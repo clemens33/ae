@@ -2098,3 +2098,6 @@ fn a_retire_whose_kill_pane_fails_keeps_its_seat() {
     assert_eq!(rig.meta(), meta_before, "the seat rows stay");
     assert_eq!(rig.events(), events_before, "no retire event");
 }
+
+#[path = "worker_birth_lifecycle_spec.rs"]
+mod worker_birth_lifecycle_spec;

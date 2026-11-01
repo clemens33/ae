@@ -1992,6 +1992,10 @@ fn hourly_code(coverage: &Coverage) -> u8 {
 }
 
 #[cfg(test)]
+#[path = "usage_birth_spec.rs"]
+mod birth_spec;
+
+#[cfg(test)]
 mod r3c_id_spec {
     #[test]
     fn r3c_valid_id_refuses_empty_and_preserves_uuid_grammar() {
