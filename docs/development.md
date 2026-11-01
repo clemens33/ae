@@ -265,7 +265,11 @@ created), `AE_HARNESS_SMOKE_<TOOL>_CMD` (the profile command), `AE_HARNESS_SMOKE
 claude login, for example `~/.claude-p`), `AE_HARNESS_SMOKE_STEP_SECS`, `_TOOL_SECS`,
 `_TOTAL_SECS` (a tool started late gets only what is left of the total), `AE_HARNESS_SMOKE_REPORT`
 (a directory for the TSV report; asked for and unwritable is a failure). Raw tool output is never
-printed or kept: a version is reduced to its numeric token and a refused verb to its exit code.
+printed: a version is reduced to its numeric token and a refused verb to its exit code. The one
+thing kept is the last pane frame of a `ready` timeout, so a smoke never fails blind: with the
+report directory set it is written there as `frame-<stamp>-<tool>.txt` (owner-only, created
+exclusively, at most 80 rows of 240 columns and 16 KiB, every control character but the row break
+and tab shown as U+FFFD), and without one the report says none was kept.
 `just harness-smoke control` runs the hang control: a `claude` shim that answers `--version` and
 then hangs must read `FAIL(ready)` inside its bound; it spends nothing and ignores every command
 and login override, so it can never reach a real binary. The recipe runs one test at a time,

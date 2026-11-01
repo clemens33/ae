@@ -257,7 +257,9 @@ impl Outcome {
     }
 
     /// Keep the pane as it stood when a ready wait ran out.
-    fn keep_frame(&mut self, _capture: &str) {}
+    fn keep_frame(&mut self, capture: &str) {
+        self.frame = Some(frame_evidence(capture));
+    }
 
     /// FAIL > LIMIT > SKIP > PASS, each naming its step.
     fn verdict(&self) -> String {
@@ -1053,6 +1055,14 @@ impl Run {
         Stop::Fail(format!("{what} within {}s", bound.as_secs()))
     }
 
+    /// A wait for the tool's first drawn frame ran out: the miss, with the pane as
+    /// it last stood kept as the evidence, because a smoke that fails blind
+    /// cannot say why the tool never drew its box.
+    fn miss_blind(&self, what: &str, bound: Duration) -> Stop {
+        self.gate.with(|out| out.keep_frame(&self.last.borrow()));
+        Self::miss_in(what, bound)
+    }
+
     /// How long the first idle frame may take. With the watchdog running, a
     /// tool that opens on a folder-trust block (claude) is answered by the
     /// watchdog's own cycle, 60 s apart, so the first answer can come a full
@@ -1146,12 +1156,12 @@ impl Run {
             if self.frame_twice(pane, bound, Want::Drawn)? {
                 Ok(())
             } else {
-                Err(Self::miss_in("no idle input frame", bound))
+                Err(self.miss_blind("no idle input frame", bound))
             }
         } else if self.settled(pane, bound)? {
             Err(Stop::Skip("no frame grammar"))
         } else {
-            Err(Self::miss_in("pane never settled", bound))
+            Err(self.miss_blind("pane never settled", bound))
         }
     }
 
@@ -1286,12 +1296,12 @@ impl Run {
             if self.frame_twice(&pane, self.step, Want::Drawn)? {
                 Ok(())
             } else {
-                Err(self.miss("no idle input frame after resume"))
+                Err(self.miss_blind("no idle input frame after resume", self.step))
             }
         } else if self.settled(&pane, self.step)? {
             Ok(())
         } else {
-            Err(self.miss("pane never settled after resume"))
+            Err(self.miss_blind("pane never settled after resume", self.step))
         }
     }
 
@@ -1648,22 +1658,99 @@ const FRAME_ROWS: usize = 80;
 const FRAME_COLS: usize = 240;
 const FRAME_BYTES: usize = 16 * 1024;
 
-/// A pane frame fit for a file a human opens in a terminal: bounded, with every
-/// control character neutralised.
+/// A pane frame fit for a file a human opens in a terminal: every control
+/// character but the row break and the tab renders as U+FFFD (the rule of
+/// `board::terminal_text`, which is crate-private and so out of this test
+/// crate's reach), each row is clipped, and the newest rows are kept under the
+/// row and byte bounds. A capture with no text says so rather than reading blank.
 fn frame_evidence(capture: &str) -> String {
-    capture.to_owned()
+    let neutral: String = capture
+        .chars()
+        .map(|ch| {
+            if ch == '\n' || ch == '\t' || !ch.is_control() {
+                ch
+            } else {
+                '\u{FFFD}'
+            }
+        })
+        .collect();
+    let mut rows: Vec<String> = neutral
+        .lines()
+        .map(|row| {
+            if row.chars().count() > FRAME_COLS {
+                row.chars()
+                    .take(FRAME_COLS - 1)
+                    .chain(std::iter::once('…'))
+                    .collect()
+            } else {
+                row.to_owned()
+            }
+        })
+        .collect();
+    if rows.len() > FRAME_ROWS {
+        rows.drain(..rows.len() - FRAME_ROWS);
+    }
+    let mut bytes = 0;
+    let mut first = rows.len();
+    for (at, row) in rows.iter().enumerate().rev() {
+        bytes += row.len() + 1;
+        if bytes > FRAME_BYTES {
+            break;
+        }
+        first = at;
+    }
+    rows.drain(..first);
+    if rows.iter().all(|row| row.trim().is_empty()) {
+        return "(no text captured)\n".to_owned();
+    }
+    let mut kept = rows.join("\n");
+    kept.push('\n');
+    kept
 }
 
-/// Write one kept frame into `dir`; an error names why, never the content.
+/// Write one kept frame into `dir`, owner-only; an error names why, never the
+/// content. The name is created exclusively, so an existing file is never
+/// overwritten and a link is never followed.
 fn write_frame(dir: &Path, stamp: u64, tool: &str, frame: &str) -> Result<PathBuf, String> {
-    let _ = (dir, stamp, tool, frame);
-    Err("not written".to_owned())
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::create_dir_all(dir)
+        .map_err(|why| format!("cannot create the report directory: {why}"))?;
+    let file = dir.join(format!("frame-{stamp}-{tool}.txt"));
+    let cannot = |why: std::io::Error| format!("cannot write the frame file for {tool}: {why}");
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&file)
+        .map_err(cannot)?;
+    out.write_all(frame.as_bytes()).map_err(cannot)?;
+    Ok(file)
 }
 
-/// Keep every frame the rows carry: the lines to print, and the problems.
+/// Keep every frame the rows carry: the lines to print, and the problems. With
+/// no report directory nothing is written and the line says how to keep one;
+/// the frame itself is never printed.
 fn keep_frames(dir: Option<&Path>, stamp: u64, rows: &[Row]) -> (Vec<String>, Vec<String>) {
-    let _ = (dir, stamp, rows);
-    (Vec::new(), Vec::new())
+    let mut notes = Vec::new();
+    let mut problems = Vec::new();
+    for row in rows {
+        let Some(frame) = &row.outcome.frame else {
+            continue;
+        };
+        match dir {
+            Some(dir) => match write_frame(dir, stamp, &row.tool, frame) {
+                Ok(file) => notes.push(format!("frame: {}", file.display())),
+                Err(why) => problems.push(format!("{} frame not kept: {why}", row.tool)),
+            },
+            None => notes.push(format!(
+                "frame: {} kept none; set AE_HARNESS_SMOKE_REPORT to keep the last frame of a \
+                 ready timeout",
+                row.tool
+            )),
+        }
+    }
+    (notes, problems)
 }
 
 /// Print the table, keep the report, and fail the test on any FAIL or on a
@@ -2261,7 +2348,10 @@ mod pins {
 
     #[test]
     fn a_frame_is_bounded_in_rows_columns_and_bytes_and_keeps_its_newest_rows() {
-        let tall: String = (0..500).map(|n| format!("row {n}\n")).collect();
+        let tall = (0..500).fold(String::new(), |mut text, n| {
+            let _ = writeln!(text, "row {n}");
+            text
+        });
         let kept = frame_evidence(&tall);
         assert!(
             kept.lines().count() <= FRAME_ROWS,
@@ -2283,9 +2373,10 @@ mod pins {
         );
         assert!(kept.ends_with("short\n"));
 
-        let heavy: String = (0..FRAME_ROWS)
-            .map(|n| format!("{n:02}{}\n", "█".repeat(FRAME_COLS - 2)))
-            .collect();
+        let heavy = (0..FRAME_ROWS).fold(String::new(), |mut text, n| {
+            let _ = writeln!(text, "{n:02}{}", "█".repeat(FRAME_COLS - 2));
+            text
+        });
         assert!(
             heavy.len() > FRAME_BYTES,
             "the fixture outgrows the byte bound"
