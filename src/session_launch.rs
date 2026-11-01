@@ -24,6 +24,8 @@ use crate::{deliver, roster, tmux, transport};
 pub(crate) mod assets;
 pub(crate) mod capture;
 pub(crate) mod name;
+#[cfg(test)]
+mod start_spec;
 
 pub use capture::developer_record_carries;
 
@@ -52,6 +54,13 @@ const READY_CHUNKS: u32 = LAUNCH_READY_POLLS / READY_CHUNK;
 
 /// How many polls the tool-process wait takes.
 const START_POLLS: u32 = 10;
+
+/// How many readings of tmux's forked child that wait takes on top: a pane reads
+/// so until its child execs, which a stalling session bus holds up for a second
+/// (#267). They spend none of `START_POLLS`, so a tool that never starts costs
+/// no more on a host that does not stall, and at most this many polls on one
+/// that does.
+const FORK_POLLS: u32 = 15;
 
 /// The pause between those polls.
 const START_POLL: Duration = Duration::from_millis(100);
@@ -4862,30 +4871,70 @@ pub(crate) fn deliver_launch_turn(
     Ok(outcome)
 }
 
+/// What one reading of a pane says about the tool typed into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Start {
+    /// tmux's own forked child: the pane's command has not run yet.
+    Forked,
+    /// A shell, no answer, or ae's own binary on its way to the tool.
+    Waiting,
+    /// The tool, or a command that is none of the above.
+    Started,
+}
+
+/// The reading of `current`, the pane's command, for `tool` typed into it.
+fn pane_start(current: &str, tool: &str, launched: &str) -> Start {
+    // opencode's process reports as `opencode.exe` — its bun-built launcher.
+    if current.strip_suffix(".exe").unwrap_or(current) == tool {
+        return Start::Started;
+    }
+    if current == "tmux" {
+        return Start::Forked;
+    }
+    if crate::watchdog::command_is_shell(current) || (!launched.is_empty() && current == launched) {
+        return Start::Waiting;
+    }
+    Start::Started
+}
+
+/// Read until a reading is [`Start::Started`] or either budget is spent.
+fn await_start(
+    mut read: impl FnMut() -> String,
+    mut nap: impl FnMut(),
+    tool: &str,
+    launched: &str,
+) {
+    let (mut waiting, mut forked) = (0, 0);
+    while waiting < START_POLLS && forked < FORK_POLLS {
+        match pane_start(&read(), tool, launched) {
+            Start::Started => return,
+            Start::Waiting => waiting += 1,
+            Start::Forked => forked += 1,
+        }
+        nap();
+    }
+}
+
 /// Wait, briefly, for the tool's process to replace the pane's shell. `launched`
-/// is the file name the pasted line launched under, from the same owner.
-fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind, launched: &str) {
+/// is the file name the pasted line launched under, from the same owner; empty
+/// when the caller takes ae's own binary in the pane as the tool's start.
+pub(crate) fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind, launched: &str) {
     if !tool.adapter().input.wait_for_process {
         return;
     }
     // The pane runs ae's own binary before it runs the tool: `_run` composes
     // the command and `exec`s it, so for a moment `pane_current_command` is
     // the launched name rather than the tool.
-    for _ in 0..START_POLLS {
-        let current = transport::observe_pane_probe(server, pane)
-            .map(|probe| probe.command)
-            .unwrap_or_default();
-        // opencode's process reports as `opencode.exe` — its bun-built launcher.
-        if current.strip_suffix(".exe").unwrap_or(&current) == tool.as_str() {
-            return;
-        }
-        if !crate::watchdog::command_is_shell(&current)
-            && (launched.is_empty() || current != launched)
-        {
-            return;
-        }
-        std::thread::sleep(START_POLL);
-    }
+    await_start(
+        || {
+            transport::observe_pane_probe(server, pane)
+                .map(|probe| probe.command)
+                .unwrap_or_default()
+        },
+        || std::thread::sleep(START_POLL),
+        tool.as_str(),
+        launched,
+    );
 }
 
 /// The look `session` declares, or `None` when the server did not answer.

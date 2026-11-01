@@ -50,12 +50,6 @@ const SHELL_SETTLE: Duration = Duration::from_millis(300);
 /// How many polls the brief's readiness wait takes, at half a second each.
 const BRIEF_READY_POLLS: u32 = 30;
 
-/// How many polls the launch's process wait takes.
-const START_POLLS: u32 = 10;
-
-/// The pause between those polls.
-const START_POLL: Duration = Duration::from_millis(100);
-
 /// How long to let a booting TUI swallow the Enter before looking for staged
 /// text.
 const LINGER_SETTLE: Duration = Duration::from_millis(1500);
@@ -458,7 +452,7 @@ fn run_spawn_inner(
         &pane,
         &crate::run::pane_command_with_snapshot(&core, dir, slot, command.as_str()),
     );
-    wait_for_agent_start(&facts.server, &pane, tool);
+    crate::session_launch::wait_for_agent_start(&facts.server, &pane, tool, "");
     // Preserve the post-exec lifecycle stamp separately from the pre-exec
     // capture floor, then start the detached capture.
     if tool.adapter().capture.is_needed() {
@@ -1188,29 +1182,6 @@ fn stamp_pane(
         Ok(())
     } else {
         Err(refused.join(", "))
-    }
-}
-
-/// Wait, briefly, for the tool's process to replace the pane's shell — the
-/// frozen `wait_for_agent_start`.
-fn wait_for_agent_start(server: &ServerId, pane: &str, tool: ToolKind) {
-    if !tool.adapter().input.wait_for_process {
-        return;
-    }
-    for _ in 0..START_POLLS {
-        let current = transport::observe_pane_probe(server, pane)
-            .map(|probe| probe.command)
-            .unwrap_or_default();
-        // opencode's process reports as `opencode.exe` (its bun-built
-        // launcher), so an exact comparison never matched and this wait
-        // silently degraded to the is-it-still-a-shell check.
-        if current.strip_suffix(".exe").unwrap_or(&current) == tool.as_str() {
-            return;
-        }
-        if !crate::watchdog::command_is_shell(&current) {
-            return;
-        }
-        std::thread::sleep(START_POLL);
     }
 }
 
