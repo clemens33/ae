@@ -150,6 +150,21 @@ pub enum Declaration {
 }
 
 impl Declaration {
+    /// The seat's declared words, cleaned for any surface: the reason as the
+    /// declaration made it, whole, with no placeholder. `None` where nothing was
+    /// said (no declaration, a blank reason, an unreadable source) — the one
+    /// place a task is derived, so a table cell, the JSON `task` and a
+    /// placeholder can never disagree about what the seat said.
+    #[must_use]
+    pub fn task(&self) -> Option<String> {
+        let Self::Made { reason, .. } = self else {
+            return None;
+        };
+        let clean = crate::board::terminal_text(&crate::goal::printable(reason));
+        let words = clean.trim();
+        (!words.is_empty()).then(|| words.to_owned())
+    }
+
     /// The reason words and, where there is a declaration, the age words a
     /// surface draws at `now`. A missing reason says so, an unreadable source
     /// says so, and an age is only ever a declaration's own.
@@ -158,12 +173,8 @@ impl Declaration {
         match self {
             Self::Unreadable => ("reason unavailable".to_owned(), None),
             Self::Absent => ("no reason given".to_owned(), None),
-            Self::Made { reason, at, .. } => {
-                let clean = crate::board::terminal_text(&crate::goal::printable(reason));
-                let reason = match clean.trim() {
-                    "" => "no reason given".to_owned(),
-                    words => words.to_owned(),
-                };
+            Self::Made { at, .. } => {
+                let reason = self.task().unwrap_or_else(|| "no reason given".to_owned());
                 let age = at.map_or_else(
                     || "age unknown".to_owned(),
                     |at| crate::brief::age(Some(now.epoch().saturating_sub(at))),
@@ -333,6 +344,16 @@ impl AgentEntry {
                 .as_ref()
                 .map_or(Value::Null, conversation_json),
         ));
+        // The declared words (the `state` reason): `null` means the journal was
+        // read and holds none, so an unreadable or incomplete source — or an
+        // entry nobody asked — says nothing rather than claim there is none.
+        // `reason` above stays the attention reason.
+        if events_complete
+            && let Some(declaration) = &self.declaration
+            && !matches!(declaration, Declaration::Unreadable)
+        {
+            push_str_or_null(&mut fields, "task", declaration.task().as_deref());
+        }
         Value::Obj(fields)
     }
 }

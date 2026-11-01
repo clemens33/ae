@@ -1629,10 +1629,7 @@ pub fn target_moved_text(
     use crate::wait_on::Class;
     let prefix = goal_prefix(goal);
     let (minutes, word) = (age / 60, moved.class.word());
-    let quote = crate::event_text::clip_head(
-        &crate::seatpack::neutralise(&crate::goal::printable(&moved.reason)),
-        MOVED_REASON_WIDTH,
-    );
+    let quote = pasted_reason(&moved.reason, MOVED_REASON_WIDTH);
     let news = match (moved.class, quote.trim().is_empty()) {
         (Class::Retired, _) => format!("{target} was retired {minutes}m ago."),
         (_, true) => format!("{target} declared {word} {minutes}m ago."),
@@ -1687,15 +1684,30 @@ fn wait_ended_note(ended: WaitEnded) -> String {
     )
 }
 
-/// STUB (red): the clause a stale nudge quotes from the seat's newest declaration.
+/// The seat's own declared words in a nudge, in cells.
+const TASK_QUOTE_WIDTH: usize = 120;
+
+/// A seat's words quoted into pasted text: one line, a leading `⟦ae:…⟧` marker
+/// quoted rather than live, head-kept to `width` cells ending in the cutter's
+/// mark.
+fn pasted_reason(reason: &str, width: usize) -> String {
+    crate::event_text::clip_head(
+        &crate::seatpack::neutralise(&crate::goal::printable(reason)),
+        width,
+    )
+}
+
+/// What a stale nudge says the seat is working on: the words of its newest
+/// declaration and the state they were declared with, quoted — never an
+/// inferred task. `None` unless the journal holds a declaration of this seat's
+/// own that left words, so an incomplete record fabricates nothing.
 #[must_use]
-pub fn declared_clause(
-    _events: &[Event],
-    _session: &str,
-    _slot: &str,
-    _agent: &str,
-) -> Option<String> {
-    None
+pub fn declared_clause(events: &[Event], session: &str, slot: &str, agent: &str) -> Option<String> {
+    let (event, _) = crate::session::declaration_of(events, session, slot, agent)?;
+    let state = event.declared_state()?;
+    let words = pasted_reason(event.summary.as_deref()?, TASK_QUOTE_WIDTH);
+    let words = words.trim();
+    (!words.is_empty()).then(|| format!("You last declared {state}: \"{words}\"."))
 }
 
 /// The text and the journal summary of one nudge: which of the three
@@ -1712,8 +1724,12 @@ pub fn nudge_words(
     task: Option<&str>,
     ended: Option<WaitEnded>,
 ) -> (String, String) {
-    let _ = task;
-    let note = ended.map(wait_ended_note);
+    let notes: Vec<String> = task
+        .map(ToOwned::to_owned)
+        .into_iter()
+        .chain(ended.map(wait_ended_note))
+        .collect();
+    let note = (!notes.is_empty()).then(|| notes.join(" "));
     let text = match (idle_age.is_some(), waiting) {
         (true, Some(reason)) => idle_nudge_text_waiting(goal, meta_dir, reason, note.as_deref()),
         (true, None) => idle_nudge_text(goal, meta_dir, note.as_deref()),
@@ -6833,7 +6849,7 @@ impl Cycle<'_> {
                     idle_age,
                     &display,
                     waiting.as_deref(),
-                    None,
+                    declared_clause(on.events, self.session, on.slot, agent).as_deref(),
                     on.seen.ended_wait,
                 );
                 let code = self.deliver(agent, &text, "nudge", &summary, None).code;

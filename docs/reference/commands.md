@@ -459,7 +459,7 @@ script or agent; no `jq` is required to produce it. The filters
          "session_id": "e795c9e9", "alive": true, "observed": "idle", "state": "blocked",
          "reason": "blocked", "client": "unknown", "account": null,
          "runtime": {"model": "unknown", "effort": "unknown"},
-         "conversation": null}
+         "conversation": null, "task": "waiting on the design call"}
       ],
       "coverage": {"joined_live_seats": 0, "live_seats": 1, "unknown_seats": 0}
     }
@@ -468,7 +468,12 @@ script or agent; no `jq` is required to produce it. The filters
 ```
 
 `attention` is the session's single most-actionable reason (see the reason
-table above); each agent's `reason` is its own contribution. `observed` is
+table above); each agent's `reason` is its own contribution. `task` is
+the words of the agent's newest `state` declaration, whole and cleaned like the table's
+cell (control characters out, multibyte text intact, no clip and no age): the agent's
+current task as it declared it, whatever the state. It is `null` when the journal was
+read and holds none (no declaration, or a blank reason) and absent, like `state`, when
+the journal could not be read. It never replaces `reason`. `observed` is
 always `busy`, `idle`, or `unknown`; unsupported, incomplete, modal, and
 ambiguous frames are `unknown`. `goal_set_epoch`
 is when the goal was last set (age it for staleness); `branch` is the

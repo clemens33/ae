@@ -347,7 +347,8 @@ fn honestwords_list_labels_declarations_and_observation_independently() {
                 "client",
                 "account",
                 "runtime",
-                "conversation"
+                "conversation",
+                "task"
             ]
         );
     }
