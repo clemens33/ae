@@ -458,16 +458,24 @@ fn letters(mut seed: u64, len: usize) -> String {
 fn answered(capture: &str, marker: &str, token: &str, baseline: usize) -> bool {
     let rows: Vec<&str> = capture.lines().collect();
     match rows.iter().rposition(|row| row.contains(marker)) {
-        Some(at) => rows[at + 1..].iter().any(|row| row.contains(token)),
-        None => baseline == 0 && capture.contains(token),
+        Some(at) => rows[at + 1..].iter().any(|row| holds(row, token)),
+        None => baseline == 0 && holds(capture, token),
     }
 }
 
-/// The first turn: the two halves of `token`, to be joined into one word. The token
-/// itself is never in the prompt, so an echo cannot answer it. Eight letters spaced
-/// apart came back hyphenated and with a space inside (measured live, codex), so
-/// the model gets two whole halves and a single join to make.
-fn turn1_prompt(token: &str, marker: &str) -> String {
+/// Two random 4-digit operands, 1000..=4999 each, so their sum always has four digits.
+fn operands(seed: u64) -> (u32, u32) {
+    let pick = |n: u64| 1000 + u32::try_from(n % 4000).unwrap_or(0);
+    (pick(seed), pick(seed / 4000))
+}
+
+/// The line every prompt the runner sends opens with: a tool that can tell it is
+/// being tested has no reason to refuse a harmless question.
+const PREFACE: &str = "Automated harness smoke test: harmless, no files and no commands.";
+
+/// The first turn: join two parts. (Skeleton: the arithmetic prompt follows.)
+fn turn1_prompt(operands: (u32, u32), marker: &str) -> String {
+    let token = (operands.0 + operands.1).to_string();
     let (first, second) = token.split_at(token.len() / 2);
     format!(
         "Join these two parts into one lowercase word, with nothing between them, \
@@ -475,8 +483,18 @@ fn turn1_prompt(token: &str, marker: &str) -> String {
     )
 }
 
+/// The recall turn. (Skeleton: the arithmetic wording follows.)
+fn turn2_prompt(marker: &str) -> String {
+    format!("Which word did you reply with before? Reply with only that word. ({marker})")
+}
+
 fn count(capture: &str, token: &str) -> usize {
     capture.matches(token).count()
+}
+
+/// Whether `row` holds `token`. (Skeleton: a substring; the whole-run rule follows.)
+fn holds(row: &str, token: &str) -> bool {
+    row.contains(token)
 }
 
 /// The version a tool printed, reduced to the ONE shape that cannot carry a path
@@ -876,6 +894,7 @@ struct Run {
     /// The newest capture, kept only to ask ae's own limit detector at a miss.
     last: RefCell<String>,
     token: String,
+    operands: (u32, u32),
 }
 
 impl Run {
@@ -1174,7 +1193,7 @@ impl Run {
 
     fn step_turn1(&self, pane: &str) -> Flow {
         let marker = format!("ref {}", letters(entropy(1), 6));
-        self.turn(pane, &turn1_prompt(&self.token, &marker), &marker)
+        self.turn(pane, &turn1_prompt(self.operands, &marker), &marker)
     }
 
     fn step_idle(&self, pane: &str) -> Flow {
@@ -1253,9 +1272,7 @@ impl Run {
 
     fn step_turn2(&self, pane: &str) -> Flow {
         let marker = format!("ref {}", letters(entropy(2), 6));
-        let prompt =
-            format!("Which word did you reply with before? Reply with only that word. ({marker})");
-        self.turn(pane, &prompt, &marker)
+        self.turn(pane, &turn2_prompt(&marker), &marker)
     }
 
     /// Whether the vendor's usage limit is on the pane RIGHT NOW (one fresh
@@ -1414,6 +1431,8 @@ fn run_tool(
         )),
     );
     let gate = Gate::new();
+    let operands = operands(entropy(7));
+    let sum = operands.0 + operands.1;
     let run = Run {
         gate: gate.clone(),
         tool: spec,
@@ -1430,7 +1449,8 @@ fn run_tool(
         step: plan.step,
         watchdog: !plan.shim,
         last: RefCell::new(String::new()),
-        token: letters(entropy(7), 8),
+        token: sum.to_string(),
+        operands,
     };
     // ae pastes its own registration turn where the adapter has one: once on
     // create, once more on resume.
@@ -1707,31 +1727,77 @@ mod pins {
     use super::*;
 
     #[test]
-    fn the_token_reaches_the_model_as_two_halves_and_never_whole() {
-        let token = letters(entropy(3), 8);
-        assert_eq!(token.len(), 8);
-        assert!(token.chars().all(|c| c.is_ascii_lowercase()));
-        let (first, second) = token.split_at(4);
-        let prompt = turn1_prompt(&token, "ref abc123");
+    fn the_sum_is_asked_for_and_never_in_the_prompt() {
+        let marker = "ref abcdef";
+        for step in 0..20_000_u64 {
+            let (a, b) = operands(step.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ entropy(3));
+            assert!((1000..=4999).contains(&a) && (1000..=4999).contains(&b));
+            let sum = (a + b).to_string();
+            assert_eq!(sum.len(), 4, "{a} + {b}");
+            let prompt = turn1_prompt((a, b), marker);
+            assert!(
+                !prompt.contains(&sum),
+                "the prompt must not hold the answer: {prompt}"
+            );
+            assert!(
+                holds(&prompt, &a.to_string()) && holds(&prompt, &b.to_string()),
+                "{prompt}"
+            );
+        }
+        let prompt = turn1_prompt((1234, 5678), marker);
         assert!(
-            !prompt.contains(&token),
-            "the prompt must not hold the answer"
-        );
-        // Measured live: eight letters spaced apart came back hyphenated (codex,
-        // run 1) and with one space inside (codex, run 4), never as one word. Two
-        // whole halves leave the model a single join to make.
-        assert!(
-            prompt.contains(first) && prompt.contains(second),
-            "both halves are given whole: {prompt}"
+            prompt.starts_with(PREFACE),
+            "benign preface first: {prompt}"
         );
         assert!(
-            !prompt.contains('-'),
-            "no hyphen can be mistaken for the answer: {prompt}"
+            prompt.contains("sum") && prompt.contains("digits"),
+            "{prompt}"
         );
-        // Taking every other character out must not rebuild the answer either: the
-        // lowercase letters of the whole prompt, run together, still lack it.
-        let letters_only: String = prompt.chars().filter(char::is_ascii_lowercase).collect();
-        assert!(!letters_only.contains(&token), "{prompt}");
+        assert!(
+            !prompt.to_ascii_lowercase().contains("letter"),
+            "no letter joining is asked for: {prompt}"
+        );
+        assert!(prompt.ends_with("(ref abcdef)"), "{prompt}");
+    }
+
+    #[test]
+    fn the_recall_turn_names_the_number_and_holds_none() {
+        let prompt = turn2_prompt("ref abcdef");
+        assert!(prompt.starts_with(PREFACE), "{prompt}");
+        assert!(
+            prompt.contains("number") && prompt.contains("digits"),
+            "{prompt}"
+        );
+        assert!(
+            !prompt.chars().any(|c| c.is_ascii_digit()),
+            "a recall prompt that held a number could answer itself: {prompt}"
+        );
+    }
+
+    #[test]
+    fn a_sum_counts_only_as_a_whole_run_of_digits() {
+        for row in ["● 6912", "6912.", "│ 6912 │", "> 6912\n", "sum: 6912"] {
+            assert!(holds(row, "6912"), "{row}");
+        }
+        for row in [
+            "● 16912",
+            "● 69123",
+            "● a6912",
+            "● 6912th",
+            "● 1691",
+            "● 6 912",
+        ] {
+            assert!(!holds(row, "6912"), "{row}");
+        }
+        assert_eq!(count("6912 and 6912 and 16912", "6912"), 2);
+        let marker = "ref abcdef";
+        let echo = "> Automated harness smoke test. What is 1234 + 5678? (ref abcdef)\n";
+        assert!(
+            !answered(echo, marker, "6912", 0),
+            "operands are not the sum"
+        );
+        assert!(answered(&format!("{echo}● 6912\n"), marker, "6912", 0));
+        assert!(!answered(&format!("{echo}● 16912\n"), marker, "6912", 0));
     }
 
     /// The frame a real claude 2.1.314 draws once its trust block is answered
