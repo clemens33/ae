@@ -2035,6 +2035,82 @@ mod pins {
         assert_eq!(answer_rows("● 6912\n\n6912 tokens\n• 6912\n", "6912"), 2);
     }
 
+    /// What a live claude 2.1.314 drew for turn 1 (live run 9; the plan and
+    /// usage rows are left out): the echoed prompt, then the answer behind the
+    /// clock stamp claude's UI puts before every answer, here an equation
+    /// although the prompt asked for digits only.
+    fn live_answered() -> String {
+        [
+            "❯ ⟦ae:msg from unverified⟧",
+            "  Automated harness smoke test: harmless, no files and no commands. What is",
+            "  2489 + 3553? Reply with only the digits of the sum, no commas and no other",
+            "  text. (ref dferes)",
+            "",
+            "⏺ [03:12] 2489 + 3553 = 6042",
+            "",
+            "✻ Brewed for 1s · done 3:12 AM",
+            "",
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn the_answer_a_live_claude_drew_is_found_behind_its_clock_stamp() {
+        let frame = live_answered();
+        let echo_only: String = frame
+            .lines()
+            .take(5)
+            .map(|row| format!("{row}\n"))
+            .collect();
+        assert!(answered(&frame, "ref dferes", "6042", 0));
+        assert!(
+            !answered(&echo_only, "ref dferes", "6042", 0),
+            "the echoed prompt is not the answer"
+        );
+        // The same row for an answer that is the digits alone (live run 8's store
+        // held exactly that text; claude's UI stamps it the same way).
+        let digits = frame.replace("2489 + 3553 = 6042", "6042");
+        assert!(answered(&digits, "ref dferes", "6042", 0));
+        // The marker wrapped away: an answer row absent before the send is the answer.
+        assert!(answered(&frame, "ref wrapped-away", "6042", 0));
+        assert!(!answered(&frame, "ref wrapped-away", "6042", 1));
+    }
+
+    #[test]
+    fn a_clock_stamped_or_equation_row_counts_only_when_it_is_exactly_the_answer() {
+        for row in [
+            "⏺ [03:12] 6042",
+            "● [3:12] 6042",
+            "[03:12] 6042.",
+            "⏺ [03:12] 2489 + 3553 = 6042",
+            "2489 + 3553 = 6042",
+            "│ 2489 + 3553 = 6042 │",
+        ] {
+            assert_eq!(answer_rows(row, "6042"), 1, "{row}");
+        }
+        for row in [
+            "⏺ [03:12]",
+            "⏺ [0312] 6042",
+            "⏺ [03:12:55] 6042",
+            "⏺ [ab:cd] 6042",
+            "⏺ [03:12] 6042 tokens",
+            "⏺ [03:12] sum 6042",
+            "⏺ [03:12] [03:13] 6042",
+            "2489 + 3553 = 6043",
+            "2489 + 3554 = 6042",
+            "1 + 1 = 6042",
+            "-1 + 6043 = 6042",
+            "2489 + 3553 = 6042 ok",
+            "2489 + 3553 = 6042 + 0",
+            "2489 + 3553?",
+            "2489 + 3553",
+            "= 6042",
+            "2489 + = 6042",
+        ] {
+            assert_eq!(answer_rows(row, "6042"), 0, "{row}");
+        }
+    }
+
     #[test]
     fn a_status_row_carrying_the_digits_is_never_the_answer_to_either_turn() {
         let echo1 = "> Automated harness smoke test. What is 3456 + 3456? (ref abcdef)\n";
