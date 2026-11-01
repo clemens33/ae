@@ -277,6 +277,39 @@ pub(crate) fn observed_harness(
     }
 }
 
+/// What a pane may be CALLED to run: [`observed_harness`] over a COVERED tree
+/// only — the pane's root is in the table and no harness is left that ae cannot
+/// place — else [`Observed::Unknown`]. The same readings a reseat's stop
+/// refuses on, asked by `ae doctor` and `ae list` alike, so neither can claim a
+/// mismatch the other would call unknown.
+#[must_use]
+pub(crate) fn covered_reading(
+    foreground: &str,
+    pane_pid: Option<u32>,
+    table: Option<&[Proc]>,
+) -> Observed {
+    match (pane_pid, table) {
+        (Some(pid), Some(rows))
+            if rows.iter().any(|row| row.pid == pid)
+                && harness_rows(rows, pid)
+                    .iter()
+                    .all(|row| row.2 == Lineage::Under) =>
+        {
+            observed_harness(foreground, Some(pid), Some(rows))
+        }
+        _ => Observed::Unknown,
+    }
+}
+
+/// Whether the harnesses a pane runs disagree with the one tool its seat
+/// records: anything but exactly that tool — the recorded one beside another is
+/// never clean. The ONE predicate behind `ae doctor`'s `seat-identity` and
+/// `ae list`'s `harness:` cell.
+#[must_use]
+pub(crate) fn harness_disagrees(tools: &[ToolKind], recorded: &str) -> bool {
+    !matches!(tools, [only] if name_matches(recorded, only.as_str()))
+}
+
 /// The known harness one process name belongs to — basename, `.exe` tolerant.
 fn harness_of(comm: &str) -> Option<ToolKind> {
     let base = comm.rsplit('/').next().unwrap_or(comm);

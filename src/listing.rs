@@ -469,6 +469,9 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
                 }
                 crate::model_drift::ModelDrift::Unknown => out.push_str(" · drift:unknown"),
             }
+            if let Some(clash) = &agent.harness_clash {
+                harness_cell(clash, &mut out);
+            }
             effort_cell(agent.effort.as_ref(), &mut out);
             if let Some(cell) = agent
                 .conversation
@@ -491,6 +494,18 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
         }
     }
     out
+}
+
+/// The harness cell: what the pane runs when that is not the tool the seat's
+/// records name. Diagnosis only — `ae doctor` says what repairs it.
+fn harness_cell(clash: &crate::digest::HarnessClash, out: &mut String) {
+    let runs: Vec<&str> = clash.runs.iter().map(|tool| tool.as_str()).collect();
+    let _ = write!(
+        out,
+        " · harness:{} (records {})",
+        runs.join("+"),
+        crate::board::terminal_text(&clash.records)
+    );
 }
 
 /// The effort cell: the level ae runs the seat at and why, a move still

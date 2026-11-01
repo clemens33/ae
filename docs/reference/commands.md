@@ -345,6 +345,10 @@ A running seat's `conv:` cell says what its current tool start did with its
 conversation: `new`, `unproven`, `lost(<cause>)`, `unrecorded` (no record of this
 start) or `unknown`; no cell is a proven current resume. The id column reads `pending`
 until the id is captured; JSON adds a `conversation` object and keeps `session_id` `-`.
+A running seat whose pane runs other known harnesses than its records name reads
+`harness:<runs> (records <tool>)` — the `seat-identity` disagreement `ae doctor` reports, from
+the listing's one process read; a diagnosis only, no record is rewritten. A pane ae cannot read
+whole, an ambiguous one, a shell and a seat that records no tool read nothing. JSON is unchanged.
 Each session's indented detail line ends with three lifecycle ages:
 `created` is the first launch, `started` is the latest launch or resume, and
 `active` is the newest ae event. Legacy sessions derive creation from the

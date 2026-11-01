@@ -1178,6 +1178,7 @@ fn agent_entries(
                 .map(|found| found.class);
             let mut entry = AgentEntry {
                 conversation: None,
+                harness_clash: None,
                 reference: reference.clone(),
                 // Schema 2 keeps publishing `alias`; for a v2 row that is the profile.
                 alias: slot.profile.clone().unwrap_or_default(),
@@ -1374,6 +1375,31 @@ pub fn conversation_of<'t>(
         launched,
         live.as_deref(),
     ))
+}
+
+/// Whether a seat's pane runs other known harnesses than its records name, for
+/// `ae list`. DIAGNOSIS only: every reading that proves nothing — no recorded
+/// tool, no pane pid, a process table that is missing or leaves the tree
+/// partly unplaced — is `None`, never a mismatch. `table` is asked at most
+/// once and only when a pid and a recorded tool exist.
+#[must_use]
+pub fn harness_clash_of<'t>(
+    recorded: Option<&str>,
+    pane_pid: Option<u32>,
+    foreground: Option<&str>,
+    table: &dyn Fn() -> Option<&'t [crate::procs::Proc]>,
+) -> Option<crate::digest::HarnessClash> {
+    let records = recorded.filter(|tool| !tool.is_empty())?;
+    let pid = pane_pid?;
+    let crate::procs::Observed::Harness(runs) =
+        crate::procs::covered_reading(foreground.unwrap_or_default(), Some(pid), table())
+    else {
+        return None;
+    };
+    crate::procs::harness_disagrees(&runs, records).then(|| crate::digest::HarnessClash {
+        runs,
+        records: records.to_owned(),
+    })
 }
 
 /// Enrich explicit JSON listings without changing activity or durable reads.

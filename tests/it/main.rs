@@ -104,6 +104,7 @@ mod launch_context_spec;
 mod lifecycle;
 mod linkfeat_spec;
 mod list_ended_spec;
+mod list_harness_spec;
 mod liveseats_spec;
 mod menu;
 mod migrate;

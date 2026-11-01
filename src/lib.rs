@@ -627,7 +627,7 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
             enrich_list_json(&read.snapshot, &mut read.world, &read.panes);
         }
         if matches!(&request, cli::Request::List(_)) {
-            enrich_list_conversation(&read.snapshot, &mut read.world, &read.pids);
+            enrich_list_seats(&read.snapshot, &mut read.world, &read.pids);
         }
         return run_with(args, Some(&read.world), out, err);
     }
@@ -680,10 +680,10 @@ fn enrich_list_json(
     }
 }
 
-/// Each seat's conversation verdict, for `ae list` alone: at most ONE process
-/// read for the whole listing, and only when some seat's journal could name
-/// its running start.
-fn enrich_list_conversation(
+/// Each seat's conversation verdict and harness clash, for `ae list` alone: at
+/// most ONE process read for the whole listing, shared by both, and only when a
+/// seat's journal could name its running start or a live seat records a tool.
+fn enrich_list_seats(
     snapshot: &liveness::Snapshot,
     world: &mut listing::World,
     pids: &fleet_read::SeatPids,
@@ -702,10 +702,10 @@ fn enrich_list_conversation(
             let Some(seat) = meta.roster().iter().find(|seat| seat.name == agent.name) else {
                 continue;
             };
-            let pid = seats
+            let pane = seats
                 .and_then(|seats| seats.get(&seat.slot))
-                .copied()
-                .flatten();
+                .and_then(Option::as_ref);
+            let pid = pane.and_then(|pane| pane.pid);
             agent.conversation = session::conversation_of(
                 meta,
                 record.snapshot.events.as_ref(),
@@ -715,6 +715,16 @@ fn enrich_list_conversation(
                 pid,
                 &table,
             );
+            agent.harness_clash = pane
+                .filter(|_| entry.status == digest::Status::Running && agent.alive == Some(true))
+                .and_then(|pane| {
+                    session::harness_clash_of(
+                        seat.binary.as_deref(),
+                        pane.pid,
+                        pane.command.as_deref(),
+                        &table,
+                    )
+                });
         }
     }
 }

@@ -225,10 +225,19 @@ pub(crate) struct WorldRead {
     pub(crate) sockets: SocketPaths,
 }
 
-/// Each Running record's listed pane pid per slot by its state directory;
-/// `None` where more than one pane carries the slot.
-pub(crate) type SeatPids =
-    std::collections::BTreeMap<std::path::PathBuf, std::collections::BTreeMap<String, Option<u32>>>;
+/// What one listed pane shows of a seat: its root pid and foreground command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SeatPane {
+    pub(crate) pid: Option<u32>,
+    pub(crate) command: Option<String>,
+}
+
+/// Each Running record's listed pane per slot by its state directory; `None`
+/// where more than one pane carries the slot.
+pub(crate) type SeatPids = std::collections::BTreeMap<
+    std::path::PathBuf,
+    std::collections::BTreeMap<String, Option<SeatPane>>,
+>;
 
 /// Each Running record's panes by its state directory: `None` when the read
 /// listed none (no recorded server, no meta, or tmux did not answer).
@@ -338,7 +347,12 @@ fn observed_runtimes(
                         seats
                             .entry(slot.clone())
                             .and_modify(|held| *held = None)
-                            .or_insert(pane.pid);
+                            .or_insert_with(|| {
+                                Some(SeatPane {
+                                    pid: pane.pid,
+                                    command: pane.command.clone(),
+                                })
+                            });
                     }
                 }
             }

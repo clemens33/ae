@@ -390,10 +390,7 @@ fn seat_identity_rows(seats: &[SeatFacts], out: &mut Report) {
                 continue;
             }
         };
-        let own = tools
-            .iter()
-            .any(|tool| crate::procs::name_matches(&seat.binary, tool.as_str()));
-        if own && tools.len() == 1 {
+        if !crate::procs::harness_disagrees(tools, &seat.binary) {
             matched += 1;
             continue;
         }
@@ -1093,20 +1090,9 @@ fn seat_reading(
     probe: Option<&crate::tmux::ObservedPaneProbe>,
     table: Option<&[crate::procs::Proc]>,
 ) -> crate::procs::Observed {
-    use crate::procs::{Lineage, harness_rows};
-    let placed = |rows: &[_], pid| {
-        !harness_rows(rows, pid)
-            .iter()
-            .any(|row| row.2 != Lineage::Under)
-    };
-    match (probe, table, probe.and_then(|probe| probe.pid)) {
-        (Some(probe), Some(rows), Some(pid))
-            if rows.iter().any(|row| row.pid == pid) && placed(rows, pid) =>
-        {
-            crate::procs::observed_harness(&probe.command, probe.pid, Some(rows))
-        }
-        _ => crate::procs::Observed::Unknown,
-    }
+    probe.map_or(crate::procs::Observed::Unknown, |probe| {
+        crate::procs::covered_reading(&probe.command, probe.pid, table)
+    })
 }
 
 /// Every live session's seats against their panes: ONE process table for the

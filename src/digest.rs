@@ -100,6 +100,20 @@ pub struct AgentEntry {
     /// What the running tool start did with its conversation; `None` where no
     /// start can run. Filled by `ae list` alone.
     pub conversation: Option<crate::conversation::Verdict>,
+    /// The seat's pane was OBSERVED to run other known harnesses than its
+    /// records name. TABLE only, same rule as `own_work`; `None` also covers
+    /// every reading that proves nothing. Filled by `ae list` alone.
+    pub harness_clash: Option<HarnessClash>,
+}
+
+/// A pane that runs known harnesses the seat's records do not name — for
+/// DIAGNOSIS only: nothing here rewrites a record or authorises a stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessClash {
+    /// What the pane's tree runs, sorted by name.
+    pub runs: Vec<crate::tool::ToolKind>,
+    /// The tool the seat records (`agent_bin.<slot>`).
+    pub records: String,
 }
 
 /// A recorded identity's quota join key, not a vendor login identity.
