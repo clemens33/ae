@@ -1716,22 +1716,31 @@ mod pins {
     use super::*;
 
     #[test]
-    fn the_joined_token_never_occurs_in_the_prompt_that_carries_it() {
+    fn the_token_reaches_the_model_as_two_halves_and_never_whole() {
         let token = letters(entropy(3), 8);
+        assert_eq!(token.len(), 8);
+        assert!(token.chars().all(|c| c.is_ascii_lowercase()));
+        let (first, second) = token.split_at(4);
         let prompt = turn1_prompt(&token, "ref abc123");
         assert!(
             !prompt.contains(&token),
             "the prompt must not hold the answer"
         );
-        // Measured live: with hyphens a model "joined with no spaces" and kept the
-        // hyphens. The letters are apart by single spaces and nothing else.
-        assert!(prompt.contains(&spaced(&token)), "{prompt}");
+        // Measured live: eight letters spaced apart came back hyphenated (codex,
+        // run 1) and with one space inside (codex, run 4), never as one word. Two
+        // whole halves leave the model a single join to make.
+        assert!(
+            prompt.contains(first) && prompt.contains(second),
+            "both halves are given whole: {prompt}"
+        );
         assert!(
             !prompt.contains('-'),
             "no hyphen can be mistaken for the answer: {prompt}"
         );
-        assert_eq!(token.len(), 8);
-        assert!(token.chars().all(|c| c.is_ascii_lowercase()));
+        // Taking every other character out must not rebuild the answer either: the
+        // lowercase letters of the whole prompt, run together, still lack it.
+        let letters_only: String = prompt.chars().filter(char::is_ascii_lowercase).collect();
+        assert!(!letters_only.contains(&token), "{prompt}");
     }
 
     /// The frame a real claude 2.1.314 draws once its trust block is answered
