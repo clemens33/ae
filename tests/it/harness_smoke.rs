@@ -239,8 +239,8 @@ struct Outcome {
     strays: Vec<String>,
     /// The newest pane frame a wait on the pane saw, already neutralised and
     /// bounded ([`frame_evidence`]), published as it is seen and cleared when the
-    /// wait passes: what is left on a failed run is the one witness of why the
-    /// tool never drew its box.
+    /// wait passes: what is left on a failed run is the one witness of what the
+    /// pane showed when its wait (first frame, quiet, answer, idle) gave up.
     frame: Option<String>,
 }
 
@@ -1800,7 +1800,7 @@ fn keep_frames(dir: Option<&Path>, stamp: u64, rows: &[Row]) -> (Vec<String>, Ve
             },
             None => notes.push(format!(
                 "frame: {} kept none; set AE_HARNESS_SMOKE_REPORT to keep the last frame of a \
-                 ready timeout",
+                 failed pane wait",
                 row.tool
             )),
         }
