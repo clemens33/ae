@@ -343,9 +343,17 @@ impl Gate {
         f(&mut self.lock().outcome)
     }
 
-    /// Like [`Self::with`], but only while the run is live.
+    /// Like [`Self::with`], but only while the run is live: the check and the
+    /// write happen under the lock [`Self::cancel`] sets the flag under, so
+    /// nothing the abandoned worker does afterwards can change what the outer
+    /// bound snapshots.
     fn with_live<R>(&self, f: impl FnOnce(&mut Outcome) -> R) -> Option<R> {
-        Some(f(&mut self.lock().outcome))
+        let mut shared = self.lock();
+        if shared.cancelled {
+            None
+        } else {
+            Some(f(&mut shared.outcome))
+        }
     }
 
     /// Start `runner` unless the run was cancelled; the check and the spawn
@@ -1025,7 +1033,7 @@ impl Run {
     fn sight(&self, pane: &str, publish: bool) -> Result<Option<String>, Stop> {
         let capture = self.look(pane)?;
         if publish && let Some(text) = &capture {
-            self.gate.with(|out| out.keep_frame(text));
+            self.gate.with_live(|out| out.keep_frame(text));
         }
         Ok(capture)
     }
@@ -1033,11 +1041,17 @@ impl Run {
     /// A readiness wait passed: the frames it published on the way are no
     /// evidence of anything, and a passing run keeps none.
     fn ready_passed(&self) {
-        self.gate.with(|out| out.frame = None);
+        self.gate.with_live(|out| out.frame = None);
     }
 
-    /// A readiness wait begins.
-    fn ready_begins(&self) {}
+    /// A readiness wait begins: until a capture succeeds the evidence is the
+    /// placeholder, published before the first (possibly blocked) capture, so a
+    /// pane or server that never answers, or an outer cut before the first read
+    /// returns, still leaves a frame that says so. Later failed captures leave
+    /// the last good frame alone.
+    fn ready_begins(&self) {
+        self.gate.with_live(|out| out.keep_frame(""));
+    }
 
     /// The frame test `want` names, twice [`FRAME_GAP`] apart: a frame that
     /// flickers through the state proves nothing. Waiting for [`Want::Drawn`]
@@ -2651,7 +2665,7 @@ mod pins {
         let files = OwnedScratch::root("hs", "fresh");
         let fresh = files.path().join("fresh.txt");
         std::fs::write(&fresh, FRESH).expect("the fresh frame");
-        let script = format!("sleep 1.5; cat {}; sleep 120", fresh.display());
+        let script = format!("sleep 1.5; cat {}; sleep 120", shell_quoted(&fresh));
         let (run, _scratch) = run_over(&script, "wait-pass");
         let bound = Duration::from_secs(8);
         assert!(run.frame_twice("%0", bound, Want::Drawn).expect("a wait"));
