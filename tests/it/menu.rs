@@ -1749,6 +1749,8 @@ fn launch_ae_session(
     config: &Path,
     session: &str,
 ) {
+    let dir = root.join("sessions").join(session);
+    let first_start = !state_kept(&dir);
     let output = ae()
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
@@ -1780,6 +1782,11 @@ fn launch_ae_session(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    // An idle seat's launch returned before its pane recorded the seat, and a
+    // fixture plants its own rows next. A repeat launch's old rows prove nothing.
+    if first_start {
+        seat_recorded(|file| scratch_text(&dir, file), Instant::now() + PANE_WAIT);
+    }
 }
 
 fn write_settings_config(project: &Path, config: &Path) {
@@ -2431,6 +2438,11 @@ fn settings_starts_then_resumes_the_exact_renamed_role_without_switching_its_cli
     assert!(
         clients.contains(&format!("{untouched}|viewed")),
         "{clients}"
+    );
+    // The role's first start records itself now, or the Resume below would.
+    seat_recorded(
+        |file| scratch_text(&role_dir, file),
+        Instant::now() + PANE_WAIT,
     );
     let renamed = ae()
         .env("HOME", &scratch)
