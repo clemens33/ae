@@ -1700,11 +1700,15 @@ fn pasted_reason(reason: &str, width: usize) -> String {
 /// What a stale nudge says the seat is working on: the words of its newest
 /// declaration and the state they were declared with, quoted — never an
 /// inferred task. `None` unless the journal holds a declaration of this seat's
-/// own that left words, so an incomplete record fabricates nothing.
+/// own, in one of [`crate::state::VALUES`], that left words, so an incomplete or
+/// hostile record fabricates and injects nothing.
 #[must_use]
 pub fn declared_clause(events: &[Event], session: &str, slot: &str, agent: &str) -> Option<String> {
     let (event, _) = crate::session::declaration_of(events, session, slot, agent)?;
-    let state = event.declared_state()?;
+    // The `ref` is persisted input: only the helper's own vocabulary is pasted.
+    let state = event
+        .declared_state()
+        .filter(|state| crate::state::VALUES.contains(state))?;
     let words = pasted_reason(event.summary.as_deref()?, TASK_QUOTE_WIDTH);
     let words = words.trim();
     (!words.is_empty()).then(|| format!("You last declared {state}: \"{words}\"."))
