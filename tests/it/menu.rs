@@ -78,7 +78,11 @@ fn tmux(socket: &Path, dir: &Path, words: &[&str]) -> (bool, String) {
 /// that client's exact shutdown refusal is retryable; every other setup error
 /// fails immediately, with the tmux diagnostics the ordinary helper discards.
 fn replace_server(socket: &Path, dir: &Path, name: &str) {
-    let _ = tmux(socket, dir, &["kill-server"]);
+    // A client reaching a killed server's path can hang until that server's
+    // stalled pane child exits, so the replacement starts on a new path entry.
+    if tmux(socket, dir, &["kill-server"]).0 {
+        let _ = fs::remove_file(socket);
+    }
     let args = [
         "-S",
         &socket.display().to_string(),
