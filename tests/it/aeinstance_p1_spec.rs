@@ -123,7 +123,7 @@ const CENSUS: [(&str, [usize; 6]); 21] = [
     ("src/effort/leg.rs", [1, 0, 0, 0, 0, 1]),
     ("src/lib.rs", [2, 0, 0, 0, 0, 0]),
     ("src/lifecycle.rs", [4, 0, 4, 4, 0, 0]),
-    ("src/lifecycle/end.rs", [2, 0, 2, 1, 0, 0]),
+    ("src/lifecycle/end.rs", [3, 0, 3, 1, 0, 0]),
     ("src/rename.rs", [2, 0, 0, 0, 0, 0]),
     ("src/run.rs", [0, 1, 0, 0, 0, 0]),
     ("src/seat_relaunch.rs", [1, 0, 0, 0, 0, 0]),

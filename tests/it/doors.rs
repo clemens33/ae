@@ -321,10 +321,13 @@ fn the_opencode_leg_captures_through_a_file_never_a_pipe() {
 /// `verify_session_absent`'s strict proof — a session is gone because the
 /// server said so, never because a socket is missing and the arithmetic worked
 /// out. `end` crosses the boot proof ONLY through
-/// `lifecycle::end::boot_proved_stopped`, and only behind `--assume-stopped`;
-/// `rename` crosses the same gate (it deletes no state, so it needs no
-/// acknowledgement). This is the guard that a later refactor cannot quietly
-/// wire the weaker evidence somewhere else.
+/// `lifecycle::end::boot_proved_stopped`. Its app may capture the proof for an
+/// unreachable server on a stopped card, then carry `--assume-stopped`;
+/// guarded execution requires that flag, frozen Unknown and fresh proof under
+/// the lifecycle lock. Ordinary end's Positive arm also requires
+/// `--assume-stopped`. `rename` crosses the same gate (it deletes no state, so
+/// it needs no acknowledgement). This is the guard that a later refactor
+/// cannot quietly wire the weaker evidence somewhere else.
 #[test]
 fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
     let holders = src_holders;
@@ -385,7 +388,8 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
     assert_eq!(
         holders("boot_proved_stopped("),
         vec![
-            // The one definition, called by `end`'s Positive arm.
+            // One definition: called by the Positive arm, stopped-card question
+            // capture and guarded execution's under-lock reproof.
             "src/lifecycle/end.rs".to_owned(),
             // The rename preflight and its retry.
             "src/rename.rs".to_owned(),
@@ -408,8 +412,8 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
     }
     assert_eq!(
         count_in("src/lifecycle/end.rs", "boot_proved_stopped("),
-        2,
-        "end.rs must hold the shared gate as one definition and exactly one call (the Positive arm)"
+        4,
+        "end.rs must hold one definition and exactly three calls: the Positive arm, stopped-card question capture and guarded under-lock reproof"
     );
     assert_eq!(
         count_in("src/rename.rs", "boot_proved_stopped("),
