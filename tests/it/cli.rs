@@ -2778,6 +2778,12 @@ exit 0
     /// whose agent has DIED.
     fn kill_agent_in(&self, pane: &str) {
         assert!(self.tmux(&["respawn-pane", "-k", "-t", pane, "exec sh"]).0);
+        pane_command(
+            |args| self.tmux(args),
+            pane,
+            Instant::now() + PANE_WAIT,
+            is_shell,
+        );
     }
 
     /// The recovery record the last event points at, and its content.

@@ -18,7 +18,7 @@ use ae::cli::{ACCEPT, ASK, GOAL, INTERRUPT, REPLY, REVIEW, SEND, SPAWN, WITHDRAW
 
 use super::deliver::wait_fake_drawn;
 use super::o2guard_p2_spec::{Seat, World, ledger, opening, received, uuid_of};
-use super::support::{PANE_WAIT, pane_command};
+use super::support::{PANE_WAIT, has_execed, pane_command};
 
 const ROLE: &str = "orchestrator role";
 const OWNER: [&str; 3] = ["ae chat", "ae app", "Telegram"];
@@ -56,7 +56,7 @@ fn pane_in(world: &World, seat: &Seat, slot: &str, agent: &str) -> String {
         |args| world.tmux_args(args),
         &pane,
         Instant::now() + PANE_WAIT,
-        |command| command == "sleep",
+        has_execed,
     );
     if !agent.is_empty() {
         world.stamp(&pane, slot, agent);

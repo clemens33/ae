@@ -40,6 +40,7 @@ use super::parity::{
     capture::{ExitOutcome, raw},
 };
 use super::phase2::run_tmux;
+use super::support::{PANE_WAIT, has_execed, pane_command};
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -259,6 +260,14 @@ impl Rig {
     /// Where that pane's own process runs.
     fn main_pane_cwd(&self, name: &str) -> PathBuf {
         let pane = self.main_pane(name);
+        // An idle seat's launch returns before its pane execs, and until then
+        // the pane's cwd is the server's.
+        pane_command(
+            |args| self.tmux(args),
+            &pane,
+            Instant::now() + PANE_WAIT,
+            has_execed,
+        );
         let (ok, where_) = self.tmux(&["display", "-p", "-t", &pane, "#{pane_current_path}"]);
         assert!(ok, "the main pane answers: {where_}");
         PathBuf::from(where_.trim())

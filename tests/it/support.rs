@@ -27,9 +27,18 @@ pub(crate) mod source_view;
 mod source_view_spec;
 
 mod pane_command_spec;
+// Installed byte for byte too; its helper outside a `#[test]` trips these.
+#[allow(
+    clippy::expect_used,
+    reason = "frozen spec installed byte-identical; its failure helper unwraps"
+)]
+mod seat_recorded_spec;
 
 use std::fmt;
+use std::io;
 use std::time::{Duration, Instant};
+
+use ae::event_text::member;
 
 /// How long to wait between two reads while a deadline allows another.
 const POLL: Duration = Duration::from_millis(50);
@@ -183,5 +192,55 @@ pub(crate) fn first_pane(
     match try_first_pane(tmux, selector_args, deadline) {
         Ok(pane) => pane,
         Err(why) => panic!("{why}"),
+    }
+}
+
+/// A fixture's witness, for a FRESH session directory, that the pane's `_run`
+/// has recorded the main seat's config home and conversation choice. Launch of
+/// a tool that skips the start wait returns before its pane execs, by design,
+/// so a fixture that kills that seat or freezes its files proves these first.
+/// `read` answers a session-relative file; one `deadline` covers both proofs.
+///
+/// Not a witness for a resume: an earlier incarnation's rows satisfy it. Not
+/// proof of the exec: `record_launch` follows, a no-op for an unobserved model.
+#[track_caller]
+pub(crate) fn seat_recorded(read: impl Fn(&str) -> io::Result<String>, deadline: Instant) {
+    recorded(&read, "meta", "config_home.main", deadline, |text| {
+        text.lines()
+            .any(|line| line.starts_with("config_home.main="))
+    });
+    recorded(
+        &read,
+        "events.jsonl",
+        "conversation-new",
+        deadline,
+        |text| {
+            text.lines().any(|line| {
+                let line = line.as_bytes();
+                member(line, "action").value() == Some(b"conversation-new".as_slice())
+                    && member(line, "target_slot").value() == Some(b"main".as_slice())
+            })
+        },
+    );
+}
+
+/// One proof of [`seat_recorded`]: its file, what it sought, and the reads made.
+#[track_caller]
+fn recorded(
+    read: &impl Fn(&str) -> io::Result<String>,
+    file: &str,
+    sought: &str,
+    deadline: Instant,
+    proves: impl Fn(&str) -> bool,
+) {
+    let reader = |_: &[&str]| match read(file) {
+        Ok(text) => (true, text),
+        Err(why) => (false, why.to_string()),
+    };
+    if let Err(why) = try_observe(reader, &[file, sought], deadline, proves) {
+        panic!(
+            "{file}: no {sought} before the deadline; {} read(s), last status ok={}, last read {:?}",
+            why.reads, why.ok, why.out
+        );
     }
 }

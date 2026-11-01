@@ -16,7 +16,7 @@ use ae::tmux::{PickerPane, PickerSession, display_menu_for_client_args};
 
 use super::cli::{OwnedChild, ae, helper_by_name};
 use super::phase2::{run_tmux, tmux_present};
-use super::support::{PANE_WAIT, SETUP_WAIT, observe, try_first_pane};
+use super::support::{PANE_WAIT, SETUP_WAIT, observe, seat_recorded, try_first_pane};
 
 /// How long a poll waits for tmux (or a child process) to catch up before the
 /// arm fails. These polls await an external process, they are not speed
@@ -4860,6 +4860,11 @@ fn settings_range_measures_renders_clicks_and_cancels_on_the_exact_client() {
         },
         |seen| seen.contains("Started orchestrator without switching this client."),
     );
+    // The idle seat's start returned before its pane recorded the seat.
+    seat_recorded(
+        |file| scratch_text(&role_dir, file),
+        Instant::now() + PANE_WAIT,
+    );
     let before_cancel = meta_bytes(&role_dir);
 
     click_status(&socket, &scratch, "settings-clicked", &clicked, 2, 3);
@@ -5991,6 +5996,15 @@ fn state_kept(dir: &Path) -> bool {
 )]
 fn meta_bytes(dir: &Path) -> Vec<u8> {
     fs::read(dir.join("meta")).unwrap_or_default()
+}
+
+/// One file of a session, with the status a witness has to see.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a fixture reading its own scratch directory; the capability boundary is about what PRODUCT code may reach"
+)]
+fn scratch_text(dir: &Path, file: &str) -> std::io::Result<String> {
+    fs::read_to_string(dir.join(file))
 }
 
 /// The events one session recorded, or nothing when it recorded none.

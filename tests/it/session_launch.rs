@@ -18,10 +18,11 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::cli::{OwnedChild, OwnedScratch, Runner, ae, git_in, helper, tmux_signalled};
 use super::phase2::run_tmux;
+use super::support::{PANE_WAIT, has_execed, pane_command, seat_recorded};
 
 /// A TUI-shaped fake agent: it records its argv, then sits there drawing the
 /// ornament the input sensor reads.
@@ -2931,6 +2932,12 @@ fn doubtful_solo_meta_refuses_before_configured_workers_can_grow_the_roster() {
     ] {
         let (code, stdout, stderr) = rig.launch(&["--local", name, "--solo"]);
         assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+        // The idle seat's launch returned before its pane recorded the seat.
+        let dir = rig.dir(name);
+        seat_recorded(
+            |file| std::fs::read_to_string(dir.join(file)),
+            Instant::now() + PANE_WAIT,
+        );
         assert!(
             rig.tmux(&["kill-session", "-t", &format!("={name}")]).0,
             "the solo session stops"
@@ -3865,13 +3872,16 @@ fn a_renamed_worktree_resume_uses_its_recorded_dir_and_existing_meta() {
             && after.contains(&format!("work_dir={}", recorded_work.display())),
         "the stored working directory survives replacement:\n{after}"
     );
-    let (_, pane_dir) = rig.tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        &format!("={new}:0.0"),
-        "#{pane_current_path}",
-    ]);
+    // An idle seat's launch returns before its pane execs, and until then the
+    // pane's cwd is the server's.
+    let pane = format!("={new}:0.0");
+    pane_command(
+        |args| rig.tmux(args),
+        &pane,
+        Instant::now() + PANE_WAIT,
+        has_execed,
+    );
+    let (_, pane_dir) = rig.tmux(&["display-message", "-p", "-t", &pane, "#{pane_current_path}"]);
     let actual = std::fs::canonicalize(pane_dir.trim()).unwrap_or_default();
     let expected = std::fs::canonicalize(&recorded_work).unwrap_or(recorded_work);
     assert_eq!(actual, expected, "the resumed agent's cwd");

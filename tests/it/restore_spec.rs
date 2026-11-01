@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::cli::{OwnedChild, OwnedScratch, Runner, ae, bounded};
 use super::phase2::run_tmux;
+use super::support::{PANE_WAIT, seat_recorded};
 
 const CONFIG: &str = "[profiles]\nidle = \"sleep 600\"\n[roster]\nlead = idle\n\
     [workspace]\nmain = lead\nlayout = vertical\n";
@@ -98,6 +99,12 @@ impl Fleet {
 
     fn launch(&self, name: &str) {
         success(&self.run(&["--local", name, "--no-attach"]));
+        // The idle seat's launch returned before its pane recorded the seat.
+        let dir = self.dir(name);
+        seat_recorded(
+            |file| std::fs::read_to_string(dir.join(file)),
+            Instant::now() + PANE_WAIT,
+        );
     }
 
     fn missing(&self, name: &str, launch_age: i64, beat_age: Option<i64>) {
