@@ -343,6 +343,11 @@ impl Gate {
         f(&mut self.lock().outcome)
     }
 
+    /// Like [`Self::with`], but only while the run is live.
+    fn with_live<R>(&self, f: impl FnOnce(&mut Outcome) -> R) -> Option<R> {
+        Some(f(&mut self.lock().outcome))
+    }
+
     /// Start `runner` unless the run was cancelled; the check and the spawn
     /// happen under one lock.
     fn spawn(&self, runner: &mut Runner) -> Result<OwnedChild, Stop> {
@@ -1031,6 +1036,9 @@ impl Run {
         self.gate.with(|out| out.frame = None);
     }
 
+    /// A readiness wait begins.
+    fn ready_begins(&self) {}
+
     /// The frame test `want` names, twice [`FRAME_GAP`] apart: a frame that
     /// flickers through the state proves nothing. Waiting for [`Want::Drawn`]
     /// is the readiness wait (the first frame, the frame after a resume and the
@@ -1038,6 +1046,9 @@ impl Run {
     /// wait after a turn, publishes nothing.
     fn frame_twice(&self, pane: &str, bound: Duration, want: Want) -> Result<bool, Stop> {
         let publish = matches!(want, Want::Drawn);
+        if publish {
+            self.ready_begins();
+        }
         let deadline = Instant::now() + bound;
         loop {
             let first = self.sight(pane, publish)?;
@@ -1064,6 +1075,7 @@ impl Run {
     /// at a tool ae has no frame grammar for. A readiness wait too, so it
     /// publishes what it sees like [`Self::frame_twice`] does.
     fn settled(&self, pane: &str, bound: Duration) -> Result<bool, Stop> {
+        self.ready_begins();
         let deadline = Instant::now() + bound;
         loop {
             let first = self.sight(pane, true)?;
@@ -2538,6 +2550,11 @@ mod pins {
         );
     }
 
+    /// `path` as one single-quoted shell word, whatever the scratch root holds.
+    fn shell_quoted(path: &Path) -> String {
+        format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+    }
+
     /// A driver over a private tmux server whose one pane (`%0`) runs `script`:
     /// no ae and no vendor, only the real capture leg and the real waits.
     fn run_over(script: &str, tag: &str) -> (Run, OwnedScratch) {
@@ -2649,6 +2666,74 @@ mod pins {
             run.gate.snapshot().frame.is_none(),
             "a pass leaves no frame"
         );
+    }
+
+    #[test]
+    fn a_readiness_wait_that_never_gets_a_capture_leaves_the_placeholder() {
+        // The pane does not exist: every look answers nothing, so the evidence is
+        // the placeholder that says so, for both readiness waits.
+        let (run, _scratch) = run_over("sleep 120", "no-pane");
+        let one = Duration::from_secs(1);
+        assert!(!run.frame_twice("%99", one, Want::Drawn).expect("a wait"));
+        assert_eq!(
+            run.gate.snapshot().frame.as_deref(),
+            Some("(no text captured)\n")
+        );
+        let (run, _scratch) = run_over("sleep 120", "no-pane-settle");
+        assert!(!run.settled("%99", one).expect("a wait"));
+        assert_eq!(
+            run.gate.snapshot().frame.as_deref(),
+            Some("(no text captured)\n")
+        );
+    }
+
+    #[test]
+    fn a_later_failed_capture_does_not_erase_the_last_successful_frame() {
+        // The pane prints a line and exits, taking the session (and the server)
+        // with it: the looks after that answer nothing.
+        let (run, _scratch) = run_over("echo last-words; sleep 1.2", "pane-exits");
+        let bound = Duration::from_secs(4);
+        assert!(!run.frame_twice("%0", bound, Want::Drawn).expect("a wait"));
+        let kept = run.gate.snapshot().frame.expect("a frame");
+        assert!(kept.contains("last-words"), "{kept:?}");
+    }
+
+    #[test]
+    fn an_outer_cut_before_any_capture_returns_still_finds_the_placeholder() {
+        let (run, _scratch) = run_over("sleep 120", "cut-first");
+        let gate = run.gate.clone();
+        let waiting = std::thread::spawn(move || {
+            run.frame_twice("%99", Duration::from_secs(30), Want::Drawn)
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        gate.cancel();
+        let ended = waiting.join().expect("the wait thread");
+        assert!(matches!(ended, Err(Stop::Cancelled)), "{ended:?}");
+        assert_eq!(
+            gate.snapshot().frame.as_deref(),
+            Some("(no text captured)\n"),
+            "the cut run carries evidence although no capture ever returned"
+        );
+    }
+
+    #[test]
+    fn a_readiness_pass_that_lands_after_the_outer_cut_cannot_erase_the_frame() {
+        let (run, _scratch) = run_over("printf 'stuck here\\n'; sleep 120", "cut-then-pass");
+        assert!(
+            !run.frame_twice("%0", Duration::from_secs(1), Want::Drawn)
+                .expect("a wait")
+        );
+        // The outer bound cancels; the snapshot is taken a lock later. A pass
+        // (or a late look) in between must change nothing the snapshot sees.
+        run.gate.cancel();
+        run.ready_passed();
+        run.gate.with_live(|out| out.keep_frame("a later frame\n"));
+        let kept = run
+            .gate
+            .snapshot()
+            .frame
+            .expect("the frame survives the cut");
+        assert!(kept.contains("stuck here"), "{kept:?}");
     }
 
     #[test]
