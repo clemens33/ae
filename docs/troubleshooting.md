@@ -20,6 +20,10 @@ Error: 'sessions' looks like a mistyped ae command, not a new session name. Did 
 
 `ae <name>` creates a session when none of that name exists, so a typo for a command (`ae sessions`, `ae agents`, `ae lists`) would have created an empty one. ae refuses to create a session named after a routed command plus `s`, or after `agent`, `seat` or `session` (singular or plural), and exits 2 with nothing written. Run the command it suggests, or pick another name. A session that already carries such a name resumes, stops and lists as usual.
 
+## `tmux kill-server` says `unknown command: ae: kill-server refused`
+
+The installed ae server refuses `kill-server`, because it would end every session and background job on it at once. Nothing was killed. Stop one session with `ae stop <name>`; the server exits with its last session.
+
 ## `ae` installed but command not found
 
 Make sure `~/.local/bin` is on `PATH`. `ae doctor` warns explicitly when it isn't.

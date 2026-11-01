@@ -2249,6 +2249,28 @@ pub(crate) fn run_tmux_op(argv: &crate::session_tmux::TmuxArgv) -> (bool, String
     }
 }
 
+/// Make `server` refuse `kill-server` (every spelling), when it is the server
+/// the lock guards ([`crate::session_tmux::kill_lock_guards`]): read the alias
+/// listing through the one process door, then write what
+/// [`crate::session_tmux::kill_lock_writes`] plans. A server the lock does not
+/// guard, or one that does not answer, is left alone.
+pub(crate) fn assert_kill_lock(server: &ServerId) {
+    let mut sockets = crate::fleet_read::SocketPaths::live();
+    if !crate::session_tmux::kill_lock_guards(server, &mut sockets) {
+        return;
+    }
+    let Some(query) = crate::session_tmux::kill_lock_query(server) else {
+        return;
+    };
+    let (answered, listing) = run_tmux_op(&query);
+    if !answered {
+        return;
+    }
+    for write in crate::session_tmux::kill_lock_writes(server, &listing) {
+        let _ = run_tmux_op(&write);
+    }
+}
+
 /// The `!` leg's popup: `args` from `console::shell::popup_args`, started
 /// DETACHED because `display-popup` holds its caller until the popup closes.
 /// Whether tmux started; what the popup runs is the human's own line.

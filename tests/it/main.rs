@@ -173,6 +173,7 @@ mod support;
 mod support_spec;
 mod teardown;
 mod telegram;
+mod tmuxlock_more;
 mod tmuxlock_spec;
 mod transport;
 mod trustmiss_spec;

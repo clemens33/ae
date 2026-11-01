@@ -911,6 +911,12 @@ fn restart_daemons(
     for binding in crate::session_tmux::status_bindings_argv(&server, &launcher, menu_mouse) {
         let _ = crate::transport::run_tmux_op(&binding);
     }
+    // The kill-server lock follows the PUBLISH's own fact, not the running
+    // shape: this caller reads Checkout even when its target is an installed
+    // home, and the command link is what says it is one.
+    if crate::session_tmux::publish_link(root).is_some() {
+        crate::transport::assert_kill_lock(&server);
+    }
     let main_pane = meta_bytes
         .as_deref()
         .and_then(|bytes| crate::meta::first_value(bytes, "main_pane"))

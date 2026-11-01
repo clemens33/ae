@@ -1299,12 +1299,21 @@ _tmux-isolated lane *args:
         error="$(LC_ALL=C kill -0 "$owner" 2>&1)" && return 1
         [[ "$error" == *"No such process"* ]]
     }
-    # A socket whose server is already gone counts as reaped.
+    # A socket whose server is already gone counts as reaped. An installed-shape
+    # test server refuses kill-server (src/session_tmux.rs): its guard is dropped
+    # first, on this explicit socket, and the kill's exit status is never taken
+    # as proof: the server must stop answering.
     reap_sockets() {
-        local root="$1" socket error failed=0
+        local root="$1" socket error failed=0 tries
         find "$root" -type s -print >/dev/null 2>&1 || return 1
         while IFS= read -r socket; do
+            env -u TMUX -u TMUX_PANE tmux -S "$socket" set-option -su command-alias >/dev/null 2>&1 || true
             error="$(tmux -S "$socket" kill-server 2>&1)" || [[ "$error" == *"no server running"* ]] || failed=1
+            tries=20
+            while env -u TMUX -u TMUX_PANE tmux -S "$socket" list-sessions >/dev/null 2>&1; do
+                ((--tries)) || { failed=1; break; }
+                sleep 0.1
+            done
         done < <(find "$root" -type s -print 2>/dev/null)
         return "$failed"
     }
@@ -1396,10 +1405,17 @@ _tmux-isolated lane *args:
     reap_stale_lanes
     test_tmux_tmp="$(mktemp -d "$base/ae-rust-test.$$.XXXXXX")"
     cleanup() {
-        local status=$? tries=30
+        local status=$? tries=30 live=30 leaked=0
         [[ -z "${watcher:-}" ]] || kill "$watcher" 2>/dev/null || true
         # Explicit socket, never a short -L: outside this directory that name is the live fleet server.
+        # An installed-shape test server refuses kill-server: drop its guard first, then prove
+        # the server stopped answering rather than trusting the kill's exit status.
+        env -u TMUX -u TMUX_PANE tmux -S "$test_tmux_tmp/tmux-$(id -u)/ae" set-option -su command-alias >/dev/null 2>&1 || true
         env -u TMUX -u TMUX_PANE tmux -S "$test_tmux_tmp/tmux-$(id -u)/ae" kill-server >/dev/null 2>&1 || true
+        until ! env -u TMUX -u TMUX_PANE tmux -S "$test_tmux_tmp/tmux-$(id -u)/ae" list-sessions >/dev/null 2>&1; do
+            if ((--live == 0)); then leaked=1; break; fi
+            sleep 0.1
+        done
         reap_dead_scratch
         # A test's orphaned child (a real opencode) can write into its root for
         # seconds after the test; past the bound the lane fails, and the next
@@ -1411,6 +1427,10 @@ _tmux-isolated lane *args:
             fi
             sleep 1
         done
+        if ((leaked)); then
+            echo "error: kept $test_tmux_tmp: the lane's own tmux server outlived its cleanup" >&2
+            exit $((status ? status : 1))
+        fi
         keep_or_remove "$test_tmux_tmp"
     }
     trap cleanup EXIT
@@ -1589,17 +1609,34 @@ harness-smoke mode="":
     base="${AE_TEST_TMPDIR:-/tmp}"
     lane="$(mktemp -d "$base/ae-hs-lane.XXXXXX")"
     cleanup() {
-        local entry root
+        local status=$? entry root tries leaked=0
         for entry in "$lane"/.ae-parity-fixtures/*/*; do
             [[ -L "$entry" ]] || continue
             root="$(readlink "$entry")"
             case "$root" in
                 "$base"/ae-it-*/hs.*)
+                    env -u TMUX -u TMUX_PANE tmux -S "$root/sock" set-option -su command-alias >/dev/null 2>&1 || true
                     env -u TMUX -u TMUX_PANE tmux -S "$root/sock" kill-server >/dev/null 2>&1 || true
-                    rm -rf "$root"
+                    # The kill's exit status is not proof: the server must stop answering
+                    # before its root is deleted; a survivor keeps the root and the lane.
+                    tries=20
+                    while env -u TMUX -u TMUX_PANE tmux -S "$root/sock" list-sessions >/dev/null 2>&1; do
+                        ((--tries)) || break
+                        sleep 0.1
+                    done
+                    if ((tries == 0)); then
+                        echo "error: kept $root: its tmux server outlived the cleanup" >&2
+                        leaked=1
+                    else
+                        rm -rf "$root"
+                    fi
                     ;;
             esac
         done
+        if ((leaked)); then
+            echo "error: kept $lane: a registered scratch root's tmux server outlived the cleanup" >&2
+            exit $((status ? status : 1))
+        fi
         rm -rf "$lane"
     }
     trap cleanup EXIT

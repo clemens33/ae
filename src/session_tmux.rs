@@ -15,7 +15,7 @@
 //! `set-option` — are NOT re-spelled here: they go through
 //! [`crate::transport::publish_option`], which is the existing door.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::inventory::ServerId;
 use crate::meta::Selector;
@@ -68,6 +68,21 @@ pub(crate) struct TmuxArgv(Vec<String>, Option<Vec<String>>);
 
 const GHOSTTY_HYPERLINKS: &str = "xterm-ghostty:hyperlinks";
 
+/// The four spellings tmux resolves to `kill-server`: the name and each of its
+/// prefixes that no other command shares (`kill-se` and `kill-s` also match
+/// `kill-session`, so tmux rejects them). An alias is matched on the whole first
+/// word, so a prefix the guard does not name would still end the server.
+const KILL_SERVER_SPELLINGS: [&str; 4] = ["kill-server", "kill-serve", "kill-serv", "kill-ser"];
+
+/// The alias value that refuses a spelling: its first word is not a command,
+/// so tmux answers `unknown command: <this text>` on stderr, exits 1 and runs
+/// nothing. Inert text: no shell, no process, no format (`#`), no separator
+/// (`;`), no escape (`\`, `$`). The exit status is part of the contract: a
+/// reaper that reads a refused `kill-server` as success would call a live
+/// server dead.
+const KILL_SERVER_REFUSAL: &str =
+    r#""ae: kill-server refused on an ae server. Stop one session with: ae stop NAME""#;
+
 impl TmuxArgv {
     /// The argv for the transport door to spawn.
     pub(crate) fn as_args(&self) -> &[String] {
@@ -97,6 +112,16 @@ pub(crate) enum Split {
 pub(crate) enum Op<'a> {
     /// Append Ghostty's measured hyperlink capability only when absent.
     EnsureHyperlinks,
+    /// `show-options -s command-alias` — the listing the kill-server lock reads
+    /// before it writes.
+    ShowCommandAliases,
+    /// Make `spelling` refuse: `set-option -s command-alias[<index>]` in place,
+    /// or `set-option -sa command-alias` (tmux fills the first free index) when
+    /// `index` is `None`.
+    SetCommandAlias {
+        index: Option<u32>,
+        spelling: &'a str,
+    },
     /// `new-session -d -s <name> -c <dir> -P -F '#{pane_id}'` — the session and
     /// its first pane, in one call, printing the pane id rather than asking for
     /// it afterwards.
@@ -277,6 +302,22 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
                 ["set-option", "-sa", "terminal-features", GHOSTTY_HYPERLINKS]
                     .map(ToOwned::to_owned),
             );
+        }
+        Op::ShowCommandAliases => {
+            args.extend(["show-options", "-s", "command-alias"].map(ToOwned::to_owned));
+        }
+        Op::SetCommandAlias { index, spelling } => {
+            match index {
+                Some(index) => args.extend(
+                    ["set-option".to_owned(), "-s".to_owned()]
+                        .into_iter()
+                        .chain(std::iter::once(format!("command-alias[{index}]"))),
+                ),
+                None => {
+                    args.extend(["set-option", "-sa", "command-alias"].map(ToOwned::to_owned));
+                }
+            }
+            args.push(format!("{spelling}={KILL_SERVER_REFUSAL}"));
         }
         Op::NewSession { name, work_dir } => {
             args.extend(crate::tmux::new_session_identity_args(name, work_dir));
@@ -762,13 +803,83 @@ pub(crate) fn publish_launcher(
     config: &Path,
     server: &ServerId,
 ) -> Vec<String> {
-    if let Some(home) = crate::instance::user_home(root) {
-        let link = home.join(".local").join("bin").join("ae");
-        if crate::lifecycle::path_exists(&link) {
-            return vec![link.display().to_string()];
-        }
+    if let Some(link) = publish_link(root) {
+        return vec![link.display().to_string()];
     }
     picker_launcher(shape, core, root, config, server)
+}
+
+/// The command link a publish onto `root` maintains, when it is there: the one
+/// fact that says the target is an installed home, whatever the running shape
+/// reads. A sandbox or checkout publish without it has none.
+pub(crate) fn publish_link(root: &Path) -> Option<PathBuf> {
+    let link = crate::instance::user_home(root)?
+        .join(".local")
+        .join("bin")
+        .join("ae");
+    crate::lifecycle::path_exists(&link).then_some(link)
+}
+
+/// Whether `server` is the one the kill-server lock guards: the installed
+/// instance's own, however a record spells it. A running server is recorded by
+/// its socket path, not the name `ae` launched it under, so the proof is the
+/// fleet's own socket-identity read ([`crate::fleet_read::SocketPaths`]); an
+/// unanswered or unequal server is never guarded. Ambient is the user's tmux;
+/// every other selected server is a checkout's, a test's or `ae-dev`'s, and
+/// stays killable.
+pub(crate) fn kill_lock_guards(
+    server: &ServerId,
+    sockets: &mut crate::fleet_read::SocketPaths,
+) -> bool {
+    let own = crate::instance::own_server();
+    match server {
+        ServerId::Ambient => false,
+        ServerId::Selected(_) => *server == own || sockets.proven_same(server, &own),
+    }
+}
+
+/// The query that reads `server`'s command aliases; `None` for the ambient
+/// server, whose aliases belong to its user.
+pub(crate) fn kill_lock_query(server: &ServerId) -> Option<TmuxArgv> {
+    matches!(server, ServerId::Selected(_)).then(|| argv(server, &Op::ShowCommandAliases))
+}
+
+/// The writes that make every [`KILL_SERVER_SPELLINGS`] entry refuse, given the
+/// `show-options -s command-alias` listing the query printed.
+///
+/// tmux resolves an alias by the LOWEST index whose name matches, so a user's
+/// own entry for the same spelling would defeat the guard. Per spelling: the
+/// lowest same-name entry is overwritten in place (same index, so a repeat is
+/// byte-identical and grows nothing); none, and the guard is appended at the
+/// first free index. An entry of any other name is never written, and there is
+/// no fixed index to collide with one.
+pub(crate) fn kill_lock_writes(server: &ServerId, listing: &str) -> Vec<TmuxArgv> {
+    if matches!(server, ServerId::Ambient) {
+        return Vec::new();
+    }
+    let entries: Vec<(u32, &str)> = listing.lines().filter_map(alias_entry).collect();
+    KILL_SERVER_SPELLINGS
+        .iter()
+        .map(|spelling| {
+            let index = entries
+                .iter()
+                .filter(|(_, name)| name == spelling)
+                .map(|(index, _)| *index)
+                .min();
+            argv(server, &Op::SetCommandAlias { index, spelling })
+        })
+        .collect()
+}
+
+/// `(index, name)` of one `command-alias[<index>] [\"]<name>=<value>…` listing
+/// line; `None` for any other line.
+fn alias_entry(line: &str) -> Option<(u32, &str)> {
+    let rest = line.trim_start().strip_prefix("command-alias[")?;
+    let (index, rest) = rest.split_once(']')?;
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix('"').unwrap_or(rest);
+    let (name, _) = rest.split_once('=')?;
+    Some((index.parse().ok()?, name))
 }
 
 /// The server-global status bindings for a positively selected, ae-owned
@@ -1024,6 +1135,10 @@ pub(crate) fn interpret_pane_id(succeeded: bool, stdout: &str) -> Option<String>
 #[cfg(test)]
 #[path = "session_tmux/o4jump_bind_spec.rs"]
 mod o4jump_bind_spec;
+
+#[cfg(test)]
+#[path = "session_tmux/killlock_unit.rs"]
+mod killlock_unit;
 
 #[cfg(test)]
 #[path = "../tests/it/aeinstance_p1_launcher.rs"]

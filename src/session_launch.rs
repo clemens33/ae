@@ -3944,6 +3944,11 @@ fn assert_status_bindings(server: &ServerId, env: &Env, core: &Path) {
     for binding in status_bindings_argv(server, &launcher, menu_mouse) {
         let _ = transport::run_tmux_op(&binding);
     }
+    // The kill-server lock rides the same server-global setup, on a published
+    // core only: a checkout's servers (tests, `ae-dev`) stay killable.
+    if crate::shape::current().published_home().is_some() {
+        transport::assert_kill_lock(server);
+    }
 }
 
 /// The SESSION-scoped look: the two status lines ae owns, and the `@ae_*`
