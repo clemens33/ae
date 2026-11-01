@@ -180,20 +180,6 @@ struct Note {
     count: u64,
 }
 
-/// What a roster or a journal names, per session.
-#[derive(Default)]
-struct Named {
-    slots: BTreeSet<String>,
-    names: BTreeSet<String>,
-}
-
-/// A live roster to check against [`Named`] once every source is in.
-struct Roster {
-    session: Option<String>,
-    label: String,
-    seats: Vec<(String, String)>,
-}
-
 /// The sources read so far: everything [`Fold::finish`] needs, and no journal.
 #[derive(Default)]
 pub struct Fold {
@@ -208,8 +194,6 @@ pub struct Fold {
     /// Legacy counts of sources with no session id: nothing to compare them by.
     loose: u64,
     notes: Vec<Note>,
-    rosters: Vec<Roster>,
-    named: BTreeMap<Option<String>, Named>,
 }
 
 impl Fold {
@@ -223,19 +207,14 @@ impl Fold {
         } = source;
         match journal {
             Ok(bytes) => {
-                let read = self.read(&label, session.as_ref(), &bytes);
-                self.seen.push(Seen {
-                    session: session.clone(),
-                    read: true,
-                    range: read,
-                });
+                let range = self.read(&label, session.as_ref(), &bytes, &seats);
                 if session.is_none() {
                     self.note(None, Some(&label), Reason::NoSessionId, 1);
                 }
-                self.rosters.push(Roster {
+                self.seen.push(Seen {
                     session,
-                    label,
-                    seats,
+                    read: true,
+                    range,
                 });
             }
             Err(gap) => {
@@ -264,6 +243,7 @@ impl Fold {
         label: &str,
         session: Option<&String>,
         bytes: &[u8],
+        seats: &[(String, String)],
     ) -> Option<(String, String)> {
         let mut pass = Pass::new(label, session);
         let mut malformed = 0;
@@ -282,11 +262,11 @@ impl Fold {
         if malformed > 0 {
             self.note(session.cloned(), Some(label), Reason::Malformed, malformed);
         }
-        self.absorb(pass)
+        self.absorb(pass, seats)
     }
 
     /// One journal's reading into the fold.
-    fn absorb(&mut self, pass: Pass<'_>) -> Option<(String, String)> {
+    fn absorb(&mut self, pass: Pass<'_>, seats: &[(String, String)]) -> Option<(String, String)> {
         let Pass {
             label,
             session,
@@ -296,7 +276,7 @@ impl Fold {
             links,
             legacy,
             notes,
-            named,
+            born,
         } = pass;
         let session = session.cloned();
         let own: BTreeSet<&str> = claims.iter().map(|(key, _)| key.1.as_str()).collect();
@@ -330,9 +310,11 @@ impl Fold {
         for (subject, reason) in notes {
             self.note(subject, Some(label), reason, 1);
         }
-        let held = self.named.entry(session).or_default();
-        held.slots.extend(named.slots);
-        held.names.extend(named.names);
+        let silent = seats.iter().filter(|seat| !proved(&born, seat)).count();
+        if silent > 0 {
+            let count = u64::try_from(silent).unwrap_or(u64::MAX);
+            self.note(session, Some(label), Reason::LiveNoBirth, count);
+        }
         range
     }
 
@@ -401,21 +383,6 @@ impl Fold {
             }
         }
         spawns.extend((0..self.loose).map(|_| Spawn::legacy(None)));
-        for roster in std::mem::take(&mut self.rosters) {
-            let named = self.named.get(&roster.session);
-            let silent = roster.seats.iter().filter(|(slot, name)| {
-                !named.is_some_and(|named| named.slots.contains(slot) || named.names.contains(name))
-            });
-            let count = u64::try_from(silent.count()).unwrap_or(u64::MAX);
-            if count > 0 {
-                self.note(
-                    roster.session,
-                    Some(&roster.label),
-                    Reason::LiveNoBirth,
-                    count,
-                );
-            }
-        }
         Ledger {
             seen: self.seen,
             spawns,
@@ -423,6 +390,14 @@ impl Fold {
             excluded,
         }
     }
+}
+
+/// Whether one journal's own births and spawns account for a live `seat`: by
+/// name, and by slot when the record states one. A slot alone is no proof, for a
+/// retired seat's slot is reused.
+fn proved(born: &BTreeSet<(Option<String>, String)>, (slot, name): &(String, String)) -> bool {
+    born.iter()
+        .any(|(stated, named)| named == name && stated.as_ref().is_none_or(|stated| stated == slot))
 }
 
 /// Lower `held` to `label`, keeping each birth's label order-free.
@@ -449,7 +424,8 @@ struct Pass<'a> {
     links: BTreeSet<String>,
     legacy: Vec<String>,
     notes: Vec<(Option<String>, Reason)>,
-    named: Named,
+    /// `(slot, name)` of each certificate or `spawn` here, damaged ones too.
+    born: BTreeSet<(Option<String>, String)>,
 }
 
 impl<'a> Pass<'a> {
@@ -463,7 +439,7 @@ impl<'a> Pass<'a> {
             links: BTreeSet::new(),
             legacy: Vec::new(),
             notes: Vec::new(),
-            named: Named::default(),
+            born: BTreeSet::new(),
         }
     }
 
@@ -488,13 +464,12 @@ impl<'a> Pass<'a> {
                 empty => *empty = Some((date.to_owned(), date.to_owned())),
             }
         }
-        if let Some(slot) = event.target_slot.value() {
-            self.named.slots.insert(slot.to_owned());
-        }
-        if (event.action == SPAWN || birth::is_family(&event.action))
+        let slot = event.target_slot.value().map(ToOwned::to_owned);
+        if (event.action == SPAWN || event.action == birth::BIRTH)
             && let Some(name) = &event.target
+            && slot.is_some() == event.target_slot.is_present()
         {
-            self.named.names.insert(name.clone());
+            self.born.insert((slot, name.clone()));
         }
         match birth::decode(event) {
             Some(Ok(record)) => self.family(record),
@@ -894,7 +869,9 @@ impl Gap {
 }
 
 impl SourceGap {
-    const fn word(self) -> &'static str {
+    /// What a coverage line says.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
         match self {
             Self::Missing => "missing",
             Self::Unreadable => "unreadable",

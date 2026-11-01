@@ -163,6 +163,16 @@ fn validate_members(path: &Path) -> Result<(), String> {
 }
 
 pub(super) fn validate_tree(path: &Path, aid: &str) -> Result<(), String> {
+    validate_tree_with(path, aid, &mut read_file)
+}
+
+/// [`validate_tree`], every check of it, reading file content through `read`:
+/// a reader with its own bounds gives up no check to keep them.
+pub(super) fn validate_tree_with(
+    path: &Path,
+    aid: &str,
+    read: &mut dyn FnMut(&Path) -> io::Result<Vec<u8>>,
+) -> Result<(), String> {
     let dir_mode =
         symlink_meta(path).map_err(|why| format!("archive: staged tree unreadable: {why}"))?;
     if dir_mode.file_type().is_symlink() || !dir_mode.is_dir() {
@@ -222,9 +232,9 @@ pub(super) fn validate_tree(path: &Path, aid: &str) -> Result<(), String> {
 
     // Meta/digest consistency: cheap insurance against a future divergence in
     // the two renderers.
-    let meta_bytes = read_file(&path.join(META))
-        .map_err(|why| format!("archive: staged meta unreadable: {why}"))?;
-    let digest = read_file(&path.join("digest.md"))
+    let meta_bytes =
+        read(&path.join(META)).map_err(|why| format!("archive: staged meta unreadable: {why}"))?;
+    let digest = read(&path.join("digest.md"))
         .map_err(|why| format!("archive: staged digest unreadable: {why}"))?;
     let digest = String::from_utf8_lossy(&digest);
     if meta_get(&meta_bytes, "archive_id") != aid {

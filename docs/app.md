@@ -870,8 +870,10 @@ a cell. `Coverage: complete` means every source was read and every record
 trusted; otherwise `Partial` names the range, and each gap names its source: a
 missing, oversized, invalid or claimed source, a malformed or damaged record, a
 lost certificate, a conflict. An unproved flag and a live seat with no birth are
-notes, not gaps in coverage. One scan reads at most 512 sources, 256 MiB, and
-4 MiB of a journal, and says so past either. It keeps no store: a purge or a
+notes, not gaps in coverage. One scan reads at most 512 sources and 256 MiB of
+content, 4 MiB of any one file, an archive's own meta and digest included, and
+says so past any of them. Directory listings have no such bound: one archive of
+millions of files costs its own step that long. It keeps no store: a purge or a
 removed archive removes those spawns from the count.
 
 Quota and Clients show retained values at once, under a line `last updated <age> ago — refreshing` (the first open of a run says `loading`), and replace them in place when the read lands, the line going with them; a read that fails outright keeps the values under `refresh failed · showing values from <age> ago`. The existing snapshots refresh while Settings is open; config, about and instructions read

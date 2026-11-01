@@ -1,9 +1,11 @@
 //! The Statistics tab's stepped read: one job lists, each later one reads one
 //! source, so a close or a due fleet read waits at most one source. Reads only:
-//! no store, no lock, no temp file, no process.
+//! no store, no lock, no temp file, no process. Every byte of content, an
+//! archive's validation included, comes under one budget; a directory listing
+//! has no bound, so one enormous archive costs its own step that long.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::quota::Budget;
 use crate::stats::{Fold, Source, SourceGap, View};
@@ -160,12 +162,21 @@ fn read(pending: Pending, limits: Limits, budget: &mut Budget) -> Source {
             if claimed {
                 return Source::failed(&id, Some(&id), SourceGap::Claimed);
             }
-            match crate::archive::validated_journal(&path, &id) {
+            let mut refused = SourceGap::Invalid;
+            let mut content = |file: &Path| {
+                crate::usage::bounded_bytes(file, limits.journal, budget).map_err(|gap| {
+                    if matches!(gap, SourceGap::Oversized | SourceGap::Budget) {
+                        refused = gap;
+                    }
+                    std::io::Error::other(gap.word())
+                })
+            };
+            match crate::archive::validated_journal(&path, &id, &mut content) {
                 Ok(journal) => {
                     let bytes = crate::usage::bounded_bytes(&journal, limits.journal, budget);
                     Source::archive(&id, bytes)
                 }
-                Err(_) => Source::failed(&id, Some(&id), SourceGap::Invalid),
+                Err(_) => Source::failed(&id, Some(&id), refused),
             }
         }
     }

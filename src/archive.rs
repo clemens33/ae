@@ -50,9 +50,14 @@ pub(crate) fn kept_archives(root: &Path) -> Result<Vec<KeptArchive>, String> {
     Ok(kept)
 }
 
-/// The journal of the archive at `path`, once its whole tree proves valid.
-pub(crate) fn validated_journal(path: &Path, id: &str) -> Result<PathBuf, String> {
-    store::validate_tree(path, id)?;
+/// The journal of the archive at `path`, once its whole tree proves valid, the
+/// content validation reads coming through `read`.
+pub(crate) fn validated_journal(
+    path: &Path,
+    id: &str,
+    read: &mut dyn FnMut(&Path) -> io::Result<Vec<u8>>,
+) -> Result<PathBuf, String> {
+    store::validate_tree_with(path, id, read)?;
     Ok(path.join(crate::store::EVENTS))
 }
 
