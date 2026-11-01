@@ -251,10 +251,13 @@ Every record ae appends ends in `"schema_version":1`. A record without it is **v
 ```
 
 - **`birth`** is the seat's first `launch_id`. A journal record never rotates it, and a reseat's new launch id matches no birth.
-- **Absent is a fact.** No `birth_client` means no `[clients]` label expanded; no `birth_model` or `birth_effort` means the command set no flag. Values are as written, so an alias stays an alias. A vendor default is never filled in.
+- **Three flag states.** Model and effort are each independent: a value as written (`birth_model`, `birth_effort`), so an alias stays an alias; a fixed reason it is unproved (`birth_model_unproved`, `birth_effort_unproved`), when the command proves neither a value nor its absence; or neither member, which is proved absence.
+- **Proved absence means no FLAG.** It never means a harness default or no model: a vendor default is never filled in, and an environment prefix with no flag stays absent for the model. No `birth_client` means no `[clients]` label expanded.
 - **`birth_profile` is diagnostic.** Profiles are presets that change; they are not an identity to aggregate on.
 - **Facts about the seat at birth, not today.** Later config edits, reseats and `/model` changes do not touch the record.
 - **No task text.** No summary, body file, command, argv or path, ever.
+
+Reason words are a closed v1 list, `birth::UNPROVED_WORDS`: `unsupported`, `not-simple`, `ambiguous-model`, `model-missing-value`, `ambiguous-effort`, `effort-missing-value`, `unknown-effort`, `env-effort`. A harness with no flag ae reads and a command that is no simple command are unproved, not absent. The words are fixed, so no value or command text reaches the wire.
 
 `worker-fact` shares the frozen identity members and adds `fact` (`brief-failed`, `start-attempted`, `start-failed`, `observed`), `start`, `observed_source`, `observed_model` and `observed_effort`. No writer ships yet.
 
@@ -264,7 +267,7 @@ Every record ae appends ends in `"schema_version":1`. A record without it is **v
 |---|---|
 | Supported version | `Birth` / `Fact` |
 | Higher `birth_v`, valid `birth` | `Unsupported`, its identity usable |
-| Absent, non-integer, below 1 or repeated `birth_v`; a repeated, wrong-typed, oversized or control-character member; an unknown v1 `fact` | `Damage`, with whatever identity it still proves |
+| Absent, non-integer, below 1 or repeated `birth_v`; a repeated, wrong-typed, oversized or control-character member on either shape; an unknown v1 `fact`; an unknown reason word; a value and a reason for one flag | `Damage`, with whatever identity it still proves |
 | `spawn` with a malformed `birth` | `Damage`, not legacy |
 | `spawn` with no `birth` | not classified: legacy |
 

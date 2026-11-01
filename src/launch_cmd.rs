@@ -273,6 +273,18 @@ struct ModelFlag<'n> {
     value: String,
 }
 
+impl ModelFlagError {
+    /// The stable word a journal record names this failure by.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::Absent => "no-model-flag",
+            Self::Ambiguous => "ambiguous-model",
+            Self::MissingValue => "model-missing-value",
+        }
+    }
+}
+
 /// Find the ONE model flag of `tool` in a lexed command.
 fn sole_model_flag(
     command: &SimpleCommand,
@@ -383,6 +395,19 @@ pub(crate) fn split_flag_pairs(cmd: &str, flags: &[&str]) -> (String, String) {
 pub(crate) fn model_flag_value(cmd: &str, tool: ToolKind) -> Option<String> {
     let command = lex_simple_command(cmd).ok()?;
     sole_model_flag(&command, tool).ok().map(|flag| flag.value)
+}
+
+/// The ONE model a profile command pins, by [`model_flag_value`]'s rule, keeping
+/// apart what that reader folds into `None`: `Ok(None)` proves the command carries
+/// no model flag, `Err` names why it proves neither that nor a value.
+pub(crate) fn model_flag_read(cmd: &str, tool: ToolKind) -> Result<Option<String>, &'static str> {
+    let command =
+        lex_simple_command(cmd).map_err(|_| EffortRefusal::NotSimple(String::new()).word())?;
+    match sole_model_flag(&command, tool) {
+        Ok(flag) => Ok(Some(flag.value)),
+        Err(ModelFlagError::Absent) => Ok(None),
+        Err(error) => Err(error.word()),
+    }
 }
 
 /// The model flag value and effort level a resolved profile pins on this
@@ -1569,6 +1594,10 @@ pub(crate) fn is_assignment(word: &str) -> bool {
     matches!(bytes.next(), Some(b) if b.is_ascii_alphabetic() || b == b'_')
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
+
+#[cfg(test)]
+#[path = "launch_cmd_birth_spec.rs"]
+mod birth_spec;
 
 #[cfg(test)]
 mod tests {

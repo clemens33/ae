@@ -18,6 +18,7 @@
 
 use crate::events::Event;
 use crate::json::Value;
+use crate::launch_cmd::EffortRefusal;
 use crate::time::Timestamp;
 
 /// The certificate's journal action.
@@ -34,19 +35,36 @@ const ID: &str = "birth";
 /// The family version member.
 const FAMILY_VERSION: &str = "birth_v";
 /// Every member this family reads off a record.
-const MEMBERS: [&str; 12] = [
+const MEMBERS: [&str; 14] = [
     FAMILY_VERSION,
     ID,
     "birth_tool",
     "birth_client",
     "birth_model",
     "birth_effort",
+    MODEL_UNPROVED,
+    EFFORT_UNPROVED,
     "birth_profile",
     "fact",
     "start",
     "observed_source",
     "observed_model",
     "observed_effort",
+];
+/// Why a command proves neither a model flag's value nor its absence.
+const MODEL_UNPROVED: &str = "birth_model_unproved";
+/// The same for the effort flag.
+const EFFORT_UNPROVED: &str = "birth_effort_unproved";
+/// The closed v1 reason vocabulary, shared by the writer and the decoder.
+pub const UNPROVED_WORDS: [&str; 8] = [
+    "unsupported",
+    "not-simple",
+    "ambiguous-model",
+    "model-missing-value",
+    "ambiguous-effort",
+    "effort-missing-value",
+    "unknown-effort",
+    "env-effort",
 ];
 /// The closed v1 fact vocabulary.
 const FACT_KINDS: [&str; 4] = [
@@ -97,8 +115,9 @@ pub struct Damage {
     pub session: Option<String>,
 }
 
-/// A certificate as read. Every cell is optional: absence is itself a fact the
-/// certificate proves, `model` absent meaning the command set no flag.
+/// A certificate as read. Every cell is optional. A flag is in one of three
+/// states: its value, a reason it is unproved, or neither, which proves only
+/// that the command carries no such FLAG, never what the harness then chose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Birth {
     pub session: Option<String>,
@@ -109,6 +128,8 @@ pub struct Birth {
     pub client: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub model_unproved: Option<String>,
+    pub effort_unproved: Option<String>,
     pub profile: Option<String>,
 }
 
@@ -288,11 +309,31 @@ fn versioned(
             session,
         });
     }
+    known_members(raw).ok()?;
     if family == Family::Birth {
         certificate(event, raw, birth, session).ok()
     } else {
         fact(raw, birth, session).ok()
     }
+}
+
+/// Every known v1 member, whichever shape reads it, so a bad member is Damage
+/// on both. A flag cannot be both proved and unproved.
+fn known_members(raw: &Raw) -> Result<(), ()> {
+    for key in MEMBERS.iter().filter(|key| **key != FAMILY_VERSION) {
+        raw.text(key)?;
+    }
+    for (unproved, value) in [
+        (MODEL_UNPROVED, "birth_model"),
+        (EFFORT_UNPROVED, "birth_effort"),
+    ] {
+        if let Some(word) = raw.text(unproved)?
+            && (!UNPROVED_WORDS.contains(&word.as_str()) || raw.text(value)?.is_some())
+        {
+            return Err(());
+        }
+    }
+    Ok(())
 }
 
 /// A supported certificate.
@@ -311,6 +352,8 @@ fn certificate(
         client: raw.text("birth_client")?,
         model: raw.text("birth_model")?,
         effort: raw.text("birth_effort")?,
+        model_unproved: raw.text(MODEL_UNPROVED)?,
+        effort_unproved: raw.text(EFFORT_UNPROVED)?,
         profile: raw.text("birth_profile")?,
     }))
 }
@@ -344,6 +387,10 @@ pub struct Configured {
     pub model: Option<String>,
     /// The effort the command proves.
     pub effort: Option<String>,
+    /// Why the command proves neither a model flag's value nor its absence.
+    pub model_unproved: Option<&'static str>,
+    /// The same for the effort flag.
+    pub effort_unproved: Option<&'static str>,
     /// Diagnostic provenance, never an aggregation key.
     pub profile: String,
 }
@@ -356,13 +403,22 @@ pub fn configured(
     tool: crate::tool::ToolKind,
     profile: &str,
 ) -> Configured {
+    let (model, model_unproved) = match crate::launch_cmd::model_flag_read(command.as_str(), tool) {
+        Ok(model) => (model, None),
+        Err(word) => (None, Some(word)),
+    };
+    let (effort, effort_unproved) = match crate::launch_cmd::effort_flag(command.as_str(), tool) {
+        Ok(level) => (Some(level.word().to_owned()), None),
+        Err(EffortRefusal::Absent) => (None, None),
+        Err(refusal) => (None, Some(refusal.word())),
+    };
     Configured {
         tool: tool.as_str().to_owned(),
         client: command.client_label().map(ToOwned::to_owned),
-        model: crate::launch_cmd::model_flag_value(command.as_str(), tool),
-        effort: crate::launch_cmd::effort_flag(command.as_str(), tool)
-            .ok()
-            .map(|level| level.word().to_owned()),
+        model,
+        effort,
+        model_unproved,
+        effort_unproved,
         profile: profile.to_owned(),
     }
 }
@@ -406,6 +462,14 @@ pub(crate) fn certificate_line(
     ] {
         if let Some(value) = value {
             members.push((key, Value::str(value.as_str())));
+        }
+    }
+    for (key, word) in [
+        (MODEL_UNPROVED, configured.model_unproved),
+        (EFFORT_UNPROVED, configured.effort_unproved),
+    ] {
+        if let Some(word) = word {
+            members.push((key, Value::str(word)));
         }
     }
     members.push(("birth_profile", Value::str(configured.profile.as_str())));
