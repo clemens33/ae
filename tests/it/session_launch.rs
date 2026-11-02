@@ -8947,6 +8947,20 @@ die "exec real tmux: $!";
 pub(super) fn launchx_trace_text(log: &Path, scratch: &Path, before_build: bool) -> String {
     let trace =
         std::fs::read_to_string(log).unwrap_or_else(|why| panic!("argv trace exists: {why}"));
+    let core = Path::new(env!("CARGO_BIN_EXE_ae"));
+    let resolved_core =
+        std::fs::canonicalize(core).unwrap_or_else(|why| panic!("canonical trace core: {why}"));
+    let resolved_scratch = std::fs::canonicalize(scratch)
+        .unwrap_or_else(|why| panic!("canonical trace scratch: {why}"));
+    let mut paths = [
+        (core.display().to_string(), "<core>"),
+        (resolved_core.display().to_string(), "<core>"),
+        (scratch.display().to_string(), "<scratch>"),
+        (resolved_scratch.display().to_string(), "<scratch>"),
+    ];
+    // Replace the longest spelling first: /tmp may be an alias of /private/tmp,
+    // and a core path may itself be inside the fixture root.
+    paths.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
     if before_build {
         assert!(
             trace
@@ -8960,9 +8974,10 @@ pub(super) fn launchx_trace_text(log: &Path, scratch: &Path, before_build: bool)
         if before_build && line.split('\t').any(|arg| arg == "new-session") {
             break;
         }
-        let mut line = line
-            .replace(&scratch.display().to_string(), "<scratch>")
-            .replace(env!("CARGO_BIN_EXE_ae"), "<core>");
+        let mut line = line.to_owned();
+        for (path, placeholder) in &paths {
+            line = line.replace(path, placeholder);
+        }
         // tmux ids occur both as stand-alone arguments and inside hook text.
         for mark in ['%', '$', '@'] {
             let chars: Vec<char> = line.chars().collect();
@@ -8987,6 +9002,34 @@ pub(super) fn launchx_trace_text(log: &Path, scratch: &Path, before_build: bool)
         output.push('\n');
     }
     output
+}
+
+#[test]
+fn launchx_trace_normalizes_raw_and_resolved_fixture_paths() {
+    let scratch = OwnedScratch::root("ln", "launchx-trace-paths");
+    let actual_scratch = scratch.join("actual");
+    std::fs::create_dir(&actual_scratch).expect("real trace scratch");
+    let alias_scratch = scratch.join("alias");
+    std::os::unix::fs::symlink(&actual_scratch, &alias_scratch).expect("trace scratch alias");
+    let resolved_scratch = std::fs::canonicalize(&alias_scratch).expect("resolved trace scratch");
+    let core = Path::new(env!("CARGO_BIN_EXE_ae"));
+    let resolved_core = std::fs::canonicalize(core).expect("resolved trace core");
+    let log = scratch.join("trace-paths");
+    std::fs::write(
+        &log,
+        format!(
+            "{}\t{}\t{}/sock\t{}/sock\tunchanged\n",
+            core.display(),
+            resolved_core.display(),
+            alias_scratch.display(),
+            resolved_scratch.display()
+        ),
+    )
+    .expect("raw and resolved paths in one trace");
+    assert_eq!(
+        launchx_trace_text(&log, &alias_scratch, false),
+        "<core>\t<core>\t<scratch>/sock\t<scratch>/sock\tunchanged\n"
+    );
 }
 
 #[test]
