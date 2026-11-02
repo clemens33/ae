@@ -9067,3 +9067,100 @@ fn launchx_trace_create_resume_and_running_reattach_match_frozen_order() {
         }
     }
 }
+// Legacy adoption requires the recorded main pane to belong to that session.
+#[test]
+fn launchx_legacy_owned_session_refuses_a_recorded_pane_from_another_session() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("lx-legacy-pane");
+    let session = "lxLegacyPane";
+    let actual_pane = bare_named_session(&rig, "default", session);
+    let foreign_pane = bare_named_session(&rig, "default", "lxOtherPane");
+    assert_ne!(actual_pane, foreign_pane, "distinct live panes");
+    set_named_session_env(&rig, "default", session, "AE_SESSION", "1");
+    set_named_session_env(
+        &rig,
+        "default",
+        session,
+        "AE_HOME",
+        &rig.home.display().to_string(),
+    );
+    let (ok, live_before) = rig.tmux_named(
+        "default",
+        &[
+            "list-panes",
+            "-s",
+            "-t",
+            &format!("={session}"),
+            "-F",
+            "#{pane_id}",
+        ],
+    );
+    assert!(ok, "private historical server answers");
+    assert!(live_before.lines().any(|pane| pane == actual_pane));
+    assert!(!live_before.lines().any(|pane| pane == foreign_pane));
+    let dir = rig.dir(session);
+    std::fs::create_dir_all(&dir).expect("legacy saved record");
+    let before = format!("schema=2\nsession={session}\nmain_pane={foreign_pane}\nmode=local\n");
+    std::fs::write(dir.join("meta"), &before).expect("wrong live pane recorded");
+    std::fs::write(dir.join("preserved"), b"legacy payload").expect("saved payload");
+    let config_before = std::fs::read(&rig.config).expect("existing config");
+    let proposed = rig.scratch.join("uncreated-destination.sock");
+    let refused = rig.launch_with_server(
+        "socket",
+        &proposed.display().to_string(),
+        &["--local", session],
+    );
+    assert_eq!(refused.0, Some(1), "{refused:?}");
+    assert!(refused.1.is_empty(), "{refused:?}");
+    assert_eq!(
+        refused.2,
+        format!(
+            "Error: tmux session '{session}' exists on the historical default server, but ae could not prove it belongs to this state root. Metadata was not changed.\n"
+        )
+    );
+    assert_eq!(
+        rig.meta(session),
+        before,
+        "refusal backfilled legacy metadata"
+    );
+    assert_eq!(
+        std::fs::read(&rig.config).expect("config retained"),
+        config_before
+    );
+    assert_eq!(
+        std::fs::read(dir.join("preserved")).expect("payload retained"),
+        b"legacy payload"
+    );
+    assert!(
+        !dir.join("events.jsonl").exists(),
+        "refusal wrote a journal"
+    );
+    assert!(
+        !dir.join(".launch-attempt").exists(),
+        "refusal stamped a launch"
+    );
+    assert!(!proposed.exists(), "refusal started the destination server");
+    let (ok, live_after) = rig.tmux_named(
+        "default",
+        &[
+            "list-panes",
+            "-s",
+            "-t",
+            &format!("={session}"),
+            "-F",
+            "#{pane_id}",
+        ],
+    );
+    assert!(ok);
+    assert_eq!(
+        live_after, live_before,
+        "refusal replaced the original pane"
+    );
+    let (ok, other_after) = rig.tmux_named(
+        "default",
+        &["list-panes", "-s", "-t", "=lxOtherPane", "-F", "#{pane_id}"],
+    );
+    assert!(ok && other_after.lines().any(|pane| pane == foreign_pane));
+}

@@ -928,3 +928,134 @@ fn launchx_trace_restore_skip_matches_frozen_order() {
     assert_eq!(actual, include_str!("../fixtures/launchx/restore-skip.txt"));
     assert!(!actual.is_empty(), "wrapper never ran");
 }
+const LAUNCHX_UNPROVEN_TMUX: &str = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+open(my $log, '>>', $ENV{AE_LAUNCHX_LOG}) or die "trace: $!";
+print $log join("\t", @ARGV), "\n";
+close($log) or die "close trace: $!";
+if (grep { $_ eq 'list-sessions' } @ARGV) {
+    my $path = "$ENV{AE_LAUNCHX_LOG}.count";
+    my $count = 0;
+    if (open(my $old, '<', $path)) { $count = <$old> || 0; close($old); }
+    $count++;
+    open(my $out, '>', $path) or die "count: $!";
+    print $out $count; close($out);
+    if ($count == 1 && $ENV{AE_LAUNCHX_LEGACY_META}) {
+        rename($ENV{AE_LAUNCHX_LEGACY_META}, $ENV{AE_LAUNCHX_META})
+            or die "publish legacy metadata: $!";
+    }
+    if ($count == 2 || $count == 3) {
+        print STDERR "launchx controlled unreachable server\n";
+        exit 1;
+    }
+}
+exec {$ENV{AE_LAUNCHX_REAL_TMUX}} $ENV{AE_LAUNCHX_REAL_TMUX}, @ARGV;
+die "exec real tmux: $!";
+"#;
+
+// Characterization of the baseline launch's Unknown restore-probe arms.
+// The legacy refusal is the existing O2 observation, not a new policy.
+#[test]
+fn launchx_restore_probe_unknown_skips_recorded_but_refuses_legacy_after_scan() {
+    for legacy in [false, true] {
+        let fleet = Fleet::new(if legacy {
+            "lx-unknown-old"
+        } else {
+            "lx-unknown"
+        });
+        fleet.missing("held", 600, Some(60));
+        let meta = fleet.dir("held").join("meta");
+        let recorded = std::fs::read_to_string(&meta).expect("recorded server metadata");
+        let expected_meta = if legacy {
+            recorded
+                .lines()
+                .filter(|line| {
+                    !line.starts_with("tmux_server=") && !line.starts_with("tmux_server_kind=")
+                })
+                .fold(String::new(), |mut output, line| {
+                    output.push_str(line);
+                    output.push('\n');
+                    output
+                })
+        } else {
+            recorded.clone()
+        };
+        assert!(recorded.contains("tmux_server_kind=socket\n"));
+        assert_ne!(expected_meta.contains("tmux_server_kind="), legacy);
+        let replacement = fleet.scratch.join("legacy-meta");
+        std::fs::write(&replacement, &expected_meta).expect("complete post-scan metadata");
+        let journal = fleet.dir("held").join("events.jsonl");
+        let journal_before = std::fs::read(&journal).expect("launch journal");
+        let stamp = fleet.dir("held").join(".launch-attempt");
+        let stamp_before = std::fs::read(&stamp).expect("launch stamp");
+        let mut command = fleet.command(&["--no-attach"]);
+        let log = super::session_launch::launchx_trace_command(&mut command, &fleet.scratch);
+        // External tmux boundary only: the advisory scan answers normally.
+        // Its metadata snapshot was read before that query. A legacy case
+        // publishes the complete replacement there; launch then re-reads it.
+        // The next two queries fail (including transport's one settle retry).
+        // All remaining calls, including final listing, reach private tmux.
+        std::fs::write(fleet.scratch.join("trace-bin/tmux"), LAUNCHX_UNPROVEN_TMUX)
+            .expect("controlled post-scan tmux outage");
+        if legacy {
+            command
+                .env("AE_LAUNCHX_LEGACY_META", &replacement)
+                .env("AE_LAUNCHX_META", &meta);
+        }
+        let out = command.output().expect("restore across later proof gap");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("ae: restoring held ("),
+            "scan never selected held: {out:?}"
+        );
+        assert!(
+            !stdout.contains("ae: restored held"),
+            "false restored report: {out:?}"
+        );
+        assert_eq!(out.status.code(), Some(u8::from(legacy).into()), "{out:?}");
+        if legacy {
+            assert!(stderr.contains("ae: restore failed held:\n"), "{out:?}");
+            assert!(stderr.contains("Error: cannot verify whether legacy tmux session 'held' is absent on the historical default server. Metadata was not changed."), "{out:?}");
+            assert!(!stderr.contains("ae: skipped held:"), "{out:?}");
+        } else {
+            assert!(
+                stderr.contains("ae: skipped held: recorded server unproven: recorded server "),
+                "{out:?}"
+            );
+            assert!(!stderr.contains("ae: restore failed held:"), "{out:?}");
+        }
+        assert!(
+            stderr.contains("the server could not be reached"),
+            "{out:?}"
+        );
+        unchanged(&meta, expected_meta.as_bytes());
+        unchanged(&journal, &journal_before);
+        unchanged(&stamp, &stamp_before);
+        assert_eq!(fleet.names(), ["keeper"]);
+        let trace = std::fs::read_to_string(&log).expect("boundary trace");
+        assert_eq!(
+            trace
+                .lines()
+                .filter(|line| line.split('\t').any(|arg| arg == "list-sessions"))
+                .count(),
+            4,
+            "scan, launch probe, settle retry, final listing: {trace}"
+        );
+        assert!(
+            !trace
+                .lines()
+                .any(|line| line.split('\t').any(|arg| arg == "new-session")),
+            "refused restore reached build: {trace}"
+        );
+        if legacy {
+            assert!(
+                trace
+                    .lines()
+                    .any(|line| line.contains("\t-L\tdefault\tlist-sessions\t")),
+                "legacy probe never ran: {trace}"
+            );
+        }
+    }
+}
