@@ -7,6 +7,7 @@
 //! monitor panes, and the attach.
 
 use std::io::{self, Write};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -2116,6 +2117,17 @@ fn launch_mode(flag: Option<Mode>, recorded: Option<Mode>, configured: &str) -> 
         .unwrap_or_else(|| Mode::parse(configured).unwrap_or(Mode::Local))
 }
 
+/// `?` for a launch step: a step that refused has already written its own
+/// diagnostic, so the launch ends with the exit code it returned.
+macro_rules! step {
+    ($step:expr) => {
+        match $step? {
+            ControlFlow::Continue(value) => value,
+            ControlFlow::Break(code) => return Ok(code),
+        }
+    };
+}
+
 /// A session's resolved shape, once every refusal has passed.
 struct Session {
     name: String,
@@ -2421,43 +2433,15 @@ fn launch(
         };
         let (probe, why) = resume_absence(&recorded.server, &session, &dir);
         match placement(&probe, in_place, recorded.legacy) {
-            // A legacy record names no server: the live session on the
-            // historical default is adopted only once it is proved to be this
-            // state root's, and its socket is backfilled before anything acts.
             Placement::Running if recorded.legacy => {
-                let historical = &recorded.server;
-                let ownership = transport::observe_session_ownership(historical, &session);
-                let main_pane = meta_value(&dir, "main_pane").unwrap_or_default();
-                let pane_belongs = !main_pane.is_empty()
-                    && transport::observe_agents(historical, &session)
-                        .is_some_and(|panes| panes.into_iter().any(|pane| pane.pane == main_pane));
-                let owned = ownership.is_some_and(|ownership| {
-                    !ownership.marker.is_empty()
-                        && existing_directories_match(Path::new(&ownership.home), &env.home)
-                }) && pane_belongs;
-                let socket = owned
-                    .then(|| transport::observe_socket_path(historical))
-                    .flatten();
-                let Some(socket) = socket else {
-                    writeln!(
-                        err,
-                        "Error: tmux session '{session}' exists on the historical default server, but ae could not prove it belongs to this state root. Metadata was not changed."
-                    )?;
-                    return Ok(EXIT_FAILED);
-                };
-                if !plan.seat_profiles.is_empty() {
-                    writeln!(err, "{}", running_override_refusal(&session))?;
-                    return Ok(EXIT_USAGE);
-                }
-                if let Err(why) = meta::backfill_server_socket(&dir, &socket) {
-                    writeln!(
-                        err,
-                        "Error: could not backfill the tmux server for '{session}' ({}).",
-                        why.cause()
-                    )?;
-                    return Ok(EXIT_FAILED);
-                }
-                let backfilled = ServerId::Selected(meta::Selector::Socket(socket.into()));
+                let backfilled = step!(adopt_legacy_session(
+                    &recorded.server,
+                    &env.home,
+                    &session,
+                    &dir,
+                    !plan.seat_profiles.is_empty(),
+                    err
+                ));
                 set_env_server(&mut env, &backfilled);
                 running_server = Some(backfilled);
             }
@@ -2547,54 +2531,18 @@ fn launch(
     // ---- explicit lineage, proved before anything is created ----
     let mut parent: Option<FromProof> = None;
     if let Some(uuid) = &plan.from {
-        let root = env.home.join("archive");
-        match from_preflight(&root, uuid) {
-            Ok(proof) => {
-                if transport::session_exists(&proposed_server, &session)
+        parent = Some(step!(prove_lineage(
+            &env.home.join("archive"),
+            uuid,
+            expected_proof,
+            || {
+                transport::session_exists(&proposed_server, &session)
                     || dir_exists(&dir)
                     || dir_exists(&work_root)
-                {
-                    writeln!(
-                        err,
-                        "Error: --from is only valid for a NEW session, and '{session}' already exists."
-                    )?;
-                    writeln!(
-                        err,
-                        "       Inheriting an archive into a running or resumable session would mean two"
-                    )?;
-                    writeln!(
-                        err,
-                        "       different things (replace its history? merge it?) with no safe default."
-                    )?;
-                    writeln!(err, "       Start the continuation under its own name:")?;
-                    writeln!(err, "           ae <new-name> --from {}", proof.id)?;
-                    return Ok(EXIT_FAILED);
-                }
-                // THE SECOND PROOF. compact took the first at its boundary;
-                // between the two the archive could have been purged, claimed
-                // or corrupted, and a child published with a lineage pointer to
-                // something that is no longer there is exactly the case
-                // `--from` exists to refuse.
-                let now = format!("{}\t{}\t{}", proof.id, proof.handover, proof.pending);
-                if let Some(expected) = expected_proof
-                    && now != expected
-                {
-                    writeln!(
-                        err,
-                        "Error: parent archive {} changed while this session was being created.",
-                        proof.id
-                    )?;
-                    writeln!(err, "  Expected: {}", expected.replace('\t', " | "))?;
-                    writeln!(err, "  Now:      {}", now.replace('\t', " | "))?;
-                    return Ok(EXIT_FAILED);
-                }
-                parent = Some(proof);
-            }
-            Err(line) => {
-                writeln!(err, "{line}")?;
-                return Ok(EXIT_FAILED);
-            }
-        }
+            },
+            &session,
+            err
+        )));
     }
 
     // ---- a session that is already running is reattached, never rebuilt ----
@@ -2674,135 +2622,13 @@ fn launch(
             return Ok(EXIT_FAILED);
         }
     };
-    let extras = config::read_workspace_keys(
-        env.global.as_deref(),
-        env.local.as_deref(),
-        &[
-            "layout",
-            "copy",
-            "watchdog",
-            "loop",
-            "orchestrator",
-            "hub",
-            "meta",
-            "palette",
-            "icons",
-            "theme",
-            "motion",
-            "sweep",
-            "quota",
-        ],
-    );
-    let config_layout = extras[0].clone().unwrap_or_default();
-    let config_copy = extras[1].clone().unwrap_or_default();
-    let look = crate::theme::Look::read(
-        &extras[8].clone().unwrap_or_default(),
-        &extras[7].clone().unwrap_or_default(),
-        &extras[9].clone().unwrap_or_default(),
-        &extras[10].clone().unwrap_or_default(),
-    );
-    let meta_agent = ["true", "1", "yes", "on"].contains(
-        &extras[4]
-            .clone()
-            .or_else(|| extras[5].clone())
-            .or_else(|| extras[6].clone())
-            .unwrap_or_default()
-            .as_str(),
-    );
-    let sweep_sec = extras[11]
-        .as_deref()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|value| value.to_string());
-    let quota_every_secs = match recorded_wins_seconds(
-        if meta_present {
-            meta_value(&dir, "quota_every_secs")
-        } else {
-            None
-        },
-        || configured_quota_every_secs(env.global.as_deref(), env.local.as_deref()),
-        crate::watchdog_daemon::Knobs::default().quota_every_secs,
-    ) {
-        Ok(value) => value,
-        Err(value) => {
-            writeln!(
-                err,
-                "Error: [workspace] quota_every_secs must be an unsigned integer in seconds; got '{value}'."
-            )?;
-            return Ok(EXIT_USAGE);
-        }
-    };
-    let idle_nudge_secs = match recorded_wins_seconds(
-        if meta_present {
-            meta_value(&dir, "idle_nudge_secs")
-        } else {
-            None
-        },
-        || {
-            configured_unsigned_workspace_seconds(
-                env.global.as_deref(),
-                env.local.as_deref(),
-                "idle_nudge_secs",
-            )
-        },
-        crate::watchdog_daemon::Knobs::default().idle_nudge_secs,
-    ) {
-        Ok(value) => value,
-        Err(value) => {
-            writeln!(
-                err,
-                "Error: [workspace] idle_nudge_secs must be an unsigned integer in seconds; got '{value}'."
-            )?;
-            return Ok(EXIT_USAGE);
-        }
-    };
-    let recorded_done = meta_present
-        .then(|| meta_value(&dir, "done_confirmations"))
-        .flatten();
-    let configured_done = if recorded_done.is_none() {
-        if let Ok(value) = configured_unsigned_workspace_seconds(
-            env.global.as_deref(),
-            env.local.as_deref(),
-            "done_confirmations",
-        ) {
-            value
-        } else {
-            writeln!(err, "Note: done_confirmations ignored; using default 2")?;
-            None
-        }
-    } else {
-        None
-    };
-    let (done_confirmations, note) = crate::meta::resolve_done_confirmations(
-        recorded_done.as_deref().or(configured_done.as_deref()),
-        false,
-        crate::watchdog::DEFAULT_DONE_CONFIRMATIONS,
-    );
-    if let Some(note) = note {
-        writeln!(err, "Note: {note}")?;
-    }
-    let done_confirmations = done_confirmations.to_string();
-    // `quota = off` is pinned like `quota_every_secs`: the recorded meta wins
-    // on resume so a config flip applies to NEW sessions only. Absent means ON
-    // — exactly today's behaviour — through the ONE `config::quota_aware`
-    // predicate. `quota = off` WINS over `quota_every_secs`: a cadence is
-    // meaningless when the feature is off, and the watchdog enforces that.
-    let recorded_quota = if meta_present {
-        meta_value(&dir, "quota")
-    } else {
-        None
-    };
-    let configured_quota = if recorded_quota.is_none() {
-        extras[12].clone().unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let quota_raw = recorded_quota.unwrap_or(configured_quota);
-    let quota = if crate::config::quota_aware(&quota_raw) {
-        "on"
-    } else {
-        "off"
-    }
-    .to_owned();
+    let values = read_workspace_values(&env);
+    let cadences = step!(resolve_watchdog_cadences(
+        &env,
+        meta_present.then_some(dir.as_path()),
+        &values.quota,
+        err
+    ));
 
     if let Some(workers) = &plan.workers {
         cfg.workers = Some(workers.clone());
@@ -2822,154 +2648,33 @@ fn launch(
     } else {
         None
     };
-    let mut mode = launch_mode(plan.mode, recorded_mode, &config_copy);
+    let mode = launch_mode(plan.mode, recorded_mode, &values.copy);
 
     // ---- the working copy ----
-    let mut origin = env.cwd.clone();
-    let mut work_dir = work_root.clone();
     // The session document is the ONE resume discriminator. A worktree path is
     // not identity: rename deliberately leaves it under the old name, and an
     // unrelated directory under the new name must never turn a fresh launch
     // into a resume.
     let resuming = meta_present;
     if resuming {
-        let parsed = meta::read_bytes(&dir)
-            .ok()
-            .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)));
-        // The recorded-client gate for launches WITHOUT overrides (an
-        // override launch took it in preflight): an unusable row refuses with
-        // its own remedy before the generic doubtful-roster refusal below,
-        // which stays as the backstop for every other anomaly.
-        if let Some(refusal) = parsed.as_ref().and_then(|meta| {
-            meta.roster()
-                .iter()
-                .find_map(|entry| recorded_selection(&session, &cfg, entry).err())
-        }) {
-            writeln!(err, "{refusal}")?;
-            return Ok(EXIT_FAILED);
-        }
-        if let Some(anomaly) = parsed.as_ref().and_then(|meta| {
-            meta.anomalies()
-                .iter()
-                .find(|item| roster::roster_doubting(item))
-        }) {
-            writeln!(
-                err,
-                "Error: session '{session}' has doubtful roster metadata ({anomaly}); run 'ae doctor' before resuming."
-            )?;
-            return Ok(EXIT_FAILED);
-        }
+        step!(check_resumed_roster(&dir, &session, &cfg, err));
     }
-    if mode == Mode::Local {
-        if dir_exists(&work_root) {
-            writeln!(
-                err,
-                "Error: stopped session '{session}' exists as worktree/copy. End it first (ae end {session}), or use a different name."
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        work_dir.clone_from(&env.cwd);
-        if resuming {
-            if let Some(stored) = meta_value(&dir, "work_dir").filter(|v| dir_exists(Path::new(v)))
-            {
-                work_dir = PathBuf::from(stored);
-            }
-            if let Some(stored) = meta_value(&dir, "origin").filter(|v| !v.is_empty()) {
-                origin = PathBuf::from(stored);
-            }
-            writeln!(
-                out,
-                "Resuming session {session} (dir: {})...",
-                work_dir.display()
-            )?;
-        }
-    } else if resuming {
-        let stored_work = meta_value(&dir, "work_dir").filter(|value| !value.is_empty());
-        if let Some(stored) = stored_work.as_deref() {
-            if !dir_exists(Path::new(stored)) {
-                writeln!(
-                    err,
-                    "Error: '{session}' records its working copy at {stored} but it is gone — restore it or end the session (ae end {session})"
-                )?;
-                return Ok(EXIT_FAILED);
-            }
-            work_dir = PathBuf::from(stored);
-        } else if !dir_exists(&work_root) {
-            writeln!(
-                err,
-                "Error: '{session}' records its working copy at {} but it is gone — restore it or end the session (ae end {session})",
-                work_root.display()
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        if let Some(stored) = meta_value(&dir, "origin").filter(|v| !v.is_empty()) {
-            origin = PathBuf::from(stored);
-        }
-        writeln!(
-            out,
-            "Resuming session {session} (dir: {})...",
-            work_dir.display()
-        )?;
-    } else {
-        if dir_exists(&work_root) {
-            writeln!(
-                err,
-                "Error: working copy '{}' exists without session metadata; refusing to overwrite it — choose a fresh name or remove/relocate the preserved workdir yourself.",
-                work_root.display()
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        if let Err(why) = std::fs::create_dir_all(&work_root) {
-            writeln!(
-                err,
-                "Error: could not create {} ({why})",
-                work_root.display()
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        match mode {
-            Mode::Git if crate::git::is_work_tree(path_bytes(&env.cwd)) => {
-                writeln!(out, "Creating git worktree...")?;
-                if !crate::git::worktree_add_detached(path_bytes(&env.cwd), path_bytes(&work_root))
-                {
-                    let _ = std::fs::remove_dir_all(&work_root);
-                    writeln!(
-                        err,
-                        "Error: could not create a git worktree at {}",
-                        work_root.display()
-                    )?;
-                    return Ok(EXIT_FAILED);
-                }
-            }
-            Mode::Git => {
-                writeln!(err, "Warning: not a git repo, falling back to full copy.")?;
-                mode = Mode::Full;
-                writeln!(out, "Creating full copy...")?;
-                if let Err(why) = copy_tree(&env.cwd, &work_root) {
-                    let _ = std::fs::remove_dir_all(&work_root);
-                    writeln!(err, "Error: could not copy the working tree ({why})")?;
-                    return Ok(EXIT_FAILED);
-                }
-            }
-            Mode::Full => {
-                writeln!(out, "Creating full copy...")?;
-                if let Err(why) = copy_tree(&env.cwd, &work_root) {
-                    let _ = std::fs::remove_dir_all(&work_root);
-                    writeln!(err, "Error: could not copy the working tree ({why})")?;
-                    return Ok(EXIT_FAILED);
-                }
-            }
-            Mode::Local => unreachable!("local mode is handled above"),
-        }
-        writeln!(out, "Working copy ready.")?;
-    }
+    let copy = step!(prepare_working_copy(
+        &env.cwd,
+        &work_root,
+        &session,
+        mode,
+        resuming.then_some(dir.as_path()),
+        out,
+        err
+    ));
 
     // Layout is META-WINS on resume: pinned at launch, so a config flip applies
     // to NEW sessions only, mirroring agent identity.
-    let mut layout = if config_layout.is_empty() {
+    let mut layout = if values.layout.is_empty() {
         "vertical".to_owned()
     } else {
-        config_layout
+        values.layout
     };
     // A RESUME RESTORES THE ROSTER IT SAVED.
     if resuming {
@@ -3003,48 +2708,17 @@ fn launch(
     }
 
     // ---- restored spawned seats, LEXED before anything is created ----
-    //
-    // A spawned seat records a PROFILE NAME, and the resume looks that name up
-    // in whatever config is current — so the command it resolves to is one no
-    // earlier validation ever saw. `config::launch_plan` lexes the [roster]
-    // seats and `_spawn` lexes the profile it is handed, but this path did
-    // neither: it read `cfg.command()`, opened a pane, and let the pane shell
-    // run the string. A profile holding `touch m ; tail -f /dev/null` therefore
-    // executed BOTH commands on resume — the same defect the spawn gate closed
-    // (colead gate b5d60fec), reached through the restore instead.
     if resuming {
-        let spawned = match spawned_entries(&dir, &session) {
-            Ok(spawned) => spawned,
-            Err(line) => {
-                writeln!(err, "{line}")?;
-                return Ok(EXIT_FAILED);
-            }
-        };
-        for entry in spawned {
-            // An unconfigured profile is not a refusal: the seat is preserved
-            // verbatim and never launched, which the restore already handles.
-            let command = match cfg.command(&entry.profile, home.as_deref()) {
-                Ok(command) => command,
-                Err(why) => {
-                    writeln!(err, "{why}")?;
-                    return Ok(EXIT_FAILED);
-                }
-            };
-            let Some(command) = command.filter(|command| !command.as_str().is_empty()) else {
-                continue;
-            };
-            if let Err(why) = crate::launch_cmd::lex_simple_command(command.as_str()) {
-                writeln!(
-                    err,
-                    "Error: seat '{}' ({}) — profile '{}' refused — {why}. Nothing was resumed.",
-                    entry.name, entry.slot, entry.profile
-                )?;
-                return Ok(EXIT_FAILED);
-            }
-        }
+        step!(lex_spawned_seats(
+            &dir,
+            &session,
+            &cfg,
+            home.as_deref(),
+            err
+        ));
     }
 
-    let chat = !(meta_agent || orchestrator_seat)
+    let chat = !(values.meta_agent || orchestrator_seat)
         && match config::workspace_chat_window(env.global.as_deref(), env.local.as_deref()) {
             config::ChatWindow::On | config::ChatWindow::App => true,
             config::ChatWindow::Off => false,
@@ -3058,11 +2732,11 @@ fn launch(
         };
     let mut shape = Session {
         name: session.clone(),
-        mode,
-        work_dir,
-        origin,
+        mode: copy.mode,
+        work_dir: copy.work_dir,
+        origin: copy.origin,
         layout,
-        look,
+        look: values.look,
         chat,
         resuming,
         dir_created: false,
@@ -3075,18 +2749,522 @@ fn launch(
         &cfg,
         seat_overrides.as_ref(),
         WatchdogFacts {
-            meta_agent,
-            sweep_sec: sweep_sec.as_deref(),
-            quota_every_secs: &quota_every_secs,
-            idle_nudge_secs: &idle_nudge_secs,
-            done_confirmations: &done_confirmations,
-            quota: &quota,
+            meta_agent: values.meta_agent,
+            sweep_sec: values.sweep_sec.as_deref(),
+            quota_every_secs: &cadences.quota_every_secs,
+            idle_nudge_secs: &cadences.idle_nudge_secs,
+            done_confirmations: &cadences.done_confirmations,
+            quota: &cadences.quota,
         },
         parent.as_ref(),
         lifecycle.take(),
         out,
         err,
     )
+}
+
+// ---------------------------------------------------------------------------
+// the launch's named steps, in the order `launch` calls them
+// ---------------------------------------------------------------------------
+
+/// Adopt a legacy session — a record with no server rows — that is running on
+/// the historical default server. It is ours only when its ownership marker
+/// names this state root AND its recorded main pane is one of its panes; then,
+/// unless seat overrides were asked of a running session, its socket is
+/// backfilled into the record before anything acts on it. Continues with the
+/// backfilled server.
+fn adopt_legacy_session(
+    historical: &ServerId,
+    home: &Path,
+    session: &str,
+    dir: &Path,
+    overrides: bool,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, ServerId>> {
+    let ownership = transport::observe_session_ownership(historical, session);
+    let main_pane = meta_value(dir, "main_pane").unwrap_or_default();
+    let pane_belongs = !main_pane.is_empty()
+        && transport::observe_agents(historical, session)
+            .is_some_and(|panes| panes.into_iter().any(|pane| pane.pane == main_pane));
+    let owned = ownership.is_some_and(|ownership| {
+        !ownership.marker.is_empty() && existing_directories_match(Path::new(&ownership.home), home)
+    }) && pane_belongs;
+    let socket = owned
+        .then(|| transport::observe_socket_path(historical))
+        .flatten();
+    let Some(socket) = socket else {
+        writeln!(
+            err,
+            "Error: tmux session '{session}' exists on the historical default server, but ae could not prove it belongs to this state root. Metadata was not changed."
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    };
+    if overrides {
+        writeln!(err, "{}", running_override_refusal(session))?;
+        return Ok(ControlFlow::Break(EXIT_USAGE));
+    }
+    if let Err(why) = meta::backfill_server_socket(dir, &socket) {
+        writeln!(
+            err,
+            "Error: could not backfill the tmux server for '{session}' ({}).",
+            why.cause()
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    Ok(ControlFlow::Continue(ServerId::Selected(
+        meta::Selector::Socket(socket.into()),
+    )))
+}
+
+/// Prove a `--from` parent archive for a NEW session: the archive preflight
+/// first, then `exists` (asked only once the archive proved) refuses a name
+/// that is already a running or resumable session, then THE SECOND PROOF.
+/// compact took the first at its boundary; between the two the archive could
+/// have been purged, claimed or corrupted, and a child published with a
+/// lineage pointer to something that is no longer there is exactly the case
+/// `--from` exists to refuse.
+fn prove_lineage(
+    root: &Path,
+    uuid: &str,
+    expected_proof: Option<&str>,
+    exists: impl FnOnce() -> bool,
+    session: &str,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, FromProof>> {
+    let proof = match from_preflight(root, uuid) {
+        Ok(proof) => proof,
+        Err(line) => {
+            writeln!(err, "{line}")?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+    };
+    if exists() {
+        writeln!(
+            err,
+            "Error: --from is only valid for a NEW session, and '{session}' already exists."
+        )?;
+        writeln!(
+            err,
+            "       Inheriting an archive into a running or resumable session would mean two"
+        )?;
+        writeln!(
+            err,
+            "       different things (replace its history? merge it?) with no safe default."
+        )?;
+        writeln!(err, "       Start the continuation under its own name:")?;
+        writeln!(err, "           ae <new-name> --from {}", proof.id)?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    let now = format!("{}\t{}\t{}", proof.id, proof.handover, proof.pending);
+    if let Some(expected) = expected_proof
+        && now != expected
+    {
+        writeln!(
+            err,
+            "Error: parent archive {} changed while this session was being created.",
+            proof.id
+        )?;
+        writeln!(err, "  Expected: {}", expected.replace('\t', " | "))?;
+        writeln!(err, "  Now:      {}", now.replace('\t', " | "))?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    Ok(ControlFlow::Continue(proof))
+}
+
+/// The `[workspace]` values a launch takes from config, read once.
+struct WorkspaceValues {
+    /// `layout`, empty when unset.
+    layout: String,
+    /// `copy`, the configured working-copy mode, empty when unset.
+    copy: String,
+    look: crate::theme::Look,
+    /// `orchestrator` (or its older spellings `hub`, `meta`) is on.
+    meta_agent: bool,
+    /// `sweep`, when it is unsigned seconds.
+    sweep_sec: Option<String>,
+    /// `quota`, empty when unset.
+    quota: String,
+}
+
+fn read_workspace_values(env: &Env) -> WorkspaceValues {
+    let extras = config::read_workspace_keys(
+        env.global.as_deref(),
+        env.local.as_deref(),
+        &[
+            "layout",
+            "copy",
+            "watchdog",
+            "loop",
+            "orchestrator",
+            "hub",
+            "meta",
+            "palette",
+            "icons",
+            "theme",
+            "motion",
+            "sweep",
+            "quota",
+        ],
+    );
+    let look = crate::theme::Look::read(
+        &extras[8].clone().unwrap_or_default(),
+        &extras[7].clone().unwrap_or_default(),
+        &extras[9].clone().unwrap_or_default(),
+        &extras[10].clone().unwrap_or_default(),
+    );
+    let meta_agent = ["true", "1", "yes", "on"].contains(
+        &extras[4]
+            .clone()
+            .or_else(|| extras[5].clone())
+            .or_else(|| extras[6].clone())
+            .unwrap_or_default()
+            .as_str(),
+    );
+    let sweep_sec = extras[11]
+        .as_deref()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.to_string());
+    WorkspaceValues {
+        layout: extras[0].clone().unwrap_or_default(),
+        copy: extras[1].clone().unwrap_or_default(),
+        look,
+        meta_agent,
+        sweep_sec,
+        quota: extras[12].clone().unwrap_or_default(),
+    }
+}
+
+/// The watchdog facts a launch records, each META-WINS: a resume keeps what
+/// its session recorded, so a config flip applies to NEW sessions only.
+struct WatchdogCadences {
+    quota_every_secs: String,
+    idle_nudge_secs: String,
+    done_confirmations: String,
+    /// `on` or `off`.
+    quota: String,
+}
+
+/// Resolve the [`WatchdogCadences`]: `resumed` is the session directory of a
+/// resume, whose recorded rows win; a configured value is read only for a row
+/// that is absent. `configured_quota` is the `[workspace] quota` already read.
+fn resolve_watchdog_cadences(
+    env: &Env,
+    resumed: Option<&Path>,
+    configured_quota: &str,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, WatchdogCadences>> {
+    let recorded = |key: &str| resumed.and_then(|dir| meta_value(dir, key));
+    let quota_every_secs = match recorded_wins_seconds(
+        recorded("quota_every_secs"),
+        || configured_quota_every_secs(env.global.as_deref(), env.local.as_deref()),
+        crate::watchdog_daemon::Knobs::default().quota_every_secs,
+    ) {
+        Ok(value) => value,
+        Err(value) => {
+            writeln!(
+                err,
+                "Error: [workspace] quota_every_secs must be an unsigned integer in seconds; got '{value}'."
+            )?;
+            return Ok(ControlFlow::Break(EXIT_USAGE));
+        }
+    };
+    let idle_nudge_secs = match recorded_wins_seconds(
+        recorded("idle_nudge_secs"),
+        || {
+            configured_unsigned_workspace_seconds(
+                env.global.as_deref(),
+                env.local.as_deref(),
+                "idle_nudge_secs",
+            )
+        },
+        crate::watchdog_daemon::Knobs::default().idle_nudge_secs,
+    ) {
+        Ok(value) => value,
+        Err(value) => {
+            writeln!(
+                err,
+                "Error: [workspace] idle_nudge_secs must be an unsigned integer in seconds; got '{value}'."
+            )?;
+            return Ok(ControlFlow::Break(EXIT_USAGE));
+        }
+    };
+    let recorded_done = recorded("done_confirmations");
+    let configured_done = if recorded_done.is_none() {
+        if let Ok(value) = configured_unsigned_workspace_seconds(
+            env.global.as_deref(),
+            env.local.as_deref(),
+            "done_confirmations",
+        ) {
+            value
+        } else {
+            writeln!(err, "Note: done_confirmations ignored; using default 2")?;
+            None
+        }
+    } else {
+        None
+    };
+    let (done_confirmations, note) = crate::meta::resolve_done_confirmations(
+        recorded_done.as_deref().or(configured_done.as_deref()),
+        false,
+        crate::watchdog::DEFAULT_DONE_CONFIRMATIONS,
+    );
+    if let Some(note) = note {
+        writeln!(err, "Note: {note}")?;
+    }
+    // `quota = off` is pinned like `quota_every_secs`: the recorded meta wins
+    // on resume so a config flip applies to NEW sessions only. Absent means ON
+    // — exactly today's behaviour — through the ONE `config::quota_aware`
+    // predicate. `quota = off` WINS over `quota_every_secs`: a cadence is
+    // meaningless when the feature is off, and the watchdog enforces that.
+    let quota_raw = recorded("quota").unwrap_or_else(|| configured_quota.to_owned());
+    let quota = if crate::config::quota_aware(&quota_raw) {
+        "on"
+    } else {
+        "off"
+    }
+    .to_owned();
+    Ok(ControlFlow::Continue(WatchdogCadences {
+        quota_every_secs,
+        idle_nudge_secs,
+        done_confirmations: done_confirmations.to_string(),
+        quota,
+    }))
+}
+
+/// The recorded-client gate for a resume WITHOUT overrides (an override launch
+/// took it in preflight): an unusable row refuses with its own remedy before
+/// the generic doubtful-roster refusal, which stays as the backstop for every
+/// other anomaly.
+fn check_resumed_roster(
+    dir: &Path,
+    session: &str,
+    cfg: &IdentityConfig,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8>> {
+    let parsed = meta::read_bytes(dir)
+        .ok()
+        .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)));
+    if let Some(refusal) = parsed.as_ref().and_then(|meta| {
+        meta.roster()
+            .iter()
+            .find_map(|entry| recorded_selection(session, cfg, entry).err())
+    }) {
+        writeln!(err, "{refusal}")?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    if let Some(anomaly) = parsed.as_ref().and_then(|meta| {
+        meta.anomalies()
+            .iter()
+            .find(|item| roster::roster_doubting(item))
+    }) {
+        writeln!(
+            err,
+            "Error: session '{session}' has doubtful roster metadata ({anomaly}); run 'ae doctor' before resuming."
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    Ok(ControlFlow::Continue(()))
+}
+
+/// The directory a launch's agents work in, the origin it records, and the
+/// mode it ends in (a `--worktree` outside a git repo falls back to a full
+/// copy).
+struct WorkingCopy {
+    work_dir: PathBuf,
+    origin: PathBuf,
+    mode: Mode,
+}
+
+/// Find the working copy a resume recorded, or make the one a fresh launch
+/// asked for. Local mode works in `cwd` and never copies; a managed copy is
+/// created under `work_root` only when nothing stands there, and a failed one
+/// is removed again. `resumed` is the session directory of a resume, whose
+/// record names the copy; `None` for a fresh launch.
+fn prepare_working_copy(
+    cwd: &Path,
+    work_root: &Path,
+    session: &str,
+    mut mode: Mode,
+    resumed: Option<&Path>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, WorkingCopy>> {
+    let mut origin = cwd.to_path_buf();
+    let mut work_dir = work_root.to_path_buf();
+    if mode == Mode::Local {
+        if dir_exists(work_root) {
+            writeln!(
+                err,
+                "Error: stopped session '{session}' exists as worktree/copy. End it first (ae end {session}), or use a different name."
+            )?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+        work_dir = cwd.to_path_buf();
+        if let Some(dir) = resumed {
+            if let Some(stored) = meta_value(dir, "work_dir").filter(|v| dir_exists(Path::new(v))) {
+                work_dir = PathBuf::from(stored);
+            }
+            if let Some(stored) = meta_value(dir, "origin").filter(|v| !v.is_empty()) {
+                origin = PathBuf::from(stored);
+            }
+            writeln!(
+                out,
+                "Resuming session {session} (dir: {})...",
+                work_dir.display()
+            )?;
+        }
+    } else if let Some(dir) = resumed {
+        let stored_work = meta_value(dir, "work_dir").filter(|value| !value.is_empty());
+        if let Some(stored) = stored_work.as_deref() {
+            if !dir_exists(Path::new(stored)) {
+                writeln!(
+                    err,
+                    "Error: '{session}' records its working copy at {stored} but it is gone — restore it or end the session (ae end {session})"
+                )?;
+                return Ok(ControlFlow::Break(EXIT_FAILED));
+            }
+            work_dir = PathBuf::from(stored);
+        } else if !dir_exists(work_root) {
+            writeln!(
+                err,
+                "Error: '{session}' records its working copy at {} but it is gone — restore it or end the session (ae end {session})",
+                work_root.display()
+            )?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+        if let Some(stored) = meta_value(dir, "origin").filter(|v| !v.is_empty()) {
+            origin = PathBuf::from(stored);
+        }
+        writeln!(
+            out,
+            "Resuming session {session} (dir: {})...",
+            work_dir.display()
+        )?;
+    } else {
+        match create_working_copy(cwd, work_root, mode, out, err)? {
+            ControlFlow::Continue(created) => mode = created,
+            ControlFlow::Break(code) => return Ok(ControlFlow::Break(code)),
+        }
+    }
+    Ok(ControlFlow::Continue(WorkingCopy {
+        work_dir,
+        origin,
+        mode,
+    }))
+}
+
+/// Create a fresh launch's managed copy under `work_root` — a detached git
+/// worktree, or a full copy (also the fallback outside a git repo) — refusing
+/// to touch anything already standing there and removing a copy that failed.
+/// Continues with the mode the copy was made in.
+fn create_working_copy(
+    cwd: &Path,
+    work_root: &Path,
+    mode: Mode,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, Mode>> {
+    if dir_exists(work_root) {
+        writeln!(
+            err,
+            "Error: working copy '{}' exists without session metadata; refusing to overwrite it — choose a fresh name or remove/relocate the preserved workdir yourself.",
+            work_root.display()
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    if let Err(why) = std::fs::create_dir_all(work_root) {
+        writeln!(
+            err,
+            "Error: could not create {} ({why})",
+            work_root.display()
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    let mut mode = mode;
+    match mode {
+        Mode::Git if crate::git::is_work_tree(path_bytes(cwd)) => {
+            writeln!(out, "Creating git worktree...")?;
+            if !crate::git::worktree_add_detached(path_bytes(cwd), path_bytes(work_root)) {
+                let _ = std::fs::remove_dir_all(work_root);
+                writeln!(
+                    err,
+                    "Error: could not create a git worktree at {}",
+                    work_root.display()
+                )?;
+                return Ok(ControlFlow::Break(EXIT_FAILED));
+            }
+        }
+        Mode::Git => {
+            writeln!(err, "Warning: not a git repo, falling back to full copy.")?;
+            mode = Mode::Full;
+            writeln!(out, "Creating full copy...")?;
+            if let Err(why) = copy_tree(cwd, work_root) {
+                let _ = std::fs::remove_dir_all(work_root);
+                writeln!(err, "Error: could not copy the working tree ({why})")?;
+                return Ok(ControlFlow::Break(EXIT_FAILED));
+            }
+        }
+        Mode::Full => {
+            writeln!(out, "Creating full copy...")?;
+            if let Err(why) = copy_tree(cwd, work_root) {
+                let _ = std::fs::remove_dir_all(work_root);
+                writeln!(err, "Error: could not copy the working tree ({why})")?;
+                return Ok(ControlFlow::Break(EXIT_FAILED));
+            }
+        }
+        Mode::Local => unreachable!("local mode never creates a copy"),
+    }
+    writeln!(out, "Working copy ready.")?;
+    Ok(ControlFlow::Continue(mode))
+}
+
+/// Lex every restored spawned seat's command before anything is created.
+///
+/// A spawned seat records a PROFILE NAME, and the resume looks that name up
+/// in whatever config is current — so the command it resolves to is one no
+/// earlier validation ever saw. `config::launch_plan` lexes the [roster]
+/// seats and `_spawn` lexes the profile it is handed, but this path did
+/// neither: it read `cfg.command()`, opened a pane, and let the pane shell
+/// run the string. A profile holding `touch m ; tail -f /dev/null` therefore
+/// executed BOTH commands on resume — the same defect the spawn gate closed
+/// (colead gate b5d60fec), reached through the restore instead.
+fn lex_spawned_seats(
+    dir: &Path,
+    session: &str,
+    cfg: &IdentityConfig,
+    home: Option<&Path>,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8>> {
+    let spawned = match spawned_entries(dir, session) {
+        Ok(spawned) => spawned,
+        Err(line) => {
+            writeln!(err, "{line}")?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+    };
+    for entry in spawned {
+        // An unconfigured profile is not a refusal: the seat is preserved
+        // verbatim and never launched, which the restore already handles.
+        let command = match cfg.command(&entry.profile, home) {
+            Ok(command) => command,
+            Err(why) => {
+                writeln!(err, "{why}")?;
+                return Ok(ControlFlow::Break(EXIT_FAILED));
+            }
+        };
+        let Some(command) = command.filter(|command| !command.as_str().is_empty()) else {
+            continue;
+        };
+        if let Err(why) = crate::launch_cmd::lex_simple_command(command.as_str()) {
+            writeln!(
+                err,
+                "Error: seat '{}' ({}) — profile '{}' refused — {why}. Nothing was resumed.",
+                entry.name, entry.slot, entry.profile
+            )?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+    }
+    Ok(ControlFlow::Continue(()))
 }
 
 // ---------------------------------------------------------------------------
