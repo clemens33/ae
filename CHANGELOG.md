@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.3] - 2026-11-02
+- Pin durable worker birth facts, retention and family inertness (red)
+- Durable worker birth facts survive the resume trim and stay inert to lifecycle folds
+- Pin known members on either family shape and the flag states certificates must keep apart (red)
+- Known family members are validated on either shape and an unproved flag is never read as absent
+- Scope the long flag state table's lint allowance
+- Pin a malformed session id and a hostile target or slot as birth family damage
+- A decision card that stopped standing stays in chat and ae app history, closed, at its own journal position
+- Pin the Statistics tab's configured evidence, scoped fold and stepped read (red)
+- The Statistics tab counts recorded worker spawns by configured route over retained journals
+- Pin that only a seat's own birth or spawn proves it and archive validation obeys the read caps (red)
+- Only a seat's own birth or spawn proves it, and archive validation reads under the scan's caps
+- Pin that a broken archive root is a coverage gap and only absence is healthy empty (red)
+- A broken archive root is a coverage gap, and only absence reads as an empty history
+- Pin order-free birth labels, the balance bounds, the exact-cap budget gap and narrow table counts
+- Pin that a fact's stated and source-implied session are the same evidence
+- The scan's first step keeps one check for sources left
+- Pin canonical ids, damage in any copy, legacy without a session, scope filters and read coverage
+- Clippy deny entries name the door to use instead, and a guard pins it
+- Bump pulldown-cmark to 0.13.6 for RUSTSEC-2026-0433
+
 ## [v2026.11.2] - 2026-11-02
 - Brief guidance names the final gate owner and marks commands scoped or final (#219); drop retired tier words and tier comments from guidance and seeded config comments (#280 part)
 - Core rule names -S <private socket>, never -L or TMUX_TMPDIR, for destructive tmux
