@@ -261,7 +261,9 @@ Long scope and bucket cells keep visibly elided head and tail;
 generated percentage, window reset, age and freshness fields remain whole. Literal `#` stays data
 while widths are measured and is doubled only by the final tmux argv renderer.
 Windows list in a stable bucket/qualifier/window order no input order can change.
-A `read-error` or `truncated` sibling suppresses that scope's windows behind its status;
+A `read-error` sibling suppresses that scope's windows behind its status. A `truncated`
+sibling keeps the windows already read and adds the note `read cut short — usage shown is a
+lower bound` beside them; a scope whose only evidence is the cut says `read cut short` alone.
 `unknown` may coexist with a proven same-source reading.
 
 Menu fit is staged. The original three-item orchestrator menu must fit first. The quota projection

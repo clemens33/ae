@@ -43,6 +43,8 @@ const QUOTA_MAX_FILES: usize = 4_096;
 const QUOTA_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const QUOTA_MAX_ELAPSED: Duration = Duration::from_secs(2);
 const CODEX_DISPLAY_ROLLOUTS: usize = 3;
+/// The note on a scope whose windows came from a read that ran out of budget.
+const PARTIAL_READ: &str = "read cut short — usage shown is a lower bound";
 /// Where the grok CLI keeps its shared debug log, under its config home.
 const GROK_LOG: &str = "logs/unified.jsonl";
 /// Says why a full grok window may not block work.
@@ -1612,11 +1614,13 @@ impl SettingsScope {
             .collect::<Vec<_>>()
             .join(" ");
         let account = self.account_words(now);
-        let incomplete = self
-            .statuses
-            .iter()
-            .any(|status| matches!(status, Status::ReadError | Status::Truncated));
-        if incomplete || self.readings.is_empty() {
+        // A read ERROR keeps the words alone: a sibling's window is never lent
+        // to it. A read CUT SHORT does not: the windows it did read are real,
+        // and each is a lower bound, because the rollout left unread may hold
+        // a later, fuller sample. They stay, and the scope says so.
+        let failed = self.statuses.contains(&Status::ReadError);
+        let cut = self.statuses.contains(&Status::Truncated);
+        if failed || self.readings.is_empty() {
             return view::Scope {
                 title,
                 profiles,
@@ -1635,7 +1639,12 @@ impl SettingsScope {
                 .then_with(|| left.window_minutes.cmp(&right.window_minutes))
         });
         // agy's note beside the answer it kept past a refresh that had none.
-        let note = leg_hint(&self.group).map(str::to_owned);
+        let hint = leg_hint(&self.group);
+        let note = match (cut, hint) {
+            (true, Some(hint)) => Some(format!("{PARTIAL_READ} — {hint}")),
+            (true, None) => Some(PARTIAL_READ.to_owned()),
+            (false, hint) => hint.map(str::to_owned),
+        };
         let windows = readings
             .into_iter()
             .map(|reading| self.window_view(reading, now, pace))
@@ -4434,6 +4443,9 @@ fn locate_rollouts<'a>(
     truncated: &mut bool,
 ) -> Vec<LocatedRollout<'a>> {
     let mut located = Vec::new();
+    // One listing per day directory for the whole scope: rollouts recorded on
+    // the same days would otherwise each claim every entry of those days again.
+    let mut listed = DayListings::default();
     for &rollout in candidates {
         let sessions = match &rollout.location {
             RolloutLocation::Configured => scope.source.as_deref(),
@@ -4441,15 +4453,17 @@ fn locate_rollouts<'a>(
             RolloutLocation::Unknown(_) => None,
         };
         let source = match sessions {
-            Some(sessions) => match find_codex_rollout(sessions, &rollout.id, budget) {
-                Ok(Bounded::Ready(Some(file))) => RolloutSource::File(Box::new(file)),
-                Ok(Bounded::Ready(None)) => RolloutSource::Missing,
-                Ok(Bounded::Truncated) => {
-                    *truncated = true;
-                    break;
+            Some(sessions) => {
+                match find_codex_rollout_listed(sessions, &rollout.id, budget, &mut listed) {
+                    Ok(Bounded::Ready(Some(file))) => RolloutSource::File(Box::new(file)),
+                    Ok(Bounded::Ready(None)) => RolloutSource::Missing,
+                    Ok(Bounded::Truncated) => {
+                        *truncated = true;
+                        break;
+                    }
+                    Err(_) => RolloutSource::Failed,
                 }
-                Err(_) => RolloutSource::Failed,
-            },
+            }
             None => RolloutSource::Missing,
         };
         let modified = match &source {
@@ -5347,10 +5361,89 @@ fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
     true
 }
 
+/// The file names of each Codex day directory already listed, so rollouts that
+/// share a day read it once. Only a complete listing is kept: a directory that
+/// is absent is remembered as such, and neither a refusal nor a cut listing is.
+#[derive(Default)]
+struct DayListings(std::collections::HashMap<PathBuf, Option<Vec<std::ffi::OsString>>>);
+
+impl DayListings {
+    fn names(
+        &mut self,
+        dir: &Path,
+        budget: &mut Budget,
+    ) -> io::Result<Bounded<Option<&[std::ffi::OsString]>>> {
+        if !self.0.contains_key(dir) {
+            match list_day(dir, budget)? {
+                Bounded::Ready(names) => {
+                    self.0.insert(dir.to_owned(), names);
+                }
+                Bounded::Truncated => return Ok(Bounded::Truncated),
+            }
+        }
+        Ok(Bounded::Ready(
+            self.0.get(dir).and_then(|names| names.as_deref()),
+        ))
+    }
+}
+
+/// One day directory's entry names, each entry claimed against the budget.
+/// `None` is a directory that is not there.
+fn list_day(
+    dir: &Path,
+    budget: &mut Budget,
+) -> io::Result<Bounded<Option<Vec<std::ffi::OsString>>>> {
+    if !budget.claim_file() {
+        return Ok(Bounded::Truncated);
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: quota lstat classifies only the three UTC neighbours of the Codex id day"
+    )]
+    let metadata = match std::fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(Bounded::Ready(None));
+        }
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rollout root is not a directory",
+        ));
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: bounded enumeration of three possible local-clock days for one exact Codex id"
+    )]
+    let entries = std::fs::read_dir(dir)?;
+    let mut names = Vec::new();
+    for entry in entries {
+        if !budget.claim_file() {
+            return Ok(Bounded::Truncated);
+        }
+        names.push(entry?.file_name());
+    }
+    Ok(Bounded::Ready(Some(names)))
+}
+
 pub(crate) fn find_codex_rollout(
     root: &Path,
     id: &str,
     budget: &mut Budget,
+) -> io::Result<Bounded<Option<RolloutFile>>> {
+    find_codex_rollout_listed(root, id, budget, &mut DayListings::default())
+}
+
+/// [`find_codex_rollout`] over day listings the caller keeps across rollouts:
+/// a fleet of N recorded rollouts that share their days costs the entries of
+/// those days once, not N times.
+fn find_codex_rollout_listed(
+    root: &Path,
+    id: &str,
+    budget: &mut Budget,
+    listed: &mut DayListings,
 ) -> io::Result<Bounded<Option<RolloutFile>>> {
     let Some(dirs) = codex_rollout_dirs(root, id) else {
         return Err(io::Error::new(
@@ -5361,37 +5454,14 @@ pub(crate) fn find_codex_rollout(
     let mut found = None;
     let suffix = format!("-{id}.jsonl");
     for dir in dirs {
-        if !budget.claim_file() {
-            return Ok(Bounded::Truncated);
-        }
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "a door: quota lstat classifies only the three UTC neighbours of the Codex id day"
-        )]
-        let metadata = match std::fs::symlink_metadata(&dir) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
+        let names = match listed.names(&dir, budget)? {
+            Bounded::Ready(Some(names)) => names,
+            Bounded::Ready(None) => continue,
+            Bounded::Truncated => return Ok(Bounded::Truncated),
         };
-        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "rollout root is not a directory",
-            ));
-        }
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "a door: bounded enumeration of three possible local-clock days for one exact Codex id"
-        )]
-        let entries = std::fs::read_dir(&dir)?;
-        for entry in entries {
-            if !budget.claim_file() {
-                return Ok(Bounded::Truncated);
-            }
-            let entry = entry?;
-            let name = entry.file_name();
+        for name in names {
             if name.to_string_lossy().ends_with(&suffix) {
-                let path = entry.path();
+                let path = dir.join(name);
                 #[allow(
                     clippy::disallowed_methods,
                     reason = "a door: one budgeted lstat validates and ranks an exact ae-owned Codex rollout"
@@ -6276,20 +6346,9 @@ mod tests {
             status: FleetStatus::Complete,
         };
         let scope = Scope {
-            tool: ToolKind::Codex,
-            home: Some(root.join(".codex")),
-            source: Some(root.join(".codex/sessions")),
-            source_key: Some(root.join(".codex/sessions")),
-            profiles: vec!["codex-profile".to_owned()],
-            configured_profiles: vec!["codex-profile".to_owned()],
             clients: vec!["codex-client".to_owned()],
-            accounts: Vec::new(),
-            rollouts: Vec::new(),
             hint: Some("configured scope hint".to_owned()),
-            manual_resets: None,
-            notes: Vec::new(),
-            leg: false,
-            go: false,
+            ..configured_codex_scope(&root)
         };
 
         let project = |groups: super::CodexGroups| {
@@ -6317,12 +6376,26 @@ mod tests {
         assert_eq!(summary.profiles, scope.profiles);
         assert_eq!(summary.hint, scope.hint);
         assert!(super::settings_summary_scope(&truncated.all[0], summary));
+        // Oracle: lead ruling 2026-11-02 on the invariant "a human sees a true
+        // usable reading when one exists". One rollout was read (30%) and one
+        // was not: the scope keeps the window it has and says, beside it, that
+        // the usage shown is a lower bound.
         let truncated = project(truncated);
+        let cut = truncated
+            .iter()
+            .find(|scope| {
+                scope
+                    .only
+                    .as_deref()
+                    .is_some_and(|only| only.contains("read cut short"))
+            })
+            .unwrap_or_else(|| panic!("a cut scope names itself: {truncated:?}"));
+        assert_eq!(cut.windows.len(), 1, "{truncated:?}");
+        assert_eq!(cut.windows[0].raw.as_deref(), Some("30%"), "{truncated:?}");
         assert!(
-            truncated
-                .iter()
-                .any(|scope| scope.only.as_deref() == Some("read cut short")
-                    && scope.windows.is_empty()),
+            cut.only
+                .as_deref()
+                .is_some_and(|only| only.contains("lower bound")),
             "{truncated:?}"
         );
 
@@ -6337,6 +6410,135 @@ mod tests {
             "{failed:?}"
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Oracle: the invariant "a read cut short names a budget that was really
+    /// spent". Live shape 2026-11-02: 47 recorded rollouts shared three
+    /// neighbouring day directories of about a hundred entries each, so
+    /// every distinct entry is some 350, far under the 4096-file budget. Nothing
+    /// may be cut, every rollout is read, and the next client read on the same
+    /// budget (grok) still has a budget to read with.
+    #[test]
+    fn rollouts_sharing_day_directories_do_not_spend_the_file_budget_per_rollout() {
+        const NOW: i64 = 1_788_858_600;
+        let root =
+            std::path::PathBuf::from(format!("/tmp/ae-quota-shared-days-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for day in ["07", "08", "09"] {
+            let dir = root.join(format!(".codex/sessions/2026/09/{day}"));
+            std::fs::create_dir_all(&dir).expect("day directory");
+            for filler in 0..100 {
+                std::fs::write(
+                    dir.join(format!("rollout-filler-{filler:04}.jsonl")),
+                    b"{}\n",
+                )
+                .expect("an unrelated rollout");
+            }
+        }
+        let record = concat!(
+            "{\"timestamp\":\"2026-09-08T09:04:00Z\",\"type\":\"event_msg\",",
+            "\"payload\":{\"type\":\"token_count\",\"rate_limits\":{",
+            "\"limit_id\":\"codex\",\"plan_type\":\"pro\",\"primary\":{",
+            "\"used_percent\":42,\"window_minutes\":300,\"resets_at\":1788861600}}}}\n",
+        );
+        let day = root.join(".codex/sessions/2026/09/08");
+        let mut fleet = FleetRollouts {
+            rollouts: Vec::new(),
+            status: FleetStatus::Complete,
+        };
+        for index in 0..47 {
+            let id = format!("01a08046-2{index:03}-7abc-8abc-{index:012}");
+            std::fs::write(day.join(format!("rollout-test-{id}.jsonl")), record)
+                .expect("a usable rollout");
+            fleet.rollouts.push(FleetRollout {
+                owner: format!("session:seat-{index}"),
+                profile: "codex-profile".to_owned(),
+                client: None,
+                id,
+                tool: ToolKind::Codex,
+                location: RolloutLocation::Configured,
+            });
+        }
+        let grok_log = root.join(".grok/logs/unified.jsonl");
+        std::fs::create_dir_all(grok_log.parent().expect("grok logs")).expect("grok logs");
+        std::fs::write(
+            &grok_log,
+            concat!(
+                "{\"ts\":\"2026-09-08T09:04:00Z\",\"msg\":\"billing: fetched credits config\",",
+                "\"ctx\":{\"config\":{\"creditUsagePercent\":12,",
+                "\"billingPeriodStart\":\"2026-09-07T00:00:00Z\",",
+                "\"billingPeriodEnd\":\"2026-09-14T00:00:00Z\"}}}\n",
+            ),
+        )
+        .expect("grok billing record");
+        let mut grok = configured_codex_scope(&root);
+        grok.tool = ToolKind::Grok;
+        grok.home = Some(root.join(".grok"));
+        grok.source = Some(grok_log.clone());
+        grok.source_key = Some(grok_log);
+
+        let mut budget = Budget::new();
+        let groups = codex_groups(&configured_codex_scope(&root), &fleet, NOW, &mut budget);
+        assert_eq!(groups.all.len(), 47, "every rollout is read");
+        let summary = groups
+            .rendered
+            .iter()
+            .find_map(|group| group.summary.as_ref())
+            .expect("the 44 rollouts past the display cap are counted");
+        assert_eq!(summary.hidden, 44);
+        assert_eq!(
+            summary.status, None,
+            "nothing ran out, so nothing may be called cut short"
+        );
+        assert!(
+            matches!(
+                super::read_grok(&grok, NOW, &mut budget).0,
+                ReadRows::Rows(_)
+            ),
+            "the client read after codex still has its budget"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Oracle: lead ruling 2026-11-02 on the invariant "one cut read among
+    /// many must not hide good windows", and the 7 Oct rule that incomplete
+    /// evidence is never hidden behind a fresh row: a scope with a usable
+    /// window and a cut sibling keeps the window AND says on the scope that
+    /// the usage is a lower bound. A scope whose only evidence is the cut
+    /// still says so in words, and a read ERROR keeps the words alone (see
+    /// `view_facts_keep_incomplete_evidence_without_sibling_numbers`).
+    #[test]
+    fn view_facts_keep_windows_beside_a_cut_read_and_call_them_a_lower_bound() {
+        let mut good = named("cx", "30", None);
+        good.rollout = Some("good".to_owned());
+        let mut cut = good.clone();
+        cut.rollout = Some("cut".to_owned());
+        cut.rows = vec![super::placeholder(Status::Truncated)];
+        let scopes = viewed(vec![good, cut.clone()]);
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].windows.len(), 1, "{scopes:?}");
+        assert_eq!(scopes[0].windows[0].raw.as_deref(), Some("30%"));
+        let note = scopes[0].only.as_deref().expect("a partial note");
+        assert!(
+            note.contains("read cut short") && note.contains("lower bound"),
+            "{note}"
+        );
+        let alone = viewed(vec![cut.clone()]);
+        assert!(alone[0].windows.is_empty());
+        assert_eq!(alone[0].only.as_deref(), Some("read cut short"));
+
+        // A client that speaks its own hint keeps it beside the partial note.
+        let mut asked = named("cx", "30", None);
+        asked.tool = ToolKind::Agy;
+        asked.hint = Some("agy hint".to_owned());
+        let mut asked_cut = asked.clone();
+        asked_cut.rows = vec![super::placeholder(Status::Truncated)];
+        let scopes = viewed(vec![asked, asked_cut]);
+        assert_eq!(scopes[0].windows.len(), 1, "{scopes:?}");
+        assert_eq!(
+            scopes[0].only.as_deref(),
+            Some("read cut short — usage shown is a lower bound — agy hint")
+        );
     }
 
     #[test]
@@ -7263,7 +7465,11 @@ mod tests {
             assert_eq!(scopes[0].title, "codex · usable");
             assert_eq!(scopes[1].title, "codex · incomplete");
             assert!(scopes[1].only.is_some());
-            assert!(scopes[1].windows.is_empty());
+            // Order is unchanged either way (an incomplete scope never outranks
+            // a complete one on the strength of the 1% it did read); only a
+            // read ERROR still withholds the windows.
+            let kept = usize::from(status == Status::Truncated);
+            assert_eq!(scopes[1].windows.len(), kept, "{status:?}: {scopes:?}");
         }
     }
 

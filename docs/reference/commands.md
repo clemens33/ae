@@ -782,9 +782,13 @@ folds calm windows into one `+N calm scopes, M calm windows — ae quota` line (
 rows never fold, and a client that still cannot hold the table is refused with the size it
 needs. These rows are keyless and cannot trigger an action; only `Close` dismisses the
 dialog. `ae quota` remains the full view with rollout provenance, raw values, credits,
-paths, hints, and notes. Any `read-error` or `truncated` sibling makes the scope report that
-incomplete status instead of its window rows; an `unknown` sibling does not erase an
-observed same-source window. The dialog reads no pace.
+paths, hints, and notes. Any `read-error` sibling makes the scope report that status
+instead of its window rows. A `truncated` sibling does not hide the windows already read:
+the scope keeps them and says beside them `read cut short — usage shown is a lower
+bound` (the rollout left unread may hold a later, fuller sample), and it still sorts
+after the complete scopes; a scope whose only evidence is the cut says `read cut short`
+alone. An `unknown` sibling does not erase an observed same-source window. The dialog
+reads no pace.
 
 Ae first proves the original orchestrator-only menu fits. It draws the quota entry row only when
 it fits by its actual rendered width. Otherwise the
