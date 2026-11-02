@@ -86,9 +86,6 @@ impl Scan {
             fold.add(source);
         } else {
             self.queue = Some(self.list());
-            if self.remaining().is_some_and(|left| left > 0) {
-                return None;
-            }
         }
         if self.remaining().is_some_and(|left| left > 0) {
             return None;
