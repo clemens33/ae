@@ -62,6 +62,18 @@ sub fail {
 if (($ENV{SEATPROOF_FAULT}//'') eq 'physical' && $ARGV[-1] eq '#{session_id} | #{session_created}' && grep { $_ eq $ENV{SEATPROOF_PANE} } @ARGV) {
     open(my $seen, '>', "$root/physical-failed") or die; close($seen); exit 1;
 }
+# Hold the Nth read of the pane's stamps, so a test can change them after the
+# helper resolved its target and before it admits that target.
+if (($ENV{SEATPROOF_HOLD_VIEWER}//'') ne '' && $ARGV[-1] =~ /\@ae_slot/ &&
+    (grep { $_ eq 'display-message' } @ARGV) && (grep { $_ eq $ENV{SEATPROOF_PANE} } @ARGV)) {
+    open(my $log, '>>', "$root/viewer-reads") or die; print $log "read\n"; close($log);
+    open(my $count, '<', "$root/viewer-reads") or die; my @reads = <$count>; close($count);
+    if (@reads == $ENV{SEATPROOF_HOLD_VIEWER}) {
+        open(my $held, '>', "$root/held") or die; close($held);
+        my $end = time() + 90;
+        while (!-e "$root/release") { die 'hold deadline' if time() > $end; select(undef, undef, undef, .01); }
+    }
+}
 if (!$after && grep { $_ eq 'capture-pane' } @ARGV) {
     if (sysopen(my $seen, "$root/seen", O_CREAT|O_EXCL|O_WRONLY, 0600)) {
         close($seen); my $end=time()+90;
@@ -668,6 +680,117 @@ fn an_unstamped_raw_pane_with_unreadable_physical_identity_is_refused() {
         w.rig.scratch.join("barrier/physical-failed").exists(),
         "physical fault did not run"
     );
+    w.refuse(&output, "could not be proven");
+    w.untouched(&before);
+}
+// The six tests below pin the admission rules `src/tracked.rs::current_seat` proves
+// from the seat-binding contract (docs/reference/contract.md, "A peer delivery
+// reaches only the seat it was ADDRESSED to"): a stamp that is unreadable or
+// incomplete, a roster holder other than the stamped agent, and a damaged launch
+// row are each REFUSED with nothing typed. Each fixture is a first admission, so
+// no later re-proof can rescue a wrong verdict.
+impl World {
+    fn raw_send(&self) -> Runner {
+        let mut cmd = self.rig.command(Some(&self.main));
+        cmd.args(["@s", "send", &self.pane, BODY])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
+    fn stamp(&self, key: &str, value: Option<&str>) {
+        match value {
+            Some(value) => self
+                .rig
+                .tmux(&["set-option", "-p", "-t", &self.pane, key, value]),
+            None => self
+                .rig
+                .tmux(&["set-option", "-p", "-u", "-t", &self.pane, key]),
+        };
+    }
+    fn row(&self, key: &str, value: Option<&str>) {
+        ae::meta::rewrite(&self.dir(), key, value).expect("fixture roster row");
+    }
+    /// `send kid`, held at the Nth read of the pane's stamps until `release`.
+    fn held_send(&self, nth: usize) -> OwnedChild {
+        let mut cmd = self.command("send", true, false);
+        self.barrier(&mut cmd);
+        self.resume();
+        cmd.env("SEATPROOF_HOLD_VIEWER", nth.to_string())
+            .env("SEATPROOF_PANE", &self.pane);
+        let child = cmd.spawn().expect("held send");
+        wait("the held read of the pane's stamps", || {
+            self.rig.scratch.join("barrier/held").exists()
+        });
+        child
+    }
+    fn release(&self) {
+        fs::write(self.rig.scratch.join("barrier/release"), "go").expect("release the read");
+    }
+}
+#[test]
+fn a_pane_stamped_with_a_slot_but_no_agent_is_refused_even_when_the_roster_holder_is_empty() {
+    let w = World::new("sp-no-agent-stamp");
+    w.stamp("@ae_agent", None);
+    // An empty holder names no agent, so it cannot name "the stamped agent" either.
+    w.row(&format!("seat.{SLOT}"), Some(""));
+    w.row(&format!("launch_id.{SLOT}"), None);
+    let before = w.screen();
+    let output = w.raw_send().output().expect("raw send");
+    w.refuse(&output, "could not be proven");
+    w.untouched(&before);
+}
+#[test]
+fn a_pane_stamped_with_a_slot_outside_the_grammar_is_refused_whatever_the_roster_says() {
+    let w = World::new("sp-garbage-slot-stamp");
+    w.stamp("@ae_slot", Some("garbage"));
+    w.row("seat.garbage", Some("kid"));
+    let before = w.screen();
+    let output = w.raw_send().output().expect("raw send");
+    w.refuse(&output, "could not be proven");
+    w.untouched(&before);
+}
+#[test]
+fn a_pane_stamped_as_an_agent_the_roster_row_does_not_name_is_refused_as_replaced() {
+    let w = World::new("sp-other-holder");
+    // The roster names another holder of the stamped slot: the seat was replaced.
+    w.row(&format!("seat.{SLOT}"), Some("other"));
+    let before = w.screen();
+    let output = w.raw_send().output().expect("raw send");
+    w.refuse(&output, "replaced");
+    w.untouched(&before);
+}
+#[test]
+fn an_empty_launch_row_is_a_damaged_row_not_a_legacy_seat() {
+    let w = World::new("sp-empty-launch-row");
+    // Only an ABSENT launch row is legacy; a row that exists and is empty is damaged.
+    w.row(&format!("launch_id.{SLOT}"), Some(""));
+    let before = w.screen();
+    let output = w.command("send", true, false).output().expect("send");
+    w.refuse(&output, "could not be proven");
+    w.untouched(&before);
+}
+#[test]
+fn a_slot_stamp_removed_between_resolution_and_admission_is_refused_not_admitted_raw() {
+    let w = World::new("sp-stamp-removed-in-flight");
+    let before = w.screen();
+    let child = w.held_send(2);
+    w.stamp("@ae_slot", None);
+    w.release();
+    let output = finish(child);
+    w.refuse(&output, "could not be proven");
+    w.untouched(&before);
+}
+#[test]
+fn a_pane_restamped_as_another_complete_seat_between_resolution_and_admission_is_refused() {
+    let w = World::new("sp-restamped-in-flight");
+    let other = "spawned.1";
+    w.row(&format!("seat.{other}"), Some("kid"));
+    w.row(&format!("launch_id.{other}"), Some("tok-kid"));
+    let before = w.screen();
+    let child = w.held_send(2);
+    w.stamp("@ae_slot", Some(other));
+    w.release();
+    let output = finish(child);
     w.refuse(&output, "could not be proven");
     w.untouched(&before);
 }
