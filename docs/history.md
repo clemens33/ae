@@ -1063,6 +1063,13 @@ The bootstrap contract, in full — nothing else is assumed to exist:
 - **`panic = "abort"`** in the release profile forecloses `catch_unwind`. Revisit if the
   long-lived watchdog or telegram loop needs to survive a panic in one iteration rather than
   take the process down. Cheap to flip; recorded so it stays a decision.
+- **The automation pause is lifted (human ruling 2026-11-02).** `AGENTS.md` had paused new
+  automation features until a daily-use inventory existed, with only the human able to lift
+  it. The inventory exists and the human ruled: "relax this although the focus is still on
+  quality of code base architecture, guardrails and similar". The line now reads that
+  automation features are allowed again, with the focus on code quality, architecture and
+  guardrails, and a new one earning its place by daily use; `tests/it/doors/contract_spec.rs`
+  pins the new sentence.
 - **`cliff.toml` is excluded from taplo** — a bash-era file whose reformat would be an
   unrelated diff in a frozen area. It joins the lane when someone reformats it deliberately.
 

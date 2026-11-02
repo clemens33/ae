@@ -19,7 +19,7 @@ Doors: every ambient read and process start uses a named door carrying its reaso
 | any src/ module; find its named owner before editing | [Key invariants](docs/reference/contract.md#key-invariants) |
 | src/config.rs, src/meta.rs, config grammar | [Config](docs/reference/contract.md#config) |
 
-New automation features are paused until a daily-use inventory exists. Only the human may lift this pause.
+Automation features are allowed again, but the focus stays on code quality, architecture and guardrails: a new one must earn its place by daily use.
 
 One Rust core in one immutable versioned install, published read-only. tmux is the runtime.
 The only Bash in the product is `install`, the 83-line bootstrap that publishes the core.

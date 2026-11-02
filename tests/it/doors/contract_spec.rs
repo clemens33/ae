@@ -8,7 +8,8 @@ use crate::support::source_view;
 
 const LIMIT: usize = 22 * 1024;
 const REFERENCE: &str = "docs/reference/contract.md";
-const PAUSE: &str = "New automation features are paused until a daily-use inventory exists. Only the human may lift this pause.";
+const AUTOMATION: &str = "Automation features are allowed again, but the focus stays on code quality, architecture and guardrails: a new one must earn its place by daily use.";
+const OLD_PAUSE: &str = "New automation features are paused until a daily-use inventory exists. Only the human may lift this pause.";
 const MODULE_MAP: &str = "Module map: [Structure](docs/reference/contract.md#structure).";
 const TOPICS: [&str; 7] = [
     "Structure",
@@ -29,8 +30,8 @@ fn size_ok(agents: &str) -> bool {
     !agents.trim().is_empty() && agents.len() <= LIMIT
 }
 
-fn pause_ok(agents: &str) -> bool {
-    agents.lines().any(|line| line == PAUSE)
+fn automation_ok(agents: &str) -> bool {
+    agents.lines().any(|line| line == AUTOMATION)
 }
 
 // Deliberately a bounded grammar: explicit src/*.rs file owners, optionally
@@ -311,10 +312,10 @@ fn the_contract_fits_the_startup_budget() {
 }
 
 #[test]
-fn the_contract_keeps_the_human_automation_pause() {
+fn the_contract_keeps_the_automation_ruling() {
     assert!(
-        pause_ok(&read("AGENTS.md")),
-        "AGENTS.md must retain exact human-owned automation pause: {PAUSE}"
+        automation_ok(&read("AGENTS.md")),
+        "AGENTS.md must retain the exact automation ruling: {AUTOMATION}"
     );
 }
 
@@ -339,12 +340,20 @@ fn every_explicit_contract_owner_exists() {
 
 #[test]
 fn the_split_guards_reject_independent_planted_edits() {
-    assert!(pause_ok(PAUSE));
-    assert!(!pause_ok(""));
-    assert!(!pause_ok(&PAUSE.replace("Only the human", "Any agent")));
-    assert!(!pause_ok(&PAUSE.replace(
-        "until a daily-use inventory exists",
-        "until an agent is ready"
+    assert!(automation_ok(AUTOMATION));
+    assert!(!automation_ok(""));
+    assert!(!automation_ok(OLD_PAUSE));
+    assert!(!automation_ok(&AUTOMATION.replace(
+        "Automation features are allowed again",
+        "New automation features are paused"
+    )));
+    assert!(!automation_ok(&AUTOMATION.replace(
+        "code quality, architecture and guardrails",
+        "shipping speed"
+    )));
+    assert!(!automation_ok(&AUTOMATION.replace(
+        "must earn its place by daily use",
+        "needs no justification"
     )));
     assert!(size_ok("# ae\n"));
     assert!(!size_ok(&"x".repeat(LIMIT + 1)));
