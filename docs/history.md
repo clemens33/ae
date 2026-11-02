@@ -824,6 +824,13 @@ RUSTSEC-2026-0381; the TLS graph remains **EXEMPTED, not audited**.
 TABLES|STRIKETHROUGH only, not WIKILINKS, so it is unaffected, and the bump is made
 because the deny lane gates releases.
 
+2026-11-02 security-fix exception to the 14-day age rule: bumped pulldown-cmark
+`0.13.5` → `0.13.6` (published 2026-10-30) for RUSTSEC-2026-0433 (quadratic parsing of
+nested image wikilinks under `ENABLE_WIKILINKS`); ae enables TABLES|STRIKETHROUGH only,
+not WIKILINKS, so it is unaffected, and the bump is made because the deny lane gates
+releases. The 0.13.5..0.13.6 source diff is one line in the wikilink path of
+`src/parse.rs`, so table and strikethrough output does not change.
+
 **Std replaces crates since our MSRV** — use these, never the crate equivalents:
 `std::process::ExitCode`/`Termination` (1.61) over raw `exit()`, `std::io::IsTerminal`
 (1.70) over atty/is-terminal, `core::error::Error` (1.81) for no-std-shaped error trees.
@@ -897,15 +904,16 @@ exempted version — replace the exemption the moment one is possible.
 
 ### Inert Markdown reader (#251, owner ruling 2026-10-21)
 
-The linked-file reader uses `pulldown-cmark =0.13.5`, exact-pinned with
+The linked-file reader uses `pulldown-cmark =0.13.6`, exact-pinned with
 `default-features = false`. 0.13.4 (published 2026-05-20) was selected because
 0.13.5 (2026-10-21) was younger than the required fourteen days; the pin moved
 to 0.13.5 for RUSTSEC-2026-0414 (exponential events under `ENABLE_WIKILINKS`,
-which ae does not enable), which the release deny lane blocks on. Only tables
+which ae does not enable), and to 0.13.6 (2026-10-30) for RUSTSEC-2026-0433 (quadratic
+nested image wikilinks, same flag), which the release deny lane blocks on. Only tables
 and strikethrough are enabled at runtime. No HTML emitter, syntax colouring,
 network fetch, URI opener, external viewer or tui-markdown is introduced.
 
-The resolved graph adds exactly pulldown-cmark 0.13.5 (CommonMark events),
+The resolved graph adds exactly pulldown-cmark 0.13.6 (CommonMark events),
 memchr 2.8.3 (byte scanning) and unicase 2.10.0 (reference matching), reusing
 bitflags 2.13.2. Their MIT/Apache-2.0 licenses already fit deny.toml. Exact
 versions have no imported cargo-vet coverage; their three named exemptions
