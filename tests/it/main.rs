@@ -158,6 +158,7 @@ mod restore;
 mod restore_spec;
 mod retiredeliv_spec;
 mod run;
+mod runwith_spec;
 mod sanitize;
 mod scratch;
 mod seat_relaunch;
