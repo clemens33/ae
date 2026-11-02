@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.4] - 2026-11-02
+- Lift the automation pause, focus stays on code quality, architecture and guardrails
+- A codex read is not cut short by its own day listings, and a cut read keeps its windows
+- A day the store cannot classify is an error, an absent day is not
+- The filtered test form is just _tmux-isolated test -E, and a full-suite mutation baseline is projected at 55 to 60 minutes so slices filter with -- -E (#221)
+- Pin first-admission seat proof, stamps and launch rows refuse with nothing typed
+- Observe watchdog cycles before negative assertions
+- A resumed seat on an exhausted account moves without waiting for a failed turn
+- An exhausted seat's fresh cap keeps quota's own reading, and a cap reads full on any row it reaches
+- Whether a quota qualifier names a model is the adapter row's to say, not a branch in quota
+
 ## [v2026.11.3] - 2026-11-02
 - Pin durable worker birth facts, retention and family inertness (red)
 - Durable worker birth facts survive the resume trim and stay inert to lifecycle folds
