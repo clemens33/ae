@@ -602,6 +602,219 @@ fn malformed_journal_lines_are_a_visible_partial_read_and_empty_is_supported_zer
 }
 
 #[test]
+fn noncanonical_meta_session_ids_never_prove_a_current_birth() {
+    let cert = f::birth(
+        f::S,
+        1,
+        &f::fields("codex", None, Some("sol"), Some("high")),
+    )
+    .replace(&format!(",\"target_session_id\":\"{}\"", f::S), "");
+    assert!(!cert.contains("target_session_id"));
+    let valid = stats::fold(vec![source("valid", f::S, cert.as_bytes())], Some(f::S));
+    assert_eq!(
+        current(&valid).total,
+        1,
+        "a canonical source proves the birth"
+    );
+    assert!(valid.all.gaps.is_empty());
+    for invalid in ["not-a-session", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", ""] {
+        for this in [f::S, invalid] {
+            let view = stats::fold(vec![source("bad-id", invalid, cert.as_bytes())], Some(this));
+            assert_eq!(view.all.total, 1);
+            assert_eq!(
+                current(&view).total,
+                0,
+                "invalid UUID {invalid:?}, scope {this:?}"
+            );
+            assert_eq!((view.all.sources_read, view.all.sources_total), (1, 1));
+            assert!(view.all.gaps.iter().any(|gap| {
+                gap.source.as_deref() == Some("bad-id")
+                    && gap.reason == Reason::NoSessionId
+                    && gap.count == 1
+            }));
+            assert_model_effort(&view.all, &[("sol", "high", 1)]);
+        }
+    }
+}
+
+#[test]
+fn damage_in_any_certificate_copy_stays_visible_in_both_source_orders() {
+    let clean = f::birth(
+        f::S,
+        1,
+        &f::fields("codex", None, Some("sol"), Some("high")),
+    );
+    let damaged = clean.replace("\"birth_effort\":\"high\"", "\"birth_effort\":4");
+    assert_ne!(clean, damaged);
+    let sources = || {
+        vec![
+            source("damaged", f::S, damaged.as_bytes()),
+            source("clean", f::S, clean.as_bytes()),
+        ]
+    };
+    let view = stats::fold(sources(), Some(f::S));
+    let reversed = stats::fold(sources().into_iter().rev().collect(), Some(f::S));
+    assert_eq!(view, reversed, "a clean copy cannot erase earlier damage");
+    for scoped in [&view.all, current(&view)] {
+        assert_eq!(scoped.total, 1);
+        assert_eq!((scoped.model_known, scoped.effort_known), (0, 0));
+        assert_harness(scoped, &[("unknown", 1)]);
+        assert_clients(scoped, &[("unknown", 1)]);
+        assert_model_effort(scoped, &[("unknown", "unknown", 1)]);
+        assert!(
+            scoped
+                .gaps
+                .iter()
+                .any(|gap| gap.reason == Reason::Damaged && gap.count == 1)
+        );
+        assert_sums(scoped);
+    }
+}
+
+#[test]
+fn modern_only_sources_do_not_lower_a_divergent_legacy_range_to_zero() {
+    let a = f::legacy("private-A").repeat(2);
+    let b = f::legacy("private-B").repeat(3);
+    let modern = f::birth(
+        f::S,
+        9,
+        &f::fields("codex", None, Some("sol"), Some("high")),
+    );
+    let sources = || {
+        vec![
+            source("legacy-a", f::S, a.as_bytes()),
+            source("legacy-b", f::S, b.as_bytes()),
+            source("modern-only", f::S, modern.as_bytes()),
+        ]
+    };
+    let view = stats::fold(sources(), Some(f::S));
+    let reversed = stats::fold(sources().into_iter().rev().collect(), Some(f::S));
+    assert_eq!(view, reversed);
+    for scoped in [&view.all, current(&view)] {
+        assert_eq!((scoped.total, scoped.legacy), (1, 0));
+        assert_eq!((scoped.sources_read, scoped.sources_total), (3, 3));
+        assert_eq!(
+            scoped.gaps,
+            vec![crate::stats::Gap {
+                source: None,
+                reason: Reason::LegacyExcluded {
+                    sessions: 1,
+                    a: 2,
+                    b: 3
+                },
+                count: 1,
+            }]
+        );
+        assert_model_effort(scoped, &[("sol", "high", 1)]);
+    }
+}
+
+#[test]
+fn legacy_without_a_proved_session_counts_only_in_all_retained() {
+    let a = f::legacy("private-unbound-A").repeat(2);
+    let b = f::legacy("private-unbound-B").repeat(3);
+    let modern = f::birth(
+        f::S,
+        1,
+        &f::fields("codex", None, Some("sol"), Some("high")),
+    );
+    let sources = || {
+        vec![
+            Source::live("unbound-a", b"seat.main=lead\n", Ok(a.as_bytes().to_vec())),
+            Source::live("unbound-b", b"", Ok(b.as_bytes().to_vec())),
+            source("known", f::S, modern.as_bytes()),
+        ]
+    };
+    let view = stats::fold(sources(), Some(f::S));
+    let reversed = stats::fold(sources().into_iter().rev().collect(), Some(f::S));
+    assert_eq!(view, reversed);
+    assert_eq!((view.all.total, view.all.legacy), (6, 5));
+    assert_eq!((current(&view).total, current(&view).legacy), (1, 0));
+    assert_eq!((view.all.model_known, view.all.effort_known), (1, 1));
+    assert_harness(&view.all, &[("unknown", 5), ("codex", 1)]);
+    assert_model_effort(&view.all, &[("unknown", "unknown", 5), ("sol", "high", 1)]);
+    assert_model_effort(current(&view), &[("sol", "high", 1)]);
+    assert_eq!((view.all.sources_read, view.all.sources_total), (3, 3));
+    assert_eq!(view.all.gaps.len(), 2);
+    assert!(
+        view.all
+            .gaps
+            .iter()
+            .all(|gap| gap.reason == Reason::NoSessionId && gap.count == 1)
+    );
+    assert_sums(&view.all);
+    assert_sums(current(&view));
+}
+
+#[test]
+fn current_scope_excludes_foreign_notes_and_sources_but_keeps_unbound_ones() {
+    let foreign_meta = format!("session_id={}\nseat.spawned.7=unproved\n", f::T);
+    let view = stats::fold(
+        vec![
+            source("own", f::S, b""),
+            Source::live("foreign-live", foreign_meta.as_bytes(), Ok(Vec::new())),
+            Source::failed("foreign-failed", Some(f::T), SourceGap::Missing),
+            Source::failed("unbound", None, SourceGap::Budget),
+        ],
+        Some(f::S),
+    );
+    assert_eq!((view.all.sources_read, view.all.sources_total), (2, 4));
+    assert_eq!(
+        view.all.gaps.len(),
+        3,
+        "foreign notes exist in all retained"
+    );
+    assert!(
+        view.all
+            .gaps
+            .iter()
+            .any(|gap| gap.reason == Reason::LiveNoBirth)
+    );
+    let scoped = current(&view);
+    assert_eq!((scoped.sources_read, scoped.sources_total), (1, 2));
+    assert_eq!(scoped.total, 0);
+    assert_eq!(
+        scoped.gaps,
+        vec![crate::stats::Gap {
+            source: Some("unbound".to_owned()),
+            reason: Reason::Source(SourceGap::Budget),
+            count: 1,
+        }],
+        "unknown identity might be this session; foreign identity cannot"
+    );
+}
+
+#[test]
+fn missing_source_coverage_alone_is_partial_without_any_gap() {
+    let mut scoped = Scoped {
+        total: 0,
+        legacy: 0,
+        model_known: 0,
+        effort_known: 0,
+        range: None,
+        sources_read: 0,
+        sources_total: 0,
+        harness: Vec::new(),
+        client: Vec::new(),
+        model_effort: Vec::new(),
+        joint: Vec::new(),
+        gaps: Vec::new(),
+    };
+    for (read, total, partial) in [
+        (0, 0, false),
+        (0, 1, true),
+        (1, 1, false),
+        (1, 2, true),
+        (2, 2, false),
+    ] {
+        scoped.sources_read = read;
+        scoped.sources_total = total;
+        assert!(scoped.balanced());
+        assert_eq!(scoped.partial(), partial, "read {read} of {total}, no gaps");
+    }
+}
+
+#[test]
 fn missing_current_uuid_does_not_turn_this_session_into_all_retained() {
     let bytes = f::birth(f::S, 1, &f::fields("codex", None, None, None));
     let view = stats::fold(vec![source("S", f::S, bytes.as_bytes())], None);
