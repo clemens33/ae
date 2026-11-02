@@ -161,6 +161,49 @@ fn scan_is_lazy_and_each_step_reads_only_one_source() {
 }
 
 #[test]
+fn journal_exactly_at_its_cap_is_readable_or_a_budget_gap_never_oversized() {
+    let root = Scratch::new("exact-cap");
+    let body = cert(1);
+    let dir = root.live("edge", f::S, &body);
+    let meta_size = u64::try_from(format!("session_id={}\n", f::S).len()).expect("small meta");
+    let body_size = u64::try_from(body.len()).expect("small journal");
+    let live = BTreeMap::from([("edge".to_owned(), dir)]);
+    for shortage in [0, 1] {
+        let mut scan = Scan::limited(
+            root.0.clone(),
+            live.clone(),
+            true,
+            1,
+            Some(f::S.into()),
+            Limits {
+                bytes: meta_size + body_size - shortage,
+                journal: body_size,
+                ..LIMITS
+            },
+        );
+        let view = drain(&mut scan);
+        assert_eq!(view.all.sources_total, 1);
+        if shortage == 0 {
+            assert_eq!(view.all.total, 1, "exact reservation and cap both admit");
+            assert_eq!(view.all.sources_read, 1);
+            assert!(view.all.gaps.is_empty());
+        } else {
+            assert_eq!(view.all.total, 0, "budget refused the only certificate");
+            assert_eq!(view.all.sources_read, 0);
+            assert_eq!(
+                view.all.gaps,
+                vec![crate::stats::Gap {
+                    source: Some("edge".to_owned()),
+                    reason: Reason::Source(SourceGap::Budget),
+                    count: 1,
+                }],
+                "a file at the cap is not oversized"
+            );
+        }
+    }
+}
+
+#[test]
 fn production_caps_and_each_small_limit_are_enforced() {
     assert_eq!(
         LIMITS,

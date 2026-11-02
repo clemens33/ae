@@ -158,6 +158,67 @@ fn narrow_tables_retain_every_unknown_row_count_and_total_and_scroll_to_the_end(
 }
 
 #[test]
+fn long_table_labels_fit_the_panel_and_leave_their_counts_visible() {
+    let long = f::fields(
+        "codex",
+        Some(&"c".repeat(100)),
+        Some(&"m".repeat(100)),
+        Some("high"),
+    );
+    let mut bytes = String::new();
+    for birth in 1..=11 {
+        bytes.push_str(&f::birth(f::S, birth, &long));
+    }
+    bytes.push_str(&f::birth(
+        f::S,
+        12,
+        &f::fields("codex", None, Some("sol"), Some("high")),
+    ));
+    let mut feed = SettingsBodies::default();
+    feed.stats.view = Some(Box::new(stats::fold(
+        vec![Source::archive(f::S, Ok(bytes.into_bytes()))],
+        Some(f::S),
+    )));
+    for width in [40, 41, 57, 80, 180] {
+        let rows = lines(&feed, width);
+        let (screen, _) = painted(&feed, width, 100, 0);
+        let painted_rows: Vec<_> = screen.lines().collect();
+        for (heading, counts) in [
+            ("Harness", vec!["12"]),
+            ("Client", vec!["11", "1"]),
+            ("Model + effort", vec!["11", "1"]),
+            ("Joint", vec!["11", "1"]),
+        ] {
+            let start = rows.iter().position(|row| row == heading).expect("table");
+            let table: Vec<_> = rows[start + 1..]
+                .iter()
+                .take_while(|row| !row.is_empty())
+                .collect();
+            assert_eq!(table.len(), counts.len(), "{heading}, width {width}");
+            let painted_start = painted_rows
+                .iter()
+                .position(|row| row.trim() == heading)
+                .expect("table heading painted");
+            for (index, (row, count)) in table.iter().zip(counts).enumerate() {
+                // These fixtures use ASCII labels and one-cell join/ellipsis marks.
+                assert!(
+                    row.chars().count() <= usize::from(width - 2),
+                    "{heading} exceeds panel room at width {width}: {row:?}"
+                );
+                assert_eq!(row.split_whitespace().last(), Some(count));
+                assert_eq!(
+                    painted_rows[painted_start + 1 + index]
+                        .split_whitespace()
+                        .last(),
+                    Some(count),
+                    "{heading} count clipped at width {width}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn minimum_panel_keeps_all_seven_compact_titles_click_targets_and_hint() {
     let feed = bodies(Some(f::S));
     let (screen, layout) = painted(&feed, 40, 8, 0);

@@ -233,6 +233,101 @@ fn modern_overlap_rename_replay_and_session_uuid_are_independent() {
 }
 
 #[test]
+fn repeated_birth_gap_labels_are_order_independent() {
+    let first = f::birth(
+        f::S,
+        1,
+        &f::fields("codex", None, Some("sol"), Some("high")),
+    );
+    let second = f::birth(
+        f::S,
+        1,
+        &f::fields("codex", None, Some("other"), Some("high")),
+    );
+    for (reason, journals) in [
+        (
+            Reason::CertificateLost,
+            [f::link(1), f::link(1), f::link(1)],
+        ),
+        (Reason::Conflict, [first.clone(), second, first]),
+    ] {
+        let sources = || {
+            ["zeta", "middle", "alpha"]
+                .into_iter()
+                .zip(&journals)
+                .map(|(label, bytes)| source(label, f::S, bytes.as_bytes()))
+                .collect::<Vec<_>>()
+        };
+        let forward = stats::fold(sources(), Some(f::S));
+        let reverse = stats::fold(sources().into_iter().rev().collect(), Some(f::S));
+        assert_eq!(forward, reverse, "gap labels are evidence too: {reason:?}");
+        assert_eq!(forward.all.total, 1);
+        assert_eq!(forward.all.gaps.len(), 1);
+        let gap = &forward.all.gaps[0];
+        assert_eq!(gap.reason, reason);
+        assert_eq!(gap.count, 1);
+        assert!(
+            gap.source
+                .as_deref()
+                .is_some_and(|label| ["alpha", "middle", "zeta"].contains(&label)),
+            "canonical gap label must name a source that actually supplied it"
+        );
+        assert_eq!(current(&forward).gaps, forward.all.gaps);
+    }
+}
+
+#[test]
+fn balanced_rejects_each_wrong_table_and_each_part_above_its_whole() {
+    let row = |cells| vec![Row { cells, count: 2 }];
+    let valid = Scoped {
+        total: 2,
+        legacy: 1,
+        model_known: 1,
+        effort_known: 1,
+        range: None,
+        sources_read: 1,
+        sources_total: 2,
+        harness: row(vec![Cell::Unknown]),
+        client: row(vec![Cell::Unknown]),
+        model_effort: row(vec![Cell::Unknown; 2]),
+        joint: row(vec![Cell::Unknown; 4]),
+        gaps: Vec::new(),
+    };
+    assert!(valid.balanced(), "hand-built tables each sum to two");
+    for index in 0..4 {
+        for count in [0, 1, 3] {
+            let mut wrong = valid.clone();
+            let table = match index {
+                0 => &mut wrong.harness,
+                1 => &mut wrong.client,
+                2 => &mut wrong.model_effort,
+                _ => &mut wrong.joint,
+            };
+            table[0].count = count;
+            assert!(
+                !wrong.balanced(),
+                "table {index} sums to {count}, total two"
+            );
+        }
+        let mut wrong = valid.clone();
+        let part = match index {
+            0 => &mut wrong.legacy,
+            1 => &mut wrong.model_known,
+            2 => &mut wrong.effort_known,
+            _ => &mut wrong.sources_read,
+        };
+        *part = 3;
+        assert!(!wrong.balanced(), "part {index} is three, whole two");
+    }
+    let mut boundary = valid;
+    boundary.legacy = 2;
+    boundary.model_known = 2;
+    boundary.effort_known = 2;
+    boundary.sources_read = 2;
+    assert!(boundary.balanced(), "equality is valid at every part bound");
+}
+
+#[test]
 fn legacy_multiplicity_subsequence_and_whole_record_divergence_are_honest() {
     let a = f::legacy("prompt-A-private");
     let b = f::legacy("prompt-B-private");
