@@ -1129,6 +1129,151 @@ fn open_popup_and_run_shell_line_have_only_their_named_product_caller_and_pure_s
         );
     }
 }
+/// `clippy.toml`'s two deny lists as `(path, reason)` pairs, in file order. A
+/// bare `"path",` entry has no reason and reads as `(path, None)`; a comment
+/// line is not an entry. The text, not clippy, is asked, because clippy accepts
+/// a bare path and the invariant is about what the error TELLS an agent.
+fn deny_entries(config: &str) -> Vec<(String, Option<String>)> {
+    let mut entries = Vec::new();
+    let mut inside = false;
+    for line in config.lines().map(str::trim) {
+        if line.starts_with("disallowed-types = [") || line.starts_with("disallowed-methods = [") {
+            // A list opened and closed on one line holds bare paths by construction:
+            // no reason fits beside them, so each reads as an entry without one.
+            if line.ends_with(']') {
+                let items = line.split_once('[').map_or("", |(_, rest)| rest);
+                entries.extend(
+                    items
+                        .split('"')
+                        .skip(1)
+                        .step_by(2)
+                        .map(|path| (path.to_owned(), None)),
+                );
+            } else {
+                inside = true;
+            }
+        } else if line == "]" {
+            inside = false;
+        } else if inside && !line.starts_with('#') && !line.is_empty() {
+            let quoted = |after: &str| {
+                line.split_once(after)
+                    .and_then(|(_, rest)| rest.split_once('"'))
+                    .map(|(value, _)| value.to_owned())
+            };
+            if line.starts_with('{') {
+                let path = quoted("path = \"").unwrap_or_default();
+                let reason = line
+                    .split_once("reason = \"")
+                    .and_then(|(_, rest)| rest.rsplit_once('"'))
+                    .map(|(value, _)| value.to_owned());
+                entries.push((path, reason));
+            } else {
+                entries.push((
+                    line.trim_end_matches(',').trim_matches('"').to_owned(),
+                    None,
+                ));
+            }
+        }
+    }
+    entries
+}
+
+/// What a reason names that must exist: the `src/` files it cites, and the
+/// `module::function` doors it cites, each as the function's declaration.
+fn door_claims(reason: &str) -> (Vec<String>, Vec<(String, String)>) {
+    let words = reason.split(|c: char| !(c.is_alphanumeric() || "_:/.".contains(c)));
+    let mut files = Vec::new();
+    let mut doors = Vec::new();
+    for word in words {
+        let word = word.trim_matches(|c| c == ':' || c == '.');
+        if word.starts_with("src/") && Path::new(word).extension().is_some_and(|ext| ext == "rs") {
+            files.push(word.to_owned());
+        } else if let Some((module, function)) = word.split_once("::") {
+            doors.push((format!("src/{module}.rs"), function.to_owned()));
+        }
+    }
+    (files, doors)
+}
+
+#[test]
+fn every_denied_entry_names_the_door_to_use_instead() {
+    let config = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("clippy.toml"))
+        .unwrap_or_else(|why| panic!("clippy.toml must be readable: {why}"));
+    let entries = deny_entries(&config);
+    assert!(
+        entries.len() >= 20,
+        "the deny lists were not found in clippy.toml: {entries:?}"
+    );
+    let mut cited = 0_usize;
+    for (path, reason) in &entries {
+        let Some(reason) = reason else {
+            panic!(
+                "`{path}` has no reason: write `{{ path = \"...\", reason = \"...\" }}` on its own line, naming the door to use"
+            );
+        };
+        // Clippy prints the reason on the error line: one screenful, not a paragraph.
+        assert!(
+            (20..=100).contains(&reason.len()),
+            "`{path}` reason must be 20..=100 chars, one line: {reason:?}"
+        );
+        let (files, doors) = door_claims(reason);
+        assert!(
+            !files.is_empty() || !doors.is_empty(),
+            "`{path}` reason names no door (a `src/<file>.rs` or `module::function`): {reason:?}"
+        );
+        // A reason that names a door that moved is worse than none.
+        for file in &files {
+            assert!(
+                source_view::tree().iter().any(|(name, _)| name == file),
+                "`{path}` reason cites {file}, which does not exist"
+            );
+        }
+        for (file, function) in &doors {
+            cited += 1;
+            let text = source_view::tree()
+                .iter()
+                .find(|(name, _)| name == file)
+                .map_or("", |(_, text)| text.as_str());
+            assert!(
+                text.contains(&format!("fn {function}("))
+                    || text.contains(&format!("fn {function}<")),
+                "`{path}` reason cites {file}::{function}, which is not a function there"
+            );
+        }
+    }
+    assert!(
+        cited > 0,
+        "no entry cites a module door: the check read nothing"
+    );
+}
+
+#[test]
+fn the_deny_list_reader_sees_a_bare_path_and_a_reasonless_table() {
+    let config = "disallowed-types = [\n  # a comment\n  \"std::bare\",\n  { path = \"std::tabled\" },\n  { path = \"std::good\", reason = \"use store::read_source\" },\n]\nallow-unwrap-in-tests = true\n";
+    assert_eq!(
+        deny_entries(config),
+        vec![
+            ("std::bare".to_owned(), None),
+            ("std::tabled".to_owned(), None),
+            (
+                "std::good".to_owned(),
+                Some("use store::read_source".to_owned())
+            ),
+        ]
+    );
+    // The one-line list is how the type deny stood before it carried a reason.
+    assert_eq!(
+        deny_entries("disallowed-types = [\"std::process::Command\"]\n"),
+        vec![("std::process::Command".to_owned(), None)]
+    );
+    let (files, doors) = door_claims("run via src/transport.rs run_* leg; store::read_capped (x)");
+    assert_eq!(files, vec!["src/transport.rs".to_owned()]);
+    assert_eq!(
+        doors,
+        vec![("src/store.rs".to_owned(), "read_capped".to_owned())]
+    );
+}
+
 // Contract/reference owners, index, and startup budget share this door's reads.
 #[path = "doors/contract_spec.rs"]
 mod contract_spec;

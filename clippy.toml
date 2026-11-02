@@ -61,7 +61,9 @@ allow-panic-in-tests = true
 # tests/it/doors.rs, which runs clippy under `--force-warn` — a flag
 # no `allow`, group `allow`, `cfg_attr`, `expect` or crate-root `#![allow]` can
 # override.
-disallowed-types = ["std::process::Command"]
+disallowed-types = [
+  { path = "std::process::Command", reason = "run a child via a src/transport.rs run_* leg; a new Command site is a review" },
+]
 
 # The capability boundary for READING THE OUTSIDE WORLD — the phase-3 gate's
 # criterion 3, which requires that presentation re-derives nothing.
@@ -94,11 +96,24 @@ disallowed-types = ["std::process::Command"]
 # `criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones`
 # in tests/it/phase3.rs, which asks clippy under `--force-warn` — a flag no
 # `allow`, `expect` or crate-root attribute can override.
+#
+# EVERY ENTRY CARRIES A `reason` THAT NAMES THE DOOR TO USE — the `disallowed-types`
+# entry above and each one below. Clippy prints the reason with the error, so an
+# agent that hits the deny is told where to go, not only what is banned. Keep a
+# reason one line, true, and about 80 characters; a new entry names its door too.
+# The rule for choosing, in order:
+#   1. an ae-owned file -> its owner's reader: `store::read_capped`,
+#      `store::read_source`, `store::source_presence`; the config -> `config::read_selected`.
+#   2. an environment variable -> a named fn in `src/doors.rs`.
+#   3. test code -> `#[allow(clippy::disallowed_methods, reason = "...")]` at the
+#      site: the boundary is on product code.
+#   4. no owner fits -> a new one-site product door, `#[allow(..., reason = "a door: ...")]`;
+#      a door in a new product FILE is a review (`tests/it/phase3_probe_spec.rs`).
 disallowed-methods = [
-  "std::fs::read",
-  "std::fs::read_to_string",
-  "std::fs::read_dir",
-  "std::fs::metadata",
+  { path = "std::fs::read", reason = "product: store::read_source (read_capped to cap); test code: #[allow] with a reason" },
+  { path = "std::fs::read_to_string", reason = "product: store::read_source + from_utf8 (read_capped to cap); test: #[allow]" },
+  { path = "std::fs::read_dir", reason = "sessions: inventory::durable_records; else a one-site 'a door:' allow" },
+  { path = "std::fs::metadata", reason = "follows links; use store::source_presence (lstat) or a one-site 'a door:' allow" },
   # The lstat door. Listed BESIDE `metadata` rather than instead of it, because
   # the two are not interchangeable and the difference is a security property:
   # `metadata` FOLLOWS a symlink, `symlink_metadata` classifies the link itself.
@@ -109,14 +124,14 @@ disallowed-methods = [
   # absent, and the Telegram bridge's private logs, a link refused before the
   # append), so the entry exists to keep each of them a line in a review rather
   # than to discourage it.
-  "std::fs::symlink_metadata",
-  "std::fs::File::open",
-  "std::path::Path::exists",
-  "std::path::Path::metadata",
-  "std::path::Path::is_dir",
-  "std::path::Path::is_file",
-  "std::env::var",
-  "std::env::var_os",
+  { path = "std::fs::symlink_metadata", reason = "lstat via store::source_presence(path), or doors::canonical_strict_dir for dirs" },
+  { path = "std::fs::File::open", reason = "store::read_source (read_capped to cap); needs a handle: one-site 'a door:' allow" },
+  { path = "std::path::Path::exists", reason = "store::source_presence(path); a directory: doors::canonical_strict_dir" },
+  { path = "std::path::Path::metadata", reason = "follows links; use store::source_presence (lstat) or a one-site 'a door:' allow" },
+  { path = "std::path::Path::is_dir", reason = "a directory: doors::canonical_strict_dir; a file: store::source_presence" },
+  { path = "std::path::Path::is_file", reason = "a file: store::source_presence(path); a directory: doors::canonical_strict_dir" },
+  { path = "std::env::var", reason = "read env in a named src/doors.rs fn (home, cwd, no_autostart); one fn per variable" },
+  { path = "std::env::var_os", reason = "read env in a named src/doors.rs fn (home, cwd, no_autostart); one fn per variable" },
   # THE TERMINAL DOOR (`ae app`, 2026-10-03, lead ruling D2 on the sideapp
   # plan). rustix's termios module is how the app takes raw mode, puts the mode
   # back and reads the window size without libc or `unsafe`, and every entry
@@ -129,18 +144,18 @@ disallowed-methods = [
   # source this is an enumeration, over the compiled artifact a convention.
   # Only the `termios` feature is enabled (Cargo.toml), so no other rustix
   # module exists in the graph to route around this list.
-  "rustix::termios::tcgetattr",
-  "rustix::termios::tcsetattr",
-  "rustix::termios::tcgetwinsize",
-  "rustix::termios::tcsetwinsize",
-  "rustix::termios::tcgetpgrp",
-  "rustix::termios::tcsetpgrp",
-  "rustix::termios::tcgetsid",
-  "rustix::termios::tcsendbreak",
-  "rustix::termios::tcdrain",
-  "rustix::termios::tcflush",
-  "rustix::termios::tcflow",
-  "rustix::termios::isatty",
-  "rustix::termios::ioctl_tiocexcl",
-  "rustix::termios::ioctl_tiocnxcl",
+  { path = "rustix::termios::tcgetattr", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcsetattr", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcgetwinsize", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcsetwinsize", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcgetpgrp", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcsetpgrp", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcgetsid", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcsendbreak", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcdrain", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcflush", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcflow", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::isatty", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::ioctl_tiocexcl", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::ioctl_tiocnxcl", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
 ]
