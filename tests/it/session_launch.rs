@@ -8603,3 +8603,286 @@ fn the_watchdog_pane_starts_before_a_blocked_launch_delivery_ends() {
 
 #[path = "startreseat_spec.rs"]
 mod startreseat_spec;
+// launchx characterization pins: observable launch behavior at 8f15cb91.
+// Installed byte-identically at the end of tests/it/session_launch.rs.
+
+#[test]
+fn launchx_teardown_tombstones_refuse_before_lock_or_config_seed() {
+    if skip() {
+        return;
+    }
+    for (root_name, note) in [
+        ("sessions", "the session state is parked under it"),
+        ("worktrees", "a working copy is parked under it"),
+    ] {
+        let rig = Rig::idle("launchx-tombstone");
+        let session = "lxTomb";
+        let tombstone = rig.home.join(root_name).join(format!(".ending.{session}"));
+        std::fs::create_dir_all(&tombstone).expect("parked teardown");
+        std::fs::write(tombstone.join("preserved"), b"human work").expect("parked work");
+        std::fs::remove_file(&rig.config).expect("unseeded global config");
+
+        let (code, stdout, stderr) = rig.launch(&["--local", session]);
+        assert_eq!(code, Some(1), "{stdout}{stderr}");
+        assert!(stdout.is_empty(), "{stdout}");
+        assert_eq!(
+            stderr,
+            format!(
+                "Error: a previous teardown of '{session}' did not complete.\n       {} is standing — {note}, not under '{session}'.\n       Inspect it, then remove it by hand and retry:\n           rm -rf {}\n",
+                tombstone.display(),
+                tombstone.display()
+            )
+        );
+        assert!(!rig.config.exists(), "refusal seeded config");
+        assert!(!rig.dir(session).exists(), "refusal created session state");
+        assert!(
+            !rig.home
+                .join(format!("sessions/.lifecycle.{session}.lock"))
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read(tombstone.join("preserved")).expect("kept work"),
+            b"human work"
+        );
+        assert!(!rig.sessions().contains(&session.to_owned()));
+    }
+}
+
+#[test]
+fn launchx_unreadable_meta_refuses_before_lock_or_seed() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("launchx-unreadable");
+    let session = "lxUnreadable";
+    std::fs::create_dir_all(rig.dir(session).join("meta")).expect("unreadable metadata node");
+    std::fs::remove_file(&rig.config).expect("unseeded global config");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", session]);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert_eq!(
+        stderr,
+        format!("Error: could not read metadata for '{session}'.\n")
+    );
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(!rig.config.exists(), "refusal seeded config");
+    assert!(
+        !rig.home
+            .join(format!("sessions/.lifecycle.{session}.lock"))
+            .exists()
+    );
+    assert!(rig.dir(session).join("meta").is_dir());
+    assert!(!rig.dir(session).join("events.jsonl").exists());
+    assert!(!rig.sessions().contains(&session.to_owned()));
+}
+
+#[test]
+fn launchx_ambiguous_saved_server_refuses_without_migration_or_seed() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("launchx-ambiguous");
+    let session = "lxAmbiguous";
+    std::fs::create_dir_all(rig.dir(session)).expect("saved state");
+    // Partial server pair is hostile but supported input, not an absent selector.
+    let before = "schema=2\nsession=lxAmbiguous\ntmux_server_kind=socket\n";
+    std::fs::write(rig.dir(session).join("meta"), before).expect("partial server pair");
+    std::fs::remove_file(&rig.config).expect("unseeded global config");
+
+    let (code, stdout, stderr) = rig.launch(&["--local", session]);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert_eq!(
+        stderr,
+        "Error: 'lxAmbiguous' records a tmux server ae cannot resolve — its meta rows 'tmux_server_kind' / 'tmux_server' do not name exactly one server.\n"
+    );
+    assert!(stdout.is_empty(), "{stdout}");
+    assert_eq!(
+        rig.meta(session),
+        before,
+        "refusal migrated or rewrote meta"
+    );
+    assert!(!rig.config.exists(), "refusal seeded config");
+    assert!(
+        !rig.home
+            .join(format!("sessions/.lifecycle.{session}.lock"))
+            .exists()
+    );
+    assert!(!rig.dir(session).join("events.jsonl").exists());
+    assert!(!rig.sessions().contains(&session.to_owned()));
+}
+
+#[test]
+fn launchx_recorded_seconds_survive_malformed_config_but_fresh_launch_refuses() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("launchx-seconds");
+    rig.without_chat();
+    let base = std::fs::read_to_string(&rig.config).expect("private config");
+    std::fs::write(
+        &rig.config,
+        format!("{base}quota_every_secs = 420\nidle_nudge_secs = 421\n"),
+    )
+    .expect("valid initial knobs");
+    let session = "lxSeconds";
+    let first = rig.launch(&["--local", session]);
+    assert_eq!(first.0, Some(0), "{first:?}");
+    assert!(rig.tmux(&["kill-session", "-t", "=lxSeconds"]).0);
+    std::fs::write(
+        &rig.config,
+        format!("{base}quota_every_secs = broken\nidle_nudge_secs = broken\n"),
+    )
+    .expect("malformed current knobs");
+
+    let resumed = rig.launch(&["--local", session]);
+    assert_eq!(resumed.0, Some(0), "{resumed:?}");
+    assert!(!resumed.2.contains("unsigned integer"), "{resumed:?}");
+    let meta = rig.meta(session);
+    assert!(
+        meta.lines().any(|line| line == "quota_every_secs=420"),
+        "{meta}"
+    );
+    assert!(
+        meta.lines().any(|line| line == "idle_nudge_secs=421"),
+        "{meta}"
+    );
+
+    let fresh = rig.launch(&["--local", "lxFreshSeconds"]);
+    assert_eq!(fresh.0, Some(2), "{fresh:?}");
+    assert_eq!(
+        fresh.2,
+        "Error: [workspace] quota_every_secs must be an unsigned integer in seconds; got 'broken'.\n"
+    );
+    assert!(!rig.dir("lxFreshSeconds").exists());
+}
+
+#[test]
+fn launchx_existing_workdirs_refuse_without_overwriting_preserved_content() {
+    if skip() {
+        return;
+    }
+    for mode in ["--local", "--copy"] {
+        let rig = Rig::idle("launchx-preserved-work");
+        let session = "lxPreserved";
+        let work = rig.home.join("worktrees").join(session);
+        std::fs::create_dir_all(&work).expect("preserved working copy");
+        std::fs::write(work.join("kept"), b"human work").expect("preserved content");
+
+        let (code, stdout, stderr) = rig.launch(&[mode, session]);
+        assert_eq!(code, Some(1), "{stdout}{stderr}");
+        assert!(stdout.is_empty(), "{stdout}");
+        let expected = if mode == "--local" {
+            format!(
+                "Error: stopped session '{session}' exists as worktree/copy. End it first (ae end {session}), or use a different name.\n"
+            )
+        } else {
+            format!(
+                "Error: working copy '{}' exists without session metadata; refusing to overwrite it — choose a fresh name or remove/relocate the preserved workdir yourself.\n",
+                work.display()
+            )
+        };
+        assert_eq!(stderr, expected);
+        assert_eq!(
+            std::fs::read(work.join("kept")).expect("kept content"),
+            b"human work"
+        );
+        assert!(!rig.dir(session).exists());
+        assert!(!rig.sessions().contains(&session.to_owned()));
+    }
+}
+
+#[test]
+fn launchx_git_fallback_copies_then_resume_uses_recorded_mode_until_flag_overrides() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("launchx-fallback");
+    rig.without_chat();
+    let base = std::fs::read_to_string(&rig.config).expect("private config");
+    std::fs::write(&rig.config, format!("{base}copy = local\n")).expect("local config mode");
+    std::fs::write(rig.project.join("payload"), b"project bytes").expect("project content");
+    let session = "lxFallback";
+    let work = rig.home.join("worktrees").join(session);
+
+    let first = rig.launch(&["--worktree", session]);
+    assert_eq!(first.0, Some(0), "{first:?}");
+    assert!(
+        first
+            .1
+            .starts_with("Creating full copy...\nWorking copy ready.\n"),
+        "{first:?}"
+    );
+    assert!(
+        first
+            .2
+            .contains("Warning: not a git repo, falling back to full copy.\n"),
+        "{first:?}"
+    );
+    assert_eq!(
+        std::fs::read(work.join("payload")).expect("copied content"),
+        b"project bytes"
+    );
+    assert!(rig.meta(session).lines().any(|line| line == "mode=full"));
+    assert!(rig.tmux(&["kill-session", "-t", "=lxFallback"]).0);
+
+    let resumed = rig.launch(&[session]);
+    assert_eq!(resumed.0, Some(0), "{resumed:?}");
+    assert!(
+        resumed.1.starts_with(&format!(
+            "Resuming session {session} (dir: {})...\n",
+            work.display()
+        )),
+        "{resumed:?}"
+    );
+    assert!(!resumed.1.contains("Creating full copy"), "{resumed:?}");
+    assert!(rig.meta(session).lines().any(|line| line == "mode=full"));
+    assert!(rig.tmux(&["kill-session", "-t", "=lxFallback"]).0);
+    let before = rig.meta(session);
+
+    let overridden = rig.launch(&["--local", session]);
+    assert_eq!(overridden.0, Some(1), "{overridden:?}");
+    assert_eq!(
+        overridden.2,
+        format!(
+            "Error: stopped session '{session}' exists as worktree/copy. End it first (ae end {session}), or use a different name.\n"
+        )
+    );
+    assert_eq!(rig.meta(session), before);
+    assert_eq!(
+        std::fs::read(work.join("payload")).expect("kept content"),
+        b"project bytes"
+    );
+    assert!(!rig.sessions().contains(&session.to_owned()));
+}
+
+#[test]
+fn launchx_git_worktree_failure_removes_only_new_workdir_and_never_builds() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("launchx-git-failure");
+    git_in(&rig.project, &["init", "-q"]);
+    // A real repository with unborn HEAD cannot supply a detached worktree.
+    std::fs::write(rig.project.join("kept"), b"uncommitted work").expect("source content");
+    let session = "lxGitFailure";
+    let work = rig.home.join("worktrees").join(session);
+
+    let (code, stdout, stderr) = rig.launch(&["--worktree", session]);
+    assert_eq!(code, Some(1), "{stdout}{stderr}");
+    assert_eq!(stdout, "Creating git worktree...\n");
+    assert!(
+        stderr.ends_with(&format!(
+            "Error: could not create a git worktree at {}\n",
+            work.display()
+        )),
+        "{stderr}"
+    );
+    assert!(!stdout.contains("Working copy ready"));
+    assert!(!work.exists(), "failed new working copy was left behind");
+    assert!(!rig.dir(session).exists(), "build ran after copy failure");
+    assert_eq!(
+        std::fs::read(rig.project.join("kept")).expect("source kept"),
+        b"uncommitted work"
+    );
+    assert!(!rig.sessions().contains(&session.to_owned()));
+}
