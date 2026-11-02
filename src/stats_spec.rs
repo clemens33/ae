@@ -524,6 +524,61 @@ fn facts_before_parent_extensions_divergence_and_late_values_never_rewrite_confi
 }
 
 #[test]
+fn stated_and_source_implied_fact_sessions_compare_as_the_same_evidence() {
+    for session in [f::S, f::T] {
+        let cert = f::birth(
+            session,
+            1,
+            &f::fields("codex", Some("codex"), Some("sol"), Some("high")),
+        );
+        let start = format!(",\"start\":\"spawned.0:{}:41\"", f::id(1));
+        let stated = format!(
+            "{}{}",
+            f::fact(session, 1, "start-attempted", &start),
+            f::fact(
+                session,
+                1,
+                "observed",
+                &format!("{start},\"observed_source\":\"frame\",\"observed_model\":\"other\"")
+            ),
+        );
+        let implied = stated.replace(&format!(",\"target_session_id\":\"{session}\""), "");
+        assert_ne!(stated, implied, "fixture really omits the record session");
+        assert!(!implied.contains("target_session_id"));
+        for (left, right) in [
+            (&stated, &stated),
+            (&stated, &implied),
+            (&implied, &stated),
+            (&implied, &implied),
+        ] {
+            let sources = || {
+                vec![
+                    source("left", session, format!("{cert}{left}").as_bytes()),
+                    source("right", session, format!("{cert}{right}").as_bytes()),
+                ]
+            };
+            let view = stats::fold(sources(), Some(session));
+            let reverse = stats::fold(sources().into_iter().rev().collect(), Some(session));
+            assert_eq!(view, reverse, "fact spelling does not make order matter");
+            for scoped in [&view.all, current(&view)] {
+                assert_eq!(scoped.total, 1);
+                assert_eq!((scoped.sources_read, scoped.sources_total), (2, 2));
+                assert_eq!((scoped.model_known, scoped.effort_known), (1, 1));
+                assert_harness(scoped, &[("codex", 1)]);
+                assert_clients(scoped, &[("codex", 1)]);
+                assert_model_effort(scoped, &[("sol", "high", 1)]);
+                assert!(
+                    scoped.gaps.is_empty(),
+                    "same source-proved session is no conflict: {:?}",
+                    scoped.gaps
+                );
+                assert_sums(scoped);
+            }
+        }
+    }
+}
+
+#[test]
 fn malformed_journal_lines_are_a_visible_partial_read_and_empty_is_supported_zero() {
     let empty = one(f::S, b"");
     assert_eq!(empty.all.total, 0);
