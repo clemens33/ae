@@ -526,13 +526,7 @@ pub(crate) fn own_exhausted(
         .into_iter()
         .filter(|(key, _)| crate::quota::scoped_here(tool, key.qualifier.as_deref(), pin))
         .collect();
-    super::exhausted(&bound, capped).or_else(|| {
-        let window = scope.fresh_cap?;
-        Some(super::Window {
-            judged: super::FULL,
-            ..window
-        })
-    })
+    super::exhausted(&bound, capped).or(scope.fresh_cap)
 }
 
 /// Whether a seat its `[auto_reseat]` row names nothing for still has a move:
@@ -1845,6 +1839,42 @@ mod effort_scope_spec {
                 expected,
                 "qualifier={qualifier:?} pin={pin:?}"
             );
+        }
+    }
+
+    /// A spend cap leaves the account nothing, so the seat reads full however
+    /// little a window has used: on its own bound row, on a row no family binds
+    /// with nothing bound left, and on a row that binds while the cap came from
+    /// one that does not.
+    #[test]
+    fn a_spend_cap_reads_full_whichever_window_carried_it() {
+        let capped = Policy::for_tests(
+            None,
+            Account {
+                spend_control_reached: Some(true),
+                spend_observed_at: Some(NOW),
+                ..Account::default()
+            },
+        );
+        let source = "/effort-spec-account/.claude.json";
+        for (case, groups) in [
+            ("bound", vec![group(source, None, "3", capped.clone())]),
+            (
+                "nothing bound",
+                vec![group(source, Some("mystery"), "3", capped.clone())],
+            ),
+            (
+                "another row binds",
+                vec![
+                    group(source, Some("mystery"), "3", capped.clone()),
+                    group(source, None, "3", Policy::default()),
+                ],
+            ),
+        ] {
+            let observed = observation(groups);
+            let judged = super::own_exhausted(Some(&observed), &seat(), Some("opus"), NOW)
+                .map(|window| window.judged.to_bits());
+            assert_eq!(judged, Some(100.0_f64.to_bits()), "{case}");
         }
     }
 
