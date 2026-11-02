@@ -1992,6 +1992,130 @@ fn apply_seat_overrides(snapshot: &SeatOverrideSnapshot, seats: &mut [Seat]) -> 
     Ok(())
 }
 
+/// The tmux server a saved session's record names, as a launch probes it.
+#[derive(Debug, PartialEq, Eq)]
+struct RecordedServer {
+    server: ServerId,
+    /// A pre-pair record with no server rows: it is probed on the historical
+    /// default server, and nothing there may be assumed to be ours.
+    legacy: bool,
+}
+
+impl RecordedServer {
+    /// `None` for a record whose server rows do not name exactly one server.
+    fn of(selector: ServerSelector) -> Option<Self> {
+        match selector {
+            ServerSelector::Positive(selector) => Some(Self {
+                server: ServerId::Selected(selector),
+                legacy: false,
+            }),
+            ServerSelector::Missing => Some(Self {
+                server: crate::doors::historical_server(),
+                legacy: true,
+            }),
+            ServerSelector::Ambiguous => None,
+        }
+    }
+}
+
+/// Where a saved session stands on its recorded server, and so which server a
+/// launch of it uses.
+#[derive(Debug, PartialEq, Eq)]
+enum Placement {
+    /// Still running there: reattach, never rebuild.
+    Running,
+    /// Proved absent there: rebuild on the destination.
+    Stopped(Destination),
+    /// Neither proved: refuse, never assume absent.
+    Unproven,
+}
+
+/// The server a stopped session is rebuilt on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Destination {
+    /// The recorded server: an in-place resume (the picker's or settings'
+    /// captured Resume, or a crash restore) lands where it was.
+    Recorded,
+    /// The server this launch was asked on: an ordinary resume re-pairs there,
+    /// and a legacy record has no server of its own to return to.
+    Proposed,
+}
+
+/// Decide a saved session's [`Placement`] from the absence probe of its
+/// recorded server.
+fn placement(probe: &tmux::StopProbe, in_place: bool, legacy: bool) -> Placement {
+    match probe {
+        tmux::StopProbe::Present => Placement::Running,
+        tmux::StopProbe::Absent if in_place && !legacy => Placement::Stopped(Destination::Recorded),
+        tmux::StopProbe::Absent => Placement::Stopped(Destination::Proposed),
+        tmux::StopProbe::Unknown => Placement::Unproven,
+    }
+}
+
+/// The refusal of a launch whose recorded server answered neither way. A crash
+/// restore skips a positively recorded session instead; a legacy one refuses
+/// even there.
+fn refuse_unproven(
+    restore: Option<&crate::restore::Attempt>,
+    recorded: &RecordedServer,
+    session: &str,
+    why: Option<String>,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    if !recorded.legacy
+        && let Some(attempt) = restore
+    {
+        attempt.skip(crate::restore::unproven(why.as_deref()));
+        return Ok(0);
+    }
+    if recorded.legacy {
+        writeln!(
+            err,
+            "Error: cannot verify whether legacy tmux session '{session}' is absent on the historical default server. Metadata was not changed."
+        )?;
+    } else {
+        writeln!(
+            err,
+            "Error: cannot verify whether tmux session '{session}' is absent on its recorded server. Metadata was not changed."
+        )?;
+    }
+    if let Some(why) = why {
+        writeln!(err, "       {why}")?;
+    }
+    Ok(EXIT_FAILED)
+}
+
+/// A watchdog cadence in seconds, META-WINS: the session's recorded row on a
+/// resume, else the configured value, else `default`. `configured` runs only
+/// when nothing is recorded, so a resume never reads, nor refuses on, the
+/// current config's value. Whichever wins must be unsigned seconds; `Err`
+/// carries the offending text, the configured read's own included.
+fn recorded_wins_seconds(
+    recorded: Option<String>,
+    configured: impl FnOnce() -> Result<Option<String>, String>,
+    default: u64,
+) -> Result<String, String> {
+    let configured = if recorded.is_none() {
+        configured()?
+    } else {
+        None
+    };
+    let value = recorded
+        .or(configured)
+        .unwrap_or_else(|| default.to_string());
+    if value.parse::<u64>().is_err() {
+        return Err(value);
+    }
+    Ok(value)
+}
+
+/// A launch's working-copy mode: the flag, then the recorded one, then the
+/// configured `copy`, then local.
+fn launch_mode(flag: Option<Mode>, recorded: Option<Mode>, configured: &str) -> Mode {
+    flag.or(recorded)
+        .unwrap_or_else(|| Mode::parse(configured).unwrap_or(Mode::Local))
+}
+
 /// A session's resolved shape, once every refusal has passed.
 struct Session {
     name: String,
@@ -2085,7 +2209,8 @@ fn launch(
     }
 
     let proposed_server = env.server();
-    let in_place = expected_launch.is_some_and(ExpectedLaunch::is_resume) || restore.is_some();
+    let expected_resume = expected_launch.is_some_and(ExpectedLaunch::is_resume);
+    let in_place = expected_resume || restore.is_some();
     let settings_start = expected_launch.is_some_and(ExpectedLaunch::is_start);
     if settings_start && session != crate::orchestrator::ORCHESTRATOR_SESSION {
         writeln!(
@@ -2110,7 +2235,7 @@ fn launch(
         writeln!(err, "{refusal}")?;
         return Ok(EXIT_USAGE);
     }
-    if expected_launch.is_some_and(ExpectedLaunch::is_resume) && !preflight_meta_present {
+    if expected_resume && !preflight_meta_present {
         writeln!(
             err,
             "Error: role target '{session}' disappeared before Resume acquired its lifecycle lock. Nothing was resumed."
@@ -2128,49 +2253,18 @@ fn launch(
             writeln!(err, "Error: could not read metadata for '{session}'.")?;
             return Ok(EXIT_FAILED);
         };
-        match Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector() {
-            ServerSelector::Positive(selector) => {
-                let recorded = ServerId::Selected(selector);
-                match resume_absence(&recorded, &session, &dir) {
-                    (tmux::StopProbe::Absent, _) if in_place => recorded,
-                    (tmux::StopProbe::Absent, _) => proposed_server.clone(),
-                    (tmux::StopProbe::Present, _) => recorded,
-                    (tmux::StopProbe::Unknown, why) => {
-                        if let Some(attempt) = restore {
-                            attempt.skip(crate::restore::unproven(why.as_deref()));
-                            return Ok(0);
-                        }
-                        writeln!(
-                            err,
-                            "Error: cannot verify whether tmux session '{session}' is absent on its recorded server. Metadata was not changed."
-                        )?;
-                        if let Some(why) = why {
-                            writeln!(err, "       {why}")?;
-                        }
-                        return Ok(EXIT_FAILED);
-                    }
-                }
-            }
-            ServerSelector::Missing => {
-                let historical = crate::doors::historical_server();
-                match resume_absence(&historical, &session, &dir) {
-                    (tmux::StopProbe::Absent, _) => proposed_server.clone(),
-                    (tmux::StopProbe::Present, _) => historical,
-                    (tmux::StopProbe::Unknown, why) => {
-                        writeln!(
-                            err,
-                            "Error: cannot verify whether legacy tmux session '{session}' is absent on the historical default server. Metadata was not changed."
-                        )?;
-                        if let Some(why) = why {
-                            writeln!(err, "       {why}")?;
-                        }
-                        return Ok(EXIT_FAILED);
-                    }
-                }
-            }
-            ServerSelector::Ambiguous => {
-                writeln!(err, "Error: '{session}' {AMBIGUOUS_SERVER}.")?;
-                return Ok(EXIT_FAILED);
+        let Some(recorded) =
+            RecordedServer::of(Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector())
+        else {
+            writeln!(err, "Error: '{session}' {AMBIGUOUS_SERVER}.")?;
+            return Ok(EXIT_FAILED);
+        };
+        let (probe, why) = resume_absence(&recorded.server, &session, &dir);
+        match placement(&probe, in_place, recorded.legacy) {
+            Placement::Running | Placement::Stopped(Destination::Recorded) => recorded.server,
+            Placement::Stopped(Destination::Proposed) => proposed_server.clone(),
+            Placement::Unproven => {
+                return refuse_unproven(restore, &recorded, &session, why, err);
             }
         }
     } else {
@@ -2218,10 +2312,7 @@ fn launch(
     // captured target lock even though preflight saw its state. The read-only
     // preflight above exists only to place the tmux floor before this lock-file
     // write; every expected fact is re-read while the lock is held.
-    let mut lifecycle = if settings_start
-        || expected_launch.is_some_and(ExpectedLaunch::is_resume)
-        || preflight_meta_present
-    {
+    let mut lifecycle = if settings_start || expected_resume || preflight_meta_present {
         if let Ok(held) = crate::store::lock(
             &sessions.join(format!(".lifecycle.{session}.lock")),
             LIFECYCLE_WAIT,
@@ -2322,111 +2413,80 @@ fn launch(
                 return Ok(EXIT_FAILED);
             }
         }
-        match Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector() {
-            ServerSelector::Positive(selector) => {
-                let recorded = ServerId::Selected(selector);
-                match resume_absence(&recorded, &session, &dir) {
-                    (tmux::StopProbe::Present, _) => {
-                        if let Some(attempt) = restore {
-                            attempt.skip("already running");
-                            return Ok(0);
-                        }
-                        if !plan.seat_profiles.is_empty() {
-                            writeln!(err, "{}", running_override_refusal(&session))?;
-                            return Ok(EXIT_USAGE);
-                        }
-                        set_env_server(&mut env, &recorded);
-                        running_server = Some(recorded);
-                    }
-                    (tmux::StopProbe::Absent, _) => {
-                        let destination = if in_place {
-                            &recorded
-                        } else {
-                            &proposed_server
-                        };
-                        if !destination_is_absent(destination, &session, err)? {
-                            return Ok(EXIT_FAILED);
-                        }
-                        if in_place {
-                            set_env_server(&mut env, &recorded);
-                        }
-                    }
-                    (tmux::StopProbe::Unknown, why) => {
-                        if let Some(attempt) = restore {
-                            attempt.skip(crate::restore::unproven(why.as_deref()));
-                            return Ok(0);
-                        }
-                        writeln!(
-                            err,
-                            "Error: cannot verify whether tmux session '{session}' is absent on its recorded server. Metadata was not changed."
-                        )?;
-                        if let Some(why) = why {
-                            writeln!(err, "       {why}")?;
-                        }
-                        return Ok(EXIT_FAILED);
-                    }
+        let Some(recorded) =
+            RecordedServer::of(Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector())
+        else {
+            writeln!(err, "Error: '{session}' {AMBIGUOUS_SERVER}.")?;
+            return Ok(EXIT_FAILED);
+        };
+        let (probe, why) = resume_absence(&recorded.server, &session, &dir);
+        match placement(&probe, in_place, recorded.legacy) {
+            // A legacy record names no server: the live session on the
+            // historical default is adopted only once it is proved to be this
+            // state root's, and its socket is backfilled before anything acts.
+            Placement::Running if recorded.legacy => {
+                let historical = &recorded.server;
+                let ownership = transport::observe_session_ownership(historical, &session);
+                let main_pane = meta_value(&dir, "main_pane").unwrap_or_default();
+                let pane_belongs = !main_pane.is_empty()
+                    && transport::observe_agents(historical, &session)
+                        .is_some_and(|panes| panes.into_iter().any(|pane| pane.pane == main_pane));
+                let owned = ownership.is_some_and(|ownership| {
+                    !ownership.marker.is_empty()
+                        && existing_directories_match(Path::new(&ownership.home), &env.home)
+                }) && pane_belongs;
+                let socket = owned
+                    .then(|| transport::observe_socket_path(historical))
+                    .flatten();
+                let Some(socket) = socket else {
+                    writeln!(
+                        err,
+                        "Error: tmux session '{session}' exists on the historical default server, but ae could not prove it belongs to this state root. Metadata was not changed."
+                    )?;
+                    return Ok(EXIT_FAILED);
+                };
+                if !plan.seat_profiles.is_empty() {
+                    writeln!(err, "{}", running_override_refusal(&session))?;
+                    return Ok(EXIT_USAGE);
+                }
+                if let Err(why) = meta::backfill_server_socket(&dir, &socket) {
+                    writeln!(
+                        err,
+                        "Error: could not backfill the tmux server for '{session}' ({}).",
+                        why.cause()
+                    )?;
+                    return Ok(EXIT_FAILED);
+                }
+                let backfilled = ServerId::Selected(meta::Selector::Socket(socket.into()));
+                set_env_server(&mut env, &backfilled);
+                running_server = Some(backfilled);
+            }
+            Placement::Running => {
+                if let Some(attempt) = restore {
+                    attempt.skip("already running");
+                    return Ok(0);
+                }
+                if !plan.seat_profiles.is_empty() {
+                    writeln!(err, "{}", running_override_refusal(&session))?;
+                    return Ok(EXIT_USAGE);
+                }
+                set_env_server(&mut env, &recorded.server);
+                running_server = Some(recorded.server);
+            }
+            Placement::Stopped(destination) => {
+                let target = match destination {
+                    Destination::Recorded => &recorded.server,
+                    Destination::Proposed => &proposed_server,
+                };
+                if !destination_is_absent(target, &session, err)? {
+                    return Ok(EXIT_FAILED);
+                }
+                if destination == Destination::Recorded {
+                    set_env_server(&mut env, &recorded.server);
                 }
             }
-            ServerSelector::Missing => {
-                let historical = crate::doors::historical_server();
-                match resume_absence(&historical, &session, &dir) {
-                    (tmux::StopProbe::Present, _) => {
-                        let ownership = transport::observe_session_ownership(&historical, &session);
-                        let main_pane = meta_value(&dir, "main_pane").unwrap_or_default();
-                        let pane_belongs = !main_pane.is_empty()
-                            && transport::observe_agents(&historical, &session).is_some_and(
-                                |panes| panes.into_iter().any(|pane| pane.pane == main_pane),
-                            );
-                        let owned = ownership.is_some_and(|ownership| {
-                            !ownership.marker.is_empty()
-                                && existing_directories_match(Path::new(&ownership.home), &env.home)
-                        }) && pane_belongs;
-                        let socket = owned
-                            .then(|| transport::observe_socket_path(&historical))
-                            .flatten();
-                        let Some(socket) = socket else {
-                            writeln!(
-                                err,
-                                "Error: tmux session '{session}' exists on the historical default server, but ae could not prove it belongs to this state root. Metadata was not changed."
-                            )?;
-                            return Ok(EXIT_FAILED);
-                        };
-                        if !plan.seat_profiles.is_empty() {
-                            writeln!(err, "{}", running_override_refusal(&session))?;
-                            return Ok(EXIT_USAGE);
-                        }
-                        if let Err(why) = meta::backfill_server_socket(&dir, &socket) {
-                            writeln!(
-                                err,
-                                "Error: could not backfill the tmux server for '{session}' ({}).",
-                                why.cause()
-                            )?;
-                            return Ok(EXIT_FAILED);
-                        }
-                        let recorded = ServerId::Selected(meta::Selector::Socket(socket.into()));
-                        set_env_server(&mut env, &recorded);
-                        running_server = Some(recorded);
-                    }
-                    (tmux::StopProbe::Absent, _) => {
-                        if !destination_is_absent(&proposed_server, &session, err)? {
-                            return Ok(EXIT_FAILED);
-                        }
-                    }
-                    (tmux::StopProbe::Unknown, why) => {
-                        writeln!(
-                            err,
-                            "Error: cannot verify whether legacy tmux session '{session}' is absent on the historical default server. Metadata was not changed."
-                        )?;
-                        if let Some(why) = why {
-                            writeln!(err, "       {why}")?;
-                        }
-                        return Ok(EXIT_FAILED);
-                    }
-                }
-            }
-            ServerSelector::Ambiguous => {
-                writeln!(err, "Error: '{session}' {AMBIGUOUS_SERVER}.")?;
-                return Ok(EXIT_FAILED);
+            Placement::Unproven => {
+                return refuse_unproven(restore, &recorded, &session, why, err);
             }
         }
     } else if transport::session_exists(&proposed_server, &session) {
@@ -2653,76 +2713,48 @@ fn launch(
         .as_deref()
         .and_then(|value| value.parse::<u64>().ok())
         .map(|value| value.to_string());
-    let recorded_quota_every_secs = if meta_present {
-        meta_value(&dir, "quota_every_secs")
-    } else {
-        None
-    };
-    let configured_quota_every_secs = if recorded_quota_every_secs.is_none() {
-        match configured_quota_every_secs(env.global.as_deref(), env.local.as_deref()) {
-            Ok(value) => value,
-            Err(value) => {
-                writeln!(
-                    err,
-                    "Error: [workspace] quota_every_secs must be an unsigned integer in seconds; got '{value}'."
-                )?;
-                return Ok(EXIT_USAGE);
-            }
+    let quota_every_secs = match recorded_wins_seconds(
+        if meta_present {
+            meta_value(&dir, "quota_every_secs")
+        } else {
+            None
+        },
+        || configured_quota_every_secs(env.global.as_deref(), env.local.as_deref()),
+        crate::watchdog_daemon::Knobs::default().quota_every_secs,
+    ) {
+        Ok(value) => value,
+        Err(value) => {
+            writeln!(
+                err,
+                "Error: [workspace] quota_every_secs must be an unsigned integer in seconds; got '{value}'."
+            )?;
+            return Ok(EXIT_USAGE);
         }
-    } else {
-        None
     };
-    let quota_every_secs = recorded_quota_every_secs
-        .or(configured_quota_every_secs)
-        .unwrap_or_else(|| {
-            crate::watchdog_daemon::Knobs::default()
-                .quota_every_secs
-                .to_string()
-        });
-    if quota_every_secs.parse::<u64>().is_err() {
-        writeln!(
-            err,
-            "Error: [workspace] quota_every_secs must be an unsigned integer in seconds; got '{quota_every_secs}'."
-        )?;
-        return Ok(EXIT_USAGE);
-    }
-    let recorded_idle_nudge_secs = if meta_present {
-        meta_value(&dir, "idle_nudge_secs")
-    } else {
-        None
-    };
-    let configured_idle_nudge_secs = if recorded_idle_nudge_secs.is_none() {
-        match configured_unsigned_workspace_seconds(
-            env.global.as_deref(),
-            env.local.as_deref(),
-            "idle_nudge_secs",
-        ) {
-            Ok(value) => value,
-            Err(value) => {
-                writeln!(
-                    err,
-                    "Error: [workspace] idle_nudge_secs must be an unsigned integer in seconds; got '{value}'."
-                )?;
-                return Ok(EXIT_USAGE);
-            }
+    let idle_nudge_secs = match recorded_wins_seconds(
+        if meta_present {
+            meta_value(&dir, "idle_nudge_secs")
+        } else {
+            None
+        },
+        || {
+            configured_unsigned_workspace_seconds(
+                env.global.as_deref(),
+                env.local.as_deref(),
+                "idle_nudge_secs",
+            )
+        },
+        crate::watchdog_daemon::Knobs::default().idle_nudge_secs,
+    ) {
+        Ok(value) => value,
+        Err(value) => {
+            writeln!(
+                err,
+                "Error: [workspace] idle_nudge_secs must be an unsigned integer in seconds; got '{value}'."
+            )?;
+            return Ok(EXIT_USAGE);
         }
-    } else {
-        None
     };
-    let idle_nudge_secs = recorded_idle_nudge_secs
-        .or(configured_idle_nudge_secs)
-        .unwrap_or_else(|| {
-            crate::watchdog_daemon::Knobs::default()
-                .idle_nudge_secs
-                .to_string()
-        });
-    if idle_nudge_secs.parse::<u64>().is_err() {
-        writeln!(
-            err,
-            "Error: [workspace] idle_nudge_secs must be an unsigned integer in seconds; got '{idle_nudge_secs}'."
-        )?;
-        return Ok(EXIT_USAGE);
-    }
     let recorded_done = meta_present
         .then(|| meta_value(&dir, "done_confirmations"))
         .flatten();
@@ -2785,15 +2817,12 @@ fn launch(
     };
 
     // ---- the mode: flag, then the recorded one, then config, then local ----
-    let mut mode = plan
-        .mode
-        .unwrap_or_else(|| Mode::parse(&config_copy).unwrap_or(Mode::Local));
-    if plan.mode.is_none()
-        && meta_present
-        && let Some(stored) = meta_value(&dir, "mode").as_deref().and_then(Mode::parse)
-    {
-        mode = stored;
-    }
+    let recorded_mode = if plan.mode.is_none() && meta_present {
+        meta_value(&dir, "mode").as_deref().and_then(Mode::parse)
+    } else {
+        None
+    };
+    let mut mode = launch_mode(plan.mode, recorded_mode, &config_copy);
 
     // ---- the working copy ----
     let mut origin = env.cwd.clone();
@@ -5992,6 +6021,141 @@ mod tests {
             pane("%4", 0, 2, Some(uuid), false),
         ];
         assert_eq!(landing(&split, uuid).as_deref(), Some("%6"));
+    }
+
+    /// A saved session is reattached while it runs and never rebuilt; an
+    /// unanswered probe is never read as absence; a stopped one is rebuilt
+    /// where it was only for an in-place resume (picker, settings, restore)
+    /// of a record that names its server, and on the asking server otherwise.
+    #[test]
+    fn a_saved_session_is_placed_by_its_probe_and_resume_kind() {
+        use super::{Destination, Placement, placement};
+        use crate::tmux::StopProbe;
+        for in_place in [false, true] {
+            for legacy in [false, true] {
+                let case = format!("in_place {in_place} legacy {legacy}");
+                assert_eq!(
+                    placement(&StopProbe::Present, in_place, legacy),
+                    Placement::Running,
+                    "{case}"
+                );
+                assert_eq!(
+                    placement(&StopProbe::Unknown, in_place, legacy),
+                    Placement::Unproven,
+                    "{case}"
+                );
+                let destination = if in_place && !legacy {
+                    Destination::Recorded
+                } else {
+                    Destination::Proposed
+                };
+                assert_eq!(
+                    placement(&StopProbe::Absent, in_place, legacy),
+                    Placement::Stopped(destination),
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    /// A record names one server, names none (legacy: the historical default
+    /// is probed), or cannot be resolved and names no server at all.
+    #[test]
+    fn a_record_names_its_probe_server_or_none() {
+        use super::RecordedServer;
+        use crate::inventory::ServerId;
+        use crate::meta::{Selector, ServerSelector};
+        let selector = Selector::Name("ae-dev".to_owned());
+        assert_eq!(
+            RecordedServer::of(ServerSelector::Positive(selector.clone())),
+            Some(RecordedServer {
+                server: ServerId::Selected(selector),
+                legacy: false
+            })
+        );
+        assert_eq!(
+            RecordedServer::of(ServerSelector::Missing),
+            Some(RecordedServer {
+                server: crate::doors::historical_server(),
+                legacy: true
+            })
+        );
+        assert_eq!(RecordedServer::of(ServerSelector::Ambiguous), None);
+    }
+
+    /// META-WINS for a watchdog cadence: the recorded row beats the config and
+    /// the config is not even read; without a row the config, then the
+    /// default; and whatever wins must be unsigned seconds.
+    #[test]
+    fn a_recorded_cadence_wins_without_reading_the_config() {
+        use super::recorded_wins_seconds;
+        let unread = || -> Result<Option<String>, String> {
+            panic!("the configured value was read although a row is recorded")
+        };
+        let recorded = |value: &str| Some(value.to_owned());
+        assert_eq!(
+            recorded_wins_seconds(recorded("45"), unread, 300),
+            Ok("45".to_owned())
+        );
+        assert_eq!(
+            recorded_wins_seconds(recorded("0"), unread, 300),
+            Ok("0".to_owned())
+        );
+        for bad in ["", "-1", "1.5", "ten", " 45"] {
+            assert_eq!(
+                recorded_wins_seconds(recorded(bad), unread, 300),
+                Err(bad.to_owned()),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            recorded_wins_seconds(None, || Ok(Some("90".to_owned())), 300),
+            Ok("90".to_owned())
+        );
+        assert_eq!(
+            recorded_wins_seconds(None, || Ok(None), 300),
+            Ok("300".to_owned())
+        );
+        assert_eq!(
+            recorded_wins_seconds(None, || Err("broken".to_owned()), 300),
+            Err("broken".to_owned())
+        );
+        assert_eq!(
+            recorded_wins_seconds(None, || Ok(Some("soon".to_owned())), 300),
+            Err("soon".to_owned())
+        );
+        let mut reads = 0;
+        let counted = || {
+            reads += 1;
+            Ok(None)
+        };
+        assert_eq!(recorded_wins_seconds(None, counted, 7), Ok("7".to_owned()));
+        assert_eq!(
+            reads, 1,
+            "an unrecorded cadence reads the config exactly once"
+        );
+    }
+
+    /// The mode: the flag, then the recorded one, then config, then local.
+    #[test]
+    fn the_flag_beats_the_record_beats_the_config_beats_local() {
+        use super::{Mode, launch_mode};
+        for configured in ["local", "git", "full", ""] {
+            for recorded in [None, Some(Mode::Local), Some(Mode::Git), Some(Mode::Full)] {
+                for flag in [Mode::Local, Mode::Git, Mode::Full] {
+                    assert_eq!(launch_mode(Some(flag), recorded, configured), flag);
+                }
+                if let Some(recorded) = recorded {
+                    assert_eq!(launch_mode(None, Some(recorded), configured), recorded);
+                }
+            }
+        }
+        assert_eq!(launch_mode(None, None, "git"), Mode::Git);
+        assert_eq!(launch_mode(None, None, "full"), Mode::Full);
+        assert_eq!(launch_mode(None, None, "local"), Mode::Local);
+        for unknown in ["", "Git", " git", "nonsense"] {
+            assert_eq!(launch_mode(None, None, unknown), Mode::Local, "{unknown:?}");
+        }
     }
 
     #[test]
