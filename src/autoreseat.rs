@@ -1371,6 +1371,17 @@ pub enum Decision {
 /// prove idle; a limit move reads that frame as clear, as it always has.
 #[must_use]
 pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64) -> Decision {
+    decide_with_waits(episode, Waits::plain(grace_secs), pane, now)
+}
+
+/// [`decide`] under explicit `waits`: every other hold stands whatever they say.
+#[must_use]
+pub fn decide_with_waits(
+    episode: Option<&Episode>,
+    waits: Waits,
+    pane: &Pane,
+    now: i64,
+) -> Decision {
     let Some(episode) = episode.filter(|found| found.terminal.is_none() || found.cooled(now))
     else {
         return Decision::Rest;
@@ -1386,9 +1397,10 @@ pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64)
     if episode.terminal.is_none() && episode.attempts >= MAX_ATTEMPTS {
         return Decision::Rest;
     }
-    let grace = i64::try_from(grace_secs).unwrap_or(i64::MAX);
+    let quota_wait = i64::try_from(waits.quota).unwrap_or(i64::MAX);
+    let input_wait = i64::try_from(waits.input).unwrap_or(i64::MAX);
     let key = episode.key.epoch();
-    let due_at = key.saturating_add(grace);
+    let due_at = key.saturating_add(quota_wait);
     if now < due_at {
         return Decision::Wait { due_at };
     }
@@ -1396,7 +1408,7 @@ pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64)
     // is due, so only input after the limit can still hold it.
     let touched = pane
         .client_input
-        .is_some_and(|at| now < at.saturating_add(grace));
+        .is_some_and(|at| now < at.saturating_add(input_wait));
     let headroom = episode.trigger == Trigger::Headroom;
     let reason = match pane.frame {
         Frame::Unread => Some(HoldReason::Unread),
@@ -1408,6 +1420,193 @@ pub fn decide(episode: Option<&Episode>, grace_secs: u64, pane: &Pane, now: i64)
         Frame::Clear | Frame::Unproven => None,
     };
     reason.map_or(Decision::Attempt, Decision::Hold)
+}
+
+/// How long after a resume settles a fresh exhausted reading opens an episode
+/// with no grace: two default quota passes and a cycle. A move is prompt only
+/// while a pass lands inside it, so a watchdog interval over 180 s can miss it.
+pub const START_WINDOW_SECS: i64 = 360;
+
+/// What a judged percentage reads when nothing is left.
+pub(crate) const FULL: f64 = 100.0;
+
+/// The seconds [`decide_with_waits`] waits on each cause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Waits {
+    /// After the episode's key.
+    pub quota: u64,
+    /// After the human's last input on the pane.
+    pub input: u64,
+}
+
+impl Waits {
+    /// The one configured grace on both causes.
+    #[must_use]
+    pub const fn plain(grace_secs: u64) -> Self {
+        Self {
+            quota: grace_secs,
+            input: grace_secs,
+        }
+    }
+
+    /// A seat that cannot work: no quota wait, and input keeps the same short
+    /// protection a delivery gets.
+    #[must_use]
+    pub const fn urgent() -> Self {
+        Self {
+            quota: 0,
+            input: crate::deliver::VIEW_GRACE.unsigned_abs(),
+        }
+    }
+}
+
+/// When the resume this session's meta records ended its launch turns: both
+/// stamps present and in order, and not in the future.
+#[must_use]
+pub fn start_fact(started: Option<i64>, settled: Option<i64>, now: i64) -> Option<i64> {
+    let (started, settled) = (started?, settled?);
+    (started > 0 && settled >= started && settled <= now).then_some(settled)
+}
+
+/// The fresh window that proves an account has nothing left, or that a fresh
+/// row reports its spend cap. Per window the newest reading rules: a healthy
+/// reading as new as an exhausted one takes its proof away, an older one
+/// cannot, and another window never does. Stale and unknown rows prove nothing.
+#[must_use]
+pub fn exhausted(windows: &[(crate::quota::WindowKey, Window)], capped: bool) -> Option<Window> {
+    let fresh = || {
+        windows
+            .iter()
+            .filter(|(_, row)| row.status == Status::Fresh)
+    };
+    let worst = |left: &&Window, right: &&Window| left.judged.total_cmp(&right.judged);
+    if capped {
+        let window = fresh().map(|(_, row)| row).max_by(worst)?;
+        return Some(Window {
+            judged: FULL,
+            ..window.clone()
+        });
+    }
+    let answered = |key: &crate::quota::WindowKey, full: &Window| {
+        fresh().any(|(other, row)| {
+            other == key && row.judged < FULL && row.observed_at >= full.observed_at
+        })
+    };
+    fresh()
+        .filter(|(key, row)| row.judged >= FULL && !answered(key, row))
+        .map(|(_, row)| row)
+        .max_by(worst)
+        .cloned()
+}
+
+/// The worst healthy fresh window, when the fresh rows prove relief: every
+/// exhausted reading has a strictly newer healthy one of its own window, so a
+/// tie or a window still full is no relief. No fresh row says nothing.
+#[must_use]
+pub fn relieved(windows: &[(crate::quota::WindowKey, Window)]) -> Option<Window> {
+    let fresh = || {
+        windows
+            .iter()
+            .filter(|(_, row)| row.status == Status::Fresh)
+    };
+    let answered = |key: &crate::quota::WindowKey, full: &Window| {
+        fresh().any(|(other, row)| {
+            other == key && row.judged < FULL && row.observed_at > full.observed_at
+        })
+    };
+    if fresh().any(|(key, row)| row.judged >= FULL && !answered(key, row)) {
+        return None;
+    }
+    fresh()
+        .map(|(_, row)| row)
+        .filter(|row| row.judged < FULL)
+        .max_by(|left, right| left.judged.total_cmp(&right.judged))
+        .cloned()
+}
+
+/// Whether an episode keyed `key` waives its quota wait: the seat's account
+/// reads exhausted now, no brief of this incarnation is armed, and the key
+/// falls inside the window a resume opens.
+#[must_use]
+pub fn urgent(settled: Option<i64>, key: i64, exhausted: bool, brief_armed: bool) -> bool {
+    exhausted
+        && !brief_armed
+        && settled.is_some_and(|settled| {
+            settled <= key && key <= settled.saturating_add(START_WINDOW_SECS)
+        })
+}
+
+/// One fresh read of a seat against the resume its session records:
+/// [`leg::start_read`]. `exhausted` is set only for a seat auto reseat may move.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StartRead {
+    pub settled: Option<i64>,
+    pub exhausted: Option<Window>,
+    pub brief_armed: bool,
+    /// Two captures of this seat prove it quiet ([`quiet_pair`]). Only the
+    /// reader that took them sets it, and only [`Self::frame`] reads it.
+    pub quiet: bool,
+}
+
+impl StartRead {
+    /// [`urgent`] for an episode keyed `key`.
+    #[must_use]
+    pub fn urgent(&self, key: i64) -> bool {
+        urgent(
+            self.settled,
+            key,
+            self.exhausted.is_some(),
+            self.brief_armed,
+        )
+    }
+
+    /// The waits an episode keyed `key` runs under.
+    #[must_use]
+    pub fn waits(&self, key: i64, grace_secs: u64) -> Waits {
+        if self.urgent(key) {
+            Waits::urgent()
+        } else {
+            Waits::plain(grace_secs)
+        }
+    }
+
+    /// The frame an episode keyed `key` is judged by: a quiet proof counts for
+    /// an urgent episode alone.
+    #[must_use]
+    pub fn frame(&self, key: i64, frame: Frame) -> Frame {
+        urgent_frame(frame, self.quiet && self.urgent(key))
+    }
+}
+
+/// Whether two captures of one seat, taken apart, prove nothing runs in it
+/// where the classifier cannot: a resumed claude draws its last reply over an
+/// empty box and no done row, so it never reads idle.
+///
+/// Both reads exist and match byte for byte, hint rows included; the tool's own
+/// box is drawn and empty; no turn runs and no prompt waits for a human. The
+/// bytes are what a turn could not leave alone, so a clock in a status line
+/// proves nothing here and the seat holds as ever.
+#[must_use]
+pub fn quiet_pair(first: Option<&str>, second: Option<&str>, agent_bin: &str) -> bool {
+    let (Some(first), Some(second)) = (first, second) else {
+        return false;
+    };
+    let tool = crate::tool::ToolKind::from_binary_name(agent_bin);
+    first == second
+        && crate::harness_state::read_frame(first, tool)
+            .is_some_and(|frame| frame.state != HarnessState::Busy)
+        && !crate::harness_state::has_human_draft(first, tool)
+        && crate::watchdog::human_prompt_class(first, agent_bin).is_none()
+}
+
+/// What a quiet proof makes of `frame`: only an unproven frame gains from it.
+#[must_use]
+pub fn urgent_frame(frame: Frame, quiet: bool) -> Frame {
+    if frame == Frame::Unproven && quiet {
+        Frame::Clear
+    } else {
+        frame
+    }
 }
 
 /// The frame one capture proves: a read that failed proves nothing, a running
@@ -1693,6 +1892,9 @@ pub fn room(windows: &[Window], at: u8) -> Room {
 pub fn headroom_words(window: &Window) -> String {
     format!("headroom {}% {}", percent(window.judged), window.label)
 }
+
+/// The re-arm record's summary when a new start ends an earlier start's episode.
+pub const RESTARTED_SUMMARY: &str = "headroom cleared: a new start reads its own account";
 
 /// The re-arm record's summary.
 #[must_use]
@@ -1994,6 +2196,10 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
         .collect();
     crate::state::summary_of(&cut)
 }
+
+#[cfg(test)]
+#[path = "autoreseat/start_policy_spec.rs"]
+mod start_policy_spec;
 
 #[cfg(test)]
 mod tests {
@@ -4566,5 +4772,102 @@ mod tests {
             assert_eq!(super::super::Fate::Carried.word(), "carried");
             assert_eq!(super::super::Fate::Seeded.word(), "seeded");
         }
+    }
+
+    #[test]
+    fn a_quiet_proof_counts_for_an_urgent_episode_and_for_no_other() {
+        let full = Window {
+            judged: FULL,
+            critical: true,
+            long: false,
+            observed_at: 100,
+            resets_at: None,
+            status: Status::Fresh,
+            label: "session 5h".to_owned(),
+        };
+        let urgent = StartRead {
+            settled: Some(100),
+            exhausted: Some(full),
+            brief_armed: false,
+            quiet: true,
+        };
+        assert_eq!(urgent.frame(100, Frame::Unproven), Frame::Clear);
+        assert_eq!(
+            urgent.frame(100, Frame::Busy),
+            Frame::Busy,
+            "only an unproven frame gains"
+        );
+        let cases = [
+            (
+                "no pair",
+                StartRead {
+                    quiet: false,
+                    ..urgent.clone()
+                },
+            ),
+            (
+                "armed brief",
+                StartRead {
+                    brief_armed: true,
+                    ..urgent.clone()
+                },
+            ),
+            (
+                "not exhausted",
+                StartRead {
+                    exhausted: None,
+                    ..urgent.clone()
+                },
+            ),
+            (
+                "no resume",
+                StartRead {
+                    settled: None,
+                    ..urgent.clone()
+                },
+            ),
+        ];
+        for (case, read) in cases {
+            assert_eq!(read.frame(100, Frame::Unproven), Frame::Unproven, "{case}");
+        }
+        for key in [99, 100 + START_WINDOW_SECS + 1] {
+            assert_eq!(urgent.frame(key, Frame::Unproven), Frame::Unproven, "{key}");
+        }
+    }
+
+    #[test]
+    fn relief_needs_a_strictly_newer_healthy_reading_of_every_full_window() {
+        let key = |bucket: &str| crate::quota::WindowKey {
+            bucket: bucket.to_owned(),
+            qualifier: None,
+            minutes: Some(300),
+        };
+        let row = |bucket: &str, judged: f64, observed_at: i64, status: Status| {
+            let window = Window {
+                judged,
+                critical: false,
+                long: false,
+                observed_at,
+                resets_at: None,
+                status,
+                label: "session 5h".to_owned(),
+            };
+            (key(bucket), window)
+        };
+        let fresh = Status::Fresh;
+        let judged =
+            |rows: &[(crate::quota::WindowKey, Window)]| relieved(rows).map(|window| window.judged);
+        assert_eq!(judged(&[row("a", 10.0, 5, fresh)]), Some(10.0));
+        assert_eq!(judged(&[]), None, "nothing read is no relief");
+        assert_eq!(judged(&[row("a", 10.0, 5, Status::Stale)]), None);
+        assert_eq!(judged(&[row("a", 100.0, 5, fresh)]), None);
+        let tied = [row("a", 100.0, 5, fresh), row("a", 10.0, 5, fresh)];
+        assert_eq!(judged(&tied), None, "a tie proves neither way");
+        let newer = [row("a", 100.0, 5, fresh), row("a", 10.0, 6, fresh)];
+        assert_eq!(judged(&newer), Some(10.0), "newer healthy is relief");
+        let older = [row("a", 10.0, 5, fresh), row("a", 100.0, 6, fresh)];
+        assert_eq!(judged(&older), None);
+        let other = [row("a", 100.0, 5, fresh), row("b", 10.0, 6, fresh)];
+        assert_eq!(judged(&other), None, "another window answers for nothing");
     }
 }

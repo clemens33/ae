@@ -622,6 +622,10 @@ struct QuotaCarry {
     /// not a delivery.
     settled: Vec<(QuotaKey, QuotaRecipient)>,
     last_observation: Option<crate::quota::Observation>,
+    /// When this daemon's first pass ran.
+    first_pass_at: Option<i64>,
+    /// The resume whose follow-up pass has run.
+    start_pass: Option<i64>,
     /// Only successfully appended samples, bounded to one current pass (256 keys).
     history_seen: Vec<crate::quota::history::Sample>,
     history_note_day: Option<i64>,
@@ -901,6 +905,28 @@ fn quota_observation_due(carry: &mut QuotaCarry, knobs: &Knobs) -> bool {
     }
     carry.sweeps_until_observe = sweeps.saturating_sub(1);
     true
+}
+
+/// How long after a resume settles its one follow-up pass waits: a seat's
+/// statusline feeds its first reading 2-3 s into its start (measured).
+const START_PASS_DELAY_SECS: i64 = 5;
+
+/// Whether this cycle owes the resume settled at `settled` its one follow-up
+/// quota pass: the first pass may have run before the seat's first reading,
+/// and the regular cadence may not come back inside the start window.
+/// Separate from [`quota_observation_due`], whose counter this never advances.
+fn start_pass_due(
+    first_pass_at: Option<i64>,
+    taken: Option<i64>,
+    settled: Option<i64>,
+    now: i64,
+) -> bool {
+    settled.is_some_and(|settled| {
+        taken != Some(settled)
+            && first_pass_at.is_some_and(|at| at < now)
+            && settled.saturating_add(START_PASS_DELAY_SECS) <= now
+            && now <= settled.saturating_add(crate::autoreseat::START_WINDOW_SECS)
+    })
 }
 
 impl QuotaCarry {
@@ -4071,6 +4097,11 @@ fn watch(
                         meta_agent: is_meta_agent(bytes),
                         roster: meta.roster().to_vec(),
                         started: meta.started_epoch().or_else(|| meta.latest_launch_epoch()),
+                        settled: crate::autoreseat::start_fact(
+                            meta.started_epoch(),
+                            meta.launch_settled_epoch(),
+                            Timestamp::now().epoch(),
+                        ),
                         launch_ids: meta
                             .roster()
                             .iter()
@@ -4493,6 +4524,11 @@ struct Carry {
     /// A headroom hold is also not named again while the journal's newest
     /// record of its episode is that same hold.
     auto_named: Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
+    /// Last cycle's capture of each seat a resume reads as exhausted, by pane
+    /// and launch, for the quiet pair. Taken whole at each cycle's start, so a
+    /// failed read, a seat no longer exhausted, a new pane or a new incarnation
+    /// leaves nothing to compare.
+    start_frames: Vec<((String, Option<String>), String)>,
     /// The `auto_reseat_at` notes this daemon journaled: each once per start.
     auto_noted: Vec<String>,
     /// The unusable `auto_trust` values this daemon named: each once per start.
@@ -4520,6 +4556,7 @@ impl Carry {
             adoption: Adoption::default(),
             brief_cursor: None,
             auto_named: Vec::new(),
+            start_frames: Vec::new(),
             auto_noted: Vec::new(),
             trust_noted: Vec::new(),
             effort: crate::effort::leg::Carry::default(),
@@ -4808,6 +4845,8 @@ struct AutoSeat {
     room: crate::autoreseat::Room,
     /// Its `[auto_reseat]` row names nothing, but its own family does.
     derives: bool,
+    /// This cycle's read of it against the session's resume.
+    start: crate::autoreseat::StartRead,
 }
 
 /// What the auto reseat step does this cycle.
@@ -4924,18 +4963,42 @@ fn auto_acts(
         } else if seat.limited {
             limit
         } else {
-            if settings.headroom_at.is_none() {
-                continue;
-            }
             let found = headroom;
             let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
+            let opening = seat.start.urgent(now);
+            let earlier = |open: &crate::autoreseat::Episode| {
+                opening && seat.start.settled.is_some_and(|at| open.key.epoch() < at)
+            };
             match (&found, &seat.room) {
-                (None, Room::Crossed(window)) => {
+                (None, _) if opening => {
+                    let cause = seat
+                        .start
+                        .exhausted
+                        .as_ref()
+                        .map(crate::autoreseat::headroom_words)
+                        .unwrap_or_default();
+                    acts.push(AutoAct::Open { slot, agent, cause });
+                    continue;
+                }
+                (None, Room::Crossed(window)) if settings.headroom_at.is_some() => {
                     let cause = crate::autoreseat::headroom_words(window);
                     acts.push(AutoAct::Open { slot, agent, cause });
                     continue;
                 }
-                (Some(open), Room::Relieved(window)) if open.open.is_none() => {
+                // Each start answers for itself: an earlier start's episode
+                // ends, and the next cycle opens this one's.
+                (Some(open), _) if open.open.is_none() && earlier(open) => {
+                    let summary = crate::autoreseat::RESTARTED_SUMMARY.to_owned();
+                    let key = open.key;
+                    acts.push(AutoAct::Rearm {
+                        slot,
+                        agent,
+                        key,
+                        summary,
+                    });
+                    continue;
+                }
+                (Some(open), Room::Relieved(window)) if open.open.is_none() && !opening => {
                     let summary = crate::autoreseat::relieved_words(window);
                     let key = open.key;
                     acts.push(AutoAct::Rearm {
@@ -4947,6 +5010,14 @@ fn auto_acts(
                     continue;
                 }
                 _ => {}
+            }
+            // With no threshold, only a start's own episode moves.
+            if settings.headroom_at.is_none()
+                && !found
+                    .as_ref()
+                    .is_some_and(|open| seat.start.urgent(open.key.epoch()))
+            {
+                continue;
             }
             found
         };
@@ -4974,8 +5045,12 @@ fn auto_acts(
         );
         // A headroom episode moves only while its account reads within the gap
         // of the threshold; an attempt already open is judged whatever it reads.
-        let near = matches!(seat.room, Room::Crossed(_) | Room::Near);
-        match crate::autoreseat::decide(Some(&found), settings.grace_secs, &seat.pane, now) {
+        let urgent = seat.start.urgent(key.epoch());
+        let near = urgent || matches!(seat.room, Room::Crossed(_) | Room::Near);
+        let waits = seat.start.waits(key.epoch(), settings.grace_secs);
+        let mut pane = seat.pane;
+        pane.frame = seat.start.frame(key.epoch(), pane.frame);
+        match crate::autoreseat::decide_with_waits(Some(&found), waits, &pane, now) {
             Decision::Overdue => acts.push(AutoAct::Overdue {
                 slot,
                 agent,
@@ -5036,6 +5111,8 @@ struct Cycle<'a> {
     launch_ids: Vec<(String, String)>,
     /// The session's start, as `ae list` reads it: alerts older are not news.
     started: Option<i64>,
+    /// When the resume this meta records settled.
+    settled: Option<i64>,
     /// The global auto reseat settings, read per cycle beside the fleet order,
     /// so turning the switch off stops the next move.
     auto: crate::autoreseat::Settings,
@@ -5377,10 +5454,15 @@ impl Cycle<'_> {
     ) -> crate::Result<()> {
         match self.quota_observation(now) {
             Ok(observation) => {
-                let recipients = quota_recipients(&self.roster, self.lead_pair);
+                let mut recipients = quota_recipients(&self.roster, self.lead_pair);
                 // TWO sets, never one: the advisory's lead pair above, and
                 // every seat proven to sit on a readable scope below.
                 let mut candidates = quota_ask_candidates(&self.roster, inputs.panes);
+                // A seat this cycle's auto step moves hears neither: a turn
+                // on its account could only fail.
+                let urgent = self.urgent_slots(&observation, inputs.panes, now);
+                recipients.retain(|seat| !urgent.contains(&seat.slot));
+                candidates.retain(|seat| !urgent.contains(&seat.recipient.slot));
                 for candidate in &mut candidates {
                     candidate.live = live_model(
                         &candidate.recipient,
@@ -5743,11 +5825,81 @@ impl Cycle<'_> {
             .find(|row| row.slot == slot)
             .is_some_and(|row| {
                 let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
-                !crate::autoreseat::leg::listed(self.meta_dir, &bytes, row, &[]).is_empty()
-                    // A held choice reaches the trigger, which names the hold
-                    // rather than "no candidate" (#269).
-                    || crate::run::observed_standing(self.meta_dir, slot).is_some()
+                crate::autoreseat::leg::derivable(self.meta_dir, &bytes, row)
             })
+    }
+
+    /// One fresh read of the seat at `slot` against this session's resume.
+    fn start_read(
+        &self,
+        quota: Option<&crate::quota::Observation>,
+        (slot, pane): (&str, &str),
+        pin: Option<&str>,
+        now: i64,
+    ) -> crate::autoreseat::StartRead {
+        let Some(row) = self.roster.iter().find(|row| row.slot == slot) else {
+            return crate::autoreseat::StartRead::default();
+        };
+        let profile = self.seat_profile(slot);
+        let at = crate::autoreseat::leg::StartSeat {
+            dir: self.meta_dir,
+            row,
+            seat: crate::autoreseat::Seat {
+                session: self.session,
+                slot,
+                agent: &row.name,
+                profile: &profile,
+                orchestrator: self.meta_agent,
+            },
+            settled: self.settled,
+            pane: Some(pane),
+            pin,
+        };
+        crate::autoreseat::leg::start_read(&self.auto, &at, quota, now)
+    }
+
+    /// Whether auto reseat may move any seat of this session.
+    fn any_seat_reachable(&self) -> bool {
+        self.roster.iter().any(|row| {
+            let profile = self.seat_profile(&row.slot);
+            let seat = crate::autoreseat::Seat {
+                session: self.session,
+                slot: &row.slot,
+                agent: &row.name,
+                profile: &profile,
+                orchestrator: self.meta_agent,
+            };
+            let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
+            crate::autoreseat::leg::reachable(&self.auto, &seat, (self.meta_dir, &bytes), row)
+        })
+    }
+
+    /// The slots a resume's exhausted reading moves now, by this observation.
+    fn urgent_slots(
+        &self,
+        observation: &crate::quota::Observation,
+        panes: &[crate::tmux::WatchPane],
+        now: i64,
+    ) -> Vec<String> {
+        if self.settled.is_none() {
+            return Vec::new();
+        }
+        panes
+            .iter()
+            .filter_map(|pane| {
+                pane.slot
+                    .as_deref()
+                    .map(|slot| (slot, pane.pane_id.as_str()))
+            })
+            .filter(|(slot, pane)| {
+                let bin = self.agent_bin(slot).unwrap_or_default();
+                let tool = crate::tool::ToolKind::from_binary_name(&bin);
+                let pin = self.seat_pin(slot, tool).model;
+                self.start_read(Some(observation), (slot, pane), pin.as_deref(), now)
+                    .urgent(now)
+            })
+            .map(|(slot, _)| slot.to_owned())
+            .collect()
     }
 
     /// One quota-cadence pass: the vendor-quota observation and advisory
@@ -5761,7 +5913,17 @@ impl Cycle<'_> {
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
-        if quota_observation_due(carry, &self.knobs) {
+        let regular = quota_observation_due(carry, &self.knobs);
+        // Zero disables the periodic pass, and this one with it; a session with
+        // no seat auto reseat may move reads exactly as it did.
+        let follow_up = self.knobs.quota_every_secs > 0
+            && start_pass_due(carry.first_pass_at, carry.start_pass, self.settled, now)
+            && self.any_seat_reachable();
+        if follow_up {
+            carry.start_pass = self.settled;
+        }
+        if regular || follow_up {
+            carry.first_pass_at.get_or_insert(now);
             self.spawn_go_usage(now);
             if self.knobs.quota_aware {
                 self.refresh_quota(carry, inputs, now, err)?;
@@ -5945,6 +6107,7 @@ impl Cycle<'_> {
         let mut effort_seats: Vec<crate::effort::leg::Sight> = Vec::new();
         // ONE stamp read per cycle; every pane shares the session's grace.
         let attempt = crate::store::open(self.meta_dir).launch_attempt();
+        let start_frames = std::mem::take(&mut carry.start_frames);
 
         for pane in &observed {
             let Some(agent) = pane.agent.as_deref().filter(|name| !name.is_empty()) else {
@@ -5971,6 +6134,25 @@ impl Cycle<'_> {
             let throttle = throttle_class(&capture, agent_bin.as_deref().unwrap_or_default());
             let throttle_quota = self.throttle_quota(&carry.quota, &slot, now, throttle.is_some());
             let own_room = self.own_room(&carry.quota, &slot, pin.as_deref(), now);
+            let mut resume = self.start_read(
+                carry.quota.last_observation.as_ref(),
+                (&slot, &pane.pane_id),
+                pin.as_deref(),
+                now,
+            );
+            if resume.exhausted.is_some() && capture_ok {
+                let seat = (
+                    pane.pane_id.clone(),
+                    launch_id_for(&self.launch_ids, &slot).map(str::to_owned),
+                );
+                let before = start_frames.iter().find(|(held, _)| *held == seat);
+                resume.quiet = crate::autoreseat::quiet_pair(
+                    before.map(|(_, frame)| frame.as_str()),
+                    Some(&capture),
+                    agent_bin.as_deref().unwrap_or_default(),
+                );
+                carry.start_frames.push((seat, capture.clone()));
+            }
             // ONE process-tree reading: the dead verdict and the unknown-snapshot
             // counter are two questions about the same answer.
             let descendancy = descendancy_of(table.as_deref(), pane.pane_pid, agent_bin.as_deref());
@@ -6128,7 +6310,9 @@ impl Cycle<'_> {
                 effort_seats.push(crate::effort::leg::Sight {
                     slot: slot.clone(),
                     capture: capture.clone(),
-                    limited: carried.limit_since.is_some(),
+                    // A resume's exhausted seat is moved, never restarted on
+                    // that account.
+                    limited: carried.limit_since.is_some() || resume.urgent(now),
                     point: crate::effort::leg::Point {
                         ready: capture_ok
                             && seen.harness.frame == HarnessState::Idle
@@ -6162,12 +6346,14 @@ impl Cycle<'_> {
                         &events,
                         (&slot, agent),
                         carried.limit_since.is_some()
+                            || resume.exhausted.is_some()
                             || matches!(
                                 own_room,
                                 crate::autoreseat::Room::Crossed(_) | crate::autoreseat::Room::Near
                             ),
                     ),
                     room: own_room,
+                    start: resume,
                 });
             }
             // A prompt over a standing failure is published as the failure.
@@ -7330,18 +7516,13 @@ impl Cycle<'_> {
         pin: Option<&str>,
         now: i64,
     ) -> crate::autoreseat::Room {
-        let at = self
-            .auto
-            .headroom_at
-            .filter(|_| self.auto.switch != crate::autoreseat::Switch::Off);
-        match (at, self.roster.iter().find(|entry| entry.slot == slot)) {
-            (Some(at), Some(entry)) => crate::autoreseat::leg::own_room(
-                quota.last_observation.as_ref(),
-                entry,
-                pin,
-                at,
-                now,
-            ),
+        let observed = quota.last_observation.as_ref();
+        let on = self.auto.switch != crate::autoreseat::Switch::Off;
+        match (on, self.roster.iter().find(|entry| entry.slot == slot)) {
+            (true, Some(entry)) => match self.auto.headroom_at {
+                Some(at) => crate::autoreseat::leg::own_room(observed, entry, pin, at, now),
+                None => crate::autoreseat::leg::own_relief(observed, entry, pin, now),
+            },
             _ => crate::autoreseat::Room::Unread,
         }
     }
@@ -10848,6 +11029,31 @@ mod tests {
     }
 
     #[test]
+    fn a_resume_owes_one_follow_up_pass_inside_its_window() {
+        let due = super::start_pass_due;
+        let settled = Some(1_000);
+        let first = Some(1_001);
+        assert!(!due(first, None, None, 1_005), "no resume, no pass");
+        assert!(
+            !due(None, None, settled, 1_005),
+            "the regular pass goes first"
+        );
+        assert!(
+            !due(Some(1_005), None, settled, 1_005),
+            "not the same cycle"
+        );
+        assert!(!due(first, None, settled, 1_004), "the seat feeds late");
+        assert!(due(first, None, settled, 1_005));
+        assert!(due(first, None, settled, 1_360));
+        assert!(!due(first, None, settled, 1_361), "the window has closed");
+        assert!(!due(first, settled, settled, 1_005), "once per resume");
+        assert!(
+            due(first, Some(900), settled, 1_005),
+            "a new resume owes its own"
+        );
+    }
+
+    #[test]
     fn quota_cadence_rounds_up_to_whole_sweeps_and_zero_disables() {
         let mut carry = QuotaCarry::default();
         let knobs = Knobs {
@@ -10963,6 +11169,7 @@ mod tests {
             meta_agent: false,
             launch_ids: Vec::new(),
             started: None,
+            settled: None,
         };
         let mut err = Vec::new();
         cycle
@@ -11032,6 +11239,7 @@ mod tests {
             meta_agent: false,
             launch_ids: Vec::new(),
             started: None,
+            settled: None,
         };
         assert!(
             cycle.throttle_quota(&carry, "main", 10_000, true).is_some(),
@@ -13934,6 +14142,7 @@ mod tests {
             meta_agent: false,
             launch_ids: Vec::new(),
             started: None,
+            settled: None,
         };
         let seat = ("spawned.3", "builder");
         let quota = QuotaCarry::default();
@@ -14018,6 +14227,7 @@ mod tests {
             meta_agent: false,
             launch_ids: Vec::new(),
             started: None,
+            settled: None,
         };
         let seat = ("spawned.3", "builder");
         // `fable`'s family is `opus` alone: the lead's two carry another effort.
@@ -14098,6 +14308,7 @@ mod tests {
             meta_agent: false,
             launch_ids: Vec::new(),
             started: None,
+            settled: None,
         };
         let now = crate::time::Timestamp::now().epoch();
         // The episode keys, both well inside today's journal.
@@ -14337,6 +14548,7 @@ mod tests {
             limited: true,
             room: crate::autoreseat::Room::Unread,
             derives: false,
+            start: crate::autoreseat::StartRead::default(),
         };
         let on = Settings {
             switch: Switch::On,
@@ -14549,6 +14761,7 @@ mod tests {
             limited,
             room: crate::autoreseat::Room::Unread,
             derives: false,
+            start: crate::autoreseat::StartRead::default(),
         };
         let on = Settings {
             switch: Switch::On,
@@ -14703,6 +14916,7 @@ mod tests {
             meta_agent: false,
             launch_ids: Vec::new(),
             started: None,
+            settled: None,
         };
         let now = crate::time::Timestamp::now().epoch();
         let at = crate::time::Timestamp::from_epoch;
@@ -14897,6 +15111,7 @@ mod tests {
             limited,
             room,
             derives: false,
+            start: crate::autoreseat::StartRead::default(),
         };
         let on = Settings {
             switch: Switch::On,
@@ -15541,6 +15756,7 @@ mod tests {
             meta_agent: false,
             launch_ids: Vec::new(),
             started: None,
+            settled: None,
         };
         let events = vec![
             Event::parse_line(
@@ -15617,6 +15833,7 @@ mod tests {
             meta_agent: false,
             launch_ids: Vec::new(),
             started: None,
+            settled: None,
         };
         let events = vec![
             Event::parse_line(
@@ -17221,6 +17438,7 @@ mod tests {
             meta_agent: false,
             launch_ids: vec![("main".to_owned(), launch.to_owned())],
             started: None,
+            settled: None,
         }
     }
 
@@ -17870,6 +18088,7 @@ mod tests {
             meta_agent: true,
             launch_ids: Vec::new(),
             started: None,
+            settled: None,
         }
     }
 

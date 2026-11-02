@@ -118,6 +118,9 @@ const CORE_KEY: &str = "ae_core_version";
 /// Session lifecycle epochs, written by the launch metadata owner.
 const CREATED_KEY: &str = "created";
 const STARTED_KEY: &str = "started";
+/// Written once by a resuming launch, after its last launch turn ended, and
+/// dropped by the next launch's rebuild: a resume whose deliveries are over.
+pub(crate) const LAUNCH_SETTLED_KEY: &str = "launch_settled";
 const LAUNCH_TIME_PREFIX: &str = "launch_time.";
 const LAUNCH_ID_PREFIX: &str = "launch_id.";
 
@@ -453,6 +456,7 @@ pub struct Meta {
     created: Option<String>,
     /// Most recent successful launch/resume time; absent on legacy sessions.
     started: Option<String>,
+    launch_settled: Option<String>,
     /// Per-seat legacy launch times, retained for the started fallback.
     launch_times: Vec<(String, String)>,
     launch_ids: Vec<(String, String)>,
@@ -638,6 +642,7 @@ impl Meta {
             CORE_KEY => self.ae_core = None,
             CREATED_KEY => self.created = None,
             STARTED_KEY => self.started = None,
+            LAUNCH_SETTLED_KEY => self.launch_settled = None,
             crate::migrate::KEY => self.declared_version = None,
             SCHEMA_KEY => self.schema = None,
             // A repeated selector key is AMBIGUOUS, which is a
@@ -715,6 +720,7 @@ impl Meta {
             CORE_KEY => self.ae_core = Some(value.to_owned()),
             CREATED_KEY => self.created = Some(value.to_owned()),
             STARTED_KEY => self.started = Some(value.to_owned()),
+            LAUNCH_SETTLED_KEY => self.launch_settled = Some(value.to_owned()),
             crate::migrate::KEY => self.declared_version = Some(value.to_owned()),
             // The selector family is the one exception: these two are read and
             // normalized rather than tolerated-and-ignored.
@@ -1235,6 +1241,13 @@ impl Meta {
     #[must_use]
     pub fn started_epoch(&self) -> Option<i64> {
         positive_epoch(self.started.as_deref())
+    }
+
+    /// When this resume's launch turns ended, whatever each outcome was.
+    /// Absent while they are delivering, after a crash, and on a new session.
+    #[must_use]
+    pub fn launch_settled_epoch(&self) -> Option<i64> {
+        positive_epoch(self.launch_settled.as_deref())
     }
 
     pub(crate) fn launch_epoch(&self, slot: &str) -> Option<i64> {

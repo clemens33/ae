@@ -17,6 +17,12 @@ fuzz_target!(|data: &[u8]| {
     // crashed write reaches that split directly. The tool a writer would tag
     // with comes off the same hostile document, so it is driven from it here.
     let parsed = ae::meta::Meta::parse(&text);
+    // The resume's settled mark decides whether a seat waits out its grace.
+    let _ = std::hint::black_box(ae::autoreseat::start_fact(
+        parsed.started_epoch(),
+        parsed.launch_settled_epoch(),
+        1_800_000_000,
+    ));
     for slot in ["main", "worker.0", "spawned.1"] {
         // The observed record and the launch baseline are judged per row
         // family from the RAW bytes: presence, duplication, partial families

@@ -142,6 +142,9 @@ pub(crate) fn tagged(summary: &str, cause: &str) -> String {
 /// The hold a headroom attempt is closed with once `auto_reseat_at` is off.
 const HEADROOM_OFF: &str = "held: auto_reseat_at is off";
 
+/// An attempt started before its grace whose start proof ended on the way here.
+const START_GONE: &str = "held: the start's exhausted reading no longer stands";
+
 /// The hold journaled when the seat is no longer eligible, led by its class.
 pub(crate) fn ineligible_record(why: Ineligible) -> String {
     why.class().lead(ineligible_summary(why))
@@ -414,6 +417,8 @@ pub(crate) struct OwnScope {
     /// A usable row of the scope, of ANY length and model family, reports a
     /// reached spend cap: the cap is the account's, not one window's.
     pub(crate) spend_capped: bool,
+    /// The first FRESH row that reports the cap.
+    pub(crate) fresh_cap: Option<super::Window>,
 }
 
 /// The windows of the one scope the seat's recorded identity names — the join
@@ -431,6 +436,7 @@ pub(crate) fn own_scope(
     let mut scope = OwnScope {
         windows: Vec::new(),
         spend_capped: false,
+        fresh_cap: None,
     };
     for group in seen.groups.iter().filter(|group| {
         group.tool == identity.tool && group.source.as_ref() == Some(&identity.source)
@@ -439,7 +445,11 @@ pub(crate) fn own_scope(
             let Some(window) = window(group, row, now) else {
                 continue;
             };
-            scope.spend_capped |= group.policy.spend_capped() && super::usable(&window);
+            let capped = group.policy.spend_capped();
+            scope.spend_capped |= capped && super::usable(&window);
+            if capped && window.status == crate::quota::Status::Fresh {
+                scope.fresh_cap.get_or_insert_with(|| window.clone());
+            }
             if !crate::quota::scoped_elsewhere(group.tool, row.qualifier.as_deref(), pin) {
                 scope
                     .windows
@@ -463,14 +473,11 @@ pub(crate) fn own_pressure(
 ) -> Option<f64> {
     let scope = own_scope(quota, entry, pin, now)?;
     if scope.spend_capped {
-        return Some(FULL);
+        return Some(super::FULL);
     }
     let windows: Vec<super::Window> = scope.windows.into_iter().map(|(_, w)| w).collect();
     super::worst_long(&windows).map(|window| window.judged)
 }
-
-/// What a reached spend cap judges every window of its account at.
-const FULL: f64 = 100.0;
 
 /// The seat's OWN account against the threshold `at`: [`own_scope`]'s windows.
 pub(crate) fn own_room(
@@ -484,6 +491,123 @@ pub(crate) fn own_room(
         let windows: Vec<super::Window> = scope.windows.into_iter().map(|(_, w)| w).collect();
         super::room(&windows, at)
     })
+}
+
+/// With no threshold, the seat's OWN account as a start's episode asks: proven
+/// relief, and anything less says nothing.
+pub(crate) fn own_relief(
+    quota: Option<&crate::quota::Observation>,
+    entry: &crate::meta::RosterEntry,
+    pin: Option<&str>,
+    now: i64,
+) -> Room {
+    own_scope(quota, entry, pin, now)
+        .filter(|scope| !scope.spend_capped)
+        .and_then(|scope| super::relieved(&scope.windows))
+        .map_or(Room::Unread, Room::Relieved)
+}
+
+/// The fresh window that proves the seat's OWN account has nothing left.
+///
+/// Stricter than [`own_scope`], which keeps a window nothing proves elsewhere:
+/// this one waives a wait, so a model-scoped window must be proven to bind the
+/// seat ([`crate::quota::scoped_here`]). A spend cap is the account's.
+pub(crate) fn own_exhausted(
+    quota: Option<&crate::quota::Observation>,
+    entry: &crate::meta::RosterEntry,
+    pin: Option<&str>,
+    now: i64,
+) -> Option<super::Window> {
+    let tool = crate::quota::recorded_identity(entry)?.tool;
+    let scope = own_scope(quota, entry, pin, now)?;
+    let capped = scope.fresh_cap.is_some();
+    let bound: Vec<_> = scope
+        .windows
+        .into_iter()
+        .filter(|(key, _)| crate::quota::scoped_here(tool, key.qualifier.as_deref(), pin))
+        .collect();
+    super::exhausted(&bound, capped).or_else(|| {
+        let window = scope.fresh_cap?;
+        Some(super::Window {
+            judged: super::FULL,
+            ..window
+        })
+    })
+}
+
+/// Whether a seat its `[auto_reseat]` row names nothing for still has a move:
+/// a candidate of its own family, or a held choice the trigger will name.
+pub(crate) fn derivable(dir: &Path, bytes: &[u8], row: &crate::meta::RosterEntry) -> bool {
+    !listed(dir, bytes, row, &[]).is_empty()
+        || crate::run::observed_standing(dir, &row.slot).is_some()
+}
+
+/// Everything [`start_read`] asks about one seat.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StartSeat<'a> {
+    pub dir: &'a Path,
+    pub row: &'a crate::meta::RosterEntry,
+    pub seat: Seat<'a>,
+    /// The session's [`super::start_fact`].
+    pub settled: Option<i64>,
+    /// The seat's live pane: a brief is armed only on the pane that would
+    /// receive it, and with no pane proven nothing can be ruled out.
+    pub pane: Option<&'a str>,
+    pub pin: Option<&'a str>,
+}
+
+/// Whether a resume's exhausted seat moves now: the ONE reading the daemon's
+/// step, the trigger, the leg, effort and the quota notices all judge by.
+pub(crate) fn start_read(
+    settings: &Settings,
+    at: &StartSeat<'_>,
+    quota: Option<&crate::quota::Observation>,
+    now: i64,
+) -> super::StartRead {
+    let Some(exhausted) = at
+        .settled
+        .and_then(|_| own_exhausted(quota, at.row, at.pin, now))
+    else {
+        return super::StartRead::default();
+    };
+    let bytes = crate::meta::read_bytes(at.dir).unwrap_or_default();
+    super::StartRead {
+        settled: at.settled,
+        brief_armed: brief_armed(at, &bytes),
+        exhausted: reachable(settings, &at.seat, (at.dir, &bytes), at.row).then_some(exhausted),
+        quiet: false,
+    }
+}
+
+/// Whether auto reseat may move this seat at all: eligible, or eligible but for
+/// a row that names nothing while its own family does.
+pub(crate) fn reachable(
+    settings: &Settings,
+    seat: &Seat<'_>,
+    (dir, bytes): (&Path, &[u8]),
+    row: &crate::meta::RosterEntry,
+) -> bool {
+    match super::eligible(settings, seat) {
+        Ok(_) => true,
+        Err(Ineligible::Unmapped) => derivable(dir, bytes, row),
+        Err(_) => false,
+    }
+}
+
+/// A brief record that would still deliver to this incarnation on this pane.
+/// A move mints a new launch id, which would end it undelivered. An unproven
+/// pane denies the waiver rather than assume no record applies.
+fn brief_armed(at: &StartSeat<'_>, bytes: &[u8]) -> bool {
+    let Some(pane) = at.pane else {
+        return true;
+    };
+    let key = format!("launch_id.{}", at.row.slot);
+    let launch_id = crate::meta::sole_value(bytes, &key);
+    matches!(
+        crate::brief_retry::read(at.dir, &at.row.slot),
+        Some(Ok(record))
+            if pane == record.pane && launch_id == Some(record.launch_id.as_bytes())
+    )
 }
 
 /// The quota readings the chooser judges by, read as the session's own
@@ -580,6 +704,58 @@ fn bounded(text: &str) -> String {
 }
 
 const STOP_UNKNOWN: &str = " --stop-unknown";
+
+/// [`start_read`] with every input read now: config, roster row, pin, journal
+/// of the brief, quota. `None` when the slot no longer holds `incarnation`,
+/// the agent, profile and launch the attempt was opened for: a seat that has
+/// changed under the leg answers for nothing.
+fn read_start(
+    root: &Path,
+    dir: &Path,
+    argv: &Argv,
+    (agent, profile, launch): (&str, &str, Option<&str>),
+    at: Timestamp,
+) -> Option<super::StartRead> {
+    let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    let row = meta.roster().iter().find(|row| row.slot == argv.slot)?;
+    let same = row.name == agent
+        && row.profile.as_deref().unwrap_or_default() == profile
+        && meta.launch_id(&argv.slot) == launch;
+    if !same {
+        return None;
+    }
+    let settings = super::settings(Some(&crate::doors::config_file(
+        crate::shape::current(),
+        root,
+    )));
+    let live = crate::tracked::resolve_on(agent, &argv.session, dir).ok();
+    let pin = crate::reseat::resolved(dir, profile).and_then(|found| found.pin);
+    let seat = Seat {
+        session: &argv.session,
+        slot: &argv.slot,
+        agent,
+        profile,
+        orchestrator: crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role,
+    };
+    Some(start_read(
+        &settings,
+        &StartSeat {
+            dir,
+            row,
+            seat,
+            settled: super::start_fact(
+                meta.started_epoch(),
+                meta.launch_settled_epoch(),
+                at.epoch(),
+            ),
+            pane: live.as_ref().map(|(found, _)| found.pane.as_str()),
+            pin: pin.as_deref(),
+        },
+        read_quota_at(root, dir, &meta, at).as_ref(),
+        at.epoch(),
+    ))
+}
 
 /// `_auto-reseat <dir> <slot> <key>`: move the seat at `slot` off its usage
 /// limit as the watchdog, and journal ONE outcome for the attempt under `key`.
@@ -681,6 +857,12 @@ pub(crate) fn run(
     let threshold = settings
         .headroom_at
         .filter(|_| found.trigger == Trigger::Headroom);
+    let quota = read_quota_at(root, dir, &meta, now);
+    // No lock spans the trigger and this leg, so the proof is judged again here.
+    let incarnation = (agent.as_str(), profile.as_str(), meta.launch_id(&argv.slot));
+    let start = read_start(root, dir, &argv, incarnation, now).unwrap_or_default();
+    let grace = i64::try_from(settings.grace_secs).unwrap_or(i64::MAX);
+    let early = now.epoch() < found.key.epoch().saturating_add(grace);
     let eligible = match super::eligible(&settings, &asked) {
         Err(why) if why != Ineligible::Unmapped => Err((why.class(), ineligible_record(why))),
         declared => {
@@ -693,11 +875,16 @@ pub(crate) fn run(
                     },
                     |why| (CauseClass::ObservedChoice, why),
                 ))
-            } else if found.trigger == Trigger::Headroom && threshold.is_none() {
+            } else if found.trigger == Trigger::Headroom
+                && threshold.is_none()
+                && !start.urgent(found.key.epoch())
+            {
                 Err((
                     CauseClass::Ineligible,
                     CauseClass::Ineligible.lead(HEADROOM_OFF),
                 ))
+            } else if early && !start.urgent(found.key.epoch()) {
+                Err((CauseClass::Other, CauseClass::Other.lead(START_GONE)))
             } else {
                 Ok(list)
             }
@@ -721,7 +908,6 @@ pub(crate) fn run(
     };
     let left = super::left_profiles(&events, &argv.session, &argv.slot, &agent);
     let left_on_headroom = super::left_on_headroom(&events, &argv.session, &argv.slot, &agent);
-    let quota = read_quota_at(root, dir, &meta, now);
     let latched = super::latched_identities(meta.roster(), &events, &argv.session, &argv.slot);
     let judged = candidates(
         &list,
@@ -761,6 +947,13 @@ pub(crate) fn run(
     let model_after = pin(&pick).unwrap_or_else(unknown);
     let (_, world) = crate::fleet_read::current_world(root);
     let mut said = Vec::new();
+    // The stop's last word on an urgent seat, under its locks: everything that
+    // made it urgent, read once more.
+    let mut still_urgent = || {
+        read_start(root, dir, &argv, incarnation, Timestamp::now())
+            .is_some_and(|read| read.urgent(found.key.epoch()))
+    };
+    let urgent = start.urgent(found.key.epoch());
     let ended = crate::reseat::run_as_watchdog(
         root,
         Some(&world),
@@ -768,6 +961,7 @@ pub(crate) fn run(
         &agent,
         &pick,
         now,
+        urgent.then_some(&mut still_urgent as &mut dyn FnMut() -> bool),
         &mut io::sink(),
         &mut said,
     )?;
@@ -860,10 +1054,26 @@ pub(crate) enum Plan {
 /// [`super::REARM_GAP`] of the threshold. `gather` is handed the seat's
 /// declared row — empty when it names none — and judges its whole list; a seat
 /// it lists nothing for declines as unmapped, writing nothing.
+#[cfg(test)]
 pub(crate) fn plan(
     settings: &super::Settings,
     seat: &Seat<'_>,
     sight: &Sight,
+    events: &[crate::events::Event],
+    gather: impl Fn(&[String], (&[(String, Timestamp)], &[String])) -> Vec<Candidate>,
+    now: Timestamp,
+) -> Plan {
+    let plain = super::StartRead::default();
+    plan_with(settings, seat, sight, &plain, events, gather, now)
+}
+
+/// [`plan`] with `start`, the trigger's own fresh read: an episode it finds
+/// urgent is due at once, whatever the threshold says.
+pub(crate) fn plan_with(
+    settings: &super::Settings,
+    seat: &Seat<'_>,
+    sight: &Sight,
+    start: &super::StartRead,
     events: &[crate::events::Event],
     gather: impl Fn(&[String], (&[(String, Timestamp)], &[String])) -> Vec<Candidate>,
     now: Timestamp,
@@ -879,7 +1089,9 @@ pub(crate) fn plan(
         return Plan::Decline("an attempt is in flight".to_owned());
     }
     let room = settings.headroom_at.filter(|_| !sight.limited);
+    let keyed = |found: &super::Episode| start.urgent(found.key.epoch());
     let found = match room {
+        _ if !sight.limited && headroom.as_ref().is_some_and(keyed) => headroom,
         None if !sight.limited => return Plan::Decline("no usage limit is drawn".to_owned()),
         None => limit,
         Some(_) if !sight.near => {
@@ -889,12 +1101,13 @@ pub(crate) fn plan(
         }
         Some(_) => headroom,
     };
-    let decision = super::decide(
-        found.as_ref(),
-        settings.grace_secs,
-        &sight.pane,
-        now.epoch(),
-    );
+    let key = found
+        .as_ref()
+        .map_or(now.epoch(), |found| found.key.epoch());
+    let waits = start.waits(key, settings.grace_secs);
+    let mut pane = sight.pane;
+    pane.frame = start.frame(key, pane.frame);
+    let decision = super::decide_with_waits(found.as_ref(), waits, &pane, now.epoch());
     let (Some(found), super::Decision::Attempt) = (found, decision) else {
         return Plan::Decline(format!("not due ({decision:?})"));
     };
@@ -1252,6 +1465,30 @@ pub(crate) fn trigger(
         profile: &profile,
         orchestrator: crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role,
     };
+    let pin = crate::reseat::resolved(dir, &profile).and_then(|found| found.pin);
+    let mut start = start_read(
+        &settings,
+        &StartSeat {
+            dir,
+            row,
+            seat,
+            settled: super::start_fact(
+                meta.started_epoch(),
+                meta.launch_settled_epoch(),
+                now.epoch(),
+            ),
+            pane: Some(&resolved.pane),
+            pin: pin.as_deref(),
+        },
+        observed(),
+        now.epoch(),
+    );
+    // Its own pair, owing nothing to the daemon's memory of the last cycle.
+    if start.exhausted.is_some() && sight.pane.frame == super::Frame::Unproven {
+        std::thread::sleep(crate::deliver::FRAME_GAP);
+        let again = crate::transport::capture_pane(&server, &resolved.pane);
+        start.quiet = super::quiet_pair(capture.as_deref(), again.as_deref(), &bin);
+    }
     let events = crate::watchdog_daemon::read_events(dir);
     let unlisted = std::cell::Cell::new(false);
     // Read only once the plan reaches the chooser.
@@ -1274,12 +1511,19 @@ pub(crate) fn trigger(
         slot: slot.to_owned(),
         key,
     };
-    let planned = plan(&settings, &seat, &sight, &events, gather, now);
+    let planned = plan_with(&settings, &seat, &sight, &start, &events, gather, now);
     // A no-candidate ending of a due episode names a held choice instead (#269),
     // once per key: the episode `plan` judged, chosen as it chose it.
-    let due = || match settings.headroom_at.filter(|_| !sight.limited) {
-        None => super::episode(&events, own_session, slot, &row.name),
-        Some(_) => super::headroom_episode(&events, own_session, slot, &row.name),
+    let due = || {
+        let headroom = super::headroom_episode(&events, own_session, slot, &row.name);
+        let keyed = headroom
+            .as_ref()
+            .is_some_and(|found| start.urgent(found.key.epoch()));
+        if !sight.limited && (keyed || settings.headroom_at.is_some()) {
+            headroom
+        } else {
+            super::episode(&events, own_session, slot, &row.name)
+        }
     };
     let ended = matches!(planned, Plan::Refuse { .. })
         || (matches!(planned, Plan::Decline(_)) && unlisted.get());
@@ -1578,6 +1822,30 @@ mod effort_scope_spec {
             percent,
             Policy::default(),
         )
+    }
+
+    /// A resume waives grace on proof, so a scoped full window counts only when
+    /// its family and the seat's are both named and equal. "Not proven elsewhere"
+    /// is enough for an ask, and not for a move.
+    #[test]
+    fn a_scoped_window_exhausts_a_seat_only_on_a_proven_family_match() {
+        for (qualifier, pin, expected) in [
+            (None, Some("opus"), true),
+            (None, None, true),
+            (Some("Opus"), Some("opus"), true),
+            (Some("Opus"), Some("sonnet"), false),
+            (Some("mystery"), Some("opus"), false),
+            (Some("Opus"), None, false),
+            (Some("Opus"), Some("mystery"), false),
+            (Some("mystery"), None, false),
+        ] {
+            let observed = observation(vec![weekly(qualifier, "100")]);
+            assert_eq!(
+                super::own_exhausted(Some(&observed), &seat(), pin, NOW).is_some(),
+                expected,
+                "qualifier={qualifier:?} pin={pin:?}"
+            );
+        }
     }
 
     #[test]
@@ -2812,6 +3080,35 @@ mod tests {
             "a hold since"
         );
     }
+    /// The stop's last word answers for the seat the attempt was opened for: a
+    /// slot that now holds another agent, profile or launch answers for nothing.
+    #[test]
+    fn a_start_read_answers_only_for_the_incarnation_its_attempt_was_opened_for() {
+        let root = Root(std::env::temp_dir().join(format!("ae-leg-start-{}", std::process::id())));
+        let dir = root.0.join("aedev");
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+        let meta = "seat.main=lead\nprofile.main=source\nlaunch_id.main=one\n";
+        assert!(std::fs::write(dir.join(crate::store::META), meta).is_ok());
+        let argv = |slot: &str| super::Argv {
+            session: "aedev".to_owned(),
+            dir: dir.clone(),
+            slot: slot.to_owned(),
+            key: crate::time::Timestamp::from_epoch(NOW),
+        };
+        let at = crate::time::Timestamp::from_epoch(NOW);
+        let read = |slot: &str, seat| super::read_start(&root.0, &dir, &argv(slot), seat, at);
+        assert!(read("main", ("lead", "source", Some("one"))).is_some());
+        for seat in [
+            ("scout", "source", Some("one")),
+            ("lead", "other", Some("one")),
+            ("lead", "source", Some("two")),
+            ("lead", "source", None),
+        ] {
+            assert!(read("main", seat).is_none(), "{seat:?}");
+        }
+        assert!(read("spawned.1", ("lead", "source", Some("one"))).is_none());
+    }
+
     /// The trigger acts only for a seat of its OWN session: `@session:agent`
     /// resolves across sessions, and a foreign seat — or a pane with no slot —
     /// declines with the one line before the lock is taken or anything read.

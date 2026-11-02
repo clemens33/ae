@@ -124,6 +124,10 @@ enum StopPolicy {
     /// refusal and nothing else — a frame that reads BUSY is refused with or
     /// without it.
     Unknown,
+    /// As `Proven`, and [`crate::autoreseat::quiet_pair`] over the two readings
+    /// proves the stop too. The auto reseat leg's own route for a resume's
+    /// urgent seat: no flag reaches it.
+    QuietStart,
 }
 
 /// Parse `<session> <agent> --using <profile>`.
@@ -835,18 +839,19 @@ fn limit_proven(capture: &str, agent_bin: &str, tool: ToolKind) -> bool {
         })
 }
 
-/// The seat's current harness frame, fail-closed, and whether that SAME
-/// capture proves the seat sits on its usage limit.
+/// The seat's current harness frame, fail-closed, whether that SAME capture
+/// proves the seat sits on its usage limit, and the capture itself.
 ///
 /// A capture ae could not take is [`HarnessState::Unknown`], never idle: the
 /// absence of a reading is not evidence that a turn is not running.
-fn frame(target: &Target, tool: ToolKind, agent_bin: &str) -> (HarnessState, bool) {
+fn frame(target: &Target, tool: ToolKind, agent_bin: &str) -> (HarnessState, bool, Option<String>) {
     transport::capture_pane(&target.server, &target.pane).map_or(
-        (HarnessState::Unknown, false),
+        (HarnessState::Unknown, false, None),
         |capture| {
             (
                 crate::harness_state::classify(&capture, tool),
                 limit_proven(&capture, agent_bin, tool),
+                Some(capture),
             )
         },
     )
@@ -987,18 +992,24 @@ fn stop_running_tool(
             target.agent
         )
     };
-    let (first, first_limited) = frame(target, tool, &agent_bin);
+    let (first, first_limited, first_capture) = frame(target, tool, &agent_bin);
     if first == HarnessState::Busy {
         busy(err)?;
         return Ok(Stop::Refused(CauseClass::Busy));
     }
     std::thread::sleep(FRAME_GAP);
-    let (second, second_limited) = frame(target, tool, &agent_bin);
+    let (second, second_limited, second_capture) = frame(target, tool, &agent_bin);
     if second == HarnessState::Busy {
         busy(err)?;
         return Ok(Stop::Refused(CauseClass::Busy));
     }
-    if !may_stop((first, first_limited), (second, second_limited), policy) {
+    let quiet = policy == StopPolicy::QuietStart
+        && crate::autoreseat::quiet_pair(
+            first_capture.as_deref(),
+            second_capture.as_deref(),
+            &agent_bin,
+        );
+    if !quiet && !may_stop((first, first_limited), (second, second_limited), policy) {
         // The next step FIRST, with its precondition: a record keeps only the
         // line's head, and `--stop-unknown` is safe only on what a human sees.
         let limited = transport::capture_pane(&target.server, &target.pane)
@@ -1138,7 +1149,7 @@ pub(crate) fn run(
     };
     let caller = caller_of(&parsed.session);
     Ok(
-        match run_parsed(root, world, &parsed, caller, now, out, err)? {
+        match run_parsed(root, world, &parsed, caller, now, &mut || true, out, err)? {
             Ended::Moved { .. } => 0,
             Ended::Refused(_) | Ended::Failed => EXIT_FAILED,
         },
@@ -1164,21 +1175,27 @@ pub(crate) fn run_as_watchdog(
     agent: &str,
     profile: &str,
     now: Timestamp,
+    urgent: Option<&mut dyn FnMut() -> bool>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<Ended> {
+    let mut open = || true;
+    let (stop, hook): (_, &mut dyn FnMut() -> bool) = match urgent {
+        Some(hook) => (StopPolicy::QuietStart, hook),
+        None => (StopPolicy::Proven, &mut open),
+    };
     let parsed = Parsed {
         session: session.to_owned(),
         agent: agent.to_owned(),
         profile: profile.to_owned(),
-        stop: StopPolicy::Proven,
+        stop,
         automatic: true,
     };
     let caller = Caller {
         pane: crate::doors::calling_pane_id(),
         display: crate::watchdog::WATCHDOG_ACTOR.to_owned(),
     };
-    run_parsed(root, world, &parsed, Ok(caller), now, out, err)
+    run_parsed(root, world, &parsed, Ok(caller), now, hook, out, err)
 }
 
 /// A profile as a reseat to it would launch it.
@@ -1210,6 +1227,7 @@ fn run_parsed(
     parsed: &Parsed,
     caller: Result<Caller, String>,
     now: Timestamp,
+    hook: &mut dyn FnMut() -> bool,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<Ended> {
@@ -1434,7 +1452,7 @@ fn run_parsed(
         )?;
     }
     // THE STOP, before the dead proof and before anything durable is written.
-    let stopped = match stop_running_tool(&dir, &target, &locked, parsed, &mut || true, err)? {
+    let stopped = match stop_running_tool(&dir, &target, &locked, parsed, &mut *hook, err)? {
         Stop::Refused(class) => return Ok(Ended::Refused(class)),
         Stop::Failed => return Ok(Ended::Failed),
         // The record goes in only once the pane is PROVEN back at its shell:
@@ -1450,6 +1468,8 @@ fn run_parsed(
             );
             true
         }
+        // Nothing to stop, so the stop gave the caller no last word: this is it.
+        Stop::NotRunning if !hook() => return Ok(Ended::Refused(CauseClass::Other)),
         Stop::NotRunning => false,
     };
     // Past the stop, a refusal leaves a stopped tool behind, or a dead seat
@@ -2103,6 +2123,20 @@ mod tests {
 
     fn parsed(words: &[&str]) -> Result<(String, String, String), String> {
         super::parse(&argv(words)).map(|parsed| (parsed.session, parsed.agent, parsed.profile))
+    }
+
+    #[test]
+    fn no_word_of_the_verb_reaches_the_legs_own_stop() {
+        for word in ["--stop-quiet", "--quiet-start", "--quiet", "--stop-start"] {
+            assert!(super::parse(&argv(&["work", "lead", "--using", "lunam", word])).is_err());
+        }
+        for words in [
+            &["work", "lead", "--using", "lunam"][..],
+            &["work", "lead", "--using", "lunam", "--stop-unknown"][..],
+        ] {
+            let stop = super::parse(&argv(words)).map(|parsed| parsed.stop);
+            assert_ne!(stop, Ok(super::StopPolicy::QuietStart), "{words:?}");
+        }
     }
 
     #[test]

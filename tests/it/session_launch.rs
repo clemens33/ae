@@ -8600,3 +8600,6 @@ fn the_watchdog_pane_starts_before_a_blocked_launch_delivery_ends() {
     drop(child);
     let _ = rig.tmux(&["kill-session", "-t", "=lnwdfirst"]);
 }
+
+#[path = "startreseat_spec.rs"]
+mod startreseat_spec;

@@ -722,6 +722,85 @@ kind a profile was left on is the kind of the attempt that moved it, judged when
 that attempt was journaled, so an opener booked in the same second afterwards
 cannot relabel the move.
 
+### A resume on an exhausted seat
+
+A stopped session started onto a dead account should not spend a failed turn, or
+a grace, finding that out. So a resuming launch writes `launch_settled=<epoch>`
+once, after its last launch turn ended, whatever each outcome was. The rebuild
+of every launch drops the row, and a new session or a crash before it leaves
+none: without it nothing changes. `autoreseat::start_fact` takes it only when it
+is no older than `started` and not in the future. A slow serial delivery delays
+every seat behind it; the window starts when delivery ends, not when it began.
+
+For `START_WINDOW_SECS` (360) after that, `leg::start_read` is the ONE read every
+actuator asks: the daemon's step, the trigger, the leg, the effort step and leg,
+and the quota notices. It needs the seat in auto reseat's reach, then a FRESH
+window of its own account binding its model at 100 judged percent, of any length
+and whatever `auto_reseat_at` says, or a fresh spend cap. The newest reading of a
+window rules, a tie between opposed readings proves nothing, and another window
+never answers for this one. Stale, unknown, uncorrelated or absent readings prove
+nothing.
+
+Binding is stricter here than for an ask or a headroom reading: an account-wide
+window binds, and a model-scoped one binds only when `quota::scoped_here` proves
+the window's family and the pin's are the same recognized family. So a pinless
+seat, or an unknown qualifier, does not move on a resume however full that
+window reads; it takes the ordinary paths.
+
+An urgent seat opens the ordinary `auto-reseat-headroom` episode, and the same
+trigger, leg and records carry it, so resume semantics, rounds and cooldown stand.
+Only two waits change: the grace is waived for an episode keyed inside the window,
+limit or headroom, and client input holds for `deliver::VIEW_GRACE` instead of the
+grace. A busy, drafted, unread or prompting frame holds as ever. So does an
+unproven one, with one exception below. Three more seams follow from a move that
+may run before a turn could:
+
+- An armed brief of the current incarnation on the live pane blocks urgency: the
+  move mints a new launch id, which would end the record undelivered. Once it is
+  delivered the seat moves.
+- A seat that urgent gets no quota advisory or checkpoint ask, because any turn on
+  its account would fail, and effort stands down as it does for a drawn limit.
+- No lock spans the trigger and the leg, so the leg reads again. An attempt ahead
+  of its plain grace whose proof has gone closes `auto-reseat-held`, and the next
+  cycle decides by the plain grace.
+
+A resumed claude never reads idle: claude 2.1.316 draws its last reply over an
+empty box and no done row, so the classifier says `Unknown` and a move would hold
+for good, on exactly the seat this section is for. `autoreseat::quiet_pair` proves
+that frame instead, for an urgent episode alone (`StartRead::frame`): two captures
+that match byte for byte, hint rows included, with the tool's own box drawn and
+empty, no spinner and no human prompt. The classifier does not change. Three pairs
+are taken, each owing nothing to the others: the daemon compares consecutive
+cycles, the trigger takes its own `deliver::FRAME_GAP` apart, and the stop takes
+its two under the send lock. The stop reaches it only as `StopPolicy::QuietStart`,
+which only `run_as_watchdog` sets and no word of `ae reseat` names, and its last
+word re-reads `start_read` under its locks. A real claude's hint rows settle within
+40 s and then held for the 200 s measured, so a default 60 s pair lands. Moving at
+the default interval takes about two minutes: one cycle opens, the next attempts.
+
+A first quota pass may run before the seat feeds its first reading, 2-3 s into a
+real claude start, so the daemon takes ONE follow-up pass 5 s after settling,
+outside the cadence's counter. It runs only with a seat in auto reseat's reach, so
+an off or excluded session reads exactly as before, and never at
+`quota_every_secs = 0`.
+
+With `auto_reseat_at = off` the seat's `Room` reads `leg::own_relief`: relief needs
+a healthy fresh window, and every exhausted reading answered by a strictly newer
+healthy one of its own window, short windows included. A tie, a window still full
+or no fresh window says nothing. A later start ends an earlier start's
+episode with `-headroom-cleared`, then opens its own, so each start answers for
+itself and a refusal is one per start.
+
+What this does not reach, each behaving as before: an account with no statusline
+feed, codex before its first turn, a fresh claude's logo frame (`Unknown`, held), a
+status line that never stops changing (no pair, held), a watchdog interval over
+180 s, a limit episode keyed before settling, an effort
+restart before settling, an in-band reading first seen before settling (the watchdog starts ahead of phase
+2, so this is the usual first pass, and it books today's ask: that turn fails, the
+limit path picks it up, and the seat moves all the same), an episode held past the window (effort no longer stands down
+for it), and a brief record on the pane the stop took, which brief retry gives up
+on its own. The plain grace path still does not wait for an armed brief.
+
 A seeded successor is handed the seat pack, whose declared-state section reads
 `ae reads this as YOUR declaration until you re-declare`: the predecessor's
 last declaration stands for the successor until it declares its own. A carried

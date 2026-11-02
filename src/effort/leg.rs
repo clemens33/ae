@@ -422,8 +422,34 @@ impl Ctx<'_> {
         let now = Timestamp::now();
         let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&seat.bytes));
         let quota = crate::autoreseat::leg::read_quota_at(self.root, &self.dir, &meta, now);
-        let limited = crate::watchdog::limit_notice(capture, seat.bin()).is_some();
         let settings = crate::autoreseat::settings(global().as_deref());
+        // A resume's exhausted seat is moved, never restarted on that account:
+        // the same stand-down a drawn limit gets, on the leg's own fresh read.
+        let start = crate::autoreseat::leg::start_read(
+            &settings,
+            &crate::autoreseat::leg::StartSeat {
+                dir: &self.dir,
+                row: &seat.entry,
+                seat: crate::autoreseat::Seat {
+                    session: &self.session,
+                    slot: &self.slot,
+                    agent: &seat.entry.name,
+                    profile: seat.entry.profile.as_deref().unwrap_or_default(),
+                    orchestrator: false,
+                },
+                settled: crate::autoreseat::start_fact(
+                    meta.started_epoch(),
+                    meta.launch_settled_epoch(),
+                    now.epoch(),
+                ),
+                pane: Some(&self.pane),
+                pin: seat.pin.as_deref(),
+            },
+            quota.as_ref(),
+            now.epoch(),
+        );
+        let limited = crate::watchdog::limit_notice(capture, seat.bin()).is_some()
+            || start.urgent(now.epoch());
         match switch(&settings) {
             (true, inverted) => seat.decide(
                 quota.as_ref(),

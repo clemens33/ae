@@ -1171,6 +1171,21 @@ pub(crate) fn scoped_elsewhere(
     matches!((window, seat), (Some(window), Some(seat)) if window != seat)
 }
 
+/// Whether a window scoped to `qualifier` is PROVEN to bind a seat whose own
+/// frame last showed `live`: the strict twin of [`scoped_elsewhere`], for a
+/// decision that waives a wait rather than one that only asks.
+///
+/// An account-wide window binds every seat. A qualifier scopes a window only
+/// for Claude, whose qualifier is a model; Codex spells its plan there. On
+/// Claude it binds only when both name the same recognized family.
+pub(crate) fn scoped_here(tool: ToolKind, qualifier: Option<&str>, live: Option<&str>) -> bool {
+    let Some(qualifier) = qualifier.filter(|_| tool == ToolKind::Claude) else {
+        return true;
+    };
+    let window = model_family(tool, qualifier);
+    window.is_some() && window == live.and_then(|text| model_family(tool, text))
+}
+
 /// The account-wide weekly reading among `held`, as its judged cell, for the
 /// notice about a SHORTER window of the same scope to name beside its reset.
 ///
@@ -5876,8 +5891,8 @@ mod tests {
         classify, codex_groups, codex_rollout_dirs, configured_scopes, credits_label, derived,
         effective, find_codex_rollout, freshness, merge_declaration, order_located_rollouts,
         percent_label, placeholder, profiles_label, read_bounded_tail, read_claude, render_at,
-        render_table, rows_or_placeholder, sanitize_cell, scoped_elsewhere, settings_same_scope,
-        vendor_timestamp,
+        render_table, rows_or_placeholder, sanitize_cell, scoped_elsewhere, scoped_here,
+        settings_same_scope, vendor_timestamp,
     };
     use crate::tool::ToolKind;
     use crate::transport::AgyRun;
@@ -5964,6 +5979,35 @@ mod tests {
             Some("pro"),
             Some("gpt-6-sol")
         ));
+    }
+
+    #[test]
+    fn only_an_unscoped_window_or_two_equal_recognized_families_prove_a_window_binds_here() {
+        let claude = ToolKind::Claude;
+        for (window, live) in [
+            (None, None),
+            (None, Some("Mystery 9")),
+            (Some("Fable"), Some("Fable 5.1")),
+            (Some("fable"), Some("Fable")),
+            (Some("Opus"), Some("opus")),
+            (Some("Opus"), Some("claude-opus-5-5")),
+        ] {
+            assert!(scoped_here(claude, window, live), "{window:?} vs {live:?}");
+        }
+        for (window, live) in [
+            (Some("Fable"), None),
+            (Some("Fable"), Some("Opus 5")),
+            (Some("Fable"), Some("Mystery 9")),
+            (Some("Fable"), Some("")),
+            (Some("Mystery"), Some("Opus 5")),
+            (Some("Mystery"), Some("Mystery")),
+            (Some("Mystery"), None),
+        ] {
+            assert!(!scoped_here(claude, window, live), "{window:?} vs {live:?}");
+        }
+        // A Codex qualifier is its plan, so it never scopes a window away.
+        assert!(scoped_here(ToolKind::Codex, Some("pro"), None));
+        assert!(scoped_here(ToolKind::Codex, Some("pro"), Some("gpt-6-sol")));
     }
 
     #[test]

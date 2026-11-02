@@ -522,6 +522,13 @@ moves nothing and closes `auto-reseat-held` (`ref` the key) with exactly
 parentheses quoting the episode's opener summary. A headroom attempt in flight
 keeps its shell from reading as a death, and books no limit.
 
+At a resume the same step moves an exhausted seat at once ([A resume on an
+exhausted seat](reseat.md#a-resume-on-an-exhausted-seat)). `Cycle::settled` is
+re-read every cycle, so a mark written while the daemon runs counts.
+`run_quota_cadence` takes one follow-up pass 5 s after it, beside the regular
+counter, never through it, and only with a seat in auto reseat's reach. The quota pass drops urgent seats from both recipient
+sets before it books anything, and the effort step reads them as limited.
+
 With `auto_reseat` absent or `off`, the path is inert: the daemon books no
 auto-reseat record, takes no seat lock, execs no leg, and `alert-cleared`
 behaves exactly as without the feature.

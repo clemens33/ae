@@ -3668,6 +3668,17 @@ fn build(
         )?;
     }
 
+    // ---- the resume has settled ----
+    // Every launch turn has ended, however it ended. The rebuild above wrote
+    // no such row, so a crash before this line leaves none: without it the
+    // watchdog treats the seats as it always has.
+    if shape.resuming {
+        let settled = crate::time::Timestamp::now().epoch().to_string();
+        if crate::meta::rewrite(&dir, crate::meta::LAUNCH_SETTLED_KEY, Some(&settled)).is_err() {
+            writeln!(err, "ae: the resume's settled mark was not written.")?;
+        }
+    }
+
     // ---- post-launch capture ----
     // AFTER the deliveries, as before: the capture children poll the tools'
     // stores for a bounded 30 s, so the rollout the turn creates must already
