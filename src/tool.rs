@@ -381,6 +381,9 @@ pub(crate) enum QuotaSource {
 pub(crate) struct QuotaSpec {
     /// Client-owned source shape.
     pub(crate) source: QuotaSource,
+    /// Whether a window's qualifier names a model, so a window can bind one
+    /// model family alone. Codex spells its plan there and scopes nothing.
+    pub(crate) qualifier_is_model: bool,
     /// Environment assignment that relocates the client's config home.
     pub(crate) config_home_env: Option<&'static str>,
     /// Client config home relative to the operator home.
@@ -894,6 +897,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
     },
     quota: QuotaSpec {
         source: QuotaSource::ClaudeCache,
+        qualifier_is_model: true,
         config_home_env: Some("CLAUDE_CONFIG_DIR"),
         default_home: Some(".claude"),
         unsupported_hint: None,
@@ -975,6 +979,7 @@ const CODEX: ToolAdapter = ToolAdapter {
     },
     quota: QuotaSpec {
         source: QuotaSource::CodexRollouts,
+        qualifier_is_model: false,
         config_home_env: Some("CODEX_HOME"),
         default_home: Some(".codex"),
         unsupported_hint: None,
@@ -1034,6 +1039,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
     effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
+        qualifier_is_model: false,
         config_home_env: None,
         default_home: Some(".gemini"),
         unsupported_hint: Some("no verified local quota source"),
@@ -1128,6 +1134,7 @@ const AGY: ToolAdapter = ToolAdapter {
     effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
+        qualifier_is_model: false,
         config_home_env: None,
         default_home: Some(".gemini/antigravity-cli"),
         unsupported_hint: Some("run agy -p \"/quota\""),
@@ -1212,6 +1219,7 @@ const GROK: ToolAdapter = ToolAdapter {
     effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::GrokLog,
+        qualifier_is_model: false,
         config_home_env: None,
         default_home: Some(".grok"),
         unsupported_hint: Some("run /usage in grok"),
@@ -1282,6 +1290,7 @@ const MUSE: ToolAdapter = ToolAdapter {
     effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
+        qualifier_is_model: false,
         config_home_env: None,
         default_home: Some(".config/muse"),
         unsupported_hint: Some("no verified local quota source"),
@@ -1375,6 +1384,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
     effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
+        qualifier_is_model: false,
         config_home_env: None,
         default_home: Some(".local/share/opencode"),
         unsupported_hint: Some("local stats are cost history, not quota"),
@@ -1432,6 +1442,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
     effort: EffortSpec::Unsupported,
     quota: QuotaSpec {
         source: QuotaSource::Unsupported,
+        qualifier_is_model: false,
         config_home_env: None,
         default_home: None,
         unsupported_hint: Some("no local quota adapter"),
@@ -1868,6 +1879,7 @@ mod tests {
                     },
                     quota: QuotaSpec {
                         source: QuotaSource::ClaudeCache,
+                        qualifier_is_model: true,
                         config_home_env: Some("CLAUDE_CONFIG_DIR"),
                         default_home: Some(".claude"),
                         unsupported_hint: None,
@@ -1946,6 +1958,7 @@ mod tests {
                     },
                     quota: QuotaSpec {
                         source: QuotaSource::CodexRollouts,
+                        qualifier_is_model: false,
                         config_home_env: Some("CODEX_HOME"),
                         default_home: Some(".codex"),
                         unsupported_hint: None,
@@ -2004,6 +2017,7 @@ mod tests {
                     effort: EffortSpec::Unsupported,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
+                        qualifier_is_model: false,
                         config_home_env: None,
                         default_home: Some(".gemini"),
                         unsupported_hint: Some("no verified local quota source"),
@@ -2082,6 +2096,7 @@ mod tests {
                     effort: EffortSpec::Unsupported,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
+                        qualifier_is_model: false,
                         config_home_env: None,
                         default_home: Some(".gemini/antigravity-cli"),
                         unsupported_hint: Some("run agy -p \"/quota\""),
@@ -2148,6 +2163,7 @@ mod tests {
                     effort: EffortSpec::Unsupported,
                     quota: QuotaSpec {
                         source: QuotaSource::GrokLog,
+                        qualifier_is_model: false,
                         config_home_env: None,
                         default_home: Some(".grok"),
                         unsupported_hint: Some("run /usage in grok"),
@@ -2208,6 +2224,7 @@ mod tests {
                     effort: EffortSpec::Unsupported,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
+                        qualifier_is_model: false,
                         config_home_env: None,
                         default_home: Some(".config/muse"),
                         unsupported_hint: Some("no verified local quota source"),
@@ -2272,6 +2289,7 @@ mod tests {
                     effort: EffortSpec::Unsupported,
                     quota: QuotaSpec {
                         source: QuotaSource::Unsupported,
+                        qualifier_is_model: false,
                         config_home_env: None,
                         default_home: Some(".local/share/opencode"),
                         unsupported_hint: Some("local stats are cost history, not quota"),
@@ -2336,6 +2354,7 @@ mod tests {
                 effort: EffortSpec::Unsupported,
                 quota: QuotaSpec {
                     source: QuotaSource::Unsupported,
+                    qualifier_is_model: false,
                     config_home_env: None,
                     default_home: None,
                     unsupported_hint: Some("no local quota adapter"),

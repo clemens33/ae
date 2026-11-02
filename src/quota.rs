@@ -1176,10 +1176,10 @@ pub(crate) fn scoped_elsewhere(
 /// decision that waives a wait rather than one that only asks.
 ///
 /// An account-wide window binds every seat. A qualifier scopes a window only
-/// for Claude, whose qualifier is a model; Codex spells its plan there. On
-/// Claude it binds only when both name the same recognized family.
+/// where the tool's adapter row says it names a model; Codex spells its plan
+/// there. Then it binds only when both name the same recognized family.
 pub(crate) fn scoped_here(tool: ToolKind, qualifier: Option<&str>, live: Option<&str>) -> bool {
-    let Some(qualifier) = qualifier.filter(|_| tool == ToolKind::Claude) else {
+    let Some(qualifier) = qualifier.filter(|_| tool.adapter().quota.qualifier_is_model) else {
         return true;
     };
     let window = model_family(tool, qualifier);
