@@ -182,7 +182,7 @@ three digits, else the online CPU count. An unset `NEXTEST_TEST_THREADS` becomes
 `CARGO_BUILD_JOBS` the free cores (left to cargo when the helper is absent); an explicit
 value of either wins, so CI and a bare clone size as before. The choice and its source
 (`budget`, `cpus`, `env`; an unset jobs value reads `unset (cargo default)`) print on stderr, and the full test, coverage and mutants runs start
-cargo at `nice -n 10` (a filtered `just test <filter>` does not). The lane runs cargo in a session of
+cargo at `nice -n 10` (a filtered `just _tmux-isolated test -E <filterset>` does not). The lane runs cargo in a session of
 its own, with no controlling terminal, so no test can take the terminal `just test` was typed
 in for a tmux pane it sits in (#149); a `cargo nextest` run straight from a terminal has no
 such guarantee. Ctrl-C still stops cargo, because the lane passes the signal on; Ctrl-Z
@@ -332,7 +332,10 @@ recorded base, no lane) reports an explicit verification gap instead, never a cl
   (median 312 s); the other 20 runs, 1161 mutants, filtered the tests to the code they
   mutated and cost 126 s per mutant on average. A survivor costs about one whole test run
   of its lane, so the cost follows the number of survivors more than the number of
-  mutants. A slice's provisional budget is 40 mutants, about an hour with its baseline
+  mutants. A full-suite baseline is now projected, not measured, at 55 to 60 minutes at two
+  test threads on 8043 tests, so a slice filters its tests to the code it mutates with
+  `-- -E` and a survivor of that filtered set is reported as such, never as final. A
+  slice's provisional budget is 40 mutants, about an hour with its baseline
   run. A larger diff is cut to the code that carries the slice's logic (`-f <file>`,
   `-F <regex>`, or `--shard k/n` with `--sharding round-robin` for a spread over the diff)
   and the freeze names what was not run; the lead may raise the budget. A later shard of
