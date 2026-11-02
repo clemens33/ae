@@ -1,0 +1,7 @@
+-u	-S	<scratch>/sock	display-message	-p	#{socket_path}
+-u	-S	<scratch>/sock	list-sessions	-F	#{session_name}
+-u	-S	<scratch>/sock	list-sessions	-F	#{session_name}
+-u	-S	<scratch>/sock	has-session	-t	=held
+-u	-S	<scratch>/sock	has-session	-t	=held
+-u	-S	<scratch>/sock	display-message	-p	#{version}
+-u	-S	<scratch>/sock	list-sessions	-F	#{session_name}

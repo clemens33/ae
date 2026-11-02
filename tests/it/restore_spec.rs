@@ -902,3 +902,29 @@ fn fixture_meta_publication_keeps_an_open_reader_on_the_complete_old_record() {
         "a reader opened after publication must see the complete replacement"
     );
 }
+#[test]
+fn launchx_trace_restore_skip_matches_frozen_order() {
+    let fleet = Fleet::new("launchx-trace-skip");
+    fleet.missing("held", 600, Some(60));
+    let meta = fleet.dir("held").join("meta");
+    let before = std::fs::read(&meta).expect("saved meta");
+    let mut command = fleet.command(&["--no-attach"]);
+    let log = super::session_launch::launchx_trace_command(&mut command, &fleet.scratch);
+    command.env(
+        "AE_LAUNCHX_RESTAMP",
+        fleet.dir("held").join(".launch-attempt"),
+    );
+    let out = command
+        .output()
+        .expect("restore with traced intervening launch");
+    success(&out);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("launched again since the scan"),
+        "{out:?}"
+    );
+    unchanged(&meta, &before);
+    assert_eq!(fleet.names(), ["keeper"]);
+    let actual = super::session_launch::launchx_trace_text(&log, &fleet.scratch, false);
+    assert_eq!(actual, include_str!("../fixtures/launchx/restore-skip.txt"));
+    assert!(!actual.is_empty(), "wrapper never ran");
+}

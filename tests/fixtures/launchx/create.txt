@@ -1,0 +1,3 @@
+-u	-S	<scratch>/sock	has-session	-t	=lxTrace
+-u	-S	<scratch>/sock	display-message	-p	#{version}
+-u	-S	<scratch>/sock	has-session	-t	=lxTrace

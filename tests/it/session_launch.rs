@@ -8886,3 +8886,141 @@ fn launchx_git_worktree_failure_removes_only_new_workdir_and_never_builds() {
     );
     assert!(!rig.sessions().contains(&session.to_owned()));
 }
+// Historical characterization of launch tmux argv at 8f15cb91; not a desired-behavior contract.
+pub(super) fn launchx_trace_command(command: &mut Runner, scratch: &Path) -> PathBuf {
+    let path = std::env::var_os("PATH").unwrap_or_else(|| panic!("test PATH"));
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("tmux"))
+        .find(|file| file.is_file())
+        .unwrap_or_else(|| panic!("real tmux executable"));
+    let bin = scratch.join("trace-bin");
+    std::fs::create_dir_all(&bin).unwrap_or_else(|why| panic!("wrapper directory: {why}"));
+    let wrapper = bin.join("tmux");
+    std::fs::write(
+        &wrapper,
+        r#"#!/usr/bin/perl
+use strict;
+use warnings;
+use Fcntl qw(:flock);
+my $log = $ENV{AE_LAUNCHX_LOG};
+open(my $out, '>>', $log) or die "trace log: $!";
+flock($out, LOCK_EX) or die "trace lock: $!";
+my @escaped = map { my $v = $_; $v =~ s/\\/\\\\/g; $v =~ s/\t/\\t/g; $v =~ s/\n/\\n/g; $v } @ARGV;
+print $out join("\t", @escaped), "\n";
+close($out) or die "close trace: $!";
+if ($ENV{AE_LAUNCHX_RESTAMP} && grep { $_ eq 'list-sessions' } @ARGV) {
+    my $countfile = "$log.count";
+    my $count = 0;
+    if (open(my $old, '<', $countfile)) { $count = <$old> || 0; close($old); }
+    $count++;
+    open(my $new, '>', $countfile) or die "count: $!";
+    print $new $count; close($new);
+    if ($count == 2) {
+        open(my $stamp, '>', $ENV{AE_LAUNCHX_RESTAMP}) or die "restamp: $!";
+        print $stamp "1\n"; close($stamp);
+    }
+}
+# Controlled version input selects the 3.4 and 3.5+ binding branches; all
+# other calls execute real tmux on the fixture's explicit private socket.
+if ($ENV{AE_LAUNCHX_VERSION} && grep { $_ eq '#{version}' } @ARGV) {
+    print $ENV{AE_LAUNCHX_VERSION}, "\n";
+    exit 0;
+}
+exec {$ENV{AE_LAUNCHX_REAL_TMUX}} $ENV{AE_LAUNCHX_REAL_TMUX}, @ARGV;
+die "exec real tmux: $!";
+"#,
+    )
+    .unwrap_or_else(|why| panic!("tmux argv wrapper: {why}"));
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+        .unwrap_or_else(|why| panic!("executable wrapper: {why}"));
+    let combined = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path)))
+        .unwrap_or_else(|why| panic!("wrapper PATH: {why}"));
+    let log = scratch.join("launchx-trace");
+    std::fs::write(&log, b"").unwrap_or_else(|why| panic!("empty trace: {why}"));
+    command
+        .env("PATH", combined)
+        .env("AE_LAUNCHX_REAL_TMUX", real)
+        .env("AE_LAUNCHX_LOG", &log);
+    log
+}
+
+pub(super) fn launchx_trace_text(log: &Path, scratch: &Path, before_build: bool) -> String {
+    let trace =
+        std::fs::read_to_string(log).unwrap_or_else(|why| panic!("argv trace exists: {why}"));
+    if before_build {
+        assert!(
+            trace
+                .lines()
+                .any(|line| line.split('\t').any(|arg| arg == "new-session")),
+            "successful create/resume never handed over to build: {trace}"
+        );
+    }
+    let mut output = String::new();
+    for line in trace.lines() {
+        if before_build && line.split('\t').any(|arg| arg == "new-session") {
+            break;
+        }
+        let mut line = line
+            .replace(&scratch.display().to_string(), "<scratch>")
+            .replace(env!("CARGO_BIN_EXE_ae"), "<core>");
+        // tmux ids occur both as stand-alone arguments and inside hook text.
+        for mark in ['%', '$', '@'] {
+            let chars: Vec<char> = line.chars().collect();
+            let mut normalized = String::new();
+            let mut index = 0;
+            while index < chars.len() {
+                if chars[index] == mark && chars.get(index + 1).is_some_and(char::is_ascii_digit) {
+                    normalized.push(mark);
+                    normalized.push_str("<id>");
+                    index += 1;
+                    while chars.get(index).is_some_and(char::is_ascii_digit) {
+                        index += 1;
+                    }
+                } else {
+                    normalized.push(chars[index]);
+                    index += 1;
+                }
+            }
+            line = normalized;
+        }
+        output.push_str(&line);
+        output.push('\n');
+    }
+    output
+}
+
+#[test]
+fn launchx_trace_create_resume_and_running_reattach_match_frozen_order() {
+    if skip() {
+        return;
+    }
+    for version in ["3.4", "3.5"] {
+        let rig = Rig::idle("launchx-trace");
+        rig.without_chat();
+        let _keeper = bare_session(&rig, &rig.sock, "keeper");
+        for (label, stopped) in [("create", false), ("resume", true), ("reattach", false)] {
+            if stopped {
+                assert!(rig.tmux(&["kill-session", "-t", "=lxTrace"]).0);
+            }
+            let mut command = rig.launch_command_with_server(
+                "socket",
+                &rig.sock.display().to_string(),
+                &["--local", "lxTrace"],
+            );
+            let log = launchx_trace_command(&mut command, &rig.scratch);
+            command.env("AE_LAUNCHX_VERSION", version);
+            let out = command.output().expect("traced launch");
+            assert!(out.status.success(), "{out:?}");
+            let actual = launchx_trace_text(&log, &rig.scratch, label != "reattach");
+            let expected = match (label, version) {
+                ("create", _) => include_str!("../fixtures/launchx/create.txt"),
+                ("resume", _) => include_str!("../fixtures/launchx/resume.txt"),
+                ("reattach", "3.4") => include_str!("../fixtures/launchx/reattach-3.4.txt"),
+                ("reattach", "3.5") => include_str!("../fixtures/launchx/reattach-3.5.txt"),
+                _ => unreachable!("closed fixture cases"),
+            };
+            assert_eq!(actual, expected, "{label}, controlled version {version}");
+            assert!(!actual.is_empty(), "wrapper never ran");
+        }
+    }
+}
