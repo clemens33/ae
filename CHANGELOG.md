@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.2] - 2026-11-02
+- Brief guidance names the final gate owner and marks commands scoped or final (#219); drop retired tier words and tier comments from guidance and seeded config comments (#280 part)
+- Core rule names -S <private socket>, never -L or TMUX_TMPDIR, for destructive tmux
+- Pin the declared reason as list --json task and in the stale nudge (red)
+- List --json task and the stale nudge quote the declared reason
+- Pin that a nudge quotes only a state the helper could have written (red)
+- A stale nudge quotes a declaration only in the helper's own state vocabulary
+- Pin that an installed ae server refuses kill-server and a publish reasserts it (red)
+- An installed ae server refuses kill-server in every spelling, launch and publish reassert it, and the lane reapers drop the guard and prove the server gone
+- One bounded owner for waiting on a pane's own command and draw
+- Launch and spawn: a pane still reading tmux has not started its tool
+- Planted panes run their command before anything acts on them
+- Rename and menu fixtures witness the moment they depend on
+- Witness a non-waiting seat's pane before reading what it records
+- Menu fixtures wait for the seat rows before they plant their own
+- A replaced server in the collision fixture starts on a new socket entry
+- The direct menu proof runs without a chat window
+- Pin that a waiting tool's launch reads its pane and others do not
+- Rust-linux-26 defaults to the stalling bus now that arm is green
+- Pin End in the app session menu and the guarded single-target end (red)
+- Every ae app card menu offers End, in or out of tmux, with nobody attached
+- The End question's push consequence is carried and proven, and only positive absence reads as Ended
+- Census the End owner self-invocation and its two reviewed boot-proof calls
+- A question on the default is refused when the default moved under it
+
 ## [v2026.11.1] - 2026-11-01
 - State mutation workflow triggers and manual full lane
 - Name the live capture floor fallback owner
