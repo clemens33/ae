@@ -44,7 +44,10 @@ const RC_HEADER: usize = 2 * size_of::<usize>();
 /// ae's own notice stay plain.
 pub(super) fn eligible(kind: &Kind) -> bool {
     match kind {
-        Kind::Assistant { .. } | Kind::Answer { gap: None, .. } | Kind::Card { .. } => true,
+        Kind::Assistant { .. }
+        | Kind::Answer { gap: None, .. }
+        | Kind::Card { .. }
+        | Kind::PastCard { .. } => true,
         Kind::Said { who } => who != "ae",
         _ => false,
     }

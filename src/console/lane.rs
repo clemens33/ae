@@ -46,6 +46,10 @@ pub enum Kind {
     Said { who: String },
     /// A seat's CURRENT `waiting-user` declaration.
     Card { seat: String },
+    /// A `waiting-user` declaration that no longer stands, whole and at its own
+    /// journal position. It claims no answer and needs no one: the journal
+    /// records no selection, so it says only that the declaration is closed.
+    PastCard { seat: String },
     /// The watchdog's standing `human-prompt` verdict on a seat.
     NeedsYou { seat: String },
     /// The human's console ask `id` to `to`; `uncertain` when its submit was
@@ -226,8 +230,9 @@ fn bridge(name: &str) -> bool {
 /// The journal half is the human-facing record: a chat-bridge thread in FULL
 /// (whichever seat it names), `say` lines from the lead pair and ae's own
 /// notices, and a worker's `say` only COUNTED — never shown, never silent.
-/// Cards and prompts belong to the lead pair alone, and only while the
-/// declaration or verdict still stands.
+/// Cards and prompts belong to the lead pair alone. A prompt shows only while
+/// its verdict stands; a declaration shows as the standing card while it
+/// stands, and after it as a past card at its own journal position.
 #[must_use]
 pub fn fold(
     session: &str,
@@ -580,7 +585,13 @@ pub fn open_asks<'a>(events: &'a [Event], session: &str) -> Vec<&'a str> {
 /// lines were left out.
 fn journal_items(session: &str, seats: &[Seat], events: &[Event]) -> (Vec<Item>, usize) {
     let (mut items, mut other_say) = (Vec::new(), 0);
-    for event in events {
+    let mut past = past_runs(session, seats, events).into_iter().peekable();
+    for (at, event) in events.iter().enumerate() {
+        // A declaration that stopped standing draws where the journal put it,
+        // so a same-second neighbour keeps its order around it.
+        while let Some((_, seat, text)) = past.next_if(|(first, ..)| *first == at) {
+            items.push(item(Kind::PastCard { seat }, micros(event), text));
+        }
         let (actor, action) = (event.actor.clone(), event.action.as_str());
         let to = event.target.clone().unwrap_or_default();
         let asks = [
@@ -686,16 +697,75 @@ fn admission(ask: &Event, reply: &Event) -> Result<(), String> {
     Ok(())
 }
 
+/// The declaration `seat` still stands on: its CURRENT `waiting-user`, as the
+/// one standing read judges it. A human's next message, a crossed challenge or
+/// the seat's own newer declaration ends it.
+fn standing_card<'a>(session: &str, seat: &Seat, events: &'a [Event]) -> Option<&'a Event> {
+    watchdog::latest_relevant_event(events, session, &seat.slot, &seat.name)
+        .filter(watchdog::declaration_current)
+        .map(|relevant| relevant.event)
+        .filter(|event| event.declared_state() == Some("waiting-user"))
+}
+
+/// The `waiting-user` declarations of the lead pair that no longer stand, as
+/// `(journal position of the first, seat, text)` in journal order. One entry
+/// per RUN: consecutive own declarations with byte-identical text (a watchdog
+/// challenge forces the same words again), any other declared state
+/// ending the run. A contentless text is dropped before the runs are built: it
+/// makes no entry and breaks no run. The run the standing read holds is the
+/// standing [`Kind::Card`]; every other run is past, so a card ended by a
+/// message with no new declaration is past as well.
+fn past_runs<'a>(
+    session: &str,
+    seats: &[Seat],
+    events: &'a [Event],
+) -> Vec<(usize, String, &'a str)> {
+    let mut runs = Vec::new();
+    for seat in seats {
+        let standing = standing_card(session, seat, events);
+        // The open run: where it began, its text, whether it holds the standing card.
+        let mut open: Option<(usize, &str, bool)> = None;
+        let mut close = |run: Option<(usize, &'a str, bool)>| {
+            if let Some((first, text, _)) = run.filter(|(.., holds)| !holds) {
+                runs.push((first, seat.name.clone(), text));
+            }
+        };
+        for (at, event) in events.iter().enumerate() {
+            let Some(state) = event.declared_state() else {
+                continue;
+            };
+            if !watchdog::event_is_actor(event, session, &seat.slot, &seat.name) {
+                continue;
+            }
+            let text = event.summary.as_deref().unwrap_or("");
+            if state != "waiting-user" {
+                close(open.take());
+                continue;
+            }
+            if text.trim().is_empty() {
+                continue;
+            }
+            let is_standing = standing.is_some_and(|card| std::ptr::eq(card, event));
+            match &mut open {
+                Some((_, first, holds)) if *first == text => *holds |= is_standing,
+                _ => {
+                    close(open.replace((at, text, is_standing)));
+                }
+            }
+        }
+        close(open.take());
+    }
+    runs.sort_by_key(|(first, ..)| *first);
+    runs
+}
+
 /// What a lead-pair seat still asks of the human: its CURRENT `waiting-user`
 /// declaration, and the watchdog's uncleared `human-prompt`.
 fn standing_items(session: &str, seats: &[Seat], events: &[Event]) -> Vec<Item> {
     let mut items = Vec::new();
     for seat in seats {
         let seat_name = seat.name.clone();
-        let card = watchdog::latest_relevant_event(events, session, &seat.slot, &seat.name)
-            .filter(watchdog::declaration_current)
-            .map(|relevant| relevant.event)
-            .filter(|event| event.declared_state() == Some("waiting-user"));
+        let card = standing_card(session, seat, events);
         let prompt = events
             .iter()
             .rev()
@@ -787,6 +857,7 @@ mod tests {
                     Kind::Reply { from, to } => format!("reply {from}>{to}"),
                     Kind::Said { who } => format!("said {who}"),
                     Kind::Card { seat } => format!("card {seat}"),
+                    Kind::PastCard { seat } => format!("past {seat}"),
                     Kind::NeedsYou { seat } => format!("needs {seat}"),
                     other => format!("{other:?}"),
                 };
@@ -865,16 +936,22 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_user_declaration_is_a_card_only_while_it_is_current() {
+    fn a_waiting_user_declaration_is_a_standing_card_only_while_it_is_current() {
         let waiting = |ts: &str, actor: &str, state: &str| ev(ts, actor, "state", "", state);
         let asks = waiting(T0, "lead", "waiting-user");
         assert_eq!(
             shown(std::slice::from_ref(&asks), Vec::new()),
             ["card lead: waiting-user"]
         );
+        // Superseded declarations stay as one past entry per run (dechist);
+        // only other states and other seats stay out of the lane.
         for later in ["working", "done"] {
             let events = [asks.clone(), waiting(T1, "lead", later)];
-            assert!(shown(&events, Vec::new()).is_empty(), "{later}");
+            assert_eq!(
+                shown(&events, Vec::new()),
+                ["past lead: waiting-user"],
+                "{later}"
+            );
         }
         assert!(shown(&[waiting(T0, "lead", "waiting-agent")], Vec::new()).is_empty());
         assert!(shown(&[waiting(T0, "scout", "waiting-user")], Vec::new()).is_empty());

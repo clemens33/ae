@@ -60,6 +60,22 @@ the window on demand. See [Keys](#keys).
   last, dim where the look is drawn. One empty row separates those blocks. A
   reason with no ` | ` is split into sentences the same way.
   `--follow` prints `-- closed: …` when one stops standing.
+- **Closed decisions**: a card that stopped standing stays in the chat, whole
+  and in the same layout, at the time it was declared, headed `DECISION <seat>
+  · closed`, so you can look back at the question and its options. A card
+  stops standing when the seat declares anything else, when you send it a
+  chat ask or a Telegram or Discord message, or when the watchdog's challenge
+  crosses it. The journal records no selection: a closed card never
+  says which option you took or that it was answered, and your reply stands
+  below it in order. It is history, not a need: it has no verdict, no row in
+  [Needs you](#needs-you) and no badge. One entry stands for consecutive
+  declarations of the same words by one seat (the watchdog's challenge makes it
+  declare again); different words, or a declaration after another state, is
+  another entry. Only the lead pair's own declarations count, as for a
+  standing card, and a declaration with no words is skipped. `--follow` prints
+  a card once: one it showed while it stood is not shown again as closed, only
+  its `-- closed:` line is; a fresh start shows the closed cards in history
+  order. A needs-you prompt keeps no history.
 - **Coverage rows** for anything it cannot read: a torn or absent transcript,
   an unsupported harness, an unreadable journal, skipped journal lines.
 - `--all` shows every assistant reply of the lead pair, answers to agents
@@ -82,8 +98,8 @@ repeatable, and works in a read-only chat too. A handle names one fold of this
 chat: a number it never drew, a turn a rewritten journal has since moved, or one no
 longer in the read is refused by name. The rows come through the same
 neutraliser as every other row; `/more` takes ASCII digits only (`/more` alone or
-`/more x` is refused as `/more takes one fold number`). A decision card folds after its
-options are split onto their own lines.
+`/more x` is refused as `/more takes one fold number`). A decision card, standing or
+closed, folds after its options are split onto their own lines.
 
 ## Needs you
 

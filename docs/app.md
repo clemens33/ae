@@ -620,6 +620,13 @@ unmarked. A file path in a rendered turn is as clickable and as readable with
 unchanged. A drag copies what is drawn, and `y` copies the turn's source. `ae
 chat` prints the same bytes as ever.
 
+A decision card that stopped standing stays in the lane as a closed card, drawn
+like the standing one (same layout, same Markdown, same fold) but headed
+`DECISION · closed`, at the time it was declared, with your reply below it in
+order. It never says which option you took, and it is history, not a need:
+the sidebar, the badges and Needs you read the seat's verdict, which a closed
+card does not touch. See [Closed decisions](chat.md#what-it-shows).
+
 Markdown headers add `rendered` or `raw` before `rows A-B/N`. Other files keep
 `Read · <path>[:line] · rows A-B/N`. Raw lines are numbered in a gutter. Any
 `:line` link opens raw, jumps with three rows of context above the line and
@@ -655,7 +662,7 @@ thirty-row line. The fold row is a
 click target and `Enter` on a marked turn that has one toggles it too, the mark kept;
 the unfolded turn ends in `show fewer lines`. Enter with no mark, on a short turn or
 over a composed draft keeps its usual job and never puts the draft aside. A decision
-card folds after its options are split. Which turns you opened lives only in this
+card, standing or closed, folds after its options are split. Which turns you opened lives only in this
 app's memory, per session incarnation: a different session, a replaced one or a
 restart shows every turn folded, and a new turn starts folded. A sent ask's header
 reads `to <seat> · sent`; a failed outcome keeps its alert line. The ask body is the
@@ -1063,7 +1070,7 @@ not know the argument.
   a terminal that sends only legacy X10 reports gets no drag. Inside tmux a
   binding that replaces the default `MouseDrag1Pane` keeps drags from the app.
 - Dragged sizes are not remembered when the app quits.
-- A copy is the whole recorded body for transcript turns, an admitted answer, an ask whose stored text was read and a short `say` line. An ask whose text could not be read, a bridge message, a not-delivered line and a card or needs-you line copy the journal's summary (line breaks flattened, 600 characters), a `say` of 3500 characters or more its capped summary, a bridge reply nothing (the record keeps no body) and an unadmitted reply stays a preview; the hint row says `preview only` for each. An answer whose body could not be read copies its summary with the reason.
+- A copy is the whole recorded body for transcript turns, an admitted answer, an ask whose stored text was read and a short `say` line. An ask whose text could not be read, a bridge message, a not-delivered line and a card (standing or closed) or needs-you line copy the journal's summary (line breaks flattened, 600 characters), a `say` of 3500 characters or more its capped summary, a bridge reply nothing (the record keeps no body) and an unadmitted reply stays a preview; the hint row says `preview only` for each. An answer whose body could not be read copies its summary with the reason.
 - A turn is named by a 64-bit fingerprint of its record, so two identical records mark together. `[` / `]` stop at the oldest row the last frame produced; a second press after the next frame goes on. tmux keeps 50 buffers by default, so the 51st copy drops the oldest.
 - A Stop answered in the app is checked against the tmux session id the menu
   was drawn with only by the stop's own owner, after the app already said

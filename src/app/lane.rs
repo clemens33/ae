@@ -728,6 +728,7 @@ fn head(kind: &Kind, main: &str, through: bool) -> (String, String, Voice) {
             "DECISION · waiting-user".to_owned(),
             seat(name),
         ),
+        Kind::PastCard { seat: name } => (name.clone(), "DECISION · closed".to_owned(), seat(name)),
         Kind::NeedsYou { seat: name } => (
             name.clone(),
             "NEEDS YOU · in its pane".to_owned(),
@@ -786,6 +787,7 @@ pub(super) fn preview_why(item: &Item) -> Option<String> {
         Kind::Inbound { .. }
         | Kind::NotDelivered { .. }
         | Kind::Card { .. }
+        | Kind::PastCard { .. }
         | Kind::NeedsYou { .. }
         | Kind::Accepted { .. } => Some(summary.to_owned()),
         Kind::Said { .. } if item.body.chars().count() >= CHAT_SUMMARY_CAP => Some(format!(

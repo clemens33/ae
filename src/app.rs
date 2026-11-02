@@ -57,6 +57,8 @@ mod apppolish3_spec;
 mod appread_spec;
 mod backend;
 mod cue;
+#[cfg(test)]
+mod dechist_spec;
 pub mod draw;
 #[cfg(test)]
 #[path = "../tests/it/app_early_spec.rs"]

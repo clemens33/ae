@@ -32,6 +32,9 @@ coverage incomplete: say — 1 line from other seats not shown
 ## 09:12:30 said ae
   moved a seat
 
+## 09:14:00 DECISION lead · closed
+  old question
+
 ## 09:16:00 DECISION colead · waiting-user
   pick a name	for v2
 

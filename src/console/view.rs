@@ -36,7 +36,7 @@ fn cells(text: &str) -> usize {
 /// every other body raw as ONE text part. Both the chat and the app draw
 /// these, neutralising and wrapping each part through their usual door.
 pub(crate) fn body_parts(item: &Item) -> Vec<Part<'_>> {
-    if matches!(item.kind, Kind::Card { .. }) {
+    if matches!(item.kind, Kind::Card { .. } | Kind::PastCard { .. }) {
         return card::layout(&item.body);
     }
     vec![Part {
@@ -595,6 +595,7 @@ impl Dress {
             Kind::Assistant { seat, .. }
             | Kind::Answer { seat, .. }
             | Kind::Card { seat }
+            | Kind::PastCard { seat }
             | Kind::NeedsYou { seat } => self.seat(seat),
             Kind::Reply { from, .. } | Kind::Unadmitted { from, .. } => self.seat(from),
             Kind::Said { who } => self.seat(who),
@@ -642,6 +643,7 @@ pub(super) fn tag(kind: &Kind) -> String {
         Kind::Reply { from, to } => format!("{from} → {to} · preview (600-char summary)"),
         Kind::Said { who } => format!("said {who}"),
         Kind::Card { seat } => format!("DECISION {seat} · waiting-user"),
+        Kind::PastCard { seat } => format!("DECISION {seat} · closed"),
         Kind::NeedsYou { seat } => format!("NEEDS YOU {seat} · needs you in its pane"),
         Kind::Asked {
             to,
@@ -698,13 +700,35 @@ pub(super) fn tag(kind: &Kind) -> String {
 /// The memory key of a console-thread row: its record's position in the read.
 const CONSOLE_KEY: &str = "console record ";
 
+/// A card or prompt this console printed that may yet stop standing: the words
+/// its `-- closed:` line names it by and, for a decision card, the seat and
+/// words its past entry will arrive with when it does.
+#[derive(Debug)]
+struct Standing {
+    label: String,
+    card: Option<(String, String)>,
+}
+
+impl Standing {
+    fn of(item: &Item) -> Self {
+        let card = match &item.kind {
+            Kind::Card { seat } => Some((seat.clone(), item.body.clone())),
+            _ => None,
+        };
+        Self {
+            label: tag(&item.kind),
+            card,
+        }
+    }
+}
+
 /// What a console has already printed: rows by multiplicity (two records of
 /// equal words in one second are two rows), the cards and prompts it printed
 /// that may yet stop standing, the lane-derived gaps it named, and the day.
 #[derive(Debug, Default)]
 pub struct Printed {
     shown: BTreeMap<String, usize>,
-    open: BTreeMap<String, String>,
+    open: BTreeMap<String, Standing>,
     gaps: BTreeSet<String>,
     day: Option<String>,
     pending: Vec<Pending>,
@@ -913,12 +937,16 @@ impl Printed {
             *nth += 1;
             let turn = (hashed(&key), *nth);
             if matches!(item.kind, Kind::Card { .. } | Kind::NeedsYou { .. }) {
-                standing.insert(key.clone(), tag(&item.kind));
+                standing.insert(key.clone(), Standing::of(item));
             }
             let printed = self.shown.entry(key).or_default();
             if turn.1 > *printed {
                 *printed += 1;
-                self.row(item, turn, &mut out);
+                // A card this console printed while it stood is not printed
+                // again once it is past; its `-- closed:` line says it ended.
+                if !self.printed_standing(item) {
+                    self.row(item, turn, &mut out);
+                }
             }
         }
         // Only a lane whose journal was READ can say a card stopped standing; a
@@ -934,9 +962,9 @@ impl Printed {
                     self.pending.push(pending);
                 }
             }
-            for (key, label) in &self.open {
+            for (key, was) in &self.open {
                 if !standing.contains_key(key) {
-                    let closed = format!("-- closed: {label} is no longer standing\n\n");
+                    let closed = format!("-- closed: {} is no longer standing\n\n", was.label);
                     out.push_str(&self.style.dim(&closed));
                     self.shown.remove(key);
                 }
@@ -944,6 +972,19 @@ impl Printed {
             self.open = standing;
         }
         out
+    }
+
+    /// Whether `item` is the past entry of a decision card this console printed
+    /// as standing and has not yet closed: the same seat's, with the same words.
+    fn printed_standing(&self, item: &Item) -> bool {
+        let Kind::PastCard { seat } = &item.kind else {
+            return false;
+        };
+        self.open.values().any(|was| {
+            was.card
+                .as_ref()
+                .is_some_and(|(stood, body)| stood == seat && *body == item.body)
+        })
     }
 
     /// The "needs you" section of `read`, for a pane of `size` (`None`: a pipe
@@ -1109,7 +1150,7 @@ impl Printed {
         if matches!(item.kind, Kind::Accepted { .. }) {
             return Vec::new();
         }
-        if !matches!(item.kind, Kind::Card { .. }) {
+        if !matches!(item.kind, Kind::Card { .. } | Kind::PastCard { .. }) {
             let lines = item.body.lines();
             let rows = lines.flat_map(|line| {
                 self.style
