@@ -6500,6 +6500,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// Oracle: the store's own contract. A day with no directory holds no
+    /// rollout (`Ready(None)`), but a day the store cannot classify is a
+    /// refusal that reads as an error, never as an absent day: otherwise a
+    /// damaged store would read as silence instead of "quota file unreadable".
+    #[test]
+    fn an_unclassifiable_day_directory_is_an_error_and_an_absent_one_is_not() {
+        let root =
+            std::path::PathBuf::from(format!("/tmp/ae-quota-day-refusal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("sessions root");
+        let id = "01a08046-1974-7352-ade3-81a786200795";
+        assert!(matches!(
+            find_codex_rollout(&root, id, &mut Budget::new()),
+            Ok(Bounded::Ready(None))
+        ));
+        std::fs::write(root.join("2026"), b"not a directory").expect("year as a file");
+        assert!(find_codex_rollout(&root, id, &mut Budget::new()).is_err());
+        // A regular file where the day directory belongs is refused by its
+        // classification, before anything is opened.
+        std::fs::remove_file(root.join("2026")).expect("year file");
+        let day = root.join("2026/09/08");
+        std::fs::create_dir_all(day.parent().expect("month")).expect("month directory");
+        std::fs::write(&day, b"not a directory").expect("day as a file");
+        let refused = find_codex_rollout(&root, id, &mut Budget::new())
+            .err()
+            .expect("a file is not a day directory");
+        assert_eq!(refused.kind(), std::io::ErrorKind::InvalidData, "{refused}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// Oracle: lead ruling 2026-11-02 on the invariant "one cut read among
     /// many must not hide good windows", and the 7 Oct rule that incomplete
     /// evidence is never hidden behind a fresh row: a scope with a usable
