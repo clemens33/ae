@@ -239,6 +239,13 @@ if ($owned && $mode eq 'decline' && locked()) {
 if ($owned && (grep { $_ eq 'display-message' } @ARGV) && $ARGV[-1] =~ /^\[ae watchdog\] /) {
     open(my $log, '>>', "$root/notifications") or die; print $log "$ARGV[-1]\n"; close $log;
 }
+if ($owned && (grep { $_ eq 'set-option' } @ARGV) && $ARGV[-2] eq '@ae_agents') {
+    system {$real} $real, @ARGV;
+    exit 1 if $? != 0;
+    open(my $log, '>>', "$root/published-cycles") or die;
+    print $log "published\n"; close $log;
+    exit 0;
+}
 exec {$real} $real, @ARGV; die 'tmux exec';
 "#;
 
@@ -530,6 +537,21 @@ impl Rig {
     }
     fn count(&self, action: &str) -> usize {
         self.events().iter().filter(|e| e.action == action).count()
+    }
+    /// The daemon publishes its roster once per cycle, after applying effects.
+    /// Receipts follow successful real tmux writes; a stale roster cannot prove
+    /// another cycle ran, especially after restarting the daemon.
+    fn wait_five_cycles(&self) {
+        let published = || {
+            text(self.root.join("published-cycles"))
+                .lines()
+                .filter(|line| *line == "published")
+                .count()
+        };
+        let before = published();
+        wait_within("five fresh published cycles", WITNESS_WAIT, || {
+            published() >= before + 5
+        });
     }
     /// A cycle that reached the human-prompt bound has ended. `@ae_agents` says
     /// `prompt` only from that cycle on, and the daemon publishes it after the
@@ -1865,7 +1887,7 @@ mod unreach {
         let mut rig = Rig::new("ur-young", "codex", "normal");
         rig.start();
         rig.named();
-        std::thread::sleep(Duration::from_secs(5));
+        rig.wait_five_cycles();
         assert!(
             rig.wire().is_empty(),
             "first sight has not aged sixty seconds"
@@ -2047,7 +2069,7 @@ mod unreach {
             });
             rig.stop();
             rig.start();
-            std::thread::sleep(Duration::from_secs(5));
+            rig.wait_five_cycles();
             rig.stop();
             assert_eq!(
                 rig.count("auto-dismiss-reserved"),
@@ -2096,7 +2118,7 @@ mod unreach {
         rig.start();
         std::thread::sleep(Duration::from_secs(3));
         drop(client);
-        std::thread::sleep(Duration::from_secs(6));
+        rig.wait_five_cycles();
         assert!(
             rig.wire().is_empty(),
             "detaching does not erase the sixty-second input hold"
@@ -2170,10 +2192,10 @@ mod unreach {
             }
             start_challenges(&mut rig);
             wait_for("first unreachable alert", || unreachable_alerts(&rig) > 0);
-            std::thread::sleep(Duration::from_secs(5));
+            rig.wait_five_cycles();
             rig.stop();
             start_challenges(&mut rig);
-            std::thread::sleep(Duration::from_secs(5));
+            rig.wait_five_cycles();
             assert_eq!(
                 unreachable_alerts(&rig),
                 1,
