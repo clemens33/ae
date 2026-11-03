@@ -2124,6 +2124,39 @@ fn launch_mode(flag: Option<Mode>, recorded: Option<Mode>, configured: &str) -> 
         .unwrap_or_else(|| Mode::parse(configured).unwrap_or(Mode::Local))
 }
 
+/// Whether the chat opens as the session's first window, and the reason for
+/// the one note a malformed `[workspace] chat` earns. A meta agent's session
+/// and the orchestrator seat never open it, and then the setting is not read
+/// at all: `read` runs only when neither suppresses it. A malformed setting
+/// opens the chat, as when it is unset.
+fn chat_opens(
+    meta_agent: bool,
+    orchestrator_seat: bool,
+    read: impl FnOnce() -> config::ChatWindow,
+) -> (bool, Option<String>) {
+    if meta_agent || orchestrator_seat {
+        return (false, None);
+    }
+    match read() {
+        config::ChatWindow::On | config::ChatWindow::App => (true, None),
+        config::ChatWindow::Off => (false, None),
+        config::ChatWindow::Unusable(why) => (true, Some(why)),
+    }
+}
+
+/// A session's layout. META-WINS on resume: a non-empty recorded layout was
+/// pinned at launch, so a config flip applies to NEW sessions only, mirroring
+/// agent identity. Otherwise the configured one, and `vertical` when none is.
+fn session_layout(configured: String, saved: Option<String>) -> String {
+    saved.filter(|value| !value.is_empty()).unwrap_or_else(|| {
+        if configured.is_empty() {
+            "vertical".to_owned()
+        } else {
+            configured
+        }
+    })
+}
+
 /// `?` for a launch step: a step that refused has already written its own
 /// diagnostic, so the launch ends with the exit code it returned.
 macro_rules! step {
@@ -2676,13 +2709,6 @@ fn launch(
         err
     ));
 
-    // Layout is META-WINS on resume: pinned at launch, so a config flip applies
-    // to NEW sessions only, mirroring agent identity.
-    let mut layout = if values.layout.is_empty() {
-        "vertical".to_owned()
-    } else {
-        values.layout
-    };
     // A RESUME RESTORES THE ROSTER IT SAVED.
     if resuming {
         let overridden: Vec<&str> = seat_overrides.as_ref().map_or_else(Vec::new, |snapshot| {
@@ -2710,9 +2736,13 @@ fn launch(
         writeln!(err, "{line}")?;
         return Ok(EXIT_FAILED);
     }
-    if resuming && let Some(saved) = meta_value(&dir, "layout").filter(|v| !v.is_empty()) {
-        layout = saved;
-    }
+    // Read only on resume, and only once the roster has been restored.
+    let saved_layout = if resuming {
+        meta_value(&dir, "layout")
+    } else {
+        None
+    };
+    let layout = session_layout(values.layout, saved_layout);
 
     // ---- restored spawned seats, LEXED before anything is created ----
     if resuming {
@@ -2725,18 +2755,15 @@ fn launch(
         ));
     }
 
-    let chat = !(values.meta_agent || orchestrator_seat)
-        && match config::workspace_chat_window(env.global.as_deref(), env.local.as_deref()) {
-            config::ChatWindow::On | config::ChatWindow::App => true,
-            config::ChatWindow::Off => false,
-            config::ChatWindow::Unusable(why) => {
-                writeln!(
-                    err,
-                    "Note: [workspace] chat: {why}; the chat window opens, as when it is unset."
-                )?;
-                true
-            }
-        };
+    let (chat, unusable) = chat_opens(values.meta_agent, orchestrator_seat, || {
+        config::workspace_chat_window(env.global.as_deref(), env.local.as_deref())
+    });
+    if let Some(why) = unusable {
+        writeln!(
+            err,
+            "Note: [workspace] chat: {why}; the chat window opens, as when it is unset."
+        )?;
+    }
     let mut shape = Session {
         name: session.clone(),
         mode: copy.mode,
@@ -6486,6 +6513,72 @@ mod tests {
         assert_eq!(launch_mode(None, None, "local"), Mode::Local);
         for unknown in ["", "Git", " git", "nonsense"] {
             assert_eq!(launch_mode(None, None, unknown), Mode::Local, "{unknown:?}");
+        }
+    }
+
+    /// A meta agent's session and the orchestrator seat never open the chat
+    /// and never read its setting, so a malformed one earns no note.
+    #[test]
+    fn a_suppressed_chat_never_reads_its_setting() {
+        use super::chat_opens;
+        for (meta_agent, orchestrator_seat) in [(true, false), (false, true), (true, true)] {
+            let unread =
+                || -> crate::config::ChatWindow { panic!("a suppressed chat read its setting") };
+            assert_eq!(
+                chat_opens(meta_agent, orchestrator_seat, unread),
+                (false, None),
+                "meta={meta_agent}, seat={orchestrator_seat}"
+            );
+        }
+    }
+
+    /// Otherwise the setting is read exactly once: on and app open the chat,
+    /// off keeps it closed, and a malformed one opens it and is named.
+    #[test]
+    fn an_unsuppressed_chat_reads_its_setting_once() {
+        use super::chat_opens;
+        use crate::config::ChatWindow;
+        for (setting, expected) in [
+            (ChatWindow::On, (true, None)),
+            (ChatWindow::App, (true, None)),
+            (ChatWindow::Off, (false, None)),
+            (
+                ChatWindow::Unusable("\"x\" is not on".to_owned()),
+                (true, Some("\"x\" is not on".to_owned())),
+            ),
+        ] {
+            let mut reads = 0;
+            let read = || {
+                reads += 1;
+                setting.clone()
+            };
+            assert_eq!(chat_opens(false, false, read), expected, "{setting:?}");
+            assert_eq!(reads, 1, "{setting:?}");
+        }
+    }
+
+    /// A non-empty recorded layout wins; otherwise the configured one, and
+    /// `vertical` when nothing is configured.
+    #[test]
+    fn a_recorded_layout_beats_the_config_beats_vertical() {
+        use super::session_layout;
+        for configured in ["", "horizontal", "lead-solo"] {
+            assert_eq!(
+                session_layout(configured.to_owned(), Some("lead-pair".to_owned())),
+                "lead-pair"
+            );
+            let fallback = if configured.is_empty() {
+                "vertical"
+            } else {
+                configured
+            };
+            for saved in [None, Some(String::new())] {
+                assert_eq!(
+                    session_layout(configured.to_owned(), saved.clone()),
+                    fallback,
+                    "{configured:?} {saved:?}"
+                );
+            }
         }
     }
 
