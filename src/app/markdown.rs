@@ -862,6 +862,40 @@ impl<'a> Mapper<'a> {
         self.flush();
         self.scopes.pop();
     }
+    /// A table keeps the hang it starts at (before the prefix is cleared) and
+    /// takes cells into its last row. Its head and rows start empty rows; a cell
+    /// start drops a pending row, and a cell end with no table row to take it
+    /// leaves the row open.
+    fn open_table(&mut self, align: &[Alignment]) {
+        self.block(true);
+        self.flush();
+        self.out.items.push(Item::Table(Table {
+            rows: Vec::new(),
+            align: align.to_vec(),
+            hang: self.hang,
+        }));
+        self.prefix.clear();
+    }
+    fn open_table_row(&mut self) {
+        if let Some(table) = self.out.table_mut() {
+            table.rows.push(Vec::new());
+        }
+    }
+    fn open_cell(&mut self, range: &Range<usize>) {
+        self.row = Row {
+            line: self.doc.line(range.start),
+            ..Row::default()
+        };
+    }
+    fn close_cell(&mut self) {
+        if let Some(row) = self.out.table_mut().and_then(|t| t.rows.last_mut()) {
+            row.push(std::mem::take(&mut self.row));
+        }
+    }
+    fn close_table(&mut self) {
+        self.gap();
+        self.indent();
+    }
     /// A span opens: the marks it found come back at its end, whichever kind ends it.
     fn save(&mut self) {
         self.saved.push(self.marks);
@@ -917,27 +951,9 @@ impl<'a> Mapper<'a> {
                         Tag::Item => self.open_item(range),
                         Tag::BlockQuote(_) => self.open_quote(),
                         Tag::List(start) => self.open_list(*start),
-                        Tag::Table(align) => {
-                            self.block(true);
-                            self.flush();
-                            self.out.items.push(Item::Table(Table {
-                                rows: Vec::new(),
-                                align: align.clone(),
-                                hang: self.hang,
-                            }));
-                            self.prefix.clear();
-                        }
-                        Tag::TableHead | Tag::TableRow => {
-                            if let Some(table) = self.out.table_mut() {
-                                table.rows.push(Vec::new());
-                            }
-                        }
-                        Tag::TableCell => {
-                            self.row = Row {
-                                line: self.doc.line(range.start),
-                                ..Row::default()
-                            };
-                        }
+                        Tag::Table(align) => self.open_table(align),
+                        Tag::TableHead | Tag::TableRow => self.open_table_row(),
+                        Tag::TableCell => self.open_cell(range),
                         _ => {}
                     }
                     match tag {
@@ -976,15 +992,8 @@ impl<'a> Mapper<'a> {
                     TagEnd::BlockQuote(_) => self.close_quote(),
                     TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => self.restore(),
                     TagEnd::Link | TagEnd::Image => self.close_link(),
-                    TagEnd::TableCell => {
-                        if let Some(row) = self.out.table_mut().and_then(|t| t.rows.last_mut()) {
-                            row.push(std::mem::take(&mut self.row));
-                        }
-                    }
-                    TagEnd::Table => {
-                        self.gap();
-                        self.indent();
-                    }
+                    TagEnd::TableCell => self.close_cell(),
+                    TagEnd::Table => self.close_table(),
                     _ => {}
                 },
                 Event::Text(text) if self.code => self.literal(text, self.marks),
