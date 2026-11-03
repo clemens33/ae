@@ -5252,6 +5252,18 @@ fn waits_for_reset(seat: &AutoSeat, episode: &crate::autoreseat::Episode, now: i
             || seat.reset.is_some_and(resumed))
 }
 
+/// Whether a cycle reads the seat's binding reset: only on its limit — the
+/// notice drawn, or the latch standing — the one window a wake judges.
+fn reads_reset(throttle: Option<Throttle>, latched: bool) -> bool {
+    throttle == Some(Throttle::LimitReached) || latched
+}
+
+/// The tool's own resume as this cycle READ it: a failed capture reads
+/// nothing armed, and the latch never takes it for a cancel either.
+fn armed_reading(capture_ok: bool, capture: &str, tool: crate::tool::ToolKind) -> bool {
+    capture_ok && crate::harness_state::auto_continue_armed(capture, tool)
+}
+
 /// The first-sight forecast of a seat auto reseat leaves to its reset's wake
 /// ([`crate::autoreseat::reset_wait`]), or `None` when the move applies.
 fn waiting_forecast(
@@ -6397,11 +6409,9 @@ impl Cycle<'_> {
                     .and_then(|at| events[at].reference.as_deref())
                     .is_some_and(|booked| !booked.is_empty() && start.as_deref() != Some(booked))
                 && start.is_some();
-            // Read only on the limit: the one window a wake judges.
-            let limit_reset = (throttle == Some(Throttle::LimitReached)
-                || carried.limit_since.is_some())
-            .then(|| self.own_reset(&carry.quota, &slot, pin.as_deref(), now))
-            .flatten();
+            let limit_reset = reads_reset(throttle, carried.limit_since.is_some())
+                .then(|| self.own_reset(&carry.quota, &slot, pin.as_deref(), now))
+                .flatten();
             let seen = Observation {
                 now_epoch: now,
                 hash,
@@ -6415,8 +6425,7 @@ impl Cycle<'_> {
                 ),
                 limit_reset,
                 limit_woke_journal: limit_wake_in(&events, (self.session, &slot, agent), false),
-                auto_continue: capture_ok
-                    && crate::harness_state::auto_continue_armed(&capture, tool),
+                auto_continue: armed_reading(capture_ok, &capture, tool),
                 capture_ok,
                 human_prompt: crate::watchdog::human_prompt_class(
                     &capture,
@@ -8388,7 +8397,7 @@ mod limitwake_spec;
 
 #[cfg(test)]
 mod limitwake_readers {
-    use super::{ACTOR, limit_wake_in, waiting_forecast};
+    use super::{ACTOR, armed_reading, limit_wake_in, reads_reset, waiting_forecast};
     use crate::autoreseat::LimitReset;
     use crate::events::Event;
 
@@ -8427,6 +8436,117 @@ mod limitwake_readers {
             assert_eq!(limit_wake_in(&foreign, SEAT, landed), None, "{landed}");
         }
         assert_eq!(limit_wake_in(&[], SEAT, false), None);
+    }
+
+    /// The cycle reads the seat's OWN reset through its roster row: a seat the
+    /// roster names gets the held reading's reset, any other slot none.
+    #[test]
+    fn the_cycle_reads_the_rostered_seats_own_reset() {
+        use super::{Cycle, Knobs, QuotaCarry, SendHelper};
+        use crate::meta::{
+            RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RecordedWorkDir,
+            RosterEntry,
+        };
+        use crate::quota::{Group, Observation, Policy, Row, Status};
+        let now = 1_700_000_010;
+        let entry = RosterEntry {
+            slot: "main".into(),
+            name: "lead".into(),
+            profile: Some("opusx".into()),
+            client: RecordedClient::Missing,
+            harness_session: None,
+            config_home: RecordedConfigHome::Path("/limitwake-cycle-account".into()),
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: Some("claude".into()),
+            work_dir: RecordedWorkDir::Missing,
+        };
+        let row = Row {
+            bucket: "session".into(),
+            qualifier: None,
+            window_minutes: Some(300),
+            used_percent: Some("100".into()),
+            resets_at: Some(now + 1800),
+            observed_at: Some(now),
+            status: Status::Fresh,
+        };
+        let group = Group {
+            profiles: vec!["opusx".into()],
+            tool: crate::tool::ToolKind::Claude,
+            home: None,
+            source: Some("/limitwake-cycle-account/.claude.json".into()),
+            clients: vec![],
+            rollout: None,
+            owner: None,
+            rows: vec![row],
+            hint: None,
+            summary: None,
+            policy: Policy::default(),
+            notes: vec![],
+            plan: None,
+        };
+        let quota = QuotaCarry {
+            last_observation: Some(Observation {
+                groups: vec![group],
+                rendered: vec![],
+                home: None,
+                now,
+            }),
+            ..QuotaCarry::default()
+        };
+        let dir = std::path::Path::new("/limitwake-cycle-meta");
+        let helper = SendHelper::for_session(dir);
+        let server = crate::inventory::ServerId::Ambient;
+        let cycle = Cycle {
+            knobs: Knobs::default(),
+            meta_dir: dir,
+            helper: &helper,
+            server: &server,
+            session: "demo",
+            goal: None,
+            roster: vec![entry],
+            local_config: None,
+            lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
+            auto: crate::autoreseat::settings(None),
+            auto_trust: crate::config::AutoTrust::Off,
+            meta_agent: false,
+            launch_ids: Vec::new(),
+            started: None,
+            settled: None,
+        };
+        assert_eq!(
+            cycle.own_reset(&quota, "main", None, now),
+            Some(LimitReset {
+                at: now + 1800,
+                short: true
+            })
+        );
+        assert_eq!(cycle.own_reset(&quota, "spawned.9", None, now), None);
+    }
+
+    #[test]
+    fn the_reset_is_read_only_on_the_limit() {
+        use crate::watchdog::Throttle;
+        assert!(reads_reset(Some(Throttle::LimitReached), false), "drawn");
+        assert!(reads_reset(None, true), "latched, notice not read");
+        assert!(!reads_reset(None, false));
+        assert!(
+            !reads_reset(Some(Throttle::Throttled), false),
+            "a transient throttle is no limit"
+        );
+    }
+
+    #[test]
+    fn only_a_read_capture_can_show_the_vendor_armed() {
+        use crate::tool::ToolKind;
+        let rule = "─".repeat(20);
+        let armed = format!(
+            "{rule}\n❯\n{rule}\n  Continuing automatically at 1am · esc to cancel\n  🧠 Opus\n  ⏵⏵ on\n"
+        );
+        assert!(armed_reading(true, &armed, ToolKind::Claude));
+        assert!(!armed_reading(false, &armed, ToolKind::Claude), "blind");
+        let plain = format!("{rule}\n❯\n{rule}\n  🧠 Opus\n  ⏵⏵ on\n");
+        assert!(!armed_reading(true, &plain, ToolKind::Claude));
     }
 
     #[test]
@@ -14160,6 +14280,55 @@ mod tests {
         let dead = account(&PaneState::default(), &dying, &knobs);
         assert_eq!(dead.verdict, Verdict::Dead);
         assert_eq!(dead.next.limit_since, None, "no limit episode was entered");
+    }
+
+    /// The vendor's footer first read gone AT the reset instant cannot be told
+    /// from the vendor having fired: the arming stands, so ae never wakes it.
+    #[test]
+    fn a_footer_gone_at_the_reset_instant_keeps_the_arming() {
+        let knobs = Knobs::default();
+        let at = seen().now_epoch;
+        let armed = PaneState {
+            identity: Some(seen().identity),
+            limit_since: Some(at - 600),
+            limit_reset: Some(crate::autoreseat::LimitReset { at, short: true }),
+            limit_armed: Some(at),
+            ..PaneState::default()
+        };
+        let gone = Observation {
+            throttle: Some(Throttle::LimitReached),
+            ..seen()
+        };
+        let cycle = account(&armed, &gone, &knobs);
+        assert_eq!(cycle.next.limit_armed, Some(at));
+        let before = Observation {
+            now_epoch: at - 1,
+            ..gone
+        };
+        assert_eq!(account(&armed, &before, &knobs).next.limit_armed, None);
+    }
+
+    /// A seat back from the dead starts its limit wake from nothing: the
+    /// refused attempts of the dead episode's reset are not carried.
+    #[test]
+    fn a_death_clear_drops_the_refused_wake_attempts() {
+        let knobs = Knobs::default();
+        let dead = PaneState {
+            identity: Some(seen().identity),
+            dead_latched: true,
+            limit_since: Some(seen().now_epoch - 600),
+            limit_wake_attempts: knobs.undelivered_max,
+            ..PaneState::default()
+        };
+        let back = account(&dead, &seen(), &knobs);
+        assert!(back.effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Emit {
+                action: "dead-cleared",
+                ..
+            }
+        )));
+        assert_eq!(back.next.limit_wake_attempts, 0);
     }
 
     /// A seat that died while limited and came back runs a NEW episode: the

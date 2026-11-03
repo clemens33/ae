@@ -1004,6 +1004,10 @@ mod tests {
         // footer-shaped rows after it and no box read, is not armed.
         let quoted = format!("output\n{rule}\n{row}  🧠 Opus 5.5 (high)\n  ⏵⏵ auto mode on\n");
         assert!(!auto_continue_armed(&quoted, ToolKind::Claude));
+        // A row below the box that is neither chrome nor the limit footer means
+        // the frame is not read, so nothing below it reads armed.
+        let foreign = frame("", &format!("{row}  some agent output\n"));
+        assert!(!auto_continue_armed(&foreign, ToolKind::Claude));
     }
 
     #[test]
