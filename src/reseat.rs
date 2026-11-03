@@ -61,6 +61,13 @@ use crate::tool::ToolKind;
 use crate::tracked::{self, EventFields};
 use crate::transport;
 
+#[cfg(test)]
+#[path = "reseat/limitmuse_spec.rs"]
+mod limitmuse_spec;
+#[cfg(test)]
+#[path = "reseat/muse_gap_tests.rs"]
+mod muse_gap_tests;
+
 /// The usage line.
 pub const RESEAT_USAGE: &str =
     "Usage: ae reseat <session> <agent> --using <profile> [--stop-unknown]";
@@ -836,7 +843,7 @@ fn limit_proven(capture: &str, agent_bin: &str, tool: ToolKind) -> bool {
     // for every muse frame, idle ones included, and stays so): its limit stop is
     // proven by its own scan alone, which reads the block, the empty box and the
     // footer below it, and refuses a background task.
-    if tool == ToolKind::Muse {
+    if tool.limit_screen_scanned() {
         return crate::watchdog::limit_standing(capture, agent_bin)
             == crate::watchdog::LimitStanding::Stands;
     }
@@ -881,7 +888,7 @@ fn frame_gap(reading: Reading<'_>, agent_bin: &str, tool: ToolKind) -> Option<St
     // Muse's frame is read by its own scan, never by the claude grammar the
     // classifier routes it to, so a muse capture is always a frame to judge.
     let Some(capture) = capture.filter(|capture| {
-        tool == ToolKind::Muse || crate::harness_state::read_frame(capture, tool).is_some()
+        tool.limit_screen_scanned() || crate::harness_state::read_frame(capture, tool).is_some()
     }) else {
         return Some("no frame".to_owned());
     };
@@ -892,10 +899,10 @@ fn frame_gap(reading: Reading<'_>, agent_bin: &str, tool: ToolKind) -> Option<St
         crate::watchdog::LimitStanding::BackgroundTask(row) => {
             format!("background task: \"{}\"", row.replace('"', ""))
         }
-        crate::watchdog::LimitStanding::NoBox if tool == ToolKind::Muse => {
+        crate::watchdog::LimitStanding::NoBox if tool.limit_screen_scanned() => {
             "no empty box under the limit row".to_owned()
         }
-        crate::watchdog::LimitStanding::Stands if tool == ToolKind::Muse => return None,
+        crate::watchdog::LimitStanding::Stands if tool.limit_screen_scanned() => return None,
         _ => "no limit row".to_owned(),
     })
 }
@@ -3369,11 +3376,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "reseat/limitmuse_spec.rs"]
-mod limitmuse_spec;
-
-#[cfg(test)]
-#[path = "reseat/muse_gap_tests.rs"]
-mod muse_gap_tests;

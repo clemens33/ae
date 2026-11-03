@@ -1609,11 +1609,31 @@ impl ToolKind {
         matches!(self, Self::Claude)
             && row == "⏺ Automatic continue cancelled · /rate-limit-options to re-arm"
     }
+
+    /// Whether the reseat stop proof judges this harness's limit screen with its
+    /// own scan (`watchdog::limit_standing`) instead of the frame grammar: only
+    /// muse, whose frames the grammar routes to claude's and always reads
+    /// `Unknown`.
+    #[must_use]
+    pub(crate) const fn limit_screen_scanned(self) -> bool {
+        matches!(self, Self::Muse)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_muse_has_its_limit_screen_judged_by_its_own_scan() {
+        let scanned: Vec<&str> = KNOWN
+            .iter()
+            .filter(|adapter| adapter.kind.limit_screen_scanned())
+            .map(|adapter| adapter.name)
+            .collect();
+        assert_eq!(scanned, ["muse"]);
+        assert!(!ToolKind::Unknown.limit_screen_scanned());
+    }
 
     #[test]
     fn each_adapter_row_carries_a_unique_client_token() {

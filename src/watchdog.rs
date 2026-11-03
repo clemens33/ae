@@ -11,6 +11,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::events::{Event, Identity, SessionKey};
 use crate::procs::Descendancy;
 
+#[cfg(test)]
+#[path = "watchdog/muse_standing_tests.rs"]
+mod muse_standing_tests;
+
 /// The shells the dead-check treats as "no agent in the foreground".
 #[must_use]
 pub fn command_is_shell(cmd: &str) -> bool {
@@ -669,14 +673,14 @@ const CLAUDE_LIMIT_HEAD: &str = "⏺ Usage limit reached";
 #[must_use]
 pub fn limit_standing(buf: &str, agent_bin: &str) -> LimitStanding {
     match agent_bin {
-        "claude" => claude_limit_standing(buf),
+        "claude" => claude_limit_standing(buf, agent_bin),
         "muse" => muse_limit_standing(buf),
         _ => LimitStanding::NoCell,
     }
 }
 
-fn claude_limit_standing(buf: &str) -> LimitStanding {
-    let tool = crate::tool::ToolKind::Claude;
+fn claude_limit_standing(buf: &str, agent_bin: &str) -> LimitStanding {
+    let tool = crate::tool::ToolKind::from_binary_name(agent_bin);
     let Some((window, at, _)) = newest_row(buf, &CLAUDE_BANNER) else {
         return LimitStanding::NoCell;
     };
@@ -6681,7 +6685,3 @@ tail line
         assert_eq!(claude(&pad(1)), None, "one row further up it is out");
     }
 }
-
-#[cfg(test)]
-#[path = "watchdog/muse_standing_tests.rs"]
-mod muse_standing_tests;
