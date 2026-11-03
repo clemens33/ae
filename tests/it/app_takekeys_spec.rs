@@ -6,7 +6,8 @@
 //! are the per-key steps of .local/takekeys/plan.md sec. 2 as critiqued in
 //! .local/takekeys/nav-critique.md. Groups: G1 pre-loop/read-press, G2
 //! newline + pre-fleet, G3 hold, G4 spent/modal, G5 disarm, G6 selection,
-//! G7 mode chain + batch order. Bug-shaped behaviour is pinned, never fixed.
+//! G7 mode chain + batch order, G8 supplement (predicate terms pinned one by
+//! one). Bug-shaped behaviour is pinned, never fixed.
 #![allow(clippy::expect_used, reason = "bounded acceptance fixtures")]
 
 use std::collections::BTreeMap;
@@ -653,5 +654,62 @@ fn mid_batch_quit_abandons_the_rest_of_the_batch() {
         app.model.selected(),
         Some("api"),
         "PIN: the j after the quit never acted"
+    );
+}
+
+// ---------------------------------------------------------- G8: supplement
+// Authored against the driver's hand-mutation pre-checks (evidence/pre/):
+// three predicate terms the G1-G7 groups do not distinguish one by one.
+
+#[test]
+fn prefleet_reader_overlay_takes_the_full_path_not_early() {
+    let mut app = cold();
+    app.model.open_reader(1);
+    assert!(app.model.reader_open());
+    let batch = vec![(Key::Text(b"j".to_vec()), Instant::now())];
+    assert!(take_keys(&mut app, batch).is_some());
+    assert!(
+        app.early.is_empty(),
+        "PIN: a j with only the reader open never queues for replay"
+    );
+    assert!(app.model.reader_open(), "the key went to the reader");
+}
+
+#[test]
+fn text_under_settings_disarms_the_armed_press() {
+    let (_root, mut app) = loaded("tk-disarm-settings");
+    app.open_settings();
+    assert!(app.model.settings_open());
+    let base = Instant::now();
+    app.armed = Some(Armed {
+        at: base,
+        what: Arm::Quit,
+    });
+    let keys = vec![(Key::Text(b"j".to_vec()), at(base, 1))];
+    assert!(take_keys(&mut app, keys).is_some());
+    assert!(
+        app.armed.is_none(),
+        "DOC: any other key disarms; settings is not browsing at S8"
+    );
+}
+
+#[test]
+fn text_while_held_disarms_the_armed_press() {
+    let (_root, mut app) = loaded("tk-disarm-held");
+    app.held = Some("not writing".to_owned());
+    let base = Instant::now();
+    app.armed = Some(Armed {
+        at: base,
+        what: Arm::Quit,
+    });
+    let keys = vec![(Key::Text(b"j".to_vec()), at(base, 1))];
+    assert_eq!(
+        take_keys(&mut app, keys),
+        Some(true),
+        "PIN: redraw is the disarm; the held key itself swallows"
+    );
+    assert!(
+        app.armed.is_none(),
+        "DOC: any other key disarms; a held entry is not browsing"
     );
 }
