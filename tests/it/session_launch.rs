@@ -9402,3 +9402,6 @@ fn launchx_legacy_copy_resume_reuses_existing_copy_and_refuses_missing_copy() {
         }
     }
 }
+
+#[path = "buildx_spec.rs"]
+mod buildx_spec;

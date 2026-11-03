@@ -1,0 +1,155 @@
+-u	-S	<scratch>/sock	list-sessions	-F	#{session_name}
+-u	-S	<scratch>/sock	has-session	-t	=bxTrace
+-u	-S	<scratch>/sock	has-session	-t	=bxTrace
+-u	-S	<scratch>/sock	display-message	-p	#{version}
+-u	-S	<scratch>/sock	list-sessions	-F	#{session_name}
+-u	-S	<scratch>/sock	has-session	-t	=bxTrace
+-u	-S	<scratch>/sock	new-session	-d	-s	bxTrace	-c	<scratch>/project	-P	-F	#{session_id} | #{session_created} | #{pid} | #{start_time} | #{pane_id}
+-u	-S	<scratch>/sock	set-environment	-t	=bxTrace	-u	CLAUDECODE
+-u	-S	<scratch>/sock	set-environment	-t	=bxTrace	-u	CLAUDE_CODE_SESSION
+-u	-S	<scratch>/sock	set-environment	-t	=bxTrace	AE_SESSION	1
+-u	-S	<scratch>/sock	set-environment	-t	=bxTrace	AE_ORIGIN	<scratch>/project
+-u	-S	<scratch>/sock	set-environment	-t	=bxTrace	AE_DIR	<scratch>/project
+-u	-S	<scratch>/sock	set-environment	-t	=bxTrace	AE_MODE	local
+-u	-S	<scratch>/sock	set-environment	-t	=bxTrace	AE_HOME	<scratch>/aehome
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	mouse	on
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	focus-events	on
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	history-limit	50000
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	automatic-rename	off
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_main_pane	%<1>
+-u	-S	<scratch>/sock	list-sessions	-F	#{session_id} | #{session_name}
+-u	-S	<scratch>/sock	show-options	-t	=bxTrace:	-qv	@ae_session_uuid
+-u	-S	<scratch>/sock	list-panes	-s	-t	=bxTrace	-F	#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_reader_src} | #{@ae_console} | #{pane_dead} | #{window_index} | #{pane_index} | #{@ae_agent}
+-u	-S	<scratch>/sock	set-hook	-t	%<1>	client-session-changed	if-shell -F -t %<1> "#{==:#{session_id},$<1>}" "select-window -t %<1> ; select-pane -t %<1>"
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	status	2
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	status-interval	5
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	status-style	bg=#313335,fg=#A9B7C6
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	window-status-separator	  
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	set-titles	on
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	set-titles-string	#{?#{@ae_attn_glyph},#{@ae_attn_glyph} ,}ae
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	status-format[0]	#[align=left]#[nobold fg=#808080 bg=#313335]#{W:#{?#{@ae_window_plumbing},,#[range=window|#{window_index} fg=#808080 bg=#313335 nobold]#[push-default] #{window_index}:#{?#{@ae_window_agents},#{@ae_window_agents},#{window_name}}#{?window_zoomed_flag,Z,} #[pop-default]#[norange nobold fg=#808080 bg=#313335]},#{?#{@ae_window_plumbing},,#[range=window|#{window_index} fg=#A9B7C6 bg=#214283 bold]#[push-default] #{window_index}:#{?#{@ae_window_agents},#{@ae_window_agents},#{window_name}}#{?window_zoomed_flag,Z,} #[pop-default]#[norange nobold fg=#808080 bg=#313335]}}#[align=right nobold fg=#808080 bg=#313335] #{@ae_branch_status}#{@ae_goal_status}#{?#{e|>=:#{client_width},100}, #{@ae_paths},} #{@ae_watchdog_status} 
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	status-format[1]	#[align=left fg=#808080 bg=#313335]#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ≡#[norange] #{?#{@ae_orchestrator_strip},#{@ae_orchestrator_strip},}#{@ae_fleet_strip}#[align=right fg=#808080 bg=#313335]#[range=user|ae-settings]#{?@ae_settings_open,#[bg=#214283 fg=#A9B7C6],} ⚙ #[norange]
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_palette	darcula
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_icons	on
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_look	on
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_motion	on
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_look_stamp	22:darcula:on:on
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_paths	…/ln.buildx-full/project
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_attn_glyph	◌
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_attn_rank	3
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_attn_style	#[fg=#9876AA bg=#313335 bold]
+-u	-S	<scratch>/sock	display-message	-p	#{version}
+-u	-S	<scratch>/sock	bind-key	-T	root	MouseDown1Status	run-shell	-C	-t	{mouse}	#{?#{==:#{mouse_status_range},ae-settings},run-shell -b "'env' 'AE_HOME=<scratch>/aehome' 'CONFIG_FILE=<scratch>/config' 'AE_TMUX_SERVER=<scratch>/sock' 'AE_TMUX_SERVER_KIND=socket' '<core>' 'orchestrator' '--settings' '--client' #{q:client_name}",#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b "'env' 'AE_HOME=<scratch>/aehome' 'CONFIG_FILE=<scratch>/config' 'AE_TMUX_SERVER=<scratch>/sock' 'AE_TMUX_SERVER_KIND=socket' '<core>' 'orchestrator' '--popup' '--client' #{q:client_name}",#{?#{==:#{mouse_status_range},window},select-window -t #{window_id},#{?#{==:#{mouse_status_range},session},switch-client -c #{q:client_name} -t #{session_id},}}}}
+-u	-S	<scratch>/sock	bind-key	-T	root	MouseDown3Status	run-shell	-C	-t	{mouse}	#{?#{==:#{mouse_status_range},ae-settings},run-shell -b "'env' 'AE_HOME=<scratch>/aehome' 'CONFIG_FILE=<scratch>/config' 'AE_TMUX_SERVER=<scratch>/sock' 'AE_TMUX_SERVER_KIND=socket' '<core>' 'orchestrator' '--settings' '--client' #{q:client_name}",#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b "'env' 'AE_HOME=<scratch>/aehome' 'CONFIG_FILE=<scratch>/config' 'AE_TMUX_SERVER=<scratch>/sock' 'AE_TMUX_SERVER_KIND=socket' '<core>' 'orchestrator' '--popup' '--client' #{q:client_name}",#{?#{==:#{mouse_status_range},session},run-shell -b "'env' 'AE_HOME=<scratch>/aehome' 'CONFIG_FILE=<scratch>/config' 'AE_TMUX_SERVER=<scratch>/sock' 'AE_TMUX_SERVER_KIND=socket' '<core>' '_session-menu' 'show' '--client' '#{client_name}' '--client-pid' '#{client_pid}' '--session' '#{session_name}' '--session-id' '#{session_id}' '--pane' '#{pane_id}' '--server-pid' '#{pid}' '--server-start' '#{start_time}'",}}}
+-u	-S	<scratch>/sock	bind-key	-T	prefix	a	run-shell	-b	'env' 'AE_HOME=<scratch>/aehome' 'CONFIG_FILE=<scratch>/config' 'AE_TMUX_SERVER=<scratch>/sock' 'AE_TMUX_SERVER_KIND=socket' '<core>' 'orchestrator' '--popup' '--client' #{q:client_name}
+-u	-S	<scratch>/sock	unbind-key	-T	root	MouseUp1Status
+-u	-S	<scratch>/sock	unbind-key	-T	root	MouseUp3Status
+-u	-S	<scratch>/sock	unbind-key	-T	root	MouseDown3Pane
+-u	-S	<scratch>/sock	unbind-key	-T	root	M-MouseDown3Pane
+-u	-S	<scratch>/sock	unbind-key	-T	root	MouseDown3StatusLeft
+-u	-S	<scratch>/sock	unbind-key	-T	root	M-MouseDown3Status
+-u	-S	<scratch>/sock	unbind-key	-T	root	M-MouseDown3StatusLeft
+-u	-S	<scratch>/sock	bind-key	-T	copy-mode	WheelUpPane	send-keys	-X	-N	5	scroll-up
+-u	-S	<scratch>/sock	bind-key	-T	copy-mode	WheelDownPane	send-keys	-X	-N	5	scroll-down
+-u	-S	<scratch>/sock	bind-key	-T	copy-mode-vi	WheelUpPane	send-keys	-X	-N	5	scroll-up
+-u	-S	<scratch>/sock	bind-key	-T	copy-mode-vi	WheelDownPane	send-keys	-X	-N	5	scroll-down
+-u	-S	<scratch>/sock	bind-key	-T	prefix	v	run-shell	-b	'env' 'AE_HOME=<scratch>/aehome' 'CONFIG_FILE=<scratch>/config' 'AE_TMUX_SERVER=<scratch>/sock' 'AE_TMUX_SERVER_KIND=socket' '<core>' '_reader' '--client' #{q:client_name}
+-u	-S	<scratch>/sock	bind-key	-T	prefix	h	run-shell	-b	'env' 'AE_HOME=<scratch>/aehome' 'CONFIG_FILE=<scratch>/config' 'AE_TMUX_SERVER=<scratch>/sock' 'AE_TMUX_SERVER_KIND=socket' '<core>' '_console' '--client' #{q:client_name}
+-u	-S	<scratch>/sock	bind-key	-T	prefix	H	run-shell	-b	'env' 'AE_HOME=<scratch>/aehome' 'CONFIG_FILE=<scratch>/config' 'AE_TMUX_SERVER=<scratch>/sock' 'AE_TMUX_SERVER_KIND=socket' '<core>' '_console' '--jump' '--client' #{q:client_name}
+-u	-S	<scratch>/sock	bind-key	-T	prefix	O	run-shell	-b	'env' 'AE_HOME=<scratch>/aehome' 'CONFIG_FILE=<scratch>/config' 'AE_TMUX_SERVER=<scratch>/sock' 'AE_TMUX_SERVER_KIND=socket' '<core>' '_orchestrator-jump' '--client' #{q:client_name} --client-pid '#{client_pid}' --server-pid '#{pid}' --server-start '#{start_time}' --from '#{session_id}' '#{window_id}' '#{pane_id}'
+-u	-S	<scratch>/sock	bind-key	-n	F12	if-shell	-F	#{&&:#{@ae_view_client},#{==:#{client_name},#{@ae_view_client}}}	if-shell -F '#{@ae_view_return}' "run-shell -C '#{@ae_view_return}'" 'detach-client'	send-keys F12
+-u	-S	<scratch>/sock	bind-key	-n	C-]	if-shell	-F	#{&&:#{@ae_view_client},#{==:#{client_name},#{@ae_view_client}}}	if-shell -F '#{@ae_view_return}' "run-shell -C '#{@ae_view_return}'" 'detach-client'	send-keys C-]
+-u	-S	<scratch>/sock	show-options	-sv	terminal-features
+-u	-S	<scratch>/sock	select-pane	-t	%<1>
+-u	-S	<scratch>/sock	set-option	-w	-t	%<1>	automatic-rename	off
+-u	-S	<scratch>/sock	rename-window	-t	%<1>	lead
+-u	-S	<scratch>/sock	split-window	-v	-t	=bxTrace:	-c	<scratch>/project	-P	-F	#{pane_id}
+-u	-S	<scratch>/sock	split-window	-v	-t	=bxTrace:	-c	<scratch>/project	-P	-F	#{pane_id}
+-u	-S	<scratch>/sock	split-window	-v	-t	=bxTrace:	-c	<scratch>/project	-P	-F	#{pane_id}
+-u	-S	<scratch>/sock	select-layout	-t	=bxTrace:	even-vertical
+-u	-S	<scratch>/sock	select-pane	-t	%<1>	-T	ae:lead
+-u	-S	<scratch>/sock	set-option	-p	-t	%<1>	@ae_agent	lead
+-u	-S	<scratch>/sock	set-option	-p	-t	%<1>	@ae_agent_label	lead
+-u	-S	<scratch>/sock	set-option	-p	-t	%<1>	@ae_slot	main
+-u	-S	<scratch>/sock	set-option	-p	-t	%<1>	@ae_profile	idle
+-u	-S	<scratch>/sock	select-pane	-t	%<2>	-T	ae:colead
+-u	-S	<scratch>/sock	set-option	-p	-t	%<2>	@ae_agent	colead
+-u	-S	<scratch>/sock	set-option	-p	-t	%<2>	@ae_agent_label	colead
+-u	-S	<scratch>/sock	set-option	-p	-t	%<2>	@ae_slot	worker.0
+-u	-S	<scratch>/sock	set-option	-p	-t	%<2>	@ae_profile	idle
+-u	-S	<scratch>/sock	select-pane	-t	%<3>	-T	ae:builder
+-u	-S	<scratch>/sock	set-option	-p	-t	%<3>	@ae_agent	builder
+-u	-S	<scratch>/sock	set-option	-p	-t	%<3>	@ae_agent_label	builder
+-u	-S	<scratch>/sock	set-option	-p	-t	%<3>	@ae_slot	worker.1
+-u	-S	<scratch>/sock	set-option	-p	-t	%<3>	@ae_profile	idle
+-u	-S	<scratch>/sock	select-pane	-t	%<4>	-T	ae:checker
+-u	-S	<scratch>/sock	set-option	-p	-t	%<4>	@ae_agent	checker
+-u	-S	<scratch>/sock	set-option	-p	-t	%<4>	@ae_agent_label	checker
+-u	-S	<scratch>/sock	set-option	-p	-t	%<4>	@ae_slot	worker.2
+-u	-S	<scratch>/sock	set-option	-p	-t	%<4>	@ae_profile	idle
+-u	-S	<scratch>/sock	select-layout	-t	=bxTrace:	even-vertical
+-u	-S	<scratch>/sock	if-shell	-F	-t	$<1>	#{&&:#{&&:#{==:#{pid},<pid>},#{==:#{start_time},<epoch>}},#{&&:#{&&:#{==:#{session_id},$<1>},#{==:#{session_created},<epoch>}},#{==:#{@ae_session_uuid},}}}	set-option -t $<1>: @ae_session_uuid <uuid>
+-u	-S	<scratch>/sock	show-options	-t	=$<1>:	-qv	@ae_session_uuid
+-u	-S	<scratch>/sock	list-panes	-s	-t	=bxTrace	-F	#{pane_id}|#{@ae_slot}|#{@ae_agent}
+-u	-S	<scratch>/sock	load-buffer	-b	<buffer>	-
+-u	-S	<scratch>/sock	paste-buffer	-d	-p	-b	<buffer>	-t	%<1>
+-u	-S	<scratch>/sock	send-keys	-t	%<1>	Enter
+-u	-S	<scratch>/sock	load-buffer	-b	<buffer>	-
+-u	-S	<scratch>/sock	paste-buffer	-d	-p	-b	<buffer>	-t	%<2>
+-u	-S	<scratch>/sock	send-keys	-t	%<2>	Enter
+-u	-S	<scratch>/sock	load-buffer	-b	<buffer>	-
+-u	-S	<scratch>/sock	paste-buffer	-d	-p	-b	<buffer>	-t	%<3>
+-u	-S	<scratch>/sock	send-keys	-t	%<3>	Enter
+-u	-S	<scratch>/sock	load-buffer	-b	<buffer>	-
+-u	-S	<scratch>/sock	paste-buffer	-d	-p	-b	<buffer>	-t	%<4>
+-u	-S	<scratch>/sock	send-keys	-t	%<4>	Enter
+-u	-S	<scratch>/sock	list-panes	-s	-t	=bxTrace	-F	#{pane_id} | #{@ae_agent}
+-u	-S	<scratch>/sock	new-window	-d	-t	=bxTrace:99	-n	ae-monitor	-P	-F	#{pane_id}	<scratch>/aehome/sessions/bxTrace/events-tail
+-u	-S	<scratch>/sock	set-option	-w	-t	%<5>	@ae_window_plumbing	1
+-u	-S	<scratch>/sock	set-option	-p	-t	%<5>	@ae_agent	_events
+-u	-S	<scratch>/sock	set-option	-p	-t	%<5>	@ae_agent_label	events
+-u	-S	<scratch>/sock	select-pane	-t	%<5>	-T	ae events
+-u	-S	<scratch>/sock	display-message	-p	-t	=bxTrace:	#{@ae_icons} | #{@ae_palette} | #{@ae_look} | #{@ae_motion}
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	pane-border-status	top
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	pane-border-format	 #{@ae_agent_label}#{?#{@ae_pane_state}, · #{@ae_pane_state},} 
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	pane-border-lines	heavy
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	pane-border-style	fg=#555555
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	pane-active-border-style	#{?#{@ae_pane_accent},fg=#{@ae_pane_accent},fg=#6897BB}
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	menu-style	bg=#3C3F41,fg=#A9B7C6
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	menu-selected-style	bg=#214283,fg=#A9B7C6,bold
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	menu-border-style	fg=#555555
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	menu-border-lines	rounded
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	popup-style	bg=#3C3F41,fg=#A9B7C6
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	popup-border-style	fg=#555555
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	popup-border-lines	rounded
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	@ae_theme	22:darcula:on:on
+-u	-S	<scratch>/sock	select-pane	-t	%<5>	-d
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_watchdog_status	#[fg=#808080]◌ watchdog off
+-u	-S	<scratch>/sock	list-panes	-s	-t	=bxTrace	-F	#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_reader_src} | #{@ae_console} | #{pane_dead} | #{window_index} | #{pane_index} | #{@ae_agent}
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	pane-border-status	top
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	pane-border-format	 #{@ae_agent_label}#{?#{@ae_pane_state}, · #{@ae_pane_state},} 
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	pane-border-lines	heavy
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	pane-border-style	fg=#555555
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	pane-active-border-style	#{?#{@ae_pane_accent},fg=#{@ae_pane_accent},fg=#6897BB}
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	menu-style	bg=#3C3F41,fg=#A9B7C6
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	menu-selected-style	bg=#214283,fg=#A9B7C6,bold
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	menu-border-style	fg=#555555
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	menu-border-lines	rounded
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	popup-style	bg=#3C3F41,fg=#A9B7C6
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	popup-border-style	fg=#555555
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	popup-border-lines	rounded
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	@ae_theme	22:darcula:on:on
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	pane-border-status	top
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	pane-border-format	 #{@ae_agent_label}#{?#{@ae_pane_state}, · #{@ae_pane_state},} 
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	pane-border-lines	heavy
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	pane-border-style	fg=#555555
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	pane-active-border-style	#{?#{@ae_pane_accent},fg=#{@ae_pane_accent},fg=#6897BB}
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	menu-style	bg=#3C3F41,fg=#A9B7C6
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	menu-selected-style	bg=#214283,fg=#A9B7C6,bold
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	menu-border-style	fg=#555555
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	menu-border-lines	rounded
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	popup-style	bg=#3C3F41,fg=#A9B7C6
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	popup-border-style	fg=#555555
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	popup-border-lines	rounded
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	@ae_theme	22:darcula:on:on
+-u	-S	<scratch>/sock	select-pane	-t	%<1>
