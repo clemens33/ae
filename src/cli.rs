@@ -892,555 +892,514 @@ impl Request {
     #[must_use]
     #[allow(
         clippy::too_many_lines,
-        reason = "the argv parse table: one match arm per subcommand, kept as one readable dispatch rather than fragmented into sub-parsers"
+        reason = "one visible arm per command; operand grammars live in the named parsers below"
     )]
     pub fn parse(args: &[String]) -> Self {
-        match args.first().map(String::as_str) {
-            None | Some("-h" | "--help" | "help") => Self::Help,
-            Some("-V" | "--version" | "version") => Self::Version,
-            Some("list" | "ls") if args.iter().any(|arg| arg == "--ended") => {
-                if args.len() == 2 {
-                    Self::ListEnded
-                } else {
-                    Self::UsageError(
-                        "--ended cannot be combined with live filters or --json".to_owned(),
-                    )
-                }
+        let Some((command, tail)) = args.split_first() else {
+            return Self::Help;
+        };
+        match command.as_str() {
+            "-h" | "--help" | "help" => Self::Help,
+            "-V" | "--version" | "version" => Self::Version,
+            "list" | "ls" => Self::parse_list(tail),
+            "next" | "jump" => Self::Next {
+                tail: tail.to_vec(),
+            },
+            "orchestrator" => Self::Orchestrator {
+                tail: tail.to_vec(),
+            },
+            "brief" => Self::Brief {
+                tail: tail.to_vec(),
+            },
+            "board" => Self::Board {
+                tail: tail.to_vec(),
+            },
+            "chat" | "console" => Self::Console {
+                tail: tail.to_vec(),
+            },
+            "app" => Self::App {
+                tail: tail.to_vec(),
+            },
+            QUOTA => Self::parse_dir(QUOTA, tail, |dir| Self::Quota { dir }),
+            USAGE => Self::parse_usage(tail),
+            SAY => Self::parse_dir_tail(SAY, tail, |dir, tail| Self::Say { dir, tail }),
+            PEEK => Self::parse_dir_tail(PEEK, tail, |dir, tail| Self::Peek { dir, tail }),
+            AGENTS => Self::parse_dir_tail(AGENTS, tail, |dir, tail| Self::Agents { dir, tail }),
+            FOCUS => Self::parse_dir_tail(FOCUS, tail, |dir, tail| Self::Focus { dir, tail }),
+            CAPTURE_SID => Self::parse_capture_sid(tail),
+            REGISTER_SID => Self::parse_register_sid(tail),
+            LAUNCH => Self::Launch {
+                tail: tail.to_vec(),
+            },
+            DOCTOR => Self::Doctor {
+                tail: tail.to_vec(),
+            },
+            INIT => Self::Init {
+                tail: tail.to_vec(),
+            },
+            RENAME => Self::Rename {
+                tail: tail.to_vec(),
+            },
+            RESEAT => Self::Reseat {
+                tail: tail.to_vec(),
+            },
+            AUTO_RESEAT => Self::AutoReseat {
+                tail: tail.to_vec(),
+            },
+            AUTO_EFFORT => Self::AutoEffort {
+                tail: tail.to_vec(),
+            },
+            CHECK_DEPS => Self::CheckDeps {
+                tail: tail.to_vec(),
+            },
+            RUN => Self::parse_run(tail),
+            INSTALL => Self::Install {
+                tail: tail.to_vec(),
+            },
+            AUTOUPGRADE => Self::Autoupgrade {
+                tail: tail.to_vec(),
+            },
+            SHIMS_RENDER => Self::parse_dir_tail(SHIMS_RENDER, tail, |dir, tail| {
+                Self::ShimsRender { dir, tail }
+            }),
+            REQUESTS => Self::parse_requests(tail),
+            STATE => Self::parse_dir_tail(STATE, tail, |dir, tail| Self::State { dir, tail }),
+            GOAL => Self::parse_dir_tail(GOAL, tail, |dir, tail| Self::Goal { dir, tail }),
+            ASK => Self::parse_dir_tail(ASK, tail, |dir, tail| Self::Ask { dir, tail }),
+            REVIEW => Self::parse_dir_tail(REVIEW, tail, |dir, tail| Self::Review { dir, tail }),
+            REPLY => Self::parse_dir_tail(REPLY, tail, |dir, tail| Self::Reply { dir, tail }),
+            WITHDRAW => {
+                Self::parse_dir_tail(WITHDRAW, tail, |dir, tail| Self::Withdraw { dir, tail })
             }
-            Some("list" | "ls") => match ListArgs::parse(&args[1..]) {
-                Ok(parsed) => Self::List(parsed),
-                Err(UnknownFlag(token)) => Self::UsageError(token),
+            ACCEPT => Self::parse_dir_tail(ACCEPT, tail, |dir, tail| Self::Accept { dir, tail }),
+            SEND => Self::parse_dir_tail(SEND, tail, |dir, tail| Self::Send { dir, tail }),
+            RELAY => Self::parse_dir_tail(RELAY, tail, |dir, tail| Self::Relay { dir, tail }),
+            INTERRUPT => {
+                Self::parse_dir_tail(INTERRUPT, tail, |dir, tail| Self::Interrupt { dir, tail })
+            }
+            MEMO => Self::parse_dir_tail(MEMO, tail, |dir, tail| Self::Memo { dir, tail }),
+            EVENTS_TAIL => Self::parse_dir(EVENTS_TAIL, tail, |dir| Self::EventsTail { dir }),
+            ARCHIVE_PUBLISH => Self::parse_archive_publish(tail),
+            ARCHIVE_FROM_PREFLIGHT => Self::parse_archive_from_preflight(tail),
+            ARCHIVE_PURGE => Self::parse_purge(tail),
+            END_LOCAL_TEARDOWN => Self::parse_dir(END_LOCAL_TEARDOWN, tail, |dir| {
+                Self::EndLocalTeardown { dir }
+            }),
+            END_NONLOCAL_TEARDOWN => Self::parse_end_nonlocal_teardown(tail),
+            WATCHDOG_RUN => Self::parse_watchdog_run(tail),
+            TELEGRAM_RUN => Self::parse_telegram_run(tail),
+            WATCHDOG => Self::Watchdog {
+                tail: tail.to_vec(),
             },
-            Some("next" | "jump") => Self::Next {
-                tail: args[1..].to_vec(),
+            TELEGRAM => Self::Telegram {
+                tail: tail.to_vec(),
             },
-            Some("orchestrator") => Self::Orchestrator {
-                tail: args[1..].to_vec(),
-            },
-            Some("brief") => Self::Brief {
-                tail: args[1..].to_vec(),
-            },
-            Some("board") => Self::Board {
-                tail: args[1..].to_vec(),
-            },
-            Some("chat" | "console") => Self::Console {
-                tail: args[1..].to_vec(),
-            },
-            Some("app") => Self::App {
-                tail: args[1..].to_vec(),
-            },
-            Some(QUOTA) => match &args[1..] {
-                [dir] => Self::Quota { dir: dir.into() },
-                [_, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(QUOTA),
-            },
-            Some(USAGE) => match &args[1..] {
-                [dir, flag] if flag == "--hourly" => Self::UsageHourly { dir: dir.into() },
-                [dir] => Self::Usage { dir: dir.into() },
-                [_, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(USAGE),
-            },
-            Some(SAY) => match &args[1..] {
-                [] => Self::MissingOperand(SAY),
-                [dir, rest @ ..] => Self::Say {
-                    dir: dir.into(),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(PEEK) => match &args[1..] {
-                [] => Self::MissingOperand(PEEK),
-                [dir, rest @ ..] => Self::Peek {
-                    dir: dir.into(),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(AGENTS) => match &args[1..] {
-                [] => Self::MissingOperand(AGENTS),
-                [dir, rest @ ..] => Self::Agents {
-                    dir: dir.into(),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(FOCUS) => match &args[1..] {
-                [] => Self::MissingOperand(FOCUS),
-                [dir, rest @ ..] => Self::Focus {
-                    dir: dir.into(),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(CAPTURE_SID) => match &args[1..] {
-                [dir, slot, pane] => Self::CaptureSid {
-                    dir: dir.into(),
-                    slot: slot.clone(),
-                    pane: pane.clone(),
-                },
-                [_, _, _, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(CAPTURE_SID),
-            },
-            Some(REGISTER_SID) => match &args[1..] {
-                [dir, slot] => Self::RegisterSid {
-                    dir: dir.into(),
-                    slot: slot.clone(),
-                    id: None,
-                },
-                [dir, slot, id] => Self::RegisterSid {
-                    dir: dir.into(),
-                    slot: slot.clone(),
-                    id: Some(id.clone()),
-                },
-                [_, _, _, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(REGISTER_SID),
-            },
-            Some(LAUNCH) => Self::Launch {
-                tail: args[1..].to_vec(),
-            },
-            Some(DOCTOR) => Self::Doctor {
-                tail: args[1..].to_vec(),
-            },
-            Some(INIT) => Self::Init {
-                tail: args[1..].to_vec(),
-            },
-            Some(RENAME) => Self::Rename {
-                tail: args[1..].to_vec(),
-            },
-            Some(RESEAT) => Self::Reseat {
-                tail: args[1..].to_vec(),
-            },
-            Some(AUTO_RESEAT) => Self::AutoReseat {
-                tail: args[1..].to_vec(),
-            },
-            Some(AUTO_EFFORT) => Self::AutoEffort {
-                tail: args[1..].to_vec(),
-            },
-            Some(CHECK_DEPS) => Self::CheckDeps {
-                tail: args[1..].to_vec(),
-            },
-            Some(RUN) => Self::parse_run(&args[1..]),
-            Some(INSTALL) => Self::Install {
-                tail: args[1..].to_vec(),
-            },
-            Some(AUTOUPGRADE) => Self::Autoupgrade {
-                tail: args[1..].to_vec(),
-            },
-            Some(SHIMS_RENDER) => match &args[1..] {
-                [] => Self::MissingOperand(SHIMS_RENDER),
-                [dir, tail @ ..] => Self::ShimsRender {
-                    dir: dir.into(),
-                    tail: tail.to_vec(),
-                },
-            },
-            Some(REQUESTS) => Self::parse_requests(&args[1..]),
-            Some(STATE) => match &args[1..] {
-                [] => Self::MissingOperand(STATE),
-                [dir, rest @ ..] => Self::State {
-                    dir: dir.into(),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(GOAL) => match &args[1..] {
-                [] => Self::MissingOperand(GOAL),
-                [dir, rest @ ..] => Self::Goal {
-                    dir: dir.into(),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(ASK) => match &args[1..] {
-                [] => Self::MissingOperand(ASK),
-                [dir, rest @ ..] => Self::Ask {
-                    dir: PathBuf::from(dir),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(REVIEW) => match &args[1..] {
-                [] => Self::MissingOperand(REVIEW),
-                [dir, rest @ ..] => Self::Review {
-                    dir: PathBuf::from(dir),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(REPLY) => match &args[1..] {
-                [] => Self::MissingOperand(REPLY),
-                [dir, rest @ ..] => Self::Reply {
-                    dir: PathBuf::from(dir),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(WITHDRAW) => match &args[1..] {
-                [] => Self::MissingOperand(WITHDRAW),
-                [dir, rest @ ..] => Self::Withdraw {
-                    dir: PathBuf::from(dir),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(ACCEPT) => match &args[1..] {
-                [] => Self::MissingOperand(ACCEPT),
-                [dir, rest @ ..] => Self::Accept {
-                    dir: PathBuf::from(dir),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(SEND) => match &args[1..] {
-                [] => Self::MissingOperand(SEND),
-                [dir, rest @ ..] => Self::Send {
-                    dir: PathBuf::from(dir),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(RELAY) => match &args[1..] {
-                [] => Self::MissingOperand(RELAY),
-                [dir, rest @ ..] => Self::Relay {
-                    dir: PathBuf::from(dir),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(INTERRUPT) => match &args[1..] {
-                [] => Self::MissingOperand(INTERRUPT),
-                [dir, rest @ ..] => Self::Interrupt {
-                    dir: PathBuf::from(dir),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(MEMO) => match &args[1..] {
-                [] => Self::MissingOperand(MEMO),
-                [dir, rest @ ..] => Self::Memo {
-                    dir: dir.into(),
-                    tail: rest.to_vec(),
-                },
-            },
-            Some(EVENTS_TAIL) => match &args[1..] {
-                [] => Self::MissingOperand(EVENTS_TAIL),
-                [dir] => Self::EventsTail { dir: dir.into() },
-                [_, extra, ..] => Self::UsageError(extra.clone()),
-            },
-            Some(ARCHIVE_PUBLISH) => match &args[1..] {
-                [dir, push_outcome, push_ref, preserved, workdir, archived_at] => {
-                    Self::ArchivePublish {
-                        dir: dir.into(),
-                        push_outcome: push_outcome.clone(),
-                        push_ref: push_ref.clone(),
-                        preserved: preserved.clone(),
-                        workdir: workdir.clone(),
-                        archived_at: archived_at.clone(),
-                    }
-                }
-                [_, _, _, _, _, _, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(ARCHIVE_PUBLISH),
-            },
-            Some(ARCHIVE_FROM_PREFLIGHT) => match &args[1..] {
-                [root, raw_uuid] => Self::ArchiveFromPreflight {
-                    root: root.into(),
-                    raw_uuid: raw_uuid.clone(),
-                },
-                [_, _, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(ARCHIVE_FROM_PREFLIGHT),
-            },
-            Some(ARCHIVE_PURGE) => Self::parse_purge(&args[1..]),
-            Some(END_LOCAL_TEARDOWN) => match &args[1..] {
-                [dir] => Self::EndLocalTeardown { dir: dir.into() },
-                [_, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(END_LOCAL_TEARDOWN),
-            },
-            Some(END_NONLOCAL_TEARDOWN) => match &args[1..] {
-                [dir] => Self::EndNonlocalTeardown {
-                    dir: dir.into(),
-                    preserve: false,
-                },
-                [dir, flag] if flag == "--preserve" => Self::EndNonlocalTeardown {
-                    dir: dir.into(),
-                    preserve: true,
-                },
-                // `<dir> --preserve <extra> ...`: --preserve is valid here, so the
-                // first UNEXPECTED token is the one after it — name that, not --preserve.
-                [_, flag, extra, ..] if flag == "--preserve" => Self::UsageError(extra.clone()),
-                [_, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(END_NONLOCAL_TEARDOWN),
-            },
-            Some(WATCHDOG_RUN) => match &args[1..] {
-                [] => Self::MissingOperand(WATCHDOG_RUN),
-                [dir, flags @ ..] => match watchdog_knobs(flags) {
-                    Ok(knobs) => Self::WatchdogRun {
-                        dir: dir.into(),
-                        knobs,
-                    },
-                    Err(word) => Self::UsageError(word),
-                },
-            },
-            Some(TELEGRAM_RUN) => match &args[1..] {
-                [] => Self::MissingOperand(TELEGRAM_RUN),
-                [ae_home, flags @ ..] => match telegram_options(ae_home, flags) {
-                    Ok((paths, knobs)) => Self::TelegramRun { paths, knobs },
-                    Err(word) => Self::UsageError(word),
-                },
-            },
-            Some(WATCHDOG) => Self::Watchdog {
-                tail: args[1..].to_vec(),
-            },
-            Some(TELEGRAM) => Self::Telegram {
-                tail: args[1..].to_vec(),
-            },
-            Some(MONITOR) => match &args[1..] {
-                [word, dir, flags @ ..] if word == crate::monitor::SWEEP => {
-                    match monitor_args(flags) {
-                        Ok(parsed) => Self::Monitor {
-                            dir: dir.into(),
-                            args: parsed,
-                        },
-                        Err(word) => Self::UsageError(word),
-                    }
-                }
-                // A subcommand that is not `sweep` is the offending word; a
-                // `sweep` with no directory is the missing operand it is.
-                [word, ..] if word != crate::monitor::SWEEP => Self::UsageError(word.clone()),
-                _ => Self::MissingOperand(MONITOR),
-            },
-            Some(NET_PROBE) => match &args[1..] {
-                [] => Self::MissingOperand(NET_PROBE),
-                [host, flags @ ..] => match net_probe_port(flags) {
-                    Ok(port) => Self::NetProbe {
-                        host: host.clone(),
-                        port,
-                    },
-                    Err(word) => Self::UsageError(word),
-                },
-            },
-            Some(COMPACT_FREEZE) => match &args[1..] {
-                [dir] => Self::CompactFreeze {
-                    dir: dir.into(),
-                    keep_history: false,
-                },
-                [dir, flag] if flag == "--keep-history" => Self::CompactFreeze {
-                    dir: dir.into(),
-                    keep_history: true,
-                },
-                // `<dir> --keep-history <extra> ...`: --keep-history is valid here, so
-                // the first unexpected token is the one after it — name that.
-                [_, flag, extra, ..] if flag == "--keep-history" => Self::UsageError(extra.clone()),
-                [_, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(COMPACT_FREEZE),
-            },
-            Some(COMPACT_REVALIDATE) => match &args[1..] {
-                [dir, tuple] => Self::CompactRevalidate {
-                    dir: dir.into(),
-                    tuple: tuple.clone(),
-                    when: DEFAULT_REVALIDATE_WHEN.to_owned(),
-                    keep_history: false,
-                },
-                [dir, tuple, flag] if flag == "--keep-history" => Self::CompactRevalidate {
-                    dir: dir.into(),
-                    tuple: tuple.clone(),
-                    when: DEFAULT_REVALIDATE_WHEN.to_owned(),
-                    keep_history: true,
-                },
-                [dir, tuple, flag, label] if flag == "--when" => Self::CompactRevalidate {
-                    dir: dir.into(),
-                    tuple: tuple.clone(),
-                    when: label.clone(),
-                    keep_history: false,
-                },
-                [dir, tuple, flag, label, keep] if flag == "--when" && keep == "--keep-history" => {
-                    Self::CompactRevalidate {
-                        dir: dir.into(),
-                        tuple: tuple.clone(),
-                        when: label.clone(),
-                        keep_history: true,
-                    }
-                }
-                // `--when` with no label is a usage error naming the flag itself.
-                [_, _, flag] if flag == "--when" => Self::MissingOperand(COMPACT_REVALIDATE),
-                [_, _, flag, _, extra, ..] if flag == "--when" => Self::UsageError(extra.clone()),
-                [_, _, flag, extra, ..] if flag == "--keep-history" => {
-                    Self::UsageError(extra.clone())
-                }
-                [_, _, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(COMPACT_REVALIDATE),
-            },
-            Some(COMPACT_ARCHIVE) => match &args[1..] {
-                [
-                    dir,
-                    tuple,
-                    archived_at,
-                    push_outcome,
-                    push_ref,
-                    preserved,
-                    workdir,
-                ] => Self::CompactArchive {
-                    dir: dir.into(),
-                    tuple: tuple.clone(),
-                    archived_at: archived_at.clone(),
-                    push_outcome: push_outcome.clone(),
-                    push_ref: push_ref.clone(),
-                    preserved: preserved.clone(),
-                    workdir: workdir.clone(),
-                    keep_history: false,
-                },
-                [
-                    dir,
-                    tuple,
-                    archived_at,
-                    push_outcome,
-                    push_ref,
-                    preserved,
-                    workdir,
-                    flag,
-                ] if flag == "--keep-history" => Self::CompactArchive {
-                    dir: dir.into(),
-                    tuple: tuple.clone(),
-                    archived_at: archived_at.clone(),
-                    push_outcome: push_outcome.clone(),
-                    push_ref: push_ref.clone(),
-                    preserved: preserved.clone(),
-                    workdir: workdir.clone(),
-                    keep_history: true,
-                },
-                [_, _, _, _, _, _, _, flag, extra, ..] if flag == "--keep-history" => {
-                    Self::UsageError(extra.clone())
-                }
-                [_, _, _, _, _, _, _, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(COMPACT_ARCHIVE),
-            },
-            Some(COMPACT_TEARDOWN) => match &args[1..] {
-                [dir, tuple] => Self::CompactTeardown {
-                    dir: dir.into(),
-                    tuple: tuple.clone(),
-                    keep_history: false,
-                },
-                [dir, tuple, flag] if flag == "--keep-history" => Self::CompactTeardown {
-                    dir: dir.into(),
-                    tuple: tuple.clone(),
-                    keep_history: true,
-                },
-                [_, _, flag, extra, ..] if flag == "--keep-history" => {
-                    Self::UsageError(extra.clone())
-                }
-                [_, _, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(COMPACT_TEARDOWN),
-            },
-            Some(COMPACT_WAIT) => match &args[1..] {
-                [dir, reference] => Self::CompactWait {
-                    dir: dir.into(),
-                    reference: reference.clone(),
-                    timeout_secs: crate::compact::DEFAULT_HANDOVER_SECS,
-                },
-                [dir, reference, flag, secs] if flag == "--timeout" => match secs.parse::<u64>() {
-                    Ok(n) => Self::CompactWait {
-                        dir: dir.into(),
-                        reference: reference.clone(),
-                        timeout_secs: n,
-                    },
-                    Err(_) => Self::UsageError(secs.clone()),
-                },
-                [_, _, flag, _, extra, ..] if flag == "--timeout" => {
-                    Self::UsageError(extra.clone())
-                }
-                [_, _, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(COMPACT_WAIT),
-            },
-            Some(COMPACT_CANCEL) => match &args[1..] {
-                [dir, reference] => Self::CompactCancel {
-                    dir: dir.into(),
-                    reference: reference.clone(),
-                },
-                [_, _, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(COMPACT_CANCEL),
-            },
-            Some(COMPACT_MEMO_BASELINE) => match &args[1..] {
-                [dir] => Self::CompactMemoBaseline { dir: dir.into() },
-                [_, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(COMPACT_MEMO_BASELINE),
-            },
-            Some(COMPACT_FIND_OUTSTANDING) => match &args[1..] {
-                [dir] => Self::CompactFindOutstanding { dir: dir.into() },
-                [_, extra, ..] => Self::UsageError(extra.clone()),
-                _ => Self::MissingOperand(COMPACT_FIND_OUTSTANDING),
-            },
+            MONITOR => Self::parse_monitor(tail),
+            NET_PROBE => Self::parse_net_probe(tail),
+            COMPACT_FREEZE => Self::parse_compact_freeze(tail),
+            COMPACT_REVALIDATE => Self::parse_compact_revalidate(tail),
+            COMPACT_ARCHIVE => Self::parse_compact_archive(tail),
+            COMPACT_TEARDOWN => Self::parse_compact_teardown(tail),
+            COMPACT_WAIT => Self::parse_compact_wait(tail),
+            COMPACT_CANCEL => Self::parse_compact_cancel(tail),
+            COMPACT_MEMO_BASELINE => Self::parse_dir(COMPACT_MEMO_BASELINE, tail, |dir| {
+                Self::CompactMemoBaseline { dir }
+            }),
+            COMPACT_FIND_OUTSTANDING => Self::parse_dir(COMPACT_FIND_OUTSTANDING, tail, |dir| {
+                Self::CompactFindOutstanding { dir }
+            }),
             // Every flag is optional: a launch with no config files still
             // resolves (to a MainMissing violation), and the entry says so
             // itself rather than being told by argv that it asked wrong.
-            Some(LAUNCH_PLAN) => Self::LaunchPlan {
-                tail: args[1..].to_vec(),
+            LAUNCH_PLAN => Self::LaunchPlan {
+                tail: tail.to_vec(),
             },
-            Some(META_INIT) => match &args[1..] {
-                [] => Self::MissingOperand(META_INIT),
-                [dir, tail @ ..] => Self::MetaInit {
-                    dir: dir.into(),
-                    tail: tail.to_vec(),
-                },
-            },
-            Some(SPAWN) => match &args[1..] {
-                [] => Self::MissingOperand(SPAWN),
-                [dir, tail @ ..] => Self::Spawn {
-                    dir: dir.into(),
-                    tail: tail.to_vec(),
-                },
-            },
-            Some(RELAUNCH) => match &args[1..] {
-                [] => Self::MissingOperand(RELAUNCH),
-                [dir, tail @ ..] => Self::Relaunch {
-                    dir: dir.into(),
-                    tail: tail.to_vec(),
-                },
-            },
-            Some(RETIRE) => match &args[1..] {
-                [] => Self::MissingOperand(RETIRE),
-                [dir, tail @ ..] => Self::Retire {
-                    dir: dir.into(),
-                    tail: tail.to_vec(),
-                },
-            },
+            META_INIT => {
+                Self::parse_dir_tail(META_INIT, tail, |dir, tail| Self::MetaInit { dir, tail })
+            }
+            SPAWN => Self::parse_dir_tail(SPAWN, tail, |dir, tail| Self::Spawn { dir, tail }),
+            RELAUNCH => {
+                Self::parse_dir_tail(RELAUNCH, tail, |dir, tail| Self::Relaunch { dir, tail })
+            }
+            RETIRE => Self::parse_dir_tail(RETIRE, tail, |dir, tail| Self::Retire { dir, tail }),
             // The operand is a session NAME, and the entries validate it
             // themselves: `all`, a missing name and a bad flag are three
             // different refusals, and argv cannot tell them apart.
-            Some(END) => Self::End {
-                tail: args[1..].to_vec(),
+            END => Self::End {
+                tail: tail.to_vec(),
             },
-            Some(STOP) => Self::Stop {
-                tail: args[1..].to_vec(),
+            STOP => Self::Stop {
+                tail: tail.to_vec(),
             },
-            Some(SESSION_MENU) => Self::SessionMenu {
-                tail: args[1..].to_vec(),
+            SESSION_MENU => Self::SessionMenu {
+                tail: tail.to_vec(),
             },
-            Some(READER) => Self::Reader {
-                tail: args[1..].to_vec(),
+            READER => Self::Reader {
+                tail: tail.to_vec(),
             },
-            Some(CONSOLE_TOGGLE) => Self::ConsoleToggle {
-                tail: args[1..].to_vec(),
+            CONSOLE_TOGGLE => Self::ConsoleToggle {
+                tail: tail.to_vec(),
             },
-            Some(ORCHESTRATOR_JUMP) => Self::OrchestratorJump {
-                tail: args[1..].to_vec(),
+            ORCHESTRATOR_JUMP => Self::OrchestratorJump {
+                tail: tail.to_vec(),
             },
-            Some(COMPACT) => Self::Compact {
-                tail: args[1..].to_vec(),
+            COMPACT => Self::Compact {
+                tail: tail.to_vec(),
             },
-            Some(ROSTER) => match &args[1..] {
-                [] => Self::MissingOperand(ROSTER),
-                [dir, tail @ ..] => Self::Roster {
-                    dir: dir.into(),
-                    tail: tail.to_vec(),
-                },
-            },
-            Some(MANIFEST_RENDER) => match &args[1..] {
-                [] => Self::MissingOperand(MANIFEST_RENDER),
-                [dir, tail @ ..] => Self::ManifestRender {
-                    dir: dir.into(),
-                    tail: tail.to_vec(),
-                },
-            },
-            Some(CONTEXT) => match &args[1..] {
-                [] => Self::MissingOperand(CONTEXT),
-                [dir, tail @ ..] => Self::Context {
-                    dir: dir.into(),
-                    tail: tail.to_vec(),
-                },
-            },
-            Some(ARCHIVE_PREVIEW) => match &args[1..] {
-                [] => Self::MissingOperand(ARCHIVE_PREVIEW),
-                [dir] => Self::ArchivePreview { dir: dir.into() },
-                [_, extra, ..] => Self::UsageError(extra.clone()),
-            },
+            ROSTER => Self::parse_dir_tail(ROSTER, tail, |dir, tail| Self::Roster { dir, tail }),
+            MANIFEST_RENDER => Self::parse_dir_tail(MANIFEST_RENDER, tail, |dir, tail| {
+                Self::ManifestRender { dir, tail }
+            }),
+            CONTEXT => Self::parse_dir_tail(CONTEXT, tail, |dir, tail| Self::Context { dir, tail }),
+            ARCHIVE_PREVIEW => {
+                Self::parse_dir(ARCHIVE_PREVIEW, tail, |dir| Self::ArchivePreview { dir })
+            }
             // Option-shaped first, because everything left over is a name and
             // not an error.
-            Some(other) if other.starts_with('-') => Self::UsageError(other.to_owned()),
-            Some(other) => Self::LaunchCandidate(other.to_owned()),
+            other if other.starts_with('-') => Self::UsageError(other.to_owned()),
+            other => Self::LaunchCandidate(other.to_owned()),
+        }
+    }
+
+    /// Helpers that require a directory and leave the remaining grammar to their owner.
+    fn parse_dir_tail(
+        verb: &'static str,
+        tail: &[String],
+        build: fn(PathBuf, Vec<String>) -> Self,
+    ) -> Self {
+        match tail {
+            [] => Self::MissingOperand(verb),
+            [dir, rest @ ..] => build(dir.into(), rest.to_vec()),
+        }
+    }
+
+    /// Helpers whose directory is their only operand; report the first extra word.
+    fn parse_dir(verb: &'static str, tail: &[String], build: fn(PathBuf) -> Self) -> Self {
+        match tail {
+            [dir] => build(dir.into()),
+            [_, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(verb),
+        }
+    }
+
+    /// Live filters and the exclusive ended-history spelling share one command.
+    fn parse_list(tail: &[String]) -> Self {
+        if tail.iter().any(|arg| arg == "--ended") {
+            return if tail.len() == 1 {
+                Self::ListEnded
+            } else {
+                Self::UsageError(
+                    "--ended cannot be combined with live filters or --json".to_owned(),
+                )
+            };
+        }
+        match ListArgs::parse(tail) {
+            Ok(parsed) => Self::List(parsed),
+            Err(UnknownFlag(token)) => Self::UsageError(token),
+        }
+    }
+
+    /// `_usage <dir> [--hourly]`.
+    fn parse_usage(tail: &[String]) -> Self {
+        match tail {
+            [dir, flag] if flag == "--hourly" => Self::UsageHourly { dir: dir.into() },
+            [dir] => Self::Usage { dir: dir.into() },
+            [_, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(USAGE),
+        }
+    }
+
+    /// `_capture-sid <dir> <slot> <pane>`.
+    fn parse_capture_sid(tail: &[String]) -> Self {
+        match tail {
+            [dir, slot, pane] => Self::CaptureSid {
+                dir: dir.into(),
+                slot: slot.clone(),
+                pane: pane.clone(),
+            },
+            [_, _, _, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(CAPTURE_SID),
+        }
+    }
+
+    /// `_register-sid <dir> <slot> [<id>]`.
+    fn parse_register_sid(tail: &[String]) -> Self {
+        match tail {
+            [dir, slot] => Self::RegisterSid {
+                dir: dir.into(),
+                slot: slot.clone(),
+                id: None,
+            },
+            [dir, slot, id] => Self::RegisterSid {
+                dir: dir.into(),
+                slot: slot.clone(),
+                id: Some(id.clone()),
+            },
+            [_, _, _, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(REGISTER_SID),
+        }
+    }
+
+    /// `_archive-publish <dir> <push-outcome> <push-ref> <preserved> <workdir> <archived-at>`.
+    fn parse_archive_publish(tail: &[String]) -> Self {
+        match tail {
+            [dir, push_outcome, push_ref, preserved, workdir, archived_at] => {
+                Self::ArchivePublish {
+                    dir: dir.into(),
+                    push_outcome: push_outcome.clone(),
+                    push_ref: push_ref.clone(),
+                    preserved: preserved.clone(),
+                    workdir: workdir.clone(),
+                    archived_at: archived_at.clone(),
+                }
+            }
+            [_, _, _, _, _, _, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(ARCHIVE_PUBLISH),
+        }
+    }
+
+    /// `_archive-from-preflight <root> <raw-uuid>`.
+    fn parse_archive_from_preflight(tail: &[String]) -> Self {
+        match tail {
+            [root, raw_uuid] => Self::ArchiveFromPreflight {
+                root: root.into(),
+                raw_uuid: raw_uuid.clone(),
+            },
+            [_, _, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(ARCHIVE_FROM_PREFLIGHT),
+        }
+    }
+
+    /// `_end-nonlocal-teardown <dir> [--preserve]`.
+    fn parse_end_nonlocal_teardown(tail: &[String]) -> Self {
+        match tail {
+            [dir] => Self::EndNonlocalTeardown {
+                dir: dir.into(),
+                preserve: false,
+            },
+            [dir, flag] if flag == "--preserve" => Self::EndNonlocalTeardown {
+                dir: dir.into(),
+                preserve: true,
+            },
+            // `<dir> --preserve <extra> ...`: --preserve is valid here, so the
+            // first UNEXPECTED token is the one after it — name that, not --preserve.
+            [_, flag, extra, ..] if flag == "--preserve" => Self::UsageError(extra.clone()),
+            [_, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(END_NONLOCAL_TEARDOWN),
+        }
+    }
+
+    /// `_watchdog-run <dir> [knob flags]`.
+    fn parse_watchdog_run(tail: &[String]) -> Self {
+        match tail {
+            [] => Self::MissingOperand(WATCHDOG_RUN),
+            [dir, flags @ ..] => match watchdog_knobs(flags) {
+                Ok(knobs) => Self::WatchdogRun {
+                    dir: dir.into(),
+                    knobs,
+                },
+                Err(word) => Self::UsageError(word),
+            },
+        }
+    }
+
+    /// `_telegram-run <ae-home> [path and knob flags]`.
+    fn parse_telegram_run(tail: &[String]) -> Self {
+        match tail {
+            [] => Self::MissingOperand(TELEGRAM_RUN),
+            [ae_home, flags @ ..] => match telegram_options(ae_home, flags) {
+                Ok((paths, knobs)) => Self::TelegramRun { paths, knobs },
+                Err(word) => Self::UsageError(word),
+            },
+        }
+    }
+
+    /// Read the clock only after a complete `sweep <dir>` prefix matches.
+    fn parse_monitor(tail: &[String]) -> Self {
+        match tail {
+            [word, dir, flags @ ..] if word == crate::monitor::SWEEP => match monitor_args(flags) {
+                Ok(parsed) => Self::Monitor {
+                    dir: dir.into(),
+                    args: parsed,
+                },
+                Err(word) => Self::UsageError(word),
+            },
+            // A subcommand that is not `sweep` is the offending word; a
+            // `sweep` with no directory is the missing operand it is.
+            [word, ..] if word != crate::monitor::SWEEP => Self::UsageError(word.clone()),
+            _ => Self::MissingOperand(MONITOR),
+        }
+    }
+
+    /// `_net-probe <host> [--port <n>]`.
+    fn parse_net_probe(tail: &[String]) -> Self {
+        match tail {
+            [] => Self::MissingOperand(NET_PROBE),
+            [host, flags @ ..] => match net_probe_port(flags) {
+                Ok(port) => Self::NetProbe {
+                    host: host.clone(),
+                    port,
+                },
+                Err(word) => Self::UsageError(word),
+            },
+        }
+    }
+
+    /// `_compact-freeze <dir> [--keep-history]`.
+    fn parse_compact_freeze(tail: &[String]) -> Self {
+        match tail {
+            [dir] => Self::CompactFreeze {
+                dir: dir.into(),
+                keep_history: false,
+            },
+            [dir, flag] if flag == "--keep-history" => Self::CompactFreeze {
+                dir: dir.into(),
+                keep_history: true,
+            },
+            // `<dir> --keep-history <extra> ...`: --keep-history is valid here, so
+            // the first unexpected token is the one after it — name that.
+            [_, flag, extra, ..] if flag == "--keep-history" => Self::UsageError(extra.clone()),
+            [_, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(COMPACT_FREEZE),
+        }
+    }
+
+    /// `_compact-revalidate <dir> <tuple> [--when <label>] [--keep-history]`.
+    fn parse_compact_revalidate(tail: &[String]) -> Self {
+        match tail {
+            [dir, tuple] => Self::CompactRevalidate {
+                dir: dir.into(),
+                tuple: tuple.clone(),
+                when: DEFAULT_REVALIDATE_WHEN.to_owned(),
+                keep_history: false,
+            },
+            [dir, tuple, flag] if flag == "--keep-history" => Self::CompactRevalidate {
+                dir: dir.into(),
+                tuple: tuple.clone(),
+                when: DEFAULT_REVALIDATE_WHEN.to_owned(),
+                keep_history: true,
+            },
+            [dir, tuple, flag, label] if flag == "--when" => Self::CompactRevalidate {
+                dir: dir.into(),
+                tuple: tuple.clone(),
+                when: label.clone(),
+                keep_history: false,
+            },
+            [dir, tuple, flag, label, keep] if flag == "--when" && keep == "--keep-history" => {
+                Self::CompactRevalidate {
+                    dir: dir.into(),
+                    tuple: tuple.clone(),
+                    when: label.clone(),
+                    keep_history: true,
+                }
+            }
+            // `--when` with no label is a missing operand, as the helper reports.
+            [_, _, flag] if flag == "--when" => Self::MissingOperand(COMPACT_REVALIDATE),
+            [_, _, flag, _, extra, ..] if flag == "--when" => Self::UsageError(extra.clone()),
+            [_, _, flag, extra, ..] if flag == "--keep-history" => Self::UsageError(extra.clone()),
+            [_, _, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(COMPACT_REVALIDATE),
+        }
+    }
+
+    /// `_compact-archive <dir> <tuple> <archived-at> <push-outcome> <push-ref> <preserved> <workdir> [--keep-history]`.
+    fn parse_compact_archive(tail: &[String]) -> Self {
+        match tail {
+            [
+                dir,
+                tuple,
+                archived_at,
+                push_outcome,
+                push_ref,
+                preserved,
+                workdir,
+            ] => Self::CompactArchive {
+                dir: dir.into(),
+                tuple: tuple.clone(),
+                archived_at: archived_at.clone(),
+                push_outcome: push_outcome.clone(),
+                push_ref: push_ref.clone(),
+                preserved: preserved.clone(),
+                workdir: workdir.clone(),
+                keep_history: false,
+            },
+            [
+                dir,
+                tuple,
+                archived_at,
+                push_outcome,
+                push_ref,
+                preserved,
+                workdir,
+                flag,
+            ] if flag == "--keep-history" => Self::CompactArchive {
+                dir: dir.into(),
+                tuple: tuple.clone(),
+                archived_at: archived_at.clone(),
+                push_outcome: push_outcome.clone(),
+                push_ref: push_ref.clone(),
+                preserved: preserved.clone(),
+                workdir: workdir.clone(),
+                keep_history: true,
+            },
+            [_, _, _, _, _, _, _, flag, extra, ..] if flag == "--keep-history" => {
+                Self::UsageError(extra.clone())
+            }
+            [_, _, _, _, _, _, _, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(COMPACT_ARCHIVE),
+        }
+    }
+
+    /// `_compact-teardown <dir> <tuple> [--keep-history]`.
+    fn parse_compact_teardown(tail: &[String]) -> Self {
+        match tail {
+            [dir, tuple] => Self::CompactTeardown {
+                dir: dir.into(),
+                tuple: tuple.clone(),
+                keep_history: false,
+            },
+            [dir, tuple, flag] if flag == "--keep-history" => Self::CompactTeardown {
+                dir: dir.into(),
+                tuple: tuple.clone(),
+                keep_history: true,
+            },
+            [_, _, flag, extra, ..] if flag == "--keep-history" => Self::UsageError(extra.clone()),
+            [_, _, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(COMPACT_TEARDOWN),
+        }
+    }
+
+    /// `_compact-wait <dir> <ref> [--timeout <secs>]`.
+    fn parse_compact_wait(tail: &[String]) -> Self {
+        match tail {
+            [dir, reference] => Self::CompactWait {
+                dir: dir.into(),
+                reference: reference.clone(),
+                timeout_secs: crate::compact::DEFAULT_HANDOVER_SECS,
+            },
+            [dir, reference, flag, secs] if flag == "--timeout" => match secs.parse::<u64>() {
+                Ok(n) => Self::CompactWait {
+                    dir: dir.into(),
+                    reference: reference.clone(),
+                    timeout_secs: n,
+                },
+                Err(_) => Self::UsageError(secs.clone()),
+            },
+            [_, _, flag, _, extra, ..] if flag == "--timeout" => Self::UsageError(extra.clone()),
+            [_, _, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(COMPACT_WAIT),
+        }
+    }
+
+    /// `_compact-cancel <dir> <ref>`.
+    fn parse_compact_cancel(tail: &[String]) -> Self {
+        match tail {
+            [dir, reference] => Self::CompactCancel {
+                dir: dir.into(),
+                reference: reference.clone(),
+            },
+            [_, _, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(COMPACT_CANCEL),
         }
     }
 
