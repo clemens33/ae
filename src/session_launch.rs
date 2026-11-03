@@ -2049,6 +2049,16 @@ enum Destination {
     Proposed,
 }
 
+/// What placing a saved session needs besides its record: the server this
+/// launch was asked on, whether the launch resumes in place, and the crash
+/// restore it serves, if any.
+#[derive(Clone, Copy)]
+struct Placing<'a> {
+    proposed: &'a ServerId,
+    in_place: bool,
+    restore: Option<&'a crate::restore::Attempt>,
+}
+
 /// Decide a saved session's [`Placement`] from the absence probe of its
 /// recorded server.
 fn placement(probe: &tmux::StopProbe, in_place: bool, legacy: bool) -> Placement {
@@ -2201,99 +2211,31 @@ fn launch(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
-    let cwd = env.cwd.display().to_string();
     let sessions = env.sessions();
     let worktrees = env.worktrees();
 
     // ---- the name, and the guards that must precede every side effect ----
-    let Some(session) = plan.name.clone() else {
-        writeln!(err, "{MISSING_NAME}")?;
-        writeln!(err, "{PUBLIC_USAGE}")?;
-        return Ok(EXIT_USAGE);
-    };
-    if !name::is_session_name(&session) {
-        writeln!(
-            err,
-            "Error: invalid session name '{session}'. Names must match {}.",
-            name::SESSION_NAME_GRAMMAR
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-
-    // A word the entry routes ITSELF may not become a name: `ae <word>` would
-    // answer the command and never reach the session. The picker's own resume
-    // is exempt, because it addresses a session that already EXISTS and a
-    // legacy one may still carry such a name.
-    if expected_launch.is_none() && crate::entry::name_is_routed_verb(&session) {
-        writeln!(err, "{}", crate::entry::routed_verb_refusal(&session))?;
-        return Ok(EXIT_USAGE);
-    }
+    let session = step!(check_name(env, plan, expected_launch, err));
     let dir = sessions.join(&session);
     let work_root = worktrees.join(&session);
 
-    // A pending rename transaction owns this name until its proved retry
-    // converges: a launch must not read or mutate a mixed generation as
-    // ordinary state.
-    if let Some(blocked) = crate::rename::intent_blocks(&env.home, &session) {
-        writeln!(err, "Error: {blocked}. Nothing was launched.")?;
-        return Ok(EXIT_FAILED);
-    }
-
-    for (root, note) in [
-        (&sessions, "the session state is parked under it"),
-        (&worktrees, "a working copy is parked under it"),
-    ] {
-        let tombstone = root.join(format!(".ending.{session}"));
-        if node_exists(&tombstone) {
-            writeln!(
-                err,
-                "Error: a previous teardown of '{session}' did not complete."
-            )?;
-            writeln!(
-                err,
-                "       {} is standing — {note}, not under '{session}'.",
-                tombstone.display()
-            )?;
-            writeln!(err, "       Inspect it, then remove it by hand and retry:")?;
-            writeln!(err, "           rm -rf {}", tombstone.display())?;
-            return Ok(EXIT_FAILED);
-        }
-    }
-
     let proposed_server = env.server();
     let expected_resume = expected_launch.is_some_and(ExpectedLaunch::is_resume);
-    let in_place = expected_resume || restore.is_some();
+    let placing = Placing {
+        proposed: &proposed_server,
+        in_place: expected_resume || restore.is_some(),
+        restore,
+    };
     let settings_start = expected_launch.is_some_and(ExpectedLaunch::is_start);
-    if settings_start && session != crate::orchestrator::ORCHESTRATOR_SESSION {
-        writeln!(
-            err,
-            "Error: settings Start may create only the canonical orchestrator."
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    // Start may not inspect canonical saved state until it owns the canonical
-    // lifecycle lock below. Resume may inspect only to select the recorded
-    // server for the tmux floor; absence makes the captured action stale and
-    // is refused before a lock-file or any other effect.
-    let preflight_meta_present = !settings_start && node_exists(&dir.join(crate::store::META));
-    // A near-miss word may not CREATE a session: no record is the launch's own
-    // create-versus-resume discriminator, so a session already named so still
-    // resumes. Read-only above this line, so a refusal has written nothing.
-    if expected_launch.is_none()
-        && restore.is_none()
-        && !preflight_meta_present
-        && let Some(refusal) = crate::entry::near_miss_refusal(&session)
-    {
-        writeln!(err, "{refusal}")?;
-        return Ok(EXIT_USAGE);
-    }
-    if expected_resume && !preflight_meta_present {
-        writeln!(
-            err,
-            "Error: role target '{session}' disappeared before Resume acquired its lifecycle lock. Nothing was resumed."
-        )?;
-        return Ok(EXIT_FAILED);
-    }
+    let preflight_meta_present = step!(check_launch_kind(
+        &session,
+        &dir,
+        expected_launch,
+        restore,
+        expected_resume,
+        settings_start,
+        err
+    ));
 
     // ---- THE tmux FLOOR, before the first thing this launch would write ----
     // AHEAD of the lifecycle lock, migration chain and config seed. A resume
@@ -2301,24 +2243,7 @@ fn launch(
     // of the server this attempt will actually use; the decision is repeated
     // under the lifecycle lock below before anything acts on it.
     let floor_server = if preflight_meta_present {
-        let Ok(bytes) = meta::read_bytes(&dir) else {
-            writeln!(err, "Error: could not read metadata for '{session}'.")?;
-            return Ok(EXIT_FAILED);
-        };
-        let Some(recorded) =
-            RecordedServer::of(Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector())
-        else {
-            writeln!(err, "Error: '{session}' {AMBIGUOUS_SERVER}.")?;
-            return Ok(EXIT_FAILED);
-        };
-        let (probe, why) = resume_absence(&recorded.server, &session, &dir);
-        match placement(&probe, in_place, recorded.legacy) {
-            Placement::Running | Placement::Stopped(Destination::Recorded) => recorded.server,
-            Placement::Stopped(Destination::Proposed) => proposed_server.clone(),
-            Placement::Unproven => {
-                return refuse_unproven(restore, &recorded, &session, why, err);
-            }
-        }
+        step!(preflight_server(&dir, &session, placing, err))
     } else {
         proposed_server.clone()
     };
@@ -2328,28 +2253,14 @@ fn launch(
         write!(err, "{refusal}")?;
         return Ok(crate::tmux_floor::EXIT_REFUSED);
     }
-    let seat_overrides =
-        match validate_seat_overrides(env, plan, &dir, preflight_meta_present, running_preflight) {
-            Ok(snapshot) => snapshot,
-            Err(SeatOverrideRefusal::Usage(line)) => {
-                writeln!(err, "{line}")?;
-                return Ok(EXIT_USAGE);
-            }
-            Err(SeatOverrideRefusal::Failed(line)) => {
-                writeln!(err, "{line}")?;
-                return Ok(EXIT_FAILED);
-            }
-        };
-
-    if !preflight_meta_present
-        && let Some(actor) = reserved_launch_actor(env, plan, seat_overrides.as_ref())
-    {
-        writeln!(
-            err,
-            "Error: agent name '{actor}' is reserved for ae's journal actors; pick another name."
-        )?;
-        return Ok(EXIT_USAGE);
-    }
+    let seat_overrides = step!(check_seat_overrides(
+        env,
+        plan,
+        &dir,
+        preflight_meta_present,
+        running_preflight,
+        err
+    ));
 
     #[cfg(debug_assertions)]
     if let Some(marker) = &env.test_pre_lock_marker {
@@ -2434,92 +2345,15 @@ fn launch(
     }
 
     let mut env = env.clone();
-    let mut running_server = None;
-    if meta_present {
-        let Ok(bytes) = meta::read_bytes(&dir) else {
-            writeln!(err, "Error: could not read metadata for '{session}'.")?;
-            return Ok(EXIT_FAILED);
-        };
-        // An explicit origin is a claim about this exact session, including a
-        // live one. It must agree with the recorded owner before reattach can
-        // migrate, seed, or backfill anything below.
-        if plan.dir.is_some() {
-            let recorded = meta::first_value(&bytes, "origin")
-                .map(|value| String::from_utf8_lossy(value).into_owned())
-                .unwrap_or_default();
-            if recorded.is_empty() || !same_directory(&recorded, &cwd) {
-                writeln!(
-                    err,
-                    "Error: session '{session}' exists with a different origin."
-                )?;
-                writeln!(
-                    err,
-                    "       recorded: {}",
-                    if recorded.is_empty() {
-                        "<none>"
-                    } else {
-                        &recorded
-                    }
-                )?;
-                writeln!(err, "       requested: {cwd}")?;
-                return Ok(EXIT_FAILED);
-            }
-        }
-        let Some(recorded) =
-            RecordedServer::of(Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector())
-        else {
-            writeln!(err, "Error: '{session}' {AMBIGUOUS_SERVER}.")?;
-            return Ok(EXIT_FAILED);
-        };
-        let (probe, why) = resume_absence(&recorded.server, &session, &dir);
-        match placement(&probe, in_place, recorded.legacy) {
-            Placement::Running if recorded.legacy => {
-                let backfilled = step!(adopt_legacy_session(
-                    &recorded.server,
-                    &env.home,
-                    &session,
-                    &dir,
-                    !plan.seat_profiles.is_empty(),
-                    err
-                ));
-                set_env_server(&mut env, &backfilled);
-                running_server = Some(backfilled);
-            }
-            Placement::Running => {
-                if let Some(attempt) = restore {
-                    attempt.skip("already running");
-                    return Ok(0);
-                }
-                if !plan.seat_profiles.is_empty() {
-                    writeln!(err, "{}", running_override_refusal(&session))?;
-                    return Ok(EXIT_USAGE);
-                }
-                set_env_server(&mut env, &recorded.server);
-                running_server = Some(recorded.server);
-            }
-            Placement::Stopped(destination) => {
-                let target = match destination {
-                    Destination::Recorded => &recorded.server,
-                    Destination::Proposed => &proposed_server,
-                };
-                if !destination_is_absent(target, &session, err)? {
-                    return Ok(EXIT_FAILED);
-                }
-                if destination == Destination::Recorded {
-                    set_env_server(&mut env, &recorded.server);
-                }
-            }
-            Placement::Unproven => {
-                return refuse_unproven(restore, &recorded, &session, why, err);
-            }
-        }
-    } else if transport::session_exists(&proposed_server, &session) {
-        writeln!(
-            err,
-            "Error: tmux session '{session}' exists but is not an ae session."
-        )?;
-        return Ok(EXIT_FAILED);
-    }
+    let running_server = step!(resolve_server(
+        &mut env,
+        plan,
+        &dir,
+        &session,
+        placing,
+        meta_present,
+        err
+    ));
 
     let orchestrator_config = env.home.join(crate::orchestrator::CONFIG_FILE);
     let seeds_orchestrator_config = session == crate::orchestrator::ORCHESTRATOR_SESSION
@@ -2534,40 +2368,14 @@ fn launch(
     {
         return Ok(code);
     }
-    // THE CHAIN, before anything reads a field of this meta: a resume or a
-    // reattach is ae touching a session, and a shape it cannot place is one it
-    // must not act on.
-    if meta_present && let Err(refusal) = crate::migrate::session(&dir) {
-        writeln!(err, "Error: {}", refusal.line(&session))?;
-        return Ok(EXIT_FAILED);
-    }
-    // On resume the RECORDED config wins: an agent's aliases must resolve from
-    // the file the session was created with, not from wherever the caller is.
-    if meta_present {
-        if let Some(stored) = meta_value(&dir, "config").filter(|v| !v.is_empty()) {
-            env.global = Some(PathBuf::from(stored));
-        }
-        let origin = meta_value(&dir, "origin").unwrap_or_default();
-        env.local = config::local_overlay(&dir, &origin);
-    }
-    let orchestrator_seat = env
-        .local
-        .as_deref()
-        .is_some_and(|local| crate::orchestrator::is_seat_overlay(local, &env.home));
-    if orchestrator_seat && seat_overrides.is_none() {
-        let (_, has_profiles, has_roster) =
-            config::read_workspace_keys_with_identity_sections(None, env.local.as_deref(), &[]);
-        if (has_profiles || has_roster)
-            && let (Some(local), Some(global)) = (env.local.as_deref(), env.global.as_deref())
-        {
-            writeln!(
-                err,
-                "ae orchestrator: ignoring [roster]/[profiles] in {}: the seat profile is [roster] orchestrator in {}",
-                local.display(),
-                global.display()
-            )?;
-        }
-    }
+    let orchestrator_seat = step!(adopt_recorded_config(
+        &mut env,
+        &dir,
+        &session,
+        meta_present,
+        seat_overrides.is_some(),
+        err
+    ));
     // ---- explicit lineage, proved before anything is created ----
     let mut parent: Option<FromProof> = None;
     if let Some(uuid) = &plan.from {
@@ -2620,38 +2428,8 @@ fn launch(
         return Ok(attach(&server, &env, &session, out)?);
     }
 
-    if seeds_orchestrator_config && let Some(global) = env.global.as_deref() {
-        // The global roster chooses the seat's profile. Check it after the
-        // global first-run seed, but only after the live-session reattach
-        // branch: a running seat is never rebuilt or revalidated.
-        let cfg = match config::read_identity(Some(global), None) {
-            Ok(cfg) => cfg,
-            Err(why) => {
-                writeln!(err, "{why}")?;
-                return Ok(EXIT_FAILED);
-            }
-        };
-        if cfg
-            .roster_profile(crate::orchestrator::ORCHESTRATOR_SESSION)
-            .is_none()
-        {
-            writeln!(
-                err,
-                "ae orchestrator: no profile for the seat — add \"orchestrator = <profile>\" under [roster] in {}",
-                global.display()
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-    }
-    if seeds_orchestrator_config
-        && let Some(code) = crate::seed_default_config(
-            &orchestrator_config,
-            crate::orchestrator::DEFAULT_CONFIG,
-            "orchestrator",
-            err,
-        )?
-    {
-        return Ok(code);
+    if seeds_orchestrator_config {
+        step!(seed_orchestrator_seat(&env, &orchestrator_config, err));
     }
 
     // ---- config, roster, workspace values ----
@@ -2670,17 +2448,8 @@ fn launch(
         err
     ));
 
-    if let Some(workers) = &plan.workers {
-        cfg.workers = Some(workers.clone());
-    }
     let home = crate::doors::home();
-    let mut seats = match config::launch_plan(&cfg, plan.main.as_deref(), home.as_deref()) {
-        Ok(resolved) => resolved.seats,
-        Err(violations) => {
-            write!(err, "{}", config::render_violations(&violations))?;
-            return Ok(EXIT_FAILED);
-        }
-    };
+    let mut seats = step!(resolve_seats(&mut cfg, plan, home.as_deref(), err));
 
     // ---- the mode: flag, then the recorded one, then config, then local ----
     let recorded_mode = if plan.mode.is_none() && meta_present {
@@ -2709,33 +2478,15 @@ fn launch(
         err
     ));
 
-    // A RESUME RESTORES THE ROSTER IT SAVED.
-    if resuming {
-        let overridden: Vec<&str> = seat_overrides.as_ref().map_or_else(Vec::new, |snapshot| {
-            snapshot
-                .overrides
-                .iter()
-                .map(|replacement| replacement.agent.as_str())
-                .collect()
-        });
-        if let Err(line) = restore_saved_roster(
-            &dir,
-            &session,
-            &cfg,
-            home.as_deref(),
-            &overridden,
-            &mut seats,
-        ) {
-            writeln!(err, "{line}")?;
-            return Ok(EXIT_FAILED);
-        }
-    }
-    if let Some(snapshot) = seat_overrides.as_ref()
-        && let Err(line) = apply_seat_overrides(snapshot, &mut seats)
-    {
-        writeln!(err, "{line}")?;
-        return Ok(EXIT_FAILED);
-    }
+    step!(restore_roster(
+        resuming.then_some(dir.as_path()),
+        &session,
+        &cfg,
+        home.as_deref(),
+        seat_overrides.as_ref(),
+        &mut seats,
+        err
+    ));
     // Read only on resume, and only once the roster has been restored.
     let saved_layout = if resuming {
         meta_value(&dir, "layout")
@@ -2801,6 +2552,303 @@ fn launch(
 // the launch's named steps, in the order `launch` calls them
 // ---------------------------------------------------------------------------
 
+/// The session name, and the guards on it that precede every side effect: it
+/// is given, it matches the grammar, it is not a word the entry routes itself,
+/// no pending rename owns it, and no unfinished teardown has parked its state
+/// or working copy. Read-only, so a refusal has written nothing.
+fn check_name(
+    env: &Env,
+    plan: &Plan,
+    expected_launch: Option<&ExpectedLaunch>,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, String>> {
+    let Some(session) = plan.name.clone() else {
+        writeln!(err, "{MISSING_NAME}")?;
+        writeln!(err, "{PUBLIC_USAGE}")?;
+        return Ok(ControlFlow::Break(EXIT_USAGE));
+    };
+    if !name::is_session_name(&session) {
+        writeln!(
+            err,
+            "Error: invalid session name '{session}'. Names must match {}.",
+            name::SESSION_NAME_GRAMMAR
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+
+    // A word the entry routes ITSELF may not become a name: `ae <word>` would
+    // answer the command and never reach the session. The picker's own resume
+    // is exempt, because it addresses a session that already EXISTS and a
+    // legacy one may still carry such a name.
+    if expected_launch.is_none() && crate::entry::name_is_routed_verb(&session) {
+        writeln!(err, "{}", crate::entry::routed_verb_refusal(&session))?;
+        return Ok(ControlFlow::Break(EXIT_USAGE));
+    }
+
+    // A pending rename transaction owns this name until its proved retry
+    // converges: a launch must not read or mutate a mixed generation as
+    // ordinary state.
+    if let Some(blocked) = crate::rename::intent_blocks(&env.home, &session) {
+        writeln!(err, "Error: {blocked}. Nothing was launched.")?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+
+    for (root, note) in [
+        (env.sessions(), "the session state is parked under it"),
+        (env.worktrees(), "a working copy is parked under it"),
+    ] {
+        let tombstone = root.join(format!(".ending.{session}"));
+        if node_exists(&tombstone) {
+            writeln!(
+                err,
+                "Error: a previous teardown of '{session}' did not complete."
+            )?;
+            writeln!(
+                err,
+                "       {} is standing — {note}, not under '{session}'.",
+                tombstone.display()
+            )?;
+            writeln!(err, "       Inspect it, then remove it by hand and retry:")?;
+            writeln!(err, "           rm -rf {}", tombstone.display())?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+    }
+    Ok(ControlFlow::Continue(session))
+}
+
+/// The refusals the launch's kind owes before the floor: settings Start
+/// creates only the canonical orchestrator, a near-miss word never CREATES a
+/// session, and an expected Resume whose record is gone is stale. Continues
+/// with whether the record was there at preflight.
+fn check_launch_kind(
+    session: &str,
+    dir: &Path,
+    expected_launch: Option<&ExpectedLaunch>,
+    restore: Option<&crate::restore::Attempt>,
+    expected_resume: bool,
+    settings_start: bool,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, bool>> {
+    if settings_start && session != crate::orchestrator::ORCHESTRATOR_SESSION {
+        writeln!(
+            err,
+            "Error: settings Start may create only the canonical orchestrator."
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    // Start may not inspect canonical saved state until it owns the canonical
+    // lifecycle lock below. Resume may inspect only to select the recorded
+    // server for the tmux floor; absence makes the captured action stale and
+    // is refused before a lock-file or any other effect.
+    let preflight_meta_present = !settings_start && node_exists(&dir.join(crate::store::META));
+    // A near-miss word may not CREATE a session: no record is the launch's own
+    // create-versus-resume discriminator, so a session already named so still
+    // resumes. Read-only above this line, so a refusal has written nothing.
+    if expected_launch.is_none()
+        && restore.is_none()
+        && !preflight_meta_present
+        && let Some(refusal) = crate::entry::near_miss_refusal(session)
+    {
+        writeln!(err, "{refusal}")?;
+        return Ok(ControlFlow::Break(EXIT_USAGE));
+    }
+    if expected_resume && !preflight_meta_present {
+        writeln!(
+            err,
+            "Error: role target '{session}' disappeared before Resume acquired its lifecycle lock. Nothing was resumed."
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    Ok(ControlFlow::Continue(preflight_meta_present))
+}
+
+/// The server a resume's tmux floor is asked of, from a read-only look at the
+/// record before any lock: the recorded one when it runs there or stays there,
+/// the proposed one when the stopped session moves. An unproven absence
+/// refuses, or skips for a restore.
+fn preflight_server(
+    dir: &Path,
+    session: &str,
+    placing: Placing<'_>,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, ServerId>> {
+    let Ok(bytes) = meta::read_bytes(dir) else {
+        writeln!(err, "Error: could not read metadata for '{session}'.")?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    };
+    let Some(recorded) =
+        RecordedServer::of(Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector())
+    else {
+        writeln!(err, "Error: '{session}' {AMBIGUOUS_SERVER}.")?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    };
+    let (probe, why) = resume_absence(&recorded.server, session, dir);
+    Ok(match placement(&probe, placing.in_place, recorded.legacy) {
+        Placement::Running | Placement::Stopped(Destination::Recorded) => {
+            ControlFlow::Continue(recorded.server)
+        }
+        Placement::Stopped(Destination::Proposed) => {
+            ControlFlow::Continue(placing.proposed.clone())
+        }
+        Placement::Unproven => ControlFlow::Break(refuse_unproven(
+            placing.restore,
+            &recorded,
+            session,
+            why,
+            err,
+        )?),
+    })
+}
+
+/// The seat overrides this launch may apply, validated against the record and
+/// the running state seen at preflight, and on a create the refusal of an
+/// agent name ae reserves for its journal actors.
+fn check_seat_overrides(
+    env: &Env,
+    plan: &Plan,
+    dir: &Path,
+    preflight_meta_present: bool,
+    running_preflight: bool,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, Option<SeatOverrideSnapshot>>> {
+    let seat_overrides =
+        match validate_seat_overrides(env, plan, dir, preflight_meta_present, running_preflight) {
+            Ok(snapshot) => snapshot,
+            Err(SeatOverrideRefusal::Usage(line)) => {
+                writeln!(err, "{line}")?;
+                return Ok(ControlFlow::Break(EXIT_USAGE));
+            }
+            Err(SeatOverrideRefusal::Failed(line)) => {
+                writeln!(err, "{line}")?;
+                return Ok(ControlFlow::Break(EXIT_FAILED));
+            }
+        };
+
+    if !preflight_meta_present
+        && let Some(actor) = reserved_launch_actor(env, plan, seat_overrides.as_ref())
+    {
+        writeln!(
+            err,
+            "Error: agent name '{actor}' is reserved for ae's journal actors; pick another name."
+        )?;
+        return Ok(ControlFlow::Break(EXIT_USAGE));
+    }
+    Ok(ControlFlow::Continue(seat_overrides))
+}
+
+/// The server this launch acts on, decided again under the lifecycle lock,
+/// where the record is authoritative. A saved session's explicit `--dir` must
+/// name its recorded origin; then a running one continues with the server it
+/// runs on (a legacy one adopted and backfilled first), and a stopped one with
+/// its destination proved free. `env` is pointed at that server. Without a
+/// record, a live tmux session of the name is not ours to build over.
+fn resolve_server(
+    env: &mut Env,
+    plan: &Plan,
+    dir: &Path,
+    session: &str,
+    placing: Placing<'_>,
+    meta_present: bool,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, Option<ServerId>>> {
+    if !meta_present {
+        if transport::session_exists(placing.proposed, session) {
+            writeln!(
+                err,
+                "Error: tmux session '{session}' exists but is not an ae session."
+            )?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+        return Ok(ControlFlow::Continue(None));
+    }
+    let Ok(bytes) = meta::read_bytes(dir) else {
+        writeln!(err, "Error: could not read metadata for '{session}'.")?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    };
+    // An explicit origin is a claim about this exact session, including a
+    // live one. It must agree with the recorded owner before reattach can
+    // migrate, seed, or backfill anything below.
+    if plan.dir.is_some() {
+        let cwd = env.cwd.display().to_string();
+        let recorded = meta::first_value(&bytes, "origin")
+            .map(|value| String::from_utf8_lossy(value).into_owned())
+            .unwrap_or_default();
+        if recorded.is_empty() || !same_directory(&recorded, &cwd) {
+            writeln!(
+                err,
+                "Error: session '{session}' exists with a different origin."
+            )?;
+            writeln!(
+                err,
+                "       recorded: {}",
+                if recorded.is_empty() {
+                    "<none>"
+                } else {
+                    &recorded
+                }
+            )?;
+            writeln!(err, "       requested: {cwd}")?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+    }
+    let Some(recorded) =
+        RecordedServer::of(Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector())
+    else {
+        writeln!(err, "Error: '{session}' {AMBIGUOUS_SERVER}.")?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    };
+    let (probe, why) = resume_absence(&recorded.server, session, dir);
+    match placement(&probe, placing.in_place, recorded.legacy) {
+        Placement::Running if recorded.legacy => {
+            let backfilled = match adopt_legacy_session(
+                &recorded.server,
+                &env.home,
+                session,
+                dir,
+                !plan.seat_profiles.is_empty(),
+                err,
+            )? {
+                ControlFlow::Continue(server) => server,
+                ControlFlow::Break(code) => return Ok(ControlFlow::Break(code)),
+            };
+            set_env_server(env, &backfilled);
+            Ok(ControlFlow::Continue(Some(backfilled)))
+        }
+        Placement::Running => {
+            if let Some(attempt) = placing.restore {
+                attempt.skip("already running");
+                return Ok(ControlFlow::Break(0));
+            }
+            if !plan.seat_profiles.is_empty() {
+                writeln!(err, "{}", running_override_refusal(session))?;
+                return Ok(ControlFlow::Break(EXIT_USAGE));
+            }
+            set_env_server(env, &recorded.server);
+            Ok(ControlFlow::Continue(Some(recorded.server)))
+        }
+        Placement::Stopped(destination) => {
+            let target = match destination {
+                Destination::Recorded => &recorded.server,
+                Destination::Proposed => placing.proposed,
+            };
+            if !destination_is_absent(target, session, err)? {
+                return Ok(ControlFlow::Break(EXIT_FAILED));
+            }
+            if destination == Destination::Recorded {
+                set_env_server(env, &recorded.server);
+            }
+            Ok(ControlFlow::Continue(None))
+        }
+        Placement::Unproven => Ok(ControlFlow::Break(refuse_unproven(
+            placing.restore,
+            &recorded,
+            session,
+            why,
+            err,
+        )?)),
+    }
+}
+
 /// Adopt a legacy session — a record with no server rows — that is running on
 /// the historical default server. It is ours only when its ownership marker
 /// names this state root AND its recorded main pane is one of its panes; then,
@@ -2848,6 +2896,56 @@ fn adopt_legacy_session(
     Ok(ControlFlow::Continue(ServerId::Selected(
         meta::Selector::Socket(socket.into()),
     )))
+}
+
+/// A saved session's record, made placeable and made the config it reads:
+/// the migration chain runs before anything reads a field of the record, then
+/// the recorded `config` and the session's local overlay replace the caller's.
+/// Continues with whether the overlay is the orchestrator seat's, noting the
+/// `[roster]`/`[profiles]` the seat ignores unless seat overrides were asked.
+fn adopt_recorded_config(
+    env: &mut Env,
+    dir: &Path,
+    session: &str,
+    meta_present: bool,
+    overridden: bool,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, bool>> {
+    // THE CHAIN, before anything reads a field of this meta: a resume or a
+    // reattach is ae touching a session, and a shape it cannot place is one it
+    // must not act on.
+    if meta_present && let Err(refusal) = crate::migrate::session(dir) {
+        writeln!(err, "Error: {}", refusal.line(session))?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    // On resume the RECORDED config wins: an agent's aliases must resolve from
+    // the file the session was created with, not from wherever the caller is.
+    if meta_present {
+        if let Some(stored) = meta_value(dir, "config").filter(|v| !v.is_empty()) {
+            env.global = Some(PathBuf::from(stored));
+        }
+        let origin = meta_value(dir, "origin").unwrap_or_default();
+        env.local = config::local_overlay(dir, &origin);
+    }
+    let orchestrator_seat = env
+        .local
+        .as_deref()
+        .is_some_and(|local| crate::orchestrator::is_seat_overlay(local, &env.home));
+    if orchestrator_seat && !overridden {
+        let (_, has_profiles, has_roster) =
+            config::read_workspace_keys_with_identity_sections(None, env.local.as_deref(), &[]);
+        if (has_profiles || has_roster)
+            && let (Some(local), Some(global)) = (env.local.as_deref(), env.global.as_deref())
+        {
+            writeln!(
+                err,
+                "ae orchestrator: ignoring [roster]/[profiles] in {}: the seat profile is [roster] orchestrator in {}",
+                local.display(),
+                global.display()
+            )?;
+        }
+    }
+    Ok(ControlFlow::Continue(orchestrator_seat))
 }
 
 /// Prove a `--from` parent archive for a NEW session: the archive preflight
@@ -2968,6 +3066,47 @@ fn read_workspace_values(env: &Env) -> WorkspaceValues {
     }
 }
 
+/// The orchestrator seat's own config, seeded on its first launch once the
+/// global roster names the seat's profile. Asked after the global first-run
+/// seed, but only after the live-session reattach branch: a running seat is
+/// never rebuilt or revalidated.
+fn seed_orchestrator_seat(
+    env: &Env,
+    orchestrator_config: &Path,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8>> {
+    if let Some(global) = env.global.as_deref() {
+        // The global roster chooses the seat's profile.
+        let cfg = match config::read_identity(Some(global), None) {
+            Ok(cfg) => cfg,
+            Err(why) => {
+                writeln!(err, "{why}")?;
+                return Ok(ControlFlow::Break(EXIT_FAILED));
+            }
+        };
+        if cfg
+            .roster_profile(crate::orchestrator::ORCHESTRATOR_SESSION)
+            .is_none()
+        {
+            writeln!(
+                err,
+                "ae orchestrator: no profile for the seat — add \"orchestrator = <profile>\" under [roster] in {}",
+                global.display()
+            )?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+    }
+    if let Some(code) = crate::seed_default_config(
+        orchestrator_config,
+        crate::orchestrator::DEFAULT_CONFIG,
+        "orchestrator",
+        err,
+    )? {
+        return Ok(ControlFlow::Break(code));
+    }
+    Ok(ControlFlow::Continue(()))
+}
+
 /// The watchdog facts a launch records, each META-WINS: a resume keeps what
 /// its session recorded, so a config flip applies to NEW sessions only.
 struct WatchdogCadences {
@@ -3063,6 +3202,26 @@ fn resolve_watchdog_cadences(
         done_confirmations: done_confirmations.to_string(),
         quota,
     }))
+}
+
+/// The seats this launch starts with: the config's roster, its workers
+/// replaced by the plan's when given, and its main seat by `use <name>`.
+fn resolve_seats(
+    cfg: &mut IdentityConfig,
+    plan: &Plan,
+    home: Option<&Path>,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, Vec<Seat>>> {
+    if let Some(workers) = &plan.workers {
+        cfg.workers = Some(workers.clone());
+    }
+    match config::launch_plan(cfg, plan.main.as_deref(), home) {
+        Ok(resolved) => Ok(ControlFlow::Continue(resolved.seats)),
+        Err(violations) => {
+            write!(err, "{}", config::render_violations(&violations))?;
+            Ok(ControlFlow::Break(EXIT_FAILED))
+        }
+    }
 }
 
 /// The recorded-client gate for a resume WITHOUT overrides (an override launch
@@ -3250,6 +3409,40 @@ fn create_working_copy(
     }
     writeln!(out, "Working copy ready.")?;
     Ok(ControlFlow::Continue(mode))
+}
+
+/// A RESUME RESTORES THE ROSTER IT SAVED: `resumed` is the session directory
+/// of a resume, whose recorded seat profiles replace the config's, leaving to
+/// the seat overrides the seats they replace; then the overrides are applied.
+fn restore_roster(
+    resumed: Option<&Path>,
+    session: &str,
+    cfg: &IdentityConfig,
+    home: Option<&Path>,
+    seat_overrides: Option<&SeatOverrideSnapshot>,
+    seats: &mut [Seat],
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8>> {
+    if let Some(dir) = resumed {
+        let overridden: Vec<&str> = seat_overrides.map_or_else(Vec::new, |snapshot| {
+            snapshot
+                .overrides
+                .iter()
+                .map(|replacement| replacement.agent.as_str())
+                .collect()
+        });
+        if let Err(line) = restore_saved_roster(dir, session, cfg, home, &overridden, seats) {
+            writeln!(err, "{line}")?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+    }
+    if let Some(snapshot) = seat_overrides
+        && let Err(line) = apply_seat_overrides(snapshot, seats)
+    {
+        writeln!(err, "{line}")?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    Ok(ControlFlow::Continue(()))
 }
 
 /// Lex every restored spawned seat's command before anything is created.
