@@ -388,12 +388,7 @@ fn render_clients_line(output: &mut String, line: &str, found: &[Discovery]) {
     push_line(output, line);
 }
 
-fn render_profiles_line(
-    output: &mut String,
-    line: &str,
-    found: &[Discovery],
-    choices: &Choices,
-) {
+fn render_profiles_line(output: &mut String, line: &str, found: &[Discovery], choices: &Choices) {
     if let Some(name) = catalog_profile_line(line) {
         if profile(found, name).is_some() {
             push_line(output, line);
@@ -429,6 +424,34 @@ fn render_roster_line(output: &mut String, line: &str, choices: &Choices) {
     push_line(output, line);
 }
 
+fn render_workspace_line(output: &mut String, line: &str, choices: &Choices) {
+    if line == "workers = colead" {
+        if choices.colead.is_some() {
+            push_line(output, line);
+        }
+        return;
+    }
+    if line == "layout = lead-pair" {
+        output.push_str("layout = ");
+        output.push_str(if choices.colead.is_some() {
+            "lead-pair"
+        } else {
+            "lead-solo"
+        });
+        output.push('\n');
+        return;
+    }
+    if line.starts_with("palette = ") {
+        return;
+    }
+    push_line(output, line);
+    if line == "watchdog = true" {
+        output.push_str("palette = ");
+        output.push_str(&choices.palette);
+        output.push('\n');
+    }
+}
+
 fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -> String {
     let mut output = render_header(now);
     let mut section = "";
@@ -436,48 +459,12 @@ fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -
         if line.starts_with('[') && line.ends_with(']') {
             section = line;
         }
-        if section == "[clients]" {
-            render_clients_line(&mut output, line, found);
-            continue;
-        }
-        if section == "[profiles]" {
-            render_profiles_line(&mut output, line, found, choices);
-            continue;
-        }
-        if section == "[roster]" {
-            render_roster_line(&mut output, line, choices);
-            continue;
-        }
-        if section == "[workspace]" {
-            if line == "workers = colead" {
-                if choices.colead.is_some() {
-                    output.push_str(line);
-                    output.push('\n');
-                }
-                continue;
-            }
-            if line == "layout = lead-pair" {
-                output.push_str("layout = ");
-                output.push_str(if choices.colead.is_some() {
-                    "lead-pair"
-                } else {
-                    "lead-solo"
-                });
-                output.push('\n');
-                continue;
-            }
-            if line.starts_with("palette = ") {
-                continue;
-            }
-        }
-        push_line(&mut output, line);
-        if line == "[profiles]" {
-            push_picks(&mut output, choices);
-        }
-        if section == "[workspace]" && line == "watchdog = true" {
-            output.push_str("palette = ");
-            output.push_str(&choices.palette);
-            output.push('\n');
+        match section {
+            "[clients]" => render_clients_line(&mut output, line, found),
+            "[profiles]" => render_profiles_line(&mut output, line, found, choices),
+            "[roster]" => render_roster_line(&mut output, line, choices),
+            "[workspace]" => render_workspace_line(&mut output, line, choices),
+            _ => push_line(&mut output, line),
         }
     }
     output
