@@ -1984,7 +1984,7 @@ impl App {
     /// Whether a ^C pressed at `origin` falls inside [`QUIT_GUARD`] of the last
     /// clear: the press's own time, never the clock when it is looked at.
     fn guarded(&self, origin: Instant) -> bool {
-        (self.cleared_at).is_some_and(|at| origin.saturating_duration_since(at) <= QUIT_GUARD)
+        guarded_at(self.cleared_at, origin)
     }
 
     /// The hint row's word after a clear: how the text comes back.
@@ -4694,12 +4694,7 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
             continue;
         }
         if !app.deferred.is_empty() || !app.queued.is_empty() || app.unbounded(&key) {
-            app.deferred.push((key, origin));
-            app.deferred.extend(keyed);
-            let unguarded = (app.deferred.iter())
-                .any(|(key, origin)| *key == Key::Interrupt && !app.guarded(*origin));
-            let quit = unguarded && app.queued.is_empty() && !app.has_text();
-            return (!quit).then_some(true);
+            return hold(app, (key, origin), keyed);
         }
         // A read spent on a modal changes nothing more; an open modal takes
         // every key and press before any mode under it.
@@ -4749,6 +4744,45 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
         };
     }
     Some(redraw)
+}
+
+/// Hold `first` and every key after it (`rest`) in order behind what is
+/// waiting: `Some(true)`, or `None` when a held `^C` quits at once.
+fn hold(
+    app: &mut App,
+    first: (Key, Instant),
+    rest: impl Iterator<Item = (Key, Instant)>,
+) -> Option<bool> {
+    app.deferred.push(first);
+    app.deferred.extend(rest);
+    let quit = held_quit(
+        &app.deferred,
+        app.queued.is_empty(),
+        app.has_text(),
+        app.cleared_at,
+    );
+    (!quit).then_some(true)
+}
+
+/// Whether the held keys quit at once: one is a `^C` the last clear (at
+/// `cleared_at`) does not guard, judged at that key's own read, and no ask is
+/// queued (a quit would lose it) and no draft has text (a quit would lose it).
+fn held_quit(
+    held: &[(Key, Instant)],
+    nothing_queued: bool,
+    has_text: bool,
+    cleared_at: Option<Instant>,
+) -> bool {
+    nothing_queued
+        && !has_text
+        && (held.iter())
+            .any(|(key, origin)| *key == Key::Interrupt && !guarded_at(cleared_at, *origin))
+}
+
+/// Whether a ^C read at `origin` falls inside [`QUIT_GUARD`] of a clear at
+/// `cleared_at`: the press's own time, never the clock when it is looked at.
+fn guarded_at(cleared_at: Option<Instant>, origin: Instant) -> bool {
+    cleared_at.is_some_and(|at| origin.saturating_duration_since(at) <= QUIT_GUARD)
 }
 
 /// Take a key read before the first fleet read, a Text run byte by byte:
@@ -6576,6 +6610,58 @@ mod tests {
         );
         let past = cleared + super::QUIT_GUARD + Duration::from_millis(1);
         assert_eq!(behind(&mut app, past), None, "past the guard it quits");
+    }
+
+    /// The guard after a clear is [`QUIT_GUARD`] long, inclusive, counted from
+    /// the clear to the press's own read; with no clear there is no guard, and
+    /// a press read before the clear saturates to the instant of the clear.
+    #[test]
+    fn a_press_is_guarded_for_the_guard_window_after_a_clear() {
+        let before = Instant::now();
+        let cleared = before + Duration::from_secs(10);
+        let guard = super::QUIT_GUARD;
+        let ms = Duration::from_millis(1);
+        let guarded = |at| super::guarded_at(Some(cleared), at);
+        assert!(guarded(cleared), "the clear's own instant");
+        assert!(guarded(cleared + guard), "the last instant of the window");
+        assert!(!guarded(cleared + guard + ms), "one tick past it");
+        assert!(guarded(before), "read before the clear saturates");
+        assert!(!super::guarded_at(None, cleared), "no clear, no guard");
+    }
+
+    /// Held keys quit at once only for a `^C` the clear does not guard, with no
+    /// ask queued and no draft text to lose; any other key never quits them.
+    #[test]
+    fn held_keys_quit_only_for_an_unguarded_interrupt_with_nothing_to_lose() {
+        let t0 = Instant::now();
+        let cleared = t0 + Duration::from_secs(10);
+        let late = cleared + super::QUIT_GUARD + Duration::from_millis(1);
+        let inside = cleared + Duration::from_secs(1);
+        let ints = |at: Instant| (Key::Interrupt, at);
+        let text = (Key::Text(b"j".to_vec()), t0);
+        let quits = super::held_quit;
+        assert!(quits(&[ints(t0)], true, false, None), "no clear: quits");
+        assert!(!quits(&[], true, false, None), "nothing held");
+        assert!(!quits(std::slice::from_ref(&text), true, false, None));
+        assert!(!quits(&[ints(t0)], false, false, None), "an ask is queued");
+        assert!(!quits(&[ints(t0)], true, true, None), "a draft has text");
+        assert!(
+            !quits(&[ints(inside)], true, false, Some(cleared)),
+            "guarded"
+        );
+        assert!(
+            quits(&[ints(late)], true, false, Some(cleared)),
+            "unguarded"
+        );
+        let both = [text, ints(inside), ints(late)];
+        assert!(
+            quits(&both, true, false, Some(cleared)),
+            "any unguarded one"
+        );
+        assert!(
+            !quits(&both[..2], true, false, Some(cleared)),
+            "only guarded"
+        );
     }
 
     /// O1: a press after the window passed arms the seat the CURRENT frame
