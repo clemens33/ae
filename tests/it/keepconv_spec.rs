@@ -334,3 +334,101 @@ fn unobserved_tool_after_resume_fallback_never_records_kept() {
     );
     assert!(!out.contains("kept conversation"), "unproven resume: {out}");
 }
+// Independent runparsed mutant-response pins. The oracle is the keep contract
+// in docs/internals/reseat.md: a tool never seen claims no keep; a fresh id
+// after a planned keep records the same fallback as a successful start.
+#[test]
+fn runparsed_unseen_ineligible_keep_never_claims_resume_fallback() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let rig = Rig::new("rpunseenfresh");
+    configured(
+        &rig,
+        "--model opus --effort high",
+        "--model sonnet --effort low --verbose",
+    );
+    // A third option change follows the ordinary seed path. Prevent only the
+    // successor exec, after the real predecessor and dead proof are set up.
+    assert!(
+        std::fs::set_permissions(
+            rig.scratch.join("tools/claude"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .is_ok()
+    );
+
+    let (code, out, err) = reseat(&rig);
+    assert_eq!(code, Some(1), "unseen successor: out={out} err={err}");
+    assert!(err.contains("its tool was not seen"), "{err}");
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-keep-target");
+    assert_ne!(rig.meta_row("harness_session.spawned.0"), ID);
+    assert!(rig.dir.join("seed.scout.md").is_file());
+    assert!(out.is_empty(), "no keep was planned: {out}");
+    assert!(
+        rig.events().contains(&format!(
+            "pasted, tool not seen [from fake-keep-source to fake-keep-target, prior {ID}]"
+        )),
+        "ordinary seed path retains its original audit: {}",
+        rig.events()
+    );
+    assert!(
+        !rig.events().contains("resume fell back"),
+        "an unplanned resume cannot fall back: {}",
+        rig.events()
+    );
+}
+
+#[test]
+fn runparsed_unseen_keep_with_fresh_id_records_seeded_resume_fallback() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let rig = Rig::new("rpunseenkeep");
+    configured(
+        &rig,
+        "--model opus --effort high",
+        "--model sonnet --effort low",
+    );
+    // The recorded cwd has a resumable store, but the pane's physical cwd
+    // does not. The documented residual makes _run mint a fresh id BEFORE
+    // the deliberately failed exec: this is a proven fallback, not a keep.
+    let physical = root(&rig).join("work");
+    let linked = root(&rig).join("linked-work");
+    assert!(std::os::unix::fs::symlink(&physical, &linked).is_ok());
+    assert!(std::fs::remove_file(transcript(&rig, &physical)).is_ok());
+    plant(&transcript(&rig, &linked));
+    replace_row(&rig, "work_dir", &linked.display().to_string());
+    assert!(
+        std::fs::set_permissions(
+            rig.scratch.join("tools/claude"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .is_ok()
+    );
+
+    let (code, out, err) = reseat(&rig);
+    assert_eq!(code, Some(1), "unseen successor: out={out} err={err}");
+    assert!(err.contains("its tool was not seen"), "{err}");
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-keep-target");
+    assert_ne!(rig.meta_row("harness_session.spawned.0"), ID);
+    assert!(rig.dir.join("seed.scout.md").is_file());
+    assert_eq!(
+        out,
+        format!(
+            "could not keep conversation {ID} (resume fell back) — its seed pack is {}\n",
+            rig.dir.join("seed.scout.md").display()
+        ),
+        "the fresh id proves the fallback before the failed exec"
+    );
+    assert!(
+        rig.events().contains(&format!(
+            "pasted, tool not seen [from fake-keep-source to fake-keep-target, prior {ID}, seeded (resume fell back)]"
+        )),
+        "the failed start still records the proven fallback: {}",
+        rig.events()
+    );
+    assert!(
+        !rig.events().contains(&format!("conversation {ID}, kept]")),
+        "a tool never seen cannot claim a kept conversation: {}",
+        rig.events()
+    );
+}
