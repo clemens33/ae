@@ -143,6 +143,84 @@ fn limitmuse_drafts_and_incomplete_or_old_frames_never_prove() {
 }
 
 #[test]
+fn limitmuse_every_fleet_model_and_effort_has_a_valid_footer() {
+    // Lead footer ruling; exact model ids independently sourced from fleet profiles.
+    for model in [
+        "muse-spark-1.3",
+        "muse-spark-1.3-contributor",
+        "muse-wonder-1.0",
+        "muse-wonder-1.0-contributor",
+        "muse-wonder-full-1.0",
+        "muse-wonder-full-1.0-contributor",
+    ] {
+        for effort in ["max", "xhigh"] {
+            for path in ["~/project", "/tmp/project"] {
+                let footer = format!("{model} · {effort} · {path} · YOLO");
+                let frame = PLAIN.replace("muse-wonder-full-1.0 · max · ~/project · YOLO", &footer);
+                assert!(proves(&frame), "authorized fleet footer: {footer}");
+            }
+        }
+    }
+}
+
+#[test]
+fn limitmuse_unrecognized_footer_fields_refuse() {
+    for footer in [
+        "muse-spark-1.4 · max · ~/project · YOLO",
+        "muse-spark-1.3 · high · ~/project · YOLO",
+        "muse-spark-1.3 · max · project · YOLO",
+        "muse-spark-1.3 · max · ~/project · manual",
+    ] {
+        let frame = PLAIN.replace("muse-wonder-full-1.0 · max · ~/project · YOLO", footer);
+        assert!(!proves(&frame), "unknown footer field: {footer}");
+    }
+}
+
+#[test]
+fn limitmuse_four_prose_fields_are_not_a_model_footer() {
+    let frame = PLAIN.replace(
+        "muse-wonder-full-1.0 · max · ~/project · YOLO",
+        "◆ Running job · still active · do not stop · 14 seconds",
+    );
+    assert!(
+        !proves(&frame),
+        "a field count cannot prove the vendor model footer"
+    );
+}
+
+#[test]
+fn limitmuse_voice_label_without_its_rule_cannot_prove_a_composer() {
+    let frame = PLAIN
+        .lines()
+        .map(|row| {
+            if row.starts_with("── Voice input") {
+                "── Voice input is recording a new request"
+            } else {
+                row
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !proves(&frame),
+        "the invariant requires a voice rule, not matching prefix text"
+    );
+}
+
+#[test]
+fn limitmuse_a_different_word_after_the_head_is_not_the_vendor_head() {
+    let frame = PLAIN.replacen(
+        "◆ Usage limit reached",
+        "◆ Usage limit reachedElsewhere and a new turn is active",
+        1,
+    );
+    assert!(
+        !proves(&frame),
+        "head matching must preserve the vendor words"
+    );
+}
+
+#[test]
 fn limitmuse_both_captures_must_independently_prove_the_limit_stop() {
     let valid = (HarnessState::Unknown, proves(PLAIN));
     let draft = PLAIN.replace("\n❯\n", "\n❯ pending\n");

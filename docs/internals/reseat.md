@@ -130,9 +130,16 @@ Then, under `.lifecycle.<session>.lock`:
    /usage for details.`, `Send a message to continue when usage is available.`),
    followed only by blank rows and the quota warning (`⚠ Usage nearly
    exhausted…`, `This task may stop before it finishes.`), the `── Voice input`
-   rule, an EMPTY `❯` row, the closing rule, and below it the model footer
-   (`model · effort · path · mode`) ALONE. Muse does not continue by itself, so
-   a move is the only way off. The per-turn `model failed: API error 429` row is
+   rule (a labelled `── Voice input (<hint>) ──…` drawn out to the closing rule's
+   width), an EMPTY `❯` row, the closing rule, and below it the model footer
+   (`model · effort · path · mode`) ALONE: the model one of the six ids the
+   fleet's muse profiles run (`watchdog::MUSE_MODELS`, the `-contributor` ids
+   included, because a contributor seat has been measured drawing the base id),
+   effort `max` or `xhigh`, a `~` or `/` path and the `YOLO` mode every profile
+   sets. A NEW Muse model id must be added to that list; until it is, the stop
+   fails closed (`row after the limit row: "<footer>"`). Muse does not continue by itself, so
+   a move is the only way off. The head is the phrase alone or followed by ` · ` and its tail (`reachedElsewhere`
+   is no head). The per-turn `model failed: API error 429` row is
    no stop here. Any other row refuses and is quoted (`row after the limit row:
    "<row>"`: an unknown follow-up, a row after the block, a second or unknown
    row below the box), a draft or a second-line draft is `no empty box under

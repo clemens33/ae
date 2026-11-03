@@ -16,7 +16,8 @@ fn attempt(tag: &str, frame: &str) -> (Rig, String) {
         .is_ok()
     );
     let config = rig.scratch.join("config");
-    let text = std::fs::read_to_string(&config).expect("fixture config");
+    let text =
+        std::fs::read_to_string(&config).unwrap_or_else(|why| panic!("fixture config: {why}"));
     let profile = format!(
         "fake-muse = \"{} {}\"\n[workspace]",
         rig.scratch.join("tools/muse").display(),
@@ -51,7 +52,9 @@ fn limitmuse_real_stop_leg_moves_the_measured_plain_frame() {
 
 fn refuses(tag: &str, frame: &str, reason: &str) {
     let (rig, pane) = attempt(tag, frame);
-    let before = rig.tool_pid(&pane, "muse").expect("predecessor running");
+    let before = rig
+        .tool_pid(&pane, "muse")
+        .unwrap_or_else(|| panic!("predecessor running"));
     let (code, out, err) = leg(&rig, "spawned.0", KEY);
     assert_eq!(code, Some(1), "out={out} err={err}");
     assert_eq!(

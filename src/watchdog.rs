@@ -778,9 +778,7 @@ fn muse_limit_standing(buf: &str) -> LimitStanding {
         .take_while(|row| !row.trim().is_empty() && row.starts_with(' '))
         .count();
     let block = &follow[..indented];
-    if !text.starts_with(MUSE_LIMIT_HEAD)
-        || !block.iter().any(|row| row.trim() == MUSE_LIMIT_STOPPED)
-    {
+    if !muse_limit_head(text) || !block.iter().any(|row| row.trim() == MUSE_LIMIT_STOPPED) {
         return LimitStanding::NoCell;
     }
     if let Some(row) = block.iter().map(|row| row.trim()).find(|row| {
@@ -799,10 +797,10 @@ fn muse_limit_standing(buf: &str) -> LimitStanding {
         .rposition(|row| row.trim() == "❯")
         .filter(|&prompt| {
             prompt > end
-                && window[prompt - 1].starts_with(MUSE_VOICE_RULE)
-                && window
-                    .get(prompt + 1)
-                    .is_some_and(|row| crate::harness_state::claude_border(row.trim()))
+                && window.get(prompt + 1).is_some_and(|rule| {
+                    crate::harness_state::claude_border(rule.trim())
+                        && muse_voice_rule(window[prompt - 1], rule.trim())
+                })
         })
     else {
         return LimitStanding::NoBox;
@@ -834,11 +832,53 @@ fn muse_limit_standing(buf: &str) -> LimitStanding {
     }
 }
 
-/// Whether `row`, trimmed, is muse's composer footer: `model · effort · path ·
-/// mode`, four non-empty fields.
+/// Whether `text`, the words after the `◆`, is muse's usage-limit head: the
+/// phrase and then nothing, or ` · ` and the variable tail (`/upgrade (…) …`),
+/// both measured. A word that merely starts with the phrase is not the head.
+fn muse_limit_head(text: &str) -> bool {
+    text.trim_end()
+        .strip_prefix(MUSE_LIMIT_HEAD)
+        .is_some_and(|tail| tail.is_empty() || tail.starts_with(" · "))
+}
+
+/// Whether `row` is muse's rule above the composer: `── Voice input (` and a
+/// hint, then `) `, then `─` out to the SAME width as `closing`, the rule under
+/// the box. Measured at 80, 170 and 217 cells on two seats, in both hint
+/// spellings; a label alone is no rule.
+fn muse_voice_rule(row: &str, closing: &str) -> bool {
+    let row = row.trim_end();
+    let label = row.trim_end_matches('─');
+    label
+        .strip_prefix(MUSE_VOICE_RULE)
+        .is_some_and(|hint| hint.starts_with(" (") && label.ends_with(") "))
+        && row.chars().count() == closing.chars().count()
+}
+
+/// The models the fleet's muse profiles run (`--model`), as the composer footer
+/// names them (a `-contributor` seat has been measured drawing the base id).
+/// Another id is not recognised and refuses.
+const MUSE_MODELS: [&str; 6] = [
+    "muse-spark-1.3",
+    "muse-spark-1.3-contributor",
+    "muse-wonder-1.0",
+    "muse-wonder-1.0-contributor",
+    "muse-wonder-full-1.0",
+    "muse-wonder-full-1.0-contributor",
+];
+
+/// Whether `row`, trimmed, is muse's composer footer as the fleet's seats draw
+/// it: `model · effort · path · mode` with a model of [`MUSE_MODELS`], effort
+/// `max` or `xhigh`, a `~` or `/` path, and the `YOLO` mode every profile sets.
+/// A model, effort or mode outside what was measured or configured refuses.
 fn muse_footer(row: &str) -> bool {
     let fields: Vec<&str> = row.split(" · ").collect();
-    fields.len() == 4 && fields.iter().all(|field| !field.trim().is_empty())
+    let [model, effort, path, mode] = fields.as_slice() else {
+        return false;
+    };
+    MUSE_MODELS.contains(model)
+        && matches!(*effort, "max" | "xhigh")
+        && path.starts_with(['~', '/'])
+        && *mode == "YOLO"
 }
 
 /// Whether `text`, a column-0 row, is the vendor's limit furniture rather than

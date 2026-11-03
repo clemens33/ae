@@ -210,10 +210,10 @@ fn only_the_model_footer_may_sit_below_the_box() {
         assert_eq!(standing(&frame), row_after(row), "{label}");
     }
     // A second footer-shaped row is a second row, named.
-    let two = format!("{PLAIN}  other-model · max · ~/project · YOLO\n");
+    let two = format!("{PLAIN}  muse-spark-1.3 · xhigh · /tmp/p · YOLO\n");
     assert_eq!(
         standing(&two),
-        row_after("other-model · max · ~/project · YOLO")
+        row_after("muse-spark-1.3 · xhigh · /tmp/p · YOLO")
     );
     // The task selector alone names itself: with no task row it is no proof.
     let selector = PLAIN.replace(FOOTER, &format!("main · ↓ to select\n{FOOTER}"));
@@ -259,4 +259,113 @@ fn a_block_pushed_out_of_the_window_reads_as_none() {
     assert_eq!(standing(&three), LimitStanding::NoCell);
     let far = PLAIN.replace(VOICE, &format!("{}{VOICE}", "stray row\n".repeat(20)));
     assert_eq!(standing(&far), LimitStanding::NoCell);
+}
+
+#[test]
+fn the_footer_is_a_fleet_model_at_a_known_effort_over_a_path_in_yolo_mode() {
+    for model in [
+        "muse-spark-1.3",
+        "muse-spark-1.3-contributor",
+        "muse-wonder-1.0",
+        "muse-wonder-1.0-contributor",
+        "muse-wonder-full-1.0",
+        "muse-wonder-full-1.0-contributor",
+    ] {
+        for effort in ["max", "xhigh"] {
+            for path in ["~/project", "/Users/x/ae"] {
+                let row = format!("{model} · {effort} · {path} · YOLO");
+                let frame = PLAIN.replace(FOOTER, &format!("  {row}"));
+                assert_eq!(standing(&frame), LimitStanding::Stands, "{row}");
+            }
+        }
+    }
+    // One field wrong refuses and names the row: an id the fleet does not run
+    // (and a near miss of one), an effort other than max or xhigh, a path with
+    // no root, any other mode.
+    for row in [
+        "muse-spark-1.4 · max · ~/project · YOLO",
+        "muse-spark-1.3-contributor-x · max · ~/project · YOLO",
+        "Muse-Spark-1.3 · max · ~/project · YOLO",
+        "muse-spark-1.3 · high · ~/project · YOLO",
+        "muse-spark-1.3 · ultra · ~/project · YOLO",
+        "muse-spark-1.3 · max · project · YOLO",
+        "muse-spark-1.3 · max ·  · YOLO",
+        "muse-spark-1.3 · max · ~/project · yolo",
+        "muse-spark-1.3 · max · ~/project · PLAN",
+        "◆ Running job · still active · do not stop · 14 seconds",
+    ] {
+        let frame = PLAIN.replace(FOOTER, &format!("  {row}"));
+        assert_eq!(standing(&frame), row_after(row), "{row}");
+    }
+}
+
+#[test]
+fn the_voice_rule_is_a_labelled_rule_as_wide_as_the_closing_rule() {
+    // Both measured hint spellings, at the width of the capture.
+    let (rule, voice) = {
+        let rows: Vec<&str> = PLAIN.lines().collect();
+        (rows[9], rows[7])
+    };
+    assert!(voice.starts_with(VOICE) && rule.starts_with("────"));
+    let width = rule.chars().count();
+    let hinted = |hint: &str| {
+        let label = format!("{VOICE} ({hint}) ");
+        format!("{label}{}", "─".repeat(width - label.chars().count()))
+    };
+    for hint in ["alt(option)+v to start", "⌥ + v to start", "x"] {
+        assert_eq!(
+            standing(&PLAIN.replace(voice, &hinted(hint))),
+            LimitStanding::Stands
+        );
+    }
+    // A label with no rule, a shorter or a longer rule, no hint, no
+    // parenthesis, no space before the rule: not the composer's top rule.
+    for row in [
+        "── Voice input is recording a new request".to_owned(),
+        "── Voice input (alt(option)+v to start)".to_owned(),
+        format!("── Voice input (alt+v) {}", "─".repeat(width - 21)),
+        format!("── Voice input (alt+v) {}", "─".repeat(width - 19)),
+        format!("── Voice input alt+v) {}", "─".repeat(width - 20)),
+        format!("── Voice input() {}", "─".repeat(width - 17)),
+        format!("── Voice input (alt+v){}", "─".repeat(width - 20)),
+        format!("──Voice input (alt+v) {}", "─".repeat(width - 21)),
+    ] {
+        assert_eq!(
+            standing(&PLAIN.replace(voice, &row)),
+            LimitStanding::NoBox,
+            "{row}"
+        );
+    }
+}
+
+#[test]
+fn the_head_is_the_phrase_alone_or_then_a_dot_and_its_tail() {
+    let head = "◆ Usage limit reached";
+    for ok in [
+        head.to_owned(),
+        format!("{head}  "),
+        format!("{head} · /upgrade (https://example.test) for more, or wait"),
+    ] {
+        let frame = WATCHING
+            .replacen(head, &ok, 1)
+            .lines()
+            .filter(|row| !row.starts_with("main ·") && !row.starts_with("└ ◇"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(standing(&frame), LimitStanding::Stands, "{ok:?}");
+    }
+    for bad in [
+        "◆ Usage limit reachedElsewhere and a new turn is active",
+        "◆ Usage limit reached again",
+        "◆ Usage limit reached: a new turn is active",
+        "◆ Usage limit reached· no space",
+        "◆ Usage limit reached ·",
+    ] {
+        let frame = PLAIN.replacen(
+            "◆ Usage limit reached · /upgrade (https://accountscenter.meta.com/muse_code/?ep=xgrade) for increased limits, or wait for usage to reset at 12:11 PM",
+            bad,
+            1,
+        );
+        assert_eq!(standing(&frame), LimitStanding::NoCell, "{bad:?}");
+    }
 }
