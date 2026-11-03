@@ -3461,6 +3461,26 @@ pub(crate) fn read_gate(key: &str) {
     }
 }
 
+/// The refusal every command that needs the state root gives when there is
+/// none: one stderr line, exit 1.
+fn refuse_no_state_root(err: &mut impl Write) -> Result<u8> {
+    writeln!(err, "ae: {NO_STATE_ROOT}")?;
+    Ok(EXIT_UNAVAILABLE)
+}
+
+/// Run `entry` over the state root, read here and only here; refuse when
+/// there is none. The root is read before `entry` runs, so whatever `entry`
+/// reads comes after it.
+fn with_state_root<E: Write, X: Into<Error>>(
+    err: &mut E,
+    entry: impl FnOnce(&std::path::Path, &mut E) -> std::result::Result<u8, X>,
+) -> Result<u8> {
+    match state_root() {
+        Some(root) => entry(&root, err).map_err(Into::into),
+        None => refuse_no_state_root(err),
+    }
+}
+
 /// What a `MissingOperand` refusal says the command needs.
 ///
 /// Every internal entry but two is per-SESSION and takes that session's meta
@@ -3496,8 +3516,7 @@ fn refuse_unwired_orchestrator(tail: &[String], err: &mut impl Write) -> Result<
         )?;
         return Ok(entry::EXIT_USAGE);
     }
-    writeln!(err, "ae: {NO_STATE_ROOT}")?;
-    Ok(EXIT_UNAVAILABLE)
+    refuse_no_state_root(err)
 }
 
 /// Run the CLI against `args` over `world` — the injected session source.
@@ -3679,35 +3698,25 @@ pub fn run_with(
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin)?;
             identity::meta_init(dir, tail, &stdin, out, err)?
         }
-        cli::Request::Relaunch { dir, tail } => {
-            if let Some(root) = state_root() {
-                if let Some(viewer) = writing_viewer(dir, err)? {
-                    seat_relaunch::run(
-                        &root,
-                        dir,
-                        tail,
-                        &viewer.display,
-                        &own_session(dir),
-                        time::Timestamp::now(),
-                        out,
-                        err,
-                    )?
-                } else {
-                    state::EXIT_FAILED
-                }
+        cli::Request::Relaunch { dir, tail } => with_state_root(err, |root, err| -> Result<u8> {
+            if let Some(viewer) = writing_viewer(dir, err)? {
+                Ok(seat_relaunch::run(
+                    root,
+                    dir,
+                    tail,
+                    &viewer.display,
+                    &own_session(dir),
+                    time::Timestamp::now(),
+                    out,
+                    err,
+                )?)
             } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
+                Ok(state::EXIT_FAILED)
             }
-        }
-        cli::Request::Reseat { tail } => {
-            if let Some(root) = state_root() {
-                reseat::run(&root, world, tail, time::Timestamp::now(), out, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
-        }
+        })?,
+        cli::Request::Reseat { tail } => with_state_root(err, |root, err| {
+            reseat::run(root, world, tail, time::Timestamp::now(), out, err)
+        })?,
         cli::Request::Spawn { dir, tail } => {
             if let Some(viewer) = writing_viewer(dir, err)? {
                 if tracked::refuse_role_entry(dir, err)? {
@@ -3727,84 +3736,39 @@ pub fn run_with(
             }
         }
         // The three whole lifecycle operations.
-        cli::Request::End { tail } => {
-            if let Some(root) = state_root() {
-                lifecycle::end::run(&root, tail, doors::calling_pane_id().as_deref(), out, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
-        }
+        cli::Request::End { tail } => with_state_root(err, |root, err| {
+            lifecycle::end::run(root, tail, doors::calling_pane_id().as_deref(), out, err)
+        })?,
         cli::Request::Stop { tail } => {
-            if let Some(root) = state_root() {
-                lifecycle::run_stop(&root, tail, out, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
+            with_state_root(err, |root, err| lifecycle::run_stop(root, tail, out, err))?
         }
         cli::Request::SessionMenu { tail } => {
-            if let Some(root) = state_root() {
-                session_menu::run(&root, tail, out, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
+            with_state_root(err, |root, err| session_menu::run(root, tail, out, err))?
         }
         cli::Request::Reader { tail } => reader::run(tail, out, err)?,
         cli::Request::ConsoleToggle { tail } => console::toggle::run(tail, out, err)?,
         cli::Request::OrchestratorJump { tail } => jump::run(tail, err)?,
-        cli::Request::Compact { tail } => {
-            if let Some(root) = state_root() {
-                lifecycle::compaction::run(&root, tail, out, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
-        }
+        cli::Request::Compact { tail } => with_state_root(err, |root, err| {
+            lifecycle::compaction::run(root, tail, out, err)
+        })?,
         // `doctor` and `rename` take no session directory, so like `end`/`stop`
         // they derive the state root themselves and refuse the same way when
         // there is none.
         cli::Request::Doctor { tail } => {
-            if let Some(root) = state_root() {
-                doctor::run(&root, tail, out, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
+            with_state_root(err, |root, err| doctor::run(root, tail, out, err))?
         }
-        cli::Request::Init { tail } => {
-            if let Some(root) = state_root() {
-                let path = doors::config_file(shape::current(), &root);
-                init::run(&path, tail, out, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
-        }
+        cli::Request::Init { tail } => with_state_root(err, |root, err| {
+            let path = doors::config_file(shape::current(), root);
+            init::run(&path, tail, out, err)
+        })?,
         cli::Request::Rename { tail } => {
-            if let Some(root) = state_root() {
-                rename::run(&root, tail, out, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
+            with_state_root(err, |root, err| rename::run(root, tail, out, err))?
         }
-        cli::Request::AutoReseat { tail } => {
-            if let Some(root) = state_root() {
-                autoreseat::leg::run(&root, tail, time::Timestamp::now(), err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
-        }
+        cli::Request::AutoReseat { tail } => with_state_root(err, |root, err| {
+            autoreseat::leg::run(root, tail, time::Timestamp::now(), err)
+        })?,
         cli::Request::AutoEffort { tail } => {
-            if let Some(root) = state_root() {
-                effort::leg::run(&root, tail, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
+            with_state_root(err, |root, err| effort::leg::run(root, tail, err))?
         }
         cli::Request::CheckDeps { tail } => doctor::check_deps(tail, err)?,
         cli::Request::ShimsRender { dir, tail } => doctor::shims_render(dir, tail, err)?,
@@ -3897,22 +3861,12 @@ pub fn run_with(
             compact::cancel_step(dir, reference, err)?
         }
         // The two daemons' lifecycle.
-        cli::Request::Watchdog { tail } => {
-            if let Some(root) = state_root() {
-                watchdog_lifecycle::run(&root, tail, out, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
-        }
-        cli::Request::Telegram { tail } => {
-            if let Some(root) = state_root() {
-                telegram_lifecycle::run(&root, tail, out, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
-        }
+        cli::Request::Watchdog { tail } => with_state_root(err, |root, err| {
+            watchdog_lifecycle::run(root, tail, out, err)
+        })?,
+        cli::Request::Telegram { tail } => with_state_root(err, |root, err| {
+            telegram_lifecycle::run(root, tail, out, err)
+        })?,
         cli::Request::WatchdogRun { dir, knobs } => watchdog_daemon::run(dir, *knobs, out, err)?,
         cli::Request::TelegramRun { paths, knobs } => telegram::bridge::run(paths, *knobs, err)?,
         cli::Request::NetProbe { host, port } => netprobe::run(host, *port, out, err)?,
