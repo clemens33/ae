@@ -3461,6 +3461,45 @@ pub(crate) fn read_gate(key: &str) {
     }
 }
 
+/// What a `MissingOperand` refusal says the command needs.
+///
+/// Every internal entry but two is per-SESSION and takes that session's meta
+/// directory; `_telegram-run` takes an ae home, and `_net-probe` is not a
+/// directory at all: the one entry that takes a name to resolve.
+fn missing_operand(command: &str) -> &'static str {
+    if command == cli::TELEGRAM_RUN {
+        "an ae home directory"
+    } else if command == cli::NET_PROBE {
+        "a host to resolve"
+    } else {
+        "a session meta directory"
+    }
+}
+
+/// The bare `orchestrator` word, reached here only by a direct `run_with`
+/// caller (a parsed `--popup` is answered before `run_dispatch`): a usage
+/// error, the one-line "no preamble" refusal, or the missing state root.
+fn refuse_unwired_orchestrator(tail: &[String], err: &mut impl Write) -> Result<u8> {
+    let args = match orchestrator::parse(tail) {
+        Ok(args) => args,
+        Err(usage) => {
+            write!(err, "{}", usage.render())?;
+            return Ok(usage.code());
+        }
+    };
+    if !(args.popup || args.settings || args.quota_dialog) {
+        // The bare word reaches the core only WITHOUT a preamble: the seat is
+        // a launch, and a launch needs the ae command.
+        writeln!(
+            err,
+            "ae orchestrator: the seat launches through the ae command"
+        )?;
+        return Ok(entry::EXIT_USAGE);
+    }
+    writeln!(err, "ae: {NO_STATE_ROOT}")?;
+    Ok(EXIT_UNAVAILABLE)
+}
+
 /// Run the CLI against `args` over `world` — the injected session source.
 ///
 /// # Errors
@@ -3509,18 +3548,7 @@ pub fn run_with(
             request.exit_code().unwrap_or(2)
         }
         cli::Request::MissingOperand(command) => {
-            // Every internal entry but one is per-SESSION and takes that
-            // session's meta directory.
-            let operand = if *command == cli::TELEGRAM_RUN {
-                "an ae home directory"
-            } else if *command == cli::NET_PROBE {
-                // Not a directory at all: the one entry here that takes a name
-                // to resolve.
-                "a host to resolve"
-            } else {
-                "a session meta directory"
-            };
-            writeln!(err, "ae: {command} needs {operand}")?;
+            writeln!(err, "ae: {command} needs {}", missing_operand(command))?;
             request.exit_code().unwrap_or(2)
         }
         // The refusal is a DIAGNOSTIC and never
@@ -3951,25 +3979,7 @@ pub fn run_with(
         cli::Request::App { tail } => app::run(tail, out, err)?,
         // A parsed `--popup` is answered before `run_dispatch` reaches this
         // generic arm. Only a direct `run_with` caller can bring one here.
-        cli::Request::Orchestrator { tail } => {
-            if let Err(usage) = orchestrator::parse(tail) {
-                write!(err, "{}", usage.render())?;
-                usage.code()
-            } else if !orchestrator::parse(tail)
-                .is_ok_and(|args| args.popup || args.settings || args.quota_dialog)
-            {
-                // The bare word reaches the core only WITHOUT a preamble: the
-                // seat is a launch, and a launch needs the ae command.
-                writeln!(
-                    err,
-                    "ae orchestrator: the seat launches through the ae command"
-                )?;
-                entry::EXIT_USAGE
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
-        }
+        cli::Request::Orchestrator { tail } => refuse_unwired_orchestrator(tail, err)?,
         cli::Request::LaunchCandidate(name) => {
             writeln!(err, "ae: {NO_LAUNCHER}: {name}")?;
             EXIT_UNAVAILABLE
