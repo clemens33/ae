@@ -188,6 +188,23 @@ fn recovery_location_matrix_preserves_occupants_and_uses_new_side_when_both_hold
 }
 
 #[test]
+fn recovery_lost_uuid_with_regular_file_is_replaced_identity_not_gone() {
+    let root = Root::new("lost-file");
+    let value = intent();
+    std::fs::write(root.0.join("sessions/sold"), b"replacement file\n").unwrap();
+    refused(
+        &root,
+        &value,
+        "sold",
+        "snew",
+        &format!(
+            "Error: neither 'sold' nor 'snew' holds UUID '{}' anymore — refusing over replaced identity (manual repair only). Nothing was renamed.",
+            value.uuid
+        ),
+    );
+}
+
+#[test]
 fn recovery_server_change_precedes_unknown_liveness() {
     let mut value = intent();
     let root = Root::new("server-change");
@@ -334,6 +351,29 @@ fn recovery_tmux_destination_precedes_managed_address_and_payload_checks() {
             fixture.root.0.join("worktrees").display()
         ),
     );
+}
+
+#[test]
+fn recovery_each_managed_address_must_match_before_root_and_payload_checks() {
+    let fixture = PrivateServer::new("one-managed-address");
+    let mut value = fixture.prepared();
+    value.mode = WorkMode::Full;
+    for old_moved in [false, true] {
+        value.old_work = fixture.root.0.join("worktrees/sold").display().to_string();
+        value.new_work = fixture.root.0.join("worktrees/snew").display().to_string();
+        if old_moved {
+            value.old_work.push_str("-moved");
+        } else {
+            value.new_work.push_str("-moved");
+        }
+        refused(
+            &fixture.root,
+            &value,
+            "sold",
+            "snew",
+            "Error: the managed addresses for this transaction moved while pending — refusing a stale plan. Nothing was renamed.",
+        );
+    }
 }
 
 #[test]
