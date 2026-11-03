@@ -388,6 +388,24 @@ fn render_clients_line(output: &mut String, line: &str, found: &[Discovery]) {
     push_line(output, line);
 }
 
+fn render_profiles_line(
+    output: &mut String,
+    line: &str,
+    found: &[Discovery],
+    choices: &Choices,
+) {
+    if let Some(name) = catalog_profile_line(line) {
+        if profile(found, name).is_some() {
+            push_line(output, line);
+        }
+        return;
+    }
+    push_line(output, line);
+    if line == "[profiles]" {
+        push_picks(output, choices);
+    }
+}
+
 fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -> String {
     let mut output = render_header(now);
     let mut section = "";
@@ -399,13 +417,8 @@ fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -
             render_clients_line(&mut output, line, found);
             continue;
         }
-        if section == "[profiles]"
-            && let Some(name) = catalog_profile_line(line)
-        {
-            if profile(found, name).is_some() {
-                output.push_str(line);
-                output.push('\n');
-            }
+        if section == "[profiles]" {
+            render_profiles_line(&mut output, line, found, choices);
             continue;
         }
         if section == "[roster]" {
