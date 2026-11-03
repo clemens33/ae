@@ -766,6 +766,61 @@ impl<'a> Mapper<'a> {
         }
         self.row.add(&clean(text), marks);
     }
+    /// Text kept as written: one row per source line, a bare newline a one-cell row.
+    fn literal(&mut self, text: &str, marks: Marks) {
+        for line in text.split_inclusive('\n') {
+            self.add(
+                if line == "\n" {
+                    " "
+                } else {
+                    line.trim_end_matches('\n')
+                },
+                marks,
+            );
+            if line.ends_with('\n') {
+                self.flush();
+            }
+        }
+    }
+    /// A span opens: the marks it found come back at its end, whichever kind ends it.
+    fn save(&mut self) {
+        self.saved.push(self.marks);
+    }
+    fn restore(&mut self) {
+        self.marks = self.saved.pop().unwrap_or_default();
+    }
+    fn open_link(&mut self, link_type: LinkType, dest_url: &str) {
+        self.save();
+        self.marks.link = true;
+        let auto = matches!(link_type, LinkType::Autolink | LinkType::Email);
+        self.links.push((clean(dest_url), auto, false));
+    }
+    fn open_image(&mut self, dest_url: &str) {
+        self.save();
+        self.add("[image: ", self.marks);
+        self.links.push((clean(dest_url), false, true));
+    }
+    /// Ends a link or an image alike: the popped entry, not the end tag, says which it was.
+    fn close_link(&mut self) {
+        if let Some((target, auto, image)) = self.links.pop()
+            && !auto
+        {
+            self.add(
+                &format!("{}{target})", if image { "](" } else { " (" }),
+                Marks {
+                    target: true,
+                    ..self.marks
+                },
+            );
+        }
+        self.restore();
+    }
+    fn rule(&mut self, range: &Range<usize>) {
+        self.block(true);
+        self.flush();
+        self.out.items.push(Item::Rule(self.doc.line(range.start)));
+        self.gap();
+    }
     #[allow(
         clippy::too_many_lines,
         reason = "one exhaustive event dispatcher keeps paired state transitions visible"
@@ -843,35 +898,24 @@ impl<'a> Mapper<'a> {
                             self.code = true;
                             self.marks.code_block = true;
                         }
-                        Tag::Emphasis
-                        | Tag::Strong
-                        | Tag::Strikethrough
-                        | Tag::Link { .. }
-                        | Tag::Image { .. } => {
-                            self.saved.push(self.marks);
-                            match tag {
-                                Tag::Emphasis => self.marks.emphasis = true,
-                                Tag::Strong => self.marks.strong = true,
-                                Tag::Strikethrough => self.marks.strike = true,
-                                Tag::Link {
-                                    link_type,
-                                    dest_url,
-                                    ..
-                                } => {
-                                    self.marks.link = true;
-                                    self.links.push((
-                                        clean(dest_url),
-                                        matches!(link_type, LinkType::Autolink | LinkType::Email),
-                                        false,
-                                    ));
-                                }
-                                Tag::Image { dest_url, .. } => {
-                                    self.add("[image: ", self.marks);
-                                    self.links.push((clean(dest_url), false, true));
-                                }
-                                _ => {}
-                            }
+                        Tag::Emphasis => {
+                            self.save();
+                            self.marks.emphasis = true;
                         }
+                        Tag::Strong => {
+                            self.save();
+                            self.marks.strong = true;
+                        }
+                        Tag::Strikethrough => {
+                            self.save();
+                            self.marks.strike = true;
+                        }
+                        Tag::Link {
+                            link_type,
+                            dest_url,
+                            ..
+                        } => self.open_link(*link_type, dest_url),
+                        Tag::Image { dest_url, .. } => self.open_image(dest_url),
                         _ => {}
                     }
                 }
@@ -906,23 +950,8 @@ impl<'a> Mapper<'a> {
                         self.marks.quote = self.quotes > 0;
                         self.indent();
                     }
-                    TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
-                        self.marks = self.saved.pop().unwrap_or_default();
-                    }
-                    TagEnd::Link | TagEnd::Image => {
-                        if let Some((target, auto, image)) = self.links.pop()
-                            && !auto
-                        {
-                            self.add(
-                                &format!("{}{target})", if image { "](" } else { " (" }),
-                                Marks {
-                                    target: true,
-                                    ..self.marks
-                                },
-                            );
-                        }
-                        self.marks = self.saved.pop().unwrap_or_default();
-                    }
+                    TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => self.restore(),
+                    TagEnd::Link | TagEnd::Image => self.close_link(),
                     TagEnd::TableCell => {
                         if let Some(row) = self.out.table_mut().and_then(|t| t.rows.last_mut()) {
                             row.push(std::mem::take(&mut self.row));
@@ -934,21 +963,7 @@ impl<'a> Mapper<'a> {
                     }
                     _ => {}
                 },
-                Event::Text(text) if self.code => {
-                    for text in text.split_inclusive('\n') {
-                        self.add(
-                            if text == "\n" {
-                                " "
-                            } else {
-                                text.trim_end_matches('\n')
-                            },
-                            self.marks,
-                        );
-                        if text.ends_with('\n') {
-                            self.flush();
-                        }
-                    }
-                }
+                Event::Text(text) if self.code => self.literal(text, self.marks),
                 Event::Text(text) => self.add(text, self.marks),
                 Event::Code(text) => self.add(
                     text,
@@ -957,33 +972,17 @@ impl<'a> Mapper<'a> {
                         ..self.marks
                     },
                 ),
-                Event::Html(text) | Event::InlineHtml(text) => {
-                    for text in text.split_inclusive('\n') {
-                        self.add(
-                            if text == "\n" {
-                                " "
-                            } else {
-                                text.trim_end_matches('\n')
-                            },
-                            Marks {
-                                html: true,
-                                ..self.marks
-                            },
-                        );
-                        if text.ends_with('\n') {
-                            self.flush();
-                        }
-                    }
-                }
+                Event::Html(text) | Event::InlineHtml(text) => self.literal(
+                    text,
+                    Marks {
+                        html: true,
+                        ..self.marks
+                    },
+                ),
                 Event::SoftBreak if self.opts.soft_break_row => self.flush(),
                 Event::SoftBreak => self.add(" ", self.marks),
                 Event::HardBreak => self.flush(),
-                Event::Rule => {
-                    self.block(true);
-                    self.flush();
-                    self.out.items.push(Item::Rule(self.doc.line(range.start)));
-                    self.gap();
-                }
+                Event::Rule => self.rule(range),
                 _ => {}
             }
         }
