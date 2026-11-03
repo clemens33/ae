@@ -3491,10 +3491,6 @@ fn locate(old: Occupancy, new: Occupancy) -> Result<Located, Unlocated> {
 /// registration against the recorded intent (including a move completed
 /// before its phase update), then converge forward. Never a new ordinary
 /// rename over partial state, never an overwrite of a replacement occupant.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered re-proof checklist mirroring preflight: the locate/re-proof/complete sequence must read as a single order"
-)]
 fn recover(
     root: &Path,
     old: &str,
@@ -3505,274 +3501,19 @@ fn recover(
     err: &mut impl Write,
 ) -> crate::Result<u8> {
     let mut intent = intent.clone();
-    if let Err(refusal) = correlate(&intent, old, new) {
-        writeln!(err, "{}", refusal.0)?;
-        return Ok(EXIT_FAILED);
-    }
-    let sessions = crate::lifecycle::sessions_dir(root);
-    let old_dir = sessions.join(&intent.old);
-    let new_dir = sessions.join(&intent.new);
-    // A live session over partial state stops recovery cold: stop it first,
-    // then retry. Locks alone cannot serialize a running harness.
-    for name in [&intent.old, &intent.new] {
-        let dir = sessions.join(name);
-        if let Some(server) = crate::session_launch::recorded_server_resolved(&dir)
-            && crate::lifecycle::live_id(&server, name).is_some()
-        {
-            writeln!(
-                err,
-                "Error: session '{name}' is live while rename '{}' → '{}' is pending at phase '{}' — stop it first, then retry '{}'. Nothing was renamed.",
-                intent.old,
-                intent.new,
-                intent.phase,
-                retry_command(&intent)
-            )?;
+    match reprove(root, old, new, &mut intent) {
+        Err(refusal) => {
+            writeln!(err, "{}", refusal.0)?;
             return Ok(EXIT_FAILED);
         }
-    }
-    // Locate the UUID: exactly one side may hold it. A replacement occupant
-    // (different UUID) is never overwritten; a missing both is manual repair.
-    let old_holds = crate::lifecycle::dir_exists(&old_dir)
-        && crate::meta::session_id_in(&old_dir) == intent.uuid;
-    let new_holds = crate::lifecycle::dir_exists(&new_dir)
-        && crate::meta::session_id_in(&new_dir) == intent.uuid;
-    let old_occupied = crate::lifecycle::path_exists(&old_dir) && !old_holds;
-    let new_occupied = crate::lifecycle::path_exists(&new_dir) && !new_holds;
-    let located = match locate(
-        Occupancy::of(old_holds, old_occupied),
-        Occupancy::of(new_holds, new_occupied),
-    ) {
-        Ok(side) => side,
-        Err(Unlocated::NewOccupied) => {
-            writeln!(
-                err,
-                "Error: '{}' is now occupied by another session — refusing to overwrite a replacement path/UUID. Retry '{}' after freeing it.",
-                new_dir.display(),
-                retry_command(&intent)
-            )?;
-            return Ok(EXIT_FAILED);
+        // A completed record converges to its durable result without
+        // duplicating it — and never parks: retrying a completion is a
+        // success, not a cut.
+        Ok(Reproved::Completed) => {
+            print_stopped_success(&intent, false, out, err)?;
+            return Ok(0);
         }
-        Err(Unlocated::Lost) => {
-            // Read only on this arm, as before: a remnant directory on either
-            // side names replaced identity rather than a vanished one.
-            if old_occupied
-                || crate::lifecycle::dir_exists(&old_dir)
-                || crate::lifecycle::dir_exists(&new_dir)
-            {
-                writeln!(
-                    err,
-                    "Error: neither '{}' nor '{}' holds UUID '{}' anymore — refusing over replaced identity (manual repair only). Nothing was renamed.",
-                    intent.old, intent.new, intent.uuid
-                )?;
-            } else {
-                writeln!(
-                    err,
-                    "Error: both '{}' and '{}' are gone for UUID '{}' — refusing (manual repair only). Nothing was renamed.",
-                    intent.old, intent.new, intent.uuid
-                )?;
-            }
-            return Ok(EXIT_FAILED);
-        }
-        Err(Unlocated::OldOccupied) => {
-            writeln!(
-                err,
-                "Error: '{}' is now occupied by another session — refusing to touch a replacement occupant. Retry '{}' after freeing it.",
-                old_dir.display(),
-                retry_command(&intent)
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-    };
-    // Re-proof: the recorded server pair and the managed addresses must read
-    // back as recorded. A root or registration that moved under the handoff
-    // refuses rather than converging the wrong transaction.
-    let current_dir = match located {
-        Located::New => &new_dir,
-        Located::Old => &old_dir,
-    };
-    let Some(server) = crate::session_launch::recorded_server_resolved(current_dir) else {
-        writeln!(
-            err,
-            "Error: the recorded server for this transaction is now ambiguous — refusing a stale plan. Nothing was renamed."
-        )?;
-        return Ok(EXIT_FAILED);
-    };
-    let (kind, value) = server_pair(&server);
-    if kind != intent.server_kind || value != intent.server_value {
-        writeln!(
-            err,
-            "Error: the recorded server for this transaction changed while pending (recorded '{}/{}') — refusing a stale plan. Nothing was renamed.",
-            intent.server_kind, intent.server_value
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    // Liveness and destination proofs are re-taken at point of use, never
-    // carried from preflight across the durable cut: a revived session, an
-    // occupied new name, or an unreachable server refuses the retry UNLESS the
-    // boot-time proof positively places the session before the host boot —
-    // the same gate the fresh preflight crosses.
-    match crate::transport::verify_session_absent(&server, &intent.old) {
-        crate::tmux::StopProbe::Absent => {}
-        crate::tmux::StopProbe::Present => {
-            writeln!(
-                err,
-                "Error: session '{}' answered live on its recorded server while rename '{}' → '{}' is pending — stop it first, then retry '{}'. Nothing was renamed.",
-                intent.old,
-                intent.old,
-                intent.new,
-                retry_command(&intent)
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        crate::tmux::StopProbe::Unknown => {
-            if !crate::lifecycle::end::boot_proved_stopped(current_dir, &server, &intent.old) {
-                writeln!(
-                    err,
-                    "Error: cannot prove session '{}' stopped (its recorded tmux server is unreachable) — refusing a retry over unknown liveness. Nothing was renamed.",
-                    intent.old
-                )?;
-                return Ok(EXIT_FAILED);
-            }
-        }
-    }
-    if crate::transport::session_exists(&server, &intent.new) {
-        writeln!(
-            err,
-            "Error: session '{}' already exists — refusing to converge over an occupied destination. Nothing was renamed.",
-            intent.new
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    if intent.mode != WorkMode::Local {
-        let managed_old = crate::lifecycle::worktrees_dir(root).join(&intent.old);
-        let managed_new = crate::lifecycle::worktrees_dir(root).join(&intent.new);
-        if Path::new(&intent.old_work) != managed_old || Path::new(&intent.new_work) != managed_new
-        {
-            writeln!(
-                err,
-                "Error: the managed addresses for this transaction moved while pending — refusing a stale plan. Nothing was renamed."
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        // Teardown-grade root authority, re-taken: a swapped worktrees root
-        // under a pending transaction refuses rather than moving through a
-        // link.
-        let worktrees = crate::lifecycle::worktrees_dir(root);
-        if is_symlink(&worktrees) || !crate::lifecycle::dir_exists(&worktrees) {
-            writeln!(
-                err,
-                "Error: the configured worktrees root '{}' is not a real directory — refusing a retry over moved ground. Nothing was renamed.",
-                worktrees.display()
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        // Sharing and registration re-proofs: another session may have
-        // claimed the path, or the worktree may have been locked, repointed,
-        // or unregistered while the transaction was parked.
-        let sessions = crate::lifecycle::sessions_dir(root);
-        if let Err(why) = sharing_check(
-            root,
-            &sessions,
-            &intent.old,
-            &intent.new,
-            &intent.old_work,
-            Path::new(&intent.new_work),
-        ) {
-            writeln!(err, "Error: {why}. Nothing was renamed.")?;
-            return Ok(EXIT_FAILED);
-        }
-        if intent.mode == WorkMode::Git
-            && let Err(why) = git_recovery_check(root, &intent)
-        {
-            writeln!(err, "Error: {why}. Nothing was renamed.")?;
-            return Ok(EXIT_FAILED);
-        }
-    }
-    // Re-prove the immutable payload facts against the located meta. Mode,
-    // origin and UUID never change; session/work rows legitimately change
-    // across the transaction, so each address admits exactly its coherent
-    // before/after shapes. A forged mode/origin/work intent over a
-    // mismatched session refuses before either path moves.
-    if let Err(why) = bind_payload_to_meta(current_dir, &intent, new_holds) {
-        writeln!(err, "Error: {why}. Nothing was renamed.")?;
-        return Ok(EXIT_FAILED);
-    }
-    // Re-probe explicit homes while the state still sits at the old address,
-    // where the candidate paths are still meaningful: a transcript layout
-    // that changed under the handoff refuses like a fresh one. Past the
-    // state move the decision is irrevocable and the check is meaningless.
-    if !new_holds {
-        let home_bytes = crate::meta::read_bytes(current_dir).unwrap_or_default();
-        let home_meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&home_bytes));
-        if let Err(why) =
-            explicit_home_check(home_meta.roster(), &intent.old_work, &intent.new_work)
-        {
-            writeln!(err, "Error: {why}. Nothing was renamed.")?;
-            return Ok(EXIT_FAILED);
-        }
-    }
-    // Re-prove the recorded phase's cumulative facts before using it as a
-    // skip boundary: a carrier claiming work the filesystem never did
-    // normalizes to the highest proven phase (recorded forward) instead of
-    // skipping into success; a record lagging verified facts catches up.
-    let proven = proven_phase(root, &intent);
-    if phase_ord(&proven) != phase_ord(&intent.phase) {
-        intent.phase = proven;
-        if let Err(why) = publish_intent(root, &intent) {
-            writeln!(
-                err,
-                "Error: the transaction phase corrected but its record failed ({why}) — retry '{}'. Nothing was renamed.",
-                retry_command(&intent)
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-    }
-    // A completed record converges to its durable result without duplicating
-    // it — and never parks: retrying a completion is a success, not a cut.
-    if intent.phase == PHASE_COMPLETE {
-        if !new_holds {
-            writeln!(
-                err,
-                "Error: the transaction completed for '{}' → '{}' but '{}' no longer holds it — refusing over drifted completion (manual repair only). Nothing was renamed.",
-                intent.old, intent.new, intent.new
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        if let Err(why) = verify_completion(root, &intent) {
-            writeln!(
-                err,
-                "Error: the transaction completed for '{}' → '{}' but {why} — refusing over drifted completion (manual repair only). Nothing was renamed.",
-                intent.old, intent.new
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        print_stopped_success(&intent, false, out, err)?;
-        return Ok(0);
-    }
-    // Pending requests that arrived mid-transaction strand the same way.
-    let state_name = current_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-    let names = [intent.old.as_str(), intent.new.as_str()];
-    match pending_blockers(root, &names, current_dir, state_name) {
-        Ok(blockers) if !blockers.is_empty() => {
-            writeln!(
-                err,
-                "Error: {} pending request(s) arrived while rename '{}' → '{}' was pending ({}) — close them first (reply from the target seat, or retire the holding seat), then retry '{}'. Nothing was renamed.",
-                blockers.len(),
-                intent.old,
-                intent.new,
-                blockers.join(", "),
-                retry_command(&intent)
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        Ok(_) => {}
-        Err(why) => {
-            writeln!(err, "Error: {why}. Nothing was renamed.")?;
-            return Ok(EXIT_FAILED);
-        }
+        Ok(Reproved::Pending) => {}
     }
     match complete_transaction(root, &mut intent, crash, err) {
         Ok(()) => {
@@ -3785,6 +3526,289 @@ fn recover(
         }
         Err(TxnError::Crash(code)) => Ok(code),
     }
+}
+
+/// Where the re-proof checklist leaves a transaction that passed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reproved {
+    /// The record is complete and still reads whole.
+    Completed,
+    /// The remaining phases are owed.
+    Pending,
+}
+
+/// The one ordered re-proof checklist, mirroring preflight: locate, re-prove,
+/// then decide what completing owes. Each step proves its facts or returns
+/// the one refusal line; every read, probe and the one phase write happen in
+/// this order and nowhere else, and nothing is written to the streams here.
+fn reprove(root: &Path, old: &str, new: &str, intent: &mut Intent) -> Result<Reproved, Refusal> {
+    correlate(intent, old, new)?;
+    let sessions = crate::lifecycle::sessions_dir(root);
+    refuse_live_pair(&sessions, intent)?;
+    let (located, current_dir) = locate_uuid(&sessions, intent)?;
+    let server = reprove_server(&current_dir, intent)?;
+    reprove_stopped(&current_dir, &server, intent)?;
+    if intent.mode != WorkMode::Local {
+        reprove_managed(root, intent)?;
+    }
+    // Re-prove the immutable payload facts against the located meta. Mode,
+    // origin and UUID never change; session/work rows legitimately change
+    // across the transaction, so each address admits exactly its coherent
+    // before/after shapes. A forged mode/origin/work intent over a
+    // mismatched session refuses before either path moves.
+    bind_payload_to_meta(&current_dir, intent, located == Located::New).map_err(refused)?;
+    // Past the state move the decision is irrevocable and the home check is
+    // meaningless.
+    if located == Located::Old {
+        reprove_homes(&current_dir, intent)?;
+    }
+    normalize_phase(root, intent)?;
+    if intent.phase == PHASE_COMPLETE {
+        reprove_completion(root, intent, located)?;
+        return Ok(Reproved::Completed);
+    }
+    refuse_blockers(root, intent, &current_dir)?;
+    Ok(Reproved::Pending)
+}
+
+/// A checked failure's reason as its refusal line.
+fn refused(mut why: String) -> Refusal {
+    why.insert_str(0, "Error: ");
+    why.push_str(". Nothing was renamed.");
+    Refusal(why)
+}
+
+/// A live session over partial state stops recovery cold: stop it first,
+/// then retry. Locks alone cannot serialize a running harness.
+fn refuse_live_pair(sessions: &Path, intent: &Intent) -> Result<(), Refusal> {
+    for name in [&intent.old, &intent.new] {
+        let dir = sessions.join(name);
+        if let Some(server) = crate::session_launch::recorded_server_resolved(&dir)
+            && crate::lifecycle::live_id(&server, name).is_some()
+        {
+            return Err(Refusal(format!(
+                "Error: session '{name}' is live while rename '{}' → '{}' is pending at phase '{}' — stop it first, then retry '{}'. Nothing was renamed.",
+                intent.old,
+                intent.new,
+                intent.phase,
+                retry_command(intent)
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Locate the UUID: exactly one side may hold it. A replacement occupant
+/// (different UUID) is never overwritten; a missing both is manual repair.
+/// Returns the side and its state directory.
+fn locate_uuid(sessions: &Path, intent: &Intent) -> Result<(Located, PathBuf), Refusal> {
+    let old_dir = sessions.join(&intent.old);
+    let new_dir = sessions.join(&intent.new);
+    let old_holds = crate::lifecycle::dir_exists(&old_dir)
+        && crate::meta::session_id_in(&old_dir) == intent.uuid;
+    let new_holds = crate::lifecycle::dir_exists(&new_dir)
+        && crate::meta::session_id_in(&new_dir) == intent.uuid;
+    let old_occupied = crate::lifecycle::path_exists(&old_dir) && !old_holds;
+    let new_occupied = crate::lifecycle::path_exists(&new_dir) && !new_holds;
+    match locate(
+        Occupancy::of(old_holds, old_occupied),
+        Occupancy::of(new_holds, new_occupied),
+    ) {
+        Ok(Located::New) => Ok((Located::New, new_dir)),
+        Ok(Located::Old) => Ok((Located::Old, old_dir)),
+        Err(Unlocated::NewOccupied) => Err(Refusal(format!(
+            "Error: '{}' is now occupied by another session — refusing to overwrite a replacement path/UUID. Retry '{}' after freeing it.",
+            new_dir.display(),
+            retry_command(intent)
+        ))),
+        // Read only on this arm: a remnant directory on either side names
+        // replaced identity rather than a vanished one.
+        Err(Unlocated::Lost) => Err(Refusal(
+            if old_occupied
+                || crate::lifecycle::dir_exists(&old_dir)
+                || crate::lifecycle::dir_exists(&new_dir)
+            {
+                format!(
+                    "Error: neither '{}' nor '{}' holds UUID '{}' anymore — refusing over replaced identity (manual repair only). Nothing was renamed.",
+                    intent.old, intent.new, intent.uuid
+                )
+            } else {
+                format!(
+                    "Error: both '{}' and '{}' are gone for UUID '{}' — refusing (manual repair only). Nothing was renamed.",
+                    intent.old, intent.new, intent.uuid
+                )
+            },
+        )),
+        Err(Unlocated::OldOccupied) => Err(Refusal(format!(
+            "Error: '{}' is now occupied by another session — refusing to touch a replacement occupant. Retry '{}' after freeing it.",
+            old_dir.display(),
+            retry_command(intent)
+        ))),
+    }
+}
+
+/// Re-proof: the recorded server pair must read back as recorded. A
+/// registration that moved under the handoff refuses rather than converging
+/// the wrong transaction.
+fn reprove_server(current_dir: &Path, intent: &Intent) -> Result<ServerId, Refusal> {
+    let Some(server) = crate::session_launch::recorded_server_resolved(current_dir) else {
+        return Err(Refusal(
+            "Error: the recorded server for this transaction is now ambiguous — refusing a stale plan. Nothing was renamed."
+                .to_owned(),
+        ));
+    };
+    let (kind, value) = server_pair(&server);
+    if kind != intent.server_kind || value != intent.server_value {
+        return Err(Refusal(format!(
+            "Error: the recorded server for this transaction changed while pending (recorded '{}/{}') — refusing a stale plan. Nothing was renamed.",
+            intent.server_kind, intent.server_value
+        )));
+    }
+    Ok(server)
+}
+
+/// Liveness and destination proofs are re-taken at point of use, never
+/// carried from preflight across the durable cut: a revived session, an
+/// occupied new name, or an unreachable server refuses the retry UNLESS the
+/// boot-time proof positively places the session before the host boot —
+/// the same gate the fresh preflight crosses.
+fn reprove_stopped(current_dir: &Path, server: &ServerId, intent: &Intent) -> Result<(), Refusal> {
+    match crate::transport::verify_session_absent(server, &intent.old) {
+        crate::tmux::StopProbe::Absent => {}
+        crate::tmux::StopProbe::Present => {
+            return Err(Refusal(format!(
+                "Error: session '{}' answered live on its recorded server while rename '{}' → '{}' is pending — stop it first, then retry '{}'. Nothing was renamed.",
+                intent.old,
+                intent.old,
+                intent.new,
+                retry_command(intent)
+            )));
+        }
+        crate::tmux::StopProbe::Unknown => {
+            if !crate::lifecycle::end::boot_proved_stopped(current_dir, server, &intent.old) {
+                return Err(Refusal(format!(
+                    "Error: cannot prove session '{}' stopped (its recorded tmux server is unreachable) — refusing a retry over unknown liveness. Nothing was renamed.",
+                    intent.old
+                )));
+            }
+        }
+    }
+    if crate::transport::session_exists(server, &intent.new) {
+        return Err(Refusal(format!(
+            "Error: session '{}' already exists — refusing to converge over an occupied destination. Nothing was renamed.",
+            intent.new
+        )));
+    }
+    Ok(())
+}
+
+/// The managed addresses must read back as recorded, under a real
+/// worktrees root, with sharing and (git) registration re-proved.
+fn reprove_managed(root: &Path, intent: &Intent) -> Result<(), Refusal> {
+    let managed_old = crate::lifecycle::worktrees_dir(root).join(&intent.old);
+    let managed_new = crate::lifecycle::worktrees_dir(root).join(&intent.new);
+    if Path::new(&intent.old_work) != managed_old || Path::new(&intent.new_work) != managed_new {
+        return Err(Refusal(
+            "Error: the managed addresses for this transaction moved while pending — refusing a stale plan. Nothing was renamed."
+                .to_owned(),
+        ));
+    }
+    // Teardown-grade root authority, re-taken: a swapped worktrees root
+    // under a pending transaction refuses rather than moving through a
+    // link.
+    let worktrees = crate::lifecycle::worktrees_dir(root);
+    if is_symlink(&worktrees) || !crate::lifecycle::dir_exists(&worktrees) {
+        return Err(Refusal(format!(
+            "Error: the configured worktrees root '{}' is not a real directory — refusing a retry over moved ground. Nothing was renamed.",
+            worktrees.display()
+        )));
+    }
+    // Sharing and registration re-proofs: another session may have
+    // claimed the path, or the worktree may have been locked, repointed,
+    // or unregistered while the transaction was parked.
+    let sessions = crate::lifecycle::sessions_dir(root);
+    sharing_check(
+        root,
+        &sessions,
+        &intent.old,
+        &intent.new,
+        &intent.old_work,
+        Path::new(&intent.new_work),
+    )
+    .map_err(refused)?;
+    if intent.mode == WorkMode::Git {
+        git_recovery_check(root, intent).map_err(refused)?;
+    }
+    Ok(())
+}
+
+/// Re-probe explicit homes while the state still sits at the old address,
+/// where the candidate paths are still meaningful: a transcript layout that
+/// changed under the handoff refuses like a fresh one.
+fn reprove_homes(current_dir: &Path, intent: &Intent) -> Result<(), Refusal> {
+    let home_bytes = crate::meta::read_bytes(current_dir).unwrap_or_default();
+    let home_meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&home_bytes));
+    // The implicit-home warning belongs to the fresh rename; recovery
+    // converges without it, as it always has.
+    explicit_home_check(home_meta.roster(), &intent.old_work, &intent.new_work).map_err(refused)?;
+    Ok(())
+}
+
+/// Re-prove the recorded phase's cumulative facts before using it as a skip
+/// boundary: a carrier claiming work the filesystem never did normalizes to
+/// the highest proven phase (recorded forward) instead of skipping into
+/// success; a record lagging verified facts catches up.
+fn normalize_phase(root: &Path, intent: &mut Intent) -> Result<(), Refusal> {
+    let proven = proven_phase(root, intent);
+    if phase_ord(&proven) != phase_ord(&intent.phase) {
+        intent.phase = proven;
+        if let Err(why) = publish_intent(root, intent) {
+            return Err(Refusal(format!(
+                "Error: the transaction phase corrected but its record failed ({why}) — retry '{}'. Nothing was renamed.",
+                retry_command(intent)
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A completed record must still read whole at the new address, or it is
+/// drifted completion (manual repair only).
+fn reprove_completion(root: &Path, intent: &Intent, located: Located) -> Result<(), Refusal> {
+    if located != Located::New {
+        return Err(Refusal(format!(
+            "Error: the transaction completed for '{}' → '{}' but '{}' no longer holds it — refusing over drifted completion (manual repair only). Nothing was renamed.",
+            intent.old, intent.new, intent.new
+        )));
+    }
+    if let Err(why) = verify_completion(root, intent) {
+        return Err(Refusal(format!(
+            "Error: the transaction completed for '{}' → '{}' but {why} — refusing over drifted completion (manual repair only). Nothing was renamed.",
+            intent.old, intent.new
+        )));
+    }
+    Ok(())
+}
+
+/// Pending requests that arrived mid-transaction strand the same way.
+fn refuse_blockers(root: &Path, intent: &Intent, current_dir: &Path) -> Result<(), Refusal> {
+    let state_name = current_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let names = [intent.old.as_str(), intent.new.as_str()];
+    let blockers = pending_blockers(root, &names, current_dir, state_name).map_err(refused)?;
+    if blockers.is_empty() {
+        return Ok(());
+    }
+    Err(Refusal(format!(
+        "Error: {} pending request(s) arrived while rename '{}' → '{}' was pending ({}) — close them first (reply from the target seat, or retire the holding seat), then retry '{}'. Nothing was renamed.",
+        blockers.len(),
+        intent.old,
+        intent.new,
+        blockers.join(", "),
+        retry_command(intent)
+    )))
 }
 
 /// Prove a completed transaction still reads whole: the UUID, coherent meta
