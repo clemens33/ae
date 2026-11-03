@@ -1813,8 +1813,9 @@ fn done_step(event: &Event, own: bool, launch: Option<&str>) -> Step {
 }
 
 /// [`wait_progress`]'s table for `state`. A challenge or abandonment naming
-/// another state is neither ours nor news, judged BEFORE its launch; same
-/// journal bound on failed pushes as [`done_step`].
+/// another state is neither ours nor news; a challenge is judged by its state
+/// BEFORE its launch, so only our own state's challenge from another launch
+/// resets. Same journal bound on failed pushes as [`done_step`].
 fn wait_step(
     event: &Event,
     own: bool,
