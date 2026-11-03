@@ -272,54 +272,59 @@ pub fn parse_plan(args: &[String]) -> Result<Plan, String> {
 
 /// Parse the same grammar for the orchestrator seat, whose existing public
 /// surface also permits an explicit `--attach`.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one owner for the complete public launch grammar and its duplicate checks"
-)]
 pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Result<Plan, String> {
-    let mut plan = Plan::default();
-    let mut colead_override = false;
-    let mut rest = args;
-    while let [word, tail @ ..] = rest {
-        rest = tail;
-        match word.as_str() {
-            "--worktree" => plan.mode = Some(Mode::Git),
-            "--copy" => plan.mode = Some(Mode::Full),
-            "--local" => plan.mode = Some(Mode::Local),
-            "--attach" if allow_attach => plan.attach = Some(true),
-            "--no-attach" => plan.attach = Some(false),
-            "--tmux" if !allow_attach => plan.tmux = true,
-            "--solo" if !allow_attach => plan.workers = Some(String::new()),
+    PlanParser {
+        plan: Plan::default(),
+        rest: args,
+        allow_attach,
+        colead_override: false,
+    }
+    .parse()
+}
+
+/// The launch grammar's cursor and accumulated decisions. Values are consumed
+/// verbatim; only a word in the option position is interpreted as a flag.
+struct PlanParser<'a> {
+    plan: Plan,
+    rest: &'a [String],
+    allow_attach: bool,
+    colead_override: bool,
+}
+
+impl PlanParser<'_> {
+    fn parse(mut self) -> Result<Plan, String> {
+        while let [word, tail @ ..] = self.rest {
+            self.rest = tail;
+            self.parse_word(word)?;
+        }
+        if self.colead_override && self.plan.workers.as_deref() == Some("") {
+            return Err(
+                "Error: '--solo' starts the lead alone; drop --colead/--seat <worker>.".to_owned(),
+            );
+        }
+        Ok(self.plan)
+    }
+
+    fn parse_word(&mut self, word: &str) -> Result<(), String> {
+        match word {
+            "--worktree" => self.plan.mode = Some(Mode::Git),
+            "--copy" => self.plan.mode = Some(Mode::Full),
+            "--local" => self.plan.mode = Some(Mode::Local),
+            "--attach" if self.allow_attach => self.plan.attach = Some(true),
+            "--no-attach" => self.plan.attach = Some(false),
+            "--tmux" if !self.allow_attach => self.plan.tmux = true,
+            "--solo" if !self.allow_attach => self.plan.workers = Some(String::new()),
             _ if word == "--dir" || word.starts_with("--dir=") => {
-                if plan.dir.is_some() {
-                    return Err(
-                        "Error: --dir may be given only once — a launch has one origin.".to_owned(),
-                    );
-                }
-                let value = if let Some(inline) = word.strip_prefix("--dir=") {
-                    inline.to_owned()
-                } else {
-                    match rest.split_first() {
-                        Some((value, tail)) => {
-                            rest = tail;
-                            value.clone()
-                        }
-                        None => String::new(),
-                    }
-                };
-                if value.is_empty() {
-                    return Err("Error: --dir requires a path.".to_owned());
-                }
-                plan.dir = Some(value);
+                self.directory(word.strip_prefix("--dir="))?;
             }
             "use" => {
-                let Some((value, tail)) = rest.split_first() else {
+                let Some((value, tail)) = self.rest.split_first() else {
                     return Err("Error: 'use' requires an agent NAME bound in [roster] (e.g. ae myproject use colead)".to_owned());
                 };
-                plan.main = Some(value.clone());
-                rest = tail;
+                self.plan.main = Some(value.clone());
+                self.rest = tail;
             }
-            _ if !allow_attach
+            _ if !self.allow_attach
                 && (word == "--lead"
                     || word.starts_with("--lead=")
                     || word == "--colead"
@@ -327,91 +332,10 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
                     || word == "--seat"
                     || word.starts_with("--seat=")) =>
             {
-                let (agent, inline) = if let Some(value) = word.strip_prefix("--lead=") {
-                    ("lead", Some(value))
-                } else if word == "--lead" {
-                    ("lead", None)
-                } else if let Some(value) = word.strip_prefix("--colead=") {
-                    colead_override = true;
-                    ("colead", Some(value))
-                } else if word == "--colead" {
-                    colead_override = true;
-                    ("colead", None)
-                } else {
-                    let raw = if let Some(value) = word.strip_prefix("--seat=") {
-                        value.to_owned()
-                    } else {
-                        match rest.split_first() {
-                            Some((value, tail)) => {
-                                rest = tail;
-                                value.clone()
-                            }
-                            None => String::new(),
-                        }
-                    };
-                    let Some((agent, profile)) = raw.split_once('=') else {
-                        return Err(
-                            "Error: --seat requires <agent>=<profile> (e.g. --seat lead=solx)."
-                                .to_owned(),
-                        );
-                    };
-                    if agent.is_empty() || profile.is_empty() {
-                        return Err(
-                            "Error: --seat requires non-empty <agent>=<profile>.".to_owned()
-                        );
-                    }
-                    if plan.seat_profiles.iter().any(|(seen, _)| seen == agent) {
-                        return Err(format!(
-                            "Error: profile override for agent '{agent}' may be given only once."
-                        ));
-                    }
-                    plan.seat_profiles
-                        .push((agent.to_owned(), profile.to_owned()));
-                    continue;
-                };
-                let profile = if let Some(value) = inline {
-                    value.to_owned()
-                } else {
-                    match rest.split_first() {
-                        Some((value, tail)) => {
-                            rest = tail;
-                            value.clone()
-                        }
-                        None => String::new(),
-                    }
-                };
-                if profile.is_empty() {
-                    return Err(format!("Error: --{agent} requires a profile."));
-                }
-                if plan.seat_profiles.iter().any(|(seen, _)| seen == agent) {
-                    return Err(format!(
-                        "Error: profile override for agent '{agent}' may be given only once."
-                    ));
-                }
-                plan.seat_profiles.push((agent.to_owned(), profile));
+                self.seat_profile(word)?;
             }
             _ if word == "--from" || word.starts_with("--from=") => {
-                if plan.from.is_some() {
-                    return Err("Error: --from may be given only once — a session inherits from exactly one archive.".to_owned());
-                }
-                let value = if let Some(inline) = word.strip_prefix("--from=") {
-                    inline.to_owned()
-                } else {
-                    match rest.split_first() {
-                        Some((value, tail)) => {
-                            rest = tail;
-                            value.clone()
-                        }
-                        None => String::new(),
-                    }
-                };
-                if value.is_empty() {
-                    return Err(
-                        "Error: --from requires an archive UUID (list them: ls ~/.ae/archive)."
-                            .to_owned(),
-                    );
-                }
-                plan.from = Some(value);
+                self.archive(word.strip_prefix("--from="))?;
             }
             _ if word.starts_with("--") => {
                 return Err(format!(
@@ -421,19 +345,99 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
             // A launch takes exactly one session name: a second positional is
             // a usage error, never a rename of the first.
             _ => {
-                if let Some(first) = plan.name.as_deref() {
+                if let Some(first) = self.plan.name.as_deref() {
                     return Err(second_positional_refusal(first, word));
                 }
-                plan.name = Some(word.clone());
+                self.plan.name = Some(word.to_owned());
             }
         }
+        Ok(())
     }
-    if colead_override && plan.workers.as_deref() == Some("") {
-        return Err(
-            "Error: '--solo' starts the lead alone; drop --colead/--seat <worker>.".to_owned(),
-        );
+
+    /// Inline values never advance the cursor. A missing split value is empty;
+    /// each flag owns the validation and the order of its duplicate check.
+    fn value(&mut self, inline: Option<&str>) -> String {
+        if let Some(value) = inline {
+            return value.to_owned();
+        }
+        match self.rest.split_first() {
+            Some((value, tail)) => {
+                self.rest = tail;
+                value.clone()
+            }
+            None => String::new(),
+        }
     }
-    Ok(plan)
+
+    fn directory(&mut self, inline: Option<&str>) -> Result<(), String> {
+        if self.plan.dir.is_some() {
+            return Err(
+                "Error: --dir may be given only once — a launch has one origin.".to_owned(),
+            );
+        }
+        let value = self.value(inline);
+        if value.is_empty() {
+            return Err("Error: --dir requires a path.".to_owned());
+        }
+        self.plan.dir = Some(value);
+        Ok(())
+    }
+
+    fn archive(&mut self, inline: Option<&str>) -> Result<(), String> {
+        if self.plan.from.is_some() {
+            return Err("Error: --from may be given only once — a session inherits from exactly one archive.".to_owned());
+        }
+        let value = self.value(inline);
+        if value.is_empty() {
+            return Err(
+                "Error: --from requires an archive UUID (list them: ls ~/.ae/archive).".to_owned(),
+            );
+        }
+        self.plan.from = Some(value);
+        Ok(())
+    }
+
+    fn seat_profile(&mut self, word: &str) -> Result<(), String> {
+        if word == "--seat" || word.starts_with("--seat=") {
+            let raw = self.value(word.strip_prefix("--seat="));
+            let Some((agent, profile)) = raw.split_once('=') else {
+                return Err(
+                    "Error: --seat requires <agent>=<profile> (e.g. --seat lead=solx).".to_owned(),
+                );
+            };
+            if agent.is_empty() || profile.is_empty() {
+                return Err("Error: --seat requires non-empty <agent>=<profile>.".to_owned());
+            }
+            return self.add_profile(agent, profile.to_owned());
+        }
+        let (agent, inline) = if word == "--lead" || word.starts_with("--lead=") {
+            ("lead", word.strip_prefix("--lead="))
+        } else {
+            // Only the --colead sugar sets this parse-time solo conflict.
+            self.colead_override = true;
+            ("colead", word.strip_prefix("--colead="))
+        };
+        let profile = self.value(inline);
+        if profile.is_empty() {
+            return Err(format!("Error: --{agent} requires a profile."));
+        }
+        self.add_profile(agent, profile)
+    }
+
+    fn add_profile(&mut self, agent: &str, profile: String) -> Result<(), String> {
+        if self
+            .plan
+            .seat_profiles
+            .iter()
+            .any(|(seen, _)| seen == agent)
+        {
+            return Err(format!(
+                "Error: profile override for agent '{agent}' may be given only once."
+            ));
+        }
+        self.plan.seat_profiles.push((agent.to_owned(), profile));
+        Ok(())
+    }
 }
 
 /// The refusal for a launch argv naming two sessions: it names both words,
