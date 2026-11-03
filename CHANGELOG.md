@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.7] - 2026-11-03
+- Cut AGENTS.md to the rules an agent cannot infer; move the rest to the docs it already links
+- A limited claude seat is stoppable when only echoes and the vendor's limit rows follow its cell, and a refused stop names why
+- Watchdog wakes a limited seat once its known reset passes, and auto reseat waits for a near short reset
+- Pin the limit wake's cycle wiring, death clear, footer and reset-instant arming
+- Pin CLI parser behavior before extraction
+- Separate CLI dispatch from operand grammars
+- Pin unknown flags before extra CLI operands
+- Characterise end_locked — order, refusals, lock and archive boundary at the kill
+- End_locked proves its target and refuses before the stop through named steps and pure decisions
+- End_locked stops its target in one step and picks the local, retry or git finish by exclusion
+- End_locked's git path refuses, commits and pushes through named steps with pure push facts
+- Pin that an existing non-git work dir refuses the git end before any stop
+
 ## [v2026.11.6] - 2026-11-03
 - Freeze build characterisation traces for create, resume, spawned restore, chat and the after-preflight refusals
 - Build asks three pure decisions for worker placement, each seat's client and the respawn layout
