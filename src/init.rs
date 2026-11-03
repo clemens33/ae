@@ -378,6 +378,16 @@ fn render_header(now: crate::time::Timestamp) -> String {
     )
 }
 
+fn render_clients_line(output: &mut String, line: &str, found: &[Discovery]) {
+    if let Some(name) = catalog_client_line(line) {
+        if is_found(found, name) {
+            push_line(output, line);
+        }
+        return;
+    }
+    push_line(output, line);
+}
+
 fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -> String {
     let mut output = render_header(now);
     let mut section = "";
@@ -385,13 +395,8 @@ fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -
         if line.starts_with('[') && line.ends_with(']') {
             section = line;
         }
-        if section == "[clients]"
-            && let Some(name) = catalog_client_line(line)
-        {
-            if is_found(found, name) {
-                output.push_str(line);
-                output.push('\n');
-            }
+        if section == "[clients]" {
+            render_clients_line(&mut output, line, found);
             continue;
         }
         if section == "[profiles]"
