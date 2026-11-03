@@ -170,79 +170,104 @@ impl Keys {
         self.begun.filter(|_| !self.discarded)
     }
 
-    /// The keys `chunk` completes, read at `stamp`.
+    /// The keys `chunk` completes, read at `stamp`. Each byte goes to the one
+    /// step its state names, first match wins: inside a paste, inside a legacy
+    /// X10 report, inside an SGR report, in an escape sequence, else a plain key.
     pub fn feed(&mut self, chunk: &[u8], stamp: Instant) -> Vec<(Key, Instant)> {
         let mut keys = Vec::new();
         for &byte in chunk {
             if let Some(origin) = self.paste {
-                match paste_hold(&mut self.pending, byte) {
-                    Hold::Byte => self.literal(&mut keys, &[byte], origin),
-                    Hold::Held => {}
-                    Hold::Closed => self.paste = None,
-                    Hold::Flush(held) => self.literal(&mut keys, &held, origin),
-                }
+                self.pasting(&mut keys, byte, origin);
             } else if self.x10 > 0 {
-                self.x10 -= 1;
-                if self.x10 == 0 {
-                    self.begun = None;
-                }
+                self.skipping();
             } else if self.mouse {
-                if byte == 0x1b {
-                    // A fresh escape resynchronizes a damaged report.
-                    self.pending = vec![byte];
-                    self.begun = Some(stamp);
-                    (self.mouse, self.discarded) = (false, false);
-                    continue;
-                }
-                if !self.discarded {
-                    if self.pending.len() < MOUSE_MAX {
-                        self.pending.push(byte);
-                    } else {
-                        self.pending.clear();
-                        self.discarded = true;
-                    }
-                }
-                if matches!(byte, b'M' | b'm') {
-                    if !self.discarded {
-                        keys.extend(mouse(&self.pending).zip(self.begun));
-                    }
-                    self.pending.clear();
-                    self.begun = None;
-                    (self.mouse, self.discarded) = (false, false);
-                }
+                self.reporting(&mut keys, byte, stamp);
             } else if !self.pending.is_empty() || byte == 0x1b {
-                if self.app && byte == 0x1b && self.pending == [0x1b] {
-                    // Nothing continues an escape with a second one: the
-                    // first was a lone Esc.
-                    keys.extend(self.begun.map(|began| (Key::Escape, began)));
-                    self.pending.clear();
-                }
-                if self.pending.is_empty() {
-                    self.begun = Some(stamp);
-                }
-                self.pending.push(byte);
-                match opened(&self.pending, self.app) {
-                    Opened::Open => {}
-                    Opened::Paste => {
-                        (self.paste, self.lf_skip) = (self.begun.take(), false);
-                        self.pending.clear();
-                    }
-                    Opened::Report => self.mouse = true,
-                    Opened::Legacy => {
-                        self.pending.clear();
-                        self.x10 = 3;
-                    }
-                    Opened::Closed => {
-                        let began = self.begun.take();
-                        let seq = std::mem::take(&mut self.pending);
-                        keys.extend(spelled(&seq, self.app).zip(began));
-                    }
-                }
+                self.escaping(&mut keys, byte, stamp);
             } else {
                 typed(&mut keys, byte, self.app, stamp);
             }
         }
         keys
+    }
+
+    /// One byte inside a paste: literal, unless it may still be the close.
+    fn pasting(&mut self, keys: &mut Vec<(Key, Instant)>, byte: u8, origin: Instant) {
+        match paste_hold(&mut self.pending, byte) {
+            Hold::Byte => self.literal(keys, &[byte], origin),
+            Hold::Held => {}
+            Hold::Closed => self.paste = None,
+            Hold::Flush(held) => self.literal(keys, &held, origin),
+        }
+    }
+
+    /// One payload byte of a legacy X10 report: consumed, an ESC too.
+    fn skipping(&mut self) {
+        self.x10 -= 1;
+        if self.x10 == 0 {
+            self.begun = None;
+        }
+    }
+
+    /// One byte of an SGR mouse report: kept up to [`MOUSE_MAX`], then only
+    /// the discard flag; `M` or `m` ends it, and an ESC starts afresh.
+    fn reporting(&mut self, keys: &mut Vec<(Key, Instant)>, byte: u8, stamp: Instant) {
+        if byte == 0x1b {
+            // A fresh escape resynchronizes a damaged report.
+            self.pending = vec![byte];
+            self.begun = Some(stamp);
+            (self.mouse, self.discarded) = (false, false);
+            return;
+        }
+        if !self.discarded {
+            if self.pending.len() < MOUSE_MAX {
+                self.pending.push(byte);
+            } else {
+                self.pending.clear();
+                self.discarded = true;
+            }
+        }
+        if matches!(byte, b'M' | b'm') {
+            if !self.discarded {
+                keys.extend(mouse(&self.pending).zip(self.begun));
+            }
+            self.pending.clear();
+            self.begun = None;
+            (self.mouse, self.discarded) = (false, false);
+        }
+    }
+
+    /// One byte of an escape sequence, begun or continued: what it opens (a
+    /// paste, a report) or the key it completes, stamped by the read that
+    /// began it.
+    fn escaping(&mut self, keys: &mut Vec<(Key, Instant)>, byte: u8, stamp: Instant) {
+        if self.app && byte == 0x1b && self.pending == [0x1b] {
+            // Nothing continues an escape with a second one: the
+            // first was a lone Esc.
+            keys.extend(self.begun.map(|began| (Key::Escape, began)));
+            self.pending.clear();
+        }
+        if self.pending.is_empty() {
+            self.begun = Some(stamp);
+        }
+        self.pending.push(byte);
+        match opened(&self.pending, self.app) {
+            Opened::Open => {}
+            Opened::Paste => {
+                (self.paste, self.lf_skip) = (self.begun.take(), false);
+                self.pending.clear();
+            }
+            Opened::Report => self.mouse = true,
+            Opened::Legacy => {
+                self.pending.clear();
+                self.x10 = 3;
+            }
+            Opened::Closed => {
+                let began = self.begun.take();
+                let seq = std::mem::take(&mut self.pending);
+                keys.extend(spelled(&seq, self.app).zip(began));
+            }
+        }
     }
 
     /// Paste bytes, a CR or CRLF folded to LF: the chat's are text, the app's
