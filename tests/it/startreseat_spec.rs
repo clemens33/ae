@@ -1166,3 +1166,201 @@ fn current_incarnation_armed_brief_blocks_urgent_trigger_then_delivers_once_befo
         "pending brief is never lost or delivered twice"
     );
 }
+fn runparsed_lastword_command(
+    rig: &Rig,
+    session: &str,
+    staged_record: &std::path::Path,
+    live_record: &std::path::Path,
+) -> (super::super::cli::Runner, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut command = ae();
+    // Reuse the existing pass-through trace wrapper to resolve the isolated
+    // runner PATH and real tmux; replace only its owned fixture script.
+    let trace = super::launchx_trace_command(&mut command, &rig.scratch);
+    let wrapper = rig.scratch.join("trace-bin/tmux");
+    std::fs::write(
+        &wrapper,
+        r#"#!/usr/bin/perl
+use strict;
+use warnings;
+use Fcntl qw(:flock);
+if (-e $ENV{AE_LASTWORD_STAGED} && grep { $_ eq $ENV{AE_LASTWORD_PROBE} } @ARGV) {
+    if (open(my $lock, '+<', $ENV{AE_LASTWORD_LOCK})) {
+        if (!flock($lock, LOCK_EX | LOCK_NB)) {
+            rename($ENV{AE_LASTWORD_STAGED}, $ENV{AE_LASTWORD_LIVE}) or die "publish armed brief: $!";
+            open(my $seen, '>', $ENV{AE_LASTWORD_SEEN}) or die "barrier receipt: $!";
+            print $seen "armed under lifecycle\n";
+            close($seen) or die "close receipt: $!";
+        }
+        close($lock);
+    }
+}
+exec {$ENV{AE_LAUNCHX_REAL_TMUX}} $ENV{AE_LAUNCHX_REAL_TMUX}, @ARGV;
+die "exec private tmux: $!";
+"#,
+    )
+    .expect("owned pass-through barrier");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+        .expect("owned executable barrier");
+    let seen = trace.with_extension("lastword");
+    command
+        .env("HOME", &rig.scratch)
+        .env("AE_HOME", &rig.home)
+        .env("CONFIG_FILE", &rig.config)
+        .env("TMUX", format!("{},0,0", rig.sock.display()))
+        .env_remove("TMUX_PANE")
+        .env_remove("AE_SENDER_OVERRIDE")
+        .env("AE_LASTWORD_STAGED", staged_record)
+        .env("AE_LASTWORD_LIVE", live_record)
+        .env("AE_LASTWORD_SEEN", &seen)
+        .env("AE_LASTWORD_PROBE", ae::tmux::PANE_PROBE_FORMAT)
+        .env(
+            "AE_LASTWORD_LOCK",
+            rig.home
+                .join("sessions")
+                .join(format!(".lifecycle.{session}.lock")),
+        );
+    (command, seen)
+}
+
+fn runparsed_stage_lastword_brief(
+    rig: &Rig,
+    session: &str,
+    before: &str,
+    pane: &str,
+    ts: Timestamp,
+) -> (PathBuf, PathBuf, Vec<u8>) {
+    let dir = rig.dir(session);
+    let staged = rig.scratch.join("staged-last-word");
+    std::fs::create_dir_all(&staged).expect("owned staging directory");
+    let record = ae::brief_retry::Record {
+        slot: "main".to_owned(),
+        reference: "spawn-main".to_owned(),
+        pane: pane.to_owned(),
+        launch_id: row(before, "launch_id.main"),
+        actor: "lead".to_owned(),
+        attempts: 0,
+        created: ts.epoch(),
+        phase: ae::brief_retry::Phase::Armed,
+        body: "last-word armed brief".to_owned(),
+    };
+    ae::brief_retry::publish(&staged, &record).expect("real brief grammar");
+    let staged_record = ae::brief_retry::path(&staged, "main");
+    let armed_bytes = std::fs::read(&staged_record).expect("staged brief");
+    let live_record = ae::brief_retry::path(&dir, "main");
+    assert!(!live_record.exists(), "admission initially remains urgent");
+
+    (staged_record, live_record, armed_bytes)
+}
+
+#[test]
+fn runparsed_dead_seat_rechecks_urgency_under_lifecycle_before_any_move_write() {
+    // Contract: docs/internals/reseat.md startup urgency requires the last
+    // start_read under the move's locks. An armed brief withdraws urgency,
+    // including when there is no running tool to stop.
+    let session = "restartlastword";
+    let rig = fixture(session, "", "destination");
+    launch(&rig, session);
+    let (_, relative) = retained(&rig, session);
+    quota(&rig, "source", "session", 100, 0, None);
+    stop(&rig, session);
+    launch(&rig, session);
+    let before = rig.meta(session);
+    assert!(
+        !row(&before, "launch_settled").is_empty(),
+        "real resumed launch"
+    );
+    let pane = row(&before, "main_pane");
+    assert!(
+        rig.tmux(&[
+            "respawn-pane",
+            "-k",
+            "-t",
+            &pane,
+            "-c",
+            &rig.project.display().to_string(),
+            "exec /bin/sh",
+        ])
+        .0,
+        "owned seat returns to its shell"
+    );
+    until(&rig, session, || {
+        let (ok, command) = rig.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &pane,
+            "#{pane_current_command}",
+        ]);
+        ok && matches!(command.trim(), "sh" | "bash" | "dash" | "zsh" | "fish")
+    });
+
+    let dir = rig.dir(session);
+    let marker = dir.join("launch.main.started");
+    let marker_before = std::fs::read(&marker).expect("real launch marker");
+    let prompt = dir.join("launch.main.prompt");
+    std::fs::write(&prompt, b"last-word brief must survive").expect("owned old brief");
+    let ts = Timestamp::now();
+    let log = dir.join("events.jsonl");
+    let mut journal = std::fs::read_to_string(&log).unwrap_or_default();
+    for (action, reference) in [
+        ("auto-reseat-headroom", String::new()),
+        (ATTEMPT_ACTION, format!(",\"ref\":\"{ts}\"")),
+    ] {
+        writeln!(journal, "{{\"ts\":\"{ts}\",\"actor\":\"watchdog\",\"action\":\"{action}\",\"target\":\"lead\",\"target_slot\":\"main\",\"target_session\":\"{session}\"{reference},\"summary\":\"headroom 100% session 5h\"}}").expect("real episode records");
+    }
+    std::fs::write(&log, &journal).expect("open urgent attempt");
+
+    let (staged_record, live_record, armed_bytes) =
+        runparsed_stage_lastword_brief(&rig, session, &before, &pane, ts);
+
+    let (mut command, seen) =
+        runparsed_lastword_command(&rig, session, &staged_record, &live_record);
+    let result = command
+        .arg("_auto-reseat")
+        .arg(&dir)
+        .arg("main")
+        .arg(ts.to_string())
+        .output()
+        .expect("real auto-reseat leg");
+
+    assert!(seen.is_file(), "causal barrier was not reached: {result:?}");
+    assert_eq!(
+        std::fs::read_to_string(&seen).expect("causal barrier reached"),
+        "armed under lifecycle\n"
+    );
+    assert_eq!(result.status.code(), Some(1), "{result:?}");
+    assert_eq!(rig.meta(session), before, "declined move writes no meta");
+    assert_eq!(
+        std::fs::read(&marker).expect("marker retained"),
+        marker_before
+    );
+    assert_eq!(
+        std::fs::read(&prompt).expect("old brief retained"),
+        b"last-word brief must survive"
+    );
+    assert_eq!(
+        std::fs::read(live_record).expect("armed brief retained"),
+        armed_bytes
+    );
+    assert!(!dir.join("seed.lead.md").exists(), "no seed publication");
+    assert!(
+        !rig.scratch.join("destination").join(relative).exists(),
+        "no conversation copy"
+    );
+    assert!(booked(&rig, session, "reseat").is_empty(), "no move audit");
+    assert!(
+        booked(&rig, session, DONE_ACTION).is_empty(),
+        "no completion"
+    );
+    let refused = booked(&rig, session, REFUSED_ACTION);
+    assert_eq!(refused.len(), 1, "one refusal: {result:?}");
+    assert!(
+        refused[0]
+            .summary
+            .as_deref()
+            .is_some_and(|text| text.starts_with("other:")),
+        "hook decline retains Other: {refused:?}"
+    );
+}
