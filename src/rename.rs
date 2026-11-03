@@ -3394,6 +3394,99 @@ fn print_stopped_success(
     Ok(())
 }
 
+/// One whole recovery refusal line, `Error: ` and its suffix included: the
+/// caller writes it once and exits [`EXIT_FAILED`].
+struct Refusal(String);
+
+/// Filename/argv/payload correlation, re-proved at every entry: only the pair
+/// this command holds locks for may be recovered here, and an intent renaming
+/// to itself, or local mode at the work phase it never takes, is damage.
+fn correlate(intent: &Intent, old: &str, new: &str) -> Result<(), Refusal> {
+    if intent.old != old || intent.new != new {
+        return Err(Refusal(format!(
+            "Error: the rename intent for '{old}' → '{new}' names '{}' → '{}' — refusing a carrier that does not match this command. Nothing was renamed.",
+            intent.old, intent.new
+        )));
+    }
+    if intent.old == intent.new {
+        return Err(Refusal(format!(
+            "Error: the recorded intent renames '{}' to itself — refusing damaged intent. Nothing was renamed.",
+            intent.old
+        )));
+    }
+    if intent.mode == WorkMode::Local && intent.phase == PHASE_WORK_MOVED {
+        return Err(Refusal(format!(
+            "Error: the recorded intent is local mode at unreachable phase '{}' — refusing damaged intent. Nothing was renamed.",
+            intent.phase
+        )));
+    }
+    Ok(())
+}
+
+/// What one state address holds for the transaction UUID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Occupancy {
+    /// A directory whose meta records the UUID.
+    Holds,
+    /// Something else is there: a replacement occupant.
+    Occupied,
+    /// Nothing is there.
+    Free,
+}
+
+impl Occupancy {
+    /// The address's occupancy from the two read facts: it holds the UUID,
+    /// or a path is there that does not.
+    fn of(holds: bool, occupied: bool) -> Self {
+        if holds {
+            Self::Holds
+        } else if occupied {
+            Self::Occupied
+        } else {
+            Self::Free
+        }
+    }
+}
+
+/// The address recovery continues from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Located {
+    Old,
+    New,
+}
+
+/// Why no address may be used, in refusal precedence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unlocated {
+    /// The new address holds another session.
+    NewOccupied,
+    /// Neither address holds the UUID.
+    Lost,
+    /// The old address holds another session.
+    OldOccupied,
+}
+
+/// Locate the UUID: exactly one side may be used. A replacement occupant is
+/// never overwritten (the new side refuses first), a UUID neither side holds
+/// is manual repair, and when both hold it the new side is the one recovery
+/// continues from.
+fn locate(old: Occupancy, new: Occupancy) -> Result<Located, Unlocated> {
+    if new == Occupancy::Occupied {
+        return Err(Unlocated::NewOccupied);
+    }
+    if old != Occupancy::Holds && new != Occupancy::Holds {
+        return Err(Unlocated::Lost);
+    }
+    if old == Occupancy::Occupied {
+        return Err(Unlocated::OldOccupied);
+    }
+    Ok(if new == Occupancy::Holds {
+        Located::New
+    } else {
+        Located::Old
+    })
+}
+
 /// A proved retry of the same command: reconcile actual paths and
 /// registration against the recorded intent (including a move completed
 /// before its phase update), then converge forward. Never a new ordinary
@@ -3412,30 +3505,8 @@ fn recover(
     err: &mut impl Write,
 ) -> crate::Result<u8> {
     let mut intent = intent.clone();
-    // Filename/argv/payload correlation, re-proved at every entry: only the
-    // pair this command holds locks for may be recovered here.
-    if intent.old != old || intent.new != new {
-        writeln!(
-            err,
-            "Error: the rename intent for '{old}' → '{new}' names '{}' → '{}' — refusing a carrier that does not match this command. Nothing was renamed.",
-            intent.old, intent.new
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    if intent.old == intent.new {
-        writeln!(
-            err,
-            "Error: the recorded intent renames '{}' to itself — refusing damaged intent. Nothing was renamed.",
-            intent.old
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    if intent.mode == WorkMode::Local && intent.phase == PHASE_WORK_MOVED {
-        writeln!(
-            err,
-            "Error: the recorded intent is local mode at unreachable phase '{}' — refusing damaged intent. Nothing was renamed.",
-            intent.phase
-        )?;
+    if let Err(refusal) = correlate(&intent, old, new) {
+        writeln!(err, "{}", refusal.0)?;
         return Ok(EXIT_FAILED);
     }
     let sessions = crate::lifecycle::sessions_dir(root);
@@ -3467,47 +3538,58 @@ fn recover(
         && crate::meta::session_id_in(&new_dir) == intent.uuid;
     let old_occupied = crate::lifecycle::path_exists(&old_dir) && !old_holds;
     let new_occupied = crate::lifecycle::path_exists(&new_dir) && !new_holds;
-    if new_occupied {
-        writeln!(
-            err,
-            "Error: '{}' is now occupied by another session — refusing to overwrite a replacement path/UUID. Retry '{}' after freeing it.",
-            new_dir.display(),
-            retry_command(&intent)
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    if !old_holds && !new_holds {
-        if old_occupied
-            || crate::lifecycle::dir_exists(&old_dir)
-            || crate::lifecycle::dir_exists(&new_dir)
-        {
+    let located = match locate(
+        Occupancy::of(old_holds, old_occupied),
+        Occupancy::of(new_holds, new_occupied),
+    ) {
+        Ok(side) => side,
+        Err(Unlocated::NewOccupied) => {
             writeln!(
                 err,
-                "Error: neither '{}' nor '{}' holds UUID '{}' anymore — refusing over replaced identity (manual repair only). Nothing was renamed.",
-                intent.old, intent.new, intent.uuid
+                "Error: '{}' is now occupied by another session — refusing to overwrite a replacement path/UUID. Retry '{}' after freeing it.",
+                new_dir.display(),
+                retry_command(&intent)
             )?;
-        } else {
-            writeln!(
-                err,
-                "Error: both '{}' and '{}' are gone for UUID '{}' — refusing (manual repair only). Nothing was renamed.",
-                intent.old, intent.new, intent.uuid
-            )?;
+            return Ok(EXIT_FAILED);
         }
-        return Ok(EXIT_FAILED);
-    }
-    if old_occupied {
-        writeln!(
-            err,
-            "Error: '{}' is now occupied by another session — refusing to touch a replacement occupant. Retry '{}' after freeing it.",
-            old_dir.display(),
-            retry_command(&intent)
-        )?;
-        return Ok(EXIT_FAILED);
-    }
+        Err(Unlocated::Lost) => {
+            // Read only on this arm, as before: a remnant directory on either
+            // side names replaced identity rather than a vanished one.
+            if old_occupied
+                || crate::lifecycle::dir_exists(&old_dir)
+                || crate::lifecycle::dir_exists(&new_dir)
+            {
+                writeln!(
+                    err,
+                    "Error: neither '{}' nor '{}' holds UUID '{}' anymore — refusing over replaced identity (manual repair only). Nothing was renamed.",
+                    intent.old, intent.new, intent.uuid
+                )?;
+            } else {
+                writeln!(
+                    err,
+                    "Error: both '{}' and '{}' are gone for UUID '{}' — refusing (manual repair only). Nothing was renamed.",
+                    intent.old, intent.new, intent.uuid
+                )?;
+            }
+            return Ok(EXIT_FAILED);
+        }
+        Err(Unlocated::OldOccupied) => {
+            writeln!(
+                err,
+                "Error: '{}' is now occupied by another session — refusing to touch a replacement occupant. Retry '{}' after freeing it.",
+                old_dir.display(),
+                retry_command(&intent)
+            )?;
+            return Ok(EXIT_FAILED);
+        }
+    };
     // Re-proof: the recorded server pair and the managed addresses must read
     // back as recorded. A root or registration that moved under the handoff
     // refuses rather than converging the wrong transaction.
-    let current_dir = if new_holds { &new_dir } else { &old_dir };
+    let current_dir = match located {
+        Located::New => &new_dir,
+        Located::Old => &old_dir,
+    };
     let Some(server) = crate::session_launch::recorded_server_resolved(current_dir) else {
         writeln!(
             err,
