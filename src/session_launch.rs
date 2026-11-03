@@ -3383,7 +3383,6 @@ fn stored_session_id(dir: &Path, slot: &str, resuming: bool) -> Option<String> {
 }
 
 #[allow(
-    clippy::too_many_lines,
     clippy::too_many_arguments,
     reason = "the frozen order, kept in one place — see the module docs"
 )]
@@ -3405,66 +3404,13 @@ fn build(
     let dir = sessions.join(&shape.name);
     let work_dir = shape.work_dir.display().to_string();
 
-    if let Err(why) = std::fs::create_dir_all(&sessions) {
-        writeln!(
-            err,
-            "Error: could not create {} ({why})",
-            sessions.display()
-        )?;
-        return Ok(EXIT_FAILED);
-    }
-    // The LIFECYCLE LOCK: a resume carries the one under which it chose this
-    // destination; a new session takes it here before its first tmux write.
-    let lifecycle = if let Some(held) = lifecycle {
-        held
-    } else {
-        let Ok(held) = crate::store::lock(
-            &sessions.join(format!(".lifecycle.{}.lock", shape.name)),
-            LIFECYCLE_WAIT,
-        ) else {
-            writeln!(
-                err,
-                "Error: another lifecycle operation (end) is in progress for '{}' — retry shortly.",
-                shape.name
-            )?;
-            return Ok(EXIT_FAILED);
-        };
-        held
+    let (lifecycle, core) = step!(claim_state(shape, &sessions, &dir, lifecycle, err));
+    let at = Building {
+        server: &server,
+        dir: &dir,
+        work_dir: &work_dir,
+        core: &core,
     };
-
-    let Some(core) = crate::shape::resolved_exe() else {
-        writeln!(err, "Error: the core could not name its own binary.")?;
-        return Ok(EXIT_FAILED);
-    };
-
-    // Ownership as an explicit FACT, decided BEFORE the stamp below needs the
-    // directory to exist — a state dir this attempt found is never a state dir
-    // this attempt may remove.
-    shape.dir_created = !node_exists(&dir);
-    if let Err(why) = create_private_dir(&dir) {
-        writeln!(err, "Error: could not create {} ({why})", dir.display())?;
-        return Ok(EXIT_FAILED);
-    }
-    // THE LAUNCH-ATTEMPT STAMP, and its position is the whole point: under the
-    // lifecycle lock, AFTER the state directory exists and BEFORE the first
-    // tmux create. A launch that then dies between the create and the meta
-    // publication has still left the moment behind, which is what lets a later
-    // reboot proof say "ae has not touched this session since the host booted"
-    // without trusting facts the publication may never have reached.
-    //
-    // CHECKED, never best-effort: a stamp that could not be written would make
-    // the next reboot silently unprovable, so the launch is refused instead.
-    if let Err(why) =
-        crate::store::open(&dir).stamp_launch_attempt(crate::time::Timestamp::now().epoch())
-    {
-        writeln!(
-            err,
-            "Error: could not record the launch attempt for '{}' ({why}). No tmux session was created.",
-            shape.name
-        )?;
-        rollback_dir(shape, &dir, err)?;
-        return Ok(EXIT_FAILED);
-    }
 
     // ---- the session and its first pane ----
     // The identity and the pane come out of the ONE command that created the
@@ -3480,222 +3426,42 @@ fn build(
         name_agent_window(&server, &main_pane, &main.name);
     }
 
-    // ---- worker panes, by layout ----
-    let mut panes = vec![main_pane.clone()];
-    let workers = seats.len().saturating_sub(1);
-    let window = format!("{}:", tmux::session_target(&shape.name));
-    for (index, seat) in seats.iter().skip(1).enumerate() {
-        let created = match worker_placement(&shape.layout, index) {
-            WorkerPane::NewWindow => new_window(&server, &window, &seat.name, &work_dir),
-            WorkerPane::Split { of, dir } => {
-                let target = match of {
-                    PaneRef::First => &panes[0],
-                    PaneRef::Last => &panes[panes.len() - 1],
-                    PaneRef::Window => &window,
-                };
-                split(&server, target, &work_dir, dir)
-            }
-        };
-        let Some(pane) = created else {
-            return rollback_launch(
-                shape,
-                &dir,
-                &server,
-                &format!("Error: could not create a pane for worker {index}"),
-                err,
-            );
-        };
-        panes.push(pane);
-    }
-    apply_layout(&server, shape, &panes, workers);
-
-    // Pane stamps.
-    for (index, seat) in seats.iter().enumerate() {
-        stamp_pane(
-            &server,
-            &panes[index],
-            &seat.name,
-            &seat.slot,
-            &seat.profile,
-        );
-    }
-
-    // ---- the roster, and the ids each seat launches with ----
-    // The recorded client rows, re-read under the lifecycle lock; `seat_client`
-    // decides each seat against them.
-    let recorded_meta: Option<Meta> = if shape.resuming {
-        // A read failure refuses, never launders toward None: a later
-        // successful raw rebuild would drop the client rows and switch the
-        // seats' accounts.
-        let bytes = match meta::read_bytes(&dir) {
-            Ok(bytes) => bytes,
-            Err(why) => {
-                return rollback_launch(
-                    shape,
-                    &dir,
-                    &server,
-                    &format!("cannot read the meta to carry recorded clients: {why}"),
-                    err,
-                );
-            }
-        };
-        Some(Meta::parse(&String::from_utf8_lossy(&bytes)))
-    } else {
-        None
+    // From here on every refusal rolls the whole launch back: the tmux
+    // session is killed, and the state directory removed if this attempt
+    // created it.
+    let panes = match open_panes(at, shape, seats, &main_pane) {
+        Ok(panes) => panes,
+        Err(line) => return rollback_launch(shape, &dir, &server, &line, err),
     };
-    let mut launching: Vec<Launching> = Vec::new();
-    for (index, seat) in seats.iter().enumerate() {
-        let client = match seat_client(&shape.name, seat, recorded_meta.as_ref()) {
-            Ok(client) => client,
-            Err(line) => return rollback_launch(shape, &dir, &server, &line, err),
-        };
-        let stored = stored_session_id(&dir, &seat.slot, shape.resuming);
-        let session_id = launch_session_id(stored, shape.resuming, seat.tool);
-        let launch_id = launch_token(
-            seat.tool,
-            shape
-                .resuming
-                .then(|| meta_value(&dir, &format!("launch_id.{}", seat.slot)))
-                .flatten(),
-        );
-        launching.push(Launching {
-            slot: seat.slot.clone(),
-            name: seat.name.clone(),
-            profile: seat.profile.clone(),
-            client,
-            binary: seat.binary.clone(),
-            tool: seat.tool,
-            session_id,
-            config_home: shape
-                .resuming
-                .then(|| meta_value(&dir, &format!("config_home.{}", seat.slot)))
-                .flatten()
-                .filter(|value| !value.is_empty()),
-            config_home_base: shape
-                .resuming
-                .then(|| meta_value(&dir, &format!("config_home_base.{}", seat.slot)))
-                .flatten()
-                .filter(|value| !value.is_empty()),
-            launch_id,
-            pane: panes[index].clone(),
-            command_snapshot: seat_overrides.map(|_| seat.command.clone()),
-        });
-    }
-
-    // ---- spawned agents, restored on resume ----
-    if shape.resuming {
-        let spawned = match spawned_entries(&dir, &shape.name) {
-            Ok(spawned) => spawned,
-            Err(line) => return rollback_launch(shape, &dir, &server, &line, err),
-        };
-        for entry in spawned {
-            // A profile that is not configured on THIS machine keeps its seat
-            // VERBATIM at its original index — a later resume with the profile
-            // configured restores the worker, and preserving the index keeps
-            // the slot key stable for any in-flight request addressed to it.
-            let command = match cfg.command(&entry.profile, home.as_deref()) {
-                Ok(Some(command)) => command,
-                Ok(None) => IdentityConfig::resolved_snapshot(""),
-                Err(why) => {
-                    return rollback_launch(shape, &dir, &server, &why.to_string(), err);
-                }
-            };
-            let pane = if command.as_str().is_empty() {
-                String::new()
-            } else {
-                match new_window(
-                    &server,
-                    &format!("{}:", tmux::session_target(&shape.name)),
-                    &entry.name,
-                    &work_dir,
-                ) {
-                    Some(pane) => {
-                        stamp_pane(&server, &pane, &entry.name, &entry.slot, &entry.profile);
-                        panes.push(pane.clone());
-                        pane
-                    }
-                    None => String::new(),
-                }
-            };
-            let tool = ToolKind::from_cmd(command.as_str());
-            let launch_id =
-                launch_token(tool, meta_value(&dir, &format!("launch_id.{}", entry.slot)));
-            launching.push(Launching {
-                slot: entry.slot,
-                name: entry.name,
-                profile: entry.profile,
-                client: entry.client,
-                binary: entry.binary,
-                tool,
-                session_id: entry.harness_session,
-                config_home: entry.config_home,
-                config_home_base: entry.config_home_base,
-                launch_id,
-                pane,
-                command_snapshot: seat_overrides
-                    .and_then(|_| (!command.as_str().is_empty()).then(|| command.clone())),
-            });
-        }
-        if let Some(layout) = respawn_layout(&shape.layout) {
-            let target = format!("{}:", tmux::session_target(&shape.name));
-            let _ = transport::run_tmux_op(&argv(
-                &server,
-                &Op::SelectLayout {
-                    target: &target,
-                    layout,
-                },
-            ));
-        }
-    }
-
-    // ---- the meta, published as ONE document ----
-    let document = match meta_document(env, shape, &launching, watchdog, parent) {
-        Ok(document) => document,
-        Err(why) => return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err),
+    let mut launching = match seat_roster(at, shape, seats, &panes, seat_overrides) {
+        Ok(launching) => launching,
+        Err(line) => return rollback_launch(shape, &dir, &server, &line, err),
     };
-    let published = publish_meta_and_seed_uuid(
-        &server,
-        Some(&live_session_id),
-        &dir,
-        shape.resuming,
-        &document,
-    );
-    if published.is_err() {
-        return rollback_launch(
+    if shape.resuming
+        && let Err(line) = restore_spawned(
+            at,
             shape,
-            &dir,
-            &server,
-            "Error: the session meta could not be published.",
-            err,
-        );
+            cfg,
+            home.as_deref(),
+            seat_overrides,
+            &mut launching,
+        )
+    {
+        return rollback_launch(shape, &dir, &server, &line, err);
     }
-
-    // ---- assets ----
-    // RESOLVED, not as invoked: the helper links published below must name the
-    // immutable core, not `~/.local/bin/ae`. macOS answers `current_exe()` with
-    // the path this process was exec'd BY, so on an installed machine the raw
-    // answer is the command symlink — and a session whose helpers pointed at it
-    // would follow the next `ae upgrade` to a core it was never built against.
-    if let Err(why) = assets::write_helpers(&dir, &core) {
-        return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err);
+    if let Err(line) = publish_meta(
+        at,
+        env,
+        shape,
+        &launching,
+        watchdog,
+        parent,
+        &live_session_id,
+    ) {
+        return rollback_launch(shape, &dir, &server, &line, err);
     }
-    let manifest = crate::render::manifest_document(
-        &dir,
-        &shape.name,
-        &work_dir,
-        &shape.origin.display().to_string(),
-        shape.mode.as_str(),
-        &main_pane,
-        &env.config_files(),
-    );
-    if let Err(why) = assets::publish_document(&dir.join("workspace.md"), &manifest) {
-        return rollback_launch(
-            shape,
-            &dir,
-            &server,
-            &format!("Error: could not write the workspace manifest ({why})."),
-            err,
-        );
+    if let Err(line) = write_assets(at, env, shape, &main_pane) {
+        return rollback_launch(shape, &dir, &server, &line, err);
     }
 
     // Resume-only event retention, before the events pane starts tailing: the
@@ -3707,100 +3473,18 @@ fn build(
     // Freshly created panes can still be inside shell init when tmux returns.
     std::thread::sleep(SHELL_SETTLE);
 
-    // ---- launch scripts, and the paste into each pane's shell ----
-    //
-    // Phase 1 is the EXEC half only: each seat's tool is started and its
-    // launch turn, if any, is CARRIED, never delivered. The deliveries wait
-    // below the monitors, because a gated prompt delivery blocks up to 45 s
-    // per seat on the tool's input readiness and the monitor panes must not
-    // wait on any seat. The gate is evaluated here, at exec time: `_run`
-    // publishes the start marker pre-exec on Create, so a later re-read of
-    // `resuming_seat` would wrongly paste a fresh seat.
-    let mut pending: Vec<(&Launching, String)> = Vec::with_capacity(launching.len());
-    for agent in &launching {
-        // A seat with no pane is a preserved roster row, not an agent to start.
-        if agent.pane.is_empty() {
-            continue;
-        }
-        match start_agent(shape, &dir, &core, agent, &server, err)? {
-            Err(why) => {
-                return rollback_launch(shape, &dir, &server, &format!("Error: {why}"), err);
-            }
-            Ok(Some(prompt)) => pending.push((agent, prompt)),
-            Ok(None) => {}
-        }
-    }
+    let pending = match exec_seats(at, shape, &launching, err)? {
+        Ok(pending) => pending,
+        Err(line) => return rollback_launch(shape, &dir, &server, &line, err),
+    };
 
     // The session is fully on disk; `ae end` may safely delete it, and the
     // capture children below are spawned detached past the hold.
     drop(lifecycle);
 
-    // ---- the monitor panes ----
-    // BEFORE the phase-2 deliveries: every fleet-line value is
-    // watchdog-published, so a launch blocked in a readiness wait must still
-    // show a live status line. Rollback is unreachable past phase 1, so these
-    // panes cannot orphan.
-    let events_pane = ensure_events_pane(&server, &shape.name, &dir);
-    if let Some(anchor) = &events_pane {
-        start_watchdog_pane(shape, &dir, &server, anchor, env.no_autostart);
-    }
-
-    // ---- the chat, as the session's first window ----
-    // A VIEW, not a seat: opened once every seat and monitor window exists,
-    // ahead of the look sweep and the phase-2 waits. One that cannot be
-    // opened leaves the launch standing, named on stderr and in the journal.
-    let chat = if shape.chat {
-        let config = env
-            .global
-            .clone()
-            .unwrap_or_else(|| env.home.join("config"));
-        let home = crate::console::toggle::Home::of(&env.home, &config, Some(&dir));
-        open_first_chat(&server, &shape.name, &dir, home, err)?
-    } else {
-        None
-    };
-    if chat.is_some() {
-        stamp_client_session_hook(&server, &shape.name, &main_pane, true);
-    }
-
-    // ---- the per-window half of the look ----
-    // Every window a layout, a seat or a monitor created is stamped; the
-    // phase-2 deliveries create no window, so stamping ahead of them keeps
-    // the contract and the look off the readiness wait. The watchdog
-    // restamps whatever appears after this.
-    stamp_windows(&server, &shape.name, &shape.look);
-
-    // ---- phase 2: the gated launch-prompt deliveries ----
-    // Past the monitors and past the lock: a vanished directory or pane takes
-    // the durable failure inside `deliver_launch_turn`, whose errors are
-    // swallowed, so no state is recreated and nothing panics. A concurrent
-    // launch against this live session reattaches, never rebuilds.
-    for (agent, prompt) in pending {
-        // The outcome is DELIBERATELY dropped here: a launch answers for the
-        // whole roster and each turn already failed durably on its own. Only a
-        // single-slot caller maps it onto an exit code.
-        let _ = deliver_launch_turn(
-            &dir,
-            &server,
-            &agent.slot,
-            &agent.pane,
-            agent.tool,
-            &prompt,
-            OnHumanPrompt::Wait,
-            err,
-        )?;
-    }
-
-    // ---- the resume has settled ----
-    // Every launch turn has ended, however it ended. The rebuild above wrote
-    // no such row, so a crash before this line leaves none: without it the
-    // watchdog treats the seats as it always has.
-    if shape.resuming {
-        let settled = crate::time::Timestamp::now().epoch().to_string();
-        if crate::meta::rewrite(&dir, crate::meta::LAUNCH_SETTLED_KEY, Some(&settled)).is_err() {
-            writeln!(err, "ae: the resume's settled mark was not written.")?;
-        }
-    }
+    // Rollback is unreachable past this point.
+    let chat = open_views(at, env, shape, &main_pane, err)?;
+    deliver_and_settle(at, shape, pending, err)?;
 
     // ---- post-launch capture ----
     // AFTER the deliveries, as before: the capture children poll the tools'
@@ -3837,6 +3521,435 @@ fn build(
 // ---------------------------------------------------------------------------
 // the pieces
 // ---------------------------------------------------------------------------
+
+/// The facts every step of one launch's build addresses: the server, the
+/// session's state directory, its working directory and the resolved core.
+#[derive(Clone, Copy)]
+struct Building<'a> {
+    server: &'a ServerId,
+    dir: &'a Path,
+    work_dir: &'a str,
+    core: &'a Path,
+}
+
+/// The launch's claim on its state, before any tmux write: the sessions root,
+/// the lifecycle lock, the core's own path, the session directory and the
+/// launch-attempt stamp, refusing at the first that fails. Answers the held
+/// lock and the core.
+fn claim_state(
+    shape: &mut Session,
+    sessions: &Path,
+    dir: &Path,
+    lifecycle: Option<std::fs::File>,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, (std::fs::File, PathBuf)>> {
+    if let Err(why) = std::fs::create_dir_all(sessions) {
+        writeln!(
+            err,
+            "Error: could not create {} ({why})",
+            sessions.display()
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    // The LIFECYCLE LOCK: a resume carries the one under which it chose this
+    // destination; a new session takes it here before its first tmux write.
+    let lifecycle = if let Some(held) = lifecycle {
+        held
+    } else {
+        let Ok(held) = crate::store::lock(
+            &sessions.join(format!(".lifecycle.{}.lock", shape.name)),
+            LIFECYCLE_WAIT,
+        ) else {
+            writeln!(
+                err,
+                "Error: another lifecycle operation (end) is in progress for '{}' — retry shortly.",
+                shape.name
+            )?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        };
+        held
+    };
+
+    let Some(core) = crate::shape::resolved_exe() else {
+        writeln!(err, "Error: the core could not name its own binary.")?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    };
+
+    // Ownership as an explicit FACT, decided BEFORE the stamp below needs the
+    // directory to exist — a state dir this attempt found is never a state dir
+    // this attempt may remove.
+    shape.dir_created = !node_exists(dir);
+    if let Err(why) = create_private_dir(dir) {
+        writeln!(err, "Error: could not create {} ({why})", dir.display())?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    // THE LAUNCH-ATTEMPT STAMP, and its position is the whole point: under the
+    // lifecycle lock, AFTER the state directory exists and BEFORE the first
+    // tmux create. A launch that then dies between the create and the meta
+    // publication has still left the moment behind, which is what lets a later
+    // reboot proof say "ae has not touched this session since the host booted"
+    // without trusting facts the publication may never have reached.
+    //
+    // CHECKED, never best-effort: a stamp that could not be written would make
+    // the next reboot silently unprovable, so the launch is refused instead.
+    if let Err(why) =
+        crate::store::open(dir).stamp_launch_attempt(crate::time::Timestamp::now().epoch())
+    {
+        writeln!(
+            err,
+            "Error: could not record the launch attempt for '{}' ({why}). No tmux session was created.",
+            shape.name
+        )?;
+        rollback_dir(shape, dir, err)?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    Ok(ControlFlow::Continue((lifecycle, core)))
+}
+
+/// Every seat's pane: the main pane, then one per worker by layout, the
+/// layout applied, and each pane stamped with its seat. Answers the panes in
+/// seat order, or the line a failed worker pane refuses with.
+fn open_panes(
+    at: Building<'_>,
+    shape: &Session,
+    seats: &[Seat],
+    main_pane: &str,
+) -> Result<Vec<String>, String> {
+    let mut panes = vec![main_pane.to_owned()];
+    let workers = seats.len().saturating_sub(1);
+    let window = format!("{}:", tmux::session_target(&shape.name));
+    for (index, seat) in seats.iter().skip(1).enumerate() {
+        let created = match worker_placement(&shape.layout, index) {
+            WorkerPane::NewWindow => new_window(at.server, &window, &seat.name, at.work_dir),
+            WorkerPane::Split { of, dir } => {
+                let target = match of {
+                    PaneRef::First => &panes[0],
+                    PaneRef::Last => &panes[panes.len() - 1],
+                    PaneRef::Window => &window,
+                };
+                split(at.server, target, at.work_dir, dir)
+            }
+        };
+        let Some(pane) = created else {
+            return Err(format!("Error: could not create a pane for worker {index}"));
+        };
+        panes.push(pane);
+    }
+    apply_layout(at.server, shape, &panes, workers);
+
+    // Pane stamps.
+    for (index, seat) in seats.iter().enumerate() {
+        stamp_pane(
+            at.server,
+            &panes[index],
+            &seat.name,
+            &seat.slot,
+            &seat.profile,
+        );
+    }
+    Ok(panes)
+}
+
+/// The roster, and the ids each seat launches with: the recorded client rows,
+/// re-read under the lifecycle lock on a resume, decide each seat's client;
+/// a resume reuses each seat's recorded ids and homes. Answers one
+/// [`Launching`] per seat, or the line the first refusal prints.
+fn seat_roster(
+    at: Building<'_>,
+    shape: &Session,
+    seats: &[Seat],
+    panes: &[String],
+    seat_overrides: Option<&SeatOverrideSnapshot>,
+) -> Result<Vec<Launching>, String> {
+    let recorded_meta: Option<Meta> = if shape.resuming {
+        // A read failure refuses, never launders toward None: a later
+        // successful raw rebuild would drop the client rows and switch the
+        // seats' accounts.
+        let bytes = meta::read_bytes(at.dir)
+            .map_err(|why| format!("cannot read the meta to carry recorded clients: {why}"))?;
+        Some(Meta::parse(&String::from_utf8_lossy(&bytes)))
+    } else {
+        None
+    };
+    let mut launching: Vec<Launching> = Vec::new();
+    for (index, seat) in seats.iter().enumerate() {
+        let client = seat_client(&shape.name, seat, recorded_meta.as_ref())?;
+        let stored = stored_session_id(at.dir, &seat.slot, shape.resuming);
+        let session_id = launch_session_id(stored, shape.resuming, seat.tool);
+        let launch_id = launch_token(
+            seat.tool,
+            shape
+                .resuming
+                .then(|| meta_value(at.dir, &format!("launch_id.{}", seat.slot)))
+                .flatten(),
+        );
+        launching.push(Launching {
+            slot: seat.slot.clone(),
+            name: seat.name.clone(),
+            profile: seat.profile.clone(),
+            client,
+            binary: seat.binary.clone(),
+            tool: seat.tool,
+            session_id,
+            config_home: shape
+                .resuming
+                .then(|| meta_value(at.dir, &format!("config_home.{}", seat.slot)))
+                .flatten()
+                .filter(|value| !value.is_empty()),
+            config_home_base: shape
+                .resuming
+                .then(|| meta_value(at.dir, &format!("config_home_base.{}", seat.slot)))
+                .flatten()
+                .filter(|value| !value.is_empty()),
+            launch_id,
+            pane: panes[index].clone(),
+            command_snapshot: seat_overrides.map(|_| seat.command.clone()),
+        });
+    }
+    Ok(launching)
+}
+
+/// A resume's spawned agents, restored in slot order after the seats, each in
+/// a window of its own; the split layouts are then rebalanced. Answers the
+/// line the first refusal prints.
+fn restore_spawned(
+    at: Building<'_>,
+    shape: &Session,
+    cfg: &IdentityConfig,
+    home: Option<&Path>,
+    seat_overrides: Option<&SeatOverrideSnapshot>,
+    launching: &mut Vec<Launching>,
+) -> Result<(), String> {
+    let spawned = spawned_entries(at.dir, &shape.name)?;
+    for entry in spawned {
+        // A profile that is not configured on THIS machine keeps its seat
+        // VERBATIM at its original index — a later resume with the profile
+        // configured restores the worker, and preserving the index keeps
+        // the slot key stable for any in-flight request addressed to it.
+        let command = match cfg.command(&entry.profile, home) {
+            Ok(Some(command)) => command,
+            Ok(None) => IdentityConfig::resolved_snapshot(""),
+            Err(why) => return Err(why.to_string()),
+        };
+        let pane = if command.as_str().is_empty() {
+            String::new()
+        } else {
+            match new_window(
+                at.server,
+                &format!("{}:", tmux::session_target(&shape.name)),
+                &entry.name,
+                at.work_dir,
+            ) {
+                Some(pane) => {
+                    stamp_pane(at.server, &pane, &entry.name, &entry.slot, &entry.profile);
+                    pane
+                }
+                None => String::new(),
+            }
+        };
+        let tool = ToolKind::from_cmd(command.as_str());
+        let launch_id = launch_token(
+            tool,
+            meta_value(at.dir, &format!("launch_id.{}", entry.slot)),
+        );
+        launching.push(Launching {
+            slot: entry.slot,
+            name: entry.name,
+            profile: entry.profile,
+            client: entry.client,
+            binary: entry.binary,
+            tool,
+            session_id: entry.harness_session,
+            config_home: entry.config_home,
+            config_home_base: entry.config_home_base,
+            launch_id,
+            pane,
+            command_snapshot: seat_overrides
+                .and_then(|_| (!command.as_str().is_empty()).then(|| command.clone())),
+        });
+    }
+    if let Some(layout) = respawn_layout(&shape.layout) {
+        let target = format!("{}:", tmux::session_target(&shape.name));
+        let _ = transport::run_tmux_op(&argv(
+            at.server,
+            &Op::SelectLayout {
+                target: &target,
+                layout,
+            },
+        ));
+    }
+    Ok(())
+}
+
+/// The meta, published as ONE document. Answers the line a refusal prints.
+fn publish_meta(
+    at: Building<'_>,
+    env: &Env,
+    shape: &Session,
+    launching: &[Launching],
+    watchdog: WatchdogFacts<'_>,
+    parent: Option<&FromProof>,
+    live_session_id: &ProvenIdentity,
+) -> Result<(), String> {
+    let document = meta_document(env, shape, launching, watchdog, parent)
+        .map_err(|why| format!("Error: {why}"))?;
+    let published = publish_meta_and_seed_uuid(
+        at.server,
+        Some(live_session_id),
+        at.dir,
+        shape.resuming,
+        &document,
+    );
+    if published.is_err() {
+        return Err("Error: the session meta could not be published.".to_owned());
+    }
+    Ok(())
+}
+
+/// The session's assets: the helper links and the workspace manifest.
+/// Answers the line a refusal prints.
+fn write_assets(
+    at: Building<'_>,
+    env: &Env,
+    shape: &Session,
+    main_pane: &str,
+) -> Result<(), String> {
+    // RESOLVED, not as invoked: the helper links published below must name the
+    // immutable core, not `~/.local/bin/ae`. macOS answers `current_exe()` with
+    // the path this process was exec'd BY, so on an installed machine the raw
+    // answer is the command symlink — and a session whose helpers pointed at it
+    // would follow the next `ae upgrade` to a core it was never built against.
+    assets::write_helpers(at.dir, at.core).map_err(|why| format!("Error: {why}"))?;
+    let manifest = crate::render::manifest_document(
+        at.dir,
+        &shape.name,
+        at.work_dir,
+        &shape.origin.display().to_string(),
+        shape.mode.as_str(),
+        main_pane,
+        &env.config_files(),
+    );
+    assets::publish_document(&at.dir.join("workspace.md"), &manifest)
+        .map_err(|why| format!("Error: could not write the workspace manifest ({why})."))
+}
+
+/// Launch scripts, and the paste into each pane's shell: phase 1 of the start,
+/// the EXEC half only. Answers each seat's carried launch turn, in roster
+/// order, or the line a refusal prints.
+///
+/// Each seat's tool is started and its launch turn, if any, is CARRIED, never
+/// delivered. The deliveries wait below the monitors, because a gated prompt
+/// delivery blocks up to 45 s per seat on the tool's input readiness and the
+/// monitor panes must not wait on any seat. The gate is evaluated here, at
+/// exec time: `_run` publishes the start marker pre-exec on Create, so a
+/// later re-read of `resuming_seat` would wrongly paste a fresh seat.
+fn exec_seats<'l>(
+    at: Building<'_>,
+    shape: &Session,
+    launching: &'l [Launching],
+    err: &mut impl Write,
+) -> io::Result<Result<Vec<(&'l Launching, String)>, String>> {
+    let mut pending: Vec<(&Launching, String)> = Vec::with_capacity(launching.len());
+    for agent in launching {
+        // A seat with no pane is a preserved roster row, not an agent to start.
+        if agent.pane.is_empty() {
+            continue;
+        }
+        match start_agent(shape, at.dir, at.core, agent, at.server, err)? {
+            Err(why) => return Ok(Err(format!("Error: {why}"))),
+            Ok(Some(prompt)) => pending.push((agent, prompt)),
+            Ok(None) => {}
+        }
+    }
+    Ok(Ok(pending))
+}
+
+/// The session's views, opened past the lock and before the phase-2
+/// deliveries: the monitor panes, the chat as the first window, and the
+/// per-window half of the look. Answers the chat's pane, if one opened.
+fn open_views(
+    at: Building<'_>,
+    env: &Env,
+    shape: &Session,
+    main_pane: &str,
+    err: &mut impl Write,
+) -> io::Result<Option<String>> {
+    // ---- the monitor panes ----
+    // BEFORE the phase-2 deliveries: every fleet-line value is
+    // watchdog-published, so a launch blocked in a readiness wait must still
+    // show a live status line. Rollback is unreachable past phase 1, so these
+    // panes cannot orphan.
+    let events_pane = ensure_events_pane(at.server, &shape.name, at.dir);
+    if let Some(anchor) = &events_pane {
+        start_watchdog_pane(shape, at.dir, at.server, anchor, env.no_autostart);
+    }
+
+    // ---- the chat, as the session's first window ----
+    // A VIEW, not a seat: opened once every seat and monitor window exists,
+    // ahead of the look sweep and the phase-2 waits. One that cannot be
+    // opened leaves the launch standing, named on stderr and in the journal.
+    let chat = if shape.chat {
+        let config = env
+            .global
+            .clone()
+            .unwrap_or_else(|| env.home.join("config"));
+        let home = crate::console::toggle::Home::of(&env.home, &config, Some(at.dir));
+        open_first_chat(at.server, &shape.name, at.dir, home, err)?
+    } else {
+        None
+    };
+    if chat.is_some() {
+        stamp_client_session_hook(at.server, &shape.name, main_pane, true);
+    }
+
+    // ---- the per-window half of the look ----
+    // Every window a layout, a seat or a monitor created is stamped; the
+    // phase-2 deliveries create no window, so stamping ahead of them keeps
+    // the contract and the look off the readiness wait. The watchdog
+    // restamps whatever appears after this.
+    stamp_windows(at.server, &shape.name, &shape.look);
+    Ok(chat)
+}
+
+/// Phase 2: the gated launch-prompt deliveries, then a resume's settled mark.
+fn deliver_and_settle(
+    at: Building<'_>,
+    shape: &Session,
+    pending: Vec<(&Launching, String)>,
+    err: &mut impl Write,
+) -> io::Result<()> {
+    // Past the monitors and past the lock: a vanished directory or pane takes
+    // the durable failure inside `deliver_launch_turn`, whose errors are
+    // swallowed, so no state is recreated and nothing panics. A concurrent
+    // launch against this live session reattaches, never rebuilds.
+    for (agent, prompt) in pending {
+        // The outcome is DELIBERATELY dropped here: a launch answers for the
+        // whole roster and each turn already failed durably on its own. Only a
+        // single-slot caller maps it onto an exit code.
+        let _ = deliver_launch_turn(
+            at.dir,
+            at.server,
+            &agent.slot,
+            &agent.pane,
+            agent.tool,
+            &prompt,
+            OnHumanPrompt::Wait,
+            err,
+        )?;
+    }
+
+    // ---- the resume has settled ----
+    // Every launch turn has ended, however it ended. The rebuild above wrote
+    // no such row, so a crash before this line leaves none: without it the
+    // watchdog treats the seats as it always has.
+    if shape.resuming {
+        let settled = crate::time::Timestamp::now().epoch().to_string();
+        if crate::meta::rewrite(at.dir, crate::meta::LAUNCH_SETTLED_KEY, Some(&settled)).is_err() {
+            writeln!(err, "ae: the resume's settled mark was not written.")?;
+        }
+    }
+    Ok(())
+}
 
 /// Which existing pane or window a worker split divides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
