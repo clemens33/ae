@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.10] - 2026-11-03
+- Pin the done and wait progress folds event by event before taking them apart
+- Done and wait progress share one episode, its launch match and its phase at now
+- Done and wait progress read each record through one step table and apply it in a short fold
+- The wait step table names which challenge its state is judged before its launch
+- Pin the console key decoder across chunk splits, read stamps, idle bounds and both decoders
+- The key decoder asks one function what a byte outside any sequence, report or paste is
+- The key decoder asks two functions what an escape sequence so far is and which key it spells
+- The key decoder asks one function what a byte inside a paste does to the bytes held behind it
+- The key decoder feed dispatches each byte to the step its state names
+- Pin ae init render output byte for byte before taking it apart
+- Ae init render builds its header in one place
+- Ae init render filters clients lines in one place
+- Ae init render filters profiles lines in one place
+- Ae init render rewrites roster lines in one place
+- Ae init render rewrites workspace lines and dispatches by section
+- Pin the markdown event mapper by its Mapped rows, hand-built streams and container exits before taking it apart
+- The markdown mapper takes inline marks, links, literal text and rules through short handlers
+- The markdown mapper opens and closes leaf blocks and code through paired handlers
+- The markdown mapper opens and closes quotes, lists and items through paired handlers
+- The markdown mapper opens and closes tables, rows and cells through paired handlers
+- The markdown mapper is a short dispatch over start, end and text events, without its lint allowance
+- Pin the markdown mapper quote marks, html block starts, code text newlines and paragraph ends
+
 ## [v2026.11.9] - 2026-11-03
 - Characterize launch plan argv grammar
 - Split launch argv parsing into named steps
