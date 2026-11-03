@@ -1763,7 +1763,7 @@ fn end_one(
 /// End one session whose lifecycle lock the caller holds.
 #[allow(
     clippy::too_many_lines,
-    reason = "the frozen order IS the contract; splitting it would put the sequence in two places"
+    reason = "the frozen order IS the contract: every step is named here, in order, so the sequence stays in one place"
 )]
 fn end_locked(
     root: &Path,
@@ -1816,7 +1816,6 @@ fn end_locked(
     };
 
     let mode = meta_value(&bytes, "mode");
-    let origin = meta_value(&bytes, "origin");
     let work_dir = resolve_workdir(root, &bytes, name);
 
     let plan = resolve_plan(root, name, current_purge);
@@ -1864,107 +1863,25 @@ fn end_locked(
         return Ok(true);
     }
 
-    // git/full mode.
+    // The git path: git and full mode, and by exclusion any mode not local.
     let wdir_bytes = work_dir.as_os_str().as_encoded_bytes().to_vec();
-    if !dir_exists(&work_dir) || !crate::git::is_work_tree(&wdir_bytes) {
-        writeln!(
-            err,
-            "Error: working directory is not a git repo — cannot preserve work."
-        )?;
-        writeln!(
-            err,
-            "  Nothing was stopped and nothing was deleted; the session is still running."
-        )?;
-        writeln!(err, "  Working directory: {}", work_dir.display())?;
+    if workdir_refused(&work_dir, &wdir_bytes, err)? {
         return Ok(false);
     }
     // STOP FIRST — and verify it.
     if !stop_target(&dir, name, &bytes, &plan, &proof, err)? {
         return Ok(false);
     }
-
-    if crate::git::has_pending_work(&wdir_bytes) {
-        writeln!(out, "Committing changes in {name}...")?;
-        let stamp = Timestamp::now().to_string();
-        let human = stamp.replace('T', " ").replace('Z', " UTC");
-        if !crate::git::commit_all(
-            &wdir_bytes,
-            &format!("ae: end session {name}"),
-            &format!("Ended: {human}"),
-        ) {
-            writeln!(
-                err,
-                "Error: commit failed. The session is STOPPED; nothing was deleted."
-            )?;
-            writeln!(
-                err,
-                "  Your work, ae state and agent conversation files are all preserved."
-            )?;
-            writeln!(err, "  Working directory: {}", work_dir.display())?;
-            writeln!(err, "  Fix the commit there, then re-run: ae end {name}")?;
-            writeln!(err, "  Or pick the session back up: ae {name}")?;
-            return Ok(false);
-        }
+    if !commit_pending(&wdir_bytes, &work_dir, name, out, err)? {
+        return Ok(false);
     }
-
     // The push outcome is recorded by the branch that ACTUALLY runs and handed
     // to the archive — never rediscovered afterwards, when the remote may have
     // moved and the worktree may already be gone.
-    let has_origin = crate::git::has_origin(&wdir_bytes);
-    let mut git = Git::none();
-    let mut preserve_workdir = false;
-    if has_origin {
-        crate::git::fetch_origin(&wdir_bytes);
-    }
-    if has_origin && !crate::git::head_is_on_a_remote(&wdir_bytes) {
-        let branch = sanitize_branch_name(name);
-        writeln!(out, "Pushing to origin/{branch}...")?;
-        writeln!(
-            out,
-            "  {} file(s) changed",
-            crate::git::pushed_file_count(&wdir_bytes)
-        )?;
-        if !crate::git::push_head(&wdir_bytes, &branch) {
-            writeln!(
-                err,
-                "Error: push failed. The session is STOPPED; nothing was deleted."
-            )?;
-            writeln!(
-                err,
-                "  The commit is safe locally — ae state and the working tree are preserved."
-            )?;
-            writeln!(err, "  Working directory: {}", work_dir.display())?;
-            writeln!(
-                err,
-                "  To retry the push: cd {} && git push -u origin HEAD:refs/heads/{branch}",
-                work_dir.display()
-            )?;
-            writeln!(err, "  Then finish up:    ae end {name}")?;
-            writeln!(err, "  Or pick the session back up: ae {name}")?;
-            return Ok(false);
-        }
-        writeln!(out, "Pushed to origin/{branch}")?;
-        "pushed".clone_into(&mut git.outcome);
-        git.push_ref = format!("origin/{branch}");
-        git.workdir = work_dir.display().to_string();
-    } else if has_origin {
-        writeln!(out, "No new commits to push.")?;
-        "already-reachable".clone_into(&mut git.outcome);
-        git.workdir = work_dir.display().to_string();
-    } else {
-        // B3 durability: a no-remote git target just COMMITTED work that exists
-        // ONLY in this directory.
-        writeln!(
-            out,
-            "Working directory preserved: {} (no origin remote to push to).",
-            work_dir.display()
-        )?;
-        preserve_workdir = true;
-        "no-origin".clone_into(&mut git.outcome);
-        git.preserved = work_dir.display().to_string();
-        git.workdir = work_dir.display().to_string();
-    }
-
+    let Some((mut git, mut preserve_workdir)) = push_work(&wdir_bytes, &work_dir, name, out, err)?
+    else {
+        return Ok(false);
+    };
     if !preserve_workdir && nonlossless_workdir(&work_dir, name, out)? {
         preserve_workdir = true;
         git.preserved = work_dir.display().to_string();
@@ -1981,8 +1898,158 @@ fn end_locked(
     } else {
         writeln!(out, "Ended {name}")?;
     }
-    let _ = (origin, mode);
     Ok(true)
+}
+
+/// Whether the git path cannot preserve the work because the working
+/// directory is missing or not a git work tree, saying so on `err` before
+/// anything is stopped. A missing directory asks git nothing.
+fn workdir_refused(work_dir: &Path, wdir: &[u8], err: &mut impl Write) -> io::Result<bool> {
+    if dir_exists(work_dir) && crate::git::is_work_tree(wdir) {
+        return Ok(false);
+    }
+    writeln!(
+        err,
+        "Error: working directory is not a git repo — cannot preserve work."
+    )?;
+    writeln!(
+        err,
+        "  Nothing was stopped and nothing was deleted; the session is still running."
+    )?;
+    writeln!(err, "  Working directory: {}", work_dir.display())?;
+    Ok(true)
+}
+
+/// Commit whatever the stopped session left uncommitted; a clean tree commits
+/// nothing and stamps nothing. Whether the end may go on: a failed commit is
+/// reported on `err` with the way back.
+fn commit_pending(
+    wdir: &[u8],
+    work_dir: &Path,
+    name: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    if !crate::git::has_pending_work(wdir) {
+        return Ok(true);
+    }
+    writeln!(out, "Committing changes in {name}...")?;
+    let stamp = Timestamp::now().to_string();
+    let human = stamp.replace('T', " ").replace('Z', " UTC");
+    if crate::git::commit_all(
+        wdir,
+        &format!("ae: end session {name}"),
+        &format!("Ended: {human}"),
+    ) {
+        return Ok(true);
+    }
+    writeln!(
+        err,
+        "Error: commit failed. The session is STOPPED; nothing was deleted."
+    )?;
+    writeln!(
+        err,
+        "  Your work, ae state and agent conversation files are all preserved."
+    )?;
+    writeln!(err, "  Working directory: {}", work_dir.display())?;
+    writeln!(err, "  Fix the commit there, then re-run: ae end {name}")?;
+    writeln!(err, "  Or pick the session back up: ae {name}")?;
+    Ok(false)
+}
+
+/// Where the committed work went.
+enum Pushed {
+    /// Pushed to this `ae/…` branch on origin.
+    Branch(String),
+    /// Already on a remote branch; nothing to push.
+    Reachable,
+    /// No origin remote: the work exists only in the directory.
+    NoOrigin,
+}
+
+/// Push the committed work if origin lacks it, saying what happened on `out`:
+/// the archive's git facts and whether the directory must be preserved, or
+/// `None` for a failed push reported on `err` with the way back. The remote is
+/// fetched, and HEAD placed against it, only when there is an origin.
+fn push_work(
+    wdir: &[u8],
+    work_dir: &Path,
+    name: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<Option<(Git, bool)>> {
+    let has_origin = crate::git::has_origin(wdir);
+    if has_origin {
+        crate::git::fetch_origin(wdir);
+    }
+    let pushed = if has_origin && !crate::git::head_is_on_a_remote(wdir) {
+        let branch = sanitize_branch_name(name);
+        writeln!(out, "Pushing to origin/{branch}...")?;
+        writeln!(
+            out,
+            "  {} file(s) changed",
+            crate::git::pushed_file_count(wdir)
+        )?;
+        if !crate::git::push_head(wdir, &branch) {
+            writeln!(
+                err,
+                "Error: push failed. The session is STOPPED; nothing was deleted."
+            )?;
+            writeln!(
+                err,
+                "  The commit is safe locally — ae state and the working tree are preserved."
+            )?;
+            writeln!(err, "  Working directory: {}", work_dir.display())?;
+            writeln!(
+                err,
+                "  To retry the push: cd {} && git push -u origin HEAD:refs/heads/{branch}",
+                work_dir.display()
+            )?;
+            writeln!(err, "  Then finish up:    ae end {name}")?;
+            writeln!(err, "  Or pick the session back up: ae {name}")?;
+            return Ok(None);
+        }
+        writeln!(out, "Pushed to origin/{branch}")?;
+        Pushed::Branch(branch)
+    } else if has_origin {
+        writeln!(out, "No new commits to push.")?;
+        Pushed::Reachable
+    } else {
+        // B3 durability: a no-remote git target just COMMITTED work that exists
+        // ONLY in this directory.
+        writeln!(
+            out,
+            "Working directory preserved: {} (no origin remote to push to).",
+            work_dir.display()
+        )?;
+        Pushed::NoOrigin
+    };
+    Ok(Some(push_facts(pushed, work_dir)))
+}
+
+/// The archive's git facts for where the work went, and whether the directory
+/// is preserved — PURE. Every field a kind does not name keeps the
+/// [`Git::none`] value; the `"-"` of `preserved` is load-bearing, because the
+/// finish preserves the directory whenever it is anything else.
+fn push_facts(pushed: Pushed, work_dir: &Path) -> (Git, bool) {
+    let mut git = Git::none();
+    git.workdir = work_dir.display().to_string();
+    match pushed {
+        Pushed::Branch(branch) => {
+            "pushed".clone_into(&mut git.outcome);
+            git.push_ref = format!("origin/{branch}");
+            (git, false)
+        }
+        Pushed::Reachable => {
+            "already-reachable".clone_into(&mut git.outcome);
+            (git, false)
+        }
+        Pushed::NoOrigin => {
+            "no-origin".clone_into(&mut git.outcome);
+            git.preserved.clone_from(&git.workdir);
+            (git, true)
+        }
+    }
 }
 
 /// Which end finishes without a git step of its own, and its final word —
@@ -3056,9 +3123,10 @@ fn socket_dir(root: &Path) -> Option<PathBuf> {
 mod tests {
     use super::{
         Action, ConfirmedPlan, EndExpectation, ExpectWords, FrozenTarget, FrozenTmux, Git, Plan,
-        Reproof, Sweep, TmuxSight, Verdict, archive_step, early_finish, end_prompt, end_purge,
-        freeze_target, parse, path_exists, purge_conversation_files, refusal_before_stop, reprove,
-        sanitize_branch_name, server_from_words, supervisor_args, unrecorded_verdict,
+        Pushed, Reproof, Sweep, TmuxSight, Verdict, archive_step, early_finish, end_prompt,
+        end_purge, freeze_target, parse, path_exists, purge_conversation_files, push_facts,
+        refusal_before_stop, reprove, sanitize_branch_name, server_from_words, supervisor_args,
+        unrecorded_verdict,
     };
     use std::path::{Path, PathBuf};
 
@@ -4030,5 +4098,30 @@ mod tests {
             let (git, ended) = early_finish(mode, Some(retried())).expect("a retry skips git");
             assert_eq!((git.outcome.as_str(), ended), ("pushed", "Ended"));
         }
+    }
+
+    #[test]
+    fn the_push_facts_keep_every_unnamed_field_at_its_none_value() {
+        let facts = |pushed| {
+            let (git, preserve) = push_facts(pushed, Path::new("/w d"));
+            (
+                [git.outcome, git.push_ref, git.preserved, git.workdir],
+                git.retry_id,
+                preserve,
+            )
+        };
+        let row = |cells: [&str; 4]| cells.map(str::to_owned);
+        assert_eq!(
+            facts(Pushed::Branch("ae/s".to_owned())),
+            (row(["pushed", "origin/ae/s", "-", "/w d"]), None, false)
+        );
+        assert_eq!(
+            facts(Pushed::Reachable),
+            (row(["already-reachable", "-", "-", "/w d"]), None, false)
+        );
+        assert_eq!(
+            facts(Pushed::NoOrigin),
+            (row(["no-origin", "-", "/w d", "/w d"]), None, true)
+        );
     }
 }
