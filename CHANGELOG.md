@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.8] - 2026-11-03
+- Auto reseat proves a muse seat is limit-stopped from its own final frame, and refuses to stop one that still runs a background task
+- A muse limit stop needs a fleet model footer, a full-width labelled voice rule and the exact limit head
+- Pin each muse voice-rule defect on its own, and a closing row that is text rather than a rule
+- The muse limit proof asks the tool adapter rather than naming the variant, and its test modules are declared ahead of mod tests
+- Pin that a standing scan ends the gap for muse alone, not for claude
+
 ## [v2026.11.7] - 2026-11-03
 - Cut AGENTS.md to the rules an agent cannot infer; move the rest to the docs it already links
 - A limited claude seat is stoppable when only echoes and the vendor's limit rows follow its cell, and a refused stop names why
