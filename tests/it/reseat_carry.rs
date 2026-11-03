@@ -1106,3 +1106,33 @@ fn a_failed_continuation_keeps_status_and_safe_recovery_with_maximum_agent_names
         );
     }
 }
+#[test]
+fn runparsed_a_clear_failure_says_the_carried_copy_is_inert_and_the_marker_is_back() {
+    let rig = Rig::new("rpcarryclear");
+    dead_seat(&rig);
+    let marker = rig.dir.join("launch.spawned.0.started");
+    let prompt = rig.dir.join("launch.spawned.0.prompt");
+    assert!(std::fs::create_dir(&prompt).is_ok());
+    let meta = rig.meta();
+    let events = rig.events();
+
+    let (code, out, err) = reseat(&rig, "fake-claude-b");
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert!(
+        out.starts_with(&format!("carried conversation {ID} from ")),
+        "{out}"
+    );
+    assert!(err.ends_with("— the seat was not moved and 'scout' still records profile 'fake-claude-a'. Its start marker is back; the copy already in the other account is inert, since no record names it.\n"), "{err}");
+    assert!(marker.is_file());
+    assert!(prompt.is_dir());
+    assert_eq!(rig.meta(), meta);
+    assert_eq!(rig.events(), events);
+    let copied = account(&rig, "b")
+        .join("projects")
+        .join(ae::carry::project_key(&work_dir(&rig)))
+        .join(format!("{ID}.jsonl"));
+    assert_eq!(std::fs::read(copied).unwrap_or_default(), TRANSCRIPT);
+    assert!(!rig.dir.join("seed.scout.md").exists());
+    assert!(rig.received().is_empty());
+}

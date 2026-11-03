@@ -993,3 +993,283 @@ fn a_seed_blocked_by_claudes_folder_trust_prompt_fails_fast_naming_it_and_the_ne
     );
     assert!(rig.dir.join("seed.scout.md").exists(), "the seed is kept");
 }
+// Frozen runparsed characterization: failures preserve their exact side of the move.
+
+fn runparsed_move(rig: &Rig, profile: &str) -> (Option<i32>, String, String) {
+    rig.run_top(
+        &rig.main_pane,
+        &["reseat", &rig.session, "scout", "--using", profile],
+    )
+}
+
+#[test]
+fn runparsed_lifecycle_contention_refuses_before_a_running_seat_is_stopped() {
+    let rig = Rig::new("rplock");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    let meta = rig.meta();
+    let events = rig.events();
+    let held = ae::store::lock(
+        &rig.scratch
+            .join("sessions")
+            .join(format!(".lifecycle.{}.lock", rig.session)),
+        std::time::Duration::ZERO,
+    )
+    .unwrap_or_else(|why| panic!("fixture lifecycle lock: {why}"));
+
+    let (code, out, err) = runparsed_move(&rig, "fake-opencode");
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert_eq!(
+        err.lines().last(),
+        Some(
+            format!(
+                "Error: another lifecycle operation holds '{}' — it waited and gave up. Try again once that finishes.",
+                rig.session
+            )
+            .as_str()
+        )
+    );
+    assert!(out.is_empty(), "{out}");
+    assert_eq!(rig.meta(), meta);
+    assert_eq!(rig.events(), events);
+    assert!(rig.tool_pid(&pane, "claude").is_some());
+    assert!(!rig.dir.join("seed.scout.md").exists());
+    drop(held);
+}
+
+#[test]
+fn runparsed_seed_publish_failure_keeps_launch_files_after_recording_the_stop() {
+    let rig = Rig::new("rpseed");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    let marker = rig.dir.join("launch.spawned.0.started");
+    let prompt = rig.dir.join("launch.spawned.0.prompt");
+    assert!(std::fs::write(&prompt, "RUNPARSED FIRST MESSAGE").is_ok());
+    let meta = rig.meta();
+    let seed = rig.dir.join("seed.scout.md");
+    assert!(std::fs::create_dir(&seed).is_ok());
+
+    let (code, out, err) = runparsed_move(&rig, "fake-opencode");
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert!(
+        err.contains(&format!("Error: could not publish {} (", seed.display())),
+        "{err}"
+    );
+    assert!(err.ends_with(". Nothing was reseated.\n"), "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(seed.is_dir());
+    assert!(marker.is_file(), "seed publication must precede clear_slot");
+    assert_eq!(
+        std::fs::read_to_string(prompt).unwrap_or_default(),
+        "RUNPARSED FIRST MESSAGE"
+    );
+    assert_eq!(rig.meta(), meta, "stopping does not publish a seat move");
+    assert!(rig.tool_pid(&pane, "claude").is_none());
+    assert!(rig.tool_pid(&pane, "opencode").is_none());
+    let events: Vec<_> = rig
+        .events()
+        .lines()
+        .map(|line| {
+            ae::events::Event::parse_line(line)
+                .unwrap_or_else(|why| panic!("product event: {why:?}"))
+        })
+        .collect();
+    let moves: Vec<_> = events
+        .iter()
+        .filter(|event| event.action == "reseat")
+        .collect();
+    assert_eq!(moves.len(), 1, "{moves:?}");
+    assert_eq!(
+        moves[0].summary.as_deref(),
+        Some(
+            format!("stopped claude in place (pane {pane}) [from fake-claude to fake-opencode]")
+                .as_str()
+        )
+    );
+    assert!(rig.received().is_empty());
+}
+
+#[test]
+fn runparsed_fresh_clear_failure_keeps_seed_and_old_meta_without_restoring_the_marker() {
+    let rig = Rig::new("rpclear");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    rig.kill_tools(&pane);
+    let marker = rig.dir.join("launch.spawned.0.started");
+    assert!(marker.is_file());
+    let prompt = rig.dir.join("launch.spawned.0.prompt");
+    assert!(std::fs::create_dir(&prompt).is_ok());
+    let meta = rig.meta();
+    let events = rig.events();
+
+    let (code, out, err) = runparsed_move(&rig, "fake-opencode");
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    let line = err.lines().last().unwrap_or_default();
+    assert!(
+        line.starts_with("Error: the launch files of slot spawned.0 could not be cleared ("),
+        "{err}"
+    );
+    assert!(
+        line.ends_with("— the seat was not moved and 'scout' still records profile 'fake-claude'."),
+        "{err}"
+    );
+    assert!(out.is_empty(), "{out}");
+    assert!(!marker.exists(), "a fresh move restores no resume marker");
+    assert!(prompt.is_dir());
+    assert_eq!(rig.meta(), meta);
+    assert_eq!(rig.events(), events, "no stop or move completed");
+    let seed = std::fs::read_to_string(rig.dir.join("seed.scout.md")).unwrap_or_default();
+    assert!(
+        seed.starts_with("⟦ae:ctx⟧\n"),
+        "seed is published before clear_slot: {seed}"
+    );
+    assert!(rig.received().is_empty());
+}
+
+#[test]
+fn runparsed_a_profileless_seat_refuses_at_the_dead_proof_before_seed_or_cleanup() {
+    // Characterize BS1: the run_parsed comment calls this legal, but the
+    // borrowed dead proof cannot read a seat with no profile. Preserve it.
+    let rig = Rig::new("rpnoprof");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    rig.kill_tools(&pane);
+    let text = rig
+        .meta()
+        .lines()
+        .filter(|line| !line.starts_with("profile.spawned.0="))
+        .fold(String::new(), |mut text, line| {
+            let _ = writeln!(text, "{line}");
+            text
+        });
+    assert!(std::fs::write(rig.dir.join("meta"), text).is_ok());
+    let marker = rig.dir.join("launch.spawned.0.started");
+    let prompt = rig.dir.join("launch.spawned.0.prompt");
+    assert!(std::fs::write(&prompt, "PROFILELESS FIRST MESSAGE").is_ok());
+    let meta = rig.meta();
+    let events = rig.events();
+
+    let (code, out, err) = runparsed_move(&rig, "fake-opencode");
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert_eq!(
+        err.lines().last(),
+        Some("Error: seat 'spawned.0' has no profile recorded. Nothing was reseated.")
+    );
+    assert!(out.is_empty(), "{out}");
+    assert!(marker.is_file(), "dead proof precedes cleanup");
+    assert_eq!(
+        std::fs::read_to_string(prompt).unwrap_or_default(),
+        "PROFILELESS FIRST MESSAGE"
+    );
+    assert_eq!(rig.meta(), meta);
+    assert_eq!(rig.events(), events);
+    assert!(!rig.dir.join("seed.scout.md").exists());
+    assert!(rig.received().is_empty());
+}
+
+#[test]
+fn runparsed_cover_warning_then_tool_change_note_precede_the_busy_stop_refusal() {
+    let rig = Rig::new("rporder");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    rig.mark_busy(&pane);
+    let config = rig.scratch.join("config");
+    let text = std::fs::read_to_string(&config).unwrap_or_default();
+    assert!(
+        std::fs::write(
+            config,
+            text.replace(
+                "layout = vertical\n",
+                "layout = vertical\nauto_reseat = on\n"
+            )
+        )
+        .is_ok()
+    );
+    let meta = rig.meta();
+    let events = rig.events();
+
+    let (code, out, err) = runparsed_move(&rig, "fake-opencode");
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    let lines: Vec<_> = err.lines().collect();
+    assert_eq!(lines.len(), 3, "{err}");
+    assert!(
+        lines[0].starts_with(
+            "ae: warning: profile 'fake-opencode' has no auto-reseat exit off its account"
+        ),
+        "{err}"
+    );
+    assert!(
+        lines[1].starts_with("note: 'scout' records claude and 'fake-opencode' runs opencode:"),
+        "{err}"
+    );
+    assert!(
+        lines[2].contains("is BUSY — a turn is running in pane"),
+        "{err}"
+    );
+    assert!(out.is_empty(), "{out}");
+    assert_eq!(rig.meta(), meta);
+    assert_eq!(rig.events(), events);
+    assert!(rig.tool_pid(&pane, "claude").is_some());
+    assert!(rig.received().is_empty());
+}
+
+#[test]
+fn runparsed_lifecycle_lock_is_free_while_the_successor_waits_for_its_composer() {
+    let rig = Rig::new("rpunlock");
+    let pane = rig.seat("spawned.0", "scout", "claude");
+    rig.kill_tools(&pane);
+    let mut command = super::cli::ae();
+    command
+        .env("TMUX", format!("{},0,0", rig.sock.display()))
+        .env("TMUX_PANE", &rig.main_pane)
+        .env("AE_HOME", &rig.scratch)
+        .env_remove("AE_SENDER_OVERRIDE")
+        .args(["reseat", &rig.session, "scout", "--using", "fake-codex"]);
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    let mut child = command
+        .spawn()
+        .unwrap_or_else(|why| panic!("reseat child: {why}"));
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while rig.tool_pid(&pane, "codex").is_none() {
+        assert!(
+            child.try_wait().is_ok_and(|status| status.is_none()),
+            "reseat ended before successor identity"
+        );
+        assert!(
+            std::time::Instant::now() < until,
+            "successor was never seen"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let lock = rig
+        .scratch
+        .join("sessions")
+        .join(format!(".lifecycle.{}.lock", rig.session));
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let held = loop {
+        if let Ok(held) = ae::store::lock(&lock, std::time::Duration::ZERO) {
+            break held;
+        }
+        assert!(
+            child.try_wait().is_ok_and(|status| status.is_none()),
+            "reseat ended before lock release was observed"
+        );
+        assert!(
+            std::time::Instant::now() < until,
+            "lifecycle lock stayed held through readiness wait"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(
+        child.try_wait().is_ok_and(|status| status.is_none()),
+        "the lock must be free DURING the wait"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-codex");
+    assert!(
+        rig.received().is_empty(),
+        "the unmodelled fake has accepted no launch turn"
+    );
+    drop(held);
+    drop(child);
+}
