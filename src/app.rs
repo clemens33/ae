@@ -4688,8 +4688,7 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
         }
         // An open overlay or seat view owns its keys even before the first
         // fleet read lands; only plain navigation waits for the fleet.
-        let modal = app.model.settings_open() || app.model.peek_open() || app.model.reader_open();
-        if !app.fleeted && !modal && key != Key::Interrupt {
+        if !app.fleeted && !overlay_open(app) && key != Key::Interrupt {
             redraw |= early(app, &key, origin)?;
             continue;
         }
@@ -4708,8 +4707,10 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
             };
             continue;
         }
+        // Browsing here is not `Mode::Browse`: the seat view and the reader
+        // count as browsing, the settings overlay does not.
         let browsing = !app.model.settings_open() && !app.composing() && app.held.is_none();
-        if key != Key::Interrupt && !(browsing && matches!(key, Key::Text(_))) {
+        if disarms(&key, browsing) {
             redraw |= app.armed.take().is_some();
         }
         // A selection a panel change left behind is gone before this key; Esc
@@ -4722,6 +4723,18 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
         redraw |= route_key(app, key, origin)?;
     }
     Some(redraw)
+}
+
+/// Whether the settings overlay, the seat view or the reader is open: each
+/// owns its keys.
+fn overlay_open(app: &App) -> bool {
+    app.model.settings_open() || app.model.peek_open() || app.model.reader_open()
+}
+
+/// Whether `key` ends the armed press: any key but `^C`, and but a letter
+/// while `browsing`, where a Text run decides for itself byte by byte.
+fn disarms(key: &Key, browsing: bool) -> bool {
+    *key != Key::Interrupt && !(browsing && matches!(key, Key::Text(_)))
 }
 
 /// Route one key that passed every gate: a mouse report acts on the frame
@@ -6728,6 +6741,68 @@ mod tests {
         assert_eq!(super::mode([true, false, false], true, false), Settings);
         assert_eq!(super::mode([false, true, false], true, false), Peek);
         assert_eq!(super::mode([false; 3], false, true), Held);
+    }
+
+    /// With two overlays open, the earlier of settings, seat view, reader owns
+    /// the key at the call site too, not just in [`mode`]: Esc is handled as
+    /// that one's close, which tells the reader thread of exactly that one.
+    #[test]
+    fn esc_is_the_close_of_the_first_open_overlay() {
+        let at = Instant::now();
+        let held = |open: fn(&mut Model), asks: &mut Vec<loader::Request>| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut app = App::new(None, None, None, Some(tx));
+            app.fleeted = true;
+            open(&mut app.model);
+            assert_eq!(take_keys(&mut app, vec![(Key::Escape, at)]), Some(true));
+            asks.extend(rx.try_iter());
+        };
+        let mut told = Vec::new();
+        held(
+            |model| {
+                model.open_peek(1);
+                model.open_settings(1);
+            },
+            &mut told,
+        );
+        assert!(
+            told.iter()
+                .any(|ask| matches!(ask, loader::Request::Settings { open: false, .. })),
+            "settings took the Esc and said it closed"
+        );
+        assert!(
+            !told
+                .iter()
+                .any(|ask| matches!(ask, loader::Request::Peek(_)))
+        );
+        let mut told = Vec::new();
+        held(
+            |model| {
+                model.open_reader(1);
+                model.open_peek(1);
+            },
+            &mut told,
+        );
+        assert!(
+            told.iter()
+                .any(|ask| matches!(ask, loader::Request::Peek(None))),
+            "the seat view took the Esc and said it closed"
+        );
+    }
+
+    /// An armed press survives `^C` and, while browsing, a letter; any other
+    /// key ends it (docs/app.md §Keys: "disarmed by any other key").
+    #[test]
+    fn only_interrupt_and_a_browsing_letter_keep_an_armed_press() {
+        let letter = Key::Text(b"j".to_vec());
+        for browsing in [true, false] {
+            assert!(!super::disarms(&Key::Interrupt, browsing), "^C {browsing}");
+            for other in [Key::Down, Key::Enter, Key::Escape, Key::Tab] {
+                assert!(super::disarms(&other, browsing), "{other:?} {browsing}");
+            }
+        }
+        assert!(!super::disarms(&letter, true), "a browsing letter");
+        assert!(super::disarms(&letter, false), "a letter in a draft");
     }
 
     /// O1: a press after the window passed arms the seat the CURRENT frame
