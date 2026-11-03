@@ -1755,6 +1755,100 @@ fn launch_matches(event: &Event, launch: Option<&str>) -> bool {
     })
 }
 
+/// What one relevant record does to a progress episode, as one fold judges
+/// it: the first row of that fold's table the record matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// Leaves the episode as it is.
+    Skip,
+    /// Ends the episode.
+    Reset,
+    /// A failed delivery of the fold's own challenge.
+    Attempt,
+    /// The fold's own challenge reached the pane.
+    Delivered,
+    /// The seat's own declaration of the tracked state.
+    Proof,
+    /// A record the wait outlives that is not the watchdog's (#225).
+    News,
+}
+
+/// The fold's OWN challenge record, past any state filter: another
+/// incarnation's ends the episode, an unconfirmed one is a failed attempt.
+fn challenge_step(event: &Event, launch: Option<&str>) -> Step {
+    if !launch_matches(event, launch) {
+        Step::Reset
+    } else if crate::tracked::summary_is_unconfirmed(event.summary.as_deref()) {
+        Step::Attempt
+    } else {
+        Step::Delivered
+    }
+}
+
+/// [`done_progress`]'s table. Every failed push is durable with this launch
+/// reference: an unconfirmed done-challenge (a refused-pre-paste one
+/// included) or a delivery-abandoned record, so attempts bound the pushes.
+/// With no launch witness a ref-less abandoned ordinary nudge also counts:
+/// that degraded mode suppresses challenges sooner, the conservative
+/// direction, and still raises the alert.
+fn done_step(event: &Event, own: bool, launch: Option<&str>) -> Step {
+    let watchdog = event.actor == WATCHDOG_ACTOR;
+    if watchdog && event.action == DONE_CHALLENGE_ACTION {
+        challenge_step(event, launch)
+    } else if watchdog && event.action == crate::tracked::ABANDONED_ACTION {
+        if launch_matches(event, launch) {
+            Step::Attempt
+        } else {
+            Step::Skip
+        }
+    } else if watchdog && event.action == NUDGE_ACTION {
+        Step::Skip
+    } else if own && event.declared_state() == Some("done") {
+        Step::Proof
+    } else if is_challenge(event) || ends_quiet("done", event, own, &[]) {
+        Step::Reset
+    } else {
+        Step::Skip
+    }
+}
+
+/// [`wait_progress`]'s table for `state`. A challenge or abandonment naming
+/// another state is neither ours nor news, judged BEFORE its launch; same
+/// journal bound on failed pushes as [`done_step`].
+fn wait_step(
+    event: &Event,
+    own: bool,
+    launch: Option<&str>,
+    state: WaitState,
+    own_requests: &[&str],
+) -> Step {
+    let watchdog = event.actor == WATCHDOG_ACTOR;
+    let names_state = || wait_challenge_names(event.summary.as_deref(), state);
+    if watchdog && event.action == WAIT_CHALLENGE_ACTION {
+        if names_state() {
+            challenge_step(event, launch)
+        } else {
+            Step::Skip
+        }
+    } else if watchdog && event.action == crate::tracked::ABANDONED_ACTION {
+        if launch_matches(event, launch) && names_state() {
+            Step::Attempt
+        } else {
+            Step::Skip
+        }
+    } else if watchdog && event.action == NUDGE_ACTION {
+        Step::Skip
+    } else if own && event.declared_state() == Some(state.as_str()) {
+        Step::Proof
+    } else if is_challenge(event) || ends_quiet(state.as_str(), event, own, own_requests) {
+        Step::Reset
+    } else if watchdog {
+        Step::Skip
+    } else {
+        Step::News
+    }
+}
+
 /// One proof episode of a quiet declaration: what [`done_progress`] and
 /// [`wait_progress`] both carry forward through the journal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1812,6 +1906,17 @@ impl Episode {
         self.outstanding = None;
     }
 
+    /// A `done` declaration at `at`: credited only when it answers a
+    /// delivered challenge; a proactive one leaves the episode and its anchor
+    /// alone; with no episode it opens one.
+    fn prove(done: &mut Option<Self>, at: crate::time::Timestamp) {
+        match done.as_mut() {
+            Some(episode) if episode.outstanding.is_some() => episode.credit(at),
+            Some(_) => {}
+            None => *done = Some(Self::open(at)),
+        }
+    }
+
     /// The phase at `now`: an outstanding challenge lapses after `cadence`;
     /// otherwise the next challenge is due `due_after` seconds past the anchor.
     /// A clock behind either instant reads as age zero.
@@ -1828,6 +1933,50 @@ impl Episode {
             Phase::ChallengeDue { age }
         } else {
             Phase::Provisional
+        }
+    }
+}
+
+/// A wait [`Episode`] and whether its anchor is a CREDITED proof with no news
+/// since (#225): set together on open and re-arm, so no stale credit leaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WaitEpisode {
+    episode: Episode,
+    earned: bool,
+}
+
+impl WaitEpisode {
+    /// A fresh wait episode anchored at `at`; `earned` when the Nth proof
+    /// re-arms it.
+    const fn open(at: crate::time::Timestamp, earned: bool) -> Self {
+        Self {
+            episode: Episode::open(at),
+            earned,
+        }
+    }
+
+    /// A same-state declaration at `at`, every appended line counted (no
+    /// dedup). Answering a delivered challenge it is credited and earns
+    /// spacing, and the Nth such proof re-arms a fresh episode: waits are
+    /// never terminally proven. A proactive one refreshes the anchor only and
+    /// earns nothing; with no episode it opens one.
+    fn prove(wait: &mut Option<Self>, at: crate::time::Timestamp, required: u8) {
+        match wait.as_mut() {
+            Some(current)
+                if current.episode.outstanding.is_some()
+                    && current.episode.confirmations.saturating_add(1) >= required =>
+            {
+                *current = Self::open(at, true);
+            }
+            Some(current) if current.episode.outstanding.is_some() => {
+                current.episode.credit(at);
+                current.earned = true;
+            }
+            Some(current) => {
+                current.episode.anchor = at;
+                current.earned = false;
+            }
+            None => *wait = Some(Self::open(at, false)),
         }
     }
 }
@@ -1864,8 +2013,7 @@ pub enum DoneProgress {
 #[must_use]
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "one forward fold keeps the episode, its challenges and what ends it in one pass"
+    reason = "the public fold signature every reader calls: journal, seat routing key, launch witness, clock and both knobs"
 )]
 pub fn done_progress(
     events: &[Event],
@@ -1885,59 +2033,31 @@ pub fn done_progress(
         if !own && !addressed {
             continue;
         }
-        if event.action == DONE_CHALLENGE_ACTION && event.actor == WATCHDOG_ACTOR {
-            // Every failed push is durable with this launch reference: an
-            // unconfirmed done-challenge event (a refused-pre-paste one
-            // included) or a delivery-abandoned event, so attempts bound the
-            // pushes.
-            if !launch_matches(event, launch) {
+        match done_step(event, own, launch) {
+            Step::Skip | Step::News => {}
+            Step::Reset => {
                 episode = None;
                 last_done = None;
-                continue;
             }
-            if let Some(episode) = episode.as_mut() {
-                if crate::tracked::summary_is_unconfirmed(event.summary.as_deref()) {
+            Step::Attempt => {
+                if let Some(episode) = episode.as_mut() {
                     episode.attempt();
-                } else {
+                }
+            }
+            Step::Delivered => {
+                if let Some(episode) = episode.as_mut() {
                     episode.deliver(event.ts);
                 }
             }
-            continue;
-        }
-        if event.actor == WATCHDOG_ACTOR && event.action == crate::tracked::ABANDONED_ACTION {
-            // With no launch witness, a ref-less abandoned ordinary nudge
-            // also counts. That degraded mode suppresses challenges sooner,
-            // the conservative direction, and still raises the alert.
-            if launch_matches(event, launch)
-                && let Some(episode) = episode.as_mut()
-            {
-                episode.attempt();
+            Step::Proof => {
+                // The legacy dual emit journals one done twice: one proof.
+                let signature = (event.ts, event.summary.as_deref());
+                if last_done != Some(signature) {
+                    last_done = Some(signature);
+                    Episode::prove(&mut episode, event.ts);
+                }
             }
-            continue;
         }
-        if event.actor == WATCHDOG_ACTOR && event.action == NUDGE_ACTION {
-            continue;
-        }
-        if own && event.declared_state() == Some("done") {
-            let signature = (event.ts, event.summary.as_deref());
-            if last_done == Some(signature) {
-                continue;
-            }
-            last_done = Some(signature);
-            match episode.as_mut() {
-                // Only a done answering a delivered challenge earns credit; a
-                // proactive one leaves the episode and its anchor alone.
-                Some(episode) if episode.outstanding.is_some() => episode.credit(event.ts),
-                Some(_) => {}
-                None => episode = Some(Episode::open(event.ts)),
-            }
-            continue;
-        }
-        if !is_challenge(event) && !ends_quiet("done", event, own, &[]) {
-            continue;
-        }
-        episode = None;
-        last_done = None;
     }
     let Some(episode) = episode else {
         return DoneProgress::None;
@@ -2050,8 +2170,7 @@ pub enum WaitProgress {
 #[must_use]
 #[allow(
     clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "one forward fold keeps the episode, its challenges and what ends it in one pass"
+    reason = "the public fold signature every reader calls: journal, seat routing key, launch witness, clock, both knobs and the wait state"
 )]
 pub fn wait_progress(
     events: &[Event],
@@ -2067,7 +2186,6 @@ pub fn wait_progress(
     if required == 0 || cadence == 0 {
         return WaitProgress::None;
     }
-    let want = state.as_str();
     let mut episode: Option<WaitEpisode> = None;
     let mut own_requests: Vec<&str> = Vec::new();
     for event in events {
@@ -2081,71 +2199,27 @@ pub fn wait_progress(
         {
             own_requests.push(id);
         }
-        if event.action == WAIT_CHALLENGE_ACTION && event.actor == WATCHDOG_ACTOR {
-            // Same journal bound as `done_progress`: every failed push is an
-            // unconfirmed record here or its abandonment below.
-            if !wait_challenge_names(event.summary.as_deref(), state) {
-                continue; // another state's challenge: not ours, not news
-            }
-            if !launch_matches(event, launch) {
-                episode = None;
-                continue;
-            }
-            if let Some(WaitEpisode { episode, .. }) = episode.as_mut() {
-                if crate::tracked::summary_is_unconfirmed(event.summary.as_deref()) {
-                    episode.attempt();
-                } else {
-                    episode.deliver(event.ts);
+        match wait_step(event, own, launch, state, &own_requests) {
+            Step::Skip => {}
+            Step::Reset => episode = None,
+            Step::Attempt => {
+                if let Some(current) = episode.as_mut() {
+                    current.episode.attempt();
                 }
             }
-            continue;
-        }
-        if event.actor == WATCHDOG_ACTOR && event.action == crate::tracked::ABANDONED_ACTION {
-            if launch_matches(event, launch)
-                && wait_challenge_names(event.summary.as_deref(), state)
-                && let Some(WaitEpisode { episode, .. }) = episode.as_mut()
-            {
-                episode.attempt();
+            Step::Delivered => {
+                if let Some(current) = episode.as_mut() {
+                    current.episode.deliver(event.ts);
+                }
             }
-            continue;
-        }
-        if event.actor == WATCHDOG_ACTOR && event.action == NUDGE_ACTION {
-            continue;
-        }
-        if own && event.declared_state() == Some(want) {
-            match episode.as_mut() {
-                // The Nth proof re-arms a fresh episode anchored at this
-                // proof: waits are never terminally proven.
-                Some(current)
-                    if current.episode.outstanding.is_some()
-                        && current.episode.confirmations.saturating_add(1) >= required =>
-                {
-                    *current = WaitEpisode::open(event.ts, true);
-                }
-                Some(current) if current.episode.outstanding.is_some() => {
-                    current.episode.credit(event.ts);
-                    current.earned = true;
-                }
-                // A proactive re-declaration refreshes the anchor only,
-                // and earns no spacing: it answered no challenge.
-                Some(current) => {
-                    current.episode.anchor = event.ts;
+            Step::Proof => WaitEpisode::prove(&mut episode, event.ts, required),
+            // News the wait outlives: the next challenge keeps the base cadence.
+            Step::News => {
+                if let Some(current) = episode.as_mut() {
                     current.earned = false;
                 }
-                None => episode = Some(WaitEpisode::open(event.ts, false)),
             }
-            continue;
         }
-        if !is_challenge(event) && !ends_quiet(want, event, own, &own_requests) {
-            // News the wait outlives: the next challenge keeps the base cadence.
-            if event.actor != WATCHDOG_ACTOR
-                && let Some(current) = episode.as_mut()
-            {
-                current.earned = false;
-            }
-            continue;
-        }
-        episode = None;
     }
     let Some(WaitEpisode { episode, earned }) = episode else {
         return WaitProgress::None;
@@ -2179,25 +2253,6 @@ pub fn wait_progress(
             confirmations,
             required,
         },
-    }
-}
-
-/// A wait [`Episode`] and whether its anchor is a CREDITED proof with no news
-/// since (#225): set together on open and re-arm, so no stale credit leaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct WaitEpisode {
-    episode: Episode,
-    earned: bool,
-}
-
-impl WaitEpisode {
-    /// A fresh wait episode anchored at `at`; `earned` when the Nth proof
-    /// re-arms it.
-    const fn open(at: crate::time::Timestamp, earned: bool) -> Self {
-        Self {
-            episode: Episode::open(at),
-            earned,
-        }
     }
 }
 
@@ -2716,13 +2771,13 @@ mod tests {
         CLAUDE_LIMIT, CLAUDE_TRANSIENT, CODEX_LIMIT, CODEX_TRANSIENT, DEFAULT_IDLE_NUDGE_SECS,
         DoneProgress, Episode, MUSE_LIMIT, NUDGE_IDLE_PREFIX, NUDGE_SENTENCE, NUDGE_TAIL,
         NUDGE_WAITING_CLOSE, NUDGE_WAITING_OPEN, OVERVIEW_HOLD_WHILE_WORKING_SECS,
-        OWN_WORK_AGE_CAP, Phase, QuietKind, SweepAlert, SweepEffect, SweepKnobs, SweepObservation,
-        SweepState, SweepVerdict, Throttle, WaitProgress, WaitState, WedgeDetail, classify_dead,
-        command_is_shell, declaration_current, declaration_key, done_progress, indented, is_echo,
-        is_sweep_target, latest_relevant_event, launch_matches, limit_notice, quiet_filter,
-        quiet_hash, quiet_reason, raw_nudge, record_sweep, shows_throttle, stale_composite,
-        submit_hdr, sweep_step, throttle_class, wait_progress, waiting_agent_cap_secs,
-        waiting_agent_escalated,
+        OWN_WORK_AGE_CAP, Phase, QuietKind, Step, SweepAlert, SweepEffect, SweepKnobs,
+        SweepObservation, SweepState, SweepVerdict, Throttle, WaitEpisode, WaitProgress, WaitState,
+        WedgeDetail, classify_dead, command_is_shell, declaration_current, declaration_key,
+        done_progress, done_step, indented, is_echo, is_sweep_target, latest_relevant_event,
+        launch_matches, limit_notice, quiet_filter, quiet_hash, quiet_reason, raw_nudge,
+        record_sweep, shows_throttle, stale_composite, submit_hdr, sweep_step, throttle_class,
+        wait_progress, wait_step, waiting_agent_cap_secs, waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -3028,23 +3083,22 @@ mod tests {
         let mut challenged = open;
         challenged.deliver(at_secs(200));
         assert_eq!(
-            challenged.phase(at_secs(259), 60, 0),
+            challenged.phase(at_secs(259), 60, 60),
             Phase::Challenged,
-            "an outstanding challenge outranks any due age"
+            "an outstanding challenge outranks an anchor past its due age"
         );
-        assert_eq!(challenged.phase(at_secs(260), 60, 0), Phase::Lapsed);
+        assert_eq!(challenged.phase(at_secs(260), 60, 60), Phase::Lapsed);
         assert_eq!(
-            challenged.phase(at_secs(100), 0, 0),
-            Phase::Lapsed,
-            "a clock behind the challenge reads as age zero"
+            challenged.phase(at_secs(100), 60, 60),
+            Phase::Challenged,
+            "a clock behind the challenge reads as age zero, never as lapsed"
         );
         let later = Episode::open(at_secs(300));
         assert_eq!(
-            later.phase(at_secs(0), 60, 0),
-            Phase::ChallengeDue { age: 0 },
-            "a clock behind the anchor reads as age zero"
+            later.phase(at_secs(0), 60, 60),
+            Phase::Provisional,
+            "a clock behind the anchor reads as age zero, never as due"
         );
-        assert_eq!(later.phase(at_secs(0), 60, 1), Phase::Provisional);
     }
 
     #[test]
@@ -3059,6 +3113,236 @@ mod tests {
         assert!(!launch_matches(&with_ref, None));
         assert!(launch_matches(&refless, None));
         assert!(!launch_matches(&refless, Some("launch-1")));
+    }
+
+    /// One record for the step tables: `reference` and `summary` optional.
+    fn step_record(actor: &str, action: &str, reference: &str, summary: &str) -> Event {
+        let optional = |key: &str, value: &str| {
+            if value.is_empty() {
+                String::new()
+            } else {
+                format!(r#","{key}":"{value}""#)
+            }
+        };
+        let (reference, summary) = (optional("ref", reference), optional("summary", summary));
+        event(&format!(
+            r#"{{"ts":"2026-08-29T04:00:00Z","actor":"{actor}","action":"{action}"{reference}{summary}}}"#
+        ))
+    }
+
+    #[test]
+    fn the_done_step_table_reads_each_record_by_its_first_matching_row() {
+        let rows = [
+            (
+                "watchdog",
+                "done-challenge",
+                "L1",
+                "",
+                false,
+                Step::Delivered,
+            ),
+            (
+                "watchdog",
+                "done-challenge",
+                "L1",
+                "[unconfirmed] confirmation 1/2",
+                false,
+                Step::Attempt,
+            ),
+            ("watchdog", "done-challenge", "L2", "", false, Step::Reset),
+            ("watchdog", "done-challenge", "", "", false, Step::Reset),
+            // Done matches an abandonment by its launch alone.
+            (
+                "watchdog",
+                "delivery-abandoned",
+                "L1",
+                "refused: busy; blocked confirmation 1/2",
+                false,
+                Step::Attempt,
+            ),
+            ("watchdog", "delivery-abandoned", "", "", false, Step::Skip),
+            ("watchdog", "nudge", "", "", false, Step::Skip),
+            ("watchdog", "alert", "", "", false, Step::Skip),
+            ("seat", "state", "done", "shipped", true, Step::Proof),
+            ("seat", "done", "", "shipped", true, Step::Proof),
+            ("seat", "state", "working", "", true, Step::Reset),
+            (
+                "watchdog",
+                "wait-challenge",
+                "L1",
+                "blocked confirmation 1/2",
+                false,
+                Step::Reset,
+            ),
+            ("peer", "send", "", "", false, Step::Reset),
+            ("peer", "state", "done", "", false, Step::Reset),
+        ];
+        for (actor, action, reference, summary, own, want) in rows {
+            let record = step_record(actor, action, reference, summary);
+            assert_eq!(
+                done_step(&record, own, Some("L1")),
+                want,
+                "{actor} {action} ref={reference} summary={summary}"
+            );
+        }
+        let refless = step_record("watchdog", "delivery-abandoned", "", "");
+        assert_eq!(done_step(&refless, false, None), Step::Attempt);
+    }
+
+    #[test]
+    fn the_wait_step_table_judges_the_state_name_before_the_launch() {
+        let rows = [
+            (
+                "watchdog",
+                "wait-challenge",
+                "L1",
+                "blocked confirmation 1/2",
+                false,
+                Step::Delivered,
+            ),
+            (
+                "watchdog",
+                "wait-challenge",
+                "L1",
+                "[unconfirmed] blocked confirmation 1/2",
+                false,
+                Step::Attempt,
+            ),
+            (
+                "watchdog",
+                "wait-challenge",
+                "L2",
+                "blocked confirmation 1/2",
+                false,
+                Step::Reset,
+            ),
+            (
+                "watchdog",
+                "wait-challenge",
+                "L2",
+                "waiting-agent confirmation 1/2",
+                false,
+                Step::Skip,
+            ),
+            (
+                "watchdog",
+                "wait-challenge",
+                "L1",
+                "garbage",
+                false,
+                Step::Skip,
+            ),
+            (
+                "watchdog",
+                "delivery-abandoned",
+                "L1",
+                "refused: busy; blocked confirmation 1/2",
+                false,
+                Step::Attempt,
+            ),
+            (
+                "watchdog",
+                "delivery-abandoned",
+                "L1",
+                "refused: busy; waiting-agent confirmation 1/2",
+                false,
+                Step::Skip,
+            ),
+            (
+                "watchdog",
+                "delivery-abandoned",
+                "L2",
+                "refused: busy; blocked confirmation 1/2",
+                false,
+                Step::Skip,
+            ),
+            ("watchdog", "nudge", "", "", false, Step::Skip),
+            ("watchdog", "alert", "", "", false, Step::Skip),
+            ("watchdog", "done-challenge", "L1", "", false, Step::Reset),
+            ("seat", "state", "blocked", "dep", true, Step::Proof),
+            ("seat", "state", "waiting-agent", "", true, Step::Reset),
+            ("seat", "send", "", "", true, Step::News),
+            ("peer", "send", "", "", false, Step::News),
+            ("telegram:1", "send", "", "", false, Step::Reset),
+        ];
+        for (actor, action, reference, summary, own, want) in rows {
+            let record = step_record(actor, action, reference, summary);
+            assert_eq!(
+                wait_step(&record, own, Some("L1"), Blocked, &[]),
+                want,
+                "{actor} {action} ref={reference} summary={summary}"
+            );
+        }
+        // `waiting-agent` alone ends on a reply to one of the seat's own asks.
+        let answer = step_record("peer", "reply", "ae-1", "");
+        let other = step_record("peer", "reply", "ae-9", "");
+        assert_eq!(
+            wait_step(&answer, false, None, WaitingAgent, &["ae-1"]),
+            Step::Reset
+        );
+        assert_eq!(
+            wait_step(&other, false, None, WaitingAgent, &["ae-1"]),
+            Step::News
+        );
+        assert_eq!(
+            wait_step(&answer, false, None, Blocked, &["ae-1"]),
+            Step::News
+        );
+    }
+
+    #[test]
+    fn a_done_proof_opens_or_answers_and_a_wait_proof_also_refreshes_and_rearms() {
+        let mut done = None;
+        Episode::prove(&mut done, at_secs(0));
+        Episode::prove(&mut done, at_secs(30));
+        assert_eq!(
+            done,
+            Some(Episode::open(at_secs(0))),
+            "proactive done: no change"
+        );
+        if let Some(episode) = done.as_mut() {
+            episode.deliver(at_secs(60));
+        }
+        Episode::prove(&mut done, at_secs(90));
+        assert_eq!(
+            done.map(|e| (e.confirmations, e.anchor)),
+            Some((1, at_secs(90)))
+        );
+
+        let mut wait = None;
+        WaitEpisode::prove(&mut wait, at_secs(0), 2);
+        assert_eq!(wait, Some(WaitEpisode::open(at_secs(0), false)));
+        WaitEpisode::prove(&mut wait, at_secs(30), 2);
+        assert_eq!(
+            wait,
+            Some(WaitEpisode::open(at_secs(30), false)),
+            "proactive: re-anchor"
+        );
+        let challenge = |wait: &mut Option<WaitEpisode>, secs| {
+            if let Some(current) = wait.as_mut() {
+                current.episode.attempt();
+                current.episode.deliver(at_secs(secs));
+            }
+        };
+        challenge(&mut wait, 60);
+        WaitEpisode::prove(&mut wait, at_secs(90), 2);
+        assert_eq!(
+            wait.map(|w| (
+                w.episode.confirmations,
+                w.episode.anchor,
+                w.episode.attempts,
+                w.earned
+            )),
+            Some((1, at_secs(90), 1, true)),
+            "an answer is credited, keeps its attempts and earns spacing"
+        );
+        challenge(&mut wait, 120);
+        WaitEpisode::prove(&mut wait, at_secs(150), 2);
+        assert_eq!(
+            wait,
+            Some(WaitEpisode::open(at_secs(150), true)),
+            "the Nth proof re-arms a fresh, earned episode"
+        );
     }
 
     fn progress(lines: &[&str], now: &str, required: u8, cadence: u64) -> DoneProgress {
