@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.5] - 2026-11-03
+- Pin launch teardown, saved-meta, recorded-knob and working-copy refusals before taking launch apart
+- Pin the ordered tmux calls of launch create, resume, reattach and restore skip
+- The launch trace pins match a core and scratch named by an alias or by their resolved path
+- Pin that a restore skips an unproven recorded server and that legacy adoption needs the recorded pane in that session
+- Launch places a saved session through one decision and reads its knobs and mode through pure helpers
+- Pin that a resume keeps its recorded layout and origin and that a copy resume without a recorded path reuses or refuses its named copy
+- Launch calls its legacy adoption, lineage proof, workspace values, watchdog cadences and working copy as named steps
+- Pin run_with's dispatch refusals, flush order and list warnings before taking it apart
+- Run_with picks the missing-operand noun through a pure helper and refuses the bare orchestrator word in one step
+- Run_with gates the thirteen state-root commands through one helper
+- Run_with gates the viewer-writing commands through one helper and moves send into its own function
+- Run_with gates list and monitor on the world through one helper and moves the list warnings out
+
 ## [v2026.11.4] - 2026-11-02
 - Lift the automation pause, focus stays on code quality, architecture and guardrails
 - A codex read is not cut short by its own day listings, and a cut read keeps its windows
