@@ -610,6 +610,125 @@ pub fn limit_rows<'a>(buf: &'a str, agent_bin: &str) -> Option<Vec<&'a str>> {
         })
 }
 
+/// Whether the limit [`limit_rows`] reads still stands, from what the pane
+/// drew after it — the stop proof of a limited claude seat that is not
+/// idle-shaped (`reseat::limit_proven`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LimitStanding {
+    /// Only blank rows, user-echo blocks and the vendor's limit furniture follow
+    /// the newest limit cell, down to the box.
+    Stands,
+    /// No claude limit cell in the scan window: another tool, no limit, or a
+    /// cell pushed out of view.
+    NoCell,
+    /// The cell is in view but no empty prompt box sits below it.
+    NoBox,
+    /// A row between the cell and the box that could mean the seat is working.
+    /// The row, trimmed, one line, at most [`OFFENDING_ROW_CHARS`] chars.
+    RowAfterCell(String),
+}
+
+/// The longest offending row a refusal carries, in chars.
+const OFFENDING_ROW_CHARS: usize = 80;
+
+/// The glyphs a claude transcript row of its own opens with — the response hook,
+/// the assistant and tool bullets and the spinner set. An indented row that
+/// starts with one is a row, never a wrapped line of a user echo.
+const CLAUDE_ROW_MARKS: [char; 9] = ['⎿', '⏺', '●', '✻', '✽', '✶', '✳', '✢', '·'];
+
+/// The vendor's own limit head, measured at column 0 on 2.1.296 and 2.1.317
+/// (`⏺ Usage limit reached[ again] · continuing automatically at … · esc to
+/// cancel`): a prefix, because the tail rewords across versions.
+const CLAUDE_LIMIT_HEAD: &str = "⏺ Usage limit reached";
+
+/// Whether the limit [`limit_rows`] reads still stands, read from the rows the
+/// pane drew between that newest cell and the prompt box below it.
+///
+/// A limited turn is a user-echo block, the `  ⎿` cell, the vendor's `⏺ Usage
+/// limit reached` head and a `✻ … · done` row, in that measured order on
+/// 2.1.317. Anything the seat could be working in is a different row, so the
+/// region may hold ONLY blank rows, user-echo blocks and that limit furniture:
+///
+/// - the cell ends at its first blank or non-indented row, so an echo that abuts
+///   it is not swallowed into it;
+/// - an echo block is a column-0 `❯` with text, then rows that are blank or
+///   indented two spaces or more and do not open with a transcript mark glyph;
+///   blank rows sit INSIDE an echo (claude keeps the blanks between a pasted
+///   body's paragraphs) and never close it, a column-0 row always does;
+/// - limit furniture is a column-0 row opening `⏺ Usage limit reached`, the exact
+///   cancelled-wait row, or a row the frame grammar reads as finished.
+///
+/// Every other row is [`LimitStanding::RowAfterCell`]; when unsure, it refuses.
+/// Claude only: no other tool has a measured echo or furniture shape.
+#[must_use]
+pub fn limit_standing(buf: &str, agent_bin: &str) -> LimitStanding {
+    if agent_bin != "claude" {
+        return LimitStanding::NoCell;
+    }
+    let tool = crate::tool::ToolKind::from_binary_name(agent_bin);
+    let Some((window, at, _)) = newest_row(buf, &CLAUDE_BANNER) else {
+        return LimitStanding::NoCell;
+    };
+    let end = at
+        + 1
+        + window[at + 1..]
+            .iter()
+            .take_while(|row| !row.trim().is_empty() && row.starts_with([' ', '\u{a0}']))
+            .count();
+    // The box: the newest bare prompt row, a rule directly above it, that rule
+    // below the cell. A draft or queued text is no bare row.
+    let Some(rule) = window
+        .iter()
+        .rposition(|row| row.trim() == "❯")
+        .and_then(|prompt| prompt.checked_sub(1))
+        .filter(|&rule| rule >= end && crate::harness_state::claude_border(window[rule].trim()))
+    else {
+        return LimitStanding::NoBox;
+    };
+    let mut echo = false;
+    for row in &window[end..rule] {
+        let text = row.trim().replace('\u{a0}', " ");
+        if text.is_empty() {
+            continue;
+        }
+        let indent = row
+            .chars()
+            .take_while(|ch| matches!(ch, ' ' | '\u{a0}'))
+            .count();
+        let settled = if indent == 0 {
+            echo = text
+                .strip_prefix('❯')
+                .is_some_and(|typed| !typed.trim().is_empty());
+            echo || limit_furniture(&text, tool)
+        } else {
+            echo && indent >= 2 && !text.starts_with(CLAUDE_ROW_MARKS)
+        };
+        if !settled {
+            return LimitStanding::RowAfterCell(offending_row(&text));
+        }
+    }
+    LimitStanding::Stands
+}
+
+/// Whether `text`, a column-0 row, is the vendor's limit furniture rather than
+/// work: its head, the cancelled-wait row, or a row that reads as finished.
+fn limit_furniture(text: &str, tool: crate::tool::ToolKind) -> bool {
+    text.starts_with(CLAUDE_LIMIT_HEAD)
+        || tool.limit_wait_cancelled(text)
+        || crate::harness_state::claude_done(text)
+}
+
+/// `text` as a refusal quotes it: one line, control characters dropped, cut to
+/// [`OFFENDING_ROW_CHARS`] chars.
+fn offending_row(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !ch.is_control())
+        .take(OFFENDING_ROW_CHARS)
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+}
+
 /// The measured usage-limit menu of the tool whose binary is `agent_bin`.
 fn menu_for(agent_bin: &str) -> Option<&'static Menu> {
     match agent_bin {
@@ -3337,6 +3456,55 @@ mod tests {
         ] {
             assert_eq!(throttle_class(row, "opencode"), None, "{row}");
         }
+    }
+
+    const LIMITED_CLAUDE: &str =
+        include_str!("../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
+
+    /// The cell ends at its first blank or non-indented row, so a work row
+    /// drawn right under it with no blank between is READ, not swallowed or
+    /// skipped; an echo abutting the cell is read the same way.
+    #[test]
+    fn a_row_abutting_the_limit_cell_is_read_not_skipped() {
+        use super::{LimitStanding, limit_standing};
+        const ABUT: &str = "clau.de/reset\n\n✻ Baked for 0s · done 10:23 AM";
+        assert_eq!(LIMITED_CLAUDE.matches(ABUT).count(), 1);
+        for (below, standing) in [
+            (
+                "⏺ abutting work",
+                LimitStanding::RowAfterCell("⏺ abutting work".to_owned()),
+            ),
+            ("❯ abutting echo", LimitStanding::Stands),
+            (
+                "❯ abutting echo\n⏺ then work",
+                LimitStanding::RowAfterCell("⏺ then work".to_owned()),
+            ),
+        ] {
+            let frame = LIMITED_CLAUDE.replacen(ABUT, &format!("clau.de/reset\n{below}"), 1);
+            assert_eq!(limit_standing(&frame, "claude"), standing, "{below}");
+        }
+    }
+
+    /// The box is the newest bare prompt row WITH a rule directly above it: a
+    /// bare prompt row under anything else is no box.
+    #[test]
+    fn a_limit_stands_only_over_a_box_with_a_rule_above_its_prompt() {
+        use super::{LimitStanding, limit_standing};
+        assert_eq!(
+            limit_standing(LIMITED_CLAUDE, "claude"),
+            LimitStanding::Stands
+        );
+        let mut rows: Vec<&str> = LIMITED_CLAUDE.lines().collect();
+        let prompt = rows
+            .iter()
+            .rposition(|row| row.trim() == "❯")
+            .expect("the box prompt row");
+        assert!(rows[prompt - 1].starts_with('─'), "a rule above the prompt");
+        rows[prompt - 1] = "not a rule";
+        assert_eq!(
+            limit_standing(&rows.join("\n"), "claude"),
+            LimitStanding::NoBox
+        );
     }
 
     /// The notice counts only inside the bottom window, measured up from the

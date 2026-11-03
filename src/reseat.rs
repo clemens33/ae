@@ -815,7 +815,11 @@ fn stop_timeout_advice(probe: Option<&ObservedPaneProbe>) -> (String, &'static s
 ///
 /// The row must be CURRENT: an unknown verdict proves the limit only when the
 /// nearest row above the box is that cell, never a limit left in the transcript,
-/// or claude 2.1.296's own row for a limit wait the human cancelled (measured).
+/// or claude 2.1.296's own row for a limit wait the human cancelled (measured),
+/// or when nothing but blank rows, user-echo blocks and the vendor's own limit
+/// rows follow the cell down to the box (`watchdog::limit_standing`): a message
+/// delivered to a limited seat, or the vendor's head drawn under its cell
+/// (claude 2.1.317), is not a turn.
 ///
 /// A tool that draws its limit as a MENU in place of the box has no box to
 /// read: the menu as the capture's live bottom, with no turn drawn above it
@@ -837,6 +841,42 @@ fn limit_proven(capture: &str, agent_bin: &str, tool: ToolKind) -> bool {
                     .iter()
                     .any(|row| row.trim().replace('\u{a0}', " ") == current)
         })
+        || crate::watchdog::limit_standing(capture, agent_bin)
+            == crate::watchdog::LimitStanding::Stands
+}
+
+/// One frame reading: its state, whether it proves the usage limit, and the
+/// capture it was read from (`None` when ae could not take one).
+type Reading<'a> = (HarnessState, bool, Option<&'a str>);
+
+/// The reason a refused stop names first, so the head a journal keeps carries
+/// it: the first reading that proves nothing decides; two readings that each
+/// prove but not alike (a frame that changed between them) say so.
+fn refusal_why(first: Reading<'_>, second: Reading<'_>, agent_bin: &str, tool: ToolKind) -> String {
+    frame_gap(first, agent_bin, tool)
+        .or_else(|| frame_gap(second, agent_bin, tool))
+        .unwrap_or_else(|| "the frame changed between the two readings".to_owned())
+}
+
+/// Why one reading did not prove the frame, as the refusal names it first — a
+/// journal record keeps only the line's head — or `None` when the reading
+/// proves the stop on its own (idle, or the limit proven).
+fn frame_gap(reading: Reading<'_>, agent_bin: &str, tool: ToolKind) -> Option<String> {
+    let (state, limited, capture) = reading;
+    if state == HarnessState::Idle || limited {
+        return None;
+    }
+    let Some(capture) =
+        capture.filter(|capture| crate::harness_state::read_frame(capture, tool).is_some())
+    else {
+        return Some("no frame".to_owned());
+    };
+    Some(match crate::watchdog::limit_standing(capture, agent_bin) {
+        crate::watchdog::LimitStanding::RowAfterCell(row) => {
+            format!("row after the limit row: \"{}\"", row.replace('"', ""))
+        }
+        _ => "no limit row".to_owned(),
+    })
 }
 
 /// The seat's current harness frame, fail-closed, whether that SAME capture
@@ -1014,11 +1054,20 @@ fn stop_running_tool(
         // line's head, and `--stop-unknown` is safe only on what a human sees.
         let limited = transport::capture_pane(&target.server, &target.pane)
             .is_some_and(|capture| crate::watchdog::limit_notice(&capture, &agent_bin).is_some());
+        // WHY first, so the head a journal keeps names it: the first reading
+        // that proves nothing decides; two readings that each prove but not
+        // alike (a frame that changed between them) say so.
+        let why = refusal_why(
+            (first, first_limited, first_capture.as_deref()),
+            (second, second_limited, second_capture.as_deref()),
+            &agent_bin,
+            tool,
+        );
         writeln!(
             err,
-            "Error: once its box is empty and {}, run: ae reseat {} {} --using {} --stop-unknown \
-             — ae cannot read '{}'s frame in pane {}, so it cannot tell a running turn from an \
-             idle box. Nothing was reseated.",
+            "Error: frame not proven ({why}) — once its box is empty and {}, run: ae reseat {} {} \
+             --using {} --stop-unknown — ae cannot read '{}'s frame in pane {}, so it cannot tell \
+             a running turn from an idle box. Nothing was reseated.",
             if limited {
                 "the limit line is its newest row"
             } else {
@@ -2657,6 +2706,89 @@ mod tests {
             assert!(
                 super::may_stop(first, second, StopPolicy::Unknown),
                 "{first:?} then {second:?} under --stop-unknown"
+            );
+        }
+    }
+
+    /// An unknown verdict proves the limit when only blank rows, an echo and the
+    /// vendor's limit rows follow the cell, never over a work row, and never
+    /// over a nearest row that is neither the cell nor such furniture.
+    #[test]
+    fn a_limit_over_an_echo_is_proven_and_over_work_is_not() {
+        const LIMITED: &str =
+            include_str!("../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
+        const DONE: &str = "✻ Baked for 0s · done 10:23 AM";
+        let tool = super::ToolKind::Claude;
+        for (below, proven) in [
+            (DONE, true),
+            ("", true),
+            ("❯ please continue", true),
+            ("❯ first\n  second", true),
+            ("⏺ Running a tool", false),
+            ("❯ one\n\n⏺ Running a tool", false),
+            ("✻ Sautéed for 6s", false),
+        ] {
+            let frame = LIMITED.replacen(DONE, below, 1);
+            assert_eq!(
+                super::limit_proven(&frame, "claude", tool),
+                proven,
+                "{below}"
+            );
+        }
+    }
+
+    /// The refusal's first clause names the first reading that proves nothing;
+    /// readings that each prove, but not alike, say the frame changed.
+    #[test]
+    fn a_refusal_names_the_first_reading_that_proves_nothing() {
+        use super::{HarnessState::Idle, HarnessState::Unknown, refusal_why};
+        const LIMITED: &str =
+            include_str!("../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
+        const IDLE: &str = include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt");
+        let tool = super::ToolKind::Claude;
+        let working = LIMITED.replace("✻ Baked for 0s · done 10:23 AM", "⏺ a \"tool\" row");
+        for (first, second, why) in [
+            // No capture, a box that reads no frame: nothing to prove.
+            ((Unknown, false, None), (Idle, false, None), "no frame"),
+            (
+                (Unknown, false, Some("not a claude frame")),
+                (Unknown, false, Some(IDLE)),
+                "no frame",
+            ),
+            // A frame with no limit cell in view.
+            (
+                (Unknown, false, Some(IDLE)),
+                (Idle, false, None),
+                "no limit row",
+            ),
+            // A row after the cell: quoted, its double quotes removed.
+            (
+                (Unknown, false, Some(working.as_str())),
+                (Unknown, false, Some(IDLE)),
+                "row after the limit row: \"⏺ a tool row\"",
+            ),
+            // The FIRST failing reading decides, not the second.
+            (
+                (Idle, false, None),
+                (Unknown, false, Some(working.as_str())),
+                "row after the limit row: \"⏺ a tool row\"",
+            ),
+            // Each reading proves on its own, in different ways.
+            (
+                (Idle, false, None),
+                (Unknown, true, None),
+                "the frame changed between the two readings",
+            ),
+            (
+                (Unknown, true, None),
+                (Idle, false, None),
+                "the frame changed between the two readings",
+            ),
+        ] {
+            assert_eq!(
+                refusal_why(first, second, "claude", tool),
+                why,
+                "{first:?} then {second:?}"
             );
         }
     }

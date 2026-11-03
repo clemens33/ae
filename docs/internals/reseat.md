@@ -89,11 +89,36 @@ Then, under `.lifecycle.<session>.lock`:
    with an `Unknown` verdict the limit row must be the nearest row above the
    box, never one left in the transcript, or claude 2.1.296's own measured
    `⏺ Automatic continue cancelled · /rate-limit-options to re-arm` row (a limit
-   wait the human cancelled, a finished turn); claude 2.1.296 draws a `⚠ Usage limit
+   wait the human cancelled, a finished turn), or the cell still STANDS
+   (`watchdog::limit_standing`): only blank rows, user-echo blocks and the
+   vendor's own limit furniture follow it down to the box. A message delivered
+   to a limited seat is echoed under the cell, and claude 2.1.317 draws its
+   `⏺ Usage limit reached · continuing automatically …` head under the cell
+   (2.1.296 turn 1 as well), so neither is a turn; the nearest-row rule alone
+   refused both. The cell ends at its first blank or non-indented row. An echo
+   is a column-0 `❯` with text, then rows that are blank or indented two
+   spaces or more and do not open with a transcript mark glyph (`⎿ ⏺ ● ✻ ✽ ✶
+   ✳ ✢ ·`): the blanks between a pasted body's paragraphs sit INSIDE the echo
+   (measured) and never close it, a column-0 row always does. Furniture is a
+   column-0 `⏺ Usage limit reached…` head, the exact cancelled-wait row, or a
+   row the frame grammar reads as finished (`✻ … · done`). Every other row —
+   an assistant or tool row, a spinner, a quoted `⎿` — refuses, and it is the
+   refusal's first clause. The scan reads the same 20-row bottom window as the
+   notice, so a delivery echo long enough to push the cell out of it is
+   `no limit row` while the echo is held (claude 2.1.317 fails each delivery's
+   turn and draws a fresh cell under its echo, which brings the cell back).
+   claude 2.1.296 draws a `⚠ Usage limit
    reached` row and its `Continuing automatically at` row BELOW the box, which
    the frame grammar reads as footer there only. The unreadable-frame refusal
-   leads with the exact `ae reseat … --stop-unknown` command and its
-   precondition, because a journal record keeps only the line's head.
+   leads with `frame not proven (<why>)` — `no frame` (no capture, a draft or
+   queued text in the box, unreadable chrome), `no limit row` (no cell in the
+   window, or no empty box under it) or `row after the limit row: "<row>"`
+   (the first row that could mean work, trimmed, at most 80 chars, quotes
+   removed), from the first reading that proves nothing, or `the frame changed
+   between the two readings` when each reading proves but not alike (an idle
+   box, then a limit proof) — then the exact
+   `ae reseat … --stop-unknown` command and its precondition, because a
+   journal record keeps only the line's head, and the reason must be in it.
 
    Then `respawn-pane -k -c <work_dir>` through `session_tmux::Op::RespawnPane`
    — the op the monitor panes already use, on the existing tmux door. Measured

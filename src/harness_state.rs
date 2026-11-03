@@ -477,7 +477,9 @@ pub(crate) fn claude_spinner(line: &str) -> bool {
         && chars.as_str().contains("… (")
 }
 
-fn claude_done(line: &str) -> bool {
+/// Whether `line` is claude's finished-turn row — read by the limit stop proof
+/// (`watchdog::limit_standing`) as settled output as well as the frame grammar.
+pub(crate) fn claude_done(line: &str) -> bool {
     line.starts_with("✻ ") && line.contains(" · done ")
 }
 
@@ -501,7 +503,7 @@ fn claude_limit_footer(line: &str) -> bool {
     line.starts_with("⚠ Usage limit reached") || line.starts_with("Continuing automatically at ")
 }
 
-fn claude_border(line: &str) -> bool {
+pub(crate) fn claude_border(line: &str) -> bool {
     !line.is_empty() && line.chars().all(|c| matches!(c, '─' | '━' | '═'))
 }
 

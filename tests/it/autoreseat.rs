@@ -1975,3 +1975,902 @@ fn class_a_carry_whose_target_holds_a_different_file_leads_with_its_class() {
     assert_told_early(&rig, "carry-target-differs", 60);
     assert!(rig.tool_pid(&pane, "claude").is_some(), "never stopped");
 }
+// ===== limitframe-fix FROZEN acceptance tests (nav limitframe-nav, spec gate) =====
+//
+// Install: append these bytes VERBATIM to the end of tests/it/autoreseat.rs.
+// No other edit. SHA pinned in .local/limitframe-fix/SHA256SUMS.
+//
+// What this pins (brief .local/brief-limitframe-fix.md, invariant 1-3):
+// - S1: ae::watchdog::limit_standing(buf, "claude") proves the limit when the
+//   rows between the newest limit cell and the box are ONLY blank rows and
+//   column-0 `❯` echo blocks with indented wrap; anything else is
+//   RowAfterCell(trimmed row, <=80 chars, one line). No cell -> NoCell, no
+//   box -> NoBox.
+// - S2: the real leg moves on cell+echo and refuses on assistant/queued/
+//   draft/long-echo frames, through limitstop_playback on Rig (same Rig,
+//   same real stop path as limitstop_the_real_limit_frame_is_stopped_...).
+// - S3: the refusal's first clause names no frame / no limit row / the row
+//   after the limit row, and the auto-reseat-refused journal summary keeps it.
+//
+// Frames are SYNTHETIC: LIMITSTOP_FRAME (measured claude 2.1.296) with the
+// last `done` row swapped for echo rows. No recorded real 2.1.317 limited
+// frame exists (brief residual). The vendor cell text is the measured one.
+// The multi-paragraph echo rows below are MEASURED claude 2.1.317 transcript
+// rows (evidence .local/limitframe-fix/echo-probe-2.1.317.txt): blanks
+// preserved between paragraphs, continuations indented exactly 2 spaces.
+// The sanitized probe frame itself ships as
+// tests/fixtures/harness-state/claude-limit-echo-2.1.317.txt (frozen bytes in
+// .local/limitframe-fix/); LIMITFRAME_PROBE pins it Stands on S1 and moved
+// on the leg.
+
+/// The `done` row of the last limited turn: the anchor every synthetic echo
+/// frame hangs below the newest limit cell.
+const LIMITFRAME_DONE: &str = "✻ Baked for 0s · done 10:23 AM";
+
+/// [`LIMITSTOP_FRAME`] with its last `done` row replaced by `rows`: the
+/// newest limit cell stays, the box stays, and `rows` is what the seat drew
+/// between them.
+fn limitframe_swap_done(rows: &str) -> String {
+    assert_eq!(
+        LIMITSTOP_FRAME.matches(LIMITFRAME_DONE).count(),
+        1,
+        "one done anchor"
+    );
+    LIMITSTOP_FRAME.replacen(LIMITFRAME_DONE, rows, 1)
+}
+
+/// The cell's last row glued to the `done` row: the anchor for the
+/// no-blank-line (abutting) frames.
+const LIMITFRAME_ABUT: &str = "clau.de/reset\n\n✻ Baked for 0s · done 10:23 AM";
+
+/// The measured 2.1.317 echo of a pasted multi-paragraph ae-shaped body:
+/// opener at column 0, blank rows BETWEEN the paragraphs, continuations
+/// indented 2 spaces. Trailing pane padding trimmed.
+fn limitframe_nightcase() -> String {
+    "❯ [ae:ask from lead] echo shape probe (no action, reply ok)\n\n  REQUIRED: When you have finished, reply with only the word ok and nothing else.\n\n  No return command; this turn only records how claude echoes a pasted body."
+        .to_owned()
+}
+
+/// One echo opener plus 24 indented wrap rows: long enough to push the newest
+/// cell out of the 20-row scan window.
+fn limitframe_long_echo() -> String {
+    let mut rows = String::from("❯ a long delivery");
+    for n in 0..24 {
+        let _ = write!(rows, "\n  wrapped line {n}");
+    }
+    rows
+}
+
+/// Drop `count` blank rows from the gap above the box rule: the nightcase
+/// echo adds rows below the cell, and the cell must stay inside the 20-row
+/// scan window (D1: the 6-row gap is fresh-pane padding; the measured echo
+/// rows stay untouched).
+fn limitframe_collapse_gap(frame: &str, count: usize) -> String {
+    let mut rows: Vec<&str> = frame.lines().collect();
+    let rule_at = rows
+        .iter()
+        .position(|row| !row.is_empty() && row.chars().all(|c| c == '─'))
+        .unwrap_or_else(|| panic!("the box top rule"));
+    let mut at = rule_at;
+    for _ in 0..count {
+        at -= 1;
+        assert!(rows[at].trim().is_empty(), "gap row {at} is blank");
+        rows.remove(at);
+    }
+    rows.join("\n") + "\n"
+}
+
+#[test]
+fn limitframe_cell_only_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        limit_standing(&limitframe_swap_done(""), "claude"),
+        LimitStanding::Stands,
+        "blank rows between the cell and the box prove the limit"
+    );
+}
+
+#[test]
+fn limitframe_cell_plus_echo_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = limitframe_swap_done("❯ please continue after reset");
+    assert_eq!(
+        ae::harness_state::classify(&frame, ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Unknown,
+        "the echo frame is unproven, never idle"
+    );
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::Stands,
+        "one echo block below the cell proves the limit"
+    );
+}
+
+#[test]
+fn limitframe_cell_plus_multiline_echo_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = limitframe_swap_done("❯ first line\n  wrapped second line\n  wrapped third line");
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::Stands,
+        "indented wrap rows belong to the echo block"
+    );
+}
+
+#[test]
+fn limitframe_cell_plus_two_echoes_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        limit_standing(&limitframe_swap_done("❯ one\n\n❯ two"), "claude"),
+        LimitStanding::Stands,
+        "two deliveries are two echo blocks, both tolerated"
+    );
+}
+
+#[test]
+fn limitframe_cell_plus_echo_plus_assistant_row_refuses_with_the_row() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let row = "⏺ Running a tool after the earlier limit";
+    assert_eq!(
+        limit_standing(&limitframe_swap_done(&format!("❯ one\n\n{row}")), "claude"),
+        LimitStanding::RowAfterCell(row.to_owned()),
+        "an assistant row after the echo is newer work"
+    );
+}
+
+#[test]
+fn limitframe_cell_plus_assistant_row_refuses_with_the_row() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let row = "⏺ Running a tool after the earlier limit";
+    assert_eq!(
+        limit_standing(&limitframe_swap_done(row), "claude"),
+        LimitStanding::RowAfterCell(row.to_owned()),
+        "an assistant row below the cell is newer work"
+    );
+}
+
+#[test]
+fn limitframe_cell_plus_spinner_row_refuses() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let busy = include_str!("../fixtures/harness-state/claude-busy-167x40.txt")
+        .lines()
+        .find(|row| row.starts_with("✻ Enchanting"))
+        .expect("measured busy row");
+    let frame = limitframe_swap_done(busy);
+    assert_eq!(
+        ae::harness_state::classify(&frame, ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Busy,
+        "the spinner row reads busy"
+    );
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::RowAfterCell(busy.trim().replace('\u{a0}', " ")),
+        "a running turn below the cell refuses"
+    );
+}
+
+#[test]
+fn limitframe_bare_hook_row_below_the_cell_refuses() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        limit_standing(&limitframe_swap_done("  ⎿  quoted continuation"), "claude"),
+        LimitStanding::RowAfterCell("⎿  quoted continuation".to_owned()),
+        "a hook row without its limit head is not the cell"
+    );
+}
+
+#[test]
+fn limitframe_draft_in_box_reads_no_box() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = LIMITSTOP_FRAME.replace("❯\u{a0}\n", "❯ draft text\n");
+    assert_eq!(
+        ae::harness_state::read_frame(&frame, ae::tool::ToolKind::Claude),
+        None,
+        "a draft reads no frame"
+    );
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::NoBox,
+        "no bare prompt row, no box"
+    );
+}
+
+#[test]
+fn limitframe_queued_text_in_box_reads_no_box() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = LIMITSTOP_FRAME.replace("❯\u{a0}\n", "❯ Press up to edit queued messages\n");
+    assert_eq!(
+        ae::harness_state::read_frame(&frame, ae::tool::ToolKind::Claude),
+        None,
+        "queued text reads no frame"
+    );
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::NoBox,
+        "no bare prompt row, no box"
+    );
+}
+
+#[test]
+fn limitframe_long_echo_pushes_the_cell_out_of_view() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = limitframe_swap_done(&limitframe_long_echo());
+    assert!(
+        ae::watchdog::limit_notice(&frame, "claude").is_none(),
+        "the cell left the scan window"
+    );
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::NoCell,
+        "a cell outside the window proves nothing"
+    );
+}
+
+#[test]
+fn limitframe_missing_box_reads_no_box() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = LIMITSTOP_FRAME.replace("❯\u{a0}\n", "");
+    assert_eq!(
+        ae::harness_state::read_frame(&frame, ae::tool::ToolKind::Claude),
+        None,
+        "no prompt row reads no frame"
+    );
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::NoBox,
+        "no bare prompt row, no box"
+    );
+}
+
+#[test]
+fn limitframe_stray_indented_row_without_an_opener_refuses() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        limit_standing(&limitframe_swap_done("  some stray indent"), "claude"),
+        LimitStanding::RowAfterCell("some stray indent".to_owned()),
+        "indent alone is not an echo block"
+    );
+}
+
+#[test]
+fn limitframe_bare_prompt_row_in_the_region_refuses() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        limit_standing(&limitframe_swap_done("❯"), "claude"),
+        LimitStanding::RowAfterCell("❯".to_owned()),
+        "an opener with no text is no delivery"
+    );
+}
+
+#[test]
+fn limitframe_vendor_head_below_the_cell_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let row = "⏺ Usage limit reached · continuing automatically at 1am · esc to cancel";
+    assert_eq!(
+        limit_standing(&limitframe_swap_done(row), "claude"),
+        LimitStanding::Stands,
+        "the measured 2.1.317 order draws the head below the cell; it is limit furniture"
+    );
+}
+
+#[test]
+fn limitframe_vendor_head_prefix_tolerates_any_tail() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        limit_standing(
+            &limitframe_swap_done("⏺ Usage limit reached · retrying soon"),
+            "claude"
+        ),
+        LimitStanding::Stands,
+        "the contract is the prefix; tails reword across versions"
+    );
+}
+
+#[test]
+fn limitframe_cancelled_row_in_region_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let row = "⏺ Automatic continue cancelled · /rate-limit-options to re-arm";
+    assert_eq!(
+        limit_standing(&limitframe_swap_done(row), "claude"),
+        LimitStanding::Stands,
+        "the same row limit_wait_cancelled names counts in the region too"
+    );
+}
+
+#[test]
+fn limitframe_done_row_in_region_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        limit_standing(
+            &limitframe_swap_done("✻ Sautéed for 6s · done Tuesday 3:03 PM"),
+            "claude"
+        ),
+        LimitStanding::Stands,
+        "a row the grammar reads as finished is settled output, like the cell"
+    );
+}
+
+#[test]
+fn limitframe_done_then_echo_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = limitframe_swap_done("✻ Sautéed for 6s · done Tuesday 3:03 PM\n\n❯ late delivery");
+    assert_eq!(
+        ae::harness_state::classify(&frame, ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Unknown,
+        "the echo below the done row reads unproven"
+    );
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::Stands,
+        "finished turn plus a later echo is an idle seat, safe to move"
+    );
+}
+
+#[test]
+fn limitframe_unfinished_spinner_shaped_row_refuses() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        limit_standing(&limitframe_swap_done("✻ Sautéed for 6s"), "claude"),
+        LimitStanding::RowAfterCell("✻ Sautéed for 6s".to_owned()),
+        "tolerance needs the done shape, not the spinner glyph"
+    );
+}
+
+#[test]
+fn limitframe_head_then_echo_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let head = "⏺ Usage limit reached · continuing automatically at 12am · esc to cancel";
+    assert_eq!(
+        limit_standing(&limitframe_swap_done(&format!("{head}\n\n❯ one")), "claude"),
+        LimitStanding::Stands,
+        "limit furniture above, delivery below: the likely night order"
+    );
+}
+
+#[test]
+fn limitframe_echo_then_head_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let head = "⏺ Usage limit reached · continuing automatically at 12am · esc to cancel";
+    assert_eq!(
+        limit_standing(&limitframe_swap_done(&format!("❯ one\n\n{head}")), "claude"),
+        LimitStanding::Stands,
+        "a limit head newer than the echo is still limit evidence, never work"
+    );
+}
+
+#[test]
+fn limitframe_head_then_assistant_row_refuses() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let head = "⏺ Usage limit reached · continuing automatically at 12am · esc to cancel";
+    let row = "⏺ Running a tool after the earlier limit";
+    assert_eq!(
+        limit_standing(&limitframe_swap_done(&format!("{head}\n\n{row}")), "claude"),
+        LimitStanding::RowAfterCell(row.to_owned()),
+        "the head tolerates nothing after it but furniture and echoes"
+    );
+}
+
+#[test]
+fn limitframe_indented_vendor_head_refuses() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let row = "  ⏺ Usage limit reached · continuing automatically at 12am · esc to cancel";
+    assert_eq!(
+        limit_standing(&limitframe_swap_done(row), "claude"),
+        LimitStanding::RowAfterCell(
+            "⏺ Usage limit reached · continuing automatically at 12am · esc to cancel".to_owned()
+        ),
+        "the tolerated head sits at column 0, measured; indent is no head"
+    );
+}
+
+#[test]
+fn limitframe_abutting_echo_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        LIMITSTOP_FRAME.matches(LIMITFRAME_ABUT).count(),
+        1,
+        "one abut anchor"
+    );
+    let frame = LIMITSTOP_FRAME.replacen(LIMITFRAME_ABUT, "clau.de/reset\n❯ abutting echo", 1);
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::Stands,
+        "the cell ends where the column-0 echo starts, blank line or not"
+    );
+}
+
+#[test]
+fn limitframe_abutting_echo_plus_assistant_row_refuses() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = LIMITSTOP_FRAME.replacen(
+        LIMITFRAME_ABUT,
+        "clau.de/reset\n❯ abutting echo\n⏺ newer turn row",
+        1,
+    );
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::RowAfterCell("⏺ newer turn row".to_owned()),
+        "no blank line may smuggle a turn into the cell"
+    );
+}
+
+#[test]
+fn limitframe_other_tools_read_no_cell() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        limit_standing(LIMITSTOP_FRAME, "codex"),
+        LimitStanding::NoCell,
+        "the echo rule is claude's only"
+    );
+}
+
+#[test]
+fn limitframe_idle_frame_reads_no_cell() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let idle = include_str!("../fixtures/harness-state/claude-idle-167x40.txt");
+    assert_eq!(
+        limit_standing(idle, "claude"),
+        LimitStanding::NoCell,
+        "no limit row, no standing"
+    );
+}
+
+#[test]
+fn limitframe_offending_row_is_bounded_to_one_line() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let row = format!("⏺ {}", "y".repeat(200));
+    match limit_standing(&limitframe_swap_done(&row), "claude") {
+        LimitStanding::RowAfterCell(got) => {
+            assert!(got.chars().count() <= 80, "bounded to 80 chars: {got:?}");
+            assert!(
+                !got.is_empty() && !got.chars().any(char::is_control),
+                "one clean line: {got:?}"
+            );
+            assert!(row.starts_with(got.as_str()), "a head cut: {got:?}");
+        }
+        other => panic!("must refuse with the row, got {other:?}"),
+    }
+}
+
+#[test]
+fn limitframe_offending_row_is_control_free() {
+    use ae::watchdog::limit_standing;
+    match limit_standing(&limitframe_swap_done("⏺ beep\u{7} here"), "claude") {
+        ae::watchdog::LimitStanding::RowAfterCell(got) => {
+            assert!(
+                !got.chars().any(char::is_control),
+                "no control chars survive: {got:?}"
+            );
+        }
+        other => panic!("must refuse with the row, got {other:?}"),
+    }
+}
+
+#[test]
+fn limitframe_offending_row_normalizes_nbsp() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        limit_standing(&limitframe_swap_done("⏺ stuck\u{a0}row"), "claude"),
+        LimitStanding::RowAfterCell("⏺ stuck row".to_owned()),
+        "NBSP reads as a space"
+    );
+}
+
+#[test]
+fn limitframe_offending_row_keeps_quotes_for_the_scan() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        limit_standing(&limitframe_swap_done("⏺ said \"hi\" loudly"), "claude"),
+        LimitStanding::RowAfterCell("⏺ said \"hi\" loudly".to_owned()),
+        "the scan keeps the row; the refusal line strips the quotes"
+    );
+}
+
+#[test]
+fn limitframe_cell_only_frame_is_stopped_by_the_limit_leg() {
+    let frame = limitframe_swap_done("");
+    let (rig, pane) = limitstop_attempt("lfcellonly", &frame);
+    let captured = rig.capture(&pane);
+    assert_eq!(
+        ae::harness_state::classify(&captured, ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Unknown,
+        "the bench-shaped frame is unproven, not idle"
+    );
+    assert!(
+        ae::watchdog::limit_notice(&captured, "claude").is_some(),
+        "the cell is in view"
+    );
+    let pid = rig.tool_pid(&pane, "claude").expect("the limited tool");
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(0),
+        "cell alone over an empty box must move: out={out} err={err}"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "claude").is_none(), "old tool stopped");
+    assert_ne!(rig.tool_pid(&pane, "opencode"), Some(pid));
+    assert_eq!(
+        one_outcome(&rig, DONE_ACTION).reference.as_deref(),
+        Some("fake-claude")
+    );
+}
+
+#[test]
+fn limitframe_echo_frame_is_stopped_by_the_limit_leg() {
+    let frame = limitframe_swap_done("❯ please continue after reset");
+    let (rig, pane) = limitstop_attempt("lfecho", &frame);
+    let captured = rig.capture(&pane);
+    assert_eq!(
+        ae::harness_state::classify(&captured, ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Unknown,
+        "the echo frame is unproven, not idle"
+    );
+    assert!(
+        ae::watchdog::limit_notice(&captured, "claude").is_some(),
+        "the cell is in view"
+    );
+    let pid = rig.tool_pid(&pane, "claude").expect("the limited tool");
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(0),
+        "cell plus echo must move: out={out} err={err}"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "claude").is_none(), "old tool stopped");
+    assert_ne!(rig.tool_pid(&pane, "opencode"), Some(pid));
+    assert_eq!(
+        one_outcome(&rig, DONE_ACTION).reference.as_deref(),
+        Some("fake-claude")
+    );
+}
+
+#[test]
+fn limitframe_multiline_echo_frame_is_stopped_by_the_limit_leg() {
+    let frame = limitframe_swap_done("❯ first line\n  wrapped second line\n  wrapped third line");
+    let (rig, pane) = limitstop_attempt("lfmulti", &frame);
+    assert_eq!(
+        ae::harness_state::classify(&rig.capture(&pane), ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Unknown,
+        "the wrapped-echo frame is unproven, not idle"
+    );
+    let pid = rig.tool_pid(&pane, "claude").expect("the limited tool");
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(0),
+        "cell plus wrapped echo must move: out={out} err={err}"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "claude").is_none(), "old tool stopped");
+    assert_ne!(rig.tool_pid(&pane, "opencode"), Some(pid));
+    assert_eq!(
+        one_outcome(&rig, DONE_ACTION).reference.as_deref(),
+        Some("fake-claude")
+    );
+}
+
+#[test]
+fn limitframe_echo_then_assistant_row_is_refused_with_the_row_named() {
+    let row = "⏺ Running a tool after the earlier limit";
+    let frame = limitframe_swap_done(&format!("❯ one\n\n{row}"));
+    let (rig, pane) = limitstop_attempt("lfechoassis", &frame);
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(1),
+        "an assistant row after the echo cannot move: out={out} err={err}"
+    );
+    let token = format!(
+        "Error: frame not proven (row after the limit row: \"{row}\") — once its box is empty and "
+    );
+    assert!(err.contains(&token), "refusal names the row: {err}");
+    assert!(err.contains("--stop-unknown"), "command kept: {err}");
+    let refused = one_outcome(&rig, REFUSED_ACTION);
+    untouched(&rig, &pane);
+    let summary = refused.summary.as_deref().unwrap_or_default();
+    assert!(
+        summary.contains(&format!("(row after the limit row: \"{row}\")")),
+        "journal keeps reason and row: {summary}"
+    );
+    assert!(!summary.contains('\n'), "journal stays one line: {summary}");
+    assert!(
+        summary.contains("ae reseat ") && summary.contains("--stop-unknown"),
+        "journal keeps the command: {summary}"
+    );
+    assert!(
+        summary.chars().count() <= 600,
+        "journal stays bounded: {summary}"
+    );
+}
+
+#[test]
+fn limitframe_assistant_row_is_refused_with_the_row_named() {
+    let row = "⏺ Running a tool after the earlier limit";
+    let frame = limitframe_swap_done(row);
+    let (rig, pane) = limitstop_attempt("lfassis", &frame);
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(1),
+        "an assistant row below the cell cannot move: out={out} err={err}"
+    );
+    let token = format!(
+        "Error: frame not proven (row after the limit row: \"{row}\") — once its box is empty and "
+    );
+    assert!(err.contains(&token), "refusal names the row: {err}");
+    let refused = one_outcome(&rig, REFUSED_ACTION);
+    untouched(&rig, &pane);
+    let summary = refused.summary.as_deref().unwrap_or_default();
+    assert!(
+        summary.contains(&format!("(row after the limit row: \"{row}\")")),
+        "journal keeps reason and row: {summary}"
+    );
+}
+
+#[test]
+fn limitframe_queued_text_is_refused_as_no_frame() {
+    let frame = LIMITSTOP_FRAME.replace("❯\u{a0}\n", "❯ Press up to edit queued messages\n");
+    let (rig, pane) = limitstop_attempt("lfqueued", &frame);
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(1),
+        "queued text cannot move: out={out} err={err}"
+    );
+    assert!(
+        err.contains("Error: frame not proven (no frame) — once its box is empty and "),
+        "refusal names no frame: {err}"
+    );
+    let refused = one_outcome(&rig, REFUSED_ACTION);
+    untouched(&rig, &pane);
+    let summary = refused.summary.as_deref().unwrap_or_default();
+    assert!(
+        summary.contains("(no frame)"),
+        "journal keeps the reason: {summary}"
+    );
+}
+
+#[test]
+fn limitframe_draft_is_refused_as_no_frame() {
+    let frame = LIMITSTOP_FRAME.replace("❯\u{a0}\n", "❯ draft text\n");
+    let (rig, pane) = limitstop_attempt("lfdraft", &frame);
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(code, Some(1), "a draft cannot move: out={out} err={err}");
+    assert!(
+        err.contains("Error: frame not proven (no frame) — once its box is empty and "),
+        "refusal names no frame: {err}"
+    );
+    let refused = one_outcome(&rig, REFUSED_ACTION);
+    untouched(&rig, &pane);
+    let summary = refused.summary.as_deref().unwrap_or_default();
+    assert!(
+        summary.contains("(no frame)"),
+        "journal keeps the reason: {summary}"
+    );
+}
+
+#[test]
+fn limitframe_long_echo_is_refused_as_no_limit_row() {
+    let frame = limitframe_swap_done(&limitframe_long_echo());
+    let (rig, pane) = limitstop_attempt("lflong", &frame);
+    assert!(
+        ae::watchdog::limit_notice(&rig.capture(&pane), "claude").is_none(),
+        "the cell left the scan window"
+    );
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(1),
+        "a cell out of view cannot move: out={out} err={err}"
+    );
+    assert!(
+        err.contains("Error: frame not proven (no limit row) — once its box is empty and "),
+        "refusal names no limit row: {err}"
+    );
+    let refused = one_outcome(&rig, REFUSED_ACTION);
+    untouched(&rig, &pane);
+    let summary = refused.summary.as_deref().unwrap_or_default();
+    assert!(
+        summary.contains("(no limit row)"),
+        "journal keeps the reason: {summary}"
+    );
+}
+
+#[test]
+fn limitframe_quoted_row_is_stripped_in_the_refusal_line() {
+    let frame = limitframe_swap_done("⏺ said \"hi\" loudly");
+    let (rig, pane) = limitstop_attempt("lfquote", &frame);
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(1),
+        "an assistant row cannot move: out={out} err={err}"
+    );
+    assert!(
+        err.contains("Error: frame not proven (row after the limit row: \"⏺ said hi loudly\")"),
+        "quotes stripped from the quoted row: {err}"
+    );
+    untouched(&rig, &pane);
+}
+
+#[test]
+fn limitframe_measured_multiparagraph_echo_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = limitframe_collapse_gap(&limitframe_swap_done(&limitframe_nightcase()), 2);
+    assert_eq!(
+        ae::harness_state::classify(&frame, ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Unknown,
+        "the night-case frame is unproven, never idle"
+    );
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::Stands,
+        "blank rows sit INSIDE one echo; the paragraphs after them continue it"
+    );
+}
+
+#[test]
+fn limitframe_hook_row_after_a_blank_inside_an_echo_refuses() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = limitframe_swap_done("❯ one\n\n  ⎿ x");
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::RowAfterCell("⎿ x".to_owned()),
+        "an indented mark glyph is no paragraph, even inside an open echo"
+    );
+}
+
+#[test]
+fn limitframe_indented_head_after_a_blank_refuses() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = limitframe_swap_done("❯ one\n\n  ⏺ newer status row");
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::RowAfterCell("⏺ newer status row".to_owned()),
+        "the refusal reads the first glyph, not the column"
+    );
+}
+
+#[test]
+fn limitframe_indented_echo_mark_after_a_blank_continues() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = limitframe_swap_done("❯ one\n\n  ❯ quoted earlier ask");
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::Stands,
+        "a pasted body may quote another echo; the mark set decides, not ❯"
+    );
+}
+
+#[test]
+fn limitframe_echo_survives_multiple_blank_rows() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = limitframe_swap_done("❯ one\n\n\n  still the same echo");
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::Stands,
+        "blank rows never close an echo by count"
+    );
+}
+
+#[test]
+fn limitframe_column_zero_plain_row_after_a_blank_refuses() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    let frame = limitframe_swap_done("❯ one\n\nplain at column zero");
+    assert_eq!(
+        limit_standing(&frame, "claude"),
+        LimitStanding::RowAfterCell("plain at column zero".to_owned()),
+        "continuation needs the indent; column 0 is a new row"
+    );
+}
+
+/// The measured 2.1.317 limited turn, sanitized: echo, `  ⎿` cell, `⏺`
+/// head, `✻ … done` row, empty box, limit footers.
+const LIMITFRAME_PROBE: &str =
+    include_str!("../fixtures/harness-state/claude-limit-echo-2.1.317.txt");
+
+#[test]
+fn limitframe_probe_frame_stands() {
+    use ae::watchdog::{LimitStanding, limit_standing};
+    assert_eq!(
+        ae::harness_state::classify(LIMITFRAME_PROBE, ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Idle,
+        "the probe turn finished: current is the done row"
+    );
+    assert!(
+        ae::watchdog::limit_notice(LIMITFRAME_PROBE, "claude").is_some(),
+        "the cell is in view"
+    );
+    assert_eq!(
+        limit_standing(LIMITFRAME_PROBE, "claude"),
+        LimitStanding::Stands,
+        "the real frame is head plus done below the cell: all tolerated"
+    );
+}
+
+#[test]
+fn limitframe_probe_frame_is_moved_by_the_limit_leg() {
+    let (rig, pane) = limitstop_attempt("lfprobe", LIMITFRAME_PROBE);
+    assert_eq!(
+        ae::harness_state::classify(&rig.capture(&pane), ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Idle,
+        "the probe turn finished: the leg moves it on the idle proof"
+    );
+    let pid = rig.tool_pid(&pane, "claude").expect("the limited tool");
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(0),
+        "the measured limited frame must move: out={out} err={err}"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "claude").is_none(), "old tool stopped");
+    assert_ne!(rig.tool_pid(&pane, "opencode"), Some(pid));
+    assert_eq!(
+        one_outcome(&rig, DONE_ACTION).reference.as_deref(),
+        Some("fake-claude")
+    );
+}
+
+#[test]
+fn limitframe_head_plus_echo_frame_is_stopped_by_the_limit_leg() {
+    let head = "⏺ Usage limit reached · continuing automatically at 12am · esc to cancel";
+    let frame = limitframe_swap_done(&format!("{head}\n\n❯ one"));
+    let (rig, pane) = limitstop_attempt("lfnighthead", &frame);
+    let captured = rig.capture(&pane);
+    assert_eq!(
+        ae::harness_state::classify(&captured, ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Unknown,
+        "the head-plus-echo frame is unproven, not idle"
+    );
+    assert!(
+        ae::watchdog::limit_notice(&captured, "claude").is_some(),
+        "the cell is in view"
+    );
+    let pid = rig.tool_pid(&pane, "claude").expect("the limited tool");
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(0),
+        "cell plus head plus echo must move: out={out} err={err}"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "claude").is_none(), "old tool stopped");
+    assert_ne!(rig.tool_pid(&pane, "opencode"), Some(pid));
+    assert_eq!(
+        one_outcome(&rig, DONE_ACTION).reference.as_deref(),
+        Some("fake-claude")
+    );
+}
+
+#[test]
+fn limitframe_nightcase_frame_is_stopped_by_the_limit_leg() {
+    let frame = limitframe_collapse_gap(&limitframe_swap_done(&limitframe_nightcase()), 2);
+    let (rig, pane) = limitstop_attempt("lfnight", &frame);
+    let captured = rig.capture(&pane);
+    assert_eq!(
+        ae::harness_state::classify(&captured, ae::tool::ToolKind::Claude),
+        ae::harness_state::HarnessState::Unknown,
+        "the night-case frame is unproven, not idle"
+    );
+    assert!(
+        ae::watchdog::limit_notice(&captured, "claude").is_some(),
+        "the cell is in view"
+    );
+    let pid = rig.tool_pid(&pane, "claude").expect("the limited tool");
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+    assert_eq!(
+        code,
+        Some(0),
+        "cell plus the measured multi-paragraph echo must move: out={out} err={err}"
+    );
+    assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
+    assert!(rig.tool_pid(&pane, "claude").is_none(), "old tool stopped");
+    assert_ne!(rig.tool_pid(&pane, "opencode"), Some(pid));
+    assert_eq!(
+        one_outcome(&rig, DONE_ACTION).reference.as_deref(),
+        Some("fake-claude")
+    );
+}
