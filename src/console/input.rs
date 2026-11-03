@@ -246,28 +246,7 @@ impl Keys {
                     keys.extend(key.zip(began));
                 }
             } else {
-                let key = match byte {
-                    0x7f | 0x08 => Key::Backspace,
-                    0x01 => Key::Home,
-                    0x05 => Key::End,
-                    0x15 => Key::ClearLine,
-                    0x17 => Key::KillBigWord,
-                    0x0b => Key::KillToEnd,
-                    0x19 => Key::Yank,
-                    0x16 => Key::ImagePaste,
-                    b'\r' => Key::Enter,
-                    b'\n' => Key::Newline,
-                    0x09 if self.app => Key::Tab,
-                    0x03 if self.app => Key::Interrupt,
-                    // The app drops every other control: ^Z or ^\\ never
-                    // suspends or kills it, and none reaches a draft.
-                    ..0x20 if self.app => continue,
-                    _ => {
-                        text(&mut keys, &[byte], stamp);
-                        continue;
-                    }
-                };
-                keys.push((key, stamp));
+                typed(&mut keys, byte, self.app, stamp);
             }
         }
         keys
@@ -339,6 +318,30 @@ fn text(keys: &mut Vec<(Key, Instant)>, bytes: &[u8], origin: Instant) {
         return;
     }
     keys.push((Key::Text(bytes.to_vec()), origin));
+}
+
+/// One byte outside any sequence, report or paste: the control key it is,
+/// nothing when the app drops it, else text.
+fn typed(keys: &mut Vec<(Key, Instant)>, byte: u8, app: bool, stamp: Instant) {
+    let key = match byte {
+        0x7f | 0x08 => Key::Backspace,
+        0x01 => Key::Home,
+        0x05 => Key::End,
+        0x15 => Key::ClearLine,
+        0x17 => Key::KillBigWord,
+        0x0b => Key::KillToEnd,
+        0x19 => Key::Yank,
+        0x16 => Key::ImagePaste,
+        b'\r' => Key::Enter,
+        b'\n' => Key::Newline,
+        0x09 if app => Key::Tab,
+        0x03 if app => Key::Interrupt,
+        // The app drops every other control: ^Z or ^\\ never
+        // suspends or kills it, and none reaches a draft.
+        ..0x20 if app => return,
+        _ => return text(keys, &[byte], stamp),
+    };
+    keys.push((key, stamp));
 }
 
 /// Whether escape sequence `seq` is complete: a CSI at its final byte, an
@@ -2003,7 +2006,7 @@ mod inputfeed_spec;
 mod tests {
     use super::{
         CAP, Command, Composer, Draft, Effect, Entered, Input, Key, Keys, Outcome, Reading, Screen,
-        Seen, Size, View, anchor_up, command, command_to, draw, outcome_line, paint, window,
+        Seen, Size, View, anchor_up, command, command_to, draw, outcome_line, paint, typed, window,
     };
     use std::time::{Duration, Instant};
 
@@ -3572,6 +3575,85 @@ mod tests {
             input.draft(),
             "!ls",
             "read-only puts !ls back into the draft"
+        );
+    }
+
+    /// ASCII and the keys `Key` documents: `^A` `^E` `^U` `^W` `^K` `^Y` `^V`, DEL and BS, CR and LF.
+    #[test]
+    fn typed_spells_each_control_byte_as_its_key_and_the_app_alone_drops_the_rest() {
+        let at = Instant::now();
+        let named: [(u8, Key); 11] = [
+            (0x7f, Key::Backspace),
+            (0x08, Key::Backspace),
+            (0x01, Key::Home),
+            (0x05, Key::End),
+            (0x15, Key::ClearLine),
+            (0x17, Key::KillBigWord),
+            (0x0b, Key::KillToEnd),
+            (0x19, Key::Yank),
+            (0x16, Key::ImagePaste),
+            (b'\r', Key::Enter),
+            (b'\n', Key::Newline),
+        ];
+        let mut out = Vec::new();
+        for app in [false, true] {
+            for (byte, key) in &named {
+                out.clear();
+                typed(&mut out, *byte, app, at);
+                assert_eq!(out, [(key.clone(), at)], "{byte:#04x} app={app}");
+            }
+        }
+        for (byte, key) in [(0x09, Key::Tab), (0x03, Key::Interrupt)] {
+            out.clear();
+            typed(&mut out, byte, true, at);
+            assert_eq!(out, [(key, at)], "{byte:#04x} in the app");
+            out.clear();
+            typed(&mut out, byte, false, at);
+            assert_eq!(
+                out,
+                [(Key::Text(vec![byte]), at)],
+                "{byte:#04x} in the chat"
+            );
+        }
+        let spelled_bytes: Vec<u8> = named.iter().map(|(byte, _)| *byte).collect();
+        for byte in
+            (0x00..0x20).filter(|b| ![0x09, 0x03, 0x1b].contains(b) && !spelled_bytes.contains(b))
+        {
+            out.clear();
+            typed(&mut out, byte, true, at);
+            assert_eq!(out, [], "{byte:#04x} is dropped in the app");
+            typed(&mut out, byte, false, at);
+            assert_eq!(
+                out,
+                [(Key::Text(vec![byte]), at)],
+                "{byte:#04x} is text in the chat"
+            );
+        }
+        for byte in [b' ', b'a', b'~', 0xc3, 0xa9, 0xff] {
+            for app in [false, true] {
+                out.clear();
+                typed(&mut out, byte, app, at);
+                assert_eq!(out, [(Key::Text(vec![byte]), at)], "{byte:#04x} app={app}");
+            }
+        }
+    }
+
+    #[test]
+    fn typed_joins_text_of_one_read_and_splits_it_at_another() {
+        let (first, second) = (
+            Instant::now(),
+            Instant::now() + std::time::Duration::from_millis(5),
+        );
+        let mut out = Vec::new();
+        for (byte, at) in [(b'a', first), (b'b', first), (b'c', second)] {
+            typed(&mut out, byte, false, at);
+        }
+        assert_eq!(
+            out,
+            [
+                (Key::Text(b"ab".to_vec()), first),
+                (Key::Text(b"c".to_vec()), second)
+            ]
         );
     }
 }
