@@ -3481,6 +3481,60 @@ fn with_state_root<E: Write, X: Into<Error>>(
     }
 }
 
+/// Run `entry` as the viewer that may write; an unreadable viewer is refused
+/// (the reason is on `err`) and exits 1 without running it.
+///
+/// The viewer is observed here, once, before `entry` runs, so whatever `entry`
+/// reads or stamps comes after it.
+fn with_writing_viewer<E: Write, X: Into<Error>>(
+    dir: &std::path::Path,
+    err: &mut E,
+    entry: impl FnOnce(requests::Viewer, &mut E) -> std::result::Result<u8, X>,
+) -> Result<u8> {
+    match writing_viewer(dir, err)? {
+        Some(viewer) => entry(viewer, err).map_err(Into::into),
+        None => Ok(state::EXIT_FAILED),
+    }
+}
+
+/// `send`: the sender is the observed viewer, unless the environment names a
+/// sender override, which skips the refusing viewer gate and takes the actual
+/// calling pane instead.
+fn run_send(
+    dir: &std::path::Path,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let own_session = own_session(dir);
+    let env = send_env();
+    let viewer = if env.sender_override.is_some() {
+        Some(
+            actual_calling_pane()
+                .as_ref()
+                .map(|(pane, _)| requests::Viewer::from_pane(pane, &own_session))
+                .unwrap_or_default(),
+        )
+    } else {
+        writing_viewer(dir, err)?
+    };
+    let Some(viewer) = viewer else {
+        return Ok(state::EXIT_FAILED);
+    };
+    Ok(send::run(
+        dir,
+        tail,
+        &env,
+        &viewer.display,
+        &viewer.session,
+        &own_session,
+        time::Timestamp::now(),
+        send_defer(),
+        out,
+        err,
+    )?)
+}
+
 /// What a `MissingOperand` refusal says the command needs.
 ///
 /// Every internal entry but two is per-SESSION and takes that session's meta
@@ -3579,7 +3633,7 @@ pub fn run_with(
         cli::Request::Ask { dir, tail } => run_tracked(tracked::Kind::Ask, dir, tail, out, err)?,
         cli::Request::Interrupt { dir, tail } => {
             let own_session = own_session(dir);
-            if let Some(viewer) = writing_viewer(dir, err)? {
+            with_writing_viewer(dir, err, |viewer, err| {
                 interrupt::run(
                     dir,
                     tail,
@@ -3588,41 +3642,10 @@ pub fn run_with(
                     &own_session,
                     time::Timestamp::now(),
                     err,
-                )?
-            } else {
-                state::EXIT_FAILED
-            }
-        }
-        cli::Request::Send { dir, tail } => {
-            let own_session = own_session(dir);
-            let env = send_env();
-            let viewer = if env.sender_override.is_some() {
-                Some(
-                    actual_calling_pane()
-                        .as_ref()
-                        .map(|(pane, _)| requests::Viewer::from_pane(pane, &own_session))
-                        .unwrap_or_default(),
                 )
-            } else {
-                writing_viewer(dir, err)?
-            };
-            if let Some(viewer) = viewer {
-                send::run(
-                    dir,
-                    tail,
-                    &env,
-                    &viewer.display,
-                    &viewer.session,
-                    &own_session,
-                    time::Timestamp::now(),
-                    send_defer(),
-                    out,
-                    err,
-                )?
-            } else {
-                state::EXIT_FAILED
-            }
+            })?
         }
+        cli::Request::Send { dir, tail } => run_send(dir, tail, out, err)?,
         cli::Request::Relay { dir, tail } => relay::run(
             dir,
             tail,
@@ -3698,9 +3721,9 @@ pub fn run_with(
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin)?;
             identity::meta_init(dir, tail, &stdin, out, err)?
         }
-        cli::Request::Relaunch { dir, tail } => with_state_root(err, |root, err| -> Result<u8> {
-            if let Some(viewer) = writing_viewer(dir, err)? {
-                Ok(seat_relaunch::run(
+        cli::Request::Relaunch { dir, tail } => with_state_root(err, |root, err| {
+            with_writing_viewer(dir, err, |viewer, err| {
+                seat_relaunch::run(
                     root,
                     dir,
                     tail,
@@ -3709,32 +3732,30 @@ pub fn run_with(
                     time::Timestamp::now(),
                     out,
                     err,
-                )?)
-            } else {
-                Ok(state::EXIT_FAILED)
-            }
+                )
+            })
         })?,
         cli::Request::Reseat { tail } => with_state_root(err, |root, err| {
             reseat::run(root, world, tail, time::Timestamp::now(), out, err)
         })?,
         cli::Request::Spawn { dir, tail } => {
-            if let Some(viewer) = writing_viewer(dir, err)? {
+            with_writing_viewer(dir, err, |viewer, err| -> Result<u8> {
                 if tracked::refuse_role_entry(dir, err)? {
-                    state::EXIT_FAILED
-                } else {
-                    spawn::run_spawn(dir, tail, &viewer.display, time::Timestamp::now(), out, err)?
+                    return Ok(state::EXIT_FAILED);
                 }
-            } else {
-                state::EXIT_FAILED
-            }
+                Ok(spawn::run_spawn(
+                    dir,
+                    tail,
+                    &viewer.display,
+                    time::Timestamp::now(),
+                    out,
+                    err,
+                )?)
+            })?
         }
-        cli::Request::Retire { dir, tail } => {
-            if let Some(viewer) = writing_viewer(dir, err)? {
-                spawn::run_retire(dir, tail, &viewer.display, time::Timestamp::now(), out, err)?
-            } else {
-                state::EXIT_FAILED
-            }
-        }
+        cli::Request::Retire { dir, tail } => with_writing_viewer(dir, err, |viewer, err| {
+            spawn::run_retire(dir, tail, &viewer.display, time::Timestamp::now(), out, err)
+        })?,
         // The three whole lifecycle operations.
         cli::Request::End { tail } => with_state_root(err, |root, err| {
             lifecycle::end::run(root, tail, doors::calling_pane_id().as_deref(), out, err)
