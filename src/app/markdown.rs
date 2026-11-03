@@ -806,6 +806,62 @@ impl<'a> Mapper<'a> {
         self.code = false;
         self.marks.code_block = false;
     }
+    /// Quote, list and item each ask `block` first, so the ENCLOSING scope is
+    /// checked and marked seen before the new one is pushed. A quote and a list
+    /// flush only through `block`; a list neither flushes nor indents.
+    fn open_quote(&mut self) {
+        self.block(true);
+        self.scopes.push(Scope::of(true));
+        self.quotes += 1;
+        self.marks.quote = true;
+        self.indent();
+    }
+    fn close_quote(&mut self) {
+        self.flush();
+        self.gap();
+        self.scopes.pop();
+        self.quotes = self.quotes.saturating_sub(1);
+        self.marks.quote = self.quotes > 0;
+        self.indent();
+    }
+    fn open_list(&mut self, start: Option<u64>) {
+        self.block(false);
+        self.scopes
+            .push(Scope::of(self.loose.next().unwrap_or(false)));
+        self.lists.push(start);
+    }
+    /// A list ends without a flush or a gap.
+    fn close_list(&mut self) {
+        self.lists.pop();
+        self.scopes.pop();
+        self.indent();
+    }
+    /// An item draws its bullet as the prefix of its first row and hangs under it.
+    fn open_item(&mut self, range: &Range<usize>) {
+        self.block(false);
+        self.scopes
+            .push(Scope::of(self.scopes.last().is_some_and(|s| s.loose)));
+        self.flush();
+        self.row.line = self.doc.line(range.start);
+        let bullet = match self.lists.last_mut() {
+            Some(Some(n)) => {
+                let text = format!("{n}. ");
+                *n = n.saturating_add(1);
+                text
+            }
+            _ => "- ".to_owned(),
+        };
+        self.prefix = format!(
+            "{}{bullet}",
+            "  ".repeat(self.quotes + self.lists.len().saturating_sub(1))
+        );
+        self.hang = cells(&self.prefix);
+    }
+    /// An item ends without an indent.
+    fn close_item(&mut self) {
+        self.flush();
+        self.scopes.pop();
+    }
     /// A span opens: the marks it found come back at its end, whichever kind ends it.
     fn save(&mut self) {
         self.saved.push(self.marks);
@@ -858,39 +914,9 @@ impl<'a> Mapper<'a> {
                             self.open_leaf(!matches!(tag, Tag::Paragraph), range);
                         }
                         Tag::HtmlBlock => self.block(false),
-                        Tag::Item => {
-                            self.block(false);
-                            self.scopes
-                                .push(Scope::of(self.scopes.last().is_some_and(|s| s.loose)));
-                            self.flush();
-                            self.row.line = self.doc.line(range.start);
-                            let bullet = match self.lists.last_mut() {
-                                Some(Some(n)) => {
-                                    let text = format!("{n}. ");
-                                    *n = n.saturating_add(1);
-                                    text
-                                }
-                                _ => "- ".to_owned(),
-                            };
-                            self.prefix = format!(
-                                "{}{bullet}",
-                                "  ".repeat(self.quotes + self.lists.len().saturating_sub(1))
-                            );
-                            self.hang = cells(&self.prefix);
-                        }
-                        Tag::BlockQuote(_) => {
-                            self.block(true);
-                            self.scopes.push(Scope::of(true));
-                            self.quotes += 1;
-                            self.marks.quote = true;
-                            self.indent();
-                        }
-                        Tag::List(start) => {
-                            self.block(false);
-                            self.scopes
-                                .push(Scope::of(self.loose.next().unwrap_or(false)));
-                            self.lists.push(*start);
-                        }
+                        Tag::Item => self.open_item(range),
+                        Tag::BlockQuote(_) => self.open_quote(),
+                        Tag::List(start) => self.open_list(*start),
                         Tag::Table(align) => {
                             self.block(true);
                             self.flush();
@@ -945,23 +971,9 @@ impl<'a> Mapper<'a> {
                         self.gap();
                     }
                     TagEnd::CodeBlock => self.close_code(),
-                    TagEnd::Item => {
-                        self.flush();
-                        self.scopes.pop();
-                    }
-                    TagEnd::List(_) => {
-                        self.lists.pop();
-                        self.scopes.pop();
-                        self.indent();
-                    }
-                    TagEnd::BlockQuote(_) => {
-                        self.flush();
-                        self.gap();
-                        self.scopes.pop();
-                        self.quotes = self.quotes.saturating_sub(1);
-                        self.marks.quote = self.quotes > 0;
-                        self.indent();
-                    }
+                    TagEnd::Item => self.close_item(),
+                    TagEnd::List(_) => self.close_list(),
+                    TagEnd::BlockQuote(_) => self.close_quote(),
                     TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => self.restore(),
                     TagEnd::Link | TagEnd::Image => self.close_link(),
                     TagEnd::TableCell => {
