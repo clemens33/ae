@@ -1997,6 +1997,9 @@ pub fn paint(
 mod imgtoken_spec;
 
 #[cfg(test)]
+mod inputfeed_spec;
+
+#[cfg(test)]
 mod tests {
     use super::{
         CAP, Command, Composer, Draft, Effect, Entered, Input, Key, Keys, Outcome, Reading, Screen,
