@@ -15,6 +15,11 @@
 //! 2. HTML block rows keep `line 0` in `Mapped` and anchor `line_of` to the
 //!    previous block instead of their own source line, pinned by
 //!    `html_block_rows_anchor_to_the_previous_block_pin`.
+//!
+//! Amendment (mutants round, same navigator): group 4 pins the four
+//! `cargo-mutants --in-diff` survivors on the refactored tree (78 tested,
+//! 73 caught, 1 unviable let-chain `||` in `close_link`); each pin was shown
+//! RED against its own mutant before this freeze.
 
 use std::fmt::Write as _;
 
@@ -699,5 +704,103 @@ fn hand_heading_level_and_email_autolink_pin() {
         ),
         ["L hang=0 code=false line=0 |a@b.co| [0:-,0:-l]"],
         "an email autolink appends no target"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Group 4: mutants-round amendment (one pin per surviving mutant)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn quote_marks_survive_the_inner_close_and_end_at_the_outer_one() {
+    let r = render("- a\n\n  > > deep\n  >\n  > shallow\n\n  after\n", 40);
+    assert_eq!(
+        texts(&r),
+        ["- a", "", "      deep", "", "    shallow", "", "  after"]
+    );
+    let quoted = Marks {
+        quote: true,
+        ..Marks::default()
+    };
+    assert_eq!(marks_of(&r, "deep"), quoted);
+    assert_eq!(
+        marks_of(&r, "shallow"),
+        quoted,
+        "still quoted after only the inner quote closes"
+    );
+    assert_eq!(
+        marks_of(&r, "after"),
+        Marks::default(),
+        "the item text after the outer close is unquoted"
+    );
+}
+
+#[test]
+fn an_html_block_in_a_quote_keeps_its_separators() {
+    assert_eq!(
+        texts(&render("> para\n>\n> <div>x</div>\n>\n> after\n", 40)),
+        ["  para", "", "  <div>x</div>", "", "  after"],
+        "the HTML block start still asks the loose quote scope for a gap"
+    );
+}
+
+#[test]
+fn hand_text_with_a_newline_outside_code_is_never_split_pin() {
+    assert_eq!(
+        dump_hand(
+            "a\nb",
+            vec![
+                Event::Start(Tag::Paragraph),
+                Event::Text("a\nb".into()),
+                Event::End(TagEnd::Paragraph),
+            ],
+            Opts::default()
+        ),
+        ["L hang=0 code=false line=0 |a\nb| [0:-]"],
+        "only code-mode text splits on newlines"
+    );
+}
+
+// Parser-unreachable (a paragraph end closing a heading): a group-3 style
+// behaviour pin; the retire-via-lead rule of the first gate applies.
+#[test]
+fn hand_paragraph_end_flushes_and_clears_the_heading_pin() {
+    assert_eq!(
+        dump_hand(
+            "a b",
+            vec![
+                Event::Start(Tag::Paragraph),
+                Event::Text("a".into()),
+                Event::End(TagEnd::Paragraph),
+                Event::Text("b".into()),
+            ],
+            Opts::default()
+        ),
+        [
+            "L hang=0 code=false line=0 |a| [0:-]",
+            "L hang=0 code=false line=0 |b| [0:-]",
+        ]
+    );
+    assert_eq!(
+        dump_hand(
+            "h x",
+            vec![
+                Event::Start(Tag::Heading {
+                    level: HeadingLevel::H2,
+                    id: None,
+                    classes: Vec::new(),
+                    attrs: Vec::new(),
+                }),
+                Event::Text("h".into()),
+                Event::End(TagEnd::Paragraph),
+                Event::Text("x".into()),
+            ],
+            Opts::default()
+        ),
+        [
+            "G",
+            "L hang=0 code=false line=0 |h| [0:-,0:H2]",
+            "L hang=0 code=false line=0 |x| [0:-]",
+        ]
     );
 }
