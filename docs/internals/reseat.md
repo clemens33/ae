@@ -82,7 +82,7 @@ Then, under `.lifecycle.<session>.lock`:
    whether the input box holds text, which is FALSE mid-turn. Only claude's
    and codex's grammars are owned: muse declares claude's input model and
    draws its own frame, so it reads `Unknown` and fails closed (pinned on a
-   measured muse capture), every unmodelled composer is `Unknown` always, and
+   measured muse capture; only its limit stop, below, has a proof), every unmodelled composer is `Unknown` always, and
    even claude proves `Idle` from the pane's recent output, so a seat that has
    not finished a turn since it started needs the flag. The other proof is the
    vendor's usage limit on BOTH readings over an empty box (`limit_proven`):
@@ -119,6 +119,31 @@ Then, under `.lifecycle.<session>.lock`:
    box, then a limit proof) — then the exact
    `ae reseat … --stop-unknown` command and its precondition, because a
    journal record keeps only the line's head, and the reason must be in it.
+
+   Muse has a limit proof of its own, and only that (`watchdog::limit_standing(
+   buf, "muse")`; its frames still classify `Unknown`, idle ones included, so
+   `limit_proven` skips the claude grammar for it). A Muse seat that hit its
+   quota stops on its limit block (muse-wonder-full-1.0, measured on two
+   limited seats): the newest transcript block is the column-0 `◆ Usage limit
+   reached…` head with its indented `This turn stopped because your usage limit
+   was reached.` row and the known follow-ups (`Your usage resets at …`, `Check
+   /usage for details.`, `Send a message to continue when usage is available.`),
+   followed only by blank rows and the quota warning (`⚠ Usage nearly
+   exhausted…`, `This task may stop before it finishes.`), the `── Voice input`
+   rule, an EMPTY `❯` row, the closing rule, and below it the model footer
+   (`model · effort · path · mode`) ALONE. Muse does not continue by itself, so
+   a move is the only way off. The per-turn `model failed: API error 429` row is
+   no stop here. Any other row refuses and is quoted (`row after the limit row:
+   "<row>"`: an unknown follow-up, a row after the block, a second or unknown
+   row below the box), a draft or a second-line draft is `no empty box under
+   the limit row`, a block missing or pushed out of Muse's 16-row bottom window
+   is `no limit row`, and ANY `└` row below the box — a background task,
+   running, watching or finished, because the stop kills what it watches — is
+   `background task: "<row>"`. The human may relax that last rule later; today
+   it errs toward keeping the work. The scan reads the final frame only, so a
+   Muse version that draws these rows differently refuses until its frame is
+   measured (named residual: a task list long enough to push the block out of
+   the window refuses as `no limit row`).
 
    Then `respawn-pane -k -c <work_dir>` through `session_tmux::Op::RespawnPane`
    — the op the monitor panes already use, on the existing tmux door. Measured

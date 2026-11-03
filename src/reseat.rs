@@ -824,9 +824,21 @@ fn stop_timeout_advice(probe: Option<&ObservedPaneProbe>) -> (String, &'static s
 /// A tool that draws its limit as a MENU in place of the box has no box to
 /// read: the menu as the capture's live bottom, with no turn drawn above it
 /// (`watchdog::limit_menu_idle`), is the proof, and nothing is answered in it.
+///
+/// Muse's frame is no frame of the grammar above (it classifies unknown), so its
+/// stop is proven by `watchdog::limit_standing` alone: the usage-limit block as
+/// the newest transcript block over an empty box, and no background task below.
 fn limit_proven(capture: &str, agent_bin: &str, tool: ToolKind) -> bool {
     if crate::watchdog::limit_menu_idle(capture, agent_bin) {
         return true;
+    }
+    // Muse draws a frame claude's grammar does not read (`classify` says unknown
+    // for every muse frame, idle ones included, and stays so): its limit stop is
+    // proven by its own scan alone, which reads the block, the empty box and the
+    // footer below it, and refuses a background task.
+    if tool == ToolKind::Muse {
+        return crate::watchdog::limit_standing(capture, agent_bin)
+            == crate::watchdog::LimitStanding::Stands;
     }
     let (Some(rows), Some(frame)) = (
         crate::watchdog::limit_rows(capture, agent_bin),
@@ -866,15 +878,24 @@ fn frame_gap(reading: Reading<'_>, agent_bin: &str, tool: ToolKind) -> Option<St
     if state == HarnessState::Idle || limited {
         return None;
     }
-    let Some(capture) =
-        capture.filter(|capture| crate::harness_state::read_frame(capture, tool).is_some())
-    else {
+    // Muse's frame is read by its own scan, never by the claude grammar the
+    // classifier routes it to, so a muse capture is always a frame to judge.
+    let Some(capture) = capture.filter(|capture| {
+        tool == ToolKind::Muse || crate::harness_state::read_frame(capture, tool).is_some()
+    }) else {
         return Some("no frame".to_owned());
     };
     Some(match crate::watchdog::limit_standing(capture, agent_bin) {
         crate::watchdog::LimitStanding::RowAfterCell(row) => {
             format!("row after the limit row: \"{}\"", row.replace('"', ""))
         }
+        crate::watchdog::LimitStanding::BackgroundTask(row) => {
+            format!("background task: \"{}\"", row.replace('"', ""))
+        }
+        crate::watchdog::LimitStanding::NoBox if tool == ToolKind::Muse => {
+            "no empty box under the limit row".to_owned()
+        }
+        crate::watchdog::LimitStanding::Stands if tool == ToolKind::Muse => return None,
         _ => "no limit row".to_owned(),
     })
 }
@@ -3348,3 +3369,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "reseat/limitmuse_spec.rs"]
+mod limitmuse_spec;
+
+#[cfg(test)]
+#[path = "reseat/muse_gap_tests.rs"]
+mod muse_gap_tests;

@@ -2874,3 +2874,6 @@ fn limitframe_nightcase_frame_is_stopped_by_the_limit_leg() {
         Some("fake-claude")
     );
 }
+
+#[path = "autoreseat/limitmuse_spec.rs"]
+mod limitmuse_spec;

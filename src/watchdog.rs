@@ -611,21 +611,26 @@ pub fn limit_rows<'a>(buf: &'a str, agent_bin: &str) -> Option<Vec<&'a str>> {
 }
 
 /// Whether the limit [`limit_rows`] reads still stands, from what the pane
-/// drew after it — the stop proof of a limited claude seat that is not
+/// drew after it — the stop proof of a limited claude or muse seat that is not
 /// idle-shaped (`reseat::limit_proven`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LimitStanding {
     /// Only blank rows, user-echo blocks and the vendor's limit furniture follow
-    /// the newest limit cell, down to the box.
+    /// the newest limit cell, down to the box (muse: and the box's footer is the
+    /// model row alone).
     Stands,
-    /// No claude limit cell in the scan window: another tool, no limit, or a
-    /// cell pushed out of view.
+    /// No limit cell of the tool in the scan window: another tool, no limit, a
+    /// cell pushed out of view, or (muse) a cell that is no usage-limit stop.
     NoCell,
     /// The cell is in view but no empty prompt box sits below it.
     NoBox,
-    /// A row between the cell and the box that could mean the seat is working.
-    /// The row, trimmed, one line, at most [`OFFENDING_ROW_CHARS`] chars.
+    /// A row between the cell and the box (muse: or below the box) that could
+    /// mean the seat is working. The row, trimmed, one line, at most
+    /// [`OFFENDING_ROW_CHARS`] chars.
     RowAfterCell(String),
+    /// Muse only: a background task row below the box — the seat still has work
+    /// running or watching that a stop would kill. The row, as above.
+    BackgroundTask(String),
 }
 
 /// The longest offending row a refusal carries, in chars.
@@ -659,13 +664,19 @@ const CLAUDE_LIMIT_HEAD: &str = "⏺ Usage limit reached";
 ///   cancelled-wait row, or a row the frame grammar reads as finished.
 ///
 /// Every other row is [`LimitStanding::RowAfterCell`]; when unsure, it refuses.
-/// Claude only: no other tool has a measured echo or furniture shape.
+/// Claude and muse only ([`muse_limit_standing`]): no other tool has a measured
+/// echo or furniture shape, and each reads only its own grammar.
 #[must_use]
 pub fn limit_standing(buf: &str, agent_bin: &str) -> LimitStanding {
-    if agent_bin != "claude" {
-        return LimitStanding::NoCell;
+    match agent_bin {
+        "claude" => claude_limit_standing(buf),
+        "muse" => muse_limit_standing(buf),
+        _ => LimitStanding::NoCell,
     }
-    let tool = crate::tool::ToolKind::from_binary_name(agent_bin);
+}
+
+fn claude_limit_standing(buf: &str) -> LimitStanding {
+    let tool = crate::tool::ToolKind::Claude;
     let Some((window, at, _)) = newest_row(buf, &CLAUDE_BANNER) else {
         return LimitStanding::NoCell;
     };
@@ -708,6 +719,126 @@ pub fn limit_standing(buf: &str, agent_bin: &str) -> LimitStanding {
         }
     }
     LimitStanding::Stands
+}
+
+/// The words after muse's `◆` on the head of its usage-limit block, measured on
+/// `muse-wonder-full-1.0` in two shapes (`Usage limit reached · /upgrade (…) for
+/// increased limits, or wait for usage to reset at …` and the bare head): a
+/// prefix, because the tail rewords. The per-turn 429 row is the other
+/// [`MUSE_LIMIT`] phrase and is no usage-limit stop.
+const MUSE_LIMIT_HEAD: &str = "Usage limit reached";
+
+/// The follow-up row that makes the block a STOP, indented two spaces under the head.
+const MUSE_LIMIT_STOPPED: &str = "This turn stopped because your usage limit was reached.";
+
+/// The other follow-up rows the block draws, indented under the head: the reset
+/// row of the bare head is a prefix (its time varies), the two hints are exact.
+const MUSE_LIMIT_RESET: &str = "Your usage resets at ";
+const MUSE_LIMIT_HINTS: [&str; 2] = [
+    "Check /usage for details.",
+    "Send a message to continue when usage is available.",
+];
+
+/// The two column-0 rows muse draws between the block and the composer once its
+/// quota is nearly spent: the warning (a prefix, its numbers vary) and its tail.
+const MUSE_WARNING: &str = "⚠ Usage nearly exhausted";
+const MUSE_WARNING_TAIL: &str = "This task may stop before it finishes.";
+
+/// The rule muse draws above its composer, at column 0: the label follows it.
+const MUSE_VOICE_RULE: &str = "── Voice input";
+
+/// [`limit_standing`] for muse, read from its measured stop frame: the newest
+/// `◆ Usage limit reached` block, then ONLY blank rows and the quota warning,
+/// the `── Voice input` rule, an EMPTY `❯` box, its closing rule, and below it
+/// the model footer ALONE.
+///
+/// - the block is the head, the `This turn stopped because your usage limit was
+///   reached.` row and its known indented follow-ups ([`MUSE_LIMIT_RESET`],
+///   [`MUSE_LIMIT_HINTS`]); the per-turn 429 row, a head without the stop row
+///   and a head quoted anywhere but column 0 are no [`LimitStanding::NoCell`] block;
+/// - an unknown follow-up, any other row between the block and the box, and any
+///   row below the box that is not the footer is [`LimitStanding::RowAfterCell`]:
+///   muse echoes a delivered message and draws a working turn as transcript rows,
+///   so one is never taken for furniture;
+/// - a `└` row below the box is a background task, running, watching or finished:
+///   its seat may be watching a thing a stop would kill, so it is
+///   [`LimitStanding::BackgroundTask`] whatever it says;
+/// - the footer is `model · effort · path · mode` and the window is muse's
+///   banner window measured up from the last ink: a block pushed out of it by a
+///   long footer region reads as no block.
+///
+/// When unsure, it refuses.
+fn muse_limit_standing(buf: &str) -> LimitStanding {
+    let Some((window, at, text)) = newest_row(buf, &MUSE_BANNER) else {
+        return LimitStanding::NoCell;
+    };
+    let follow = &window[at + 1..];
+    let indented = follow
+        .iter()
+        .take_while(|row| !row.trim().is_empty() && row.starts_with(' '))
+        .count();
+    let block = &follow[..indented];
+    if !text.starts_with(MUSE_LIMIT_HEAD)
+        || !block.iter().any(|row| row.trim() == MUSE_LIMIT_STOPPED)
+    {
+        return LimitStanding::NoCell;
+    }
+    if let Some(row) = block.iter().map(|row| row.trim()).find(|row| {
+        !(row.starts_with(MUSE_LIMIT_RESET)
+            || *row == MUSE_LIMIT_STOPPED
+            || MUSE_LIMIT_HINTS.contains(row))
+    }) {
+        return LimitStanding::RowAfterCell(offending_row(row));
+    }
+    let end = at + 1 + indented;
+    // The box: the newest bare prompt row, the voice rule directly above it, a
+    // rule directly below. A draft, even one that starts on the second line,
+    // breaks one of the three.
+    let Some(prompt) = window
+        .iter()
+        .rposition(|row| row.trim() == "❯")
+        .filter(|&prompt| {
+            prompt > end
+                && window[prompt - 1].starts_with(MUSE_VOICE_RULE)
+                && window
+                    .get(prompt + 1)
+                    .is_some_and(|row| crate::harness_state::claude_border(row.trim()))
+        })
+    else {
+        return LimitStanding::NoBox;
+    };
+    if let Some(row) = window[end..prompt - 1]
+        .iter()
+        .map(|row| row.trim_end())
+        .find(|row| {
+            !(row.trim().is_empty() || row.starts_with(MUSE_WARNING) || *row == MUSE_WARNING_TAIL)
+        })
+    {
+        return LimitStanding::RowAfterCell(offending_row(row.trim()));
+    }
+    let footer: Vec<&str> = window[prompt + 2..]
+        .iter()
+        .map(|row| row.trim())
+        .filter(|row| !row.is_empty())
+        .collect();
+    if let Some(task) = footer.iter().find(|row| row.starts_with('└')) {
+        return LimitStanding::BackgroundTask(offending_row(task));
+    }
+    if let Some(row) = footer.iter().find(|row| !muse_footer(row)) {
+        return LimitStanding::RowAfterCell(offending_row(row));
+    }
+    match footer.as_slice() {
+        [_] => LimitStanding::Stands,
+        [] => LimitStanding::NoBox,
+        [_, extra, ..] => LimitStanding::RowAfterCell(offending_row(extra)),
+    }
+}
+
+/// Whether `row`, trimmed, is muse's composer footer: `model · effort · path ·
+/// mode`, four non-empty fields.
+fn muse_footer(row: &str) -> bool {
+    let fields: Vec<&str> = row.split(" · ").collect();
+    fields.len() == 4 && fields.iter().all(|field| !field.trim().is_empty())
 }
 
 /// Whether `text`, a column-0 row, is the vendor's limit furniture rather than
@@ -6510,3 +6641,7 @@ tail line
         assert_eq!(claude(&pad(1)), None, "one row further up it is out");
     }
 }
+
+#[cfg(test)]
+#[path = "watchdog/muse_standing_tests.rs"]
+mod muse_standing_tests;
