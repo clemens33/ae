@@ -935,92 +935,102 @@ impl<'a> Mapper<'a> {
         self.out.items.push(Item::Rule(self.doc.line(range.start)));
         self.gap();
     }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive event dispatcher keeps paired state transitions visible"
-    )]
     fn map(mut self) -> Mapped {
         for (event, range) in &self.block.events {
-            match event {
-                Event::Start(tag) => {
-                    match tag {
-                        Tag::Paragraph | Tag::Heading { .. } | Tag::CodeBlock(_) => {
-                            self.open_leaf(!matches!(tag, Tag::Paragraph), range);
-                        }
-                        Tag::HtmlBlock => self.block(false),
-                        Tag::Item => self.open_item(range),
-                        Tag::BlockQuote(_) => self.open_quote(),
-                        Tag::List(start) => self.open_list(*start),
-                        Tag::Table(align) => self.open_table(align),
-                        Tag::TableHead | Tag::TableRow => self.open_table_row(),
-                        Tag::TableCell => self.open_cell(range),
-                        _ => {}
-                    }
-                    match tag {
-                        Tag::Heading { level, .. } => self.marks.heading = Some(*level as u8),
-                        Tag::CodeBlock(_) => self.open_code(),
-                        Tag::Emphasis => {
-                            self.save();
-                            self.marks.emphasis = true;
-                        }
-                        Tag::Strong => {
-                            self.save();
-                            self.marks.strong = true;
-                        }
-                        Tag::Strikethrough => {
-                            self.save();
-                            self.marks.strike = true;
-                        }
-                        Tag::Link {
-                            link_type,
-                            dest_url,
-                            ..
-                        } => self.open_link(*link_type, dest_url),
-                        Tag::Image { dest_url, .. } => self.open_image(dest_url),
-                        _ => {}
-                    }
-                }
-                Event::End(tag) => match tag {
-                    TagEnd::Paragraph | TagEnd::HtmlBlock => self.close_leaf(),
-                    TagEnd::Heading(_) => {
-                        self.close_leaf();
-                        self.gap();
-                    }
-                    TagEnd::CodeBlock => self.close_code(),
-                    TagEnd::Item => self.close_item(),
-                    TagEnd::List(_) => self.close_list(),
-                    TagEnd::BlockQuote(_) => self.close_quote(),
-                    TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => self.restore(),
-                    TagEnd::Link | TagEnd::Image => self.close_link(),
-                    TagEnd::TableCell => self.close_cell(),
-                    TagEnd::Table => self.close_table(),
-                    _ => {}
-                },
-                Event::Text(text) if self.code => self.literal(text, self.marks),
-                Event::Text(text) => self.add(text, self.marks),
-                Event::Code(text) => self.add(
-                    text,
-                    Marks {
-                        code: true,
-                        ..self.marks
-                    },
-                ),
-                Event::Html(text) | Event::InlineHtml(text) => self.literal(
-                    text,
-                    Marks {
-                        html: true,
-                        ..self.marks
-                    },
-                ),
-                Event::SoftBreak if self.opts.soft_break_row => self.flush(),
-                Event::SoftBreak => self.add(" ", self.marks),
-                Event::HardBreak => self.flush(),
-                Event::Rule => self.rule(range),
-                _ => {}
-            }
+            self.event(event, range);
         }
         self.flush();
         self.out
+    }
+    fn event(&mut self, event: &Event<'static>, range: &Range<usize>) {
+        match event {
+            Event::Start(tag) => {
+                // Structure first, then marks: a block's opening flush must see the
+                // flags (`code`, `marks.heading`) the previous block left.
+                self.start_structure(tag, range);
+                self.start_marks(tag);
+            }
+            Event::End(tag) => self.end(*tag),
+            Event::Text(text) if self.code => self.literal(text, self.marks),
+            Event::Text(text) => self.add(text, self.marks),
+            Event::Code(text) => self.add(
+                text,
+                Marks {
+                    code: true,
+                    ..self.marks
+                },
+            ),
+            Event::Html(text) | Event::InlineHtml(text) => self.literal(
+                text,
+                Marks {
+                    html: true,
+                    ..self.marks
+                },
+            ),
+            Event::SoftBreak if self.opts.soft_break_row => self.flush(),
+            Event::SoftBreak => self.add(" ", self.marks),
+            Event::HardBreak => self.flush(),
+            Event::Rule => self.rule(range),
+            _ => {}
+        }
+    }
+    fn start_structure(&mut self, tag: &Tag<'_>, range: &Range<usize>) {
+        match tag {
+            Tag::Paragraph | Tag::Heading { .. } | Tag::CodeBlock(_) => {
+                self.open_leaf(!matches!(tag, Tag::Paragraph), range);
+            }
+            Tag::HtmlBlock => self.block(false),
+            Tag::Item => self.open_item(range),
+            Tag::BlockQuote(_) => self.open_quote(),
+            Tag::List(start) => self.open_list(*start),
+            Tag::Table(align) => self.open_table(align),
+            Tag::TableHead | Tag::TableRow => self.open_table_row(),
+            Tag::TableCell => self.open_cell(range),
+            _ => {}
+        }
+    }
+    fn start_marks(&mut self, tag: &Tag<'_>) {
+        match tag {
+            Tag::Heading { level, .. } => self.marks.heading = Some(*level as u8),
+            Tag::CodeBlock(_) => self.open_code(),
+            Tag::Emphasis => {
+                self.save();
+                self.marks.emphasis = true;
+            }
+            Tag::Strong => {
+                self.save();
+                self.marks.strong = true;
+            }
+            Tag::Strikethrough => {
+                self.save();
+                self.marks.strike = true;
+            }
+            Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            } => self.open_link(*link_type, dest_url),
+            Tag::Image { dest_url, .. } => self.open_image(dest_url),
+            _ => {}
+        }
+    }
+    fn end(&mut self, tag: TagEnd) {
+        match tag {
+            TagEnd::Paragraph | TagEnd::HtmlBlock => self.close_leaf(),
+            TagEnd::Heading(_) => {
+                self.close_leaf();
+                self.gap();
+            }
+            TagEnd::CodeBlock => self.close_code(),
+            TagEnd::Item => self.close_item(),
+            TagEnd::List(_) => self.close_list(),
+            TagEnd::BlockQuote(_) => self.close_quote(),
+            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => self.restore(),
+            TagEnd::Link | TagEnd::Image => self.close_link(),
+            TagEnd::TableCell => self.close_cell(),
+            TagEnd::Table => self.close_table(),
+            _ => {}
+        }
     }
 }
 
