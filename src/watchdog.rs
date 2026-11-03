@@ -1747,6 +1747,91 @@ pub fn human_input_ends_wait(
         .is_some_and(|epoch| epoch > bound)
 }
 
+/// Whether a watchdog challenge footprint belongs to this seat incarnation:
+/// its `ref` is the launch witness, or, with no witness, it carries no `ref`.
+fn launch_matches(event: &Event, launch: Option<&str>) -> bool {
+    launch.map_or(event.reference.is_none(), |id| {
+        event.reference.as_deref() == Some(id)
+    })
+}
+
+/// One proof episode of a quiet declaration: what [`done_progress`] and
+/// [`wait_progress`] both carry forward through the journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Episode {
+    /// Proofs credited by answering a delivered challenge.
+    confirmations: u8,
+    /// The declaration the challenge cadence runs from.
+    anchor: crate::time::Timestamp,
+    /// The delivered challenge still awaiting its proof.
+    outstanding: Option<crate::time::Timestamp>,
+    /// Failed challenge deliveries, so a restart cannot reopen the budget.
+    attempts: u32,
+}
+
+/// Where an [`Episode`] stands at `now`, before a fold names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Declared, challenge not yet due.
+    Provisional,
+    /// Past its due age with no outstanding challenge.
+    ChallengeDue { age: u64 },
+    /// A delivered challenge awaits proof.
+    Challenged,
+    /// The outstanding challenge went unanswered for a whole cadence.
+    Lapsed,
+}
+
+impl Episode {
+    /// A fresh episode anchored at the declaration `at`.
+    const fn open(at: crate::time::Timestamp) -> Self {
+        Self {
+            confirmations: 0,
+            anchor: at,
+            outstanding: None,
+            attempts: 0,
+        }
+    }
+
+    /// One failed challenge delivery.
+    const fn attempt(&mut self) {
+        self.attempts = self.attempts.saturating_add(1);
+    }
+
+    /// A delivered challenge: the FIRST one stays outstanding until a proof.
+    const fn deliver(&mut self, at: crate::time::Timestamp) {
+        if self.outstanding.is_none() {
+            self.outstanding = Some(at);
+        }
+    }
+
+    /// A proof answering the outstanding challenge: credit, re-anchor, clear.
+    const fn credit(&mut self, at: crate::time::Timestamp) {
+        self.confirmations = self.confirmations.saturating_add(1);
+        self.anchor = at;
+        self.outstanding = None;
+    }
+
+    /// The phase at `now`: an outstanding challenge lapses after `cadence`;
+    /// otherwise the next challenge is due `due_after` seconds past the anchor.
+    /// A clock behind either instant reads as age zero.
+    fn phase(&self, now: crate::time::Timestamp, cadence: u64, due_after: u64) -> Phase {
+        if let Some(challenged_at) = self.outstanding {
+            return if challenged_at.seconds_until(now).max(0).cast_unsigned() >= cadence {
+                Phase::Lapsed
+            } else {
+                Phase::Challenged
+            };
+        }
+        let age = self.anchor.seconds_until(now).max(0).cast_unsigned();
+        if age >= due_after {
+            Phase::ChallengeDue { age }
+        } else {
+            Phase::Provisional
+        }
+    }
+}
+
 /// Journal-derived progress for the current seat incarnation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoneProgress {
@@ -1792,12 +1877,7 @@ pub fn done_progress(
     cadence: u64,
     required: u8,
 ) -> DoneProgress {
-    let mut episode: Option<(
-        u8,
-        crate::time::Timestamp,
-        Option<crate::time::Timestamp>,
-        u32,
-    )> = None;
+    let mut episode: Option<Episode> = None;
     let mut last_done: Option<(crate::time::Timestamp, Option<&str>)> = None;
     for event in events {
         let own = event_is_actor(event, session, slot, agent);
@@ -1810,36 +1890,28 @@ pub fn done_progress(
             // unconfirmed done-challenge event (a refused-pre-paste one
             // included) or a delivery-abandoned event, so attempts bound the
             // pushes.
-            let matching = launch.map_or(event.reference.is_none(), |id| {
-                event.reference.as_deref() == Some(id)
-            });
-            if !matching {
+            if !launch_matches(event, launch) {
                 episode = None;
                 last_done = None;
                 continue;
             }
-            if crate::tracked::summary_is_unconfirmed(event.summary.as_deref()) {
-                if let Some((_, _, _, attempts)) = episode.as_mut() {
-                    *attempts = attempts.saturating_add(1);
+            if let Some(episode) = episode.as_mut() {
+                if crate::tracked::summary_is_unconfirmed(event.summary.as_deref()) {
+                    episode.attempt();
+                } else {
+                    episode.deliver(event.ts);
                 }
-            } else if let Some((_, _, outstanding, _)) = episode.as_mut()
-                && outstanding.is_none()
-            {
-                *outstanding = Some(event.ts);
             }
             continue;
         }
         if event.actor == WATCHDOG_ACTOR && event.action == crate::tracked::ABANDONED_ACTION {
-            let matching = launch.map_or(event.reference.is_none(), |id| {
-                event.reference.as_deref() == Some(id)
-            });
-            if matching {
-                // With no launch witness, a ref-less abandoned ordinary nudge
-                // also counts. That degraded mode suppresses challenges sooner,
-                // the conservative direction, and still raises the alert.
-                if let Some((_, _, _, attempts)) = episode.as_mut() {
-                    *attempts = attempts.saturating_add(1);
-                }
+            // With no launch witness, a ref-less abandoned ordinary nudge
+            // also counts. That degraded mode suppresses challenges sooner,
+            // the conservative direction, and still raises the alert.
+            if launch_matches(event, launch)
+                && let Some(episode) = episode.as_mut()
+            {
+                episode.attempt();
             }
             continue;
         }
@@ -1853,13 +1925,11 @@ pub fn done_progress(
             }
             last_done = Some(signature);
             match episode.as_mut() {
-                Some((count, done_at, outstanding @ Some(_), _)) => {
-                    *count = count.saturating_add(1);
-                    *done_at = event.ts;
-                    *outstanding = None;
-                }
-                None => episode = Some((0, event.ts, None, 0)),
-                _ => {}
+                // Only a done answering a delivered challenge earns credit; a
+                // proactive one leaves the episode and its anchor alone.
+                Some(episode) if episode.outstanding.is_some() => episode.credit(event.ts),
+                Some(_) => {}
+                None => episode = Some(Episode::open(event.ts)),
             }
             continue;
         }
@@ -1869,38 +1939,37 @@ pub fn done_progress(
         episode = None;
         last_done = None;
     }
-    let Some((confirmations, done_at, outstanding, attempts)) = episode else {
+    let Some(episode) = episode else {
         return DoneProgress::None;
     };
+    let Episode {
+        confirmations,
+        attempts,
+        ..
+    } = episode;
+    // Confirmation outranks every phase, an outstanding challenge included.
     if required == 0 || cadence == 0 || confirmations >= required {
         return DoneProgress::Confirmed;
     }
-    if let Some(challenged_at) = outstanding {
-        return if challenged_at.seconds_until(now).max(0).cast_unsigned() >= cadence {
-            DoneProgress::Lapsed {
-                confirmations,
-                required,
-            }
-        } else {
-            DoneProgress::Challenged {
-                confirmations,
-                required,
-            }
-        };
-    }
-    let age = done_at.seconds_until(now).max(0).cast_unsigned();
-    if age >= cadence {
-        DoneProgress::ChallengeDue {
+    match episode.phase(now, cadence, cadence) {
+        Phase::Provisional => DoneProgress::Provisional {
+            confirmations,
+            required,
+        },
+        Phase::ChallengeDue { age } => DoneProgress::ChallengeDue {
             confirmations,
             required,
             done_age_secs: age,
             attempts,
-        }
-    } else {
-        DoneProgress::Provisional {
+        },
+        Phase::Challenged => DoneProgress::Challenged {
             confirmations,
             required,
-        }
+        },
+        Phase::Lapsed => DoneProgress::Lapsed {
+            confirmations,
+            required,
+        },
     }
 }
 
@@ -1999,13 +2068,7 @@ pub fn wait_progress(
         return WaitProgress::None;
     }
     let want = state.as_str();
-    let mut episode: Option<(
-        u8,
-        crate::time::Timestamp,
-        Option<crate::time::Timestamp>,
-        u32,
-        bool,
-    )> = None;
+    let mut episode: Option<WaitEpisode> = None;
     let mut own_requests: Vec<&str> = Vec::new();
     for event in events {
         let own = event_is_actor(event, session, slot, agent);
@@ -2024,30 +2087,25 @@ pub fn wait_progress(
             if !wait_challenge_names(event.summary.as_deref(), state) {
                 continue; // another state's challenge: not ours, not news
             }
-            let matching = launch.map_or(event.reference.is_none(), |id| {
-                event.reference.as_deref() == Some(id)
-            });
-            if !matching {
+            if !launch_matches(event, launch) {
                 episode = None;
                 continue;
             }
-            if crate::tracked::summary_is_unconfirmed(event.summary.as_deref()) {
-                if let Some((_, _, _, attempts, _)) = episode.as_mut() {
-                    *attempts = attempts.saturating_add(1);
+            if let Some(WaitEpisode { episode, .. }) = episode.as_mut() {
+                if crate::tracked::summary_is_unconfirmed(event.summary.as_deref()) {
+                    episode.attempt();
+                } else {
+                    episode.deliver(event.ts);
                 }
-            } else if let Some((_, _, outstanding, _, _)) = episode.as_mut()
-                && outstanding.is_none()
-            {
-                *outstanding = Some(event.ts);
             }
             continue;
         }
         if event.actor == WATCHDOG_ACTOR && event.action == crate::tracked::ABANDONED_ACTION {
-            let matching = launch.map_or(event.reference.is_none(), |id| {
-                event.reference.as_deref() == Some(id)
-            }) && wait_challenge_names(event.summary.as_deref(), state);
-            if matching && let Some((_, _, _, attempts, _)) = episode.as_mut() {
-                *attempts = attempts.saturating_add(1);
+            if launch_matches(event, launch)
+                && wait_challenge_names(event.summary.as_deref(), state)
+                && let Some(WaitEpisode { episode, .. }) = episode.as_mut()
+            {
+                episode.attempt();
             }
             continue;
         }
@@ -2055,75 +2113,90 @@ pub fn wait_progress(
             continue;
         }
         if own && event.declared_state() == Some(want) {
-            let rearms = matches!(episode, Some((count, _, Some(_), _, _))
-                if count.saturating_add(1) >= required);
-            if rearms {
+            match episode.as_mut() {
                 // The Nth proof re-arms a fresh episode anchored at this
                 // proof: waits are never terminally proven.
-                episode = Some((0, event.ts, None, 0, true));
-            } else {
-                match episode.as_mut() {
-                    Some((count, wait_at, outstanding @ Some(_), _, earned)) => {
-                        *count = count.saturating_add(1);
-                        *wait_at = event.ts;
-                        *outstanding = None;
-                        *earned = true;
-                    }
-                    None => episode = Some((0, event.ts, None, 0, false)),
-                    // A proactive re-declaration refreshes the anchor only,
-                    // and earns no spacing: it answered no challenge.
-                    Some((_, wait_at, None, _, earned)) => {
-                        *wait_at = event.ts;
-                        *earned = false;
-                    }
+                Some(current)
+                    if current.episode.outstanding.is_some()
+                        && current.episode.confirmations.saturating_add(1) >= required =>
+                {
+                    *current = WaitEpisode::open(event.ts, true);
                 }
+                Some(current) if current.episode.outstanding.is_some() => {
+                    current.episode.credit(event.ts);
+                    current.earned = true;
+                }
+                // A proactive re-declaration refreshes the anchor only,
+                // and earns no spacing: it answered no challenge.
+                Some(current) => {
+                    current.episode.anchor = event.ts;
+                    current.earned = false;
+                }
+                None => episode = Some(WaitEpisode::open(event.ts, false)),
             }
             continue;
         }
         if !is_challenge(event) && !ends_quiet(want, event, own, &own_requests) {
             // News the wait outlives: the next challenge keeps the base cadence.
             if event.actor != WATCHDOG_ACTOR
-                && let Some((.., earned)) = episode.as_mut()
+                && let Some(current) = episode.as_mut()
             {
-                *earned = false;
+                current.earned = false;
             }
             continue;
         }
         episode = None;
     }
-    let Some((confirmations, wait_at, outstanding, attempts, earned)) = episode else {
+    let Some(WaitEpisode { episode, earned }) = episode else {
         return WaitProgress::None;
     };
-    if let Some(challenged_at) = outstanding {
-        return if challenged_at.seconds_until(now).max(0).cast_unsigned() >= cadence {
-            WaitProgress::Lapsed {
-                confirmations,
-                required,
-            }
-        } else {
-            WaitProgress::Challenged {
-                confirmations,
-                required,
-            }
-        };
-    }
-    let age = wait_at.seconds_until(now).max(0).cast_unsigned();
+    let Episode {
+        confirmations,
+        attempts,
+        ..
+    } = episode;
     let spacing = if earned {
         unchanged_wait_spacing(cadence)
     } else {
         cadence
     };
-    if age >= spacing {
-        WaitProgress::ChallengeDue {
+    match episode.phase(now, cadence, spacing) {
+        Phase::Provisional => WaitProgress::Provisional {
+            confirmations,
+            required,
+        },
+        Phase::ChallengeDue { age } => WaitProgress::ChallengeDue {
             confirmations,
             required,
             wait_age_secs: age,
             attempts,
-        }
-    } else {
-        WaitProgress::Provisional {
+        },
+        Phase::Challenged => WaitProgress::Challenged {
             confirmations,
             required,
+        },
+        Phase::Lapsed => WaitProgress::Lapsed {
+            confirmations,
+            required,
+        },
+    }
+}
+
+/// A wait [`Episode`] and whether its anchor is a CREDITED proof with no news
+/// since (#225): set together on open and re-arm, so no stale credit leaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WaitEpisode {
+    episode: Episode,
+    earned: bool,
+}
+
+impl WaitEpisode {
+    /// A fresh wait episode anchored at `at`; `earned` when the Nth proof
+    /// re-arms it.
+    const fn open(at: crate::time::Timestamp, earned: bool) -> Self {
+        Self {
+            episode: Episode::open(at),
+            earned,
         }
     }
 }
@@ -2641,14 +2714,15 @@ mod tests {
     use super::WaitState::{Blocked, WaitingAgent};
     use super::{
         CLAUDE_LIMIT, CLAUDE_TRANSIENT, CODEX_LIMIT, CODEX_TRANSIENT, DEFAULT_IDLE_NUDGE_SECS,
-        DoneProgress, MUSE_LIMIT, NUDGE_IDLE_PREFIX, NUDGE_SENTENCE, NUDGE_TAIL,
+        DoneProgress, Episode, MUSE_LIMIT, NUDGE_IDLE_PREFIX, NUDGE_SENTENCE, NUDGE_TAIL,
         NUDGE_WAITING_CLOSE, NUDGE_WAITING_OPEN, OVERVIEW_HOLD_WHILE_WORKING_SECS,
-        OWN_WORK_AGE_CAP, QuietKind, SweepAlert, SweepEffect, SweepKnobs, SweepObservation,
+        OWN_WORK_AGE_CAP, Phase, QuietKind, SweepAlert, SweepEffect, SweepKnobs, SweepObservation,
         SweepState, SweepVerdict, Throttle, WaitProgress, WaitState, WedgeDetail, classify_dead,
         command_is_shell, declaration_current, declaration_key, done_progress, indented, is_echo,
-        is_sweep_target, latest_relevant_event, limit_notice, quiet_filter, quiet_hash,
-        quiet_reason, raw_nudge, record_sweep, shows_throttle, stale_composite, submit_hdr,
-        sweep_step, throttle_class, wait_progress, waiting_agent_cap_secs, waiting_agent_escalated,
+        is_sweep_target, latest_relevant_event, launch_matches, limit_notice, quiet_filter,
+        quiet_hash, quiet_reason, raw_nudge, record_sweep, shows_throttle, stale_composite,
+        submit_hdr, sweep_step, throttle_class, wait_progress, waiting_agent_cap_secs,
+        waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -2888,6 +2962,103 @@ mod tests {
         ] {
             assert_eq!(classify(line), Some(kind));
         }
+    }
+
+    /// Seconds past 04:00:00 on the shared test day.
+    fn at_secs(secs: u32) -> Timestamp {
+        let (minutes, seconds) = (secs / 60, secs % 60);
+        Timestamp::parse(&format!("2026-08-29T04:{minutes:02}:{seconds:02}Z")).expect("test time")
+    }
+
+    #[test]
+    fn an_episode_opens_empty_and_keeps_the_first_delivered_challenge() {
+        let mut episode = Episode::open(at_secs(0));
+        assert_eq!(
+            (
+                episode.confirmations,
+                episode.anchor,
+                episode.outstanding,
+                episode.attempts
+            ),
+            (0, at_secs(0), None, 0)
+        );
+        episode.deliver(at_secs(10));
+        episode.deliver(at_secs(20));
+        assert_eq!(
+            episode.outstanding,
+            Some(at_secs(10)),
+            "the first delivered challenge is the one awaiting proof"
+        );
+    }
+
+    #[test]
+    fn a_credited_proof_reanchors_clears_the_challenge_and_keeps_the_attempts() {
+        let mut episode = Episode::open(at_secs(0));
+        episode.attempt();
+        episode.deliver(at_secs(10));
+        episode.credit(at_secs(30));
+        assert_eq!(
+            (
+                episode.confirmations,
+                episode.anchor,
+                episode.outstanding,
+                episode.attempts
+            ),
+            (1, at_secs(30), None, 1)
+        );
+        episode.attempts = u32::MAX;
+        episode.confirmations = u8::MAX;
+        episode.attempt();
+        episode.credit(at_secs(40));
+        assert_eq!(
+            (episode.confirmations, episode.attempts),
+            (u8::MAX, u32::MAX),
+            "both counters saturate"
+        );
+    }
+
+    #[test]
+    fn an_episode_phase_is_due_at_its_spacing_and_lapses_a_cadence_after_its_challenge() {
+        let open = Episode::open(at_secs(0));
+        assert_eq!(open.phase(at_secs(119), 60, 120), Phase::Provisional);
+        assert_eq!(
+            open.phase(at_secs(120), 60, 120),
+            Phase::ChallengeDue { age: 120 }
+        );
+        let mut challenged = open;
+        challenged.deliver(at_secs(200));
+        assert_eq!(
+            challenged.phase(at_secs(259), 60, 0),
+            Phase::Challenged,
+            "an outstanding challenge outranks any due age"
+        );
+        assert_eq!(challenged.phase(at_secs(260), 60, 0), Phase::Lapsed);
+        assert_eq!(
+            challenged.phase(at_secs(100), 0, 0),
+            Phase::Lapsed,
+            "a clock behind the challenge reads as age zero"
+        );
+        let later = Episode::open(at_secs(300));
+        assert_eq!(
+            later.phase(at_secs(0), 60, 0),
+            Phase::ChallengeDue { age: 0 },
+            "a clock behind the anchor reads as age zero"
+        );
+        assert_eq!(later.phase(at_secs(0), 60, 1), Phase::Provisional);
+    }
+
+    #[test]
+    fn a_challenge_footprint_matches_the_launch_witness_or_none_without_one() {
+        let with_ref = event(
+            r#"{"ts":"2026-08-29T04:00:00Z","actor":"watchdog","action":"done-challenge","ref":"launch-1"}"#,
+        );
+        let refless =
+            event(r#"{"ts":"2026-08-29T04:00:00Z","actor":"watchdog","action":"done-challenge"}"#);
+        assert!(launch_matches(&with_ref, Some("launch-1")));
+        assert!(!launch_matches(&with_ref, Some("launch-2")));
+        assert!(!launch_matches(&with_ref, None));
+        assert!(launch_matches(&refless, None));
+        assert!(!launch_matches(&refless, Some("launch-1")));
     }
 
     fn progress(lines: &[&str], now: &str, required: u8, cadence: u64) -> DoneProgress {
