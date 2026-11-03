@@ -3900,6 +3900,10 @@ fn is_symlink(path: &Path) -> bool {
 }
 
 #[cfg(test)]
+#[path = "../tests/it/renamerecover_unit_spec.rs"]
+mod renamerecover_unit_spec;
+
+#[cfg(test)]
 #[allow(
     clippy::disallowed_methods,
     reason = "tests read back what the doors wrote; the boundary is on product code — see clippy.toml"

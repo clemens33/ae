@@ -24,6 +24,9 @@ use super::cli::{OwnedChild, OwnedScratch, Runner, ae, git_in, helper, tmux_sign
 use super::phase2::run_tmux;
 use super::support::{PANE_WAIT, has_execed, pane_command, seat_recorded};
 
+#[path = "renamerecover_crash_spec.rs"]
+mod renamerecover_crash_spec;
+
 /// A TUI-shaped fake agent: it records its argv, then sits there drawing the
 /// ornament the input sensor reads.
 const FAKE_AGENT: &str = r#"#!/usr/bin/perl
