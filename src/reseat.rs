@@ -1293,7 +1293,6 @@ pub(crate) fn resolved(dir: &Path, profile: &str) -> Option<Resolved> {
 
 /// The move itself, from a parsed argv and the caller rule's verdict. Every
 /// ending says what became of the seat.
-#[allow(clippy::too_many_lines, reason = "the frozen order, kept in one place")]
 #[allow(
     clippy::too_many_arguments,
     reason = "the verb's own inputs, spelled out rather than bundled"
@@ -1308,13 +1307,156 @@ fn run_parsed(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<Ended> {
-    // Nothing of the seat has changed on any refusal before the stop.
-    let refused = Ended::Refused(CauseClass::Other);
+    let ask = Ask {
+        root,
+        world,
+        parsed,
+        now,
+    };
+    match move_seat(&ask, caller, hook, out, err) {
+        Ok(ended) | Err(Halt::End(ended)) => Ok(ended),
+        Err(Halt::Io(why)) => Err(why),
+    }
+}
+
+/// The verb's read-only inputs, asked of by every step.
+struct Ask<'a> {
+    root: &'a Path,
+    world: Option<&'a crate::listing::World>,
+    parsed: &'a Parsed,
+    now: Timestamp,
+}
+
+/// Why a step ended the move early: the ending it decided, its refusal
+/// already printed, or a stream that would not take that refusal.
+enum Halt {
+    End(Ended),
+    Io(io::Error),
+}
+
+impl From<io::Error> for Halt {
+    fn from(why: io::Error) -> Self {
+        Self::Io(why)
+    }
+}
+
+/// The order is the contract (the module docs): every step below is called
+/// once, in this order, and a step that ends the move has said why.
+fn move_seat(
+    ask: &Ask<'_>,
+    caller: Result<Caller, String>,
+    hook: &mut dyn FnMut() -> bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<Ended, Halt> {
+    let seat = admit(ask, caller, err)?;
+    // THE LOCK, taken the way every lifecycle writer takes it: the dead proof,
+    // the seed, the slot cleanup, the meta move and the paste are ONE
+    // transaction, so no stop, compact, relaunch or second reseat interleaves.
+    let Ok(lifecycle) = crate::lifecycle::lock(ask.root, &ask.parsed.session) else {
+        writeln!(
+            err,
+            "Error: another lifecycle operation holds '{}' — it waited and gave up. Try again \
+             once that finishes.",
+            ask.parsed.session
+        )?;
+        return Ok(Ended::Refused(CauseClass::Lock));
+    };
+    // What the records say NOW, under the lock: the stop reads the working copy
+    // from it, and the audit line reads the conversation the predecessor holds.
+    let locked = crate::meta::read_bytes(&seat.dir).unwrap_or_default();
+    let prepared = prepare(ask, &seat, &locked, err)?;
+    let mut at = Record {
+        caller: &seat.caller,
+        now: ask.now,
+        from: &seat.recorded,
+        to: &ask.parsed.profile,
+        prior: &prepared.prior,
+        // Filled in once the carry question is answered, below. Every record
+        // written before that is a STOP, and a stop names no conversation at
+        // all ([`Mentions`]), so no record can carry this placeholder into an
+        // audit line.
+        carry: Carried::No,
+    };
+    let (before, broke) = stop_and_prove_dead(ask, &seat, &locked, &at, hook, err)?;
+    let travel = conversation(&seat, &locked, &prepared, &before, broke, out, err)?;
+    at.carry = travel.carried.clone();
+    let seed = build_seed(ask, &seat, &travel, broke, err)?;
+    clear_launch_files(&seat, &travel, broke, err)?;
+    let after = publish_move(ask, &seat, &travel, &prepared.prior, before, broke, err)?;
+    let started =
+        crate::seat_relaunch::start(&seat.dir, &seat.target, &after, ask.now, RESEAT_VERB, err)?;
+    // PAST THE LOCK before any readiness wait: a gated turn blocks up to 45s,
+    // and nothing else may be held out of the session's lifecycle for that.
+    drop(lifecycle);
+    let (dir, target, profile) = (&seat.dir, &seat.target, &ask.parsed.profile);
+    match started {
+        // Nothing reached the pane and the refusing site already said why. The
+        // meta HAS moved, so the next step is named rather than left implicit.
+        Started::NotPasted => {
+            writeln!(
+                err,
+                "  '{}' records profile '{profile}' now — `relaunch {}` starts it.",
+                target.agent, target.agent
+            )?;
+            Ok(Ended::Failed)
+        }
+        Started::NotSeen => Ok(not_seen(
+            &seat,
+            profile,
+            seed.as_deref(),
+            &mut at,
+            out,
+            err,
+        )?),
+        Started::Running { resuming_seat } => Ok(finish(
+            dir,
+            target,
+            &after,
+            resuming_seat,
+            ask.parsed,
+            seed.as_deref(),
+            &mut at,
+            &seat.from_command.as_ref().map_or_else(String::new, |from| {
+                kept_change(from, &seat.moving.command, seat.moving.tool)
+            }),
+            out,
+            err,
+        )?),
+    }
+}
+
+/// The seat this move is about, every fact of it resolved BEFORE the lock.
+struct Admitted<'w> {
+    /// The session as the caller's world enumerated it, for the seed pack.
+    entry: &'w crate::digest::SessionEntry,
+    dir: PathBuf,
+    caller: Caller,
+    /// The profile the seat recorded BEFORE the move, empty when none.
+    recorded: String,
+    /// The same, as the two messages that say what a half-finished move left
+    /// behind spell it.
+    was: String,
+    moving: Moving,
+    /// The command the recorded profile resolves to now, for the keep question.
+    from_command: Option<String>,
+    target: Target,
+}
+
+/// Step 1 of the order: the session, the caller, the seat and the profile
+/// resolve, and nothing is written. Every refusal here is
+/// [`Ended::Refused`] for [`CauseClass::Other`]: nothing of the seat changed.
+fn admit<'w>(
+    ask: &Ask<'w>,
+    caller: Result<Caller, String>,
+    err: &mut impl Write,
+) -> Result<Admitted<'w>, Halt> {
+    let (parsed, refused) = (ask.parsed, Halt::End(Ended::Refused(CauseClass::Other)));
     // The seed is built from the world the caller already enumerated, so the
     // pack a successor is handed is the one `ae brief --seat` prints this
     // instant — and an incomplete enumeration refuses rather than packs a
     // session it only half saw.
-    let Some(entry) = world.and_then(|world| {
+    let Some(entry) = ask.world.and_then(|world| {
         world
             .sessions
             .iter()
@@ -1325,16 +1467,16 @@ fn run_parsed(
             "Error: no session named '{}' that ae could read.",
             parsed.session
         )?;
-        return Ok(refused);
+        return Err(refused);
     };
-    let dir = crate::inventory::Roots::under(root)
+    let dir = crate::inventory::Roots::under(ask.root)
         .sessions()
         .join(&parsed.session);
     let caller = match caller {
         Ok(caller) => caller,
         Err(line) => {
             writeln!(err, "{line}")?;
-            return Ok(refused);
+            return Err(refused);
         }
     };
     // THE ROSTER FIRST, and tmux only after it. Everything a typo gets wrong —
@@ -1356,7 +1498,7 @@ fn run_parsed(
                 roster.join(", ")
             }
         )?;
-        return Ok(refused);
+        return Err(refused);
     };
     let (slot, recorded) = (
         seated.slot.clone(),
@@ -1378,13 +1520,13 @@ fn run_parsed(
              brings it back on the same profile.",
             parsed.agent, parsed.profile, parsed.agent
         )?;
-        return Ok(refused);
+        return Err(refused);
     }
     let moving = match resolve_profile(&dir, &bytes, &parsed.profile, &parsed.agent) {
         Ok(moving) => moving,
         Err(why) => {
             writeln!(err, "Error: {why}. Nothing was reseated.")?;
-            return Ok(refused);
+            return Err(refused);
         }
     };
     let from_command = recorded_command(&dir, &bytes, seated);
@@ -1395,11 +1537,34 @@ fn run_parsed(
     {
         writeln!(err, "{line}")?;
     }
-    let target = match resolve(&dir, &parsed.agent, &parsed.session) {
+    let target = place(&dir, parsed, &caller, &slot, err)?;
+    Ok(Admitted {
+        entry,
+        dir,
+        caller,
+        recorded,
+        was,
+        moving,
+        from_command,
+        target,
+    })
+}
+
+/// The seat's PANE, resolved after every durable fact: the target, never the
+/// caller's own pane, and stamped with the slot the roster seats it at.
+fn place(
+    dir: &Path,
+    parsed: &Parsed,
+    caller: &Caller,
+    slot: &str,
+    err: &mut impl Write,
+) -> Result<Target, Halt> {
+    let refused = Halt::End(Ended::Refused(CauseClass::Other));
+    let target = match resolve(dir, &parsed.agent, &parsed.session) {
         Ok(target) => target,
         Err(line) => {
             writeln!(err, "{line}")?;
-            return Ok(refused);
+            return Err(refused);
         }
     };
     // NOT YOUR OWN SEAT. The dead proof would refuse a live caller anyway, so
@@ -1413,7 +1578,7 @@ fn run_parsed(
              command is the one that would be replaced. Ask another seat, or run it from a shell.",
             target.agent
         )?;
-        return Ok(refused);
+        return Err(refused);
     }
     // The pane's own stamp against the roster. They disagree only when a stamp
     // is stale or a meta was hand-edited, and the move would then be published
@@ -1425,37 +1590,44 @@ fn run_parsed(
              stop and resume the session.",
             target.pane, target.slot, parsed.session, parsed.agent
         )?;
-        return Ok(refused);
+        return Err(refused);
     }
+    Ok(target)
+}
 
-    // THE LOCK, taken the way every lifecycle writer takes it: the dead proof,
-    // the seed, the slot cleanup, the meta move and the paste are ONE
-    // transaction, so no stop, compact, relaunch or second reseat interleaves.
-    let Ok(lifecycle) = crate::lifecycle::lock(root, &parsed.session) else {
-        writeln!(
-            err,
-            "Error: another lifecycle operation holds '{}' — it waited and gave up. Try again \
-             once that finishes.",
-            parsed.session
-        )?;
-        return Ok(Ended::Refused(CauseClass::Lock));
-    };
-    // What the records say NOW, under the lock: the stop reads the working copy
-    // from it, and the audit line reads the conversation the predecessor holds.
-    let locked = crate::meta::read_bytes(&dir).unwrap_or_default();
+/// What the records under the lock answered before anything is stopped.
+struct Prepared {
+    /// The conversation id the seat records, `harness_session.<slot>`.
+    prior: String,
+    /// Whether the move KEEPS that conversation ([`keeps`]).
+    keeping: bool,
+    /// What the carry Check proved, kept for the copy: `None` when no carry
+    /// was asked of it.
+    checked: Option<crate::carry::Crossing>,
+}
+
+/// Under the lock and before the stop: the automatic gate, the keep question,
+/// the carry Check and the tool-change note — reads and stderr only.
+fn prepare(
+    ask: &Ask<'_>,
+    seat: &Admitted<'_>,
+    locked: &[u8],
+    err: &mut impl Write,
+) -> Result<Prepared, Halt> {
+    let (target, moving) = (&seat.target, &seat.moving);
     // THE ONE AUTOMATIC GATE, under the lock and before anything is checked,
     // copied or stopped: the persisted record at this read decides. A later
     // observation written under the meta lock alone is not seen (named residual).
-    if parsed.automatic
-        && let Some(hold) = crate::run::observed_standing(&dir, &target.slot)
+    if ask.parsed.automatic
+        && let Some(hold) = crate::run::observed_standing(&seat.dir, &target.slot)
     {
         writeln!(err, "Error: {}", crate::autoreseat::observed_summary(&hold))?;
-        return Ok(Ended::Refused(CauseClass::ObservedChoice));
+        return Err(Halt::End(Ended::Refused(CauseClass::ObservedChoice)));
     }
-    let prior = crate::lifecycle::meta_value(&locked, &format!("harness_session.{}", target.slot));
+    let prior = crate::lifecycle::meta_value(locked, &format!("harness_session.{}", target.slot));
     // DOES THE SEAT KEEP ITS CONVERSATION? From the records under the lock. A
     // kept move stays in its account, which a carry never does.
-    let row = |key: &str| crate::lifecycle::meta_value(&locked, &format!("{key}.{}", target.slot));
+    let row = |key: &str| crate::lifecycle::meta_value(locked, &format!("{key}.{}", target.slot));
     let keeping = keeps(&Keep {
         from_binary: &row("agent_bin"),
         to_binary: &moving.binary,
@@ -1465,21 +1637,9 @@ fn run_parsed(
         from_base: &row("config_home_base"),
         to_home: (moving.account.as_ref())
             .map(|account| (account.row.as_str(), account.base.as_deref())),
-        from_command: from_command.as_deref(),
+        from_command: seat.from_command.as_deref(),
         to_command: &moving.command,
     });
-    let mut at = Record {
-        caller: &caller,
-        now,
-        from: &recorded,
-        to: &parsed.profile,
-        prior: &prior,
-        // Filled in once the carry question is answered, below. Every record
-        // written before that is a STOP, and a stop names no conversation at
-        // all ([`Mentions`]), so no record can carry this placeholder into an
-        // audit line.
-        carry: Carried::No,
-    };
     // A CARRY THAT WOULD FAIL refuses HERE, before a running tool is ended: the
     // whole copy set is proven by the copy's own walk, writing nothing. A
     // working copy ae cannot use is left to the stop and the dead proof, which
@@ -1487,8 +1647,8 @@ fn run_parsed(
     // What it proved is KEPT: the copy after the stop archives exactly what
     // this Check decided, or nothing.
     let mut checked = None;
-    if let Ok(work_dir) = crate::seat_relaunch::usable_work_dir(&locked)
-        && let Some(plan) = carry_plan(&locked, &target.slot, &moving, &prior, &work_dir)
+    if let Ok(work_dir) = crate::seat_relaunch::usable_work_dir(locked)
+        && let Some(plan) = carry_plan(locked, &target.slot, moving, &prior, &work_dir)
     {
         match crate::carry::run(&plan, crate::carry::Mode::Check) {
             Ok(crossing) => checked = Some(crossing),
@@ -1503,60 +1663,106 @@ fn run_parsed(
                     from.display(),
                     to.display()
                 )?;
-                return Ok(Ended::Refused(carry_class(why.kind())));
+                return Err(Halt::End(Ended::Refused(carry_class(why.kind()))));
             }
         }
     }
     // A TOOL CHANGE says what it costs before anything happens, a dead pane
-    // included: the successor cannot read the old tool's store, and ae looks
-    // for no conversation its records do not name.
-    let from_binary = crate::lifecycle::meta_value(&locked, &format!("agent_bin.{}", target.slot));
+    // included ([`tool_change_note`]).
+    let from_binary = crate::lifecycle::meta_value(locked, &format!("agent_bin.{}", target.slot));
     if let Some(note) = tool_change_note(
         &target.agent,
-        &parsed.profile,
+        &ask.parsed.profile,
         &from_binary,
         &moving.binary,
         &prior,
     ) {
         writeln!(err, "{note}")?;
     }
-    // THE STOP, before the dead proof and before anything durable is written.
-    let stopped = match stop_running_tool(&dir, &target, &locked, parsed, &mut *hook, err)? {
-        Stop::Refused(class) => return Ok(Ended::Refused(class)),
-        Stop::Failed => return Ok(Ended::Failed),
+    Ok(Prepared {
+        prior,
+        keeping,
+        checked,
+    })
+}
+
+/// THE STOP, before the dead proof and before anything durable is written,
+/// then the dead proof itself. Returns the proof with how every later refusal
+/// ends ([`past_the_stop`]), decided HERE from whether this move stopped the
+/// tool.
+fn stop_and_prove_dead(
+    ask: &Ask<'_>,
+    seat: &Admitted<'_>,
+    locked: &[u8],
+    at: &Record<'_>,
+    hook: &mut dyn FnMut() -> bool,
+    err: &mut impl Write,
+) -> Result<(Proven, Ended), Halt> {
+    let (dir, target) = (&seat.dir, &seat.target);
+    let stopped = match stop_running_tool(dir, target, locked, ask.parsed, &mut *hook, err)? {
+        Stop::Refused(class) => return Err(Halt::End(Ended::Refused(class))),
+        Stop::Failed => return Err(Halt::End(Ended::Failed)),
         // The record goes in only once the pane is PROVEN back at its shell:
         // an audit line claiming a stop that did not finish would outlive
         // every refusal above it.
         Stop::Stopped(binary) => {
             record(
-                &dir,
-                &at,
-                &target,
+                dir,
+                at,
+                target,
                 &format!("stopped {binary} in place (pane {})", target.pane),
                 Mentions::NothingOfIt,
             );
             true
         }
         // Nothing to stop, so the stop gave the caller no last word: this is it.
-        Stop::NotRunning if !hook() => return Ok(Ended::Refused(CauseClass::Other)),
+        Stop::NotRunning if !hook() => return Err(Halt::End(Ended::Refused(CauseClass::Other))),
         Stop::NotRunning => false,
     };
     let broke = past_the_stop(stopped);
-    let Some(before) = crate::seat_relaunch::prove_dead(&dir, &target, RESEAT_VERB, err)? else {
-        return Ok(broke);
+    let Some(before) = crate::seat_relaunch::prove_dead(dir, target, RESEAT_VERB, err)? else {
+        return Err(Halt::End(broke));
     };
-    // DOES THE CONVERSATION TRAVEL? Asked here, past the dead proof and before
-    // anything is removed, so a refusal costs only the reading. Every arm that
-    // does not carry leaves the rest of this function exactly as it was.
-    let plan = carry_plan(&locked, &target.slot, &moving, &prior, &before.work_dir);
+    Ok((before, broke))
+}
+
+/// What became of the conversation, past the dead proof.
+struct Travel {
+    carried: Carried,
+    /// A carry was planned or a keep proven: the one path where ae has just
+    /// PROVEN the start marker was there. Its own fact, never derived from
+    /// [`Carried::travelled`]: a failed copy is Seeded and still planned.
+    planned: bool,
+    /// The keep probe found the conversation in its store.
+    keep_on: bool,
+    /// The slot's start marker, which `_run` reads to resume.
+    marker: PathBuf,
+}
+
+/// DOES THE CONVERSATION TRAVEL? The keep probe and what it says, the marker
+/// proven writable, then the copy and what it says — in that order.
+fn conversation(
+    seat: &Admitted<'_>,
+    locked: &[u8],
+    prepared: &Prepared,
+    before: &Proven,
+    broke: Ended,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<Travel, Halt> {
+    let (dir, target, moving, prior) = (&seat.dir, &seat.target, &seat.moving, &prepared.prior);
+    // Asked here, past the dead proof and before anything is removed, so a
+    // refusal costs only the reading. Every arm that does not carry leaves the
+    // rest of the move exactly as it was.
+    let plan = carry_plan(locked, &target.slot, moving, prior, &before.work_dir);
     // A conversation to keep must still be in the tool's own store, asked by
     // the probe `_run` resumes with, keyed by the seat's recorded working copy.
     // When it is not, the move seeds and says what it could not keep.
     let kept = match moving.account.as_ref() {
-        Some(account) if keeping => Some(
+        Some(account) if prepared.keeping => Some(
             if crate::run::resumable_in(
                 moving.tool,
-                &prior,
+                prior,
                 &crate::launch_cmd::Resolved::Path(account.path.clone()),
                 Some(Path::new(&before.work_dir)),
             ) {
@@ -1574,7 +1780,7 @@ fn run_parsed(
         _ => None,
     };
     let keep_on = kept == Some(Carried::Kept);
-    let marker = crate::run::started_marker(&dir, &target.slot);
+    let marker = crate::run::started_marker(dir, &target.slot);
     // THE RESUME MARKER, PROVEN WRITABLE BEFORE ANYTHING MOVES. `clear_slot`
     // below removes it and a carried seat has to have it back, or `_run` would
     // open a NEW conversation beside the store this is about to copy. The two
@@ -1590,119 +1796,152 @@ fn run_parsed(
     {
         writeln!(
             err,
-            "Error: {why} — nothing was reseated and '{}' still records {was}.",
-            target.agent
+            "Error: {why} — nothing was reseated and '{}' still records {}.",
+            target.agent, seat.was
         )?;
-        return Ok(broke);
+        return Err(Halt::End(broke));
     }
     let planned = plan.is_some() || keep_on;
     let carried = match plan {
         None => kept.unwrap_or(Carried::No),
-        Some(plan) => {
-            let (from, to) = plan.homes();
-            // A move whose Check never ran — its working copy was not usable
-            // then — copies with an empty proof, which archives nothing.
-            let unproven = crate::carry::Proof::default();
-            let proof = checked
-                .as_ref()
-                .map_or(&unproven, crate::carry::Crossing::proof);
-            match crate::carry::run(&plan, crate::carry::Mode::Copy(proof)) {
-                Ok(crossing) => {
-                    // RULING 1: typing the reseat with the other account's
-                    // profile IS the consent, so there is no prompt — but the
-                    // crossing is never silent. Said HERE rather than with the
-                    // final line because it is true from this moment: the
-                    // bytes are in the other account whatever the steps below
-                    // decide, and the source is untouched either way.
-                    writeln!(
-                        out,
-                        "carried conversation {} from {} to {}{}",
-                        plan.id(),
-                        from.display(),
-                        to.display(),
-                        if crossing.memory_kept {
-                            " (the target already had a project memory; it was kept, never merged)"
-                        } else {
-                            ""
-                        }
-                    )?;
-                    // WHAT IT ARCHIVED, said on the one line that names the
-                    // directory: the target account's own files were moved,
-                    // so the human is told where they are now.
-                    match crossing.archived() {
-                        Some((count, dir)) => {
-                            writeln!(
-                                out,
-                                "archived {} the target account held for this conversation in \
-                                 {} (moved aside, never deleted)",
-                                crate::carry::files(count),
-                                dir.display()
-                            )?;
-                            Carried::Archived {
-                                count,
-                                dir: dir.to_path_buf(),
-                            }
-                        }
-                        None => Carried::Yes,
+        Some(plan) => copy(&plan, prepared.checked.as_ref(), &target.agent, out, err)?,
+    };
+    Ok(Travel {
+        carried,
+        planned,
+        keep_on,
+        marker,
+    })
+}
+
+/// The carry's COPY, with the proof its Check left, and what it says.
+fn copy(
+    plan: &crate::carry::Plan,
+    checked: Option<&crate::carry::Crossing>,
+    agent: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<Carried> {
+    let (from, to) = plan.homes();
+    // A move whose Check never ran — its working copy was not usable
+    // then — copies with an empty proof, which archives nothing.
+    let unproven = crate::carry::Proof::default();
+    let proof = checked.map_or(&unproven, crate::carry::Crossing::proof);
+    Ok(
+        match crate::carry::run(plan, crate::carry::Mode::Copy(proof)) {
+            Ok(crossing) => {
+                // RULING 1: typing the reseat with the other account's
+                // profile IS the consent, so there is no prompt — but the
+                // crossing is never silent. Said HERE rather than with the
+                // final line because it is true from this moment: the
+                // bytes are in the other account whatever the steps below
+                // decide, and the source is untouched either way.
+                writeln!(
+                    out,
+                    "carried conversation {} from {} to {}{}",
+                    plan.id(),
+                    from.display(),
+                    to.display(),
+                    if crossing.memory_kept {
+                        " (the target already had a project memory; it was kept, never merged)"
+                    } else {
+                        ""
                     }
-                }
-                Err(why) => {
-                    // RULING 4: the move still happens, on a fresh conversation
-                    // with the seed pack, and what failed is named.
-                    writeln!(
-                        err,
-                        "note: '{}' could not carry conversation {} from {} to {} ({why}) — \
-                         moving it on a fresh conversation with its seed pack instead.",
-                        target.agent,
-                        plan.id(),
-                        from.display(),
-                        to.display()
-                    )?;
-                    Carried::Seeded(why.to_string())
+                )?;
+                // WHAT IT ARCHIVED, said on the one line that names the
+                // directory: the target account's own files were moved,
+                // so the human is told where they are now.
+                match crossing.archived() {
+                    Some((count, dir)) => {
+                        writeln!(
+                            out,
+                            "archived {} the target account held for this conversation in \
+                         {} (moved aside, never deleted)",
+                            crate::carry::files(count),
+                            dir.display()
+                        )?;
+                        Carried::Archived {
+                            count,
+                            dir: dir.to_path_buf(),
+                        }
+                    }
+                    None => Carried::Yes,
                 }
             }
-        }
-    };
-    at.carry = carried.clone();
-    // BUILT FIRST, because the pack reads the seat's recorded first message and
-    // the cleanup below removes that file. A CARRIED seat gets neither: the
-    // conversation itself travelled, so there is nothing for ae to tell the
-    // successor and nothing for a human to re-send by hand.
-    // A KEPT seat's pack is built too but published only if its resume falls
-    // back ([`finish`]): this is the last moment its first message is readable.
-    let seed = if carried.fate() == Fate::Carried {
-        None
-    } else {
-        let pack = match crate::seat_pack(
-            entry,
-            &dir,
-            crate::doors::home().as_deref(),
-            now,
-            &target.agent,
-        ) {
-            Ok(pack) => crate::provenance::first_line(&crate::provenance::ctx(), &pack),
             Err(why) => {
-                writeln!(err, "Error: {why}. Nothing was reseated.")?;
-                return Ok(broke);
+                // RULING 4: the move still happens, on a fresh conversation
+                // with the seed pack, and what failed is named.
+                writeln!(
+                    err,
+                    "note: '{agent}' could not carry conversation {} from {} to {} ({why}) — \
+                 moving it on a fresh conversation with its seed pack instead.",
+                    plan.id(),
+                    from.display(),
+                    to.display()
+                )?;
+                Carried::Seeded(why.to_string())
             }
-        };
-        if !keep_on
-            && let Err(why) =
-                crate::launch::publish_data(&seed_file(&dir, &target.agent), pack.as_bytes())
-        {
+        },
+    )
+}
+
+/// THE SEED PACK, BUILT FIRST, because the pack reads the seat's recorded
+/// first message and the cleanup removes that file. A CARRIED seat gets
+/// neither: the conversation itself travelled, so there is nothing for ae to
+/// tell the successor and nothing for a human to re-send by hand. A KEPT
+/// seat's pack is built too but published only if its resume falls back
+/// ([`finish`]): this is the last moment its first message is readable.
+fn build_seed(
+    ask: &Ask<'_>,
+    seat: &Admitted<'_>,
+    travel: &Travel,
+    broke: Ended,
+    err: &mut impl Write,
+) -> Result<Option<String>, Halt> {
+    if travel.carried.fate() == Fate::Carried {
+        return Ok(None);
+    }
+    let pack = match crate::seat_pack(
+        seat.entry,
+        &seat.dir,
+        crate::doors::home().as_deref(),
+        ask.now,
+        &seat.target.agent,
+    ) {
+        Ok(pack) => crate::provenance::first_line(&crate::provenance::ctx(), &pack),
+        Err(why) => {
             writeln!(err, "Error: {why}. Nothing was reseated.")?;
-            return Ok(broke);
+            return Err(Halt::End(broke));
         }
-        Some(pack)
     };
-    if let Err(why) = crate::run::clear_slot(&dir, &target.slot) {
+    if !travel.keep_on
+        && let Err(why) =
+            crate::launch::publish_data(&seed_file(&seat.dir, &seat.target.agent), pack.as_bytes())
+    {
+        writeln!(err, "Error: {why}. Nothing was reseated.")?;
+        return Err(Halt::End(broke));
+    }
+    Ok(Some(pack))
+}
+
+/// Every per-slot launch file goes, then a seat whose conversation travels
+/// gets its start marker back.
+fn clear_launch_files(
+    seat: &Admitted<'_>,
+    travel: &Travel,
+    broke: Ended,
+    err: &mut impl Write,
+) -> Result<(), Halt> {
+    let (target, carried, was) = (&seat.target, &travel.carried, &seat.was);
+    let marker = &travel.marker;
+    if let Err(why) = crate::run::clear_slot(&seat.dir, &target.slot) {
         // THE MARKER, BACK. `clear_slot` removes it FIRST and can fail on a
         // later file, and the meta has NOT moved — so the seat is still its old
         // self and still needs the marker its old self had. Only where a carry
         // was planned, because that is the one path where ae has just PROVEN
         // the marker was there; a seat that never started must not be handed
         // one it never had.
-        let stranded = planned && crate::launch::publish_data(&marker, b"").is_err();
+        let stranded = travel.planned && crate::launch::publish_data(marker, b"").is_err();
         let note = uncleared_note(stranded, carried.fate() == Fate::Carried);
         writeln!(
             err,
@@ -1710,7 +1949,7 @@ fn run_parsed(
              moved and '{}' still records {was}.{note}",
             target.slot, target.agent
         )?;
-        return Ok(broke);
+        return Err(Halt::End(broke));
     }
     // THE RESUME MARKER, PUT BACK. `clear_slot` removes it with the rest of the
     // slot's launch files, and `_run` reads exactly that file to decide between
@@ -1724,9 +1963,9 @@ fn run_parsed(
     // account is inert because no record names it, so re-running the same
     // reseat puts the marker back and carries again.
     if carried.travelled() {
-        let mut back = crate::launch::publish_data(&marker, b"");
+        let mut back = crate::launch::publish_data(marker, b"");
         if back.is_err() {
-            back = crate::launch::publish_data(&marker, b"");
+            back = crate::launch::publish_data(marker, b"");
         }
         if let Err(why) = back {
             let copied = carried.fate() == Fate::Carried;
@@ -1752,107 +1991,107 @@ fn run_parsed(
                     ""
                 }
             )?;
-            return Ok(broke);
+            return Err(Halt::End(broke));
         }
     }
+    Ok(())
+}
+
+/// The meta rows move in ONE guarded replacement, then the seat is re-read:
+/// the command, the tool and the conversation are the NEW profile's now, and
+/// `start` pastes what `read_seat` composes from the moved rows.
+fn publish_move(
+    ask: &Ask<'_>,
+    seat: &Admitted<'_>,
+    travel: &Travel,
+    prior: &str,
+    before: Proven,
+    broke: Ended,
+    err: &mut impl Write,
+) -> Result<Proven, Halt> {
+    let (target, moving, carried) = (&seat.target, &seat.moving, &travel.carried);
     let conversation = if crate::launch::takes_launch_session_id(moving.tool) {
         crate::launch::generate_uuid()
     } else {
         crate::launch::PENDING.to_owned()
     };
     let moved = crate::meta::publish_seat_move(
-        &dir,
+        &seat.dir,
         &target.slot,
         &target.agent,
         &crate::meta::SeatMove {
-            profile: &parsed.profile,
+            profile: &ask.parsed.profile,
             binary: &moving.binary,
             launch_id: &crate::session_launch::launch_token(moving.tool, None),
-            conversation: seat_conversation(&carried, moving.account.as_ref(), &conversation, now),
+            conversation: seat_conversation(
+                carried,
+                moving.account.as_ref(),
+                &conversation,
+                ask.now,
+            ),
         },
     );
     if let Err(why) = moved {
         writeln!(
             err,
             "Error: the seat move could not be recorded ({}) — slot {} has no launch files now \
-             and still records {was}. Re-run the reseat.",
+             and still records {}. Re-run the reseat.",
             why.cause(),
-            target.slot
+            target.slot,
+            seat.was
         )?;
-        return Ok(broke);
+        return Err(Halt::End(broke));
     }
-    // Re-read: the command, the tool and the conversation are the NEW profile's
-    // now, and `start` pastes what `read_seat` composes from the moved rows.
-    let after = match crate::run::read_seat(&dir, &target.slot, None) {
-        Ok(seat) => Proven {
-            seat,
+    match crate::run::read_seat(&seat.dir, &target.slot, None) {
+        Ok(read) => Ok(Proven {
+            seat: read,
             agent_bin: moving.binary.clone(),
             work_dir: before.work_dir,
             id_before: if carried.travelled() {
-                prior.clone()
+                prior.to_owned()
             } else {
                 conversation
             },
-        },
+        }),
         Err(why) => {
             writeln!(
                 err,
                 "Error: {why}. '{}' already records profile '{}' and its pane is at a shell, so \
                  `relaunch {}` finishes the move once the profile reads.",
-                target.agent, parsed.profile, target.agent
+                target.agent, ask.parsed.profile, target.agent
             )?;
-            return Ok(Ended::Failed);
+            Err(Halt::End(Ended::Failed))
         }
-    };
-    let started = crate::seat_relaunch::start(&dir, &target, &after, now, RESEAT_VERB, err)?;
-    // PAST THE LOCK before any readiness wait: a gated turn blocks up to 45s,
-    // and nothing else may be held out of the session's lifecycle for that.
-    drop(lifecycle);
-    match started {
-        // Nothing reached the pane and the refusing site already said why. The
-        // meta HAS moved, so the next step is named rather than left implicit.
-        Started::NotPasted => {
-            writeln!(
-                err,
-                "  '{}' records profile '{}' now — `relaunch {}` starts it.",
-                target.agent, parsed.profile, target.agent
-            )?;
-            Ok(Ended::Failed)
-        }
-        Started::NotSeen => {
-            // `_run` may have fallen back before its tool failed: a fresh id
-            // proves that, and an unchanged one proves no resume either.
-            let unproven = at.carry == Carried::Kept
-                && !resume_fell_back(&dir, &target, seed.as_deref(), &mut at, None, out, err)?;
-            let mentions = if unproven {
-                Mentions::NothingOfIt
-            } else {
-                Mentions::Conversation
-            };
-            record(&dir, &at, &target, NOT_SEEN, mentions);
-            writeln!(
-                err,
-                "Error: '{}' moved to '{}' and its tool was not seen: look at the pane; \
-                 `relaunch {}` finishes the move once it is back at a shell.",
-                target.agent, parsed.profile, target.agent
-            )?;
-            Ok(Ended::Failed)
-        }
-        Started::Running { resuming_seat } => finish(
-            &dir,
-            &target,
-            &after,
-            resuming_seat,
-            parsed,
-            seed.as_deref(),
-            &mut at,
-            &from_command.map_or_else(String::new, |from| {
-                kept_change(&from, &moving.command, moving.tool)
-            }),
-            out,
-            err,
-        ),
     }
+}
+
+/// The pasted tool was not seen: `_run` may have fallen back before its tool
+/// failed — a fresh id proves that, and an unchanged one proves no resume
+/// either.
+fn not_seen(
+    seat: &Admitted<'_>,
+    profile: &str,
+    seed: Option<&str>,
+    at: &mut Record<'_>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<Ended> {
+    let (dir, target) = (&seat.dir, &seat.target);
+    let unproven =
+        at.carry == Carried::Kept && !resume_fell_back(dir, target, seed, at, None, out, err)?;
+    let mentions = if unproven {
+        Mentions::NothingOfIt
+    } else {
+        Mentions::Conversation
+    };
+    record(dir, at, target, NOT_SEEN, mentions);
+    writeln!(
+        err,
+        "Error: '{}' moved to '{profile}' and its tool was not seen: look at the pane; \
+         `relaunch {}` finishes the move once it is back at a shell.",
+        target.agent, target.agent
+    )?;
+    Ok(Ended::Failed)
 }
 
 /// PURE: what a TOOL CHANGE says before anything happens, a dead pane
