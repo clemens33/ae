@@ -1511,22 +1511,14 @@ fn run_parsed(
     // included: the successor cannot read the old tool's store, and ae looks
     // for no conversation its records do not name.
     let from_binary = crate::lifecycle::meta_value(&locked, &format!("agent_bin.{}", target.slot));
-    if !from_binary.is_empty() && from_binary != moving.binary {
-        writeln!(
-            err,
-            "note: '{}' records {from_binary} and '{}' runs {}: if this move succeeds it starts a \
-             fresh {} conversation{}. ae searches for no conversation its records do not name; \
-             any other stays in its own account.",
-            target.agent,
-            parsed.profile,
-            moving.binary,
-            moving.binary,
-            if crate::session_launch::capture::is_lowercase_uuid(&prior) {
-                format!(" and its recorded conversation {prior} stays behind as a predecessor")
-            } else {
-                String::new()
-            }
-        )?;
+    if let Some(note) = tool_change_note(
+        &target.agent,
+        &parsed.profile,
+        &from_binary,
+        &moving.binary,
+        &prior,
+    ) {
+        writeln!(err, "{note}")?;
     }
     // THE STOP, before the dead proof and before anything durable is written.
     let stopped = match stop_running_tool(&dir, &target, &locked, parsed, &mut *hook, err)? {
@@ -1549,9 +1541,7 @@ fn run_parsed(
         Stop::NotRunning if !hook() => return Ok(Ended::Refused(CauseClass::Other)),
         Stop::NotRunning => false,
     };
-    // Past the stop, a refusal leaves a stopped tool behind, or a dead seat
-    // exactly as it was.
-    let broke = if stopped { Ended::Failed } else { refused };
+    let broke = past_the_stop(stopped);
     let Some(before) = crate::seat_relaunch::prove_dead(&dir, &target, RESEAT_VERB, err)? else {
         return Ok(broke);
     };
@@ -1713,19 +1703,7 @@ fn run_parsed(
         // the marker was there; a seat that never started must not be handed
         // one it never had.
         let stranded = planned && crate::launch::publish_data(&marker, b"").is_err();
-        let note = match (stranded, carried.fate() == Fate::Carried) {
-            (true, _) => {
-                " Its start marker could not be put back either, so its next start would open a \
-                 NEW conversation beside the one it records."
-            }
-            // SAID, because a carry has already written in the other account
-            // and "nothing was touched" would not be true of it.
-            (false, true) => {
-                " Its start marker is back; the copy already in the other account is inert, since \
-                 no record names it."
-            }
-            (false, false) => "",
-        };
+        let note = uncleared_note(stranded, carried.fate() == Fate::Carried);
         writeln!(
             err,
             "Error: the launch files of slot {} could not be cleared ({why}) — the seat was not \
@@ -1790,25 +1768,7 @@ fn run_parsed(
             profile: &parsed.profile,
             binary: &moving.binary,
             launch_id: &crate::session_launch::launch_token(moving.tool, None),
-            conversation: match (&carried, moving.account.as_ref()) {
-                (Carried::Kept, _) => crate::meta::Conversation::Kept,
-                // The account rows and the kept conversation are published in
-                // the SAME replacement: a conversation whose store no row names
-                // is the window a later reader would resolve to the home the
-                // seat just left.
-                (Carried::Yes | Carried::Archived { .. }, Some(account)) => {
-                    crate::meta::Conversation::Carried {
-                        config_home: &account.row,
-                        config_home_base: account.base.as_deref(),
-                    }
-                }
-                // A carry proves an account, so the second arm is unreachable;
-                // it is spelled rather than unwrapped, and it is today's move.
-                _ => crate::meta::Conversation::Fresh {
-                    id: &conversation,
-                    capture_floor: now.epoch(),
-                },
-            },
+            conversation: seat_conversation(&carried, moving.account.as_ref(), &conversation, now),
         },
     );
     if let Err(why) = moved {
@@ -1892,6 +1852,90 @@ fn run_parsed(
             out,
             err,
         ),
+    }
+}
+
+/// PURE: what a TOOL CHANGE says before anything happens, a dead pane
+/// included — `None` when the seat records no tool or keeps the one it has.
+/// The successor cannot read the old tool's store, and ae looks for no
+/// conversation its records do not name.
+fn tool_change_note(
+    agent: &str,
+    profile: &str,
+    from_binary: &str,
+    to_binary: &str,
+    prior: &str,
+) -> Option<String> {
+    if from_binary.is_empty() || from_binary == to_binary {
+        return None;
+    }
+    Some(format!(
+        "note: '{agent}' records {from_binary} and '{profile}' runs {to_binary}: if this move \
+         succeeds it starts a fresh {to_binary} conversation{}. ae searches for no conversation \
+         its records do not name; any other stays in its own account.",
+        if crate::session_launch::capture::is_lowercase_uuid(prior) {
+            format!(" and its recorded conversation {prior} stays behind as a predecessor")
+        } else {
+            String::new()
+        }
+    ))
+}
+
+/// PURE: how a refusal PAST THE STOP ends. A tool this move stopped is left
+/// stopped, which is something done; a seat that was already dead is exactly
+/// as it was, which is a refusal.
+const fn past_the_stop(stopped: bool) -> Ended {
+    if stopped {
+        Ended::Failed
+    } else {
+        Ended::Refused(CauseClass::Other)
+    }
+}
+
+/// PURE: what an uncleared slot adds to its refusal. A marker that could not be
+/// put back is said first, because it changes what the next start does; a
+/// carry has already written in the other account, so "nothing was touched"
+/// would not be true of it and the inert copy is SAID.
+const fn uncleared_note(stranded: bool, copied: bool) -> &'static str {
+    match (stranded, copied) {
+        (true, _) => {
+            " Its start marker could not be put back either, so its next start would open a \
+             NEW conversation beside the one it records."
+        }
+        (false, true) => {
+            " Its start marker is back; the copy already in the other account is inert, since \
+             no record names it."
+        }
+        (false, false) => "",
+    }
+}
+
+/// PURE: what the seat move publishes for the conversation. A kept one stays;
+/// a carried one is published in the SAME replacement as the account rows
+/// that name its store, because a conversation whose store no row names is
+/// the window a later reader would resolve to the home the seat just left;
+/// every other move opens `id` fresh from `now`.
+///
+/// A carry proves an account, so a carried fate with none is unreachable; it is
+/// spelled rather than unwrapped, and it is today's move.
+fn seat_conversation<'a>(
+    carried: &Carried,
+    account: Option<&'a Account>,
+    id: &'a str,
+    now: Timestamp,
+) -> crate::meta::Conversation<'a> {
+    match (carried, account) {
+        (Carried::Kept, _) => crate::meta::Conversation::Kept,
+        (Carried::Yes | Carried::Archived { .. }, Some(account)) => {
+            crate::meta::Conversation::Carried {
+                config_home: &account.row,
+                config_home_base: account.base.as_deref(),
+            }
+        }
+        _ => crate::meta::Conversation::Fresh {
+            id,
+            capture_floor: now.epoch(),
+        },
     }
 }
 
@@ -3374,5 +3418,140 @@ mod tests {
                 );
             }
         }
+    }
+
+    // Oracle: docs/internals/reseat.md step 7a — a recorded `agent_bin` that
+    // differs from the new binary prints ONE note, a dead pane included; a
+    // UUID-grammar id stays behind as a predecessor; nothing else says a word.
+    #[test]
+    fn only_a_recorded_tool_that_differs_is_noted_and_only_a_uuid_is_named_as_left_behind() {
+        const UUID: &str = "11111111-1111-4111-8111-111111111111";
+        let note = |from: &str, to: &str, prior: &str| {
+            super::tool_change_note("w1", "fake-claude", from, to, prior)
+        };
+        assert_eq!(note("", "claude", UUID), None, "no recorded tool, no note");
+        assert_eq!(
+            note("claude", "claude", UUID),
+            None,
+            "the same tool, no note"
+        );
+        assert_eq!(
+            note("codex", "claude", UUID).as_deref(),
+            Some(
+                "note: 'w1' records codex and 'fake-claude' runs claude: if this move succeeds it \
+                 starts a fresh claude conversation and its recorded conversation \
+                 11111111-1111-4111-8111-111111111111 stays behind as a predecessor. ae searches \
+                 for no conversation its records do not name; any other stays in its own account."
+            )
+        );
+        for prior in [
+            "",
+            "pending",
+            "ses_123",
+            "11111111-1111-4111-8111-11111111111A",
+        ] {
+            assert_eq!(
+                note("codex", "claude", prior).as_deref(),
+                Some(
+                    "note: 'w1' records codex and 'fake-claude' runs claude: if this move succeeds \
+                     it starts a fresh claude conversation. ae searches for no conversation its \
+                     records do not name; any other stays in its own account."
+                ),
+                "{prior:?} is no conversation the note may name"
+            );
+        }
+    }
+
+    // Oracle: `Ended` — Refused means nothing of the seat changed, Failed that
+    // something was stopped or written and the move did not finish.
+    #[test]
+    fn a_refusal_past_the_stop_is_a_failure_only_when_this_move_stopped_the_tool() {
+        use super::{CauseClass, Ended, past_the_stop};
+        assert_eq!(past_the_stop(true), Ended::Failed);
+        assert_eq!(past_the_stop(false), Ended::Refused(CauseClass::Other));
+    }
+
+    // Oracle: docs/internals/reseat.md crash windows and the carry ladder — a
+    // marker that cannot be put back changes the next start and is said first;
+    // a carry's copy is said to be inert; a plain move adds nothing.
+    #[test]
+    fn an_uncleared_slot_names_a_lost_marker_first_and_an_inert_copy_otherwise() {
+        use super::uncleared_note;
+        let lost = " Its start marker could not be put back either, so its next start would \
+                    open a NEW conversation beside the one it records.";
+        assert_eq!(uncleared_note(true, false), lost);
+        assert_eq!(uncleared_note(true, true), lost, "the lost marker wins");
+        assert_eq!(
+            uncleared_note(false, true),
+            " Its start marker is back; the copy already in the other account is inert, since \
+             no record names it."
+        );
+        assert_eq!(uncleared_note(false, false), "");
+    }
+
+    // Oracle: `meta::Conversation` — Kept leaves every row; Carried rewrites the
+    // store rows to the target account in the same replacement; anything else
+    // opens the given id fresh from the move's own instant.
+    #[test]
+    fn the_seat_move_keeps_carries_with_its_account_or_opens_fresh() {
+        use super::{Account, Carried, seat_conversation};
+        use crate::meta::Conversation;
+        let now = crate::time::Timestamp::from_epoch(1_700_000_000);
+        let implicit = Account {
+            path: std::path::PathBuf::from("/h/.claude"),
+            row: "implicit:/h/.claude".to_owned(),
+            base: Some("/h".to_owned()),
+        };
+        let explicit = Account {
+            path: std::path::PathBuf::from("/x/claude"),
+            row: "/x/claude".to_owned(),
+            base: None,
+        };
+        let fresh = |conversation: &Conversation<'_>| {
+            matches!(
+                conversation,
+                Conversation::Fresh {
+                    id: "new-id",
+                    capture_floor: 1_700_000_000
+                }
+            )
+        };
+        for account in [None, Some(&implicit)] {
+            assert!(matches!(
+                seat_conversation(&Carried::Kept, account, "new-id", now),
+                Conversation::Kept
+            ));
+        }
+        assert!(matches!(
+            seat_conversation(&Carried::Yes, Some(&implicit), "new-id", now),
+            Conversation::Carried {
+                config_home: "implicit:/h/.claude",
+                config_home_base: Some("/h"),
+            }
+        ));
+        let archived = Carried::Archived {
+            count: 2,
+            dir: std::path::PathBuf::from("/a"),
+        };
+        assert!(matches!(
+            seat_conversation(&archived, Some(&explicit), "new-id", now),
+            Conversation::Carried {
+                config_home: "/x/claude",
+                config_home_base: None,
+            }
+        ));
+        for carried in [Carried::No, Carried::Seeded("why".to_owned())] {
+            assert!(fresh(&seat_conversation(
+                &carried,
+                Some(&implicit),
+                "new-id",
+                now
+            )));
+            assert!(fresh(&seat_conversation(&carried, None, "new-id", now)));
+        }
+        assert!(
+            fresh(&seat_conversation(&Carried::Yes, None, "new-id", now)),
+            "a carry with no account is spelled as today's fresh move"
+        );
     }
 }
