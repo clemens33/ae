@@ -543,6 +543,18 @@ the next episode's chooser reads that row. A restarted daemon re-books `limit`
 for the same key: the fold ignores a second `limit` while the episode stands,
 so the key survives the restart.
 
+**A near reset waits.** A limit episode with no attempt open is left to the watchdog's limit
+wake ([Watchdog](watchdog.md)) instead of moving while its carried binding reset is SHORT (every
+binding window states a length under a day) and under `LIMIT_WAIT_MAX_SECS` (60 min) away,
+judged each cycle at decision time, until `LIMIT_WAKE_FALLBACK_SECS` (300 s) past it
+(`autoreseat::reset_wait`); the first-sight forecast then says ae waits and wakes the seat
+instead of promising a move. Past the fallback the move applies as before, unless the seat
+resumed on that reset — its wake LANDED in the journal, or Claude Code's own resume was armed
+for it — which holds the move until a fresh reading names a new binding reset. The wait is
+silent: no trigger, no hold record, no unmapped naming. An unknown reset, a long or unstated
+window, a reset 60 min or more away, an attempt already open and headroom episodes move or
+close exactly as before.
+
 Past the grace the daemon hands at most one due seat per cycle to the trigger,
 through the session's own `send` helper with the action `auto-reseat` — the
 trigger re-derives the whole decision under the seat's lock, so a forged call

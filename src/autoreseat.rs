@@ -159,6 +159,36 @@ pub const GAVE_UP_SUMMARY: &str = "other: held: gave up after repeated refused o
 pub const IN_FLIGHT_SECS: i64 = 180;
 /// The grace a limit is given before the seat is moved.
 pub const DEFAULT_GRACE_SECS: u64 = 600;
+/// A limit whose known short-window reset is UNDER this far away waits for
+/// the reset's wake instead of moving the seat.
+pub const LIMIT_WAIT_MAX_SECS: i64 = 3600;
+/// How long past the reset a waiting seat is left to its wake before the move
+/// applies again: five default cycles, room for the woken turn to land and
+/// scroll the notice away.
+pub const LIMIT_WAKE_FALLBACK_SECS: i64 = 300;
+
+/// The binding reset of a seat's spent scope, as a held quota reading names
+/// it ([`leg::own_reset`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LimitReset {
+    /// The instant the binding window resets, epoch seconds.
+    pub at: i64,
+    /// Every binding window states a length under a day. An unstated length
+    /// is not proven short.
+    pub short: bool,
+}
+
+/// Until when a limit episode waits for its reset instead of moving, judged
+/// at `now`, each cycle: a known SHORT reset under [`LIMIT_WAIT_MAX_SECS`]
+/// away waits until [`LIMIT_WAKE_FALLBACK_SECS`] past it. An unknown reset, a
+/// long or unstated window, a reset 60 minutes or more away, and a wait past
+/// its fallback all answer `None`: the move applies as it always has.
+#[must_use]
+pub fn reset_wait(reset: Option<LimitReset>, now: i64) -> Option<i64> {
+    let reset = reset.filter(|reset| reset.short)?;
+    let until = reset.at.saturating_add(LIMIT_WAKE_FALLBACK_SECS);
+    (reset.at.saturating_sub(now) < LIMIT_WAIT_MAX_SECS && now < until).then_some(until)
+}
 
 const LIMIT_ACTION: &str = "limit";
 const CLEARED_ACTION: &str = "alert-cleared";
@@ -2196,6 +2226,10 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
         .collect();
     crate::state::summary_of(&cut)
 }
+
+#[cfg(test)]
+#[path = "autoreseat/limitwake_spec.rs"]
+mod limitwake_spec;
 
 #[cfg(test)]
 #[path = "autoreseat/start_policy_spec.rs"]

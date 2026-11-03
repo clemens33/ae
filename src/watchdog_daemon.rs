@@ -229,6 +229,23 @@ pub struct PaneState {
     /// against. Its ONE release is a cycle judged at all that no longer shows
     /// the notice: it retracts the verdict, requests recovery.
     pub limit_since: Option<i64>,
+    /// The latched episode's binding reset, as the newest fresh reading named
+    /// it. Carried because the reading itself goes unknown the moment the
+    /// reset passes; a cycle with no reading never clears it, the release and
+    /// a death's clear do.
+    pub limit_reset: Option<crate::autoreseat::LimitReset>,
+    /// The reset instant whose wake was delivered (or left unconfirmed): it is
+    /// never woken again. It survives the release, so a re-hit on the SAME
+    /// reset starts no second wake.
+    pub limit_woken: Option<i64>,
+    /// Refused wakes for the carried reset, bounded by `undelivered_max`; a new
+    /// reset starts its own count.
+    pub limit_wake_attempts: u32,
+    /// The reset the tool's OWN resume was seen armed for. The vendor owns that
+    /// reset: ae never wakes it, even after the footer goes when the vendor
+    /// fires. Only a footer read gone BEFORE the reset — the human cancelled —
+    /// hands it back.
+    pub limit_armed: Option<i64>,
     /// Consecutive cycles showing a human-only prompt. It lives HERE, in the
     /// carry, so a dead seat's reset clears it for free and a restart begins
     /// again — exactly like the two latches above it. There is NO separate
@@ -275,6 +292,18 @@ pub struct Observation {
     /// [`crate::watchdog::limit_notice`]'s answer: the vendor's own limit
     /// cell, which holds the reset time the named notice quotes.
     pub limit_notice: Option<String>,
+    /// The seat's own binding reset as this cycle's held quota observation
+    /// reads it ([`crate::autoreseat::leg::own_reset`]), read only while the
+    /// seat is on its limit; `None` when unknown or not read.
+    pub limit_reset: Option<crate::autoreseat::LimitReset>,
+    /// The reset epoch of this seat's newest delivered or unconfirmed wake the
+    /// journal holds ([`limit_woke_journal`]): what a restarted daemon, with
+    /// no carry, must not wake again.
+    pub limit_woke_journal: Option<i64>,
+    /// The tool's own resume is armed on this cycle's frame
+    /// ([`crate::harness_state::auto_continue_armed`]); `false` on a failed
+    /// capture, which the latch never reads as a cancel.
+    pub auto_continue: bool,
     /// Whether THIS cycle's pane capture SUCCEEDED. A failed read is an
     /// absence of evidence: the usage-limit latch may not clear on it, exactly
     /// as the dead latch may not.
@@ -477,6 +506,9 @@ pub enum Effect {
     /// ONE quota pass outside the cadence, on the cycle a seat left the usage
     /// limit. `run` collects it and performs it once; `quota = off` runs none.
     QuotaRefresh,
+    /// Deliver the ONE continuation turn a limited seat is owed once its
+    /// known `reset` has passed, through the guarded send like a nudge.
+    LimitWake { reset: i64 },
     /// Deliver one SWEEP prompt to the orchestrator.
     SweepNudge,
     /// Reconcile the durable event log against a wedge alert this daemon does
@@ -872,6 +904,28 @@ fn delivered_receipts(events: &[Event]) -> Vec<&str> {
         .filter(|event| event.action == crate::quota::action::CHECKPOINT && event.actor == ACTOR)
         .filter_map(|event| event.reference.as_deref())
         .collect()
+}
+
+/// The reset epoch of the seat's newest wake the journal holds: a
+/// `limit-wake` row this daemon's actor wrote to the seat, whose `ref` parses
+/// as an epoch. With `landed`, only one [`crate::events::landed`] reads as a
+/// confirmed paste; without, an unconfirmed one counts too, because it may
+/// have reached the seat. The send helper writes neither for a refusal.
+fn limit_wake_in(
+    events: &[Event],
+    (session, slot, agent): (&str, &str, &str),
+    landed: bool,
+) -> Option<i64> {
+    events
+        .iter()
+        .rev()
+        .filter(|event| {
+            event.action == crate::watchdog::LIMIT_WAKE_ACTION
+                && event.actor == ACTOR
+                && crate::watchdog::event_is_addressed_to(event, session, slot, agent)
+                && (!landed || crate::events::landed(event))
+        })
+        .find_map(|event| event.reference.as_deref()?.parse::<i64>().ok())
 }
 
 /// What one quota pass reads beside its own carry.
@@ -1559,6 +1613,18 @@ pub fn nudge_text(goal: Option<&str>, meta_dir: &Path, note: Option<&str>) -> St
     )
 }
 
+/// The limit wake: the nudge, with one note naming the reset that passed. It
+/// is spelled through [`nudge_text`] so the footprint grammar strips it like
+/// any nudge and a delivered wake never reads as the seat's own output.
+#[must_use]
+pub fn limit_wake_text(goal: Option<&str>, meta_dir: &Path, reset: i64) -> String {
+    let note = format!(
+        "Your vendor usage limit reset at {}.",
+        Timestamp::from_epoch(reset)
+    );
+    nudge_text(goal, meta_dir, Some(&note))
+}
+
 /// The idle reminder uses the same delivery path but names the positive
 /// observation that started its independent clock.
 #[must_use]
@@ -1951,6 +2017,62 @@ fn book_limit(next: &mut PaneState, effects: &mut Vec<Effect>, seen: &Observatio
     next.nudge_count = 0;
 }
 
+/// The grace a passed reset is given before its wake, for the vendor's clock.
+pub const LIMIT_WAKE_GRACE_SECS: i64 = 60;
+
+/// The limit latch's ONE continuation turn per reset, booked on a cycle that
+/// keeps the `limit` verdict and changes nothing else about the latch.
+///
+/// This cycle's reading of the binding reset, when there is one, replaces the
+/// carried one (a new instant starts its own refused-attempt count); no
+/// reading clears nothing, because a passed reset no longer reads at all. The
+/// wake is due from [`LIMIT_WAKE_GRACE_SECS`] past the carried reset, unless
+/// that instant is spent — woken in this daemon's carry, or in the journal a
+/// restarted one reads — or its refused attempts reached `undelivered_max`.
+/// No reset known, no wake: a time is never guessed. Only a pane READ this
+/// cycle and not busy, drafted, prompting or mid-move is woken; an unknown
+/// frame is, because the guarded delivery refuses for itself.
+fn book_limit_wake(
+    next: &mut PaneState,
+    effects: &mut Vec<Effect>,
+    seen: &Observation,
+    knobs: &Knobs,
+) {
+    if let Some(reading) = seen.limit_reset {
+        if next.limit_reset.map(|held| held.at) != Some(reading.at) {
+            next.limit_wake_attempts = 0;
+        }
+        next.limit_reset = Some(reading);
+    }
+    let Some(reset) = next.limit_reset else {
+        return;
+    };
+    // A blind cycle neither arms nor disarms. A footer first read gone at or
+    // after the reset cannot be told from the vendor having fired: it stands.
+    if seen.capture_ok {
+        if seen.auto_continue {
+            next.limit_armed = Some(reset.at);
+        } else if next.limit_armed == Some(reset.at) && seen.now_epoch < reset.at {
+            next.limit_armed = None;
+        }
+    }
+    let spent = next.limit_woken == Some(reset.at)
+        || seen.limit_woke_journal == Some(reset.at)
+        || next.limit_armed == Some(reset.at);
+    let ready = seen.capture_ok
+        && seen.harness.frame != HarnessState::Busy
+        && !seen.harness.human_draft
+        && seen.human_prompt.is_none()
+        && seen.auto_in_flight.is_none();
+    if !spent
+        && ready
+        && seen.now_epoch >= reset.at.saturating_add(LIMIT_WAKE_GRACE_SECS)
+        && next.limit_wake_attempts < knobs.undelivered_max
+    {
+        effects.push(Effect::LimitWake { reset: reset.at });
+    }
+}
+
 /// What a stale pane earns: a nudge, the one max-nudges alert, or nothing.
 fn book_stale(
     prior: &PaneState,
@@ -2097,6 +2219,9 @@ fn clear_death_latch(
         undelivered_streak: 0,
         throttle_streak: 0,
         limit_since: None,
+        limit_reset: None,
+        limit_wake_attempts: 0,
+        limit_armed: None,
         human_prompt_streak: 0,
         ..next.clone()
     })
@@ -2250,6 +2375,11 @@ fn account_ordinary(
         && seen.auto_in_flight != Some(crate::autoreseat::Trigger::Limit)
     {
         next.limit_since = None;
+        // The episode's reset leaves with it; the spent mark stays, so a
+        // re-hit on the same reset is not woken twice.
+        next.limit_reset = None;
+        next.limit_wake_attempts = 0;
+        next.limit_armed = None;
         effects.push(Effect::Emit {
             action: "alert-cleared",
             summary: "usage limit cleared — pane no longer shows it".to_owned(),
@@ -2346,6 +2476,7 @@ fn account_ordinary(
                 <= seen.declared_age_secs
         {
             book_limit(&mut next, &mut effects, seen);
+            book_limit_wake(&mut next, &mut effects, seen, knobs);
             next.undelivered_streak = 0;
             return Accounting {
                 next,
@@ -2400,6 +2531,7 @@ fn account_ordinary(
     //    again by a daemon that restarted mid-move.
     if limited(prior, seen) || seen.auto_in_flight == Some(crate::autoreseat::Trigger::Limit) {
         book_limit(&mut next, &mut effects, seen);
+        book_limit_wake(&mut next, &mut effects, seen, knobs);
         return Accounting {
             next,
             effects,
@@ -4847,6 +4979,15 @@ struct AutoSeat {
     derives: bool,
     /// This cycle's read of it against the session's resume.
     start: crate::autoreseat::StartRead,
+    /// Its latched episode's carried binding reset: a near short one waits
+    /// for the wake instead of moving ([`crate::autoreseat::reset_wait`]).
+    reset: Option<crate::autoreseat::LimitReset>,
+    /// The reset epoch of its newest wake the journal proves LANDED: the seat
+    /// resumed on that reset, which is no reason to move it.
+    wake_landed: Option<i64>,
+    /// The reset its carry saw the tool's own resume armed for: the vendor
+    /// resumes it, which plays the landed role.
+    armed: Option<i64>,
 }
 
 /// What the auto reseat step does this cycle.
@@ -4934,10 +5075,12 @@ fn auto_acts(
             Err(Ineligible::Unmapped) if seat.limited => {
                 let found = crate::autoreseat::episode(events, session, &seat.slot, &seat.agent);
                 let said = crate::autoreseat::leg::ineligible_record(Ineligible::Unmapped);
-                if let Some(open) =
-                    found.filter(|open| open.terminal.is_none() && !open.holds_with(&said))
-                    && let Decision::Attempt | Decision::Hold(_) =
-                        crate::autoreseat::decide(Some(&open), settings.grace_secs, &seat.pane, now)
+                if let Some(open) = found.filter(|open| {
+                    open.terminal.is_none()
+                        && !open.holds_with(&said)
+                        && !waits_for_reset(seat, open, now)
+                }) && let Decision::Attempt | Decision::Hold(_) =
+                    crate::autoreseat::decide(Some(&open), settings.grace_secs, &seat.pane, now)
                 {
                     let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
                     let (key, profile) = (open.key, seat.profile.clone());
@@ -5037,6 +5180,9 @@ fn auto_acts(
             }
             continue;
         }
+        if waits_for_reset(seat, &found, now) {
+            continue;
+        }
         let (slot, agent, key, trigger) = (
             seat.slot.clone(),
             seat.agent.clone(),
@@ -5086,6 +5232,39 @@ fn auto_acts(
         agent: seat.agent.clone(),
     }));
     acts
+}
+
+/// Whether a limit episode with no attempt open is left to the seat's wake
+/// this cycle, silently — no trigger and no naming: its known short reset is
+/// near or not yet past its fallback ([`crate::autoreseat::reset_wait`]), or
+/// the carried reset has passed and the seat resumed on it — the journal
+/// proves its wake LANDED, or the tool's own resume was armed for it. That
+/// second hold never widens the wait to a reset still ahead, and a fresh
+/// reading naming a new binding reset ends it. An open attempt is never
+/// masked, and headroom is not this path's.
+fn waits_for_reset(seat: &AutoSeat, episode: &crate::autoreseat::Episode, now: i64) -> bool {
+    let resumed = |reset: crate::autoreseat::LimitReset| {
+        now >= reset.at && (seat.wake_landed == Some(reset.at) || seat.armed == Some(reset.at))
+    };
+    episode.trigger == crate::autoreseat::Trigger::Limit
+        && episode.open.is_none()
+        && (crate::autoreseat::reset_wait(seat.reset, now).is_some()
+            || seat.reset.is_some_and(resumed))
+}
+
+/// The first-sight forecast of a seat auto reseat leaves to its reset's wake
+/// ([`crate::autoreseat::reset_wait`]), or `None` when the move applies.
+fn waiting_forecast(
+    agent: &str,
+    reset: Option<crate::autoreseat::LimitReset>,
+    now: i64,
+) -> Option<String> {
+    let held = reset?;
+    crate::autoreseat::reset_wait(reset, now)?;
+    Some(format!(
+        "ae waits for {agent}'s limit to reset at {} and wakes it then; it moves only if the wake does not land",
+        Timestamp::from_epoch(held.at)
+    ))
 }
 
 /// Everything one cycle needs that does not change within it.
@@ -6218,6 +6397,11 @@ impl Cycle<'_> {
                     .and_then(|at| events[at].reference.as_deref())
                     .is_some_and(|booked| !booked.is_empty() && start.as_deref() != Some(booked))
                 && start.is_some();
+            // Read only on the limit: the one window a wake judges.
+            let limit_reset = (throttle == Some(Throttle::LimitReached)
+                || carried.limit_since.is_some())
+            .then(|| self.own_reset(&carry.quota, &slot, pin.as_deref(), now))
+            .flatten();
             let seen = Observation {
                 now_epoch: now,
                 hash,
@@ -6229,6 +6413,10 @@ impl Cycle<'_> {
                     &capture,
                     agent_bin.as_deref().unwrap_or_default(),
                 ),
+                limit_reset,
+                limit_woke_journal: limit_wake_in(&events, (self.session, &slot, agent), false),
+                auto_continue: capture_ok
+                    && crate::harness_state::auto_continue_armed(&capture, tool),
                 capture_ok,
                 human_prompt: crate::watchdog::human_prompt_class(
                     &capture,
@@ -6286,10 +6474,12 @@ impl Cycle<'_> {
                 },
                 // Forecast once, at the limit's first sight: the Notify that
                 // carries it is booked only then.
+                // A seat left to its reset's wake is never promised a move.
                 auto_deadline: (throttle == Some(Throttle::LimitReached)
                     && carried.limit_since.is_none())
                 .then(|| self.auto_deadline(&carry.quota, &events, (&slot, agent), now))
-                .flatten(),
+                .flatten()
+                .map(|line| waiting_forecast(agent, limit_reset, now).unwrap_or(line)),
             };
             let acting = Acting {
                 agent,
@@ -6354,6 +6544,9 @@ impl Cycle<'_> {
                     ),
                     room: own_room,
                     start: resume,
+                    reset: carried.limit_reset,
+                    wake_landed: limit_wake_in(&events, (self.session, &slot, agent), true),
+                    armed: carried.limit_armed,
                 });
             }
             // A prompt over a standing failure is published as the failure.
@@ -7050,6 +7243,34 @@ impl Cycle<'_> {
                 }
                 Ok(())
             }
+            Effect::LimitWake { reset } => {
+                let text = limit_wake_text(self.goal.as_deref(), self.meta_dir, *reset);
+                let summary = format!(
+                    "usage limit reset at {} — continuation turn",
+                    Timestamp::from_epoch(*reset)
+                );
+                let reference = reset.to_string();
+                let code = self
+                    .deliver(
+                        agent,
+                        &text,
+                        crate::watchdog::LIMIT_WAKE_ACTION,
+                        &summary,
+                        Some(&reference),
+                    )
+                    .code;
+                self.reachable_again(on, crate::watchdog::LIMIT_WAKE_ACTION, code, err)?;
+                // The helper's success covers a delivered AND an unconfirmed
+                // paste: either may have reached the seat, so the reset is
+                // spent. A refusal pasted nothing and counts one attempt. The
+                // nudge budget is not this path's: neither touches it.
+                if code == Some(0) {
+                    state.limit_woken = Some(*reset);
+                } else {
+                    state.limit_wake_attempts = state.limit_wake_attempts.saturating_add(1);
+                }
+                Ok(())
+            }
             Effect::DoneChallenge {
                 confirmations,
                 required,
@@ -7505,6 +7726,19 @@ impl Cycle<'_> {
             }
         }
         Ok(())
+    }
+
+    /// The seat at `slot`'s own binding reset, from the held quota
+    /// observation; `None` when no roster row or reading names one.
+    fn own_reset(
+        &self,
+        quota: &QuotaCarry,
+        slot: &str,
+        pin: Option<&str>,
+        now: i64,
+    ) -> Option<crate::autoreseat::LimitReset> {
+        let entry = self.roster.iter().find(|entry| entry.slot == slot)?;
+        crate::autoreseat::leg::own_reset(quota.last_observation.as_ref(), entry, pin, now)
     }
 
     /// The seat at `slot`'s own account against the headroom threshold, from
@@ -8149,6 +8383,71 @@ fn bar_glyph(dead: usize, stale: usize, icons: bool) -> &'static str {
 }
 
 #[cfg(test)]
+#[path = "watchdog_limitwake_spec.rs"]
+mod limitwake_spec;
+
+#[cfg(test)]
+mod limitwake_readers {
+    use super::{ACTOR, limit_wake_in, waiting_forecast};
+    use crate::autoreseat::LimitReset;
+    use crate::events::Event;
+
+    fn row(actor: &str, action: &str, target: &str, reference: &str, summary: &str) -> Event {
+        Event::parse_line(&format!(
+            r#"{{"ts":"2026-11-03T00:00:00Z","actor":"{actor}","action":"{action}","target":"{target}","ref":"{reference}","summary":"{summary}"}}"#
+        ))
+        .expect("a journal line")
+    }
+
+    const SEAT: (&str, &str, &str) = ("demo", "main", "lead");
+
+    #[test]
+    fn the_spent_reader_takes_the_newest_wake_delivered_or_unconfirmed() {
+        let events = [
+            row(ACTOR, "limit-wake", "lead", "100", "woke"),
+            row(ACTOR, "limit-wake", "lead", "200", "[unconfirmed] woke"),
+        ];
+        assert_eq!(limit_wake_in(&events, SEAT, false), Some(200));
+        assert_eq!(
+            limit_wake_in(&events, SEAT, true),
+            Some(100),
+            "landed skips the unconfirmed row"
+        );
+    }
+
+    #[test]
+    fn the_readers_take_only_the_watchdogs_wakes_to_this_seat_with_an_epoch() {
+        let foreign = [
+            row("colead", "limit-wake", "lead", "100", "woke"),
+            row(ACTOR, "nudge", "lead", "100", "idle"),
+            row(ACTOR, "limit-wake", "colead", "100", "woke"),
+            row(ACTOR, "limit-wake", "lead", "soon", "woke"),
+        ];
+        for landed in [false, true] {
+            assert_eq!(limit_wake_in(&foreign, SEAT, landed), None, "{landed}");
+        }
+        assert_eq!(limit_wake_in(&[], SEAT, false), None);
+    }
+
+    #[test]
+    fn a_waiting_seat_is_forecast_its_wake_and_a_moving_one_is_not() {
+        let near = Some(LimitReset {
+            at: 10_000,
+            short: true,
+        });
+        let line = waiting_forecast("lead", near, 9_000).expect("waits");
+        assert!(line.contains("ae waits for lead's limit"), "{line}");
+        assert!(
+            line.contains(&crate::time::Timestamp::from_epoch(10_000).to_string()),
+            "{line}"
+        );
+        assert!(!line.contains("will move"), "{line}");
+        assert_eq!(waiting_forecast("lead", near, 6_400), None, "60 min: moves");
+        assert_eq!(waiting_forecast("lead", None, 9_000), None, "unknown");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn history_state_is_known_at_900_seconds_and_unknown_at_901() {
@@ -8568,6 +8867,9 @@ mod tests {
             is_dead: false,
             throttle: None,
             limit_notice: None,
+            limit_reset: None,
+            limit_woke_journal: None,
+            auto_continue: false,
             human_prompt: None,
             capture_ok: true,
             throttle_quota: None,
@@ -14549,6 +14851,9 @@ mod tests {
             room: crate::autoreseat::Room::Unread,
             derives: false,
             start: crate::autoreseat::StartRead::default(),
+            reset: None,
+            wake_landed: None,
+            armed: None,
         };
         let on = Settings {
             switch: Switch::On,
@@ -14762,6 +15067,9 @@ mod tests {
             room: crate::autoreseat::Room::Unread,
             derives: false,
             start: crate::autoreseat::StartRead::default(),
+            reset: None,
+            wake_landed: None,
+            armed: None,
         };
         let on = Settings {
             switch: Switch::On,
@@ -15112,6 +15420,9 @@ mod tests {
             room,
             derives: false,
             start: crate::autoreseat::StartRead::default(),
+            reset: None,
+            wake_landed: None,
+            armed: None,
         };
         let on = Settings {
             switch: Switch::On,

@@ -448,6 +448,23 @@ When a usage-limit phrase is detected:
 A return to plain throttling after a limit episode emits a fresh `throttled` event: the limit
 episode ends the transient streak.
 
+**The limit wake.** A latched seat whose reset has passed gets ONE continuation turn from the
+watchdog, without a human or peer. The reset is the seat's OWN spent scope's binding instant,
+from the held quota reading (`autoreseat::leg::own_reset`: the latest reset of the fresh full
+windows that bind its model family; none under a spend cap or when any of them states no reset),
+never the notice's zone text. The latch carries it, because the row goes unknown once it passes.
+From `LIMIT_WAKE_GRACE_SECS` (60 s) past it, on a cycle that READ the pane and finds it not busy,
+drafted, prompting or mid-move (an unknown frame is woken: the guarded send refuses for itself),
+the daemon delivers the nudge with one note naming the reset, as action `limit-wake` with the
+reset epoch as its `ref`. The verdict stays `limit` and nothing else about the latch changes: the
+release is still the clear capture of step 4. Each reset is woken at most once: a delivered or
+unconfirmed wake spends it in the carry and, for a restarted daemon, in the journal; refusals are
+bounded by `undelivered_max`; a re-hit wakes only on a NEW reset a fresh reading names. When
+Claude Code arms its own resume (the `Continuing automatically at …` footer below its box) the
+vendor owns that reset and ae never wakes it; a footer read gone BEFORE the reset is a cancel and
+hands it back. Unknown reset, no wake. Residuals: a restart between the reset and the wake loses
+that wake; tools with no quota parser never wake.
+
 On the first throttle event only, the watchdog may append the worst row from its last scheduled
 quota observation — never when quota-unaware, where there is no scheduled observation to read
 from. The source must exactly match the seat's recorded config-home mode/base; Codex

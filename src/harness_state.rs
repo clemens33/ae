@@ -500,8 +500,34 @@ fn claude_chrome(line: &str) -> bool {
 /// The two rows Claude Code 2.1.296 draws BELOW the box on a usage limit (measured):
 /// footer only — above the box they are transcript and prove nothing idle.
 fn claude_limit_footer(line: &str) -> bool {
-    line.starts_with("⚠ Usage limit reached") || line.starts_with("Continuing automatically at ")
+    line.starts_with("⚠ Usage limit reached") || line.starts_with(CLAUDE_AUTO_CONTINUE)
 }
+
+/// Whether the tool's OWN resume is armed on this frame: Claude Code, at a
+/// usage limit, draws `Continuing automatically at …` in the footer BELOW its
+/// box and continues the turn itself at the reset. Only the live footer of a
+/// positively read frame counts — the bare prompt between its two rules, then
+/// footer furniture only ([`read_claude`]'s anchors) — so the same words in the
+/// transcript above the box (history, or the row left after the human pressed
+/// Esc) never read armed, and an unread frame never reads armed either. Only a tool whose own frame is the
+/// bordered composer is read; every other tool answers `false`.
+#[must_use]
+pub fn auto_continue_armed(capture: &str, tool: ToolKind) -> bool {
+    if tool.input_model() != InputModel::BorderDelimited || !observable(tool) {
+        return false;
+    }
+    let lines = clean_lines(capture);
+    let Some(prompt_index) = lines.iter().rposition(|line| *line == "❯") else {
+        return false;
+    };
+    claude_input_frame(&lines, prompt_index)
+        && lines[prompt_index + 1..]
+            .iter()
+            .any(|line| line.starts_with(CLAUDE_AUTO_CONTINUE))
+}
+
+/// The armed resume's footer row, as Claude Code 2.1.296 and 2.1.317 draw it.
+const CLAUDE_AUTO_CONTINUE: &str = "Continuing automatically at ";
 
 pub(crate) fn claude_border(line: &str) -> bool {
     !line.is_empty() && line.chars().all(|c| matches!(c, '─' | '━' | '═'))
@@ -957,6 +983,27 @@ mod tests {
         let lines = clean_lines("  ⎿\u{a0}Tip: use\u{a0}/btw  \nplain line\n");
         assert_eq!(lines[0], "⎿ Tip: use /btw");
         assert_eq!(lines[1], "plain line");
+    }
+
+    /// The 2.1.317 footer, as measured: four-space indent, a capital `Esc` and
+    /// the `/usage-credits` clause; the same row quoted above the box is not it.
+    #[test]
+    fn the_2_1_317_auto_continue_footer_reads_armed() {
+        use super::auto_continue_armed;
+        let rule = "─".repeat(40);
+        let frame = |above: &str, below: &str| {
+            format!(
+                "{above}{rule}\n❯ \n{rule}\n  ⚠ Usage limit reached · limit resets 12am\n{below}  🧠 Opus 5.5 (high)  📁 work  $0.00  7d 100%\n  ⏵⏵ auto mode on (shift+tab to cycle)\n"
+            )
+        };
+        let row = "    Continuing automatically at 12am · Esc to cancel · /usage-credits to continue now  \n";
+        assert!(auto_continue_armed(&frame("", row), ToolKind::Claude));
+        assert!(!auto_continue_armed(&frame(row, ""), ToolKind::Claude));
+        assert!(!auto_continue_armed(&frame("", row), ToolKind::Codex));
+        // A quoted rule and armed row at the end of the transcript, with only
+        // footer-shaped rows after it and no box read, is not armed.
+        let quoted = format!("output\n{rule}\n{row}  🧠 Opus 5.5 (high)\n  ⏵⏵ auto mode on\n");
+        assert!(!auto_continue_armed(&quoted, ToolKind::Claude));
     }
 
     #[test]

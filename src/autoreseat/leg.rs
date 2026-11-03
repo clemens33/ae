@@ -529,6 +529,67 @@ pub(crate) fn own_exhausted(
     super::exhausted(&bound, capped).or(scope.fresh_cap)
 }
 
+/// The binding reset of the seat's OWN spent scope: the instant its limit
+/// lifts, from a held quota reading, never from the notice's zone text.
+///
+/// The windows are [`own_exhausted`]'s bound ones, and a window binds when a
+/// FRESH reading of it is full and no reading of it as new is healthy. The
+/// binding instant is the LATEST reset among them, because waking at an
+/// earlier one while another still binds would hit the limit again at once.
+/// It is short only when every binding window states a length under a day.
+///
+/// `None` — the reset is unknown — when nothing is read, the scope reports a
+/// spend cap (no window reset lifts one), no window binds, or a full bound
+/// window states no reset: one unknown binding instant makes THE instant
+/// unknown.
+pub(crate) fn own_reset(
+    quota: Option<&crate::quota::Observation>,
+    entry: &crate::meta::RosterEntry,
+    pin: Option<&str>,
+    now: i64,
+) -> Option<super::LimitReset> {
+    let tool = crate::quota::recorded_identity(entry)?.tool;
+    let scope = own_scope(quota, entry, pin, now)?;
+    if scope.spend_capped {
+        return None;
+    }
+    let bound: Vec<_> = scope
+        .windows
+        .into_iter()
+        .filter(|(key, _)| crate::quota::scoped_here(tool, key.qualifier.as_deref(), pin))
+        .collect();
+    let full = |window: &super::Window| window.judged >= super::FULL;
+    if bound
+        .iter()
+        .any(|(_, window)| full(window) && window.resets_at.is_none())
+    {
+        return None;
+    }
+    let answered = |key: &crate::quota::WindowKey, spent: &super::Window| {
+        bound.iter().any(|(other, window)| {
+            other == key
+                && window.status == crate::quota::Status::Fresh
+                && !full(window)
+                && window.observed_at >= spent.observed_at
+        })
+    };
+    let binding: Vec<&(crate::quota::WindowKey, super::Window)> = bound
+        .iter()
+        .filter(|(key, window)| {
+            window.status == crate::quota::Status::Fresh && full(window) && !answered(key, window)
+        })
+        .collect();
+    let at = binding
+        .iter()
+        .filter_map(|(_, window)| window.resets_at)
+        .max()?;
+    let short = binding.iter().all(|(key, _)| {
+        key.minutes
+            .is_some_and(|minutes| !crate::quota::proven_long(Some(minutes)))
+    });
+    Some(super::LimitReset { at, short })
+}
+
 /// Whether a seat its `[auto_reseat]` row names nothing for still has a move:
 /// a candidate of its own family, or a held choice the trigger will name.
 pub(crate) fn derivable(dir: &Path, bytes: &[u8], row: &crate::meta::RosterEntry) -> bool {
@@ -2009,6 +2070,10 @@ mod effort_scope_spec {
         assert!(super::own_scope(None, &seat(), Some("opus"), NOW).is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "leg_limitwake_spec.rs"]
+mod leg_limitwake_spec;
 
 #[cfg(test)]
 mod tests {

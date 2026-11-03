@@ -1240,6 +1240,10 @@ pub struct Relevant<'a> {
 
 pub const DEFAULT_DONE_CONFIRMATIONS: u8 = 2;
 pub(crate) const DONE_CHALLENGE_ACTION: &str = "done-challenge";
+/// The watchdog's one continuation turn for a seat whose vendor-limit reset
+/// has passed. Its own wire action, never the nudge's: the journal row's `ref`
+/// is the reset epoch, the restart half of the one-wake-per-reset proof.
+pub(crate) const LIMIT_WAKE_ACTION: &str = "limit-wake";
 /// The watchdog's proof challenge for a `waiting-agent`/`blocked` declaration.
 /// A NEW wire action (not `done-challenge` reused): the two folds match
 /// challenges by action, and sharing one would let a wait challenge arm a done
