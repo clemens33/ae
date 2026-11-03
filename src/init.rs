@@ -1099,6 +1099,10 @@ fn run_with(
 }
 
 #[cfg(test)]
+#[path = "../tests/it/initrender_spec.rs"]
+mod initrender_spec;
+
+#[cfg(test)]
 mod tests {
     #![allow(
         clippy::disallowed_methods,
