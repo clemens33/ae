@@ -63,6 +63,7 @@ pub(crate) mod capture {
         //! The one place a child process is run — and the only thing this
         //! harness ever holds of what one produced.
 
+        use std::ffi::OsStr;
         use std::fs::{self, File};
         use std::io;
         use std::path::{Path, PathBuf};
@@ -398,6 +399,15 @@ pub(crate) mod capture {
                     .env_remove("TMUX_PANE")
                     .env("TMUX_TMPDIR", cwd)
                     .env("SHELL", "/bin/sh");
+                // A pane inherits its SERVER's environment, and the first
+                // command sent decides it, so a fixture whose caller named no
+                // `HOME` would hand every pane the operator's, where their
+                // tools keep their stores. The fixture's root stands in; a
+                // caller that names its own (a tool home inside its scratch)
+                // keeps it.
+                if !invocation.env.contains_key(OsStr::new("HOME")) {
+                    command.env("HOME", cwd);
+                }
             }
             command
                 .stdin(Stdio::null())
@@ -415,4 +425,106 @@ pub(crate) mod capture {
             }
         }
     }
+}
+
+/// The pin of the tmux door's environment. A pane inherits its SERVER's
+/// environment, not its client's, so the first tmux command a fixture sends
+/// decides what every pane under that server can read: the stores of the
+/// operator's own tools live under `$HOME`. A server started through this door
+/// therefore sees the fixture's `HOME` and never the operator's, whether the
+/// caller inherits its environment, clears it down to `PATH`, or names a `HOME`
+/// of its own (which the door keeps: a fixture may keep a tool home inside its
+/// scratch).
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the pin reads its own PATH to hand a cleared tmux its way to the binary, and the HOME file its own pane wrote"
+)]
+fn a_pane_started_through_the_tmux_door_reports_a_scratch_home() {
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    fn pane_home(root: &Path, name: &str, start: Invocation) -> String {
+        let reported = root.join(format!("{name}.home"));
+        let staged = root.join(format!("{name}.staged"));
+        // Written whole or not at all, so a read never sees half a path.
+        let script = format!(
+            "printf %s \"$HOME\" > '{staged}' && mv '{staged}' '{reported}'; sleep 60",
+            staged = staged.display(),
+            reported = reported.display(),
+        );
+        let invocation = start
+            .arg("-f")
+            .arg("/dev/null")
+            .arg("-S")
+            .arg(root.join(format!("{name}.sock")))
+            .arg("new-session")
+            .arg("-d")
+            .arg("-s")
+            .arg(name)
+            .arg(script);
+        let status = capture::raw::run(
+            &invocation,
+            root,
+            &root.join(format!("{name}.out")),
+            &root.join(format!("{name}.err")),
+        )
+        .unwrap_or_else(|why| panic!("tmux must be runnable for the door pin: {why}"));
+        assert!(
+            matches!(status.outcome(), capture::ExitOutcome::Code(0)),
+            "the {name} server must start"
+        );
+        let deadline = Instant::now() + super::support::PANE_WAIT;
+        loop {
+            if let Ok(home) = std::fs::read_to_string(&reported) {
+                return home;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the {name} pane never reported its HOME"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    // The scratch owner reaps every server beneath its root when it drops.
+    let scratch = super::cli::OwnedScratch::root("door", "home");
+    let root = scratch.path().to_owned();
+    let path = std::env::var_os("PATH").unwrap_or_else(|| panic!("test PATH"));
+    let own = root.join("kept-home");
+    assert!(
+        std::fs::create_dir_all(&own).is_ok(),
+        "the caller's own home"
+    );
+    let arms = [
+        ("a", "inherited", Invocation::new("tmux"), root.clone()),
+        (
+            "c",
+            "cleared to PATH",
+            Invocation::new("tmux").env_cleared().env("PATH", path),
+            root.clone(),
+        ),
+        (
+            "e",
+            "an explicit HOME",
+            Invocation::new("tmux").env("HOME", &own),
+            own.clone(),
+        ),
+    ];
+    let wrong: Vec<String> = arms
+        .into_iter()
+        .filter_map(|(name, how, start, expected)| {
+            let seen = pane_home(&root, name, start);
+            (Path::new(&seen) != expected).then(|| {
+                format!(
+                    "{how}: the pane reported HOME={seen:?}, not {}",
+                    expected.display()
+                )
+            })
+        })
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "a tmux server this door starts must not see the operator's HOME: {wrong:#?}"
+    );
 }

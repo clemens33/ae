@@ -522,6 +522,7 @@ fn stale_lane_sweep_reaps_a_nested_socket_owned_by_a_dead_lane() {
             .arg("_tmux-isolated")
             .arg("unknown")
             .env("TMPDIR", &scratch_root)
+            .env("HOME", &scratch_root)
             .env("AE_TEST_TMPDIR", &scratch_root),
         &root(),
         &scratch_root.join("sweep-out"),
@@ -781,6 +782,7 @@ fn a_killed_tests_scratch_and_server_are_swept_by_the_lane() {
             .arg("_tmux-isolated")
             .arg("test")
             .env("PATH", format!("{}:{path}", base.join("bin").display()))
+            .env("HOME", &*base)
             .env("AE_GATE_EXE", exe)
             .env("AE_GATE_SCRATCH_KILL_BASE", &*base)
             .env("AE_GATE_SCRATCH_KILL_REPORT", base.join("exit-pid"))
@@ -881,6 +883,7 @@ fn a_cleanup_race_never_fails_an_all_green_lane() {
             .arg("_tmux-isolated")
             .arg("test")
             .env("PATH", format!("{}:{path}", base.join("bin").display()))
+            .env("HOME", &*base)
             .env("TMPDIR", &*base)
             .env("AE_TEST_TMPDIR", &*base),
         &root(),
@@ -948,6 +951,7 @@ fn a_lane_run_in_a_terminal_detaches_cargo_and_still_stops_on_ctrl_c() {
     let lane = |invocation: Invocation| {
         invocation
             .env("PATH", &path)
+            .env("HOME", &*base)
             .env("TMPDIR", &*base)
             .env("AE_TEST_TMPDIR", &*base)
     };
@@ -1043,7 +1047,8 @@ fn a_lane_run_in_a_terminal_detaches_cargo_and_still_stops_on_ctrl_c() {
 /// A lane run on a `PATH` of its own so no installed `jobs-budget` leaks in:
 /// `<base>/bin` links `just` and `tmux`, holds the fake `cargo` with the shell
 /// body `cargo`, and a `jobs-budget` printing `budget` when one is given. The
-/// returned invocation has its environment and no arguments yet.
+/// returned invocation has its environment and no arguments yet. `HOME` is the
+/// scratch itself: the lane's sentry tmux server is started under it.
 fn lane_over(base: &Path, budget: Option<&str>, cargo: &str) -> Invocation {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
     let bin = base.join("bin");
@@ -1075,7 +1080,7 @@ fn lane_over(base: &Path, budget: Option<&str>, cargo: &str) -> Invocation {
             "PATH",
             format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin.display()),
         )
-        .env("HOME", std::env::var_os("HOME").unwrap_or_default())
+        .env("HOME", base)
         .env("TMPDIR", base)
         .env("AE_TEST_TMPDIR", base)
 }
@@ -1112,6 +1117,35 @@ fn sized_lane(
     let words: Vec<String> = seen.split_whitespace().map(str::to_owned).collect();
     assert_eq!(words.len(), 5, "{args:?} ran no cargo: {stderr}");
     (words, stderr)
+}
+
+/// The lane starts a tmux server of its own, the sentry, and a pane inherits its
+/// server's environment: so the `HOME` the lane runs under is the `HOME` that
+/// server and every pane under it carries. A lane a test runs is confined to
+/// the test's scratch, never the operator's home. The fake `cargo` asks the
+/// sentry itself, from inside the lane, while that server is alive.
+#[test]
+fn the_lane_sentry_server_sees_the_fixture_home_not_the_operators() {
+    let base = super::cli::OwnedScratch::root("gate", "sentryhome");
+    let cargo = "case \"$1\" in nextest) tmux -L ae show-environment -g HOME \
+                 >\"$AE_TEST_TMPDIR/sentry-home\" ;; *) exit 0 ;; esac\n";
+    let lane = lane_over(&base, Some("6"), cargo)
+        .arg("_tmux-isolated")
+        .arg("test");
+    let ran = raw::run(&lane, &root(), &base.join("out"), &base.join("err"))
+        .unwrap_or_else(|why| panic!("the lane runs: {why}"));
+    let stderr = read(&base.join("err"));
+    assert!(
+        matches!(ran.outcome(), ExitOutcome::Code(0)),
+        "the lane must end green: {stderr}"
+    );
+    let seen = std::fs::read_to_string(base.join("sentry-home")).unwrap_or_default();
+    let home = seen.trim().strip_prefix("HOME=").unwrap_or_default();
+    assert!(
+        !home.is_empty() && Path::new(home).starts_with(&*base),
+        "the sentry must carry the fixture's HOME {}, not {seen:?}: {stderr}",
+        base.display()
+    );
 }
 
 /// A lane sizes itself from `jobs-budget` (threads capped at the tmux suite's
@@ -3980,6 +4014,7 @@ fn registered_readonly_residue_is_reaped_without_following_links() {
             .arg("_tmux-isolated")
             .arg("test")
             .env("PATH", format!("{}:{path}", base.join("bin").display()))
+            .env("HOME", &*base)
             .env(
                 "AE_GATE_EXE",
                 std::env::current_exe().expect("the test binary"),

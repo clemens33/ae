@@ -103,6 +103,9 @@ impl Rig {
             .arg(format!("TMUX_TMPDIR={}", self.root.display()))
             .arg("tmux")
             .arg("-u")
+            // The `env` program is not the door's tmux, so the door's HOME
+            // default does not reach this server: name the fixture's own.
+            .env("HOME", self.root.join("home"))
             .env("TMUX_TMPDIR", self.root.display().to_string());
         for item in &command {
             inv = inv.arg(item);
