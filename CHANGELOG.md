@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.9] - 2026-11-03
+- Characterize launch plan argv grammar
+- Split launch argv parsing into named steps
+- Characterize reseat failure sides around the stop, seed, clear and lock
+- Reseat names its tool-change note, past-stop ending, uncleared note and seat-move conversation as pure decisions
+- Reseat's move runs as named steps in its frozen order, each ending with the refusal it decided
+- An unseen reseat says it fell back only when a keep was planned, and records the seeded fallback
+- A dead seat's automatic move asks its last word under the lifecycle lock and writes nothing when it is withdrawn
+- Characterize launch chat suppression, saved layout fallback, running reattach, foreign name and reserved actor refusals
+- Launch asks two pure decisions for whether the chat opens and which layout a session keeps
+- Launch calls its name and kind guards, preflight server, seat overrides, locked server resolution, recorded config, orchestrator seat seed, seats and roster restore as named steps
+- Pin that a resume resolves profiles from its recorded config and that the orchestrator seat notes each ignored identity section alone
+
 ## [v2026.11.8] - 2026-11-03
 - Auto reseat proves a muse seat is limit-stopped from its own final frame, and refuses to stop one that still runs a background task
 - A muse limit stop needs a fleet model footer, a full-width labelled voice rule and the exact limit head
