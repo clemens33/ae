@@ -258,3 +258,112 @@ fn launchx2_reserved_main_and_worker_actors_refuse_before_default_seed() {
         assert!(!launchx_trace_text(&log, &rig.scratch, false).contains("\tnew-session\t"));
     }
 }
+
+#[test]
+fn launchx2_resume_resolves_profiles_from_recorded_config_not_callers_config_file() {
+    require_tmux();
+    let rig = Rig::idle("lx2-config");
+    rig.without_chat();
+    let caller_config = rig.scratch.join("caller.config");
+    std::fs::write(
+        &caller_config,
+        "[profiles]\nidle = \"cat\"\ncaller = \"cat\"\n\n[roster]\nlead = caller\n\n\
+         [workspace]\nmain = lead\nchat = off\nwatchdog = false\n",
+    )
+    .expect("different caller roster and profile command");
+    let launch = |session: &str, config: &Path| {
+        ae().env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env("HOME", &rig.scratch)
+            .env("AE_HOME", &rig.home)
+            .env("CONFIG_FILE", config)
+            .env("AE_NO_AUTOSTART", "1")
+            .env("TMUX_TMPDIR", &rig.scratch)
+            .env("AE_TMUX_SERVER_KIND", "socket")
+            .env("AE_TMUX_SERVER", &rig.sock)
+            .current_dir(&rig.project)
+            .args(["--local", session, "--no-attach"])
+            .output()
+            .expect("public launch with an explicit CONFIG_FILE")
+    };
+    let session = "lx2RecordedConfig";
+    let created = launch(session, &rig.config);
+    assert!(created.status.success(), "{created:?}");
+    rig.wait_for_pane_command(session, "main", "sleep");
+    let config_row = format!("config={}", rig.config.display());
+    assert!(rig.meta(session).lines().any(|line| line == config_row));
+
+    // The caller config is valid and selects a different executable on a fresh
+    // launch. Keeping that session alive also preserves the private server.
+    let fresh = launch("lx2CallerConfig", &caller_config);
+    assert!(fresh.status.success(), "{fresh:?}");
+    rig.wait_for_pane_command("lx2CallerConfig", "main", "cat");
+    assert!(
+        rig.meta("lx2CallerConfig")
+            .lines()
+            .any(|line| line == "profile.main=caller")
+    );
+    stop(&rig, session);
+
+    let resumed = launch(session, &caller_config);
+    assert!(resumed.status.success(), "{resumed:?}");
+    assert!(
+        String::from_utf8_lossy(&resumed.stdout).contains("Resuming session lx2RecordedConfig"),
+        "{resumed:?}"
+    );
+    let meta = rig.meta(session);
+    assert!(
+        meta.lines().any(|line| line == config_row),
+        "resume must retain the recorded global config: {meta}"
+    );
+    assert!(
+        meta.lines().any(|line| line == "profile.main=idle"),
+        "{meta}"
+    );
+    rig.wait_for_pane_command(session, "main", "sleep");
+}
+
+#[test]
+fn launchx2_orchestrator_notes_each_ignored_identity_section_independently() {
+    require_tmux();
+    for (section, overlay) in [
+        ("profiles", "[profiles]\nidle = \"cat\"\n"),
+        ("roster", "[roster]\norchestrator = missing\n"),
+    ] {
+        let rig = Rig::idle("lx2-note");
+        std::fs::write(
+            &rig.config,
+            "[profiles]\nidle = \"sleep 600\"\n\n[roster]\norchestrator = idle\n\n\
+             [workspace]\nmain = orchestrator\nchat = off\nwatchdog = false\n",
+        )
+        .expect("global orchestrator identity");
+        std::fs::create_dir_all(&rig.home).expect("dedicated home");
+        let local = rig.home.join("orchestrator.config");
+        std::fs::write(&local, overlay).expect("one legacy identity section only");
+        let result = command(&rig, "orchestrator", Some(&local))
+            .output()
+            .expect("launch with one ignored identity section");
+        assert!(result.status.success(), "section={section}: {result:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&result.stderr),
+            format!(
+                "ae orchestrator: ignoring [roster]/[profiles] in {}: the seat profile is [roster] orchestrator in {}\n",
+                local.display(),
+                rig.config.display()
+            ),
+            "the {section}-only overlay must independently trigger the note"
+        );
+        assert!(
+            rig.meta("orchestrator")
+                .lines()
+                .any(|line| line == "profile.main=idle"),
+            "section={section}: global identity remains authoritative"
+        );
+        rig.wait_for_pane_command("orchestrator", "main", "sleep");
+        assert_eq!(
+            std::fs::read_to_string(&local).expect("legacy overlay after launch"),
+            overlay,
+            "section={section}: note leaves the legacy overlay untouched"
+        );
+    }
+}
