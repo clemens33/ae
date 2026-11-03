@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.6] - 2026-11-03
+- Freeze build characterisation traces for create, resume, spawned restore, chat and the after-preflight refusals
+- Build asks three pure decisions for worker placement, each seat's client and the respawn layout
+- Start every session_launch keeper tmux server from a scratch HOME, PATH and TMUX_TMPDIR with the environment cleared
+- Build runs as named steps — claim state, open panes, seat roster, restore spawned, publish meta, write assets, exec seats, open views, deliver and settle
+- Pin that the launch's Telegram autostart obeys --no-autostart
+- Start every test-run tmux server from a scratch HOME
+
 ## [v2026.11.5] - 2026-11-03
 - Pin launch teardown, saved-meta, recorded-knob and working-copy refusals before taking launch apart
 - Pin the ordered tmux calls of launch create, resume, reattach and restore skip
