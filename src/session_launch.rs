@@ -26,6 +26,9 @@ pub(crate) mod assets;
 pub(crate) mod capture;
 pub(crate) mod name;
 #[cfg(test)]
+#[path = "../tests/it/planattach_spec.rs"]
+mod planattach_spec;
+#[cfg(test)]
 mod start_spec;
 #[cfg(test)]
 mod start_wiring_spec;
