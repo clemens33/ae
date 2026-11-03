@@ -1811,12 +1811,7 @@ fn end_locked(
             unrecorded(root, name, args, frozen_tmux, out, err)?.then(Proof::default)
         }
     };
-    let Some(Proof {
-        server,
-        session_id,
-        seen,
-    }) = proof
-    else {
+    let Some(proof) = proof else {
         return Ok(false);
     };
 
@@ -1825,7 +1820,7 @@ fn end_locked(
     let work_dir = resolve_workdir(root, &bytes, name);
 
     let plan = resolve_plan(root, name, current_purge);
-    if let Some(lines) = refusal_before_stop(name, &plan, contract, seen.as_ref()) {
+    if let Some(lines) = refusal_before_stop(name, &plan, contract, proof.seen.as_ref()) {
         for line in lines {
             writeln!(err, "{line}")?;
         }
@@ -1834,9 +1829,9 @@ fn end_locked(
 
     // A session already gone may still have a pane view running its agents;
     // ending it would archive and delete the state they run under.
-    if session_id.is_none()
-        && matches!(seen, Some(TmuxSight::Absent))
-        && let Some(server) = server.as_ref()
+    if proof.session_id.is_none()
+        && matches!(proof.seen, Some(TmuxSight::Absent))
+        && let Some(server) = proof.server.as_ref()
         && !views_gone(server, &dir, name, "end", err)?
     {
         writeln!(err, "  Nothing was stopped and nothing was deleted.")?;
@@ -1855,66 +1850,17 @@ fn end_locked(
         None
     };
 
-    // Local mode manages no branch of its own, so the archive records the git
-    // outcome honestly as not-managed rather than inventing a range from the
-    // human's own checkout.
-    if mode == "local" || mode.is_empty() {
-        let handoff_note = server
-            .as_ref()
-            .zip(session_id.as_ref())
-            .and_then(|(server, _)| handoff_clients_before_kill(server, name));
-        if let (Some(server), Some(id)) = (server.as_ref(), session_id.as_ref())
-            && !kill_verified(server, name, "end", id, err)?
-        {
+    // Local mode, or a retry of an end whose git step already ran: stop, then
+    // capture, with no git of its own.
+    if let Some((git, ended)) = early_finish(&mode, retry) {
+        if !stop_target(&dir, name, &bytes, &plan, &proof, err)? {
             return Ok(false);
-        }
-        if let Some(note) = handoff_note {
-            transaction::emit(
-                &dir,
-                name,
-                &if plan.action == Action::Keep {
-                    archive::canonical_uuid(&meta_value(&bytes, "session_id"))
-                } else {
-                    String::new()
-                },
-                END_RESULT_ACTION,
-                &note,
-            );
-            writeln!(err, "Warning: {note}")?;
         }
         // CAPTURE BEFORE DELETE.
-        let git = retry.unwrap_or_else(Git::none);
         if !transaction::finish(root, name, &bytes, &plan, &git, out, err)? {
             return Ok(false);
         }
-        writeln!(out, "Ended local session {name}")?;
-        return Ok(true);
-    }
-
-    if let Some(git) = retry {
-        let handoff_note = server
-            .as_ref()
-            .zip(session_id.as_ref())
-            .and_then(|(server, _)| handoff_clients_before_kill(server, name));
-        if let (Some(server), Some(id)) = (server.as_ref(), session_id.as_ref())
-            && !kill_verified(server, name, "end", id, err)?
-        {
-            return Ok(false);
-        }
-        if let Some(note) = handoff_note {
-            transaction::emit(
-                &dir,
-                name,
-                &archive::canonical_uuid(&meta_value(&bytes, "session_id")),
-                END_RESULT_ACTION,
-                &note,
-            );
-            writeln!(err, "Warning: {note}")?;
-        }
-        if !transaction::finish(root, name, &bytes, &plan, &git, out, err)? {
-            return Ok(false);
-        }
-        writeln!(out, "Ended {name}")?;
+        writeln!(out, "{ended} {name}")?;
         return Ok(true);
     }
 
@@ -1933,28 +1879,8 @@ fn end_locked(
         return Ok(false);
     }
     // STOP FIRST — and verify it.
-    let handoff_note = server
-        .as_ref()
-        .zip(session_id.as_ref())
-        .and_then(|(server, _)| handoff_clients_before_kill(server, name));
-    if let (Some(server), Some(id)) = (server.as_ref(), session_id.as_ref())
-        && !kill_verified(server, name, "end", id, err)?
-    {
+    if !stop_target(&dir, name, &bytes, &plan, &proof, err)? {
         return Ok(false);
-    }
-    if let Some(note) = handoff_note {
-        transaction::emit(
-            &dir,
-            name,
-            &if plan.action == Action::Keep {
-                archive::canonical_uuid(&meta_value(&bytes, "session_id"))
-            } else {
-                String::new()
-            },
-            END_RESULT_ACTION,
-            &note,
-        );
-        writeln!(err, "Warning: {note}")?;
     }
 
     if crate::git::has_pending_work(&wdir_bytes) {
@@ -2056,6 +1982,52 @@ fn end_locked(
         writeln!(out, "Ended {name}")?;
     }
     let _ = (origin, mode);
+    Ok(true)
+}
+
+/// Which end finishes without a git step of its own, and its final word —
+/// PURE. Local mode (or no mode) manages no branch, so its archive records the
+/// git outcome as not-managed, or a retry's recorded facts; any other mode
+/// skips git only on a retry, whose git step already ran. `None` takes the git
+/// path, whatever the mode is called.
+fn early_finish(mode: &str, retry: Option<Git>) -> Option<(Git, &'static str)> {
+    if mode == "local" || mode.is_empty() {
+        return Some((retry.unwrap_or_else(Git::none), "Ended local session"));
+    }
+    retry.map(|git| (git, "Ended"))
+}
+
+/// Stop the proven target: hand its clients off, then kill it and verify the
+/// kill. A failed handoff is journaled and warned about only once the kill
+/// held; a refused kill (reported on `err`) discards it. A target with no live
+/// tmux session to kill is already stopped.
+fn stop_target(
+    dir: &Path,
+    name: &str,
+    bytes: &[u8],
+    plan: &Plan,
+    proof: &Proof,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    let (Some(server), Some(id)) = (proof.server.as_ref(), proof.session_id.as_ref()) else {
+        return Ok(true);
+    };
+    let handoff_note = handoff_clients_before_kill(server, name);
+    if !kill_verified(server, name, "end", id, err)? {
+        return Ok(false);
+    }
+    if let Some(note) = handoff_note {
+        // A retry (an end whose archive may already be complete) is always
+        // Keep, so it names the same id the git and local paths name; emit
+        // itself decides whether that id still takes the row.
+        let archive_id = if plan.action == Action::Keep {
+            archive::canonical_uuid(&meta_value(bytes, "session_id"))
+        } else {
+            String::new()
+        };
+        transaction::emit(dir, name, &archive_id, END_RESULT_ACTION, &note);
+        writeln!(err, "Warning: {note}")?;
+    }
     Ok(true)
 }
 
@@ -3084,8 +3056,8 @@ fn socket_dir(root: &Path) -> Option<PathBuf> {
 mod tests {
     use super::{
         Action, ConfirmedPlan, EndExpectation, ExpectWords, FrozenTarget, FrozenTmux, Git, Plan,
-        Reproof, Sweep, TmuxSight, Verdict, archive_step, end_prompt, end_purge, freeze_target,
-        parse, path_exists, purge_conversation_files, refusal_before_stop, reprove,
+        Reproof, Sweep, TmuxSight, Verdict, archive_step, early_finish, end_prompt, end_purge,
+        freeze_target, parse, path_exists, purge_conversation_files, refusal_before_stop, reprove,
         sanitize_branch_name, server_from_words, supervisor_args, unrecorded_verdict,
     };
     use std::path::{Path, PathBuf};
@@ -4030,5 +4002,33 @@ mod tests {
             refusal_before_stop("s", &keep(), Some((&keep(), &same)), Some(&live)),
             None
         );
+    }
+
+    #[test]
+    fn only_local_mode_or_a_retry_finishes_without_git() {
+        let retried = || Git {
+            outcome: "pushed".to_owned(),
+            ..Git::none()
+        };
+        for mode in ["local", ""] {
+            let (git, ended) = early_finish(mode, None).expect("local finishes early");
+            assert_eq!(
+                (git.outcome.as_str(), ended),
+                ("not-managed", "Ended local session")
+            );
+            let (git, ended) = early_finish(mode, Some(retried())).expect("local retry");
+            assert_eq!(
+                (git.outcome.as_str(), ended),
+                ("pushed", "Ended local session")
+            );
+        }
+        for mode in ["git", "full", "weird"] {
+            assert!(
+                early_finish(mode, None).is_none(),
+                "{mode} takes the git path"
+            );
+            let (git, ended) = early_finish(mode, Some(retried())).expect("a retry skips git");
+            assert_eq!((git.outcome.as_str(), ended), ("pushed", "Ended"));
+        }
     }
 }
