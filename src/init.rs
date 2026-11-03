@@ -364,13 +364,22 @@ fn notes(found: &[Discovery], choices: &Choices) -> Vec<String> {
     notes
 }
 
-fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -> String {
+fn push_line(output: &mut String, line: &str) {
+    output.push_str(line);
+    output.push('\n');
+}
+
+fn render_header(now: crate::time::Timestamp) -> String {
     let timestamp = now.to_string();
     let date = timestamp.get(..10).unwrap_or(timestamp.as_str());
-    let mut output = format!(
+    format!(
         "# written by ae init on {date}; model pins as of ae {}\n",
         crate::VERSION
-    );
+    )
+}
+
+fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -> String {
+    let mut output = render_header(now);
     let mut section = "";
     for line in crate::entry::DEFAULT_CONFIG.lines() {
         if line.starts_with('[') && line.ends_with(']') {
@@ -437,8 +446,7 @@ fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -
                 continue;
             }
         }
-        output.push_str(line);
-        output.push('\n');
+        push_line(&mut output, line);
         if line == "[profiles]" {
             push_picks(&mut output, choices);
         }
