@@ -581,3 +581,50 @@ fn buildx_attempt_stamp_failure_keeps_existing_state_and_creates_no_session() {
     assert!(dir.join(".launch-attempt").is_dir());
     assert!(!rig.sessions().contains(&"bxAttemptFail".to_owned()));
 }
+
+#[test]
+fn buildx_telegram_autostart_obeys_suppression_after_launch() {
+    if skip() {
+        return;
+    }
+    for suppressed in [false, true] {
+        let rig = Rig::idle("buildx-telegram");
+        rig.without_chat();
+        keeper(&rig);
+        let config = std::fs::read_to_string(&rig.config).expect("fixture config");
+        std::fs::write(
+            &rig.config,
+            format!("{config}\n[telegram]\nenabled = true\n"),
+        )
+        .expect("bridge requested without credentials");
+        // Missing token_file refuses before any daemon or network operation.
+        // Its warning and durable refusal expose whether launch called autostart.
+        let mut launch = if suppressed {
+            rig.launch_command_no_autostart(&["--local", "bxTelegram"])
+        } else {
+            command(&rig, "bxTelegram")
+        };
+        let result = launch.output().expect("launch with requested bridge");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(result.status.code(), Some(0), "{result:?}");
+        assert!(rig.sessions().contains(&"bxTelegram".to_owned()));
+        assert!(!rig.sessions().contains(&"ae-telegram".to_owned()));
+        let refusal = rig.home.join("telegram/autostart-refusal");
+        let events = std::fs::read_to_string(rig.dir("bxTelegram").join("events.jsonl"))
+            .expect("launch journal");
+        assert_eq!(
+            stderr.contains("ae telegram: skipped autostart"),
+            !suppressed,
+            "suppressed={suppressed}: {stderr}"
+        );
+        assert_eq!(refusal.exists(), !suppressed, "suppressed={suppressed}");
+        assert_eq!(
+            events.contains("\"action\":\"telegram_autostart_refused\""),
+            !suppressed,
+            "suppressed={suppressed}: {events}"
+        );
+        if !suppressed {
+            assert!(stderr.contains("token_file is not set"), "{stderr}");
+        }
+    }
+}
