@@ -1324,3 +1324,53 @@ fn endlocked_a_purged_local_end_writes_no_archive() {
     assert!(!exists(&rig.archive()), "no archive");
     assert!(!exists(&rig.dir), "the state is gone");
 }
+
+/// P12 addendum: an existing recorded directory is not enough for the git
+/// path. A non-repository refuses before STOP, retaining the live session,
+/// its state and work, without publishing an archive.
+#[test]
+fn endlocked_an_existing_nongit_workdir_refuses_before_any_stop() {
+    let rig = Rig::new("egnongit");
+    let work_dir = rig.home.join("plain work");
+    put(&work_dir, "work.txt", b"uncommitted work\n");
+    put(&rig.dir, "kept.txt", b"session state\n");
+    set_row(&rig, "mode", Some("git"));
+    set_row(&rig, "work_dir", Some(&work_dir.display().to_string()));
+    assert!(work_dir.is_dir(), "the recorded directory exists");
+    assert!(
+        !work_dir.join(".git").exists(),
+        "the fixture has no git data"
+    );
+    assert!(rig.session_is_live(), "the target starts live");
+    let (code, out, err, rows) = end_traced(
+        &rig,
+        &["_end", "-f", &rig.name],
+        &[
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ],
+    );
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    let want = format!(
+        "{}Error: working directory is not a git repo — cannot preserve work.\n  Nothing was stopped and nothing was deleted; the session is still running.\n  Working directory: {}\n1 session(s) failed to end. See errors above.\n",
+        migrate_note(&rig),
+        work_dir.display()
+    );
+    assert_eq!(
+        err, want,
+        "the existing non-git directory must refuse before STOP"
+    );
+    assert_eq!(count(&rows, "kill-session", ""), 0, "{}", trace_dump(&rows));
+    assert!(rig.session_is_live(), "the target remains live");
+    assert!(exists(&rig.dir.join("meta")), "live meta is kept");
+    assert_eq!(
+        std::fs::read(rig.dir.join("kept.txt")).expect("kept session state"),
+        b"session state\n"
+    );
+    assert_eq!(
+        std::fs::read(work_dir.join("work.txt")).expect("kept work"),
+        b"uncommitted work\n"
+    );
+    assert!(!exists(&rig.archive()), "nothing was archived");
+    assert!(!out.contains("Ended "), "no success was reported: {out}");
+}
