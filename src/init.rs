@@ -406,6 +406,29 @@ fn render_profiles_line(
     }
 }
 
+fn render_roster_line(output: &mut String, line: &str, choices: &Choices) {
+    if line == "lead = fable5" {
+        output.push_str("lead = ");
+        output.push_str(&choices.lead.name());
+        output.push('\n');
+        if let Some(colead) = &choices.colead {
+            output.push_str("colead = ");
+            output.push_str(&colead.name());
+            output.push('\n');
+        }
+        if let Some(orchestrator) = &choices.orchestrator {
+            output.push_str("orchestrator = ");
+            output.push_str(&orchestrator.name());
+            output.push('\n');
+        }
+        return;
+    }
+    if line == "colead = gpt6astra" || line == "orchestrator = gpt56luna" {
+        return;
+    }
+    push_line(output, line);
+}
+
 fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -> String {
     let mut output = render_header(now);
     let mut section = "";
@@ -422,25 +445,8 @@ fn render(found: &[Discovery], choices: &Choices, now: crate::time::Timestamp) -
             continue;
         }
         if section == "[roster]" {
-            if line == "lead = fable5" {
-                output.push_str("lead = ");
-                output.push_str(&choices.lead.name());
-                output.push('\n');
-                if let Some(colead) = &choices.colead {
-                    output.push_str("colead = ");
-                    output.push_str(&colead.name());
-                    output.push('\n');
-                }
-                if let Some(orchestrator) = &choices.orchestrator {
-                    output.push_str("orchestrator = ");
-                    output.push_str(&orchestrator.name());
-                    output.push('\n');
-                }
-                continue;
-            }
-            if line == "colead = gpt6astra" || line == "orchestrator = gpt56luna" {
-                continue;
-            }
+            render_roster_line(&mut output, line, choices);
+            continue;
         }
         if section == "[workspace]" {
             if line == "workers = colead" {
