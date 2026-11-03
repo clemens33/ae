@@ -318,17 +318,24 @@ fn the_voice_rule_is_a_labelled_rule_as_wide_as_the_closing_rule() {
             LimitStanding::Stands
         );
     }
-    // A label with no rule, a shorter or a longer rule, no hint, no
-    // parenthesis, no space before the rule: not the composer's top rule.
+    // Each row below is wrong in ONE way and, but for the first two, drawn to
+    // the width of the closing rule: a label with no rule, a rule a cell short
+    // or long, a wrong label at the right width, no opening parenthesis, no
+    // closing one, no space before the rule, no space in the marker.
+    let pad = |label: &str, extra: isize| {
+        let dashes = width.saturating_add_signed(extra) - label.chars().count();
+        format!("{label}{}", "─".repeat(dashes))
+    };
     for row in [
         "── Voice input is recording a new request".to_owned(),
         "── Voice input (alt(option)+v to start)".to_owned(),
-        format!("── Voice input (alt+v) {}", "─".repeat(width - 21)),
-        format!("── Voice input (alt+v) {}", "─".repeat(width - 19)),
-        format!("── Voice input alt+v) {}", "─".repeat(width - 20)),
-        format!("── Voice input() {}", "─".repeat(width - 17)),
-        format!("── Voice input (alt+v){}", "─".repeat(width - 20)),
-        format!("──Voice input (alt+v) {}", "─".repeat(width - 21)),
+        pad("── Voice input (alt+v) ", -1),
+        pad("── Voice input (alt+v) ", 1),
+        pad("── Quiet input (alt+v) ", 0),
+        pad("── Voice input alt+v) ", 0),
+        pad("── Voice input (alt+v ", 0),
+        pad("── Voice input (alt+v)", 0),
+        pad("──Voice input (alt+v) ", 0),
     ] {
         assert_eq!(
             standing(&PLAIN.replace(voice, &row)),
@@ -336,6 +343,13 @@ fn the_voice_rule_is_a_labelled_rule_as_wide_as_the_closing_rule() {
             "{row}"
         );
     }
+    // The closing row must itself be a rule: a text row as wide as the voice
+    // rule does not close the box.
+    let wide_text = "x".repeat(width);
+    assert_eq!(
+        standing(&PLAIN.replace(rule, &wide_text)),
+        LimitStanding::NoBox
+    );
 }
 
 #[test]
