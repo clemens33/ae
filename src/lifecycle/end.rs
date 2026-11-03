@@ -1774,31 +1774,11 @@ fn end_locked(
     err: &mut impl Write,
 ) -> io::Result<bool> {
     let dir = sessions_dir(root).join(name);
-    let current_purge = confirmed_for(args, name).map_or(args.purge_cli, |confirmed| {
-        if confirmed.from_default {
-            None
-        } else {
-            Some(confirmed.plan.purge)
-        }
-    });
+    let current_purge = end_purge(confirmed_for(args, name), args.purge_cli);
     // Refuse unsupported/unreadable snapshot nodes before migration writes
     // meta. This is advisory; the publisher repeats capture under source holds.
     let preflight_plan = resolve_plan(root, name, current_purge);
-    if preflight_plan.action == Action::Keep
-        && let Err(why) = crate::archive::retained::preflight(&dir)
-    {
-        let target = root
-            .join("archive")
-            .join(archive::canonical_uuid(&meta::session_id_in(&dir)));
-        if archive::retained::node_exists(&target) {
-            writeln!(
-                err,
-                "Error: {}",
-                archive::publish::mismatch(&dir, &target, &why)
-            )?;
-        } else {
-            writeln!(err, "Error: {why}")?;
-        }
+    if preflight_refused(root, &dir, &preflight_plan, err)? {
         return Ok(false);
     }
     // The chain, under the lifecycle lock this end already holds. A refusal is
@@ -1822,149 +1802,33 @@ fn end_locked(
     //        nothing, or
     //    (c) the target's POSITIVE record names a server that verifiably lacks
     //        the session.
-    let frozen_tmux = contract.map(|(_, tmux)| tmux);
-    let selector = server_of(&bytes);
-    let mut session_id: Option<String> = None;
-    let mut server = None;
-    let mut seen: Option<TmuxSight> = None;
-    match selector {
+    let proof = match server_of(&bytes) {
         ServerSelector::Positive(sel) => {
-            let id = ServerId::Selected(sel);
-            let reading = sight(&id, name);
-            if reading == TmuxSight::Unknown {
-                if args.assume_stopped && boot_proved_stopped(&dir, &id, name) {
-                    writeln!(
-                        out,
-                        "Proceeding on explicit --assume-stopped acknowledgement and the boot-time proof (this session's own last sign of life predates the host boot, so nothing can still hold it)."
-                    )?;
-                } else {
-                    writeln!(
-                        err,
-                        "Error: cannot verify session '{name}' state (its recorded tmux server is unreachable) — state preserved."
-                    )?;
-                    return Ok(false);
-                }
-            }
-            if let TmuxSight::Live { id: live, .. } = &reading {
-                session_id = Some(live.clone());
-            }
-            seen = Some(reading);
-            server = Some(id);
+            positive_sight(&dir, name, args, ServerId::Selected(sel), out, err)?
         }
         ServerSelector::Missing | ServerSelector::Ambiguous => {
-            // The prompt saw a positively recorded server, so the lock must
-            // re-prove against one; a lost record is a refusal, never a sweep.
-            if let Some(tmux) = frozen_tmux
-                && !matches!(tmux, FrozenTmux::Unobserved)
-            {
-                writeln!(
-                    err,
-                    "Error: '{name}' has no positive server record, so ae cannot prove what was confirmed."
-                )?;
-                writeln!(err, "  Confirmed: {}", tmux.describe())?;
-                writeln!(err, "  Now:       no positive server record")?;
-                writeln!(
-                    err,
-                    "  Nothing was stopped and nothing was deleted. Re-run 'ae end {name}' to see the current plan."
-                )?;
-                return Ok(false);
-            }
-            // No positive ownership record.
-            match sweep(root, name) {
-                Sweep::Found(where_) => {
-                    writeln!(
-                        err,
-                        "Error: session '{name}' has no positive server record AND is LIVE on enumerable server '{where_}'."
-                    )?;
-                    writeln!(
-                        err,
-                        "  Establish ownership first: 'ae doctor --refresh {name}'."
-                    )?;
-                    writeln!(err, "  State preserved.")?;
-                    return Ok(false);
-                }
-                Sweep::Unsure(where_) => {
-                    writeln!(
-                        err,
-                        "Error: cannot verify enumerable tmux server '{where_}' (socket exists but did not answer) — session '{name}' could be hiding behind it."
-                    )?;
-                    writeln!(
-                        err,
-                        "  Fix that server (permissions/staleness), then retry. State preserved."
-                    )?;
-                    return Ok(false);
-                }
-                Sweep::Clear => {}
-            }
-            if !args.assume_stopped {
-                writeln!(
-                    err,
-                    "Error: session '{name}' has no positive server record (pre-fix or ambiguous meta) — it may be live somewhere ae cannot enumerate."
-                )?;
-                writeln!(
-                    err,
-                    "  Resolve: 'ae doctor --refresh {name}', or acknowledge it is stopped: ae end --assume-stopped {name}"
-                )?;
-                writeln!(err, "  State preserved.")?;
-                return Ok(false);
-            }
-            writeln!(
-                out,
-                "Proceeding on explicit --assume-stopped acknowledgement (not live on any enumerable server, default included)."
-            )?;
+            let frozen_tmux = contract.map(|(_, tmux)| tmux);
+            unrecorded(root, name, args, frozen_tmux, out, err)?.then(Proof::default)
         }
-    }
+    };
+    let Some(Proof {
+        server,
+        session_id,
+        seen,
+    }) = proof
+    else {
+        return Ok(false);
+    };
 
     let mode = meta_value(&bytes, "mode");
     let origin = meta_value(&bytes, "origin");
     let work_dir = resolve_workdir(root, &bytes, name);
 
-    // A session ae cannot IDENTIFY is refused HERE, before anything is stopped:
-    // the archive step would refuse it at the end anyway, and there is no
-    // reason to stop a session for a failure already visible.
     let plan = resolve_plan(root, name, current_purge);
-    if plan.action == Action::Unavailable {
-        writeln!(
-            err,
-            "Error: session '{name}' cannot be archived — {}.",
-            plan.detail
-        )?;
-        writeln!(
-            err,
-            "  Nothing was stopped and NOTHING was deleted; ae does not delete a session it could not capture."
-        )?;
-        return Ok(false);
-    }
-    // The frozen incarnation no longer matches what the lock sees: refuse
-    // before anything is stopped, with both versions.
-    if let (Some(tmux), Some(reading)) = (frozen_tmux, seen.as_ref())
-        && let Reproof::Refuse(first) = reprove(name, tmux, reading)
-    {
-        writeln!(err, "Error: {first}")?;
-        writeln!(err, "  Confirmed: {}", tmux.describe())?;
-        writeln!(err, "  Now:       {}", reading.describe(name))?;
-        writeln!(
-            err,
-            "  Nothing was stopped and nothing was deleted. Re-run 'ae end {name}' to see the current plan."
-        )?;
-        return Ok(false);
-    }
-    // A contract that no longer matches the one confirmed is caught here too,
-    // not only at the archive step: the step is the backstop under the lock,
-    // but by then the session has been stopped.
-    if let Some((frozen, _)) = contract
-        && *frozen != plan
-    {
-        writeln!(
-            err,
-            "Error: what '{name}' would do changed between the confirmation and now — refusing to act on an answer given to a different question."
-        )?;
-        writeln!(err, "  Confirmed: {}", frozen.line(name))?;
-        writeln!(err, "  Now:       {}", plan.line(name))?;
-        writeln!(
-            err,
-            "  Nothing was stopped and nothing was deleted. Re-run 'ae end {name}' to see the current plan."
-        )?;
+    if let Some(lines) = refusal_before_stop(name, &plan, contract, seen.as_ref()) {
+        for line in lines {
+            writeln!(err, "{line}")?;
+        }
         return Ok(false);
     }
 
@@ -2193,6 +2057,228 @@ fn end_locked(
     }
     let _ = (origin, mode);
     Ok(true)
+}
+
+/// The history choice an end resolves its plan with — PURE. A target the
+/// prompt confirmed carries its plan's choice, unless that choice came from
+/// config, which then decides again under the lock (`None`); a target nothing
+/// was confirmed for takes the command line's.
+fn end_purge(confirmed: Option<&ConfirmedPlan>, purge_cli: Option<bool>) -> Option<bool> {
+    confirmed.map_or(purge_cli, |confirmed| {
+        if confirmed.from_default {
+            None
+        } else {
+            Some(confirmed.plan.purge)
+        }
+    })
+}
+
+/// Whether a kept history's retained snapshot nodes are unsupported or
+/// unreadable, saying why on `err`. Only a [`Action::Keep`] plan asks; the
+/// archive target is named from a FRESH read of the recorded id.
+fn preflight_refused(
+    root: &Path,
+    dir: &Path,
+    plan: &Plan,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    if plan.action != Action::Keep {
+        return Ok(false);
+    }
+    let Err(why) = crate::archive::retained::preflight(dir) else {
+        return Ok(false);
+    };
+    let target = root
+        .join("archive")
+        .join(archive::canonical_uuid(&meta::session_id_in(dir)));
+    if archive::retained::node_exists(&target) {
+        writeln!(
+            err,
+            "Error: {}",
+            archive::publish::mismatch(dir, &target, &why)
+        )?;
+    } else {
+        writeln!(err, "Error: {why}")?;
+    }
+    Ok(true)
+}
+
+/// What the server proof established (the invariant in [`end_locked`]): the
+/// recorded server, the exact tmux session to kill on it, and what the lock
+/// saw there. All three are `None` for a target with no positive record that
+/// the acknowledgement let through.
+#[derive(Default)]
+struct Proof {
+    server: Option<ServerId>,
+    session_id: Option<String>,
+    seen: Option<TmuxSight>,
+}
+
+/// The target's own recorded server: what it shows now. An unreachable server
+/// is refused unless the human acknowledged the stop AND the boot-time proof
+/// holds.
+fn positive_sight(
+    dir: &Path,
+    name: &str,
+    args: &Args,
+    id: ServerId,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<Option<Proof>> {
+    let reading = sight(&id, name);
+    if reading == TmuxSight::Unknown {
+        if args.assume_stopped && boot_proved_stopped(dir, &id, name) {
+            writeln!(
+                out,
+                "Proceeding on explicit --assume-stopped acknowledgement and the boot-time proof (this session's own last sign of life predates the host boot, so nothing can still hold it)."
+            )?;
+        } else {
+            writeln!(
+                err,
+                "Error: cannot verify session '{name}' state (its recorded tmux server is unreachable) — state preserved."
+            )?;
+            return Ok(None);
+        }
+    }
+    let session_id = match &reading {
+        TmuxSight::Live { id: live, .. } => Some(live.clone()),
+        TmuxSight::Absent | TmuxSight::Unknown => None,
+    };
+    Ok(Some(Proof {
+        server: Some(id),
+        session_id,
+        seen: Some(reading),
+    }))
+}
+
+/// A target with no positive server record: refused when the prompt saw one
+/// (a lost record is a refusal, never a sweep), else swept and judged by
+/// [`unrecorded_verdict`]. Whether it may proceed.
+fn unrecorded(
+    root: &Path,
+    name: &str,
+    args: &Args,
+    frozen_tmux: Option<&FrozenTmux>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    if let Some(tmux) = frozen_tmux
+        && !matches!(tmux, FrozenTmux::Unobserved)
+    {
+        writeln!(
+            err,
+            "Error: '{name}' has no positive server record, so ae cannot prove what was confirmed."
+        )?;
+        writeln!(err, "  Confirmed: {}", tmux.describe())?;
+        writeln!(err, "  Now:       no positive server record")?;
+        writeln!(
+            err,
+            "  Nothing was stopped and nothing was deleted. Re-run 'ae end {name}' to see the current plan."
+        )?;
+        return Ok(false);
+    }
+    match unrecorded_verdict(name, &sweep(root, name), args.assume_stopped) {
+        Verdict::Refuse(lines) => {
+            for line in lines {
+                writeln!(err, "{line}")?;
+            }
+            Ok(false)
+        }
+        Verdict::Proceed(line) => {
+            writeln!(out, "{line}")?;
+            Ok(true)
+        }
+    }
+}
+
+/// What a recordless target's sweep allows.
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    /// Refuse, with these `err` lines.
+    Refuse(Vec<String>),
+    /// Proceed, announcing it with this `out` line.
+    Proceed(&'static str),
+}
+
+/// Judge the enumerable sweep of a recordless target — PURE. Only every
+/// enumerable server answering without it AND the human's acknowledgement
+/// let it through.
+fn unrecorded_verdict(name: &str, sweep: &Sweep, assume_stopped: bool) -> Verdict {
+    match sweep {
+        Sweep::Found(where_) => Verdict::Refuse(vec![
+            format!(
+                "Error: session '{name}' has no positive server record AND is LIVE on enumerable server '{where_}'."
+            ),
+            format!("  Establish ownership first: 'ae doctor --refresh {name}'."),
+            "  State preserved.".to_owned(),
+        ]),
+        Sweep::Unsure(where_) => Verdict::Refuse(vec![
+            format!(
+                "Error: cannot verify enumerable tmux server '{where_}' (socket exists but did not answer) — session '{name}' could be hiding behind it."
+            ),
+            "  Fix that server (permissions/staleness), then retry. State preserved.".to_owned(),
+        ]),
+        Sweep::Clear if !assume_stopped => Verdict::Refuse(vec![
+            format!(
+                "Error: session '{name}' has no positive server record (pre-fix or ambiguous meta) — it may be live somewhere ae cannot enumerate."
+            ),
+            format!(
+                "  Resolve: 'ae doctor --refresh {name}', or acknowledge it is stopped: ae end --assume-stopped {name}"
+            ),
+            "  State preserved.".to_owned(),
+        ]),
+        Sweep::Clear => Verdict::Proceed(
+            "Proceeding on explicit --assume-stopped acknowledgement (not live on any enumerable server, default included).",
+        ),
+    }
+}
+
+/// The refusals due before anything is stopped, in order — PURE: a session ae
+/// cannot identify (the archive step would refuse it anyway), a confirmed
+/// tmux incarnation the lock no longer sees, and a confirmed plan that is no
+/// longer the plan. The `err` lines of the first that applies.
+fn refusal_before_stop(
+    name: &str,
+    plan: &Plan,
+    contract: Option<(&Plan, &FrozenTmux)>,
+    seen: Option<&TmuxSight>,
+) -> Option<Vec<String>> {
+    if plan.action == Action::Unavailable {
+        return Some(vec![
+            format!(
+                "Error: session '{name}' cannot be archived — {}.",
+                plan.detail
+            ),
+            "  Nothing was stopped and NOTHING was deleted; ae does not delete a session it could not capture."
+                .to_owned(),
+        ]);
+    }
+    let rerun = || {
+        format!(
+            "  Nothing was stopped and nothing was deleted. Re-run 'ae end {name}' to see the current plan."
+        )
+    };
+    let (frozen_plan, tmux) = contract?;
+    if let Some(reading) = seen
+        && let Reproof::Refuse(first) = reprove(name, tmux, reading)
+    {
+        return Some(vec![
+            format!("Error: {first}"),
+            format!("  Confirmed: {}", tmux.describe()),
+            format!("  Now:       {}", reading.describe(name)),
+            rerun(),
+        ]);
+    }
+    (*frozen_plan != *plan).then(|| {
+        vec![
+            format!(
+                "Error: what '{name}' would do changed between the confirmation and now — refusing to act on an answer given to a different question."
+            ),
+            format!("  Confirmed: {}", frozen_plan.line(name)),
+            format!("  Now:       {}", plan.line(name)),
+            rerun(),
+        ]
+    })
 }
 
 /// The operation facts the archive publisher needs and the core does not derive
@@ -2998,9 +3084,9 @@ fn socket_dir(root: &Path) -> Option<PathBuf> {
 mod tests {
     use super::{
         Action, ConfirmedPlan, EndExpectation, ExpectWords, FrozenTarget, FrozenTmux, Git, Plan,
-        Reproof, TmuxSight, archive_step, end_prompt, freeze_target, parse, path_exists,
-        purge_conversation_files, reprove, sanitize_branch_name, server_from_words,
-        supervisor_args,
+        Reproof, Sweep, TmuxSight, Verdict, archive_step, end_prompt, end_purge, freeze_target,
+        parse, path_exists, purge_conversation_files, refusal_before_stop, reprove,
+        sanitize_branch_name, server_from_words, supervisor_args, unrecorded_verdict,
     };
     use std::path::{Path, PathBuf};
 
@@ -3807,6 +3893,142 @@ mod tests {
         assert_eq!(
             purge.line("s"),
             "  - s: NO archive, and /a/archive/u/ is DELETED if it exists · conversation files DELETED"
+        );
+    }
+
+    fn confirmed(purge: bool, from_default: bool) -> ConfirmedPlan {
+        ConfirmedPlan {
+            name: "alpha".to_owned(),
+            plan: Plan {
+                action: Action::Keep,
+                detail: "/archive/id".to_owned(),
+                purge,
+            },
+            from_default,
+            tmux: FrozenTmux::Unobserved,
+        }
+    }
+
+    #[test]
+    fn the_end_purge_takes_the_confirmed_choice_unless_config_made_it() {
+        for cli in [None, Some(true), Some(false)] {
+            assert_eq!(
+                end_purge(None, cli),
+                cli,
+                "nothing confirmed: the command line"
+            );
+            for purge in [true, false] {
+                assert_eq!(
+                    end_purge(Some(&confirmed(purge, true)), cli),
+                    None,
+                    "config made it: config decides again under the lock"
+                );
+                assert_eq!(
+                    end_purge(Some(&confirmed(purge, false)), cli),
+                    Some(purge),
+                    "the confirmed choice, never the command line"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_recordless_target_proceeds_only_on_a_clear_sweep_and_the_flag() {
+        let found = Sweep::Found("default".to_owned());
+        let unsure = Sweep::Unsure("other".to_owned());
+        for flag in [false, true] {
+            assert_eq!(
+                unrecorded_verdict("s", &found, flag),
+                Verdict::Refuse(vec![
+                    "Error: session 's' has no positive server record AND is LIVE on enumerable server 'default'.".to_owned(),
+                    "  Establish ownership first: 'ae doctor --refresh s'.".to_owned(),
+                    "  State preserved.".to_owned(),
+                ])
+            );
+            assert_eq!(
+                unrecorded_verdict("s", &unsure, flag),
+                Verdict::Refuse(vec![
+                    "Error: cannot verify enumerable tmux server 'other' (socket exists but did not answer) — session 's' could be hiding behind it.".to_owned(),
+                    "  Fix that server (permissions/staleness), then retry. State preserved.".to_owned(),
+                ])
+            );
+        }
+        assert_eq!(
+            unrecorded_verdict("s", &Sweep::Clear, false),
+            Verdict::Refuse(vec![
+                "Error: session 's' has no positive server record (pre-fix or ambiguous meta) — it may be live somewhere ae cannot enumerate.".to_owned(),
+                "  Resolve: 'ae doctor --refresh s', or acknowledge it is stopped: ae end --assume-stopped s".to_owned(),
+                "  State preserved.".to_owned(),
+            ])
+        );
+        assert_eq!(
+            unrecorded_verdict("s", &Sweep::Clear, true),
+            Verdict::Proceed(
+                "Proceeding on explicit --assume-stopped acknowledgement (not live on any enumerable server, default included)."
+            )
+        );
+    }
+
+    #[test]
+    fn the_refusals_before_the_stop_apply_in_order() {
+        let rerun = "  Nothing was stopped and nothing was deleted. Re-run 'ae end s' to see the current plan.";
+        let unavailable = Plan {
+            action: Action::Unavailable,
+            detail: "why".to_owned(),
+            purge: false,
+        };
+        let other = Plan {
+            purge: true,
+            ..keep()
+        };
+        let live = TmuxSight::Live {
+            id: "$2".to_owned(),
+            created: "9".to_owned(),
+        };
+        let frozen = FrozenTmux::Live {
+            id: "$1".to_owned(),
+            created: "9".to_owned(),
+        };
+        // Unidentifiable comes first, contract or not.
+        let first = refusal_before_stop("s", &unavailable, Some((&other, &frozen)), Some(&live));
+        assert_eq!(
+            first,
+            Some(vec![
+                "Error: session 's' cannot be archived — why.".to_owned(),
+                "  Nothing was stopped and NOTHING was deleted; ae does not delete a session it could not capture.".to_owned(),
+            ])
+        );
+        // Nothing confirmed: nothing to re-prove.
+        assert_eq!(refusal_before_stop("s", &keep(), None, Some(&live)), None);
+        // A different incarnation outranks a changed plan.
+        let mismatch = refusal_before_stop("s", &keep(), Some((&other, &frozen)), Some(&live));
+        assert_eq!(
+            mismatch,
+            Some(vec![
+                "Error: 's' is a different tmux session than the one confirmed.".to_owned(),
+                "  Confirmed: tmux $1 (created 9)".to_owned(),
+                "  Now:       tmux $2 (created 9)".to_owned(),
+                rerun.to_owned(),
+            ])
+        );
+        // No sight (a recordless target): only the plan is compared.
+        let changed = refusal_before_stop("s", &keep(), Some((&other, &frozen)), None);
+        assert_eq!(
+            changed,
+            Some(vec![
+                "Error: what 's' would do changed between the confirmation and now — refusing to act on an answer given to a different question.".to_owned(),
+                format!("  Confirmed: {}", other.line("s")),
+                format!("  Now:       {}", keep().line("s")),
+                rerun.to_owned(),
+            ])
+        );
+        let same = FrozenTmux::Live {
+            id: "$2".to_owned(),
+            created: "9".to_owned(),
+        };
+        assert_eq!(
+            refusal_before_stop("s", &keep(), Some((&keep(), &same)), Some(&live)),
+            None
         );
     }
 }
