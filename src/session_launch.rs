@@ -3483,39 +3483,18 @@ fn build(
     // ---- worker panes, by layout ----
     let mut panes = vec![main_pane.clone()];
     let workers = seats.len().saturating_sub(1);
+    let window = format!("{}:", tmux::session_target(&shape.name));
     for (index, seat) in seats.iter().skip(1).enumerate() {
-        let created = match shape.layout.as_str() {
-            "lead-pair" => match index {
-                0 => split(&server, &panes[0], &work_dir, Split::Horizontal),
-                1 => new_window(
-                    &server,
-                    &format!("{}:", tmux::session_target(&shape.name)),
-                    &seat.name,
-                    &work_dir,
-                ),
-                _ => split(&server, &panes[panes.len() - 1], &work_dir, Split::Vertical),
-            },
-            "lead-solo" => match index {
-                0 => new_window(
-                    &server,
-                    &format!("{}:", tmux::session_target(&shape.name)),
-                    &seat.name,
-                    &work_dir,
-                ),
-                _ => split(&server, &panes[panes.len() - 1], &work_dir, Split::Vertical),
-            },
-            "vertical" => split(
-                &server,
-                &format!("{}:", tmux::session_target(&shape.name)),
-                &work_dir,
-                Split::Horizontal,
-            ),
-            _ => split(
-                &server,
-                &format!("{}:", tmux::session_target(&shape.name)),
-                &work_dir,
-                Split::Vertical,
-            ),
+        let created = match worker_placement(&shape.layout, index) {
+            WorkerPane::NewWindow => new_window(&server, &window, &seat.name, &work_dir),
+            WorkerPane::Split { of, dir } => {
+                let target = match of {
+                    PaneRef::First => &panes[0],
+                    PaneRef::Last => &panes[panes.len() - 1],
+                    PaneRef::Window => &window,
+                };
+                split(&server, target, &work_dir, dir)
+            }
         };
         let Some(pane) = created else {
             return rollback_launch(
@@ -3542,10 +3521,8 @@ fn build(
     }
 
     // ---- the roster, and the ids each seat launches with ----
-    // The recorded client rows, re-read under the lifecycle lock: preflight
-    // (or the post-lock gate for a launch without overrides) already refused
-    // every unusable row, so an Invalid met here is a mid-flight hand edit —
-    // and it still refuses rather than laundering toward Missing.
+    // The recorded client rows, re-read under the lifecycle lock; `seat_client`
+    // decides each seat against them.
     let recorded_meta: Option<Meta> = if shape.resuming {
         // A read failure refuses, never launders toward None: a later
         // successful raw rebuild would drop the client rows and switch the
@@ -3568,62 +3545,9 @@ fn build(
     };
     let mut launching: Vec<Launching> = Vec::new();
     for (index, seat) in seats.iter().enumerate() {
-        let carried: Option<String> = match recorded_meta
-            .as_ref()
-            .and_then(|meta| meta.roster().iter().find(|entry| entry.slot == seat.slot))
-        {
-            None => None,
-            Some(entry) => match &entry.client {
-                crate::meta::RecordedClient::Missing => None,
-                crate::meta::RecordedClient::Label(label) => Some(label.clone()),
-                crate::meta::RecordedClient::Invalid => {
-                    return rollback_launch(
-                        shape,
-                        &dir,
-                        &server,
-                        &invalid_client_refusal(&shape.name, &seat.name, &seat.slot),
-                        err,
-                    );
-                }
-            },
-        };
-        if let (Some(selected), Some(known)) = (seat.client_override.as_deref(), carried.as_deref())
-            && selected != known
-        {
-            return rollback_launch(
-                shape,
-                &dir,
-                &server,
-                &different_label_refusal(&shape.name, &seat.name, &seat.profile, known, selected),
-                err,
-            );
-        }
-        if seat.client_override.is_none()
-            && let Some(added) = carried.as_deref()
-        {
-            // A label preflight never saw: hand-added (or a concurrent
-            // launch's) between preflight and this lock. It carries no R1/R4
-            // proof, and this seat was composed without it — retrying
-            // re-runs preflight, which honors it properly.
-            return rollback_launch(
-                shape,
-                &dir,
-                &server,
-                &format!(
-                    "Error: session '{}' seat '{}' recorded client override '{added}' while this launch was starting — \
-                     nothing was resumed; retry the launch.",
-                    shape.name, seat.name
-                ),
-                err,
-            );
-        }
-        // An unproven pairing honors the pane but mints no label fact: only a
-        // carried row — an earlier PROVEN start's fact, republished unchanged —
-        // may survive it.
-        let client = if seat.store_proven {
-            seat.client_override.clone().or(carried)
-        } else {
-            carried
+        let client = match seat_client(&shape.name, seat, recorded_meta.as_ref()) {
+            Ok(client) => client,
+            Err(line) => return rollback_launch(shape, &dir, &server, &line, err),
         };
         let stored = stored_session_id(&dir, &seat.slot, shape.resuming);
         let session_id = launch_session_id(stored, shape.resuming, seat.tool);
@@ -3712,16 +3636,8 @@ fn build(
                     .and_then(|_| (!command.as_str().is_empty()).then(|| command.clone())),
             });
         }
-        // Rebalance only the SPLIT layouts: a spawned agent gets its own window,
-        // so window 0 gains no panes, and even-vertical would stack lead-pair's
-        // side-by-side leads.
-        if shape.layout != "lead-solo" && shape.layout != "lead-pair" {
+        if let Some(layout) = respawn_layout(&shape.layout) {
             let target = format!("{}:", tmux::session_target(&shape.name));
-            let layout = if shape.layout == "vertical" {
-                "even-horizontal"
-            } else {
-                "even-vertical"
-            };
             let _ = transport::run_tmux_op(&argv(
                 &server,
                 &Op::SelectLayout {
@@ -3921,6 +3837,123 @@ fn build(
 // ---------------------------------------------------------------------------
 // the pieces
 // ---------------------------------------------------------------------------
+
+/// Which existing pane or window a worker split divides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneRef {
+    /// The session's first pane.
+    First,
+    /// The pane created last.
+    Last,
+    /// The session's current window.
+    Window,
+}
+
+/// Where a launch puts one worker seat's pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerPane {
+    /// A split of an existing pane or window.
+    Split { of: PaneRef, dir: Split },
+    /// A window of its own, named after the seat.
+    NewWindow,
+}
+
+/// Where worker `index` (0 = the first seat after main) goes in `layout`.
+///
+/// `lead-pair` puts the colead beside the lead and the rest in a second
+/// window; `lead-solo` puts every worker in that second window; `vertical`
+/// and every other layout split the session's window.
+fn worker_placement(layout: &str, index: usize) -> WorkerPane {
+    match (layout, index) {
+        ("lead-pair", 0) => WorkerPane::Split {
+            of: PaneRef::First,
+            dir: Split::Horizontal,
+        },
+        ("lead-pair", 1) | ("lead-solo", 0) => WorkerPane::NewWindow,
+        ("lead-pair" | "lead-solo", _) => WorkerPane::Split {
+            of: PaneRef::Last,
+            dir: Split::Vertical,
+        },
+        ("vertical", _) => WorkerPane::Split {
+            of: PaneRef::Window,
+            dir: Split::Horizontal,
+        },
+        _ => WorkerPane::Split {
+            of: PaneRef::Window,
+            dir: Split::Vertical,
+        },
+    }
+}
+
+/// The client row `seat` launches with, or the line its refusal prints.
+///
+/// The recorded client rows were re-read under the lifecycle lock: preflight
+/// (or the post-lock gate for a launch without overrides) already refused
+/// every unusable row, so an Invalid met here is a mid-flight hand edit — and
+/// it still refuses rather than laundering toward Missing.
+fn seat_client(
+    session: &str,
+    seat: &Seat,
+    recorded: Option<&Meta>,
+) -> Result<Option<String>, String> {
+    let carried: Option<String> = match recorded
+        .and_then(|meta| meta.roster().iter().find(|entry| entry.slot == seat.slot))
+    {
+        None => None,
+        Some(entry) => match &entry.client {
+            crate::meta::RecordedClient::Missing => None,
+            crate::meta::RecordedClient::Label(label) => Some(label.clone()),
+            crate::meta::RecordedClient::Invalid => {
+                return Err(invalid_client_refusal(session, &seat.name, &seat.slot));
+            }
+        },
+    };
+    if let (Some(selected), Some(known)) = (seat.client_override.as_deref(), carried.as_deref())
+        && selected != known
+    {
+        return Err(different_label_refusal(
+            session,
+            &seat.name,
+            &seat.profile,
+            known,
+            selected,
+        ));
+    }
+    if seat.client_override.is_none()
+        && let Some(added) = carried.as_deref()
+    {
+        // A label preflight never saw: hand-added (or a concurrent
+        // launch's) between preflight and this lock. It carries no R1/R4
+        // proof, and this seat was composed without it — retrying
+        // re-runs preflight, which honors it properly.
+        return Err(format!(
+            "Error: session '{session}' seat '{}' recorded client override '{added}' while this launch was starting — \
+             nothing was resumed; retry the launch.",
+            seat.name
+        ));
+    }
+    // An unproven pairing honors the pane but mints no label fact: only a
+    // carried row — an earlier PROVEN start's fact, republished unchanged —
+    // may survive it.
+    Ok(if seat.store_proven {
+        seat.client_override.clone().or(carried)
+    } else {
+        carried
+    })
+}
+
+/// The layout a resume re-applies once its spawned agents are back, if any.
+///
+/// Only the SPLIT layouts rebalance: a spawned agent gets its own window, so
+/// window 0 gains no panes, and even-vertical would stack lead-pair's
+/// side-by-side leads.
+fn respawn_layout(layout: &str) -> Option<&'static str> {
+    match layout {
+        "lead-solo" | "lead-pair" => None,
+        "vertical" => Some("even-horizontal"),
+        _ => Some("even-vertical"),
+    }
+}
 
 /// Create the session and its first pane; report the created pane AND the full
 /// identity the SAME command printed.
