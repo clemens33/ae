@@ -782,6 +782,30 @@ impl<'a> Mapper<'a> {
             }
         }
     }
+    /// A paragraph, heading or code block starts; an HTML block only asks for its
+    /// separator (`block`) and keeps the open row and its line.
+    fn open_leaf(&mut self, set_off: bool, range: &Range<usize>) {
+        self.block(set_off);
+        self.flush();
+        self.row.line = self.doc.line(range.start);
+    }
+    /// Ends a paragraph, heading or HTML block; a heading also asks for its own gap.
+    fn close_leaf(&mut self) {
+        self.flush();
+        self.marks.heading = None;
+    }
+    /// Code rows keep the flag a row was flushed with: the opening flush runs before
+    /// this, the closing flush before [`Self::close_code`] clears it.
+    fn open_code(&mut self) {
+        self.code = true;
+        self.marks.code_block = true;
+    }
+    fn close_code(&mut self) {
+        self.flush();
+        self.gap();
+        self.code = false;
+        self.marks.code_block = false;
+    }
     /// A span opens: the marks it found come back at its end, whichever kind ends it.
     fn save(&mut self) {
         self.saved.push(self.marks);
@@ -831,9 +855,7 @@ impl<'a> Mapper<'a> {
                 Event::Start(tag) => {
                     match tag {
                         Tag::Paragraph | Tag::Heading { .. } | Tag::CodeBlock(_) => {
-                            self.block(!matches!(tag, Tag::Paragraph));
-                            self.flush();
-                            self.row.line = self.doc.line(range.start);
+                            self.open_leaf(!matches!(tag, Tag::Paragraph), range);
                         }
                         Tag::HtmlBlock => self.block(false),
                         Tag::Item => {
@@ -894,10 +916,7 @@ impl<'a> Mapper<'a> {
                     }
                     match tag {
                         Tag::Heading { level, .. } => self.marks.heading = Some(*level as u8),
-                        Tag::CodeBlock(_) => {
-                            self.code = true;
-                            self.marks.code_block = true;
-                        }
+                        Tag::CodeBlock(_) => self.open_code(),
                         Tag::Emphasis => {
                             self.save();
                             self.marks.emphasis = true;
@@ -920,19 +939,12 @@ impl<'a> Mapper<'a> {
                     }
                 }
                 Event::End(tag) => match tag {
-                    TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::HtmlBlock => {
-                        self.flush();
-                        self.marks.heading = None;
-                        if matches!(tag, TagEnd::Heading(_)) {
-                            self.gap();
-                        }
-                    }
-                    TagEnd::CodeBlock => {
-                        self.flush();
+                    TagEnd::Paragraph | TagEnd::HtmlBlock => self.close_leaf(),
+                    TagEnd::Heading(_) => {
+                        self.close_leaf();
                         self.gap();
-                        self.code = false;
-                        self.marks.code_block = false;
                     }
+                    TagEnd::CodeBlock => self.close_code(),
                     TagEnd::Item => {
                         self.flush();
                         self.scopes.pop();
