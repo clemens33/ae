@@ -231,19 +231,22 @@ impl Keys {
                     self.begun = Some(stamp);
                 }
                 self.pending.push(byte);
-                if self.pending == PASTE_START {
-                    (self.paste, self.lf_skip) = (self.begun.take(), false);
-                    self.pending.clear();
-                } else if self.app && self.pending == b"\x1b[<" {
-                    self.mouse = true;
-                } else if self.app && self.pending == b"\x1b[M" {
-                    self.pending.clear();
-                    self.x10 = 3;
-                } else if escape_done(&self.pending) || self.pending.len() > PENDING_MAX {
-                    let began = self.begun.take();
-                    let seq = std::mem::take(&mut self.pending);
-                    let key = editing(&seq).or_else(|| self.app.then(|| moving(&seq)).flatten());
-                    keys.extend(key.zip(began));
+                match opened(&self.pending, self.app) {
+                    Opened::Open => {}
+                    Opened::Paste => {
+                        (self.paste, self.lf_skip) = (self.begun.take(), false);
+                        self.pending.clear();
+                    }
+                    Opened::Report => self.mouse = true,
+                    Opened::Legacy => {
+                        self.pending.clear();
+                        self.x10 = 3;
+                    }
+                    Opened::Closed => {
+                        let began = self.begun.take();
+                        let seq = std::mem::take(&mut self.pending);
+                        keys.extend(spelled(&seq, self.app).zip(began));
+                    }
                 }
             } else {
                 typed(&mut keys, byte, self.app, stamp);
@@ -342,6 +345,38 @@ fn typed(keys: &mut Vec<(Key, Instant)>, byte: u8, app: bool, stamp: Instant) {
         _ => return text(keys, &[byte], stamp),
     };
     keys.push((key, stamp));
+}
+
+/// What the bytes of an escape sequence so far are.
+#[derive(Debug, PartialEq, Eq)]
+enum Opened {
+    /// Still waiting for its end.
+    Open,
+    /// `ESC [ 2 0 0 ~`: a bracketed paste begins.
+    Paste,
+    /// `ESC [ <` in the app: an SGR mouse report begins.
+    Report,
+    /// `ESC [ M` in the app: a legacy X10 report begins.
+    Legacy,
+    /// Complete, or open past [`PENDING_MAX`] and dropped whole.
+    Closed,
+}
+
+/// Classify `seq`, the bytes of one escape sequence so far: the paste open
+/// and the app's report openers come before the generic end of a sequence.
+fn opened(seq: &[u8], app: bool) -> Opened {
+    match seq {
+        _ if seq == PASTE_START => Opened::Paste,
+        b"\x1b[<" if app => Opened::Report,
+        b"\x1b[M" if app => Opened::Legacy,
+        _ if escape_done(seq) || seq.len() > PENDING_MAX => Opened::Closed,
+        _ => Opened::Open,
+    }
+}
+
+/// The key a complete escape sequence spells, the app's extras only in the app.
+fn spelled(seq: &[u8], app: bool) -> Option<Key> {
+    editing(seq).or_else(|| app.then(|| moving(seq)).flatten())
 }
 
 /// Whether escape sequence `seq` is complete: a CSI at its final byte, an
@@ -2005,8 +2040,9 @@ mod inputfeed_spec;
 #[cfg(test)]
 mod tests {
     use super::{
-        CAP, Command, Composer, Draft, Effect, Entered, Input, Key, Keys, Outcome, Reading, Screen,
-        Seen, Size, View, anchor_up, command, command_to, draw, outcome_line, paint, typed, window,
+        CAP, Command, Composer, Draft, Effect, Entered, Input, Key, Keys, Opened, Outcome,
+        PASTE_END, PASTE_START, Reading, Screen, Seen, Size, View, anchor_up, command, command_to,
+        draw, opened, outcome_line, paint, spelled, typed, window,
     };
     use std::time::{Duration, Instant};
 
@@ -3655,5 +3691,111 @@ mod tests {
                 (Key::Text(b"c".to_vec()), second)
             ]
         );
+    }
+
+    /// ECMA-48 5.4: a CSI is `ESC [`, parameters 0x30-0x3F, intermediates 0x20-0x2F and one
+    /// final byte 0x40-0x7E; SS3 is `ESC O` and one byte; any other `ESC x` is complete.
+    #[test]
+    fn opened_follows_the_escape_grammar_in_both_decoders() {
+        const ESC: u8 = 0x1b;
+        let open_to_the_limit = [&[ESC, b'['][..], &[b'1'; 14]].concat();
+        let rows: Vec<(Vec<u8>, Opened)> = vec![
+            (vec![ESC], Opened::Open),
+            (vec![ESC, b'['], Opened::Open),
+            (vec![ESC, b'O'], Opened::Open),
+            (vec![ESC, b'O', b'A'], Opened::Closed),
+            (vec![ESC, b'x'], Opened::Closed),
+            (vec![ESC, ESC], Opened::Closed),
+            (vec![ESC, 0x7f], Opened::Closed),
+            (vec![ESC, b'\r'], Opened::Closed),
+            (vec![ESC, b'[', b'D'], Opened::Closed),
+            (vec![ESC, b'[', b'1', b';', b'5'], Opened::Open),
+            (vec![ESC, b'[', b'1', b';', b'5', b'D'], Opened::Closed),
+            (vec![ESC, b'[', b' '], Opened::Open),
+            (vec![ESC, b'[', b'?'], Opened::Open),
+            (vec![ESC, b'[', b'@'], Opened::Closed),
+            (vec![ESC, b'[', b'~'], Opened::Closed),
+            (vec![ESC, b'[', 0x7f], Opened::Open),
+            (open_to_the_limit.clone(), Opened::Open),
+            ([&open_to_the_limit[..], b"1"].concat(), Opened::Closed),
+            ([&open_to_the_limit[..], b"m"].concat(), Opened::Closed),
+        ];
+        for (seq, want) in rows {
+            for app in [false, true] {
+                assert_eq!(opened(&seq, app), want, "{seq:02x?} app={app}");
+            }
+        }
+    }
+
+    /// xterm ctlseqs: `ESC [ 200 ~` opens a bracketed paste in either decoder (the close
+    /// `ESC [ 201 ~` alone is an ordinary complete CSI); `ESC [ <` opens an SGR mouse
+    /// report and `ESC [ M` an X10 one, and only the app reads them: the chat sees a
+    /// CSI still open, and a CSI whose final byte is M.
+    #[test]
+    fn opened_reads_the_paste_open_everywhere_and_the_mouse_openers_in_the_app_alone() {
+        for app in [false, true] {
+            assert_eq!(opened(PASTE_START, app), Opened::Paste);
+            assert_eq!(opened(&PASTE_START[..5], app), Opened::Open);
+            assert_eq!(opened(PASTE_END, app), Opened::Closed);
+        }
+        assert_eq!(opened(b"\x1b[<", false), Opened::Open);
+        assert_eq!(opened(b"\x1b[<", true), Opened::Report);
+        assert_eq!(opened(b"\x1b[M", false), Opened::Closed);
+        assert_eq!(opened(b"\x1b[M", true), Opened::Legacy);
+    }
+
+    /// xterm ctlseqs: cursor keys are `CSI A..D` or `SS3 A..D`, Home and End `CSI H` `CSI F`
+    /// or `SS3 H` `SS3 F` or the VT220/rxvt `~` forms; Delete `CSI 3 ~`; Page Up and Down
+    /// `CSI 5 ~` and `CSI 6 ~`. Alt+Enter and Alt+Backspace are ESC and the key.
+    #[test]
+    fn spelled_gives_the_editing_keys_to_both_decoders_and_up_down_and_pages_to_the_app() {
+        let both: &[(&[u8], Key)] = &[
+            (b"\x1b[D", Key::Left),
+            (b"\x1bOD", Key::Left),
+            (b"\x1b[C", Key::Right),
+            (b"\x1bOC", Key::Right),
+            (b"\x1b[H", Key::Home),
+            (b"\x1bOH", Key::Home),
+            (b"\x1b[1~", Key::Home),
+            (b"\x1b[7~", Key::Home),
+            (b"\x1b[F", Key::End),
+            (b"\x1bOF", Key::End),
+            (b"\x1b[4~", Key::End),
+            (b"\x1b[8~", Key::End),
+            (b"\x1b[3~", Key::Delete),
+            (b"\x1b\r", Key::Newline),
+            (b"\x1b\n", Key::Newline),
+            (b"\x1b\x7f", Key::KillWord),
+            (b"\x1b\x08", Key::KillWord),
+        ];
+        for (seq, key) in both.iter().cloned() {
+            for app in [false, true] {
+                assert_eq!(spelled(seq, app), Some(key.clone()), "{seq:?} app={app}");
+            }
+        }
+        let app_only: [(&[u8], Key); 6] = [
+            (b"\x1b[A", Key::Up),
+            (b"\x1bOA", Key::Up),
+            (b"\x1b[B", Key::Down),
+            (b"\x1bOB", Key::Down),
+            (b"\x1b[5~", Key::PageUp),
+            (b"\x1b[6~", Key::PageDown),
+        ];
+        for (seq, key) in app_only {
+            assert_eq!(spelled(seq, false), None, "{seq:?} in the chat");
+            assert_eq!(spelled(seq, true), Some(key), "{seq:?} in the app");
+        }
+        for seq in [
+            &b"\x1b[1;5D"[..],
+            b"\x1b[2~",
+            b"\x1bx",
+            b"\x1b\x1b",
+            b"\x1b[201~",
+            b"\x1b[<",
+        ] {
+            for app in [false, true] {
+                assert_eq!(spelled(seq, app), None, "{seq:?} app={app}");
+            }
+        }
     }
 }
