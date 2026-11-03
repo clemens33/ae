@@ -175,21 +175,11 @@ impl Keys {
         let mut keys = Vec::new();
         for &byte in chunk {
             if let Some(origin) = self.paste {
-                if self.pending.is_empty() && byte != 0x1b {
-                    self.literal(&mut keys, &[byte], origin);
-                    continue;
-                }
-                self.pending.push(byte);
-                if self.pending == PASTE_END {
-                    self.pending.clear();
-                    (self.paste, self.lf_skip) = (None, false);
-                } else if !PASTE_END.starts_with(&self.pending) {
-                    let mut held = std::mem::take(&mut self.pending);
-                    if held.len() > 1 && byte == 0x1b {
-                        held.pop();
-                        self.pending.push(byte);
-                    }
-                    self.literal(&mut keys, &held, origin);
+                match paste_hold(&mut self.pending, byte) {
+                    Hold::Byte => self.literal(&mut keys, &[byte], origin),
+                    Hold::Held => {}
+                    Hold::Closed => self.paste = None,
+                    Hold::Flush(held) => self.literal(&mut keys, &held, origin),
                 }
             } else if self.x10 > 0 {
                 self.x10 -= 1;
@@ -377,6 +367,42 @@ fn opened(seq: &[u8], app: bool) -> Opened {
 /// The key a complete escape sequence spells, the app's extras only in the app.
 fn spelled(seq: &[u8], app: bool) -> Option<Key> {
     editing(seq).or_else(|| app.then(|| moving(seq)).flatten())
+}
+
+/// What one byte inside a paste did to the bytes held behind it.
+#[derive(Debug, PartialEq, Eq)]
+enum Hold {
+    /// Nothing held and no ESC: the byte is paste text.
+    Byte,
+    /// The held bytes are still a proper prefix of the close.
+    Held,
+    /// The close `ESC [ 2 0 1 ~` is complete.
+    Closed,
+    /// The held bytes can no longer close the paste: they are text.
+    Flush(Vec<u8>),
+}
+
+/// One byte of a paste against the bytes `pending` holds back: only `ESC [ 2 0 1 ~`
+/// ends a paste, so only a proper prefix of it is kept and a mismatch hands
+/// the held bytes back as text, a trailing ESC kept as the new start.
+fn paste_hold(pending: &mut Vec<u8>, byte: u8) -> Hold {
+    if pending.is_empty() && byte != 0x1b {
+        return Hold::Byte;
+    }
+    pending.push(byte);
+    if *pending == PASTE_END {
+        pending.clear();
+        Hold::Closed
+    } else if PASTE_END.starts_with(pending) {
+        Hold::Held
+    } else {
+        let mut held = std::mem::take(pending);
+        if byte == 0x1b {
+            held.pop();
+            pending.push(byte);
+        }
+        Hold::Flush(held)
+    }
 }
 
 /// Whether escape sequence `seq` is complete: a CSI at its final byte, an
@@ -2040,9 +2066,9 @@ mod inputfeed_spec;
 #[cfg(test)]
 mod tests {
     use super::{
-        CAP, Command, Composer, Draft, Effect, Entered, Input, Key, Keys, Opened, Outcome,
+        CAP, Command, Composer, Draft, Effect, Entered, Hold, Input, Key, Keys, Opened, Outcome,
         PASTE_END, PASTE_START, Reading, Screen, Seen, Size, View, anchor_up, command, command_to,
-        draw, opened, outcome_line, paint, spelled, typed, window,
+        draw, opened, outcome_line, paint, paste_hold, spelled, typed, window,
     };
     use std::time::{Duration, Instant};
 
@@ -3797,5 +3823,45 @@ mod tests {
                 assert_eq!(spelled(seq, app), None, "{seq:?} app={app}");
             }
         }
+    }
+
+    /// xterm ctlseqs: a bracketed paste ends at `ESC [ 2 0 1 ~` and nowhere else.
+    #[test]
+    fn paste_hold_keeps_back_only_what_may_still_close_the_paste() {
+        let step = |pending: &mut Vec<u8>, bytes: &[u8]| -> Vec<Hold> {
+            bytes
+                .iter()
+                .map(|&byte| paste_hold(pending, byte))
+                .collect()
+        };
+        let held = |count: usize, last: Hold| -> Vec<Hold> {
+            (0..count).map(|_| Hold::Held).chain([last]).collect()
+        };
+        let mut pending = Vec::new();
+        assert_eq!(step(&mut pending, b"ab"), [Hold::Byte, Hold::Byte]);
+        assert_eq!(pending, b"");
+        assert_eq!(step(&mut pending, PASTE_END), held(5, Hold::Closed));
+        assert_eq!(pending, b"", "the close leaves nothing held");
+
+        // A prefix of the close that breaks is text, the byte that broke it with it.
+        assert_eq!(
+            step(&mut pending, b"\x1b[20x"),
+            held(4, Hold::Flush(b"\x1b[20x".to_vec()))
+        );
+        assert_eq!(pending, b"");
+        // The start of a paste inside one is text: its third digit is not the close's.
+        let mut want = held(4, Hold::Flush(b"\x1b[200".to_vec()));
+        want.push(Hold::Byte);
+        assert_eq!(step(&mut pending, b"\x1b[200~"), want);
+        // An ESC breaks a prefix and starts the next one.
+        assert_eq!(
+            step(&mut pending, b"\x1b[2\x1b"),
+            held(3, Hold::Flush(b"\x1b[2".to_vec()))
+        );
+        assert_eq!(pending, b"\x1b");
+        assert_eq!(step(&mut pending, b"\x1b"), [Hold::Flush(b"\x1b".to_vec())]);
+        assert_eq!(pending, b"\x1b");
+        assert_eq!(step(&mut pending, b"[201~"), held(4, Hold::Closed));
+        assert_eq!(pending, b"");
     }
 }
