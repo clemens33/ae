@@ -186,6 +186,24 @@ impl Rig {
         run_tmux(&args, &self.scratch)
     }
 
+    /// [`Rig::tmux_on`] for a command that may START the server: the keeper.
+    fn keeper_on(&self, socket: &Path, tail: &[&str]) -> (bool, String) {
+        let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
+            ae::meta::Selector::Socket(socket.to_path_buf()),
+        ));
+        args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+        keeper_tmux(&args, &self.scratch)
+    }
+
+    /// [`Rig::tmux_named`] for a command that may START the server: the keeper.
+    fn keeper_named(&self, name: &str, tail: &[&str]) -> (bool, String) {
+        let mut args = ae::tmux::server_args(&ae::inventory::ServerId::Selected(
+            ae::meta::Selector::Name(name.to_owned()),
+        ));
+        args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+        keeper_tmux(&args, &self.scratch)
+    }
+
     /// Run `_launch` with the preamble this rig implies.
     fn launch(&self, tail: &[&str]) -> (Option<i32>, String, String) {
         self.launch_with_server("socket", &self.sock.display().to_string(), tail)
@@ -791,8 +809,37 @@ fn a_client_profile_launches_the_configured_executable_and_home() {
     );
 }
 
+/// Run `tmux` where it may be the process that STARTS a server. A pane inherits
+/// its server's environment, not its client's, so the first command decides
+/// what every pane under that server can see. The environment is dropped and
+/// `HOME` and `TMUX_TMPDIR` are the scratch's own, so no keeper server or pane
+/// reaches the developer's HOME. `PATH` is the test's, as the tmux binary needs it.
+fn keeper_tmux(args: &[String], scratch: &Path) -> (bool, String) {
+    let path = std::env::var_os("PATH").unwrap_or_else(|| panic!("test PATH"));
+    let mut invocation = super::parity::Invocation::new("tmux")
+        .env_cleared()
+        .env("HOME", scratch)
+        .env("PATH", path)
+        .env("TMUX_TMPDIR", scratch)
+        .arg("-u");
+    for arg in args {
+        invocation = invocation.arg(arg);
+    }
+    let out = scratch.join("keeper-out");
+    let err = scratch.join("keeper-err");
+    let status = super::parity::capture::raw::run(&invocation, scratch, &out, &err)
+        .unwrap_or_else(|why| panic!("tmux must be runnable for a keeper: {why}"));
+    (
+        matches!(
+            status.outcome(),
+            super::parity::capture::ExitOutcome::Code(0)
+        ),
+        std::fs::read_to_string(&out).unwrap_or_default(),
+    )
+}
+
 fn bare_session(rig: &Rig, socket: &Path, name: &str) -> String {
-    let (created, pane) = rig.tmux_on(
+    let (created, pane) = rig.keeper_on(
         socket,
         &[
             "-f",
@@ -811,7 +858,7 @@ fn bare_session(rig: &Rig, socket: &Path, name: &str) -> String {
 }
 
 fn bare_named_session(rig: &Rig, server: &str, name: &str) -> String {
-    let (created, pane) = rig.tmux_named(
+    let (created, pane) = rig.keeper_named(
         server,
         &[
             "-f",
@@ -838,6 +885,63 @@ fn set_named_session_env(rig: &Rig, server: &str, session: &str, key: &str, valu
         .0,
         "set {key} on {session}"
     );
+}
+
+/// What `$HOME` a window the SERVER opens reports: a pane inherits the server's
+/// environment, not the client's, so this reads what the keeper handed down.
+fn keeper_pane_home(rig: &Rig, server: Option<&str>, label: &str) -> PathBuf {
+    let report = rig.scratch.join(format!("home-report-{label}"));
+    let command = format!("printf '%s' \"$HOME\" > '{}'", report.display());
+    let tail = ["new-window", "-d", "-t", "=keeper:", &command];
+    let (opened, why) = server.map_or_else(|| rig.tmux(&tail), |name| rig.tmux_named(name, &tail));
+    assert!(opened, "a window on the {label} keeper: {why}");
+    let deadline = Instant::now() + PANE_WAIT;
+    loop {
+        if let Ok(home) = std::fs::read_to_string(&report)
+            && !home.is_empty()
+        {
+            return PathBuf::from(home);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the {label} keeper pane reported no HOME"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Every keeper server a test starts hands its panes the rig's scratch HOME,
+/// never the runner's: a pane that reads the human's HOME can reach their real
+/// tool store. Both keeper doors, the socket one and the named one.
+#[test]
+fn a_keeper_started_pane_never_sees_the_runners_home() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("keeper-home");
+    let scratch = std::fs::canonicalize(&rig.scratch).expect("canonical scratch");
+    // The check below passes a HOME inside the scratch, so the runner's own
+    // must lie outside it or the guard proves nothing.
+    let runner_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    assert!(
+        !std::fs::canonicalize(&runner_home).is_ok_and(|home| home.starts_with(&scratch)),
+        "the guard needs a runner HOME outside the scratch: {}",
+        runner_home.display()
+    );
+    let _socket = bare_session(&rig, &rig.sock, "keeper");
+    let _named = bare_named_session(&rig, "default", "keeper");
+    for (label, server) in [("socket", None), ("named", Some("default"))] {
+        let home = keeper_pane_home(&rig, server, label);
+        let resolved = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
+        assert!(
+            resolved.starts_with(&scratch),
+            "the {label} keeper pane reports HOME {} outside the scratch {}",
+            home.display(),
+            scratch.display()
+        );
+    }
 }
 
 #[test]
@@ -3638,7 +3742,7 @@ fn an_ambient_launch_does_not_replace_mouse_down_status() {
     }
     let rig = Rig::idle("focus-ambient");
     let ambient = |words: &[&str]| {
-        run_tmux(
+        keeper_tmux(
             &words
                 .iter()
                 .map(|word| (*word).to_owned())
@@ -7077,16 +7181,19 @@ fn a_retry_over_an_occupied_name_refuses() {
 
     kill_at_boundary(&rig, "roold", "ronew", "after-intent");
     assert!(
-        rig.tmux(&[
-            "-f",
-            "/dev/null",
-            "new-session",
-            "-d",
-            "-s",
-            "ronew",
-            "sleep",
-            "60"
-        ])
+        rig.keeper_on(
+            &rig.sock,
+            &[
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                "ronew",
+                "sleep",
+                "60"
+            ]
+        )
         .0,
         "a live namesake appears mid-transaction"
     );
