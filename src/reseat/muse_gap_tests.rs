@@ -3,6 +3,7 @@
 //! refusal text of each standing, and that claude's own text and proof are
 //! untouched by the muse arm.
 use super::{HarnessState, ToolKind, frame_gap, limit_proven, refusal_why};
+use crate::watchdog::{LimitStanding, limit_standing};
 
 const PLAIN: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-plain.txt");
 const WATCHING: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-watching.txt");
@@ -115,6 +116,26 @@ fn claude_keeps_its_own_refusal_text_for_a_box_it_cannot_prove() {
     assert_eq!(
         frame_gap(
             (HarnessState::Unknown, false, Some(&gapped)),
+            "claude",
+            ToolKind::Claude
+        )
+        .as_deref(),
+        Some("no limit row")
+    );
+}
+
+#[test]
+fn a_scan_that_stands_is_a_muse_only_end_of_the_gap() {
+    // The stands-means-no-gap arm is muse's: claude proves a standing scan in
+    // `limit_proven`, so a claude reading handed over unproven with the same
+    // standing keeps the one text it always had.
+    assert_eq!(
+        limit_standing(CLAUDE_LIMITED, "claude"),
+        LimitStanding::Stands
+    );
+    assert_eq!(
+        frame_gap(
+            (HarnessState::Unknown, false, Some(CLAUDE_LIMITED)),
             "claude",
             ToolKind::Claude
         )
