@@ -28,7 +28,9 @@ selects the lead window and pane by pane id; it is a focus rule, not a look
 option, and is present when `theme = off` too. Input rules cannot be
 session-scoped: on a positively selected ae-owned server, launch binds
 `prefix a` and `prefix v` and installs one capability-canonical status map
-plus the no-select `copy-mode`/`copy-mode-vi` wheel map. tmux 3.5+ uses
+plus the no-select `copy-mode`/`copy-mode-vi` wheel map. That map also binds root
+`F12` and `C-]`, which detach only the client the session's `@ae_view_client` names (the
+`ae app` seat view outside tmux) and send the key on for every other client. tmux 3.5+ uses
 `MouseDown1Status` and `MouseDown3Status` for menus and removes stale Up
 bindings. On either capability, ae removes tmux's stock right-click pane,
 window, and session menus, while keeping its own `MouseDown3Status` action.
@@ -236,7 +238,8 @@ double-width there and tmux pads a further cell in. Its `+N` overflow
 counter is the user range `ae-more`. The button inherits the line's dim style
 while quiet; while `@ae_menu_open` is set it uses the palette's selected
 background and ink. Either mouse button on either range, or `<prefix> a`
-(default `C-b a`), opens the same fleet picker at the left edge above the
+(default `C-b a`; it does not collide with stock tmux's pane keys), opens the same
+fleet picker at the left edge above the
 status line with `display-menu -x 0 -y S`. Its title starts with `ae session`.
 The final three cells on the right are the distinct user range `ae-settings`: exactly
 ` ⚙ ` (` * ` in ASCII mode). The selected style starts before the leading blank and remains through

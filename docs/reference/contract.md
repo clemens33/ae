@@ -219,6 +219,17 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | `TMUX` / `TMUX_PANE` | which pane this shell is, for `stop` and `watchdog` | both |
 | the controlling terminal (stdin) | `ae app`'s raw mode, the mode restored on exit and on panic, and the window size — rustix `termios`, confined by `clippy.toml` | both |
 
+**The two inventories.** No `std::process::Command` outside the enumerated doors. The PRODUCT has five sites over
+four files — `src/transport.rs`, `src/run.rs`, `src/upgrade.rs` (TWICE: `tar`, and the
+downloaded core's own `_install`), `src/install.rs` — and the suite has fifteen, across
+`tests/it/`'s `cli.rs`, `install.rs`, `migrate.rs`, `shape.rs`, `parity.rs` and `doors.rs`.
+`tests/it/doors.rs` pins the exact per-file counts, so a new door is a review, not a diff.
+Same for the world-reading methods in `clippy.toml`'s `disallowed-methods`: each lives at a
+named door carrying its reason. A new caller of an existing door moves neither inventory:
+`tests/it/phase3_probe_spec.rs` is the FILE-level world-read inventory, `tests/it/doors.rs` counts
+disallowed-TYPES relaxation SITES per file, so reads in an already-listed file add no file
+and calls through an existing door add no site.
+
 `doors::boot_time` is the one door with two spellings and no variable of its own: Linux's
 `/proc/stat` `btime` when that file exists, otherwise `transport::run_sysctl` — a fixed-program
 leg of the EXISTING process door (`sysctl -n kern.boottime`, no argument a caller chooses), so

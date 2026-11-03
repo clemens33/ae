@@ -179,7 +179,7 @@ just check            # lint (shellcheck) + format check (shfmt) for the install
 just release          # check → test → rust-deny → CalVer bump → changelog → tag → gh release
 ```
 
-`just rust-deny` audits supply chain on every release; `just rust-mutants` asks whether the tests discriminate. Lanes and conventions: **[docs/development.md](docs/development.md)**. The Rust toolchain contract — exact pins, lint policy, the no-`unwrap` rule — is in **[AGENTS.md](AGENTS.md#toolchain-pins)**.
+`just rust-deny` audits supply chain on every release; `just rust-mutants` asks whether the tests discriminate. Lanes and conventions: **[docs/development.md](docs/development.md)**. The Rust toolchain contract — exact pins, lint policy, the no-`unwrap` rule — is in **[AGENTS.md](AGENTS.md#toolchain-pins)**, the pinned versions in **[docs/development.md](docs/development.md#pinned-versions)**.
 
 ## License
 

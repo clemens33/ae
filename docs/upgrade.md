@@ -115,6 +115,10 @@ on its own pane's `@ae_console` stamp:
   and only hints.
 - A pane tmux does not answer for only hints.
 
+ae's own app starts carry the internal `--app-own` marker (the landings, an exec restart
+with no view), a view carrier, or a stamped chat pane; only a human-typed `ae app` prints
+its one-line stderr hint.
+
 Until then the hint row says `ae <V> installed - restarts when idle`; an app that will not
 restart, and any app under `auto_upgrade = off` or `AE_NO_AUTOSTART`, says `ae <V>
 installed - restart ae app to use it`.

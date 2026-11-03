@@ -39,6 +39,21 @@ mkdocs.yml          — docs site config
 | [x86_64-unknown-linux-musl-gcc](https://github.com/messense/macos-cross-toolchains) | musl cross toolchain — needed by `just bundles` only. `brew install messense/macos-cross-toolchains/x86_64-unknown-linux-musl` |
 | [mkdocs-material](https://squidfunk.github.io/mkdocs-material/) | docs site (optional, only for `just docs`) |
 
+### Pinned versions
+
+AGENTS.md carries the rule: pins, not channels, and the files below are the single sources. This is the full list with its versions; where it and a source disagree, the source wins.
+
+| What | Pin | Declared in |
+|---|---|---|
+| Compiler | `1.97.1` (exact release) | `rust-toolchain.toml` |
+| Edition / MSRV | `2024` / `rust-version = "1.97.1"` | `Cargo.toml` |
+| Profile + components | `minimal` + rustfmt, clippy, llvm-tools | `rust-toolchain.toml` |
+| Targets | `aarch64-apple-darwin`, `x86_64-unknown-linux-musl` | `rust-toolchain.toml`, justfile, `deny.toml` |
+| Dev tools | nextest `0.9.143`, taplo `0.10.0`, deny `0.20.2`, mutants `27.1.0`, llvm-cov `0.9.0`, vet `0.10.2`, git-cliff `2.13.1`; cargo-fuzz `0.13.2` on request, not by `rust-setup` | justfile `*_VERSION` — the single source |
+| Fuzz compiler | `nightly-2026-08-20` (exact). The product compiler does not move; there is no `fuzz/rust-toolchain.toml`, the lane passes `cargo +<pin>` | justfile `FUZZ_TOOLCHAIN` — the only source |
+| `just` | `1.57.0` | justfile `JUST_VERSION`; CI reads the pin from there |
+| tmux floor | `3.4` — a launch and the picker REFUSE below it; `list`/`version`/`doctor`/`upgrade` do not. Ubuntu 24.04 and Homebrew both package a tmux that clears it, so CI installs the package | `src/tmux_floor.rs`; CI step in `.github/workflows/rust.yml` |
+
 ## Common commands
 
 **What the bash lint lane does and does not cover.** `just lint` pins shellcheck to 0.11.0
@@ -106,6 +121,30 @@ since it went green (#267). The 24.04 lane runs with no bus at
 all. Both lanes are on demand: `just test`, `just pre` and `just release` never run
 them. They are arm64 only; the x86_64 proof of Ubuntu 26.04 is a human run on
 x86_64 hardware, and nothing here claims it.
+
+## Lane reference
+
+Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the short form of the rows that hold a rule (the gate, `just pre`, the lane lock, mutants, fuzz, deny/vet, prune, the on-demand lanes); every row is here in full.
+
+| Recipe | What it is |
+|---|---|
+| `just rust-setup` | bootstrap: toolchain + pinned tools. Idempotent, and CI asserts it |
+| `just test` / `just rust-check` | **the gate**: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test` |
+| `just pre` | **ADVISORY, NOT the gate**, never cited as it: `rust-fmt-check` + `rust-lint` + the unit tests + the `doors`, `floor` and `gate` guard modules of `tests/it`, through the lane's filtered arm. No doctests, no fuzz compile, no retries; `just test` stays exact |
+| `just lane-lock claim <name> [secs]` / `release <name>` / `status` | the gate lane lock, one gate per machine: the MAIN checkout's `.local/locks/gate` directory (resolved from a linked worktree), whose `owner` line the recipe creates EXCLUSIVELY: that create is the claim, because `mkdir` is not atomic on every host (Ubuntu 26.04's uutils reports success for a directory that exists) and there the hand protocol has no owner proof; the `next` queue file. Same on-disk protocol as the hand one. `release` refuses any other owner; it never steals or clears a stale lock, it reports one (`status` exit 1 while held) |
+| `just check` | the bash lane: shellcheck + shfmt over `install` |
+| `just rust-fmt` / `rust-fmt-check` | `cargo fmt` + `taplo fmt` |
+| `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint` |
+| `just rust-test` | `cargo nextest run --locked` **and** `cargo test --doc --locked`. Both. nextest does not run doctests |
+| `just rust-fuzz-check` | product compiler, locked `cargo check --bins` over every fuzz target; no execution. Uses inherited `CARGO_TARGET_DIR` or root `target` |
+| `just rust-deny` / `rust-vet` | supply chain. The TLS graph is EXEMPTED, not audited (docs/history.md §11) |
+| `just rust-mutants` | does the suite discriminate? A product slice runs it `--in-diff` over its own diff before freeze and answers every survivor in the freeze report (test added, or named equivalent); budget bounded, LOCAL, no percentage ever cited or gated (docs/development.md §Mutation testing). CI runs it diff-bounded on path-matching pushes to main and PRs targeting main when a source diff and usable base exist; the full lane is opt-in manual dispatch (`mutants=true`). Bounded in config: 2 tests, 60 s kill, RSS watcher (`AE_MUTANTS_RSS_MAX_MB`, default 2048). `rust-cov` reports, never gates |
+| `just rust-fuzz target=<name> secs=60` / `rust-fuzz-all secs=60` | human-run cargo-fuzz over the hostile parsers, on an exact nightly. Refuses on an unpinned tool or a stale `fuzz/Cargo.lock`, ends on the cutover evidence line, and REPORTS — CI carries no nightly and never runs it (`fuzz/README.md`) |
+| `just rust-build-release` / `bundles` | native release binary (native only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` (needs the musl cross toolchain) |
+| `just rust-prune` / `rust-prune apply=yes` | THIS checkout's stale `ae` build output: the report is the default and removes nothing, `apply=yes` runs five fixed `cargo clean -p ae` cleans, each proved by a `--dry-run` path check first. Refuses a redirected target dir, a non-root cwd, a linked tree, a process using the checkout or a dry run it cannot prove (a stdout line that is not an absolute path inside its tree, no single valid `Summary`). Own tree only, never during a gate (`docs/development.md`) |
+| `just release` | the whole release, locally: check, test, rust-deny before the bump. Pre-flight refuses before any state is written |
+| `just rust-linux` / `rust-linux-26` / `rust-linux-smoke` | ON DEMAND, never reached by `just test`, `just pre` or `just release`: the gate on real Linux, native arm64, in a local container (read-only checkout, `ae-linux-arm64-*` cache volumes, non-root, the mounted source checked against the host's HEAD, tree and dirty count) / the same on Ubuntu 26.04, own `ae-linux26-arm64-*` volumes; `rust-linux-26` (bus `stall`, the default since that arm went green, #267) adds a stalling session bus proved before the build, `rust-linux-26 off` is the validated-host arm / the x86_64 musl release bundle from `./dist` executed in an amd64 container. arm64 only: the x86_64 proof of Ubuntu 26.04 is a human run on x86_64 hardware |
+| `just harness-smoke [control]` | ON-DEMAND live smoke of the adapter rows against the REAL harness binaries and logins (a few short turns per tool); never in the gate, CI or mutants; control = hang shim, no spend |
 
 ## Tests
 

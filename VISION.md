@@ -25,6 +25,8 @@ listed in AGENTS.md and has not changed.
 ## What does not change
 
 - **Simplicity is the feature.** The ownership map fits in one sitting.
+- **Resistant to features.** If tmux already does it, do not re-implement it.
+- **One crate with modules,** because that is how a Rust program stays readable.
 - **Daily productivity over feature completeness.** If it does not save time on every use,
   it does not belong. Resisting features is the work.
 - **One command to install after prerequisites.** A checksum-verified three-member bundle
