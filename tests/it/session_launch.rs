@@ -9164,3 +9164,241 @@ fn launchx_legacy_owned_session_refuses_a_recorded_pane_from_another_session() {
     );
     assert!(ok && other_after.lines().any(|pane| pane == foreign_pane));
 }
+// A config layout change applies to fresh sessions; a resume keeps its saved layout.
+#[test]
+fn launchx_resume_keeps_recorded_layout_when_config_changes_but_fresh_uses_config() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("lx-layout");
+    rig.without_chat();
+    let session = "lxSavedLayout";
+    std::fs::write(
+        &rig.config,
+        format!("{}chat = off\n", lead_config("vertical", &["worker"])),
+    )
+    .expect("initial two-seat vertical layout");
+    let first = rig.launch(&["--local", session]);
+    assert_eq!(first.0, Some(0), "{first:?}");
+    assert!(
+        rig.meta(session)
+            .lines()
+            .any(|line| line == "layout=vertical")
+    );
+    rig.wait_for_pane_command(session, "main", "sleep");
+    rig.wait_for_pane_command(session, "worker.0", "sleep");
+    let _keeper = bare_session(&rig, &rig.sock, "lxLayoutKeeper");
+    stop(&rig, session);
+    std::fs::write(
+        &rig.config,
+        format!("{}chat = off\n", lead_config("horizontal", &["worker"])),
+    )
+    .expect("different valid layout for future sessions");
+    for (name, layout, side_by_side) in [
+        (session, "vertical", true),
+        ("lxFreshLayout", "horizontal", false),
+    ] {
+        let launched = rig.launch(&["--local", name]);
+        assert_eq!(launched.0, Some(0), "{launched:?}");
+        let meta = rig.meta(name);
+        assert!(
+            meta.lines().any(|line| line == format!("layout={layout}")),
+            "{name} must record {layout}: {meta}"
+        );
+        let (ok, geometry) = rig.tmux(&[
+            "list-panes",
+            "-t",
+            &format!("={name}:0"),
+            "-F",
+            "#{pane_left}|#{pane_top}",
+        ]);
+        assert!(ok, "real pane geometry of {name}");
+        let panes = geometry
+            .lines()
+            .map(|line| line.split_once('|').expect("left and top coordinates"))
+            .collect::<Vec<_>>();
+        assert_eq!(panes.len(), 2, "two real seats: {geometry}");
+        if side_by_side {
+            assert_eq!(panes[0].1, panes[1].1, "equal tops: {geometry}");
+            assert_ne!(panes[0].0, panes[1].0, "recorded vertical: {geometry}");
+        } else {
+            assert_eq!(panes[0].0, panes[1].0, "equal left edges: {geometry}");
+            assert_ne!(panes[0].1, panes[1].1, "fresh horizontal: {geometry}");
+        }
+    }
+}
+// Local and managed-copy resumes preserve saved origins; empty origins use this cwd.
+#[test]
+fn launchx_resume_preserves_saved_origin_and_empty_origin_uses_cwd() {
+    if skip() {
+        return;
+    }
+    for (mode, stored_origin) in [
+        ("--local", true),
+        ("--local", false),
+        ("--copy", true),
+        ("--copy", false),
+    ] {
+        let rig = Rig::idle("lx-origin");
+        rig.without_chat();
+        let session = "lxSavedOrigin";
+        let first = rig.launch(&[mode, session]);
+        assert_eq!(first.0, Some(0), "{first:?}");
+        rig.wait_for_pane_command(session, "main", "sleep");
+        let _keeper = bare_session(&rig, &rig.sock, "lxOriginKeeper");
+        stop(&rig, session);
+
+        let saved_origin = rig.scratch.join("saved-origin");
+        std::fs::create_dir_all(&saved_origin).expect("a distinct saved origin");
+        let before = rig.meta(session);
+        let work_dir = before
+            .lines()
+            .find(|line| line.starts_with("work_dir="))
+            .expect("initial saved working directory")
+            .to_owned();
+        assert_eq!(
+            before
+                .lines()
+                .filter(|line| line.starts_with("origin="))
+                .count(),
+            1,
+            "one origin row in the initial record"
+        );
+        let recorded = if stored_origin {
+            saved_origin.display().to_string()
+        } else {
+            String::new()
+        };
+        let changed = before.lines().fold(String::new(), |mut text, line| {
+            if line.starts_with("origin=") {
+                text.push_str("origin=");
+                text.push_str(&recorded);
+            } else {
+                text.push_str(line);
+            }
+            text.push('\n');
+            text
+        });
+        std::fs::write(rig.dir(session).join("meta"), changed)
+            .expect("saved origin fixture, all other metadata retained");
+
+        let resumed = rig.launch(&[mode, session]);
+        assert_eq!(resumed.0, Some(0), "{resumed:?}");
+        let expected = if stored_origin {
+            &saved_origin
+        } else {
+            &rig.project
+        };
+        let after = rig.meta(session);
+        assert!(
+            after
+                .lines()
+                .any(|line| line == format!("origin={}", expected.display())),
+            "mode={mode}, stored_origin={stored_origin}: expected origin {}; metadata: {after}",
+            expected.display()
+        );
+        assert!(
+            after.lines().any(|line| line == work_dir),
+            "resume retains its saved working directory: {after}"
+        );
+        rig.wait_for_pane_command(session, "main", "sleep");
+    }
+}
+// Legacy copy records without a usable work_dir reuse only an existing managed copy.
+#[test]
+fn launchx_legacy_copy_resume_reuses_existing_copy_and_refuses_missing_copy() {
+    if skip() {
+        return;
+    }
+    for (copy_exists, empty_row) in [(true, false), (true, true), (false, false), (false, true)] {
+        let rig = Rig::idle("lx-legacy-copy");
+        rig.without_chat();
+        let session = "lxLegacyCopy";
+        std::fs::write(rig.project.join("payload"), b"saved project bytes")
+            .expect("source content");
+        let first = rig.launch(&["--copy", session]);
+        assert_eq!(first.0, Some(0), "{first:?}");
+        rig.wait_for_pane_command(session, "main", "sleep");
+        let _keeper = bare_session(&rig, &rig.sock, "lxCopyKeeper");
+        stop(&rig, session);
+        let work = rig.home.join("worktrees").join(session);
+        assert_eq!(
+            std::fs::read(work.join("payload")).expect("managed copy payload"),
+            b"saved project bytes"
+        );
+        let before = rig.meta(session);
+        assert_eq!(
+            before
+                .lines()
+                .filter(|line| line.starts_with("work_dir="))
+                .count(),
+            1
+        );
+        let legacy = before.lines().fold(String::new(), |mut text, line| {
+            if line.starts_with("work_dir=") {
+                if empty_row {
+                    text.push_str("work_dir=\n");
+                }
+            } else {
+                text.push_str(line);
+                text.push('\n');
+            }
+            text
+        });
+        std::fs::write(rig.dir(session).join("meta"), &legacy).expect("legacy copy record");
+        if !copy_exists {
+            std::fs::remove_dir_all(&work).expect("remove this fixture's managed copy");
+        }
+        let journal = rig.dir(session).join("events.jsonl");
+        let journal_before = std::fs::read(&journal).ok();
+        let resumed = rig.launch(&[session]);
+        if copy_exists {
+            assert_eq!(resumed.0, Some(0), "empty_row={empty_row}: {resumed:?}");
+            assert!(
+                resumed.1.starts_with(&format!(
+                    "Resuming session {session} (dir: {})...\n",
+                    work.display()
+                )),
+                "{resumed:?}"
+            );
+            assert!(!resumed.1.contains("Creating full copy"), "{resumed:?}");
+            assert_eq!(
+                std::fs::read(work.join("payload")).expect("preserved payload"),
+                b"saved project bytes"
+            );
+            rig.wait_for_pane_command(session, "main", "sleep");
+            let (_, cwd) = rig.tmux(&[
+                "display-message",
+                "-p",
+                "-t",
+                &format!("={session}:0.0"),
+                "#{pane_current_path}",
+            ]);
+            assert_eq!(
+                std::fs::canonicalize(cwd.trim()).expect("agent cwd"),
+                std::fs::canonicalize(&work).expect("managed copy")
+            );
+        } else {
+            assert_eq!(resumed.0, Some(1), "empty_row={empty_row}: {resumed:?}");
+            assert_eq!(
+                resumed.2,
+                format!(
+                    "Error: '{session}' records its working copy at {} but it is gone — restore it or end the session (ae end {session})\n",
+                    work.display()
+                )
+            );
+            assert!(resumed.1.is_empty(), "{resumed:?}");
+            assert_eq!(rig.meta(session), legacy, "refusal preserves metadata");
+            assert_eq!(
+                std::fs::read(&journal).ok(),
+                journal_before,
+                "refusal preserves journal"
+            );
+            assert!(!work.exists(), "refusal never recreates the copy");
+            assert!(
+                !rig.sessions().contains(&session.to_owned()),
+                "refusal never builds tmux session"
+            );
+        }
+    }
+}
