@@ -4719,31 +4719,77 @@ fn take_keys(app: &mut App, keyed: Vec<(Key, Instant)>) -> Option<bool> {
             redraw = true;
             continue;
         }
-        redraw |= if let Key::Mouse(mouse) = &key {
-            app.mouse_made(*mouse, origin)
-        } else {
-            // A key or a paste ends a drag first, then acts as it always has.
-            let ended = app.model.let_go();
-            let acted =
-                if key == Key::Interrupt && (app.clear_draft(origin) || app.guard_quit(origin)) {
-                    true
-                } else if app.model.settings_open() {
-                    settings_key(app, &key, origin)?
-                } else if app.model.peek_open() {
-                    peek_key(app, &key, origin)?
-                } else if app.model.reader_open() {
-                    reader_key(app, &key, origin)?
-                } else if app.composing() {
-                    app.compose(key, origin).map(|()| true)?
-                } else if app.held.is_some() {
-                    app.retry(&key)?
-                } else {
-                    browse(app, &key, origin)?
-                };
-            acted || ended
-        };
+        redraw |= route_key(app, key, origin)?;
     }
     Some(redraw)
+}
+
+/// Route one key that passed every gate: a mouse report acts on the frame
+/// that drew it; a key or a paste ends a drag first, then acts as it always
+/// has, in the mode that owns it. `Some(redraw)`, or `None` to quit.
+fn route_key(app: &mut App, key: Key, origin: Instant) -> Option<bool> {
+    if let Key::Mouse(mouse) = &key {
+        return Some(app.mouse_made(*mouse, origin));
+    }
+    let ended = app.model.let_go();
+    let acted = by_mode(app, key, origin)?;
+    Some(acted || ended)
+}
+
+/// Act on a key that is no mouse report: a `^C` first clears a draft or only
+/// arms a quit when the last clear guards it, anything else goes to the mode
+/// that owns the key. Judged here, after the `^C` and the end of a drag, never
+/// earlier. `Some(redraw)`, or `None` to quit.
+fn by_mode(app: &mut App, key: Key, origin: Instant) -> Option<bool> {
+    if key == Key::Interrupt && (app.clear_draft(origin) || app.guard_quit(origin)) {
+        return Some(true);
+    }
+    let overlays = [
+        app.model.settings_open(),
+        app.model.peek_open(),
+        app.model.reader_open(),
+    ];
+    match mode(overlays, app.composing(), app.held.is_some()) {
+        Mode::Settings => settings_key(app, &key, origin),
+        Mode::Peek => peek_key(app, &key, origin),
+        Mode::Reader => reader_key(app, &key, origin),
+        Mode::Composer => app.compose(key, origin).map(|()| true),
+        Mode::Held => app.retry(&key),
+        Mode::Browse => browse(app, &key, origin),
+    }
+}
+
+/// Who takes a key, first of these that is true: the settings overlay, the
+/// seat view, the file reader, the composer, a refused (held) entry, else the
+/// browse keys. Not the `browsing` that decides what ends an armed press in
+/// [`take_keys`]: that one counts the seat view and the reader as browsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Settings,
+    Peek,
+    Reader,
+    Composer,
+    Held,
+    Browse,
+}
+
+/// The mode that owns a key given which of them is open (see [`Mode`]): the
+/// three `overlays` are settings, seat view and reader, in that order.
+fn mode(overlays: [bool; 3], composing: bool, held: bool) -> Mode {
+    let [settings, peek, reader] = overlays;
+    if settings {
+        Mode::Settings
+    } else if peek {
+        Mode::Peek
+    } else if reader {
+        Mode::Reader
+    } else if composing {
+        Mode::Composer
+    } else if held {
+        Mode::Held
+    } else {
+        Mode::Browse
+    }
 }
 
 /// Hold `first` and every key after it (`rest`) in order behind what is
@@ -6662,6 +6708,26 @@ mod tests {
             !quits(&both[..2], true, false, Some(cleared)),
             "only guarded"
         );
+    }
+
+    /// Which mode takes a key is the first of settings, seat view, reader,
+    /// composer, held entry that is open, else browsing (docs/app.md: an open
+    /// Settings or seat view owns its keys even over a kept draft, a held
+    /// composer takes every key). All 32 combinations, the winner read as the
+    /// highest set bit of (settings, peek, reader, composing, held).
+    #[test]
+    fn the_first_open_mode_takes_the_key() {
+        use super::Mode::{Browse, Composer, Held, Peek, Reader, Settings};
+        let by_height = [Browse, Held, Composer, Reader, Peek, Settings];
+        for bits in 0_u32..32 {
+            let on = |bit: u32| bits & (1 << bit) != 0;
+            let got = super::mode([on(4), on(3), on(2)], on(1), on(0));
+            let top = (u32::BITS - bits.leading_zeros()) as usize;
+            assert_eq!(got, by_height[top], "open modes {bits:05b}");
+        }
+        assert_eq!(super::mode([true, false, false], true, false), Settings);
+        assert_eq!(super::mode([false, true, false], true, false), Peek);
+        assert_eq!(super::mode([false; 3], false, true), Held);
     }
 
     /// O1: a press after the window passed arms the seat the CURRENT frame
