@@ -1013,3 +1013,6 @@ pub struct View<'a> {
 #[cfg(test)]
 #[path = "markdown_fix_spec.rs"]
 mod fix_spec;
+#[cfg(test)]
+#[path = "mdmap_spec.rs"]
+mod mdmap_spec;
