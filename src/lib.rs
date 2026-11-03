@@ -3535,6 +3535,65 @@ fn run_send(
     )?)
 }
 
+/// Run `entry` over the world the caller already read; there is none when the
+/// state root could not be derived, which is refused like a missing root.
+fn with_world<E: Write, X: Into<Error>>(
+    world: Option<&listing::World>,
+    err: &mut E,
+    entry: impl FnOnce(&listing::World, &mut E) -> std::result::Result<u8, X>,
+) -> Result<u8> {
+    match world {
+        Some(world) => entry(world, err).map_err(Into::into),
+        None => refuse_no_state_root(err),
+    }
+}
+
+/// `list`: the inventory warning (not for `--json`), then the pending-rename
+/// warnings, then the table. Every warning goes to STDERR and the table still
+/// prints.
+fn run_list(
+    list_args: &filters::ListArgs,
+    world: &listing::World,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    if !list_args.json
+        && let Some(warning) = listing::diagnostic(world)
+    {
+        writeln!(err, "{warning}")?;
+    }
+    if let Some(root) = state_root() {
+        write_pending_renames(&root, err)?;
+    }
+    write!(out, "{}", listing::render(list_args, world))?;
+    Ok(0)
+}
+
+/// A pending rename transaction is not ordinary state: surface it on STDERR
+/// with its proved retry rather than letting the table read as settled. The
+/// damaged carriers are read only after every pending intent was written.
+fn write_pending_renames(root: &std::path::Path, err: &mut impl Write) -> Result<()> {
+    for intent in rename::pending_intents(root) {
+        writeln!(
+            err,
+            "ae: warning: rename '{}' → '{}' is in progress at phase '{}' — retry 'ae rename {} {}'",
+            intent.old_name(),
+            intent.new_name(),
+            intent.phase(),
+            intent.old_name(),
+            intent.new_name()
+        )?;
+    }
+    for damaged in rename::pending_damaged(root) {
+        writeln!(
+            err,
+            "ae: warning: a damaged rename carrier is pending ({}) — repair or remove it by hand",
+            damaged.why
+        )?;
+    }
+    Ok(())
+}
+
 /// What a `MissingOperand` refusal says the command needs.
 ///
 /// Every internal entry but two is per-SESSION and takes that session's meta
@@ -3901,52 +3960,12 @@ pub fn run_with(
                 state::EXIT_FAILED
             }
         }
-        cli::Request::List(list_args) => {
-            if let Some(world) = world {
-                // The warning goes to STDERR and the table still prints.
-                if !list_args.json
-                    && let Some(warning) = listing::diagnostic(world)
-                {
-                    writeln!(err, "{warning}")?;
-                }
-                // A pending rename transaction is not ordinary state: surface
-                // it on STDERR with its proved retry rather than letting the
-                // table read as settled.
-                if let Some(root) = state_root() {
-                    for intent in crate::rename::pending_intents(&root) {
-                        writeln!(
-                            err,
-                            "ae: warning: rename '{}' → '{}' is in progress at phase '{}' — retry 'ae rename {} {}'",
-                            intent.old_name(),
-                            intent.new_name(),
-                            intent.phase(),
-                            intent.old_name(),
-                            intent.new_name()
-                        )?;
-                    }
-                    for damaged in crate::rename::pending_damaged(&root) {
-                        writeln!(
-                            err,
-                            "ae: warning: a damaged rename carrier is pending ({}) — repair or remove it by hand",
-                            damaged.why
-                        )?;
-                    }
-                }
-                write!(out, "{}", listing::render(list_args, world))?;
-                0
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
-        }
-        cli::Request::Monitor { dir, args } => {
-            if let Some(world) = world {
-                monitor::run(dir, world, args, out, err)?
-            } else {
-                writeln!(err, "ae: {NO_STATE_ROOT}")?;
-                EXIT_UNAVAILABLE
-            }
-        }
+        cli::Request::List(list_args) => with_world(world, err, |world, err| {
+            run_list(list_args, world, out, err)
+        })?,
+        cli::Request::Monitor { dir, args } => with_world(world, err, |world, err| {
+            monitor::run(dir, world, args, out, err)
+        })?,
         cli::Request::Next { tail } => run_next(tail, world, out, err)?,
         cli::Request::Brief { tail } => run_brief(tail, world, out, err)?,
         cli::Request::Board { tail } => run_board(tail, world, out, err)?,
