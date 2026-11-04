@@ -736,7 +736,8 @@ fn agy_limit_standing(buf: &str) -> LimitStanding {
         Some(row) if !row.trim().is_empty() => {
             return LimitStanding::RowAfterCell(offending_row(row.trim()));
         }
-        _ => return LimitStanding::NoCell,
+        // A blank or no row under the limit row: the cell has no Error ID row.
+        _ => return LimitStanding::NoBox,
     }
     let below: Vec<&str> = window[at + 2..]
         .iter()

@@ -162,8 +162,10 @@ Then, under `.lifecycle.<session>.lock`:
    wrapped draft is `no empty box under the limit row`, and the Error ID row ends
    the cell, so work abutting it refuses. A limit row agy wraps over several rows
    (its changelog says it wraps alerts itself, so a pane narrower than the row
-   draws it so), or one with no `Error ID:` row under it, refuses too, and the
-   step is `--stop-unknown`. Named residual: no live capture of the rows under the
+   draws it so) refuses as a row after the limit row, and a limit row with a blank
+   or no row under it (no `Error ID:` row) is `no empty box under the limit row`;
+   the step is `--stop-unknown`. An agy seat that is not on its limit keeps its
+   `no frame` reason. Named residual: no live capture of the rows under the
    limit exists, so a frame that draws anything else there refuses until it is
    measured. The reset in the row is relative and never read: an agy limit has no
    known reset, so the limit trigger moves the seat.

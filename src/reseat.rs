@@ -62,6 +62,9 @@ use crate::tracked::{self, EventFields};
 use crate::transport;
 
 #[cfg(test)]
+#[path = "reseat/agylimit_reason_spec.rs"]
+mod agylimit_reason_spec;
+#[cfg(test)]
 #[path = "reseat/agylimit_spec.rs"]
 mod agylimit_spec;
 #[cfg(test)]
@@ -926,6 +929,12 @@ fn frame_gap(reading: Reading<'_>, agent_bin: &str, tool: ToolKind) -> Option<St
         }
         crate::watchdog::LimitStanding::BackgroundTask(row) => {
             format!("background task: \"{}\"", row.replace('"', ""))
+        }
+        // A tool whose input no grammar reads and whose scan finds no limit
+        // cell has no frame at all, as it had before the scan: agy's refusal
+        // for a seat that is not on its limit keeps saying so.
+        crate::watchdog::LimitStanding::NoCell if !tool.input_model().is_modelled() => {
+            "no frame".to_owned()
         }
         crate::watchdog::LimitStanding::NoBox if tool.limit_screen_scanned() => {
             "no empty box under the limit row".to_owned()
