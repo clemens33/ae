@@ -1113,20 +1113,10 @@ fn episodes(
             continue;
         }
         if let Some(open) = limit.as_mut()
-            && matches!(
-                event.action.as_str(),
-                ATTEMPT_ACTION | REFUSED_ACTION | FAILED_ACTION
-            )
-            && event.reference.as_deref() == Some(open.reference())
-            && open.cooled(event.ts.epoch())
+            && reopens(open, event)
         {
             open.reopen();
         }
-        let live = |found: &Option<Episode>| {
-            found.as_ref().is_some_and(|open| {
-                open.terminal.is_none() && event.reference.as_deref() == Some(open.reference())
-            })
-        };
         match event.action.as_str() {
             CLEARED_ACTION => limit = None,
             LIMIT_ACTION => {
@@ -1154,7 +1144,9 @@ fn episodes(
                 }
                 headroom = None;
             }
-            REFUSED_ACTION | FAILED_ACTION if live(&limit) || live(&headroom) => {
+            REFUSED_ACTION | FAILED_ACTION
+                if live(limit.as_ref(), event) || live(headroom.as_ref(), event) =>
+            {
                 let outcome = if event.action == REFUSED_ACTION {
                     Outcome::Refused
                 } else {
@@ -1174,6 +1166,25 @@ fn episodes(
         }
     }
     (limit, headroom)
+}
+
+/// Whether `event` opens a new round of the limit episode `open`: an attempt or
+/// a closing under its own key, journaled once its cooldown has passed
+/// ([`Episode::cooled`]).
+fn reopens(open: &Episode, event: &Event) -> bool {
+    matches!(
+        event.action.as_str(),
+        ATTEMPT_ACTION | REFUSED_ACTION | FAILED_ACTION
+    ) && event.reference.as_deref() == Some(open.reference())
+        && open.cooled(event.ts.epoch())
+}
+
+/// Whether `event` names the key of an episode whose round is still open: the
+/// live key an outcome closes by.
+fn live(found: Option<&Episode>, event: &Event) -> bool {
+    found.is_some_and(|open| {
+        open.terminal.is_none() && event.reference.as_deref() == Some(open.reference())
+    })
 }
 
 /// The episode, of either kind, whose attempt is in flight: opened, no
@@ -4439,6 +4450,97 @@ mod tests {
             found.map(|found| found.terminal),
             Some(Some(Outcome::Refused))
         );
+    }
+
+    /// A limit episode keyed `KEY`, closed `closed_at` seconds after it with
+    /// `rounds` closings counted, written field by field.
+    fn shut(terminal: Option<Outcome>, rounds: u8, closed_at: i64) -> Episode {
+        Episode {
+            key: after_key(0),
+            reference: KEY.to_owned(),
+            trigger: Trigger::Limit,
+            cause: String::new(),
+            attempts: 1,
+            rounds,
+            closed_at: Some(after_key(closed_at)),
+            open: None,
+            terminal,
+            held: false,
+            last_hold: None,
+            choice_held: false,
+        }
+    }
+
+    #[test]
+    fn a_closed_limit_round_reopens_on_its_own_attempt_or_closing_once_the_cooldown_has_passed() {
+        let closed = shut(Some(Outcome::Refused), 1, 100);
+        let due = 100 + RETRY_COOLDOWN_SECS;
+        for action in [ATTEMPT_ACTION, REFUSED_ACTION, FAILED_ACTION] {
+            assert!(reopens(&closed, &routed(due, action, KEY)), "{action}");
+            assert!(
+                reopens(&closed, &routed(due + 600, action, KEY)),
+                "{action}"
+            );
+            assert!(
+                !reopens(&closed, &routed(due - 1, action, KEY)),
+                "{action} inside the cooldown"
+            );
+            assert!(
+                !reopens(&closed, &routed(due, action, OTHER_KEY)),
+                "{action} under another key"
+            );
+            assert!(
+                !reopens(&closed, &watchdog(due, action, None)),
+                "{action} under no key"
+            );
+        }
+        for action in [
+            HELD_ACTION,
+            DONE_ACTION,
+            LIMIT_ACTION,
+            CLEARED_ACTION,
+            HEADROOM_ACTION,
+            REARMED_ACTION,
+            "unrelated",
+        ] {
+            assert!(!reopens(&closed, &routed(due, action, KEY)), "{action}");
+        }
+    }
+
+    #[test]
+    fn only_a_refused_or_failed_limit_round_with_rounds_left_reopens() {
+        let due = 100 + RETRY_COOLDOWN_SECS;
+        let attempt = routed(due, ATTEMPT_ACTION, KEY);
+        assert!(reopens(&shut(Some(Outcome::Failed), 1, 100), &attempt));
+        assert!(reopens(
+            &shut(Some(Outcome::Refused), MAX_ROUNDS - 1, 100),
+            &attempt
+        ));
+        assert!(!reopens(
+            &shut(Some(Outcome::Refused), MAX_ROUNDS, 100),
+            &attempt
+        ));
+        assert!(!reopens(&shut(Some(Outcome::Done), 1, 100), &attempt));
+        assert!(!reopens(&shut(None, 0, 100), &attempt));
+        let headroom = Episode {
+            trigger: Trigger::Headroom,
+            ..shut(Some(Outcome::Refused), 1, 100)
+        };
+        assert!(!reopens(&headroom, &attempt), "a headroom round stays shut");
+    }
+
+    #[test]
+    fn a_record_is_live_for_an_open_round_under_its_own_key_only() {
+        let open = shut(None, 0, 100);
+        let record = routed(200, REFUSED_ACTION, KEY);
+        assert!(live(Some(&open), &record));
+        assert!(!live(None, &record), "no episode, no live key");
+        assert!(!live(Some(&open), &routed(200, REFUSED_ACTION, OTHER_KEY)));
+        assert!(!live(Some(&open), &watchdog(200, REFUSED_ACTION, None)));
+        for outcome in [Outcome::Refused, Outcome::Failed, Outcome::Done] {
+            let closed = shut(Some(outcome), 1, 100);
+            assert!(!live(Some(&closed), &record), "{outcome:?} is closed");
+        }
     }
 
     #[test]
