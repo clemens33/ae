@@ -7,6 +7,7 @@
 //! capture.
 
 use std::io::{self, Write};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use crate::archive;
@@ -719,10 +720,10 @@ enum RunMode {
 }
 
 /// `_end [-f] [--purge-history|--keep-history] [--assume-stopped] <name|all>`.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the confirmation, handoff and direct paths share one ordered preflight"
-)]
+///
+/// One ordered preflight serves the confirmation, handoff and direct paths:
+/// argv, caller, target, mode, targets, rename, freeze, who is asked, then
+/// the end itself. Each step below is named, in that order.
 pub(crate) fn run(
     root: &Path,
     tail: &[String],
@@ -766,39 +767,12 @@ pub(crate) fn run(
     }
 
     // RESOLVE BEFORE PROMPTING.
-    let targets: Vec<String> = if args.mode == RunMode::Handoff && !args.confirmed.is_empty() {
-        let Some(carried) = carried_targets(&args.target, &args.confirmed) else {
-            writeln!(
-                err,
-                "Error: carried end plans do not match '{}'.",
-                args.target
-            )?;
-            return Ok(EXIT_USAGE);
-        };
-        carried
-    } else if args.target == "all" {
-        all_sessions(root)
-    } else {
-        if !name_is_usable(root, &args.target) {
-            writeln!(err, "Session '{}' not found.", args.target)?;
-            return Ok(EXIT_FAILED);
-        }
-        let dir = sessions_dir(root).join(&args.target);
-        if !dir_exists(&dir) && !dir_exists(&worktrees_dir(root).join(&args.target)) {
-            writeln!(err, "Session '{}' not found.", args.target)?;
-            return Ok(EXIT_FAILED);
-        }
-        vec![args.target.clone()]
+    let targets = match targets_of(root, &args, err)? {
+        ControlFlow::Continue(targets) => targets,
+        ControlFlow::Break(code) => return Ok(code),
     };
-
-    // A pending rename transaction owns its names until its proved retry
-    // converges: an end must not tear down a mixed generation as ordinary
-    // state.
-    for target in &targets {
-        if let Some(blocked) = crate::rename::intent_blocks(root, target) {
-            writeln!(err, "Error: {blocked}. Nothing was ended.")?;
-            return Ok(crate::state::EXIT_FAILED);
-        }
+    if let ControlFlow::Break(code) = rename_pending(root, &targets, err)? {
+        return Ok(code);
     }
 
     // ONE resolution: the prompt renders from these fields and the frozen
@@ -827,59 +801,11 @@ pub(crate) fn run(
             );
         }
         Prompt::Client(caller) => {
-            let Some(continuation) = handoff_argv(&args, &frozen) else {
-                writeln!(
-                    err,
-                    "Error: ae cannot name its own executable, so it cannot hand '{}' to a supervisor — nothing was ended.",
-                    args.target
-                )?;
-                return Ok(EXIT_FAILED);
-            };
-            let Some(caller_server) = caller_server.as_ref() else {
-                writeln!(err, "Error: the calling tmux server is unknown; pass -f.")?;
-                return Ok(EXIT_FAILED);
-            };
-            return match confirm_on_client(
-                caller_server,
-                caller,
-                &end_prompt(&args.target, &frozen),
-                &continuation,
-            ) {
-                ClientPrompt::Shown => Ok(0),
-                ClientPrompt::Nobody => {
-                    writeln!(err, "Error: nobody attached to confirm; pass -f.")?;
-                    Ok(EXIT_FAILED)
-                }
-                ClientPrompt::Failed => {
-                    writeln!(err, "Error: tmux refused the confirmation prompt; pass -f.")?;
-                    Ok(EXIT_FAILED)
-                }
-            };
+            return confirm_on_caller_client(caller_server.as_ref(), caller, &args, &frozen, err);
         }
         Prompt::Terminal => {
-            // Set REGARDLESS of how many targets there were: the human was asked,
-            // and what they were asked about is now the whole of what may be ended.
-            confirm_body(root, &args, &frozen, err)?;
-            write!(err, "Continue? [y/N] ")?;
-            err.flush()?;
-            match answer(read_reply().as_deref()) {
-                Answer::Yes => {}
-                Answer::No => {
-                    writeln!(err, "Aborted.")?;
-                    return Ok(0);
-                }
-                Answer::NoInput => {
-                    writeln!(
-                        err,
-                        "Error: could not obtain confirmation — no input on stdin."
-                    )?;
-                    writeln!(
-                        err,
-                        "  Nothing was stopped and nothing was deleted. Run it from a terminal, or"
-                    )?;
-                    writeln!(err, "  pass -f if you mean to proceed without being asked.")?;
-                    return Ok(EXIT_FAILED);
-                }
+            if let ControlFlow::Break(code) = confirm_in_terminal(root, &args, &frozen, err)? {
+                return Ok(code);
             }
         }
         Prompt::Forced => {}
@@ -905,11 +831,144 @@ pub(crate) fn run(
         );
     }
 
-    // EXACTLY the list the human was shown.
+    end_each(root, &args, &frozen, out, err)
+}
+
+/// The names this end is about: the carried plans of a handoff, the census
+/// for `all`, or the one named session, which must exist.
+fn targets_of(
+    root: &Path,
+    args: &Args,
+    err: &mut impl Write,
+) -> io::Result<ControlFlow<u8, Vec<String>>> {
+    if args.mode == RunMode::Handoff && !args.confirmed.is_empty() {
+        let Some(carried) = carried_targets(&args.target, &args.confirmed) else {
+            writeln!(
+                err,
+                "Error: carried end plans do not match '{}'.",
+                args.target
+            )?;
+            return Ok(ControlFlow::Break(EXIT_USAGE));
+        };
+        return Ok(ControlFlow::Continue(carried));
+    }
+    if args.target == "all" {
+        return Ok(ControlFlow::Continue(all_sessions(root)));
+    }
+    if !name_is_usable(root, &args.target) {
+        writeln!(err, "Session '{}' not found.", args.target)?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    let dir = sessions_dir(root).join(&args.target);
+    if !dir_exists(&dir) && !dir_exists(&worktrees_dir(root).join(&args.target)) {
+        writeln!(err, "Session '{}' not found.", args.target)?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    Ok(ControlFlow::Continue(vec![args.target.clone()]))
+}
+
+/// A pending rename transaction owns its names until its proved retry
+/// converges: an end must not tear down a mixed generation as ordinary state.
+/// The first blocked target, in order, refuses the whole end.
+fn rename_pending(
+    root: &Path,
+    targets: &[String],
+    err: &mut impl Write,
+) -> io::Result<ControlFlow<u8>> {
+    for target in targets {
+        if let Some(blocked) = crate::rename::intent_blocks(root, target) {
+            writeln!(err, "Error: {blocked}. Nothing was ended.")?;
+            return Ok(ControlFlow::Break(crate::state::EXIT_FAILED));
+        }
+    }
+    Ok(ControlFlow::Continue(()))
+}
+
+/// No terminal, inside a session: the caller's attached tmux client is asked,
+/// and its `y` runs the handoff continuation. This process ends nothing.
+fn confirm_on_caller_client(
+    caller_server: Option<&ServerId>,
+    caller: &str,
+    args: &Args,
+    frozen: &[FrozenTarget],
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let Some(continuation) = handoff_argv(args, frozen) else {
+        writeln!(
+            err,
+            "Error: ae cannot name its own executable, so it cannot hand '{}' to a supervisor — nothing was ended.",
+            args.target
+        )?;
+        return Ok(EXIT_FAILED);
+    };
+    let Some(caller_server) = caller_server else {
+        writeln!(err, "Error: the calling tmux server is unknown; pass -f.")?;
+        return Ok(EXIT_FAILED);
+    };
+    match confirm_on_client(
+        caller_server,
+        caller,
+        &end_prompt(&args.target, frozen),
+        &continuation,
+    ) {
+        ClientPrompt::Shown => Ok(0),
+        ClientPrompt::Nobody => {
+            writeln!(err, "Error: nobody attached to confirm; pass -f.")?;
+            Ok(EXIT_FAILED)
+        }
+        ClientPrompt::Failed => {
+            writeln!(err, "Error: tmux refused the confirmation prompt; pass -f.")?;
+            Ok(EXIT_FAILED)
+        }
+    }
+}
+
+/// The terminal question. Only a yes continues to the end.
+fn confirm_in_terminal(
+    root: &Path,
+    args: &Args,
+    frozen: &[FrozenTarget],
+    err: &mut impl Write,
+) -> io::Result<ControlFlow<u8>> {
+    // Set REGARDLESS of how many targets there were: the human was asked,
+    // and what they were asked about is now the whole of what may be ended.
+    confirm_body(root, args, frozen, err)?;
+    write!(err, "Continue? [y/N] ")?;
+    err.flush()?;
+    match answer(read_reply().as_deref()) {
+        Answer::Yes => Ok(ControlFlow::Continue(())),
+        Answer::No => {
+            writeln!(err, "Aborted.")?;
+            Ok(ControlFlow::Break(0))
+        }
+        Answer::NoInput => {
+            writeln!(
+                err,
+                "Error: could not obtain confirmation — no input on stdin."
+            )?;
+            writeln!(
+                err,
+                "  Nothing was stopped and nothing was deleted. Run it from a terminal, or"
+            )?;
+            writeln!(err, "  pass -f if you mean to proceed without being asked.")?;
+            Ok(ControlFlow::Break(EXIT_FAILED))
+        }
+    }
+}
+
+/// End EXACTLY the list the human was shown, in that order, and count what
+/// failed.
+fn end_each(
+    root: &Path,
+    args: &Args,
+    frozen: &[FrozenTarget],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
     let mut failures = 0_u32;
-    for target in &frozen {
-        let contract = contract_for(&args, target);
-        if !end_one(root, &target.name, &args, contract, out, err)? {
+    for target in frozen {
+        let contract = contract_for(args, target);
+        if !end_one(root, &target.name, args, contract, out, err)? {
             failures += 1;
         }
     }
