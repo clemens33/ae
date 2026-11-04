@@ -5141,9 +5141,7 @@ fn auto_acts(
                 let said = trigger == Trigger::Headroom
                     && found
                         .holds_with(&crate::autoreseat::leg::held_summary(reason, found.cause()));
-                named.retain(|(at, held, _)| *at != slot || *held == key);
-                if !said && !named.contains(&(slot.clone(), key, reason)) {
-                    named.push((slot.clone(), key, reason));
+                if name_hold(named, &slot, key, reason, said) {
                     acts.push(AutoAct::Held {
                         slot,
                         agent,
@@ -5165,6 +5163,25 @@ fn auto_acts(
         agent: seat.agent.clone(),
     }));
     acts
+}
+
+/// Whether the hold of `slot`'s episode `key` for `reason` is named this
+/// cycle, remembering it in `named` if so. The slot's memory of any other
+/// episode is dropped first, whatever is said; a hold the journal already
+/// ends on (`said`) or one named before is not named again.
+fn name_hold(
+    named: &mut Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
+    slot: &str,
+    key: Timestamp,
+    reason: crate::autoreseat::HoldReason,
+    said: bool,
+) -> bool {
+    named.retain(|(at, held, _)| at != slot || *held == key);
+    let fresh = !said && !named.contains(&(slot.to_owned(), key, reason));
+    if fresh {
+        named.push((slot.to_owned(), key, reason));
+    }
+    fresh
 }
 
 /// What the auto reseat step says this cycle of a limited seat with no
@@ -15941,6 +15958,51 @@ mod tests {
         }
     }
 
+    /// A hold is named once per slot, episode and reason: a new episode of
+    /// the slot forgets the old one's names, even when the journal already
+    /// says this hold and nothing is named; another slot's names stand.
+    #[test]
+    fn a_hold_is_named_once_per_slot_episode_and_reason() {
+        use super::name_hold;
+        use crate::autoreseat::HoldReason::{Busy, Draft};
+        let at = crate::time::Timestamp::from_epoch;
+        let entry = |slot: &str, key: i64, reason| (slot.to_owned(), at(key), reason);
+        let mut named = vec![entry("spawned.2", 100, Busy)];
+        assert!(
+            name_hold(&mut named, "spawned.1", at(100), Busy, false),
+            "first"
+        );
+        assert!(
+            !name_hold(&mut named, "spawned.1", at(100), Busy, false),
+            "again"
+        );
+        assert!(
+            name_hold(&mut named, "spawned.1", at(100), Draft, false),
+            "a new reason"
+        );
+        assert_eq!(
+            named,
+            [
+                entry("spawned.2", 100, Busy),
+                entry("spawned.1", 100, Busy),
+                entry("spawned.1", 100, Draft)
+            ]
+        );
+        assert!(
+            !name_hold(&mut named, "spawned.1", at(200), Busy, true),
+            "said"
+        );
+        assert_eq!(
+            named,
+            [entry("spawned.2", 100, Busy)],
+            "the old episode forgotten"
+        );
+        assert!(
+            name_hold(&mut named, "spawned.1", at(100), Busy, false),
+            "named again"
+        );
+    }
+
     /// The headroom seam's seat: unlatched in `room`, its start settled at 200
     /// and, when `urgent`, reading its short window exhausted.
     fn route_seat(room: &crate::autoreseat::Room, urgent: bool) -> super::AutoSeat {
@@ -15949,7 +16011,11 @@ mod tests {
             room: room.clone(),
             start: crate::autoreseat::StartRead {
                 settled: Some(200),
-                exhausted: urgent.then(|| seam_window(100.0, "session_all 5h")),
+                exhausted: urgent.then(|| crate::autoreseat::Window {
+                    long: false,
+                    observed_at: 200,
+                    ..seam_window(100.0, "session_all 5h")
+                }),
                 ..crate::autoreseat::StartRead::default()
             },
             ..seam_seat()
