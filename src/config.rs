@@ -983,55 +983,14 @@ fn overlay_identity_text(
             continue;
         }
         if let Some(name) = section_header(trimmed) {
-            if name == "agents" {
-                return Err(ConfigError::LegacyAgents {
-                    file: file.to_owned(),
-                    line,
-                });
-            }
-            section = name;
+            section = identity_section(file, line, name)?;
             continue;
         }
-        if !IDENTITY_SECTIONS.contains(&section.as_str()) {
-            continue;
-        }
-        // The raw KEY CLAIM first (comments excluded): a `[roster]` key outside
-        // the agent grammar refuses here, before any value parse, and a key
-        // named twice refuses even when one claim carries no value.
-        let Some(key) = key_claim(trimmed) else {
+        // The raw KEY CLAIM first, before any value parse, so a key named
+        // twice refuses even when one claim carries no value.
+        let Some(key) = identity_key_claim(file, &section, line, trimmed)? else {
             continue;
         };
-        if section == "roster" || section == "clients" {
-            if !is_agent_name(key) {
-                return Err(if section == "roster" {
-                    ConfigError::RosterKey {
-                        file: file.to_owned(),
-                        key: key.to_owned(),
-                        line,
-                    }
-                } else {
-                    ConfigError::ClientKey {
-                        file: file.to_owned(),
-                        key: key.to_owned(),
-                        line,
-                    }
-                });
-            }
-            if section == "clients" && key == "env" {
-                return Err(client_error(
-                    file,
-                    key,
-                    line,
-                    "offending word 'env': the label is reserved prefix syntax".to_owned(),
-                ));
-            }
-        } else if !is_config_key(key) {
-            // A non-key line contributes nothing.
-            continue;
-        }
-        if section == "workspace" && key != "main" && key != "workers" {
-            continue;
-        }
         if seen.iter().any(|(s, k)| s == &section && k == key) {
             return Err(ConfigError::DuplicateKey {
                 file: file.to_owned(),
@@ -1062,6 +1021,70 @@ fn overlay_identity_text(
         }
     }
     Ok(())
+}
+
+/// The section a header opens: any name but `agents`, the v1 section, which
+/// refuses wherever it appears.
+fn identity_section(file: &Path, line: usize, name: String) -> Result<String, ConfigError> {
+    if name == "agents" {
+        return Err(ConfigError::LegacyAgents {
+            file: file.to_owned(),
+            line,
+        });
+    }
+    Ok(name)
+}
+
+/// The identity key a line claims in `section`. `Ok(None)` contributes
+/// nothing: a section outside the identity set, a line without a key claim
+/// (comments excluded), a `[profiles]` key outside the config-key grammar, or
+/// a `[workspace]` key other than `main` and `workers`. A `[roster]` or
+/// `[clients]` label outside the agent grammar, or the `[clients]` label
+/// `env`, refuses.
+fn identity_key_claim<'a>(
+    file: &Path,
+    section: &str,
+    line: usize,
+    trimmed: &'a str,
+) -> Result<Option<&'a str>, ConfigError> {
+    if !IDENTITY_SECTIONS.contains(&section) {
+        return Ok(None);
+    }
+    let Some(key) = key_claim(trimmed) else {
+        return Ok(None);
+    };
+    let claims = match section {
+        "roster" | "clients" => {
+            if let Some(refusal) = label_refusal(file, section, line, key) {
+                return Err(refusal);
+            }
+            true
+        }
+        "workspace" => key == "main" || key == "workers",
+        _ => is_config_key(key),
+    };
+    Ok(claims.then_some(key))
+}
+
+/// Why a `[roster]` or `[clients]` label refuses, if it does: outside the
+/// agent grammar, or the `[clients]` label `env`, which is prefix syntax.
+fn label_refusal(file: &Path, section: &str, line: usize, key: &str) -> Option<ConfigError> {
+    if !is_agent_name(key) {
+        let (file, key) = (file.to_owned(), key.to_owned());
+        return Some(if section == "roster" {
+            ConfigError::RosterKey { file, key, line }
+        } else {
+            ConfigError::ClientKey { file, key, line }
+        });
+    }
+    (section == "clients" && key == "env").then(|| {
+        client_error(
+            file,
+            key,
+            line,
+            "offending word 'env': the label is reserved prefix syntax".to_owned(),
+        )
+    })
 }
 
 /// Parse one client definition with the launch-command lexer. `$HOME` expands
@@ -3905,6 +3928,111 @@ mod tests {
         // A comment is not a claim — control.
         let f = NamedTemp::new("dupcomment", "[roster]\n# lead = old\nlead = cc\n");
         assert!(read_identity(Some(f.path()), None).is_ok());
+    }
+
+    #[test]
+    fn only_the_v1_agents_header_refuses_and_every_other_name_opens_its_section() {
+        let file = Path::new("f");
+        assert_eq!(
+            identity_section(file, 7, "agents".to_owned()),
+            Err(ConfigError::LegacyAgents {
+                file: file.to_owned(),
+                line: 7
+            })
+        );
+        for name in ["profiles", "Agents", "agents_", "prompt"] {
+            assert_eq!(
+                identity_section(file, 7, name.to_owned()),
+                Ok(name.to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn an_identity_key_claim_skips_outside_its_grammar_and_refuses_bad_labels() {
+        let file = Path::new("f");
+        let skips = [
+            ("", "a = x"),
+            ("prices", "no:colons = x"),
+            ("Profiles", "a = x"),
+            ("profiles", "a"),
+            ("profiles", "# a = x"),
+            ("profiles", "1a = x"),
+            ("profiles", "= x"),
+            ("workspace", "layout = x"),
+            ("workspace", "mainly = x"),
+            ("workspace", "no:colons = x"),
+            ("roster", "# no:colons = x"),
+        ];
+        for (section, line) in skips {
+            assert_eq!(
+                identity_key_claim(file, section, 3, line),
+                Ok(None),
+                "[{section}] {line}"
+            );
+        }
+        let claims = [
+            ("profiles", "a =", "a"),
+            ("profiles", "_a-b = x", "_a-b"),
+            ("workspace", "main =", "main"),
+            ("workspace", "workers = a, b", "workers"),
+            ("roster", "2nd = p", "2nd"),
+            ("roster", "env = p", "env"),
+            ("clients", "cc = ./not-judged-here", "cc"),
+        ];
+        for (section, line, key) in claims {
+            assert_eq!(
+                identity_key_claim(file, section, 3, line),
+                Ok(Some(key)),
+                "[{section}] {line}"
+            );
+        }
+        let refusals = [
+            (
+                "roster",
+                "no:colons = p",
+                ConfigError::RosterKey {
+                    file: file.to_owned(),
+                    key: "no:colons".to_owned(),
+                    line: 3,
+                },
+            ),
+            (
+                "roster",
+                "= p",
+                ConfigError::RosterKey {
+                    file: file.to_owned(),
+                    key: String::new(),
+                    line: 3,
+                },
+            ),
+            (
+                "clients",
+                "_bad = x",
+                ConfigError::ClientKey {
+                    file: file.to_owned(),
+                    key: "_bad".to_owned(),
+                    line: 3,
+                },
+            ),
+            (
+                "clients",
+                "env =",
+                ConfigError::ClientEntry {
+                    file: file.to_owned(),
+                    client: "env".to_owned(),
+                    line: 3,
+                    reason: "offending word 'env': the label is reserved prefix syntax".to_owned(),
+                },
+            ),
+        ];
+        for (section, line, expected) in refusals {
+            assert_eq!(
+                identity_key_claim(file, section, 3, line),
+                Err(expected),
+                "[{section}] {line}"
+            );
+        }
     }
 
     #[test]
