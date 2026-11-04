@@ -796,6 +796,10 @@ fn standing_items(session: &str, seats: &[Seat], events: &[Event]) -> Vec<Item> 
 }
 
 #[cfg(test)]
+#[path = "consoleitems_spec.rs"]
+mod consoleitems_spec;
+
+#[cfg(test)]
 mod tests {
     use super::{Body, Kind, Lane, Seat, fold};
     use crate::board::{Coverage, Observation, Role, Row};
