@@ -21,6 +21,7 @@
 //!   relaunch.
 
 use std::io::{self, Write};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use crate::compact;
@@ -51,10 +52,10 @@ struct Args {
 }
 
 /// `_compact [-f] [--keep-history] [--digest-only] <name> [--exec-plan <path>]`.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the five phases and their two lock regions ARE the contract; splitting them would put the order in two places"
-)]
+///
+/// The five phases and their two lock regions ARE the contract, so they stay
+/// here, in order: each phase's work is one named step, and both lock
+/// acquisitions and both revalidations stay in this body.
 pub(crate) fn run(
     root: &Path,
     tail: &[String],
@@ -84,11 +85,83 @@ pub(crate) fn run(
     let dir = sessions_dir(root).join(&name);
 
     // ── phase (a): freeze ───────────────────────────────────────────────────
-    // CLEAN CUT: the core resolves and freezes the authorization tuple, or
-    // refuses a session it cannot classify.
-    let mut tuple = Vec::new();
-    if compact::freeze(&dir, args.keep_history, &mut tuple, err)? != 0 {
+    let (tuple, frozen) = match freeze_tuple(&dir, args.keep_history, err)? {
+        ControlFlow::Continue(frozen) => frozen,
+        ControlFlow::Break(code) => return Ok(code),
+    };
+    // The server the SOURCE ran on, read HERE — while its meta is still on
+    // disk.
+    let child_server = recorded_server(&dir);
+    report_frozen(&frozen, err)?;
+
+    // ── phase (1): confirm ──────────────────────────────────────────────────
+    if !args.force
+        && let ControlFlow::Break(code) = confirm(&frozen, args.digest_only, err)?
+    {
+        return Ok(code);
+    }
+
+    // ── phase (b): the semantic handover ────────────────────────────────────
+    // Under the lifecycle lock so a replacement is never MESSAGED.
+    let reference;
+    {
+        let Ok(_guard) = lock(root, &frozen.name) else {
+            return lock_busy(&frozen.name, err);
+        };
+        if compact::revalidate_step(&dir, &tuple, args.keep_history, "after confirmation", err)?
+            != 0
+        {
+            return Ok(EXIT_FAILED);
+        }
+        reference = match handover(&dir, &frozen, args.digest_only, err)? {
+            ControlFlow::Continue(reference) => reference,
+            ControlFlow::Break(code) => return Ok(code),
+        };
+    }
+
+    // ── phase (c): the bounded wait ─────────────────────────────────────────
+    // On timeout the wait leaves the request as it found it — a normal timeout
+    // is a resumable pause, not a withdrawal.
+    if !args.digest_only && compact::wait_step(&dir, &reference, handover_secs(err)?, err)? != 0 {
         return Ok(EXIT_FAILED);
+    }
+
+    // ── phase (d): revalidate, stop, archive, teardown — under ONE lock ─────
+    let plan_line;
+    {
+        let Ok(_guard) = lock(root, &frozen.name) else {
+            return lock_busy(&frozen.name, err);
+        };
+        if compact::revalidate_step(
+            &dir,
+            &tuple,
+            args.keep_history,
+            "after the handover wait",
+            err,
+        )? != 0
+        {
+            return Ok(EXIT_FAILED);
+        }
+        plan_line = match stop_archive_teardown(&dir, &tuple, &frozen, args.keep_history, err)? {
+            ControlFlow::Continue(plan_line) => plan_line,
+            ControlFlow::Break(code) => return Ok(code),
+        };
+    }
+
+    // ── phase (e): the boundary ─────────────────────────────────────────────
+    boundary(root, &args, &frozen, &plan_line, &child_server, out, err)
+}
+
+/// Phase (a): the core resolves and freezes the authorization tuple, or
+/// refuses a session it cannot classify. CLEAN CUT.
+fn freeze_tuple(
+    dir: &Path,
+    keep_history: bool,
+    err: &mut impl Write,
+) -> io::Result<ControlFlow<u8, (String, Frozen)>> {
+    let mut tuple = Vec::new();
+    if compact::freeze(dir, keep_history, &mut tuple, err)? != 0 {
+        return Ok(ControlFlow::Break(EXIT_FAILED));
     }
     let tuple = String::from_utf8_lossy(&tuple).trim_end().to_owned();
     let Some(frozen) = Frozen::parse(&tuple) else {
@@ -96,15 +169,14 @@ pub(crate) fn run(
             err,
             "reboot: internal error — the frozen tuple did not parse (expected ten fields)."
         )?;
-        return Ok(EXIT_FAILED);
+        return Ok(ControlFlow::Break(EXIT_FAILED));
     };
+    Ok(ControlFlow::Continue((tuple, frozen)))
+}
 
-    // The server the SOURCE ran on, read HERE — while its meta is still on
-    // disk.
-    let (child_server_kind, child_server_value) = recorded_server(&dir);
-
-    // STDERR: reboot's STDOUT is a contract — the four boundary lines, in
-    // order, and nothing else.
+/// The frozen facts. STDERR: reboot's STDOUT is a contract — the four
+/// boundary lines, in order, and nothing else.
+fn report_frozen(frozen: &Frozen, err: &mut impl Write) -> io::Result<()> {
     writeln!(
         err,
         "reboot: {} ({}) resolved and frozen.",
@@ -128,203 +200,208 @@ pub(crate) fn run(
         "conversation files: {}",
         if frozen.purge { "DELETED" } else { "kept" }
     )?;
-    writeln!(err, "archive: {}", frozen.archive)?;
+    writeln!(err, "archive: {}", frozen.archive)
+}
 
-    // ── phase (1): confirm ──────────────────────────────────────────────────
-    if !args.force {
-        confirm_body(&frozen, args.digest_only, err)?;
-        write!(err, "Continue? [y/N] ")?;
-        err.flush()?;
-        match answer(read_reply().as_deref()) {
-            Answer::Go => {}
-            Answer::Declined => {
-                writeln!(err, "Aborted.")?;
-                return Ok(0);
-            }
-            // EOF IS NOT CONSENT — AND NOT A CRASH.
-            Answer::NoInput => {
-                writeln!(
-                    err,
-                    "Error: could not obtain confirmation — no input on stdin."
-                )?;
-                writeln!(
-                    err,
-                    "  Nothing was stopped, archived or changed. Run it from a terminal, or"
-                )?;
-                writeln!(err, "  pass -f if you mean to proceed without being asked.")?;
-                return Ok(EXIT_FAILED);
-            }
+/// Phase (1): the prompt on stderr and one line of stdin.
+fn confirm(
+    frozen: &Frozen,
+    digest_only: bool,
+    err: &mut impl Write,
+) -> io::Result<ControlFlow<u8>> {
+    confirm_body(frozen, digest_only, err)?;
+    write!(err, "Continue? [y/N] ")?;
+    err.flush()?;
+    match answer(read_reply().as_deref()) {
+        Answer::Go => Ok(ControlFlow::Continue(())),
+        Answer::Declined => {
+            writeln!(err, "Aborted.")?;
+            Ok(ControlFlow::Break(0))
         }
-    }
-
-    // ── phase (b): the semantic handover ────────────────────────────────────
-    // Under the lifecycle lock so a replacement is never MESSAGED.
-    let reference;
-    {
-        let Ok(_guard) = lock(root, &frozen.name) else {
+        // EOF IS NOT CONSENT — AND NOT A CRASH.
+        Answer::NoInput => {
             writeln!(
                 err,
-                "Error: another lifecycle operation is in progress for '{}' — retry shortly. Nothing was changed.",
-                frozen.name
+                "Error: could not obtain confirmation — no input on stdin."
             )?;
-            return Ok(EXIT_FAILED);
-        };
-        if compact::revalidate_step(&dir, &tuple, args.keep_history, "after confirmation", err)?
-            != 0
-        {
-            return Ok(EXIT_FAILED);
-        }
-        // A retry reuses an outstanding request (and, through its stored body,
-        // its baseline) rather than delivering a duplicate.
-        let mut pending = outstanding(&dir)?;
-        match handover_route(args.digest_only, !pending.is_empty()) {
-            // The ONLY degradation, and it is explicit.
-            Handover::Skip { withdraw } => {
-                if withdraw {
-                    if compact::cancel_step(&dir, &pending, err)? != 0 {
-                        return Ok(EXIT_FAILED);
-                    }
-                    writeln!(err, "reboot: withdrew {pending} (--digest-only).")?;
-                    pending.clear();
-                }
-                writeln!(
-                    err,
-                    "reboot: semantic handover skipped (--digest-only); the digest is the handover."
-                )?;
-            }
-            Handover::Request => {
-                let mut baseline = Vec::new();
-                let baseline = if compact::memo_baseline_step(&dir, &mut baseline)? == 0 {
-                    String::from_utf8_lossy(&baseline).trim().to_owned()
-                } else {
-                    "0".to_owned()
-                };
-                let body = request_text(&dir, &baseline);
-                let sender = tracked::Sender {
-                    display: format!("ae:reboot:{}", frozen.uuid),
-                    slot: String::new(),
-                    session: String::new(),
-                };
-                let mut delivered = Vec::new();
-                let code = tracked::run(
-                    tracked::Kind::Ask,
-                    &dir,
-                    &[frozen.main_ref.clone(), body],
-                    Some(&sender),
-                    &frozen.name,
-                    Timestamp::now(),
-                    entropy(),
-                    std::time::Duration::from_millis(0),
-                    &mut delivered,
-                    err,
-                )?;
-                if code != 0 {
-                    writeln!(
-                        err,
-                        "Error: could not deliver the handover request to '{}'.",
-                        frozen.main_ref
-                    )?;
-                    writeln!(
-                        err,
-                        "  Nothing was stopped and nothing was archived; the session is untouched."
-                    )?;
-                    return Ok(EXIT_FAILED);
-                }
-                pending = outstanding(&dir)?;
-                if pending.is_empty() {
-                    writeln!(
-                        err,
-                        "Error: the handover request was delivered but not recorded — refusing to wait on a request ae cannot see."
-                    )?;
-                    return Ok(EXIT_FAILED);
-                }
-                writeln!(
-                    err,
-                    "reboot: handover requested as {pending}; waiting for the reply AND a new handover memo."
-                )?;
-            }
-            Handover::Reuse => {
-                writeln!(
-                    err,
-                    "reboot: reusing the outstanding handover request {pending}."
-                )?;
-            }
-        }
-        reference = pending;
-    }
-
-    // ── phase (c): the bounded wait ─────────────────────────────────────────
-    // On timeout the wait leaves the request as it found it — a normal timeout
-    // is a resumable pause, not a withdrawal.
-    if !args.digest_only && compact::wait_step(&dir, &reference, handover_secs(err)?, err)? != 0 {
-        return Ok(EXIT_FAILED);
-    }
-
-    // ── phase (d): revalidate, stop, archive, teardown — under ONE lock ─────
-    let plan_line;
-    {
-        let Ok(_guard) = lock(root, &frozen.name) else {
             writeln!(
                 err,
-                "Error: another lifecycle operation is in progress for '{}' — retry shortly. Nothing was changed.",
-                frozen.name
+                "  Nothing was stopped, archived or changed. Run it from a terminal, or"
             )?;
-            return Ok(EXIT_FAILED);
-        };
-        if compact::revalidate_step(
-            &dir,
-            &tuple,
-            args.keep_history,
-            "after the handover wait",
-            err,
-        )? != 0
-        {
-            return Ok(EXIT_FAILED);
+            writeln!(err, "  pass -f if you mean to proceed without being asked.")?;
+            Ok(ControlFlow::Break(EXIT_FAILED))
         }
-        // STOP on the recorded server, by EXACT id.
-        let bytes = meta::read_bytes(&dir).unwrap_or_default();
-        if let ServerSelector::Positive(selector) = server_of(&bytes) {
-            let server = ServerId::Selected(selector);
-            if let Some(id) = live_id(&server, &frozen.name)
-                && !kill_verified(&server, &frozen.name, "reboot", &id, err)?
-            {
-                return Ok(EXIT_FAILED);
+    }
+}
+
+/// The refusal when the lifecycle lock is held elsewhere, at either region.
+fn lock_busy(name: &str, err: &mut impl Write) -> io::Result<u8> {
+    writeln!(
+        err,
+        "Error: another lifecycle operation is in progress for '{name}' — retry shortly. Nothing was changed."
+    )?;
+    Ok(EXIT_FAILED)
+}
+
+/// Phase (b), under the caller's lock: withdraw, request or reuse — the
+/// reference the wait polls.
+fn handover(
+    dir: &Path,
+    frozen: &Frozen,
+    digest_only: bool,
+    err: &mut impl Write,
+) -> io::Result<ControlFlow<u8, String>> {
+    // A retry reuses an outstanding request (and, through its stored body,
+    // its baseline) rather than delivering a duplicate.
+    let mut pending = outstanding(dir)?;
+    match handover_route(digest_only, !pending.is_empty()) {
+        // The ONLY degradation, and it is explicit.
+        Handover::Skip { withdraw } => {
+            if withdraw {
+                if compact::cancel_step(dir, &pending, err)? != 0 {
+                    return Ok(ControlFlow::Break(EXIT_FAILED));
+                }
+                writeln!(err, "reboot: withdrew {pending} (--digest-only).")?;
+                pending.clear();
             }
+            writeln!(
+                err,
+                "reboot: semantic handover skipped (--digest-only); the digest is the handover."
+            )?;
         }
-        // ARCHIVE: revalidate + PROVE stopped + publish + print the recovery
-        // command.
-        let archived_at = Timestamp::now().to_string();
-        let mut recovery = Vec::new();
-        let code = compact::archive_step(
-            &dir,
-            &tuple,
-            args.keep_history,
-            &archived_at,
-            "not-managed",
-            "-",
-            "-",
-            "",
-            &mut recovery,
+        Handover::Request => return request_handover(dir, frozen, err),
+        Handover::Reuse => {
+            writeln!(
+                err,
+                "reboot: reusing the outstanding handover request {pending}."
+            )?;
+        }
+    }
+    Ok(ControlFlow::Continue(pending))
+}
+
+/// Deliver the handover request to the main agent and prove it was recorded.
+fn request_handover(
+    dir: &Path,
+    frozen: &Frozen,
+    err: &mut impl Write,
+) -> io::Result<ControlFlow<u8, String>> {
+    let mut baseline = Vec::new();
+    let baseline = if compact::memo_baseline_step(dir, &mut baseline)? == 0 {
+        String::from_utf8_lossy(&baseline).trim().to_owned()
+    } else {
+        "0".to_owned()
+    };
+    let body = request_text(dir, &baseline);
+    let sender = tracked::Sender {
+        display: format!("ae:reboot:{}", frozen.uuid),
+        slot: String::new(),
+        session: String::new(),
+    };
+    let mut delivered = Vec::new();
+    let code = tracked::run(
+        tracked::Kind::Ask,
+        dir,
+        &[frozen.main_ref.clone(), body],
+        Some(&sender),
+        &frozen.name,
+        Timestamp::now(),
+        entropy(),
+        std::time::Duration::from_millis(0),
+        &mut delivered,
+        err,
+    )?;
+    if code != 0 {
+        writeln!(
             err,
+            "Error: could not deliver the handover request to '{}'.",
+            frozen.main_ref
         )?;
-        if code != 0 {
-            return Ok(code);
-        }
-        // The recovery point is durable and proven — SHOW it before anything is
-        // torn down.
-        err.write_all(&recovery)?;
-        // TEARDOWN: revalidate + PROVE stopped + re-preflight the archive +
-        // remove the live session + print the exec plan.
-        let mut plan = Vec::new();
-        let code = compact::teardown_step(&dir, &tuple, args.keep_history, &mut plan, err)?;
-        if code != 0 {
-            return Ok(code);
-        }
-        plan_line = String::from_utf8_lossy(&plan).trim_end().to_owned();
+        writeln!(
+            err,
+            "  Nothing was stopped and nothing was archived; the session is untouched."
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
     }
+    let pending = outstanding(dir)?;
+    if pending.is_empty() {
+        writeln!(
+            err,
+            "Error: the handover request was delivered but not recorded — refusing to wait on a request ae cannot see."
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    writeln!(
+        err,
+        "reboot: handover requested as {pending}; waiting for the reply AND a new handover memo."
+    )?;
+    Ok(ControlFlow::Continue(pending))
+}
 
-    // ── phase (e): the boundary ─────────────────────────────────────────────
-    // THE ARCHIVE IS PUBLISHED AND THE SOURCE IS GONE.
+/// Phase (d) after its revalidation, under the caller's lock: stop, archive,
+/// show the recovery point, tear down — the plan line teardown printed.
+fn stop_archive_teardown(
+    dir: &Path,
+    tuple: &str,
+    frozen: &Frozen,
+    keep_history: bool,
+    err: &mut impl Write,
+) -> io::Result<ControlFlow<u8, String>> {
+    // STOP on the recorded server, by EXACT id.
+    let bytes = meta::read_bytes(dir).unwrap_or_default();
+    if let ServerSelector::Positive(selector) = server_of(&bytes) {
+        let server = ServerId::Selected(selector);
+        if let Some(id) = live_id(&server, &frozen.name)
+            && !kill_verified(&server, &frozen.name, "reboot", &id, err)?
+        {
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+    }
+    // ARCHIVE: revalidate + PROVE stopped + publish + print the recovery
+    // command.
+    let archived_at = Timestamp::now().to_string();
+    let mut recovery = Vec::new();
+    let code = compact::archive_step(
+        dir,
+        tuple,
+        keep_history,
+        &archived_at,
+        "not-managed",
+        "-",
+        "-",
+        "",
+        &mut recovery,
+        err,
+    )?;
+    if code != 0 {
+        return Ok(ControlFlow::Break(code));
+    }
+    // The recovery point is durable and proven — SHOW it before anything is
+    // torn down.
+    err.write_all(&recovery)?;
+    // TEARDOWN: revalidate + PROVE stopped + re-preflight the archive +
+    // remove the live session + print the exec plan.
+    let mut plan = Vec::new();
+    let code = compact::teardown_step(dir, tuple, keep_history, &mut plan, err)?;
+    if code != 0 {
+        return Ok(ControlFlow::Break(code));
+    }
+    Ok(ControlFlow::Continue(
+        String::from_utf8_lossy(&plan).trim_end().to_owned(),
+    ))
+}
+
+/// Phase (e). THE ARCHIVE IS PUBLISHED AND THE SOURCE IS GONE: prove it
+/// inheritable, publish the exec plan, print the contract, relaunch.
+fn boundary(
+    root: &Path,
+    args: &Args,
+    frozen: &Frozen,
+    plan_line: &str,
+    child_server: &(String, String),
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
     let (plan_name, plan_uuid) = plan_line
         .split_once('\u{1f}')
         .unwrap_or((frozen.name.as_str(), frozen.uuid.as_str()));
@@ -340,11 +417,11 @@ pub(crate) fn run(
             err,
             "  The archive is intact and the source session is gone; start the fresh session by hand:"
         )?;
-        writeln!(err, "      {}", recovery_command(&frozen))?;
+        writeln!(err, "      {}", recovery_command(frozen))?;
         return Ok(EXIT_FAILED);
     }
     let proof = String::from_utf8_lossy(&proof).trim_end().to_owned();
-    let recovery = recovery_command(&frozen);
+    let recovery = recovery_command(frozen);
 
     // The exec plan the relaunch is driven from.
     if let Some(path) = args.exec_plan.as_ref() {
@@ -398,8 +475,8 @@ pub(crate) fn run(
         uuid: plan_uuid,
         proof: &proof,
         roster: &frozen.roster,
-        server_kind: &child_server_kind,
-        server_value: &child_server_value,
+        server_kind: &child_server.0,
+        server_value: &child_server.1,
     };
     // A child that will not start is NOT a failed reboot: the archive is
     // published and proven, and the recovery command above is the route back.
