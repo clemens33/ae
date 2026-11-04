@@ -1,0 +1,20 @@
+clock-0                    running
+  goal (just now): 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字 · git:? · ae ? · created just now · started - · active -
+clock-1                    running
+  goal (0s ago): 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字… · git:? · ae ? · created 0s ago · started - · active -
+clock-2                    running
+  goal (59s ago): 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字… · git:? · ae ? · created 59s ago · started - · active -
+clock-3                    running
+  goal (1m ago): 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字… · git:? · ae ? · created 1m ago · started - · active -
+clock-4                    running
+  goal (59m ago): 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字… · git:? · ae ? · created 59m ago · started - · active -
+clock-5                    running
+  goal (1h ago): 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字… · git:? · ae ? · created 1h ago · started - · active -
+clock-6                    running
+  goal (23h ago): 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字… · git:? · ae ? · created 23h ago · started - · active -
+clock-7                    running
+  goal (1d ago): 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字… · git:? · ae ? · created 1d ago · started - · active -
+clock-8                    running
+  goal (6d ago): 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字… · git:? · ae ? · created 6d ago · started - · active -
+clock-9                    running
+  goal (>7d): 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字… · git:? · ae ? · created >7d · started - · active -

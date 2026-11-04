@@ -1,0 +1,21 @@
+exact                      running
+  git:? · ae ? · created - · started - · active -
+  limit-done               profile        -          needs you (usage limit) · auto-reseat in flight · declared: own words · 2m · observed:unknown
+  limit-wait               profile        -          needs you (usage limit) · declared: own words · 2m · observed:unknown
+  unreachable              profile        -          unreachable (no delivery) · own words · 2m · observed:unknown
+  working                  profile        -          working · own words · 2m · observed:unknown
+  waiting-user             profile        -          needs you (waiting on you) · own words · 2m · observed:unknown
+  idle                     profile        -          no current status · own words · 2m · observed:unknown
+  absent                   profile        -          no current status · own words · 2m · observed:unknown
+  other                    profile        -          future-state · own words · 2m · observed:unknown
+partial                    running
+  ae ? · created - · started - · active -
+  partial-limit                           -          needs you (usage limit) · auto-reseat in flight · reason unavailable · observed:unknown
+  limit-wait               profile        -          needs you (usage limit) · reason unavailable · observed:unknown
+  partial-unreachable                     -          unreachable (no delivery) · reason unavailable · observed:unknown
+  working                  profile        -          unknown · reason unavailable · observed:unknown
+  waiting-user             profile        -          unknown · reason unavailable · observed:unknown
+  idle                     profile        -          unknown · reason unavailable · observed:unknown
+  absent                   profile        -          unknown · reason unavailable · observed:unknown
+  other                    profile        -          unknown · reason unavailable · observed:unknown
+  partial-done             profile        -          unknown · observed:unknown

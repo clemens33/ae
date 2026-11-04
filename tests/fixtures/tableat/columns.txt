@@ -1,0 +1,9 @@
+session-name-longer-than-26-characters running
+  git:? · ae ? · created - · started - · active -
+  lead                     一二三四五六七八九十甲乙丙… 12345678   working · observed:unknown
+  equal                    12345678901234 pending    working · observed:unknown
+  short                    一二三四五六七八九十甲乙丙… abc        working · observed:unknown
+  empty                    一二三四五六七八九十甲乙丙… -          working · observed:unknown
+  字界                       一二三四五六七八九十甲乙丙… 一二三四五六七八   working · observed:unknown
+  reference-longer-than-24-characters 一二三四五六七八九十甲乙丙… 12345678   working · observed:unknown
+  profile:legacy                          -          no current status · observed:unknown

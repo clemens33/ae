@@ -1,0 +1,21 @@
+proof                      running
+  git:? · ae ? · created - · started - · active -
+  no-record                profile        -          finished · observed:unknown
+  none                     profile        -          finished · observed:unknown
+  provisional              profile        -          finished (unconfirmed 0/3) · observed:unknown
+  due                      profile        -          finished (unconfirmed 1/3) · observed:unknown
+  challenged               profile        -          finished (unconfirmed 2/3) · observed:unknown
+  lapsed                   profile        -          finished (unconfirmed 1/3, lapsed) · observed:unknown
+  confirmed                profile        -          finished · observed:unknown
+  no-record                profile        -          waiting on an agent · observed:unknown
+  none                     profile        -          waiting on an agent · observed:unknown
+  provisional              profile        -          waiting on an agent (unconfirmed 0/3) · observed:unknown
+  due                      profile        -          waiting on an agent (unconfirmed 1/3) · observed:unknown
+  challenged               profile        -          waiting on an agent (unconfirmed 2/3) · observed:unknown
+  lapsed                   profile        -          waiting on an agent (unconfirmed 1/3, lapsed) · observed:unknown
+  no-record                profile        -          needs you (blocked) · observed:unknown
+  none                     profile        -          needs you (blocked) · observed:unknown
+  provisional              profile        -          needs you (blocked) (unconfirmed 0/3) · observed:unknown
+  due                      profile        -          needs you (blocked) (unconfirmed 1/3) · observed:unknown
+  challenged               profile        -          needs you (blocked) (unconfirmed 2/3) · observed:unknown
+  lapsed                   profile        -          needs you (blocked) (unconfirmed 1/3, lapsed) · observed:unknown

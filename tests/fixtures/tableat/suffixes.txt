@@ -1,0 +1,11 @@
+live                       running    attn:unreachable
+  git:? · ae ? · created - · started - · active -
+  worker                   profile        -          unreachable (no delivery) · review complete · 12m · observed:busy · drift:model-v2 · harness:claude+codex (records opencode�[31m) · effort:damaged · conv:unrecorded · waiting on 2 requests, 1 spawn !
+stopped                    stopped
+  git:? · ae ? · created - · started - · active -
+  worker                   profile        -          working · review complete · 12m · observed:input ready · drift:unknown · harness:claude+codex (records opencode�[31m) · effort:damaged · conv:unrecorded · waiting on 2 requests, 1 spawn
+  absent                   profile        -          no current status · no reason given · observed:unknown
+  unknown                  profile        -          no current status · reason unavailable · observed:unknown
+uncertain                  unknown
+  git:? · ae ? · created - · started - · active -
+  long-reason              profile        -          working · 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字… · age unknown · observed:unknown

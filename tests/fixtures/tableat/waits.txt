@@ -1,0 +1,15 @@
+wait-0                     running    working
+  git:? · ae ? · created - · started - · active -
+  worker                   profile        -          waiting on peer (unconfirmed 1/3, lapsed) · waiting for peer evidence · 2m · observed:unknown
+  worker                   profile        -          waiting on remote:peer (target done) · overdue 2m (unconfirmed 1/3, lapsed) · waiting for peer evidence · 2m · observed:unknown
+  worker                   profile        -          waiting on @remote (not found) (unconfirmed 1/3, lapsed) · waiting for peer evidence · 2m · observed:unknown
+wait-1                     running    waiting (in session)
+  git:? · ae ? · created - · started - · active -
+  worker                   profile        -          waiting on peer (unconfirmed 1/3, lapsed) · waiting for peer evidence · 2m · observed:unknown
+  worker                   profile        -          waiting on remote:peer (target done) · overdue 2m (unconfirmed 1/3, lapsed) · waiting for peer evidence · 2m · observed:unknown
+  worker                   profile        -          waiting on @remote (not found) (unconfirmed 1/3, lapsed) · waiting for peer evidence · 2m · observed:unknown
+wait-2                     running    waiting on @remote
+  git:? · ae ? · created - · started - · active -
+  worker                   profile        -          waiting on peer (unconfirmed 1/3, lapsed) · waiting for peer evidence · 2m · observed:unknown
+  worker                   profile        -          waiting on remote:peer (target done) · overdue 2m (unconfirmed 1/3, lapsed) · waiting for peer evidence · 2m · observed:unknown
+  worker                   profile        -          waiting on @remote (not found) (unconfirmed 1/3, lapsed) · waiting for peer evidence · 2m · observed:unknown
