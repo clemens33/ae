@@ -38,6 +38,12 @@ mod guard_spec;
 mod purgeguard_spec;
 #[path = "lifecycle_retain_spec.rs"]
 mod retain_spec;
+#[path = "lifecycle_runstop_census_spec.rs"]
+mod runstop_census_spec;
+#[path = "lifecycle_runstop_orphan_spec.rs"]
+mod runstop_orphan_spec;
+#[path = "lifecycle_runstop_pipe_spec.rs"]
+mod runstop_pipe_spec;
 #[path = "lifecycle_runstop_spec.rs"]
 mod runstop_spec;
 #[path = "lifecycle_stop_sole_uuid_spec.rs"]
