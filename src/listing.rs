@@ -13,7 +13,7 @@ use crate::inventory::FailedSource;
 use crate::liveness::Snapshot;
 use crate::session::SessionRuntime;
 use crate::time::Timestamp;
-use crate::watchdog::WaitProgress;
+use crate::watchdog::{DoneProgress, WaitProgress};
 
 /// The facts a listing needs that no session directory holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -361,139 +361,158 @@ fn push_wait_end(out: &mut String, session: &SessionEntry) {
 
 /// The tabular view at the snapshot time that supplied `sessions`.
 #[must_use]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one row writer per column, in the order the table prints them"
-)]
 pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
     let mut out = String::new();
     for session in sessions {
-        // Columns are PADDED, not tab-separated.
-        push_padded(&mut out, &session.name, NAME_WIDTH);
-        push_padded(&mut out, session.status.as_str(), STATUS_WIDTH);
-        push_markers(&mut out, session);
-        push_wait_end(&mut out, session);
-        // ORIGIN — where this session came from.
-        match session
-            .origin
-            .as_deref()
-            .filter(|origin| !origin.is_empty())
-        {
-            Some(origin) => out.push_str(origin),
-            None => {
-                while out.ends_with(' ') {
-                    out.pop();
-                }
-            }
-        }
-        out.push('\n');
+        push_session_line(&mut out, session);
         push_frozen_session_subline(&mut out, session, now);
         for agent in &session.agents {
-            out.push_str("  ");
-            push_padded(&mut out, &agent.reference, AGENT_WIDTH);
-            let profile = if agent.reference == agent.name {
-                agent.alias.as_str()
-            } else {
-                ""
-            };
-            push_clipped_padded(&mut out, profile, PROFILE_WIDTH);
-            // Frozen rendered the short session id on BOTH grammars — running
-            // and stopped — and our table omitted it entirely, which run 2
-            // semantic-fails independently of every health or state question.
-            // It sits between the reference and the semantic fields, and it is
-            // the SAME helper the digest consumes so the two surfaces cannot
-            // drift.
-            push_padded(&mut out, agent.table_session_id(), ID_WIDTH);
-            // Per-agent HEALTH is deliberately NOT a column here.
-            // The verdict cell. A standing usage limit or unreachable failure
-            // REPLACES the declared state here — the pane fact is what needs the
-            // human, and the JSON digest keeps the declaration under `state`.
-            if agent.reason == Some(crate::attention::Reason::Limit) {
-                out.push_str(limit_cell(agent));
-            } else if agent.unreachable {
-                out.push_str(crate::theme::seat_word("unreachable"));
-            } else if session.agent_state_is_exact() && agent.state.as_deref() == Some("done") {
-                match agent.done_progress {
-                    Some(
-                        crate::watchdog::DoneProgress::Provisional {
-                            confirmations,
-                            required,
-                        }
-                        | crate::watchdog::DoneProgress::ChallengeDue {
-                            confirmations,
-                            required,
-                            ..
-                        }
-                        | crate::watchdog::DoneProgress::Challenged {
-                            confirmations,
-                            required,
-                        },
-                    ) => {
-                        let _ = write!(out, "finished (unconfirmed {confirmations}/{required})");
-                    }
-                    Some(crate::watchdog::DoneProgress::Lapsed {
-                        confirmations,
-                        required,
-                    }) => {
-                        let _ = write!(
-                            out,
-                            "finished (unconfirmed {confirmations}/{required}, lapsed)"
-                        );
-                    }
-                    _ => out.push_str(crate::theme::seat_word("done")),
-                }
-            } else if session.agent_state_is_exact()
-                && matches!(agent.state.as_deref(), Some("waiting-agent" | "blocked"))
-            {
-                let typed = agent.wait_words(now);
-                wait_cell(agent, typed.as_deref(), &mut out);
-            } else {
-                out.push_str(
-                    match (session.agent_state_is_exact(), agent.state.as_deref()) {
-                        (true, Some(state)) => crate::theme::seat_word(state),
-                        (true, None) => crate::theme::seat_word("idle"),
-                        (false, _) => "unknown",
-                    },
-                );
-            }
-            push_declaration(&mut out, agent, session.agent_state_is_exact(), now);
-            out.push_str(" · observed:");
-            out.push_str(agent.observed.human());
-            // Observed model drift, or the loud absence of an observer for this
-            // tool: silence must never read as preservation.
-            match &agent.model_drift {
-                crate::model_drift::ModelDrift::Quiet => {}
-                crate::model_drift::ModelDrift::Observed(model) => {
-                    out.push_str(" · drift:");
-                    out.push_str(model);
-                }
-                crate::model_drift::ModelDrift::Unknown => out.push_str(" · drift:unknown"),
-            }
-            if let Some(clash) = &agent.harness_clash {
-                harness_cell(clash, &mut out);
-            }
-            effort_cell(agent.effort.as_ref(), &mut out);
-            if let Some(cell) = agent
-                .conversation
-                .as_ref()
-                .and_then(crate::conversation::Verdict::cell)
-            {
-                out.push_str(&cell);
-            }
-            // WHY a seat is quiet without being idle, so the human reads it off
-            // the line instead of opening the pane.
-            if let Some(reason) = agent.own_work.and_then(crate::session::OwnWork::reason) {
-                out.push_str(" · ");
-                out.push_str(&reason);
-            }
-            // The `!` marker: a pane query fills this.
-            if session.status == Status::Running && agent.alive == Some(false) {
-                out.push_str(" !");
-            }
-            out.push('\n');
+            push_agent_line(&mut out, session, agent, now);
         }
     }
     out
+}
+
+/// The session's own line: name, status, markers, where its waits end and its
+/// origin.
+fn push_session_line(out: &mut String, session: &SessionEntry) {
+    // Columns are PADDED, not tab-separated.
+    push_padded(out, &session.name, NAME_WIDTH);
+    push_padded(out, session.status.as_str(), STATUS_WIDTH);
+    push_markers(out, session);
+    push_wait_end(out, session);
+    // ORIGIN — where this session came from.
+    match session
+        .origin
+        .as_deref()
+        .filter(|origin| !origin.is_empty())
+    {
+        Some(origin) => out.push_str(origin),
+        None => {
+            while out.ends_with(' ') {
+                out.pop();
+            }
+        }
+    }
+    out.push('\n');
+}
+
+/// One seat's line: reference, profile, session id, verdict, declaration and
+/// the observations after it.
+fn push_agent_line(out: &mut String, session: &SessionEntry, agent: &AgentEntry, now: Timestamp) {
+    out.push_str("  ");
+    push_padded(out, &agent.reference, AGENT_WIDTH);
+    let profile = if agent.reference == agent.name {
+        agent.alias.as_str()
+    } else {
+        ""
+    };
+    push_clipped_padded(out, profile, PROFILE_WIDTH);
+    // Frozen rendered the short session id on BOTH grammars — running
+    // and stopped — and our table omitted it entirely, which run 2
+    // semantic-fails independently of every health or state question.
+    // It sits between the reference and the semantic fields, and it is
+    // the SAME helper the digest consumes so the two surfaces cannot
+    // drift.
+    push_padded(out, agent.table_session_id(), ID_WIDTH);
+    // Per-agent HEALTH is deliberately NOT a column here.
+    push_verdict(out, session, agent, now);
+    push_declaration(out, agent, session.agent_state_is_exact(), now);
+    out.push_str(" · observed:");
+    out.push_str(agent.observed.human());
+    push_drift(out, &agent.model_drift);
+    if let Some(clash) = &agent.harness_clash {
+        harness_cell(clash, out);
+    }
+    effort_cell(agent.effort.as_ref(), out);
+    if let Some(cell) = agent
+        .conversation
+        .as_ref()
+        .and_then(crate::conversation::Verdict::cell)
+    {
+        out.push_str(&cell);
+    }
+    // WHY a seat is quiet without being idle, so the human reads it off
+    // the line instead of opening the pane.
+    if let Some(reason) = agent.own_work.and_then(crate::session::OwnWork::reason) {
+        out.push_str(" · ");
+        out.push_str(&reason);
+    }
+    // The `!` marker: a pane query fills this.
+    if session.status == Status::Running && agent.alive == Some(false) {
+        out.push_str(" !");
+    }
+    out.push('\n');
+}
+
+/// The verdict cell. A standing usage limit or unreachable failure REPLACES
+/// the declared state here — the pane fact is what needs the human, and the
+/// JSON digest keeps the declaration under `state`.
+fn push_verdict(out: &mut String, session: &SessionEntry, agent: &AgentEntry, now: Timestamp) {
+    let exact = session.agent_state_is_exact();
+    if agent.reason == Some(crate::attention::Reason::Limit) {
+        out.push_str(limit_cell(agent));
+    } else if agent.unreachable {
+        out.push_str(crate::theme::seat_word("unreachable"));
+    } else if exact && agent.state.as_deref() == Some("done") {
+        done_cell(agent.done_progress, out);
+    } else if exact && matches!(agent.state.as_deref(), Some("waiting-agent" | "blocked")) {
+        let typed = agent.wait_words(now);
+        wait_cell(agent, typed.as_deref(), out);
+    } else {
+        out.push_str(match (exact, agent.state.as_deref()) {
+            (true, Some(state)) => crate::theme::seat_word(state),
+            (true, None) => crate::theme::seat_word("idle"),
+            (false, _) => "unknown",
+        });
+    }
+}
+
+/// The verdict cell of a seat that declared `done`: the proof episode while
+/// one runs, plain `finished` when none does.
+fn done_cell(progress: Option<DoneProgress>, out: &mut String) {
+    match progress {
+        Some(
+            DoneProgress::Provisional {
+                confirmations,
+                required,
+            }
+            | DoneProgress::ChallengeDue {
+                confirmations,
+                required,
+                ..
+            }
+            | DoneProgress::Challenged {
+                confirmations,
+                required,
+            },
+        ) => {
+            let _ = write!(out, "finished (unconfirmed {confirmations}/{required})");
+        }
+        Some(DoneProgress::Lapsed {
+            confirmations,
+            required,
+        }) => {
+            let _ = write!(
+                out,
+                "finished (unconfirmed {confirmations}/{required}, lapsed)"
+            );
+        }
+        _ => out.push_str(crate::theme::seat_word("done")),
+    }
+}
+
+/// Observed model drift, or the loud absence of an observer for this tool:
+/// silence must never read as preservation.
+fn push_drift(out: &mut String, drift: &crate::model_drift::ModelDrift) {
+    match drift {
+        crate::model_drift::ModelDrift::Quiet => {}
+        crate::model_drift::ModelDrift::Observed(model) => {
+            out.push_str(" · drift:");
+            out.push_str(model);
+        }
+        crate::model_drift::ModelDrift::Unknown => out.push_str(" · drift:unknown"),
+    }
 }
 
 /// The harness cell: what the pane runs when that is not the tool the seat's
