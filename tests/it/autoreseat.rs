@@ -2880,3 +2880,6 @@ mod limitmuse_spec;
 
 #[path = "autoreseat/bgtaskreseat_spec.rs"]
 mod bgtaskreseat_spec;
+
+#[path = "autoreseat/bgtaskreseat_pins.rs"]
+mod bgtaskreseat_pins;
