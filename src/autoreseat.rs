@@ -2075,6 +2075,29 @@ fn percent(value: f64) -> String {
         .map_or_else(|| text.clone(), ToOwned::to_owned)
 }
 
+/// Per window the newest usable reading rules: a usable reading is dropped
+/// when a usable reading of the same window, `key`, was observed strictly
+/// later, stale or fresh alike. A tie keeps both, so the worse still decides;
+/// a reading ae cannot use neither rules nor is ruled, and is kept as it is.
+/// Order is kept.
+#[must_use]
+pub fn current<K: PartialEq>(windows: Vec<(K, Window)>) -> Vec<(K, Window)> {
+    let superseded: Vec<bool> = windows
+        .iter()
+        .map(|(key, window)| {
+            usable(window)
+                && windows.iter().any(|(other, newer)| {
+                    other == key && usable(newer) && newer.observed_at > window.observed_at
+                })
+        })
+        .collect();
+    windows
+        .into_iter()
+        .zip(superseded)
+        .filter_map(|(entry, gone)| (!gone).then_some(entry))
+        .collect()
+}
+
 /// A window whose number still stands: read before its reset. The status
 /// carries that, because `quota::freshness` reads a passed reset as unknown.
 fn usable(window: &Window) -> bool {
@@ -3850,6 +3873,57 @@ mod tests {
             label: "session 5h".to_owned(),
             ..window(judged, critical, 6_000, Status::Fresh)
         }
+    }
+
+    #[test]
+    fn per_window_the_newest_usable_reading_rules_and_nothing_else_is_touched() {
+        fn kept(windows: &[(&'static str, Window)]) -> Vec<(&'static str, Window)> {
+            current(windows.to_vec())
+        }
+        let at = |judged, observed_at, status| window(judged, false, observed_at, status);
+        // A newer reading of the same window wins, stale or fresh alike.
+        let stale_low = at(1.0, 20, Status::Stale);
+        let pair = [("w", at(95.0, 10, Status::Stale)), ("w", stale_low.clone())];
+        assert_eq!(kept(&pair), [("w", stale_low.clone())]);
+        let fresh_low = at(1.0, 20, Status::Fresh);
+        let pair = [("w", at(95.0, 10, Status::Stale)), ("w", fresh_low.clone())];
+        assert_eq!(kept(&pair), [("w", fresh_low)]);
+        let lows: Vec<Window> = kept(&pair).into_iter().map(|(_, w)| w).collect();
+        assert!(matches!(room(&lows, 90), Room::Relieved(_)));
+        // The newer high stands over an older low: newest, not lowest.
+        let high = at(95.0, 20, Status::Stale);
+        let pair = [("w", at(1.0, 10, Status::Fresh)), ("w", high.clone())];
+        assert_eq!(kept(&pair), [("w", high)]);
+        // A tie keeps both, so the worse still decides.
+        let tie = [
+            ("w", at(95.0, 10, Status::Stale)),
+            ("w", at(1.0, 10, Status::Stale)),
+        ];
+        assert_eq!(kept(&tie), tie);
+        // Another window is never superseded.
+        let apart = [
+            ("a", at(95.0, 10, Status::Stale)),
+            ("b", at(1.0, 20, Status::Fresh)),
+        ];
+        assert_eq!(kept(&apart), apart);
+        // A reading ae cannot use supersedes nothing, and is not superseded.
+        let unknown_newer = [
+            ("w", at(95.0, 10, Status::Stale)),
+            ("w", at(1.0, 20, Status::Unknown)),
+        ];
+        assert_eq!(kept(&unknown_newer), unknown_newer);
+        let unknown_older = [
+            ("w", at(99.0, 10, Status::Unknown)),
+            ("w", at(1.0, 20, Status::Fresh)),
+        ];
+        assert_eq!(kept(&unknown_older), unknown_older);
+        // Order is kept among what stays.
+        let three = [
+            ("b", at(5.0, 30, Status::Fresh)),
+            ("a", at(95.0, 10, Status::Stale)),
+            ("a", at(2.0, 20, Status::Stale)),
+        ];
+        assert_eq!(kept(&three), [three[0].clone(), three[2].clone()]);
     }
 
     #[test]

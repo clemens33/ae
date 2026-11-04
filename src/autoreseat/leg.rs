@@ -145,6 +145,10 @@ const HEADROOM_OFF: &str = "held: auto_reseat_at is off";
 /// An attempt started before its grace whose start proof ended on the way here.
 const START_GONE: &str = "held: the start's exhausted reading no longer stands";
 
+/// A headroom attempt whose seat's own account, read again by the leg, no
+/// longer reads at or within the re-arm gap of the threshold, or reads nothing.
+const HEADROOM_GONE: &str = "held: the account no longer reads at the headroom threshold";
+
 /// The hold journaled when the seat is no longer eligible, led by its class.
 pub(crate) fn ineligible_record(why: Ineligible) -> String {
     why.class().lead(ineligible_summary(why))
@@ -331,7 +335,8 @@ pub(crate) fn cover_warning(
 }
 
 /// The listed candidates as the chooser judges them, joined with `quota`:
-/// the windows that bind each one's account and whether another seat of the
+/// the windows that bind each one's account, per account and window only the
+/// newest usable reading ([`super::current`]), and whether another seat of the
 /// session is latched on it.
 pub(crate) fn candidates(
     list: &[(String, Provenance)],
@@ -362,22 +367,32 @@ pub(crate) fn candidates(
                         .iter()
                         .any(|seat| seat.tool == group.tool && &seat.source == *source)
                 }),
-                windows: accounts
-                    .iter()
-                    .flat_map(|(group, _)| {
-                        group
-                            .rows
-                            .iter()
-                            .filter(|row| {
-                                !crate::quota::scoped_elsewhere(
-                                    group.tool,
-                                    row.qualifier.as_deref(),
-                                    pin,
-                                )
-                            })
-                            .filter_map(|row| window(group, row, now))
-                    })
-                    .collect(),
+                // Per account and window the newest usable reading rules; one
+                // account's reading never supersedes another's.
+                windows: super::current(
+                    accounts
+                        .iter()
+                        .flat_map(|(group, source)| {
+                            group
+                                .rows
+                                .iter()
+                                .filter(|row| {
+                                    !crate::quota::scoped_elsewhere(
+                                        group.tool,
+                                        row.qualifier.as_deref(),
+                                        pin,
+                                    )
+                                })
+                                .filter_map(|row| {
+                                    let key = (*source, crate::quota::WindowKey::of(row));
+                                    window(group, row, now).map(|window| (key, window))
+                                })
+                        })
+                        .collect(),
+                )
+                .into_iter()
+                .map(|(_, window)| window)
+                .collect(),
                 left_at: left
                     .iter()
                     .find(|(taken, _)| taken == profile)
@@ -422,7 +437,8 @@ pub(crate) struct OwnScope {
 }
 
 /// The windows of the one scope the seat's recorded identity names — the join
-/// the throttle line and the checkpoint ask make — that bind its model family.
+/// the throttle line and the checkpoint ask make — that bind its model family,
+/// per window only the newest usable reading ([`super::current`]).
 /// No proven identity, no observation: nothing is read.
 pub(crate) fn own_scope(
     quota: Option<&crate::quota::Observation>,
@@ -457,6 +473,9 @@ pub(crate) fn own_scope(
             }
         }
     }
+    // The scope's rollouts each hold their own last reading of a window; the
+    // newest usable one rules, so a reading a newer one superseded never decides.
+    scope.windows = super::current(scope.windows);
     Some(scope)
 }
 
@@ -491,6 +510,25 @@ pub(crate) fn own_room(
         let windows: Vec<super::Window> = scope.windows.into_iter().map(|(_, w)| w).collect();
         super::room(&windows, at)
     })
+}
+
+/// Whether the seat's OWN account still presses the headroom threshold `at`:
+/// [`own_room`] reads it crossed, or within [`super::REARM_GAP`] below it, under
+/// the pin the seat's `profile` resolves to. The trigger judges this before it
+/// reserves an attempt, and the leg again, on its own read, before it moves.
+fn source_pressed(
+    quota: Option<&crate::quota::Observation>,
+    dir: &Path,
+    entry: &crate::meta::RosterEntry,
+    profile: &str,
+    at: u8,
+    now: Timestamp,
+) -> bool {
+    let pin = crate::reseat::resolved(dir, profile).and_then(|found| found.pin);
+    matches!(
+        own_room(quota, entry, pin.as_deref(), at, now.epoch()),
+        Room::Crossed(_) | Room::Near
+    )
 }
 
 /// With no threshold, the seat's OWN account as a start's episode asks: proven
@@ -819,8 +857,10 @@ fn read_start(
 /// and its episode: a seat gone or an episode that is not `key`'s REFUSES, so
 /// the attempt it was handed closes; an attempt already closed, or none open,
 /// is not the leg's to act on and it journals nothing. Then the global config,
-/// whose switch HOLDS, and the chooser, which refuses when nothing is usable.
-/// Only then the move, whose ending is the outcome.
+/// whose switch HOLDS; a headroom episode, unless a start made it urgent, HOLDS
+/// too once its own read finds the seat's account no longer pressed
+/// ([`source_pressed`]). Then the chooser, which refuses when nothing is
+/// usable. Only then the move, whose ending is the outcome.
 ///
 /// # Errors
 ///
@@ -940,6 +980,10 @@ pub(crate) fn run(
                 ))
             } else if early && !start.urgent(found.key.epoch()) {
                 Err((CauseClass::Other, CauseClass::Other.lead(START_GONE)))
+            } else if let Some(at) = threshold.filter(|_| !start.urgent(found.key.epoch()))
+                && !source_pressed(quota.as_ref(), dir, seat, &profile, at, now)
+            {
+                Err((CauseClass::Other, CauseClass::Other.lead(HEADROOM_GONE)))
             } else {
                 Ok(list)
             }
@@ -1505,13 +1549,10 @@ pub(crate) fn trigger(
             .as_ref()
     };
     let limited = crate::watchdog::limit_notice(text, &bin).is_some();
-    let near = settings.headroom_at.filter(|_| !limited).is_some_and(|at| {
-        let pin = crate::reseat::resolved(dir, &profile).and_then(|found| found.pin);
-        matches!(
-            own_room(observed(), row, pin.as_deref(), at, now.epoch()),
-            Room::Crossed(_) | Room::Near
-        )
-    });
+    let near = settings
+        .headroom_at
+        .filter(|_| !limited)
+        .is_some_and(|at| source_pressed(observed(), dir, row, &profile, at, now));
     let sight = Sight {
         pane: super::Pane {
             frame: super::frame_of(
