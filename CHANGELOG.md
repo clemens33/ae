@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.14] - 2026-11-04
+- The quota guidance parks a scope at 95% EFFECTIVE weekly, not 90%
+- Auto reseat ends a muse seat's background task on a limit its own pane proves 12 h away
+- A background-task stop refuses a viewing client's unreadable input and its notice leads with the ended task
+- Fuzz the muse pane's reset and task readers; docs: the background-task stop
+- A non-Muse seat on a Muse-shaped long-limit frame is not stopped, and a spaces-only row ends the 429 block
+
 ## [v2026.11.13] - 2026-11-04
 - Launch refusal precedence, rollback ownership, running override and restore rechecks are pinned
 - A crash restore names why it skips before the lifecycle lock in one pure decision
