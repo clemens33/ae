@@ -32,6 +32,8 @@ use super::support::{SETUP_WAIT, first_pane};
 mod endlocked_spec;
 #[path = "lifecycle_endrecord_spec.rs"]
 mod endrecord_spec;
+#[path = "lifecycle_endrun_spec.rs"]
+mod endrun_spec;
 #[path = "lifecycle_guard_spec.rs"]
 mod guard_spec;
 #[path = "lifecycle_purgeguard_spec.rs"]
