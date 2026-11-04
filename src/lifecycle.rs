@@ -301,11 +301,6 @@ pub(crate) fn run_stop(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let mut target = String::new();
-    let mut yes = false;
-    let mut is_self = false;
-    let mut supervise = false;
-    let mut handoff = false;
     // `--pane <id>`: the caller's own pane (the shim passes `$TMUX_PANE`, or
     // the operator's explicit `--pane=<id>` from a run-shell child, where the
     // inherited $TMUX_PANE names a FOREIGN pane).
@@ -319,88 +314,69 @@ pub(crate) fn run_stop(
             return Ok(EXIT_USAGE);
         }
     };
-    for arg in &words {
-        match arg.as_str() {
-            "-y" | "--yes" => yes = true,
-            // The caller asserts it is running INSIDE the target.
-            "--self" => is_self = true,
-            // The detached worker `--self` starts.
-            "--supervise" => supervise = true,
-            // A tmux `run-shell` job starts this, then exits before the
-            // detached supervisor kills the job's target session.
-            "--handoff" => handoff = true,
-            flag if flag.starts_with('-') => {
-                writeln!(err, "Error: unknown flag '{flag}'. Use -y/--yes or --self.")?;
-                return Ok(EXIT_USAGE);
-            }
-            name if target.is_empty() => name.clone_into(&mut target),
-            extra => {
-                writeln!(
-                    err,
-                    "Error: unexpected extra argument '{extra}' — _stop takes one session name (or 'all')."
-                )?;
-                return Ok(EXIT_USAGE);
-            }
+    let args = match stop_words(&words) {
+        Ok(args) => args,
+        Err(line) => {
+            writeln!(err, "{line}")?;
+            return Ok(EXIT_USAGE);
         }
-    }
+    };
+    // The caller's own session is read for EVERY form, an explicit target and
+    // the internal modes included, and only after the argv is known good.
     let caller_server = crate::doors::caller_server();
     let resolution = caller_resolution(root, caller_server.as_ref(), &pane);
     let caller_session = resolution.as_ref().ok().cloned();
-    if target.is_empty() {
-        if let Some(own) = &caller_session {
-            target.clone_from(own);
-            is_self = true;
-        } else if is_self {
-            let Some(own) = self_target(caller_session.as_deref(), err)? else {
-                return Ok(EXIT_FAILED);
-            };
-            target = own;
-        }
-    }
-    if target.is_empty() {
-        if let Err(gap) = &resolution {
+    let aim = match stop_target(&args, caller_session.as_deref()) {
+        Ok(aim) => aim,
+        Err(NoAim::SelfWithoutCaller) => {
             writeln!(
                 err,
-                "Error: with no session name, ae stop {NEEDS_PANE}; {}.",
-                gap.cause(&pane)
+                "Error: --self with no session name {NEEDS_PANE}; this one is not an ae agent pane."
             )?;
+            return Ok(EXIT_FAILED);
         }
-        writeln!(err, "{STOP_USAGE}")?;
-        return Ok(EXIT_USAGE);
-    }
-    // `--self` asserts "the session I am in", so it is a claim about ONE
-    // session.
-    if is_self && target == "all" {
-        writeln!(
-            err,
-            "Error: --self names the session you are in — it cannot be combined with 'all'."
-        )?;
-        return Ok(EXIT_USAGE);
-    }
-    if supervise {
-        return run_supervisor(root, &target, expect.as_ref(), out, err);
-    }
-    if expect.is_some() {
-        writeln!(
-            err,
-            "Error: --expect-* describes one supervised stop and belongs with --supervise."
-        )?;
-        return Ok(EXIT_USAGE);
-    }
-    if handoff {
-        return start_stop_supervisor(root, &target, out, err);
-    }
-    if let Some(own) = &caller_session {
-        if target == "all" && all_sessions(root).contains(own) {
-            return fleet_supervised(root, own, yes, out, err);
+        Err(NoAim::Usage) => {
+            if let Err(gap) = &resolution {
+                writeln!(
+                    err,
+                    "Error: with no session name, ae stop {NEEDS_PANE}; {}.",
+                    gap.cause(&pane)
+                )?;
+            }
+            writeln!(err, "{STOP_USAGE}")?;
+            return Ok(EXIT_USAGE);
         }
-        if target == *own {
-            is_self = true;
+    };
+    match early_route(&aim, &args, expect.is_some()) {
+        Early::SelfAll => {
+            writeln!(
+                err,
+                "Error: --self names the session you are in — it cannot be combined with 'all'."
+            )?;
+            return Ok(EXIT_USAGE);
         }
+        Early::Supervise => return run_supervisor(root, &aim.target, expect.as_ref(), out, err),
+        Early::ExpectPublic => {
+            writeln!(
+                err,
+                "Error: --expect-* describes one supervised stop and belongs with --supervise."
+            )?;
+            return Ok(EXIT_USAGE);
+        }
+        Early::Handoff => return start_stop_supervisor(root, &aim.target, out, err),
+        Early::Public => {}
     }
-    if is_self {
-        return self_supervised(root, &target, yes, out, err);
-    }
+    let own = caller_session.as_deref();
+    // The census is taken here only for `all` from inside a session.
+    let own_in_census = own.is_some_and(|own| {
+        aim.target == "all" && all_sessions(root).iter().any(|name| name == own)
+    });
+    let yes = args.yes;
+    let target = match late_route(&aim, own, own_in_census) {
+        Late::Fleet(own) => return fleet_supervised(root, own, yes, out, err),
+        Late::SelfStop => return self_supervised(root, &aim.target, yes, out, err),
+        Late::All | Late::One => aim.target,
+    };
     if target == "all" {
         let names = all_sessions(root);
         if names.is_empty() {
@@ -448,6 +424,157 @@ pub(crate) fn run_stop(
         StopOutcome::AlreadyStopped | StopOutcome::Failed | StopOutcome::Refused(_) => {
             Ok(EXIT_FAILED)
         }
+    }
+}
+
+/// The words of a `_stop` tail once the pane pair and the expectation are
+/// lifted.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct StopArgs {
+    /// The first plain word, empty when none was given.
+    target: String,
+    yes: bool,
+    /// The caller asserts it is running INSIDE the target.
+    is_self: bool,
+    worker: Worker,
+}
+
+/// Which internal stop the tail asks for. Ordered: `--supervise` wins over
+/// `--handoff` whichever comes first.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Worker {
+    /// The public forms.
+    #[default]
+    None,
+    /// `--handoff`: a tmux `run-shell` job starts this, then exits before the
+    /// detached supervisor kills the job's target session.
+    Handoff,
+    /// `--supervise`: the detached worker `--self` starts.
+    Supervise,
+}
+
+/// The flags, left to right; the first unknown flag or extra word is the
+/// refusal line.
+fn stop_words(words: &[String]) -> std::result::Result<StopArgs, String> {
+    let mut args = StopArgs::default();
+    for arg in words {
+        match arg.as_str() {
+            "-y" | "--yes" => args.yes = true,
+            "--self" => args.is_self = true,
+            "--supervise" => args.worker = Worker::Supervise,
+            "--handoff" => args.worker = args.worker.max(Worker::Handoff),
+            flag if flag.starts_with('-') => {
+                return Err(format!(
+                    "Error: unknown flag '{flag}'. Use -y/--yes or --self."
+                ));
+            }
+            name if args.target.is_empty() => name.clone_into(&mut args.target),
+            extra => {
+                return Err(format!(
+                    "Error: unexpected extra argument '{extra}' — _stop takes one session name (or 'all')."
+                ));
+            }
+        }
+    }
+    Ok(args)
+}
+
+/// The session a stop is about, decided ONCE: every later route reads this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Aim {
+    target: String,
+    /// Asserted by `--self`, or inferred from a bare stop inside a session.
+    is_self: bool,
+}
+
+/// Why a stop has no session to be about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoAim {
+    /// `--self` with no name, from a caller ae could not place.
+    SelfWithoutCaller,
+    /// No name and nothing to infer one from.
+    Usage,
+}
+
+/// A named target is taken as given; a bare stop is about the caller's own
+/// session, which it then stops as `--self`.
+fn stop_target(args: &StopArgs, own: Option<&str>) -> std::result::Result<Aim, NoAim> {
+    let aim = match own {
+        _ if !args.target.is_empty() => Aim {
+            target: args.target.clone(),
+            is_self: args.is_self,
+        },
+        Some(own) => Aim {
+            target: own.to_owned(),
+            is_self: true,
+        },
+        None if args.is_self => return Err(NoAim::SelfWithoutCaller),
+        None => return Err(NoAim::Usage),
+    };
+    if aim.target.is_empty() {
+        return Err(NoAim::Usage);
+    }
+    Ok(aim)
+}
+
+/// The routes decided before the caller's own session counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Early {
+    /// `--self` is a claim about ONE session.
+    SelfAll,
+    Supervise,
+    /// `--expect-*` belongs with `--supervise` only.
+    ExpectPublic,
+    Handoff,
+    /// None of the above: the public forms.
+    Public,
+}
+
+fn early_route(aim: &Aim, args: &StopArgs, expecting: bool) -> Early {
+    if aim.is_self && aim.target == "all" {
+        Early::SelfAll
+    } else if args.worker == Worker::Supervise {
+        Early::Supervise
+    } else if expecting {
+        Early::ExpectPublic
+    } else if args.worker == Worker::Handoff {
+        Early::Handoff
+    } else {
+        Early::Public
+    }
+}
+
+/// The public forms, once the caller's own session is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Late<'a> {
+    /// `all` from inside a session the fleet holds: the caller's own session
+    /// is among the targets.
+    Fleet(&'a str),
+    /// The caller's own session, named or asserted.
+    SelfStop,
+    /// `all` from outside the fleet.
+    All,
+    /// One other session.
+    One,
+}
+
+/// `own_in_census`: whether the census holds the caller's own session, asked
+/// only for `all`.
+fn late_route<'a>(aim: &Aim, own: Option<&'a str>, own_in_census: bool) -> Late<'a> {
+    if let Some(own) = own {
+        if aim.target == "all" && own_in_census {
+            return Late::Fleet(own);
+        }
+        if aim.target == own {
+            return Late::SelfStop;
+        }
+    }
+    if aim.is_self {
+        Late::SelfStop
+    } else if aim.target == "all" {
+        Late::All
+    } else {
+        Late::One
     }
 }
 
@@ -1336,18 +1463,6 @@ fn self_supervised(
     Ok(0)
 }
 
-/// `_stop --supervise <name>`: the detached worker.
-fn self_target(caller: Option<&str>, err: &mut impl Write) -> io::Result<Option<String>> {
-    if let Some(own) = caller {
-        return Ok(Some(own.to_owned()));
-    }
-    writeln!(
-        err,
-        "Error: --self with no session name {NEEDS_PANE}; this one is not an ae agent pane."
-    )?;
-    Ok(None)
-}
-
 /// Lift `--pane <id>` / `--pane=<id>` out of a stop tail; the rest stays in
 /// order.
 fn split_pane_flag(tail: &[String]) -> (String, Vec<String>) {
@@ -1961,8 +2076,233 @@ fn kill_under_lock(
 
 #[cfg(test)]
 mod tests {
-    use super::{name_is_valid, resume_argv, sessions_dir, stop_prompt, worktrees_dir};
+    use super::{
+        Aim, Early, Late, NoAim, StopArgs, Worker, early_route, late_route, name_is_valid,
+        resume_argv, sessions_dir, stop_prompt, stop_target, stop_words, worktrees_dir,
+    };
     use std::path::Path;
+
+    fn words(tail: &[&str]) -> Vec<String> {
+        tail.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    /// The mode flags as an argv gives them, `--handoff` first.
+    fn flags(supervise: bool, handoff: bool) -> StopArgs {
+        let tail = [(handoff, "--handoff"), (supervise, "--supervise")];
+        let tail: Vec<String> = (tail.iter())
+            .filter(|(given, _)| *given)
+            .map(|(_, flag)| (*flag).to_owned())
+            .collect();
+        stop_words(&tail).expect("mode flags parse")
+    }
+
+    fn aim(target: &str, is_self: bool) -> Aim {
+        Aim {
+            target: target.to_owned(),
+            is_self,
+        }
+    }
+
+    #[test]
+    fn stop_words_read_the_flags_and_refuse_the_first_bad_word_left_to_right() {
+        assert_eq!(stop_words(&[]), Ok(StopArgs::default()));
+        assert_eq!(
+            stop_words(&words(&[
+                "-y",
+                "--self",
+                "proj",
+                "--supervise",
+                "--handoff"
+            ])),
+            Ok(StopArgs {
+                target: "proj".to_owned(),
+                yes: true,
+                is_self: true,
+                worker: Worker::Supervise,
+            })
+        );
+        // `--supervise` wins over `--handoff` in either order.
+        for tail in [
+            &["--supervise", "--handoff"][..],
+            &["--handoff", "--supervise"][..],
+            &["--handoff", "--supervise", "--handoff"][..],
+        ] {
+            assert_eq!(
+                stop_words(&words(tail)).map(|args| args.worker),
+                Ok(Worker::Supervise)
+            );
+        }
+        assert_eq!(
+            stop_words(&words(&["--handoff", "--handoff"])).map(|args| args.worker),
+            Ok(Worker::Handoff)
+        );
+        // Repeats are accepted; `--yes` is `-y`.
+        assert_eq!(
+            stop_words(&words(&["--yes", "-y", "--yes", "proj"])),
+            Ok(StopArgs {
+                target: "proj".to_owned(),
+                yes: true,
+                ..StopArgs::default()
+            })
+        );
+        let unknown = "Error: unknown flag '--bogus'. Use -y/--yes or --self.";
+        let extra =
+            "Error: unexpected extra argument 'extra' — _stop takes one session name (or 'all').";
+        assert_eq!(
+            stop_words(&words(&["--bogus", "proj", "extra"])),
+            Err(unknown.to_owned())
+        );
+        assert_eq!(
+            stop_words(&words(&["proj", "extra", "--bogus"])),
+            Err(extra.to_owned())
+        );
+        assert_eq!(
+            stop_words(&words(&["-"])),
+            Err("Error: unknown flag '-'. Use -y/--yes or --self.".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_named_target_is_taken_as_given_and_a_bare_stop_is_the_callers_own_session() {
+        let named = |target: &str, is_self: bool| StopArgs {
+            target: target.to_owned(),
+            is_self,
+            ..StopArgs::default()
+        };
+        // A name wins over the caller, and its self flag is the argv's: naming
+        // one's own session is not yet a self stop here (late_route decides).
+        assert_eq!(
+            stop_target(&named("proj", false), Some("proj")),
+            Ok(aim("proj", false))
+        );
+        assert_eq!(
+            stop_target(&named("other", true), Some("proj")),
+            Ok(aim("other", true))
+        );
+        assert_eq!(
+            stop_target(&named("all", false), Some("all")),
+            Ok(aim("all", false))
+        );
+        assert_eq!(
+            stop_target(&named("proj", false), None),
+            Ok(aim("proj", false))
+        );
+        // Bare: the caller's own session, as --self.
+        assert_eq!(
+            stop_target(&named("", false), Some("proj")),
+            Ok(aim("proj", true))
+        );
+        assert_eq!(
+            stop_target(&named("", true), Some("all")),
+            Ok(aim("all", true))
+        );
+        // An own session with no name is no session to stop (as before the split).
+        assert_eq!(stop_target(&named("", true), Some("")), Err(NoAim::Usage));
+        // Bare with no caller.
+        assert_eq!(
+            stop_target(&named("", true), None),
+            Err(NoAim::SelfWithoutCaller)
+        );
+        assert_eq!(stop_target(&named("", false), None), Err(NoAim::Usage));
+    }
+
+    #[test]
+    fn the_early_routes_rank_self_all_then_supervise_then_expectation_then_handoff() {
+        let modes = |supervise: bool, handoff: bool| flags(supervise, handoff);
+        let every = [(false, false), (true, false), (false, true), (true, true)];
+        for (supervise, handoff) in every {
+            for expecting in [false, true] {
+                assert_eq!(
+                    early_route(&aim("all", true), &modes(supervise, handoff), expecting),
+                    Early::SelfAll
+                );
+            }
+        }
+        for target in [aim("proj", true), aim("proj", false), aim("all", false)] {
+            for handoff in [false, true] {
+                for expecting in [false, true] {
+                    assert_eq!(
+                        early_route(&target, &modes(true, handoff), expecting),
+                        Early::Supervise
+                    );
+                }
+                assert_eq!(
+                    early_route(&target, &modes(false, handoff), true),
+                    Early::ExpectPublic
+                );
+            }
+            assert_eq!(
+                early_route(&target, &modes(false, true), false),
+                Early::Handoff
+            );
+            assert_eq!(
+                early_route(&target, &modes(false, false), false),
+                Early::Public
+            );
+        }
+    }
+
+    #[test]
+    fn an_inferred_target_reaches_the_internal_modes_as_the_callers_own_session() {
+        let bare = flags;
+        for (args, route) in [
+            (bare(true, false), Early::Supervise),
+            (bare(false, true), Early::Handoff),
+            (bare(true, true), Early::Supervise),
+        ] {
+            let own = stop_target(&args, Some("proj")).expect("inferred");
+            assert_eq!(own, aim("proj", true));
+            assert_eq!(early_route(&own, &args, false), route);
+            // An inferred `all` is a self claim about `all`; a named one is not.
+            let inferred = stop_target(&args, Some("all")).expect("inferred");
+            assert_eq!(early_route(&inferred, &args, false), Early::SelfAll);
+            let named = StopArgs {
+                target: "all".to_owned(),
+                ..args.clone()
+            };
+            let named = stop_target(&named, Some("all")).expect("named");
+            assert_eq!(early_route(&named, &args, false), route);
+        }
+    }
+
+    #[test]
+    fn the_late_routes_send_own_sessions_to_the_supervised_forms() {
+        // `all` from inside the fleet, and only when the census holds the caller.
+        assert_eq!(
+            late_route(&aim("all", false), Some("proj"), true),
+            Late::Fleet("proj")
+        );
+        assert_eq!(
+            late_route(&aim("all", false), Some("proj"), false),
+            Late::All
+        );
+        assert_eq!(late_route(&aim("all", false), None, false), Late::All);
+        // A session named `all`, missing from the census, is the caller's own.
+        assert_eq!(
+            late_route(&aim("all", false), Some("all"), false),
+            Late::SelfStop
+        );
+        assert_eq!(
+            late_route(&aim("all", false), Some("all"), true),
+            Late::Fleet("all")
+        );
+        // Naming one's own session, or asserting --self.
+        assert_eq!(
+            late_route(&aim("proj", false), Some("proj"), false),
+            Late::SelfStop
+        );
+        assert_eq!(
+            late_route(&aim("proj", true), Some("other"), false),
+            Late::SelfStop
+        );
+        assert_eq!(late_route(&aim("proj", true), None, false), Late::SelfStop);
+        // Anything else is one other session.
+        assert_eq!(
+            late_route(&aim("proj", false), Some("other"), false),
+            Late::One
+        );
+        assert_eq!(late_route(&aim("proj", false), None, false), Late::One);
+    }
 
     #[test]
     fn a_resume_argv_is_exactly_this_binary_the_session_and_no_attach() {
