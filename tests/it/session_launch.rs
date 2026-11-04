@@ -9518,3 +9518,6 @@ mod buildx_spec;
 
 #[path = "launchx2_spec.rs"]
 mod launchx2_spec;
+
+#[path = "launchsplit_spec.rs"]
+mod launchsplit_spec;

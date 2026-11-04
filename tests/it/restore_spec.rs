@@ -6,6 +6,9 @@
     reason = "acceptance fixtures create and inspect their own isolated session state"
 )]
 
+#[path = "launchsplit_restore_spec.rs"]
+mod launchsplit_restore_spec;
+
 use std::io::{BufRead as _, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
