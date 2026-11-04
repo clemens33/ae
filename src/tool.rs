@@ -1611,12 +1611,12 @@ impl ToolKind {
     }
 
     /// Whether the reseat stop proof judges this harness's limit screen with its
-    /// own scan (`watchdog::limit_standing`) instead of the frame grammar: only
-    /// muse, whose frames the grammar routes to claude's and always reads
-    /// `Unknown`.
+    /// own scan (`watchdog::limit_standing`) instead of the frame grammar: muse,
+    /// whose frames the grammar routes to claude's and always reads `Unknown`,
+    /// and agy, whose input is unmodelled so the grammar reads no frame at all.
     #[must_use]
     pub(crate) const fn limit_screen_scanned(self) -> bool {
-        matches!(self, Self::Muse)
+        matches!(self, Self::Agy | Self::Muse)
     }
 
     /// Whether ae reads this harness's background task rows under its limit
@@ -1634,13 +1634,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_muse_has_its_limit_screen_judged_by_its_own_scan() {
+    fn only_agy_and_muse_have_their_limit_screen_judged_by_their_own_scan() {
         let scanned: Vec<&str> = KNOWN
             .iter()
             .filter(|adapter| adapter.kind.limit_screen_scanned())
             .map(|adapter| adapter.name)
             .collect();
-        assert_eq!(scanned, ["muse"]);
+        assert_eq!(scanned, ["agy", "muse"]);
         assert!(!ToolKind::Unknown.limit_screen_scanned());
     }
 

@@ -151,6 +151,23 @@ Then, under `.lifecycle.<session>.lock`:
    measured (named residual: a task list long enough to push the block out of
    the window refuses as `no limit row`).
 
+   Agy has a limit proof of its own too, and only that (`watchdog::limit_standing(
+   buf, "agy")`; its input is unmodelled, so it still classifies `Unknown`, and
+   headroom moves, effort and a plain reseat are as they were). On BOTH readings
+   the capture's tail must be the newest column-0 `⚠ Individual quota reached…`
+   row (the glyph, one space), the `Error ID: ` row directly under it, then only
+   blank rows and exactly the measured empty composer (rule, an empty `>` row,
+   rule, `? for shortcuts` last, read by `deliver::region::composed_ui`). Any other
+   row refuses and is quoted (`row after the limit row: "<row>"`), a draft or a
+   wrapped draft is `no empty box under the limit row`, and the Error ID row ends
+   the cell, so work abutting it refuses. A limit row agy wraps over several rows
+   (its changelog says it wraps alerts itself, so a pane narrower than the row
+   draws it so), or one with no `Error ID:` row under it, refuses too, and the
+   step is `--stop-unknown`. Named residual: no live capture of the rows under the
+   limit exists, so a frame that draws anything else there refuses until it is
+   measured. The reset in the row is relative and never read: an agy limit has no
+   known reset, so the limit trigger moves the seat.
+
    A background task is kept unless a LONG limit proves it may end (#304). When
    the reading that decides the refusal shows nothing but the stop and its
    tasks (`watchdog::muse_background_tasks`: below the box an optional

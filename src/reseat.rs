@@ -62,6 +62,9 @@ use crate::tracked::{self, EventFields};
 use crate::transport;
 
 #[cfg(test)]
+#[path = "reseat/agylimit_spec.rs"]
+mod agylimit_spec;
+#[cfg(test)]
 #[path = "reseat/limitmuse_spec.rs"]
 mod limitmuse_spec;
 #[cfg(test)]
@@ -856,6 +859,9 @@ fn stop_timeout_advice(probe: Option<&ObservedPaneProbe>) -> (String, &'static s
 /// Muse's frame is no frame of the grammar above (it classifies unknown), so its
 /// stop is proven by `watchdog::limit_standing` alone: the usage-limit block as
 /// the newest transcript block over an empty box, and no background task below.
+/// Agy's input is unmodelled (`read_frame` reads none), so its limit stop is proven
+/// the same way and ONLY the limit's: the `⚠` row, its `Error ID:` row and
+/// exactly the measured empty composer, nothing else (`watchdog::agy_limit_standing`).
 fn limit_proven(capture: &str, agent_bin: &str, tool: ToolKind) -> bool {
     if crate::watchdog::limit_menu_idle(capture, agent_bin) {
         return true;
@@ -907,7 +913,8 @@ fn frame_gap(reading: Reading<'_>, agent_bin: &str, tool: ToolKind) -> Option<St
         return None;
     }
     // Muse's frame is read by its own scan, never by the claude grammar the
-    // classifier routes it to, so a muse capture is always a frame to judge.
+    // classifier routes it to, so a muse capture is always a frame to judge; so
+    // is an agy capture, which no grammar reads.
     let Some(capture) = capture.filter(|capture| {
         tool.limit_screen_scanned() || crate::harness_state::read_frame(capture, tool).is_some()
     }) else {

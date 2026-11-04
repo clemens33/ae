@@ -174,11 +174,11 @@ const OPENCODE_BANNER: Banner = Banner {
 };
 /// Antigravity (`agy`) 1.5.0 draws the limit row at column 0: the `⚠` glyph and
 /// an ASCII space (a bare glyph with no blank after it is no row), then the head.
-/// Its capture is joined (`capture-pane -J`), so a wrapped row is one row; the
-/// cell is two rows, a blank and the four-row composer, and 12 leaves room for
-/// extra blanks and a short draft. The column and the window are not measured on
-/// a live frame (only the human's pasted row exists), so a differing frame reads
-/// as no row.
+/// The cell is the row (agy's changelog says it wraps its alerts itself, so a
+/// narrow pane draws it over 2 or 3 rows, the head on the first), the `Error ID:`
+/// row, a blank and the four-row composer, and 12 leaves room for extra blanks and
+/// a short draft. The column and the window are not measured on a live frame
+/// (only the human's pasted row exists), so a differing frame reads as no row.
 const AGY_BANNER: Banner = Banner {
     lead: Lead::Marks(&["⚠ "]),
     window: 12,
@@ -696,14 +696,66 @@ const CLAUDE_LIMIT_HEAD: &str = "⏺ Usage limit reached";
 ///   cancelled-wait row, or a row the frame grammar reads as finished.
 ///
 /// Every other row is [`LimitStanding::RowAfterCell`]; when unsure, it refuses.
-/// Claude and muse only ([`muse_limit_standing`]): no other tool has a measured
-/// echo or furniture shape, and each reads only its own grammar.
+/// Claude, muse ([`muse_limit_standing`]) and agy ([`agy_limit_standing`]) only:
+/// no other tool has a measured echo or furniture shape, and each reads only its
+/// own grammar.
 #[must_use]
 pub fn limit_standing(buf: &str, agent_bin: &str) -> LimitStanding {
     match agent_bin {
         "claude" => claude_limit_standing(buf, agent_bin),
         "muse" => muse_limit_standing(buf),
+        "agy" => agy_limit_standing(buf),
         _ => LimitStanding::NoCell,
+    }
+}
+
+/// The row agy draws under its limit row, at column 0: the client's own `Error
+/// ID:` row, measured on the human's row beside the client string.
+const AGY_ERROR_ID: &str = "Error ID: ";
+
+/// [`limit_standing`] for agy: the newest `⚠ Individual quota reached` row, the
+/// `Error ID: ` row directly under it, then ONLY blank rows and exactly the
+/// measured empty composer (`deliver::region::composed_ui`, the composer's own
+/// owner: rule, an empty `>` row, rule, the `? for shortcuts` footer last).
+///
+/// The cell ends at the Error ID row, so a work row abutting it is a row after
+/// the cell, never part of it. A row under the limit row that is not the Error
+/// ID row (a blank, a wrapped tail, work), a draft, a wrapped draft, a missing
+/// footer and any other row before the composer refuse. Agy's changelog says it
+/// wraps its alerts itself, and a capture joins only the terminal's own soft
+/// wraps, so on a pane narrower than the row the second wrapped row is a row
+/// after the limit row and refuses. The frame under the limit row is not
+/// measured on a live pane; a different one never proves, it falls back to
+/// `--stop-unknown`.
+fn agy_limit_standing(buf: &str) -> LimitStanding {
+    let Some((window, at, _)) = newest_row(buf, &AGY_BANNER) else {
+        return LimitStanding::NoCell;
+    };
+    match window.get(at + 1) {
+        Some(row) if row.starts_with(AGY_ERROR_ID) => {}
+        Some(row) if !row.trim().is_empty() => {
+            return LimitStanding::RowAfterCell(offending_row(row.trim()));
+        }
+        _ => return LimitStanding::NoCell,
+    }
+    let below: Vec<&str> = window[at + 2..]
+        .iter()
+        .copied()
+        .skip_while(|row| row.trim().is_empty())
+        .collect();
+    let composed = crate::tool::ToolKind::from_binary_name("agy")
+        .adapter()
+        .input
+        .composed;
+    if below.len() == 4 && crate::deliver::region::composed_ui(&below.join("\n"), composed) {
+        return LimitStanding::Stands;
+    }
+    match below.first() {
+        // The box is drawn but not proven empty and alone: a draft, a wrapped
+        // draft, an unknown footer or closing rule.
+        None => LimitStanding::NoBox,
+        Some(row) if row.chars().all(|ch| ch == '─') => LimitStanding::NoBox,
+        Some(row) => LimitStanding::RowAfterCell(offending_row(row.trim())),
     }
 }
 

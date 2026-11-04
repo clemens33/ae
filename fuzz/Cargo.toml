@@ -155,6 +155,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "agy_limit_pane"
+path = "fuzz_targets/agy_limit_pane.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "usage_claude_transcript"
 path = "fuzz_targets/usage_claude_transcript.rs"
 test = false
