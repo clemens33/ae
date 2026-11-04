@@ -1052,14 +1052,11 @@ fn crash_cut_until(
     Ok(Some(EXIT_FAILED))
 }
 
-/// Everything inside the two locks: the reads, then the moves.
+/// Everything inside the two locks: the reads, then the fork.
 ///
-/// A live source keeps the existing live behavior (with checked publication);
-/// a positively stopped source takes the Slice-A transaction.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the live rename's ordered checks read better in one place than threaded through helpers; the stopped transaction lives in stopped()/recover() below"
-)]
+/// A live source keeps the existing live behavior in [`live`] (with checked
+/// publication); a positively stopped source takes the Slice-A transaction in
+/// [`stopped`]/`recover`.
 fn locked(
     root: &Path,
     old: &str,
@@ -1069,29 +1066,12 @@ fn locked(
     err: &mut impl Write,
 ) -> crate::Result<u8> {
     let sessions = crate::lifecycle::sessions_dir(root);
-    let old_dir = sessions.join(old);
-    let new_dir = sessions.join(new);
-    // Rechecked under the locks: a symlink swapped in after the pre-lock
-    // check must not be renamed through.
-    for name in [old, new] {
-        if is_symlink(&sessions.join(name)) {
-            writeln!(
-                err,
-                "Error: the session path for '{name}' is a symlink; refusing to rename through it."
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-    }
-    // The server is the OLD session's own recorded one.
-    let Some(server) = crate::session_launch::recorded_server_resolved(&old_dir) else {
-        writeln!(
-            err,
-            "Error: session '{old}' {}. Nothing was renamed.",
-            crate::session_launch::AMBIGUOUS_SERVER
-        )?;
-        return Ok(EXIT_FAILED);
+    let server = match recheck_symlinks(&sessions, old, new)
+        .and_then(|()| resolve_server(&sessions.join(old), old))
+    {
+        Ok(server) => server,
+        Err(refusal) => return refuse(err, &refusal),
     };
-
     // Addressed by the EXACT id from here on: `-t proj` prefix-matches, so a
     // rename addressed by name can move a live `project` and report success.
     let Some(session_id) = crate::lifecycle::live_id(&server, old) else {
@@ -1101,148 +1081,261 @@ fn locked(
     // facts only. A live source with an armed seam refuses before mutation
     // rather than running a live rename that no cut covers.
     if let Err(refusal) = armed_live(crash, old) {
-        writeln!(err, "{}", refusal.0)?;
-        return Ok(EXIT_FAILED);
+        return refuse(err, &refusal);
     }
+    live(root, old, new, &server, &session_id, out, err)
+}
+
+/// Write one whole refusal line and exit [`EXIT_FAILED`].
+fn refuse(err: &mut impl Write, refusal: &Refusal) -> crate::Result<u8> {
+    writeln!(err, "{}", refusal.0)?;
+    Ok(EXIT_FAILED)
+}
+
+/// Rechecked under the locks, old name first: a symlink swapped in after the
+/// pre-lock check must not be renamed through.
+fn recheck_symlinks(sessions: &Path, old: &str, new: &str) -> Result<(), Refusal> {
+    for name in [old, new] {
+        if is_symlink(&sessions.join(name)) {
+            return Err(Refusal(format!(
+                "Error: the session path for '{name}' is a symlink; refusing to rename through it."
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The server is the OLD session's own recorded one.
+fn resolve_server(old_dir: &Path, old: &str) -> Result<ServerId, Refusal> {
+    crate::session_launch::recorded_server_resolved(old_dir).ok_or_else(|| {
+        Refusal(format!(
+            "Error: session '{old}' {}. Nothing was renamed.",
+            crate::session_launch::AMBIGUOUS_SERVER
+        ))
+    })
+}
+
+/// The live rename, in this order: read the look; refuse an occupied
+/// destination or a stranded request; rename the tmux session by its exact
+/// id; move the state directory; then, when the session has meta, republish
+/// it ([`republish`]). A live rename never moves managed work.
+fn live(
+    root: &Path,
+    old: &str,
+    new: &str,
+    server: &ServerId,
+    session_id: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    let sessions = crate::lifecycle::sessions_dir(root);
+    let (old_dir, new_dir) = (sessions.join(old), sessions.join(new));
     // The look is diagnosed BEFORE mutation: a session whose look cannot be
     // read keeps its wrong-for-a-moment name rather than being redressed in
     // a look it never had.
-    let look = crate::session_launch::look_of(&server, old);
-    if transport::session_exists(&server, new) {
-        writeln!(err, "Error: session '{new}' already exists.")?;
-        return Ok(EXIT_FAILED);
+    let look = crate::session_launch::look_of(server, old);
+    let moved = refuse_destination(root, server, old, new, &old_dir, &new_dir)
+        .and_then(|()| rename_tmux(server, session_id, old, new))
+        .and_then(|()| move_state_dir(&old_dir, &new_dir, old, new));
+    if let Err(refusal) = moved {
+        return refuse(err, &refusal);
     }
-    if crate::lifecycle::path_exists(&new_dir) {
-        writeln!(
-            err,
+    // 3.
+    if !crate::lifecycle::path_exists(&new_dir.join(crate::meta::FILE)) {
+        writeln!(out, "Renamed '{old}' → '{new}'")?;
+        return Ok(0);
+    }
+    republish(root, server, old, new, look.as_ref(), out, err)
+}
+
+/// The destination and request checks, in order: an existing tmux session,
+/// an existing state directory, then a pending request the rename would
+/// strand. Each is read only when the one before it passed.
+fn refuse_destination(
+    root: &Path,
+    server: &ServerId,
+    old: &str,
+    new: &str,
+    old_dir: &Path,
+    new_dir: &Path,
+) -> Result<(), Refusal> {
+    if transport::session_exists(server, new) {
+        return Err(Refusal(format!("Error: session '{new}' already exists.")));
+    }
+    if crate::lifecycle::path_exists(new_dir) {
+        return Err(Refusal(format!(
             "Error: session directory '{}' already exists.",
             new_dir.display()
-        )?;
-        return Ok(EXIT_FAILED);
+        )));
     }
-    if let Err(why) = stranding(root, old, &old_dir) {
-        writeln!(err, "Error: {why}. Nothing was renamed.")?;
-        return Ok(EXIT_FAILED);
-    }
+    stranding(root, old, old_dir)
+        .map_err(|why| Refusal(format!("Error: {why}. Nothing was renamed.")))
+}
 
-    // 1. The tmux session.
+/// 1. The tmux session, addressed by its exact id.
+fn rename_tmux(server: &ServerId, session_id: &str, old: &str, new: &str) -> Result<(), Refusal> {
     let (renamed, _) = transport::run_tmux_op(&argv(
-        &server,
+        server,
         &Op::RenameSession {
-            target: &session_id,
+            target: session_id,
             name: new,
         },
     ));
-    if !renamed {
-        writeln!(
-            err,
+    if renamed {
+        Ok(())
+    } else {
+        Err(Refusal(format!(
             "Error: tmux refused to rename session '{old}'. Nothing was renamed."
-        )?;
-        return Ok(EXIT_FAILED);
+        )))
     }
+}
 
-    // 2.
-    if crate::lifecycle::dir_exists(&old_dir) && std::fs::rename(&old_dir, &new_dir).is_err() {
-        writeln!(
-            err,
+/// 2. The state directory, when there is one.
+fn move_state_dir(old_dir: &Path, new_dir: &Path, old: &str, new: &str) -> Result<(), Refusal> {
+    if crate::lifecycle::dir_exists(old_dir) && std::fs::rename(old_dir, new_dir).is_err() {
+        return Err(Refusal(format!(
             "Error: the tmux session was renamed to '{new}' but its state directory could not be moved ({}). Retry 'ae rename {old} {new}' after fixing it.",
             old_dir.display()
-        )?;
-        return Ok(EXIT_FAILED);
+        )));
     }
+    Ok(())
+}
 
-    // 3.
-    if crate::lifecycle::path_exists(&new_dir.join(crate::meta::FILE)) {
-        if let Err(why) = crate::meta::rewrite(&new_dir, "session", Some(new)) {
-            writeln!(
-                err,
+/// The renamed session's publication, in this order: the meta row; then the
+/// manifest, the `rename` record, the monitors and the chats, each attempted
+/// before any of them is refused; the manifest refusal; the look redress; the
+/// watchdog verification; the monitor and chat refusals; the success report.
+fn republish(
+    root: &Path,
+    server: &ServerId,
+    old: &str,
+    new: &str,
+    look: Option<&crate::theme::Look>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    let new_dir = crate::lifecycle::sessions_dir(root).join(new);
+    if let Err(why) = crate::meta::rewrite(&new_dir, "session", Some(new)) {
+        return refuse(
+            err,
+            &Refusal(format!(
                 "Error: '{new}' was renamed but its meta still says '{old}' ({}). Retry 'ae rename {old} {new}' after fixing it.",
                 why.cause()
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        // Manifest publication is CHECKED: an incompatible workspace.md
-        // destination must fail the rename, not print success over it. It
-        // precedes the `rename` record, so a seat told reads the new manifest.
-        let manifest = publish_manifest(&new_dir, new);
-        let journaled = manifest.is_ok() && journal_rename(&new_dir, old, new, err)?;
-        let watchdog_expected = crate::session_launch::watchdog_enabled_for_session(&new_dir);
-        let mut monitors =
-            crate::session_launch::rebind_monitor_panes(root, &server, new, &new_dir).map(|_| ());
-        let chat = restart_chats(root, &server, new, &new_dir);
-        if let Err(why) = &chat {
-            writeln!(
-                err,
-                "Error: the session was renamed to '{new}', but its chat could not be restarted under the new name ({why}); prefix h opens the chat."
-            )?;
-        }
-        if let Err(why) = manifest {
-            writeln!(
-                err,
-                "Error: '{new}' was renamed but its workspace manifest could not be published ({why}); its running seats were NOT told. Retry 'ae rename {old} {new}' after fixing it."
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        // The pre-mutation look, redressed without reseeding verdicts. An
-        // unreadable look is diagnosed, never replaced by another look.
-        if let Some(look) = look {
-            let bytes = crate::meta::read_bytes(&new_dir).unwrap_or_default();
-            let value = |key: &str| crate::lifecycle::meta_value(&bytes, key);
-            crate::session_launch::redress_status_bar(
-                &server,
-                new,
-                &crate::session_launch::status_paths(
-                    &value("mode"),
-                    &value("origin"),
-                    &value("work_dir"),
-                    &crate::doors::home()
-                        .unwrap_or_default()
-                        .display()
-                        .to_string(),
-                ),
-                &look,
-            );
-        } else {
-            writeln!(
-                err,
-                "Warning: session '{new}' has no readable look — leaving its status bar as renamed without redressing it (never substituting another look)."
-            )?;
-        }
-        // Success is decided after the renamed session's layout and facts are
-        // back in place. The respawn helper proves registration too, but this
-        // final look makes the ordering explicit and catches a daemon that
-        // disappeared while rename republished the look.
-        if monitors.is_ok()
-            && watchdog_expected
-            && crate::watchdog_lifecycle::await_running(&server, new, &new_dir).is_none()
-        {
-            monitors = Err("watchdog disappeared after the look was republished".to_owned());
-        }
-        if let Err(why) = monitors {
-            writeln!(err, "{}", monitor_refusal(new, &why, watchdog_expected).0)?;
-            return Ok(EXIT_FAILED);
-        }
-        if chat.is_err() {
-            return Ok(EXIT_FAILED);
-        }
-        writeln!(out, "Renamed '{old}' → '{new}'")?;
-        match told(journaled, watchdog_expected) {
-            Told::Told => writeln!(out, "{}", crate::session_notice::TOLD_LINE)?,
-            Told::Untold(why) => {
-                let seats = crate::meta::read_bytes(&new_dir)
-                    .map(|bytes| {
-                        crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes))
-                            .roster()
-                            .len()
-                    })
-                    .unwrap_or_default();
-                writeln!(out, "{}", crate::session_notice::untold_line(why, seats))?;
-            }
-        }
-        return Ok(0);
+            )),
+        );
     }
+    // Manifest publication is CHECKED: an incompatible workspace.md
+    // destination must fail the rename, not print success over it. It
+    // precedes the `rename` record, so a seat told reads the new manifest.
+    let manifest = publish_manifest(&new_dir, new);
+    let journaled = manifest.is_ok() && journal_rename(&new_dir, old, new, err)?;
+    let watchdog_expected = crate::session_launch::watchdog_enabled_for_session(&new_dir);
+    let monitors =
+        crate::session_launch::rebind_monitor_panes(root, server, new, &new_dir).map(|_| ());
+    let chat = restart_chats(root, server, new, &new_dir);
+    if let Err(why) = &chat {
+        writeln!(
+            err,
+            "Error: the session was renamed to '{new}', but its chat could not be restarted under the new name ({why}); prefix h opens the chat."
+        )?;
+    }
+    if let Err(why) = manifest {
+        return refuse(
+            err,
+            &Refusal(format!(
+                "Error: '{new}' was renamed but its workspace manifest could not be published ({why}); its running seats were NOT told. Retry 'ae rename {old} {new}' after fixing it."
+            )),
+        );
+    }
+    redress(server, new, &new_dir, look, err)?;
+    if let Err(why) = verify_watchdog(monitors, watchdog_expected, server, new, &new_dir) {
+        return refuse(err, &monitor_refusal(new, &why, watchdog_expected));
+    }
+    if chat.is_err() {
+        return Ok(EXIT_FAILED);
+    }
+    report_success(old, new, &new_dir, journaled, watchdog_expected, out)
+}
 
+/// The pre-mutation look, redressed without reseeding verdicts. An
+/// unreadable look is diagnosed, never replaced by another look.
+fn redress(
+    server: &ServerId,
+    new: &str,
+    new_dir: &Path,
+    look: Option<&crate::theme::Look>,
+    err: &mut impl Write,
+) -> std::io::Result<()> {
+    let Some(look) = look else {
+        return writeln!(
+            err,
+            "Warning: session '{new}' has no readable look — leaving its status bar as renamed without redressing it (never substituting another look)."
+        );
+    };
+    let bytes = crate::meta::read_bytes(new_dir).unwrap_or_default();
+    let value = |key: &str| crate::lifecycle::meta_value(&bytes, key);
+    crate::session_launch::redress_status_bar(
+        server,
+        new,
+        &crate::session_launch::status_paths(
+            &value("mode"),
+            &value("origin"),
+            &value("work_dir"),
+            &crate::doors::home()
+                .unwrap_or_default()
+                .display()
+                .to_string(),
+        ),
+        look,
+    );
+    Ok(())
+}
+
+/// Success is decided after the renamed session's layout and facts are back
+/// in place. The respawn helper proves registration too, but this final look
+/// makes the ordering explicit and catches a daemon that disappeared while
+/// rename republished the look. Probed only when the monitors were rebound
+/// and a watchdog is expected.
+fn verify_watchdog(
+    monitors: Result<(), String>,
+    watchdog_expected: bool,
+    server: &ServerId,
+    new: &str,
+    new_dir: &Path,
+) -> Result<(), String> {
+    if monitors.is_ok()
+        && watchdog_expected
+        && crate::watchdog_lifecycle::await_running(server, new, new_dir).is_none()
+    {
+        return Err("watchdog disappeared after the look was republished".to_owned());
+    }
+    monitors
+}
+
+/// The success line and what the running seats were told. The roster is read
+/// only when they were not.
+fn report_success(
+    old: &str,
+    new: &str,
+    new_dir: &Path,
+    journaled: bool,
+    watchdog_expected: bool,
+    out: &mut impl Write,
+) -> crate::Result<u8> {
     writeln!(out, "Renamed '{old}' → '{new}'")?;
+    match told(journaled, watchdog_expected) {
+        Told::Told => writeln!(out, "{}", crate::session_notice::TOLD_LINE)?,
+        Told::Untold(why) => {
+            let seats = crate::meta::read_bytes(new_dir)
+                .map(|bytes| {
+                    crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes))
+                        .roster()
+                        .len()
+                })
+                .unwrap_or_default();
+            writeln!(out, "{}", crate::session_notice::untold_line(why, seats))?;
+        }
+    }
     Ok(0)
 }
 
@@ -1282,7 +1375,7 @@ fn told(journaled: bool, watchdog_expected: bool) -> Told {
 }
 
 /// The live rename's monitor refusal: an expected watchdog is named as
-/// unverified with its remedy; otherwise only the events monitor was rebound.
+/// unverified with its remedy; otherwise the events monitor is named.
 /// Pure.
 fn monitor_refusal(new: &str, why: &str, watchdog_expected: bool) -> Refusal {
     Refusal(if watchdog_expected {
