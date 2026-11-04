@@ -389,8 +389,8 @@ fn locked_live_manifest_failure_rebinds_events_before_refusing_and_skips_redress
             "set-option",
             "-t",
             &format!("={}:", rig.name),
-            "status-left",
-            "keep-this-layout"
+            ae::theme::PATHS_OPTION,
+            "keep-this-path-fact"
         ])
         .0
     );
@@ -420,12 +420,18 @@ fn locked_live_manifest_failure_rebinds_events_before_refusing_and_skips_redress
             && line.contains(&new_dir.join("events-tail").display().to_string())),
         "events rebound before manifest failure: {panes}"
     );
-    let (ok, status) = rig.tmux(&["show-options", "-v", "-t", "=fresh:", "status-left"]);
+    let (ok, paths) = rig.tmux(&[
+        "show-options",
+        "-v",
+        "-t",
+        "=fresh:",
+        ae::theme::PATHS_OPTION,
+    ]);
     assert!(ok);
     assert_eq!(
-        status.trim(),
-        "keep-this-layout",
-        "manifest refusal skips readable-look redress"
+        paths.trim(),
+        "keep-this-path-fact",
+        "manifest refusal skips look-fact republication"
     );
     assert!(
         rename_events(&new_dir).is_empty(),
