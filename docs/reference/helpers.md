@@ -210,8 +210,47 @@ Every agent pane carries a stable **slot** — `main`, `worker.<n>`, or `spawned
 |---|---|
 | `focus <agent>` | Switch tmux focus to another pane. |
 | `interrupt <agent> [message]` | Cancel current generation, optionally send a replacement instruction. |
-| `spawn <name> --using <profile> [prompt]` | Add a new agent to the workspace, in its own tmux window named after its role. Always pass a descriptive role name. New seats (spawn or initial launch) cannot be named `ae`, `human` or `watchdog`: ae owns these journal actors. Matching is exact and case-sensitive; existing seats remain usable. With `auto_reseat` on, a profile with no auto-reseat exit off its own account earns one stderr warning line; the spawn goes on. |
+| `spawn <name> --using <profile[@client]> [prompt]` | Add a new agent to the workspace, in its own tmux window named after its role. Always pass a descriptive role name. New seats (spawn or initial launch) cannot be named `ae`, `human` or `watchdog`: ae owns these journal actors. Matching is exact and case-sensitive; existing seats remain usable. With `auto_reseat` on, a profile with no auto-reseat exit off its own account earns one stderr warning line; the spawn goes on. `--using profile@client` runs the profile on another account of the same harness: see [Spawn on another account](#spawn-on-another-account). |
 | `retire <agent>` | Remove a spawned agent — kills its pane (and window), cleans meta incl. launch bookkeeping, updates `workspace.md`. Refuses and keeps the seat when the pane cannot be proven its own or gone; a session whose panes cannot be enumerated refuses the same way — resume it, then retire. |
+
+### Spawn on another account
+
+One preset can run on several logins of the SAME harness without a duplicate profile per login:
+`spawn scout --using opus55x@cc-mic` runs `opus55x` on the `cc-mic` client. The profile keeps
+its flags and arguments; only its launch client changes. ae records the bare profile in
+`profile.<slot>` and the label in `client.<slot>` in the seat's own write, so resume,
+the roster and the birth record all read the account the seat really runs on. A bare
+`--using opus55x`, and every alias, behave exactly as before.
+
+A pair runs only when the human has approved it, in the GLOBAL config:
+
+```toml
+[client_pairs]
+opus55x = cc-mic, cc-p     # profile = the clients it may run on
+```
+
+- Only the global file counts. A project `.ae/config` can neither approve a pair nor redefine an
+  approved profile or client for it; both names resolve from the global config.
+- A row ae cannot read in full (an empty list, an empty entry, a name that is not a client label)
+  approves nothing, and a profile keyed twice approves nothing: ae never guesses which row was
+  meant.
+- Removing a line retires the route for new spawns. A seat already recorded on that pair keeps
+  resuming: approval gates new admissions, never a recorded seat.
+- The check runs before ae looks at which names exist. An unapproved pair is refused with where to
+  approve it and, when the profile has a usable row, the clients it IS approved for. Tell your
+  agents the spellings you allow in `[prompt] spawn_instructions`, the place for profile and
+  spend rules.
+- An approved pair still has to pass the launch's own gates: the profile and the client must run
+  the same known harness (`opus55x@codex` is refused), the profile's command must be one simple
+  command, and the account's conversation store must be one ae can verify before the first start.
+- A launch you type yourself (`ae my-app --lead opus55x@cc-mic`) is not gated by this list.
+
+This is a guardrail, not a sandbox: it stops an agent from naming an account you did not approve.
+A bare profile whose own command sets the account variable can already pick any account, and
+whoever can edit the config can approve anything.
+
+The `ae spawn` stderr hint about a profile with no auto-reseat exit is skipped for a
+`profile@client` spawn, because it judges the profile's own account, not the one the seat runs on.
 
 ## Not agent-facing
 

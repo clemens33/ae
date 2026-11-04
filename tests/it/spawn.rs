@@ -1754,10 +1754,11 @@ fn the_spawn_grammar_refuses_a_missing_profile_and_a_hostile_name() {
             vec!["helper", "--using", "nosuch"],
             "not defined in [profiles]",
         ),
-        // R5: `profile@client` is launch-only; spawn takes a bare profile.
+        // #296 part A: this rig's config approves no pair, so the pair gate
+        // refuses before existence (full spec: presetspawn_spec.rs).
         (
             vec!["helper", "--using", "fake@cc-mic"],
-            "profile@client is launch-only",
+            "is not an approved pair",
         ),
     ] {
         let (code, stdout, stderr) = rig.run(ae::cli::SPAWN, &tail);

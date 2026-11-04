@@ -89,11 +89,32 @@ solmic = "codex-mic --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
 
 For a one-off seat on another account, skip the duplicate profile and say so at launch instead:
 `ae myproject --lead fable5@cc-mic` runs the `fable5` flags against the `cc-mic` account. The
-`@` spelling works on `--lead`, `--colead` and `--seat`, and only there — `spawn --using`
-takes a bare profile. Both sides must be the same known tool, and the recorded client is
+`@` spelling works on `--lead`, `--colead` and `--seat`, and on `spawn --using` once you approve
+the pair (below). Both sides must be the same known tool, and the recorded client is
 write-once for the session: a flagless resume honors it by itself, while an explicit
 re-pairing repeats its exact label. See
 [Commands](../reference/commands.md) for the refusal rules.
+
+### `[client_pairs]`: which pairs an agent may spawn
+
+A launch is yours, so the `@` spelling there needs no permission. A spawn is an agent's, so
+`spawn --using fable5@cc-mic` runs only for a pair you listed, in the GLOBAL config:
+
+```toml
+[client_pairs]
+fable5 = cc-mic            # fable5 may run on cc-mic
+opus55x = cc-mic, cc-p
+```
+
+The key is a profile, the value the clients it may run on, comma-separated. Only the global file
+is read: a project `.ae/config` cannot approve a pair or redefine an approved name. A row ae
+cannot read in full approves nothing — an empty list, an empty entry (`a,,b`), a name that is not
+a client label — and a profile keyed twice approves nothing rather than letting the later row
+win. An entry naming a profile or client that does not exist is inert. Remove a line to retire a
+route for new spawns; a seat already recorded on it keeps resuming. The `spawn_instructions`
+text is the place to tell your agents which spellings you allow: written policy is never turned
+into a permission, and an unlisted pair is refused with where to approve it and the clients that
+profile is approved for. See [Spawn on another account](../reference/helpers.md#spawn-on-another-account).
 
 A client row also takes `manual_resets=<0-9>`, in any order beside `config_home=`:
 

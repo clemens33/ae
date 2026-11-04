@@ -7829,6 +7829,87 @@ fn a_restored_spawned_seat_with_a_valid_profile_still_resumes() {
     );
 }
 
+/// #296 part A (frozen presetspawn spec): a stopped session whose spawned
+/// seat records a client override — the rows a correct `spawn --using
+/// scoutx@cc-mic` plus its first start leave behind. Split binaries sign
+/// each exec, because the retained store would mask a wrong-account exec
+/// in the environment alone. The config carries NO `[client_pairs]`:
+/// resume is not a new admission.
+fn presetspawn_stopped_rig(tag: &str, session: &str) -> Rig {
+    let rig = split_binary_rig(tag);
+    add_profile(&rig, "scoutx", "claude --model scout");
+    add_profile(&rig, "leadx", "claude --model leadx");
+    let (code, stdout, stderr) = rig.launch(&["--local", session]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    stop(&rig, session);
+    let store = std::fs::canonicalize(rig.scratch.join(".claude-mic"))
+        .unwrap_or_else(|why| panic!("a canonical store: {why}"));
+    let mut meta = rig.meta(session);
+    assert!(!meta.contains("spawned."), "a fresh meta: {meta}");
+    let _ = write!(
+        meta,
+        "seat.spawned.0=helper\nprofile.spawned.0=scoutx\nclient.spawned.0=cc-mic\n\
+         agent_bin.spawned.0=claude\nharness_session.spawned.0=33333333-3333-4333-8333-333333333333\n\
+         config_home.spawned.0={}\n",
+        store.display()
+    );
+    assert!(
+        std::fs::write(rig.dir(session).join("meta"), meta).is_ok(),
+        "a stopped meta with an override spawned seat"
+    );
+    assert!(
+        std::fs::write(&rig.launched, "").is_ok(),
+        "a clean exec log for the resume"
+    );
+    rig
+}
+
+/// The resumed execs settled: the scout argv plus exactly one side-a and
+/// one side-b signed exec (main on the default binary, spawned on the
+/// override binary).
+fn presetspawn_assert_resumed_account(rig: &Rig, session: &str, main_model: &str) {
+    let launched = rig.launch_argv();
+    assert!(
+        launched.contains("--model scout")
+            && launched.contains(main_model)
+            && launched.matches("side=a").count() == 1
+            && launched.matches("side=b").count() == 1,
+        "main on side a, the spawned seat on its recorded side b: {launched}"
+    );
+    let rebuilt = rig.meta(session);
+    assert!(rebuilt.contains("profile.spawned.0=scoutx\n"), "{rebuilt}");
+    assert!(
+        rebuilt.contains("client.spawned.0=cc-mic\n"),
+        "republication keeps the client row: {rebuilt}"
+    );
+    assert!(!rebuilt.contains('@'), "no @ reaches meta: {rebuilt}");
+}
+
+#[test]
+fn presetspawn_resumed_spawned_seat_keeps_override_account_flagless() {
+    if skip() {
+        return;
+    }
+    let rig = presetspawn_stopped_rig("psresumeflagless", "lnpsflagless");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnpsflagless"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    presetspawn_assert_resumed_account(&rig, "lnpsflagless", "--model fable");
+}
+
+#[test]
+fn presetspawn_resumed_spawned_seat_keeps_override_account_with_seat_flag() {
+    if skip() {
+        return;
+    }
+    // The snapshot arm: a resume carrying ANY seat override used to hand
+    // the restored spawned seat a BARE command snapshot, silently moving
+    // it to the profile's default account (side a).
+    let rig = presetspawn_stopped_rig("psresumeseatflag", "lnpsseatflag");
+    let (code, stdout, stderr) = rig.launch(&["--local", "lnpsseatflag", "--lead", "leadx"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    presetspawn_assert_resumed_account(&rig, "lnpsseatflag", "--model leadx");
+}
+
 /// A seat name a human typed into the meta reaches a pane border, and the
 /// border reads an option VALUE, which tmux takes styles out of.
 ///

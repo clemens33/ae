@@ -6,7 +6,8 @@ use libfuzzer_sys::fuzz_target;
 // the file and hands the parser a `str`, so lossy conversion puts every input
 // byte in play as the one thing the parser can see. The auto reseat settings
 // read the same global text, through their own entry, and so does the strict
-// effort switch.
+// effort switch. The approved-pair list is hand-edited global text read through
+// `section_entries`, so its pure entry takes the same bytes.
 fuzz_target!(|data: &[u8]| {
     let text = String::from_utf8_lossy(data);
     let _ = std::hint::black_box(ae::config::parse_identity(&text));
@@ -18,4 +19,6 @@ fuzz_target!(|data: &[u8]| {
         std::path::Path::new("config"),
         &text,
     ));
+    let pairs = ae::pairs::parse_in(std::path::Path::new("config"), &text);
+    let _ = std::hint::black_box(pairs.judge("opus55x", "cc-mic"));
 });

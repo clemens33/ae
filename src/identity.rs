@@ -646,6 +646,24 @@ pub(crate) enum TargetSpec<'a> {
     },
 }
 
+/// The identity a new spawned seat is born with.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NewSeat<'a> {
+    /// The agent's name.
+    pub(crate) name: &'a str,
+    /// The BARE profile (`profile.<slot>` never carries `@`).
+    pub(crate) profile: &'a str,
+    /// The `[clients]` label a `profile@client` spawn honors (`client.<slot>`);
+    /// `None` is the whole bare shape — no row.
+    pub(crate) client: Option<&'a str>,
+    /// The binary the validated launch command resolves to.
+    pub(crate) binary: &'a str,
+    /// The harness conversation id, when one is minted up front.
+    pub(crate) sid: Option<&'a str>,
+    /// The launch id the seat is born with.
+    pub(crate) launch_id: Option<&'a str>,
+}
+
 /// Take the lowest free `spawned.<n>` for `name` and publish the seat, under
 /// one hold of the meta lock — the decision half of `add-seat`, as a value.
 ///
@@ -664,13 +682,17 @@ pub(crate) enum TargetSpec<'a> {
 /// before any write.
 pub(crate) fn add_seat_slot_core(
     dir: &Path,
-    name: &str,
-    profile: &str,
-    binary: &str,
-    sid: Option<&str>,
-    launch_id: Option<&str>,
+    seat: &NewSeat<'_>,
     target: TargetSpec<'_>,
 ) -> Result<String, String> {
+    let NewSeat {
+        name,
+        profile,
+        client,
+        binary,
+        sid,
+        launch_id,
+    } = *seat;
     let _held = meta::lock(dir).map_err(|why| format!("cannot take the meta lock: {why}"))?;
     let text = text_of(dir)?;
     let current = Meta::parse(&text);
@@ -688,7 +710,12 @@ pub(crate) fn add_seat_slot_core(
             "'{name}' already holds a seat — under v2 the name IS the identity."
         ));
     }
-    for field in [profile, binary].into_iter().chain(sid).chain(launch_id) {
+    for field in [profile, binary]
+        .into_iter()
+        .chain(client)
+        .chain(sid)
+        .chain(launch_id)
+    {
         if !control_free(field) || field.contains('\n') {
             return Err(format!(
                 "the value {field:?} carries a control byte no meta line can round-trip."
@@ -727,9 +754,10 @@ pub(crate) fn add_seat_slot_core(
         slot: slot.clone(),
         name: name.to_owned(),
         profile: profile.to_owned(),
-        // `spawn --using` takes a bare profile; a client override is
-        // launch-only, so a spawned seat never records one.
-        client: None,
+        // The BARE profile above; a `profile@client` spawn records its
+        // client label in the seat's own write, so no seat is observable
+        // without the account it runs on.
+        client: client.map(ToOwned::to_owned),
         binary: Some(binary.to_owned()),
         harness_session: sid.map(ToOwned::to_owned),
         config_home: None,
@@ -766,7 +794,18 @@ pub fn add_seat_slot(
         None => TargetSpec::None,
         Some(spelling) => TargetSpec::LegacySpelling(spelling),
     };
-    add_seat_slot_core(dir, name, profile, binary, sid, None, target)
+    add_seat_slot_core(
+        dir,
+        &NewSeat {
+            name,
+            profile,
+            client: None,
+            binary,
+            sid,
+            launch_id: None,
+        },
+        target,
+    )
 }
 
 /// Read `add-seat`'s flags: `--using <profile>`, `--binary <bin>`,
@@ -2258,11 +2297,14 @@ mod tests {
     ) -> Result<String, String> {
         super::add_seat_slot_core(
             scratch.dir(),
-            name,
-            "fable5",
-            "claude",
-            None,
-            None,
+            &super::NewSeat {
+                name,
+                profile: "fable5",
+                client: None,
+                binary: "claude",
+                sid: None,
+                launch_id: None,
+            },
             super::TargetSpec::Explicit {
                 target,
                 state_root: state,
@@ -2415,7 +2457,15 @@ mod tests {
         let scratch = local_core_dirs("born");
         let add = |id| {
             let none = super::TargetSpec::None;
-            super::add_seat_slot_core(scratch.dir(), "scout", "fable5", "claude", None, id, none)
+            let seat = super::NewSeat {
+                name: "scout",
+                profile: "fable5",
+                client: None,
+                binary: "claude",
+                sid: None,
+                launch_id: id,
+            };
+            super::add_seat_slot_core(scratch.dir(), &seat, none)
         };
         assert!(add(Some("bad\u{7}")).is_err());
         assert!(!scratch.meta().contains("scout"), "{}", scratch.meta());
@@ -2428,6 +2478,33 @@ mod tests {
             scratch.meta()
         );
         assert_eq!(proven.slot, slot);
+    }
+
+    // A `profile@client` spawn publishes the client row in the seat's own
+    // write, beside the bare profile; a label no meta line can round-trip is
+    // refused before any write.
+    #[test]
+    fn a_client_label_is_published_with_the_seat_or_refused_before_it() {
+        let scratch = local_core_dirs("client");
+        let add = |client| {
+            let seat = super::NewSeat {
+                name: "scout",
+                profile: "fable5",
+                client,
+                binary: "claude",
+                sid: None,
+                launch_id: None,
+            };
+            super::add_seat_slot_core(scratch.dir(), &seat, super::TargetSpec::None)
+        };
+        assert!(add(Some("cc\nseat.main=x")).is_err());
+        assert!(add(Some("cc\u{7}")).is_err());
+        assert!(!scratch.meta().contains("scout"), "{}", scratch.meta());
+        let slot = add(Some("cc-mic")).expect("a seat");
+        let meta = scratch.meta();
+        assert!(meta.contains(&format!("profile.{slot}=fable5\n")), "{meta}");
+        assert!(meta.contains(&format!("client.{slot}=cc-mic\n")), "{meta}");
+        assert!(!meta.contains('@'), "{meta}");
     }
 
     // A retire plus a re-spawn under the same name lands on the SAME slot

@@ -39,7 +39,7 @@ use crate::transport;
 use crate::watchdog_glue;
 
 /// The usage line.
-pub const SPAWN_USAGE: &str = "Usage: spawn <name> --using <profile> [--] [prompt]";
+pub const SPAWN_USAGE: &str = "Usage: spawn <name> --using <profile[@client]> [--] [prompt]";
 
 /// The `retire` usage.
 pub const RETIRE_USAGE: &str = "Usage: retire <agent-name|pane-id>";
@@ -73,13 +73,16 @@ const RETIRE_ACTION: &str = "retire";
 pub struct Parsed {
     /// The new agent's name — REQUIRED, and its identity.
     pub name: String,
-    /// The `[profiles]` recipe to launch it with.
+    /// The BARE `[profiles]` recipe to launch it with — never carries `@`.
     pub profile: String,
+    /// The `[clients]` label of a `--using profile@client` selection: the
+    /// account the profile runs on instead of its own. `None` is a bare spawn.
+    pub client: Option<String>,
     /// The task, as typed.
     pub prompt: String,
 }
 
-/// Parse `<name> --using <profile> [--] [prompt…]`.
+/// Parse `<name> --using <profile[@client]> [--] [prompt…]`.
 ///
 /// # Errors
 ///
@@ -120,15 +123,17 @@ pub fn parse(tail: &[String]) -> Result<Parsed, String> {
                 .to_owned(),
         );
     }
-    if profile.contains('@') {
+    // The one grammar a launch `--seat` selection uses: one `@` splits the
+    // profile from its client, so every later row carries the bare profile.
+    let Some((profile, client)) = crate::session_launch::split_profile_client(&profile) else {
         return Err(format!(
-            "Error: --using '{profile}' names a client override with '@' — profile@client is launch-only \
-             (ae <name> --lead/--colead/--seat). Spawn takes a bare profile."
+            "Error: --using '{profile}' is not <profile> or <profile>@<client> (e.g. --using opus55x@cc-mic)."
         ));
-    }
+    };
     Ok(Parsed {
         name: name.clone(),
         profile,
+        client,
         prompt: rest.join(" "),
     })
 }
@@ -309,7 +314,12 @@ fn run_spawn_inner(
     };
     // The moment of choice: say once if the profile has no exit off its
     // account. The spawn goes on either way.
-    if let Some(line) = cover_warning(&staged.session, &staged.argv.profile) {
+    //
+    // Not on a `profile@client` spawn: the verdict judges the profile's OWN
+    // account, which is not the one this seat runs on.
+    if staged.argv.client.is_none()
+        && let Some(line) = cover_warning(&staged.session, &staged.argv.profile)
+    {
         writeln!(err, "{line}")?;
     }
     let (pane, _spelling, held) = match start_spawned_pane(dir, &staged, caller, now, out, err) {
@@ -584,6 +594,108 @@ impl StagedSeat {
     }
 }
 
+/// What a spawn runs: the validated command and its one parse.
+type Launchable = (
+    crate::config::ResolvedCommand,
+    crate::launch_cmd::SimpleCommand,
+);
+
+/// The bare profile's command, through the session's layered config, exactly
+/// as a spawn always resolved it.
+fn bare_command(facts: &Facts, parsed: &Parsed, home: Option<&Path>) -> Result<Launchable, String> {
+    let cfg = match facts.identity() {
+        Ok(cfg) => cfg,
+        Err(why) => return Err(why.to_string()),
+    };
+    let command = match cfg.command(&parsed.profile, home) {
+        Ok(command) => command,
+        Err(why) => return Err(why.to_string()),
+    };
+    let Some(command) = command else {
+        return Err(format!(
+            "Error: profile '{}' not defined in [profiles] of {}",
+            parsed.profile,
+            facts
+                .global
+                .as_ref()
+                .map_or_else(String::new, |path| path.display().to_string())
+        ));
+    };
+
+    // THE SAME GRAMMAR AS A LAUNCH SEAT, before any effect. config.rs enforces the
+    // one-simple-command lexer for the initial roster, and a profile selected at
+    // spawn is held to the same one: a value like `bad = "touch m; tail -f
+    // /dev/null"` is REFUSED rather than run.
+    let lexed = match crate::launch_cmd::lex_simple_command(command.as_str()) {
+        Ok(lexed) => lexed,
+        Err(why) => {
+            return Err(format!(
+                "Error: profile '{}' refused — {why}. Nothing was spawned.",
+                parsed.profile
+            ));
+        }
+    };
+    Ok((command, lexed))
+}
+
+/// A `profile@client` selection's command, or its refusal. The order is the
+/// contract, every step before any effect:
+///
+/// 1. the session's recorded GLOBAL config is the only identity read — a
+///    project overlay can neither approve a pair nor redefine an approved
+///    name, so a pair means exactly what the human's own config says;
+/// 2. the pair must be on the global `[client_pairs]` list — POLICY before
+///    existence, so an unapproved pair learns nothing about which names exist;
+/// 3. the profile and the client must exist;
+/// 4. the launch's own adapter gate and first-start store proof
+///    ([`crate::session_launch::resolve_spawn_pair`]).
+fn pair_command(
+    facts: &Facts,
+    parsed: &Parsed,
+    label: &str,
+    home: Option<&Path>,
+) -> Result<Launchable, String> {
+    let spelling = format!("{}@{label}", parsed.profile);
+    let Some(global) = facts.global.as_deref() else {
+        return Err(format!(
+            "Error: --using '{spelling}': this session records no global config, so no pair can be approved. Nothing was spawned."
+        ));
+    };
+    // ONE read of the global file feeds both the identity and the approved
+    // list, so an approval and the command it approves cannot straddle an edit.
+    let text = match crate::config::read_selected(global) {
+        Ok(text) => text,
+        Err(crate::config::ConfigError::Unreadable(path)) => {
+            return Err(format!(
+                "Error: --using '{spelling}': the global config {} cannot be read, so no pair can be approved. Nothing was spawned.",
+                path.display()
+            ));
+        }
+        Err(why) => return Err(why.to_string()),
+    };
+    let cfg = crate::config::parse_identity_in(global, &text).map_err(|why| why.to_string())?;
+    let verdict = crate::pairs::parse_in(global, &text).judge(&parsed.profile, label);
+    if let Some(why) = verdict.refusal(&parsed.profile, global) {
+        return Err(format!(
+            "Error: --using '{spelling}' {why} Nothing was spawned."
+        ));
+    }
+    if cfg.profile(&parsed.profile).is_none() {
+        return Err(format!(
+            "Error: profile '{}' not defined in [profiles] of {}",
+            parsed.profile,
+            global.display()
+        ));
+    }
+    if cfg.client(label).is_none() {
+        return Err(format!(
+            "Error: client '{label}' is not defined in [clients] of {}.",
+            global.display()
+        ));
+    }
+    crate::session_launch::resolve_spawn_pair(&cfg, &parsed.name, &parsed.profile, label, home)
+}
+
 /// Step A: validate, record the seat and stamp the attempt — no pane yet.
 /// A refusal is the `Err` for the inner to print.
 #[allow(
@@ -615,40 +727,12 @@ fn record_spawned_seat(
     if !transport::session_exists(&facts.server, &facts.session) {
         return Err(format!("Error: session '{}' not running", facts.session));
     }
-    let cfg = match facts.identity() {
-        Ok(cfg) => cfg,
-        Err(why) => return Err(why.to_string()),
-    };
     let home = crate::doors::home();
-    let command = match cfg.command(&parsed.profile, home.as_deref()) {
-        Ok(command) => command,
-        Err(why) => return Err(why.to_string()),
+    let (command, lexed) = match parsed.client.as_deref() {
+        None => bare_command(&facts, &parsed, home.as_deref())?,
+        Some(label) => pair_command(&facts, &parsed, label, home.as_deref())?,
     };
-    let Some(command) = command else {
-        return Err(format!(
-            "Error: profile '{}' not defined in [profiles] of {}",
-            parsed.profile,
-            facts
-                .global
-                .as_ref()
-                .map_or_else(String::new, |path| path.display().to_string())
-        ));
-    };
-
-    // THE SAME GRAMMAR AS A LAUNCH SEAT, before any effect. config.rs enforces the
-    // one-simple-command lexer for the initial roster, and a profile selected at
-    // spawn is held to the same one: a value like `bad = "touch m; tail -f
-    // /dev/null"` is REFUSED rather than run. Tool and binary come from the one
-    // validated parse.
-    let lexed = match crate::launch_cmd::lex_simple_command(command.as_str()) {
-        Ok(lexed) => lexed,
-        Err(why) => {
-            return Err(format!(
-                "Error: profile '{}' refused — {why}. Nothing was spawned.",
-                parsed.profile
-            ));
-        }
-    };
+    // Tool and binary come from the one validated parse.
     let tool = lexed.tool();
     let binary = lexed.binary.clone();
     let session_id = if launch::takes_launch_session_id(tool) {
@@ -675,15 +759,15 @@ fn record_spawned_seat(
     // gated by the adapter capability. It is BORN in the seat's own write, so
     // no seat is ever observable without the incarnation a cleanup proves.
     let launch_id = crate::session_launch::launch_token(tool, None);
-    let slot = match crate::identity::add_seat_slot_core(
-        dir,
-        &parsed.name,
-        &parsed.profile,
-        &binary,
+    let new_seat = crate::identity::NewSeat {
+        name: &parsed.name,
+        profile: &parsed.profile,
+        client: parsed.client.as_deref(),
+        binary: &binary,
         sid,
-        Some(&launch_id),
-        spec,
-    ) {
+        launch_id: Some(&launch_id),
+    };
+    let slot = match crate::identity::add_seat_slot_core(dir, &new_seat, spec) {
         Ok(slot) => slot,
         Err(why) => return Err(format!("Error: {why}")),
     };

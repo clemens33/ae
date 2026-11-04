@@ -925,6 +925,20 @@ pub fn parse_identity(text: &str) -> Result<IdentityConfig, ConfigError> {
     Ok(cfg)
 }
 
+/// Parse one identity v2 config from text already read, naming `file` in a
+/// diagnostic: [`read_identity`] over a single global file whose text the
+/// caller holds, so a second reader of the same file can use the same bytes.
+///
+/// # Errors
+///
+/// The same errors as [`read_identity`] for a file with this text.
+pub fn parse_identity_in(file: &Path, text: &str) -> Result<IdentityConfig, ConfigError> {
+    let mut cfg = IdentityConfig::default();
+    overlay_identity_text(file, text, &mut cfg)?;
+    validate_client_conflicts(&cfg)?;
+    Ok(cfg)
+}
+
 /// Read identity like [`read_identity`], but parse `global_default` when the
 /// selected global file does not exist yet. A first launch uses this to
 /// validate against the exact config text it will seed after preflight.
@@ -3795,6 +3809,44 @@ mod tests {
             parse_identity("[profiles]\na = \"one\"\na = \"two\"\n").unwrap_err(),
             ConfigError::DuplicateKey {
                 file: Path::new("<config>").to_owned(),
+                section: "profiles".to_owned(),
+                key: "a".to_owned(),
+                line: 3
+            }
+        );
+    }
+
+    #[test]
+    fn parse_identity_in_is_the_file_reader_over_text_the_caller_holds() {
+        let text = "[clients]\ncc = claude config_home=/client\n[profiles]\np = cc\n";
+        let file = NamedTemp::new("pure-in", text);
+        assert_eq!(
+            parse_identity_in(file.path(), text).expect("valid text"),
+            read_identity(Some(file.path()), None).expect("the same text, in a file"),
+        );
+        // The caller's file is named, and a client/env conflict refuses as the
+        // file reader refuses it.
+        let conflict = "[clients]\ncc = claude config_home=/client\n[profiles]\n\
+            p = CLAUDE_CONFIG_DIR=/other cc\n";
+        let file = NamedTemp::new("pure-in-conflict", conflict);
+        let err = parse_identity_in(file.path(), conflict).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::ClientEnvConflict { ref variable, .. } if variable == "CLAUDE_CONFIG_DIR"),
+            "{err}"
+        );
+        assert_eq!(
+            err,
+            read_identity(Some(file.path()), None).unwrap_err(),
+            "the same refusal the file reader gives"
+        );
+        assert_eq!(
+            parse_identity_in(
+                Path::new("/g/config"),
+                "[profiles]\na = \"one\"\na = \"two\"\n"
+            )
+            .unwrap_err(),
+            ConfigError::DuplicateKey {
+                file: Path::new("/g/config").to_owned(),
                 section: "profiles".to_owned(),
                 key: "a".to_owned(),
                 line: 3

@@ -1,0 +1,12 @@
+[client_pairs]
+opus55x = cc-mic, cc-p   # mic and personal logins
+opus55x = cc-mic
+fable =
+sol = a,,b,
+bad@key = cc-mic
+weird = cc mic, -x, ééé, xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ok = cc-mic
+[workspace]
+main = lead
+[client_pairs]
+late = cc

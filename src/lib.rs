@@ -66,6 +66,7 @@ pub mod netprobe;
 pub mod next;
 pub mod orchestrator;
 pub mod overview;
+pub mod pairs;
 pub mod panes;
 pub mod procs;
 mod profile_view;

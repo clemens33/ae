@@ -227,7 +227,8 @@ kind is refused. A running session must be stopped before any seat profile chang
 Suffix a selection with `@<client>` to run that profile on another account of the SAME harness:
 `ae myproject --lead fablex@cc-mic`. Both clients must resolve to the same known tool — an
 unrecognized binary on either side refuses, and crossing harnesses needs a duplicate profile.
-The override is launch-only: `spawn --using` takes a bare profile and rejects `@`. ae records
+`spawn --using profile@client` takes the same spelling for a spawned seat, behind one more gate
+(see [Spawn on another account](helpers.md#spawn-on-another-account)). ae records
 the bare profile in `profile.<slot>` and the label in a new `client.<slot>` row; a launch
 without an override leaves that row absent. A recorded client is write-once, and the two
 resume shapes treat it differently. A flagless resume is "resume as recorded": it honors the

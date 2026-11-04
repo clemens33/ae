@@ -879,16 +879,26 @@ struct ResolvedSeatOverride {
 /// (`is_agent_name`) admits `@`, so one `@` splits unambiguously; an empty
 /// half or a second `@` is a usage error naming the value.
 fn split_seat_override(value: &str) -> Result<(String, Option<String>), String> {
-    let Some((profile, client)) = value.split_once('@') else {
-        return Ok((value.to_owned(), None));
-    };
-    if profile.is_empty() || client.is_empty() || client.contains('@') {
-        return Err(format!(
+    split_profile_client(value).ok_or_else(|| {
+        format!(
             "Error: --seat selection '{value}' is not <profile> or <profile>@<client> \
              (e.g. --seat lead=solx, --lead fablex@cc-mic)."
-        ));
+        )
+    })
+}
+
+/// The grammar every `profile@client` spelling shares (launch `--seat`, spawn
+/// `--using`): one `@` splits a profile from its client, no `@` is a bare
+/// profile, and an empty half or a second `@` is `None` for the caller to
+/// word.
+pub(crate) fn split_profile_client(value: &str) -> Option<(String, Option<String>)> {
+    let Some((profile, client)) = value.split_once('@') else {
+        return Some((value.to_owned(), None));
+    };
+    if profile.is_empty() || client.is_empty() || client.contains('@') {
+        return None;
     }
-    Ok((profile.to_owned(), Some(client.to_owned())))
+    Some((profile.to_owned(), Some(client.to_owned())))
 }
 
 /// Identity plus parsed override commands carried unchanged through the lock.
@@ -1198,6 +1208,51 @@ fn resolve_client_override(
         )));
     }
     Ok((resolved.command, parsed))
+}
+
+/// The same gate for a spawn: `profile@client` for the agent `agent`, a seat
+/// with no recorded store — a FIRST START, so a pairing whose store the
+/// launcher cannot verify refuses (F6) instead of recording an unproven fact.
+///
+/// This is [`resolve_client_override`] itself plus the first-start store proof
+/// the launch takes in `resolve_one_override`; a spawn never has its own copy
+/// of the adapter gate. The caller has already judged approval and existence,
+/// so the unknown-name texts (which speak of `--seat`) are not reached here.
+///
+/// # Errors
+///
+/// The refusal line, whichever of the adapter gate, the expansion or the store
+/// proof refused.
+pub(crate) fn resolve_spawn_pair(
+    cfg: &IdentityConfig,
+    agent: &str,
+    profile: &str,
+    label: &str,
+    home: Option<&Path>,
+) -> Result<(config::ResolvedCommand, crate::launch_cmd::SimpleCommand), String> {
+    let line = |refusal: SeatOverrideRefusal| match refusal {
+        SeatOverrideRefusal::Usage(line) | SeatOverrideRefusal::Failed(line) => line,
+    };
+    let profiles: Vec<&str> = cfg.profiles.iter().map(|(name, _)| name.as_str()).collect();
+    let clients: Vec<&str> = cfg.clients.iter().map(|(name, _)| name.as_str()).collect();
+    let (command, parsed) = resolve_client_override(
+        cfg,
+        agent,
+        profile,
+        label,
+        home,
+        &known_list(&profiles),
+        &known_list(&clients),
+    )
+    .map_err(line)?;
+    if let Some(reason) = current_pairing_proof(&command, parsed.tool(), home) {
+        return Err(line(unknown_store_refusal(
+            agent,
+            &format!("{profile}@{label}"),
+            &reason,
+        )));
+    }
+    Ok((command, parsed))
 }
 
 /// What one side of an `@` pair runs, for the refusal's two values.
@@ -3507,7 +3562,7 @@ fn lex_spawned_seats(
     for entry in spawned {
         // An unconfigured profile is not a refusal: the seat is preserved
         // verbatim and never launched, which the restore already handles.
-        let command = match cfg.command(&entry.profile, home) {
+        let command = match spawned_command(cfg, &entry, home) {
             Ok(command) => command,
             Err(why) => {
                 writeln!(err, "{why}")?;
@@ -3988,11 +4043,8 @@ fn restore_spawned(
         // VERBATIM at its original index — a later resume with the profile
         // configured restores the worker, and preserving the index keeps
         // the slot key stable for any in-flight request addressed to it.
-        let command = match cfg.command(&entry.profile, home) {
-            Ok(Some(command)) => command,
-            Ok(None) => IdentityConfig::resolved_snapshot(""),
-            Err(why) => return Err(why.to_string()),
-        };
+        let command = spawned_command(cfg, &entry, home)?
+            .unwrap_or_else(|| IdentityConfig::resolved_snapshot(""));
         let pane = if command.as_str().is_empty() {
             String::new()
         } else {
@@ -6245,15 +6297,52 @@ struct Spawned {
     slot: String,
     name: String,
     profile: String,
-    /// The recorded `client.<slot>` carried forward, if the seat records one.
-    /// A spawn never writes this row, so a label here is a hand edit — but a
-    /// carried label is evidence, and an Invalid row refuses rather than
-    /// laundering toward Missing.
+    /// The recorded `client.<slot>` carried forward, if the seat records one:
+    /// a `spawn --using profile@client` writes it, and it decides which
+    /// account the restored seat runs. A carried label is evidence, and an
+    /// Invalid row refuses rather than laundering toward Missing.
     client: Option<String>,
     binary: String,
     harness_session: String,
     config_home: Option<String>,
     config_home_base: Option<String>,
+}
+
+/// The launch command of one restored spawned seat, resolved through the
+/// client it RECORDED — the one resolution both the pre-create lexing and the
+/// restore take, so neither can start a seat on its profile's default account.
+///
+/// `Ok(None)` is a profile this machine does not configure: the seat is kept
+/// verbatim, as it always was.
+///
+/// # Errors
+///
+/// The refusal line: a recorded client no `[clients]` row names now, a command
+/// that is not one simple command, or an expansion that refuses.
+fn spawned_command(
+    cfg: &IdentityConfig,
+    entry: &Spawned,
+    home: Option<&Path>,
+) -> Result<Option<config::ResolvedCommand>, String> {
+    let Some(label) = entry.client.as_deref() else {
+        return cfg
+            .command(&entry.profile, home)
+            .map_err(|why| why.to_string());
+    };
+    match cfg.command_with_client(&entry.profile, label, home) {
+        Ok(resolved) => Ok(Some(resolved.command)),
+        Err(config::OverrideError::UnknownProfile) => Ok(None),
+        Err(config::OverrideError::UnknownClient) => Err(format!(
+            "Error: seat '{}' ({}) recorded client override '{label}' but no [clients] row names it now — \
+             restore the '{label}' client, or end the session.",
+            entry.name, entry.slot
+        )),
+        Err(config::OverrideError::ProfileNotSimple(why)) => Err(format!(
+            "Error: seat '{}' ({}) — profile '{}' refused — {why}. Nothing was resumed.",
+            entry.name, entry.slot, entry.profile
+        )),
+        Err(config::OverrideError::Refused(why)) => Err(why.to_string()),
+    }
 }
 
 /// The `spawned.<n>` seats a resuming session's meta records, in slot order.
@@ -8389,6 +8478,119 @@ mod tests {
             Some(&home),
         )
         .expect("unknown current proceeds; _run retains");
+    }
+
+    /// The split every `profile@client` spelling shares: no `@` is a bare
+    /// profile, one `@` splits, and a malformed value is `None` for the
+    /// caller to word.
+    #[test]
+    fn profile_client_values_split_once_or_are_malformed() {
+        assert_eq!(
+            super::split_profile_client("opus"),
+            Some(("opus".to_owned(), None))
+        );
+        assert_eq!(
+            super::split_profile_client("opus@cc-mic"),
+            Some(("opus".to_owned(), Some("cc-mic".to_owned())))
+        );
+        for bad in ["@cc-mic", "opus@", "@", "opus@cc@mic", "a@b@"] {
+            assert_eq!(super::split_profile_client(bad), None, "{bad}");
+        }
+    }
+
+    /// A spawn takes the launch's own gate: the same-harness pair resolves to
+    /// the override command, a cross-harness pair names both sides, and a
+    /// first start on a store the launcher cannot resolve refuses (F6).
+    #[test]
+    fn a_spawn_pair_takes_the_adapter_gate_and_the_first_start_store_proof() {
+        let cfg = override_cfg();
+        let home = PathBuf::from("/Users/a");
+        let (command, parsed) =
+            super::resolve_spawn_pair(&cfg, "scout", "fablex", "cc-mic", Some(&home))
+                .expect("a same-harness pair resolves");
+        assert_eq!(
+            command.as_str(),
+            "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --model fable --effort xhigh"
+        );
+        assert_eq!(command.client_label(), Some("cc-mic"));
+        assert_eq!(parsed.binary, "claude");
+        let crossed = super::resolve_spawn_pair(&cfg, "scout", "fablex", "codex", Some(&home))
+            .expect_err("a cross-harness pair refuses");
+        assert!(
+            crossed.contains("'scout'")
+                && crossed.contains("fablex@codex")
+                && crossed.contains("never the harness adapter"),
+            "{crossed}"
+        );
+        let blind = crate::config::parse_identity(
+            "[clients]\nplain = claude\n\
+             [profiles]\nvarp = \"CLAUDE_CONFIG_DIR=rel/store claude --model fable\"\n\
+             [roster]\nlead = varp\n[workspace]\nmain = lead\n",
+        )
+        .expect("readable blind config");
+        let unknown = super::resolve_spawn_pair(&blind, "scout", "varp", "plain", Some(&home))
+            .expect_err("an unverifiable store refuses at a first start");
+        assert!(
+            unknown.contains("varp@plain") && unknown.contains("unknown conversation store"),
+            "{unknown}"
+        );
+    }
+
+    fn restored(client: Option<&str>, profile: &str) -> super::Spawned {
+        super::Spawned {
+            slot: "spawned.0".to_owned(),
+            name: "scout".to_owned(),
+            profile: profile.to_owned(),
+            client: client.map(ToOwned::to_owned),
+            binary: "claude".to_owned(),
+            harness_session: String::new(),
+            config_home: None,
+            config_home_base: None,
+        }
+    }
+
+    /// A restored spawned seat resolves through the client it RECORDED: a bare
+    /// seat takes the profile's own command, a recorded label the override, an
+    /// unconfigured profile keeps the seat verbatim, and a recorded label no
+    /// `[clients]` row names refuses with its remedy.
+    #[test]
+    fn a_restored_spawned_seat_resolves_through_its_recorded_client() {
+        let cfg = override_cfg();
+        let home = PathBuf::from("/Users/a");
+        let bare = super::spawned_command(&cfg, &restored(None, "fablex"), Some(&home))
+            .expect("a bare seat resolves")
+            .expect("a configured profile");
+        assert_eq!(bare.as_str(), "claude --model fable --effort xhigh");
+        let pair = super::spawned_command(&cfg, &restored(Some("cc-mic"), "fablex"), Some(&home))
+            .expect("a recorded client resolves")
+            .expect("a configured profile");
+        assert_eq!(
+            pair.as_str(),
+            "CLAUDE_CONFIG_DIR='/Users/a/.claude-mic' claude --model fable --effort xhigh"
+        );
+        assert_eq!(
+            super::spawned_command(&cfg, &restored(Some("cc-mic"), "gone"), Some(&home)),
+            Ok(None),
+            "an unconfigured profile keeps the seat verbatim"
+        );
+        assert_eq!(
+            super::spawned_command(&cfg, &restored(None, "gone"), Some(&home)),
+            Ok(None)
+        );
+        let missing = super::spawned_command(&cfg, &restored(Some("ghost"), "fablex"), None)
+            .expect_err("a recorded client nothing names refuses");
+        assert!(
+            missing.contains("'ghost'") && missing.contains("restore the 'ghost' client"),
+            "{missing}"
+        );
+        let mixed = crate::config::parse_identity(
+            "[clients]\nclaude = claude\n[profiles]\nmulti = \"claude; touch m\"\n\
+             [roster]\nlead = multi\n[workspace]\nmain = lead\n",
+        )
+        .expect("a two-command profile still parses as a config");
+        let refused = super::spawned_command(&mixed, &restored(Some("claude"), "multi"), None)
+            .expect_err("a two-command profile refuses on restore");
+        assert!(refused.contains("Nothing was resumed"), "{refused}");
     }
 
     /// F6: a first start whose override resolves `Unknown` refuses — nothing

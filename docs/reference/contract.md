@@ -8,6 +8,8 @@ src/                — Rust sources. main.rs thin (argv in, exit code out); lib
                       directory of submodules), hold everything testable. theme.rs is PURE:
                       the palettes, the seven marks and every tmux format ae draws a session with.
                       birth.rs is the worker birth family: its journal wire and one reader.
+                      pairs.rs is the approved `profile@client` list (`[client_pairs]`):
+                      global config only, fail closed, read by `spawn` and later `reseat`.
                       stats.rs is the Statistics tab's pure fold over journal bytes, fuzzed as
                       `stats_fold`; src/app/loader/stats.rs is its stepped, bounded read.
                       tool.rs::BoardSpec is the board's one per-tool read decision
@@ -280,6 +282,7 @@ Each is one rule with one owner. Change the owner, not a copy.
 | Session name `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`, checked before any side effect. A word the entry ROUTES is refused on top of that grammar, at the two places a name is CREATED — an explicit launch and a rename — so the class closes rather than the word a slice happened to add; the picker's own resume is exempt because it addresses a session that already exists, and the canonical orchestrator is exempt because that seat IS the session of its word. A NEAR-MISS word — a routed verb plus `s` (`lists`, `boards`) or one of `agent`/`agents`/`seat`/`seats`/`session`/`sessions`, exact and case-sensitive, no edit distance — is refused too (exit 2, nothing written, `Did you mean: ae <verb>` or `ae list`), but only where a NEW name comes into being: a launch that finds no session record, and a rename into the word; a session of that name that already exists still resumes, stops, ends, lists and renames to itself as before | `src/session_launch/name.rs::is_session_name` is the grammar; `src/entry.rs::ROUTED_VERBS` is the set and `::name_is_routed_verb` the one predicate both sites ask; `::near_miss_refusal` is the near-miss set and its one text, asked by `src/session_launch.rs::launch` right after `preflight_meta_present` and by `src/rename.rs::run` |
 | Agent name `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; it reaches a system prompt, so it is an allowlist. Creation also refuses ae-owned journal actors; recorded seats keep working | `src/config.rs::is_agent_name` is the grammar; `::is_reserved_actor` is the creation-only set, asked by `src/spawn.rs::run_spawn_inner` and `src/session_launch.rs::launch` |
 | That name is re-validated at the interpolation site, fail-quiet | `src/render.rs::context_document` |
+| `spawn --using profile@client` runs a profile on another account of the SAME harness only when the pair is on the GLOBAL `[client_pairs]` list: a project `.ae/config` never approves or redefines a name, a row ae cannot read in full or a profile keyed twice approves nothing, and POLICY runs before existence (an unapproved pair learns nothing about which names exist). An approved pair then resolves from the global config alone, passes the launch's same-known-adapter gate and first-start store proof, and records the bare `profile.<slot>` plus `client.<slot>` in the seat's own publish; a restored spawned seat resolves through its recorded client, and its recorded store wins over a moved client definition. A launch `x@y` the human types is not gated by the list, and the list gates new admissions only, never a recorded seat. The gate is a guardrail against an agent choosing an account the human did not name, not a sandbox: a bare profile's own env prefix can already pick any account | `src/pairs.rs::parse_in` + `::ApprovedPairs::judge` the list, `src/spawn.rs::pair_command` the order, `src/session_launch.rs::resolve_spawn_pair` the shared gate (over `::resolve_client_override`) and `::spawned_command` the restore |
 | Every seat gets the short CORE; workers get its WORKER card, leadership keeps its detailed doctrine. Owner and role share one slot classification; fallback `seat.main` is validated before interpolation, slotless/unknown slots get neither owner nor card. `[prompt] instructions` lands whole on every seat; `[prompt] spawn_instructions` (resolved apart, same global/local masking) lands whole on the lead pair and on a slot the classification cannot place, and a worker carries one pointer line to the `## Spawn instructions` section of `workspace.md`, which holds the full text from the same winning value | `src/render.rs::seat_context_document`, `::spawn_instructions`, `::seat_role`, `src/render/{core,worker}.txt` |
 | Dispatch is on `argv[0]`'s basename; no `/` means exit 2, never a guess | `src/shim.rs` |
 | `current_exe()` has exactly ONE caller | `src/shape.rs::resolved_exe` |
@@ -383,6 +386,10 @@ auto_effort = off          # on: restart a lead-pair seat in place one effort le
 
 [auto_reseat]
 sol6x = opus55x, spark13cm  # where sol6x may move, best first; a profile keyed twice keeps its later row
+
+[client_pairs]             # global only; a project .ae/config never approves
+opus55x = cc-mic, cc-p     # profiles that `spawn --using profile@client` may run on another account;
+                           # a row ae cannot read in full, or a profile keyed twice, approves nothing
 
 [prompt]
 instructions = "Custom instructions injected into agent system prompts"

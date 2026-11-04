@@ -132,6 +132,7 @@ mod parity;
 mod phase2;
 mod phase3;
 mod pipequiet_spec;
+mod presetspawn_spec;
 mod profview_spec;
 mod progress_spec;
 mod provenance_spec;

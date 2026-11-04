@@ -70,7 +70,7 @@ Ask the lead agent to execute a harmless read-only spawn. Replace the quoted `PR
   'Read README.md; report its first heading; edit nothing.'
 ```
 
-`spawn --using` rejects `profile@client`, and `spawn` has no `--dir`: it inherits the session's recorded `work_dir`. Choose directory and mode when starting the session (`ae my-app --dir ... [--copy|--worktree]`); omit both flags for local mode.
+`spawn --using` also takes `profile@client` (a profile on another account) once the human approved the pair under `[client_pairs]`; `spawn` has no `--dir`: it inherits the session's recorded `work_dir`. Choose directory and mode when starting the session (`ae my-app --dir ... [--copy|--worktree]`); omit both flags for local mode.
 
 Use the full helper paths shown here, or the short form `ae @my-app <helper> ...`. A bare helper name, or `ae <helper> ...`, has no session and refuses with exit 2.
 
