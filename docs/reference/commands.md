@@ -1943,7 +1943,9 @@ durable result. An interrupted rename reports the committed facts and the proved
 re-run the same `ae rename <old> <new>` to converge forward; `doctor` reports a pending
 transaction with the same retry. The rename refuses before any write when the source is
 unknown, the destination is occupied, the work identity is unprovable, a request is
-pending, or an explicit config home would lose exact resume at the new path. A
+pending, or an explicit config home would lose exact resume at the new path. An occupied
+destination, whether a live session or a state directory of the new name, refuses with
+`Nothing was renamed.` like the others. A
 managed rename writes a hidden `.ae-rename-witness` file into the working copy
 while the transaction is pending (removed when it completes; a stale one is
 replaced, never followed) — expect a `??` line in `git status` until the retry
@@ -2299,6 +2301,15 @@ revalidated under the lifecycle lock; if policy or state changes while the promp
 ae refuses before stopping the session. `n` or Escape changes nothing. With no attached
 client, ae refuses with `nobody attached to confirm; pass -f`. `-f` remains the explicit
 non-interactive authorization.
+
+On a terminal, ae asks `Continue? [y/N]` on stderr and only a yes proceeds. A decline (`n`,
+`no` or an empty line) prints `Nothing was ended.` on stderr and exits 1, as `ae stop` does when
+declined; nothing is touched. End-of-input is not an answer and also exits 1. The tmux client
+prompt above is unchanged: its `n` simply closes the prompt. `ae end all` with no sessions
+prints `No ae sessions.` on stdout and exits 0 without asking. A name that cannot be a session
+name is refused as `ae: '<name>' is not a usable session name.` (exit 1, the same line `ae stop`
+prints); a usable name with neither a session directory nor a managed worktree still reports
+`Session '<name>' not found.`
 
 Before the handoff, ae records `end-request`; that event is therefore captured by a
 successful archive. A failed end leaves live state and records `end-result` with the failed
