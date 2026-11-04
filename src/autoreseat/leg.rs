@@ -1957,6 +1957,9 @@ mod effort_scope_spec {
         short.rows[0].window_minutes = Some(300);
         let mut stale = weekly(None, "70");
         stale.rows[0].observed_at = Some(NOW - 1000);
+        // Older than the stale reading of the same window, so it rules nothing.
+        let mut older = weekly(None, "62");
+        older.rows[0].observed_at = Some(NOW - 1100);
         let mut passed = weekly(None, "97");
         passed.rows[0].resets_at = Some(NOW);
         let mut unstated = weekly(None, "98");
@@ -1964,7 +1967,7 @@ mod effort_scope_spec {
         let observed = observation(vec![
             short,
             stale,
-            weekly(None, "62"),
+            older,
             passed,
             unstated,
             group(
@@ -2523,9 +2526,11 @@ mod tests {
     }
 
     /// Several rollouts report one Codex account. Their rows are judged
-    /// together, so the union must never be more permissive than one reading.
+    /// together, and per window the newest usable reading rules: a row whose
+    /// reset passed never counts, an exhausted one counts while it is the
+    /// newest, and a newer healthy reading of its window supersedes it.
     #[test]
-    fn a_rollout_row_from_a_window_already_reset_never_counts_and_an_exhausted_one_always_does() {
+    fn a_reset_rollout_row_never_counts_and_an_exhausted_one_counts_while_newest() {
         let rollout = |rows| crate::quota::Group {
             tool: crate::tool::ToolKind::Codex,
             ..account(&["sol"], "/a", plain(), rows)
@@ -2549,13 +2554,31 @@ mod tests {
                 "the reset row is gone"
             );
         }
-        let spent = row(None, "100", 120, 3600);
+        let spent = row(None, "100", 30, 3600);
         for groups in [
             vec![rollout(vec![spent.clone()]), rollout(vec![current.clone()])],
             vec![rollout(vec![current.clone()]), rollout(vec![spent.clone()])],
         ] {
             let choice = judge(&observed(groups), &["sol"], &[], &[], &[]);
             assert_eq!(choice.skipped, passed(&[("sol", Skip::Exhausted)]));
+        }
+        let superseded = row(None, "100", 120, 3600);
+        for groups in [
+            vec![
+                rollout(vec![superseded.clone()]),
+                rollout(vec![current.clone()]),
+            ],
+            vec![
+                rollout(vec![current.clone()]),
+                rollout(vec![superseded.clone()]),
+            ],
+        ] {
+            let choice = judge(&observed(groups), &["sol"], &[], &[], &[]);
+            assert_eq!(
+                choice.pick,
+                picked("sol", Tier::BelowCritical),
+                "a newer healthy reading of the window supersedes the spent one"
+            );
         }
     }
 
