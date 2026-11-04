@@ -8396,6 +8396,10 @@ fn bar_glyph(dead: usize, stale: usize, icons: bool) -> &'static str {
 mod limitwake_spec;
 
 #[cfg(test)]
+#[path = "watchdog_autoacts_spec.rs"]
+mod autoacts_spec;
+
+#[cfg(test)]
 mod limitwake_readers {
     use super::{ACTOR, armed_reading, limit_wake_in, reads_reset, waiting_forecast};
     use crate::autoreseat::LimitReset;
