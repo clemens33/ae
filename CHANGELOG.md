@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.13] - 2026-11-04
+- Launch refusal precedence, rollback ownership, running override and restore rechecks are pinned
+- A crash restore names why it skips before the lifecycle lock in one pure decision
+- Launch names the lock-busy refusal, the preflight floor server and the reattach restamp as steps
+- A held lifecycle lock and a foreign recorded main pane are pinned at launch
+- A declined ae end exits 1, an empty fleet asks nothing, and the end and rename refusals read like their siblings
+- Ae end and ae rename state the decline, empty fleet, unusable name and occupied destination refusals
+- Spawn --using accepts profile@client for pairs the human approved
+- A void pair row names the bad entry, escaped and cut at forty characters
+
 ## [v2026.11.12] - 2026-11-04
 - Identity overlay refusal order, section scope, claims, values and diagnostics are pinned before extraction
 - Identity overlay judges section headers and key claims in pure functions
