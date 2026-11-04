@@ -2228,6 +2228,10 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
 }
 
 #[cfg(test)]
+#[path = "autoreseat/episodes_spec.rs"]
+mod episodes_spec;
+
+#[cfg(test)]
 #[path = "autoreseat/limitwake_spec.rs"]
 mod limitwake_spec;
 
