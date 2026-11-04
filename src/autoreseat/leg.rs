@@ -384,7 +384,8 @@ pub(crate) fn candidates(
                                     )
                                 })
                                 .filter_map(|row| {
-                                    let key = (*source, crate::quota::WindowKey::of(row));
+                                    let key =
+                                        (group.tool, *source, crate::quota::WindowKey::of(row));
                                     window(group, row, now).map(|window| (key, window))
                                 })
                         })
