@@ -11,8 +11,9 @@ use super::*;
 struct Root(PathBuf);
 impl Root {
     fn new(tag: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("ae-rr-{}-{tag}", std::process::id()));
-        std::fs::create_dir_all(path.join("sessions")).unwrap();
+        // This spec is compiled inside the library. Reuse rename's unit-test
+        // scratch owner; the integration-only OwnedScratch is not in scope.
+        let path = super::tests::scratch(&format!("rr-{tag}"));
         Self(path)
     }
     fn side(&self, name: &str, id: &str) {

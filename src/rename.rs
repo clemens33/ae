@@ -4103,7 +4103,7 @@ mod tests {
         list.iter().map(|word| (*word).to_owned()).collect()
     }
 
-    fn scratch(tag: &str) -> PathBuf {
+    pub(super) fn scratch(tag: &str) -> PathBuf {
         let dir = PathBuf::from(format!("/tmp/ae-rename-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sessions")).unwrap();
