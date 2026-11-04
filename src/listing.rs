@@ -697,6 +697,10 @@ fn frozen_relative_time(now: Timestamp, timestamp: Option<i64>) -> String {
 mod tableat_spec;
 
 #[cfg(test)]
+#[path = "../tests/it/tableat_cells_spec.rs"]
+mod tableat_cells_spec;
+
+#[cfg(test)]
 mod tests {
     mod effort_resume_spec {
         use super::{args, render, world};
