@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.12] - 2026-11-04
+- Identity overlay refusal order, section scope, claims, values and diagnostics are pinned before extraction
+- Identity overlay judges section headers and key claims in pure functions
+- Identity overlay records each key claim and writes each value as named steps
+- The one-pass episode fold is pinned on address, spawn and actor precedence, openers, clear and re-arm, cooldown reopen before cross-close, move and absorb
+- The episode fold names its reopen and live-key decisions as pure predicates with their own tests
+- The episode fold runs each record through a pair of episodes whose steps are flat match arms, one close step and one iterator
+- Auto reseat step decisions are pinned per rule before the step is taken apart
+- The auto reseat step names an unmapped seat and routes the headroom path in two pure functions
+- The auto reseat step names each hold once through one memory function
+- An unlatched seat with no candidate names no limit episode left in the journal
+- VISION.md states the north star: harness- and provider-independent work, shared topics later
+
 ## [v2026.11.11] - 2026-11-04
 - Pin rename recovery refusals, precedence and retry cuts
 - Rename recovery decides correlation and location in pure functions
