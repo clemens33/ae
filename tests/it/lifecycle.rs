@@ -28,6 +28,8 @@ use super::cli::{OwnedScratch, ae, bounded};
 use super::parity::{Invocation, capture::ExitOutcome, capture::raw};
 use super::phase2::run_tmux;
 use super::support::{SETUP_WAIT, first_pane};
+#[path = "lifecycle_compactrun_spec.rs"]
+mod compactrun_spec;
 #[path = "lifecycle_endlocked_spec.rs"]
 mod endlocked_spec;
 #[path = "lifecycle_endrecord_spec.rs"]
