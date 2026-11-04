@@ -9521,3 +9521,9 @@ mod launchx2_spec;
 
 #[path = "launchsplit_spec.rs"]
 mod launchsplit_spec;
+
+#[path = "launchsplit_lock_spec.rs"]
+mod launchsplit_lock_spec;
+
+#[path = "launchsplit_repair_spec.rs"]
+mod launchsplit_repair_spec;
