@@ -895,7 +895,7 @@ busy: the line waits for the lead (`queued for lead (both busy)`). A leading
 When both seats can take the line and no open ask of yours pins one, quota breaks
 the tie. Each seat's pressure is the effective percentage `ae quota` judges (never
 the raw one) of the worst usable window of its own account proven at least a day
-long; an account whose spend cap is reached reads 100%. The lead keeps the line
+long, per window its newest usable reading; an account whose spend cap is reached reads 100%. The lead keeps the line
 unless that reads 80% or more (the doctrine's step-down line) and the colead's
 reads at least 20 points lower; then the colead takes it, with the same quiet note (`sent to colead (lead quota 86%)`) and the same
 opening line (`(routed to you: lead quota 86%)`). A quota ae cannot read — no

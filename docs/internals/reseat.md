@@ -822,7 +822,14 @@ daemon judges every eligible seat whose limit latch does NOT stand against its
 OWN client scope — the one `quota::recorded_identity` join the throttle line and
 the checkpoint ask make — over its held quota observation: the worst usable
 (fresh or stale) window proven at least one day long, rows scoped to another
-model family left out, by the one derived percentage. At or past the threshold it books
+model family left out, by the one derived percentage. A codex scope is its whole
+config home, and each rostered conversation's rollout keeps its own last
+reading, so per window (bucket, qualifier and length) only the newest usable
+reading of the scope counts: one a newer usable reading of the same window
+supersedes — stale or fresh — decides nothing, a tie keeps the worse, and a
+lone stale reading still binds (`autoreseat::current`, applied in
+`leg::own_scope`; auto effort and the app's lead/colead weighing read the same
+scope). At or past the threshold it books
 `auto-reseat-headroom`, whose `ts` is the episode KEY and whose summary,
 `headroom <pct>% <window>`, every later record of the episode quotes whole. The
 episode stays due under that key while the scope reads within 5 points of the
@@ -838,7 +845,13 @@ turn and a frame the classifier cannot prove idle (muse, a fresh claude) is not
 one — the same two attempts, the same trigger, leg, records and endings, each
 summary naming the trigger. A hold the journal already ends on is not named
 again, a daemon restart included. The trigger re-reads the scope and declines
-once it has relief. The chooser adds two skips: `no headroom` for a candidate
+once it has relief, and the detached leg reads it once more under the seat lock
+before it moves: a headroom episode that no longer reads at or within 5 points
+of the threshold, or reads nothing usable, is closed `held: the account no
+longer reads at the headroom threshold` with the seat untouched; a limit or an
+urgent start's episode is not re-judged there. The chooser judges each candidate
+account by its own newest usable reading per window, never by another
+account's, and adds two skips: `no headroom` for a candidate
 with a usable window at or past the threshold that is proven at least one day
 long or critical, and `left on headroom` for a
 profile the seat left on headroom until a reading after the move proves it
