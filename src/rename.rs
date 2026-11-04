@@ -205,7 +205,7 @@ pub fn run(
         )?;
         return Ok(EXIT_FAILED);
     };
-    locked(root, &old, &new, crash, out, err)
+    locked(root, &old, &new, crash.as_deref(), out, err)
 }
 
 /// A0: `rename x x` validates the source under a single lock and reports an
@@ -1064,7 +1064,7 @@ fn locked(
     root: &Path,
     old: &str,
     new: &str,
-    crash: Option<String>,
+    crash: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
@@ -1095,16 +1095,13 @@ fn locked(
     // Addressed by the EXACT id from here on: `-t proj` prefix-matches, so a
     // rename addressed by name can move a live `project` and report success.
     let Some(session_id) = crate::lifecycle::live_id(&server, old) else {
-        return stopped(root, old, new, &server, crash.as_deref(), out, err);
+        return stopped(root, old, new, &server, crash, out, err);
     };
     // The crash seam is a stopped-rename instrument: its cuts name stopped
     // facts only. A live source with an armed seam refuses before mutation
     // rather than running a live rename that no cut covers.
-    if let Some(value) = crash {
-        writeln!(
-            err,
-            "Error: {CRASH_VAR}='{value}' is armed for a stopped rename, but session '{old}' is live — live crash cuts need a separate ruling. Nothing was renamed."
-        )?;
+    if let Err(refusal) = armed_live(crash, old) {
+        writeln!(err, "{}", refusal.0)?;
         return Ok(EXIT_FAILED);
     }
     // The look is diagnosed BEFORE mutation: a session whose look cannot be
@@ -1222,45 +1219,81 @@ fn locked(
             monitors = Err("watchdog disappeared after the look was republished".to_owned());
         }
         if let Err(why) = monitors {
-            if watchdog_expected {
-                writeln!(
-                    err,
-                    "Error: the session was renamed to '{new}', but its monitor processes were not rebound ({why}). The renamed session has NO verified watchdog; run 'ae watchdog start {new}' after fixing it."
-                )?;
-            } else {
-                writeln!(
-                    err,
-                    "Error: the session was renamed to '{new}', but its events monitor was not rebound ({why})."
-                )?;
-            }
+            writeln!(err, "{}", monitor_refusal(new, &why, watchdog_expected).0)?;
             return Ok(EXIT_FAILED);
         }
         if chat.is_err() {
             return Ok(EXIT_FAILED);
         }
         writeln!(out, "Renamed '{old}' → '{new}'")?;
-        if journaled && watchdog_expected {
-            writeln!(out, "{}", crate::session_notice::TOLD_LINE)?;
-        } else {
-            let seats = crate::meta::read_bytes(&new_dir)
-                .map(|bytes| {
-                    crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes))
-                        .roster()
-                        .len()
-                })
-                .unwrap_or_default();
-            let why = if journaled {
-                "watchdog off"
-            } else {
-                "rename not journaled"
-            };
-            writeln!(out, "{}", crate::session_notice::untold_line(why, seats))?;
+        match told(journaled, watchdog_expected) {
+            Told::Told => writeln!(out, "{}", crate::session_notice::TOLD_LINE)?,
+            Told::Untold(why) => {
+                let seats = crate::meta::read_bytes(&new_dir)
+                    .map(|bytes| {
+                        crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes))
+                            .roster()
+                            .len()
+                    })
+                    .unwrap_or_default();
+                writeln!(out, "{}", crate::session_notice::untold_line(why, seats))?;
+            }
         }
         return Ok(0);
     }
 
     writeln!(out, "Renamed '{old}' → '{new}'")?;
     Ok(0)
+}
+
+/// The live path's crash-seam refusal: the seam is a stopped-rename
+/// instrument whose cuts name stopped facts only, so an armed value over a
+/// live source refuses before mutation rather than running a live rename no
+/// cut covers. Pure.
+fn armed_live(crash: Option<&str>, old: &str) -> Result<(), Refusal> {
+    match crash {
+        None => Ok(()),
+        Some(value) => Err(Refusal(format!(
+            "Error: {CRASH_VAR}='{value}' is armed for a stopped rename, but session '{old}' is live — live crash cuts need a separate ruling. Nothing was renamed."
+        ))),
+    }
+}
+
+/// Whether a live rename's running seats are told, and if not, why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Told {
+    /// The `rename` record is journaled and the watchdog that tells is expected.
+    Told,
+    /// Not told: the reason the untold line names.
+    Untold(&'static str),
+}
+
+/// The notice outcome of a live rename: told only when the record was
+/// journaled AND a watchdog is expected to fold it; a missing record is the
+/// reason named first. Pure.
+fn told(journaled: bool, watchdog_expected: bool) -> Told {
+    if journaled && watchdog_expected {
+        Told::Told
+    } else if journaled {
+        Told::Untold("watchdog off")
+    } else {
+        Told::Untold("rename not journaled")
+    }
+}
+
+/// The live rename's monitor refusal: an expected watchdog is named as
+/// unverified with its remedy; otherwise only the events monitor was rebound.
+/// Pure.
+fn monitor_refusal(new: &str, why: &str, watchdog_expected: bool) -> Refusal {
+    Refusal(if watchdog_expected {
+        format!(
+            "Error: the session was renamed to '{new}', but its monitor processes were not rebound ({why}). The renamed session has NO verified watchdog; run 'ae watchdog start {new}' after fixing it."
+        )
+    } else {
+        format!(
+            "Error: the session was renamed to '{new}', but its events monitor was not rebound ({why})."
+        )
+    })
 }
 
 /// Append the `rename` source record a session notice is armed by. A failure
@@ -3394,7 +3427,7 @@ fn print_stopped_success(
     Ok(())
 }
 
-/// One whole recovery refusal line, `Error: ` and its suffix included: the
+/// One whole rename refusal line, `Error: ` and its suffix included: the
 /// caller writes it once and exits [`EXIT_FAILED`].
 struct Refusal(String);
 
@@ -4008,6 +4041,10 @@ fn is_symlink(path: &Path) -> bool {
 #[cfg(test)]
 #[path = "../tests/it/renamelocked_unit_spec.rs"]
 mod renamelocked_unit_spec;
+
+#[cfg(test)]
+#[path = "../tests/it/renamelocked_decision_spec.rs"]
+mod renamelocked_decision_spec;
 
 #[cfg(test)]
 #[path = "../tests/it/renamerecover_unit_spec.rs"]

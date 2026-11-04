@@ -55,7 +55,7 @@ fn locked_rechecks_old_then_new_symlinks_before_resolving_the_server() {
             &root.0,
             "sold",
             "snew",
-            Some("after-intent".into()),
+            Some("after-intent"),
             &mut out,
             &mut err,
         )
