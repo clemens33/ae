@@ -2185,6 +2185,10 @@ pub fn read_workspace_keys_with_identity_sections(
 }
 
 #[cfg(test)]
+#[path = "config/overlay_spec.rs"]
+mod overlay_spec;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write as _;
@@ -3611,6 +3615,35 @@ mod tests {
         assert!(
             missing_stayed_absent,
             "parsing the fallback has zero effects"
+        );
+    }
+
+    // Behaviour pin: an invalid in-memory default names the selected global
+    // file, not <config>, and propagates the same refusal as existing text.
+    #[test]
+    fn overlay_default_refusal_names_the_selected_global_file() {
+        let root = NamedDir::new("overlay-default-refusal");
+        let missing = root.path().join("config");
+        let error = read_identity_with_global_default(
+            Some(&missing),
+            None,
+            "[roster]\nno:colons =\n[agents]\n",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            ConfigError::RosterKey {
+                file: missing.clone(),
+                key: "no:colons".to_owned(),
+                line: 2,
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Error: {}:2: invalid agent name 'no:colons' in [roster]. Names must match ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$.",
+                missing.display()
+            )
         );
     }
 
