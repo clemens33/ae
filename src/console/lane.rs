@@ -377,6 +377,32 @@ struct Thread<'a> {
     acceptance: AcceptRow,
 }
 
+/// What an admitted reply is in its thread, counted by position.
+#[derive(Debug, PartialEq, Eq)]
+struct Reached {
+    /// The seat the ask reached.
+    seat: String,
+    /// 0 for the answer, n the nth admitted reply after it.
+    follow_up: usize,
+    /// The ask was closed before the reply.
+    late: bool,
+    /// The profile the seat records now, when a reseat moved it.
+    speaker: Option<String>,
+}
+
+/// What a reply to the console is in the thread of its request, when the
+/// journal has one: why it is no answer, or its place in the thread.
+fn reached(
+    thread: Option<&mut Thread<'_>>,
+    reply: &Event,
+    seats: &[Seat],
+) -> Result<Reached, String> {
+    match thread {
+        None => Err("no chat ask with this id in the journal".to_owned()),
+        Some(thread) => thread.replied(reply, seats),
+    }
+}
+
 /// What an acceptance of one console ask may still draw.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AcceptRow {
@@ -418,6 +444,20 @@ impl<'a> Thread<'a> {
         if crate::session::retired(self.ask, retire, key) {
             self.acceptance = AcceptRow::Retired;
         }
+    }
+
+    /// `reply` as this ask's answer or a follow-up: why it is neither, or what
+    /// it is by position. Only an admitted reply takes a place in the count.
+    fn replied(&mut self, reply: &Event, seats: &[Seat]) -> Result<Reached, String> {
+        admission(self.ask, reply)?;
+        let (late, follow_up) = (self.closed, self.replies);
+        self.replies += 1;
+        Ok(Reached {
+            seat: self.ask.target.clone().unwrap_or_default(),
+            follow_up,
+            late,
+            speaker: self.speaker(seats),
+        })
     }
 
     /// A reseat that moved a seat: when it is the slot this ask reached, every
@@ -514,32 +554,30 @@ fn console_items(
                 };
                 kind
             }
-            Record::Reply => {
-                let from = event.actor.clone();
-                let admitted = match threads.get_mut(key) {
-                    None => Err("no chat ask with this id in the journal".to_owned()),
-                    Some(thread) => admission(thread.ask, event).map(|()| thread),
-                };
-                match admitted {
-                    Ok(thread) => {
-                        let (late, follow_up) = (thread.closed, thread.replies);
-                        thread.replies += 1;
-                        let speaker = thread.speaker(seats);
-                        let seat = thread.ask.target.clone().unwrap_or_default();
-                        let what = format!("reply from {seat}");
-                        let gap = adopt(body(event), &mut text, &what, gaps, None);
-                        Kind::Answer {
-                            seat,
-                            id,
-                            follow_up,
-                            late,
-                            gap,
-                            speaker,
-                        }
+            Record::Reply => match reached(threads.get_mut(key), event, seats) {
+                Ok(Reached {
+                    seat,
+                    follow_up,
+                    late,
+                    speaker,
+                }) => {
+                    let what = format!("reply from {seat}");
+                    let gap = adopt(body(event), &mut text, &what, gaps, None);
+                    Kind::Answer {
+                        seat,
+                        id,
+                        follow_up,
+                        late,
+                        gap,
+                        speaker,
                     }
-                    Err(why) => Kind::Unadmitted { from, id, why },
                 }
-            }
+                Err(why) => Kind::Unadmitted {
+                    from: event.actor.clone(),
+                    id,
+                    why,
+                },
+            },
             Record::Retire | Record::Reseat | Record::Other => continue,
         };
         let record = Some(record);
@@ -1524,5 +1562,56 @@ mod tests {
         let mut thread = super::Thread::opened(&unrouted);
         thread.moved = true;
         assert_eq!(thread.speaker(&roster), Some("unrecorded".to_owned()));
+    }
+
+    /// A reply takes its place in the thread by position, and only an admitted
+    /// one takes a place: the answer is 0, each admitted reply after it the
+    /// next follow-up, late once the ask was closed, labelled once moved.
+    #[test]
+    fn only_an_admitted_reply_takes_a_place_in_its_thread() {
+        use super::Reached;
+        let (me, stale) = (caller("main", "%1", UUID), caller("main", "%2", UUID));
+        let ask = asked("q");
+        let seats = pair();
+        let mut thread = super::Thread::opened(&ask);
+        let reached = |thread: &mut super::Thread<'_>, fields: &str| {
+            thread.replied(&answered(T1, fields, "x"), &seats)
+        };
+        let place = |follow_up, late, speaker: Option<&str>| {
+            Ok(Reached {
+                seat: "lead".to_owned(),
+                follow_up,
+                late,
+                speaker: speaker.map(str::to_owned),
+            })
+        };
+        assert_eq!(reached(&mut thread, &me), place(0, false, None));
+        assert_eq!(
+            reached(&mut thread, &stale),
+            Err("stale pane".to_owned()),
+            "not admitted"
+        );
+        assert_eq!(thread.replies, 1, "an unadmitted reply takes no place");
+        thread.closed = true;
+        assert_eq!(reached(&mut thread, &me), place(1, true, None));
+        thread.moved = true;
+        assert_eq!(
+            reached(&mut thread, &me),
+            place(2, true, Some("unrecorded"))
+        );
+        assert_eq!(thread.replies, 3);
+    }
+
+    /// A reply to a request the journal never opened is no answer, by name.
+    #[test]
+    fn a_reply_with_no_thread_is_no_answer() {
+        let me = caller("main", "%1", UUID);
+        let reply = answered(T1, &me, "x");
+        let why = "no chat ask with this id in the journal";
+        assert_eq!(super::reached(None, &reply, &pair()), Err(why.to_owned()));
+        let ask = asked("q");
+        let mut thread = super::Thread::opened(&ask);
+        let reached = super::reached(Some(&mut thread), &reply, &pair());
+        assert_eq!(reached.map(|reached| reached.follow_up), Ok(0));
     }
 }
