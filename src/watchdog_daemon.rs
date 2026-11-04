@@ -5073,24 +5073,7 @@ fn auto_acts(
         match crate::autoreseat::eligible(settings, &asked) {
             Err(Ineligible::Unmapped) if seat.derives => {}
             Err(Ineligible::Unmapped) if seat.limited => {
-                let found = crate::autoreseat::episode(events, session, &seat.slot, &seat.agent);
-                let said = crate::autoreseat::leg::ineligible_record(Ineligible::Unmapped);
-                if let Some(open) = found.filter(|open| {
-                    open.terminal.is_none()
-                        && !open.holds_with(&said)
-                        && !waits_for_reset(seat, open, now)
-                }) && let Decision::Attempt | Decision::Hold(_) =
-                    crate::autoreseat::decide(Some(&open), settings.grace_secs, &seat.pane, now)
-                {
-                    let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
-                    let (key, profile) = (open.key, seat.profile.clone());
-                    acts.push(AutoAct::Unmapped {
-                        slot,
-                        agent,
-                        key,
-                        profile,
-                    });
-                }
+                acts.extend(unmapped_act(settings, seat, events, session, now));
                 continue;
             }
             Err(_) => continue,
@@ -5106,63 +5089,13 @@ fn auto_acts(
         } else if seat.limited {
             limit
         } else {
-            let found = headroom;
-            let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
-            let opening = seat.start.urgent(now);
-            let earlier = |open: &crate::autoreseat::Episode| {
-                opening && seat.start.settled.is_some_and(|at| open.key.epoch() < at)
-            };
-            match (&found, &seat.room) {
-                (None, _) if opening => {
-                    let cause = seat
-                        .start
-                        .exhausted
-                        .as_ref()
-                        .map(crate::autoreseat::headroom_words)
-                        .unwrap_or_default();
-                    acts.push(AutoAct::Open { slot, agent, cause });
+            match headroom_route(settings, seat, headroom, now) {
+                Headroom::Act(act) => {
+                    acts.push(act);
                     continue;
                 }
-                (None, Room::Crossed(window)) if settings.headroom_at.is_some() => {
-                    let cause = crate::autoreseat::headroom_words(window);
-                    acts.push(AutoAct::Open { slot, agent, cause });
-                    continue;
-                }
-                // Each start answers for itself: an earlier start's episode
-                // ends, and the next cycle opens this one's.
-                (Some(open), _) if open.open.is_none() && earlier(open) => {
-                    let summary = crate::autoreseat::RESTARTED_SUMMARY.to_owned();
-                    let key = open.key;
-                    acts.push(AutoAct::Rearm {
-                        slot,
-                        agent,
-                        key,
-                        summary,
-                    });
-                    continue;
-                }
-                (Some(open), Room::Relieved(window)) if open.open.is_none() && !opening => {
-                    let summary = crate::autoreseat::relieved_words(window);
-                    let key = open.key;
-                    acts.push(AutoAct::Rearm {
-                        slot,
-                        agent,
-                        key,
-                        summary,
-                    });
-                    continue;
-                }
-                _ => {}
+                Headroom::Decide(found) => found,
             }
-            // With no threshold, only a start's own episode moves.
-            if settings.headroom_at.is_none()
-                && !found
-                    .as_ref()
-                    .is_some_and(|open| seat.start.urgent(open.key.epoch()))
-            {
-                continue;
-            }
-            found
         };
         let Some(found) = found else {
             continue;
@@ -5232,6 +5165,108 @@ fn auto_acts(
         agent: seat.agent.clone(),
     }));
     acts
+}
+
+/// What the auto reseat step says this cycle of a limited seat with no
+/// candidate at all: named once per episode, while that limit episode is
+/// still owed a move — a terminal episode, one the journal already ends on
+/// that hold, or one left to its reset's wake says nothing, and neither does
+/// one inside the grace or with an attempt open.
+fn unmapped_act(
+    settings: &crate::autoreseat::Settings,
+    seat: &AutoSeat,
+    events: &[Event],
+    session: &str,
+    now: i64,
+) -> Option<AutoAct> {
+    use crate::autoreseat::{Decision, Ineligible};
+    let said = crate::autoreseat::leg::ineligible_record(Ineligible::Unmapped);
+    let open =
+        crate::autoreseat::episode(events, session, &seat.slot, &seat.agent).filter(|open| {
+            open.terminal.is_none() && !open.holds_with(&said) && !waits_for_reset(seat, open, now)
+        })?;
+    let decision = crate::autoreseat::decide(Some(&open), settings.grace_secs, &seat.pane, now);
+    matches!(decision, Decision::Attempt | Decision::Hold(_)).then(|| AutoAct::Unmapped {
+        slot: seat.slot.clone(),
+        agent: seat.agent.clone(),
+        key: open.key,
+        profile: seat.profile.clone(),
+    })
+}
+
+/// Where the headroom path leaves a seat whose latch does not stand.
+#[derive(Debug, PartialEq)]
+enum Headroom {
+    /// Record this act: the seat is done this cycle.
+    Act(AutoAct),
+    /// Decide this episode like a limit one; none leaves the seat be.
+    Decide(Option<crate::autoreseat::Episode>),
+}
+
+/// The headroom path of one seat, given its headroom episode `found`: a
+/// start's urgent read or a crossing opens an episode where none is; an
+/// earlier start's episode ends when a new start reads its own account, and
+/// relief ends one no attempt moves while no start is urgent. Otherwise the
+/// episode is decided, but with no threshold only a start's own episode is.
+fn headroom_route(
+    settings: &crate::autoreseat::Settings,
+    seat: &AutoSeat,
+    found: Option<crate::autoreseat::Episode>,
+    now: i64,
+) -> Headroom {
+    use crate::autoreseat::Room;
+    let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
+    let opening = seat.start.urgent(now);
+    let earlier = |open: &crate::autoreseat::Episode| {
+        opening && seat.start.settled.is_some_and(|at| open.key.epoch() < at)
+    };
+    match (&found, &seat.room) {
+        (None, _) if opening => {
+            let cause = seat
+                .start
+                .exhausted
+                .as_ref()
+                .map(crate::autoreseat::headroom_words)
+                .unwrap_or_default();
+            return Headroom::Act(AutoAct::Open { slot, agent, cause });
+        }
+        (None, Room::Crossed(window)) if settings.headroom_at.is_some() => {
+            let cause = crate::autoreseat::headroom_words(window);
+            return Headroom::Act(AutoAct::Open { slot, agent, cause });
+        }
+        // Each start answers for itself: an earlier start's episode
+        // ends, and the next cycle opens this one's.
+        (Some(open), _) if open.open.is_none() && earlier(open) => {
+            let summary = crate::autoreseat::RESTARTED_SUMMARY.to_owned();
+            let key = open.key;
+            return Headroom::Act(AutoAct::Rearm {
+                slot,
+                agent,
+                key,
+                summary,
+            });
+        }
+        (Some(open), Room::Relieved(window)) if open.open.is_none() && !opening => {
+            let summary = crate::autoreseat::relieved_words(window);
+            let key = open.key;
+            return Headroom::Act(AutoAct::Rearm {
+                slot,
+                agent,
+                key,
+                summary,
+            });
+        }
+        _ => {}
+    }
+    // With no threshold, only a start's own episode moves.
+    if settings.headroom_at.is_none()
+        && !found
+            .as_ref()
+            .is_some_and(|open| seat.start.urgent(open.key.epoch()))
+    {
+        return Headroom::Decide(None);
+    }
+    Headroom::Decide(found)
 }
 
 /// Whether a limit episode with no attempt open is left to the seat's wake
@@ -15753,6 +15788,322 @@ mod tests {
                 trigger: Trigger::Headroom,
             }]
         );
+    }
+
+    /// The seat shape the two auto reseat seams read: one limited spawned
+    /// seat on a clear frame, nothing known of its start or its reset.
+    fn seam_seat() -> super::AutoSeat {
+        super::AutoSeat {
+            slot: "spawned.1".to_owned(),
+            agent: "one".to_owned(),
+            profile: "sol6x".to_owned(),
+            pane: crate::autoreseat::Pane {
+                frame: crate::autoreseat::Frame::Clear,
+                human_prompt: false,
+                client_input: None,
+            },
+            limited: true,
+            room: crate::autoreseat::Room::Unread,
+            derives: false,
+            start: crate::autoreseat::StartRead::default(),
+            reset: None,
+            wake_landed: None,
+            armed: None,
+        }
+    }
+
+    fn seam_record(at: i64, action: &str, rest: &str) -> Event {
+        Event::parse_line(&format!(
+            r#"{{"ts":"{}","actor":"{ACTOR}","action":"{action}","target":"one"{rest}}}"#,
+            crate::time::Timestamp::from_epoch(at)
+        ))
+        .expect("a journal line")
+    }
+
+    fn seam_window(judged: f64, label: &str) -> crate::autoreseat::Window {
+        crate::autoreseat::Window {
+            judged,
+            critical: judged >= 95.0,
+            long: true,
+            observed_at: 90,
+            resets_at: None,
+            status: crate::quota::Status::Fresh,
+            label: label.to_owned(),
+        }
+    }
+
+    /// A limited seat with no candidate is named while its limit episode is
+    /// owed a move — due, or held by its pane — and never for a seat with no
+    /// episode, inside the grace, with an attempt open or past its bound, a
+    /// terminal episode, one the journal already ends on that very hold, or
+    /// one left to its near short reset.
+    #[test]
+    fn an_unmapped_seat_is_named_only_while_its_limit_episode_is_owed_a_move() {
+        use super::{AutoAct, unmapped_act};
+        use crate::autoreseat::{
+            ATTEMPT_ACTION, Frame, HELD_ACTION, IN_FLIGHT_SECS, Ineligible, LimitReset,
+            REFUSED_ACTION, Settings, Switch,
+        };
+        let settings = |grace_secs| Settings {
+            switch: Switch::On,
+            sessions: None,
+            grace_secs,
+            map: Vec::new(),
+            headroom_at: None,
+            headroom_note: None,
+            notes: Vec::new(),
+        };
+        let key = crate::time::Timestamp::from_epoch(100);
+        let reference = format!(r#","ref":"{key}""#);
+        let said = crate::autoreseat::leg::ineligible_record(Ineligible::Unmapped);
+        let limit = seam_record(100, "limit", "");
+        let named = Some(AutoAct::Unmapped {
+            slot: "spawned.1".to_owned(),
+            agent: "one".to_owned(),
+            key,
+            profile: "sol6x".to_owned(),
+        });
+        let clear = seam_seat();
+        let busy = super::AutoSeat {
+            pane: crate::autoreseat::Pane {
+                frame: Frame::Busy,
+                ..clear.pane
+            },
+            ..clear.clone()
+        };
+        let waiting = super::AutoSeat {
+            reset: Some(LimitReset {
+                at: 1_000,
+                short: true,
+            }),
+            ..clear.clone()
+        };
+        let now = 700;
+        for (why, seat, events, grace, expected) in [
+            ("due", &clear, vec![limit.clone()], 0, named.clone()),
+            (
+                "held by its pane",
+                &busy,
+                vec![limit.clone()],
+                0,
+                named.clone(),
+            ),
+            ("no episode", &clear, vec![], 0, None),
+            ("inside the grace", &clear, vec![limit.clone()], 1_000, None),
+            (
+                "an attempt in flight",
+                &clear,
+                vec![
+                    limit.clone(),
+                    seam_record(now - 1, ATTEMPT_ACTION, &reference),
+                ],
+                0,
+                None,
+            ),
+            (
+                "an attempt past its bound",
+                &clear,
+                vec![
+                    limit.clone(),
+                    seam_record(now - IN_FLIGHT_SECS, ATTEMPT_ACTION, &reference),
+                ],
+                0,
+                None,
+            ),
+            (
+                "terminal",
+                &clear,
+                vec![limit.clone(), seam_record(120, REFUSED_ACTION, &reference)],
+                0,
+                None,
+            ),
+            (
+                "already said",
+                &clear,
+                vec![
+                    limit.clone(),
+                    seam_record(
+                        200,
+                        HELD_ACTION,
+                        &format!(r#"{reference},"summary":"{said}""#),
+                    ),
+                ],
+                0,
+                None,
+            ),
+            ("left to its reset", &waiting, vec![limit.clone()], 0, None),
+        ] {
+            assert_eq!(
+                unmapped_act(&settings(grace), seat, &events, "dev", now),
+                expected,
+                "{why}"
+            );
+        }
+    }
+
+    /// The headroom seam's seat: unlatched in `room`, its start settled at 200
+    /// and, when `urgent`, reading its short window exhausted.
+    fn route_seat(room: &crate::autoreseat::Room, urgent: bool) -> super::AutoSeat {
+        super::AutoSeat {
+            limited: false,
+            room: room.clone(),
+            start: crate::autoreseat::StartRead {
+                settled: Some(200),
+                exhausted: urgent.then(|| seam_window(100.0, "session_all 5h")),
+                ..crate::autoreseat::StartRead::default()
+            },
+            ..seam_seat()
+        }
+    }
+
+    /// The seat's headroom episode opened at `at`, an attempt open on it
+    /// when `flying`.
+    fn route_episode(at: i64, flying: bool) -> Option<crate::autoreseat::Episode> {
+        let key = crate::time::Timestamp::from_epoch(at);
+        let opened = r#","summary":"headroom 96% weekly_all 7d""#;
+        let mut events = vec![seam_record(at, crate::autoreseat::HEADROOM_ACTION, opened)];
+        if flying {
+            let attempt = format!(r#","ref":"{key}""#);
+            events.push(seam_record(
+                at + 1,
+                crate::autoreseat::ATTEMPT_ACTION,
+                &attempt,
+            ));
+        }
+        crate::autoreseat::headroom_episode(&events, "dev", "spawned.1", "one")
+    }
+
+    /// Auto reseat on, no map, the headroom threshold at 95 when `threshold`.
+    fn route_settings(threshold: bool) -> crate::autoreseat::Settings {
+        crate::autoreseat::Settings {
+            switch: crate::autoreseat::Switch::On,
+            sessions: None,
+            grace_secs: 0,
+            map: Vec::new(),
+            headroom_at: threshold.then_some(95),
+            headroom_note: None,
+            notes: Vec::new(),
+        }
+    }
+
+    /// Where no headroom episode is, an urgent start opens one from its own
+    /// exhausted window, ahead of any crossing and whatever the threshold; a
+    /// crossing opens one only under a threshold; near and relief open nothing.
+    #[test]
+    fn the_headroom_route_opens_on_an_urgent_start_or_a_crossing() {
+        use super::{AutoAct, Headroom, headroom_route};
+        use crate::autoreseat::Room;
+        let crossed = Room::Crossed(seam_window(96.0, "weekly_all 7d"));
+        let relieved = Room::Relieved(seam_window(10.0, "weekly_all 7d"));
+        let open = |cause: &str| {
+            Headroom::Act(AutoAct::Open {
+                slot: "spawned.1".to_owned(),
+                agent: "one".to_owned(),
+                cause: cause.to_owned(),
+            })
+        };
+        let start = open("headroom 100% session_all 5h");
+        let none = Headroom::Decide(None);
+        for (why, threshold, room, urgent, expected) in [
+            ("an urgent start opens", false, &Room::Unread, true, &start),
+            ("before the crossing", true, &crossed, true, &start),
+            (
+                "a crossing opens",
+                true,
+                &crossed,
+                false,
+                &open("headroom 96% weekly_all 7d"),
+            ),
+            ("no threshold, no crossing", false, &crossed, false, &none),
+            ("near opens nothing", true, &Room::Near, false, &none),
+            ("relief opens nothing", true, &relieved, false, &none),
+        ] {
+            let seat = route_seat(room, urgent);
+            let got = headroom_route(&route_settings(threshold), &seat, None, 300);
+            assert_eq!(&got, expected, "{why}");
+        }
+    }
+
+    /// An episode no attempt moves is re-armed for a new start when an earlier
+    /// start opened it, and on relief while no start is urgent; anything else
+    /// is handed on to be decided — with no threshold, only a start's own.
+    #[test]
+    fn the_headroom_route_rearms_or_hands_the_episode_on() {
+        use super::{AutoAct, Headroom, headroom_route};
+        use crate::autoreseat::{RESTARTED_SUMMARY, Room};
+        let relieved = Room::Relieved(seam_window(10.0, "weekly_all 7d"));
+        let rearm = |at: i64, summary: &str| {
+            Headroom::Act(AutoAct::Rearm {
+                slot: "spawned.1".to_owned(),
+                agent: "one".to_owned(),
+                key: crate::time::Timestamp::from_epoch(at),
+                summary: summary.to_owned(),
+            })
+        };
+        let on = |at: i64, flying: bool| Headroom::Decide(route_episode(at, flying));
+        for (why, threshold, room, urgent, (at, flying), expected) in [
+            (
+                "an earlier start's",
+                true,
+                &relieved,
+                true,
+                (199, false),
+                rearm(199, RESTARTED_SUMMARY),
+            ),
+            (
+                "this start's own",
+                true,
+                &relieved,
+                true,
+                (200, false),
+                on(200, false),
+            ),
+            (
+                "relief",
+                true,
+                &relieved,
+                false,
+                (100, false),
+                rearm(100, "headroom cleared: 10% weekly_all 7d"),
+            ),
+            (
+                "an attempt open",
+                true,
+                &relieved,
+                false,
+                (100, true),
+                on(100, true),
+            ),
+            (
+                "near",
+                true,
+                &Room::Near,
+                false,
+                (100, false),
+                on(100, false),
+            ),
+            (
+                "no threshold, not its own",
+                false,
+                &Room::Near,
+                false,
+                (100, false),
+                Headroom::Decide(None),
+            ),
+            (
+                "no threshold, its own",
+                false,
+                &Room::Near,
+                true,
+                (250, false),
+                on(250, false),
+            ),
+        ] {
+            let seat = route_seat(room, urgent);
+            let found = route_episode(at, flying);
+            let got = headroom_route(&route_settings(threshold), &seat, found, 300);
+            assert_eq!(got, expected, "{why}");
+        }
     }
 
     /// A limit already showing when the seat declared stays UNDER the
