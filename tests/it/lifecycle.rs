@@ -38,6 +38,8 @@ mod endrun_spec;
 mod guard_spec;
 #[path = "lifecycle_purgeguard_spec.rs"]
 mod purgeguard_spec;
+#[path = "renamelocked_live_spec.rs"]
+mod renamelocked_live_spec;
 #[path = "lifecycle_retain_spec.rs"]
 mod retain_spec;
 #[path = "lifecycle_runstop_census_spec.rs"]

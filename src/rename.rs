@@ -4006,6 +4006,10 @@ fn is_symlink(path: &Path) -> bool {
 }
 
 #[cfg(test)]
+#[path = "../tests/it/renamelocked_unit_spec.rs"]
+mod renamelocked_unit_spec;
+
+#[cfg(test)]
 #[path = "../tests/it/renamerecover_unit_spec.rs"]
 mod renamerecover_unit_spec;
 
