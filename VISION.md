@@ -91,3 +91,48 @@ current machine.
   tmux with divergent lock order.
 - **Every capability earns its place.** The seven above are the product. A new one has to
   displace something, or save time on every single use.
+
+## North star
+
+A direction, not a plan: it schedules no work, and the open questions at the end are undecided.
+
+ae is meant to work whatever harness runs the agent and whatever provider serves the model.
+A user may hold subscriptions from several providers and switch when availability or price
+changes; ae keeps working and keeps the work context across the switch. Today seven agent
+CLIs run side by side, `ae quota` shows each client scope's locally cached quota windows,
+and with `auto_reseat` on the watchdog can move a seat off a vendor usage limit.
+
+The user should spend attention on building something valuable and organising the work, not
+on picking each model, watching quota, operating provider subscriptions, or handling git
+worktrees, branches, CI and deployment mechanics. ae takes those routine choices over. Humans
+keep intent, steering, categorising and prioritising, product choices and review.
+
+Three things reach further out:
+
+- **Beyond software.** The work may be an HR role description as well as a feature.
+- **Durable topics several people can join.** People on different machines, each with their
+  own ae, take part in one topic, find its shared context (decisions, memos, research) and
+  continue it without retelling the story through tickets. That is shared context for related
+  work, not a person-to-person chat and not a feed of everyone's activity.
+- **Remote compute.** Sessions need not depend on one local machine.
+
+**Weighting.** Highest now: harness independence, model/provider independence, and hiding the
+quota, model-choice and git burden. Shared topics across people and machines, non-software
+work and remote compute are direction, not near-term build commitments.
+
+**How it fits the rules above.** This section relaxes nothing in "What does not change" or in
+AGENTS.md's "What ae is NOT"; changing any of them is a separate ruling. The north star is
+pursued in small steps, each verifiable alone and each earning its place: it saves time on
+every use or displaces something. A step stays a thin layer over tmux and the agent CLIs and
+coordinates by protocol, not by a framework. Until question 2 is ruled, "Your repo stays
+clean" and "Not a git workflow tool" stand as written. A step that needs a network or a
+service to keep alive must fit "Optional stays optional" and the install contract above.
+
+**Open, undecided.**
+
+1. Shared topics across machines against today's local-only state under `~/.ae/`: what is
+   shared, where it lives, and who may see it.
+2. Hiding git mechanics against "ae is not a git workflow tool": which git work ae owns end
+   to end, and where it stops.
+3. Non-software work against the tmux and agent-CLI core: whether it needs anything beyond
+   today's seats and topics.
