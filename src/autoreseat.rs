@@ -1099,73 +1099,94 @@ fn episodes(
     slot: &str,
     agent: &str,
 ) -> (Option<Episode>, Option<Episode>) {
-    let mut limit: Option<Episode> = None;
-    let mut headroom: Option<Episode> = None;
+    let mut path = Pair::default();
     for event in events {
         if !event_is_addressed_to(event, session, slot, agent) {
             continue;
         }
         if event.action == SPAWN_ACTION {
-            (limit, headroom) = (None, None);
+            path = Pair::default();
             continue;
         }
         if event.actor != WATCHDOG_ACTOR {
             continue;
         }
-        if let Some(open) = limit.as_mut()
+        path.fold(event);
+    }
+    (path.limit, path.headroom)
+}
+
+/// The two episodes of a seat's one auto reseat path while its journal is
+/// folded.
+#[derive(Default)]
+struct Pair {
+    limit: Option<Episode>,
+    headroom: Option<Episode>,
+}
+
+impl Pair {
+    /// Fold one watchdog record addressed to the seat. A cooled limit round
+    /// reopens first, so the live key an outcome closes by is the reopened one.
+    fn fold(&mut self, event: &Event) {
+        if let Some(open) = self.limit.as_mut()
             && reopens(open, event)
         {
             open.reopen();
         }
         match event.action.as_str() {
-            CLEARED_ACTION => limit = None,
+            CLEARED_ACTION => self.limit = None,
             LIMIT_ACTION => {
-                if limit.is_none() {
-                    limit = Some(Episode::opened(event.ts));
-                }
+                self.limit.get_or_insert_with(|| Episode::opened(event.ts));
             }
             HEADROOM_ACTION => {
-                if headroom.is_none() {
+                self.headroom.get_or_insert_with(|| {
                     let cause = event.summary.clone().unwrap_or_default();
-                    headroom = Some(Episode::opened_by(event.ts, Trigger::Headroom, cause));
-                }
+                    Episode::opened_by(event.ts, Trigger::Headroom, cause)
+                });
             }
             REARMED_ACTION => {
-                if headroom
-                    .as_ref()
-                    .is_some_and(|open| event.reference.as_deref() == Some(open.reference()))
-                {
-                    headroom = None;
-                }
+                self.headroom
+                    .take_if(|open| event.reference.as_deref() == Some(open.reference()));
             }
             DONE_ACTION => {
-                if let Some(open) = limit.as_mut() {
+                if let Some(open) = self.limit.as_mut() {
                     open.absorb(event);
                 }
-                headroom = None;
+                self.headroom = None;
             }
             REFUSED_ACTION | FAILED_ACTION
-                if live(limit.as_ref(), event) || live(headroom.as_ref(), event) =>
+                if live(self.limit.as_ref(), event) || live(self.headroom.as_ref(), event) =>
             {
-                let outcome = if event.action == REFUSED_ACTION {
-                    Outcome::Refused
-                } else {
-                    Outcome::Failed
-                };
-                for open in [limit.as_mut(), headroom.as_mut()].into_iter().flatten() {
-                    if open.terminal.is_none() {
-                        open.close(outcome, event.ts);
-                    }
-                }
+                self.close_open(event);
             }
             _ => {
-                for open in [limit.as_mut(), headroom.as_mut()].into_iter().flatten() {
+                for open in self.each() {
                     open.absorb(event);
                 }
             }
         }
     }
-    (limit, headroom)
+
+    /// The episodes the seat has, the limit one first.
+    fn each(&mut self) -> impl Iterator<Item = &mut Episode> {
+        [self.limit.as_mut(), self.headroom.as_mut()]
+            .into_iter()
+            .flatten()
+    }
+
+    /// An outcome under the live key of either episode ends every episode
+    /// beside it, whatever its own key; one already closed keeps its first
+    /// outcome ([`Episode::close`]).
+    fn close_open(&mut self, event: &Event) {
+        let outcome = if event.action == REFUSED_ACTION {
+            Outcome::Refused
+        } else {
+            Outcome::Failed
+        };
+        for open in self.each() {
+            open.close(outcome, event.ts);
+        }
+    }
 }
 
 /// Whether `event` opens a new round of the limit episode `open`: an attempt or
