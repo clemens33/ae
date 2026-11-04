@@ -2623,6 +2623,56 @@ mod tests {
         }
     }
 
+    /// One path read as two tools' sources is two accounts, as a recorded
+    /// identity names one by tool and source: a newer healthy reading of one
+    /// tool's window never supersedes the other tool's spent reading of the
+    /// same profile, path and window, while within one tool it does.
+    #[test]
+    fn a_reading_of_another_tool_on_the_same_path_never_supersedes_one() {
+        let on = |tool, rows| crate::quota::Group {
+            tool,
+            ..account(&["sol"], "/a", plain(), rows)
+        };
+        let (claude, codex) = (crate::tool::ToolKind::Claude, crate::tool::ToolKind::Codex);
+        let spent = row(None, "100", 120, 3600);
+        let healthy = row(None, "40", 60, 3600);
+        for groups in [
+            vec![
+                on(claude, vec![spent.clone()]),
+                on(codex, vec![healthy.clone()]),
+            ],
+            vec![
+                on(codex, vec![spent.clone()]),
+                on(claude, vec![healthy.clone()]),
+            ],
+            vec![
+                on(codex, vec![healthy.clone()]),
+                on(claude, vec![spent.clone()]),
+            ],
+            vec![
+                on(claude, vec![healthy.clone()]),
+                on(codex, vec![spent.clone()]),
+            ],
+        ] {
+            let choice = judge(&observed(groups), &["sol"], &[], &[], &[]);
+            assert_eq!(
+                choice.skipped,
+                passed(&[("sol", Skip::Exhausted)]),
+                "another tool's reading of the path supersedes nothing"
+            );
+        }
+        let same = vec![
+            on(codex, vec![spent.clone()]),
+            on(codex, vec![healthy.clone()]),
+        ];
+        let choice = judge(&observed(same), &["sol"], &[], &[], &[]);
+        assert_eq!(
+            choice.pick,
+            picked("sol", Tier::BelowCritical),
+            "within one tool the newer reading rules"
+        );
+    }
+
     /// A profile left on its limit waits for a window read after the move:
     /// the stamps and the reset the gather carries are the ones the rule reads.
     #[test]
