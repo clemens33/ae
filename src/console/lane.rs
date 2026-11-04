@@ -479,6 +479,84 @@ impl<'a> Thread<'a> {
     }
 }
 
+/// The threads of the console's asks, by request id.
+type Threads<'a> = BTreeMap<&'a str, Thread<'a>>;
+
+/// A row that reads nothing past its record: the journal's summary is its body.
+fn plain(kind: Kind, event: &Event) -> (Kind, String) {
+    (kind, event.summary.clone().unwrap_or_default())
+}
+
+/// The console's ask: it opens its thread, and its row shows the stored whole
+/// text where that reads, else the summary and the gap that names why.
+fn ask_row<'a>(
+    threads: &mut Threads<'a>,
+    ask: &'a Event,
+    body: &dyn Fn(&Event) -> Body,
+    via: &dyn Fn(&str) -> Via,
+    gaps: &mut Vec<String>,
+) -> (Kind, String) {
+    let key = ask.reference.as_deref().unwrap_or("");
+    let to = ask.target.clone().unwrap_or_default();
+    let mut text = ask.summary.clone().unwrap_or_default();
+    let mut gap = Some(OLD_CORE_GAP.to_owned());
+    if !key.is_empty() {
+        threads.insert(key, Thread::opened(ask));
+        // An ask an older core recorded has no body to read.
+        if ask.body_file.is_some() {
+            let what = format!("ask to {to}");
+            gap = adopt(body(ask), &mut text, &what, gaps, Some(ASK_OVER_GAP));
+        }
+    }
+    let kind = Kind::Asked {
+        to,
+        id: key.to_owned(),
+        uncertain: super::submit::uncertain(ask),
+        gap,
+        via: ask.relay_origin.as_deref().map(via),
+    };
+    // The stored body keeps each attachment's path; the row shows its label.
+    (kind, crate::token::collapse(&text))
+}
+
+/// A reply to the console: the answer or a follow-up when its thread admits it,
+/// with the stored whole body where that reads, else the row that says why not.
+fn reply_row(
+    thread: Option<&mut Thread<'_>>,
+    reply: &Event,
+    seats: &[Seat],
+    body: &dyn Fn(&Event) -> Body,
+    gaps: &mut Vec<String>,
+) -> (Kind, String) {
+    let id = reply.reference.clone().unwrap_or_default();
+    let mut text = reply.summary.clone().unwrap_or_default();
+    let kind = match reached(thread, reply, seats) {
+        Ok(Reached {
+            seat,
+            follow_up,
+            late,
+            speaker,
+        }) => {
+            let what = format!("reply from {seat}");
+            let gap = adopt(body(reply), &mut text, &what, gaps, None);
+            Kind::Answer {
+                seat,
+                id,
+                follow_up,
+                late,
+                gap,
+                speaker,
+            }
+        }
+        Err(why) => Kind::Unadmitted {
+            from: reply.actor.clone(),
+            id,
+            why,
+        },
+    };
+    (kind, text)
+}
+
 /// The console's own thread: its asks and what became of them, and every
 /// reply sent to it — the ANSWER only from the complete identity the ask
 /// reached, with the stored whole body where it reads, else the summary and a
@@ -497,92 +575,51 @@ fn console_items(
     via: &dyn Fn(&str) -> Via,
     gaps: &mut Vec<String>,
 ) -> Vec<Item> {
-    let mut threads: BTreeMap<&str, Thread<'_>> = BTreeMap::new();
+    let mut threads = Threads::new();
     let mut items = Vec::new();
     for (record, event) in events.iter().enumerate() {
-        let shape = Record::of(event);
-        if shape == Record::Retire {
-            for thread in threads.values_mut() {
-                thread.retire(event, session);
-            }
-            continue;
-        }
-        if shape == Record::Reseat {
-            for thread in threads.values_mut() {
-                thread.moved_by(event);
-            }
-            continue;
-        }
         let key = event.reference.as_deref().unwrap_or("");
-        let (id, to) = (key.to_owned(), event.target.clone().unwrap_or_default());
-        let mut text = event.summary.clone().unwrap_or_default();
-        let kind = match shape {
-            Record::Ask => {
-                let uncertain = super::submit::uncertain(event);
-                let mut gap = Some(OLD_CORE_GAP.to_owned());
-                if !key.is_empty() {
-                    threads.insert(key, Thread::opened(event));
-                    // An ask an older core recorded has no body to read.
-                    if event.body_file.is_some() {
-                        let what = format!("ask to {to}");
-                        let over = Some(ASK_OVER_GAP);
-                        gap = adopt(body(event), &mut text, &what, gaps, over);
-                    }
+        let (kind, text) = match Record::of(event) {
+            Record::Retire => {
+                for thread in threads.values_mut() {
+                    thread.retire(event, session);
                 }
-                // The stored body keeps each attachment's path; the row
-                // shows its label.
-                text = crate::token::collapse(&text);
-                Kind::Asked {
-                    to,
-                    id,
-                    uncertain,
-                    gap,
-                    via: event.relay_origin.as_deref().map(via),
-                }
+                continue;
             }
-            Record::Abandoned => Kind::NotDelivered { to, id },
+            Record::Reseat => {
+                for thread in threads.values_mut() {
+                    thread.moved_by(event);
+                }
+                continue;
+            }
+            Record::Ask => ask_row(&mut threads, event, body, via, gaps),
+            Record::Abandoned => {
+                let to = event.target.clone().unwrap_or_default();
+                plain(
+                    Kind::NotDelivered {
+                        to,
+                        id: key.to_owned(),
+                    },
+                    event,
+                )
+            }
             Record::Cancel => {
                 if let Some(thread) = threads.get_mut(key) {
                     thread.closed = true;
                 }
-                Kind::Closed { id }
+                plain(Kind::Closed { id: key.to_owned() }, event)
             }
             Record::Accept => {
-                let thread = threads.get_mut(key);
-                let Some(kind) = thread.and_then(|thread| thread.accepted(event, id)) else {
-                    continue;
-                };
-                kind
+                let accepted = threads.get_mut(key);
+                let accepted = accepted.and_then(|thread| thread.accepted(event, key.to_owned()));
+                let Some(kind) = accepted else { continue };
+                plain(kind, event)
             }
-            Record::Reply => match reached(threads.get_mut(key), event, seats) {
-                Ok(Reached {
-                    seat,
-                    follow_up,
-                    late,
-                    speaker,
-                }) => {
-                    let what = format!("reply from {seat}");
-                    let gap = adopt(body(event), &mut text, &what, gaps, None);
-                    Kind::Answer {
-                        seat,
-                        id,
-                        follow_up,
-                        late,
-                        gap,
-                        speaker,
-                    }
-                }
-                Err(why) => Kind::Unadmitted {
-                    from: event.actor.clone(),
-                    id,
-                    why,
-                },
-            },
-            Record::Retire | Record::Reseat | Record::Other => continue,
+            Record::Reply => reply_row(threads.get_mut(key), event, seats, body, gaps),
+            Record::Other => continue,
         };
-        let record = Some(record);
         items.push(Item {
-            record,
+            record: Some(record),
             ..item(kind, micros(event), &text)
         });
     }
