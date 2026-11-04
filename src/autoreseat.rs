@@ -2241,6 +2241,9 @@ pub enum Nudge {
 
 /// The widest a notice may be, in characters.
 pub const NOTICE_CHARS: usize = 400;
+/// The widest the quoted titles of ended background tasks may be in a move's
+/// notice, so they leave room for the move itself.
+const ENDED_TITLES_CHARS: usize = 120;
 
 /// The line for a limit episode whose last round was refused or failed.
 fn gave_up_line(agent: &str, hand: &str) -> String {
@@ -2338,23 +2341,26 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
 
 /// The line for a move; `tasks` names the background tasks its stop ended.
 fn moved_line(agent: &str, moved: &Move<'_>, tasks: &[String]) -> String {
+    // The fact that a task was ended leads, ahead of every unbounded name, so
+    // no cut can take it; the titles after it are bounded.
+    let titles = tasks
+        .iter()
+        .map(|task| format!("\"{}\"", task.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(", ");
     let ended = match tasks {
         [] => String::new(),
-        [task] => format!(
-            "; its background task \"{}\" was ended",
-            task.replace('"', "")
+        [_] => format!(
+            "ended {agent}'s background task {}; ",
+            cut_at_word(&titles, ENDED_TITLES_CHARS)
         ),
-        tasks => format!(
-            "; its background tasks {} were ended",
-            tasks
-                .iter()
-                .map(|task| format!("\"{}\"", task.replace('"', "")))
-                .collect::<Vec<_>>()
-                .join(", ")
+        _ => format!(
+            "ended {agent}'s background tasks {}; ",
+            cut_at_word(&titles, ENDED_TITLES_CHARS)
         ),
     };
     format!(
-        "{agent} moved {} -> {}{} (tool {} -> {}, model {} -> {}), {}{}{ended}; work tree {}. If \
+        "{ended}{agent} moved {} -> {}{} (tool {} -> {}, model {} -> {}), {}{}; work tree {}. If \
          {agent} is half of a review pair, re-check its gate provider. Next: {}.",
         moved.from,
         moved.to,
@@ -4215,6 +4221,121 @@ mod tests {
                 assert!(told.contains(" Next: "), "the step survives: {told}");
                 assert!(told.chars().count() <= NOTICE_CHARS, "{told}");
             }
+        }
+    }
+
+    /// A move whose stop ended background tasks names each by title, between
+    /// what became of the conversation and the work tree; one without names none.
+    #[test]
+    fn a_move_that_ended_background_tasks_names_them_once() {
+        let moved = Move {
+            from: "muse13x",
+            to: "sol61x",
+            tool: ("muse", "codex"),
+            model: ("muse-wonder-full-1.0", "gpt-6.1-sol"),
+            fate: Fate::Seeded,
+            nudge: None,
+            critical: false,
+            dirty: false,
+            cause: "",
+        };
+        let one = ["background evidence watch".to_owned()];
+        assert_eq!(
+            notice(SESSION, AGENT, &Ending::MovedEndingTasks(moved, &one)),
+            "auto reseat: ended builder's background task \"background evidence watch\"; builder \
+             moved muse13x -> sol61x (tool muse -> codex, model muse-wonder-full-1.0 -> \
+             gpt-6.1-sol), seeded; work tree clean. If builder is half of a review pair, re-check \
+             its gate provider. Next: check it picked up its seat pack."
+        );
+        let two = ["a \"quoted\" watch".to_owned(), "second".to_owned()];
+        let told = notice(SESSION, AGENT, &Ending::MovedEndingTasks(moved, &two));
+        assert!(
+            told.starts_with(
+                "auto reseat: ended builder's background tasks \"a quoted watch\", \"second\"; \
+                 builder moved "
+            ),
+            "{told}"
+        );
+        assert_eq!(
+            notice(SESSION, AGENT, &Ending::MovedEndingTasks(moved, &[])),
+            notice(SESSION, AGENT, &Ending::Moved(moved))
+        );
+        assert!(!notice(SESSION, AGENT, &Ending::Moved(moved)).contains("background"));
+        // However long the title and the profiles, the cut never takes the
+        // fact that a task was ended: the human must learn it was killed.
+        let (from, to) = ("f".repeat(200), "t".repeat(200));
+        let long = ["word ".repeat(100)];
+        for (from, to, tasks) in [
+            (from.as_str(), to.as_str(), &one[..]),
+            ("muse13x", "sol61x", &long[..]),
+            (from.as_str(), to.as_str(), &long[..]),
+        ] {
+            let told = notice(
+                SESSION,
+                AGENT,
+                &Ending::MovedEndingTasks(Move { from, to, ..moved }, tasks),
+            );
+            assert!(told.chars().count() <= NOTICE_CHARS, "{told}");
+            assert!(
+                told.starts_with("auto reseat: ended builder's background task "),
+                "{told}"
+            );
+            assert!(
+                told.ends_with("Next: check it picked up its seat pack."),
+                "{told}"
+            );
+        }
+    }
+
+    /// The refusal's step is cut out of its details and said once after
+    /// `Next:`, the details joined where it stood.
+    #[test]
+    fn a_refusal_says_its_step_once_and_joins_what_stood_around_it() {
+        for (before, after, joined) in [
+            ("Error: x (y) — ", " — z. Done", "Error: x (y) — z. Done"),
+            ("Error: ", " — z", "Error: z"),
+            ("Error: x", "", "Error: x"),
+            ("", " — z", "z"),
+            ("", "", ""),
+        ] {
+            assert_eq!(without_step(before, after), joined, "{before:?} {after:?}");
+        }
+        let why = CauseClass::BackgroundTask.lead(
+            "Error: frame not proven (background task: \"└ ◇ t  watching\"; its limit resets in \
+             under 12 h) — once its box is empty and its background task may end, run: ae reseat \
+             aedev builder --using sol61x --stop-unknown — a stop would end the task 'muse' runs \
+             in pane %3. Nothing was reseated.",
+        );
+        assert_eq!(
+            notice(
+                SESSION,
+                AGENT,
+                &Ending::Refused(CauseClass::BackgroundTask, &why)
+            ),
+            "auto reseat: background-task: builder not moved — Error: frame not proven \
+             (background task: \"└ ◇ t watching\"; its limit resets in under 12 h) — a stop \
+             would end the task 'muse' runs in pane %3. Nothing was reseated. Next: once its box \
+             is empty and its background task may end, run: ae reseat aedev builder --using \
+             sol61x --stop-unknown."
+        );
+    }
+
+    /// A cut keeps whole words only and says it cut.
+    #[test]
+    fn a_cut_lands_on_a_word_boundary_and_is_marked() {
+        for (body, room, cut) in [
+            ("one two three", 13, "one two three"),
+            ("one two three", 99, "one two three"),
+            ("one two three", 12, "one two…"),
+            ("one two three", 8, "one two…"),
+            ("one two three", 9, "one two…"),
+            ("one two three", 7, "one…"),
+            ("onetwothree", 5, "…"),
+            ("one two", 1, "…"),
+            ("one two", 0, ""),
+            ("one  two three", 9, "one  two…"),
+        ] {
+            assert_eq!(cut_at_word(body, room), cut, "{body:?} in {room}");
         }
     }
 

@@ -65,6 +65,9 @@ use crate::transport;
 #[path = "reseat/limitmuse_spec.rs"]
 mod limitmuse_spec;
 #[cfg(test)]
+#[path = "reseat/long_limit_tests.rs"]
+mod long_limit_tests;
+#[cfg(test)]
 #[path = "reseat/muse_gap_tests.rs"]
 mod muse_gap_tests;
 
@@ -952,6 +955,14 @@ fn long_limit_last_word(
     let Some(clients) = clients else {
         return Err("ae cannot read the pane's clients");
     };
+    // `viewing_input` skips a client whose input it cannot read; here that
+    // client may have just typed, so it refuses.
+    if clients
+        .iter()
+        .any(|client| client.pane == pane && client.activity.is_none())
+    {
+        return Err("ae cannot read the input of a client viewing the pane");
+    }
     let input = crate::watchdog_daemon::viewing_input(Some(clients), pane);
     if input.is_some_and(|at| i64::try_from(at).unwrap_or(i64::MAX) >= ask.opened) {
         return Err("a client gave the pane input since the move began");

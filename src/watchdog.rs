@@ -14,6 +14,9 @@ use crate::procs::Descendancy;
 #[cfg(test)]
 #[path = "watchdog/muse_standing_tests.rs"]
 mod muse_standing_tests;
+#[cfg(test)]
+#[path = "watchdog/muse_task_tests.rs"]
+mod muse_task_tests;
 
 /// The shells the dead-check treats as "no agent in the foreground".
 #[must_use]
@@ -908,8 +911,13 @@ fn muse_task_title(row: &str) -> Option<&str> {
     if chars.next().is_none_or(char::is_whitespace) {
         return None;
     }
-    let title = chars.as_str().strip_prefix(' ')?;
-    let title = title.split("  ").next().unwrap_or_default().trim();
+    // One space after the glyph, then the title: a row whose title is blank
+    // would otherwise lend its status the title's place.
+    let title = chars
+        .as_str()
+        .strip_prefix(' ')
+        .filter(|title| !title.starts_with(char::is_whitespace))?;
+    let title = title.split("  ").next().unwrap_or_default().trim_end();
     (!title.is_empty()).then_some(title)
 }
 
