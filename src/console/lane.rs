@@ -419,6 +419,24 @@ impl<'a> Thread<'a> {
             self.acceptance = AcceptRow::Retired;
         }
     }
+
+    /// A reseat that moved a seat: when it is the slot this ask reached, every
+    /// reply after it is labelled. A slot neither side names matches nothing.
+    fn moved_by(&mut self, reseat: &Event) {
+        let (moved, asked) = (reseat.target_slot.value(), self.ask.target_slot.value());
+        self.moved |= moved.is_some_and(|slot| asked == Some(slot));
+    }
+
+    /// Who a reply speaks as: the profile the roster records now for the slot
+    /// the ask reached, once a reseat moved it; `None` while it never moved.
+    fn speaker(&self, seats: &[Seat]) -> Option<String> {
+        let asked = self.ask.target_slot.value();
+        self.moved.then(|| {
+            let seat = seats.iter().find(|seat| Some(seat.slot.as_str()) == asked);
+            let profile = seat.and_then(|seat| seat.profile.clone());
+            profile.unwrap_or_else(|| "unrecorded".to_owned())
+        })
+    }
 }
 
 /// The console's own thread: its asks and what became of them, and every
@@ -450,10 +468,8 @@ fn console_items(
             continue;
         }
         if shape == Record::Reseat {
-            let moved = event.target_slot.value();
             for thread in threads.values_mut() {
-                let asked = thread.ask.target_slot.value();
-                thread.moved |= moved.is_some_and(|slot| asked == Some(slot));
+                thread.moved_by(event);
             }
             continue;
         }
@@ -508,12 +524,7 @@ fn console_items(
                     Ok(thread) => {
                         let (late, follow_up) = (thread.closed, thread.replies);
                         thread.replies += 1;
-                        let asked = thread.ask.target_slot.value();
-                        let speaker = thread.moved.then(|| {
-                            let seat = seats.iter().find(|seat| Some(seat.slot.as_str()) == asked);
-                            let profile = seat.and_then(|seat| seat.profile.clone());
-                            profile.unwrap_or_else(|| "unrecorded".to_owned())
-                        });
+                        let speaker = thread.speaker(seats);
                         let seat = thread.ask.target.clone().unwrap_or_default();
                         let what = format!("reply from {seat}");
                         let gap = adopt(body(event), &mut text, &what, gaps, None);
@@ -1459,5 +1470,59 @@ mod tests {
             let event = about(T0, actor, action, &extra);
             assert_eq!(super::Record::of(&event), want, "{actor} {action} {extra}");
         }
+    }
+
+    /// A reseat moves a thread only when it moved the slot the ask reached; a
+    /// slot neither names matches nothing, and a moved thread stays moved.
+    #[test]
+    fn a_reseat_moves_only_the_thread_whose_slot_it_moved() {
+        let reseat = |slot: &str| {
+            let extra = format!(r#","target_slot":"{slot}","summary":"reseated lead to m1""#);
+            about(T1, "human", "reseat", &extra)
+        };
+        let slotless = about(T1, "human", "reseat", r#","summary":"reseated lead to m1""#);
+        let ask = asked("q");
+        let mut thread = super::Thread::opened(&ask);
+        thread.moved_by(&reseat("worker.0"));
+        assert!(!thread.moved, "another slot");
+        thread.moved_by(&slotless);
+        assert!(!thread.moved, "a reseat that names no slot");
+        thread.moved_by(&reseat("main"));
+        assert!(thread.moved, "the slot the ask reached");
+        thread.moved_by(&reseat("worker.0"));
+        assert!(
+            thread.moved,
+            "a later reseat of another slot unmoves nothing"
+        );
+        let unrouted = about(T0, "console:local", "ask", r#","target":"lead""#);
+        let mut thread = super::Thread::opened(&unrouted);
+        thread.moved_by(&slotless);
+        assert!(!thread.moved, "two missing slots are not equal");
+    }
+
+    /// Once a reseat moved the seat, a reply speaks as the profile the roster
+    /// records now for the slot the ask reached; none recorded says so.
+    #[test]
+    fn a_moved_threads_speaker_is_the_roster_profile_or_unrecorded() {
+        let seat = |slot: &str, profile: Option<&str>| Seat {
+            slot: slot.to_owned(),
+            name: "seat".to_owned(),
+            profile: profile.map(str::to_owned),
+        };
+        let ask = asked("q");
+        let mut thread = super::Thread::opened(&ask);
+        let roster = [seat("worker.0", Some("w1")), seat("main", Some("m1"))];
+        assert_eq!(thread.speaker(&roster), None, "never moved");
+        thread.moved = true;
+        assert_eq!(thread.speaker(&roster), Some("m1".to_owned()));
+        let no_profile = [seat("worker.0", Some("w1")), seat("main", None)];
+        assert_eq!(thread.speaker(&no_profile), Some("unrecorded".to_owned()));
+        let other_seat = [seat("worker.0", Some("w1"))];
+        assert_eq!(thread.speaker(&other_seat), Some("unrecorded".to_owned()));
+        assert_eq!(thread.speaker(&[]), Some("unrecorded".to_owned()));
+        let unrouted = about(T0, "console:local", "ask", r#","target":"lead""#);
+        let mut thread = super::Thread::opened(&unrouted);
+        thread.moved = true;
+        assert_eq!(thread.speaker(&roster), Some("unrecorded".to_owned()));
     }
 }
