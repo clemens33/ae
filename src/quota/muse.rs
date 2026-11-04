@@ -206,10 +206,18 @@ pub fn limit(bytes: &[u8]) -> Option<i64> {
     if payload.get_str("terminal") != Some("failed") {
         return None;
     }
-    let (request, after) = payload
-        .get_str("reason")?
-        .strip_prefix(LIMIT_HEAD)?
-        .split_once("]: ")?;
+    limit_reason(payload.get_str("reason")?)
+}
+
+/// The reset, in epoch seconds, that `reason` states when it is the measured
+/// usage-limit sentence, whole: [`LIMIT_HEAD`], a lowercase canonical UUID
+/// request id, `]: `, [`LIMIT_MID`], a `YYYY-MM-DDTHH:MM:SSZ` reset that is a
+/// believable clock, and [`LIMIT_TAIL`]. The one reader of that sentence,
+/// whether a failed run's stdout ([`limit`]) or the row muse draws in its pane
+/// (`watchdog::muse_limit_reset`) carries it.
+#[must_use]
+pub fn limit_reason(reason: &str) -> Option<i64> {
+    let (request, after) = reason.strip_prefix(LIMIT_HEAD)?.split_once("]: ")?;
     if !is_canonical_uuid(request) {
         return None;
     }

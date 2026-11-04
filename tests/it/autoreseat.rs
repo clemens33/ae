@@ -2877,3 +2877,6 @@ fn limitframe_nightcase_frame_is_stopped_by_the_limit_leg() {
 
 #[path = "autoreseat/limitmuse_spec.rs"]
 mod limitmuse_spec;
+
+#[path = "autoreseat/bgtaskreseat_spec.rs"]
+mod bgtaskreseat_spec;

@@ -1009,7 +1009,12 @@ pub(crate) fn run(
             .is_some_and(|read| read.urgent(found.key.epoch()))
     };
     let urgent = start.urgent(found.key.epoch());
-    let ended = crate::reseat::run_as_watchdog(
+    // Only a limit episode's move may end the seat's background tasks (#304).
+    let long_limit = (found.trigger == Trigger::Limit).then(|| crate::reseat::LongLimit {
+        key: found.key.epoch(),
+        opened: found.open.map_or(now.epoch(), Timestamp::epoch),
+    });
+    let (ended, tasks) = crate::reseat::run_as_watchdog(
         root,
         Some(&world),
         &argv.session,
@@ -1017,6 +1022,7 @@ pub(crate) fn run(
         &pick,
         now,
         urgent.then_some(&mut still_urgent as &mut dyn FnMut() -> bool),
+        long_limit,
         &mut io::sink(),
         &mut said,
     )?;
@@ -1045,9 +1051,10 @@ pub(crate) fn run(
             // AFTER the move's own record: the episode is closed before the
             // seat is handed anything, so nothing retries or repeats the turn.
             let nudge = (fate != super::Fate::Seeded).then(|| nudge(&argv, &agent, fate));
-            notice(super::Ending::Moved(super::Move {
+            let to = named(&pick);
+            let moved = super::Move {
                 from: &profile,
-                to: &named(&pick),
+                to: &to,
                 tool: (&tool_before, &tool_after),
                 model: (&model_before, &model_after),
                 fate,
@@ -1055,7 +1062,12 @@ pub(crate) fn run(
                 critical: tier == super::Tier::Critical,
                 dirty,
                 cause: &cause,
-            }))
+            };
+            notice(if tasks.is_empty() {
+                super::Ending::Moved(moved)
+            } else {
+                super::Ending::MovedEndingTasks(moved, &tasks)
+            })
         }
         Ended::Refused(class) if retold(class) => String::new(),
         Ended::Refused(class) if class.transient() => notice(super::Ending::Held(class, &summary)),

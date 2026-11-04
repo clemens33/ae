@@ -48,7 +48,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::autoreseat::{CauseClass, Fate};
+use crate::autoreseat::{CauseClass, Fate, LongLimitGap};
 use crate::harness_state::HarnessState;
 use crate::inventory::ServerId;
 use crate::procs::{self, Descendancy};
@@ -119,6 +119,22 @@ struct Parsed {
     /// The watchdog's move, which must not drop an observed choice (#269). A
     /// human's `--using` is a new choice and clears it.
     automatic: bool,
+    /// A limit episode's move, which may end the seat's background tasks on a
+    /// long limit (#304); `None` for every other stop.
+    long_limit: Option<LongLimit>,
+    /// The titles of the background tasks the stop ended, for the caller.
+    ended: std::cell::RefCell<Vec<String>>,
+}
+
+/// A limit episode's automatic move, as its stop reads it to end a seat's
+/// background tasks (#304).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LongLimit {
+    /// The episode's key, epoch seconds.
+    pub(crate) key: i64,
+    /// When the attempt making the move opened, epoch seconds: a client's
+    /// input on the pane since then was no part of the judgement that opened it.
+    pub(crate) opened: i64,
 }
 
 /// Which frames the stop may end a running tool on.
@@ -188,6 +204,8 @@ fn parse(tail: &[String]) -> Result<Parsed, String> {
         profile,
         stop,
         automatic: false,
+        long_limit: None,
+        ended: std::cell::RefCell::default(),
     })
 }
 
@@ -907,6 +925,45 @@ fn frame_gap(reading: Reading<'_>, agent_bin: &str, tool: ToolKind) -> Option<St
     })
 }
 
+/// Whether the reading that decides a refusal — the first that proves nothing,
+/// as [`refusal_why`] reads them — shows nothing but the stop and the seat's
+/// background tasks: the one frame a refusal names `background-task` (#304).
+fn background_only(first: Reading<'_>, second: Reading<'_>, tool: ToolKind) -> bool {
+    tool.background_tasks_read()
+        && [first, second]
+            .into_iter()
+            .find(|(state, limited, _)| *state != HarnessState::Idle && !limited)
+            .and_then(|(_, _, capture)| capture)
+            .and_then(crate::watchdog::muse_background_tasks)
+            .is_some()
+}
+
+/// The last word on a stop that ends a seat's background tasks (#304), from
+/// the two readings that proved it and a third taken under every lock, the
+/// clock `now`, and the server's clients (`None` when they could not be read)
+/// with the pane they are judged for: the titles the stop ends, or why it may
+/// not.
+fn long_limit_last_word(
+    captures: [Option<&str>; 3],
+    ask: LongLimit,
+    now: i64,
+    (clients, pane): (Option<&[crate::tmux::ObservedClient]>, &str),
+) -> Result<Vec<String>, &'static str> {
+    let Some(clients) = clients else {
+        return Err("ae cannot read the pane's clients");
+    };
+    let input = crate::watchdog_daemon::viewing_input(Some(clients), pane);
+    if input.is_some_and(|at| i64::try_from(at).unwrap_or(i64::MAX) >= ask.opened) {
+        return Err("a client gave the pane input since the move began");
+    }
+    let [Some(first), Some(second), Some(third)] = captures else {
+        return Err("ae could not read the frame again");
+    };
+    crate::autoreseat::long_limit_stop(&[first, second, third], ask.key, now)
+        .map(|proof| proof.tasks)
+        .map_err(LongLimitGap::words)
+}
+
 /// The seat's current harness frame, fail-closed, whether that SAME capture
 /// proves the seat sits on its usage limit, and the capture itself.
 ///
@@ -1077,20 +1134,47 @@ fn stop_running_tool(
             second_capture.as_deref(),
             &agent_bin,
         );
-    if !quiet && !may_stop((first, first_limited), (second, second_limited), policy) {
+    let proven = quiet || may_stop((first, first_limited), (second, second_limited), policy);
+    // A limit episode's move may end the seat's background tasks when both
+    // readings show nothing else and the vendor's own row proves the limit
+    // long (#304); every other unproven frame refuses as it always has.
+    let long = parsed
+        .long_limit
+        .filter(|_| !proven && tool.background_tasks_read())
+        .map(
+            |ask| match (first_capture.as_deref(), second_capture.as_deref()) {
+                (Some(first), Some(second)) => crate::autoreseat::long_limit_stop(
+                    &[first, second],
+                    ask.key,
+                    Timestamp::now().epoch(),
+                ),
+                _ => Err(LongLimitGap::NotBackgroundOnly),
+            },
+        );
+    if !proven && !matches!(long, Some(Ok(_))) {
         // The next step FIRST, with its precondition: a record keeps only the
         // line's head, and `--stop-unknown` is safe only on what a human sees.
         let limited = transport::capture_pane(&target.server, &target.pane)
             .is_some_and(|capture| crate::watchdog::limit_notice(&capture, &agent_bin).is_some());
+        let first = (first, first_limited, first_capture.as_deref());
+        let second = (second, second_limited, second_capture.as_deref());
         // WHY first, so the head a journal keeps names it: the first reading
         // that proves nothing decides; two readings that each prove but not
         // alike (a frame that changed between them) say so.
-        let why = refusal_why(
-            (first, first_limited, first_capture.as_deref()),
-            (second, second_limited, second_capture.as_deref()),
-            &agent_bin,
-            tool,
-        );
+        let why = refusal_why(first, second, &agent_bin, tool);
+        if background_only(first, second, tool) {
+            let gap = long
+                .and_then(Result::err)
+                .map_or_else(String::new, |gap| format!("; {}", gap.words()));
+            writeln!(
+                err,
+                "Error: frame not proven ({why}{gap}) — once its box is empty and its background \
+                 task may end, run: ae reseat {} {} --using {} --stop-unknown — a stop would end \
+                 the task '{}' runs in pane {}. Nothing was reseated.",
+                parsed.session, target.agent, parsed.profile, agent_bin, target.pane
+            )?;
+            return Ok(Stop::Refused(CauseClass::BackgroundTask));
+        }
         writeln!(
             err,
             "Error: frame not proven ({why}) — once its box is empty and {}, run: ae reseat {} {} \
@@ -1114,6 +1198,37 @@ fn stop_running_tool(
     if !hook() {
         return Ok(Stop::Refused(CauseClass::Other));
     }
+    // A stop that ends background tasks takes ITS last word after the
+    // caller's, under every lock, immediately before the write: the send-lock
+    // does not hold the keyboard, so a THIRD reading must prove what the two
+    // did, at a fresh clock, and no client may have given the pane input since
+    // the move began. Any gap refuses, and nothing was stopped.
+    let ended = match (long, parsed.long_limit) {
+        (Some(Ok(_)), Some(ask)) => {
+            let third = transport::capture_pane(&target.server, &target.pane);
+            let clients = transport::observe_clients(&target.server);
+            let captures = [
+                first_capture.as_deref(),
+                second_capture.as_deref(),
+                third.as_deref(),
+            ];
+            let viewing = (clients.as_deref(), target.pane.as_str());
+            match long_limit_last_word(captures, ask, Timestamp::now().epoch(), viewing) {
+                Ok(tasks) => tasks,
+                Err(why) => {
+                    writeln!(
+                        err,
+                        "Error: background task not proven at the stop ({why}) — once its box is \
+                         empty and its background task may end, run: ae reseat {} {} --using {} \
+                         --stop-unknown — nothing was stopped. Nothing was reseated.",
+                        parsed.session, target.agent, parsed.profile
+                    )?;
+                    return Ok(Stop::Refused(CauseClass::BackgroundTask));
+                }
+            }
+        }
+        _ => Vec::new(),
+    };
     // THE ONLY WRITE. A tmux that refuses the argv leaves the tool running,
     // and says so in its own words rather than the timeout's.
     let (respawned, _) = transport::run_tmux_op(&crate::session_tmux::argv(
@@ -1133,6 +1248,8 @@ fn stop_running_tool(
         )?;
         return Ok(Stop::Failed);
     }
+    // The tool is gone, and its background tasks with it.
+    parsed.ended.replace(ended);
     let respawned_at = std::time::Instant::now();
     let tick = || {
         std::thread::sleep(STOP_POLL);
@@ -1187,6 +1304,8 @@ pub(crate) fn restart_in_place(
         profile: crate::lifecycle::meta_value(&locked, &format!("profile.{}", target.slot)),
         stop: StopPolicy::Proven,
         automatic: false,
+        long_limit: None,
+        ended: std::cell::RefCell::default(),
     };
     match stop_running_tool(dir, &target, &locked, &parsed, hook, err)? {
         Stop::Stopped(_) => {}
@@ -1236,7 +1355,10 @@ pub(crate) fn run(
 /// Move `agent` of `session` to `profile` AS THE WATCHDOG: both `reseat`
 /// records name it, and a running tool is stopped only on a proven frame.
 ///
-/// No caller rule: the leg that asks is ae's own, run from the watchdog.
+/// No caller rule: the leg that asks is ae's own, run from the watchdog. A
+/// limit episode's move names its episode in `long_limit`, and only such a move
+/// may end the seat's background tasks; their titles come back beside the
+/// ending, empty when it ended none.
 ///
 /// # Errors
 ///
@@ -1253,9 +1375,10 @@ pub(crate) fn run_as_watchdog(
     profile: &str,
     now: Timestamp,
     urgent: Option<&mut dyn FnMut() -> bool>,
+    long_limit: Option<LongLimit>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> io::Result<Ended> {
+) -> io::Result<(Ended, Vec<String>)> {
     let mut open = || true;
     let (stop, hook): (_, &mut dyn FnMut() -> bool) = match urgent {
         Some(hook) => (StopPolicy::QuietStart, hook),
@@ -1267,12 +1390,15 @@ pub(crate) fn run_as_watchdog(
         profile: profile.to_owned(),
         stop,
         automatic: true,
+        long_limit,
+        ended: std::cell::RefCell::default(),
     };
     let caller = Caller {
         pane: crate::doors::calling_pane_id(),
         display: crate::watchdog::WATCHDOG_ACTOR.to_owned(),
     };
-    run_parsed(root, world, &parsed, Ok(caller), now, hook, out, err)
+    let ended = run_parsed(root, world, &parsed, Ok(caller), now, hook, out, err)?;
+    Ok((ended, parsed.ended.take()))
 }
 
 /// A profile as a reseat to it would launch it.

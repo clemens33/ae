@@ -92,6 +92,9 @@ pub enum CauseClass {
     /// The human's observed model or effort choice stands, and a move would
     /// drop it (#269): a hold until the human chooses.
     ObservedChoice,
+    /// The frame shows nothing but the stop and the seat's background tasks,
+    /// which a stop would end, and nothing proves they may end (#304).
+    BackgroundTask,
     /// Every other refusal, every failure, and the give-up after the last round.
     Other,
 }
@@ -110,6 +113,7 @@ impl CauseClass {
             Self::NoCandidate => "no-candidate",
             Self::Ineligible => "ineligible",
             Self::ObservedChoice => "observed-choice",
+            Self::BackgroundTask => "background-task",
             Self::Other => "other",
         }
     }
@@ -166,6 +170,102 @@ pub const LIMIT_WAIT_MAX_SECS: i64 = 3600;
 /// applies again: five default cycles, room for the woken turn to land and
 /// scroll the notice away.
 pub const LIMIT_WAKE_FALLBACK_SECS: i64 = 300;
+/// How far ahead, at least, the vendor's own reset must stand before a limit
+/// episode's move may end a seat's background tasks (#304): a limit that lifts
+/// sooner is waited out, as every other limit is.
+pub const LONG_LIMIT_SECS: i64 = 43_200;
+/// How old, at least, a limit episode must be before that move, whatever
+/// `auto_reseat_grace_secs` says: the human's time to see the task and keep it.
+/// A shorter configured grace refuses the first attempt, so the move comes a
+/// round later ([`RETRY_COOLDOWN_SECS`]), never at the shorter grace.
+pub const BACKGROUND_GRACE_SECS: i64 = 600;
+
+/// What proves a limit episode's move may end a seat's background tasks: the
+/// reset every reading's vendor row states, epoch seconds, and the titles of
+/// the tasks the stop ends, in the order the frame draws them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LongLimitStop {
+    pub(crate) reset_at: i64,
+    pub(crate) tasks: Vec<String>,
+}
+
+/// Why readings do not prove that move ([`long_limit_stop`]): the first that
+/// applies, in this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LongLimitGap {
+    /// No reading, or one that shows anything but the stop and its background
+    /// tasks ([`crate::watchdog::muse_background_tasks`]).
+    NotBackgroundOnly,
+    /// The readings name different tasks, or the same ones in another count or
+    /// order.
+    TaskChanged,
+    /// A reading's own vendor row states no absolute reset
+    /// ([`crate::watchdog::muse_limit_reset`]).
+    NoReset,
+    /// The readings' vendor rows state different resets.
+    ResetDiffers,
+    /// The reset is under [`LONG_LIMIT_SECS`] away.
+    Short,
+    /// The episode is under [`BACKGROUND_GRACE_SECS`] old, or keyed after now.
+    Grace,
+}
+
+impl LongLimitGap {
+    /// The gap as a refusal names it.
+    #[must_use]
+    pub(crate) const fn words(self) -> &'static str {
+        match self {
+            Self::NotBackgroundOnly => "the frame changed between readings",
+            Self::TaskChanged => "its tasks changed between readings",
+            Self::NoReset => "no absolute vendor reset proves the limit 12 h away",
+            Self::ResetDiffers => "the vendor reset changed between readings",
+            Self::Short => "its limit resets in under 12 h",
+            Self::Grace => "its limit is under 10 min old",
+        }
+    }
+}
+
+/// Whether `captures`, readings of one muse seat in a limit episode keyed
+/// `key`, prove at `now` (epoch seconds) that a stop may end its background
+/// tasks (#304): EVERY reading shows nothing but the stop and its tasks, the
+/// same titles in the same order, and its own vendor row states the same
+/// absolute reset, at least [`LONG_LIMIT_SECS`] ahead; and the episode is at
+/// least [`BACKGROUND_GRACE_SECS`] old. Both bounds are inclusive. Anything
+/// else is the first [`LongLimitGap`] that applies.
+pub(crate) fn long_limit_stop(
+    captures: &[&str],
+    key: i64,
+    now: i64,
+) -> Result<LongLimitStop, LongLimitGap> {
+    let tasks: Vec<Vec<String>> = captures
+        .iter()
+        .map(|capture| crate::watchdog::muse_background_tasks(capture))
+        .collect::<Option<_>>()
+        .ok_or(LongLimitGap::NotBackgroundOnly)?;
+    let (tasks, others) = tasks.split_first().ok_or(LongLimitGap::NotBackgroundOnly)?;
+    if others.iter().any(|other| other != tasks) {
+        return Err(LongLimitGap::TaskChanged);
+    }
+    let resets: Vec<i64> = captures
+        .iter()
+        .map(|capture| crate::watchdog::muse_limit_reset(capture))
+        .collect::<Option<_>>()
+        .ok_or(LongLimitGap::NoReset)?;
+    let (&reset_at, others) = resets.split_first().ok_or(LongLimitGap::NoReset)?;
+    if others.iter().any(|other| *other != reset_at) {
+        return Err(LongLimitGap::ResetDiffers);
+    }
+    if reset_at.saturating_sub(now) < LONG_LIMIT_SECS {
+        return Err(LongLimitGap::Short);
+    }
+    if now.saturating_sub(key) < BACKGROUND_GRACE_SECS {
+        return Err(LongLimitGap::Grace);
+    }
+    Ok(LongLimitStop {
+        reset_at,
+        tasks: tasks.clone(),
+    })
+}
 
 /// The binding reset of a seat's spent scope, as a held quota reading names
 /// it ([`leg::own_reset`]).
@@ -2055,6 +2155,9 @@ pub fn recipients(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ending<'a> {
     Moved(Move<'a>),
+    /// Moved, and the stop ended these background tasks of the seat, by title
+    /// (#304).
+    MovedEndingTasks(Move<'a>, &'a [String]),
     /// Held, quoting the record's summary under its class. The refused and
     /// failed endings carry the same pair.
     Held(CauseClass, &'a str),
@@ -2069,7 +2172,7 @@ impl Ending<'_> {
     /// The cause class that leads the notice; a move has none.
     const fn class(&self) -> Option<CauseClass> {
         match self {
-            Self::Moved(_) => None,
+            Self::Moved(_) | Self::MovedEndingTasks(..) => None,
             Self::Held(class, _) | Self::Refused(class, _) | Self::Failed(class, _) => Some(*class),
             Self::Unmapped(_) => Some(CauseClass::NoCandidate),
             Self::GaveUp => Some(CauseClass::Other),
@@ -2154,62 +2257,41 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
     // agent and session names, so no cut of what follows can take it.
     let class = ending.class();
     let hand = format!("move it by hand (ae reseat {session} {agent} --using <profile>)");
+    // A quoted refusal ends its own sentence; the notice ends it once.
+    let said = |class: &CauseClass, why: &str| {
+        let why = class.details(why);
+        why.strip_suffix('.').unwrap_or(why).to_owned()
+    };
     let line = match ending {
-        Ending::Moved(moved) => format!(
-            "{agent} moved {} -> {}{} (tool {} -> {}, model {} -> {}), {}{}; work tree {}. If \
-             {agent} is half of a review pair, re-check its gate provider. Next: {}.",
-            moved.from,
-            moved.to,
-            if moved.cause.is_empty() {
-                String::new()
-            } else {
-                format!(" on {}", moved.cause)
-            },
-            moved.tool.0,
-            moved.tool.1,
-            moved.model.0,
-            moved.model.1,
-            moved.fate.word(),
-            if moved.critical {
-                ", target already critical"
-            } else {
-                ""
-            },
-            if moved.dirty { "dirty" } else { "clean" },
-            // Never a resend the pane does not call for: a nudge ae could not
-            // prove absent may already be there.
-            match moved.nudge {
-                None => "check it picked up its seat pack".to_owned(),
-                Some(Nudge::Submitted) =>
-                    "nothing, its continuation nudge was submitted".to_owned(),
-                Some(Nudge::Unconfirmed) => format!(
-                    "its continuation nudge is unconfirmed: peek {agent}; re-send a resume turn \
-                     only if the nudge still sits in its input box"
-                ),
-                Some(Nudge::Refused) => format!(
-                    "its continuation nudge was refused or unrecorded: peek {agent}; send it one \
-                     turn to resume only if no nudge reached its pane"
-                ),
-            },
-        ),
+        Ending::Moved(moved) => moved_line(agent, moved, &[]),
+        Ending::MovedEndingTasks(moved, tasks) => moved_line(agent, moved, tasks),
         Ending::Held(CauseClass::ObservedChoice, why) => format!(
             "{agent} not moved — {}. Next: {hand}, or switch its pane back to the profile's model \
              and effort; until then ae does not move it.",
             CauseClass::ObservedChoice.details(why)
         ),
-        Ending::Held(class, why) => {
-            let why = class.details(why);
-            format!("{agent} not moved yet — {why}. Next: ae tries once more if it stays eligible.")
-        }
+        Ending::Held(class, why) => format!(
+            "{agent} not moved yet — {}. Next: ae tries once more if it stays eligible.",
+            said(class, why)
+        ),
         Ending::Refused(class, why) => {
-            let why = class.details(why);
-            let next = why.find("once its box is empty").and_then(|at| {
-                why.get(at..at + why[at..].find(" --stop-unknown")? + " --stop-unknown".len())
+            let why = said(class, why);
+            // The step the refusal names, with its precondition, is said ONCE,
+            // after `Next:`: the details keep what stands around it.
+            let step = why.find("once its box is empty").and_then(|at| {
+                Some((
+                    at,
+                    at + why[at..].find(" --stop-unknown")? + " --stop-unknown".len(),
+                ))
             });
-            format!(
-                "{agent} not moved — {why}. Next: {}.",
-                next.unwrap_or(&format!("{hand} or wait for the reset"))
-            )
+            match step {
+                Some((at, end)) => format!(
+                    "{agent} not moved — {}. Next: {}.",
+                    without_step(&why[..at], &why[end..]),
+                    &why[at..end]
+                ),
+                None => format!("{agent} not moved — {why}. Next: {hand} or wait for the reset."),
+            }
         }
         Ending::Unmapped(profile) => format!(
             "{agent} not moved — no declared or derived candidate for {profile}. Next: add an \
@@ -2218,7 +2300,7 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
         Ending::Failed(class, why) => format!(
             "{agent} move failed — {}. Next: relaunch {agent} if its pane sits at a shell, \
              else reseat it by hand.",
-            class.details(why)
+            said(class, why)
         ),
         Ending::GaveUp => gave_up_line(agent, &hand),
     };
@@ -2251,17 +2333,105 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
         _ => step.to_owned(),
     };
     let room = NOTICE_CHARS.saturating_sub(head.chars().count() + step.chars().count());
-    let cut: String = head
-        .chars()
-        .chain(body.chars().take(room))
-        .chain(step.chars())
-        .collect();
-    crate::state::summary_of(&cut)
+    crate::state::summary_of(&format!("{head}{}{step}", cut_at_word(body, room)))
+}
+
+/// The line for a move; `tasks` names the background tasks its stop ended.
+fn moved_line(agent: &str, moved: &Move<'_>, tasks: &[String]) -> String {
+    let ended = match tasks {
+        [] => String::new(),
+        [task] => format!(
+            "; its background task \"{}\" was ended",
+            task.replace('"', "")
+        ),
+        tasks => format!(
+            "; its background tasks {} were ended",
+            tasks
+                .iter()
+                .map(|task| format!("\"{}\"", task.replace('"', "")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    format!(
+        "{agent} moved {} -> {}{} (tool {} -> {}, model {} -> {}), {}{}{ended}; work tree {}. If \
+         {agent} is half of a review pair, re-check its gate provider. Next: {}.",
+        moved.from,
+        moved.to,
+        if moved.cause.is_empty() {
+            String::new()
+        } else {
+            format!(" on {}", moved.cause)
+        },
+        moved.tool.0,
+        moved.tool.1,
+        moved.model.0,
+        moved.model.1,
+        moved.fate.word(),
+        if moved.critical {
+            ", target already critical"
+        } else {
+            ""
+        },
+        if moved.dirty { "dirty" } else { "clean" },
+        // Never a resend the pane does not call for: a nudge ae could not
+        // prove absent may already be there.
+        match moved.nudge {
+            None => "check it picked up its seat pack".to_owned(),
+            Some(Nudge::Submitted) => "nothing, its continuation nudge was submitted".to_owned(),
+            Some(Nudge::Unconfirmed) => format!(
+                "its continuation nudge is unconfirmed: peek {agent}; re-send a resume turn only \
+                 if the nudge still sits in its input box"
+            ),
+            Some(Nudge::Refused) => format!(
+                "its continuation nudge was refused or unrecorded: peek {agent}; send it one turn \
+                 to resume only if no nudge reached its pane"
+            ),
+        },
+    )
+}
+
+/// A refusal's details with the step cut out from between `before` and
+/// `after`, joined by the dash that set it off unless a colon already does.
+fn without_step(before: &str, after: &str) -> String {
+    let before = before.trim_end().trim_end_matches('—').trim_end();
+    let after = after.trim_start().trim_start_matches('—').trim_start();
+    match (before.is_empty(), after.is_empty()) {
+        (true, _) => after.to_owned(),
+        (_, true) => before.to_owned(),
+        _ if before.ends_with(':') => format!("{before} {after}"),
+        _ => format!("{before} — {after}"),
+    }
+}
+
+/// `body` whole when it fits in `room` characters, else cut back to its last
+/// whole word and marked `…`: half a word can read as another one, and half a
+/// name as another seat's.
+fn cut_at_word(body: &str, room: usize) -> String {
+    if body.chars().count() <= room {
+        return body.to_owned();
+    }
+    let Some(keep) = room.checked_sub(1) else {
+        return String::new();
+    };
+    let taken: String = body.chars().take(keep).collect();
+    let whole = if body.chars().nth(keep).is_some_and(char::is_whitespace) {
+        taken.as_str()
+    } else {
+        taken
+            .rfind(char::is_whitespace)
+            .map_or("", |at| &taken[..at])
+    };
+    format!("{}…", whole.trim_end())
 }
 
 #[cfg(test)]
 #[path = "autoreseat/episodes_spec.rs"]
 mod episodes_spec;
+
+#[cfg(test)]
+#[path = "autoreseat/bgtask_spec.rs"]
+mod bgtask_spec;
 
 #[cfg(test)]
 #[path = "autoreseat/limitwake_spec.rs"]
@@ -3937,6 +4107,7 @@ mod tests {
             (CauseClass::Lock, "lock", true),
             (CauseClass::NoCandidate, "no-candidate", false),
             (CauseClass::Ineligible, "ineligible", false),
+            (CauseClass::BackgroundTask, "background-task", false),
             (CauseClass::Other, "other", false),
         ];
         for (index, (class, word, transient)) in classes.iter().enumerate() {
@@ -4027,6 +4198,7 @@ mod tests {
             CauseClass::Lock,
             CauseClass::NoCandidate,
             CauseClass::Ineligible,
+            CauseClass::BackgroundTask,
             CauseClass::Other,
         ] {
             let said = class.lead(&long);

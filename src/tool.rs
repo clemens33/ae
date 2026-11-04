@@ -1618,6 +1618,15 @@ impl ToolKind {
     pub(crate) const fn limit_screen_scanned(self) -> bool {
         matches!(self, Self::Muse)
     }
+
+    /// Whether ae reads this harness's background task rows under its limit
+    /// stop and the vendor's own reset above it (`watchdog::muse_background_tasks`,
+    /// `watchdog::muse_limit_reset`), so a refusal names the task and a limit
+    /// episode's move may end it on a long limit (#304): only muse, measured.
+    #[must_use]
+    pub(crate) const fn background_tasks_read(self) -> bool {
+        matches!(self, Self::Muse)
+    }
 }
 
 #[cfg(test)]

@@ -773,8 +773,25 @@ const MUSE_VOICE_RULE: &str = "── Voice input";
 ///
 /// When unsure, it refuses.
 fn muse_limit_standing(buf: &str) -> LimitStanding {
+    match muse_stop(buf) {
+        Err(standing) => standing,
+        Ok(stop) => muse_footer_standing(&stop.footer),
+    }
+}
+
+/// A muse stop frame whose block, the rows after it and the box all stand:
+/// where its head sits among `buf`'s rows, and the footer region below the
+/// box's closing rule, each row trimmed, blank rows dropped.
+struct MuseStop<'a> {
+    head: usize,
+    footer: Vec<&'a str>,
+}
+
+/// The walk [`muse_limit_standing`] reads, up to the footer: the stop, or the
+/// standing that refused before the footer was reached.
+fn muse_stop(buf: &str) -> Result<MuseStop<'_>, LimitStanding> {
     let Some((window, at, text)) = newest_row(buf, &MUSE_BANNER) else {
-        return LimitStanding::NoCell;
+        return Err(LimitStanding::NoCell);
     };
     let follow = &window[at + 1..];
     let indented = follow
@@ -783,14 +800,14 @@ fn muse_limit_standing(buf: &str) -> LimitStanding {
         .count();
     let block = &follow[..indented];
     if !muse_limit_head(text) || !block.iter().any(|row| row.trim() == MUSE_LIMIT_STOPPED) {
-        return LimitStanding::NoCell;
+        return Err(LimitStanding::NoCell);
     }
     if let Some(row) = block.iter().map(|row| row.trim()).find(|row| {
         !(row.starts_with(MUSE_LIMIT_RESET)
             || *row == MUSE_LIMIT_STOPPED
             || MUSE_LIMIT_HINTS.contains(row))
     }) {
-        return LimitStanding::RowAfterCell(offending_row(row));
+        return Err(LimitStanding::RowAfterCell(offending_row(row)));
     }
     let end = at + 1 + indented;
     // The box: the newest bare prompt row, the voice rule directly above it, a
@@ -807,7 +824,7 @@ fn muse_limit_standing(buf: &str) -> LimitStanding {
                 })
         })
     else {
-        return LimitStanding::NoBox;
+        return Err(LimitStanding::NoBox);
     };
     if let Some(row) = window[end..prompt - 1]
         .iter()
@@ -816,24 +833,140 @@ fn muse_limit_standing(buf: &str) -> LimitStanding {
             !(row.trim().is_empty() || row.starts_with(MUSE_WARNING) || *row == MUSE_WARNING_TAIL)
         })
     {
-        return LimitStanding::RowAfterCell(offending_row(row.trim()));
+        return Err(LimitStanding::RowAfterCell(offending_row(row.trim())));
     }
     let footer: Vec<&str> = window[prompt + 2..]
         .iter()
         .map(|row| row.trim())
         .filter(|row| !row.is_empty())
         .collect();
+    // The window is the suffix of `buf`'s rows that ends at its last ink.
+    let start = buf
+        .lines()
+        .enumerate()
+        .filter(|(_, row)| !row.trim().is_empty())
+        .last()
+        .map_or(0, |(last, _)| (last + 1).saturating_sub(window.len()));
+    Ok(MuseStop {
+        head: start + at,
+        footer,
+    })
+}
+
+/// [`muse_limit_standing`]'s verdict on the footer region of a stop that
+/// stands up to its box.
+fn muse_footer_standing(footer: &[&str]) -> LimitStanding {
     if let Some(task) = footer.iter().find(|row| row.starts_with('└')) {
         return LimitStanding::BackgroundTask(offending_row(task));
     }
     if let Some(row) = footer.iter().find(|row| !muse_footer(row)) {
         return LimitStanding::RowAfterCell(offending_row(row));
     }
-    match footer.as_slice() {
+    match footer {
         [_] => LimitStanding::Stands,
         [] => LimitStanding::NoBox,
         [_, extra, ..] => LimitStanding::RowAfterCell(offending_row(extra)),
     }
+}
+
+/// The row muse draws above its task rows, measured on every task frame.
+const MUSE_TASK_SELECTOR: &str = "main · ↓ to select";
+
+/// The head of the row muse draws, at column 0, for a model call that failed.
+const MUSE_MODEL_FAILED: &str = "◆ model failed: ";
+
+/// The titles of the background tasks a muse stop frame shows when they are
+/// the ONLY thing it shows besides the stop, in footer order; `None` otherwise.
+///
+/// The frame must stand up to its box ([`muse_limit_standing`]'s walk), and its
+/// footer must be, in the measured order, an optional [`MUSE_TASK_SELECTOR`],
+/// one or more task rows, and the model footer ([`muse_footer`]) last. A task
+/// row is `└`, one glyph, a space and the title, cut at its first run of two
+/// or more spaces: the status and the elapsed time after it change on their own,
+/// and so does the glyph (`◇`, `◈` and `◆` measured on one task), so none of
+/// them is the task. Any other row, order or count is no proof.
+#[must_use]
+pub fn muse_background_tasks(buf: &str) -> Option<Vec<String>> {
+    let stop = muse_stop(buf).ok()?;
+    let rows = match stop.footer.split_first() {
+        Some((first, rest)) if *first == MUSE_TASK_SELECTOR => rest,
+        _ => &stop.footer[..],
+    };
+    let (last, tasks) = rows.split_last()?;
+    if tasks.is_empty() || !muse_footer(last) {
+        return None;
+    }
+    tasks
+        .iter()
+        .map(|row| muse_task_title(row).map(ToOwned::to_owned))
+        .collect()
+}
+
+/// The title of one trimmed muse task row, or `None` when it is no task row.
+fn muse_task_title(row: &str) -> Option<&str> {
+    let mut chars = row.strip_prefix("└ ")?.chars();
+    if chars.next().is_none_or(char::is_whitespace) {
+        return None;
+    }
+    let title = chars.as_str().strip_prefix(' ')?;
+    let title = title.split("  ").next().unwrap_or_default().trim();
+    (!title.is_empty()).then_some(title)
+}
+
+/// The reset, in epoch seconds, that the vendor's own 429 row states for the
+/// muse stop `buf` draws, or `None` when nothing in `buf` proves one.
+///
+/// The row is muse's column-0 `◆ model failed: ` row whose block is the
+/// nearest block above the newest stop head, joined with its indented
+/// continuation rows up to the first blank row, as muse wraps it (measured at
+/// 80 columns over three rows): after the head it must be the measured
+/// usage-limit sentence, whole ([`crate::quota::muse::limit_reason`]). Between
+/// that block and the stop head ONLY blank rows and user-echo blocks may sit —
+/// a column-0 `❯ <text>` row and the blank or indented rows after it, the queued
+/// message measured there. Anything else (a composer, a footer, a task row, a
+/// transcript row, a shell prompt, a banner) may be another incarnation's
+/// screen left in the scrollback, so it is no proof. A local time in the stop
+/// block (`Nov 9 at 1:00 AM`, `12:11 PM`) names no year or zone and is never read.
+#[must_use]
+pub fn muse_limit_reset(buf: &str) -> Option<i64> {
+    let head = muse_stop(buf).ok()?.head;
+    let rows: Vec<&str> = buf.lines().collect();
+    let above = rows.get(..head)?;
+    let start = above
+        .iter()
+        .rposition(|row| row.starts_with(MUSE_MODEL_FAILED))?;
+    let continued = above[start + 1..]
+        .iter()
+        .take_while(|row| row.starts_with("  ") && !row.trim().is_empty())
+        .count();
+    let end = start + 1 + continued;
+    let mut echo = false;
+    for row in &above[end..] {
+        if row.trim().is_empty() {
+            continue;
+        }
+        if row.starts_with([' ', '\u{a0}']) {
+            if !echo || !row.starts_with("  ") {
+                return None;
+            }
+            continue;
+        }
+        echo = row
+            .strip_prefix('❯')
+            .is_some_and(|typed| typed.starts_with(' ') && !typed.trim().is_empty());
+        if !echo {
+            return None;
+        }
+    }
+    let sentence = std::iter::once(above[start].trim())
+        .chain(above[start + 1..end].iter().map(|row| row.trim()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    crate::quota::muse::limit_reason(
+        sentence
+            .strip_prefix(MUSE_MODEL_FAILED.trim_end())?
+            .trim_start(),
+    )
 }
 
 /// Whether `text`, the words after the `◆`, is muse's usage-limit head: the
