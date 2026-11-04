@@ -177,6 +177,42 @@ fn derived_candidates_bypass_only_the_missing_map() {
     }
 }
 
+/// BEHAVIOUR PIN: the latch selects the limit path. A residual journal limit
+/// alone must not name an unmapped seat whose current latch does not stand.
+#[test]
+fn an_unlatched_unmapped_seat_does_not_name_a_residual_limit_episode() {
+    let mut on = settings();
+    on.map.clear();
+    let mut one = seat("spawned.1", "one");
+    one.limited = false;
+    let events = [row(100, "limit", "one", None, "")];
+    for room in [Room::Unread, Room::Crossed(window(96.0))] {
+        one.room = room;
+        assert!(
+            acts(&on, std::slice::from_ref(&one), &events, 300).is_empty(),
+            "unmapped unlatched seat is silent despite residual limit: {:?}",
+            one.room
+        );
+    }
+    one.limited = true;
+    assert_eq!(
+        acts(&on, std::slice::from_ref(&one), &events, 300),
+        [AutoAct::Unmapped {
+            slot: "spawned.1".to_owned(),
+            agent: "one".to_owned(),
+            key: stamp(100),
+            profile: "source".to_owned(),
+        }],
+        "latched control names its missing candidates"
+    );
+    one.derives = true;
+    assert_eq!(
+        acts(&on, &[one], &events, 300),
+        [trigger("one")],
+        "derived admission still outranks missing-map naming"
+    );
+}
+
 #[test]
 fn unmapped_naming_obeys_its_episode_filters_and_plain_grace() {
     let mut on = settings();
