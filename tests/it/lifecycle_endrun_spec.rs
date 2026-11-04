@@ -69,7 +69,7 @@ fn carried(name: &str) -> Vec<String> {
 #[test]
 fn endrun_grammar_refusal_precedence_table() {
     let rig = Rig::new("ergrammar");
-    let unknown = "Error: unknown flag '--bogus'. Use -f, --purge-history, --keep-history, --assume-stopped.\n";
+    let unknown = "Error: unknown flag '--bogus'. Use -f/--force, --purge-history, --keep-history, --assume-stopped, --pane=<id>.\n";
     let extra =
         "Error: unexpected extra argument 'extra' — _end takes one session name (or 'all').\n";
     let table = [
@@ -151,7 +151,11 @@ fn endrun_mode_flag_target_refusal_table() {
         for target in ["missing", "bad/name"] {
             let mut tail = words(&[target, "-f"]);
             tail.extend(words(mode));
-            let message = format!("Session '{target}' not found.\n");
+            let message = if target == "bad/name" {
+                format!("ae: '{target}' is not a usable session name.\n")
+            } else {
+                format!("Session '{target}' not found.\n")
+            };
             unchanged(&rig, &tail, false, (1, "", &message));
         }
     }
@@ -308,21 +312,17 @@ fn endrun_history_policy_prompt_table() {
     }
 }
 
-/// BASELINE BEHAVIOUR: an empty public fleet asks before announcing empty;
-/// handoff and force return immediately. No caller is inferred in this case.
+/// An empty census succeeds without a prompt, regardless of authorization or
+/// history policy. Earlier mode refusals still take precedence.
 #[test]
 fn endrun_empty_fleet_confirmation_order_table() {
     let rig = Rig::new("erempty");
     let parked = rig.home.join("parked");
     std::fs::rename(&rig.dir, &parked).expect("empty census");
-    let err = no_stdin_prompt(&rig, "This will END every ae session:", "  (none)");
-    for tail in [words(&["all"]), words(&["all", "--keep-history"])] {
-        assert_eq!(
-            run(&rig, &tail, false),
-            (Some(1), String::new(), err.clone())
-        );
-    }
     for tail in [
+        words(&["all"]),
+        words(&["all", "--keep-history"]),
+        words(&["all", "--purge-history"]),
         words(&["all", "-f"]),
         words(&["all", "--handoff"]),
         words(&["all", "--supervise", "--handoff"]),
@@ -365,8 +365,8 @@ fn answered(rig: &Rig, tail: &[&str], answer: &[u8]) -> (Option<i32>, String, St
     )
 }
 
-/// BASELINE BEHAVIOUR/B1: declining the terminal question exits zero.
-/// An accepted empty fleet prints its empty notice AFTER the question.
+/// Declining the question fails without writes. An empty census never asks,
+/// even when an answer was supplied.
 #[test]
 fn endrun_supplied_reply_classification_table() {
     let rig = Rig::new("erreply");
@@ -382,29 +382,52 @@ fn endrun_supplied_reply_classification_table() {
         .expect("prompt boundary")
         .0;
     for answer in [b"n\n".as_slice(), b"\n", b"no\n"] {
-        assert_eq!(
-            answered(&rig, &["_end", &rig.name], answer),
-            (Some(0), String::new(), format!("{prefix}Aborted.\n"))
-        );
-        assert_eq!(guard_spec::tree(&rig.dir), before);
-        assert!(rig.session_is_live());
-        assert!(!rig.archive().exists());
+        for command in ["_end", "end", "rm"] {
+            assert_eq!(
+                answered(&rig, &[command, &rig.name], answer),
+                (
+                    Some(1),
+                    String::new(),
+                    format!("{prefix}Nothing was ended.\n")
+                )
+            );
+            assert_eq!(guard_spec::tree(&rig.dir), before);
+            assert!(rig.session_is_live());
+            assert!(!rig.archive().exists());
+        }
     }
     let parked = rig.home.join("parked");
     std::fs::rename(&rig.dir, &parked).expect("empty census");
-    let full = no_stdin_prompt(&rig, "This will END every ae session:", "  (none)");
-    let prefix = full
-        .split_once("Error: could not obtain")
-        .expect("prompt boundary")
-        .0;
-    for answer in [b"y\n".as_slice(), b"  Yes\n"] {
+    for answer in [b"y\n".as_slice(), b"  Yes\n", b"n\n", b"\n", b""] {
         assert_eq!(
             answered(&rig, &["_end", "all"], answer),
-            (Some(0), "No ae sessions.\n".to_owned(), prefix.to_owned())
+            (Some(0), "No ae sessions.\n".to_owned(), String::new())
         );
     }
     assert!(rig.session_is_live());
     std::fs::rename(parked, &rig.dir).expect("restore registration");
+}
+
+/// Public aliases use stop's unusable-name refusal and do not enter the prompt.
+#[test]
+fn endrun_public_unusable_name_refusals_preserve_state() {
+    let rig = Rig::new("erbadname");
+    for name in ["bad/name", ".", "..", "../outside", "no space"] {
+        for command in ["end", "rm"] {
+            let before = guard_spec::tree(&rig.dir);
+            assert_eq!(
+                rig.run(&[command, name]),
+                (
+                    Some(1),
+                    String::new(),
+                    format!("ae: '{name}' is not a usable session name.\n")
+                )
+            );
+            assert_eq!(guard_spec::tree(&rig.dir), before);
+            assert!(rig.session_is_live());
+            assert!(!rig.archive().exists());
+        }
+    }
 }
 
 fn wait_ended(rig: &Rig) {

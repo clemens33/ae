@@ -782,14 +782,16 @@ pub(crate) fn run(
         .map(|name| freeze_target(root, &args, name))
         .collect();
 
+    // Nothing to end: say so and ask nothing.
+    if frozen.is_empty() {
+        writeln!(out, "No ae sessions.")?;
+        return Ok(0);
+    }
+
     match prompt_route(args.mode, args.force, caller_session.as_deref(), || {
         std::io::IsTerminal::is_terminal(&std::io::stdin())
     }) {
         Prompt::Handoff => {
-            if frozen.is_empty() {
-                writeln!(out, "No ae sessions.")?;
-                return Ok(0);
-            }
             return handoff(
                 root,
                 &args,
@@ -809,11 +811,6 @@ pub(crate) fn run(
             }
         }
         Prompt::Forced => {}
-    }
-
-    if frozen.is_empty() {
-        writeln!(out, "No ae sessions.")?;
-        return Ok(0);
     }
 
     if caller_session
@@ -856,7 +853,7 @@ fn targets_of(
         return Ok(ControlFlow::Continue(all_sessions(root)));
     }
     if !name_is_usable(root, &args.target) {
-        writeln!(err, "Session '{}' not found.", args.target)?;
+        writeln!(err, "ae: '{}' is not a usable session name.", args.target)?;
         return Ok(ControlFlow::Break(EXIT_FAILED));
     }
     let dir = sessions_dir(root).join(&args.target);
@@ -938,8 +935,8 @@ fn confirm_in_terminal(
     match answer(read_reply().as_deref()) {
         Answer::Yes => Ok(ControlFlow::Continue(())),
         Answer::No => {
-            writeln!(err, "Aborted.")?;
-            Ok(ControlFlow::Break(0))
+            writeln!(err, "Nothing was ended.")?;
+            Ok(ControlFlow::Break(EXIT_FAILED))
         }
         Answer::NoInput => {
             writeln!(
@@ -1142,7 +1139,7 @@ fn parse(tail: &[String]) -> Result<Args, String> {
             flag if flag.starts_with("--expect-") => expect.take(flag)?,
             flag if flag.starts_with('-') => {
                 return Err(format!(
-                    "Error: unknown flag '{flag}'. Use -f, --purge-history, --keep-history, --assume-stopped."
+                    "Error: unknown flag '{flag}'. Use -f/--force, --purge-history, --keep-history, --assume-stopped, --pane=<id>."
                 ));
             }
             name if args.target.is_empty() => name.clone_into(&mut args.target),

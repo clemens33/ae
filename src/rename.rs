@@ -1160,11 +1160,13 @@ fn refuse_destination(
     new_dir: &Path,
 ) -> Result<(), Refusal> {
     if transport::session_exists(server, new) {
-        return Err(Refusal(format!("Error: session '{new}' already exists.")));
+        return Err(Refusal(format!(
+            "Error: session '{new}' already exists. Nothing was renamed."
+        )));
     }
     if crate::lifecycle::path_exists(new_dir) {
         return Err(Refusal(format!(
-            "Error: session directory '{}' already exists.",
+            "Error: session directory '{}' already exists. Nothing was renamed.",
             new_dir.display()
         )));
     }

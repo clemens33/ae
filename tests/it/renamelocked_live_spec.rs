@@ -128,7 +128,7 @@ fn locked_live_destination_precedence_is_tmux_then_path_then_pending_requests() 
         (
             Some(1),
             String::new(),
-            "Error: session 'fresh' already exists.\n".into()
+            "Error: session 'fresh' already exists. Nothing was renamed.\n".into()
         ),
         "tmux collision beats path and requests"
     );
@@ -140,7 +140,7 @@ fn locked_live_destination_precedence_is_tmux_then_path_then_pending_requests() 
             Some(1),
             String::new(),
             format!(
-                "Error: session directory '{}' already exists.\n",
+                "Error: session directory '{}' already exists. Nothing was renamed.\n",
                 destination.display()
             )
         ),
