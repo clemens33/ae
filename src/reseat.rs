@@ -62,6 +62,9 @@ use crate::tracked::{self, EventFields};
 use crate::transport;
 
 #[cfg(test)]
+#[path = "reseat/agylimit_reason2_spec.rs"]
+mod agylimit_reason2_spec;
+#[cfg(test)]
 #[path = "reseat/agylimit_reason_spec.rs"]
 mod agylimit_reason_spec;
 #[cfg(test)]
