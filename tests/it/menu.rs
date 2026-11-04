@@ -5959,8 +5959,18 @@ fn a_status_menu_flip_refuses_after_clicked_window_grows() {
                 |order| order.lines().count() == 3,
             );
             assert!(tmux(&socket, &watcher, &["send-keys", "-t", "viewer", "f"]).0);
-            std::thread::sleep(Duration::from_millis(250));
-            let message = tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1;
+            // The refusal is drawn when tmux gets to it, not on a schedule:
+            // poll for it, and keep the last capture so a missing message
+            // fails with what the client showed.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut message = String::new();
+            while Instant::now() < deadline {
+                message = tmux(&socket, &watcher, &["capture-pane", "-p", "-t", "viewer"]).1;
+                if message.contains("flip needs an unzoomed two-pane window") {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
             (grown, message)
         });
         assert!(

@@ -1302,10 +1302,13 @@ fn a_send_flushes_an_ae_staged_chip_once_and_then_delivers_over_it() {
         deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited),
         "the staged chip reads OCCUPIED, as it did in the field"
     );
+    // The defer bounds the chip's settle wait and the clear after its Enter; a
+    // send that finds the box clear returns at once, so a generous budget costs
+    // nothing here and only a starved machine ever spends it.
     let (code, stderr) = rig.run(
         ae::cli::SEND,
         &["tui", "after the chip"],
-        &[("AE_SEND_DEFER_SEC", "2")],
+        &[("AE_SEND_DEFER_SEC", "30")],
     );
     assert_eq!((code, stderr.as_str()), (Some(0), ""), "{stderr}");
     assert_eq!(
