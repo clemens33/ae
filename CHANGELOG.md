@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.11] - 2026-11-04
+- Pin rename recovery refusals, precedence and retry cuts
+- Rename recovery decides correlation and location in pure functions
+- Rename recovery runs its re-proof checklist as named steps
+- Pin rename recovery replaced identity over a file and each managed address
+- Rename recovery spec reuses the rename test scratch owner
+- App key routing is pinned across modes before it moves
+- App held keys decide their quit in one place
+- App keys go to the mode that owns them through one chain
+- App names the open overlay and the key that ends an armed press
+- App key routing pins the open overlay and what disarms a press
+- Pin the ae list table rows, columns, state cells and clocks
+- Ae list table writes each session line, verdict cell and agent line through its own function
+- Pin the ae list table's session line, verdict, proof and drift cells
+- Make two load-flaky tests wait for their condition
+- Pin _stop argv, mode and fleet refusal order before splitting run_stop
+- _stop decides its words, target and route in pure functions
+- _stop runs as named steps and drops its long-function allowance
+- Pin stop all's census membership, closed-output exit status and already-stopped counting
+- Console thread rows are pinned across event kinds before they move
+- Console thread decides each record's kind in one place
+- Console thread owns what a reseat moves and who a moved seat speaks as
+- Console thread counts a reply's place in one step that only an admitted reply takes
+- Console thread draws an ask and a reply in their own steps
+- Pin _end argv, mode, target and confirmation order before splitting run
+- _end decides its carried targets, who is asked and what a reply means in pure functions
+- _end runs its targets, rename check, prompts and ends as named steps and drops its long-function allowance
+- Pin the live rename's under-lock checks, refusal order and publication outcomes
+- Pin that a manifest refusal leaves the renamed session's path fact unrepublished
+- The live rename's armed-seam refusal, notice outcome and monitor refusal are pure decisions
+- The live rename runs as named steps in its checked order and drops its long-function allowance
+- Pin that a successful live rename republishes the session's path fact
+- Reboot refusals, prompt answers, both locks and the boundary are pinned before run moves
+- Reboot classifies the confirmation answer and picks its handover route in pure functions
+- Reboot runs its five phases as named steps between its two lock regions and drops its long-function allowance
+- A fresh reboot handover request carries the memo byte baseline and stays open on timeout
+
 ## [v2026.11.10] - 2026-11-03
 - Pin the done and wait progress folds event by event before taking them apart
 - Done and wait progress share one episode, its launch match and its phase at now
