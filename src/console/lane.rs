@@ -310,6 +310,60 @@ pub fn fold_via(
     Lane { items, coverage }
 }
 
+/// What one journal record is to the console's thread, by its kind alone.
+/// The first test that holds decides, in this order, so a retire or a moved
+/// reseat is that whoever wrote it, and the console's own actor draws only
+/// what it wrote itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Record {
+    /// A retire: it may end the asks its seat held.
+    Retire,
+    /// A reseat that moved a seat to another profile.
+    Reseat,
+    /// The console's own ask.
+    Ask,
+    /// The console gave up delivering an ask.
+    Abandoned,
+    /// The console withdrew an ask.
+    Cancel,
+    /// A seat took on a console ask.
+    Accept,
+    /// A reply addressed to the console.
+    Reply,
+    /// Nothing the console's thread tracks or draws.
+    Other,
+}
+
+impl Record {
+    fn of(event: &Event) -> Self {
+        let action = event.action.as_str();
+        if action == "retire" {
+            return Self::Retire;
+        }
+        if action == reseat::RESEAT_ACTION
+            && event.summary.as_deref().is_some_and(reseat::moved_seat)
+        {
+            return Self::Reseat;
+        }
+        if event.actor == tracked::CONSOLE_SINK {
+            return match action {
+                ask if ask == tracked::Kind::Ask.action() => Self::Ask,
+                tracked::ABANDONED_ACTION => Self::Abandoned,
+                CANCEL => Self::Cancel,
+                _ => Self::Other,
+            };
+        }
+        if event.target.as_deref() != Some(tracked::CONSOLE_SINK) {
+            return Self::Other;
+        }
+        match action {
+            crate::session::ACCEPT => Self::Accept,
+            reply::ACTION => Self::Reply,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// What the fold knows of one console request so far.
 struct Thread<'a> {
     ask: &'a Event,
@@ -388,15 +442,14 @@ fn console_items(
     let mut threads: BTreeMap<&str, Thread<'_>> = BTreeMap::new();
     let mut items = Vec::new();
     for (record, event) in events.iter().enumerate() {
-        if event.action == "retire" {
+        let shape = Record::of(event);
+        if shape == Record::Retire {
             for thread in threads.values_mut() {
                 thread.retire(event, session);
             }
             continue;
         }
-        if event.action == reseat::RESEAT_ACTION
-            && event.summary.as_deref().is_some_and(reseat::moved_seat)
-        {
+        if shape == Record::Reseat {
             let moved = event.target_slot.value();
             for thread in threads.values_mut() {
                 let asked = thread.ask.target_slot.value();
@@ -407,78 +460,76 @@ fn console_items(
         let key = event.reference.as_deref().unwrap_or("");
         let (id, to) = (key.to_owned(), event.target.clone().unwrap_or_default());
         let mut text = event.summary.clone().unwrap_or_default();
-        let kind = if event.actor == tracked::CONSOLE_SINK {
-            match event.action.as_str() {
-                action if action == tracked::Kind::Ask.action() => {
-                    let uncertain = super::submit::uncertain(event);
-                    let mut gap = Some(OLD_CORE_GAP.to_owned());
-                    if !key.is_empty() {
-                        threads.insert(key, Thread::opened(event));
-                        // An ask an older core recorded has no body to read.
-                        if event.body_file.is_some() {
-                            let what = format!("ask to {to}");
-                            let over = Some(ASK_OVER_GAP);
-                            gap = adopt(body(event), &mut text, &what, gaps, over);
+        let kind = match shape {
+            Record::Ask => {
+                let uncertain = super::submit::uncertain(event);
+                let mut gap = Some(OLD_CORE_GAP.to_owned());
+                if !key.is_empty() {
+                    threads.insert(key, Thread::opened(event));
+                    // An ask an older core recorded has no body to read.
+                    if event.body_file.is_some() {
+                        let what = format!("ask to {to}");
+                        let over = Some(ASK_OVER_GAP);
+                        gap = adopt(body(event), &mut text, &what, gaps, over);
+                    }
+                }
+                // The stored body keeps each attachment's path; the row
+                // shows its label.
+                text = crate::token::collapse(&text);
+                Kind::Asked {
+                    to,
+                    id,
+                    uncertain,
+                    gap,
+                    via: event.relay_origin.as_deref().map(via),
+                }
+            }
+            Record::Abandoned => Kind::NotDelivered { to, id },
+            Record::Cancel => {
+                if let Some(thread) = threads.get_mut(key) {
+                    thread.closed = true;
+                }
+                Kind::Closed { id }
+            }
+            Record::Accept => {
+                let thread = threads.get_mut(key);
+                let Some(kind) = thread.and_then(|thread| thread.accepted(event, id)) else {
+                    continue;
+                };
+                kind
+            }
+            Record::Reply => {
+                let from = event.actor.clone();
+                let admitted = match threads.get_mut(key) {
+                    None => Err("no chat ask with this id in the journal".to_owned()),
+                    Some(thread) => admission(thread.ask, event).map(|()| thread),
+                };
+                match admitted {
+                    Ok(thread) => {
+                        let (late, follow_up) = (thread.closed, thread.replies);
+                        thread.replies += 1;
+                        let asked = thread.ask.target_slot.value();
+                        let speaker = thread.moved.then(|| {
+                            let seat = seats.iter().find(|seat| Some(seat.slot.as_str()) == asked);
+                            let profile = seat.and_then(|seat| seat.profile.clone());
+                            profile.unwrap_or_else(|| "unrecorded".to_owned())
+                        });
+                        let seat = thread.ask.target.clone().unwrap_or_default();
+                        let what = format!("reply from {seat}");
+                        let gap = adopt(body(event), &mut text, &what, gaps, None);
+                        Kind::Answer {
+                            seat,
+                            id,
+                            follow_up,
+                            late,
+                            gap,
+                            speaker,
                         }
                     }
-                    // The stored body keeps each attachment's path; the row
-                    // shows its label.
-                    text = crate::token::collapse(&text);
-                    Kind::Asked {
-                        to,
-                        id,
-                        uncertain,
-                        gap,
-                        via: event.relay_origin.as_deref().map(via),
-                    }
+                    Err(why) => Kind::Unadmitted { from, id, why },
                 }
-                tracked::ABANDONED_ACTION => Kind::NotDelivered { to, id },
-                CANCEL => {
-                    if let Some(thread) = threads.get_mut(key) {
-                        thread.closed = true;
-                    }
-                    Kind::Closed { id }
-                }
-                _ => continue,
             }
-        } else if event.action == crate::session::ACCEPT && to == tracked::CONSOLE_SINK {
-            let thread = threads.get_mut(key);
-            let Some(kind) = thread.and_then(|thread| thread.accepted(event, id)) else {
-                continue;
-            };
-            kind
-        } else if event.action == reply::ACTION && to == tracked::CONSOLE_SINK {
-            let from = event.actor.clone();
-            let admitted = match threads.get_mut(key) {
-                None => Err("no chat ask with this id in the journal".to_owned()),
-                Some(thread) => admission(thread.ask, event).map(|()| thread),
-            };
-            match admitted {
-                Ok(thread) => {
-                    let (late, follow_up) = (thread.closed, thread.replies);
-                    thread.replies += 1;
-                    let asked = thread.ask.target_slot.value();
-                    let speaker = thread.moved.then(|| {
-                        let seat = seats.iter().find(|seat| Some(seat.slot.as_str()) == asked);
-                        let profile = seat.and_then(|seat| seat.profile.clone());
-                        profile.unwrap_or_else(|| "unrecorded".to_owned())
-                    });
-                    let seat = thread.ask.target.clone().unwrap_or_default();
-                    let what = format!("reply from {seat}");
-                    let gap = adopt(body(event), &mut text, &what, gaps, None);
-                    Kind::Answer {
-                        seat,
-                        id,
-                        follow_up,
-                        late,
-                        gap,
-                        speaker,
-                    }
-                }
-                Err(why) => Kind::Unadmitted { from, id, why },
-            }
-        } else {
-            continue;
+            Record::Retire | Record::Reseat | Record::Other => continue,
         };
         let record = Some(record);
         items.push(Item {
@@ -1355,5 +1406,58 @@ mod tests {
             format!("{answer} · follow-up 1"),
         ];
         assert_eq!(shown, expected);
+    }
+
+    /// A record's kind is judged in a fixed order: a retire and a reseat that
+    /// moved a seat are that whoever wrote them, and the console's own actor
+    /// draws only what it wrote itself, never a reply or an accept.
+    #[test]
+    fn a_record_is_judged_by_its_kind_in_a_fixed_order() {
+        use super::Record::{Abandoned, Accept, Ask, Cancel, Other, Reply, Reseat, Retire};
+        let to_console = r#","target":"console:local""#.to_owned();
+        let to_colead = r#","target":"colead""#.to_owned();
+        let said = |text: &str| format!(r#","summary":"{text}""#);
+        let none = String::new;
+        let cases = [
+            ("lead", "retire", none(), Retire),
+            ("console:local", "retire", to_console.clone(), Retire),
+            ("human", "reseat", said("reseated lead to m1"), Reseat),
+            ("human", "reseat", said("pasted, tool not seen"), Reseat),
+            (
+                "human",
+                "reseat",
+                said("tool stopped after the reseat"),
+                Reseat,
+            ),
+            (
+                "console:local",
+                "reseat",
+                said("reseated lead to m1"),
+                Reseat,
+            ),
+            ("human", "reseat", said("start failed"), Other),
+            ("human", "reseat", said("the seat was reseated"), Other),
+            ("human", "reseat", none(), Other),
+            ("console:local", "reseat", said("start failed"), Other),
+            ("console:local", "ask", none(), Ask),
+            ("console:local", "delivery-abandoned", none(), Abandoned),
+            ("console:local", "cancel", none(), Cancel),
+            ("console:local", "accept", to_console.clone(), Other),
+            ("console:local", "reply", to_console.clone(), Other),
+            ("console:local", "send", to_console.clone(), Other),
+            ("lead", "ask", to_console.clone(), Other),
+            ("lead", "delivery-abandoned", to_console.clone(), Other),
+            ("lead", "cancel", to_console.clone(), Other),
+            ("lead", "accept", to_console.clone(), Accept),
+            ("lead", "reply", to_console.clone(), Reply),
+            ("lead", "accept", to_colead.clone(), Other),
+            ("lead", "reply", to_colead, Other),
+            ("lead", "reply", none(), Other),
+            ("lead", "send", to_console, Other),
+        ];
+        for (actor, action, extra, want) in cases {
+            let event = about(T0, actor, action, &extra);
+            assert_eq!(super::Record::of(&event), want, "{actor} {action} {extra}");
+        }
     }
 }
