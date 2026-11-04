@@ -173,6 +173,24 @@ fn locked_live_destination_precedence_is_tmux_then_path_then_pending_requests() 
 #[test]
 fn locked_live_exact_id_moves_only_the_short_name_and_preserves_work() {
     let rig = live("rlprefix");
+    // Local work at the root is displayed as the literal "/". Only meta is
+    // changed here: the live rename must never move managed work.
+    ae::meta::rewrite(&rig.dir, "work_dir", Some("/")).expect("known path fact");
+    let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(rig.sock.clone()));
+    assert!(
+        ae::transport::observe_look(&server, &rig.name).is_some(),
+        "readable look makes a redress observable"
+    );
+    assert!(
+        rig.tmux(&[
+            "set-option",
+            "-t",
+            &format!("={}:", rig.name),
+            ae::theme::PATHS_OPTION,
+            "stale-path-fact"
+        ])
+        .0
+    );
     let longer = format!("{}ect", rig.name);
     assert!(rig.tmux(&["new-session", "-d", "-s", &longer, "sh"]).0);
     let short_id = id(&rig, &rig.name);
@@ -200,6 +218,19 @@ fn locked_live_exact_id_moves_only_the_short_name_and_preserves_work() {
         id(&rig, &longer),
         long_id,
         "prefix neighbour kept its identity"
+    );
+    let (ok, paths) = rig.tmux(&[
+        "show-options",
+        "-v",
+        "-t",
+        "=fresh:",
+        ae::theme::PATHS_OPTION,
+    ]);
+    assert!(ok);
+    assert_eq!(
+        paths.trim(),
+        "/",
+        "successful rename republishes its path fact"
     );
     let new_dir = rig.home.join("sessions/fresh");
     let meta = std::fs::read_to_string(new_dir.join("meta")).expect("new meta");
