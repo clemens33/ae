@@ -38,6 +38,8 @@ mod guard_spec;
 mod purgeguard_spec;
 #[path = "lifecycle_retain_spec.rs"]
 mod retain_spec;
+#[path = "lifecycle_runstop_spec.rs"]
+mod runstop_spec;
 #[path = "lifecycle_stop_sole_uuid_spec.rs"]
 mod stop_sole_uuid;
 #[path = "lifecycle_transact_spec.rs"]
