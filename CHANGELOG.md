@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.15] - 2026-11-04
+- An agy seat on its individual quota limit reads as a usage limit
+- An agy seat on its individual quota limit can be stopped for a reseat
+- An agy limit row with no Error ID row under it refuses as no empty box, and a seat not on its limit keeps its no frame reason
+- Pin the agy limit stop's refusal reasons for an unexpected row under the limit row, work under the Error ID row and broken composers
+- A superseded quota reading never opens, keeps or moves a headroom episode
+- Per window the newest usable reading rules in the effort scope and chooser pins
+- Headroom auto reseat judges each window by its newest usable reading and the leg rechecks the seat's account before it moves
+- The newest usable reading of a window rules headroom, auto effort and the chooser; the leg's recheck
+- Another tool's reading on the same path never supersedes a candidate's reading
+- The chooser keys each reading by tool as well as source and window
+
 ## [v2026.11.14] - 2026-11-04
 - The quota guidance parks a scope at 95% EFFECTIVE weekly, not 90%
 - Auto reseat ends a muse seat's background task on a limit its own pane proves 12 h away
