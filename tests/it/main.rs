@@ -177,6 +177,7 @@ mod shorthelper;
 )]
 mod sidecompact_spec;
 mod spawn;
+mod staleheadroom_spec;
 mod support;
 mod support_spec;
 mod teardown;
