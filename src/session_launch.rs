@@ -2215,7 +2215,9 @@ struct Session {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "the frozen order, kept in one place — see the module docs"
+    reason = "the frozen order, kept in one place: every step is called here in order, and the \
+              lifecycle lock, the expected-launch proofs and the reattach stay inline where the \
+              source-order unit pins read them"
 )]
 fn launch(
     env: &Env,
@@ -2257,11 +2259,13 @@ fn launch(
     // first takes a read-only look at its recorded server so the floor is asked
     // of the server this attempt will actually use; the decision is repeated
     // under the lifecycle lock below before anything acts on it.
-    let floor_server = if preflight_meta_present {
-        step!(preflight_server(&dir, &session, placing, err))
-    } else {
-        proposed_server.clone()
-    };
+    let floor_server = step!(preflight_server(
+        &dir,
+        &session,
+        placing,
+        preflight_meta_present,
+        err
+    ));
     let running_preflight =
         preflight_meta_present && transport::session_exists(&floor_server, &session);
     if let Some(refusal) = floor_refusal(&floor_server, &session) {
@@ -2291,23 +2295,13 @@ fn launch(
     // preflight above exists only to place the tmux floor before this lock-file
     // write; every expected fact is re-read while the lock is held.
     let mut lifecycle = if settings_start || expected_resume || preflight_meta_present {
-        if let Ok(held) = crate::store::lock(
+        let Ok(held) = crate::store::lock(
             &sessions.join(format!(".lifecycle.{session}.lock")),
             LIFECYCLE_WAIT,
-        ) {
-            Some(held)
-        } else {
-            let detail = if settings_start {
-                " — stale Start refused"
-            } else {
-                " — retry shortly"
-            };
-            writeln!(
-                err,
-                "Error: another lifecycle operation is in progress for '{session}'{detail}."
-            )?;
-            return Ok(EXIT_FAILED);
-        }
+        ) else {
+            return Ok(lifecycle_busy(&session, settings_start, err)?);
+        };
+        Some(held)
     } else {
         None
     };
@@ -2413,16 +2407,7 @@ fn launch(
             )?;
             return Ok(EXIT_FAILED);
         };
-        if let Some(core) = env.core.clone().or_else(crate::shape::resolved_exe) {
-            assert_status_bindings(&server, &env, &core);
-        }
-        let layout = meta_value(&dir, "layout").unwrap_or_default();
-        let main_pane = meta_value(&dir, "main_pane").unwrap_or_default();
-        let pane_belongs = observed.iter().any(|pane| pane.pane == main_pane);
-        stamp_main_pane(&server, &session, &main_pane, pane_belongs);
-        if pane_belongs {
-            stamp_lead_pair_policy(&server, &layout, &main_pane);
-        }
+        restamp_running(&server, &env, &dir, &session, &observed);
         // The guard protects only the resume decision and its verification.
         // Attaching may block for the client's whole lifetime; holding the
         // guard across it would make stop/end refuse while the user is there.
@@ -2499,11 +2484,7 @@ fn launch(
         err
     ));
     // Read only on resume, and only once the roster has been restored.
-    let saved_layout = if resuming {
-        meta_value(&dir, "layout")
-    } else {
-        None
-    };
+    let saved_layout = resuming.then(|| meta_value(&dir, "layout")).flatten();
     let layout = session_layout(values.layout, saved_layout);
 
     // ---- restored spawned seats, LEXED before anything is created ----
@@ -2673,16 +2654,21 @@ fn check_launch_kind(
     Ok(ControlFlow::Continue(preflight_meta_present))
 }
 
-/// The server a resume's tmux floor is asked of, from a read-only look at the
-/// record before any lock: the recorded one when it runs there or stays there,
-/// the proposed one when the stopped session moves. An unproven absence
+/// The server a launch's tmux floor is asked of: the proposed one when no
+/// record was there at preflight. A resume's is decided from a read-only look
+/// at the record before any lock: the recorded one when it runs there or stays
+/// there, the proposed one when the stopped session moves. An unproven absence
 /// refuses, or skips for a restore.
 fn preflight_server(
     dir: &Path,
     session: &str,
     placing: Placing<'_>,
+    preflight_meta_present: bool,
     err: &mut impl Write,
 ) -> crate::Result<ControlFlow<u8, ServerId>> {
+    if !preflight_meta_present {
+        return Ok(ControlFlow::Continue(placing.proposed.clone()));
+    }
     let Ok(bytes) = meta::read_bytes(dir) else {
         writeln!(err, "Error: could not read metadata for '{session}'.")?;
         return Ok(ControlFlow::Break(EXIT_FAILED));
@@ -2745,6 +2731,21 @@ fn check_seat_overrides(
         return Ok(ControlFlow::Break(EXIT_USAGE));
     }
     Ok(ControlFlow::Continue(seat_overrides))
+}
+
+/// The refusal of a launch whose lifecycle lock another operation holds past
+/// the wait: a settings Start is stale by then, anything else may retry.
+fn lifecycle_busy(session: &str, settings_start: bool, err: &mut impl Write) -> io::Result<u8> {
+    let detail = if settings_start {
+        " — stale Start refused"
+    } else {
+        " — retry shortly"
+    };
+    writeln!(
+        err,
+        "Error: another lifecycle operation is in progress for '{session}'{detail}."
+    )?;
+    Ok(EXIT_FAILED)
 }
 
 /// The server this launch acts on, decided again under the lifecycle lock,
@@ -3012,6 +3013,29 @@ fn prove_lineage(
         return Ok(ControlFlow::Break(EXIT_FAILED));
     }
     Ok(ControlFlow::Continue(proof))
+}
+
+/// What a reattach stamps again on a running session's server, rebuilding
+/// nothing: the status bindings when the core can name its own binary, the
+/// recorded main pane's focus hook, and the lead-pair resize policy only when
+/// that pane is one of the session's own.
+fn restamp_running(
+    server: &ServerId,
+    env: &Env,
+    dir: &Path,
+    session: &str,
+    observed: &[tmux::ObservedAgent],
+) {
+    if let Some(core) = env.core.clone().or_else(crate::shape::resolved_exe) {
+        assert_status_bindings(server, env, &core);
+    }
+    let layout = meta_value(dir, "layout").unwrap_or_default();
+    let main_pane = meta_value(dir, "main_pane").unwrap_or_default();
+    let pane_belongs = observed.iter().any(|pane| pane.pane == main_pane);
+    stamp_main_pane(server, session, &main_pane, pane_belongs);
+    if pane_belongs {
+        stamp_lead_pair_policy(server, &layout, &main_pane);
+    }
 }
 
 /// The `[workspace]` values a launch takes from config, read once.
