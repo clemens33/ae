@@ -1,0 +1,25 @@
+◆ model failed: API error 429 [request_id=00000000-0000-0000-0000-000000000000]:
+  Subscription quota exhausted. Your usage window resets at
+  2027-01-15T08:00:00Z. (rate_limit_error)
+
+── Voice input (alt(option)+v to start) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+main · ↓ to select
+└ ◇ background evidence watch  watching                                                                                                                                                                    22m 01s
+  muse-wonder-full-1.0 · max · ~/project · YOLO
+
+◆ Usage limit reached
+  Your usage resets at 12:11 PM
+  This turn stopped because your usage limit was reached.
+  Check /usage for details.
+  Send a message to continue when usage is available.
+
+⚠ Usage nearly exhausted · 5h: 2% left · resets 12:11 PM · as of 8:57 AM · /usage
+This task may stop before it finishes.
+── Voice input (alt(option)+v to start) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+main · ↓ to select
+└ ◇ background evidence watch  watching                                                                                                                                                                    22m 01s
+  muse-wonder-full-1.0 · max · ~/project · YOLO

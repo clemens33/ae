@@ -146,11 +146,56 @@ Then, under `.lifecycle.<session>.lock`:
    the limit row`, a block missing or pushed out of Muse's 16-row bottom window
    is `no limit row`, and ANY `└` row below the box — a background task,
    running, watching or finished, because the stop kills what it watches — is
-   `background task: "<row>"`. The human may relax that last rule later; today
-   it errs toward keeping the work. The scan reads the final frame only, so a
+   `background task: "<row>"`. The scan reads the final frame only, so a
    Muse version that draws these rows differently refuses until its frame is
    measured (named residual: a task list long enough to push the block out of
    the window refuses as `no limit row`).
+
+   A background task is kept unless a LONG limit proves it may end (#304). When
+   the reading that decides the refusal shows nothing but the stop and its
+   tasks (`watchdog::muse_background_tasks`: below the box an optional
+   `main · ↓ to select`, one or more `└ <glyph> <title>` rows and the model
+   footer last, nothing else, in that order), the refusal is class
+   `background-task` and its step reads `once its box is empty and its
+   background task may end, run: … --stop-unknown`. A task's identity is its
+   title, cut at the first run of two spaces: its glyph (`◇`, `◈`, `◆`), status
+   and elapsed time change on their own. Any other row beside a task keeps
+   `unknown-frame`.
+
+   An auto reseat move of a LIMIT episode (never a headroom one, never
+   `ae reseat` by hand) may stop such a seat, ending its tasks, when ALL of this
+   holds (`autoreseat::long_limit_stop`, both bounds inclusive): both readings
+   show the same tasks in the same order; each reading's own vendor row
+   (`watchdog::muse_limit_reset`) states the same absolute reset, at least
+   `LONG_LIMIT_SECS` (12 h) ahead; and the episode's key is at least
+   `BACKGROUND_GRACE_SECS` (10 min) old. That vendor row is Muse's column-0
+   `◆ model failed: API error 429 [request_id=<uuid>]: Subscription quota
+   exhausted. Your usage window resets at <YYYY-MM-DDTHH:MM:SSZ>.
+   (rate_limit_error)`, joined from the indented rows Muse wraps it over (three
+   at 80 columns, measured), whole, read by the same sentence reader as a
+   failed run's stdout (`quota::muse::limit_reason`). It must be the newest such
+   row above the newest stop head, with ONLY blank rows and user echoes (a
+   column-0 `❯ <text>` row and the blank or indented rows after it) between
+   them: a composer, a footer, a task, transcript or shell row there may be an
+   earlier incarnation's screen left in the scrollback. Bounded guarantee: this
+   refuses every residue shape measured; an old incarnation whose residue is
+   ONLY blank rows and echoes is not told apart (after an in-place relaunch onto
+   another Muse login, its reset would be lent to this one). A local time in
+   the stop block (`Your usage resets at Nov 9 at 1:00 AM`) names no year or
+   zone and is never read, and Muse has no quota identity to join a cache
+   reading to, so the pane row is the only instant.
+
+   The proof is taken again at the stop's LAST word: after the caller's hook,
+   under the lifecycle and send locks, immediately before `respawn-pane`, a
+   THIRD reading must prove what the two did at a fresh clock (a draft, a new
+   turn, another task or reset refuses), the server's clients must be readable,
+   and no client viewing the pane may have given input since the attempt
+   opened, or carry an activity ae cannot read: the send-lock does not hold the
+   keyboard. Any gap there refuses `background-task` and nothing is stopped.
+   With `auto_reseat_grace_secs` under 600 the first attempt refuses (`its
+   limit is under 10 min old`) and the move comes a round later, after
+   `RETRY_COOLDOWN_SECS`; it is never promised at ten minutes. A limit under
+   12 h away refuses (`its limit resets in under 12 h`) as any other round.
 
    Then `respawn-pane -k -c <work_dir>` through `session_tmux::Op::RespawnPane`
    — the op the monitor panes already use, on the existing tmux door. Measured
@@ -729,13 +774,20 @@ command included) before it spends any room on the body. A profile name has no
 length bound, so a step that quotes one can fail to fit beside the head: it is
 then replaced WHOLE by a fixed step naming only the session and the agent
 (`move it by hand (ae reseat <session> <agent> --using <profile>)`), never
-clipped to half a command or half a resend condition. The class is named
+clipped to half a command or half a resend condition. A refusal's step is
+said ONCE, after `Next:`: the details drop it and keep what stood around it.
+A cut of the details lands on a word boundary and ends `…`. A move whose
+stop ended background tasks leads with that fact (`auto reseat: ended
+<agent>'s background task "<title>"; <agent> moved …`), ahead of every
+unbounded name, so no cut takes it; the done record is unchanged. The class is named
 where the refusal is decided, never read back out of the printed text: `carry-source-missing` (the
 conversation's transcript is not in the account it moves from),
 `carry-target-differs` (the account it moves to holds a different transcript, a
 node of the wrong kind, or a place ae could not archive into),
 `carry-unreadable` (any other carry refusal), `busy` (a running turn, a draft, a
-prompt, human input), `unknown-frame` (ae cannot prove the frame idle), `lock`
+prompt, human input), `unknown-frame` (ae cannot prove the frame idle),
+`background-task` (a Muse frame shows only the stop and its background tasks,
+and no long limit proves they may end), `lock`
 (another writer holds the lifecycle or send lock), `no-candidate`, `ineligible`
 (the operator's rules say this seat does not move) and `other` (the rest, and the
 give-up hold of a spent limit episode). `busy` and
