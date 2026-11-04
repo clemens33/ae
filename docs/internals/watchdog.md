@@ -400,7 +400,7 @@ Tool-specific patterns inside the watchdog body, split into the two classes: **t
 
 Both classes are MEASURED from each tool's own strings (claude 2.1.281, codex 0.156.1; a tool
 with no measurement has no row, never a guess), and count ONLY on the tool's own row: inside the
-bottom window (claude 20 rows, codex 16, up from the last non-blank row), starting at column 0
+bottom window (claude 20 rows, codex 16, agy 12, up from the last non-blank row), starting at column 0
 with one of the tool's markers, and — past spaces and NBSP — starting with a phrase. A transcript
 row quoting one never books it (#189, #193).
 
@@ -418,6 +418,7 @@ Usage-limit phrases:
 |---|---|---|
 | `claude` | `  ⎿` | `You've hit your`, `You've reached your`, `You're out of usage credits`, `Your org is out of usage`, `usage limit reached` |
 | `codex` | `■` | `You’ve hit your usage limit` (U+2019, as 0.156.1 draws it), `You've hit your usage limit`, `You've reached your usage limit`, `Usage limit reached. You've reached your usage limit`, `Quota exceeded. Check your plan` |
+| `agy` | `⚠ ` (the glyph and one ASCII space, column 0) | `Individual quota reached` (agy 1.5.0; the head only, the rest of the sentence is server text). Its `Resets in <duration>` is relative and never read as an instant, so the reset is unknown. Credits, voice and retry lines are not limit rows |
 | `gemini`, `opencode`, others | *(none measured)* | *(none)* |
 
 When a transient row is detected:

@@ -12,6 +12,9 @@ use crate::events::{Event, Identity, SessionKey};
 use crate::procs::Descendancy;
 
 #[cfg(test)]
+#[path = "watchdog/agylimit_spec.rs"]
+mod agylimit_spec;
+#[cfg(test)]
 #[path = "watchdog/muse_standing_tests.rs"]
 mod muse_standing_tests;
 #[cfg(test)]
@@ -98,6 +101,15 @@ const MUSE_LIMIT: &[&str] = &["Usage limit reached", "model failed: API error 42
 /// in 16h 10m attempt #1]`.
 const OPENCODE_LIMIT: &[&str] = &["Free usage exceeded"];
 
+/// Antigravity (`agy`) 1.5.0 classifies a refused turn as `individual quota
+/// reached` (a lowercase literal of its own) and the row it draws is `⚠`, one
+/// space, then the server's words: `Individual quota reached. Please upgrade
+/// your subscription to increase your limits. Resets in 162h20m6s.`, with the
+/// client's `Error ID:` row under it (the human's row, 2026-11-04; the
+/// sentence after the head is server text, so only the head is matched). The
+/// countdown is relative and ae reads no instant from it.
+const AGY_LIMIT: &[&str] = &["Individual quota reached"];
+
 /// How a tool draws one of its OWN rows — its usage-limit notice or its
 /// transient error — data only; the one reader is [`newest_row`]. The row
 /// starts with `lead` exactly, sits within `window` rows of the capture's last
@@ -159,6 +171,18 @@ const OPENCODE_BANNER: Banner = Banner {
     },
     window: 8,
     phrases: OPENCODE_LIMIT,
+};
+/// Antigravity (`agy`) 1.5.0 draws the limit row at column 0: the `⚠` glyph and
+/// an ASCII space (a bare glyph with no blank after it is no row), then the head.
+/// Its capture is joined (`capture-pane -J`), so a wrapped row is one row; the
+/// cell is two rows, a blank and the four-row composer, and 12 leaves room for
+/// extra blanks and a short draft. The column and the window are not measured on
+/// a live frame (only the human's pasted row exists), so a differing frame reads
+/// as no row.
+const AGY_BANNER: Banner = Banner {
+    lead: Lead::Marks(&["⚠ "]),
+    window: 12,
+    phrases: AGY_LIMIT,
 };
 /// Claude 2.1.281 draws an API error as a message row whose glyph sits at
 /// column 0 — `⏺` on macOS, `●` elsewhere — with its wrap at column 2; the
@@ -521,6 +545,7 @@ fn banner_for(agent_bin: &str) -> Option<&'static Banner> {
         "codex" => Some(&CODEX_BANNER),
         "muse" => Some(&MUSE_BANNER),
         "opencode" => Some(&OPENCODE_BANNER),
+        "agy" => Some(&AGY_BANNER),
         _ => None,
     }
 }
