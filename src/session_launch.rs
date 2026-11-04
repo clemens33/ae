@@ -2167,6 +2167,21 @@ fn session_layout(configured: String, saved: Option<String>) -> String {
     })
 }
 
+/// Why a crash restore skips once the lifecycle lock is decided. Without the
+/// lock (a restore takes it only over a record it saw) or without the record,
+/// the record was gone before the lock: that reason, and the guard is never
+/// asked. Otherwise the guard's own verdict, read afresh under the lock.
+fn restore_skip(
+    held: bool,
+    meta_present: bool,
+    guard: impl FnOnce() -> Option<&'static str>,
+) -> Option<&'static str> {
+    if !held || !meta_present {
+        return Some("saved record gone before the lifecycle lock");
+    }
+    guard()
+}
+
 /// `?` for a launch step: a step that refused has already written its own
 /// diagnostic, so the launch ends with the exit code it returned.
 macro_rules! step {
@@ -2301,17 +2316,13 @@ fn launch(
     } else {
         preflight_meta_present
     };
-    if let Some(attempt) = restore {
-        let gone = lifecycle.is_none() || !meta_present;
-        let why = if gone {
-            Some("saved record gone before the lifecycle lock")
-        } else {
+    if let Some(attempt) = restore
+        && let Some(why) = restore_skip(lifecycle.is_some(), meta_present, || {
             attempt.guard.refuse(&dir)
-        };
-        if let Some(why) = why {
-            attempt.skip(why);
-            return Ok(0);
-        }
+        })
+    {
+        attempt.skip(why);
+        return Ok(0);
     }
 
     if let Some(expected) = expected_launch {
@@ -6772,6 +6783,34 @@ mod tests {
                     "{configured:?} {saved:?}"
                 );
             }
+        }
+    }
+
+    /// A restore whose record was gone before the lifecycle lock skips with
+    /// that reason and never asks the guard; a held lock over a present record
+    /// asks the guard exactly once and answers its verdict unchanged.
+    #[test]
+    fn a_restore_skips_a_record_gone_before_the_lock_without_asking_the_guard() {
+        use super::restore_skip;
+        use std::cell::Cell;
+        let gone = Some("saved record gone before the lifecycle lock");
+        for (held, meta_present) in [(false, true), (true, false), (false, false)] {
+            let asked = Cell::new(0);
+            let verdict = restore_skip(held, meta_present, || {
+                asked.set(asked.get() + 1);
+                None
+            });
+            assert_eq!(verdict, gone, "held={held} meta_present={meta_present}");
+            assert_eq!(asked.get(), 0, "held={held} meta_present={meta_present}");
+        }
+        for guard in [None, Some("launched again since the scan")] {
+            let asked = Cell::new(0);
+            let verdict = restore_skip(true, true, || {
+                asked.set(asked.get() + 1);
+                guard
+            });
+            assert_eq!(verdict, guard, "{guard:?}");
+            assert_eq!(asked.get(), 1, "{guard:?}");
         }
     }
 
