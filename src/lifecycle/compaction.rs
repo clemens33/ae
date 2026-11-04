@@ -135,14 +135,14 @@ pub(crate) fn run(
         confirm_body(&frozen, args.digest_only, err)?;
         write!(err, "Continue? [y/N] ")?;
         err.flush()?;
-        match read_reply() {
-            Some(reply) if reply.starts_with('y') || reply.starts_with('Y') => {}
-            Some(_) => {
+        match answer(read_reply().as_deref()) {
+            Answer::Go => {}
+            Answer::Declined => {
                 writeln!(err, "Aborted.")?;
                 return Ok(0);
             }
             // EOF IS NOT CONSENT — AND NOT A CRASH.
-            None => {
+            Answer::NoInput => {
                 writeln!(
                     err,
                     "Error: could not obtain confirmation — no input on stdin."
@@ -177,74 +177,78 @@ pub(crate) fn run(
         // A retry reuses an outstanding request (and, through its stored body,
         // its baseline) rather than delivering a duplicate.
         let mut pending = outstanding(&dir)?;
-        if args.digest_only {
+        match handover_route(args.digest_only, !pending.is_empty()) {
             // The ONLY degradation, and it is explicit.
-            if !pending.is_empty() {
-                if compact::cancel_step(&dir, &pending, err)? != 0 {
+            Handover::Skip { withdraw } => {
+                if withdraw {
+                    if compact::cancel_step(&dir, &pending, err)? != 0 {
+                        return Ok(EXIT_FAILED);
+                    }
+                    writeln!(err, "reboot: withdrew {pending} (--digest-only).")?;
+                    pending.clear();
+                }
+                writeln!(
+                    err,
+                    "reboot: semantic handover skipped (--digest-only); the digest is the handover."
+                )?;
+            }
+            Handover::Request => {
+                let mut baseline = Vec::new();
+                let baseline = if compact::memo_baseline_step(&dir, &mut baseline)? == 0 {
+                    String::from_utf8_lossy(&baseline).trim().to_owned()
+                } else {
+                    "0".to_owned()
+                };
+                let body = request_text(&dir, &baseline);
+                let sender = tracked::Sender {
+                    display: format!("ae:reboot:{}", frozen.uuid),
+                    slot: String::new(),
+                    session: String::new(),
+                };
+                let mut delivered = Vec::new();
+                let code = tracked::run(
+                    tracked::Kind::Ask,
+                    &dir,
+                    &[frozen.main_ref.clone(), body],
+                    Some(&sender),
+                    &frozen.name,
+                    Timestamp::now(),
+                    entropy(),
+                    std::time::Duration::from_millis(0),
+                    &mut delivered,
+                    err,
+                )?;
+                if code != 0 {
+                    writeln!(
+                        err,
+                        "Error: could not deliver the handover request to '{}'.",
+                        frozen.main_ref
+                    )?;
+                    writeln!(
+                        err,
+                        "  Nothing was stopped and nothing was archived; the session is untouched."
+                    )?;
                     return Ok(EXIT_FAILED);
                 }
-                writeln!(err, "reboot: withdrew {pending} (--digest-only).")?;
-                pending.clear();
-            }
-            writeln!(
-                err,
-                "reboot: semantic handover skipped (--digest-only); the digest is the handover."
-            )?;
-        } else if pending.is_empty() {
-            let mut baseline = Vec::new();
-            let baseline = if compact::memo_baseline_step(&dir, &mut baseline)? == 0 {
-                String::from_utf8_lossy(&baseline).trim().to_owned()
-            } else {
-                "0".to_owned()
-            };
-            let body = request_text(&dir, &baseline);
-            let sender = tracked::Sender {
-                display: format!("ae:reboot:{}", frozen.uuid),
-                slot: String::new(),
-                session: String::new(),
-            };
-            let mut delivered = Vec::new();
-            let code = tracked::run(
-                tracked::Kind::Ask,
-                &dir,
-                &[frozen.main_ref.clone(), body],
-                Some(&sender),
-                &frozen.name,
-                Timestamp::now(),
-                entropy(),
-                std::time::Duration::from_millis(0),
-                &mut delivered,
-                err,
-            )?;
-            if code != 0 {
+                pending = outstanding(&dir)?;
+                if pending.is_empty() {
+                    writeln!(
+                        err,
+                        "Error: the handover request was delivered but not recorded — refusing to wait on a request ae cannot see."
+                    )?;
+                    return Ok(EXIT_FAILED);
+                }
                 writeln!(
                     err,
-                    "Error: could not deliver the handover request to '{}'.",
-                    frozen.main_ref
+                    "reboot: handover requested as {pending}; waiting for the reply AND a new handover memo."
                 )?;
+            }
+            Handover::Reuse => {
                 writeln!(
                     err,
-                    "  Nothing was stopped and nothing was archived; the session is untouched."
+                    "reboot: reusing the outstanding handover request {pending}."
                 )?;
-                return Ok(EXIT_FAILED);
             }
-            pending = outstanding(&dir)?;
-            if pending.is_empty() {
-                writeln!(
-                    err,
-                    "Error: the handover request was delivered but not recorded — refusing to wait on a request ae cannot see."
-                )?;
-                return Ok(EXIT_FAILED);
-            }
-            writeln!(
-                err,
-                "reboot: handover requested as {pending}; waiting for the reply AND a new handover memo."
-            )?;
-        } else {
-            writeln!(
-                err,
-                "reboot: reusing the outstanding handover request {pending}."
-            )?;
         }
         reference = pending;
     }
@@ -736,6 +740,49 @@ fn entropy() -> u64 {
     RandomState::new().hash_one(std::process::id())
 }
 
+/// What the confirmation line said.
+#[derive(Debug, PartialEq, Eq)]
+enum Answer {
+    /// A line that starts with `y` or `Y`: proceed.
+    Go,
+    /// Any other line, an empty one included: a typed decline.
+    Declined,
+    /// No line at all: end of input is not an answer.
+    NoInput,
+}
+
+/// Classify the line [`read_reply`] read, already trimmed at its start.
+fn answer(reply: Option<&str>) -> Answer {
+    match reply {
+        Some(reply) if reply.starts_with('y') || reply.starts_with('Y') => Answer::Go,
+        Some(_) => Answer::Declined,
+        None => Answer::NoInput,
+    }
+}
+
+/// How phase (b) hands over, from the flag and whether a request is open.
+#[derive(Debug, PartialEq, Eq)]
+enum Handover {
+    /// `--digest-only`: no request; withdraw the open one first, if any.
+    Skip { withdraw: bool },
+    /// Nothing open: deliver a new request.
+    Request,
+    /// A retry: wait on the request already open, never a duplicate.
+    Reuse,
+}
+
+fn handover_route(digest_only: bool, outstanding: bool) -> Handover {
+    if digest_only {
+        Handover::Skip {
+            withdraw: outstanding,
+        }
+    } else if outstanding {
+        Handover::Reuse
+    } else {
+        Handover::Request
+    }
+}
+
 /// Read the confirmation.
 fn read_reply() -> Option<String> {
     let mut buffer = String::new();
@@ -795,6 +842,38 @@ mod tests {
             recovery_command(&frozen),
             "cd '/o' && ae --local 'proj' --from 11111111-2222-3333-4444-555555555555"
         );
+    }
+
+    /// commands.md §ae reboot: a typed `n` is an answer, end of input is not,
+    /// and the prompt's `[y/N]` makes an empty line the default no.
+    #[test]
+    fn only_a_y_line_proceeds_and_end_of_input_is_not_an_answer() {
+        use super::{Answer, answer};
+        for go in ["y", "Y", "yes\n", "YES\n"] {
+            assert_eq!(answer(Some(go)), Answer::Go, "{go:?}");
+        }
+        for no in ["n\n", "N", "", "\n", "not yes\n", "ok"] {
+            assert_eq!(answer(Some(no)), Answer::Declined, "{no:?}");
+        }
+        assert_eq!(answer(None), Answer::NoInput);
+    }
+
+    /// commands.md §ae reboot: `--digest-only` skips the handover explicitly,
+    /// and re-running after a timeout keeps waiting on the same request rather
+    /// than sending a second.
+    #[test]
+    fn digest_only_never_requests_and_a_retry_reuses_the_open_request() {
+        use super::{Handover, handover_route};
+        assert_eq!(
+            handover_route(true, true),
+            Handover::Skip { withdraw: true }
+        );
+        assert_eq!(
+            handover_route(true, false),
+            Handover::Skip { withdraw: false }
+        );
+        assert_eq!(handover_route(false, true), Handover::Reuse);
+        assert_eq!(handover_route(false, false), Handover::Request);
     }
 
     #[test]
