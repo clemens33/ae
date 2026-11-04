@@ -290,11 +290,8 @@ pub(crate) fn path_metadata(path: &Path) -> std::io::Result<fs::Metadata> {
 const STOP_USAGE: &str = "Usage: _stop <session-name|all> [-y] [--self]";
 
 /// `_stop <name|all> [-y] [--self|--handoff|--supervise]` — the whole stop
-/// operation.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the public, handoff and supervisor modes share one ordered parse and target resolution"
-)]
+/// operation, in one order: the argv, the caller's own session, the target,
+/// then the route.
 pub(crate) fn run_stop(
     root: &Path,
     tail: &[String],
@@ -328,24 +325,7 @@ pub(crate) fn run_stop(
     let caller_session = resolution.as_ref().ok().cloned();
     let aim = match stop_target(&args, caller_session.as_deref()) {
         Ok(aim) => aim,
-        Err(NoAim::SelfWithoutCaller) => {
-            writeln!(
-                err,
-                "Error: --self with no session name {NEEDS_PANE}; this one is not an ae agent pane."
-            )?;
-            return Ok(EXIT_FAILED);
-        }
-        Err(NoAim::Usage) => {
-            if let Err(gap) = &resolution {
-                writeln!(
-                    err,
-                    "Error: with no session name, ae stop {NEEDS_PANE}; {}.",
-                    gap.cause(&pane)
-                )?;
-            }
-            writeln!(err, "{STOP_USAGE}")?;
-            return Ok(EXIT_USAGE);
-        }
+        Err(why) => return no_aim(why, &resolution, &pane, err),
     };
     match early_route(&aim, &args, expect.is_some()) {
         Early::SelfAll => {
@@ -371,55 +351,101 @@ pub(crate) fn run_stop(
     let own_in_census = own.is_some_and(|own| {
         aim.target == "all" && all_sessions(root).iter().any(|name| name == own)
     });
-    let yes = args.yes;
-    let target = match late_route(&aim, own, own_in_census) {
-        Late::Fleet(own) => return fleet_supervised(root, own, yes, out, err),
-        Late::SelfStop => return self_supervised(root, &aim.target, yes, out, err),
-        Late::All | Late::One => aim.target,
-    };
-    if target == "all" {
-        let names = all_sessions(root);
-        if names.is_empty() {
-            writeln!(out, "No running ae sessions.")?;
-            return Ok(0);
-        }
-        // THE FLEET FORM CONFIRMS FROM EVERY CALLER.
-        if !yes && !confirm_fleet_stop(names.len(), out, err)? {
-            return Ok(EXIT_FAILED);
-        }
-        let mut failures = 0_u32;
-        for (index, name) in names.iter().enumerate() {
-            let carry = u8::from(failures > 0 || index + 1 < names.len());
-            // A stopped session in the roster is not a failure of `stop all`:
-            // the fleet form's job is that nothing is left running, and one
-            // already down satisfies it.
-            match stop_recorded(root, name, None, carry, out, err)? {
-                StopOutcome::Stopped => {}
-                // Down, but a pane view of it may still run its agents.
-                StopOutcome::AlreadyStopped => {
-                    if !orphans_gone(root, name, err)? {
-                        failures += 1;
-                    }
-                }
-                // `Refused` belongs to a confirmed stop, which the fleet form
-                // never is; it is counted as a failure rather than ignored.
-                StopOutcome::Failed | StopOutcome::Refused(_) => failures += 1,
-            }
-        }
-        if failures > 0 {
+    match late_route(&aim, own, own_in_census) {
+        Late::Fleet(own) => fleet_supervised(root, own, args.yes, out, err),
+        Late::SelfStop => self_supervised(root, &aim.target, args.yes, out, err),
+        Late::All => stop_public_all(root, args.yes, out, err),
+        Late::One => stop_public_one(root, &aim.target, out, err),
+    }
+}
+
+/// A stop with no session to be about: the line that says why, and its exit.
+fn no_aim(
+    why: NoAim,
+    resolution: &std::result::Result<String, CallerGap>,
+    pane: &str,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    match why {
+        NoAim::SelfWithoutCaller => {
             writeln!(
                 err,
-                "{failures} session(s) failed to stop. See errors above."
+                "Error: --self with no session name {NEEDS_PANE}; this one is not an ae agent pane."
             )?;
-            return Ok(EXIT_FAILED);
+            Ok(EXIT_FAILED)
         }
+        NoAim::Usage => {
+            if let Err(gap) = resolution {
+                writeln!(
+                    err,
+                    "Error: with no session name, ae stop {NEEDS_PANE}; {}.",
+                    gap.cause(pane)
+                )?;
+            }
+            writeln!(err, "{STOP_USAGE}")?;
+            Ok(EXIT_USAGE)
+        }
+    }
+}
+
+/// `_stop all` from outside the fleet: confirm, then stop each recorded
+/// session in census order and count every failure.
+fn stop_public_all(
+    root: &Path,
+    yes: bool,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let names = all_sessions(root);
+    if names.is_empty() {
+        writeln!(out, "No running ae sessions.")?;
         return Ok(0);
     }
-    if !name_is_usable(root, &target) {
+    // THE FLEET FORM CONFIRMS FROM EVERY CALLER.
+    if !yes && !confirm_fleet_stop(names.len(), out, err)? {
+        return Ok(EXIT_FAILED);
+    }
+    let mut failures = 0_u32;
+    for (index, name) in names.iter().enumerate() {
+        let carry = u8::from(failures > 0 || index + 1 < names.len());
+        // A stopped session in the roster is not a failure of `stop all`:
+        // the fleet form's job is that nothing is left running, and one
+        // already down satisfies it.
+        match stop_recorded(root, name, None, carry, out, err)? {
+            StopOutcome::Stopped => {}
+            // Down, but a pane view of it may still run its agents.
+            StopOutcome::AlreadyStopped => {
+                if !orphans_gone(root, name, err)? {
+                    failures += 1;
+                }
+            }
+            // `Refused` belongs to a confirmed stop, which the fleet form
+            // never is; it is counted as a failure rather than ignored.
+            StopOutcome::Failed | StopOutcome::Refused(_) => failures += 1,
+        }
+    }
+    if failures > 0 {
+        writeln!(
+            err,
+            "{failures} session(s) failed to stop. See errors above."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    Ok(0)
+}
+
+/// `_stop <name>` of one session the caller is not known to be inside.
+fn stop_public_one(
+    root: &Path,
+    target: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    if !name_is_usable(root, target) {
         writeln!(err, "ae: '{target}' is not a usable session name.")?;
         return Ok(EXIT_FAILED);
     }
-    match stop_recorded(root, &target, None, 0, out, err)? {
+    match stop_recorded(root, target, None, 0, out, err)? {
         StopOutcome::Stopped => Ok(0),
         StopOutcome::AlreadyStopped | StopOutcome::Failed | StopOutcome::Refused(_) => {
             Ok(EXIT_FAILED)
