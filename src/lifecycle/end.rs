@@ -767,25 +767,14 @@ pub(crate) fn run(
 
     // RESOLVE BEFORE PROMPTING.
     let targets: Vec<String> = if args.mode == RunMode::Handoff && !args.confirmed.is_empty() {
-        let carried: Vec<String> = args
-            .confirmed
-            .iter()
-            .map(|confirmed| confirmed.name.clone())
-            .collect();
-        let matches_operand =
-            args.target == "all" || (carried.len() == 1 && carried.first() == Some(&args.target));
-        let unique = carried
-            .iter()
-            .enumerate()
-            .all(|(index, name)| !carried[..index].contains(name));
-        if !matches_operand || !unique {
+        let Some(carried) = carried_targets(&args.target, &args.confirmed) else {
             writeln!(
                 err,
                 "Error: carried end plans do not match '{}'.",
                 args.target
             )?;
             return Ok(EXIT_USAGE);
-        }
+        };
         carried
     } else if args.target == "all" {
         all_sessions(root)
@@ -819,81 +808,81 @@ pub(crate) fn run(
         .map(|name| freeze_target(root, &args, name))
         .collect();
 
-    if args.mode == RunMode::Handoff {
-        if frozen.is_empty() {
-            writeln!(out, "No ae sessions.")?;
-            return Ok(0);
-        }
-        return handoff(
-            root,
-            &args,
-            &frozen,
-            caller_session.as_deref(),
-            false,
-            out,
-            err,
-        );
-    }
-
-    if !args.force
-        && !std::io::IsTerminal::is_terminal(&std::io::stdin())
-        && let Some(caller) = &caller_session
-    {
-        let Some(continuation) = handoff_argv(&args, &frozen) else {
-            writeln!(
-                err,
-                "Error: ae cannot name its own executable, so it cannot hand '{}' to a supervisor — nothing was ended.",
-                args.target
-            )?;
-            return Ok(EXIT_FAILED);
-        };
-        let Some(caller_server) = caller_server.as_ref() else {
-            writeln!(err, "Error: the calling tmux server is unknown; pass -f.")?;
-            return Ok(EXIT_FAILED);
-        };
-        return match confirm_on_client(
-            caller_server,
-            caller,
-            &end_prompt(&args.target, &frozen),
-            &continuation,
-        ) {
-            ClientPrompt::Shown => Ok(0),
-            ClientPrompt::Nobody => {
-                writeln!(err, "Error: nobody attached to confirm; pass -f.")?;
-                Ok(EXIT_FAILED)
-            }
-            ClientPrompt::Failed => {
-                writeln!(err, "Error: tmux refused the confirmation prompt; pass -f.")?;
-                Ok(EXIT_FAILED)
-            }
-        };
-    }
-
-    if !args.force {
-        // Set REGARDLESS of how many targets there were: the human was asked,
-        // and what they were asked about is now the whole of what may be ended.
-        confirm_body(root, &args, &frozen, err)?;
-        write!(err, "Continue? [y/N] ")?;
-        err.flush()?;
-        match read_reply() {
-            Some(reply) if reply.starts_with('y') || reply.starts_with('Y') => {}
-            Some(_) => {
-                writeln!(err, "Aborted.")?;
+    match prompt_route(args.mode, args.force, caller_session.as_deref(), || {
+        std::io::IsTerminal::is_terminal(&std::io::stdin())
+    }) {
+        Prompt::Handoff => {
+            if frozen.is_empty() {
+                writeln!(out, "No ae sessions.")?;
                 return Ok(0);
             }
-            None => {
+            return handoff(
+                root,
+                &args,
+                &frozen,
+                caller_session.as_deref(),
+                false,
+                out,
+                err,
+            );
+        }
+        Prompt::Client(caller) => {
+            let Some(continuation) = handoff_argv(&args, &frozen) else {
                 writeln!(
                     err,
-                    "Error: could not obtain confirmation — no input on stdin."
+                    "Error: ae cannot name its own executable, so it cannot hand '{}' to a supervisor — nothing was ended.",
+                    args.target
                 )?;
-                writeln!(
-                    err,
-                    "  Nothing was stopped and nothing was deleted. Run it from a terminal, or"
-                )?;
-                writeln!(err, "  pass -f if you mean to proceed without being asked.")?;
                 return Ok(EXIT_FAILED);
+            };
+            let Some(caller_server) = caller_server.as_ref() else {
+                writeln!(err, "Error: the calling tmux server is unknown; pass -f.")?;
+                return Ok(EXIT_FAILED);
+            };
+            return match confirm_on_client(
+                caller_server,
+                caller,
+                &end_prompt(&args.target, &frozen),
+                &continuation,
+            ) {
+                ClientPrompt::Shown => Ok(0),
+                ClientPrompt::Nobody => {
+                    writeln!(err, "Error: nobody attached to confirm; pass -f.")?;
+                    Ok(EXIT_FAILED)
+                }
+                ClientPrompt::Failed => {
+                    writeln!(err, "Error: tmux refused the confirmation prompt; pass -f.")?;
+                    Ok(EXIT_FAILED)
+                }
+            };
+        }
+        Prompt::Terminal => {
+            // Set REGARDLESS of how many targets there were: the human was asked,
+            // and what they were asked about is now the whole of what may be ended.
+            confirm_body(root, &args, &frozen, err)?;
+            write!(err, "Continue? [y/N] ")?;
+            err.flush()?;
+            match answer(read_reply().as_deref()) {
+                Answer::Yes => {}
+                Answer::No => {
+                    writeln!(err, "Aborted.")?;
+                    return Ok(0);
+                }
+                Answer::NoInput => {
+                    writeln!(
+                        err,
+                        "Error: could not obtain confirmation — no input on stdin."
+                    )?;
+                    writeln!(
+                        err,
+                        "  Nothing was stopped and nothing was deleted. Run it from a terminal, or"
+                    )?;
+                    writeln!(err, "  pass -f if you mean to proceed without being asked.")?;
+                    return Ok(EXIT_FAILED);
+                }
             }
         }
+        Prompt::Forced => {}
     }
 
     if frozen.is_empty() {
@@ -919,10 +908,7 @@ pub(crate) fn run(
     // EXACTLY the list the human was shown.
     let mut failures = 0_u32;
     for target in &frozen {
-        // `-f` freezes nothing, because nothing was promised.
-        let contract = confirmed_for(&args, &target.name)
-            .map(|confirmed| (&confirmed.plan, &confirmed.tmux))
-            .or_else(|| (!args.force).then_some((&target.plan, &target.tmux)));
+        let contract = contract_for(&args, target);
         if !end_one(root, &target.name, &args, contract, out, err)? {
             failures += 1;
         }
@@ -935,6 +921,86 @@ pub(crate) fn run(
         return Ok(EXIT_FAILED);
     }
     Ok(0)
+}
+
+/// The carried names a handoff ends, in carried order, when they answer the
+/// operand — `all`, or exactly one plan for the named target — and no name
+/// rides twice.
+fn carried_targets(target: &str, confirmed: &[ConfirmedPlan]) -> Option<Vec<String>> {
+    let carried: Vec<String> = confirmed
+        .iter()
+        .map(|confirmed| confirmed.name.clone())
+        .collect();
+    let matches_operand = target == "all"
+        || (carried.len() == 1 && carried.first().map(String::as_str) == Some(target));
+    let unique = carried
+        .iter()
+        .enumerate()
+        .all(|(index, name)| !carried[..index].contains(name));
+    (matches_operand && unique).then_some(carried)
+}
+
+/// Who answers for an end that is not supervised.
+#[derive(Debug, PartialEq, Eq)]
+enum Prompt<'a> {
+    /// `--handoff`: the human already answered; nobody is asked again.
+    Handoff,
+    /// No terminal on stdin, inside a session: the caller's attached client.
+    Client(&'a str),
+    /// The terminal on stdin, or nothing at all.
+    Terminal,
+    /// `-f`: nobody is asked.
+    Forced,
+}
+
+/// Who answers. `stdin_tty` is asked only for an unforced direct end, before
+/// the caller is consulted, so stdin is looked at exactly when a prompt is due.
+fn prompt_route(
+    mode: RunMode,
+    force: bool,
+    caller: Option<&str>,
+    stdin_tty: impl FnOnce() -> bool,
+) -> Prompt<'_> {
+    if mode == RunMode::Handoff {
+        return Prompt::Handoff;
+    }
+    if force {
+        return Prompt::Forced;
+    }
+    let tty = stdin_tty();
+    match caller {
+        Some(caller) if !tty => Prompt::Client(caller),
+        _ => Prompt::Terminal,
+    }
+}
+
+/// What one line typed at the terminal question means.
+#[derive(Debug, PartialEq, Eq)]
+enum Answer {
+    Yes,
+    No,
+    NoInput,
+}
+
+/// `y` or `Y` first is yes; any other line is no; no line at all is no input.
+fn answer(reply: Option<&str>) -> Answer {
+    match reply {
+        Some(reply) if reply.starts_with('y') || reply.starts_with('Y') => Answer::Yes,
+        Some(_) => Answer::No,
+        None => Answer::NoInput,
+    }
+}
+
+/// What `target` is ended under: the plan carried for it, else the plan the
+/// human was shown — unless `-f`, which freezes nothing because nothing was
+/// promised.
+fn contract_for<'a>(
+    args: &'a Args,
+    target: &'a FrozenTarget,
+) -> Option<(&'a Plan, &'a FrozenTmux)> {
+    confirmed_for(args, &target.name)
+        .map(|confirmed| (&confirmed.plan, &confirmed.tmux))
+        .or_else(|| (!args.force).then_some((&target.plan, &target.tmux)))
 }
 
 #[allow(
@@ -3122,11 +3188,11 @@ fn socket_dir(root: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, ConfirmedPlan, EndExpectation, ExpectWords, FrozenTarget, FrozenTmux, Git, Plan,
-        Pushed, Reproof, Sweep, TmuxSight, Verdict, archive_step, early_finish, end_prompt,
-        end_purge, freeze_target, parse, path_exists, purge_conversation_files, push_facts,
-        refusal_before_stop, reprove, sanitize_branch_name, server_from_words, supervisor_args,
-        unrecorded_verdict,
+        Action, Answer, ConfirmedPlan, EndExpectation, ExpectWords, FrozenTarget, FrozenTmux, Git,
+        Plan, Prompt, Pushed, Reproof, RunMode, Sweep, TmuxSight, Verdict, answer, archive_step,
+        carried_targets, contract_for, early_finish, end_prompt, end_purge, freeze_target, parse,
+        path_exists, prompt_route, purge_conversation_files, push_facts, refusal_before_stop,
+        reprove, sanitize_branch_name, server_from_words, supervisor_args, unrecorded_verdict,
     };
     use std::path::{Path, PathBuf};
 
@@ -4122,6 +4188,142 @@ mod tests {
         assert_eq!(
             facts(Pushed::NoOrigin),
             (row(["no-origin", "-", "/w d", "/w d"]), None, true)
+        );
+    }
+
+    fn carry(name: &str) -> ConfirmedPlan {
+        ConfirmedPlan {
+            name: name.to_owned(),
+            ..confirmed(false, false)
+        }
+    }
+
+    #[test]
+    fn a_handoff_ends_the_carried_names_only_when_they_answer_the_operand_once_each() {
+        let names = |plans: &[ConfirmedPlan], target: &str| carried_targets(target, plans);
+        let owned = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
+        assert_eq!(names(&[carry("a")], "a"), Some(owned(&["a"])));
+        assert_eq!(names(&[carry("a")], "b"), None, "one plan for another name");
+        assert_eq!(
+            names(&[carry("a"), carry("b")], "a"),
+            None,
+            "a named target takes exactly one plan, even when one of them is its own"
+        );
+        assert_eq!(
+            names(&[carry("b"), carry("a")], "all"),
+            Some(owned(&["b", "a"])),
+            "all takes every distinct plan, in carried order"
+        );
+        assert_eq!(
+            names(&[carry("a"), carry("b"), carry("a")], "all"),
+            None,
+            "a name carried twice is refused even for all"
+        );
+        assert_eq!(names(&[carry("a"), carry("a")], "a"), None);
+    }
+
+    #[test]
+    fn the_terminal_is_looked_at_exactly_when_an_unforced_direct_end_must_ask() {
+        let route = |mode, force, caller, tty| {
+            let reads = std::cell::Cell::new(0_u32);
+            let prompt = prompt_route(mode, force, caller, || {
+                reads.set(reads.get() + 1);
+                tty
+            });
+            (prompt, reads.get())
+        };
+        for force in [false, true] {
+            for caller in [None, Some("own")] {
+                for tty in [false, true] {
+                    assert_eq!(
+                        route(RunMode::Handoff, force, caller, tty),
+                        (Prompt::Handoff, 0),
+                        "handoff never asks: force={force} caller={caller:?} tty={tty}"
+                    );
+                    assert_eq!(
+                        route(RunMode::Direct, true, caller, tty),
+                        (Prompt::Forced, 0),
+                        "-f never asks: caller={caller:?} tty={tty}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            route(RunMode::Direct, false, Some("own"), false),
+            (Prompt::Client("own"), 1),
+            "no terminal inside a session asks the caller's client"
+        );
+        assert_eq!(
+            route(RunMode::Direct, false, Some("own"), true),
+            (Prompt::Terminal, 1),
+            "a terminal inside a session is asked directly"
+        );
+        for tty in [false, true] {
+            assert_eq!(
+                route(RunMode::Direct, false, None, tty),
+                (Prompt::Terminal, 1),
+                "outside a session the terminal is asked, and looked at once: tty={tty}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_line_starting_with_y_confirms_and_no_line_is_no_input() {
+        for yes in ["y", "Y", "yes\n", "Yes please\n", "y\n"] {
+            assert_eq!(answer(Some(yes)), Answer::Yes, "{yes:?}");
+        }
+        for no in ["", "\n", "n\n", "no\n", "N", " y", "ja\n"] {
+            assert_eq!(answer(Some(no)), Answer::No, "{no:?}");
+        }
+        assert_eq!(answer(None), Answer::NoInput);
+    }
+
+    #[test]
+    fn a_target_ends_under_its_carried_plan_else_the_shown_plan_unless_forced() {
+        let carried = [
+            "--confirmed-target=alpha",
+            "--confirmed-action=keep",
+            "--confirmed-detail=/carried",
+            "--confirmed-purge=off",
+            "--confirmed-source=explicit",
+            "--confirmed-tmux=unknown",
+        ];
+        let args = |words: &[&str]| {
+            let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+            parse(&words).expect("well-formed words")
+        };
+        let shown = frozen("alpha", true);
+        let carried_plan = Plan {
+            action: Action::Keep,
+            detail: "/carried".to_owned(),
+            purge: false,
+        };
+        for force in [&[][..], &["-f"][..]] {
+            let mut words = vec!["alpha"];
+            words.extend_from_slice(force);
+            words.extend_from_slice(&carried);
+            assert_eq!(
+                contract_for(&args(&words), &shown),
+                Some((&carried_plan, &FrozenTmux::Unknown)),
+                "a carried plan wins, with or without -f: {force:?}"
+            );
+            assert_eq!(
+                contract_for(&args(&words), &frozen("beta", true)),
+                force
+                    .is_empty()
+                    .then_some((&frozen("beta", true).plan, &FrozenTmux::Unobserved)),
+                "another name's carried plan is not this target's: {force:?}"
+            );
+        }
+        assert_eq!(
+            contract_for(&args(&["alpha"]), &shown),
+            Some((&shown.plan, &shown.tmux)),
+            "unforced, the shown plan is the contract"
+        );
+        assert_eq!(
+            contract_for(&args(&["-f", "alpha"]), &shown),
+            None,
+            "-f promised nothing"
         );
     }
 }
