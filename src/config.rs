@@ -991,32 +991,60 @@ fn overlay_identity_text(
         let Some(key) = identity_key_claim(file, &section, line, trimmed)? else {
             continue;
         };
-        if seen.iter().any(|(s, k)| s == &section && k == key) {
-            return Err(ConfigError::DuplicateKey {
-                file: file.to_owned(),
-                section: section.clone(),
-                key: key.to_owned(),
-                line,
-            });
-        }
-        seen.push((section.clone(), key.to_owned()));
+        claim_once(file, &mut seen, &section, key, line)?;
         // Now the VALUE.
         let Some(value) = entry_value(trimmed) else {
             continue;
         };
-        match section.as_str() {
-            "clients" => {
-                let client = parse_client(file, key, line, &value)?;
-                upsert_client(&mut cfg.clients, key, client);
-            }
-            "profiles" => upsert(&mut cfg.profiles, key, value),
-            "roster" => upsert(&mut cfg.roster, key, value),
-            _ => {
-                if key == "main" {
-                    cfg.main = Some(value);
-                } else {
-                    cfg.workers = Some(value);
-                }
+        apply_identity_value(file, cfg, &section, key, line, value)?;
+    }
+    Ok(())
+}
+
+/// Record one key claim in `seen`, refusing a key this file already claimed
+/// in the same section.
+fn claim_once(
+    file: &Path,
+    seen: &mut Vec<(String, String)>,
+    section: &str,
+    key: &str,
+    line: usize,
+) -> Result<(), ConfigError> {
+    if seen.iter().any(|(s, k)| s == section && k == key) {
+        return Err(ConfigError::DuplicateKey {
+            file: file.to_owned(),
+            section: section.to_owned(),
+            key: key.to_owned(),
+            line,
+        });
+    }
+    seen.push((section.to_owned(), key.to_owned()));
+    Ok(())
+}
+
+/// Write one claimed value into `cfg`: a `[clients]` value must parse as a
+/// client; `[profiles]` and `[roster]` replace in place or append; a
+/// `[workspace]` value sets `main` or `workers`.
+fn apply_identity_value(
+    file: &Path,
+    cfg: &mut IdentityConfig,
+    section: &str,
+    key: &str,
+    line: usize,
+    value: String,
+) -> Result<(), ConfigError> {
+    match section {
+        "clients" => {
+            let client = parse_client(file, key, line, &value)?;
+            upsert_client(&mut cfg.clients, key, client);
+        }
+        "profiles" => upsert(&mut cfg.profiles, key, value),
+        "roster" => upsert(&mut cfg.roster, key, value),
+        _ => {
+            if key == "main" {
+                cfg.main = Some(value);
+            } else {
+                cfg.workers = Some(value);
             }
         }
     }
@@ -3946,6 +3974,24 @@ mod tests {
                 Ok(name.to_owned())
             );
         }
+    }
+
+    #[test]
+    fn a_key_is_claimed_once_per_section_and_the_repeat_names_its_line() {
+        let file = Path::new("f");
+        let mut seen = Vec::new();
+        for (section, key) in [("profiles", "a"), ("roster", "a"), ("profiles", "b")] {
+            assert_eq!(claim_once(file, &mut seen, section, key, 2), Ok(()));
+        }
+        assert_eq!(
+            claim_once(file, &mut seen, "roster", "a", 9),
+            Err(ConfigError::DuplicateKey {
+                file: file.to_owned(),
+                section: "roster".to_owned(),
+                key: "a".to_owned(),
+                line: 9
+            })
+        );
     }
 
     #[test]
