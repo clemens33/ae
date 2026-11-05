@@ -2562,4 +2562,35 @@ mod tests {
             );
         }
     }
+
+    /// The operands are the quote-resolved words AFTER the harness word, never
+    /// the harness word or its prefix; only a command led by its harness runs
+    /// it first.
+    #[test]
+    fn the_operands_are_the_resolved_words_after_the_harness_word() {
+        for (cmd, first, operands) in [
+            (
+                "codex -m 'gpt 6' -p\"w x\"",
+                true,
+                &["-m", "gpt 6", "-pw x"][..],
+            ),
+            ("CODEX_HOME=/a codex --oss", true, &["--oss"][..]),
+            ("env A=1 codex -p work", false, &["-p", "work"][..]),
+            ("/opt/bin/claude", true, &[][..]),
+        ] {
+            let parsed = lex_simple_command(cmd).unwrap();
+            assert_eq!(
+                (parsed.runs_first(), parsed.operands()),
+                (
+                    first,
+                    operands
+                        .iter()
+                        .map(|word| (*word).to_owned())
+                        .collect::<Vec<_>>()
+                        .as_slice()
+                ),
+                "{cmd}"
+            );
+        }
+    }
 }
