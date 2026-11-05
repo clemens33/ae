@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.20] - 2026-11-05
+- **reseat**: Lead-pair headroom threshold auto_reseat_lead_at
+- **reseat**: Auto_effort off holds the step and the detached leg
+- **app**: Settings rows count includes auto_reseat_lead_at
+
 ## [v2026.11.19] - 2026-11-05
 - **reseat**: Refuse unusable clients before stopping a tool
 
