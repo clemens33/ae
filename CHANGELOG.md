@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.16] - 2026-11-05
+- Auto reseat never collapses a cross-provider review pair
+- The lifecycle gate reads the lead pair from the locked meta
+- The operands of a launch command are the words after its harness
+- What an automatic move says of its pair is judged on the pair after it
+
 ## [v2026.11.15] - 2026-11-04
 - An agy seat on its individual quota limit reads as a usage limit
 - An agy seat on its individual quota limit can be stopped for a reseat
