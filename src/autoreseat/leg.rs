@@ -3764,6 +3764,35 @@ mod tests {
         assert_eq!(read(("claude", Some("alt"))), Some((None, Some(Anthropic))));
     }
 
+    /// Under the lifecycle lock the lead pair is read from the LOCKED meta's
+    /// layout: in a lead-pair session `main` is held off its partner's
+    /// provider, and in any other layout `main` and `worker.0` are no pair and
+    /// nothing is held (#305).
+    #[test]
+    fn the_lifecycle_gate_reads_the_lead_pair_from_the_locked_meta() {
+        let root = Root(std::env::temp_dir().join(format!("ae-leg-lead-{}", std::process::id())));
+        let dir = root.0.join("demo");
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+        let config = dir.join("config");
+        let profiles = "[profiles]\nown = claude --pg own\npeer = codex -m gpt-6\n";
+        assert!(std::fs::write(&config, profiles).is_ok(), "the config");
+        let meta = |layout: &str| {
+            format!(
+                "session=demo\nconfig={}\nlayout={layout}\nseat.main=lead\nprofile.main=own\n\
+                 agent_bin.main=claude\nseat.worker.0=colead\nprofile.worker.0=peer\n\
+                 agent_bin.worker.0=codex\n",
+                config.display()
+            )
+        };
+        let gate = |layout: &str, command: &str| {
+            pair_changed(&dir, meta(layout).as_bytes(), "main", command)
+        };
+        let held = gate("lead-pair", "codex -m gpt-6.1").unwrap_or_default();
+        assert!(held.contains("partner colead serves OpenAI"), "{held:?}");
+        assert_eq!(gate("lead-pair", "claude --pg other"), None);
+        assert_eq!(gate("vertical", "codex -m gpt-6.1"), None);
+    }
+
     /// Under the lifecycle lock, a pair already collapsed on one provider lets
     /// a move go on only to a destination PROVEN on some provider: the same
     /// proof the chooser and the `stays` label use (#305 R7).
