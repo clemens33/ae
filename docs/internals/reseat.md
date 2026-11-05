@@ -954,6 +954,81 @@ kind a profile was left on is the kind of the attempt that moved it, judged when
 that attempt was journaled, so an opener booked in the same second afterwards
 cannot relabel the move.
 
+### Moving back (#305)
+
+An automatic move is a detour. Once the account the seat left proves room
+again, the watchdog moves an idle seat back to where it started, through the
+same trigger, leg, records and endings, as a third kind of episode: RETURN.
+
+**The chain.** `autoreseat::chain` folds the seat's journal in append order,
+from its newest `spawn`. A watchdog `reseat` that moved the seat
+(`reseat::moved_seat`), closed by a LATER watchdog `auto-reseat-done` of a
+limit or headroom attempt, is one hop; the first hop's `done` names the ORIGIN
+(its `ref`, the profile left) and its `ts` is `away_at`, and later hops keep
+both. Any `reseat` journaled by anyone but the watchdog — a move, a stop, or one
+that only says the seat already uses that profile — ends the chain, and so does
+a `spawn` or a return's own `done`. A `done` with no moved `reseat` before it
+proves nothing. `ae reseat` journals its record with the target's slot and no
+session, so `autoreseat::addressed` takes a `reseat` record by its exact name
+and slot with no session key at all; every other record is addressed by the
+routing rule. Only the root counts: a seat moved A → B → C goes back to A, never
+to B, and an intermediate profile is never a destination. The origin is resolved
+through TODAY's config: a profile gone from it leaves the seat where it is, and a
+profile whose command was edited since the move binds the seat to the account
+and model that command names now. The chain is read from the journal alone, so a
+seat moved automatically before this release, with its history intact, can
+return too.
+
+**The proof.** `leg::home` reads the origin's accounts from the one held quota
+observation (`leg::origin_samples`): every row of every group naming the origin
+profile, each rollout, rows scoped to another model family than the origin's pin
+left out, and rows ae cannot judge KEPT. `autoreseat::return_ready` then needs,
+for every window of those accounts present NOW, its NEWEST reading to be judged,
+fresh, observed strictly after `away_at`, and strictly below the band; a tie at
+the newest stamp must agree. The band is `auto_reseat_at` − 5 (95 − 5 when off).
+At least one window proven a day long must be among them, and the worst such one
+is the cause: `return to <origin>: <pct>% <window>`. Stale, unknown, reset-passed,
+unjudged, unstamped, or tied-opposing readings deny it; a passed reset alone
+proves nothing, while a fresh healthy reading after `away_at` proves a manual
+reset. A usable spend cap on an origin account, or another seat of the session
+latched on one (`leg::origin_blocked`), denies it too.
+
+**The episode.** With the proof and no return episode open, the daemon books
+`auto-reseat-return` (its `ts` the key, its summary the cause). A drawn limit
+outranks it and so does any headroom episode: a seat its own account presses is
+the headroom path's. An unmapped seat — no `[auto_reseat]` row, no family — may
+still go home, since the origin is the return's one candidate; only the return
+path decides it. The rest is the limit path's: the plain grace and the plain
+frame (a resume's waivers never apply, and a return never takes
+`StopPolicy::QuietStart`), the same rounds and cooldowns, the pair guard, and a
+`done` whose `ref` is the profile left (the substitute) and whose summary names
+the return. A return's `done` never makes the substitute a profile "left on"
+pressure. The daemon holds a return SILENTLY: a busy, drafted or unread seat
+books no hold, attempt or notice record. The trigger and the leg re-derive the proof: gone, the leg closes the
+attempt `held: the origin account no longer proves room`
+(`held: the seat is no longer on its automatic chain`, `held: the return is not due yet`).
+Under the lifecycle lock `reseat::prepare` re-checks that the chain's newest move
+and the locked row's profile are still what the return was chosen from
+(`leg::return_changed`); anything else holds as `return-changed` (transient)
+with nothing stopped.
+
+**The flap limit.** A seat goes home at most `MAX_RETURNS` (2) times in a rolling
+24 h, counted from return `done`s in the journal, so a restart forgets nothing.
+Past it the daemon journals `auto-reseat-held` once per chain, `other: held:
+returned 2 times in 24 h; move it back by hand (ae reseat <session> <agent>
+--using <origin>)`, and tells it as every ending.
+
+Nothing new is configured: `auto_reseat`, `auto_reseat_sessions` and the
+switch's scope gate a return as they gate every move, and with quota off no
+reading proves anything, so nothing returns. Named residuals: an origin whose
+account no seat writes stays dark (a fresh reading needs a writer on it, so a
+seat may wait on its substitute); a short window that vanishes from the
+observation is no longer judged, since only the windows present now are; an
+origin account that fills again right after a return moves the seat away again
+through the ordinary paths, bounded by the flap limit; an origin whose tool ae
+reads no quota for never returns; and a busy seat waits for an idle frame
+however long that takes.
+
 ### A resume on an exhausted seat
 
 A stopped session started onto a dead account should not spend a failed turn, or
