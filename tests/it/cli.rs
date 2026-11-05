@@ -912,10 +912,11 @@ fn the_black_box_runner_cannot_see_the_developers_own_home_or_tmux() {
 }
 
 /// Run one GENERATED SESSION HELPER — a shim the launch wrote — as a black-box
-/// process.
+/// process, or this integration binary's own `current_exe()` for the bounded
+/// `--list` test inventory in `gate`.
 #[allow(
     clippy::disallowed_types,
-    reason = "the black-box tests' door: a session helper must be RUN to be proven; see clippy.toml"
+    reason = "the black-box tests' door: a generated session helper, or this integration binary's own current_exe for a bounded --list inventory, must be RUN to be proven; see clippy.toml"
 )]
 pub(crate) fn helper(path: &std::path::Path) -> Runner {
     let scratch = OwnedScratch::absent(run_scratch());

@@ -138,7 +138,7 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 | `just rust-test` | `cargo nextest run --locked` **and** `cargo test --doc --locked`. Both. nextest does not run doctests |
 | `just rust-fuzz-check` | product compiler, locked `cargo check --bins` over every fuzz target; no execution. Uses inherited `CARGO_TARGET_DIR` or root `target` |
 | `just rust-deny` / `rust-vet` | supply chain. The TLS graph is EXEMPTED, not audited (docs/history.md §11) |
-| `just rust-mutants` | does the suite discriminate? A product slice runs it `--in-diff` over its own diff before freeze and answers every survivor in the freeze report (test added, or named equivalent); budget bounded, LOCAL, no percentage ever cited or gated (docs/development.md §Mutation testing). CI runs it diff-bounded on path-matching pushes to main and PRs targeting main when a source diff and usable base exist; the full lane is opt-in manual dispatch (`mutants=true`). Bounded in config: 2 tests, 60 s kill, RSS watcher (`AE_MUTANTS_RSS_MAX_MB`, default 2048). `rust-cov` reports, never gates |
+| `just rust-mutants` | does the suite discriminate? A product slice runs it `--in-diff` over its own diff before freeze and answers every survivor in the freeze report (test added, or named equivalent); budget bounded, LOCAL, no percentage ever cited or gated (docs/development.md §Mutation testing). CI runs it diff-bounded on path-matching pushes to main and PRs targeting main when a source diff and usable base exist; the full lane is opt-in manual dispatch (`mutants=true`). Bounded in config: 2 tests, 60 s kill (three named tests 180 s, below), RSS watcher (`AE_MUTANTS_RSS_MAX_MB`, default 2048). `rust-cov` reports, never gates |
 | `just rust-fuzz target=<name> secs=60` / `rust-fuzz-all secs=60` | human-run cargo-fuzz over the hostile parsers, on an exact nightly. Refuses on an unpinned tool or a stale `fuzz/Cargo.lock`, ends on the cutover evidence line, and REPORTS — CI carries no nightly and never runs it (`fuzz/README.md`) |
 | `just rust-build-release` / `bundles` | native release binary (native only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` (needs the musl cross toolchain) |
 | `just rust-prune` / `rust-prune apply=yes` | THIS checkout's stale `ae` build output: the report is the default and removes nothing, `apply=yes` runs five fixed `cargo clean -p ae` cleans, each proved by a `--dry-run` path check first. Refuses a redirected target dir, a non-root cwd, a linked tree, a process using the checkout or a dry run it cannot prove (a stdout line that is not an absolute path inside its tree, no single valid `Summary`). Own tree only, never during a gate (`docs/development.md`) |
@@ -210,7 +210,16 @@ mutant at a time on at most two tests, each killed after 60 s (the nextest `muta
 which `.cargo/mutants.toml` selects, with SIGKILL at the bound and no grace period;
 `NEXTEST_TEST_THREADS=1` tightens it, and the lane caps anything wider than two. Arguments
 after the lane's `--` reach nextest as typed, so `-- --test-threads N` is the explicit,
-unscanned way past the cap). A mutant that grows a buffer without bound outruns any timeout (about
+unscanned way past the cap). Three named tests are the one finite exception: each is killed
+after 180 s (90 s x 2, grace zero) by its own block in the same profile, because they passed
+in 67-87 s in a whole-gate run and the 60 s kill ended valid runs (#234). A timeout is
+termination and never a caught mutant, and a hang costs up to 120 s more per mutant for each of
+them. `the_mutants_timeout_exceptions_are_named_and_finite` (`tests/it/gate.rs`) reads the
+config and the test names compiled into its own binary, which it lists once with `--list
+--format terse` under a 30 s bound; the listing must exit 0 with an EMPTY stderr, so a benign
+new startup line on stderr makes the guard fail closed until the cause is read. It refuses any
+other name, selector, kill, grace, default or linux timeout change, or form it cannot classify;
+widening needs an explicit ruling and a policy amendment. A mutant that grows a buffer without bound outruns any timeout (about
 2 GB/s, and macOS has no usable rlimit), so the mutants lane also polls its `cargo-mutants`
 subtree twice a second and SIGKILLs a test binary above `AE_MUTANTS_RSS_MAX_MB` (default 2048),
 printing the kill and appending it to `mutants.out/ae-rss-kills.log`: nextest sees a failed test,

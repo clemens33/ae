@@ -18,6 +18,12 @@ use std::path::{Path, PathBuf};
 
 use super::parity::{Invocation, capture::ExitOutcome, capture::raw};
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the frozen #234 acceptance is one long matrix fixture and its bytes stay as the independent author froze them"
+)]
+mod mutantstime_spec;
+
 /// The repository root — this file's crate manifest directory.
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -673,6 +679,603 @@ fn the_lanes_cap_their_test_threads_in_config() {
             "{slow}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// #234 — the finite `mutants` timeout exceptions, and the guard over the
+// EFFECTIVE overrides. `thread_caps_ok` above reads only the two base tables,
+// so a longer kill in an override table would pass it; `mutants_timeout_policy`
+// reads every table the effective `mutants` run can reach and refuses what it
+// cannot attribute. It is NOT a TOML parser: it accepts the committed file's own
+// line shapes and fails closed on everything else.
+// ---------------------------------------------------------------------------
+
+/// The only three tests that may outlive the 60 s `mutants` default, each under
+/// one named, finite exception.
+const MUTANTS_APPROVED: [&str; 3] = [
+    "autotrust_spec::measured_yes_and_no_use_only_the_arrow_then_enter_once_across_watchdog_restart",
+    "reseat_headroom_spec::a_readable_unknown_frame_holds_headroom_instead_of_stopping_the_tool",
+    "reseat_headroom_spec::busy_and_draft_holds_do_not_spend_attempts_and_move_after_idle",
+];
+
+/// The most an approved test may live: period x terminate-after plus grace.
+const MUTANTS_EXCEPTION_CAP_SECS: u64 = 180;
+
+/// The most any other test may live under the `mutants` profile.
+const MUTANTS_BASE_CAP_SECS: u64 = 60;
+
+/// How long the compiled-name listing may run before it is abandoned.
+const INVENTORY_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+const HEADER_DEFAULT: &str = "[profile.default]";
+const HEADER_DEFAULT_OVERRIDE: &str = "[[profile.default.overrides]]";
+const HEADER_LINUX: &str = "[profile.linux]";
+const HEADER_LINUX_OVERRIDE: &str = "[[profile.linux.overrides]]";
+const HEADER_MUTANTS: &str = "[profile.mutants]";
+const HEADER_MUTANTS_OVERRIDE: &str = "[[profile.mutants.overrides]]";
+
+/// The only table headers whose bytes the walker attributes.
+const CANONICAL_HEADERS: [&str; 6] = [
+    HEADER_DEFAULT,
+    HEADER_DEFAULT_OVERRIDE,
+    HEADER_LINUX,
+    HEADER_LINUX_OVERRIDE,
+    HEADER_MUTANTS,
+    HEADER_MUTANTS_OVERRIDE,
+];
+
+/// One `slow-timeout = { ... }` value, in whole seconds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SlowTimeout {
+    period: u64,
+    terminate_after: u64,
+    grace: Option<u64>,
+}
+
+impl SlowTimeout {
+    /// Seconds before nextest kills the test: SIGTERM at period x terminate-after,
+    /// SIGKILL a grace later (10 s when none is named). `None` on overflow.
+    fn kill_secs(self) -> Option<u64> {
+        self.period
+            .checked_mul(self.terminate_after)?
+            .checked_add(self.grace.unwrap_or(10))
+    }
+}
+
+/// A timeout the committed config carries outside the `mutants` profile. The
+/// `mutants` run inherits the default profile's overrides, so each one is part
+/// of its effective bound and may not change or vanish unnoticed.
+struct Baseline {
+    header: &'static str,
+    filter: Option<&'static str>,
+    timeout: SlowTimeout,
+}
+
+const BASELINE: [Baseline; 3] = [
+    Baseline {
+        header: HEADER_DEFAULT_OVERRIDE,
+        filter: Some(
+            "test(=compact::a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking)",
+        ),
+        timeout: SlowTimeout {
+            period: 5,
+            terminate_after: 2,
+            grace: None,
+        },
+    },
+    Baseline {
+        header: HEADER_LINUX,
+        filter: None,
+        timeout: SlowTimeout {
+            period: 60,
+            terminate_after: 5,
+            grace: None,
+        },
+    },
+    Baseline {
+        header: HEADER_LINUX_OVERRIDE,
+        filter: Some("test(/^menu::/)"),
+        timeout: SlowTimeout {
+            period: 30,
+            terminate_after: 2,
+            grace: None,
+        },
+    },
+];
+
+/// One table of the nextest config: its header line (empty before the first
+/// header) and its `key = value` lines, both sides trimmed.
+struct ConfigBlock<'a> {
+    header: &'a str,
+    keys: Vec<(&'a str, &'a str)>,
+}
+
+impl<'a> ConfigBlock<'a> {
+    /// Every value this table gives `key`, in file order.
+    fn values(&self, key: &str) -> Vec<&'a str> {
+        self.keys
+            .iter()
+            .filter(|(name, _)| *name == key)
+            .map(|(_, value)| *value)
+            .collect()
+    }
+}
+
+fn is_canonical_header(text: &str) -> bool {
+    CANONICAL_HEADERS.contains(&text)
+}
+
+/// A TOML bare key: ASCII letters, digits, `_` and `-`. A quoted, dotted or
+/// escaped key (`"slow-timeout"`, `slow-timeout.period`) can name the same
+/// setting as a bare one while sharing no text with it, so none is attributed.
+fn is_bare_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+/// Group the config into blocks. A line that is not blank, a comment, a header
+/// or `key = value`, a header spelled other than canonically, a key that is not
+/// bare, and a value that opens an inline table, an array or a multi-line string
+/// (where a second timeout could hide) each fail closed here.
+fn mutants_policy_blocks<'a>(
+    nextest: &'a str,
+    violations: &mut Vec<String>,
+) -> Vec<ConfigBlock<'a>> {
+    let mut blocks = vec![ConfigBlock {
+        header: "",
+        keys: Vec::new(),
+    }];
+    for raw_line in nextest.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            let squeezed: String = line.chars().filter(|ch| !ch.is_whitespace()).collect();
+            let unreadable = ["mutants", "overrides", "slow-timeout"]
+                .iter()
+                .any(|word| line.contains(word))
+                || line.contains(['"', '\'', '\\']);
+            if !is_canonical_header(line) && (is_canonical_header(&squeezed) || unreadable) {
+                violations.push(format!(
+                    "unsupported-form: header `{line}` is not spelled exactly as the policy reads it"
+                ));
+            }
+            blocks.push(ConfigBlock {
+                header: line,
+                keys: Vec::new(),
+            });
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            violations.push(format!(
+                "unsupported-form: line `{line}` is not a header, a comment or `key = value`"
+            ));
+            continue;
+        };
+        let (key, value) = (key.trim(), value.trim());
+        if !is_bare_key(key) {
+            violations.push(format!(
+                "unsupported-form: key `{key}` is not a plain bare key, so it cannot be attributed"
+            ));
+        }
+        if key != "slow-timeout"
+            && ["{", "[", "\"\"\"", "'''"]
+                .iter()
+                .any(|opener| value.starts_with(opener))
+        {
+            violations.push(format!(
+                "unsupported-form: the value of `{key}` opens an inline table, an array or a multi-line string the policy cannot attribute"
+            ));
+        }
+        if let Some(block) = blocks.last_mut() {
+            block.keys.push((key, value));
+        }
+    }
+    blocks
+}
+
+/// Digits only: no sign, underscore or unit.
+fn plain_number(text: &str) -> Option<u32> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// `"<N>s"` in whole seconds.
+fn quoted_seconds(text: &str) -> Option<u64> {
+    let digits = text.strip_prefix('"')?.strip_suffix("s\"")?;
+    plain_number(digits).map(u64::from)
+}
+
+/// Fill `slot` once. False when it was already filled or `parsed` is absent.
+fn set_once(slot: &mut Option<u64>, parsed: Option<u64>) -> bool {
+    if slot.is_some() {
+        return false;
+    }
+    *slot = parsed;
+    parsed.is_some()
+}
+
+/// The one-line inline table `{ period = "<N>s", terminate-after = <M>, grace-period = "<G>s" }`.
+fn parse_slow_timeout(value: &str) -> Result<SlowTimeout, String> {
+    let Some(inner) = value
+        .strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+    else {
+        return Err(format!(
+            "unsupported-form: `{value}` is not a one-line inline table"
+        ));
+    };
+    let (mut period, mut terminate_after, mut grace) = (None, None, None);
+    for part in inner.split(',') {
+        let Some((key, field)) = part.split_once('=') else {
+            return Err(format!("unsupported-form: `{part}` is not `key = value`"));
+        };
+        let (key, field) = (key.trim(), field.trim());
+        let stored = match key {
+            "period" => set_once(&mut period, quoted_seconds(field)),
+            "terminate-after" => set_once(&mut terminate_after, plain_number(field).map(u64::from)),
+            "grace-period" => set_once(&mut grace, quoted_seconds(field)),
+            _ => false,
+        };
+        if !stored {
+            return Err(format!(
+                "unsupported-form: `{part}` in `{value}` is an unknown or repeated key, or not whole seconds or a plain number"
+            ));
+        }
+    }
+    let (Some(period), Some(terminate_after)) = (period, terminate_after) else {
+        return Err(format!(
+            "unbounded: `{value}` names no period and terminate-after, so it only warns"
+        ));
+    };
+    Ok(SlowTimeout {
+        period,
+        terminate_after,
+        grace,
+    })
+}
+
+/// The text inside the one single-quoted `filter = '...'` of a block.
+fn block_filter<'a>(block: &ConfigBlock<'a>) -> Option<&'a str> {
+    let filters = block.values("filter");
+    let [one] = filters.as_slice() else {
+        return None;
+    };
+    one.strip_prefix('\'')?.strip_suffix('\'')
+}
+
+/// The NAME of a block's one `filter = 'test(=NAME)'`, or why it is not exactly that.
+fn exact_selector<'a>(block: &ConfigBlock<'a>) -> Result<&'a str, String> {
+    let Some(literal) = block_filter(block) else {
+        return Err(
+            "unattributable: a mutants timeout needs exactly one single-quoted filter".to_owned(),
+        );
+    };
+    let Some(name) = literal
+        .strip_prefix("test(=")
+        .and_then(|rest| rest.strip_suffix(')'))
+    else {
+        return Err(format!(
+            "inexact-selector: `{literal}` is not an exact `test(=NAME)` selector"
+        ));
+    };
+    if name.is_empty() || name.contains(|ch: char| ch.is_whitespace() || "()|&!,".contains(ch)) {
+        return Err(format!(
+            "inexact-selector: `{literal}` is not one exact test name"
+        ));
+    }
+    Ok(name)
+}
+
+/// The only keys the committed profile and override tables use. Anything else
+/// in those tables (a retry count, a per-test thread rule, an unknown setting)
+/// is not something the timeout policy has reviewed, so it is refused before a
+/// harmless-looking or group-only block can be accepted.
+const RECOGNIZED_KEYS: [&str; 5] = [
+    "test-threads",
+    "fail-fast",
+    "filter",
+    "test-group",
+    "slow-timeout",
+];
+
+/// Refuse every key a canonical profile or override table has not been
+/// reviewed for. Runs for every such block, whatever else the block holds.
+fn check_recognized_keys(block: &ConfigBlock<'_>, violations: &mut Vec<String>) {
+    for (key, _) in &block.keys {
+        if !RECOGNIZED_KEYS.contains(key) {
+            violations.push(format!(
+                "unsupported-form: `{key}` under {} is not a key the #234 policy recognizes",
+                block.header
+            ));
+        }
+    }
+}
+
+/// A timeout under a header the walker cannot attribute to the baseline or to
+/// a `mutants` exception.
+fn check_unattributable(block: &ConfigBlock<'_>, violations: &mut Vec<String>) {
+    if !block.values("slow-timeout").is_empty() {
+        let header = if block.header.is_empty() {
+            "no table header"
+        } else {
+            block.header
+        };
+        violations.push(format!(
+            "unattributable: a slow-timeout under {header} cannot be attributed to the baseline or to an approved exception"
+        ));
+    }
+}
+
+/// `[profile.mutants]` keeps its own 60 s kill: exactly one explicit,
+/// non-zero timeout with `grace-period = "0s"`.
+fn check_mutants_base(block: &ConfigBlock<'_>, violations: &mut Vec<String>) {
+    let timeouts = block.values("slow-timeout");
+    let verdict = match timeouts.as_slice() {
+        [one] => parse_slow_timeout(one),
+        _ => Err(format!(
+            "base-timeout: {HEADER_MUTANTS} must carry exactly one slow-timeout, found {}",
+            timeouts.len()
+        )),
+    };
+    match verdict {
+        Ok(timeout)
+            if timeout.grace == Some(0)
+                && timeout.period > 0
+                && timeout.terminate_after > 0
+                && timeout
+                    .kill_secs()
+                    .is_some_and(|secs| secs <= MUTANTS_BASE_CAP_SECS) => {}
+        Ok(_) => violations.push(format!(
+            "base-timeout: the mutants default must be a non-zero kill within {MUTANTS_BASE_CAP_SECS} s with grace-period = \"0s\""
+        )),
+        Err(why) => violations.push(why),
+    }
+}
+
+/// A timeout in a default or linux table must be one of the committed baseline
+/// timeouts, unchanged: the `mutants` run inherits the default profile's
+/// overrides, so a new or longer one would silently widen its bound.
+fn check_baseline_block(block: &ConfigBlock<'_>, seen: &mut [usize], violations: &mut Vec<String>) {
+    let timeouts = block.values("slow-timeout");
+    if timeouts.is_empty() {
+        return;
+    }
+    let filter = block_filter(block);
+    let matched = BASELINE
+        .iter()
+        .position(|entry| entry.header == block.header && entry.filter == filter);
+    match (timeouts.as_slice(), matched) {
+        ([one], Some(index))
+            if parse_slow_timeout(one).is_ok_and(|timeout| timeout == BASELINE[index].timeout) =>
+        {
+            seen[index] += 1;
+        }
+        _ => violations.push(format!(
+            "non-mutants-timeout: {} carries a slow-timeout that is not the committed baseline; only the mutants profile may widen a kill, and the #234 policy in tests/it/gate.rs must be amended deliberately to change this",
+            block.header
+        )),
+    }
+}
+
+/// An approved exception must be exactly: an exact-name filter, one finite
+/// timeout of at most 180 s with grace zero.
+fn check_exception_bound(name: &str, timeout: SlowTimeout, violations: &mut Vec<String>) {
+    if timeout.period == 0 || timeout.terminate_after == 0 {
+        violations.push(format!(
+            "unbounded: the exception for `{name}` has a zero period or terminate-after"
+        ));
+    }
+    if timeout.grace != Some(0) {
+        violations.push(format!(
+            "grace: the exception for `{name}` must say grace-period = \"0s\" so SIGKILL is not later than SIGTERM"
+        ));
+    }
+    if timeout
+        .kill_secs()
+        .is_none_or(|secs| secs > MUTANTS_EXCEPTION_CAP_SECS)
+    {
+        violations.push(format!(
+            "over-cap: the exception for `{name}` must kill within {MUTANTS_EXCEPTION_CAP_SECS} s"
+        ));
+    }
+}
+
+/// One `[[profile.mutants.overrides]]`: a group-only block relaxes no kill; one
+/// that carries a timeout must be an approved, exact, finite exception.
+fn check_mutants_override(
+    block: &ConfigBlock<'_>,
+    approved_seen: &mut [usize],
+    violations: &mut Vec<String>,
+) {
+    let timeouts = block.values("slow-timeout");
+    if timeouts.is_empty() {
+        return;
+    }
+    for (key, _) in &block.keys {
+        if !matches!(*key, "filter" | "slow-timeout") {
+            violations.push(format!(
+                "unsupported-form: `{key}` is not allowed beside a mutants slow-timeout"
+            ));
+        }
+    }
+    if timeouts.len() > 1 {
+        violations.push(
+            "duplicate-block: a mutants override carries more than one slow-timeout".to_owned(),
+        );
+    }
+    let name = match exact_selector(block) {
+        Ok(name) => name,
+        Err(why) => {
+            violations.push(why);
+            return;
+        }
+    };
+    let Some(index) = MUTANTS_APPROVED
+        .iter()
+        .position(|approved| *approved == name)
+    else {
+        violations.push(format!(
+            "unknown-name: `{name}` is not one of the three approved mutants exceptions"
+        ));
+        return;
+    };
+    approved_seen[index] += 1;
+    if let [one] = timeouts.as_slice() {
+        match parse_slow_timeout(one) {
+            Ok(timeout) => check_exception_bound(name, timeout, violations),
+            Err(why) => violations.push(why),
+        }
+    }
+}
+
+/// Every reason the nextest config's EFFECTIVE `mutants` timeouts are not the
+/// approved policy: 60 s base and inherited baseline unchanged, plus exactly the
+/// three named exceptions, each once, each in the registered test inventory.
+/// Empty means accepted.
+fn mutants_timeout_policy(nextest: &str, registered: &[&str]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let blocks = mutants_policy_blocks(nextest, &mut violations);
+    let mut baseline_seen = [0_usize; BASELINE.len()];
+    let mut approved_seen = [0_usize; MUTANTS_APPROVED.len()];
+    let mut base_blocks = 0_usize;
+    for block in &blocks {
+        if is_canonical_header(block.header) {
+            check_recognized_keys(block, &mut violations);
+        }
+        match block.header {
+            HEADER_MUTANTS => {
+                base_blocks += 1;
+                check_mutants_base(block, &mut violations);
+            }
+            HEADER_MUTANTS_OVERRIDE => {
+                check_mutants_override(block, &mut approved_seen, &mut violations);
+            }
+            HEADER_DEFAULT | HEADER_DEFAULT_OVERRIDE | HEADER_LINUX | HEADER_LINUX_OVERRIDE => {
+                check_baseline_block(block, &mut baseline_seen, &mut violations);
+            }
+            _ => check_unattributable(block, &mut violations),
+        }
+    }
+    if base_blocks != 1 {
+        violations.push(format!(
+            "base-timeout: {HEADER_MUTANTS} must appear exactly once, found {base_blocks}"
+        ));
+    }
+    for (entry, seen) in BASELINE.iter().zip(baseline_seen) {
+        if seen != 1 {
+            violations.push(format!(
+                "non-mutants-timeout: the committed baseline timeout of {} ({}) must appear exactly once, found {seen}; the #234 policy in tests/it/gate.rs must be amended deliberately to change it",
+                entry.header,
+                entry.filter.unwrap_or("no filter")
+            ));
+        }
+    }
+    for (name, seen) in MUTANTS_APPROVED.iter().zip(approved_seen) {
+        match seen {
+            0 => violations.push(format!(
+                "missing-approved: no mutants exception for `{name}`"
+            )),
+            1 => {}
+            _ => violations.push(format!(
+                "duplicate-block: `{name}` has {seen} mutants exceptions"
+            )),
+        }
+        match registered
+            .iter()
+            .filter(|candidate| **candidate == *name)
+            .count()
+        {
+            1 => {}
+            0 => violations.push(format!(
+                "stale-selector: `{name}` matches no compiled test, so its exception selects nothing"
+            )),
+            count => violations.push(format!(
+                "duplicate-registered: `{name}` is compiled {count} times"
+            )),
+        }
+    }
+    violations
+}
+
+/// The compiled test names a `--list --format terse` run reported: only exact
+/// `name: test` records and empty lines, success with an empty stderr and at
+/// least one record. Duplicates are kept: the policy counts them.
+fn decode_mutants_inventory(
+    outcome: ExitOutcome,
+    stdout: &str,
+    stderr: &str,
+) -> Result<Vec<String>, String> {
+    match outcome {
+        ExitOutcome::Code(0) => {}
+        ExitOutcome::Code(code) => return Err(format!("the listing exited with status {code}")),
+        ExitOutcome::Signalled => return Err("the listing was killed by a signal".to_owned()),
+    }
+    if !stderr.is_empty() {
+        return Err(format!("the listing wrote to stderr: {stderr:?}"));
+    }
+    let mut names = Vec::new();
+    for line in stdout.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let Some(name) = line.strip_suffix(": test") else {
+            return Err(format!(
+                "the listing has a line that is not `name: test`: {line:?}"
+            ));
+        };
+        if name.is_empty() || name.trim() != name {
+            return Err(format!("the listing has an unusable test name: {line:?}"));
+        }
+        names.push(name.to_owned());
+    }
+    if names.is_empty() {
+        return Err("the listing named no test".to_owned());
+    }
+    Ok(names)
+}
+
+/// The test names compiled into THIS integration binary: it lists itself once
+/// with `--list --format terse` (no test body runs, no cargo, no compile), its
+/// output in owned scratch FILES because a pipe would fill before the child
+/// exits, the child bounded and reaped by `cli::bounded`. Every failure to
+/// acquire the list is an error; nothing substitutes for it.
+fn compiled_it_test_names() -> Result<Vec<String>, String> {
+    let exe = std::env::current_exe()
+        .map_err(|why| format!("the integration test binary has no path: {why}"))?;
+    let scratch = super::cli::OwnedScratch::root("gate", "inventory");
+    let listing_path = scratch.path().join("listing-out");
+    let problems_path = scratch.path().join("listing-err");
+    let create = |path: &Path| {
+        std::fs::File::create(path).map_err(|why| format!("{}: {why}", path.display()))
+    };
+    let mut runner = super::cli::helper(&exe);
+    runner
+        .arg("--list")
+        .arg("--format")
+        .arg("terse")
+        .stdin(std::process::Stdio::null())
+        .stdout(create(&listing_path)?)
+        .stderr(create(&problems_path)?);
+    let child = runner
+        .spawn()
+        .map_err(|why| format!("the listing child did not start: {why}"))?;
+    let finished = super::cli::bounded(child, INVENTORY_BOUND)
+        .ok_or_else(|| "the listing child timed out or could not be waited on".to_owned())?;
+    let outcome = finished
+        .status
+        .code()
+        .map_or(ExitOutcome::Signalled, ExitOutcome::Code);
+    let text = |path: &Path| -> Result<String, String> {
+        let bytes = std::fs::read(path).map_err(|why| format!("{}: {why}", path.display()))?;
+        String::from_utf8(bytes).map_err(|why| format!("{}: {why}", path.display()))
+    };
+    decode_mutants_inventory(outcome, &text(&listing_path)?, &text(&problems_path)?)
 }
 
 /// The child half of the killed-test pins: a scratch root under the base the

@@ -94,7 +94,8 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # turns a loop bound into an unbounded allocation drives its test to GBs of RSS
 # in seconds, and on macOS no rlimit can stop it (`ulimit -v` is EINVAL, `-d`
 # limits sbrk only). So: at most TWO tests at once, and each one is killed
-# after 60 s (30 s x 2). nextest sends SIGTERM
+# after 60 s (30 s x 2), except the three named tests at the end of this
+# profile, each killed after 180 s (90 s x 2). nextest sends SIGTERM
 # there and SIGKILL a grace period later (10 s unless named), so the grace is
 # zero: a test that handles SIGTERM must not outlive the bound. The lane may
 # TIGHTEN the thread count with NEXTEST_TEST_THREADS but clamps anything wider
@@ -105,3 +106,25 @@ test-threads = 2
 # Stop at the first failure: a caught mutant needs no remaining tests.
 fail-fast = true
 slow-timeout = { period = "30s", terminate-after = 2, grace-period = "0s" }
+
+# The three tests below passed in 79.8 s, 67.2 s and 87.3 s in one whole-gate
+# run (two threads, #234), so the 60 s kill ends valid runs. Each gets ONE
+# finite exception: an exact-name filter and a hard
+# kill at 180 s (90 s x 2, grace zero), a chosen margin and not a derived bound.
+# A timeout is termination and is never a caught mutant. Only this profile may
+# widen a kill. `mutants_timeout_policy` in tests/it/gate.rs reads these blocks
+# byte for byte: exactly these three names, once each, each a header, one
+# filter line and one slow-timeout line with nothing between them (put comments
+# above the header). Another name, a broader selector, a longer kill or a
+# default/linux timeout change needs an explicit ruling and a policy amendment.
+[[profile.mutants.overrides]]
+filter = 'test(=autotrust_spec::measured_yes_and_no_use_only_the_arrow_then_enter_once_across_watchdog_restart)'
+slow-timeout = { period = "90s", terminate-after = 2, grace-period = "0s" }
+
+[[profile.mutants.overrides]]
+filter = 'test(=reseat_headroom_spec::a_readable_unknown_frame_holds_headroom_instead_of_stopping_the_tool)'
+slow-timeout = { period = "90s", terminate-after = 2, grace-period = "0s" }
+
+[[profile.mutants.overrides]]
+filter = 'test(=reseat_headroom_spec::busy_and_draft_holds_do_not_spend_attempts_and_move_after_idle)'
+slow-timeout = { period = "90s", terminate-after = 2, grace-period = "0s" }
