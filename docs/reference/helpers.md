@@ -235,7 +235,9 @@ opus55x = cc-mic, cc-p     # profile = the clients it may run on
   approves nothing, and a profile keyed twice approves nothing: ae never guesses which row was
   meant.
 - Removing a line retires the route for new spawns. A seat already recorded on that pair keeps
-  resuming: approval gates new admissions, never a recorded seat.
+  resuming: approval gates new admissions, never a recorded seat. On resume the recorded pair
+  resolves from the global config alone and passes the same adapter and store checks again, so
+  a project overlay cannot change which executable it runs.
 - The check runs before ae looks at which names exist. An unapproved pair is refused with where to
   approve it and, when the profile has a usable row, the clients it IS approved for. Tell your
   agents the spellings you allow in `[prompt] spawn_instructions`, the place for profile and

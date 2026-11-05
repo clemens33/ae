@@ -1716,10 +1716,8 @@ fn resolve_one_override(
         let old = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
         let new = parsed.tool();
         if old != new {
-            return Err(SeatOverrideRefusal::Usage(format!(
-                "Error: cannot change agent '{agent}' from {} to {} on resume — its recorded conversation cannot cross tool kinds.",
-                old.as_str(),
-                new.as_str()
+            return Err(SeatOverrideRefusal::Usage(cross_tool_refusal(
+                agent, old, new,
             )));
         }
         proven
@@ -1750,6 +1748,15 @@ fn resolve_one_override(
         parsed,
         store_proven,
     })
+}
+
+/// A resumed seat whose command now launches another tool than it recorded.
+fn cross_tool_refusal(agent: &str, old: ToolKind, new: ToolKind) -> String {
+    format!(
+        "Error: cannot change agent '{agent}' from {} to {} on resume — its recorded conversation cannot cross tool kinds.",
+        old.as_str(),
+        new.as_str()
+    )
 }
 
 /// Validate every explicit seat profile before the launch's first write.
@@ -2392,6 +2399,15 @@ fn launch(
         write!(err, "{refusal}")?;
         return Ok(crate::tmux_floor::EXIT_REFUSED);
     }
+    // A labeled spawned seat's recorded authority is judged first: a missing
+    // global config is that seat's own refusal, not the roster's.
+    let spawned_labels = step!(check_spawned_labels(
+        plan,
+        &dir,
+        preflight_meta_present,
+        running_preflight,
+        err
+    ));
     let seat_overrides = step!(check_seat_overrides(
         env,
         plan,
@@ -2613,6 +2629,7 @@ fn launch(
             &dir,
             &session,
             &cfg,
+            &spawned_labels,
             home.as_deref(),
             err
         ));
@@ -2644,7 +2661,7 @@ fn launch(
         &mut shape,
         &seats,
         &cfg,
-        seat_overrides.as_ref(),
+        (seat_overrides.as_ref(), &spawned_labels),
         WatchdogFacts {
             meta_agent: values.meta_agent,
             sweep_sec: values.sweep_sec.as_deref(),
@@ -2851,6 +2868,36 @@ fn check_seat_overrides(
         return Ok(ControlFlow::Break(EXIT_USAGE));
     }
     Ok(ControlFlow::Continue(seat_overrides))
+}
+
+/// Judge every recorded `client.<slot>` label of a stopped session's
+/// `spawned.<n>` seats BEFORE the lifecycle lock, through the same adapter gate
+/// and store re-take a fixed seat's carried label takes — against the session's
+/// recorded GLOBAL identity alone, where `spawn`/`reseat --using p@c` minted the
+/// label, so a project overlay can never redirect the pair. Approval is not
+/// re-asked: a retired `[client_pairs]` row never strands an admitted seat.
+fn check_spawned_labels(
+    plan: &Plan,
+    dir: &Path,
+    preflight_meta_present: bool,
+    running_preflight: bool,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, Vec<JudgedSpawned>>> {
+    if !preflight_meta_present || running_preflight {
+        return Ok(ControlFlow::Continue(Vec::new()));
+    }
+    let session = plan.name.as_deref().unwrap_or_default();
+    match judge_spawned_labels(dir, session, crate::doors::home().as_deref()) {
+        Ok(judged) => Ok(ControlFlow::Continue(judged)),
+        Err(SeatOverrideRefusal::Usage(line)) => {
+            writeln!(err, "{line}")?;
+            Ok(ControlFlow::Break(EXIT_USAGE))
+        }
+        Err(SeatOverrideRefusal::Failed(line)) => {
+            writeln!(err, "{line}")?;
+            Ok(ControlFlow::Break(EXIT_FAILED))
+        }
+    }
 }
 
 /// The refusal of a launch whose lifecycle lock another operation holds past
@@ -3614,6 +3661,7 @@ fn lex_spawned_seats(
     dir: &Path,
     session: &str,
     cfg: &IdentityConfig,
+    judged: &[JudgedSpawned],
     home: Option<&Path>,
     err: &mut impl Write,
 ) -> crate::Result<ControlFlow<u8>> {
@@ -3627,7 +3675,7 @@ fn lex_spawned_seats(
     for entry in spawned {
         // An unconfigured profile is not a refusal: the seat is preserved
         // verbatim and never launched, which the restore already handles.
-        let command = match spawned_command(cfg, &entry, home) {
+        let command = match restored_command(cfg, &entry, judged, session, home) {
             Ok(command) => command,
             Err(why) => {
                 writeln!(err, "{why}")?;
@@ -3773,7 +3821,7 @@ fn build(
     shape: &mut Session,
     seats: &[Seat],
     cfg: &IdentityConfig,
-    seat_overrides: Option<&SeatOverrideSnapshot>,
+    (seat_overrides, spawned_labels): (Option<&SeatOverrideSnapshot>, &[JudgedSpawned]),
     watchdog: WatchdogFacts<'_>,
     parent: Option<&FromProof>,
     lifecycle: Option<std::fs::File>,
@@ -3825,7 +3873,7 @@ fn build(
             shape,
             cfg,
             home.as_deref(),
-            seat_overrides,
+            (seat_overrides, spawned_labels),
             &mut launching,
         )
     {
@@ -4099,7 +4147,7 @@ fn restore_spawned(
     shape: &Session,
     cfg: &IdentityConfig,
     home: Option<&Path>,
-    seat_overrides: Option<&SeatOverrideSnapshot>,
+    (seat_overrides, judged): (Option<&SeatOverrideSnapshot>, &[JudgedSpawned]),
     launching: &mut Vec<Launching>,
 ) -> Result<(), String> {
     let spawned = spawned_entries(at.dir, &shape.name)?;
@@ -4108,7 +4156,7 @@ fn restore_spawned(
         // VERBATIM at its original index — a later resume with the profile
         // configured restores the worker, and preserving the index keeps
         // the slot key stable for any in-flight request addressed to it.
-        let command = spawned_command(cfg, &entry, home)?
+        let command = restored_command(cfg, &entry, judged, &shape.name, home)?
             .unwrap_or_else(|| IdentityConfig::resolved_snapshot(""));
         let pane = if command.as_str().is_empty() {
             String::new()
@@ -4131,6 +4179,10 @@ fn restore_spawned(
             tool,
             meta_value(at.dir, &format!("launch_id.{}", entry.slot)),
         );
+        // A labeled seat runs exactly the command preflight judged: `_run`
+        // never resolves its pair a second time.
+        let command_snapshot =
+            (seat_overrides.is_some() || entry.client.is_some()) && !command.as_str().is_empty();
         launching.push(Launching {
             slot: entry.slot,
             name: entry.name,
@@ -4143,8 +4195,7 @@ fn restore_spawned(
             config_home_base: entry.config_home_base,
             launch_id,
             pane,
-            command_snapshot: seat_overrides
-                .and_then(|_| (!command.as_str().is_empty()).then(|| command.clone())),
+            command_snapshot: command_snapshot.then_some(command),
         });
     }
     if let Some(layout) = respawn_layout(&shape.layout) {
@@ -6438,16 +6489,7 @@ fn spawned_entries(dir: &Path, session: &str) -> Result<Vec<Spawned>, String> {
                 return Err(invalid_client_refusal(session, &entry.name, &entry.slot));
             }
         };
-        out.push(Spawned {
-            slot: entry.slot.clone(),
-            name: entry.name.clone(),
-            profile: entry.profile.clone().unwrap_or_default(),
-            client,
-            binary: entry.binary.clone().unwrap_or_default(),
-            harness_session: entry.harness_session.clone().unwrap_or_default(),
-            config_home: entry.config_home.record_value(),
-            config_home_base: entry.config_home_base.record_value(),
-        });
+        out.push(Spawned::of(entry, client));
     }
     out.sort_by_key(|entry| {
         entry
@@ -6457,6 +6499,190 @@ fn spawned_entries(dir: &Path, session: &str) -> Result<Vec<Spawned>, String> {
             .unwrap_or(u32::MAX)
     });
     Ok(out)
+}
+
+/// Every recorded fact of one spawned seat a judgement of its client is bound
+/// to: a row that differs in any of them after the judgement is another seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpawnedIdentity {
+    slot: String,
+    name: String,
+    profile: String,
+    client: Option<String>,
+    binary: String,
+    config_home: Option<String>,
+    config_home_base: Option<String>,
+}
+
+impl Spawned {
+    /// The seat roster row `entry` names, its client row already read.
+    fn of(entry: &meta::RosterEntry, client: Option<String>) -> Self {
+        Self {
+            slot: entry.slot.clone(),
+            name: entry.name.clone(),
+            profile: entry.profile.clone().unwrap_or_default(),
+            client,
+            binary: entry.binary.clone().unwrap_or_default(),
+            harness_session: entry.harness_session.clone().unwrap_or_default(),
+            config_home: entry.config_home.record_value(),
+            config_home_base: entry.config_home_base.record_value(),
+        }
+    }
+
+    fn identity(&self) -> SpawnedIdentity {
+        SpawnedIdentity {
+            slot: self.slot.clone(),
+            name: self.name.clone(),
+            profile: self.profile.clone(),
+            client: self.client.clone(),
+            binary: self.binary.clone(),
+            config_home: self.config_home.clone(),
+            config_home_base: self.config_home_base.clone(),
+        }
+    }
+}
+
+/// A labeled spawned seat as the pre-lock judgement left it: the identity it
+/// judged and the command that seat may run — `None` for a profile the
+/// recorded global config does not define, which keeps the seat verbatim and
+/// starts nothing.
+#[derive(Debug, Clone)]
+struct JudgedSpawned {
+    identity: SpawnedIdentity,
+    command: Option<config::ResolvedCommand>,
+}
+
+/// The refusal for a session whose labeled spawned seat has no global config
+/// to resolve its recorded client in — the only config its pair was approved
+/// by. An unavailable config is not an absent profile: nothing is assumed.
+fn unavailable_authority_refusal(session: &str, entry: &meta::RosterEntry, why: &str) -> String {
+    format!(
+        "Error: session '{session}' seat '{}' ({}) records a client override, but {why} — \
+         restore the session's global config, or end the session (ae end {session}). Nothing was resumed.",
+        entry.name, entry.slot
+    )
+}
+
+/// Judge every labeled `spawned.<n>` row of the meta at `dir` against the
+/// session's recorded GLOBAL identity: the recorded client must still be a
+/// global `[clients]` row (else the removed-client refusal, ahead of any
+/// missing profile); a profile the global config lacks keeps the seat
+/// unstarted; any other pair passes the launch's adapter gate, the recorded
+/// store re-take and the recorded harness. Unlabeled rows are not judged.
+///
+/// A meta that does not read judges nothing: the restore then refuses every
+/// labeled row as unjudged, and the existing restore refusal names the meta.
+fn judge_spawned_labels(
+    dir: &Path,
+    session: &str,
+    home: Option<&Path>,
+) -> Result<Vec<JudgedSpawned>, SeatOverrideRefusal> {
+    let Ok(bytes) = meta::read_bytes(dir) else {
+        return Ok(Vec::new());
+    };
+    let parsed = Meta::parse(&String::from_utf8_lossy(&bytes));
+    let labeled: Vec<&meta::RosterEntry> = parsed
+        .roster()
+        .iter()
+        .filter(|entry| entry.slot.starts_with("spawned."))
+        .filter(|entry| matches!(entry.client, crate::meta::RecordedClient::Label(_)))
+        .collect();
+    let Some(first) = labeled.first() else {
+        return Ok(Vec::new());
+    };
+    let global = crate::lifecycle::meta_value(&bytes, "config");
+    if global.is_empty() {
+        return Err(SeatOverrideRefusal::Failed(unavailable_authority_refusal(
+            session,
+            first,
+            "the session records no global config",
+        )));
+    }
+    let cfg = config::read_identity(Some(Path::new(&global)), None).map_err(|why| {
+        SeatOverrideRefusal::Failed(unavailable_authority_refusal(
+            session,
+            first,
+            &format!("its global config {global} cannot be used ({why})"),
+        ))
+    })?;
+    let profiles: Vec<&str> = cfg.profiles.iter().map(|(name, _)| name.as_str()).collect();
+    let clients: Vec<&str> = cfg.clients.iter().map(|(name, _)| name.as_str()).collect();
+    let (known_profiles, known_clients) = (known_list(&profiles), known_list(&clients));
+    let mut judged = Vec::with_capacity(labeled.len());
+    for entry in labeled {
+        let RecordedSelection::Label(label) =
+            recorded_selection(session, &cfg, entry).map_err(SeatOverrideRefusal::Failed)?
+        else {
+            continue;
+        };
+        let profile = entry.profile.as_deref().unwrap_or_default();
+        let command = if cfg.profile(profile).is_none() {
+            None
+        } else {
+            let (command, lexed) = resolve_client_override(
+                &cfg,
+                &entry.name,
+                profile,
+                &label,
+                home,
+                &known_profiles,
+                &known_clients,
+            )?;
+            refuse_recorded_client_conflict(
+                session,
+                &entry.name,
+                profile,
+                Some(&label),
+                entry,
+                &cfg,
+                &command,
+                lexed.tool(),
+                home,
+            )?;
+            let recorded = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
+            if recorded != lexed.tool() {
+                return Err(SeatOverrideRefusal::Usage(cross_tool_refusal(
+                    &entry.name,
+                    recorded,
+                    lexed.tool(),
+                )));
+            }
+            Some(command)
+        };
+        judged.push(JudgedSpawned {
+            identity: Spawned::of(entry, Some(label)).identity(),
+            command,
+        });
+    }
+    Ok(judged)
+}
+
+/// The command a restored spawned seat runs. A labeled seat runs ONLY what its
+/// pre-lock judgement allowed, and only while its recorded facts are the ones
+/// judged; an unlabeled seat resolves as it always did. A label added, dropped
+/// or changed — or any judged fact moved — between the judgement and this read
+/// refuses: no unjudged resolution of a labeled seat ever runs.
+///
+/// # Errors
+///
+/// The refusal line: a stale or missing judgement, or [`spawned_command`]'s.
+fn restored_command(
+    cfg: &IdentityConfig,
+    entry: &Spawned,
+    judged: &[JudgedSpawned],
+    session: &str,
+    home: Option<&Path>,
+) -> Result<Option<config::ResolvedCommand>, String> {
+    let held = judged.iter().find(|held| held.identity.slot == entry.slot);
+    match (&entry.client, held) {
+        (None, None) => spawned_command(cfg, entry, home),
+        (Some(_), Some(held)) if held.identity == entry.identity() => Ok(held.command.clone()),
+        _ => Err(format!(
+            "Error: session '{session}' seat '{}' ({}) changed its recorded client identity while this launch was starting — \
+             nothing was resumed; retry the launch.",
+            entry.name, entry.slot
+        )),
+    }
 }
 
 /// What the capture pass needs from each launched agent.

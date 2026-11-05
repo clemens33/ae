@@ -60,6 +60,7 @@ mod chat_window0_spec;
 mod chat_wrap_pins;
 mod chat_wrap_spec;
 mod cli;
+mod clientfollow_resume_spec;
 mod cliparse_flag_extra_spec;
 mod cliparse_spec;
 mod compact;
