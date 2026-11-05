@@ -651,6 +651,7 @@ fn auto_reseat_waits_for_a_near_short_reset_and_moves_otherwise() {
         map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
         headroom_at: None,
         headroom_note: None,
+        lead: crate::autoreseat::Lead::default(),
         notes: Vec::new(),
     };
     let acts = |settings: &Settings, seats: &[AutoSeat], events: &[Event], now: i64| {

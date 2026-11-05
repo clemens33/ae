@@ -4661,7 +4661,8 @@ struct Carry {
     /// failed read, a seat no longer exhausted, a new pane or a new incarnation
     /// leaves nothing to compare.
     start_frames: Vec<((String, Option<String>), String)>,
-    /// The `auto_reseat_at` notes this daemon journaled: each once per start.
+    /// The `auto_reseat_at` and `auto_reseat_lead_at` notes this daemon journaled:
+    /// each once per start.
     auto_noted: Vec<String>,
     /// The unusable `auto_trust` values this daemon named: each once per start.
     trust_noted: Vec<String>,
@@ -5072,7 +5073,7 @@ fn auto_acts_with(
     settings: &crate::autoreseat::Settings,
     (seats, homes): (&[AutoSeat], &[(String, crate::autoreseat::leg::Home)]),
     events: &[Event],
-    (session, orchestrator): (&str, bool),
+    (session, orchestrator, lead_pair): (&str, bool, bool),
     now: i64,
     named: &mut Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
 ) -> Vec<AutoAct> {
@@ -5087,6 +5088,10 @@ fn auto_acts_with(
     let mut acts = Vec::new();
     let mut due: Option<(Timestamp, &AutoSeat)> = None;
     for seat in seats {
+        // Every decision below is the seat's own: the lead pair reads its own
+        // headroom threshold when the row is set.
+        let view = settings.seat_view(lead_pair, &seat.slot);
+        let settings = &*view;
         let asked = crate::autoreseat::Seat {
             session,
             slot: &seat.slot,
@@ -7661,7 +7666,7 @@ impl Cycle<'_> {
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
-        let context = (self.session, self.meta_agent);
+        let context = (self.session, self.meta_agent, self.lead_pair);
         for act in auto_acts_with(&self.auto, seats, events, context, now, named) {
             let AutoAct::Trigger { agent } = &act else {
                 self.auto_record(&act, now, err)?;
@@ -7846,22 +7851,25 @@ impl Cycle<'_> {
         Ok(())
     }
 
-    /// Journal the note an unusable `auto_reseat_at` left, target-less, once
-    /// per daemon start and note: the operator sees the threshold ae fell back
-    /// to without a move having to say it.
+    /// Journal the note an unusable `auto_reseat_at` or `auto_reseat_lead_at`
+    /// left, target-less, once per daemon start and note: the operator sees the
+    /// threshold ae fell back to without a move having to say it.
     fn auto_note(&self, noted: &mut Vec<String>, err: &mut impl Write) -> crate::Result<()> {
-        let Some(note) = self.auto.headroom_note.as_ref() else {
-            return Ok(());
-        };
-        if noted.contains(note) {
-            return Ok(());
-        }
-        noted.push(note.clone());
         let journal = Journal {
             meta_dir: self.meta_dir,
             session: self.session,
         };
-        journal.record(crate::autoreseat::NOTICE_ACTION, "", note, err)
+        for note in [&self.auto.headroom_note, &self.auto.lead.note]
+            .into_iter()
+            .flatten()
+        {
+            if noted.contains(note) {
+                continue;
+            }
+            noted.push(note.clone());
+            journal.record(crate::autoreseat::NOTICE_ACTION, "", note, err)?;
+        }
+        Ok(())
     }
 
     /// Name an unusable `auto_trust` value once per daemon start: it answers
@@ -7990,14 +7998,8 @@ impl Cycle<'_> {
         let latched =
             crate::autoreseat::latched_identities(&self.roster, events, self.session, slot);
         let read = (quota.last_observation.as_ref(), latched.as_slice());
-        crate::autoreseat::leg::home(
-            self.meta_dir,
-            events,
-            (self.session, row),
-            &self.auto,
-            read,
-            now,
-        )
+        let auto = self.auto.seat_view(self.lead_pair, slot);
+        crate::autoreseat::leg::home(self.meta_dir, events, (self.session, row), &auto, read, now)
     }
 
     /// The seat at `slot`'s own account against the headroom threshold, from
@@ -8011,8 +8013,9 @@ impl Cycle<'_> {
     ) -> crate::autoreseat::Room {
         let observed = quota.last_observation.as_ref();
         let on = self.auto.switch != crate::autoreseat::Switch::Off;
+        let auto = self.auto.seat_view(self.lead_pair, slot);
         match (on, self.roster.iter().find(|entry| entry.slot == slot)) {
-            (true, Some(entry)) => match self.auto.headroom_at {
+            (true, Some(entry)) => match auto.headroom_at {
                 Some(at) => crate::autoreseat::leg::own_room(observed, entry, pin, at, now),
                 None => crate::autoreseat::leg::own_relief(observed, entry, pin, now),
             },
@@ -8667,6 +8670,7 @@ fn auto_acts(
     now: i64,
     named: &mut Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
 ) -> Vec<AutoAct> {
+    let context = (context.0, context.1, false);
     auto_acts_with(settings, (seats, &[]), events, context, now, named)
 }
 
@@ -15048,6 +15052,7 @@ mod tests {
                 map: Vec::new(),
                 headroom_at: Some(95),
                 headroom_note: None,
+                lead: crate::autoreseat::Lead::default(),
                 notes: Vec::new(),
             },
             auto_trust: crate::config::AutoTrust::Off,
@@ -15306,6 +15311,7 @@ mod tests {
             map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
             headroom_at: None,
             headroom_note: None,
+            lead: crate::autoreseat::Lead::default(),
             notes: Vec::new(),
         };
         let (one, two) = (
@@ -15522,6 +15528,7 @@ mod tests {
             map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
             headroom_at: None,
             headroom_note: None,
+            lead: crate::autoreseat::Lead::default(),
             notes: Vec::new(),
         };
         let acts = |seats: &[AutoSeat], events: &[Event], now: i64| {
@@ -15662,6 +15669,7 @@ mod tests {
                 map: Vec::new(),
                 headroom_at: None,
                 headroom_note: None,
+                lead: crate::autoreseat::Lead::default(),
                 notes: Vec::new(),
             },
             auto_trust: crate::config::AutoTrust::Off,
@@ -15875,6 +15883,7 @@ mod tests {
             map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
             headroom_at: Some(95),
             headroom_note: None,
+            lead: crate::autoreseat::Lead::default(),
             notes: Vec::new(),
         };
         let acts = |settings: &Settings, seat: AutoSeat, events: &[Event], now: i64| {
@@ -16074,6 +16083,10 @@ mod tests {
     /// terminal episode, one the journal already ends on that very hold, or
     /// one left to its near short reset.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture enumerates the unmapped episode boundaries"
+    )]
     fn an_unmapped_seat_is_named_only_while_its_limit_episode_is_owed_a_move() {
         use super::{AutoAct, unmapped_act};
         use crate::autoreseat::{
@@ -16087,6 +16100,7 @@ mod tests {
             map: Vec::new(),
             headroom_at: None,
             headroom_note: None,
+            lead: crate::autoreseat::Lead::default(),
             notes: Vec::new(),
         };
         let key = crate::time::Timestamp::from_epoch(100);
@@ -16267,6 +16281,7 @@ mod tests {
             map: Vec::new(),
             headroom_at: threshold.then_some(95),
             headroom_note: None,
+            lead: crate::autoreseat::Lead::default(),
             notes: Vec::new(),
         }
     }

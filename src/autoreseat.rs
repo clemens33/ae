@@ -179,6 +179,8 @@ pub const REARM_GAP: f64 = 5.0;
 /// The lowest threshold `auto_reseat_at` accepts.
 const HEADROOM_FLOOR: u8 = 50;
 const HEADROOM_KEY: &str = "auto_reseat_at";
+/// The lead pair's own `auto_reseat_at`: absent means the lead pair shares it.
+const LEAD_KEY: &str = "auto_reseat_lead_at";
 
 /// Attempts one episode may make: one, and one more after a transient hold.
 pub const MAX_ATTEMPTS: u8 = 2;
@@ -345,6 +347,30 @@ pub enum Switch {
     All,
 }
 
+/// What `auto_reseat_lead_at` says about the lead pair's headroom threshold.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LeadAt {
+    /// Absent or unusable: the lead pair shares `auto_reseat_at`.
+    #[default]
+    Same,
+    /// `off`: headroom never moves a lead seat.
+    Off,
+    /// The lead pair's own threshold, `50`-`100`.
+    At(u8),
+}
+
+/// The lead pair's headroom row, judged, and whether a [`Settings::seat_view`]
+/// applied it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Lead {
+    pub at: LeadAt,
+    /// The note an unusable `auto_reseat_lead_at` left, also in `notes`.
+    pub note: Option<String>,
+    /// Set only in a seat view that took its threshold from this row, so the
+    /// key a note names survives the view.
+    pub applied: bool,
+}
+
 /// Everything the global config says about auto reseat, judged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
@@ -356,11 +382,15 @@ pub struct Settings {
     /// order declared.
     pub map: Vec<(String, Vec<String>)>,
     /// `auto_reseat_at`: the judged percentage of the seat's own account that
-    /// moves it before its limit; `None` is off.
+    /// moves it before its limit; `None` is off. In a [`Self::seat_view`] that
+    /// applied the lead row it is that row's threshold instead: the threshold
+    /// of the seat the view is for.
     pub headroom_at: Option<u8>,
     /// The note an unusable `auto_reseat_at` left, also in `notes`: the one
     /// note the watchdog journals.
     pub headroom_note: Option<String>,
+    /// `auto_reseat_lead_at`: the lead pair's own threshold row.
+    pub lead: Lead,
     /// One line per entry ignored or knob refused, for the operator.
     pub notes: Vec<String>,
 }
@@ -374,7 +404,40 @@ impl Settings {
             map: Vec::new(),
             headroom_at: None,
             headroom_note: None,
+            lead: Lead::default(),
             notes,
+        }
+    }
+
+    /// These settings as the seat at `slot` is judged by them: the lead pair
+    /// of a lead-pair session reads its own threshold when the row is set,
+    /// every other seat and an unset row read the global one, unchanged. The
+    /// view keeps which key supplied its threshold ([`Self::headroom_key`]),
+    /// and a view of a view is itself.
+    #[must_use]
+    pub fn seat_view(&self, lead_pair: bool, slot: &str) -> std::borrow::Cow<'_, Self> {
+        let at = match self.lead.at {
+            LeadAt::Same => return std::borrow::Cow::Borrowed(self),
+            LeadAt::Off => None,
+            LeadAt::At(at) => Some(at),
+        };
+        if self.lead.applied || !lead_seat(lead_pair, slot) {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut view = self.clone();
+        view.headroom_at = at;
+        view.lead.applied = true;
+        std::borrow::Cow::Owned(view)
+    }
+
+    /// The config key whose value [`Self::headroom_at`] holds: the lead row in
+    /// a view that applied it, `auto_reseat_at` otherwise.
+    #[must_use]
+    pub fn headroom_key(&self) -> &'static str {
+        if self.lead.applied {
+            LEAD_KEY
+        } else {
+            HEADROOM_KEY
         }
     }
 
@@ -404,46 +467,84 @@ pub fn settings_in(file: &Path, text: &str) -> Settings {
                 crate::config::section_entries(file, text, "auto_reseat"),
             );
             if settled.switch != Switch::Off {
-                let times = crate::config::section_entries(file, text, "workspace")
-                    .map(|rows| rows.iter().filter(|row| row.key == HEADROOM_KEY).count());
-                let (at, note) = parse_headroom(read(HEADROOM_KEY), times);
+                let times = |key: &str| {
+                    crate::config::section_entries(file, text, "workspace")
+                        .map(|rows| rows.iter().filter(|row| row.key == key).count())
+                };
+                let (at, note) = parse_headroom(read(HEADROOM_KEY), times(HEADROOM_KEY));
                 settled.headroom_at = at;
                 settled.notes.extend(note.clone());
                 settled.headroom_note = note;
+                let (at, note) = parse_lead(read(LEAD_KEY), times(LEAD_KEY));
+                settled.lead = Lead {
+                    at,
+                    note: note.clone(),
+                    applied: false,
+                };
+                settled.notes.extend(note);
             }
             settled
         }
     }
 }
 
-/// `auto_reseat_at` as written, or the default with the one note that says why.
-/// A key written twice is no value at all. A value is echoed escaped.
-fn parse_headroom(
+/// The percent row `key` as written: `Ok(Some(at))` a percent, `Ok(None)` for
+/// `off` (and for an absent key, which the caller tells apart), and why the row
+/// is unusable otherwise. A key written twice is no value at all. A value is
+/// echoed escaped.
+fn parse_percent(
+    key: &str,
     raw: Result<Option<String>, String>,
     times: Result<usize, String>,
-) -> (Option<u8>, Option<String>) {
-    let fallback = |why: String| {
-        (
-            Some(DEFAULT_HEADROOM_AT),
-            Some(format!("{why}; {DEFAULT_HEADROOM_AT} used")),
-        )
-    };
+) -> Result<Option<u8>, String> {
     match (raw, times) {
-        (Err(why), _) | (_, Err(why)) => fallback(why),
-        (Ok(_), Ok(times)) if times > 1 => fallback(format!("{HEADROOM_KEY} is set {times} times")),
-        (Ok(None), _) => (Some(DEFAULT_HEADROOM_AT), None),
+        (Err(why), _) | (_, Err(why)) => Err(why),
+        (Ok(_), Ok(times)) if times > 1 => Err(format!("{key} is set {times} times")),
+        (Ok(None), _) => Ok(None),
         (Ok(Some(raw)), _) => match raw.trim() {
-            "off" => (None, None),
+            "off" => Ok(None),
             value => match value.parse::<u8>() {
                 Ok(at) if (HEADROOM_FLOOR..=100).contains(&at) && !value.starts_with('+') => {
-                    (Some(at), None)
+                    Ok(Some(at))
                 }
-                _ => fallback(format!(
-                    "{HEADROOM_KEY} = {value:?} is not off or a whole percent from \
+                _ => Err(format!(
+                    "{key} = {value:?} is not off or a whole percent from \
                      {HEADROOM_FLOOR} to 100"
                 )),
             },
         },
+    }
+}
+
+/// `auto_reseat_at` as written, or the default with the one note that says why.
+fn parse_headroom(
+    raw: Result<Option<String>, String>,
+    times: Result<usize, String>,
+) -> (Option<u8>, Option<String>) {
+    let absent = matches!(raw, Ok(None));
+    match parse_percent(HEADROOM_KEY, raw, times) {
+        Ok(_) if absent => (Some(DEFAULT_HEADROOM_AT), None),
+        Ok(at) => (at, None),
+        Err(why) => (
+            Some(DEFAULT_HEADROOM_AT),
+            Some(format!("{why}; {DEFAULT_HEADROOM_AT} used")),
+        ),
+    }
+}
+
+/// `auto_reseat_lead_at` as written: absent or unusable is [`LeadAt::Same`],
+/// the unusable one with the note that says why and that `auto_reseat_at` is
+/// used.
+fn parse_lead(
+    raw: Result<Option<String>, String>,
+    times: Result<usize, String>,
+) -> (LeadAt, Option<String>) {
+    let absent = matches!(raw, Ok(None));
+    match parse_percent(LEAD_KEY, raw, times) {
+        Ok(_) if absent => (LeadAt::Same, None),
+        Ok(None) => (LeadAt::Off, None),
+        Ok(Some(at)) => (LeadAt::At(at), None),
+        Err(why) => (LeadAt::Same, Some(format!("{why}; {HEADROOM_KEY} used"))),
     }
 }
 
@@ -509,6 +610,7 @@ fn settle(
         map,
         headroom_at: None,
         headroom_note: None,
+        lead: Lead::default(),
         notes,
     }
 }
@@ -2145,6 +2247,14 @@ pub enum Link<'r> {
     Ambiguous,
 }
 
+/// Whether the seat at `slot` is one of the lead pair: `main` or `worker.0` of
+/// a lead-pair session. The one owner of that membership for the threshold and
+/// the pair guard.
+#[must_use]
+pub fn lead_seat(lead_pair: bool, slot: &str) -> bool {
+    lead_pair && matches!(slot, "main" | "worker.0")
+}
+
 /// The seat at `slot`'s pair partner: in a lead-pair session `main` and
 /// `worker.0` are each other's, before any name; otherwise two spawned seats
 /// named `<name>` and `<name>-nav`. Those name links are walked over every
@@ -2158,8 +2268,7 @@ pub fn partner<'r>(
     lead_pair: bool,
     slot: &str,
 ) -> Link<'r> {
-    let leads = ["main", "worker.0"];
-    if lead_pair && leads.contains(&slot) {
+    if lead_seat(lead_pair, slot) {
         let other = if slot == "main" { "worker.0" } else { "main" };
         return roster
             .iter()
@@ -3040,6 +3149,10 @@ mod limitwake_spec;
 mod start_policy_spec;
 
 #[cfg(test)]
+#[path = "autoreseat/leadat_tests.rs"]
+mod leadat_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3257,6 +3370,7 @@ mod tests {
             map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
             headroom_at: Some(DEFAULT_HEADROOM_AT),
             headroom_note: None,
+            lead: crate::autoreseat::Lead::default(),
             notes: Vec::new(),
         }
     }

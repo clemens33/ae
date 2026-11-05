@@ -11,10 +11,17 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     let text = String::from_utf8_lossy(data);
     let _ = std::hint::black_box(ae::config::parse_identity(&text));
-    let _ = std::hint::black_box(ae::autoreseat::settings_in(
-        std::path::Path::new("config"),
-        &text,
-    ));
+    let reseat = ae::autoreseat::settings_in(std::path::Path::new("config"), &text);
+    for (lead_pair, slot) in [
+        (true, "main"),
+        (true, "worker.0"),
+        (false, "main"),
+        (true, "worker.1"),
+    ] {
+        let view = reseat.seat_view(lead_pair, slot);
+        let _ = std::hint::black_box((view.headroom_at, view.headroom_key()));
+    }
+    let _ = std::hint::black_box(reseat);
     let _ = std::hint::black_box(ae::config::auto_effort_in(
         std::path::Path::new("config"),
         &text,

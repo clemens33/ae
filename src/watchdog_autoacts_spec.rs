@@ -34,6 +34,7 @@ fn settings() -> Settings {
         map: vec![("source".to_owned(), vec!["target".to_owned()])],
         headroom_at: Some(95),
         headroom_note: None,
+        lead: crate::autoreseat::Lead::default(),
         notes: Vec::new(),
     }
 }

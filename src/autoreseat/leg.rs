@@ -139,8 +139,11 @@ pub(crate) fn tagged(summary: &str, cause: &str) -> String {
     format!("{head}{tag}")
 }
 
-/// The hold a headroom attempt is closed with once `auto_reseat_at` is off.
-const HEADROOM_OFF: &str = "held: auto_reseat_at is off";
+/// The hold a headroom attempt is closed with once the threshold that applies
+/// to its seat, the config row `key`, is off.
+fn headroom_off(key: &str) -> String {
+    format!("held: {key} is off")
+}
 
 /// An attempt started before its grace whose start proof ended on the way here.
 const START_GONE: &str = "held: the start's exhausted reading no longer stands";
@@ -1184,10 +1187,13 @@ pub(crate) fn run(
         )?;
         return Ok(EXIT_FAILED);
     }
-    let settings = super::settings(Some(&crate::doors::config_file(
+    let global = super::settings(Some(&crate::doors::config_file(
         crate::shape::current(),
         root,
     )));
+    let lead_pair = crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair";
+    // The seat's own threshold: the lead pair reads its own row when it is set.
+    let settings = global.seat_view(lead_pair, &argv.slot);
     let orchestrator = crate::meta::meta_agent_role(&bytes) == crate::meta::MetaAgentRole::Role;
     let asked = Seat {
         session: &argv.session,
@@ -1200,7 +1206,7 @@ pub(crate) fn run(
     // each one is also said and told.
     let told = (
         meta.roster(),
-        crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair",
+        lead_pair,
         super::spawner(&events, &argv.session, &argv.slot, &agent),
     );
     let notice = |ending| super::notice(&argv.session, &agent, &ending);
@@ -1258,7 +1264,7 @@ pub(crate) fn run(
             {
                 Err((
                     CauseClass::Ineligible,
-                    CauseClass::Ineligible.lead(HEADROOM_OFF),
+                    CauseClass::Ineligible.lead(&headroom_off(settings.headroom_key())),
                 ))
             } else if early && !start.urgent(found.key.epoch()) {
                 Err((CauseClass::Other, CauseClass::Other.lead(START_GONE)))
@@ -2009,7 +2015,10 @@ pub(crate) fn trigger(
     let input = crate::watchdog_daemon::viewing_input(clients.as_deref(), &resolved.pane);
     let config =
         crate::state_root().map(|root| crate::doors::config_file(crate::shape::current(), &root));
-    let settings = super::settings(config.as_deref());
+    let global = super::settings(config.as_deref());
+    let lead_pair = crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair";
+    // The seat's own threshold: the lead pair reads its own row when it is set.
+    let settings = global.seat_view(lead_pair, slot);
     let profile = row.profile.clone().unwrap_or_default();
     // ONE quota read, and only once a decision needs it.
     let quota = std::cell::OnceCell::new();
@@ -2072,7 +2081,6 @@ pub(crate) fn trigger(
     let events = crate::watchdog_daemon::read_events(dir);
     // A seat whose pair partner is mid-move waits for that move: two halves
     // never choose against each other's row at once (#305).
-    let lead_pair = crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair";
     if let super::Link::Partner(other) = super::partner(meta.roster(), lead_pair, slot) {
         let (at, name) = (other.slot.as_str(), other.name.as_str());
         let limit = super::episode(&events, own_session, at, name);
@@ -3637,6 +3645,7 @@ mod tests {
             map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
             headroom_at: None,
             headroom_note: None,
+            lead: crate::autoreseat::Lead::default(),
             notes: Vec::new(),
         };
         let seat = Seat {
@@ -3788,6 +3797,7 @@ mod tests {
             map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
             headroom_at: None,
             headroom_note: None,
+            lead: crate::autoreseat::Lead::default(),
             notes: Vec::new(),
         };
         let seat = Seat {
@@ -4408,6 +4418,7 @@ mod tests {
             map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
             headroom_at,
             headroom_note: None,
+            lead: crate::autoreseat::Lead::default(),
             notes: Vec::new(),
         };
         let seat = Seat {

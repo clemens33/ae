@@ -196,7 +196,7 @@ enum Scope {
 /// Every documented `[workspace]` key in draw order: the key, its default as
 /// drawn when no source declares it, and how it resolves. Defaults are the
 /// owning readers' (plan §7); this table only spells them.
-const KEYS: [(&str, &str, Scope); 21] = [
+const KEYS: [(&str, &str, Scope); 22] = [
     ("main", "(unset)", Scope::Layered),
     ("workers", "(unset)", Scope::Layered),
     ("layout", "vertical", Scope::Pinned),
@@ -217,6 +217,7 @@ const KEYS: [(&str, &str, Scope); 21] = [
     ("auto_reseat_sessions", "(every session)", Scope::GlobalOnly),
     ("auto_reseat_grace_secs", "600", Scope::GlobalOnly),
     ("auto_reseat_at", "95", Scope::GlobalOnly),
+    ("auto_reseat_lead_at", "(auto_reseat_at)", Scope::GlobalOnly),
     ("purge_agent_history", "off", Scope::Layered),
 ];
 

@@ -31,6 +31,7 @@ fn settings(switch: Switch, map: &[(&str, &[&str])]) -> Settings {
             .collect(),
         headroom_at: Some(95),
         headroom_note: None,
+        lead: crate::autoreseat::Lead::default(),
         notes: Vec::new(),
     }
 }
@@ -98,7 +99,7 @@ fn acts(
         settings,
         (std::slice::from_ref(seat), homes),
         events,
-        (SESSION, false),
+        (SESSION, false, false),
         NOW,
         &mut Vec::new(),
     )

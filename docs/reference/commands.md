@@ -2716,7 +2716,7 @@ Everything ae does is one core operation reached through a `_`-prefixed entry: `
 `_requests`, `_state`, `_goal`, `_memo`, `_say`, `_peek`, `_agents`, `_focus`, `_interrupt`,
 `_watchdog`, `_telegram`, `_auto-reseat`, `_auto-effort`, and the two daemon bodies `_watchdog-run` and `_telegram-run`.
 The public words above and the session helpers are thin routes to them.
-`_auto-reseat <dir> <slot> <key>` is the detached leg the auto reseat trigger spawns to move a seat off its usage limit, or off an account read at or past `auto_reseat_at` — never run it by hand.
+`_auto-reseat <dir> <slot> <key>` is the detached leg the auto reseat trigger spawns to move a seat off its usage limit, or off an account read at or past the seat's headroom threshold (`auto_reseat_at`, or `auto_reseat_lead_at` for the lead pair) — never run it by hand.
 `_auto-effort <dir> <slot> <episode>` is the detached leg the watchdog spawns under `auto_effort = on` to restart a lead-pair seat in place at another effort — never run it by hand either.
 
 Don't call them directly — the core refuses any `_`-prefixed word it does not serve, with

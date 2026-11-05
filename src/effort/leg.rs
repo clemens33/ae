@@ -205,14 +205,28 @@ fn global() -> Option<PathBuf> {
     crate::state_root().map(|root| crate::doors::config_file(crate::shape::current(), &root))
 }
 
-/// The switch, and the headroom threshold that bars new step downs (R3).
-fn switch(auto: &crate::autoreseat::Settings) -> (bool, Option<u8>) {
-    let on =
-        crate::config::global_auto_effort(global().as_deref()) == crate::config::AutoEffort::On;
-    let inverted = auto
-        .headroom_at
-        .filter(|at| auto.switch != crate::autoreseat::Switch::Off && *at <= AT);
-    (on, inverted)
+/// Whether `auto_effort` is on.
+fn switch() -> bool {
+    crate::config::global_auto_effort(global().as_deref()) == crate::config::AutoEffort::On
+}
+
+/// The headroom threshold that bars new step downs of the seat at `slot` (R3),
+/// with the config key that supplied it: the threshold auto reseat judges THAT
+/// seat by, so the lead pair of a lead-pair session reads `auto_reseat_lead_at`
+/// when it is set.
+fn inverted(
+    auto: &crate::autoreseat::Settings,
+    bytes: &[u8],
+    slot: &str,
+) -> Option<(u8, &'static str)> {
+    if auto.switch == crate::autoreseat::Switch::Off {
+        return None;
+    }
+    let lead_pair = crate::lifecycle::meta_value(bytes, "layout") == "lead-pair";
+    let view = auto.seat_view(lead_pair, slot);
+    view.headroom_at
+        .filter(|at| *at <= AT)
+        .map(|at| (at, view.headroom_key()))
 }
 
 /// Why the seat is not restarted now: `Some("")` holds unnamed, a reason is
@@ -300,26 +314,26 @@ pub(crate) fn step(
     carry: &mut Carry,
     err: &mut impl Write,
 ) -> io::Result<()> {
-    let (on, inverted) = switch(cycle.auto);
-    if !on {
+    if !switch() {
         return Ok(());
-    }
-    if let Some(at) = inverted.filter(|_| !carry.noted) {
-        carry.noted = true;
-        writeln!(
-            err,
-            "ae: auto_effort: no new step down while auto_reseat_at is {at} (at most {AT}): auto reseat moves the seat first"
-        )?;
     }
     let mut started = false;
     for sight in seats {
         let Some(seat) = read_with(cycle.dir, cycle.session, &sight.slot, cycle.events) else {
             continue;
         };
+        let barred = inverted(cycle.auto, &seat.bytes, &sight.slot);
+        if let Some((at, key)) = barred.filter(|_| !carry.noted) {
+            carry.noted = true;
+            writeln!(
+                err,
+                "ae: auto_effort: no new step down while {key} is {at} (at most {AT}): auto reseat moves the seat first"
+            )?;
+        }
         let decision = seat.decide(
             cycle.quota,
             (&sight.capture, sight.limited),
-            inverted.is_none(),
+            barred.is_none(),
             cycle.now,
         );
         let key = seat.episode().map_or(cycle.now, |episode| episode.key);
@@ -450,14 +464,16 @@ impl Ctx<'_> {
         );
         let limited = crate::watchdog::limit_notice(capture, seat.bin()).is_some()
             || start.urgent(now.epoch());
-        match switch(&settings) {
-            (true, inverted) => seat.decide(
+        if switch() {
+            let barred = inverted(&settings, &seat.bytes, &self.slot);
+            seat.decide(
                 quota.as_ref(),
                 (capture, limited),
-                inverted.is_none(),
+                barred.is_none(),
                 now.epoch(),
-            ),
-            (false, _) => Decision::Idle,
+            )
+        } else {
+            Decision::Idle
         }
     }
 

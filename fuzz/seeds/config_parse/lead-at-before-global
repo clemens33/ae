@@ -1,0 +1,4 @@
+[workspace]
+auto_reseat_lead_at = 100
+auto_reseat = on
+auto_reseat_at = 80

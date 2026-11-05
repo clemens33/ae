@@ -497,6 +497,7 @@ fn a_return_is_in_flight_only_between_its_attempt_and_outcome_within_the_bound()
         map: Vec::new(),
         headroom_at: None,
         headroom_note: None,
+        lead: crate::autoreseat::Lead::default(),
         notes: Vec::new(),
     };
     let off = Settings {

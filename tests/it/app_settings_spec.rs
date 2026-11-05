@@ -40,7 +40,7 @@ const WAIT: Duration = Duration::from_secs(20);
 const FRAME: Duration = Duration::from_secs(3);
 const REFRESH_SLACK: Duration = Duration::from_secs(12);
 const HINT: &str = "? keys";
-const WORKSPACE_KEYS: [&str; 21] = [
+const WORKSPACE_KEYS: [&str; 22] = [
     "main",
     "workers",
     "layout",
@@ -61,6 +61,7 @@ const WORKSPACE_KEYS: [&str; 21] = [
     "auto_reseat_sessions",
     "auto_reseat_grace_secs",
     "auto_reseat_at",
+    "auto_reseat_lead_at",
     "purge_agent_history",
 ];
 
@@ -951,6 +952,7 @@ fn config_draws_all_documented_keys_and_launch_session_global_default_provenance
         ("auto_reseat_sessions", "(every session)", "default"),
         ("auto_reseat_grace_secs", "600", "default"),
         ("auto_reseat_at", "95", "default"),
+        ("auto_reseat_lead_at", "(auto_reseat_at)", "default"),
         ("purge_agent_history", "off", "default"),
     ] {
         config_row(&screen, key, value, source);
@@ -973,6 +975,7 @@ fn config_draws_all_documented_keys_and_launch_session_global_default_provenance
         "auto_reseat_sessions",
         "auto_reseat_grace_secs",
         "auto_reseat_at",
+        "auto_reseat_lead_at",
     ] {
         let line = screen
             .lines()

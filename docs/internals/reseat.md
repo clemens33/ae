@@ -922,7 +922,16 @@ post-move read, and otherwise neither blocked nor told.
 A seat can be moved BEFORE its limit. With `[workspace] auto_reseat_at` (global,
 `95` by default, `off` disables, `50`-`100`; anything else is `95` with one note
 the daemon journals target-less as `auto-reseat-notice` once per start), the
-daemon judges every eligible seat whose limit latch does NOT stand against its
+lead pair alone (`main` and `worker.0` of a `layout = lead-pair` session) may
+have its own bar in `auto_reseat_lead_at` (global, `50`-`100` or `off`; absent
+or unusable means the lead pair uses `auto_reseat_at`, an unusable one with its
+own note ending `; auto_reseat_at used`). Every threshold below, the crossing,
+the 5-point gap, the leg's recheck, a candidate's `no headroom` and the
+return band, is the one that applies to the seat judged; `off` for the lead pair
+stops headroom moves of a lead seat only, a drawn limit and an urgent start
+move it as before. Setting or raising a threshold does not close a headroom
+episode already open (it stays due while the account reads within 5 points of
+the new threshold, and the leg holds it only below that). The daemon judges every eligible seat whose limit latch does NOT stand against its
 OWN client scope — the one `quota::recorded_identity` join the throttle line and
 the checkpoint ask make — over its held quota observation: the worst usable
 (fresh or stale) window proven at least one day long, rows scoped to another
@@ -1010,7 +1019,7 @@ profile, each rollout, rows scoped to another model family than the origin's pin
 left out, and rows ae cannot judge KEPT. `autoreseat::return_ready` then needs,
 for every window of those accounts present NOW, its NEWEST reading to be judged,
 fresh, observed strictly after `away_at`, and strictly below the band; a tie at
-the newest stamp must agree. The band is `auto_reseat_at` − 5 (95 − 5 when off).
+the newest stamp must agree. The band is the seat's own threshold − 5: `auto_reseat_at` − 5, or `auto_reseat_lead_at` − 5 for a lead-pair seat when that row is a number (95 − 5 when the threshold that applies is `off`).
 At least one window proven a day long must be among them, and the worst such one
 is the cause: `return to <origin>: <pct>% <window>`. Stale, unknown, reset-passed,
 unjudged, unstamped, or tied-opposing readings deny it; a passed reset alone
@@ -1120,7 +1129,7 @@ outside the cadence's counter. It runs only with a seat in auto reseat's reach, 
 an off or excluded session reads exactly as before, and never at
 `quota_every_secs = 0`.
 
-With `auto_reseat_at = off` the seat's `Room` reads `leg::own_relief`: relief needs
+With the threshold that applies to the seat `off` (`auto_reseat_at = off`, or `auto_reseat_lead_at = off` for a lead-pair seat) the seat's `Room` reads `leg::own_relief`: relief needs
 a healthy fresh window, and every exhausted reading answered by a strictly newer
 healthy one of its own window, short windows included. A tie, a window still full
 or no fresh window says nothing. A later start ends an earlier start's

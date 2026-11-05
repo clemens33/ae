@@ -1,0 +1,4 @@
+[workspace]
+auto_reseat = off
+auto_reseat_at = bad
+auto_reseat_lead_at = bad

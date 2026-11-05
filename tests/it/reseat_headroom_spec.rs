@@ -2229,3 +2229,6 @@ fn phase2_an_ambiguous_missing_or_absent_model_does_not_invent_a_sibling() {
         );
     }
 }
+
+#[path = "leadat_headroom_spec.rs"]
+mod leadat;

@@ -1364,3 +1364,6 @@ fn runparsed_dead_seat_rechecks_urgency_under_lifecycle_before_any_move_write() 
         "hook decline retains Other: {refused:?}"
     );
 }
+
+#[path = "leadat_start_spec.rs"]
+mod leadat;

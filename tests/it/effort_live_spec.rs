@@ -1246,3 +1246,6 @@ fn r3_up_with_record_already_cleared_is_unproven_never_failed_or_restored() {
     assert_eq!(rig.launched().lines().count(), 1);
     assert!(!rig.meta().contains("\neffort.main="));
 }
+
+#[path = "leadat_effort_spec.rs"]
+mod leadat;
