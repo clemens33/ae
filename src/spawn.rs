@@ -638,62 +638,22 @@ fn bare_command(facts: &Facts, parsed: &Parsed, home: Option<&Path>) -> Result<L
     Ok((command, lexed))
 }
 
-/// A `profile@client` selection's command, or its refusal. The order is the
-/// contract, every step before any effect:
-///
-/// 1. the session's recorded GLOBAL config is the only identity read — a
-///    project overlay can neither approve a pair nor redefine an approved
-///    name, so a pair means exactly what the human's own config says;
-/// 2. the pair must be on the global `[client_pairs]` list — POLICY before
-///    existence, so an unapproved pair learns nothing about which names exist;
-/// 3. the profile and the client must exist;
-/// 4. the launch's own adapter gate and first-start store proof
-///    ([`crate::session_launch::resolve_spawn_pair`]).
+/// A `profile@client` selection's command, or its refusal: the one gate
+/// every new pair choice takes ([`crate::session_launch::approved_pair`]).
 fn pair_command(
     facts: &Facts,
     parsed: &Parsed,
     label: &str,
     home: Option<&Path>,
 ) -> Result<Launchable, String> {
-    let spelling = format!("{}@{label}", parsed.profile);
-    let Some(global) = facts.global.as_deref() else {
-        return Err(format!(
-            "Error: --using '{spelling}': this session records no global config, so no pair can be approved. Nothing was spawned."
-        ));
-    };
-    // ONE read of the global file feeds both the identity and the approved
-    // list, so an approval and the command it approves cannot straddle an edit.
-    let text = match crate::config::read_selected(global) {
-        Ok(text) => text,
-        Err(crate::config::ConfigError::Unreadable(path)) => {
-            return Err(format!(
-                "Error: --using '{spelling}': the global config {} cannot be read, so no pair can be approved. Nothing was spawned.",
-                path.display()
-            ));
-        }
-        Err(why) => return Err(why.to_string()),
-    };
-    let cfg = crate::config::parse_identity_in(global, &text).map_err(|why| why.to_string())?;
-    let verdict = crate::pairs::parse_in(global, &text).judge(&parsed.profile, label);
-    if let Some(why) = verdict.refusal(&parsed.profile, global) {
-        return Err(format!(
-            "Error: --using '{spelling}' {why} Nothing was spawned."
-        ));
-    }
-    if cfg.profile(&parsed.profile).is_none() {
-        return Err(format!(
-            "Error: profile '{}' not defined in [profiles] of {}",
-            parsed.profile,
-            global.display()
-        ));
-    }
-    if cfg.client(label).is_none() {
-        return Err(format!(
-            "Error: client '{label}' is not defined in [clients] of {}.",
-            global.display()
-        ));
-    }
-    crate::session_launch::resolve_spawn_pair(&cfg, &parsed.name, &parsed.profile, label, home)
+    crate::session_launch::approved_pair(
+        facts.global.as_deref(),
+        &parsed.name,
+        &parsed.profile,
+        label,
+        home,
+        "Nothing was spawned.",
+    )
 }
 
 /// Step A: validate, record the seat and stamp the attempt — no pane yet.

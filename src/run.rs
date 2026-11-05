@@ -2173,11 +2173,17 @@ pub(crate) fn read_seat_command(
                 Err(crate::config::OverrideError::Refused(why)) => Err(why.to_string()),
             }
         }
-        crate::meta::RecordedClient::Invalid => Err(format!(
-            "seat '{slot}' records an unusable client (client.{slot} is empty, duplicated or malformed) — \
-             fix the meta row, or end the session"
-        )),
+        crate::meta::RecordedClient::Invalid => Err(unusable_client(slot)),
     }
+}
+
+/// What a seat whose `client.<slot>` row ae cannot read is refused with: the
+/// wording a seat's launch read and a pair reseat share.
+pub(crate) fn unusable_client(slot: &str) -> String {
+    format!(
+        "seat '{slot}' records an unusable client (client.{slot} is empty, duplicated or malformed) — \
+         fix the meta row, or end the session"
+    )
 }
 
 /// The config pair a seat's profiles resolve against: the global file the record

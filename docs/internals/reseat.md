@@ -30,17 +30,30 @@ Everything durable is answered from the session's records, before tmux is
 consulted at all — a stopped session diagnoses a typo exactly as a running one
 does, and a live seat is only reached at the dead proof.
 
-1. the argv: `<session> <agent> --using <profile> [--stop-unknown]`, either
-   flag anywhere, a `profile@client` override refused as launch-only;
+1. the argv: `<session> <agent> --using <profile[@client]> [--stop-unknown]`,
+   either flag anywhere; `profile@client` splits once at `@` (the grammar a
+   launch `--seat` and a spawn share), and a malformed value is refused naming it;
 2. the session, in the world the caller already enumerated;
 3. the caller rule: a pane ae STAMPED may reseat only its own session; an
    unstamped shell may reseat any;
-4. the roster: which slot seats this agent, and what profile it records;
-5. the profile differs from the recorded one (`relaunch` is the other verb);
-6. the profile resolves — the same resolution `run::read_seat` makes for a
+4. the roster: which slot seats this agent, and what profile and client it records;
+5. something moves (`relaunch` is the other verb): the profile differs, or the
+   same profile asks for another client — a pair for a label the seat does not
+   record, or a BARE profile on a seat that records a usable client label,
+   which returns it to the profile's own account (the one named exception to
+   "a bare reseat behaves as before"). A bare profile on a seat with no client
+   row, or one whose row ae cannot read, is refused as `already runs`;
+6. the profile resolves — bare: the same resolution `run::read_seat` makes for a
    seat with no client override, so a profile accepted here is one `_run` can
    launch. No tool-class judgement: a reseat accepts exactly the profiles a
-   launch does;
+   launch does. PAIR: the spawn's own gate, `session_launch::approved_pair` —
+   the session's recorded GLOBAL config alone (a project overlay can neither
+   approve a pair nor redefine an approved name), `[client_pairs]` approval
+   before existence, the same-known-adapter gate and the first-start store
+   proof — then the account the pair selects, which ae must be able to name.
+   A pair onto a seat whose client row ae cannot read is refused here too,
+   with that read's words; a pair move skips the auto-reseat cover warning,
+   which judges the profile's own account;
 7. the pane: not the CALLER'S own — a seat cannot reseat itself, because the
    tool running the command is the one that would be replaced under it — and
    its stamp must agree with the roster slot.
@@ -303,6 +316,18 @@ of one tool may well serve a different one), and `client` (a launch's
 `profile@client` override, for a profile this seat no longer runs).
 The client row is removed rather than emptied: an empty override is not the
 same fact as no override.
+
+A PAIR move (`--using profile@client`, `meta::SeatMove::pair`) instead writes
+ONE `client.<slot>` row after that removal, so any earlier rows collapse to it,
+and the replacement names the account the client selects in every arm: `Fresh`
+WRITES the pair's `config_home` and implicit base (a bare `Fresh` removes them
+and leaves them to `_run`'s first start); `Carried` writes the account it was
+copied into, built from the same resolved account (`reseat::Moving::account`)
+as the pair's identity; `Kept` leaves the rows `reseat::keeps` proved, under
+the lock, are that account. The pair's first start runs the gate-judged command
+as the `_run` snapshot, so an overlay cannot swap either name. The reseat
+record's `from` and `to` spell `profile@client` wherever a client applies
+(human text only; `profile.<slot>` stays bare).
 
 All three arms also REMOVE every `effort.<slot>` line, bare, damaged and CR-ended
 ones included: a quota-driven effort record belongs to the setup that is
@@ -1026,8 +1051,12 @@ seat may wait on its substitute); a short window that vanishes from the
 observation is no longer judged, since only the windows present now are; an
 origin account that fills again right after a return moves the seat away again
 through the ordinary paths, bounded by the flap limit; an origin whose tool ae
-reads no quota for never returns; and a busy seat waits for an idle frame
-however long that takes.
+reads no quota for never returns; a busy seat waits for an idle frame
+however long that takes; and an origin that ran on a `profile@client` pair
+returns to its BARE profile, the profile's own account — the chain records the
+origin's profile only, and the return's readiness is judged on that same
+default account, so it is not unsafe, just not the original login (follow-up
+with automatic `@client` destinations, which no automatic move chooses today).
 
 ### A resume on an exhausted seat
 

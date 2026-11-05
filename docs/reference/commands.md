@@ -573,7 +573,7 @@ newest turns. A tool with no reader says so in the section (`incomplete: opencod
 read`) rather than rendering an empty one, because a successor told nothing cannot tell "the
 seat said nothing" from "ae did not look". The read stays read-only.
 
-[`ae reseat`](#ae-reseat-session-agent---using-profile) hands this same pack to a successor
+[`ae reseat`](#ae-reseat-session-agent---using-profileclient---stop-unknown) hands this same pack to a successor
 automatically, as its first turn — one builder, so what you read before a move and what the
 successor is given are the same document.
 
@@ -1116,7 +1116,7 @@ one account has no exit once that account's window is spent. It reads `OK` when 
 scope naming the uncovered profiles and the line to add under `[auto_reseat]`; a profile whose
 account ae cannot prove has a `WARN` row of its own, saying whether its own or a candidate's
 account is the one in doubt. It never fails the command. `ae spawn` and
-[`ae reseat --using`](#ae-reseat-session-agent---using-profile) print the same finding as one
+[`ae reseat --using`](#ae-reseat-session-agent---using-profileclient---stop-unknown) print the same finding as one
 stderr line for the profile you pick, and carry on.
 A `local-config` row appears when `--local`, or a `.ae/config` in the directory `ae doctor` runs
 from, layers a second file over the global config; it carries that file's path. No such file, no row,
@@ -1574,7 +1574,7 @@ Retire events without typed conversation identity collapse into one
 do not make those totals partial: their usage is unknowable. Retired events that do carry typed
 identity keep their own rows and make totals partial when that source cannot be read.
 
-A seat moved by [`ae reseat`](#ae-reseat-session-agent---using-profile) reports its SUCCESSOR's
+A seat moved by [`ae reseat`](#ae-reseat-session-agent---using-profileclient---stop-unknown) reports its SUCCESSOR's
 usage only. The predecessor's conversation is kept addressable in the seat's predecessor list,
 but `ae usage` reads the current row, so the tokens the seat spent on the tool it left drop out
 of the live figure at the moment of the move. They are not lost on disk — the conversation files
@@ -1960,7 +1960,7 @@ keeps its original path. That path is recorded session state, so a later `stop` 
 resume returns every agent to the same working directory instead of creating a second
 copy under the new session name. Live renames never move managed work.
 
-## `ae reseat <session> <agent> --using <profile> [--stop-unknown]`
+## `ae reseat <session> <agent> --using <profile[@client]> [--stop-unknown]`
 
 Move ONE seat to another profile, in place. Same slot, same pane, same name, same
 records. Between two accounts of the SAME tool the whole conversation comes with it;
@@ -1973,7 +1973,20 @@ longer answer.
 
 ```bash
 ae reseat my-feature colead --using lunam
+ae reseat my-feature colead --using opus55x@cc-mic   # same preset, another account
 ```
+
+**Another account, same preset.** `--using <profile>@<client>` moves the seat onto the
+profile run through another `[clients]` account of the SAME harness, without a duplicate
+`[profiles]` row — the spelling `spawn --using` takes, under the same gate: the pair must be
+listed under `[client_pairs]` in the GLOBAL config (a project `.ae/config` never approves
+one), a preset on a client of another harness is refused, and ae must be able to name the
+account the client selects. Every pair-admission refusal comes before anything is stopped. The
+seat records the bare profile plus its client and account; resume, roster and quota follow
+that record.
+A bare `--using <profile>` on a seat that records a client for that same profile moves it
+back to the profile's own account; with no client recorded it is still "already runs".
+Automatic reseats always choose bare profiles and clear the client.
 
 **It does the full round.** A seat whose tool is still running is stopped where it
 stands and then moved: same pane id, same pane stamps, same scrollback, the shell left

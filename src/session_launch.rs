@@ -1255,6 +1255,71 @@ pub(crate) fn resolve_spawn_pair(
     Ok((command, parsed))
 }
 
+/// A `profile@client` selection for a NEW choice — `spawn --using` or
+/// `reseat --using` — resolved to its command, or refused. The order is the
+/// contract, every step before any effect:
+///
+/// 1. the session's recorded GLOBAL config is the only identity read — a
+///    project overlay can neither approve a pair nor redefine an approved
+///    name, so a pair means exactly what the human's own config says;
+/// 2. the pair must be on the global `[client_pairs]` list — POLICY before
+///    existence, so an unapproved pair learns nothing about which names exist;
+/// 3. the profile and the client must exist;
+/// 4. the launch's own adapter gate and first-start store proof
+///    ([`resolve_spawn_pair`]).
+///
+/// `nothing` closes the refusals that name the selection, in the caller's own
+/// verb (`Nothing was spawned.`).
+///
+/// # Errors
+///
+/// The refusal line, whichever step refused.
+pub(crate) fn approved_pair(
+    global: Option<&Path>,
+    agent: &str,
+    profile: &str,
+    label: &str,
+    home: Option<&Path>,
+    nothing: &str,
+) -> Result<(config::ResolvedCommand, crate::launch_cmd::SimpleCommand), String> {
+    let spelling = format!("{profile}@{label}");
+    let Some(global) = global else {
+        return Err(format!(
+            "Error: --using '{spelling}': this session records no global config, so no pair can be approved. {nothing}"
+        ));
+    };
+    // ONE read of the global file feeds both the identity and the approved
+    // list, so an approval and the command it approves cannot straddle an edit.
+    let text = match config::read_selected(global) {
+        Ok(text) => text,
+        Err(config::ConfigError::Unreadable(path)) => {
+            return Err(format!(
+                "Error: --using '{spelling}': the global config {} cannot be read, so no pair can be approved. {nothing}",
+                path.display()
+            ));
+        }
+        Err(why) => return Err(why.to_string()),
+    };
+    let cfg = config::parse_identity_in(global, &text).map_err(|why| why.to_string())?;
+    let verdict = crate::pairs::parse_in(global, &text).judge(profile, label);
+    if let Some(why) = verdict.refusal(profile, global) {
+        return Err(format!("Error: --using '{spelling}' {why} {nothing}"));
+    }
+    if cfg.profile(profile).is_none() {
+        return Err(format!(
+            "Error: profile '{profile}' not defined in [profiles] of {}",
+            global.display()
+        ));
+    }
+    if cfg.client(label).is_none() {
+        return Err(format!(
+            "Error: client '{label}' is not defined in [clients] of {}.",
+            global.display()
+        ));
+    }
+    resolve_spawn_pair(&cfg, agent, profile, label, home)
+}
+
 /// What one side of an `@` pair runs, for the refusal's two values.
 fn adapter_word(binary: &str, known: Option<ToolKind>) -> String {
     match known {

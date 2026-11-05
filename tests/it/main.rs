@@ -135,6 +135,7 @@ mod parity;
 mod phase2;
 mod phase3;
 mod pipequiet_spec;
+mod presetreseat_spec;
 mod presetspawn_pins_spec;
 mod presetspawn_spec;
 mod profview_spec;

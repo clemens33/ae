@@ -1,5 +1,7 @@
-//! `ae reseat <session> <agent> --using <profile> [--stop-unknown]`: move ONE
-//! seat to another profile, in place.
+//! `ae reseat <session> <agent> --using <profile[@client]> [--stop-unknown]`:
+//! move ONE seat to another profile, in place — or, with `profile@client`, to a
+//! profile on another account of the same harness, for a pair the human's
+//! GLOBAL config approves under `[client_pairs]`.
 //!
 //! The pain, measured across this fleet: a seat whose vendor quota dies is lost
 //! WITH ITS CONTEXT. The only way on was a fresh spawn under a new name plus a
@@ -26,7 +28,8 @@
 //! doing nothing:
 //!
 //! 1. the argv, the session, the caller, the seat and the profile resolve —
-//!    no state is written;
+//!    a pair through the spawn's own approval and adapter gate
+//!    ([`crate::session_launch::approved_pair`]) — and no state is written;
 //! 2. under the session's lifecycle lock, a running tool is stopped and the
 //!    stop is recorded; then the seat is proven dead;
 //! 3. the seed pack is built (it reads the seat's recorded first message,
@@ -82,7 +85,7 @@ mod muse_gap_tests;
 
 /// The usage line.
 pub const RESEAT_USAGE: &str =
-    "Usage: ae reseat <session> <agent> --using <profile> [--stop-unknown]";
+    "Usage: ae reseat <session> <agent> --using <profile[@client]> [--stop-unknown]";
 
 /// The event action a reseat records, whatever its outcome.
 pub(crate) const RESEAT_ACTION: &str = "reseat";
@@ -126,7 +129,12 @@ const SEND_LOCK_WAIT: Duration = Duration::from_secs(5);
 struct Parsed {
     session: String,
     agent: String,
+    /// The BARE profile the seat moves to — never carries `@`.
     profile: String,
+    /// The `[clients]` label of a `--using profile@client` move: the account
+    /// the profile runs on instead of its own. `None` is a bare move, which
+    /// leaves the seat on the profile's own account.
+    client: Option<String>,
     stop: StopPolicy,
     /// The watchdog's move, which must not drop an observed choice (#269). A
     /// human's `--using` is a new choice and clears it.
@@ -203,20 +211,19 @@ fn parse(tail: &[String]) -> Result<Parsed, String> {
     if profile.is_empty() {
         return Err("Error: reseat needs --using <profile>.".to_owned());
     }
-    // The same line a launch draws around its own override: `profile@client` is
-    // a LAUNCH grammar, and this verb writes no client row — it removes the one
-    // the launch left, because that override belongs to a profile the seat no
-    // longer runs.
-    if profile.contains('@') {
+    // The one grammar a launch `--seat` selection and a spawn use: one `@`
+    // splits the profile from its client, so every later row carries the bare
+    // profile.
+    let Some((profile, client)) = crate::session_launch::split_profile_client(&profile) else {
         return Err(format!(
-            "Error: --using '{profile}' names a client override — profile@client is launch-only. \
-             reseat takes a bare profile."
+            "Error: --using '{profile}' is not <profile> or <profile>@<client> (e.g. --using opus55x@cc-mic)."
         ));
-    }
+    };
     Ok(Parsed {
         session: (*session).to_owned(),
         agent: (*agent).to_owned(),
         profile,
+        client,
         stop,
         automatic: false,
         long_limit: None,
@@ -382,6 +389,24 @@ fn keeps(keep: &Keep<'_>) -> bool {
         && keep
             .from_command
             .is_some_and(|from| crate::launch_cmd::keep_commands(from, keep.to_command, keep.tool))
+}
+
+/// PURE: does a move to the seat's OWN profile ask for the client the seat
+/// already records — the "nothing to move" half beside the profile compare?
+///
+/// A bare request asks for the profile's own account: that is where a seat
+/// recording no client already is, and where a seat whose client row ae
+/// cannot read is refused exactly as before. Only a seat recording a USABLE
+/// label is somewhere else, so a bare move returns it home. A pair asks for
+/// exactly its label.
+fn same_client(asked: Option<&str>, recorded: &crate::meta::RecordedClient) -> bool {
+    use crate::meta::RecordedClient;
+    match (asked, recorded) {
+        (None, RecordedClient::Label(_))
+        | (Some(_), RecordedClient::Missing | RecordedClient::Invalid) => false,
+        (None, RecordedClient::Missing | RecordedClient::Invalid) => true,
+        (Some(asked), RecordedClient::Label(label)) => asked == label,
+    }
 }
 
 /// The command the seat's recorded profile resolves to NOW, exactly as `_run`
@@ -562,6 +587,43 @@ fn resolve_profile(dir: &Path, bytes: &[u8], profile: &str, agent: &str) -> Resu
         pin: crate::launch_cmd::model_flag_value(command.as_str(), parsed.tool()),
         binary: parsed.binary,
         command: command.as_str().to_owned(),
+        pair: None,
+    })
+}
+
+/// A `profile@client` move resolved to the facts the meta records — or the
+/// refusal, every one of them before anything is stopped.
+///
+/// The gate is the spawn's own ([`crate::session_launch::approved_pair`]):
+/// the session's recorded GLOBAL config alone, approval before existence, the
+/// same-known-adapter gate and the first-start store proof. Then the ACCOUNT:
+/// a pair whose account ae cannot name is refused here, because the move
+/// publishes that account with the client in one replacement and a client
+/// without its account is no identity at all.
+fn resolve_pair(bytes: &[u8], profile: &str, label: &str, agent: &str) -> Result<Moving, String> {
+    let global = crate::lifecycle::meta_value(bytes, "config");
+    let home = crate::doors::home();
+    let (command, parsed) = crate::session_launch::approved_pair(
+        (!global.is_empty()).then(|| Path::new(&global)),
+        agent,
+        profile,
+        label,
+        home.as_deref(),
+        "Nothing was reseated.",
+    )?;
+    let Some(account) = account_of(&command, parsed.tool(), home.as_deref()) else {
+        return Err(format!(
+            "Error: --using '{profile}@{label}': ae cannot name the account '{label}' selects for \
+             '{profile}', so the move cannot record it. Nothing was reseated."
+        ));
+    };
+    Ok(Moving {
+        account: Some(account),
+        tool: parsed.tool(),
+        pin: crate::launch_cmd::model_flag_value(command.as_str(), parsed.tool()),
+        binary: parsed.binary,
+        command: command.as_str().to_owned(),
+        pair: Some(label.to_owned()),
     })
 }
 
@@ -575,6 +637,9 @@ struct Moving {
     command: String,
     /// Where this profile's conversations live, when ae can say.
     account: Option<Account>,
+    /// The approved `[clients]` label of a `profile@client` move, whose
+    /// account [`resolve_pair`] proved is `account`; `None` is a bare move.
+    pair: Option<String>,
 }
 
 /// The account a profile selects, resolved once and kept whole: the path a
@@ -1336,6 +1401,7 @@ pub(crate) fn restart_in_place(
         session: session.to_owned(),
         agent: agent.to_owned(),
         profile: crate::lifecycle::meta_value(&locked, &format!("profile.{}", target.slot)),
+        client: None,
         stop: StopPolicy::Proven,
         automatic: false,
         long_limit: None,
@@ -1355,7 +1421,7 @@ pub(crate) fn restart_in_place(
     Ok(Some(matches!(started, Started::Running { .. })))
 }
 
-/// `ae reseat <session> <agent> --using <profile> [--stop-unknown]`.
+/// `ae reseat <session> <agent> --using <profile[@client]> [--stop-unknown]`.
 ///
 /// # Errors
 ///
@@ -1424,6 +1490,7 @@ pub(crate) fn run_as_watchdog(
         session: session.to_owned(),
         agent: agent.to_owned(),
         profile: profile.to_owned(),
+        client: None,
         stop,
         automatic: true,
         long_limit,
@@ -1532,8 +1599,8 @@ fn move_seat(
     let mut at = Record {
         caller: &seat.caller,
         now: ask.now,
-        from: &seat.recorded,
-        to: &ask.parsed.profile,
+        from: &seat.from,
+        to: &seat.to,
         prior: &prepared.prior,
         // Filled in once the carry question is answered, below. Every record
         // written before that is a STOP, and a stop names no conversation at
@@ -1595,11 +1662,14 @@ struct Admitted<'w> {
     entry: &'w crate::digest::SessionEntry,
     dir: PathBuf,
     caller: Caller,
-    /// The profile the seat recorded BEFORE the move, empty when none.
-    recorded: String,
-    /// The same, as the two messages that say what a half-finished move left
-    /// behind spell it.
+    /// The profile the seat recorded BEFORE the move, as the two messages that
+    /// say what a half-finished move left behind spell it.
     was: String,
+    /// The record's `from` and `to`: each profile with the client it runs on,
+    /// `profile@client`, and the bare profile where there is none. Text a human
+    /// reads; no reader parses a profile name out of it.
+    from: String,
+    to: String,
     moving: Moving,
     /// The command the recorded profile resolves to now, for the keep question.
     from_command: Option<String>,
@@ -1676,41 +1746,86 @@ fn admit<'w>(
     } else {
         format!("profile '{recorded}'")
     };
-    if recorded == parsed.profile {
-        writeln!(
-            err,
-            "Error: '{}' already runs profile '{}' — there is nothing to move. `relaunch {}` \
-             brings it back on the same profile.",
-            parsed.agent, parsed.profile, parsed.agent
-        )?;
-        return Err(refused);
-    }
-    let moving = match resolve_profile(&dir, &bytes, &parsed.profile, &parsed.agent) {
+    let moving = match destination(&dir, &bytes, parsed, seated, &recorded) {
         Ok(moving) => moving,
-        Err(why) => {
-            writeln!(err, "Error: {why}. Nothing was reseated.")?;
+        Err(line) => {
+            writeln!(err, "{line}")?;
             return Err(refused);
         }
     };
     let from_command = recorded_command(&dir, &bytes, seated);
     // The moment of a human's choice: say once if the profile chosen has no
     // exit off its account. The watchdog's own move is no choice of anyone's.
+    // Not on a `profile@client` move: the verdict judges the profile's OWN
+    // account, which is not the one this seat moves to.
     if caller.display != crate::watchdog::WATCHDOG_ACTOR
+        && moving.pair.is_none()
         && let Some(line) = cover_warning(&dir, &bytes, &parsed.profile)
     {
         writeln!(err, "{line}")?;
     }
     let target = place(&dir, parsed, &caller, &slot, err)?;
+    let spelled = |profile: &str, client: Option<&str>| {
+        client.map_or_else(|| profile.to_owned(), |label| format!("{profile}@{label}"))
+    };
+    let from = match &seated.client {
+        crate::meta::RecordedClient::Label(label) => spelled(&recorded, Some(label)),
+        _ => recorded.clone(),
+    };
+    let to = spelled(&parsed.profile, parsed.client.as_deref());
     Ok(Admitted {
         entry,
         dir,
         caller,
-        recorded,
         was,
+        from,
+        to,
         moving,
         from_command,
         target,
     })
+}
+
+/// Where the seat moves, resolved — or the refusal line, nothing stopped or
+/// written: something must move ([`same_client`]), the profile (bare) or the
+/// pair ([`resolve_pair`]) must resolve, and a pair must not land on a client
+/// row ae cannot read.
+fn destination(
+    dir: &Path,
+    bytes: &[u8],
+    parsed: &Parsed,
+    seated: &crate::meta::RosterEntry,
+    recorded: &str,
+) -> Result<Moving, String> {
+    if recorded == parsed.profile && same_client(parsed.client.as_deref(), &seated.client) {
+        return Err(match parsed.client.as_deref() {
+            None => format!(
+                "Error: '{}' already runs profile '{}' — there is nothing to move. `relaunch {}` \
+                 brings it back on the same profile.",
+                parsed.agent, parsed.profile, parsed.agent
+            ),
+            Some(label) => format!(
+                "Error: '{}' already runs profile '{}' on client '{label}' — there is nothing to \
+                 move. `relaunch {}` brings it back on the same profile.",
+                parsed.agent, parsed.profile, parsed.agent
+            ),
+        });
+    }
+    let moving = match parsed.client.as_deref() {
+        None => resolve_profile(dir, bytes, &parsed.profile, &parsed.agent)
+            .map_err(|why| format!("Error: {why}. Nothing was reseated."))?,
+        Some(label) => resolve_pair(bytes, &parsed.profile, label, &parsed.agent)?,
+    };
+    // A pair onto a seat whose client row ae cannot read is refused HERE,
+    // before anything is stopped, with the words the seat's own read uses: a
+    // move must not stop a tool to then publish over a record it never read.
+    if moving.pair.is_some() && seated.client == crate::meta::RecordedClient::Invalid {
+        return Err(format!(
+            "Error: {}. Nothing was reseated.",
+            crate::run::unusable_client(&seated.slot)
+        ));
+    }
+    Ok(moving)
 }
 
 /// The seat's PANE, resolved after every durable fact: the target, never the
@@ -2196,6 +2311,18 @@ fn publish_move(
     err: &mut impl Write,
 ) -> Result<Proven, Halt> {
     let (target, moving, carried) = (&seat.target, &seat.moving, &travel.carried);
+    // ONE account feeds both the pair's identity and a carried conversation's
+    // rows ([`seat_conversation`]): `moving.account`, which `resolve_pair`
+    // required, so the client and the store it names cannot disagree.
+    let pair = moving
+        .pair
+        .as_deref()
+        .zip(moving.account.as_ref())
+        .map(|(client, account)| crate::meta::PairIdentity {
+            client,
+            config_home: &account.row,
+            config_home_base: account.base.as_deref(),
+        });
     let conversation = if crate::launch::takes_launch_session_id(moving.tool) {
         crate::launch::generate_uuid()
     } else {
@@ -2215,6 +2342,7 @@ fn publish_move(
                 &conversation,
                 ask.now,
             ),
+            pair,
         },
     );
     if let Err(why) = moved {
@@ -2228,7 +2356,11 @@ fn publish_move(
         )?;
         return Err(Halt::End(broke));
     }
-    match crate::run::read_seat(&seat.dir, &target.slot, None) {
+    // A pair starts on EXACTLY the command its gate judged — the global
+    // definitions, never a project overlay's redefinition of either name —
+    // as a spawn does. A bare move reads the seat as it always did.
+    let snapshot = moving.pair.is_some().then_some(moving.command.as_str());
+    match crate::run::read_seat(&seat.dir, &target.slot, snapshot) {
         Ok(read) => Ok(Proven {
             seat: read,
             agent_bin: moving.binary.clone(),
@@ -3044,14 +3176,44 @@ mod tests {
     }
 
     #[test]
-    fn a_client_override_is_refused_because_this_verb_writes_no_client_row() {
-        // The launch grammar `profile@client` pins a seat to one [clients]
-        // label. A reseat REMOVES that row, so accepting the spelling here
-        // would silently drop the half the caller typed.
-        let refusal = parsed(&["work", "lead", "--using", "lunam@cc-mic"])
-            .expect_err("a client override is refused");
-        assert!(refusal.contains("launch-only"), "{refusal}");
-        assert!(refusal.contains("lunam@cc-mic"), "{refusal}");
+    fn a_client_override_splits_into_the_bare_profile_and_its_label() {
+        // The grammar a launch `--seat` and a spawn use: one `@` splits, every
+        // later row carries the bare profile, and a malformed value is refused
+        // naming it.
+        let split = |words: &[&str]| {
+            super::parse(&argv(words)).map(|parsed| (parsed.profile, parsed.client))
+        };
+        assert_eq!(
+            split(&["work", "lead", "--using", "lunam@cc-mic"]),
+            Ok(("lunam".to_owned(), Some("cc-mic".to_owned())))
+        );
+        assert_eq!(
+            split(&["work", "lead", "--using=lunam"]),
+            Ok(("lunam".to_owned(), None))
+        );
+        for bad in ["lunam@", "@cc-mic", "lunam@cc@mic"] {
+            let refusal = split(&["work", "lead", "--using", bad]).expect_err("malformed");
+            assert!(
+                refusal.contains(&format!("'{bad}' is not <profile> or <profile>@<client>")),
+                "{refusal}"
+            );
+        }
+    }
+
+    /// The nothing-to-move half beside the profile compare: a bare request
+    /// asks for the profile's own account, a pair for exactly its label, and
+    /// only a USABLE recorded label is somewhere else.
+    #[test]
+    fn a_same_profile_move_is_nothing_only_on_the_client_already_recorded() {
+        use crate::meta::RecordedClient::{Invalid, Label, Missing};
+        let label = Label("cc-mic".to_owned());
+        assert!(super::same_client(None, &Missing));
+        assert!(super::same_client(None, &Invalid));
+        assert!(!super::same_client(None, &label));
+        assert!(super::same_client(Some("cc-mic"), &label));
+        assert!(!super::same_client(Some("cc-p"), &label));
+        assert!(!super::same_client(Some("cc-mic"), &Missing));
+        assert!(!super::same_client(Some("cc-mic"), &Invalid));
     }
 
     #[test]

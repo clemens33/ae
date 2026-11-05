@@ -26,6 +26,10 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "meta/presetreseat_spec.rs"]
+mod presetreseat_spec;
+
 /// The file this module reads. The NAME is [`crate::store::META`] — one
 /// spelling for the data file and the lock beside it, so neither can move
 /// without the other.
@@ -2212,6 +2216,23 @@ pub(crate) struct SeatMove<'a> {
     pub launch_id: &'a str,
     /// What happens to the conversation the seat was holding.
     pub conversation: Conversation<'a>,
+    /// The approved `profile@client` pair this move lands on, with the account
+    /// its gate-judged command selects; `None` is a bare move.
+    pub pair: Option<PairIdentity<'a>>,
+}
+
+/// The identity a `profile@client` move publishes beside the bare profile:
+/// the client label and the account it selects, ONE value, because a client
+/// recorded without its account is the window a later reader would resolve to
+/// another store.
+pub(crate) struct PairIdentity<'a> {
+    /// `client.<slot>` — a `[clients]` label of the session's global config.
+    pub client: &'a str,
+    /// `config_home.<slot>`, in [`RecordedConfigHome::record_value`]'s grammar.
+    pub config_home: &'a str,
+    /// `config_home_base.<slot>` — the canonical effective `HOME` an IMPLICIT
+    /// store was selected against, and `None` for an explicit one.
+    pub config_home_base: Option<&'a str>,
 }
 
 /// What a seat move does with the conversation the seat was holding — ONE
@@ -2271,6 +2292,14 @@ pub(crate) enum Conversation<'a> {
 /// which a launch's `profile@client` put there for a profile this seat no
 /// longer runs. The row is removed rather than emptied, because an empty
 /// override is not the same fact as no override.
+///
+/// A PAIR move ([`SeatMove::pair`]) instead WRITES its client, collapsing any
+/// earlier rows to one, and the replacement names the account it selects in
+/// every arm: a FRESH move writes the pair's `config_home.<slot>` and implicit
+/// base itself; a CARRIED move writes the account it was copied into, which
+/// the caller builds from the same resolved account; a KEPT move leaves the
+/// recorded rows, which the caller's keep proof found equal to it. So the
+/// client is never published without its store.
 pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String {
     let mut rows: Vec<(String, Option<String>)> = vec![
         (
@@ -2302,8 +2331,18 @@ pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String
             let old_binary = value(&format!("{ROSTER_BIN_PREFIX}{slot}"));
             let parsed = Meta::parse(text);
             let priors = parsed.harness_session_prior(slot);
-            rows.push((format!("{CONFIG_HOME_PREFIX}{slot}"), None));
-            rows.push((format!("{CONFIG_HOME_BASE_PREFIX}{slot}"), None));
+            // A bare successor's store rows go: `_run` records its own at the
+            // first start. A PAIR successor's account is already proven, and it
+            // is published HERE, with the client that selects it.
+            let pair = move_to.pair.as_ref();
+            rows.push((
+                format!("{CONFIG_HOME_PREFIX}{slot}"),
+                pair.map(|pair| pair.config_home.to_owned()),
+            ));
+            rows.push((
+                format!("{CONFIG_HOME_BASE_PREFIX}{slot}"),
+                pair.and_then(|pair| pair.config_home_base.map(str::to_owned)),
+            ));
             rows.push((
                 format!("{HARNESS_SESSION_PREFIX}{slot}"),
                 Some((*id).to_owned()),
@@ -2340,6 +2379,16 @@ pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String
             ));
         }
         Conversation::Kept => {}
+    }
+    // A pair's client is written AFTER the removal above, so whatever rows the
+    // seat had collapse to exactly one. Its account is in this same replacement
+    // in every arm: the fresh arm writes it, a carried one names the account it
+    // was copied into, and a kept one stays in the account `keeps` proved is it.
+    if let Some(pair) = move_to.pair.as_ref() {
+        rows.push((
+            format!("{CLIENT_PREFIX}{slot}"),
+            Some(pair.client.to_owned()),
+        ));
     }
     let next = rows.iter().fold(text.to_owned(), |document, (key, value)| {
         rewritten(&document, key, value.as_deref())
@@ -3780,6 +3829,7 @@ mod tests {
                         binary: "claude",
                         launch_id: "tok-2",
                         conversation,
+                        pair: None,
                     },
                 );
                 assert!(
@@ -4040,6 +4090,7 @@ mod tests {
                 id,
                 capture_floor: 5000,
             },
+            pair: None,
         }
     }
 
@@ -4054,6 +4105,7 @@ mod tests {
                 config_home: home,
                 config_home_base: None,
             },
+            pair: None,
         }
     }
 
@@ -4099,6 +4151,7 @@ mod tests {
                 config_home: "implicit:/h/b/.claude",
                 config_home_base: Some("/h/b"),
             },
+            pair: None,
         };
         let moved = super::reseated(&seated(), "main", &implicit);
         let value = |key: &str| crate::lifecycle::meta_value(moved.as_bytes(), key);
@@ -6710,6 +6763,7 @@ agent_bin.main=claude
                     binary: "claude",
                     launch_id: "new-launch",
                     conversation: super::super::Conversation::Kept,
+                    pair: None,
                 },
             );
             for line in [

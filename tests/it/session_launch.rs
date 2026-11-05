@@ -27,6 +27,9 @@ use super::support::{PANE_WAIT, has_execed, pane_command, seat_recorded};
 #[path = "renamerecover_crash_spec.rs"]
 mod renamerecover_crash_spec;
 
+#[path = "presetreseat_resume_spec.rs"]
+mod presetreseat_resume_spec;
+
 /// A TUI-shaped fake agent: it records its argv, then sits there drawing the
 /// ornament the input sensor reads.
 const FAKE_AGENT: &str = r#"#!/usr/bin/perl
