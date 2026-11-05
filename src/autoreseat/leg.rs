@@ -22,6 +22,10 @@ use super::{
     Store, Switch, Trigger,
 };
 
+#[cfg(test)]
+#[path = "leadfloor_spec.rs"]
+mod leadfloor_spec;
+
 /// The usage line.
 const USAGE: &str = "Usage: ae _auto-reseat <dir> <slot> <key>";
 
@@ -183,7 +187,9 @@ pub(crate) const fn ineligible_summary(why: Ineligible) -> &'static str {
 /// [`super::listed`], read as a move of it reads them: the session's identity
 /// config, the seat's recorded profile through its recorded client, and the
 /// store the seat RECORDS — never a model it was followed to. A config or a
-/// seat command ae cannot read derives nothing.
+/// seat command ae cannot read derives nothing. A lead-pair seat
+/// ([`super::lead_seat`]) keeps its derived siblings on the list as
+/// [`Provenance::LeadSibling`], which the chooser passes over (#309).
 pub(crate) fn listed(
     dir: &Path,
     bytes: &[u8],
@@ -232,12 +238,27 @@ pub(crate) fn listed(
                 &profiles,
             ))
         });
-    derived.unwrap_or_else(|| {
+    let list = derived.unwrap_or_else(|| {
         declared
             .iter()
             .map(|name| (name.clone(), Provenance::Declared))
             .collect()
-    })
+    });
+    // A lead-pair seat never changes model on its own (#309): its derived
+    // siblings stay listed, so the chooser names them, but are never taken.
+    let lead_pair = crate::lifecycle::meta_value(bytes, "layout") == "lead-pair";
+    if !super::lead_seat(lead_pair, &seat.slot) {
+        return list;
+    }
+    list.into_iter()
+        .map(|(name, provenance)| {
+            let barred = match provenance {
+                Provenance::Derived(super::Kin::Sibling, step) => Provenance::LeadSibling(step),
+                other => other,
+            };
+            (name, barred)
+        })
+        .collect()
 }
 
 /// A resolved command's family skeleton and its tool.
@@ -1087,6 +1108,7 @@ const fn skip_word(skip: Skip) -> &'static str {
         Skip::LeftOnHeadroom => "left on headroom",
         Skip::PairProvider => "partner's provider",
         Skip::PairUnproven => "provider unproven",
+        Skip::LeadSibling => "a lead seat never changes model unasked",
     }
 }
 

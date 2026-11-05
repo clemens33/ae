@@ -799,6 +799,10 @@ pub enum Provenance {
     Declared,
     /// Derived from the seat's own profile.
     Derived(Kin, Step),
+    /// A derived sibling the seat may not take: a lead-pair seat never changes
+    /// model on its own (#309). It stays listed so the chooser names it
+    /// ([`Skip::LeadSibling`]); only `leg::listed` makes one.
+    LeadSibling(Step),
 }
 
 impl Provenance {
@@ -809,14 +813,14 @@ impl Provenance {
         match self {
             Self::Declared => "",
             Self::Derived(Kin::Twin, _) => ", derived twin",
-            Self::Derived(Kin::Sibling, _) => ", derived sibling",
+            Self::Derived(Kin::Sibling, _) | Self::LeadSibling(_) => ", derived sibling",
         }
     }
 
     const fn step(self) -> Option<Step> {
         match self {
             Self::Declared => None,
-            Self::Derived(_, step) => Some(step),
+            Self::Derived(_, step) | Self::LeadSibling(step) => Some(step),
         }
     }
 }
@@ -2235,6 +2239,9 @@ pub enum Skip {
     /// Its provider or the partner's is unproven, or the pair link is
     /// ambiguous: nothing proves the pair stays on two providers.
     PairUnproven,
+    /// A derived sibling of a lead-pair seat: the lead never changes model on
+    /// its own ([`Provenance::LeadSibling`], #309).
+    LeadSibling,
 }
 
 /// What links a seat to its pair partner, from the roster alone (#305).
@@ -2482,7 +2489,8 @@ fn choose_guarded(
 
 /// Why `candidate` cannot be taken now, if it cannot.
 ///
-/// A profile the seat left on its limit waits for a window read after the move
+/// A lead seat's derived sibling is never taken, whatever its account, step or
+/// quota. A profile the seat left on its limit waits for a window read after the move
 /// that proves relief — a usable reading below critical, or a reset that has
 /// passed — and for no usable reading after the move to still sit at critical:
 /// a move back onto a nearly spent account would only move the seat again. A
@@ -2493,6 +2501,9 @@ fn choose_guarded(
 /// long window, or a short one the classifier put at critical, so a seat never
 /// moves onto an account whose short window is spent.
 fn passed_over(candidate: &Candidate, now: i64, room: Option<u8>) -> Option<Skip> {
+    if matches!(candidate.provenance, Provenance::LeadSibling(_)) {
+        return Some(Skip::LeadSibling);
+    }
     if !candidate.configured {
         return Some(Skip::Unconfigured);
     }

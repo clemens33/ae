@@ -110,6 +110,7 @@ mod install;
 mod keepconv_spec;
 mod lanemd_chat_spec;
 mod launch_context_spec;
+mod leadfloor_spec;
 mod lifecycle;
 mod linkfeat_spec;
 mod list_ended_spec;
