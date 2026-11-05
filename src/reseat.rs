@@ -134,6 +134,9 @@ struct Parsed {
     /// A limit episode's move, which may end the seat's background tasks on a
     /// long limit (#304); `None` for every other stop.
     long_limit: Option<LongLimit>,
+    /// A return's move: what the seat must still be under the lifecycle lock
+    /// for it to go home (#305); `None` for every other move.
+    expect: Option<crate::autoreseat::leg::Expect>,
     /// The titles of the background tasks the stop ended, for the caller.
     ended: std::cell::RefCell<Vec<String>>,
 }
@@ -217,6 +220,7 @@ fn parse(tail: &[String]) -> Result<Parsed, String> {
         stop,
         automatic: false,
         long_limit: None,
+        expect: None,
         ended: std::cell::RefCell::default(),
     })
 }
@@ -1335,6 +1339,7 @@ pub(crate) fn restart_in_place(
         stop: StopPolicy::Proven,
         automatic: false,
         long_limit: None,
+        expect: None,
         ended: std::cell::RefCell::default(),
     };
     match stop_running_tool(dir, &target, &locked, &parsed, hook, err)? {
@@ -1406,6 +1411,7 @@ pub(crate) fn run_as_watchdog(
     now: Timestamp,
     urgent: Option<&mut dyn FnMut() -> bool>,
     long_limit: Option<LongLimit>,
+    expect: Option<crate::autoreseat::leg::Expect>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<(Ended, Vec<String>)> {
@@ -1421,6 +1427,7 @@ pub(crate) fn run_as_watchdog(
         stop,
         automatic: true,
         long_limit,
+        expect,
         ended: std::cell::RefCell::default(),
     };
     let caller = Caller {
@@ -1789,6 +1796,19 @@ fn prepare(
     {
         writeln!(err, "Error: {why}")?;
         return Err(Halt::End(Ended::Refused(CauseClass::PairChanged)));
+    }
+    // A RETURN, read again under the same lock (#305): a human's or an agent's
+    // reseat since the return was chosen is a choice, and wins.
+    if let Some(expect) = ask.parsed.expect.as_ref()
+        && let Some(why) = crate::autoreseat::leg::return_changed(
+            &seat.dir,
+            locked,
+            (&ask.parsed.session, &target.slot, &target.agent),
+            expect,
+        )
+    {
+        writeln!(err, "Error: {why}")?;
+        return Err(Halt::End(Ended::Refused(CauseClass::ReturnChanged)));
     }
     let prior = crate::lifecycle::meta_value(locked, &format!("harness_session.{}", target.slot));
     // DOES THE SEAT KEEP ITS CONVERSATION? From the records under the lock. A

@@ -149,6 +149,16 @@ const START_GONE: &str = "held: the start's exhausted reading no longer stands";
 /// longer reads at or within the re-arm gap of the threshold, or reads nothing.
 const HEADROOM_GONE: &str = "held: the account no longer reads at the headroom threshold";
 
+/// A return's hold: its origin account no longer proves room on the leg's read.
+const RETURN_GONE: &str = "held: the origin account no longer proves room";
+
+/// A return's hold: the seat is no longer on an automatic chain away from its
+/// origin, or the origin no longer resolves.
+const RETURN_OFF_CHAIN: &str = "held: the seat is no longer on its automatic chain";
+
+/// A return's hold: the leg ran before the episode's grace had passed.
+const RETURN_EARLY: &str = "held: the return is not due yet";
+
 /// The hold journaled when the seat is no longer eligible, led by its class.
 pub(crate) fn ineligible_record(why: Ineligible) -> String {
     why.class().lead(ineligible_summary(why))
@@ -723,6 +733,156 @@ pub(crate) fn own_reset(
     Some(super::LimitReset { at, short })
 }
 
+/// Every reading of the account `origin` names, as a return judges it: each
+/// row of each group that names the profile and carries a source, every
+/// rollout together, keyed by `(tool, source, window)`. A row scoped to
+/// another model family than `pin` is no reading of it; a row ae cannot judge
+/// is KEPT, as [`super::Sample::Unjudged`], so it still denies the proof.
+pub(crate) fn origin_samples(
+    quota: Option<&crate::quota::Observation>,
+    origin: &str,
+    pin: Option<&str>,
+    now: i64,
+) -> Vec<(OriginKey, super::Sample)> {
+    let groups = quota.map_or(&[][..], |seen| seen.groups.as_slice());
+    groups
+        .iter()
+        .filter(|group| group.profiles.iter().any(|named| named == origin))
+        .filter_map(|group| group.source.as_ref().map(|source| (group, source)))
+        .flat_map(|(group, source)| {
+            group
+                .rows
+                .iter()
+                .filter(|row| {
+                    !crate::quota::scoped_elsewhere(group.tool, row.qualifier.as_deref(), pin)
+                })
+                .map(move |row| {
+                    let key = (group.tool, source.clone(), crate::quota::WindowKey::of(row));
+                    let sample = window(group, row, now).map_or(
+                        super::Sample::Unjudged(row.observed_at),
+                        super::Sample::Judged,
+                    );
+                    (key, sample)
+                })
+        })
+        .collect()
+}
+
+/// A window of an origin account: its tool, its source and the window.
+pub(crate) type AccountKey = (crate::tool::ToolKind, PathBuf);
+/// [`AccountKey`] and the window's identity inside it.
+pub(crate) type OriginKey = (crate::tool::ToolKind, PathBuf, crate::quota::WindowKey);
+
+/// What a return may do for one seat now: the seat stands on an automatic
+/// chain whose origin is not its current profile and still resolves.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Home {
+    pub origin: String,
+    /// The chain's newest move: what the lifecycle gate checks it still is.
+    pub newest: Timestamp,
+    /// The origin account's proof of room: the worst long window, or `None`.
+    pub ready: Option<super::Window>,
+    /// The seat already went home [`super::MAX_RETURNS`] times in the window.
+    pub flapped: bool,
+}
+
+/// The return the seat at `row` may make, from the records and one quota
+/// read: `None` with no chain, a chain whose origin the seat already serves,
+/// or an origin that no longer resolves. An origin account with a usable spend
+/// cap, or one another seat of the session is latched on, proves no room.
+pub(crate) fn home(
+    dir: &Path,
+    events: &[crate::events::Event],
+    (session, row): (&str, &crate::meta::RosterEntry),
+    settings: &Settings,
+    (quota, latched): (
+        Option<&crate::quota::Observation>,
+        &[crate::quota::RecordedIdentity],
+    ),
+    now: i64,
+) -> Option<Home> {
+    let chain = super::chain(events, session, &row.slot, &row.name)?;
+    if row.profile.as_deref() == Some(chain.origin.as_str()) {
+        return None;
+    }
+    let resolved = crate::reseat::resolved(dir, &chain.origin)?;
+    let samples = origin_samples(quota, &chain.origin, resolved.pin.as_deref(), now);
+    let accounts: Vec<AccountKey> = samples
+        .iter()
+        .map(|((tool, source, _), _)| (*tool, source.clone()))
+        .collect();
+    let band = super::return_band(settings.headroom_at);
+    let since = now.saturating_sub(super::RETURN_WINDOW_SECS);
+    Some(Home {
+        ready: (!origin_blocked(quota, &accounts, latched, now))
+            .then(|| super::return_ready(&samples, chain.away_at.epoch(), band))
+            .flatten(),
+        flapped: super::returns_since(events, session, &row.slot, &row.name, since)
+            >= super::MAX_RETURNS,
+        origin: chain.origin,
+        newest: chain.newest,
+    })
+}
+
+/// Whether one of the origin's `accounts` proves no room whatever its windows
+/// read: a spend cap on it with a usable window, or another seat of the
+/// session latched on it. An account is its tool and source together.
+fn origin_blocked(
+    quota: Option<&crate::quota::Observation>,
+    accounts: &[AccountKey],
+    latched: &[crate::quota::RecordedIdentity],
+    now: i64,
+) -> bool {
+    let named = |tool, source: &PathBuf| accounts.iter().any(|(t, s)| *t == tool && s == source);
+    let capped = quota.is_some_and(|seen| {
+        seen.groups.iter().any(|group| {
+            group.policy.spend_capped()
+                && group
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| named(group.tool, source))
+                && group
+                    .rows
+                    .iter()
+                    .filter_map(|row| window(group, row, now))
+                    .any(|window| super::usable(&window))
+        })
+    });
+    capped || latched.iter().any(|seat| named(seat.tool, &seat.source))
+}
+
+/// What a return checks under the session's lifecycle lock: the seat is still
+/// on the chain whose newest move is `newest`, and its row in the `locked`
+/// meta still records `profile`, the profile the return was chosen from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Expect {
+    pub profile: String,
+    pub newest: Timestamp,
+}
+
+/// Why a return no longer stands under the lifecycle lock, or `None` when it
+/// does: a `reseat` anyone else journaled, a `spawn`, or any other move since
+/// the return was chosen ends it, and so does a row that records another
+/// profile.
+pub(crate) fn return_changed(
+    dir: &Path,
+    locked: &[u8],
+    (session, slot, agent): (&str, &str, &str),
+    expect: &Expect,
+) -> Option<String> {
+    let profile = crate::lifecycle::meta_value(locked, &format!("profile.{slot}"));
+    if profile != expect.profile {
+        return Some(format!(
+            "{agent} records '{profile}' now, not '{}': its return no longer stands",
+            expect.profile
+        ));
+    }
+    let events = crate::watchdog_daemon::read_events(dir);
+    let chain = super::chain(&events, session, slot, agent);
+    (chain.map(|found| found.newest) != Some(expect.newest))
+        .then(|| format!("{agent} is no longer on the automatic chain its return was chosen from"))
+}
+
 /// Whether a seat its `[auto_reseat]` row names nothing for still has a move:
 /// a candidate of its own family, or a held choice the trigger will name.
 pub(crate) fn derivable(dir: &Path, bytes: &[u8], row: &crate::meta::RosterEntry) -> bool {
@@ -1055,8 +1215,33 @@ pub(crate) fn run(
     let start = read_start(root, dir, &argv, incarnation, now).unwrap_or_default();
     let grace = i64::try_from(settings.grace_secs).unwrap_or(i64::MAX);
     let early = now.epoch() < found.key.epoch().saturating_add(grace);
+    // A return re-reads its chain and its origin's room under the seat's lock,
+    // and its one candidate is the origin (#305).
+    let homeward = found.trigger == Trigger::Return;
+    let latched = super::latched_identities(meta.roster(), &events, &argv.session, &argv.slot);
+    let home_now = homeward
+        .then(|| {
+            let read = (quota.as_ref(), latched.as_slice());
+            home(
+                dir,
+                &events,
+                (&argv.session, seat),
+                &settings,
+                read,
+                now.epoch(),
+            )
+        })
+        .flatten();
     let eligible = match super::eligible(&settings, &asked) {
         Err(why) if why != Ineligible::Unmapped => Err((why.class(), ineligible_record(why))),
+        _ if homeward => match &home_now {
+            None => Err((CauseClass::Other, CauseClass::Other.lead(RETURN_OFF_CHAIN))),
+            Some(_) if early => Err((CauseClass::Other, CauseClass::Other.lead(RETURN_EARLY))),
+            Some(back) if back.ready.is_none() => {
+                Err((CauseClass::Other, CauseClass::Other.lead(RETURN_GONE)))
+            }
+            Some(back) => Ok(vec![(back.origin.clone(), Provenance::Declared)]),
+        },
         declared => {
             let list = listed(dir, &bytes, seat, declared.unwrap_or_default());
             if list.is_empty() {
@@ -1104,7 +1289,6 @@ pub(crate) fn run(
     };
     let left = super::left_profiles(&events, &argv.session, &argv.slot, &agent);
     let left_on_headroom = super::left_on_headroom(&events, &argv.session, &argv.slot, &agent);
-    let latched = super::latched_identities(meta.roster(), &events, &argv.session, &argv.slot);
     let judged = candidates(
         &list,
         |to| crate::reseat::resolved(dir, to),
@@ -1115,7 +1299,12 @@ pub(crate) fn run(
     );
     // The pair as this leg reads it, under the seat's lock (#305).
     let pair = pair_of(dir, &bytes, meta.roster(), told.1, &argv.slot);
-    let choice = super::choose_paired(&judged, now.epoch(), threshold, pair.as_ref());
+    let bar = if homeward {
+        settings.headroom_at
+    } else {
+        threshold
+    };
+    let choice = super::choose_paired(&judged, now.epoch(), bar, pair.as_ref());
     let named = |pick: &str| format!("{pick}{}", choice.provenance.word());
     let Some((pick, tier)) = choice.pick else {
         if let Some(why) = observed_ending(dir, &argv.slot).map(|why| tagged(&why, &cause)) {
@@ -1162,11 +1351,17 @@ pub(crate) fn run(
         read_start(root, dir, &argv, incarnation, Timestamp::now())
             .is_some_and(|read| read.urgent(found.key.epoch()))
     };
-    let urgent = start.urgent(found.key.epoch());
+    // A return never takes a resume's quiet waiver.
+    let urgent = !homeward && start.urgent(found.key.epoch());
     // Only a limit episode's move may end the seat's background tasks (#304).
     let long_limit = (found.trigger == Trigger::Limit).then(|| crate::reseat::LongLimit {
         key: found.key.epoch(),
         opened: found.open.map_or(now.epoch(), Timestamp::epoch),
+    });
+    // What a return checks again under the lifecycle lock (#305).
+    let expect = home_now.as_ref().map(|back| Expect {
+        profile: profile.clone(),
+        newest: back.newest,
     });
     let (ended, tasks) = crate::reseat::run_as_watchdog(
         root,
@@ -1177,6 +1372,7 @@ pub(crate) fn run(
         now,
         urgent.then_some(&mut still_urgent as &mut dyn FnMut() -> bool),
         long_limit,
+        expect,
         &mut io::sink(),
         &mut said,
     )?;
@@ -1360,7 +1556,8 @@ pub(crate) fn plan_paired(
     };
     let limit = super::episode(events, seat.session, seat.slot, seat.agent);
     let headroom = super::headroom_episode(events, seat.session, seat.slot, seat.agent);
-    if super::flying(limit.as_ref(), headroom.as_ref()).is_some() {
+    let back = super::return_episode(events, seat.session, seat.slot, seat.agent);
+    if super::flying_any(&[limit.as_ref(), headroom.as_ref(), back.as_ref()]).is_some() {
         return Plan::Decline("an attempt is in flight".to_owned());
     }
     let room = settings.headroom_at.filter(|_| !sight.limited);
@@ -1405,6 +1602,59 @@ pub(crate) fn plan_paired(
     };
     Plan::Attempt {
         key: found.key,
+        to: to.clone(),
+        note: format!(
+            "{}{}",
+            choice.provenance.word(),
+            attempt_note(cause, &choice.skipped)
+        ),
+        cause: cause.to_owned(),
+    }
+}
+
+/// Decide the trigger for a seat whose return episode `open` is the one in
+/// play, by the daemon's own rule: the seat is eligible (a row naming nothing
+/// is no bar: the origin is its candidate), its origin proves room on the
+/// trigger's own read (`home`), and the episode is due by the plain grace and
+/// an idle frame. The ONE candidate is the origin, judged by `judge` and the
+/// same chooser and pair guard every move takes (#305).
+pub(crate) fn plan_return(
+    settings: &Settings,
+    (seat, sight): (&Seat<'_>, &Sight),
+    open: &super::Episode,
+    home: Option<&Home>,
+    judge: impl FnOnce(&str) -> Vec<Candidate>,
+    pair: Option<&super::PairGuard>,
+    now: Timestamp,
+) -> Plan {
+    match super::eligible(settings, seat) {
+        Ok(_) | Err(Ineligible::Unmapped) => {}
+        Err(why) => return Plan::Decline(format!("not eligible ({why:?})")),
+    }
+    let Some(home) = home.filter(|found| found.ready.is_some()) else {
+        return Plan::Decline("the origin account does not prove room".to_owned());
+    };
+    let decision = super::decide(Some(open), settings.grace_secs, &sight.pane, now.epoch());
+    if decision != super::Decision::Attempt {
+        return Plan::Decline(format!("not due ({decision:?})"));
+    }
+    let choice = super::choose_paired(
+        &judge(&home.origin),
+        now.epoch(),
+        settings.headroom_at,
+        pair,
+    );
+    let cause = open.cause();
+    let Some((to, _)) = &choice.pick else {
+        let (class, why) = refusal(&choice, pair);
+        return Plan::Refuse {
+            key: open.key,
+            class,
+            why: tagged(&why, cause),
+        };
+    };
+    Plan::Attempt {
+        key: open.key,
         to: to.clone(),
         note: format!(
             "{}{}",
@@ -1604,6 +1854,19 @@ pub(crate) fn tell_unmapped(
     now: Timestamp,
 ) {
     tell_ending(dir, seat, key, now, &super::Ending::Unmapped(profile));
+}
+
+/// Tell the lead pair and the spawner of a hold the daemon journaled under
+/// `key`, `summary` led by its class.
+pub(crate) fn tell_held(
+    dir: &Path,
+    seat: (&str, &str, &str),
+    key: Timestamp,
+    now: Timestamp,
+    summary: &str,
+) {
+    let ending = super::Ending::Held(CauseClass::Other, summary);
+    tell_ending(dir, seat, key, now, &ending);
 }
 
 /// Tell, as an ending is told, that the last round of the seat's limit episode
@@ -1814,7 +2077,8 @@ pub(crate) fn trigger(
         let (at, name) = (other.slot.as_str(), other.name.as_str());
         let limit = super::episode(&events, own_session, at, name);
         let headroom = super::headroom_episode(&events, own_session, at, name);
-        if super::flying(limit.as_ref(), headroom.as_ref()).is_some() {
+        let back = super::return_episode(&events, own_session, at, name);
+        if super::flying_any(&[limit.as_ref(), headroom.as_ref(), back.as_ref()]).is_some() {
             return decline(err, "its pair partner's move is in flight");
         }
     }
@@ -1840,16 +2104,54 @@ pub(crate) fn trigger(
         slot: slot.to_owned(),
         key,
     };
-    let planned = plan_paired(
-        &settings,
-        &seat,
-        &sight,
-        &start,
-        &events,
-        gather,
-        pair.as_ref(),
-        now,
-    );
+    // A seat on its automatic chain whose return episode is open goes home,
+    // unless its own limit or headroom path holds it (#305).
+    let homeward = super::return_episode(&events, own_session, slot, &row.name).filter(|_| {
+        !sight.limited && super::headroom_episode(&events, own_session, slot, &row.name).is_none()
+    });
+    let planned = if let Some(open) = &homeward {
+        let latched = super::latched_identities(meta.roster(), &events, own_session, slot);
+        let left = super::left_profiles(&events, own_session, slot, &row.name);
+        let left_on_headroom = super::left_on_headroom(&events, own_session, slot, &row.name);
+        let found = home(
+            dir,
+            &events,
+            (own_session, row),
+            &settings,
+            (observed(), &latched),
+            now.epoch(),
+        );
+        let judge = |origin: &str| {
+            candidates(
+                &[(origin.to_owned(), Provenance::Declared)],
+                |to| crate::reseat::resolved(dir, to),
+                (&left, &left_on_headroom),
+                observed(),
+                &latched,
+                now.epoch(),
+            )
+        };
+        plan_return(
+            &settings,
+            (&seat, &sight),
+            open,
+            found.as_ref(),
+            judge,
+            pair.as_ref(),
+            now,
+        )
+    } else {
+        plan_paired(
+            &settings,
+            &seat,
+            &sight,
+            &start,
+            &events,
+            gather,
+            pair.as_ref(),
+            now,
+        )
+    };
     // A no-candidate ending of a due episode names a held choice instead (#269),
     // once per key: the episode `plan` judged, chosen as it chose it.
     let due = || {
@@ -1863,8 +2165,9 @@ pub(crate) fn trigger(
             super::episode(&events, own_session, slot, &row.name)
         }
     };
-    let ended = matches!(planned, Plan::Refuse { .. })
-        || (matches!(planned, Plan::Decline(_)) && unlisted.get());
+    let ended = homeward.is_none()
+        && (matches!(planned, Plan::Refuse { .. })
+            || (matches!(planned, Plan::Decline(_)) && unlisted.get()));
     if let Some(found) = due().filter(|_| ended)
         && let Some(why) = observed_ending(dir, slot)
     {
@@ -2639,6 +2942,128 @@ mod tests {
             home: None,
             now: NOW,
         }
+    }
+
+    #[test]
+    fn the_origin_samples_keep_every_rollout_and_unjudgeable_row_of_its_accounts_only() {
+        let mut unread = row(None, "10", 60, 3600);
+        unread.used_percent = None;
+        let quota = observed(vec![
+            account(
+                &["origin"],
+                "/a",
+                plain(),
+                vec![row(None, "10", 60, 3600), unread],
+            ),
+            account(
+                &["origin", "twin"],
+                "/a",
+                plain(),
+                vec![row(None, "40", 30, 3600)],
+            ),
+            account(
+                &["origin"],
+                "/b",
+                plain(),
+                vec![row(Some("Fable"), "99", 60, 3600)],
+            ),
+            account(&["other"], "/c", plain(), vec![row(None, "99", 60, 3600)]),
+        ]);
+        let samples = origin_samples(Some(&quota), "origin", Some("opus"), NOW);
+        let sources: Vec<&Path> = samples
+            .iter()
+            .map(|((_, source, _), _)| source.as_path())
+            .collect();
+        assert_eq!(
+            sources,
+            [Path::new("/a"); 3],
+            "another family's row and another profile's account are no reading of it"
+        );
+        assert!(
+            matches!(samples[1].1, super::super::Sample::Unjudged(Some(_))),
+            "a row with no percentage is kept, unjudged, with its stamp"
+        );
+        assert!(
+            samples
+                .iter()
+                .filter(|(_, sample)| matches!(sample, super::super::Sample::Judged(_)))
+                .count()
+                == 2,
+            "both rollouts of the account stay"
+        );
+        assert!(origin_samples(None, "origin", None, NOW).is_empty());
+    }
+
+    #[test]
+    fn a_usable_spend_cap_or_a_latched_peer_on_an_origin_account_blocks_the_return() {
+        let claude = crate::tool::ToolKind::Claude;
+        let accounts = [(claude, PathBuf::from("/a"))];
+        let cap = |observed_at| {
+            crate::quota::Policy::for_tests(
+                None,
+                crate::quota::Account {
+                    spend_control_reached: Some(true),
+                    spend_observed_at: Some(observed_at),
+                    ..crate::quota::Account::default()
+                },
+            )
+        };
+        let on = |tool, source: &str| crate::quota::RecordedIdentity {
+            tool,
+            source: PathBuf::from(source),
+        };
+        let open = observed(vec![account(
+            &["origin"],
+            "/a",
+            plain(),
+            vec![row(None, "10", 60, 3600)],
+        )]);
+        assert!(!origin_blocked(Some(&open), &accounts, &[], NOW));
+        assert!(!origin_blocked(None, &accounts, &[], NOW));
+        let capped = observed(vec![account(
+            &["origin"],
+            "/a",
+            cap(NOW - 60),
+            vec![row(None, "10", 60, 3600)],
+        )]);
+        assert!(origin_blocked(Some(&capped), &accounts, &[], NOW));
+        let mut spent_row = row(None, "10", 60, 3600);
+        spent_row.resets_at = Some(NOW);
+        let unusable = observed(vec![account(
+            &["origin"],
+            "/a",
+            cap(NOW - 60),
+            vec![spent_row],
+        )]);
+        assert!(
+            !origin_blocked(Some(&unusable), &accounts, &[], NOW),
+            "a cap with no usable window proves nothing"
+        );
+        let elsewhere = observed(vec![account(
+            &["other"],
+            "/c",
+            cap(NOW - 60),
+            vec![row(None, "10", 60, 3600)],
+        )]);
+        assert!(
+            !origin_blocked(Some(&elsewhere), &accounts, &[], NOW),
+            "another account's cap"
+        );
+        assert!(origin_blocked(
+            Some(&open),
+            &accounts,
+            &[on(claude, "/a")],
+            NOW
+        ));
+        assert!(
+            !origin_blocked(
+                Some(&open),
+                &accounts,
+                &[on(crate::tool::ToolKind::Codex, "/a"), on(claude, "/c")],
+                NOW
+            ),
+            "another tool on the same path, or another path, is another account"
+        );
     }
 
     /// Choose among `list` over `quota`, each candidate pinned as `pins` says.

@@ -32,6 +32,13 @@
 //! account reads more than [`REARM_GAP`] below the threshold, or at a move. A
 //! limit outranks it: a seat on its limit is the limit path's alone.
 //!
+//! A RETURN episode moves a seat home: it starts at the first
+//! `auto-reseat-return` the watchdog booked while the seat stands on an
+//! untouched chain of automatic moves ([`chain`]), and its KEY is that record's
+//! timestamp. It ends at any move, a `spawn`, or a `reseat` anyone but the
+//! watchdog journaled; a limit or headroom opener supersedes one no attempt is
+//! moving. Its refused or failed rounds cool down like a limit episode's.
+//!
 //! The folds compare action words, the seat's identity and whole `ref` values
 //! by equality, and hold summaries whole or by the observed-choice prefix.
 
@@ -63,6 +70,13 @@ pub const NOTICE_ACTION: &str = "auto-reseat-notice";
 pub const HEADROOM_ACTION: &str = "auto-reseat-headroom";
 /// A headroom episode ends and the seat is armed again. `ref` = the key.
 pub const REARMED_ACTION: &str = "auto-reseat-headroom-cleared";
+/// A return episode opens; its `ts` is the key and its summary the trigger.
+pub const RETURN_ACTION: &str = "auto-reseat-return";
+/// At most this many returns of one seat in [`RETURN_WINDOW_SECS`]: a backstop
+/// against a seat flapping between its origin and a substitute.
+pub const MAX_RETURNS: usize = 2;
+/// The rolling window [`MAX_RETURNS`] counts in.
+pub const RETURN_WINDOW_SECS: i64 = 86_400;
 
 /// Why an attempt ended short, as the short word every outcome record leads its
 /// summary with: a clip of the message behind it (a path, a profile name) can
@@ -101,6 +115,9 @@ pub enum CauseClass {
     /// Under the lifecycle lock the pair no longer stays on two providers with
     /// the destination chosen before it: a hold, tried again (#305).
     PairChanged,
+    /// Under the lifecycle lock the seat is no longer on the automatic chain or
+    /// the profile its return was chosen from: a hold (#305).
+    ReturnChanged,
     /// Every other refusal, every failure, and the give-up after the last round.
     Other,
 }
@@ -122,6 +139,7 @@ impl CauseClass {
             Self::BackgroundTask => "background-task",
             Self::PairProvider => "pair-provider",
             Self::PairChanged => "pair-changed",
+            Self::ReturnChanged => "return-changed",
             Self::Other => "other",
         }
     }
@@ -131,7 +149,11 @@ impl CauseClass {
     pub const fn transient(self) -> bool {
         matches!(
             self,
-            Self::Busy | Self::Lock | Self::ObservedChoice | Self::PairChanged
+            Self::Busy
+                | Self::Lock
+                | Self::ObservedChoice
+                | Self::PairChanged
+                | Self::ReturnChanged
         )
     }
 
@@ -304,6 +326,7 @@ pub fn reset_wait(reset: Option<LimitReset>, now: i64) -> Option<i64> {
 const LIMIT_ACTION: &str = "limit";
 const CLEARED_ACTION: &str = "alert-cleared";
 const SPAWN_ACTION: &str = "spawn";
+const RESEAT_ACTION: &str = crate::reseat::RESEAT_ACTION;
 
 /// A judged window at or past this percentage has no headroom left.
 const EXHAUSTED_PERCENT: f64 = 100.0;
@@ -1021,6 +1044,8 @@ pub enum Trigger {
     Limit,
     /// The seat's own account read at or past `auto_reseat_at`.
     Headroom,
+    /// The seat's automatic chain goes home: its origin account reads room.
+    Return,
 }
 
 /// One episode of one seat, as the journal records it.
@@ -1078,7 +1103,7 @@ impl Episode {
     /// the path is over for good, and the seat is owed one word of it.
     #[must_use]
     pub fn gave_up(&self) -> bool {
-        self.trigger == Trigger::Limit
+        self.rounds_kind()
             && matches!(self.terminal, Some(Outcome::Refused | Outcome::Failed))
             && self.rounds >= MAX_ROUNDS
     }
@@ -1087,12 +1112,18 @@ impl Episode {
     /// tried again at `at`: the cooldown has passed and rounds are left. A
     /// headroom episode stays closed until its re-arm.
     fn cooled(&self, at: i64) -> bool {
-        self.trigger == Trigger::Limit
+        self.rounds_kind()
             && matches!(self.terminal, Some(Outcome::Refused | Outcome::Failed))
             && self.rounds < MAX_ROUNDS
             && self
                 .closed_at
                 .is_some_and(|closed| at >= closed.epoch().saturating_add(RETRY_COOLDOWN_SECS))
+    }
+
+    /// A limit or return episode retries a refused or failed round after its
+    /// cooldown; a headroom one waits for its re-arm.
+    fn rounds_kind(&self) -> bool {
+        matches!(self.trigger, Trigger::Limit | Trigger::Return)
     }
 
     fn opened(key: Timestamp) -> Self {
@@ -1177,7 +1208,7 @@ impl Episode {
 /// The episode the seat is in now, or `None` when it has none.
 #[must_use]
 pub fn episode(events: &[Event], session: &str, slot: &str, agent: &str) -> Option<Episode> {
-    episodes(events, session, slot, agent).0
+    fold_path(events, session, slot, agent).limit
 }
 
 /// The headroom episode the seat is in now, or `None` when it is armed.
@@ -1193,66 +1224,109 @@ pub fn headroom_episode(
     slot: &str,
     agent: &str,
 ) -> Option<Episode> {
-    episodes(events, session, slot, agent).1
+    fold_path(events, session, slot, agent).headroom
 }
 
-/// The seat's limit episode and its headroom episode, folded in ONE pass,
+/// The return episode the seat is in now, or `None` when it has none.
+#[must_use]
+pub fn return_episode(events: &[Event], session: &str, slot: &str, agent: &str) -> Option<Episode> {
+    fold_path(events, session, slot, agent).back
+}
+
+/// The seat's limit, headroom and return episodes, folded in ONE pass,
 /// because a seat has one auto reseat path: an outcome under the live key of
-/// either — or a move, whatever its ref — closes every episode still open
-/// beside it. An outcome under a key neither holds closes nothing. A closed
+/// any — or a move, whatever its ref — closes every episode still open
+/// beside it. An outcome under a key none holds closes nothing. A closed
 /// limit episode waits for its `alert-cleared`, a closed headroom one for its
-/// re-arm, before a new one opens. A limit episode closed `refused` or
-/// `failed` is the exception: its next attempt or closing, journaled after its
-/// cooldown under the same key, opens a new round ([`Episode::cooled`]).
+/// re-arm, before a new one opens. A limit or return episode closed `refused`
+/// or `failed` is the exception: its next attempt or closing, journaled after
+/// its cooldown under the same key, opens a new round ([`Episode::cooled`]).
+fn fold_path(events: &[Event], session: &str, slot: &str, agent: &str) -> Pair {
+    let mut path = Pair::default();
+    for event in events {
+        if addressed(event, session, slot, agent) {
+            path.step(event);
+        }
+    }
+    path
+}
+
+/// Whether `event` is addressed to the seat: by the routing rule, or as a
+/// `reseat` record, which `ae reseat` journals into the seat's own session
+/// with the target's slot and no session at all.
+fn addressed(event: &Event, session: &str, slot: &str, agent: &str) -> bool {
+    event_is_addressed_to(event, session, slot, agent)
+        || (event.action == RESEAT_ACTION
+            && event.target.as_deref() == Some(agent)
+            && event.target_slot.value() == Some(slot)
+            && !event.target_session.is_present()
+            && !event.target_session_id.is_present())
+}
+
+/// The limit and headroom episodes of [`fold_path`], as the fold's own pins read them.
+#[cfg(test)]
 fn episodes(
     events: &[Event],
     session: &str,
     slot: &str,
     agent: &str,
 ) -> (Option<Episode>, Option<Episode>) {
-    let mut path = Pair::default();
-    for event in events {
-        if !event_is_addressed_to(event, session, slot, agent) {
-            continue;
-        }
-        if event.action == SPAWN_ACTION {
-            path = Pair::default();
-            continue;
-        }
-        if event.actor != WATCHDOG_ACTOR {
-            continue;
-        }
-        path.fold(event);
-    }
+    let path = fold_path(events, session, slot, agent);
     (path.limit, path.headroom)
 }
 
-/// The two episodes of a seat's one auto reseat path while its journal is
-/// folded.
+/// The episodes of a seat's one auto reseat path while its journal is folded.
 #[derive(Default)]
 struct Pair {
     limit: Option<Episode>,
     headroom: Option<Episode>,
+    back: Option<Episode>,
 }
 
 impl Pair {
-    /// Fold one watchdog record addressed to the seat. A cooled limit round
-    /// reopens first, so the live key an outcome closes by is the reopened one.
+    /// Fold one record addressed to the seat: a `spawn` starts the path anew,
+    /// a `reseat` anyone but the watchdog journaled is a choice and ends a
+    /// return, and every other record but the watchdog's is not this path's.
+    fn step(&mut self, event: &Event) {
+        if event.action == SPAWN_ACTION {
+            *self = Self::default();
+        } else if event.actor != WATCHDOG_ACTOR {
+            if event.action == RESEAT_ACTION {
+                self.back = None;
+            }
+        } else {
+            self.fold(event);
+        }
+    }
+
+    /// Fold one watchdog record addressed to the seat. A cooled round reopens
+    /// first, so the live key an outcome closes by is the reopened one.
     fn fold(&mut self, event: &Event) {
-        if let Some(open) = self.limit.as_mut()
-            && reopens(open, event)
+        for open in [self.limit.as_mut(), self.back.as_mut()]
+            .into_iter()
+            .flatten()
         {
-            open.reopen();
+            if reopens(open, event) {
+                open.reopen();
+            }
         }
         match event.action.as_str() {
             CLEARED_ACTION => self.limit = None,
             LIMIT_ACTION => {
                 self.limit.get_or_insert_with(|| Episode::opened(event.ts));
+                self.supersede();
             }
             HEADROOM_ACTION => {
                 self.headroom.get_or_insert_with(|| {
                     let cause = event.summary.clone().unwrap_or_default();
                     Episode::opened_by(event.ts, Trigger::Headroom, cause)
+                });
+                self.supersede();
+            }
+            RETURN_ACTION => {
+                self.back.get_or_insert_with(|| {
+                    let cause = event.summary.clone().unwrap_or_default();
+                    Episode::opened_by(event.ts, Trigger::Return, cause)
                 });
             }
             REARMED_ACTION => {
@@ -1264,9 +1338,12 @@ impl Pair {
                     open.absorb(event);
                 }
                 self.headroom = None;
+                self.back = None;
             }
             REFUSED_ACTION | FAILED_ACTION
-                if live(self.limit.as_ref(), event) || live(self.headroom.as_ref(), event) =>
+                if live(self.limit.as_ref(), event)
+                    || live(self.headroom.as_ref(), event)
+                    || live(self.back.as_ref(), event) =>
             {
                 self.close_open(event);
             }
@@ -1278,14 +1355,25 @@ impl Pair {
         }
     }
 
-    /// The episodes the seat has, the limit one first.
-    fn each(&mut self) -> impl Iterator<Item = &mut Episode> {
-        [self.limit.as_mut(), self.headroom.as_mut()]
-            .into_iter()
-            .flatten()
+    /// A limit or headroom opener ends a return no attempt is moving: the
+    /// seat's own account presses it, which outranks going home.
+    fn supersede(&mut self) {
+        self.back
+            .take_if(|open| open.open.is_none() || open.terminal.is_some());
     }
 
-    /// An outcome under the live key of either episode ends every episode
+    /// The episodes the seat has, the limit one first.
+    fn each(&mut self) -> impl Iterator<Item = &mut Episode> {
+        [
+            self.limit.as_mut(),
+            self.headroom.as_mut(),
+            self.back.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    /// An outcome under the live key of any episode ends every episode
     /// beside it, whatever its own key; one already closed keeps its first
     /// outcome ([`Episode::close`]).
     fn close_open(&mut self, event: &Event) {
@@ -1298,11 +1386,22 @@ impl Pair {
             open.close(outcome, event.ts);
         }
     }
+
+    /// Of the episodes, the one whose `ref` is `reference`, by [`keyed`]'s rule.
+    fn owning(&self, reference: &str) -> Option<Episode> {
+        let named = |found: &&Episode| found.reference() == reference;
+        let (limit, headroom, back) = (
+            self.limit.as_ref().filter(named),
+            self.headroom.as_ref().filter(named),
+            self.back.as_ref().filter(named),
+        );
+        flying_any(&[limit, headroom, back]).or_else(|| limit.or(headroom).or(back).cloned())
+    }
 }
 
-/// Whether `event` opens a new round of the limit episode `open`: an attempt or
-/// a closing under its own key, journaled once its cooldown has passed
-/// ([`Episode::cooled`]).
+/// Whether `event` opens a new round of the limit or return episode `open`: an
+/// attempt or a closing under its own key, journaled once its cooldown has
+/// passed ([`Episode::cooled`]).
 fn reopens(open: &Episode, event: &Event) -> bool {
     matches!(
         event.action.as_str(),
@@ -1325,37 +1424,36 @@ fn live(found: Option<&Episode>, event: &Event) -> bool {
 /// episode no attempt is moving.
 #[must_use]
 pub fn flying(limit: Option<&Episode>, headroom: Option<&Episode>) -> Option<Episode> {
-    [limit, headroom]
-        .into_iter()
+    flying_any(&[limit, headroom])
+}
+
+/// [`flying`] over any of the seat's episodes, its return episode included.
+#[must_use]
+pub fn flying_any(episodes: &[Option<&Episode>]) -> Option<Episode> {
+    episodes
+        .iter()
         .flatten()
         .find(|found| found.open.is_some() && found.terminal.is_none())
-        .cloned()
+        .map(|found| (*found).clone())
 }
 
 /// The episode keyed `key` that a leg acts under. A limit and a headroom
 /// episode opened in the same second share a key, so the one whose attempt is
-/// in flight is taken first; otherwise the limit episode, then the headroom one.
+/// in flight is taken first; otherwise the limit episode, then the headroom
+/// one, then the return one.
 #[must_use]
 pub fn keyed(
     events: &[Event],
     (session, slot, agent): (&str, &str, &str),
     key: Timestamp,
 ) -> Option<Episode> {
-    let (limit, headroom) = episodes(events, session, slot, agent);
-    owning(limit, headroom, &key.to_string())
-}
-
-/// Of the two episodes, the one whose `ref` is `reference`, by [`keyed`]'s rule.
-fn owning(limit: Option<Episode>, headroom: Option<Episode>, reference: &str) -> Option<Episode> {
-    let named = |found: &Episode| found.reference() == reference;
-    let (limit, headroom) = (limit.filter(named), headroom.filter(named));
-    flying(limit.as_ref(), headroom.as_ref())
-        .or(limit)
-        .or(headroom)
+    fold_path(events, session, slot, agent).owning(&key.to_string())
 }
 
 /// Each profile this seat left by auto reseat since its newest `spawn`, with
-/// the time of the newest such move, ordered by that move, oldest first.
+/// the time of the newest such move, ordered by that move, oldest first. A
+/// return is not leaving: the seat went home, and the profile it left is not
+/// one pressure moved it off.
 #[must_use]
 pub fn left_profiles(
     events: &[Event],
@@ -1363,7 +1461,8 @@ pub fn left_profiles(
     slot: &str,
     agent: &str,
 ) -> Vec<(String, Timestamp)> {
-    left_moves(events, session, slot, agent)
+    walk(events, session, slot, agent)
+        .left
         .into_iter()
         .map(|(profile, at, _)| (profile, at))
         .collect()
@@ -1373,56 +1472,154 @@ pub fn left_profiles(
 /// episode: the attempt before it named a headroom key.
 #[must_use]
 pub fn left_on_headroom(events: &[Event], session: &str, slot: &str, agent: &str) -> Vec<String> {
-    left_moves(events, session, slot, agent)
+    walk(events, session, slot, agent)
+        .left
         .into_iter()
         .filter(|(_, _, trigger)| *trigger == Trigger::Headroom)
         .map(|(profile, _, _)| profile)
         .collect()
 }
 
-fn left_moves(
+/// An untouched chain of automatic moves: the seat stands where auto reseat
+/// put it, and nobody chose otherwise since.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chain {
+    /// The profile the chain's FIRST move left: the last one a launch or a
+    /// human chose, where a return goes home to.
+    pub origin: String,
+    /// When that first move was journaled done: a reading at or before it
+    /// proves nothing about the origin's room since.
+    pub away_at: Timestamp,
+    /// When the chain's newest move was journaled done.
+    pub newest: Timestamp,
+}
+
+/// The seat's chain of automatic moves, if one stands now.
+///
+/// Read in journal order from the seat's newest `spawn`: a HOP is a watchdog
+/// attempt, then the watchdog's `reseat` record that says the seat moved
+/// ([`crate::reseat::moved_seat`]), then the `auto-reseat-done` that closes it.
+/// A chain stands only while the newest record that moved the seat is a
+/// watchdog `reseat` a later done closed, and no `reseat` anyone else journaled
+/// lies after it. A done no watchdog `reseat` precedes is no hop; a return hop
+/// ends the chain, as does a `spawn`.
+#[must_use]
+pub fn chain(events: &[Event], session: &str, slot: &str, agent: &str) -> Option<Chain> {
+    walk(events, session, slot, agent).chain
+}
+
+/// How many returns of this seat were journaled done since its newest `spawn`
+/// at or after `since`.
+#[must_use]
+pub fn returns_since(
     events: &[Event],
     session: &str,
     slot: &str,
     agent: &str,
-) -> Vec<(String, Timestamp, Trigger)> {
-    let mut left: Vec<(String, Timestamp, Trigger)> = Vec::new();
+    since: i64,
+) -> usize {
+    walk(events, session, slot, agent)
+        .returns
+        .iter()
+        .filter(|at| at.epoch() >= since)
+        .count()
+}
+
+/// What one ordered pass over a seat's records says of its moves.
+#[derive(Default)]
+struct Walk {
+    left: Vec<(String, Timestamp, Trigger)>,
+    chain: Option<Chain>,
+    returns: Vec<Timestamp>,
+}
+
+fn walk(events: &[Event], session: &str, slot: &str, agent: &str) -> Walk {
+    let mut path = Pair::default();
+    let mut out = Walk::default();
     // The kind of the newest attempt, judged when it was journaled: a later
     // opener under the same second cannot change which move it was.
     let mut attempted: Option<Trigger> = None;
-    for (index, event) in events.iter().enumerate() {
-        if !event_is_addressed_to(event, session, slot, agent) {
+    // A watchdog move awaiting its done: the kind it was attempted as, and the
+    // chain that stood before it.
+    let mut moving: Option<(Option<Trigger>, Option<Chain>)> = None;
+    for event in events {
+        if !addressed(event, session, slot, agent) {
             continue;
         }
+        path.step(event);
         if event.action == SPAWN_ACTION {
-            left.clear();
+            out = Walk::default();
             attempted = None;
+            moving = None;
             continue;
         }
-        if event.actor != WATCHDOG_ACTOR {
-            continue;
-        }
+        let watchdog = event.actor == WATCHDOG_ACTOR;
         match event.action.as_str() {
-            ATTEMPT_ACTION => {
-                let (limit, headroom) = episodes(&events[..=index], session, slot, agent);
-                attempted = event
+            RESEAT_ACTION if !watchdog => {
+                out.chain = None;
+                moving = None;
+            }
+            RESEAT_ACTION
+                if event
+                    .summary
+                    .as_deref()
+                    .is_some_and(crate::reseat::moved_seat) =>
+            {
+                moving = Some((attempted, out.chain.take()));
+            }
+            // An attempt no live episode owns is still an automatic move: only
+            // a return episode's attempt is a return.
+            ATTEMPT_ACTION if watchdog => {
+                let owner = event
                     .reference
                     .as_deref()
-                    .and_then(|reference| owning(limit, headroom, reference))
-                    .map(|found| found.trigger);
+                    .and_then(|reference| path.owning(reference));
+                attempted = Some(owner.map_or(Trigger::Limit, |found| found.trigger));
             }
-            DONE_ACTION => {
-                if let Some(profile) = event.reference.as_deref() {
-                    let trigger = attempted.unwrap_or(Trigger::Limit);
-                    left.retain(|(taken, _, _)| taken != profile);
-                    left.push((profile.to_owned(), event.ts, trigger));
+            DONE_ACTION if watchdog => {
+                let kind = attempted.take();
+                if let Some(profile) = event.reference.as_deref()
+                    && kind != Some(Trigger::Return)
+                {
+                    out.left.retain(|(taken, _, _)| taken != profile);
+                    out.left
+                        .push((profile.to_owned(), event.ts, kind.unwrap_or(Trigger::Limit)));
                 }
-                attempted = None;
+                if let Some((hop, before)) = moving.take() {
+                    out.chain = hop_done(hop, before, event, &mut out.returns);
+                }
             }
             _ => {}
         }
     }
-    left
+    out
+}
+
+/// The chain after a watchdog move of kind `hop` is journaled done by `done`,
+/// `before` being the chain that stood before the move.
+fn hop_done(
+    hop: Option<Trigger>,
+    before: Option<Chain>,
+    done: &Event,
+    returns: &mut Vec<Timestamp>,
+) -> Option<Chain> {
+    match hop? {
+        Trigger::Return => {
+            returns.push(done.ts);
+            None
+        }
+        Trigger::Limit | Trigger::Headroom => match before {
+            Some(chain) => Some(Chain {
+                newest: done.ts,
+                ..chain
+            }),
+            None => Some(Chain {
+                origin: done.reference.clone()?,
+                away_at: done.ts,
+                newest: done.ts,
+            }),
+        },
+    }
 }
 
 /// What the latest capture of the seat's pane proved.
@@ -1582,7 +1779,9 @@ pub fn decide_with_waits(
     let touched = pane
         .client_input
         .is_some_and(|at| now < at.saturating_add(input_wait));
-    let headroom = episode.trigger == Trigger::Headroom;
+    // Only a limit move may read an unproven frame as clear: a headroom or
+    // return move never ends a turn.
+    let headroom = episode.trigger != Trigger::Limit;
     let reason = match pane.frame {
         Frame::Unread => Some(HoldReason::Unread),
         Frame::Busy => Some(HoldReason::Busy),
@@ -1836,6 +2035,21 @@ pub fn headroom_in_flight(
     settings.switch != Switch::Off
         && headroom_episode(events, session, slot, agent)
             .and_then(|found| found.open)
+            .is_some_and(|started| now.saturating_sub(started.epoch()) < IN_FLIGHT_SECS)
+}
+
+/// [`headroom_in_flight`] for the seat's return episode: the shell a move home
+/// leaves is the move, not a death.
+#[must_use]
+pub fn return_in_flight(
+    settings: &Settings,
+    events: &[Event],
+    (session, slot, agent): (&str, &str, &str),
+    now: i64,
+) -> bool {
+    settings.switch != Switch::Off
+        && return_episode(events, session, slot, agent)
+            .and_then(|found| found.open.filter(|_| found.terminal.is_none()))
             .is_some_and(|started| now.saturating_sub(started.epoch()) < IN_FLIGHT_SECS)
 }
 
@@ -2256,6 +2470,27 @@ pub fn headroom_words(window: &Window) -> String {
     format!("headroom {}% {}", percent(window.judged), window.label)
 }
 
+/// What a return episode names its trigger by: the origin it goes home to and
+/// the worst long window that proved room.
+#[must_use]
+pub fn return_words(origin: &str, window: &Window) -> String {
+    format!(
+        "return to {origin}: {}% {}",
+        percent(window.judged),
+        window.label
+    )
+}
+
+/// The hold a seat past [`MAX_RETURNS`] gets once per chain: no return opens,
+/// and the step is the human's.
+#[must_use]
+pub fn flapped_summary(session: &str, agent: &str, origin: &str) -> String {
+    CauseClass::Other.lead(&format!(
+        "held: returned {MAX_RETURNS} times in 24 h; move it back by hand \
+         (ae reseat {session} {agent} --using {origin})"
+    ))
+}
+
 /// The re-arm record's summary when a new start ends an earlier start's episode.
 pub const RESTARTED_SUMMARY: &str = "headroom cleared: a new start reads its own account";
 
@@ -2297,6 +2532,78 @@ pub fn current<K: PartialEq>(windows: Vec<(K, Window)>) -> Vec<(K, Window)> {
         .zip(superseded)
         .filter_map(|(entry, gone)| (!gone).then_some(entry))
         .collect()
+}
+
+/// One reading of an origin account as a return judges it: a judged window,
+/// or a row ae cannot judge — no usable percentage or no observation stamp —
+/// which is kept, never dropped, so it can still deny the proof.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Sample {
+    Judged(Window),
+    /// The row's own observation stamp, when it states one.
+    Unjudged(Option<i64>),
+}
+
+impl Sample {
+    const fn observed_at(&self) -> Option<i64> {
+        match self {
+            Self::Judged(window) => Some(window.observed_at),
+            Self::Unjudged(at) => *at,
+        }
+    }
+}
+
+/// The percentage a return's origin must read strictly below: the current
+/// `auto_reseat_at`, or [`DEFAULT_HEADROOM_AT`] when it is off, minus
+/// [`REARM_GAP`].
+#[must_use]
+pub fn return_band(headroom_at: Option<u8>) -> f64 {
+    f64::from(headroom_at.unwrap_or(DEFAULT_HEADROOM_AT)) - REARM_GAP
+}
+
+/// Whether an origin account proves room for a return, from every reading of
+/// it that binds the origin's model, each with its window's identity `K`.
+///
+/// Per window only the NEWEST reading counts, but nothing is dropped before
+/// it is judged: every reading of that newest stamp must be a judged window,
+/// FRESH, observed strictly after `away_at` and strictly below `band`, so a tie
+/// of opposed or unjudgeable readings proves nothing. A reading with no stamp
+/// cannot be ordered and proves nothing. Every window the readings name must
+/// prove room, and at least one of them must be proven a day long. The worst
+/// such long window, for the record; `None` when anything is unproven.
+#[must_use]
+pub fn return_ready<K: PartialEq>(
+    samples: &[(K, Sample)],
+    away_at: i64,
+    band: f64,
+) -> Option<Window> {
+    let mut worst: Option<&Window> = None;
+    for (key, _) in samples {
+        let same = || {
+            samples
+                .iter()
+                .filter(move |(other, _)| other == key)
+                .map(|(_, sample)| sample)
+        };
+        let newest = same()
+            .map(Sample::observed_at)
+            .collect::<Option<Vec<i64>>>()?
+            .into_iter()
+            .max()?;
+        for sample in same().filter(|sample| sample.observed_at() == Some(newest)) {
+            let Sample::Judged(window) = sample else {
+                return None;
+            };
+            let room = window.judged.partial_cmp(&band) == Some(std::cmp::Ordering::Less);
+            if window.status != Status::Fresh || window.observed_at <= away_at || !room {
+                return None;
+            }
+            if window.long && worst.is_none_or(|held| window.judged > held.judged) {
+                worst = Some(window);
+            }
+        }
+    }
+    worst.cloned()
 }
 
 /// A window whose number still stands: read before its reset. The status
@@ -2715,6 +3022,10 @@ fn cut_at_word(body: &str, room: usize) -> String {
 #[cfg(test)]
 #[path = "autoreseat/episodes_spec.rs"]
 mod episodes_spec;
+
+#[cfg(test)]
+#[path = "autoreseat/chain_tests.rs"]
+mod chain_tests;
 
 #[cfg(test)]
 #[path = "autoreseat/bgtask_spec.rs"]

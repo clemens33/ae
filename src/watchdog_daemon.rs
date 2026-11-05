@@ -5038,6 +5038,20 @@ enum AutoAct {
         key: Timestamp,
         summary: String,
     },
+    /// Open a return episode: `cause` names the origin and its room (#305).
+    OpenReturn {
+        slot: String,
+        agent: String,
+        cause: String,
+    },
+    /// Say, once per chain keyed by its newest move `key`, that the seat went
+    /// home too often to go home again by itself.
+    Flapped {
+        slot: String,
+        agent: String,
+        key: Timestamp,
+        origin: String,
+    },
 }
 
 /// The auto reseat step's decisions, PURE: every latched seat the switch
@@ -5049,10 +5063,14 @@ enum AutoAct {
 /// on a crossing, re-arms on relief, and is decided like a limit episode while
 /// its account still reads within the gap of the threshold. A headroom hold the
 /// journal already ends on is not named again, a restart included.
+///
+/// A seat no limit or headroom path holds goes home by [`return_route`] when
+/// `homes` names its slot (#305); a seat with no such entry decides as it
+/// always did.
 #[allow(clippy::too_many_lines, reason = "one ordered decision per seat")]
-fn auto_acts(
+fn auto_acts_with(
     settings: &crate::autoreseat::Settings,
-    seats: &[AutoSeat],
+    (seats, homes): (&[AutoSeat], &[(String, crate::autoreseat::leg::Home)]),
     events: &[Event],
     (session, orchestrator): (&str, bool),
     now: i64,
@@ -5060,6 +5078,12 @@ fn auto_acts(
 ) -> Vec<AutoAct> {
     use crate::autoreseat::{Decision, Ineligible, Room, Trigger};
     named.retain(|(slot, _, _)| seats.iter().any(|seat| seat.slot == *slot));
+    let home = |seat: &AutoSeat| {
+        homes
+            .iter()
+            .find(|(slot, _)| *slot == seat.slot)
+            .map(|(_, found)| found)
+    };
     let mut acts = Vec::new();
     let mut due: Option<(Timestamp, &AutoSeat)> = None;
     for seat in seats {
@@ -5070,21 +5094,41 @@ fn auto_acts(
             profile: &seat.profile,
             orchestrator,
         };
-        match crate::autoreseat::eligible(settings, &asked) {
-            Err(Ineligible::Unmapped) if seat.derives => {}
+        let back = crate::autoreseat::return_episode(events, session, &seat.slot, &seat.agent);
+        // The origin is a return's one candidate, so a seat with no row of its
+        // own may still go home: only the return path decides it then.
+        let homeward_only = match crate::autoreseat::eligible(settings, &asked) {
+            Err(Ineligible::Unmapped) if seat.derives => false,
             Err(Ineligible::Unmapped) if seat.limited => {
                 acts.extend(unmapped_act(settings, seat, events, session, now));
                 continue;
             }
+            Err(Ineligible::Unmapped) if home(seat).is_some() || back.is_some() => true,
             Err(_) => continue,
-            Ok(_) => {}
-        }
+            Ok(_) => false,
+        };
         let limit = crate::autoreseat::episode(events, session, &seat.slot, &seat.agent);
         let headroom =
             crate::autoreseat::headroom_episode(events, session, &seat.slot, &seat.agent);
         // An attempt in flight, of either kind, decides the seat until it ends.
-        let flying = crate::autoreseat::flying(limit.as_ref(), headroom.as_ref());
-        let found = if flying.is_some() {
+        let flying =
+            crate::autoreseat::flying_any(&[limit.as_ref(), headroom.as_ref(), back.as_ref()]);
+        // A seat its own account presses is the headroom path's: it goes home
+        // only with no headroom episode at all (#305).
+        let pressed = headroom.is_some();
+        let found = if homeward_only {
+            match flying {
+                Some(open) => (open.trigger == Trigger::Return).then_some(open),
+                None if pressed => None,
+                None => match return_route(seat, home(seat), back) {
+                    Homeward::Act(act) => {
+                        acts.push(act);
+                        continue;
+                    }
+                    Homeward::Decide(found) => found,
+                },
+            }
+        } else if flying.is_some() {
             flying
         } else if seat.limited {
             limit
@@ -5094,6 +5138,13 @@ fn auto_acts(
                     acts.push(act);
                     continue;
                 }
+                Headroom::Decide(None) if !pressed => match return_route(seat, home(seat), back) {
+                    Homeward::Act(act) => {
+                        acts.push(act);
+                        continue;
+                    }
+                    Homeward::Decide(found) => found,
+                },
                 Headroom::Decide(found) => found,
             }
         };
@@ -5126,9 +5177,18 @@ fn auto_acts(
         // of the threshold; an attempt already open is judged whatever it reads.
         let urgent = seat.start.urgent(key.epoch());
         let near = urgent || matches!(seat.room, Room::Crossed(_) | Room::Near);
-        let waits = seat.start.waits(key.epoch(), settings.grace_secs);
+        // A return takes the plain grace and the plain frame: a resume's
+        // waivers are for an exhausted start, never for going home.
+        let homeward = trigger == Trigger::Return;
+        let waits = if homeward {
+            crate::autoreseat::Waits::plain(settings.grace_secs)
+        } else {
+            seat.start.waits(key.epoch(), settings.grace_secs)
+        };
         let mut pane = seat.pane;
-        pane.frame = seat.start.frame(key.epoch(), pane.frame);
+        if !homeward {
+            pane.frame = seat.start.frame(key.epoch(), pane.frame);
+        }
         match crate::autoreseat::decide_with_waits(Some(&found), waits, &pane, now) {
             Decision::Overdue => acts.push(AutoAct::Overdue {
                 slot,
@@ -5137,6 +5197,8 @@ fn auto_acts(
                 trigger,
             }),
             Decision::Hold(_) | Decision::Attempt if trigger == Trigger::Headroom && !near => {}
+            // A return's holds are silent: a working seat is no news (M6).
+            Decision::Hold(_) if homeward => {}
             Decision::Hold(reason) => {
                 let said = trigger == Trigger::Headroom
                     && found
@@ -5209,6 +5271,46 @@ fn unmapped_act(
         key: open.key,
         profile: seat.profile.clone(),
     })
+}
+
+/// Where the return path leaves a seat no limit or headroom path holds.
+#[derive(Debug, PartialEq)]
+enum Homeward {
+    /// Record this act: the seat is done this cycle.
+    Act(AutoAct),
+    /// Decide this return episode like a limit one; none leaves the seat be.
+    Decide(Option<crate::autoreseat::Episode>),
+}
+
+/// The return path of one seat, given its return episode `back` (#305): a
+/// chain whose origin proves room opens one where none is — or, past
+/// [`crate::autoreseat::MAX_RETURNS`], holds once instead — and an open one is
+/// decided only while that proof stands. Anything less is silent.
+fn return_route(
+    seat: &AutoSeat,
+    home: Option<&crate::autoreseat::leg::Home>,
+    back: Option<crate::autoreseat::Episode>,
+) -> Homeward {
+    let Some(home) = home else {
+        return Homeward::Decide(None);
+    };
+    let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
+    match (back, home.ready.as_ref()) {
+        (None, Some(_)) if home.flapped => Homeward::Act(AutoAct::Flapped {
+            slot,
+            agent,
+            key: home.newest,
+            origin: home.origin.clone(),
+        }),
+        (None, Some(window)) => Homeward::Act(AutoAct::OpenReturn {
+            slot,
+            agent,
+            cause: crate::autoreseat::return_words(&home.origin, window),
+        }),
+        (Some(open), Some(_)) => Homeward::Decide(Some(open)),
+        (Some(open), None) if open.gave_up() => Homeward::Decide(Some(open)),
+        _ => Homeward::Decide(None),
+    }
 }
 
 /// Where the headroom path leaves a seat whose latch does not stand.
@@ -6354,6 +6456,8 @@ impl Cycle<'_> {
         let mut quota_refresh = false;
         // Every seat whose limit latch stands after its accounting.
         let mut auto_seats: Vec<AutoSeat> = Vec::new();
+        // The return each seat on an automatic chain may make (#305), by slot.
+        let mut homes: Vec<(String, crate::autoreseat::leg::Home)> = Vec::new();
         // The lead-pair seats the effort step judges.
         let mut effort_seats: Vec<crate::effort::leg::Sight> = Vec::new();
         // ONE stamp read per cycle; every pane shares the session's grace.
@@ -6540,6 +6644,15 @@ impl Cycle<'_> {
                         now,
                     )
                     .then_some(crate::autoreseat::Trigger::Headroom)
+                    .or_else(|| {
+                        crate::autoreseat::return_in_flight(
+                            &self.auto,
+                            &events,
+                            (self.session, &slot, agent),
+                            now,
+                        )
+                        .then_some(crate::autoreseat::Trigger::Return)
+                    })
                 },
                 // Forecast once, at the limit's first sight: the Notify that
                 // carries it is booked only then.
@@ -6617,6 +6730,10 @@ impl Cycle<'_> {
                     wake_landed: limit_wake_in(&events, (self.session, &slot, agent), true),
                     armed: carried.limit_armed,
                 });
+                let unlatched = carried.limit_since.is_none();
+                if let Some(home) = self.home(&events, &slot, &carry.quota, unlatched, now) {
+                    homes.push((slot.clone(), home));
+                }
             }
             // A prompt over a standing failure is published as the failure.
             let shown = if seen.unreachable && booked.verdict == Verdict::HumanPrompt {
@@ -6683,7 +6800,13 @@ impl Cycle<'_> {
             now,
         };
         crate::effort::leg::step(&effort, &effort_seats, &mut carry.effort, err)?;
-        self.auto_reseat(&mut carry.auto_named, &auto_seats, &events, now, err)?;
+        self.auto_reseat(
+            &mut carry.auto_named,
+            (&auto_seats, &homes),
+            &events,
+            now,
+            err,
+        )?;
         self.close(
             carry,
             &counts,
@@ -7533,13 +7656,13 @@ impl Cycle<'_> {
     fn auto_reseat(
         &self,
         named: &mut Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
-        seats: &[AutoSeat],
+        seats: (&[AutoSeat], &[(String, crate::autoreseat::leg::Home)]),
         events: &[Event],
         now: i64,
         err: &mut impl Write,
     ) -> crate::Result<()> {
         let context = (self.session, self.meta_agent);
-        for act in auto_acts(&self.auto, seats, events, context, now, named) {
+        for act in auto_acts_with(&self.auto, seats, events, context, now, named) {
             let AutoAct::Trigger { agent } = &act else {
                 self.auto_record(&act, now, err)?;
                 continue;
@@ -7572,6 +7695,8 @@ impl Cycle<'_> {
             | AutoAct::Open { slot, agent, .. }
             | AutoAct::Rearm { slot, agent, .. }
             | AutoAct::GaveUp { slot, agent, .. }
+            | AutoAct::OpenReturn { slot, agent, .. }
+            | AutoAct::Flapped { slot, agent, .. }
             | AutoAct::Unmapped { slot, agent, .. } => (slot, agent),
             AutoAct::Trigger { .. } => return Ok(()),
         };
@@ -7599,9 +7724,44 @@ impl Cycle<'_> {
                 }
                 return Ok(());
             }
+            AutoAct::OpenReturn { cause, .. } => {
+                let back = crate::autoreseat::return_episode(&events, self.session, slot, agent);
+                let chain = crate::autoreseat::chain(&events, self.session, slot, agent);
+                if back.is_none() && chain.is_some() {
+                    journal.record(crate::autoreseat::RETURN_ACTION, agent, cause, err)?;
+                }
+                return Ok(());
+            }
+            AutoAct::Flapped { key, origin, .. } => {
+                let said = crate::autoreseat::flapped_summary(self.session, agent, origin);
+                let reference = key.to_string();
+                let held = events.iter().any(|event| {
+                    event.action == crate::autoreseat::HELD_ACTION
+                        && event.actor == crate::watchdog::WATCHDOG_ACTOR
+                        && event.reference.as_deref() == Some(reference.as_str())
+                        && event.summary.as_deref() == Some(said.as_str())
+                        && crate::watchdog::event_is_addressed_to(event, self.session, slot, agent)
+                });
+                if !held {
+                    let action = crate::autoreseat::HELD_ACTION;
+                    journal.record_referring(action, agent, &reference, &said, err)?;
+                    crate::autoreseat::leg::tell_held(
+                        self.meta_dir,
+                        (self.session, slot, agent),
+                        *key,
+                        Timestamp::from_epoch(now),
+                        &said,
+                    );
+                }
+                return Ok(());
+            }
             AutoAct::GaveUp { key, .. } => {
                 let said = crate::autoreseat::GAVE_UP_SUMMARY;
-                let found = crate::autoreseat::episode(&events, self.session, slot, agent);
+                let found = crate::autoreseat::episode(&events, self.session, slot, agent)
+                    .filter(|open| open.key == *key)
+                    .or_else(|| {
+                        crate::autoreseat::return_episode(&events, self.session, slot, agent)
+                    });
                 if found.is_some_and(|open| {
                     open.key == *key && open.gave_up() && !open.holds_with(said)
                 }) {
@@ -7668,6 +7828,9 @@ impl Cycle<'_> {
         let found = match trigger {
             Trigger::Limit => crate::autoreseat::episode(&events, self.session, slot, agent),
             Trigger::Headroom => headroom,
+            Trigger::Return => {
+                crate::autoreseat::return_episode(&events, self.session, slot, agent)
+            }
         };
         let cause = found
             .as_ref()
@@ -7808,6 +7971,33 @@ impl Cycle<'_> {
     ) -> Option<crate::autoreseat::LimitReset> {
         let entry = self.roster.iter().find(|entry| entry.slot == slot)?;
         crate::autoreseat::leg::own_reset(quota.last_observation.as_ref(), entry, pin, now)
+    }
+
+    /// The return the seat at `slot` may make this cycle, from the held quota
+    /// observation: none while auto reseat is off or the seat is latched.
+    fn home(
+        &self,
+        events: &[Event],
+        slot: &str,
+        quota: &QuotaCarry,
+        unlatched: bool,
+        now: i64,
+    ) -> Option<crate::autoreseat::leg::Home> {
+        if self.auto.switch == crate::autoreseat::Switch::Off || !unlatched {
+            return None;
+        }
+        let row = self.roster.iter().find(|entry| entry.slot == slot)?;
+        let latched =
+            crate::autoreseat::latched_identities(&self.roster, events, self.session, slot);
+        let read = (quota.last_observation.as_ref(), latched.as_slice());
+        crate::autoreseat::leg::home(
+            self.meta_dir,
+            events,
+            (self.session, row),
+            &self.auto,
+            read,
+            now,
+        )
     }
 
     /// The seat at `slot`'s own account against the headroom threshold, from
@@ -20172,3 +20362,20 @@ mod tests {
     include!("../tests/unit/unreach_episode.rs");
     include!("../tests/unit/unreach_motion_a4.rs");
 }
+
+/// [`auto_acts_with`] with no seat on an automatic chain: the step's pins read it.
+#[cfg(test)]
+fn auto_acts(
+    settings: &crate::autoreseat::Settings,
+    seats: &[AutoSeat],
+    events: &[Event],
+    context: (&str, bool),
+    now: i64,
+    named: &mut Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
+) -> Vec<AutoAct> {
+    auto_acts_with(settings, (seats, &[]), events, context, now, named)
+}
+
+#[cfg(test)]
+#[path = "watchdog_daemon/return_tests.rs"]
+mod return_tests;

@@ -478,7 +478,8 @@ impl Ctx<'_> {
                 && crate::watchdog::human_prompt_class(capture, seat.bin()).is_none(),
             input: input.ok().flatten(),
             reseating: crate::autoreseat::in_flight(&settings, &events, at, now)
-                || crate::autoreseat::headroom_in_flight(&settings, &events, at, now),
+                || crate::autoreseat::headroom_in_flight(&settings, &events, at, now)
+                || crate::autoreseat::return_in_flight(&settings, &events, at, now),
             pane_pid: self.pane_pid(),
         }
     }
