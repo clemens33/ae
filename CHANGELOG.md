@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.19] - 2026-11-05
+- **reseat**: Refuse unusable clients before stopping a tool
+
 ## [v2026.11.18] - 2026-11-05
 - Reseat --using accepts profile@client for pairs the human approved
 
