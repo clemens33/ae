@@ -449,3 +449,95 @@ fn a_reseat_record_is_the_seats_only_by_its_own_name_and_slot_with_no_session() 
     events.push(reseat(9, "human", "reseated, seed submitted"));
     assert_eq!(chain_of(&events), None, "the seat's own unrouted reseat");
 }
+
+/// The path's records are the watchdog's alone: an `auto-reseat` anyone else
+/// journals never decides which kind of move the watchdog's next hop was.
+#[test]
+fn an_attempt_anyone_but_the_watchdog_journals_never_relabels_a_hop() {
+    let mut events = hop(0, HEADROOM_ACTION, "origin", "substitute");
+    let mut back = hop(10, RETURN_ACTION, "substitute", "origin");
+    let done = back.pop().expect("the done");
+    let moved = back.pop().expect("the moved reseat");
+    events.extend(back);
+    events.push(record(12, "lead", ATTEMPT_ACTION, "", "forged"));
+    events.push(moved);
+    events.push(done);
+    assert_eq!(chain_of(&events), None, "the return hop ended the chain");
+    assert_eq!(returns_since(&events, SESSION, SLOT, AGENT, T0), 1);
+}
+
+/// The cause names the WORST long window of the origin: the one with the
+/// highest judged percentage, whatever order the readings come in.
+#[test]
+fn the_return_names_the_worst_long_window_in_either_order() {
+    let band = return_band(Some(95));
+    let labelled = |judged: f64, label: &str| {
+        let mut found = window(judged, true, T0 + 100, Status::Fresh);
+        label.clone_into(&mut found.label);
+        Sample::Judged(found)
+    };
+    for samples in [
+        vec![("7d", labelled(10.0, "7d")), ("30d", labelled(30.0, "30d"))],
+        vec![("30d", labelled(30.0, "30d")), ("7d", labelled(10.0, "7d"))],
+    ] {
+        let found = return_ready(&samples, AWAY, band).expect("both fresh and low");
+        assert_eq!((found.judged, found.label.as_str()), (30.0, "30d"));
+    }
+}
+
+/// A return is in flight from its attempt until its outcome, for at most
+/// [`IN_FLIGHT_SECS`], and only while auto reseat is on; a limit or headroom
+/// attempt is not one.
+#[test]
+fn a_return_is_in_flight_only_between_its_attempt_and_outcome_within_the_bound() {
+    let on = Settings {
+        switch: Switch::On,
+        sessions: None,
+        grace_secs: 0,
+        map: Vec::new(),
+        headroom_at: None,
+        headroom_note: None,
+        notes: Vec::new(),
+    };
+    let off = Settings {
+        switch: Switch::Off,
+        ..on.clone()
+    };
+    let seat = (SESSION, SLOT, AGENT);
+    let key = at(10).to_string();
+    let opener = record(10, WATCHDOG_ACTOR, RETURN_ACTION, "", "return");
+    let attempt = record(11, WATCHDOG_ACTOR, ATTEMPT_ACTION, &key, "attempt");
+    let flying = vec![opener.clone(), attempt.clone()];
+    let started = T0 + 11;
+    assert!(return_in_flight(&on, &flying, seat, started + 1));
+    assert!(return_in_flight(
+        &on,
+        &flying,
+        seat,
+        started + IN_FLIGHT_SECS - 1
+    ));
+    assert!(
+        !return_in_flight(&on, &flying, seat, started + IN_FLIGHT_SECS),
+        "past its bound an attempt is overdue, not in flight"
+    );
+    assert!(!return_in_flight(&off, &flying, seat, started + 1), "off");
+    assert!(
+        !return_in_flight(&on, &[opener.clone()], seat, started + 1),
+        "opened, no attempt"
+    );
+    assert!(!return_in_flight(&on, &[], seat, started + 1), "no episode");
+    let mut ended = flying.clone();
+    ended.push(record(12, WATCHDOG_ACTOR, REFUSED_ACTION, &key, "refused"));
+    assert!(
+        !return_in_flight(&on, &ended, seat, started + 1),
+        "an outcome"
+    );
+    let limit = vec![
+        record(10, WATCHDOG_ACTOR, LIMIT_ACTION, "", "limit"),
+        record(11, WATCHDOG_ACTOR, ATTEMPT_ACTION, &key, "attempt"),
+    ];
+    assert!(
+        !return_in_flight(&on, &limit, seat, started + 1),
+        "a limit attempt is not a return"
+    );
+}

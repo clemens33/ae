@@ -184,3 +184,127 @@ fn a_mapped_seat_on_a_chain_opens_its_return() {
         [opened()]
     );
 }
+
+/// An unmapped seat its own account presses into a headroom episode is that
+/// episode's, never the return's, even with the origin ready.
+#[test]
+fn an_unmapped_seat_with_a_headroom_episode_never_opens_a_return() {
+    let pressed = [record(NOW - 60, crate::autoreseat::HEADROOM_ACTION, "")];
+    assert!(
+        acts(
+            &settings(Switch::On, &[]),
+            &seat(Room::Unread),
+            &home(Some(ready())),
+            &pressed
+        )
+        .is_empty()
+    );
+}
+
+/// An unmapped seat's return attempt past its bound is booked overdue like
+/// any other; a limit attempt in flight on it is not the return's to decide.
+#[test]
+fn an_unmapped_seats_return_attempt_past_its_bound_is_overdue() {
+    let key = Timestamp::from_epoch(NOW - 600);
+    let reference = format!(r#","ref":"{key}""#);
+    let overdue = [
+        record(key.epoch(), RETURN_ACTION, ""),
+        record(key.epoch() + 1, ATTEMPT_ACTION, &reference),
+    ];
+    assert_eq!(
+        acts(
+            &settings(Switch::On, &[]),
+            &seat(Room::Unread),
+            &home(Some(ready())),
+            &overdue
+        ),
+        [AutoAct::Overdue {
+            slot: SLOT.to_owned(),
+            agent: AGENT.to_owned(),
+            key,
+            trigger: crate::autoreseat::Trigger::Return,
+        }]
+    );
+    let limit = [
+        record(key.epoch(), "limit", ""),
+        record(key.epoch() + 1, ATTEMPT_ACTION, &reference),
+    ];
+    assert!(
+        acts(
+            &settings(Switch::On, &[]),
+            &seat(Room::Unread),
+            &home(Some(ready())),
+            &limit
+        )
+        .is_empty()
+    );
+}
+
+/// A mapped seat with a headroom episode still standing goes home only once
+/// that episode is gone, even when the threshold is off and its own route
+/// therefore decides nothing (M5: limit, then headroom, then return).
+#[test]
+fn a_standing_headroom_episode_holds_a_mapped_seats_return() {
+    let mut off = settings(Switch::On, &[("substitute", &["manual"])]);
+    off.headroom_at = None;
+    let standing = [record(NOW - 60, crate::autoreseat::HEADROOM_ACTION, "")];
+    assert!(acts(&off, &seat(Room::Unread), &home(Some(ready())), &standing).is_empty());
+    assert_eq!(
+        acts(&off, &seat(Room::Unread), &home(Some(ready())), &[]),
+        [opened()],
+        "with no episode the same seat goes home"
+    );
+}
+
+/// Past the flap limit a ready origin is told once, never opened.
+#[test]
+fn a_flapped_seat_is_held_not_returned() {
+    let mut flapped = home(Some(ready()));
+    flapped[0].1.flapped = true;
+    assert_eq!(
+        acts(
+            &settings(Switch::On, &[]),
+            &seat(Room::Unread),
+            &flapped,
+            &[]
+        ),
+        [AutoAct::Flapped {
+            slot: SLOT.to_owned(),
+            agent: AGENT.to_owned(),
+            key: Timestamp::from_epoch(NOW - 600),
+            origin: "origin".to_owned(),
+        }]
+    );
+}
+
+/// An open return is decided only while its proof stands; once the origin no
+/// longer proves room it waits silently, unless its rounds are spent, which is
+/// told as every spent path is.
+#[test]
+fn an_open_return_moves_only_on_its_proof_and_a_spent_one_gives_up() {
+    use crate::autoreseat::{MAX_ROUNDS, REFUSED_ACTION, RETRY_COOLDOWN_SECS};
+    let mapped = settings(Switch::On, &[("substitute", &["manual"])]);
+    let key = Timestamp::from_epoch(NOW - 20_000);
+    let reference = format!(r#","ref":"{key}""#);
+    let open = [record(key.epoch(), RETURN_ACTION, "")];
+    assert!(
+        acts(&mapped, &seat(Room::Unread), &home(None), &open).is_empty(),
+        "unproven: no attempt"
+    );
+    let mut spent = open.to_vec();
+    let mut at = key.epoch();
+    for _ in 0..MAX_ROUNDS {
+        spent.push(record(at + 1, ATTEMPT_ACTION, &reference));
+        spent.push(record(at + 2, REFUSED_ACTION, &reference));
+        at += 2 + RETRY_COOLDOWN_SECS;
+    }
+    assert_eq!(
+        acts(&mapped, &seat(Room::Unread), &home(None), &spent),
+        [AutoAct::GaveUp {
+            slot: SLOT.to_owned(),
+            agent: AGENT.to_owned(),
+            key,
+            profile: "substitute".to_owned(),
+        }]
+    );
+}
