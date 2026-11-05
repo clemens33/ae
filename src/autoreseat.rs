@@ -2592,6 +2592,34 @@ pub fn stays_on(provider: Provider) -> String {
     )
 }
 
+/// What an automatic move says about its pair, judged on the pair read AFTER
+/// the move (#305 R8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterMove<'a> {
+    /// The move was the already-collapsed pair's fallback onto this provider,
+    /// and the pair still serves only it.
+    Stays(Provider),
+    /// The pair no longer serves two proven providers.
+    Collapsed(&'a PairGuard),
+    /// Nothing to say.
+    Quiet,
+}
+
+/// [`AfterMove`] for a move that was the already-collapsed fallback onto
+/// `fallback` (`None` for every other move), over the seat's pair as read
+/// after it, `None` for a seat with no partner then.
+#[must_use]
+pub fn after_move(fallback: Option<Provider>, after: Option<&PairGuard>) -> AfterMove<'_> {
+    let Some(after) = after else {
+        return AfterMove::Quiet;
+    };
+    match fallback {
+        Some(on) if after.collapsed() == Some(on) => AfterMove::Stays(on),
+        _ if after.judge(after.seat_serves).is_some() => AfterMove::Collapsed(after),
+        _ => AfterMove::Quiet,
+    }
+}
+
 /// The line for a move; `tasks` names the background tasks its stop ended.
 fn moved_line(agent: &str, moved: &Move<'_>, tasks: &[String]) -> String {
     // The fact that a task was ended leads, ahead of every unbounded name, so
@@ -3806,6 +3834,41 @@ mod tests {
             unknown.skipped,
             [("opencode".to_owned(), Skip::PairUnproven)]
         );
+    }
+
+    /// What an automatic move says of its pair is judged on the pair read after
+    /// it: the fallback stays only while that pair still serves its one
+    /// provider, and a pair no longer on two proven providers is otherwise told
+    /// collapsed (#305 R8).
+    #[test]
+    fn what_a_move_says_of_its_pair_is_judged_on_the_pair_after_it() {
+        use super::{AfterMove, after_move};
+        use crate::tool::Provider::{Anthropic, OpenAI};
+        let after = |partner| super::PairGuard {
+            partner_serves: partner,
+            ..collapsed_on_anthropic()
+        };
+        let (same, diverse, unproven) = (after(Some(Anthropic)), after(Some(OpenAI)), after(None));
+        assert_eq!(
+            after_move(Some(Anthropic), Some(&same)),
+            AfterMove::Stays(Anthropic)
+        );
+        assert_eq!(
+            after_move(Some(Anthropic), Some(&diverse)),
+            AfterMove::Quiet
+        );
+        assert_eq!(
+            after_move(Some(Anthropic), Some(&unproven)),
+            AfterMove::Collapsed(&unproven)
+        );
+        assert_eq!(
+            after_move(Some(OpenAI), Some(&same)),
+            AfterMove::Collapsed(&same)
+        );
+        assert_eq!(after_move(None, Some(&same)), AfterMove::Collapsed(&same));
+        assert_eq!(after_move(None, Some(&diverse)), AfterMove::Quiet);
+        assert_eq!(after_move(Some(Anthropic), None), AfterMove::Quiet);
+        assert_eq!(after_move(None, None), AfterMove::Quiet);
     }
 
     /// Only a move to a candidate proven on the collapsed pair's provider is

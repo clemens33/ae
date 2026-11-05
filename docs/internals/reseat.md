@@ -874,10 +874,13 @@ lock every move of either half takes, held through the meta move — in
 destination's provider. A pair the chosen destination no longer keeps on two
 proven providers, and that it does not stay on as above (`stays_serving`, the
 same proof as the chooser's), holds as `auto-reseat-held` `pair-changed`
-(transient), with nothing stopped. After an automatic move that was to keep the
-pair diverse, the leg reads the pair once more,
-and a pair no longer on two proven providers is told one more line, `auto
-reseat: pair-provider collapse: …`, beside the move's own notice. Two test
+(transient), with nothing stopped. After an automatic move the leg reads the
+pair once more, BEFORE the move's record, and judges what it says on that read
+(`autoreseat::after_move`): the `pair stays on <Provider>` lead only when the
+move was the already-collapsed fallback and the pair still serves only that
+provider; otherwise a pair no longer on two proven providers is told one more
+line, `auto reseat: pair-provider collapse: …`, beside the move's own notice,
+and a pair made diverse meanwhile is told neither. Two test
 seams, `@auto-reseat-pair` (after the choice, before the lifecycle lock) and
 `@auto-reseat-after` (after the move returns, before that read), ride the
 existing read gate (`src/lib.rs::read_gate`).

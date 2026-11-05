@@ -1188,29 +1188,28 @@ pub(crate) fn run(
         &named(&pick),
         &String::from_utf8_lossy(&said),
     );
+    // After a move its pair is read once more, BEFORE the move's record, and
+    // what the record and notice say of it is judged on that read (#305 R8).
+    let moved = matches!(ended, Ended::Moved { .. });
+    if moved {
+        // A test seam: the move has returned and its pair is not yet read again.
+        crate::read_gate("@auto-reseat-after");
+    }
+    let after = moved.then(|| pair_now(dir, &argv.slot)).flatten();
+    let fallback = pair.as_ref().and_then(|pair| pair.stays(&pick));
+    let (stays, collapsed) = match super::after_move(fallback, after.as_ref()) {
+        super::AfterMove::Stays(provider) => (Some(provider), None),
+        super::AfterMove::Collapsed(pair) => (None, Some(pair)),
+        super::AfterMove::Quiet => (None, None),
+    };
     // A pair that already served one proven provider and still does is named
     // so, ahead of the rest, by the move's record and notice alike (R7).
-    let stays = pair
-        .as_ref()
-        .and_then(|pair| pair.stays(&pick))
-        .filter(|_| matches!(ended, Ended::Moved { .. }));
     let summary = match stays {
         Some(provider) => format!("{}: {summary}", super::stays_on(provider)),
         None => summary,
     };
     let summary = tagged(&summary, &cause);
     record(&argv, &agent, now, action, &reference, &summary);
-    // A test seam: the move has returned and its pair is not yet read again.
-    if matches!(ended, Ended::Moved { .. }) {
-        crate::read_gate("@auto-reseat-after");
-    }
-    // After an automatic move that was to keep the pair diverse, a pair no
-    // longer on two proven providers is told once more, beside the move's own
-    // notice (#305).
-    let collapsed = (matches!(ended, Ended::Moved { .. }) && stays.is_none())
-        .then(|| pair_now(dir, &argv.slot))
-        .flatten()
-        .filter(|pair| pair.judge(pair.seat_serves).is_some());
     let text = match ended {
         Ended::Moved { fate } => {
             let after = crate::meta::read_bytes(dir).unwrap_or_default();
@@ -1252,7 +1251,7 @@ pub(crate) fn run(
     if !text.is_empty() {
         tell(&argv, now, told, &text);
     }
-    if let Some(pair) = &collapsed {
+    if let Some(pair) = collapsed {
         let ending = super::Ending::PairCollapse(pair);
         tell(
             &argv,
