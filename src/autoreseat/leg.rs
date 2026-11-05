@@ -2994,6 +2994,80 @@ mod tests {
         assert!(origin_samples(None, "origin", None, NOW).is_empty());
     }
 
+    /// Under the lifecycle lock a return stands only while the locked row still
+    /// records the profile it was chosen from and the journal's chain still
+    /// ends in the move it was chosen after (M2).
+    #[test]
+    fn a_return_stands_under_the_lock_only_on_its_own_profile_and_chain() {
+        let root = Root(std::env::temp_dir().join(format!("ae-leg-return-{}", std::process::id())));
+        assert!(std::fs::create_dir_all(&root.0).is_ok(), "a session dir");
+        let line = |at: i64, actor: &str, action: &str, rest: &str| {
+            format!(
+                r#"{{"ts":"{}","actor":"{actor}","action":"{action}","target":"scout"{rest},"summary":"reseated scout (pane %1, slot spawned.3) to substitute, seed submitted"}}"#,
+                Timestamp::from_epoch(at)
+            ) + "\n"
+        };
+        let routed = r#","target_slot":"spawned.3","target_session":"aedev""#;
+        let journal = [
+            line(100, "watchdog", "auto-reseat-headroom", routed),
+            line(
+                101,
+                "watchdog",
+                "auto-reseat",
+                &format!(r#"{routed},"ref":"{}""#, Timestamp::from_epoch(100)),
+            ),
+            line(102, "watchdog", "reseat", r#","target_slot":"spawned.3""#),
+            line(
+                103,
+                "watchdog",
+                "auto-reseat-done",
+                &format!(r#"{routed},"ref":"origin""#),
+            ),
+        ]
+        .concat();
+        let write = |text: &str| {
+            assert!(
+                std::fs::write(root.0.join("events.jsonl"), text).is_ok(),
+                "a journal"
+            );
+        };
+        write(&journal);
+        let seat = ("aedev", "spawned.3", "scout");
+        let expect = Expect {
+            profile: "substitute".to_owned(),
+            newest: Timestamp::from_epoch(103),
+        };
+        let locked = b"profile.spawned.3=substitute\n";
+        assert_eq!(return_changed(&root.0, locked, seat, &expect), None);
+        let moved = return_changed(&root.0, b"profile.spawned.3=manual\n", seat, &expect);
+        assert!(
+            moved.as_deref().is_some_and(|why| why.contains("'manual'")),
+            "{moved:?}"
+        );
+        let later = Expect {
+            newest: Timestamp::from_epoch(99),
+            ..expect.clone()
+        };
+        assert!(
+            return_changed(&root.0, locked, seat, &later).is_some(),
+            "another move since the choice"
+        );
+        for (ender, why) in [
+            (
+                line(110, "human", "reseat", r#","target_slot":"spawned.3""#),
+                "a manual reseat",
+            ),
+            (line(110, "lead", "spawn", routed), "a spawn"),
+        ] {
+            write(&(journal.clone() + &ender));
+            assert!(
+                return_changed(&root.0, locked, seat, &expect)
+                    .is_some_and(|said| said.contains("no longer on the automatic chain")),
+                "{why}"
+            );
+        }
+    }
+
     #[test]
     fn a_usable_spend_cap_or_a_latched_peer_on_an_origin_account_blocks_the_return() {
         let claude = crate::tool::ToolKind::Claude;
