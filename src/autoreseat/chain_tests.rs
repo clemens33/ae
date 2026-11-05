@@ -522,7 +522,7 @@ fn a_return_is_in_flight_only_between_its_attempt_and_outcome_within_the_bound()
     );
     assert!(!return_in_flight(&off, &flying, seat, started + 1), "off");
     assert!(
-        !return_in_flight(&on, &[opener.clone()], seat, started + 1),
+        !return_in_flight(&on, std::slice::from_ref(&opener), seat, started + 1),
         "opened, no attempt"
     );
     assert!(!return_in_flight(&on, &[], seat, started + 1), "no episode");
