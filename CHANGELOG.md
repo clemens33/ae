@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.21] - 2026-11-05
+- **effort**: Count tied quota readings as one logical window
+- **effort**: Validate tied readings before settling; state restore conditions in docs
+- **resume**: Judge a spawned seat's recorded client before the lock
+- **cover**: Judge a profile@client choice on the account it selects
+- **resume**: An unlabeled spawned seat reads its profile at exec, a labeled one keeps its judged command
+- **resume**: A live reattach keeps an admitted labeled spawned seat across a global store change
+- **stats**: Stream journals into the fold so busy sessions keep their spawns
+- **mutants**: Give three named >60 s tests a finite 180 s kill and guard the table
+- **reseat**: A lead-pair seat never takes a derived sibling
+- **reseat**: A lead-pair seat never takes a derived sibling
+- **reseat**: Scope lint allows to the frozen lead-pair spec modules
+
 ## [v2026.11.20] - 2026-11-05
 - **reseat**: Lead-pair headroom threshold auto_reseat_lead_at
 - **reseat**: Auto_effort off holds the step and the detached leg
