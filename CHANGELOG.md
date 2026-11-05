@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.18] - 2026-11-05
+- Reseat --using accepts profile@client for pairs the human approved
+
 ## [v2026.11.17] - 2026-11-05
 - Freeze the move-back acceptance spec (#305 part 1)
 - An automatically moved seat returns to its origin once the origin proves room
