@@ -552,11 +552,24 @@ pub(crate) fn identity_config(
 /// The one-line warning for `profile` when it has no auto-reseat exit off its
 /// account, from the same two files a move reads: the session's recorded global
 /// config (its switch and map) and the layered identity (its profiles).
-fn cover_warning(dir: &Path, bytes: &[u8], profile: &str) -> Option<String> {
+///
+/// A `profile@client` move passes the command its pair resolved to, and the
+/// verdict judges the account THAT command selects.
+fn cover_warning(dir: &Path, bytes: &[u8], profile: &str, pair: Option<&str>) -> Option<String> {
     let cfg = identity_config(dir, bytes).ok()?;
     let global = crate::lifecycle::meta_value(bytes, "config");
     let settings = crate::autoreseat::settings((!global.is_empty()).then(|| Path::new(&global)));
-    crate::autoreseat::leg::cover_warning(&cfg, &settings, profile, crate::doors::home().as_deref())
+    let home = crate::doors::home();
+    match pair {
+        None => crate::autoreseat::leg::cover_warning(&cfg, &settings, profile, home.as_deref()),
+        Some(command) => crate::autoreseat::leg::cover_warning_through(
+            &cfg,
+            &settings,
+            profile,
+            &crate::config::IdentityConfig::resolved_snapshot(command),
+            home.as_deref(),
+        ),
+    }
 }
 
 /// The new profile resolved to the two facts the meta records.
@@ -1754,13 +1767,16 @@ fn admit<'w>(
         }
     };
     let from_command = recorded_command(&dir, &bytes, seated);
-    // The moment of a human's choice: say once if the profile chosen has no
-    // exit off its account. The watchdog's own move is no choice of anyone's.
-    // Not on a `profile@client` move: the verdict judges the profile's OWN
-    // account, which is not the one this seat moves to.
+    // The moment of a human's choice: say once if the seat has no exit off
+    // the account it moves to — a `profile@client` move's own, not the
+    // profile's default. The watchdog's own move is no choice of anyone's.
     if caller.display != crate::watchdog::WATCHDOG_ACTOR
-        && moving.pair.is_none()
-        && let Some(line) = cover_warning(&dir, &bytes, &parsed.profile)
+        && let Some(line) = cover_warning(
+            &dir,
+            &bytes,
+            &parsed.profile,
+            moving.pair.is_some().then_some(moving.command.as_str()),
+        )
     {
         writeln!(err, "{line}")?;
     }

@@ -673,11 +673,10 @@ fn presetspawn_retired_pair_refuses_and_recorded_seat_survives() {
     assert_eq!(rig.meta(), settled, "the recorded seat is untouched");
 }
 
-/// Lead ruling 3: the auto-reseat cover warning judges the profile's own
-/// account, so an override spawn skips it — while the same profile bare
-/// still warns in the same config.
+/// #296 follow-up 2 supersedes lead ruling 3: the warning judges the chosen
+/// account. Neither account has an exit in this config, so both choices warn.
 #[test]
-fn presetspawn_cover_warning_skipped_on_override() {
+fn presetspawn_cover_warning_uses_override_account() {
     if skip() {
         return;
     }
@@ -704,8 +703,8 @@ fn presetspawn_cover_warning_skipped_on_override() {
     let (code, stdout, stderr) = rig.spawn("pairone", "fake@cc-mic");
     assert_eq!(code, Some(0), "{stdout}{stderr}");
     assert!(
-        !stderr.contains("has no auto-reseat exit"),
-        "no wrong-account warning on an override spawn: {stderr}"
+        stderr.contains("has no auto-reseat exit"),
+        "the chosen override account has no exit either: {stderr}"
     );
 }
 

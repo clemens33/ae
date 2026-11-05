@@ -347,6 +347,61 @@ pub(crate) fn cover_warning(
         .and_then(super::nudge_line)
 }
 
+/// [`cover_warning`] for a seat that runs `profile` through `command`, the
+/// command a `profile@client` choice resolved to: judged on the account THAT
+/// command selects, never the profile's default one. The candidates are the
+/// profile's own, as a bare seat of it has them — its `[auto_reseat]` row and
+/// its family among `[profiles]` — so a pair never becomes an exit.
+pub(crate) fn cover_warning_through(
+    cfg: &crate::config::IdentityConfig,
+    settings: &Settings,
+    profile: &str,
+    command: &crate::config::ResolvedCommand,
+    home: Option<&Path>,
+) -> Option<String> {
+    if settings.switch == Switch::Off {
+        return None;
+    }
+    let Some((words, pin, tool)) = skeleton(command) else {
+        return super::nudge_line(&ProfileCover {
+            profile: profile.to_owned(),
+            scope: Scope::Unreadable,
+            cover: Cover::Unproven(Doubt::Own),
+            suggested: Vec::new(),
+        });
+    };
+    let store = if tool.adapter().config_home_env.is_none() {
+        Store::Shared
+    } else {
+        crate::reseat::account_of(command, tool, home)
+            .map_or(Store::Unknown, |account| Store::Proven(account.path))
+    };
+    let own = Shape {
+        words,
+        pin,
+        store,
+        raw: command.as_str().to_owned(),
+        tool,
+    };
+    let profiles = shapes(cfg, home);
+    let declared = settings.candidates(profile).unwrap_or_default();
+    let cover = super::cover(declared, (profile, &own), &profiles);
+    let suggested = if matches!(cover, Cover::Exit(_)) {
+        Vec::new()
+    } else {
+        super::suggest(profile, &own, &settings.map, &profiles)
+    };
+    super::nudge_line(&ProfileCover {
+        profile: profile.to_owned(),
+        scope: Scope::Account {
+            tool: own.tool,
+            store: own.store.clone(),
+        },
+        cover,
+        suggested,
+    })
+}
+
 /// The provider the seat of roster row `row` serves NOW: its recorded profile
 /// through its recorded client, as its own launch reads it, classified by
 /// [`crate::tool::served_provider`] — and only when that command's tool is the

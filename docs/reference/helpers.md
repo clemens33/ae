@@ -238,6 +238,8 @@ opus55x = cc-mic, cc-p     # profile = the clients it may run on
   resuming: approval gates new admissions, never a recorded seat. On resume the recorded pair
   resolves from the global config alone and passes the same adapter and store checks again, so
   a project overlay cannot change which executable it runs.
+- With `auto_reseat` on, the spawn's cover warning judges the pair's own account, not the
+  profile's default one.
 - The check runs before ae looks at which names exist. An unapproved pair is refused with where to
   approve it and, when the profile has a usable row, the clients it IS approved for. Tell your
   agents the spellings you allow in `[prompt] spawn_instructions`, the place for profile and

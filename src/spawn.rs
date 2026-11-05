@@ -241,10 +241,27 @@ impl Facts {
 /// account, from the session's recorded global config (switch and map) and the
 /// layered identity (profiles). A config the session no longer records, or one
 /// that does not read, says nothing: the spawn has its own refusals for those.
-fn cover_warning(session: &Facts, profile: &str) -> Option<String> {
+///
+/// A `profile@client` spawn passes the command its pair resolved to, and the
+/// verdict judges the account THAT command selects.
+fn cover_warning(
+    session: &Facts,
+    profile: &str,
+    pair: Option<&crate::config::ResolvedCommand>,
+) -> Option<String> {
     let cfg = session.identity().ok()?;
     let settings = crate::autoreseat::settings(session.global.as_deref());
-    crate::autoreseat::leg::cover_warning(&cfg, &settings, profile, crate::doors::home().as_deref())
+    let home = crate::doors::home();
+    match pair {
+        None => crate::autoreseat::leg::cover_warning(&cfg, &settings, profile, home.as_deref()),
+        Some(command) => crate::autoreseat::leg::cover_warning_through(
+            &cfg,
+            &settings,
+            profile,
+            command,
+            home.as_deref(),
+        ),
+    }
 }
 
 // ---- spawn ----------------------------------------------------------------
@@ -312,14 +329,14 @@ fn run_spawn_inner(
             return Ok(EXIT_FAILED);
         }
     };
-    // The moment of choice: say once if the profile has no exit off its
-    // account. The spawn goes on either way.
-    //
-    // Not on a `profile@client` spawn: the verdict judges the profile's OWN
-    // account, which is not the one this seat runs on.
-    if staged.argv.client.is_none()
-        && let Some(line) = cover_warning(&staged.session, &staged.argv.profile)
-    {
+    // The moment of choice: say once if the seat has no exit off the account
+    // it runs on — a `profile@client` spawn's own, not the profile's default.
+    // The spawn goes on either way.
+    if let Some(line) = cover_warning(
+        &staged.session,
+        &staged.argv.profile,
+        staged.argv.client.is_some().then_some(&staged.command),
+    ) {
         writeln!(err, "{line}")?;
     }
     let (pane, _spelling, held) = match start_spawned_pane(dir, &staged, caller, now, out, err) {

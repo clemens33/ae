@@ -52,8 +52,8 @@ does, and a live seat is only reached at the dead proof.
    before existence, the same-known-adapter gate and the first-start store
    proof — then the account the pair selects, which ae must be able to name.
    Any move onto a seat whose client row ae cannot read is refused here too,
-   with that read's words; a pair move skips the auto-reseat cover warning,
-   which judges the profile's own account;
+   with that read's words; a pair move's auto-reseat cover warning judges
+   the account the pair selects (`leg::cover_warning_through`);
 7. the pane: not the CALLER'S own — a seat cannot reseat itself, because the
    tool running the command is the one that would be replaced under it — and
    its stamp must agree with the roster slot.
@@ -746,7 +746,10 @@ switch is on; with `auto_reseat = off` there is no verdict and no nudge. The
 verdict is read in three places and nowhere is it a gate: `ae doctor`'s
 `reseat-cover` row, one WARN row per account scope; and ONE stderr line from
 `ae spawn` and `ae reseat --using` (`leg::cover_warning`) naming the target
-profile, then proceeding with the same exit code. The watchdog's own move
+profile, then proceeding with the same exit code. A `profile@client` choice is
+judged on the account its resolved command selects
+(`leg::cover_warning_through`), over the profile's own bare candidates; an
+approved pair is never itself an exit. The watchdog's own move
 prints none. The suggestion on a WARN row is built from the declared rows first,
 then `[profiles]` order, off-account only, at most two with the second preferring
 another tool; it never invents a profile. Named residuals: the account is the
