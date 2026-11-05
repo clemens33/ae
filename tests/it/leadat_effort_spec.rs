@@ -111,3 +111,34 @@ fn leadat_new_red_detached_effort_leg_holds_at_lower_lead_bar() {
     still_held(&seat, ep, pid);
     assert!(records(&seat.rig, "effort-reserved").is_empty());
 }
+
+#[test]
+fn leadat_control_effort_off_holds_after_on_twin_applies_and_in_detached_leg() {
+    let off = lead_setup("lateffswitchof", "lead-pair", "95", None);
+    let on = lead_setup("lateffswitchon", "lead-pair", "95", None);
+    quota(&off, 95.0, 0.0);
+    quota(&on, 95.0, 0.0);
+    let config = off.rig.scratch.join("config");
+    let enabled = std::fs::read_to_string(&config).expect("effort configuration");
+    std::fs::write(
+        &config,
+        enabled.replace("auto_effort = on", "auto_effort = off"),
+    )
+    .expect("disable effort only");
+    let pid = off.rig.tool_pid(&off.rig.main_pane, off.tool);
+    assert!(pid.is_some(), "off fixture starts with a live vendor");
+    let off_daemon = watch(&off);
+    let _on_daemon = watch(&on);
+    until(&on.rig, || !records(&on.rig, "effort-reserved").is_empty());
+    until(&on.rig, || !records(&on.rig, "effort-applied").is_empty());
+    sweeps(&off.rig);
+    unchanged(&off, pid);
+
+    // A queued leg may outlive the daemon/config that opened its episode.
+    drop(off_daemon);
+    let ep = open_episode(&off, false);
+    still_held(&off, ep, pid);
+    // The same queued episode must work when only the switch changes back.
+    std::fs::write(config, enabled).expect("enable the same queued episode");
+    reserve_same_episode(&off, ep);
+}
