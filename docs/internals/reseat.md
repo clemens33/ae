@@ -945,7 +945,8 @@ lone stale reading still binds (`autoreseat::current`, applied in
 scope, and auto effort records tied readings of one window ONCE: the worst tied
 reading opens its episode, the record keeps the latest tied reset, none when any
 tied reading states none, and the step back up needs every tied reading under
-the band). At or past the threshold it books
+the band, or that recorded reset passed, while no newest usable long reading is
+at or past the threshold). At or past the threshold it books
 `auto-reseat-headroom`, whose `ts` is the episode KEY and whose summary,
 `headroom <pct>% <window>`, every later record of the episode quotes whole. The
 episode stays due under that key while the scope reads within 5 points of the

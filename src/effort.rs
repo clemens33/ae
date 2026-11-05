@@ -398,6 +398,14 @@ pub fn entry(scope: &Scope, at: u8) -> Entry {
     if pressed.is_empty() {
         return Entry::Below;
     }
+    if pressed.len() > MAX_WINDOWS
+        || pressed
+            .iter()
+            .flat_map(|tied| tied.iter())
+            .any(|window| window_word(&Pressured::of(window)).is_none())
+    {
+        return Entry::Unrecordable;
+    }
     let Some(mut recorded) = pressed
         .iter()
         .map(|tied| Pressured::settled(tied))
@@ -406,14 +414,6 @@ pub fn entry(scope: &Scope, at: u8) -> Entry {
         return Entry::Unrecordable;
     };
     recorded.sort_by(|left, right| left.key.cmp(&right.key));
-    if recorded.len() > MAX_WINDOWS
-        || pressed
-            .iter()
-            .flat_map(|tied| tied.iter())
-            .any(|window| window_word(&Pressured::of(window)).is_none())
-    {
-        return Entry::Unrecordable;
-    }
     Entry::Crossed(recorded)
 }
 
