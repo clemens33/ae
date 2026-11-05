@@ -161,7 +161,7 @@ fn scan_is_lazy_and_each_step_reads_only_one_source() {
 }
 
 #[test]
-fn journal_exactly_at_its_cap_is_readable_or_a_budget_gap_never_oversized() {
+fn journal_exactly_at_the_scan_budget_is_readable_and_one_byte_short_is_budget() {
     let root = Scratch::new("exact-cap");
     let body = cert(1);
     let dir = root.live("edge", f::S, &body);
@@ -177,14 +177,13 @@ fn journal_exactly_at_its_cap_is_readable_or_a_budget_gap_never_oversized() {
             Some(f::S.into()),
             Limits {
                 bytes: meta_size + body_size - shortage,
-                journal: body_size,
                 ..LIMITS
             },
         );
         let view = drain(&mut scan);
         assert_eq!(view.all.sources_total, 1);
         if shortage == 0 {
-            assert_eq!(view.all.total, 1, "exact reservation and cap both admit");
+            assert_eq!(view.all.total, 1, "exact byte reservation admits");
             assert_eq!(view.all.sources_read, 1);
             assert!(view.all.gaps.is_empty());
         } else {
@@ -197,7 +196,7 @@ fn journal_exactly_at_its_cap_is_readable_or_a_budget_gap_never_oversized() {
                     reason: Reason::Source(SourceGap::Budget),
                     count: 1,
                 }],
-                "a file at the cap is not oversized"
+                "journal length alone is not an oversized refusal"
             );
         }
     }
@@ -210,7 +209,10 @@ fn production_caps_and_each_small_limit_are_enforced() {
         Limits {
             sources: 512,
             bytes: 256 * 1024 * 1024,
-            journal: 4 * 1024 * 1024
+            line: 4 * 1024 * 1024,
+            member: 4 * 1024 * 1024,
+            chunk: 4 * 1024 * 1024,
+            retained: 64 * 1024 * 1024,
         }
     );
     let root = Scratch::new("limits");
@@ -266,13 +268,13 @@ fn production_caps_and_each_small_limit_are_enforced() {
         1,
         None,
         Limits {
-            journal: body_size - 1,
+            bytes: meta_size + body_size - 1,
             ..LIMITS
         },
     );
     let capped = drain(&mut journal);
     assert_eq!(capped.all.total, 0);
-    gap(&capped, SourceGap::Oversized);
+    gap(&capped, SourceGap::Budget);
 }
 
 #[test]
@@ -498,7 +500,7 @@ fn archive_meta_and_digest_each_obey_the_content_cap_before_the_journal_counts()
             2,
             None,
             Limits {
-                journal: 512,
+                member: 512,
                 ..LIMITS
             },
         ));
@@ -716,3 +718,9 @@ fn symlink_archive_root_is_refused_even_when_target_has_valid_history() {
     assert_eq!(snapshot(&root.0), before, "link is never replaced");
     assert_eq!(snapshot(&target.0), target_before, "target bytes unchanged");
 }
+
+#[path = "statsread_307_spec.rs"]
+mod statsread_307;
+
+#[path = "statsread_stream_spec.rs"]
+mod statsread_stream;

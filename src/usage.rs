@@ -1093,7 +1093,18 @@ fn child_paths(
 
 type RegularRead = Option<(Vec<u8>, Option<SystemTime>)>;
 
-fn read_regular(path: &Path, cap: u64, budget: &mut Budget) -> Result<RegularRead, Coverage> {
+/// A regular file that passed every check [`read_regular`] makes and holds its
+/// whole length in the budget: the file open, and the length the checks saw.
+struct Opened {
+    file: File,
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+/// Claim, lstat, cap, refuse a link or special file, reserve the length, open
+/// and prove the opened file is the one checked. `None` for a file that is not
+/// there. The one place a bounded read of a regular file starts.
+fn open_regular(path: &Path, cap: u64, budget: &mut Budget) -> Result<Option<Opened>, Coverage> {
     if !budget.claim_file() {
         return Err(Coverage::Truncated);
     }
@@ -1134,21 +1145,37 @@ fn read_regular(path: &Path, cap: u64, budget: &mut Budget) -> Result<RegularRea
             "transcript changed during read".to_owned(),
         ));
     }
+    Ok(Some(Opened {
+        file,
+        len: opened.len(),
+        modified: metadata.modified().ok(),
+    }))
+}
+
+fn read_regular(path: &Path, cap: u64, budget: &mut Budget) -> Result<RegularRead, Coverage> {
+    let Some(Opened {
+        file,
+        len,
+        modified,
+    }) = open_regular(path, cap, budget)?
+    else {
+        return Ok(None);
+    };
     let mut bytes = Vec::new();
-    file.take(opened.len())
+    file.take(len)
         .read_to_end(&mut bytes)
         .map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
-    let actual = u64::try_from(bytes.len()).unwrap_or(opened.len());
-    if actual != opened.len() {
+    let actual = u64::try_from(bytes.len()).unwrap_or(len);
+    if actual != len {
         return Err(Coverage::Unreadable(
             "transcript changed during read".to_owned(),
         ));
     }
-    budget.refund_bytes(opened.len().saturating_sub(actual));
+    budget.refund_bytes(len.saturating_sub(actual));
     if budget.expired() {
         return Err(Coverage::Truncated);
     }
-    Ok(Some((bytes, metadata.modified().ok())))
+    Ok(Some((bytes, modified)))
 }
 
 /// A session meta for the statistics scan, under the same cap every reader of
@@ -1173,19 +1200,204 @@ pub(crate) fn bounded_bytes(
     match read_regular(path, cap, budget) {
         Ok(Some((bytes, _))) => Ok(bytes),
         Ok(None) => Err(SourceGap::Missing),
-        Err(Coverage::Truncated) => {
-            #[allow(
-                clippy::disallowed_methods,
-                reason = "a door: usage lstat names why a bounded read stopped"
-            )]
-            let size = std::fs::symlink_metadata(path).map(|meta| meta.len());
-            Err(if size.is_ok_and(|size| size > cap) {
-                SourceGap::Oversized
-            } else {
-                SourceGap::Budget
-            })
-        }
+        Err(Coverage::Truncated) => Err(truncation_gap(path, cap)),
         Err(_) => Err(SourceGap::Unreadable),
+    }
+}
+
+/// Why a bounded read of `path` stopped short: a file over `cap` is oversized,
+/// any other truncation is a spent budget.
+fn truncation_gap(path: &Path, cap: u64) -> crate::stats::SourceGap {
+    use crate::stats::SourceGap;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: usage lstat names why a bounded read stopped"
+    )]
+    let size = std::fs::symlink_metadata(path).map(|meta| meta.len());
+    if size.is_ok_and(|size| size > cap) {
+        SourceGap::Oversized
+    } else {
+        SourceGap::Budget
+    }
+}
+
+/// One journal line handed to a sink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Line<'a> {
+    /// The line's content: no LF, at most the cap.
+    Text(&'a [u8]),
+    /// A line longer than the cap, discarded without being held.
+    Over,
+}
+
+/// How far one [`LineReader::pump`] got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pump {
+    /// The work was spent before the reader ended; call again.
+    More,
+    /// The reader ended: every byte it held, consumed.
+    Done(u64),
+}
+
+/// A bounded, resumable line splitter over any buffered reader. A line is the
+/// bytes up to the next LF, the LF excluded; a CR is content. A line of at most
+/// `cap` content bytes is `Text`, a longer one is `Over`, and an unterminated
+/// final line counts as a line. Each line is emitted once, only when its LF or
+/// the end completes it. State lives here, so a pump may stop and resume at any
+/// byte, in the middle of a line included.
+pub struct LineReader<R: BufRead> {
+    reader: R,
+    cap: usize,
+    pending: Vec<u8>,
+    over: bool,
+    consumed: u64,
+}
+
+impl<R: BufRead> LineReader<R> {
+    #[must_use]
+    pub const fn new(reader: R, cap: usize) -> Self {
+        Self {
+            reader,
+            cap,
+            pending: Vec::new(),
+            over: false,
+            consumed: 0,
+        }
+    }
+
+    /// Consume at most `work` bytes (at least one), emit every line they
+    /// complete, and keep the rest for the next call.
+    ///
+    /// # Errors
+    ///
+    /// The reader's own failure.
+    pub fn pump(&mut self, work: u64, sink: &mut dyn FnMut(Line<'_>)) -> std::io::Result<Pump> {
+        let mut left = work.max(1);
+        while left > 0 {
+            let buffer = self.reader.fill_buf()?;
+            if buffer.is_empty() {
+                if self.over {
+                    sink(Line::Over);
+                } else if !self.pending.is_empty() {
+                    sink(Line::Text(&self.pending));
+                }
+                self.over = false;
+                self.pending.clear();
+                return Ok(Pump::Done(self.consumed));
+            }
+            let room = usize::try_from(left).map_or(buffer.len(), |left| left.min(buffer.len()));
+            let window = &buffer[..room];
+            let end = window.iter().position(|byte| *byte == b'\n');
+            let body = end.map_or(window, |at| &window[..at]);
+            if !self.over {
+                if self.pending.len() + body.len() > self.cap {
+                    self.over = true;
+                    self.pending = Vec::new();
+                } else {
+                    Self::grow(&mut self.pending, self.cap, body.len());
+                    self.pending.extend_from_slice(body);
+                }
+            }
+            if end.is_some() {
+                if self.over {
+                    sink(Line::Over);
+                } else {
+                    sink(Line::Text(&self.pending));
+                }
+                self.over = false;
+                if self.pending.capacity() > JOURNAL_BUFFER {
+                    self.pending = Vec::new();
+                } else {
+                    self.pending.clear();
+                }
+            }
+            let used = end.map_or(room, |at| at + 1);
+            self.reader.consume(used);
+            let used = u64::try_from(used).unwrap_or(u64::MAX);
+            self.consumed = self.consumed.saturating_add(used);
+            left = left.saturating_sub(used);
+        }
+        Ok(Pump::More)
+    }
+
+    /// Make room for `more` bytes without the buffer ever asking for more than
+    /// `cap`: it doubles, but stops at the line cap the caller already checked.
+    fn grow(pending: &mut Vec<u8>, cap: usize, more: usize) {
+        let need = pending.len() + more;
+        if need > pending.capacity() {
+            let target = need.max(pending.capacity().saturating_mul(2));
+            pending.reserve_exact(target.min(cap) - pending.len());
+        }
+    }
+}
+
+/// Every line of `reader` to `sink` in one go: [`LineReader`] with unbounded
+/// work. The bytes consumed come back.
+///
+/// # Errors
+///
+/// The reader's own failure.
+pub fn each_line<R: BufRead>(
+    reader: &mut R,
+    cap: usize,
+    sink: &mut dyn FnMut(Line<'_>),
+) -> std::io::Result<u64> {
+    let mut lines = LineReader::new(reader, cap);
+    match lines.pump(u64::MAX, sink)? {
+        Pump::Done(read) => Ok(read),
+        Pump::More => Ok(lines.consumed),
+    }
+}
+
+/// The buffer a journal read holds beside its pending line.
+const JOURNAL_BUFFER: usize = 64 * 1024;
+
+/// One journal open for the statistics scan, read a chunk of work at a time.
+/// The file is the one checked at open, read to the length reserved from the
+/// budget; a path replaced afterwards does not matter to it.
+pub(crate) struct Journal {
+    lines: LineReader<BufReader<std::io::Take<File>>>,
+    len: u64,
+}
+
+/// Open `path` for a stepped read, its whole length reserved from `budget`
+/// before the first byte. Over the budget is [`SourceGap::Budget`]: there is no
+/// size cutoff of its own.
+pub(crate) fn open_journal(
+    path: &Path,
+    line: usize,
+    budget: &mut Budget,
+) -> Result<Journal, crate::stats::SourceGap> {
+    use crate::stats::SourceGap;
+    match open_regular(path, u64::MAX, budget) {
+        Ok(Some(Opened { file, len, .. })) => Ok(Journal {
+            lines: LineReader::new(
+                BufReader::with_capacity(JOURNAL_BUFFER, file.take(len)),
+                line,
+            ),
+            len,
+        }),
+        Ok(None) => Err(SourceGap::Missing),
+        Err(Coverage::Truncated) => Err(SourceGap::Budget),
+        Err(_) => Err(SourceGap::Unreadable),
+    }
+}
+
+impl Journal {
+    /// Read up to `work` more bytes into `sink`: `true` once the journal is
+    /// read through. A journal that ends short of the length opened is
+    /// unreadable.
+    pub(crate) fn pump(
+        &mut self,
+        work: u64,
+        sink: &mut dyn FnMut(Line<'_>),
+    ) -> Result<bool, crate::stats::SourceGap> {
+        use crate::stats::SourceGap;
+        match self.lines.pump(work, sink) {
+            Ok(Pump::More) => Ok(false),
+            Ok(Pump::Done(read)) if read == self.len => Ok(true),
+            Ok(Pump::Done(_)) | Err(_) => Err(SourceGap::Unreadable),
+        }
     }
 }
 
@@ -2032,6 +2244,10 @@ fn hourly_code(coverage: &Coverage) -> u8 {
 #[cfg(test)]
 #[path = "usage_birth_spec.rs"]
 mod birth_spec;
+
+#[cfg(test)]
+#[path = "usage_linecap_spec.rs"]
+mod linecap_spec;
 
 #[cfg(test)]
 mod r3c_id_spec {

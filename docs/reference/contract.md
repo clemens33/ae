@@ -10,8 +10,10 @@ src/                — Rust sources. main.rs thin (argv in, exit code out); lib
                       birth.rs is the worker birth family: its journal wire and one reader.
                       pairs.rs is the approved `profile@client` list (`[client_pairs]`):
                       global config only, fail closed, read by `spawn` and later `reseat`.
-                      stats.rs is the Statistics tab's pure fold over journal bytes, fuzzed as
-                      `stats_fold`; src/app/loader/stats.rs is its stepped, bounded read.
+                      stats.rs is the Statistics tab's pure fold over journal lines (a journal is
+                      never held), fuzzed as `stats_fold`; src/app/loader/stats.rs is its stepped
+                      read, one chunk of one source a step under a scan byte budget and a
+                      retained-state budget; usage.rs's `LineReader` frames the lines.
                       tool.rs::BoardSpec is the board's one per-tool read decision
                       (stream, export or unsupported). fleet_read.rs owns one fleet read:
                       the socket proof cache, discovery and the snapshot's assembly

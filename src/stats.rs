@@ -35,6 +35,8 @@ pub enum SourceGap {
     Budget,
     Invalid,
     Claimed,
+    /// What the fold would keep of this source does not fit its memory budget.
+    Retained,
 }
 
 /// One journal as the reader found it.
@@ -54,17 +56,11 @@ impl Source {
         let Ok(text) = std::str::from_utf8(meta) else {
             return Self::failed(name, None, SourceGap::Unreadable);
         };
-        let seats = Meta::parse(text)
-            .roster()
-            .iter()
-            .filter(|seat| seat.slot.starts_with(SPAWNED))
-            .map(|seat| (seat.slot.clone(), seat.name.clone()))
-            .collect();
         Self {
             label: name.to_owned(),
             session: session_id(text),
             journal,
-            seats,
+            seats: roster(text),
         }
     }
 
@@ -91,6 +87,136 @@ impl Source {
     }
 }
 
+/// One journal being read line by line: the same fold as [`Source`]'s whole
+/// bytes, a line at a time, so the journal is never held. It owns what the open
+/// source keeps and counts it against the room the fold had left; nothing
+/// reaches the fold until [`Fold::add_reading`].
+pub struct Reading {
+    label: String,
+    session: Option<String>,
+    seats: Vec<(String, String)>,
+    pass: Pass,
+    malformed: u64,
+    line_limit: u64,
+    /// The roster's share of `charge`: held while open, never by the fold.
+    roster: u64,
+    /// Charged bytes so far: the source, its roster and what its lines keep.
+    charge: u64,
+    room: u64,
+}
+
+impl Reading {
+    /// A live session: `name`, its raw meta and the room the fold has left. A
+    /// meta that is not text proves no identity; a source whose roster does not
+    /// fit the room never opens. Both come back as the source that gave nothing.
+    ///
+    /// # Errors
+    ///
+    /// The failed [`Source`] to add in its place.
+    pub fn live(name: &str, meta: &[u8], room: u64) -> Result<Self, Source> {
+        let Ok(text) = std::str::from_utf8(meta) else {
+            return Err(Source::failed(name, None, SourceGap::Unreadable));
+        };
+        Self::open(name.to_owned(), session_id(text), roster(text), room)
+    }
+
+    /// A kept archive, named by its session id.
+    ///
+    /// # Errors
+    ///
+    /// The failed [`Source`] to add in its place.
+    pub fn archive(id: &str, room: u64) -> Result<Self, Source> {
+        let session = is_canonical_uuid(id).then(|| id.to_owned());
+        Self::open(id.to_owned(), session, Vec::new(), room)
+    }
+
+    fn open(
+        label: String,
+        session: Option<String>,
+        seats: Vec<(String, String)>,
+        room: u64,
+    ) -> Result<Self, Source> {
+        let roster = seats.iter().fold(0_u64, |sum, (slot, name)| {
+            let text = u64::try_from(slot.len() + name.len()).unwrap_or(u64::MAX);
+            sum.saturating_add(text).saturating_add(SEAT_COST)
+        });
+        let charge = SOURCE_COST.saturating_add(roster);
+        if charge > room {
+            return Err(Source::failed(
+                &label,
+                session.as_deref(),
+                SourceGap::Retained,
+            ));
+        }
+        Ok(Self {
+            pass: Pass::new(label.clone(), session.clone()),
+            label,
+            session,
+            seats,
+            malformed: 0,
+            line_limit: 0,
+            roster,
+            charge,
+            room,
+        })
+    }
+
+    /// One journal line, LF excluded. A line that keeps state raises the charge;
+    /// a line whose price does not fit the room left is refused before any of it
+    /// is kept, and the source is refused whole.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceGap::Retained`] when the line would pass the room; the charge and
+    /// everything kept stay as they were.
+    pub fn line(&mut self, line: &[u8]) -> Result<(), SourceGap> {
+        if line.trim_ascii().is_empty() {
+            return Ok(());
+        }
+        let parsed = std::str::from_utf8(line)
+            .ok()
+            .and_then(|text| Some((text, Event::parse_line(text).ok()?)));
+        match parsed {
+            Some((text, event)) => {
+                let left = self.room.saturating_sub(self.charge);
+                let Some(paid) = self.pass.record(text, &event, left) else {
+                    return Err(SourceGap::Retained);
+                };
+                self.charge = self.charge.saturating_add(paid);
+            }
+            None => self.malformed += 1,
+        }
+        Ok(())
+    }
+
+    /// A line over the line limit, discarded unread.
+    pub const fn over_long(&mut self) {
+        self.line_limit += 1;
+    }
+
+    /// Charged bytes so far, the open roster included.
+    #[must_use]
+    pub const fn charge(&self) -> u64 {
+        self.charge
+    }
+
+    /// Give the source up with `gap`: nothing it read is kept.
+    #[must_use]
+    pub fn fail(self, gap: SourceGap) -> Source {
+        Source::failed(&self.label, self.session.as_deref(), gap)
+    }
+}
+
+/// `(slot, name)` of each spawned seat the live roster lists.
+fn roster(meta: &str) -> Vec<(String, String)> {
+    Meta::parse(meta)
+        .roster()
+        .iter()
+        .filter(|seat| seat.slot.starts_with(SPAWNED))
+        .map(|seat| (seat.slot.clone(), seat.name.clone()))
+        .collect()
+}
+
 /// The id a meta proves: exactly one `session_id` line, canonical.
 fn session_id(meta: &str) -> Option<String> {
     let mut ids = meta
@@ -101,6 +227,157 @@ fn session_id(meta: &str) -> Option<String> {
         _ => None,
     }
 }
+
+/// What a source costs the fold to hold at all: its row, range and labels.
+const SOURCE_COST: u64 = 4096;
+/// What one seat of a live roster costs while its source is open: two string
+/// headers and two allocations beyond the text.
+const SEAT_COST: u64 = 112;
+/// What a birth certificate costs beyond its text, in charged bytes: the claim
+/// set's own tree node, its place in the fold's maps, the settled spawn, the
+/// notes and table rows it can produce. [`CERT_MODEL`] recomputes it.
+const CERT_COST: u64 = 6144;
+/// A later fact's cost beyond its text.
+const FACT_COST: u64 = 3072;
+/// A modern `spawn`'s link to its certificate, beyond its text.
+const LINK_COST: u64 = 1536;
+/// A legacy `spawn` beyond its text, which the fold keeps whole.
+const LEGACY_COST: u64 = 512;
+/// A per-record note beyond its text.
+const NOTE_COST: u64 = 1024;
+
+/// What one record keeps, in charged bytes, priced before any of it is kept: a
+/// `base` for each kind of state it makes, and the number of `copies` of its
+/// text that state holds. The text is variable and unbounded below the line
+/// limit, so each owner of a copy is charged, not the text once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Price {
+    base: u64,
+    copies: u64,
+}
+
+impl Price {
+    /// A record that keeps nothing.
+    const NONE: Self = Self { base: 0, copies: 0 };
+
+    const fn plus(self, other: Self) -> Self {
+        Self {
+            base: self.base + other.base,
+            copies: self.copies + other.copies,
+        }
+    }
+
+    /// What `self` has gained since `before`.
+    const fn since(self, before: Self) -> Self {
+        Self {
+            base: self.base - before.base,
+            copies: self.copies - before.copies,
+        }
+    }
+
+    /// The charge for a record of `text` bytes.
+    fn of(self, text: usize) -> u64 {
+        let text = u64::try_from(text).unwrap_or(u64::MAX);
+        self.base.saturating_add(self.copies.saturating_mul(text))
+    }
+}
+
+/// A certificate holds its text in the claim set's value, the settled spawn,
+/// both scopes' table rows, the birth id and the born name: eight copies (see
+/// `.local/statsread/retention-audit.md` for the owners).
+const CERT: Price = Price {
+    base: CERT_COST,
+    copies: 8,
+};
+/// A fact holds its strings in the pass's list and again in the fold's.
+const FACT: Price = Price {
+    base: FACT_COST,
+    copies: 2,
+};
+/// A link holds the birth id and the born name.
+const LINK: Price = Price {
+    base: LINK_COST,
+    copies: 2,
+};
+/// A legacy spawn holds its whole line and the born name.
+const LEGACY: Price = Price {
+    base: LEGACY_COST,
+    copies: 2,
+};
+/// A note holds its subject and the born name.
+const NOTE: Price = Price {
+    base: NOTE_COST,
+    copies: 2,
+};
+
+/// A B-tree leaf node holding eleven slots of `slot` bytes.
+const fn leaf(slot: usize) -> usize {
+    11 * slot + 16
+}
+
+/// One entry's share of such a node: every node but the root holds five or more.
+const fn share(slot: usize) -> usize {
+    leaf(slot).div_ceil(5)
+}
+
+/// A certificate's cost, worst case, from the sizes of what it keeps: a claim
+/// set's own node (a tree per certificate), its share of the certificates map
+/// and of the born set, the pass's copy and the settled spawn, four string
+/// allocations, the three notes `settle` may add and two scopes' table rows.
+const CERT_MODEL: usize = leaf(size_of::<Claim>())
+    + share(size_of::<Key>() + size_of::<Certificates>())
+    + share(size_of::<(Option<String>, String)>())
+    + size_of::<(Key, Held)>()
+    + size_of::<Spawn>()
+    + 4 * 32
+    + 3 * (size_of::<Note>() + 2 * (36 + 32))
+    + 2 * (size_of::<Row>() + 4 * (32 + 32));
+
+/// A fact's cost, worst case: its record twice over beside its key's share of
+/// the pass's and the fold's maps and their list headers.
+const FACT_MODEL: usize = size_of::<Fact>()
+    + 2 * share(size_of::<Key>() + size_of::<Vec<Fact>>())
+    + size_of::<Vec<Vec<Fact>>>()
+    + 4 * 32;
+
+/// A link's cost, worst case: its share of the pass's set and the fold's map.
+const LINK_MODEL: usize =
+    share(size_of::<String>()) + share(size_of::<Key>() + size_of::<String>()) + 4 * 32;
+
+/// A legacy spawn's cost, worst case beside its text: the list slot, the
+/// settled spawn and two allocations.
+const LEGACY_MODEL: usize = size_of::<String>() + size_of::<Spawn>() + 2 * 32;
+
+/// A note's cost, worst case: the pass's row, the fold's note, the born entry
+/// and the allocations behind them.
+const NOTE_MODEL: usize = size_of::<(Option<String>, Reason)>()
+    + size_of::<Note>()
+    + share(size_of::<(Option<String>, String)>())
+    + 6 * 32;
+
+/// The longest a source's label can be: a directory entry's name. A note keeps
+/// its source's label, so each note a record makes carries one beyond the model.
+const LABEL: u64 = 255;
+
+const _: () = {
+    assert!(
+        CERT_MODEL as u64 + 4 * LABEL <= CERT_COST,
+        "a certificate outgrew its charge"
+    );
+    assert!(FACT_MODEL as u64 <= FACT_COST, "a fact outgrew its charge");
+    assert!(
+        LINK_MODEL as u64 + LABEL <= LINK_COST,
+        "a link outgrew its charge"
+    );
+    assert!(
+        LEGACY_MODEL as u64 <= LEGACY_COST,
+        "a legacy spawn outgrew its charge"
+    );
+    assert!(
+        NOTE_MODEL as u64 + LABEL <= NOTE_COST,
+        "a note outgrew its charge"
+    );
+};
 
 /// `(session id, birth id)`: one worker's birth.
 type Key = (Option<String>, String);
@@ -194,9 +471,39 @@ pub struct Fold {
     /// Legacy counts of sources with no session id: nothing to compare them by.
     loose: u64,
     notes: Vec<Note>,
+    /// The most the fold may keep, in charged bytes.
+    limit: Limit,
+    /// What the sources added so far keep, in charged bytes.
+    held: u64,
+}
+
+/// The retained-state ceiling: none unless one is asked for.
+#[derive(Clone, Copy)]
+struct Limit(u64);
+
+impl Default for Limit {
+    fn default() -> Self {
+        Self(u64::MAX)
+    }
 }
 
 impl Fold {
+    /// A fold that refuses a source whose kept state would push the total past
+    /// `limit` charged bytes. [`Fold::default`] has no such ceiling.
+    #[must_use]
+    pub fn with_retained(limit: u64) -> Self {
+        Self {
+            limit: Limit(limit),
+            ..Self::default()
+        }
+    }
+
+    /// Charged bytes still free for the next source.
+    #[must_use]
+    pub const fn room(&self) -> u64 {
+        self.limit.0.saturating_sub(self.held)
+    }
+
     /// Read one source. Its bytes are gone when this returns.
     pub fn add(&mut self, source: Source) {
         let Source {
@@ -207,15 +514,16 @@ impl Fold {
         } = source;
         match journal {
             Ok(bytes) => {
-                let range = self.read(&label, session.as_ref(), &bytes, &seats);
-                if session.is_none() {
-                    self.note(None, Some(&label), Reason::NoSessionId, 1);
+                let mut reading = match Reading::open(label, session, seats, self.room()) {
+                    Ok(reading) => reading,
+                    Err(refused) => return self.add(refused),
+                };
+                for line in bytes.split(|byte| *byte == b'\n') {
+                    if let Err(gap) = reading.line(line) {
+                        return self.add(reading.fail(gap));
+                    }
                 }
-                self.seen.push(Seen {
-                    session,
-                    read: true,
-                    range,
-                });
+                self.add_reading(reading);
             }
             Err(gap) => {
                 self.note(session.clone(), Some(&label), Reason::Source(gap), 1);
@@ -228,6 +536,38 @@ impl Fold {
         }
     }
 
+    /// Take a journal read through to its end: its kept state, its counts, and
+    /// its place among the sources. Its roster charge ends here.
+    pub fn add_reading(&mut self, reading: Reading) {
+        let Reading {
+            label,
+            session,
+            seats,
+            pass,
+            malformed,
+            line_limit,
+            roster,
+            charge,
+            ..
+        } = reading;
+        if malformed > 0 {
+            self.note(session.clone(), Some(&label), Reason::Malformed, malformed);
+        }
+        if line_limit > 0 {
+            self.note(session.clone(), Some(&label), Reason::LineLimit, line_limit);
+        }
+        let range = self.absorb(pass, &seats);
+        if session.is_none() {
+            self.note(None, Some(&label), Reason::NoSessionId, 1);
+        }
+        self.seen.push(Seen {
+            session,
+            read: true,
+            range,
+        });
+        self.held = self.held.saturating_add(charge.saturating_sub(roster));
+    }
+
     fn note(&mut self, session: Option<String>, source: Option<&str>, reason: Reason, count: u64) {
         self.notes.push(Note {
             session,
@@ -237,36 +577,8 @@ impl Fold {
         });
     }
 
-    /// Every record of one readable journal; its date range back.
-    fn read(
-        &mut self,
-        label: &str,
-        session: Option<&String>,
-        bytes: &[u8],
-        seats: &[(String, String)],
-    ) -> Option<(String, String)> {
-        let mut pass = Pass::new(label, session);
-        let mut malformed = 0;
-        for line in bytes.split(|byte| *byte == b'\n') {
-            if line.trim_ascii().is_empty() {
-                continue;
-            }
-            let parsed = std::str::from_utf8(line)
-                .ok()
-                .and_then(|text| Some((text, Event::parse_line(text).ok()?)));
-            match parsed {
-                Some((text, event)) => pass.record(text, &event),
-                None => malformed += 1,
-            }
-        }
-        if malformed > 0 {
-            self.note(session.cloned(), Some(label), Reason::Malformed, malformed);
-        }
-        self.absorb(pass, seats)
-    }
-
     /// One journal's reading into the fold.
-    fn absorb(&mut self, pass: Pass<'_>, seats: &[(String, String)]) -> Option<(String, String)> {
+    fn absorb(&mut self, pass: Pass, seats: &[(String, String)]) -> Option<(String, String)> {
         let Pass {
             label,
             session,
@@ -277,8 +589,9 @@ impl Fold {
             legacy,
             notes,
             born,
+            ..
         } = pass;
-        let session = session.cloned();
+        let label = label.as_str();
         let own: BTreeSet<&str> = claims.iter().map(|(key, _)| key.1.as_str()).collect();
         for birth in links.iter().filter(|birth| !own.contains(birth.as_str())) {
             least(
@@ -415,9 +728,9 @@ struct Held {
 }
 
 /// One pass over one journal.
-struct Pass<'a> {
-    label: &'a str,
-    session: Option<&'a String>,
+struct Pass {
+    label: String,
+    session: Option<String>,
     range: Option<(String, String)>,
     claims: Vec<(Key, Held)>,
     facts: BTreeMap<Key, Vec<Fact>>,
@@ -426,10 +739,14 @@ struct Pass<'a> {
     notes: Vec<(Option<String>, Reason)>,
     /// `(slot, name)` of each certificate or `spawn` here, damaged ones too.
     born: BTreeSet<(Option<String>, String)>,
+    /// What the records so far keep, by kind; every kind of state is added
+    /// through [`Pass::keep`] so the price a record was admitted at is checked
+    /// against what it made.
+    spent: Price,
 }
 
-impl<'a> Pass<'a> {
-    fn new(label: &'a str, session: Option<&'a String>) -> Self {
+impl Pass {
+    fn new(label: String, session: Option<String>) -> Self {
         Self {
             label,
             session,
@@ -440,18 +757,88 @@ impl<'a> Pass<'a> {
             legacy: Vec::new(),
             notes: Vec::new(),
             born: BTreeSet::new(),
+            spent: Price::NONE,
         }
     }
 
-    /// The key a record belongs to, and whether it contradicts its own source:
-    /// a record names `Some(session)` the journal does not belong to.
-    fn key(&self, session: Option<String>, birth: String) -> (Key, bool) {
-        let foreign =
-            session.is_some() && self.session.is_some() && session.as_ref() != self.session;
-        ((session.or_else(|| self.session.cloned()), birth), foreign)
+    /// Whether a record naming `session` contradicts its own source: it names
+    /// `Some(session)` the journal does not belong to.
+    fn foreign(&self, session: Option<&String>) -> bool {
+        session.is_some() && self.session.is_some() && session != self.session.as_ref()
     }
 
-    fn record(&mut self, text: &str, event: &Event) {
+    /// The key a record belongs to, and whether it contradicts its own source.
+    fn key(&self, session: Option<String>, birth: String) -> (Key, bool) {
+        let foreign = self.foreign(session.as_ref());
+        ((session.or_else(|| self.session.clone()), birth), foreign)
+    }
+
+    /// Admit one parsed record if its price fits `left`, and fold it in. The
+    /// price is worked out from the decoded record before anything is copied, so
+    /// a record that does not fit is refused with the pass untouched (`None`);
+    /// one that fits comes back as the charged bytes it keeps, nothing for a
+    /// record that keeps none (an ordinary event only moves the date range).
+    fn record(&mut self, text: &str, event: &Event, left: u64) -> Option<u64> {
+        let decoded = birth::decode(event);
+        let price = self.price(event, decoded.as_ref());
+        let paid = price.of(text.len());
+        if paid > left {
+            return None;
+        }
+        let before = self.spent;
+        self.fold_in(text, event, decoded);
+        debug_assert_eq!(
+            self.spent.since(before),
+            price,
+            "a record kept other state than it was priced for"
+        );
+        Some(paid)
+    }
+
+    /// What `decoded` will keep: the same cases [`Pass::family`] and
+    /// [`Pass::damaged`] act on, each kind it will make.
+    fn price(&self, event: &Event, decoded: Option<&Result<Record, Damage>>) -> Price {
+        let mismatch = |session: &Option<String>| {
+            if self.foreign(session.as_ref()) {
+                NOTE
+            } else {
+                Price::NONE
+            }
+        };
+        match decoded {
+            Some(Ok(Record::Birth(certificate))) => CERT.plus(mismatch(&certificate.session)),
+            Some(Ok(Record::Fact(fact))) => {
+                if self.foreign(fact.session.as_ref()) {
+                    NOTE
+                } else {
+                    FACT
+                }
+            }
+            Some(Ok(Record::SpawnLink { .. })) => LINK,
+            Some(
+                Ok(Record::Unsupported {
+                    family: Family::Birth,
+                    session,
+                    ..
+                })
+                | Err(Damage {
+                    family: Family::Birth,
+                    birth: Some(_),
+                    session,
+                }),
+            ) => CERT.plus(mismatch(session)),
+            Some(Ok(Record::Unsupported { .. }) | Err(Damage { .. })) => NOTE,
+            None if event.action == SPAWN => LEGACY,
+            None => Price::NONE,
+        }
+    }
+
+    /// Note that the state of one kind has been made.
+    fn keep(&mut self, kind: Price) {
+        self.spent = self.spent.plus(kind);
+    }
+
+    fn fold_in(&mut self, text: &str, event: &Event, decoded: Option<Result<Record, Damage>>) {
         let date = event.ts.to_string();
         if let Some(date) = date.get(..DATE_LEN) {
             match &mut self.range {
@@ -471,10 +858,13 @@ impl<'a> Pass<'a> {
         {
             self.born.insert((slot, name.clone()));
         }
-        match birth::decode(event) {
+        match decoded {
             Some(Ok(record)) => self.family(record),
             Some(Err(damage)) => self.damaged(damage),
-            None if event.action == SPAWN => self.legacy.push(text.to_owned()),
+            None if event.action == SPAWN => {
+                self.keep(LEGACY);
+                self.legacy.push(text.to_owned());
+            }
             None => {}
         }
     }
@@ -485,7 +875,7 @@ impl<'a> Pass<'a> {
                 let stated = claim(&certificate);
                 let (key, foreign) = self.key(certificate.session, certificate.birth);
                 let claim = if foreign {
-                    self.notes.push((key.0.clone(), Reason::SessionMismatch));
+                    self.note_row(key.0.clone(), Reason::SessionMismatch);
                     unknown()
                 } else {
                     stated
@@ -495,12 +885,13 @@ impl<'a> Pass<'a> {
             Record::Fact(fact) => {
                 let (key, foreign) = self.key(fact.session.clone(), fact.birth.clone());
                 if foreign {
-                    self.notes.push((key.0, Reason::SessionMismatch));
+                    self.note_row(key.0, Reason::SessionMismatch);
                 } else {
                     let fact = Fact {
                         session: None,
                         ..fact
                     };
+                    self.keep(FACT);
                     self.facts.entry(key).or_default().push(fact);
                 }
             }
@@ -512,15 +903,18 @@ impl<'a> Pass<'a> {
             } => {
                 let (key, foreign) = self.key(session, birth);
                 if foreign {
-                    self.notes.push((key.0.clone(), Reason::SessionMismatch));
+                    self.note_row(key.0.clone(), Reason::SessionMismatch);
                 }
                 self.hold(key, unknown(), false, true);
             }
             Record::Unsupported { session, .. } => {
-                let subject = session.or_else(|| self.session.cloned());
-                self.notes.push((subject, Reason::Unsupported));
+                let subject = session.or_else(|| self.session.clone());
+                self.note_row(subject, Reason::Unsupported);
             }
-            Record::SpawnLink { birth } => drop(self.links.insert(birth)),
+            Record::SpawnLink { birth } => {
+                self.keep(LINK);
+                self.links.insert(birth);
+            }
         }
     }
 
@@ -533,18 +927,24 @@ impl<'a> Pass<'a> {
             } => {
                 let (key, foreign) = self.key(session, birth);
                 if foreign {
-                    self.notes.push((key.0.clone(), Reason::SessionMismatch));
+                    self.note_row(key.0.clone(), Reason::SessionMismatch);
                 }
                 self.hold(key, unknown(), true, false);
             }
             Damage { session, .. } => {
-                let subject = session.or_else(|| self.session.cloned());
-                self.notes.push((subject, Reason::Damaged));
+                let subject = session.or_else(|| self.session.clone());
+                self.note_row(subject, Reason::Damaged);
             }
         }
     }
 
+    fn note_row(&mut self, subject: Option<String>, reason: Reason) {
+        self.keep(NOTE);
+        self.notes.push((subject, reason));
+    }
+
     fn hold(&mut self, key: Key, claim: Claim, damaged: bool, unsupported: bool) {
+        self.keep(CERT);
         self.claims.push((
             key,
             Held {
@@ -861,6 +1261,7 @@ impl Gap {
                 let flag = if *model { "model" } else { "effort" };
                 format!("{count} {flag} unproved: {word}")
             }
+            Reason::LineLimit => format!("{count} over the line limit"),
         };
         self.source
             .as_ref()
@@ -879,6 +1280,7 @@ impl SourceGap {
             Self::Budget => "over the read budget",
             Self::Invalid => "invalid archive",
             Self::Claimed => "claimed archive",
+            Self::Retained => "over the memory budget",
         }
     }
 }
@@ -895,8 +1297,17 @@ pub enum Reason {
     SessionMismatch,
     NoSessionId,
     LiveNoBirth,
-    LegacyExcluded { sessions: u64, a: u64, b: u64 },
-    Unproved { model: bool, word: String },
+    LegacyExcluded {
+        sessions: u64,
+        a: u64,
+        b: u64,
+    },
+    Unproved {
+        model: bool,
+        word: String,
+    },
+    /// Lines over the line limit, discarded unread.
+    LineLimit,
 }
 
 impl Reason {
