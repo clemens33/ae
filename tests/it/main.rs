@@ -62,6 +62,7 @@ mod chat_wrap_spec;
 mod cli;
 mod clientfollow_cover_spec;
 mod clientfollow_resume_spec;
+mod clientfollow_snapshot_supplement;
 mod cliparse_flag_extra_spec;
 mod cliparse_spec;
 mod compact;
