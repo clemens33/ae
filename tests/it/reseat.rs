@@ -21,6 +21,57 @@ use super::seat_relaunch::Rig;
 /// The conversation the predecessor is carrying when it is moved off.
 const OLD_ID: &str = "11111111-1111-4111-8111-111111111111";
 
+/// A refused move must leave the live predecessor and all move records alone.
+fn invalid_client_refuses_before_stop(tag: &str, client_rows: &str) {
+    let rig = Rig::new(tag);
+    rig.seat_rows("spawned.0", "scout", "claude-a", "claude");
+    let pane = rig.new_pane("spawned.0", "scout");
+    rig.start(&pane, "spawned.0", "claude");
+    let meta = format!("{}{client_rows}", rig.meta());
+    assert!(std::fs::write(rig.dir.join("meta"), &meta).is_ok());
+    let before = (rig.events(), rig.launched(), rig.tool_pid(&pane, "claude"));
+    assert!(before.2.is_some(), "live predecessor before admission");
+
+    let (code, out, err) = rig.run_top(
+        &rig.main_pane,
+        &["reseat", &rig.session, "scout", "--using", "fake-opencode"],
+    );
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    assert_eq!(
+        rig.tool_pid(&pane, "claude"),
+        before.2,
+        "refusal stopped predecessor: {err}"
+    );
+    assert_eq!(
+        err.lines().find(|line| line.starts_with("Error:")),
+        Some(
+            "Error: seat 'spawned.0' records an unusable client (client.spawned.0 is empty, duplicated or malformed) — fix the meta row, or end the session. Nothing was reseated."
+        )
+    );
+    assert_eq!(rig.meta(), meta, "refusal changed metadata");
+    assert_eq!(rig.events(), before.0, "refusal wrote a move event");
+    assert_eq!(rig.launched(), before.1, "refusal launched another tool");
+}
+
+#[test]
+fn reseat_empty_client_refuses_before_stop() {
+    invalid_client_refuses_before_stop("invalidempty", "client.spawned.0=\n");
+}
+
+#[test]
+fn reseat_duplicate_client_refuses_before_stop() {
+    invalid_client_refuses_before_stop(
+        "invalidduplicate",
+        "client.spawned.0=alt\nclient.spawned.0=alt\n",
+    );
+}
+
+#[test]
+fn reseat_malformed_client_refuses_before_stop() {
+    invalid_client_refuses_before_stop("invalidmalformed", "client.spawned.0=bad@client\n");
+}
+
 /// Append rows a launch would have recorded for a seat that has been running:
 /// a conversation, a post-exec launch stamp, and a positively observed model.
 /// Every one of them belongs to the tool that is LEAVING.

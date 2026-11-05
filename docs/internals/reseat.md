@@ -51,7 +51,7 @@ does, and a live seat is only reached at the dead proof.
    approve a pair nor redefine an approved name), `[client_pairs]` approval
    before existence, the same-known-adapter gate and the first-start store
    proof — then the account the pair selects, which ae must be able to name.
-   A pair onto a seat whose client row ae cannot read is refused here too,
+   Any move onto a seat whose client row ae cannot read is refused here too,
    with that read's words; a pair move skips the auto-reseat cover warning,
    which judges the profile's own account;
 7. the pane: not the CALLER'S own — a seat cannot reseat itself, because the

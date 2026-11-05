@@ -1788,7 +1788,7 @@ fn admit<'w>(
 
 /// Where the seat moves, resolved — or the refusal line, nothing stopped or
 /// written: something must move ([`same_client`]), the profile (bare) or the
-/// pair ([`resolve_pair`]) must resolve, and a pair must not land on a client
+/// pair ([`resolve_pair`]) must resolve, and a move must not land on a client
 /// row ae cannot read.
 fn destination(
     dir: &Path,
@@ -1816,10 +1816,10 @@ fn destination(
             .map_err(|why| format!("Error: {why}. Nothing was reseated."))?,
         Some(label) => resolve_pair(bytes, &parsed.profile, label, &parsed.agent)?,
     };
-    // A pair onto a seat whose client row ae cannot read is refused HERE,
+    // A move onto a seat whose client row ae cannot read is refused HERE,
     // before anything is stopped, with the words the seat's own read uses: a
     // move must not stop a tool to then publish over a record it never read.
-    if moving.pair.is_some() && seated.client == crate::meta::RecordedClient::Invalid {
+    if seated.client == crate::meta::RecordedClient::Invalid {
         return Err(format!(
             "Error: {}. Nothing was reseated.",
             crate::run::unusable_client(&seated.slot)

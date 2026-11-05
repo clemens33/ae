@@ -235,6 +235,44 @@ fn one_outcome(rig: &Rig, action: &str) -> Event {
     outcome_at(rig, action, "spawned.0")
 }
 
+#[test]
+fn reseat_invalid_client_is_journaled_as_refused_before_stop() {
+    let (rig, pane) = limited("leginvalidclient", "on", "fake-opencode");
+    assert!(
+        std::fs::write(
+            rig.dir.join("meta"),
+            format!("{}client.spawned.0=\n", rig.meta()),
+        )
+        .is_ok()
+    );
+    let before = (rig.meta(), rig.launched(), rig.tool_pid(&pane, "claude"));
+    assert!(
+        before.2.is_some(),
+        "live predecessor before automatic admission"
+    );
+
+    let (code, out, err) = leg(&rig, "spawned.0", KEY);
+
+    assert_eq!(code, Some(1), "out={out} err={err}");
+    let refused = one_outcome(&rig, REFUSED_ACTION);
+    assert_eq!(refused.reference.as_deref(), Some(KEY));
+    assert!(
+        refused.summary.as_deref().is_some_and(|summary| summary.starts_with(
+            "other: Error: seat 'spawned.0' records an unusable client (client.spawned.0 is empty, duplicated or malformed)"
+        )),
+        "{refused:?}"
+    );
+    assert!(err.contains("Nothing was reseated."), "{err}");
+    assert_eq!(rig.meta(), before.0, "refusal changed metadata");
+    assert_eq!(rig.launched(), before.1, "refusal launched another tool");
+    assert_eq!(
+        rig.tool_pid(&pane, "claude"),
+        before.2,
+        "refusal stopped predecessor"
+    );
+    untouched(&rig, &pane);
+}
+
 /// Nothing of the seat changed: its tool runs, its profile stands, and no
 /// reseat was recorded or seeded.
 fn untouched(rig: &Rig, pane: &str) {
