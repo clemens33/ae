@@ -518,6 +518,17 @@ did. The family is read from the seat's RECORDED profile and client, so a model
 the human switched to in the pane does not travel, and a seat launched on
 another client of its profile is never moved back to that profile.
 
+A lead-pair seat — `main` and `worker.0` of a `layout = lead-pair` session —
+never takes a derived SIBLING: auto reseat does not swap the model of a lead on
+its own, whatever the sibling's account or step. Its siblings stay on the list
+and are passed over with `a lead seat never changes model unasked`; a move that
+finds nothing else refuses with `no usable candidate` and names each sibling and
+that reason, and the seat stays where it is. A declared candidate (your row) and
+a derived twin — the same setup and model on another proven account — still move
+a lead as they move any seat, so to let a lead fall back to a weaker or another
+model, name that profile under `[auto_reseat]`. Every other seat is unchanged,
+and so is a manual `ae reseat --using`.
+
 **Is every profile covered?** A profile whose declared row and derived family
 all run on ONE account has no exit when that account's window is spent: its
 seats just sit on the limit. With `auto_reseat` on, `ae doctor` prints one
@@ -529,7 +540,9 @@ same warning as ONE stderr line when the profile you pick has no such exit, and
 go on. With `auto_reseat = off` the row reads `skipped (auto_reseat off)` and
 nothing warns. A model of the same tool is a sibling but not an exit: it shares
 the account's allowance. A profile ae cannot place on an account is reported as
-unproven, never as covered.
+unproven, never as covered. The row and the warnings read a profile, not a seat:
+a lead-pair seat cannot use a derived sibling, so a profile whose only exit is a
+sibling on another account reads as covered here but not for the lead pair.
 
 Names show in pane borders and are how agents address each other. Each window
 keeps its first agent's name as its stable tmux routing name; later splits do

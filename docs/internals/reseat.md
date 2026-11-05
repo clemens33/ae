@@ -757,7 +757,34 @@ config home ae can prove, not the vendor's live quota buckets, so a sibling
 whose window is model-scoped still reads as no exit; doctor judges the
 invocation's global config and cwd overlay, `spawn` and `reseat` the session's
 recorded config, and a session with no recorded `config=` row gets no nudge; a
-suggestion may name a profile the operator keeps for rare use.
+suggestion may name a profile the operator keeps for rare use. The verdict also
+reads a profile and not a seat (#309): a profile whose only exit is a derived
+sibling on another proven account reads as covered, and a lead-pair seat cannot
+use that sibling (below), so for the lead pair the row can over-promise. A
+seat-aware warning is not built.
+
+A LEAD-PAIR SEAT NEVER TAKES A DERIVED SIBLING (#309). `autoreseat::lead_seat`
+(`main` and `worker.0` of a `layout = lead-pair` session, the classifier
+`auto_reseat_lead_at` and the pair guard use) marks the seat; no model ranking
+exists, so any derived move to another model could land a lead on a weaker one,
+and a `Kept` sibling outranks a twin on another account. The bar sits at the one
+seat-aware reader of the list, `leg::listed`: for a lead seat it turns each
+derived sibling into `Provenance::LeadSibling(Step)` (spelled `derived sibling`
+as before) and leaves the list's membership and order alone. The chooser's
+`passed_over` then returns `Skip::LeadSibling` for it ahead of every quota rule,
+so no step, tier, headroom bar, urgent start or collapsed-pair fallback can pick
+it, and `Choice::skipped` names it (`<profile>, derived sibling (a lead seat never
+changes model unasked)`). Because it stays listed, `derivable` and `reachable`
+still read true, the leg and the trigger reach the chooser rather than the
+`Unmapped` hold, and a lead with nothing else to take ends with the ordinary
+`no-candidate` refusal, now naming the siblings; the first-sight forecast says
+`ae cannot move <agent>: no usable candidate: ...` the same way. A declared
+candidate and a derived twin are unchanged for every seat, the return to the
+origin judges one declared candidate and is untouched, every other seat and a
+manual `ae reseat --using` are byte-identical, and pure `listed` and `cover` stay
+seat-free. Named residual: a lead on a weak model cannot auto-move to a STRONGER
+sibling either; the human's `[auto_reseat]` row is the way until a model tier
+ranking is ruled.
 
 The chooser takes the first usable candidate of the best tier, in listed order —
 and every declared candidate outranks every derived one: a declared candidate on
