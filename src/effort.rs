@@ -11,6 +11,7 @@
 
 pub(crate) mod leg;
 
+use std::cmp::Ordering;
 use std::path::Path;
 
 use crate::autoreseat::{REARM_GAP, Room};
@@ -282,15 +283,70 @@ pub(crate) fn own_scope(
     })
 }
 
-/// One long window an episode was opened on, as its record keeps it.
+/// One long window an episode was opened on, as its record keeps it: one per
+/// LOGICAL window, however many tied readings stood behind it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pressured {
     /// Its identity in the scope.
     pub key: WindowKey,
-    /// When the reading that pressed it was observed.
+    /// When the readings that pressed it were observed (tied readings share it).
     pub observed_at: i64,
-    /// When it resets, where the vendor said.
+    /// When it resets: the LATEST reset any tied reading states, and `None`
+    /// when any tied reading states none, so a known earlier deadline never
+    /// erases a later or unknown one.
     pub resets_at: Option<i64>,
+}
+
+impl Pressured {
+    /// What one reading alone would record, to prove it has a spelling.
+    fn of(window: &Window) -> Self {
+        Self {
+            key: window.key.clone(),
+            observed_at: window.observed_at,
+            resets_at: window.resets_at,
+        }
+    }
+
+    /// The one record of a logical window: its readings `tied`, which are
+    /// never empty and share a key and an observation.
+    fn settled(tied: &[&Window]) -> Option<Self> {
+        let first = tied.first()?;
+        let resets_at = tied.iter().try_fold(i64::MIN, |latest, window| {
+            Some(latest.max(window.resets_at?))
+        });
+        Some(Self {
+            key: first.key.clone(),
+            observed_at: first.observed_at,
+            resets_at,
+        })
+    }
+}
+
+/// The scope's usable long windows as LOGICAL windows: per [`WindowKey`] the
+/// readings of its newest observation. A strictly older reading is superseded
+/// and readings observed together tie, all of them counting, as
+/// [`crate::autoreseat::current`] has it; here too, so a scope built by hand
+/// reads like the one `own_scope` produces.
+fn logical(scope: &Scope) -> Vec<Vec<&Window>> {
+    let mut windows: Vec<Vec<&Window>> = Vec::new();
+    for window in scope.windows.iter().filter(|window| window.long()) {
+        let Some(tied) = windows
+            .iter_mut()
+            .find(|tied| tied.first().is_some_and(|first| first.key == window.key))
+        else {
+            windows.push(vec![window]);
+            continue;
+        };
+        match tied
+            .first()
+            .map(|first| window.observed_at.cmp(&first.observed_at))
+        {
+            Some(Ordering::Greater) => *tied = vec![window],
+            Some(Ordering::Equal) => tied.push(window),
+            Some(Ordering::Less) | None => {}
+        }
+    }
+    windows
 }
 
 /// Whether a scope opens an episode at threshold `at`.
@@ -302,7 +358,8 @@ pub enum Entry {
     Unread,
     /// Every long window reads under the threshold.
     Below,
-    /// Every long window at or past it, in key order.
+    /// Every logical long window with a tied reading at or past it, once each,
+    /// in key order.
     Crossed(Vec<Pressured>),
     /// The pressed set cannot be recorded whole.
     Unrecordable,
@@ -320,60 +377,72 @@ pub enum Recovery {
     Relieved,
 }
 
-/// Whether `scope` opens an episode at threshold `at`.
+/// Whether `scope` opens an episode at threshold `at`. Logical windows are
+/// counted, not readings: the worst tied reading of a window decides it, one
+/// record is kept per window, and [`MAX_WINDOWS`] bounds distinct windows.
+/// Every tied reading of a pressed window must have a spelling, so a bad
+/// stamp or text cannot hide beneath a valid tie.
 #[must_use]
 pub fn entry(scope: &Scope, at: u8) -> Entry {
     if scope.spend_capped {
         return Entry::SpendCapped;
     }
-    let long = scope.windows.iter().filter(|window| window.long());
-    let mut pressured: Vec<Pressured> = long
-        .clone()
-        .filter(|window| window.judged >= f64::from(at))
-        .map(|window| Pressured {
-            key: window.key.clone(),
-            observed_at: window.observed_at,
-            resets_at: window.resets_at,
-        })
-        .collect();
-    if long.count() == 0 {
+    let windows = logical(scope);
+    if windows.is_empty() {
         return Entry::Unread;
     }
-    if pressured.is_empty() {
+    let pressed: Vec<&Vec<&Window>> = windows
+        .iter()
+        .filter(|tied| tied.iter().any(|window| window.judged >= f64::from(at)))
+        .collect();
+    if pressed.is_empty() {
         return Entry::Below;
     }
-    pressured.sort_by(|left, right| left.key.cmp(&right.key));
-    if pressured.len() > MAX_WINDOWS
-        || pressured.windows(2).any(|pair| pair[0].key == pair[1].key)
-        || pressured.iter().any(|window| window_word(window).is_none())
+    let Some(mut recorded) = pressed
+        .iter()
+        .map(|tied| Pressured::settled(tied))
+        .collect::<Option<Vec<Pressured>>>()
+    else {
+        return Entry::Unrecordable;
+    };
+    recorded.sort_by(|left, right| left.key.cmp(&right.key));
+    if recorded.len() > MAX_WINDOWS
+        || pressed
+            .iter()
+            .flat_map(|tied| tied.iter())
+            .any(|window| window_word(&Pressured::of(window)).is_none())
     {
         return Entry::Unrecordable;
     }
-    Entry::Crossed(pressured)
+    Entry::Crossed(recorded)
 }
 
 /// Whether the `recorded` windows of an applied episode at `threshold` are
-/// relieved. A recorded window clears on a later-or-equal reading of the same
-/// window under the threshold by [`REARM_GAP`], or once its recorded reset
-/// has passed; any long window at or past the threshold vetoes.
+/// relieved. A recorded window clears once its recorded reset has passed, or on
+/// a later-or-equal observation whose EVERY tied reading of the window is under
+/// the threshold by [`REARM_GAP`]; any long window reading at or past the
+/// threshold vetoes.
 #[must_use]
 pub fn recovery(recorded: &[Pressured], threshold: u8, scope: &Scope, now: i64) -> Recovery {
     if scope.spend_capped {
         return Recovery::SpendCapped;
     }
-    let long = scope.windows.iter().filter(|window| window.long());
-    if long
-        .clone()
+    let windows = logical(scope);
+    if windows
+        .iter()
+        .flatten()
         .any(|window| window.judged >= f64::from(threshold))
     {
         return Recovery::Hold;
     }
     let cleared = |pressed: &Pressured| {
         pressed.resets_at.is_some_and(|reset| reset <= now)
-            || long.clone().any(|window| {
-                window.key == pressed.key
-                    && window.observed_at >= pressed.observed_at
-                    && window.judged < f64::from(threshold) - REARM_GAP
+            || windows.iter().any(|tied| {
+                tied.first().is_some_and(|first| {
+                    first.key == pressed.key && first.observed_at >= pressed.observed_at
+                }) && tied
+                    .iter()
+                    .all(|window| window.judged < f64::from(threshold) - REARM_GAP)
             })
     };
     if recorded.iter().all(cleared) {
@@ -1631,3 +1700,6 @@ pub fn line(
     });
     line.trim_end_matches('\n').to_owned()
 }
+
+#[cfg(test)]
+mod tie_spec;

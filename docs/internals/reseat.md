@@ -942,7 +942,10 @@ reading of the scope counts: one a newer usable reading of the same window
 supersedes — stale or fresh — decides nothing, a tie keeps the worse, and a
 lone stale reading still binds (`autoreseat::current`, applied in
 `leg::own_scope`; auto effort and the app's lead/colead weighing read the same
-scope). At or past the threshold it books
+scope, and auto effort records tied readings of one window ONCE: the worst tied
+reading opens its episode, the record keeps the latest tied reset, none when any
+tied reading states none, and the step back up needs every tied reading under
+the band). At or past the threshold it books
 `auto-reseat-headroom`, whose `ts` is the episode KEY and whose summary,
 `headroom <pct>% <window>`, every later record of the episode quotes whole. The
 episode stays due under that key while the scope reads within 5 points of the
