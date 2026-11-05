@@ -6034,7 +6034,15 @@ impl Cycle<'_> {
             &latched,
             now,
         );
-        let choice = crate::autoreseat::choose(&judged, now);
+        // The pair guard forecasts what the legs will choose (#305).
+        let pair = crate::autoreseat::leg::pair_of(
+            self.meta_dir,
+            &bytes,
+            &self.roster,
+            self.lead_pair,
+            slot,
+        );
+        let choice = crate::autoreseat::choose_paired(&judged, now, None, pair.as_ref());
         Some(crate::autoreseat::leg::deadline(
             agent,
             &choice,
@@ -8450,6 +8458,10 @@ mod limitwake_spec;
 #[cfg(test)]
 #[path = "watchdog_autoacts_spec.rs"]
 mod autoacts_spec;
+
+#[cfg(test)]
+#[path = "watchdog_pairguard_spec.rs"]
+mod pairguard_spec;
 
 #[cfg(test)]
 mod limitwake_readers {

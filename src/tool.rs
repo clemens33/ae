@@ -1505,6 +1505,104 @@ impl ToolAdapter {
     }
 }
 
+/// The lab whose models a seat serves: the unit the cross-provider review rule
+/// counts. Unknown is `None`, never a provider of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    Anthropic,
+    OpenAI,
+    Google,
+    XAi,
+    Meta,
+}
+
+impl Provider {
+    /// The word a record or a notice names it by.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Anthropic => "Anthropic",
+            Self::OpenAI => "OpenAI",
+            Self::Google => "Google",
+            Self::XAi => "xAI",
+            Self::Meta => "Meta",
+        }
+    }
+}
+
+/// The provider a resolved profile command serves, PROVEN from the command
+/// alone, or `None`. A tool whose in-pane model switch can reach another lab
+/// (Antigravity, `OpenCode`) proves none; so does an unknown tool, an `env`
+/// prefix, a leading assignment other than the tool's own account variable,
+/// and a flag that reroutes the tool's backend (codex `--oss`, `--profile`,
+/// `-p` or a `model_provider` config pair; muse `--provider` naming another
+/// lab). What a tool's own config file reroutes is invisible here.
+#[must_use]
+pub fn served_provider(command: &str) -> Option<Provider> {
+    let parsed = crate::launch_cmd::lex_simple_command(command).ok()?;
+    let tool = parsed.tool();
+    let own = tool.adapter().config_home_env;
+    let foreign = parsed
+        .assignments
+        .iter()
+        .any(|word| word.split_once('=').map(|(name, _)| name) != own);
+    if foreign || !parsed.runs_first() {
+        return None;
+    }
+    let words = parsed.operands();
+    match tool {
+        ToolKind::Claude => Some(Provider::Anthropic),
+        ToolKind::Codex => (!codex_reroutes(words)).then_some(Provider::OpenAI),
+        ToolKind::Muse => (!muse_reroutes(words)).then_some(Provider::Meta),
+        ToolKind::Grok => Some(Provider::XAi),
+        ToolKind::Gemini => Some(Provider::Google),
+        ToolKind::Agy | ToolKind::OpenCode | ToolKind::Unknown => None,
+    }
+}
+
+/// Whether codex `words` select a backend other than its own: `--oss`, a
+/// profile, or a config override of `model_provider*` or `profile*`. A short
+/// option's value may be attached, with or without `=`.
+fn codex_reroutes(words: &[String]) -> bool {
+    let reroutes = |pair: &str| {
+        let key = pair.trim_start();
+        key.starts_with("model_provider") || key.starts_with("profile")
+    };
+    words.iter().enumerate().any(|(at, word)| {
+        if word == "-c" || word == "--config" {
+            return words.get(at + 1).is_some_and(|value| reroutes(value));
+        }
+        if word == "--oss" || word == "--profile" || word.starts_with("--profile=") {
+            return true;
+        }
+        if let Some(value) = word.strip_prefix("--config=") {
+            return reroutes(value);
+        }
+        if word.starts_with("--") {
+            return false;
+        }
+        word.starts_with("-p")
+            || word
+                .strip_prefix("-c")
+                .map(|value| value.strip_prefix('=').unwrap_or(value))
+                .is_some_and(reroutes)
+    })
+}
+
+/// Whether muse `words` name a provider other than its own, Meta, which muse
+/// spells as the provider's word in lowercase.
+fn muse_reroutes(words: &[String]) -> bool {
+    let own = Provider::Meta.word().to_ascii_lowercase();
+    words.iter().enumerate().any(|(at, word)| {
+        let value = if word == "--provider" {
+            words.get(at + 1).map(String::as_str)
+        } else {
+            word.strip_prefix("--provider=")
+        };
+        word.starts_with("--provider") && value != Some(own.as_str())
+    })
+}
+
 impl ToolKind {
     /// Classify one known bare binary name, preserving absence as `None`.
     #[must_use]
@@ -1632,6 +1730,84 @@ impl ToolKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One classifier proves a provider from the command alone, and fails
+    /// toward none: a tool that can switch labs in its pane, an unknown tool,
+    /// and any word that reroutes a backend prove nothing (#305).
+    #[test]
+    fn a_command_proves_its_served_provider_only_when_nothing_reroutes_it() {
+        use Provider::{Anthropic, Google, Meta, OpenAI, XAi};
+        for (command, expected) in [
+            ("claude --model claude-opus-5-5", Some(Anthropic)),
+            ("CLAUDE_CONFIG_DIR=/a claude --model fable", Some(Anthropic)),
+            ("/opt/bin/claude", Some(Anthropic)),
+            ("ANTHROPIC_BASE_URL=http://x claude", None),
+            ("CODEX_HOME=/a claude", None),
+            ("env claude", None),
+            (
+                "codex --yolo -m gpt-6.1-sol -c model_reasoning_effort=high",
+                Some(OpenAI),
+            ),
+            ("CODEX_HOME=/a codex -m gpt-6-sol", Some(OpenAI)),
+            ("codex --oss", None),
+            ("codex -p work", None),
+            ("codex --profile work", None),
+            ("codex --profile=work", None),
+            ("codex -c model_provider=ollama", None),
+            ("codex --config model_providers.x.name=y", None),
+            ("codex -c=model_provider=ollama", None),
+            ("codex --config=model_provider=ollama", None),
+            ("muse --provider meta --model muse-spark-1.3", Some(Meta)),
+            ("muse --model muse-wonder-1.0", Some(Meta)),
+            ("muse --provider other --model x", None),
+            ("muse --provider=other", None),
+            ("muse --provider", None),
+            ("grok --always-approve -m grok-4.7", Some(XAi)),
+            ("gemini -m gemini-3", Some(Google)),
+            ("agy --dangerously-skip-permissions", None),
+            ("agy --model gemini-4-argon-high", None),
+            ("agy --model claude-opus-5-5", None),
+            (
+                "opencode --agent build --model openrouter/deepseek/deepseek-v4.1-flash",
+                None,
+            ),
+            ("opencode --model opencode-go/glm-5.3-flash", None),
+            ("aider --model gpt-6", None),
+            ("claude 'unterminated", None),
+            ("", None),
+        ] {
+            assert_eq!(served_provider(command), expected, "{command}");
+        }
+        assert_eq!(
+            [Anthropic, OpenAI, Google, XAi, Meta].map(Provider::word),
+            ["Anthropic", "OpenAI", "Google", "xAI", "Meta"]
+        );
+    }
+
+    #[test]
+    fn an_attached_short_value_or_a_config_profile_reroutes_codex() {
+        let proven: Vec<&str> = [
+            "codex -pwork",
+            "codex -p=work",
+            "codex -cmodel_provider=ollama",
+            r#"codex -cmodel_provider="ollama""#,
+            "codex -c profile=work",
+            "codex -cprofile=work",
+            "codex --config profile=work",
+            "codex --config=profile=work",
+        ]
+        .into_iter()
+        .filter(|command| served_provider(command).is_some())
+        .collect();
+        assert!(proven.is_empty(), "rerouted yet proven: {proven:?}");
+        for command in ["codex -m gpt-6-sol", "codex -c model=gpt-6-sol"] {
+            assert_eq!(
+                served_provider(command),
+                Some(Provider::OpenAI),
+                "{command}"
+            );
+        }
+    }
 
     #[test]
     fn only_agy_and_muse_have_their_limit_screen_judged_by_their_own_scan() {

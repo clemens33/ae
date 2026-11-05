@@ -1780,6 +1780,16 @@ fn prepare(
         writeln!(err, "Error: {}", crate::autoreseat::observed_summary(&hold))?;
         return Err(Halt::End(Ended::Refused(CauseClass::ObservedChoice)));
     }
+    // THE PAIR, read again under the same lock (#305): every automatic move of
+    // either half takes it, so the partner's row here is the one its own last
+    // move committed. A destination that would collapse the pair holds.
+    if ask.parsed.automatic
+        && let Some(why) =
+            crate::autoreseat::leg::pair_changed(&seat.dir, locked, &target.slot, &moving.command)
+    {
+        writeln!(err, "Error: {why}")?;
+        return Err(Halt::End(Ended::Refused(CauseClass::PairChanged)));
+    }
     let prior = crate::lifecycle::meta_value(locked, &format!("harness_session.{}", target.slot));
     // DOES THE SEAT KEEP ITS CONVERSATION? From the records under the lock. A
     // kept move stays in its account, which a carry never does.

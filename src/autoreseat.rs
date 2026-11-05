@@ -42,7 +42,7 @@ use crate::events::Event;
 use crate::harness_state::HarnessState;
 use crate::quota::Status;
 use crate::time::Timestamp;
-use crate::tool::ToolKind;
+use crate::tool::{Provider, ToolKind};
 use crate::watchdog::{WATCHDOG_ACTOR, event_is_addressed_to};
 
 pub(crate) mod leg;
@@ -95,6 +95,12 @@ pub enum CauseClass {
     /// The frame shows nothing but the stop and the seat's background tasks,
     /// which a stop would end, and nothing proves they may end (#304).
     BackgroundTask,
+    /// No usable candidate keeps the seat and its pair partner on two proven
+    /// providers (#305): the pair guard held the move.
+    PairProvider,
+    /// Under the lifecycle lock the pair no longer stays on two providers with
+    /// the destination chosen before it: a hold, tried again (#305).
+    PairChanged,
     /// Every other refusal, every failure, and the give-up after the last round.
     Other,
 }
@@ -114,6 +120,8 @@ impl CauseClass {
             Self::Ineligible => "ineligible",
             Self::ObservedChoice => "observed-choice",
             Self::BackgroundTask => "background-task",
+            Self::PairProvider => "pair-provider",
+            Self::PairChanged => "pair-changed",
             Self::Other => "other",
         }
     }
@@ -121,7 +129,10 @@ impl CauseClass {
     /// Whether the cause may pass on a retry: the record is a hold, not a refusal.
     #[must_use]
     pub const fn transient(self) -> bool {
-        matches!(self, Self::Busy | Self::Lock | Self::ObservedChoice)
+        matches!(
+            self,
+            Self::Busy | Self::Lock | Self::ObservedChoice | Self::PairChanged
+        )
     }
 
     /// `summary` led by the class: `<class>: <summary>`.
@@ -1903,6 +1914,163 @@ pub enum Skip {
     /// threshold.
     NoRoom,
     LeftOnHeadroom,
+    /// It serves the provider the seat's pair partner serves.
+    PairProvider,
+    /// Its provider or the partner's is unproven, or the pair link is
+    /// ambiguous: nothing proves the pair stays on two providers.
+    PairUnproven,
+}
+
+/// What links a seat to its pair partner, from the roster alone (#305).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Link<'r> {
+    /// No partner: the guard never applies.
+    Solo,
+    Partner(&'r crate::meta::RosterEntry),
+    /// More than one seat could be its partner: a partner nothing proves.
+    Ambiguous,
+}
+
+/// The seat at `slot`'s pair partner: in a lead-pair session `main` and
+/// `worker.0` are each other's, before any name; otherwise two spawned seats
+/// named `<name>` and `<name>-nav`. Those name links are walked over every
+/// spawned seat, and a seat whose linked group holds more than two seats (a
+/// chain such as `x`, `x-nav`, `x-nav-nav`, or a linked name written twice) is
+/// `Ambiguous`; a seat no name links stays `Solo`, whatever else the roster
+/// holds.
+#[must_use]
+pub fn partner<'r>(
+    roster: &'r [crate::meta::RosterEntry],
+    lead_pair: bool,
+    slot: &str,
+) -> Link<'r> {
+    let leads = ["main", "worker.0"];
+    if lead_pair && leads.contains(&slot) {
+        let other = if slot == "main" { "worker.0" } else { "main" };
+        return roster
+            .iter()
+            .find(|entry| entry.slot == other)
+            .map_or(Link::Solo, Link::Partner);
+    }
+    let spawned: Vec<&crate::meta::RosterEntry> = roster
+        .iter()
+        .filter(|entry| SeatClass::of(&entry.slot) == Some(SeatClass::Spawned))
+        .collect();
+    let Some(start) = spawned.iter().position(|entry| entry.slot == slot) else {
+        return Link::Solo;
+    };
+    let linked = |one: &crate::meta::RosterEntry, two: &crate::meta::RosterEntry| {
+        let nav = |base: &str, other: &str| other.strip_suffix("-nav") == Some(base);
+        nav(&one.name, &two.name) || nav(&two.name, &one.name)
+    };
+    let mut group = vec![start];
+    let mut next = 0;
+    while let Some(&at) = group.get(next) {
+        next += 1;
+        for (other, entry) in spawned.iter().enumerate() {
+            if !group.contains(&other) && linked(spawned[at], entry) {
+                group.push(other);
+            }
+        }
+    }
+    match group.as_slice() {
+        [_] => Link::Solo,
+        [_, other] => Link::Partner(spawned[*other]),
+        _ => Link::Ambiguous,
+    }
+}
+
+/// The pair guard of a seat with a partner, as every chooser and the
+/// lifecycle gate judge it (#305).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairGuard {
+    /// The partner's name; `None` when the pair link is ambiguous.
+    pub partner: Option<String>,
+    /// The provider the partner serves now, when proven.
+    pub partner_serves: Option<Provider>,
+    /// The provider the seat serves now, when proven.
+    pub seat_serves: Option<Provider>,
+    /// Each listed candidate's provider, as a move to it would serve it.
+    pub destinations: Vec<(String, Option<Provider>)>,
+}
+
+impl PairGuard {
+    /// Why a seat serving `to` would not keep the pair on two PROVEN
+    /// providers, or `None` when it would.
+    #[must_use]
+    pub fn judge(&self, to: Option<Provider>) -> Option<Skip> {
+        match (&self.partner, self.partner_serves, to) {
+            (Some(_), Some(partner), Some(to)) if partner != to => None,
+            (Some(_), Some(_), Some(_)) => Some(Skip::PairProvider),
+            _ => Some(Skip::PairUnproven),
+        }
+    }
+
+    /// The one provider the seat and its partner are both PROVEN to serve: a
+    /// pair already collapsed before any move, with no diversity left to
+    /// protect (#305 R7). `None` while either is unproven, the link is
+    /// ambiguous, or the two differ.
+    #[must_use]
+    pub fn collapsed(&self) -> Option<Provider> {
+        match (&self.partner, self.seat_serves, self.partner_serves) {
+            (Some(_), Some(seat), Some(partner)) if seat == partner => Some(seat),
+            _ => None,
+        }
+    }
+
+    /// The provider an already collapsed pair stays on when the seat moves to
+    /// serve `to`: only a destination PROVEN on that same provider — the ONE
+    /// proof of the chooser's fallback, the lifecycle gate and the label.
+    #[must_use]
+    pub fn stays_serving(&self, to: Option<Provider>) -> Option<Provider> {
+        self.collapsed().filter(|on| to == Some(*on))
+    }
+
+    /// [`Self::stays_serving`] for the listed candidate `profile`.
+    #[must_use]
+    pub fn stays(&self, profile: &str) -> Option<Provider> {
+        self.stays_serving(self.destination(profile))
+    }
+
+    /// The provider a move to the listed candidate `profile` would serve.
+    fn destination(&self, profile: &str) -> Option<Provider> {
+        self.destinations
+            .iter()
+            .find(|(name, _)| name == profile)
+            .and_then(|(_, serves)| *serves)
+    }
+
+    /// [`Self::judge`] for the listed candidate `profile`.
+    fn skip(&self, profile: &str) -> Option<Skip> {
+        self.judge(self.destination(profile))
+    }
+
+    /// The fallback's judgment of `profile` for a pair already collapsed: a
+    /// candidate it stays on is taken too, every other one judged as ever.
+    fn fallback_skip(&self, profile: &str) -> Option<Skip> {
+        if self.stays(profile).is_some() {
+            return None;
+        }
+        self.skip(profile)
+    }
+
+    /// The pair as a record or a notice names it: what the seat serves, then
+    /// its partner and what that one serves, or why nothing proves it.
+    #[must_use]
+    pub fn words(&self) -> String {
+        let seat = self
+            .seat_serves
+            .map_or("an unproven provider", Provider::word);
+        match (&self.partner, self.partner_serves) {
+            (Some(name), Some(serves)) => {
+                format!("it serves {seat}, partner {name} serves {}", serves.word())
+            }
+            (Some(name), None) => {
+                format!("it serves {seat}, partner {name}'s provider is unproven")
+            }
+            (None, _) => format!("it serves {seat}, its pair link is ambiguous"),
+        }
+    }
 }
 
 /// The candidate taken, and every one passed over with its reason, named as a
@@ -1928,11 +2096,44 @@ pub fn choose(candidates: &[Candidate], now: i64) -> Choice {
 /// candidate must have room below it. `None` is a limit episode's chooser.
 #[must_use]
 pub fn choose_with(candidates: &[Candidate], now: i64, room: Option<u8>) -> Choice {
+    choose_paired(candidates, now, room, None)
+}
+
+/// [`choose_with`] for a seat with a pair partner: after every other rule, a
+/// candidate that does not keep the pair on two proven providers is passed
+/// over too ([`PairGuard::judge`]), on every route — so a pair is never collapsed,
+/// the order among the rest is unchanged, and `None` is [`choose_with`]. A pair
+/// already collapsed ([`PairGuard::collapsed`]) still prefers a candidate that
+/// makes it diverse, and with none takes one PROVEN on that same provider
+/// ([`PairGuard::stays`]); an unproven one stays passed over (#305 R7).
+#[must_use]
+pub fn choose_paired(
+    candidates: &[Candidate],
+    now: i64,
+    room: Option<u8>,
+    pair: Option<&PairGuard>,
+) -> Choice {
+    let guarded = choose_guarded(candidates, now, room, pair, PairGuard::skip);
+    if guarded.pick.is_none() && pair.and_then(PairGuard::collapsed).is_some() {
+        return choose_guarded(candidates, now, room, pair, PairGuard::fallback_skip);
+    }
+    guarded
+}
+
+/// [`choose_paired`] with the pair's `judge` a filter after every other rule.
+fn choose_guarded(
+    candidates: &[Candidate],
+    now: i64,
+    room: Option<u8>,
+    pair: Option<&PairGuard>,
+    judge: fn(&PairGuard, &str) -> Option<Skip>,
+) -> Choice {
     type Rank = (bool, bool, Option<Step>, Tier);
     let mut skipped = Vec::new();
     let mut best: Option<(&Candidate, Rank)> = None;
     for candidate in candidates {
-        if let Some(skip) = passed_over(candidate, now, room) {
+        let guarded = || pair.and_then(|pair| judge(pair, &candidate.profile));
+        if let Some(skip) = passed_over(candidate, now, room).or_else(guarded) {
             let named = format!("{}{}", candidate.profile, candidate.provenance.word());
             skipped.push((named, skip));
             continue;
@@ -2189,13 +2390,22 @@ pub enum Ending<'a> {
     Unmapped(&'a str),
     /// The last round was refused or failed: no further attempt.
     GaveUp,
+    /// After an automatic move the pair no longer serves two proven
+    /// providers: said once, beside the move's own notice (#305).
+    PairCollapse(&'a PairGuard),
+    /// Moved, with the tasks its stop ended, while the pair already served
+    /// this one proven provider and no candidate made it diverse (#305 R7).
+    PairStays(Provider, Move<'a>, &'a [String]),
 }
 
 impl Ending<'_> {
     /// The cause class that leads the notice; a move has none.
     const fn class(&self) -> Option<CauseClass> {
         match self {
-            Self::Moved(_) | Self::MovedEndingTasks(..) => None,
+            Self::Moved(_)
+            | Self::MovedEndingTasks(..)
+            | Self::PairCollapse(_)
+            | Self::PairStays(..) => None,
             Self::Held(class, _) | Self::Refused(class, _) | Self::Failed(class, _) => Some(*class),
             Self::Unmapped(_) => Some(CauseClass::NoCandidate),
             Self::GaveUp => Some(CauseClass::Other),
@@ -2290,7 +2500,9 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
     };
     let line = match ending {
         Ending::Moved(moved) => moved_line(agent, moved, &[]),
-        Ending::MovedEndingTasks(moved, tasks) => moved_line(agent, moved, tasks),
+        Ending::MovedEndingTasks(moved, tasks) | Ending::PairStays(_, moved, tasks) => {
+            moved_line(agent, moved, tasks)
+        }
         Ending::Held(CauseClass::ObservedChoice, why) => format!(
             "{agent} not moved — {}. Next: {hand}, or switch its pane back to the profile's model \
              and effort; until then ae does not move it.",
@@ -2329,11 +2541,18 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
             said(class, why)
         ),
         Ending::GaveUp => gave_up_line(agent, &hand),
+        Ending::PairCollapse(pair) => format!(
+            "{agent} moved, and {}: its review pair no longer serves two proven providers. \
+             Next: ae reseat {session} {agent} --using <a profile on another provider>.",
+            pair.words()
+        ),
     };
-    let head = class.map_or_else(
-        || "auto reseat: ".to_owned(),
-        |class| format!("auto reseat: {}: ", class.word()),
-    );
+    let head = match (ending, class) {
+        (Ending::PairCollapse(_), _) => "auto reseat: pair-provider collapse: ".to_owned(),
+        (Ending::PairStays(provider, ..), _) => format!("auto reseat: {}: ", stays_on(*provider)),
+        (_, None) => "auto reseat: ".to_owned(),
+        (_, Some(class)) => format!("auto reseat: {}: ", class.word()),
+    };
     let line = crate::seatpack::neutralise(&line);
     // A cut takes the details, never the head or the step after them: the head
     // names the cause and the step is what the human acts on, and half a
@@ -2360,6 +2579,17 @@ pub fn notice(session: &str, agent: &str, ending: &Ending<'_>) -> String {
     };
     let room = NOTICE_CHARS.saturating_sub(head.chars().count() + step.chars().count());
     crate::state::summary_of(&format!("{head}{}{step}", cut_at_word(body, room)))
+}
+
+/// What a move's record and notice lead with when its pair already served one
+/// proven `provider` and still does (#305 R7): ONE spelling for both.
+#[must_use]
+pub fn stays_on(provider: Provider) -> String {
+    format!(
+        "{}: pair stays on {}",
+        CauseClass::PairProvider.word(),
+        provider.word()
+    )
 }
 
 /// The line for a move; `tasks` names the background tasks its stop ended.
@@ -3415,6 +3645,186 @@ mod tests {
             binary: None,
             work_dir: crate::meta::RecordedWorkDir::Missing,
         }
+    }
+
+    /// The pair link is the roster's alone: the lead pair's two slots first,
+    /// then a spawned `<name>` / `<name>-nav` pair, a group of more than two
+    /// ambiguous, and every other seat solo whatever the roster also holds.
+    #[test]
+    fn a_pair_link_is_read_from_the_roster_alone() {
+        use super::{Link, partner};
+        let named = |link: Link<'_>| match link {
+            Link::Solo => "solo".to_owned(),
+            Link::Partner(row) => row.name.clone(),
+            Link::Ambiguous => "ambiguous".to_owned(),
+        };
+        let lead = [
+            roster_seat("main", "lead"),
+            roster_seat("worker.0", "colead"),
+            roster_seat("spawned.0", "colead-nav"),
+        ];
+        assert_eq!(named(partner(&lead, true, "main")), "colead");
+        assert_eq!(named(partner(&lead, true, "worker.0")), "lead");
+        assert_eq!(named(partner(&lead, false, "main")), "solo");
+        assert_eq!(named(partner(&lead, false, "worker.0")), "solo");
+        // `colead` is no spawned seat, so its `-nav` links to nothing.
+        assert_eq!(named(partner(&lead, true, "spawned.0")), "solo");
+        assert_eq!(named(partner(&lead[..1], true, "main")), "solo");
+        let spawned = |names: &[&str]| -> Vec<crate::meta::RosterEntry> {
+            names
+                .iter()
+                .enumerate()
+                .map(|(at, name)| roster_seat(&format!("spawned.{at}"), name))
+                .collect()
+        };
+        for (names, slot, expected) in [
+            (&["x", "x-nav"][..], "spawned.0", "x-nav"),
+            (&["x", "x-nav"][..], "spawned.1", "x"),
+            (&["x-nav", "x"][..], "spawned.0", "x"),
+            (&["x"][..], "spawned.0", "solo"),
+            (&["x-nav"][..], "spawned.0", "solo"),
+            (&["x", "x-nav", "x-nav-nav"][..], "spawned.0", "ambiguous"),
+            (&["x", "x-nav", "x-nav-nav"][..], "spawned.1", "ambiguous"),
+            (&["x", "x-nav", "x-nav-nav"][..], "spawned.2", "ambiguous"),
+            (&["x", "x-nav", "x-nav"][..], "spawned.0", "ambiguous"),
+            (&["x", "x", "x-nav"][..], "spawned.2", "ambiguous"),
+            (&["solo", "other", "other"][..], "spawned.0", "solo"),
+            (&["solo", "other", "other"][..], "spawned.1", "solo"),
+            (&["solo", "x", "x-nav"][..], "spawned.0", "solo"),
+            (&["solo", "x", "x-nav"][..], "spawned.2", "x"),
+            (&["x", "x-navy"][..], "spawned.0", "solo"),
+            (&["x", "x-nav"][..], "spawned.9", "solo"),
+        ] {
+            let roster = spawned(names);
+            assert_eq!(
+                named(partner(&roster, false, slot)),
+                expected,
+                "{names:?} {slot}"
+            );
+        }
+        let mixed = [
+            roster_seat("worker.1", "x"),
+            roster_seat("spawned.0", "x-nav"),
+        ];
+        assert_eq!(named(partner(&mixed, false, "spawned.0")), "solo");
+        assert_eq!(named(partner(&mixed, true, "worker.1")), "solo");
+    }
+
+    /// A pair stays diverse only on two PROVEN, different providers; anything
+    /// unproven, an ambiguous link included, is never diversity.
+    #[test]
+    fn a_pair_guard_proves_diversity_only_from_two_known_different_providers() {
+        use super::{PairGuard, Skip};
+        use crate::tool::Provider::{Anthropic, OpenAI};
+        let guard = |partner: Option<&str>, serves| PairGuard {
+            partner: partner.map(ToOwned::to_owned),
+            partner_serves: serves,
+            seat_serves: Some(Anthropic),
+            destinations: vec![
+                ("a".to_owned(), Some(Anthropic)),
+                ("o".to_owned(), Some(OpenAI)),
+            ],
+        };
+        let known = guard(Some("p"), Some(Anthropic));
+        assert_eq!(known.judge(Some(OpenAI)), None);
+        assert_eq!(known.judge(Some(Anthropic)), Some(Skip::PairProvider));
+        assert_eq!(known.judge(None), Some(Skip::PairUnproven));
+        assert_eq!(known.skip("o"), None);
+        assert_eq!(known.skip("a"), Some(Skip::PairProvider));
+        assert_eq!(known.skip("unlisted"), Some(Skip::PairUnproven));
+        assert_eq!(
+            guard(Some("p"), None).judge(Some(OpenAI)),
+            Some(Skip::PairUnproven)
+        );
+        assert_eq!(
+            guard(None, Some(Anthropic)).judge(Some(OpenAI)),
+            Some(Skip::PairUnproven)
+        );
+        assert_eq!(
+            known.words(),
+            "it serves Anthropic, partner p serves Anthropic"
+        );
+        assert_eq!(
+            guard(Some("p"), None).words(),
+            "it serves Anthropic, partner p's provider is unproven"
+        );
+        assert_eq!(
+            PairGuard {
+                seat_serves: None,
+                ..guard(None, None)
+            }
+            .words(),
+            "it serves an unproven provider, its pair link is ambiguous"
+        );
+    }
+
+    /// The guard of a pair already collapsed on Anthropic, listing `opencode`
+    /// (no provider proven), `claude-b` (Anthropic) and `codex-b` (`OpenAI`).
+    fn collapsed_on_anthropic() -> super::PairGuard {
+        use crate::tool::Provider::{Anthropic, OpenAI};
+        super::PairGuard {
+            partner: Some("peer".to_owned()),
+            partner_serves: Some(Anthropic),
+            seat_serves: Some(Anthropic),
+            destinations: vec![
+                ("opencode".to_owned(), None),
+                ("claude-b".to_owned(), Some(Anthropic)),
+                ("codex-b".to_owned(), Some(OpenAI)),
+            ],
+        }
+    }
+
+    /// [`super::choose_paired`] over usable declared `list` for the pair
+    /// [`collapsed_on_anthropic`].
+    fn choose_collapsed(list: &[&str]) -> super::Choice {
+        let list: Vec<Candidate> = list.iter().map(|to| candidate(to, vec![])).collect();
+        super::choose_paired(&list, NOW, None, Some(&collapsed_on_anthropic()))
+    }
+
+    /// A pair already collapsed falls back only to a candidate PROVEN on its
+    /// one provider, passing over an earlier unproven one, and still prefers a
+    /// diverse one (#305 R7).
+    #[test]
+    fn a_collapsed_pair_falls_back_only_to_a_proven_same_provider_candidate() {
+        let fallback = choose_collapsed(&["opencode", "claude-b"]);
+        assert_eq!(fallback.pick, Some(("claude-b".to_owned(), Tier::Unknown)));
+        assert_eq!(
+            fallback.skipped,
+            [("opencode".to_owned(), Skip::PairUnproven)]
+        );
+        let diverse = choose_collapsed(&["opencode", "claude-b", "codex-b"]);
+        assert_eq!(diverse.pick, Some(("codex-b".to_owned(), Tier::Unknown)));
+    }
+
+    /// A pair already collapsed whose only candidates prove no provider holds:
+    /// nothing proves it stays where it is (#305 R7).
+    #[test]
+    fn a_collapsed_pair_with_only_unproven_candidates_holds() {
+        let unknown = choose_collapsed(&["opencode"]);
+        assert_eq!(unknown.pick, None);
+        assert_eq!(
+            unknown.skipped,
+            [("opencode".to_owned(), Skip::PairUnproven)]
+        );
+    }
+
+    /// Only a move to a candidate proven on the collapsed pair's provider is
+    /// named as staying on it (#305 R7).
+    #[test]
+    fn a_collapsed_pair_stays_only_on_a_proven_same_provider_candidate() {
+        use crate::tool::Provider::Anthropic;
+        let pair = collapsed_on_anthropic();
+        assert_eq!(pair.collapsed(), Some(Anthropic));
+        assert_eq!(pair.stays("claude-b"), Some(Anthropic));
+        assert_eq!(pair.stays("opencode"), None);
+        assert_eq!(pair.stays("unlisted"), None);
+        assert_eq!(pair.stays("codex-b"), None);
+        let diverse = super::PairGuard {
+            partner_serves: Some(crate::tool::Provider::OpenAI),
+            ..collapsed_on_anthropic()
+        };
+        assert_eq!(diverse.collapsed(), None);
+        assert_eq!(diverse.stays("claude-b"), None);
     }
 
     /// A codex seat whose recorded account is `home`: an identity the quota

@@ -219,6 +219,20 @@ impl SimpleCommand {
     pub fn tool(&self) -> ToolKind {
         ToolKind::from_binary_name(&self.binary)
     }
+
+    /// Whether the harness is the first command word: no `env` prefix runs it.
+    #[must_use]
+    pub(crate) const fn runs_first(&self) -> bool {
+        self.binary_index == 0
+    }
+
+    /// The quote-resolved words after the harness word.
+    #[must_use]
+    pub(crate) fn operands(&self) -> &[String] {
+        self.word_values
+            .get(self.binary_index + 1..)
+            .unwrap_or_default()
+    }
 }
 
 /// The model flag spellings ae may READ for a tool. Empty means ae never

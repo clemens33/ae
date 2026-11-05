@@ -808,10 +808,86 @@ prompt, human input), `unknown-frame` (ae cannot prove the frame idle),
 `background-task` (a Muse frame shows only the stop and its background tasks,
 and no long limit proves they may end), `lock`
 (another writer holds the lifecycle or send lock), `no-candidate`, `ineligible`
-(the operator's rules say this seat does not move) and `other` (the rest, and the
-give-up hold of a spent limit episode). `busy` and
-`lock` are the transient classes: their record is a hold, every other class a
-refusal. `ae reseat` itself prints its messages unchanged.
+(the operator's rules say this seat does not move), `observed-choice` (the
+seat's persisted observed model or effort choice stands), `pair-provider` (no
+usable candidate keeps the seat's review pair on two proven providers),
+`pair-changed` (under the lifecycle lock the chosen destination no longer does)
+and `other` (the rest, and the give-up hold of a spent limit episode). `busy`,
+`lock`, `observed-choice` and `pair-changed` are transient classes: their record
+is a hold, every other class a refusal. `ae reseat` itself prints its messages unchanged.
+
+### The pair guard (#305)
+
+A seat with a review-pair partner is never moved onto the partner's provider by
+auto reseat. The partner comes from the roster alone (`autoreseat::partner`): in
+a `layout = lead-pair` session `main` and `worker.0` are each other's, before any
+name; otherwise two SPAWNED seats named `<name>` and `<name>-nav`. Those name
+links are walked over every spawned seat, and a seat whose linked group holds
+more than two seats (a chain `x`, `x-nav`, `x-nav-nav`, or a linked name written
+twice) is AMBIGUOUS: paired with a partner nothing proves, never unpaired. A seat
+no name links is solo, whatever else the roster holds, and a solo seat's choices,
+records and notices are exactly what they were. Nothing is persisted: the link is
+re-read from the roster every time.
+
+A provider is proven from a resolved command alone (`tool::served_provider`):
+Claude Code is Anthropic, Codex OpenAI, Muse Meta, Grok Build xAI, Gemini CLI
+Google — unless the command carries an `env` prefix, a leading assignment other
+than the tool's own account variable, codex `--oss`, `--profile`, `-p` or a
+`model_provider` config pair, or muse `--provider` naming another lab.
+Antigravity and OpenCode prove none (their in-pane model switch reaches other
+labs), nor does an unknown tool. A SEAT serves what its CURRENT roster row
+resolves to — its recorded profile through its recorded client, as its own
+launch reads it — and only while that command's tool is the tool the row records
+running (`agent_bin`); a disagreement, or anything ae cannot read, proves
+nothing. A CANDIDATE serves what its profile resolves to, as a move to it
+resolves it (`leg::pair_of`).
+
+Every chooser — the first-sight forecast, the trigger and the leg — runs
+`autoreseat::choose_paired`: after every other rule, a candidate is usable only
+when the partner's provider and the candidate's are both proven and differ
+(`PairGuard::judge`); the rest are passed over as `partner's provider` or
+`provider unproven`, and the order among the usable ones is the order it always
+was. There is no exception on any route: headroom, a drawn limit and an urgent
+start all HOLD rather than collapse a pair. A pair ALREADY collapsed — the seat
+and its partner both proven on one provider (`PairGuard::collapsed`) — has no
+diversity to protect: it still prefers a candidate that makes it diverse, and
+with none moves to the best candidate PROVEN on that same provider
+(`PairGuard::stays`), its `auto-reseat-done` summary and its one notice led by
+`pair-provider: pair stays on <Provider>` and no collapse line after it; an
+unproven candidate stays passed over, so with only those it holds, and an
+unproven seat or partner gets no such fallback. With nothing usable, and at least one
+candidate passed over by the guard alone, the leg or trigger journals
+`auto-reseat-refused` with the class `pair-provider`, naming what the seat
+serves and what its partner serves (or that the partner's provider is unproven,
+or the link ambiguous), and tells it as every refusal is told; a refusal for
+quota, history or configuration alone keeps `no-candidate`, byte for byte. A
+headroom refusal stays closed until the re-arm, a limit one cools and retries
+as ever, and a later round refusing for the very same reason under the same key
+is journaled but not told again. Manual `ae reseat` is not guarded and prints
+what it always printed.
+
+A seat whose partner has an attempt in flight declines at the trigger, writing
+nothing. The binding check runs under the session's lifecycle lock — the one
+lock every move of either half takes, held through the meta move — in
+`reseat::prepare`'s automatic gate, before any carry check or stop
+(`leg::pair_changed`): the partner's row read under that lock, against the
+destination's provider. A pair the chosen destination no longer keeps on two
+proven providers, and that it does not stay on as above (`stays_serving`, the
+same proof as the chooser's), holds as `auto-reseat-held` `pair-changed`
+(transient), with nothing stopped. After an automatic move that was to keep the
+pair diverse, the leg reads the pair once more,
+and a pair no longer on two proven providers is told one more line, `auto
+reseat: pair-provider collapse: …`, beside the move's own notice. Two test
+seams, `@auto-reseat-pair` (after the choice, before the lifecycle lock) and
+`@auto-reseat-after` (after the move returns, before that read), ride the
+existing read gate (`src/lib.rs::read_gate`).
+
+Named residuals, a command-based approximation: a profile or client edited in
+config after its seat launched, with no change of tool, reads as the edited
+command; a reroute inside a tool's own config file (codex `config.toml`, Claude
+Code `settings.json`) is invisible; and a manual partner move after an automatic
+move's lifecycle lock drops is told only when it lands before the leg's
+post-move read, and otherwise neither blocked nor told.
 
 ### Headroom episodes
 

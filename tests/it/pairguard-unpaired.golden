@@ -1,0 +1,2 @@
+{"ts":"$TIME","actor":"watchdog","action":"auto-reseat-refused","target":"solo","ref":"$KEY","target_slot":"spawned.0","target_session":"$SESSION","summary":"no-candidate: refused: no usable candidate: missing (not configured here), first (exhausted)","schema_version":1}
+{"ts":"$TIME","actor":"watchdog","action":"chat","summary":"auto reseat: no-candidate: solo not moved — refused: no usable candidate: missing (not configured here), first (exhausted). Next: move it by hand (ae reseat $SESSION solo --using <profile>) or wait for the reset.","schema_version":1}

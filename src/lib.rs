@@ -3424,7 +3424,8 @@ pub(crate) fn fleet_order() -> theme::FleetOrder {
 /// `<dir>/<key>` exists, the read named `key` holds — a session's journal read
 /// by its name, a standing console's transcript stages as `@board-current` and
 /// `@board-earlier` whatever the session, the fleet's world read as `@world`,
-/// the in-app reader's file read as `reader` —
+/// the in-app reader's file read as `reader`, the auto reseat leg's pair reads
+/// as `@auto-reseat-pair` and `@auto-reseat-after` —
 /// after appending one line `held <key>` to `<dir>/trace`, polling for at most
 /// 60 s. Every read that finds the file holds again; `trace` itself is never a
 /// gate. An installed core returns before reading the variable; unset, nothing

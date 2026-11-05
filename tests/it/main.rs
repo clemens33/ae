@@ -128,6 +128,7 @@ mod o6list_spec;
 mod o8snap_spec;
 mod obsreask_spec;
 mod oc2b_spec;
+mod pairguard_spec;
 mod parity;
 mod phase2;
 mod phase3;

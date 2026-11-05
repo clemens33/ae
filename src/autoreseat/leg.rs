@@ -334,6 +334,100 @@ pub(crate) fn cover_warning(
         .and_then(super::nudge_line)
 }
 
+/// The provider the seat of roster row `row` serves NOW: its recorded profile
+/// through its recorded client, as its own launch reads it, classified by
+/// [`crate::tool::served_provider`] — and only when that command's tool is the
+/// tool the row records running (`agent_bin`). Anything ae cannot read, and a
+/// command that disagrees with the running tool, proves nothing.
+fn serves(
+    cfg: &crate::config::IdentityConfig,
+    row: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+) -> Option<crate::tool::Provider> {
+    let profile = row.profile.as_deref()?;
+    let command =
+        crate::run::read_seat_command(cfg, profile, &row.name, &row.slot, &row.client, home)
+            .ok()?;
+    let tool = crate::launch_cmd::lex_simple_command(command.as_str())
+        .ok()?
+        .tool();
+    let running = crate::tool::ToolKind::from_binary_name(row.binary.as_deref()?);
+    (tool.is_known() && tool == running)
+        .then(|| crate::tool::served_provider(command.as_str()))
+        .flatten()
+}
+
+/// The pair guard of the seat at `slot`, read from `bytes` (the session's
+/// meta) and its identity config, or `None` for a seat with no pair partner
+/// ([`super::partner`]). Every `[profiles]` entry is resolved as a move to it
+/// resolves it, so each candidate's provider is the one its move would serve.
+pub(crate) fn pair_of(
+    dir: &Path,
+    bytes: &[u8],
+    roster: &[crate::meta::RosterEntry],
+    lead_pair: bool,
+    slot: &str,
+) -> Option<super::PairGuard> {
+    let partner = match super::partner(roster, lead_pair, slot) {
+        super::Link::Solo => return None,
+        super::Link::Partner(row) => Some(row),
+        super::Link::Ambiguous => None,
+    };
+    let home = crate::doors::home();
+    let home = home.as_deref();
+    let cfg = crate::reseat::identity_config(dir, bytes).ok();
+    let read = |row: &crate::meta::RosterEntry| cfg.as_ref().and_then(|cfg| serves(cfg, row, home));
+    let seat = roster.iter().find(|row| row.slot == slot);
+    let destinations = cfg.as_ref().map_or_else(Vec::new, |cfg| {
+        cfg.profiles
+            .iter()
+            .map(|(name, _)| {
+                let command = cfg.command(name, home).ok().flatten();
+                let serves = command.and_then(|found| crate::tool::served_provider(found.as_str()));
+                (name.clone(), serves)
+            })
+            .collect()
+    });
+    Some(super::PairGuard {
+        partner: partner.map(|row| row.name.clone()),
+        partner_serves: partner.and_then(read),
+        seat_serves: seat.and_then(read),
+        destinations,
+    })
+}
+
+/// [`pair_of`] over the session meta at `dir` as it reads now.
+fn pair_now(dir: &Path, slot: &str) -> Option<super::PairGuard> {
+    let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    let lead_pair = crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair";
+    pair_of(dir, &bytes, meta.roster(), lead_pair, slot)
+}
+
+/// THE LIFECYCLE GATE (#305), asked by an automatic reseat under the session's
+/// lifecycle lock and before any stop, over `locked`, the meta read under that
+/// lock: why a move of the seat at `slot` to the profile resolving to `command`
+/// no longer keeps its pair on two proven providers, or `None` when it does,
+/// the pair already serves one proven provider that the destination is proven
+/// on too ([`super::PairGuard::stays_serving`]), or the seat has no partner.
+pub(crate) fn pair_changed(dir: &Path, locked: &[u8], slot: &str, command: &str) -> Option<String> {
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(locked));
+    let lead_pair = crate::lifecycle::meta_value(locked, "layout") == "lead-pair";
+    let pair = pair_of(dir, locked, meta.roster(), lead_pair, slot)?;
+    let to = crate::tool::served_provider(command);
+    // A pair already collapsed may stay on its provider, proven (R7).
+    if pair.stays_serving(to).is_some() {
+        return None;
+    }
+    pair.judge(to)?;
+    Some(format!(
+        "auto reseat: the pair changed before the stop: {}, and the destination serves {} — \
+         nothing was stopped",
+        pair.words(),
+        to.map_or("an unproven provider", crate::tool::Provider::word)
+    ))
+}
+
 /// The listed candidates as the chooser judges them, joined with `quota`:
 /// the windows that bind each one's account, per account and window only the
 /// newest usable reading ([`super::current`]), and whether another seat of the
@@ -773,6 +867,8 @@ const fn skip_word(skip: Skip) -> &'static str {
         Skip::LeftOnLimit => "left on its limit",
         Skip::NoRoom => "no headroom",
         Skip::LeftOnHeadroom => "left on headroom",
+        Skip::PairProvider => "partner's provider",
+        Skip::PairUnproven => "provider unproven",
     }
 }
 
@@ -1017,7 +1113,9 @@ pub(crate) fn run(
         &latched,
         now.epoch(),
     );
-    let choice = super::choose_with(&judged, now.epoch(), threshold);
+    // The pair as this leg reads it, under the seat's lock (#305).
+    let pair = pair_of(dir, &bytes, meta.roster(), told.1, &argv.slot);
+    let choice = super::choose_paired(&judged, now.epoch(), threshold, pair.as_ref());
     let named = |pick: &str| format!("{pick}{}", choice.provenance.word());
     let Some((pick, tier)) = choice.pick else {
         if let Some(why) = observed_ending(dir, &argv.slot).map(|why| tagged(&why, &cause)) {
@@ -1028,12 +1126,23 @@ pub(crate) fn run(
             }
             return Ok(code);
         }
-        let why = tagged(&no_candidate(&choice.skipped), &cause);
+        let (class, why) = refusal(&choice, pair.as_ref());
+        let why = tagged(&why, &cause);
+        let seat_of = (argv.session.as_str(), argv.slot.as_str(), agent.as_str());
+        let retell = !pair_told(&events, seat_of, class, &key, &why);
         let code = close(&argv, &agent, now, (REFUSED_ACTION, &why), err)?;
-        let ending = super::Ending::Refused(CauseClass::NoCandidate, &why);
-        tell(&argv, now, told, &notice(ending));
+        if retell {
+            tell(
+                &argv,
+                now,
+                told,
+                &notice(super::Ending::Refused(class, &why)),
+            );
+        }
         return Ok(code);
     };
+    // A test seam: the choice is made and the lifecycle lock not yet taken.
+    crate::read_gate("@auto-reseat-pair");
     // What the move changes, as the notice names it: the tool and model before
     // it, read now, and the model the target pins.
     let pin = |profile: &str| crate::reseat::resolved(dir, profile).and_then(|found| found.pin);
@@ -1079,8 +1188,29 @@ pub(crate) fn run(
         &named(&pick),
         &String::from_utf8_lossy(&said),
     );
+    // A pair that already served one proven provider and still does is named
+    // so, ahead of the rest, by the move's record and notice alike (R7).
+    let stays = pair
+        .as_ref()
+        .and_then(|pair| pair.stays(&pick))
+        .filter(|_| matches!(ended, Ended::Moved { .. }));
+    let summary = match stays {
+        Some(provider) => format!("{}: {summary}", super::stays_on(provider)),
+        None => summary,
+    };
     let summary = tagged(&summary, &cause);
     record(&argv, &agent, now, action, &reference, &summary);
+    // A test seam: the move has returned and its pair is not yet read again.
+    if matches!(ended, Ended::Moved { .. }) {
+        crate::read_gate("@auto-reseat-after");
+    }
+    // After an automatic move that was to keep the pair diverse, a pair no
+    // longer on two proven providers is told once more, beside the move's own
+    // notice (#305).
+    let collapsed = (matches!(ended, Ended::Moved { .. }) && stays.is_none())
+        .then(|| pair_now(dir, &argv.slot))
+        .flatten()
+        .filter(|pair| pair.judge(pair.seat_serves).is_some());
     let text = match ended {
         Ended::Moved { fate } => {
             let after = crate::meta::read_bytes(dir).unwrap_or_default();
@@ -1108,10 +1238,10 @@ pub(crate) fn run(
                 dirty,
                 cause: &cause,
             };
-            notice(if tasks.is_empty() {
-                super::Ending::Moved(moved)
-            } else {
-                super::Ending::MovedEndingTasks(moved, &tasks)
+            notice(match stays {
+                Some(provider) => super::Ending::PairStays(provider, moved, &tasks),
+                None if tasks.is_empty() => super::Ending::Moved(moved),
+                None => super::Ending::MovedEndingTasks(moved, &tasks),
             })
         }
         Ended::Refused(class) if retold(class) => String::new(),
@@ -1121,6 +1251,15 @@ pub(crate) fn run(
     };
     if !text.is_empty() {
         tell(&argv, now, told, &text);
+    }
+    if let Some(pair) = &collapsed {
+        let ending = super::Ending::PairCollapse(pair);
+        tell(
+            &argv,
+            now,
+            told,
+            &super::notice(&argv.session, &agent, &ending),
+        );
     }
     Ok(if matches!(ended, Ended::Moved { .. }) {
         0
@@ -1145,8 +1284,13 @@ pub(crate) struct Sight {
 pub(crate) enum Plan {
     /// Nothing, and nothing is written: why, for the trigger's error stream.
     Decline(String),
-    /// Close the episode keyed `key`: nothing listed is usable.
-    Refuse { key: Timestamp, why: String },
+    /// Close the episode keyed `key`: nothing listed is usable, for the
+    /// reason `class` names.
+    Refuse {
+        key: Timestamp,
+        class: CauseClass,
+        why: String,
+    },
     /// Open an attempt under `key` and start the leg that moves the seat to
     /// `to`; `note` follows `from <profile> to <to>` in the attempt's summary —
     /// the pick's provenance first — and `cause` names a headroom trigger
@@ -1181,6 +1325,7 @@ pub(crate) fn plan(
 
 /// [`plan`] with `start`, the trigger's own fresh read: an episode it finds
 /// urgent is due at once, whatever the threshold says.
+#[cfg(test)]
 pub(crate) fn plan_with(
     settings: &super::Settings,
     seat: &Seat<'_>,
@@ -1188,6 +1333,25 @@ pub(crate) fn plan_with(
     start: &super::StartRead,
     events: &[crate::events::Event],
     gather: impl Fn(&[String], (&[(String, Timestamp)], &[String])) -> Vec<Candidate>,
+    now: Timestamp,
+) -> Plan {
+    plan_paired(settings, seat, sight, start, events, gather, None, now)
+}
+
+/// [`plan_with`] for a seat with a pair partner: the chooser passes over every
+/// candidate `pair` judges collapsing (#305).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the trigger's own reads, each handed over once"
+)]
+pub(crate) fn plan_paired(
+    settings: &super::Settings,
+    seat: &Seat<'_>,
+    sight: &Sight,
+    start: &super::StartRead,
+    events: &[crate::events::Event],
+    gather: impl Fn(&[String], (&[(String, Timestamp)], &[String])) -> Vec<Candidate>,
+    pair: Option<&super::PairGuard>,
     now: Timestamp,
 ) -> Plan {
     let list = match super::eligible(settings, seat) {
@@ -1230,23 +1394,25 @@ pub(crate) fn plan_with(
         let why = Ineligible::Unmapped;
         return Plan::Decline(format!("not eligible ({why:?})"));
     }
-    let choice = super::choose_with(&judged, now.epoch(), room);
+    let choice = super::choose_paired(&judged, now.epoch(), room, pair);
     let cause = found.cause();
-    match choice.pick {
-        Some((to, _)) => Plan::Attempt {
+    let Some((to, _)) = &choice.pick else {
+        let (class, why) = refusal(&choice, pair);
+        return Plan::Refuse {
             key: found.key,
-            to,
-            note: format!(
-                "{}{}",
-                choice.provenance.word(),
-                attempt_note(cause, &choice.skipped)
-            ),
-            cause: cause.to_owned(),
-        },
-        None => Plan::Refuse {
-            key: found.key,
-            why: tagged(&no_candidate(&choice.skipped), cause),
-        },
+            class,
+            why: tagged(&why, cause),
+        };
+    };
+    Plan::Attempt {
+        key: found.key,
+        to: to.clone(),
+        note: format!(
+            "{}{}",
+            choice.provenance.word(),
+            attempt_note(cause, &choice.skipped)
+        ),
+        cause: cause.to_owned(),
     }
 }
 
@@ -1270,6 +1436,49 @@ fn attempt_note(cause: &str, skipped: &[(String, Skip)]) -> String {
 /// The refusal that names each candidate passed over, and why.
 fn no_candidate(skipped: &[(String, Skip)]) -> String {
     CauseClass::NoCandidate.lead(&format!("refused: {}", unusable(skipped)))
+}
+
+/// The refusal of a choice with no pick, and its class: `pair-provider` when
+/// the pair guard passed over a candidate (#305), naming what the seat and
+/// its partner serve; otherwise the [`no_candidate`] refusal, byte for byte.
+fn refusal(choice: &super::Choice, pair: Option<&super::PairGuard>) -> (CauseClass, String) {
+    let guarded = choice
+        .skipped
+        .iter()
+        .any(|(_, skip)| matches!(skip, Skip::PairProvider | Skip::PairUnproven));
+    match pair.filter(|_| guarded) {
+        Some(pair) => (
+            CauseClass::PairProvider,
+            CauseClass::PairProvider.lead(&format!(
+                "refused: {}: {}",
+                pair.words(),
+                unusable(&choice.skipped)
+            )),
+        ),
+        None => (CauseClass::NoCandidate, no_candidate(&choice.skipped)),
+    }
+}
+
+/// Whether the watchdog already journaled the pair refusal `why` for this
+/// `(session, slot, agent)` seat under the episode `key`: a later round that
+/// refuses for the very same reason is recorded, not told again (#305). `why`
+/// is compared as [`record`] keeps it, [`bounded`].
+fn pair_told(
+    events: &[crate::events::Event],
+    (session, slot, agent): (&str, &str, &str),
+    class: CauseClass,
+    key: &str,
+    why: &str,
+) -> bool {
+    let kept = bounded(why);
+    class == CauseClass::PairProvider
+        && events.iter().any(|event| {
+            event.actor == WATCHDOG_ACTOR
+                && event.action == REFUSED_ACTION
+                && event.reference.as_deref() == Some(key)
+                && event.summary.as_deref() == Some(kept.as_str())
+                && crate::watchdog::event_is_addressed_to(event, session, slot, agent)
+        })
 }
 
 fn unusable(skipped: &[(String, Skip)]) -> String {
@@ -1599,6 +1808,18 @@ pub(crate) fn trigger(
         start.quiet = super::quiet_pair(capture.as_deref(), again.as_deref(), &bin);
     }
     let events = crate::watchdog_daemon::read_events(dir);
+    // A seat whose pair partner is mid-move waits for that move: two halves
+    // never choose against each other's row at once (#305).
+    let lead_pair = crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair";
+    if let super::Link::Partner(other) = super::partner(meta.roster(), lead_pair, slot) {
+        let (at, name) = (other.slot.as_str(), other.name.as_str());
+        let limit = super::episode(&events, own_session, at, name);
+        let headroom = super::headroom_episode(&events, own_session, at, name);
+        if super::flying(limit.as_ref(), headroom.as_ref()).is_some() {
+            return decline(err, "its pair partner's move is in flight");
+        }
+    }
+    let pair = pair_of(dir, &bytes, meta.roster(), lead_pair, slot);
     let unlisted = std::cell::Cell::new(false);
     // Read only once the plan reaches the chooser.
     let gather = |list: &[String], left: (&[(String, Timestamp)], &[String])| {
@@ -1620,7 +1841,16 @@ pub(crate) fn trigger(
         slot: slot.to_owned(),
         key,
     };
-    let planned = plan_with(&settings, &seat, &sight, &start, &events, gather, now);
+    let planned = plan_paired(
+        &settings,
+        &seat,
+        &sight,
+        &start,
+        &events,
+        gather,
+        pair.as_ref(),
+        now,
+    );
     // A no-candidate ending of a due episode names a held choice instead (#269),
     // once per key: the episode `plan` judged, chosen as it chose it.
     let due = || {
@@ -1650,11 +1880,15 @@ pub(crate) fn trigger(
     }
     match planned {
         Plan::Decline(why) => decline(err, &why),
-        Plan::Refuse { key, why } => {
+        Plan::Refuse { key, class, why } => {
             let argv = argv(key);
+            let seat_of = (own_session, slot, row.name.as_str());
+            let retell = !pair_told(&events, seat_of, class, &key.to_string(), &why);
             let code = close(&argv, &row.name, now, (REFUSED_ACTION, &why), err)?;
-            let ending = super::Ending::Refused(CauseClass::NoCandidate, &why);
-            said(&argv, now, &super::notice(own_session, &row.name, &ending));
+            if retell {
+                let ending = super::Ending::Refused(class, &why);
+                said(&argv, now, &super::notice(own_session, &row.name, &ending));
+            }
             Ok(code)
         }
         Plan::Attempt {
@@ -1702,7 +1936,20 @@ fn close(
 /// Journal one record as the watchdog, routed to the seat by slot and session
 /// so the seat's episode fold reads it whatever the seat is called.
 fn record(argv: &Argv, agent: &str, now: Timestamp, action: &str, reference: &str, summary: &str) {
-    let _ = crate::store::open(&argv.dir).append_event(&crate::tracked::event_line(&EventFields {
+    let line = journal_line(argv, agent, now, action, reference, summary);
+    let _ = crate::store::open(&argv.dir).append_event(&line);
+}
+
+/// The event line [`record`] appends: its summary [`bounded`].
+fn journal_line(
+    argv: &Argv,
+    agent: &str,
+    now: Timestamp,
+    action: &str,
+    reference: &str,
+    summary: &str,
+) -> String {
+    crate::tracked::event_line(&EventFields {
         ts: now,
         actor: WATCHDOG_ACTOR,
         action,
@@ -1723,7 +1970,7 @@ fn record(argv: &Argv, agent: &str, now: Timestamp, action: &str, reference: &st
         identity_gap: "",
         summary: &bounded(summary),
         body_file: "",
-    }));
+    })
 }
 
 #[cfg(test)]
@@ -3006,6 +3253,7 @@ mod tests {
             ),
             Plan::Refuse {
                 key,
+                class: CauseClass::NoCandidate,
                 why: "no-candidate: refused: no usable candidate: opus55x (not configured here)"
                     .to_owned()
             }
@@ -3107,6 +3355,7 @@ mod tests {
             plan_at(&events, due, &nothing),
             Plan::Refuse {
                 key,
+                class: CauseClass::NoCandidate,
                 why: "no-candidate: refused: no usable candidate: opus55x (not configured here)"
                     .to_owned()
             },
@@ -3331,6 +3580,212 @@ mod tests {
         assert!(read("spawned.1", ("lead", "source", Some("one"))).is_none());
     }
 
+    const TOLD_AT: i64 = 1_793_000_000;
+    const AMBIGUOUS: &str =
+        "pair-provider: refused: it serves Anthropic, its pair link is ambiguous";
+
+    /// The pair refusal the leg journals for `slot`, read back as the journal keeps it.
+    fn refused_as_journaled(slot: &str, agent: &str, why: &str) -> Event {
+        let key = Timestamp::from_epoch(TOLD_AT);
+        let argv = Argv {
+            session: "aedev".into(),
+            dir: PathBuf::from("/nonexistent"),
+            slot: slot.into(),
+            key,
+        };
+        let line = journal_line(&argv, agent, key, REFUSED_ACTION, &key.to_string(), why);
+        Event::parse_line(&line).expect("the leg writes a well-formed record")
+    }
+
+    /// Whether the seat `slot`/`agent` of session `aedev` was already told `why`.
+    fn told(events: &[Event], (slot, agent): (&str, &str), why: &str) -> bool {
+        let key = Timestamp::from_epoch(TOLD_AT).to_string();
+        let seat = ("aedev", slot, agent);
+        pair_told(events, seat, CauseClass::PairProvider, &key, why)
+    }
+
+    /// A pair refusal counts as told for the seat it is addressed to, by slot
+    /// or by its legacy display name, never for another seat (#305).
+    #[test]
+    fn a_pair_refusal_counts_as_told_only_for_the_seat_it_addresses() {
+        let theirs = [refused_as_journaled("spawned.1", "scout", AMBIGUOUS)];
+        assert!(told(&theirs, ("spawned.1", "scout"), AMBIGUOUS));
+        assert!(!told(&theirs, ("spawned.2", "scout-nav"), AMBIGUOUS));
+        let key = Timestamp::from_epoch(TOLD_AT);
+        let by_name = Event::parse_line(&format!(
+            r#"{{"ts":"{key}","actor":"watchdog","action":"{REFUSED_ACTION}","target":"scout","ref":"{key}","summary":"{AMBIGUOUS}"}}"#
+        ))
+        .expect("a well-formed record");
+        let by_name = std::slice::from_ref(&by_name);
+        assert!(told(by_name, ("spawned.1", "scout"), AMBIGUOUS));
+        assert!(!told(by_name, ("spawned.2", "scout-nav"), AMBIGUOUS));
+        let other = CauseClass::NoCandidate;
+        let seat = ("aedev", "spawned.1", "scout");
+        assert!(!pair_told(
+            &theirs,
+            seat,
+            other,
+            &key.to_string(),
+            AMBIGUOUS
+        ));
+    }
+
+    /// Only the watchdog's own refusal counts as told (#305).
+    #[test]
+    fn a_pair_refusal_counts_as_told_only_when_the_watchdog_wrote_it() {
+        let key = Timestamp::from_epoch(TOLD_AT);
+        let forged = Event::parse_line(&format!(
+            r#"{{"ts":"{key}","actor":"lead","action":"{REFUSED_ACTION}","target":"scout","ref":"{key}","target_slot":"spawned.1","target_session":"aedev","summary":"{AMBIGUOUS}"}}"#
+        ))
+        .expect("a well-formed record");
+        assert!(!told(&[forged], ("spawned.1", "scout"), AMBIGUOUS));
+    }
+
+    /// A reason longer than the journal keeps counts as told once journaled:
+    /// it is compared as the journal keeps it (#305).
+    #[test]
+    fn a_long_pair_refusal_counts_as_told_as_the_journal_keeps_it() {
+        let long = format!(
+            "{AMBIGUOUS}: no usable candidate: {}",
+            ["first", "second", "third", "fourth", "fifth", "sixth"]
+                .map(|to| format!("{to} (partner's provider)"))
+                .join(", ")
+        );
+        assert!(long.chars().count() > SUMMARY_CHARS, "{long}");
+        let journaled = [refused_as_journaled("spawned.1", "scout", &long)];
+        assert!(told(&journaled, ("spawned.1", "scout"), &long));
+        assert!(!told(&journaled, ("spawned.1", "scout"), AMBIGUOUS));
+    }
+
+    /// What a seat serves is its CURRENT config command, and only while that
+    /// command's tool is the one its row records running: a same-tool edit
+    /// after launch reads as edited (the named approximation), a tool change
+    /// proves nothing, and every profile's provider is the one its move would
+    /// serve (#305).
+    #[test]
+    fn a_pair_guard_reads_the_current_command_and_the_running_tool() {
+        use crate::tool::Provider::{Anthropic, OpenAI};
+        let root = Root(std::env::temp_dir().join(format!("ae-leg-pair-{}", std::process::id())));
+        let dir = root.0.join("demo");
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+        let config = dir.join("config");
+        let meta = format!(
+            "session=demo\nconfig={}\nseat.spawned.0=x-nav\nprofile.spawned.0=own\nagent_bin.spawned.0=claude\n\
+             seat.spawned.1=x\nprofile.spawned.1=peer\nagent_bin.spawned.1=codex\n",
+            config.display()
+        );
+        let read = |peer: &str| {
+            let text = format!(
+                "[profiles]\nown = claude --pg own\npeer = {peer}\nother = agy --model gemini-4\n"
+            );
+            assert!(std::fs::write(&config, text).is_ok(), "the config");
+            let parsed = crate::meta::Meta::parse(&meta);
+            pair_of(&dir, meta.as_bytes(), parsed.roster(), false, "spawned.0")
+        };
+        let pair = read("codex -m gpt-6").expect("a paired seat");
+        assert_eq!(pair.partner.as_deref(), Some("x"));
+        assert_eq!(
+            (pair.seat_serves, pair.partner_serves),
+            (Some(Anthropic), Some(OpenAI))
+        );
+        assert_eq!(
+            pair.destinations,
+            [
+                ("own".to_owned(), Some(Anthropic)),
+                ("peer".to_owned(), Some(OpenAI)),
+                ("other".to_owned(), None)
+            ]
+        );
+        // Edited after launch, same tool: the edited command decides.
+        assert_eq!(
+            read("codex --oss").and_then(|pair| pair.partner_serves),
+            None
+        );
+        // Edited onto another tool than the one running: nothing is proven.
+        assert_eq!(
+            read("claude --pg peer").and_then(|pair| pair.partner_serves),
+            None
+        );
+        let solo = crate::meta::Meta::parse("seat.spawned.0=solo\nprofile.spawned.0=own\n");
+        assert_eq!(pair_of(&dir, b"", solo.roster(), false, "spawned.0"), None);
+    }
+
+    /// A pair session `demo` under `root`: `x-nav` (spawned.0) and `x`
+    /// (spawned.1) on the profiles `own` and `peer` of `profiles`, each with
+    /// its `(agent_bin, client)` row; returns the session dir and its meta.
+    fn pair_session(
+        root: &Root,
+        profiles: &str,
+        seat: (&str, Option<&str>),
+        peer: (&str, Option<&str>),
+    ) -> (PathBuf, String) {
+        let dir = root.0.join("demo");
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+        let config = dir.join("config");
+        assert!(std::fs::write(&config, profiles).is_ok(), "the config");
+        let client = |slot: &str, label: Option<&str>| {
+            label.map_or_else(String::new, |label| format!("client.{slot}={label}\n"))
+        };
+        let meta = format!(
+            "session=demo\nconfig={}\nseat.spawned.0=x-nav\nprofile.spawned.0=own\nagent_bin.spawned.0={}\n{}\
+             seat.spawned.1=x\nprofile.spawned.1=peer\nagent_bin.spawned.1={}\n{}",
+            config.display(),
+            seat.0,
+            client("spawned.0", seat.1),
+            peer.0,
+            client("spawned.1", peer.1),
+        );
+        (dir, meta)
+    }
+
+    /// A seat whose recorded client swaps its profile's binary for another
+    /// tool's serves the CLIENT's tool's provider, while that tool runs (#305).
+    #[test]
+    fn a_recorded_client_that_swaps_the_tool_decides_what_the_seat_serves() {
+        use crate::tool::Provider::{Anthropic, OpenAI};
+        let root = Root(std::env::temp_dir().join(format!("ae-leg-client-{}", std::process::id())));
+        let profiles =
+            "[clients]\nalt = codex\n[profiles]\nown = claude --pg own\npeer = claude --pg peer\n";
+        let read = |seat| {
+            let (dir, meta) = pair_session(&root, profiles, seat, ("claude", None));
+            let parsed = crate::meta::Meta::parse(&meta);
+            pair_of(&dir, meta.as_bytes(), parsed.roster(), false, "spawned.0")
+                .map(|pair| (pair.seat_serves, pair.partner_serves))
+        };
+        assert_eq!(
+            read(("codex", Some("alt"))),
+            Some((Some(OpenAI), Some(Anthropic)))
+        );
+        assert_eq!(
+            read(("claude", None)),
+            Some((Some(Anthropic), Some(Anthropic)))
+        );
+        // The client names codex, the row records claude running: unproven.
+        assert_eq!(read(("claude", Some("alt"))), Some((None, Some(Anthropic))));
+    }
+
+    /// Under the lifecycle lock, a pair already collapsed on one provider lets
+    /// a move go on only to a destination PROVEN on some provider: the same
+    /// proof the chooser and the `stays` label use (#305 R7).
+    #[test]
+    fn the_lifecycle_gate_holds_a_collapsed_pair_whose_destination_proves_nothing() {
+        let root = Root(std::env::temp_dir().join(format!("ae-leg-gate-{}", std::process::id())));
+        let profiles = "[profiles]\nown = claude --pg own\npeer = claude --pg peer\n";
+        let (dir, meta) = pair_session(&root, profiles, ("claude", None), ("claude", None));
+        let gate = |command: &str| pair_changed(&dir, meta.as_bytes(), "spawned.0", command);
+        assert_eq!(gate("claude --pg other"), None);
+        assert_eq!(gate("codex -m gpt-6"), None);
+        let passed: Vec<&str> = ["opencode --model x", "agy --model gemini-4", "codex --oss"]
+            .into_iter()
+            .filter(|unproven| {
+                !gate(unproven).is_some_and(|held| {
+                    held.contains("the destination serves an unproven provider")
+                })
+            })
+            .collect();
+        assert!(passed.is_empty(), "unproven yet not held: {passed:?}");
+    }
+
     /// The trigger acts only for a seat of its OWN session: `@session:agent`
     /// resolves across sessions, and a foreign seat — or a pane with no slot —
     /// declines with the one line before the lock is taken or anything read.
@@ -3482,6 +3937,7 @@ mod tests {
             plan(&settings(Some(95)), &seat, &near, &crossed, at(96.0), now),
             Plan::Refuse {
                 key,
+                class: CauseClass::NoCandidate,
                 why: "no-candidate: refused: no usable candidate: opus55x (no headroom) \
                       (headroom 96% weekly_all 7d)"
                     .to_owned(),
