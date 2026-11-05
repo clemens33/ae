@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.17] - 2026-11-05
+- Freeze the move-back acceptance spec (#305 part 1)
+- An automatically moved seat returns to its origin once the origin proves room
+- Moving a seat back after an automatic reseat
+- A return stands under the lifecycle lock only on its own profile and chain
+- Pin the return path's in-flight bound, worst window, forged attempts and daemon routes
+- Borrow the lone opener as a slice
+- Keep the daemon's tests module last
+
 ## [v2026.11.16] - 2026-11-05
 - Auto reseat never collapses a cross-provider review pair
 - The lifecycle gate reads the lead pair from the locked meta
