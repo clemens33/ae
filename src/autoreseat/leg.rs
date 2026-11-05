@@ -23,6 +23,10 @@ use super::{
 };
 
 #[cfg(test)]
+#[allow(
+    clippy::format_push_string,
+    reason = "frozen #309 acceptance spec, lint-only"
+)]
 #[path = "leadfloor_spec.rs"]
 mod leadfloor_spec;
 

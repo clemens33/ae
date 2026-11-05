@@ -110,6 +110,10 @@ mod install;
 mod keepconv_spec;
 mod lanemd_chat_spec;
 mod launch_context_spec;
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "frozen #309 acceptance spec, lint-only"
+)]
 mod leadfloor_spec;
 mod lifecycle;
 mod linkfeat_spec;
