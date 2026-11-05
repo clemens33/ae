@@ -8654,6 +8654,23 @@ mod autoacts_spec;
 mod pairguard_spec;
 
 #[cfg(test)]
+#[path = "watchdog_daemon/return_tests.rs"]
+mod return_tests;
+
+/// [`auto_acts_with`] with no seat on an automatic chain: the step's pins read it.
+#[cfg(test)]
+fn auto_acts(
+    settings: &crate::autoreseat::Settings,
+    seats: &[AutoSeat],
+    events: &[Event],
+    context: (&str, bool),
+    now: i64,
+    named: &mut Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
+) -> Vec<AutoAct> {
+    auto_acts_with(settings, (seats, &[]), events, context, now, named)
+}
+
+#[cfg(test)]
 mod limitwake_readers {
     use super::{ACTOR, armed_reading, limit_wake_in, reads_reset, waiting_forecast};
     use crate::autoreseat::LimitReset;
@@ -20362,20 +20379,3 @@ mod tests {
     include!("../tests/unit/unreach_episode.rs");
     include!("../tests/unit/unreach_motion_a4.rs");
 }
-
-/// [`auto_acts_with`] with no seat on an automatic chain: the step's pins read it.
-#[cfg(test)]
-fn auto_acts(
-    settings: &crate::autoreseat::Settings,
-    seats: &[AutoSeat],
-    events: &[Event],
-    context: (&str, bool),
-    now: i64,
-    named: &mut Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
-) -> Vec<AutoAct> {
-    auto_acts_with(settings, (seats, &[]), events, context, now, named)
-}
-
-#[cfg(test)]
-#[path = "watchdog_daemon/return_tests.rs"]
-mod return_tests;
