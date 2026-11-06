@@ -1,5 +1,5 @@
 //! #309 part B: reuse the unchanged part-A Rig fixture to drive real automatic moves.
-//! Install as tests/it/leadfloor2_spec.rs, child module of leadfloor_spec.rs.
+//! Install as `tests/it/leadfloor2_spec.rs`, child module of `leadfloor_spec.rs`.
 
 use super::*;
 use std::process::Stdio;

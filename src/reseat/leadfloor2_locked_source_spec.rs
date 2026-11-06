@@ -19,6 +19,10 @@ impl Drop for Root {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the admitted and locked snapshots stay together in one acceptance transaction"
+)]
 fn leadfloor2_late_floor_uses_locked_source_not_admitted_source() {
     let owned = Root(std::env::temp_dir().join(format!(
         "ae-lf2-locked-source-{}-{}",

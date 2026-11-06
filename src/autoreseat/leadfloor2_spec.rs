@@ -664,6 +664,10 @@ fn leadfloor2_urgent_start_waives_waits_but_keeps_the_floor() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the chain proof and both return verdicts form one acceptance case"
+)]
 fn leadfloor2_proven_return_origin_is_exempt_even_without_a_tier_but_keeps_pair_guard() {
     for slot in ["main", "worker.0"] {
         for floor in [FLOOR, "auto_reseat_lead_floor = bad\n"] {
