@@ -108,10 +108,11 @@ pre-grammar name is normalised, and the refusal prints the path spelling that wo
 | `_register-sid` | codex's own session-id handshake. The one helper no human types |
 | `watchdog`, `events-tail`, `loop` | The two monitor panes' whole command (`loop` = deprecated alias) |
 
-**Bodies between agents are caveman-terse.** CORE teaches every seat; leadership rule 10 adds detail: what you pass
+**Bodies between agents are caveman-lite.** CORE teaches every seat; leadership rule 10 adds detail: what you pass
 through `send`/`ask`/`review`/`reply`/`memo`, a spawn brief or an `interrupt` is read by another
-agent and costs its context, so drop filler and keep file:line, commands, errors, ids and
-verdict words exact. Nothing else is covered: replies to the human, `say`, commits, code and
+agent and costs its context, so put the meaning first in full sentences (articles kept, no
+fragments), drop filler, and keep decisions, conditions, ids, evidence and stated uncertainty,
+with file:line, commands, errors and verdict words exact. Nothing else is covered: replies to the human, `say`, commits, code and
 docs follow whatever your own instructions define.
 
 `relay` carries a verbatim, explicit human instruction into another session's chat: one
