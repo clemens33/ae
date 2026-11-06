@@ -2782,8 +2782,9 @@ pub fn choose_paired(
 /// on a lead-pair seat's [`Settings::seat_view`], the blanket sibling bar is
 /// replaced: every candidate that would change the model is judged by its
 /// model's tier ([`Settings::floor_refuses`]) and a refused one stays listed
-/// and named. Exempt: a derived twin and a declared candidate on the seat's
-/// own model ([`Provenance::DeclaredTwin`]), and on a [`Route::Return`] the
+/// and named. Exempt: a derived twin whose model is read (two unread pins prove
+/// nothing, so an unpinned twin is refused as `NoModel`), a declared candidate
+/// on the seat's own model ([`Provenance::DeclaredTwin`]), and on a [`Route::Return`] the
 /// origin, the human's own choice a proven chain of automatic moves left. The
 /// pair guard still filters after it.
 #[must_use]
@@ -2811,8 +2812,14 @@ fn stamp_floor(settings: &Settings, route: Route<'_>, candidate: &Candidate) -> 
     if let Provenance::LeadSibling(step) = out.provenance {
         out.provenance = Provenance::Derived(Kin::Sibling, step);
     }
+    // A derived twin is the seat's own model by derivation (its pin equals the
+    // seat's), so it is exempt only when that pin is READ: two unread pins are
+    // equal as text and prove nothing. The late gate (`leg::floor_changed`)
+    // exempts a same model on the same terms.
+    let read = out.model.pin.is_some() && out.model.tool.is_some();
     let exempt = match (out.provenance, route) {
-        (Provenance::Derived(Kin::Twin, _) | Provenance::DeclaredTwin, _) => true,
+        (Provenance::Derived(Kin::Twin, _), _) => read,
+        (Provenance::DeclaredTwin, _) => true,
         (_, Route::Return { origin }) => out.profile == origin,
         _ => false,
     };
