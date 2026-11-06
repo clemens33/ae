@@ -5011,3 +5011,6 @@ mod tests {
 #[cfg(test)]
 #[path = "leadfloor2_spec.rs"]
 mod leadfloor2_spec;
+#[cfg(test)]
+#[path = "leadfloor2_unpinned_spec.rs"]
+mod leadfloor2_unpinned_spec;
