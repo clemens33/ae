@@ -13,7 +13,14 @@
 //! groups' evidence, their session views and the root view, and removes the
 //! intent. [`recovery`] finishes or undoes whatever a crash left: an
 //! interrupted repair swap first, then leftover temps, then an intent, rebuilt
-//! from the primary group's evidence as it stands.
+//! from the primary group's evidence as it stands. Every file a plan writes is
+//! synced before the intent publishes; directories are not.
+//!
+//! A [`repair`] moves the payload aside whole for an empty one in the epoch
+//! after the highest one a surviving document proves; the first build is
+//! staged the same way, so a payload never exists without its epoch file. A
+//! file that cannot be read is an IO error, never damage: nothing is repaired
+//! over it.
 //!
 //! Lock order: a journal lock, then `stats.lock`, never the reverse. Nothing
 //! here takes a journal lock; journals are read unlocked and witnessed.
@@ -83,6 +90,7 @@ pub enum Read {
     Bytes(Vec<u8>),
     /// Longer than the cap: never handed to a parser.
     Oversized,
+    /// A file that is there and could not be read: an IO error, not damage.
     Unreadable(String),
     /// A node no payload file has the shape of: a directory, a link.
     Invalid(String),
@@ -204,9 +212,8 @@ impl Dir for Files {
         match crate::store::read_capped(&path, cap) {
             Ok(crate::store::SourceRead::Absent) => Read::Absent,
             Ok(crate::store::SourceRead::Ready(bytes)) => Read::Bytes(bytes),
-            Ok(
-                crate::store::SourceRead::Invalid(why) | crate::store::SourceRead::Unreadable(why),
-            ) => Read::Unreadable(why),
+            Ok(crate::store::SourceRead::Invalid(why)) => Read::Invalid(why),
+            Ok(crate::store::SourceRead::Unreadable(why)) => Read::Unreadable(why),
             Err(crate::store::Oversized) => Read::Oversized,
         }
     }
@@ -224,7 +231,8 @@ impl Dir for Files {
                 {
                     observe::file(FileEvent::Created(name.clone()));
                 }
-                file.write_all(bytes)
+                file.write_all(bytes)?;
+                synced(&file, name)
             }
             Op::Rename { from, to } => std::fs::rename(self.path(from)?, self.path(to)?),
             Op::Remove(name) => std::fs::remove_file(self.path(name)?),
@@ -253,6 +261,35 @@ impl Dir for Files {
         names.sort();
         Ok(names)
     }
+}
+
+/// Make a written file's bytes durable before any plan step names it: every
+/// staged write is synced before the intent publishes. Directories are not
+/// synced; a file cut short still reads as damage by its end record.
+#[cfg_attr(
+    not(test),
+    allow(
+        unused_variables,
+        reason = "the name and time are observed only by tests"
+    )
+)]
+fn synced(file: &std::fs::File, name: &str) -> io::Result<()> {
+    #[cfg(test)]
+    {
+        if observe::faulted(name) {
+            return Err(io::Error::other(format!("{name}: injected sync failure")));
+        }
+    }
+    let started = std::time::Instant::now();
+    file.sync_all()?;
+    #[cfg(test)]
+    {
+        observe::file(FileEvent::Synced {
+            name: name.to_owned(),
+            took: started.elapsed(),
+        });
+    }
+    Ok(())
 }
 
 /// What `Files` did on this thread, in order (`cfg(test)` only): see
@@ -325,6 +362,18 @@ mod observe {
 
     pub(super) fn file(event: FileEvent) {
         FILES.with(|events| events.borrow_mut().push(event));
+    }
+
+    /// Whether the sync of `name` is the one a test made fail: taken once.
+    pub(super) fn faulted(name: &str) -> bool {
+        SYNC_FAULT.with(|fault| {
+            let mut fault = fault.borrow_mut();
+            let hit = fault.as_deref() == Some(name);
+            if hit {
+                *fault = None;
+            }
+            hit
+        })
     }
 
     /// Every operation but a write, which records its create itself.
@@ -479,7 +528,7 @@ impl Dir for Memory {
         match self.files.get(name) {
             Some(bytes) if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > cap => Read::Oversized,
             Some(bytes) => Read::Bytes(bytes.clone()),
-            None if self.dirs.contains(name) => Read::Unreadable(format!("{name}: a directory")),
+            None if self.dirs.contains(name) => Read::Invalid(format!("{name}: a directory")),
             None => Read::Absent,
         }
     }
@@ -853,6 +902,25 @@ impl Held {
     }
 }
 
+/// What a read of a source that found nothing new saw: the payload's hold on
+/// the source, and its journal's identity and length.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tail {
+    base: Base,
+    dev: u64,
+    ino: u64,
+    len: u64,
+}
+
+impl Tail {
+    /// The durable cursor, and the journal's length past it.
+    #[must_use]
+    pub fn span(&self) -> (u64, u64) {
+        let cursor = self.base.stamp.map_or(0, |(_, cursor)| cursor);
+        (cursor, self.len)
+    }
+}
+
 /// What preparing a source found.
 #[derive(Debug)]
 pub enum Next {
@@ -872,6 +940,8 @@ struct Reader<'a> {
     archive: bool,
     /// New journal bytes read so far.
     read: u64,
+    /// The journal's identity and length when the read found nothing new.
+    quiet: Option<(u64, u64, u64)>,
 }
 
 impl Reader<'_> {
@@ -956,6 +1026,7 @@ impl Reader<'_> {
             return Ok(None);
         }
         if tail.len == mark.seen && mark.read == mark.seen {
+            self.quiet = Some((tail.dev, tail.ino, tail.len));
             return Ok(Some(Next::Nothing));
         }
         let Ok(window) = self.window(cursor, self.limits.chunk) else {
@@ -988,7 +1059,7 @@ impl Reader<'_> {
 
     /// Frame `data`, read from `cursor` with `tail` the bytes just before it.
     fn frame(
-        &self,
+        &mut self,
         fresh: Option<Fresh>,
         cursor: u64,
         tail: Vec<u8>,
@@ -1000,11 +1071,12 @@ impl Reader<'_> {
         let read_end = cursor.saturating_add(width);
         let eof = read_end >= window.len;
         let final_line = self.archive && eof;
-        let session = self.key.as_deref();
+        let (id, key) = (self.id, self.key);
+        let session = key.as_deref();
         let line = self.limits.line;
         let judged = |at: u64, bytes: &[u8]| {
             Digest::of(session, at, bytes, final_line, line)
-                .map_err(|why| Refused::Io(format!("{}: {why:?}", self.id)))
+                .map_err(|why| Refused::Io(format!("{id}: {why:?}")))
         };
         let (digest, still) = if skipping {
             match data.iter().position(|byte| *byte == b'\n') {
@@ -1013,13 +1085,17 @@ impl Reader<'_> {
                     let rest = data.get(lf + 1..).unwrap_or_default();
                     (judged(past, rest)?.widened(cursor), false)
                 }
-                None if data.is_empty() => return Ok(Next::Nothing),
+                None if data.is_empty() => {
+                    self.quiet = Some((window.dev, window.ino, window.len));
+                    return Ok(Next::Nothing);
+                }
                 None => (Digest::passed(cursor, read_end), true),
             }
         } else if data.contains(&b'\n') || (final_line && !data.is_empty()) {
             (judged(cursor, &data)?, false)
         } else if eof {
             if fresh.is_none() {
+                self.quiet = Some((window.dev, window.ino, window.len));
                 return Ok(Next::Nothing);
             }
             (Digest::passed(cursor, cursor), false)
@@ -1095,6 +1171,27 @@ impl Prepared {
         limits: Limits,
         held: Option<Held>,
     ) -> Result<(Next, u64), Refused> {
+        Self::read_observed(dir, journal, source, limits, held, None)
+            .map(|(next, read, _)| (next, read))
+    }
+
+    /// [`Prepared::read_counted`], told the [`Tail`] the last read of this
+    /// source that found nothing new saw: when the payload still holds the
+    /// source as it did and its journal has the same identity and length, the
+    /// journal's length is all that is looked at, no byte of it read. A read
+    /// that finds nothing new returns the tail to tell the next one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Prepared::read`].
+    pub fn read_observed(
+        dir: &mut dyn Dir,
+        journal: &mut dyn Journal,
+        source: &SourceSpec,
+        limits: Limits,
+        held: Option<Held>,
+        quiet: Option<&Tail>,
+    ) -> Result<(Next, u64, Option<Tail>), Refused> {
         let epoch = read_epoch(dir)?.unwrap_or(0);
         let (key, origin) = source.origin();
         let row = load_view(dir, epoch, &key)?.and_then(|view| view.rows.get(source.id()).cloned());
@@ -1112,6 +1209,7 @@ impl Prepared {
             limits,
             archive: matches!(source, SourceSpec::Archive { .. }),
             read: 0,
+            quiet: None,
         };
         if matches!(source, SourceSpec::Failed { .. }) {
             let next = if row.is_some() {
@@ -1119,12 +1217,20 @@ impl Prepared {
             } else {
                 reader.registered(origin)
             };
-            return Ok((next, 0));
+            return Ok((next, 0, None));
+        }
+        if held.is_none()
+            && let Some(quiet) = quiet.filter(|quiet| quiet.base == base)
+            && reader
+                .window(quiet.len, 0)
+                .is_ok_and(|now| (now.dev, now.ino, now.len) == (quiet.dev, quiet.ino, quiet.len))
+        {
+            return Ok((Next::Nothing, 0, Some(quiet.clone())));
         }
         if let Some(held) = held.filter(|held| held.source == source.id() && held.base == base)
             && let Some(next) = reader.resume(held)?
         {
-            return Ok((next, reader.read));
+            return Ok((next, reader.read, None));
         }
         let next = match &row {
             Some(row) if !row.failed => match reader.continued(row)? {
@@ -1143,7 +1249,16 @@ impl Prepared {
                 reset: false,
             })?,
         };
-        Ok((next, reader.read))
+        let tail = match (&next, reader.quiet) {
+            (Next::Nothing, Some((dev, ino, len))) => Some(Tail {
+                base: base.clone(),
+                dev,
+                ino,
+                len,
+            }),
+            _ => None,
+        };
+        Ok((next, reader.read, tail))
     }
 
     #[must_use]
@@ -1275,10 +1390,11 @@ fn fetch(dir: &mut dyn Dir, name: &str, cap: u64) -> Result<Option<Vec<u8>>, Ref
             file: name.to_owned(),
             cap,
         }),
-        Read::Unreadable(why) | Read::Invalid(why) => Err(Refused::Damaged {
+        Read::Invalid(why) => Err(Refused::Damaged {
             file: name.to_owned(),
             reason: why,
         }),
+        Read::Unreadable(why) => Err(Refused::Io(format!("{name}: {why}"))),
     }
 }
 
@@ -1315,10 +1431,76 @@ fn list(dir: &mut dyn Dir, name: &str) -> Result<Vec<String>, Refused> {
     })
 }
 
+/// Whether the payload directory is there.
+fn built(dir: &mut dyn Dir) -> Result<bool, Refused> {
+    Ok(list(dir, "")?.iter().any(|name| name == PAYLOAD))
+}
+
+/// The payload's epoch, `None` only while there is no payload: a payload with
+/// no epoch file is damaged, never epoch 0.
 fn read_epoch(dir: &mut dyn Dir) -> Result<Option<u64>, Refused> {
-    fetch(dir, EPOCH, EPOCH_CAP)?
-        .map(|bytes| doc::parse_epoch(&bytes).map_err(damaged(EPOCH)))
-        .transpose()
+    match fetch(dir, EPOCH, EPOCH_CAP)? {
+        Some(bytes) => doc::parse_epoch(&bytes).map(Some).map_err(damaged(EPOCH)),
+        None if built(dir)? => Err(wrong(EPOCH, "missing")),
+        None => Ok(None),
+    }
+}
+
+/// What a document proves, when it can: damaged or over its cap it proves
+/// nothing, but a file that cannot be read is an error, never passed over.
+fn proof(
+    dir: &mut dyn Dir,
+    name: &str,
+    cap: u64,
+    epoch_of: impl Fn(&[u8]) -> Option<u64>,
+) -> Result<Option<u64>, Refused> {
+    match fetch(dir, name, cap) {
+        Ok(bytes) => Ok(bytes.as_deref().and_then(epoch_of)),
+        Err(refused) if refused.damage().is_some() => Ok(None),
+        Err(refused) => Err(refused),
+    }
+}
+
+fn epoch_text(bytes: &[u8]) -> Option<u64> {
+    doc::parse_epoch(bytes).ok()
+}
+
+/// Whether the retired payload `stats.old.<epoch>` carries the epoch its
+/// name says: only then does it count.
+fn retired_valid(dir: &mut dyn Dir, epoch: u64) -> Result<bool, Refused> {
+    let name = format!("{}/epoch", retired_name(epoch));
+    Ok(proof(dir, &name, EPOCH_CAP, epoch_text)? == Some(epoch))
+}
+
+/// The highest epoch anything left proves: the epoch file, the epoch field of
+/// a readable root or session view, and each retired payload whose content
+/// carries its name's epoch. `None` when nothing proves one.
+fn authority(dir: &mut dyn Dir) -> Result<Option<u64>, Refused> {
+    let mut proven = vec![proof(dir, EPOCH, EPOCH_CAP, epoch_text)?];
+    proven.push(proof(dir, ROOT, ROOT_VIEW_CAP, |bytes| {
+        let text = std::str::from_utf8(bytes).ok()?;
+        doc::parse_root(text).ok().map(|root| root.epoch)
+    })?);
+    for name in list(dir, SESSIONS)? {
+        if name.strip_suffix(".view").and_then(doc::key_of).is_none() {
+            continue;
+        }
+        proven.push(proof(
+            dir,
+            &format!("{SESSIONS}/{name}"),
+            SESSION_VIEW_CAP,
+            |bytes| {
+                let text = std::str::from_utf8(bytes).ok()?;
+                doc::parse_session(text).ok().map(|view| view.epoch)
+            },
+        )?);
+    }
+    for old in list(dir, "")?.iter().filter_map(|name| retired(name)) {
+        if retired_valid(dir, old)? {
+            proven.push(Some(old));
+        }
+    }
+    Ok(proven.into_iter().flatten().max())
 }
 
 fn load_root(dir: &mut dyn Dir, epoch: u64) -> Result<Option<Root>, Refused> {
@@ -1383,30 +1565,50 @@ fn intent_of(dir: &mut dyn Dir) -> Result<Option<Intent>, Refused> {
         .transpose()
 }
 
-/// Refused with [`Refused::RecoveryOwed`] while a crash left work behind. A
-/// repair replaces the whole payload, so it is held back only by work
-/// [`recovery`] can still finish.
-fn owed(dir: &mut dyn Dir, repair: bool) -> Result<(), Refused> {
+/// Whether a crash left work [`recovery`] would do: a staged or retired
+/// payload, an intent, a temp. It lists names only and reads no file, so it
+/// is cheap enough to ask without the lock before every idle round.
+///
+/// # Errors
+///
+/// A directory that cannot be listed.
+pub fn owes(dir: &mut dyn Dir) -> Result<bool, Refused> {
     let top = list(dir, "")?;
     if top
         .iter()
         .any(|name| name == STAGING || retired(name).is_some())
     {
-        return Err(Refused::RecoveryOwed);
+        return Ok(true);
     }
     if !top.iter().any(|name| name == PAYLOAD) {
-        return Ok(());
+        return Ok(false);
     }
     let inside = list(dir, PAYLOAD)?;
-    if inside.iter().any(|name| name == "intent") && (!repair || intent_of(dir).is_ok()) {
-        return Err(Refused::RecoveryOwed);
+    if inside
+        .iter()
+        .any(|name| name == "intent" || name.ends_with(TEMP))
+    {
+        return Ok(true);
     }
-    if !repair {
-        let temps = inside.iter().any(|name| name.ends_with(TEMP))
-            || list(dir, SESSIONS)?.iter().any(|name| name.ends_with(TEMP));
-        if temps {
-            return Err(Refused::RecoveryOwed);
-        }
+    Ok(list(dir, SESSIONS)?.iter().any(|name| name.ends_with(TEMP)))
+}
+
+/// The payload reads a preparation of `source` makes, and nothing of its
+/// journal: the epoch, then its group's session view.
+///
+/// # Errors
+///
+/// What those reads meet: damage, a file over its cap, an IO error.
+pub fn verify(dir: &mut dyn Dir, source: &SourceSpec) -> Result<(), Refused> {
+    let epoch = read_epoch(dir)?.unwrap_or(0);
+    let (key, _) = source.origin();
+    load_view(dir, epoch, &key).map(drop)
+}
+
+/// Refused with [`Refused::RecoveryOwed`] while a crash left work behind.
+fn owed(dir: &mut dyn Dir) -> Result<(), Refused> {
+    if owes(dir)? {
+        return Err(Refused::RecoveryOwed);
     }
     Ok(())
 }
@@ -1456,6 +1658,7 @@ fn capped(name: String, text: String, cap: u64) -> Result<(String, String), Refu
 
 /// The root after `views` replace their groups': by difference when the root
 /// and the views it was made from agree, else added up again from every view.
+/// A missing root is no baseline: the other groups' views are still there.
 fn rooted(
     dir: &mut dyn Dir,
     epoch: u64,
@@ -1463,8 +1666,8 @@ fn rooted(
     views: &[SessionView],
     generation: u64,
 ) -> Result<Root, Refused> {
+    let mut all = root.as_ref().map(|root| root.all.clone());
     let mut root = root.unwrap_or_else(|| Root::empty(epoch));
-    let mut all = Some(root.all.clone());
     for view in views {
         let old = load_view(dir, epoch, &view.key)?;
         let agreed = root.rows.get(&view.key).map(|row| row.generation)
@@ -1523,21 +1726,25 @@ fn commit(
         .collect();
     let root = rooted(dir, epoch, root, &views, generation)?;
     let mut first = Vec::new();
-    let top = list(dir, "")?;
-    let inside = if top.iter().any(|name| name == PAYLOAD) {
-        list(dir, PAYLOAD)?
+    if built(dir)? {
+        if !list(dir, PAYLOAD)?.iter().any(|name| name == "session") {
+            first.push(Op::MakeDir(SESSIONS.to_owned()));
+        }
     } else {
-        first.push(Op::MakeDir(PAYLOAD.to_owned()));
-        Vec::new()
-    };
-    if !inside.iter().any(|name| name == "session") {
-        first.push(Op::MakeDir(SESSIONS.to_owned()));
-    }
-    if !inside.iter().any(|name| name == "epoch") {
-        first.push(Op::Write {
-            name: EPOCH.to_owned(),
-            bytes: doc::render_epoch(epoch).into_bytes(),
-        });
+        // The first build is staged like a repair, so a payload never exists
+        // without its epoch file.
+        first.extend([
+            Op::MakeDir(STAGING.to_owned()),
+            Op::Write {
+                name: format!("{STAGING}/epoch"),
+                bytes: doc::render_epoch(epoch).into_bytes(),
+            },
+            Op::MakeDir(format!("{STAGING}/session")),
+            Op::Rename {
+                from: STAGING.to_owned(),
+                to: PAYLOAD.to_owned(),
+            },
+        ]);
     }
     let mut files = Vec::new();
     for group in &groups {
@@ -1584,7 +1791,7 @@ pub fn publish(
     journal: &mut dyn Journal,
     work: &Prepared,
 ) -> Result<Decision, Refused> {
-    owed(dir, false)?;
+    owed(dir)?;
     let epoch = read_epoch(dir)?.unwrap_or(0);
     if epoch != work.base.epoch {
         return Ok(Decision::Discard(Why::Epoch));
@@ -1661,7 +1868,7 @@ pub fn event(
     offset: u64,
     line: &[u8],
 ) -> Result<Decision, Refused> {
-    owed(dir, false)?;
+    owed(dir)?;
     let key: Key = match group {
         Some(id) if !is_canonical_uuid(id) => {
             return Err(Refused::UnknownSource(source.to_owned()));
@@ -1697,39 +1904,38 @@ pub fn event(
 }
 
 /// Under the stats lock: finish or undo what a crash left. An interrupted
-/// repair swap first: the staged payload when it carries the next epoch, else
-/// the newest retired one. Then leftover temps, and an intent rebuilt from
-/// its primary group's evidence as it stands. Applied whole, a second call
-/// plans nothing.
+/// swap first: the staged payload when it carries the epoch after the newest
+/// retired one, or when there is none (a first build), else that retired
+/// payload. Then leftover temps, and an intent rebuilt from its primary
+/// group's evidence as it stands. Applied whole, a second call plans nothing.
 ///
 /// # Errors
 ///
-/// A payload file over its cap or damaged, or a directory that cannot be
-/// listed.
+/// A payload file over its cap or damaged, a retired payload whose content is
+/// not the epoch its name says, or a file or directory that cannot be read.
 pub fn recovery(dir: &mut dyn Dir) -> Result<Plan, Refused> {
     let top = list(dir, "")?;
     let olds: BTreeSet<u64> = top.iter().filter_map(|name| retired(name)).collect();
     let staging = top.iter().any(|name| name == STAGING);
     if !top.iter().any(|name| name == PAYLOAD) {
-        return Ok(Plan::of(swap_back(dir, staging, &olds)));
+        return swap_back(dir, staging, &olds).map(Plan::of);
     }
+    let bytes = fetch(dir, EPOCH, EPOCH_CAP)?.ok_or_else(|| wrong(EPOCH, "missing"))?;
+    let epoch = doc::parse_epoch(&bytes).map_err(damaged(EPOCH))?;
     let mut ops = Vec::new();
-    let epoch = read_epoch(dir)?;
-    if epoch.is_some() {
-        if staging {
-            ops.push(Op::RemoveTree(STAGING.to_owned()));
-        }
-        for old in &olds {
-            ops.push(Op::RemoveTree(retired_name(*old)));
-        }
+    if staging {
+        ops.push(Op::RemoveTree(STAGING.to_owned()));
     }
-    let epoch = epoch.unwrap_or(0);
+    for old in &olds {
+        ops.push(Op::RemoveTree(retired_name(*old)));
+    }
     for name in list(dir, PAYLOAD)? {
         if name.ends_with(TEMP) {
             ops.push(Op::Remove(format!("{PAYLOAD}/{name}")));
         }
     }
-    for name in list(dir, SESSIONS)? {
+    let sessions = list(dir, SESSIONS)?;
+    for name in &sessions {
         if name.ends_with(TEMP) {
             ops.push(Op::Remove(format!("{SESSIONS}/{name}")));
         }
@@ -1740,27 +1946,46 @@ pub fn recovery(dir: &mut dyn Dir) -> Result<Plan, Refused> {
     if intent.epoch != epoch {
         return Err(wrong(INTENT, "epoch"));
     }
-    ops.extend(replay(dir, epoch, &intent)?);
+    let staged = temp(&evidence_name(&intent.primary));
+    let staged = sessions
+        .iter()
+        .any(|name| format!("{SESSIONS}/{name}") == staged);
+    ops.extend(replay(dir, epoch, &intent, staged)?);
     Ok(Plan::of(ops))
 }
 
 /// With no payload: finish an interrupted swap when the staged payload
-/// carries the epoch after the newest retired one, else put that retired
-/// payload back. Every other retired payload goes.
-fn swap_back(dir: &mut dyn Dir, staging: bool, olds: &BTreeSet<u64>) -> Vec<Op> {
-    let mut ops = Vec::new();
-    let newest = olds.last().copied();
-    let staged = staging
-        .then(|| match dir.read(&format!("{STAGING}/epoch"), EPOCH_CAP) {
-            Read::Bytes(bytes) => doc::parse_epoch(&bytes).ok(),
-            _ => None,
-        })
-        .flatten();
+/// carries the epoch after the newest retired one, or there is no retired one
+/// (amendment 14: a first build), else put that retired payload back. A
+/// retired payload counts only when its content carries its name's epoch;
+/// every other one goes.
+fn swap_back(dir: &mut dyn Dir, staging: bool, olds: &BTreeSet<u64>) -> Result<Vec<Op>, Refused> {
+    let mut valid = BTreeSet::new();
+    for old in olds {
+        if retired_valid(dir, *old)? {
+            valid.insert(*old);
+        }
+    }
+    let newest = valid.last().copied();
+    if newest.is_none()
+        && let Some(bad) = olds.first()
+    {
+        return Err(wrong(
+            &format!("{}/epoch", retired_name(*bad)),
+            "differs from its name",
+        ));
+    }
+    let staged = if staging {
+        proof(dir, &format!("{STAGING}/epoch"), EPOCH_CAP, epoch_text)?
+    } else {
+        None
+    };
     let finish = match (staged, newest) {
         (Some(staged), Some(newest)) => newest.checked_add(1) == Some(staged),
         (Some(_), None) => true,
         (None, _) => false,
     };
+    let mut ops = Vec::new();
     let restored = if finish {
         ops.push(Op::Rename {
             from: STAGING.to_owned(),
@@ -1781,15 +2006,29 @@ fn swap_back(dir: &mut dyn Dir, staging: bool, olds: &BTreeSet<u64>) -> Vec<Op> 
     for old in olds.iter().filter(|old| Some(**old) != restored) {
         ops.push(Op::RemoveTree(retired_name(*old)));
     }
-    ops
+    Ok(ops)
 }
 
 /// The writes that finish `intent`: each touched group's fragments taken
 /// again from the primary's evidence, their views, the root, then the
-/// intent's removal.
-fn replay(dir: &mut dyn Dir, epoch: u64, intent: &Intent) -> Result<Vec<Op>, Refused> {
-    let primary = load_group(dir, epoch, &intent.primary)?
-        .unwrap_or_else(|| Group::new(intent.primary.clone()));
+/// intent's removal. A primary still `staged` was not committed: it stands as
+/// it was. One neither there nor staged is damage: the commit point is gone.
+fn replay(
+    dir: &mut dyn Dir,
+    epoch: u64,
+    intent: &Intent,
+    staged: bool,
+) -> Result<Vec<Op>, Refused> {
+    let primary = match load_group(dir, epoch, &intent.primary)? {
+        Some(group) => group,
+        None if staged => Group::new(intent.primary.clone()),
+        None => {
+            return Err(wrong(
+                &evidence_name(&intent.primary),
+                "missing, though the intent names it",
+            ));
+        }
+    };
     let mut rewritten = Vec::new();
     let mut views = Vec::new();
     for key in &intent.touched {
@@ -1844,28 +2083,83 @@ fn replay(dir: &mut dyn Dir, epoch: u64, intent: &Intent) -> Result<Vec<Op>, Ref
     Ok(ops)
 }
 
-/// Under the stats lock, after [`recovery`]: the plan that replaces the
-/// payload with an empty one in the next epoch, so every source is read again
-/// from its journal. The old payload is moved aside whole, then removed.
+/// Under the stats lock: the plan that replaces the payload with an empty one
+/// in the epoch after the highest one anything left proves, so every source
+/// is read again from its journal. The old payload is moved aside whole, its
+/// epoch file first made to say the epoch its retired name carries, then
+/// removed.
+///
+/// [`recovery`] decides first (amendment 15): work it can still finish is
+/// owed; damage it cannot get past is taken over, the intent, every temp and
+/// any staged or retired payload removed before the swap; an IO error refuses,
+/// every file kept. A store never built has nothing to repair.
 ///
 /// # Errors
 ///
-/// Recovery still owed, or a directory that cannot be listed.
+/// Recovery still owed, an IO error, or a payload no surviving evidence
+/// proves the epoch of ([`Refused::EpochUnproven`]).
 pub fn repair(dir: &mut dyn Dir) -> Result<Plan, Refused> {
-    owed(dir, true)?;
-    let payload = list(dir, "")?.iter().any(|name| name == PAYLOAD);
-    let epoch = read_epoch(dir).ok().flatten().unwrap_or(0);
-    let next = epoch
+    let takeover = match recovery(dir) {
+        Ok(plan) if plan.ops.is_empty() => false,
+        Ok(_) => return Err(Refused::RecoveryOwed),
+        Err(refused) if refused.damage().is_some() => true,
+        Err(refused) => return Err(refused),
+    };
+    let top = list(dir, "")?;
+    let payload = top.iter().any(|name| name == PAYLOAD);
+    let debris: Vec<&String> = top
+        .iter()
+        .filter(|name| *name == STAGING || retired(name).is_some())
+        .collect();
+    if !payload && debris.is_empty() {
+        return Ok(Plan::of(Vec::new()));
+    }
+    let proven = authority(dir)?.ok_or(Refused::EpochUnproven)?;
+    let next = proven
         .checked_add(1)
         .ok_or_else(|| Refused::Io("epoch".to_owned()))?;
-    let old = retired_name(epoch);
-    let mut ops = vec![
-        Op::MakeDir(STAGING.to_owned()),
-        Op::Write {
-            name: format!("{STAGING}/epoch"),
-            bytes: doc::render_epoch(next).into_bytes(),
-        },
-    ];
+    let mut ops = Vec::new();
+    if takeover {
+        ops.extend(debris.into_iter().map(|name| Op::RemoveTree(name.clone())));
+        if payload {
+            for name in list(dir, PAYLOAD)? {
+                if name == "intent" || name.ends_with(TEMP) {
+                    ops.push(Op::Remove(format!("{PAYLOAD}/{name}")));
+                }
+            }
+            for name in list(dir, SESSIONS)? {
+                if name.ends_with(TEMP) {
+                    ops.push(Op::Remove(format!("{SESSIONS}/{name}")));
+                }
+            }
+        }
+    }
+    let old = retired_name(proven);
+    if payload {
+        let current = dir.read(EPOCH, EPOCH_CAP);
+        let says = match &current {
+            Read::Bytes(bytes) => epoch_text(bytes),
+            _ => None,
+        };
+        if says != Some(proven) {
+            if matches!(current, Read::Invalid(_)) {
+                ops.push(Op::RemoveTree(EPOCH.to_owned()));
+            }
+            ops.push(Op::Write {
+                name: temp(EPOCH),
+                bytes: doc::render_epoch(proven).into_bytes(),
+            });
+            ops.push(Op::Rename {
+                from: temp(EPOCH),
+                to: EPOCH.to_owned(),
+            });
+        }
+    }
+    ops.push(Op::MakeDir(STAGING.to_owned()));
+    ops.push(Op::Write {
+        name: format!("{STAGING}/epoch"),
+        bytes: doc::render_epoch(next).into_bytes(),
+    });
     if payload {
         ops.push(Op::Rename {
             from: PAYLOAD.to_owned(),
@@ -1882,44 +2176,71 @@ pub fn repair(dir: &mut dyn Dir) -> Result<Plan, Refused> {
     Ok(Plan::of(ops))
 }
 
+/// How many times a reader takes the root and a session view again when a
+/// publication moved between the two reads.
+const READS: usize = 3;
+
 /// The answer both scopes show, read without the lock: the root's counts and,
-/// for a session, its group's beside them.
+/// for a session, its group's beside them, both of one committed state.
 pub fn shown(dir: &mut dyn Dir, this: Option<&str>) -> Shown {
     shown_of(dir, this).unwrap_or_else(Shown::Refused)
 }
 
+/// A session view is of the root read before it when its generation is the
+/// one the root's row records: a publication committed between the two reads
+/// makes them differ, and both are read again. Still differing after
+/// [`READS`] reads, the answer is [`Shown::Building`] while publications move
+/// or an intent is there, else the view is damaged.
 fn shown_of(dir: &mut dyn Dir, this: Option<&str>) -> Result<Shown, Refused> {
-    let Some(epoch) = read_epoch(dir)? else {
-        return Ok(Shown::Building);
-    };
-    let Some(root) = load_root(dir, epoch)? else {
-        return Ok(Shown::Building);
-    };
-    let updating = !matches!(dir.read(INTENT, INTENT_CAP), Read::Absent);
-    let this = match this {
-        None => ThisSession::NoUuid,
-        Some(id) => {
-            let mut scope = root.covering.clone();
-            let key = Some(id.to_owned());
-            if is_canonical_uuid(id) && root.rows.contains_key(&key) {
-                let view = load_view(dir, epoch, &key)?
-                    .ok_or_else(|| wrong(&view_name(&key), "missing"))?;
-                scope.add(&view.tally);
+    let mut first = None;
+    let mut moved = false;
+    let mut differs = String::new();
+    for _ in 0..READS {
+        let Some(epoch) = read_epoch(dir)? else {
+            return Ok(Shown::Building);
+        };
+        let Some(root) = load_root(dir, epoch)? else {
+            return Ok(Shown::Building);
+        };
+        moved |= *first.get_or_insert(root.generation) != root.generation;
+        let updating = !matches!(dir.read(INTENT, INTENT_CAP), Read::Absent);
+        moved |= updating;
+        let this = match this {
+            None => ThisSession::NoUuid,
+            Some(id) => {
+                let mut scope = root.covering.clone();
+                let key = Some(id.to_owned());
+                if is_canonical_uuid(id)
+                    && let Some(row) = root.rows.get(&key)
+                {
+                    let name = view_name(&key);
+                    let view =
+                        load_view(dir, epoch, &key)?.ok_or_else(|| wrong(&name, "missing"))?;
+                    if view.generation != row.generation {
+                        differs = name;
+                        continue;
+                    }
+                    scope.add(&view.tally);
+                }
+                ThisSession::Ready(Box::new(scope.scoped()))
             }
-            ThisSession::Ready(Box::new(scope.scoped()))
-        }
-    };
-    Ok(Shown::Ready {
-        view: View {
-            all: root.all.scoped(),
-            this,
-        },
-        epoch,
-        r#gen: root.generation,
-        updating,
-        pending: root.pending(),
-        listed: root.listed(),
-    })
+        };
+        return Ok(Shown::Ready {
+            view: View {
+                all: root.all.scoped(),
+                this,
+            },
+            epoch,
+            r#gen: root.generation,
+            updating,
+            pending: root.pending(),
+            listed: root.listed(),
+        });
+    }
+    if moved {
+        return Ok(Shown::Building);
+    }
+    Err(wrong(&differs, "generation differs from the root"))
 }
 
 /// An answer added up from every session view alone, never the persisted

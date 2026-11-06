@@ -6,20 +6,25 @@
 //! Sources take turns: one that has more to read goes to the back after each
 //! step, so a large journal never strands a later one, except that a line
 //! longer than one read keeps its turn until it ends or is known to be over
-//! the limit. A round that finds nothing to read is [`Outcome::Idle`].
+//! the limit. A live tail with no LF yet is read once, in a step of its own;
+//! until its journal changes, later rounds look at its length alone. A round
+//! that finds nothing to read is [`Outcome::Idle`]. The first step, and every
+//! idle one, first finishes what a crash left owed.
 //!
-//! A payload file met damaged or over its cap is repaired once: the payload is
-//! replaced in the next epoch and every source read again. Damage met again
-//! before that rebuild has caught up stops this maintainer, refused, for the
-//! rest of its life; the next one (the next `ae app` run) repairs once again.
+//! A payload file met damaged or over its cap is checked again under the lock
+//! by the payload reads alone, then repaired once: the payload is replaced in
+//! a later epoch and every source read again. Damage met again before that
+//! rebuild has caught up (a round that could not list every source has not)
+//! stops this maintainer, refused, for the rest of its life; the next one (the
+//! next `ae app` run) repairs once again. An IO error stops nothing.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::disk::{
     self, Decision, FileJournals, Files, Held, Limits, Next, Payload, Prepared, Refused,
-    SourceSpec, Why,
+    SourceSpec, Tail, Why,
 };
 use crate::quota::Budget;
 use crate::stats::SourceGap;
@@ -73,15 +78,28 @@ pub struct Step {
 }
 
 /// The wait after `step`: never less than the step itself took, so the
-/// upkeep holds at most about half a core.
+/// upkeep holds at most about half a core. An IO error, which stops nothing,
+/// waits as long as an idle round before it is met again.
 #[must_use]
 pub fn pause(step: &Step) -> Duration {
     let least = match step.outcome {
-        Outcome::Idle => REFRESH,
+        Outcome::Idle | Outcome::Refused(Refused::Io(_)) => REFRESH,
         Outcome::Deferred => BUSY,
         _ => BREATH,
     };
     step.active.max(least)
+}
+
+/// Where one round over the sources is.
+#[derive(Debug, Default)]
+struct Round {
+    /// The listing was taken.
+    listed: bool,
+    /// Something was read.
+    worked: bool,
+    /// The listing could not enumerate everything: a rebuild that has not
+    /// seen every source has not caught up.
+    incomplete: bool,
 }
 
 /// The upkeep of the store under one root.
@@ -93,10 +111,7 @@ pub struct Maintainer {
     files: Files,
     journals: FileJournals,
     queue: VecDeque<SourceSpec>,
-    /// This round's listing was taken.
-    listed: bool,
-    /// This round read something.
-    worked: bool,
+    round: Round,
     /// The line held for the source at the queue's front.
     held: Option<Held>,
     /// The source the last prepared work is of, its time and its read.
@@ -108,6 +123,11 @@ pub struct Maintainer {
     rebuilding: bool,
     /// Damage met again while rebuilding: the upkeep stopped.
     stopped: Option<Refused>,
+    /// What each source's last read that found nothing new saw: an unchanged
+    /// journal is passed over on its length alone.
+    tails: BTreeMap<String, Tail>,
+    /// The first step asked whether a crash left work owed.
+    begun: bool,
     #[cfg(test)]
     recheck: Recheck,
 }
@@ -141,13 +161,14 @@ impl Maintainer {
             files: Files::at(root),
             journals: FileJournals::at(root),
             queue: VecDeque::new(),
-            listed: false,
-            worked: false,
+            round: Round::default(),
             held: None,
             prepared: None,
             archives: BTreeMap::new(),
             rebuilding: false,
             stopped: None,
+            tails: BTreeMap::new(),
+            begun: false,
             #[cfg(test)]
             recheck: Recheck::default(),
         }
@@ -197,12 +218,60 @@ impl Maintainer {
         step
     }
 
-    /// Prepare, then publish.
+    /// Prepare, then publish. The first step, and every step that would
+    /// report [`Outcome::Idle`], first finish what a crash left owed, under
+    /// the lock, so recovery never waits for new journal work; `held`
+    /// counts that lock too.
     pub fn step(&mut self) -> Step {
-        match self.prepare() {
+        let started = Instant::now();
+        let mut held = Duration::ZERO;
+        if !std::mem::replace(&mut self.begun, true) {
+            let (settled, refused) = self.settle();
+            held = settled;
+            if let Some(outcome) = refused {
+                return Step {
+                    source: None,
+                    outcome,
+                    read: 0,
+                    active: started.elapsed(),
+                    held,
+                };
+            }
+        }
+        let mut step = match self.prepare() {
             Ok(work) => self.commit(work),
             Err(step) => step,
+        };
+        if step.outcome == Outcome::Idle {
+            let (settled, refused) = self.settle();
+            held = held.saturating_add(settled);
+            if let Some(outcome) = refused {
+                step.outcome = outcome;
+            }
         }
+        step.held = step.held.saturating_add(held);
+        step.active = step.active.max(started.elapsed());
+        step
+    }
+
+    /// Under the lock, when a crash left work owed: recovery applied whole,
+    /// or the damage it met handled as any other. How long the lock was
+    /// held, and the outcome when recovery was refused.
+    fn settle(&mut self) -> (Duration, Option<Outcome>) {
+        if !disk::owes(&mut self.files).unwrap_or(false) {
+            return (Duration::ZERO, None);
+        }
+        let Ok(lock) = Payload::at(&self.root).lock(self.lock_wait) else {
+            return (Duration::ZERO, None);
+        };
+        let taken = Instant::now();
+        let refused = self
+            .recover()
+            .err()
+            .map(|refused| self.refused_locked(refused));
+        let held = taken.elapsed();
+        drop(lock);
+        (held, refused)
     }
 
     fn finished(source: Option<String>, outcome: Outcome, read: u64, started: Instant) -> Step {
@@ -224,20 +293,15 @@ impl Maintainer {
                 started,
             ));
         }
-        let mut read = 0_u64;
         loop {
             if self.queue.is_empty() {
-                if self.listed && !self.worked {
-                    self.listed = false;
-                    self.rebuilding = false;
-                    return Err(Self::finished(None, Outcome::Idle, read, started));
+                if self.round.listed && !self.round.worked {
+                    return Err(self.idle(started));
                 }
                 self.queue = self.list().into();
-                (self.listed, self.worked) = (true, false);
+                (self.round.listed, self.round.worked) = (true, false);
                 if self.queue.is_empty() {
-                    self.listed = false;
-                    self.rebuilding = false;
-                    return Err(Self::finished(None, Outcome::Idle, read, started));
+                    return Err(self.idle(started));
                 }
             }
             let Some(spec) = self.queue.pop_front() else {
@@ -245,49 +309,95 @@ impl Maintainer {
             };
             let id = spec.id().to_owned();
             let held = self.held.take().filter(|held| held.source() == id);
-            let prepared = Prepared::read_counted(
+            let prepared = Prepared::read_observed(
                 &mut self.files,
                 &mut self.journals,
                 &spec,
                 self.limits,
                 held,
+                self.tails.get(&id),
             );
             match prepared {
-                Ok((Next::Work(work), more)) => {
-                    self.worked = true;
-                    return Ok((work, spec, read.saturating_add(more)));
+                Ok((Next::Work(work), more, _)) => {
+                    self.tails.remove(&id);
+                    self.round.worked = true;
+                    return Ok((work, spec, more));
                 }
-                Ok((Next::Holding(held), more)) => {
-                    self.worked = true;
+                Ok((Next::Holding(held), more, _)) => {
+                    self.tails.remove(&id);
+                    self.round.worked = true;
                     let (from, to) = held.span();
                     self.held = Some(held);
                     self.queue.push_front(spec);
-                    let read = read.saturating_add(more);
                     return Err(Self::finished(
                         Some(id),
                         Outcome::Holding { from, to },
-                        read,
+                        more,
                         started,
                     ));
                 }
-                // A live tail with no LF yet: read again once it grows.
-                Ok((Next::Nothing, more)) => read = read.saturating_add(more),
+                Ok((Next::Nothing, more, tail)) => {
+                    let pending = tail.as_ref().map(Tail::span);
+                    match tail {
+                        Some(tail) => self.tails.insert(id.clone(), tail),
+                        None => self.tails.remove(&id),
+                    };
+                    // A live tail with no LF yet, read once: its own step, so
+                    // one step reads one source's chunk at most.
+                    if more > 0 {
+                        self.round.worked = true;
+                        let (from, to) = pending.unwrap_or_default();
+                        return Err(Self::finished(
+                            Some(id),
+                            Outcome::Holding { from, to },
+                            more,
+                            started,
+                        ));
+                    }
+                }
                 Err(refused) => {
-                    let outcome = self.refused_unlocked(&spec, refused);
+                    let (outcome, held) = self.refused_unlocked(&spec, refused);
                     if outcome == Outcome::Deferred {
                         self.queue.push_front(spec);
                     }
-                    return Err(Self::finished(Some(id), outcome, read, started));
+                    let mut step = Self::finished(Some(id), outcome, 0, started);
+                    step.held = held;
+                    return Err(step);
                 }
             }
         }
     }
 
-    /// Every source, in order: live sessions by name, then kept archives.
+    /// The round found nothing to read. A rebuild has caught up only when
+    /// the round saw every source.
+    fn idle(&mut self, started: Instant) -> Step {
+        self.round.listed = false;
+        if !self.round.incomplete {
+            self.rebuilding = false;
+        }
+        Self::finished(None, Outcome::Idle, 0, started)
+    }
+
+    /// Every source, in order: live sessions by name, then kept archives. A
+    /// root that would not enumerate is one failed source named for it, as
+    /// the loader names it, never an empty answer.
     fn list(&mut self) -> Vec<SourceSpec> {
+        let specs = self.listed_specs();
+        let ids: BTreeSet<&str> = specs.iter().map(SourceSpec::id).collect();
+        self.tails.retain(|id, _| ids.contains(id.as_str()));
+        specs
+    }
+
+    fn listed_specs(&mut self) -> Vec<SourceSpec> {
         let mut specs = Vec::new();
         let roots = crate::inventory::Roots::under(&self.root);
-        let mut records = crate::inventory::durable_meta_records(&roots).records;
+        let scan = crate::inventory::durable_meta_records(&roots);
+        let lost = !scan.incomplete.is_empty();
+        self.round.incomplete = lost;
+        if lost {
+            specs.push(failed("sessions"));
+        }
+        let mut records = scan.records;
         records.sort_by(|left, right| left.name.cmp(&right.name));
         records.dedup_by(|left, right| left.name == right.name);
         for record in records {
@@ -312,6 +422,8 @@ impl Maintainer {
             }
         }
         let Ok(kept) = crate::archive::kept_archives(&self.root) else {
+            self.round.incomplete = true;
+            specs.push(failed("archive"));
             return specs;
         };
         for kept in kept {
@@ -411,31 +523,33 @@ impl Maintainer {
     }
 
     /// A refusal met while preparing `spec`: the damage is met again under
-    /// the lock, after recovery, before anything is repaired.
-    fn refused_unlocked(&mut self, spec: &SourceSpec, refused: Refused) -> Outcome {
+    /// the lock, after recovery, by the payload reads alone, before anything
+    /// is repaired. Healed meanwhile, the source is prepared again on the
+    /// next step, outside the lock. The outcome, and how long the lock was
+    /// held.
+    fn refused_unlocked(&mut self, spec: &SourceSpec, refused: Refused) -> (Outcome, Duration) {
         if refused.damage().is_none() {
-            return Outcome::Refused(refused);
+            return (Outcome::Refused(refused), Duration::ZERO);
         }
         #[cfg(test)]
         if let Some(hook) = self.recheck.0.as_mut() {
             hook(&self.root);
         }
         let Ok(lock) = Payload::at(&self.root).lock(self.lock_wait) else {
-            return Outcome::Deferred;
+            return (Outcome::Deferred, Duration::ZERO);
         };
-        let again = match self.recover() {
-            Err(refused) => Some(refused),
-            Ok(()) => {
-                Prepared::read_counted(&mut self.files, &mut self.journals, spec, self.limits, None)
-                    .err()
-            }
-        };
+        let taken = Instant::now();
+        let again = self
+            .recover()
+            .and_then(|()| disk::verify(&mut self.files, spec))
+            .err();
         let outcome = match again {
             Some(refused) => self.refused_locked(refused),
             None => Outcome::Deferred,
         };
+        let held = taken.elapsed();
         drop(lock);
-        outcome
+        (outcome, held)
     }
 
     /// Under the lock: damage repaired once per rebuild; met again before the
@@ -456,14 +570,27 @@ impl Maintainer {
             Ok(()) => {
                 self.rebuilding = true;
                 self.queue.clear();
-                (self.held, self.listed, self.worked) = (None, false, false);
+                self.tails.clear();
+                (self.held, self.round.listed, self.round.worked) = (None, false, false);
                 Outcome::Repaired { file, reason }
             }
+            // An IO error is not the damage met again: the next step asks again.
+            Err(why @ Refused::Io(_)) => Outcome::Refused(why),
             Err(why) => {
                 self.stopped = Some(why.clone());
                 Outcome::Refused(why)
             }
         }
+    }
+}
+
+/// The failed source a root that would not enumerate stands for.
+fn failed(root: &str) -> SourceSpec {
+    SourceSpec::Failed {
+        id: root.to_owned(),
+        label: root.to_owned(),
+        session: None,
+        gap: SourceGap::Unreadable,
     }
 }
 

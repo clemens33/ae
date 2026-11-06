@@ -4491,7 +4491,7 @@ enum Step {
 fn step(
     app: &mut App,
     outside: &mut dyn Outside,
-    _upkeep: &mut maintainer::Upkeep,
+    upkeep: &mut maintainer::Upkeep,
     typed: &[String],
     err: &mut impl Write,
 ) -> crate::Result<Step> {
@@ -4506,6 +4506,9 @@ fn step(
     let view = app.handover(&pid, &version, Timestamp::now().epoch());
     let view = view.map(|handover| handover.render());
     let argv = upgrade::exec_argv(&link, typed, view, &version, crate::VERSION);
+    // The store's upkeep stops before the process is replaced: an exec never
+    // returns to stop it.
+    upkeep.pause(maintainer::STOP_BOUND);
     outside.suspend();
     let why = outside.exec(&argv).to_string();
     if let Err(lost) = outside.resume() {
@@ -4513,6 +4516,7 @@ fn step(
         writeln!(err, "{}", terminal_text(&said))?;
         return Ok(Step::Quit(crate::entry::EXIT_FAILED));
     }
+    upkeep.resume();
     app.failed = Some((version, why));
     outside.clear()?;
     Ok(Step::Stay(true))

@@ -1,10 +1,12 @@
 //! The Statistics store's upkeep thread in `ae app`: one thread,
 //! `ae-app-stats`, steps [`Maintainer`] and waits [`maint::pause`] between
-//! steps on its stop channel, so a stop wakes it at once. The app keeps the
-//! [`Running`] handle for as long as it runs; dropping it, on any return,
-//! stops the thread and waits up to [`STOP_BOUND`] for it. A step still
-//! running then is abandoned: the process ending mid-publication is a crash
-//! the store's recovery finishes.
+//! steps on its stop channel, so a stop wakes it at once. The app owns the
+//! thread through [`Upkeep`] for as long as it runs: it stops the thread
+//! before an exec replaces the process and starts it again when the exec
+//! failed. Dropping the [`Running`] handle, on any return, stops the thread
+//! and waits up to [`STOP_BOUND`] for it. A step still running then is
+//! abandoned: the process ending mid-publication is a crash the store's
+//! recovery finishes.
 //!
 //! A repair, and the stop after damage met again, reach the app as one
 //! [`Wake::Notice`] each, naming the file and why.
@@ -169,32 +171,47 @@ impl Drop for Running {
     }
 }
 
-/// The app's one owner of the upkeep thread, when it could start one.
+/// The app's one owner of the upkeep thread, when it could start one: it
+/// stops the thread before the process is replaced, and starts it again when
+/// that failed.
 pub(super) struct Upkeep {
     running: Option<Running>,
+    root: PathBuf,
+    notices: Sender<Wake>,
 }
 
 impl Upkeep {
     /// Start the thread; an app that cannot start it runs without it.
     pub(super) fn start(root: PathBuf, notices: Sender<Wake>) -> Self {
         Self {
-            running: start(root, notices).ok(),
+            running: start(root.clone(), notices.clone()).ok(),
+            root,
+            notices,
         }
     }
 
-    /// Stop the thread within `bound`.
-    pub(super) fn stop(self, bound: Duration) {
-        if let Some(running) = self.running {
+    /// Stop the thread within `bound`, before an exec replaces the process:
+    /// a step still running past it is abandoned, as on any stop.
+    pub(super) fn pause(&mut self, bound: Duration) {
+        if let Some(running) = self.running.take() {
             running.stop(bound);
         }
     }
 
+    /// Start the thread again when none runs: the exec failed.
+    pub(super) fn resume(&mut self) {
+        if self.running.is_none() {
+            self.running = start(self.root.clone(), self.notices.clone()).ok();
+        }
+    }
+
+    /// Stop the thread within `bound`.
+    pub(super) fn stop(mut self, bound: Duration) {
+        self.pause(bound);
+    }
+
     /// The thread this owner runs, if any.
     #[cfg(test)]
-    #[allow(
-        dead_code,
-        reason = "observed by the r6 spec's exec-restart regressions"
-    )]
     pub(super) fn running(&self) -> Option<&Running> {
         self.running.as_ref()
     }
