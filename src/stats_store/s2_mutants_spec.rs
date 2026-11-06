@@ -162,6 +162,8 @@ fn s2_m2_consistent_delta_does_not_read_an_unrelated_session_view() {
     let plan = published(
         disk::publish(&mut logged, &mut journals, &work).expect("consistent delta publication"),
     );
+    // all_views reads unrelated session views in the re-sum fallback. If that
+    // fallback becomes lazy, revisit this cost observable rather than dropping it.
     let unrelated = format!("stats/session/{T}.view");
     assert!(
         !logged.names.contains(&unrelated),
@@ -282,4 +284,49 @@ fn s2_m7_chunked_source_rejoins_the_current_round_after_other_sources() {
         },
     ];
     check(&mut Files::at(&root.0), &feeds, lim.line);
+}
+
+#[test]
+fn s2_fuzz_repeated_completed_catchup_is_an_oracle_checked_noop() {
+    let mut rig = Rig::new(super::cases::fixtures(), 4096, 4096);
+    for i in 0..rig.feeds.len() {
+        rig.catchup(i);
+    }
+    let before: Vec<_> = rig
+        .dir
+        .names()
+        .into_iter()
+        .map(|name| {
+            let bytes = rig
+                .dir
+                .file(&name)
+                .expect("persisted fixture file")
+                .to_vec();
+            (name, bytes)
+        })
+        .collect();
+    let cursors: Vec<_> = rig.feeds.iter().map(|feed| feed.cursor).collect();
+    for i in 0..rig.feeds.len() {
+        rig.catchup(i);
+        rig.check();
+    }
+    let after: Vec<_> = rig
+        .dir
+        .names()
+        .into_iter()
+        .map(|name| {
+            let bytes = rig
+                .dir
+                .file(&name)
+                .expect("persisted fixture file")
+                .to_vec();
+            (name, bytes)
+        })
+        .collect();
+    assert_eq!(after, before, "completed catch-up changes no durable file");
+    assert_eq!(
+        rig.feeds.iter().map(|feed| feed.cursor).collect::<Vec<_>>(),
+        cursors,
+        "completed source cursors stay fixed"
+    );
 }

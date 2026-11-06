@@ -255,6 +255,41 @@ impl Rig {
         self.feeds[i].active = true;
     }
     pub fn catchup(&mut self, i: usize) {
+        // Crash recovery may retain a payload already at this source's end.
+        // Probe the real product quiet path rather than skipping a completed
+        // source. ready remains strict for outstanding or unregistered work.
+        if self.feeds[i].active && self.feeds[i].cursor == self.feeds[i].bytes.len() as u64 {
+            recover(&mut self.dir);
+            let snapshot = |dir: &Memory| {
+                dir.names()
+                    .into_iter()
+                    .map(|name| {
+                        let bytes = dir.file(&name).expect("durable fixture file").to_vec();
+                        (name, bytes)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let before = snapshot(&self.dir);
+            let next = Prepared::read(
+                &mut self.dir,
+                &mut self.journals,
+                &self.feeds[i].spec,
+                self.limits,
+                None,
+            )
+            .expect("read an already completed source");
+            assert!(
+                matches!(next, Next::Nothing),
+                "the real product must find no work for a completed source: {next:?}"
+            );
+            assert_eq!(
+                snapshot(&self.dir),
+                before,
+                "the quiet read changes no durable file or source cursor"
+            );
+            self.check();
+            return;
+        }
         let max = self.feeds[i].bytes.len().saturating_add(8);
         for _ in 0..max {
             let work = self.ready(i);
