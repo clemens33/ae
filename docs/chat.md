@@ -391,6 +391,14 @@ markers — and a chat ask's footer repeats the guidance in one line.
 `human:chat` is display only: the journal still records the ask as
 `console:local`, and older records show that spelling for the same route.
 
+The reply itself must stand alone, because [Telegram](#telegram) carries text
+only and never a file. A substantial report goes in one local, self-contained
+file (HTML, SVG or PNG), and the reply adds its absolute path after the
+answer. The path has no space, because [Links](#links) never links one. The
+terminal link opens the file with the default application, usually the desktop
+browser for an HTML file. An ask stored with the earlier footer still reads
+back in the chat.
+
 ## Run a command
 
 `!<command>` in the owner chat runs that one line as your own command, in the

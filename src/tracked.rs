@@ -207,7 +207,14 @@ pub const CONSOLE_DISPLAY: &str = "human:chat";
 /// ae chat: the chat-asker footer in [`compose`] and the seats' context in
 /// `render::console_turns` both read this, so the guidance cannot drift. One
 /// plain-ASCII line, no quotes or apostrophes a shell could read.
-pub const CHAT_REPLY_STYLE: &str = "The human reads this reply in ae chat: answer first in one short line, then short lines, a blank line between points, numbered lines for choices, no tables, headings or bold markers, about 15 lines unless asked for more.";
+pub const CHAT_REPLY_STYLE: &str = "The human reads this reply in ae chat: answer first in one short line, then short lines, a blank line between points, numbered lines for choices, no tables, headings or bold markers, about 15 lines unless asked for more. The reply must stand alone, as a phone shows text only. Put a substantial report in ONE local self-contained file; add its absolute path, no spaces, after the answer.";
+
+/// Every chat style line a stored ask may end in, the current one first.
+/// [`uncompose_ask`] accepts each on read; only the first is ever written.
+const ACCEPTED_CHAT_REPLY_STYLES: [&str; 2] = [
+    CHAT_REPLY_STYLE,
+    "The human reads this reply in ae chat: answer first in one short line, then short lines, a blank line between points, numbered lines for choices, no tables, headings or bold markers, about 15 lines unless asked for more.",
+];
 
 /// The ONE stored-identity-to-display mapping. Exactly [`CONSOLE_SINK`] reads as
 /// [`CONSOLE_DISPLAY`]; every other sender, `console:localx` included, passes
@@ -427,8 +434,9 @@ const NO_PEEK_LINE: &str =
 /// taken off — nothing else. The prefix is the exact marker and `REQUEST` line
 /// for either name the console reads as, the tail is the LAST REQUIRED footer
 /// and nothing after it but one reply-command line, the fixed line and the
-/// optional chat style line, so text of the human's that looks like either
-/// survives and a file that is not that whole envelope is `None`.
+/// optional chat style line (any of [`ACCEPTED_CHAT_REPLY_STYLES`]), so text
+/// of the human's that looks like either survives and a file that is not that
+/// whole envelope is `None`.
 #[must_use]
 pub fn uncompose_ask<'a>(framed: &'a str, id: &str) -> Option<&'a str> {
     [CONSOLE_DISPLAY, CONSOLE_SINK]
@@ -442,7 +450,8 @@ pub fn uncompose_ask<'a>(framed: &'a str, id: &str) -> Option<&'a str> {
             let at = rest.rfind(REQUIRED_HEAD)?;
             let (command, after) = rest[at + REQUIRED_HEAD.len()..].split_once(NO_PEEK_LINE)?;
             let style = after.strip_prefix('\n');
-            let ended = after.is_empty() || style == Some(CHAT_REPLY_STYLE);
+            let ended = after.is_empty()
+                || style.is_some_and(|line| ACCEPTED_CHAT_REPLY_STYLES.contains(&line));
             (ended && !command.contains('\n')).then(|| &rest[..at])
         })
 }
@@ -3087,6 +3096,52 @@ mod tests {
             )),
             "{text}"
         );
+    }
+
+    /// Wrong implementations caught, one per fact: a style that never says the
+    /// answer must stand alone (a phone shows text only), one that lets a file
+    /// carry the answer, one that omits the path rule (absolute, no spaces,
+    /// because ae never links a path with a space), one that puts the path first.
+    #[test]
+    fn the_reply_style_tells_the_answer_to_stand_alone_and_a_report_file_to_follow_it() {
+        let style = super::CHAT_REPLY_STYLE;
+        for fact in [
+            "must stand alone, as a phone shows text only.",
+            "a substantial report in ONE local self-contained file;",
+            "add its absolute path, no spaces, after the answer.",
+        ] {
+            assert!(style.contains(fact), "{fact:?} missing: {style:?}");
+        }
+        assert!(
+            !style.contains('"') && !style.contains('\''),
+            "no quote a shell could read: {style:?}"
+        );
+    }
+
+    /// A stored ask keeps the style line it was framed with: one framed with
+    /// the older line reads back as the current one does, never as a refusal.
+    /// The older line is frozen here, independent of the constant.
+    #[test]
+    fn a_stored_ask_framed_with_the_earlier_style_line_still_reads_back() {
+        const EARLIER: &str = "The human reads this reply in ae chat: answer first in one short line, then short lines, a blank line between points, numbered lines for choices, no tables, headings or bold markers, about 15 lines unless asked for more.";
+        let id = "ae-20260930T060000Z-0000abcd";
+        let sender = super::CONSOLE_DISPLAY;
+        let current = compose(Kind::Ask, id, sender, "why?", "/x/reply \"<your reply>\"");
+        let earlier = current.replace(super::CHAT_REPLY_STYLE, EARLIER);
+        assert!(earlier.ends_with(EARLIER), "{earlier}");
+        let accepted = super::ACCEPTED_CHAT_REPLY_STYLES;
+        assert_eq!(
+            accepted[0],
+            super::CHAT_REPLY_STYLE,
+            "the current line first"
+        );
+        assert!(accepted.contains(&EARLIER), "the older line stays accepted");
+        let frame =
+            |text: &str| crate::provenance::first_line(&crate::provenance::peer(sender), text);
+        assert_eq!(super::uncompose_ask(&frame(&earlier), id), Some("why?"));
+        assert_eq!(super::uncompose_ask(&frame(&current), id), Some("why?"));
+        let altered = earlier.replace("15 lines", "16 lines");
+        assert_eq!(super::uncompose_ask(&frame(&altered), id), None);
     }
 
     #[test]
