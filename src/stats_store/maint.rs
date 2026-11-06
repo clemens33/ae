@@ -6,9 +6,11 @@
 //! Sources take turns: one that has more to read goes to the back after each
 //! step, so a large journal never strands a later one, except that a line
 //! longer than one read keeps its turn until it ends or is known to be over
-//! the limit. A live tail with no LF yet is read once, in a step of its own;
-//! until its journal changes, later rounds look at its length alone. A round
-//! that finds nothing to read is [`Outcome::Idle`]. The first step, and every
+//! the limit. A live tail with no LF yet is read once, in a step of its own,
+//! and so is a quiet source whose witness had to be read again
+//! ([`Outcome::Checked`]); until its journal's identity, length or change
+//! times move, later rounds look at its status alone. A round that finds
+//! nothing to read is [`Outcome::Idle`]. The first step, and every
 //! idle one, first finishes what a crash left owed.
 //!
 //! A payload file met damaged or over its cap is checked again under the lock
@@ -322,13 +324,15 @@ impl Maintainer {
                 held,
                 self.tails.get(&id),
             );
+            let prepared =
+                prepared.map(|seen| (seen.next, seen.read, seen.touched, seen.cursor, seen.tail));
             match prepared {
-                Ok((Next::Work(work), more, _)) => {
+                Ok((Next::Work(work), more, ..)) => {
                     self.tails.remove(&id);
                     self.round.worked = true;
                     return Ok((work, spec, more));
                 }
-                Ok((Next::Holding(held), more, _)) => {
+                Ok((Next::Holding(held), more, ..)) => {
                     self.tails.remove(&id);
                     self.round.worked = true;
                     let (from, to) = held.span();
@@ -341,7 +345,7 @@ impl Maintainer {
                         started,
                     ));
                 }
-                Ok((Next::Nothing, more, tail)) => {
+                Ok((Next::Nothing, more, touched, at, tail)) => {
                     let pending = tail.as_ref().map(Tail::span);
                     match tail {
                         Some(tail) => self.tails.insert(id.clone(), tail),
@@ -356,6 +360,17 @@ impl Maintainer {
                             Some(id),
                             Outcome::Holding { from, to },
                             more,
+                            started,
+                        ));
+                    }
+                    // A quiet source whose journal had to be read to check
+                    // its witness: its own step too. Nothing new was read, so
+                    // the round can still end idle.
+                    if touched {
+                        return Err(Self::finished(
+                            Some(id),
+                            Outcome::Checked { at },
+                            0,
                             started,
                         ));
                     }

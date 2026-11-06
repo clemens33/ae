@@ -4495,6 +4495,9 @@ fn step(
     typed: &[String],
     err: &mut impl Write,
 ) -> crate::Result<Step> {
+    // A thread a failed exec owes starts here, on the first turn after the
+    // stopped one ended.
+    upkeep.tend();
     let (version, link) = match app.restart_due(Instant::now()) {
         None => return Ok(Step::Stay(false)),
         Some((version, upgrade::Via::Respawn(respawn))) => {

@@ -3,17 +3,18 @@
 //! steps on its stop channel, so a stop wakes it at once. The app owns the
 //! thread through [`Upkeep`] for as long as it runs: it stops the thread
 //! before an exec replaces the process and starts it again when the exec
-//! failed. Dropping the [`Running`] handle, on any return, stops the thread
-//! and waits up to [`STOP_BOUND`] for it. A step still running then is
-//! abandoned: the process ending mid-publication is a crash the store's
-//! recovery finishes.
+//! failed. A thread still in its step when that stop's bound passes stays
+//! owned until it ends, and no other starts before then, so at most one runs.
+//! Dropping the [`Running`] handle, on any return, stops the thread and waits
+//! up to [`STOP_BOUND`] for it. A step still running then is abandoned: the
+//! process ending mid-publication is a crash the store's recovery finishes.
 //!
 //! A repair, and the stop after damage met again, reach the app as one
 //! [`Wake::Notice`] each, naming the file and why.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -32,6 +33,8 @@ pub(super) struct Running {
     stop: Option<Sender<()>>,
     done: Option<Receiver<()>>,
     worker: Option<JoinHandle<()>>,
+    /// The completion token the thread holds: gone once its loop is over.
+    token: Weak<()>,
     #[cfg_attr(not(test), allow(dead_code, reason = "observed only by tests"))]
     watch: Watch,
 }
@@ -39,18 +42,14 @@ pub(super) struct Running {
 /// What tests observe of the thread: nothing in the product.
 struct Watch {
     #[cfg(test)]
-    ended: std::sync::Weak<()>,
-    #[cfg(test)]
     parked: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Watch {
-    /// The completion `token` the thread holds, and its `probe`.
+    /// What the thread's `probe` shows.
     #[cfg_attr(not(test), allow(unused_variables, reason = "observed only by tests"))]
-    fn of(token: &Arc<()>, probe: &Probe) -> Self {
+    fn of(probe: &Probe) -> Self {
         Self {
-            #[cfg(test)]
-            ended: Arc::downgrade(token),
             #[cfg(test)]
             parked: Arc::clone(&probe.parked),
         }
@@ -101,7 +100,8 @@ fn spawn(root: PathBuf, notices: Sender<Wake>, probe: Probe) -> std::io::Result<
     let (stop, stopped) = mpsc::channel();
     let (finished, done) = mpsc::channel();
     let token = Arc::new(());
-    let watch = Watch::of(&token, &probe);
+    let ended = Arc::downgrade(&token);
+    let watch = Watch::of(&probe);
     let worker = std::thread::Builder::new()
         .name("ae-app-stats".to_owned())
         .spawn(move || {
@@ -114,6 +114,7 @@ fn spawn(root: PathBuf, notices: Sender<Wake>, probe: Probe) -> std::io::Result<
         stop: Some(stop),
         done: Some(done),
         worker: Some(worker),
+        token: ended,
         watch,
     })
 }
@@ -157,49 +158,60 @@ fn upkeep(root: &Path, stop: &Receiver<()>, notices: &Sender<Wake>, probe: &Prob
 
 impl Running {
     /// Stop the thread: `true` when it ended within `bound`.
+    #[cfg(test)]
     pub(super) fn stop(mut self, bound: Duration) -> bool {
         self.halt(bound)
     }
 
+    /// Tell the thread to stop, once, and wait up to `bound` for it: `true`
+    /// when it ended, joined. A thread still in its step keeps its handle,
+    /// so a later call waits for the same thread again.
     fn halt(&mut self, bound: Duration) -> bool {
-        let Some(stop) = self.stop.take() else {
-            return true;
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        let Some(done) = self.done.take() else {
+            return self.worker.is_none();
         };
-        let _ = stop.send(());
-        drop(stop);
-        let ended = self.done.take().is_some_and(|done| {
-            matches!(
-                done.recv_timeout(bound),
-                Ok(()) | Err(RecvTimeoutError::Disconnected)
-            )
-        });
-        if let Some(worker) = self.worker.take()
-            && ended
-        {
+        if done.recv_timeout(bound) == Err(RecvTimeoutError::Timeout) {
+            self.done = Some(done);
+            return false;
+        }
+        if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
-        ended
+        true
+    }
+
+    /// Whether the thread's loop is over: its token is gone.
+    fn finished(&self) -> bool {
+        self.token.upgrade().is_none()
     }
 }
 
 impl Drop for Running {
+    /// A thread never told to stop gets the whole bound; one already told
+    /// and waited for is only looked at once more.
     fn drop(&mut self) {
-        self.halt(STOP_BOUND);
+        let bound = if self.stop.is_some() {
+            STOP_BOUND
+        } else {
+            Duration::ZERO
+        };
+        self.halt(bound);
     }
 }
 
 /// The app's one owner of the upkeep thread, when it could start one: it
 /// stops the thread before the process is replaced, and starts it again when
-/// that failed.
+/// that failed, never while the stopped one is still in its step.
 pub(super) struct Upkeep {
     running: Option<Running>,
-    /// A stopped thread still finishing its step: observed only by tests.
-    #[cfg(test)]
-    #[allow(
-        dead_code,
-        reason = "observed by the r7 spec's stop-timeout regression"
-    )]
+    /// A thread told to stop that was still in its step when the bound
+    /// passed: still owned, until it ends.
     stopping: Option<Running>,
+    /// A thread is owed again: an exec failed after the stop.
+    owed: bool,
     root: PathBuf,
     notices: Sender<Wake>,
 }
@@ -209,31 +221,54 @@ impl Upkeep {
     pub(super) fn start(root: PathBuf, notices: Sender<Wake>) -> Self {
         Self {
             running: start(root.clone(), notices.clone()).ok(),
-            #[cfg(test)]
             stopping: None,
+            owed: false,
             root,
             notices,
         }
     }
 
     /// Stop the thread within `bound`, before an exec replaces the process:
-    /// a step still running past it is abandoned, as on any stop.
+    /// a thread still in its step past it goes on to the exec, kept as
+    /// stopping so it stays owned if the exec fails.
     pub(super) fn pause(&mut self, bound: Duration) {
-        if let Some(running) = self.running.take() {
-            running.stop(bound);
+        if let Some(mut running) = self.running.take()
+            && !running.halt(bound)
+        {
+            self.stopping = Some(running);
         }
     }
 
-    /// Start the thread again when none runs: the exec failed.
+    /// The exec failed: a thread is owed again, started at once unless the
+    /// stopped one is still in its step.
     pub(super) fn resume(&mut self) {
-        if self.running.is_none() {
+        self.owed = true;
+        self.tend();
+    }
+
+    /// Every app turn: a stopped thread that has ended is reaped, and only
+    /// then is an owed thread started.
+    pub(super) fn tend(&mut self) {
+        if self.stopping.as_ref().is_some_and(Running::finished)
+            && let Some(mut stopped) = self.stopping.take()
+        {
+            // Its loop is over: what is left is the send of its done signal.
+            stopped.halt(STOP_BOUND);
+        }
+        if self.owed && self.stopping.is_none() && self.running.is_none() {
+            self.owed = false;
             self.running = start(self.root.clone(), self.notices.clone()).ok();
         }
     }
 
-    /// Stop the thread within `bound`.
+    /// Stop the thread within `bound`: the running one, or else the one
+    /// still stopping.
     pub(super) fn stop(mut self, bound: Duration) {
-        self.pause(bound);
+        if let Some(mut running) = self.running.take() {
+            running.halt(bound);
+        } else if let Some(mut stopped) = self.stopping.take() {
+            stopped.halt(bound);
+        }
     }
 
     /// The thread this owner runs, if any.
@@ -244,10 +279,6 @@ impl Upkeep {
 
     /// The stopped thread this owner still waits for, if any.
     #[cfg(test)]
-    #[allow(
-        dead_code,
-        reason = "observed by the r7 spec's stop-timeout regression"
-    )]
     pub(super) fn stopping(&self) -> Option<&Running> {
         self.stopping.as_ref()
     }
@@ -255,10 +286,6 @@ impl Upkeep {
     /// [`Upkeep::start`], its thread held at the top of its first step until
     /// the returned [`Hold`] is dropped: armed before the thread starts.
     #[cfg(test)]
-    #[allow(
-        dead_code,
-        reason = "observed by the r7 spec's stop-timeout regression"
-    )]
     pub(super) fn start_holding(root: PathBuf, notices: Sender<Wake>) -> (Self, Hold) {
         let probe = Probe::default();
         probe.gate.arm();
@@ -266,6 +293,7 @@ impl Upkeep {
         let upkeep = Self {
             running: spawn(root.clone(), notices.clone(), probe).ok(),
             stopping: None,
+            owed: false,
             root,
             notices,
         };
@@ -297,10 +325,6 @@ impl Gate {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    #[allow(
-        dead_code,
-        reason = "observed by the r7 spec's stop-timeout regression"
-    )]
     fn arm(&self) {
         self.state().armed = true;
     }
@@ -320,10 +344,6 @@ impl Gate {
         state.armed = false;
     }
 
-    #[allow(
-        dead_code,
-        reason = "observed by the r7 spec's stop-timeout regression"
-    )]
     fn release(&self) {
         self.state().released = true;
         self.turned.notify_all();
@@ -333,19 +353,11 @@ impl Gate {
 /// A test's hold on the upkeep thread: dropping it, on any return or
 /// unwind, lets the thread go on.
 #[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "observed by the r7 spec's stop-timeout regression"
-)]
 pub(super) struct Hold(Arc<Gate>);
 
 #[cfg(test)]
 impl Hold {
     /// Whether the thread reached the gate within `within`.
-    #[allow(
-        dead_code,
-        reason = "observed by the r7 spec's stop-timeout regression"
-    )]
     pub(super) fn entered(&self, within: Duration) -> bool {
         let state = self.0.state();
         let (state, _) = self
@@ -368,7 +380,7 @@ impl Drop for Hold {
 impl Running {
     /// The thread's completion, observable after the handle is gone.
     pub(super) fn ended(&self) -> Ended {
-        Ended(self.watch.ended.clone())
+        Ended(self.token.clone())
     }
 
     /// Whether the thread is waiting between steps.
@@ -388,10 +400,6 @@ impl Ended {
     }
 
     /// Whether `other` is the completion of the same thread.
-    #[allow(
-        dead_code,
-        reason = "observed by the r7 spec's stop-timeout regression"
-    )]
     pub(super) fn same_worker(&self, other: &Self) -> bool {
         std::sync::Weak::ptr_eq(&self.0, &other.0)
     }

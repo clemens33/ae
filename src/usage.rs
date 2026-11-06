@@ -1221,14 +1221,27 @@ fn truncation_gap(path: &Path, cap: u64) -> crate::stats::SourceGap {
     }
 }
 
+/// One bounded journal read: the file's device, inode and length, its
+/// modification and status-change times (seconds, nanoseconds), and the bytes.
+#[derive(Debug)]
+pub(crate) struct JournalWindow {
+    pub(crate) dev: u64,
+    pub(crate) ino: u64,
+    pub(crate) len: u64,
+    pub(crate) mtime: (i64, i64),
+    pub(crate) ctime: (i64, i64),
+    pub(crate) bytes: Vec<u8>,
+}
+
 /// At most `max` bytes of the journal at `path` from `from`, with the file's
-/// device, inode and length: one bounded read for the maintained statistics
-/// store, under [`open_regular`]'s own checks. A file read is the file checked.
+/// identity and change times from the same status: one bounded read for the
+/// maintained statistics store, under [`open_regular`]'s own checks. A file
+/// read is the file checked.
 pub(crate) fn journal_window(
     path: &Path,
     from: u64,
     max: u64,
-) -> Result<(u64, u64, u64, Vec<u8>), crate::stats::SourceGap> {
+) -> Result<JournalWindow, crate::stats::SourceGap> {
     use crate::stats::SourceGap;
     use std::io::{Seek as _, SeekFrom};
     use std::os::unix::fs::MetadataExt as _;
@@ -1251,7 +1264,14 @@ pub(crate) fn journal_window(
     if u64::try_from(bytes.len()) != Ok(take) {
         return Err(SourceGap::Unreadable);
     }
-    Ok((identity.dev(), identity.ino(), len, bytes))
+    Ok(JournalWindow {
+        dev: identity.dev(),
+        ino: identity.ino(),
+        len,
+        mtime: (identity.mtime(), identity.mtime_nsec()),
+        ctime: (identity.ctime(), identity.ctime_nsec()),
+        bytes,
+    })
 }
 
 /// One journal line handed to a sink.

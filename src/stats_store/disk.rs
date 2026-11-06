@@ -13,14 +13,22 @@
 //! groups' evidence, their session views and the root view, and removes the
 //! intent. [`recovery`] finishes or undoes whatever a crash left: an
 //! interrupted repair swap first, then leftover temps, then an intent, rebuilt
-//! from the primary group's evidence as it stands. Every file a plan writes is
-//! synced before the intent publishes; directories are not.
+//! from the primary group's evidence as it stands; a primary staged but not
+//! committed keeps its temp until the intent is gone. Every file a plan writes
+//! is synced before the intent publishes; directories are not.
 //!
 //! A [`repair`] moves the payload aside whole for an empty one in the epoch
-//! after the highest one a surviving document proves; the first build is
-//! staged the same way, so a payload never exists without its epoch file. A
-//! file that cannot be read is an IO error, never damage: nothing is repaired
-//! over it.
+//! after the highest one a surviving document proves, and no prefix of it
+//! removes that proof before the active epoch file carries it; the first build
+//! is staged the same way, so a payload never exists without its epoch file.
+//! A retired payload proving an epoch at or above the active one is damage
+//! (amendment 17). A file that cannot be read is an IO error, never damage:
+//! nothing is repaired over it.
+//!
+//! A source with nothing new is remembered by its journal's identity, length
+//! and change times (amendment 16): while they stay the same, its next look
+//! reads no byte. A change reads the witness again: the bytes just before the
+//! cursor. A same-length rewrite further back than the witness is not seen.
 //!
 //! Lock order: a journal lock, then `stats.lock`, never the reverse. Nothing
 //! here takes a journal lock; journals are read unlocked and witnessed.
@@ -607,13 +615,45 @@ impl Dir for Memory {
 
 // --- journals ---------------------------------------------------------------
 
-/// A bounded look at a journal: its identity and length, and the bytes read.
+/// A bounded look at a journal: its identity, length and change times, and
+/// the bytes read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Window {
     pub dev: u64,
     pub ino: u64,
     pub len: u64,
+    /// Modification and status-change times, seconds and nanoseconds.
+    pub changed: Changed,
     pub bytes: Vec<u8>,
+}
+
+/// A journal's modification and status-change times, seconds and
+/// nanoseconds: an in-place rewrite moves the status change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Changed {
+    pub mtime: (i64, i64),
+    pub ctime: (i64, i64),
+}
+
+impl Window {
+    fn identity(&self) -> Identity {
+        Identity {
+            dev: self.dev,
+            ino: self.ino,
+            len: self.len,
+            changed: self.changed,
+        }
+    }
+}
+
+/// What a quiet journal looked like (amendment 16): the same file, the same
+/// length and the same change times read nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Identity {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    changed: Changed,
 }
 
 /// Where sources' journals are read.
@@ -678,24 +718,30 @@ impl FileJournals {
 impl Journal for FileJournals {
     fn window(&mut self, source: &str, from: u64, max: u64) -> Result<Window, SourceGap> {
         let path = self.path(source).ok_or(SourceGap::Missing)?;
-        let (dev, ino, len, bytes) = crate::usage::journal_window(&path, from, max)?;
+        let read = crate::usage::journal_window(&path, from, max)?;
         #[cfg(test)]
         {
-            observe::journal(bytes.len());
+            observe::journal(read.bytes.len());
         }
         Ok(Window {
-            dev,
-            ino,
-            len,
-            bytes,
+            dev: read.dev,
+            ino: read.ino,
+            len: read.len,
+            changed: Changed {
+                mtime: read.mtime,
+                ctime: read.ctime,
+            },
+            bytes: read.bytes,
         })
     }
 }
 
-/// Journals in memory: test and fuzz stores.
+/// Journals in memory: test and fuzz stores. Every [`MemoryJournals::set`]
+/// is a write: it moves the journal's change times, as a write to a file does.
 #[derive(Debug, Clone, Default)]
 pub struct MemoryJournals {
-    journals: BTreeMap<String, (u64, u64, Vec<u8>)>,
+    journals: BTreeMap<String, (u64, u64, Vec<u8>, i64)>,
+    writes: i64,
 }
 
 impl MemoryJournals {
@@ -706,14 +752,15 @@ impl MemoryJournals {
 
     /// `source`'s journal is now `bytes`, in the file `(dev, ino)`.
     pub fn set(&mut self, source: &str, dev: u64, ino: u64, bytes: &[u8]) {
+        self.writes = self.writes.saturating_add(1);
         self.journals
-            .insert(source.to_owned(), (dev, ino, bytes.to_vec()));
+            .insert(source.to_owned(), (dev, ino, bytes.to_vec(), self.writes));
     }
 }
 
 impl Journal for MemoryJournals {
     fn window(&mut self, source: &str, from: u64, max: u64) -> Result<Window, SourceGap> {
-        let (dev, ino, bytes) = self.journals.get(source).ok_or(SourceGap::Missing)?;
+        let (dev, ino, bytes, write) = self.journals.get(source).ok_or(SourceGap::Missing)?;
         let len = bytes.len();
         let start = usize::try_from(from).unwrap_or(usize::MAX).min(len);
         let end = start
@@ -723,6 +770,10 @@ impl Journal for MemoryJournals {
             dev: *dev,
             ino: *ino,
             len: u64::try_from(len).unwrap_or(u64::MAX),
+            changed: Changed {
+                mtime: (*write, 0),
+                ctime: (*write, 0),
+            },
             bytes: bytes.get(start..end).unwrap_or_default().to_vec(),
         })
     }
@@ -823,6 +874,13 @@ struct Base {
     stamp: Option<(u64, u64)>,
 }
 
+impl Base {
+    /// The source's durable cursor: 0 when unregistered.
+    fn cursor(&self) -> u64 {
+        self.stamp.map_or(0, |(_, cursor)| cursor)
+    }
+}
+
 /// A source registered, or replaced from its start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Fresh {
@@ -903,22 +961,33 @@ impl Held {
 }
 
 /// What a read of a source that found nothing new saw: the payload's hold on
-/// the source, and its journal's identity and length.
+/// the source, and its journal's identity, length and change times.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tail {
     base: Base,
-    dev: u64,
-    ino: u64,
-    len: u64,
+    seen: Identity,
 }
 
 impl Tail {
     /// The durable cursor, and the journal's length past it.
     #[must_use]
     pub fn span(&self) -> (u64, u64) {
-        let cursor = self.base.stamp.map_or(0, |(_, cursor)| cursor);
-        (cursor, self.len)
+        (self.base.cursor(), self.seen.len)
     }
+}
+
+/// What one read of a source found, and what it cost.
+#[derive(Debug)]
+pub struct Observed {
+    pub next: Next,
+    /// New journal bytes read.
+    pub read: u64,
+    /// Whether any journal content was read, a witness included.
+    pub touched: bool,
+    /// The source's durable cursor in the payload.
+    pub cursor: u64,
+    /// What to tell the next read of a source that found nothing new.
+    pub tail: Option<Tail>,
 }
 
 /// What preparing a source found.
@@ -940,13 +1009,17 @@ struct Reader<'a> {
     archive: bool,
     /// New journal bytes read so far.
     read: u64,
-    /// The journal's identity and length when the read found nothing new.
-    quiet: Option<(u64, u64, u64)>,
+    /// Whether any journal content was read, a witness included.
+    touched: bool,
+    /// The journal as it was when the read found nothing new.
+    quiet: Option<Identity>,
 }
 
 impl Reader<'_> {
     fn window(&mut self, from: u64, max: u64) -> Result<Window, SourceGap> {
-        self.journal.window(self.id, from, max)
+        let window = self.journal.window(self.id, from, max)?;
+        self.touched |= !window.bytes.is_empty();
+        Ok(window)
     }
 
     fn count(&mut self, bytes: &[u8]) {
@@ -1026,7 +1099,7 @@ impl Reader<'_> {
             return Ok(None);
         }
         if tail.len == mark.seen && mark.read == mark.seen {
-            self.quiet = Some((tail.dev, tail.ino, tail.len));
+            self.quiet = Some(tail.identity());
             return Ok(Some(Next::Nothing));
         }
         let Ok(window) = self.window(cursor, self.limits.chunk) else {
@@ -1086,7 +1159,7 @@ impl Reader<'_> {
                     (judged(past, rest)?.widened(cursor), false)
                 }
                 None if data.is_empty() => {
-                    self.quiet = Some((window.dev, window.ino, window.len));
+                    self.quiet = Some(window.identity());
                     return Ok(Next::Nothing);
                 }
                 None => (Digest::passed(cursor, read_end), true),
@@ -1095,7 +1168,7 @@ impl Reader<'_> {
             (judged(cursor, &data)?, false)
         } else if eof {
             if fresh.is_none() {
-                self.quiet = Some((window.dev, window.ino, window.len));
+                self.quiet = Some(window.identity());
                 return Ok(Next::Nothing);
             }
             (Digest::passed(cursor, cursor), false)
@@ -1172,14 +1245,15 @@ impl Prepared {
         held: Option<Held>,
     ) -> Result<(Next, u64), Refused> {
         Self::read_observed(dir, journal, source, limits, held, None)
-            .map(|(next, read, _)| (next, read))
+            .map(|seen| (seen.next, seen.read))
     }
 
     /// [`Prepared::read_counted`], told the [`Tail`] the last read of this
     /// source that found nothing new saw: when the payload still holds the
-    /// source as it did and its journal has the same identity and length, the
-    /// journal's length is all that is looked at, no byte of it read. A read
-    /// that finds nothing new returns the tail to tell the next one.
+    /// source as it did and its journal has the same identity, length and
+    /// change times (amendment 16), the journal's status is all that is looked
+    /// at, no byte of it read. A read that finds nothing new returns the tail
+    /// to tell the next one, and says whether it read journal content.
     ///
     /// # Errors
     ///
@@ -1191,7 +1265,7 @@ impl Prepared {
         limits: Limits,
         held: Option<Held>,
         quiet: Option<&Tail>,
-    ) -> Result<(Next, u64, Option<Tail>), Refused> {
+    ) -> Result<Observed, Refused> {
         let epoch = read_epoch(dir)?.unwrap_or(0);
         let (key, origin) = source.origin();
         let row = load_view(dir, epoch, &key)?.and_then(|view| view.rows.get(source.id()).cloned());
@@ -1209,7 +1283,16 @@ impl Prepared {
             limits,
             archive: matches!(source, SourceSpec::Archive { .. }),
             read: 0,
+            touched: false,
             quiet: None,
+        };
+        let cursor = base.cursor();
+        let seen = |next: Next, reader: &Reader<'_>, tail: Option<Tail>| Observed {
+            next,
+            read: reader.read,
+            touched: reader.touched,
+            cursor,
+            tail,
         };
         if matches!(source, SourceSpec::Failed { .. }) {
             let next = if row.is_some() {
@@ -1217,20 +1300,20 @@ impl Prepared {
             } else {
                 reader.registered(origin)
             };
-            return Ok((next, 0, None));
+            return Ok(seen(next, &reader, None));
         }
         if held.is_none()
             && let Some(quiet) = quiet.filter(|quiet| quiet.base == base)
             && reader
-                .window(quiet.len, 0)
-                .is_ok_and(|now| (now.dev, now.ino, now.len) == (quiet.dev, quiet.ino, quiet.len))
+                .window(quiet.seen.len, 0)
+                .is_ok_and(|now| now.identity() == quiet.seen)
         {
-            return Ok((Next::Nothing, 0, Some(quiet.clone())));
+            return Ok(seen(Next::Nothing, &reader, Some(quiet.clone())));
         }
         if let Some(held) = held.filter(|held| held.source == source.id() && held.base == base)
             && let Some(next) = reader.resume(held)?
         {
-            return Ok((next, reader.read, None));
+            return Ok(seen(next, &reader, None));
         }
         let next = match &row {
             Some(row) if !row.failed => match reader.continued(row)? {
@@ -1250,15 +1333,13 @@ impl Prepared {
             })?,
         };
         let tail = match (&next, reader.quiet) {
-            (Next::Nothing, Some((dev, ino, len))) => Some(Tail {
+            (Next::Nothing, Some(quiet)) => Some(Tail {
                 base: base.clone(),
-                dev,
-                ino,
-                len,
+                seen: quiet,
             }),
             _ => None,
         };
-        Ok((next, reader.read, tail))
+        Ok(seen(next, &reader, tail))
     }
 
     #[must_use]
@@ -1907,12 +1988,16 @@ pub fn event(
 /// swap first: the staged payload when it carries the epoch after the newest
 /// retired one, or when there is none (a first build), else that retired
 /// payload. Then leftover temps, and an intent rebuilt from its primary
-/// group's evidence as it stands. Applied whole, a second call plans nothing.
+/// group's evidence as it stands; a primary staged but never committed keeps
+/// its temp until the intent is gone. Applied whole, a second call plans
+/// nothing, and so does every prefix of it.
 ///
 /// # Errors
 ///
-/// A payload file over its cap or damaged, a retired payload whose content is
-/// not the epoch its name says, or a file or directory that cannot be read.
+/// A payload file over its cap or damaged, an active epoch at or below a
+/// retired payload that proves its own (amendment 17), a retired payload whose
+/// content is not the epoch its name says, or a file or directory that cannot
+/// be read.
 pub fn recovery(dir: &mut dyn Dir) -> Result<Plan, Refused> {
     let top = list(dir, "")?;
     let olds: BTreeSet<u64> = top.iter().filter_map(|name| retired(name)).collect();
@@ -1922,6 +2007,17 @@ pub fn recovery(dir: &mut dyn Dir) -> Result<Plan, Refused> {
     }
     let bytes = fetch(dir, EPOCH, EPOCH_CAP)?.ok_or_else(|| wrong(EPOCH, "missing"))?;
     let epoch = doc::parse_epoch(&bytes).map_err(damaged(EPOCH))?;
+    // Amendment 17: a retired payload proving an epoch at or above the active
+    // one means the active epoch went back. Removing it would lose that proof.
+    for old in olds.iter().filter(|old| **old >= epoch) {
+        if retired_valid(dir, *old)? {
+            let name = retired_name(*old);
+            return Err(wrong(
+                EPOCH,
+                &format!("epoch {epoch} is not above the retired epoch {old} in {name}"),
+            ));
+        }
+    }
     let mut ops = Vec::new();
     if staging {
         ops.push(Op::RemoveTree(STAGING.to_owned()));
@@ -1935,22 +2031,32 @@ pub fn recovery(dir: &mut dyn Dir) -> Result<Plan, Refused> {
         }
     }
     let sessions = list(dir, SESSIONS)?;
+    let intent = intent_of(dir)?;
+    // The primary's staged evidence is the proof that it never committed: it
+    // goes only after the intent, so a crash between the two finds either both
+    // or a temp alone.
+    let staged = intent
+        .as_ref()
+        .map(|intent| temp(&evidence_name(&intent.primary)))
+        .filter(|staged| {
+            sessions
+                .iter()
+                .any(|name| format!("{SESSIONS}/{name}") == *staged)
+        });
     for name in &sessions {
-        if name.ends_with(TEMP) {
-            ops.push(Op::Remove(format!("{SESSIONS}/{name}")));
+        let name = format!("{SESSIONS}/{name}");
+        if name.ends_with(TEMP) && staged.as_ref() != Some(&name) {
+            ops.push(Op::Remove(name));
         }
     }
-    let Some(intent) = intent_of(dir)? else {
+    let Some(intent) = intent else {
         return Ok(Plan::of(ops));
     };
     if intent.epoch != epoch {
         return Err(wrong(INTENT, "epoch"));
     }
-    let staged = temp(&evidence_name(&intent.primary));
-    let staged = sessions
-        .iter()
-        .any(|name| format!("{SESSIONS}/{name}") == staged);
-    ops.extend(replay(dir, epoch, &intent, staged)?);
+    ops.extend(replay(dir, epoch, &intent, staged.is_some())?);
+    ops.extend(staged.map(Op::Remove));
     Ok(Plan::of(ops))
 }
 
@@ -2090,9 +2196,12 @@ fn replay(
 /// removed.
 ///
 /// [`recovery`] decides first (amendment 15): work it can still finish is
-/// owed; damage it cannot get past is taken over, the intent, every temp and
-/// any staged or retired payload removed before the swap; an IO error refuses,
-/// every file kept. A store never built has nothing to repair.
+/// owed; damage it cannot get past is taken over; an IO error refuses, every
+/// file kept. A takeover removes what proves nothing first: the intent, every
+/// temp, staging and the retired payloads below the proven epoch. Then the
+/// active epoch file is made to say the proven epoch, and only then does the
+/// retired payload carrying it go, so every prefix keeps the proof. A store
+/// never built has nothing to repair.
 ///
 /// # Errors
 ///
@@ -2118,9 +2227,17 @@ pub fn repair(dir: &mut dyn Dir) -> Result<Plan, Refused> {
     let next = proven
         .checked_add(1)
         .ok_or_else(|| Refused::Io("epoch".to_owned()))?;
+    let old = retired_name(proven);
     let mut ops = Vec::new();
+    let mut proof = None;
     if takeover {
-        ops.extend(debris.into_iter().map(|name| Op::RemoveTree(name.clone())));
+        for name in debris {
+            if *name == old {
+                proof = Some(Op::RemoveTree(old.clone()));
+            } else {
+                ops.push(Op::RemoveTree(name.clone()));
+            }
+        }
         if payload {
             for name in list(dir, PAYLOAD)? {
                 if name == "intent" || name.ends_with(TEMP) {
@@ -2134,7 +2251,6 @@ pub fn repair(dir: &mut dyn Dir) -> Result<Plan, Refused> {
             }
         }
     }
-    let old = retired_name(proven);
     if payload {
         let current = dir.read(EPOCH, EPOCH_CAP);
         let says = match &current {
@@ -2155,6 +2271,7 @@ pub fn repair(dir: &mut dyn Dir) -> Result<Plan, Refused> {
             });
         }
     }
+    ops.extend(proof);
     ops.push(Op::MakeDir(STAGING.to_owned()));
     ops.push(Op::Write {
         name: format!("{STAGING}/epoch"),
