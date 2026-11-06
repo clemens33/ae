@@ -2998,3 +2998,7 @@ mod tests {
         assert_eq!(document.warnings(), 6, "{}", document.render());
     }
 }
+
+#[cfg(test)]
+#[path = "doctor/leadfloor2_warnings_spec.rs"]
+mod leadfloor2_warnings_spec;
