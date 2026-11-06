@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.22] - 2026-11-06
+- **app**: A linked HTML, SVG, image or PDF file shows an open note instead of raw source or a refusal
+- **chat**: A reply to the human stands alone; a substantial report is one local file
+- **render**: Agent-to-agent message style is caveman-lite: meaning first, full sentences, no fragments
+- **stats**: Maintained Statistics store pure model (S1, dark)
+- **stats_store**: Refuse persisted dates the calendar does not have
+- **stats_store**: Pin the survivors of the S1 mutation run
+- **stats_store**: Say what a refused over-limit event records
+- Clarify OpenCode variant requests in doctor
+- **autoreseat**: Frozen acceptance for the lead capability floor (#309 B)
+- **autoreseat**: Re-freeze the lead floor IT without the unused import (#309 B)
+- **autoreseat**: Lead floor with per-model tiers for automatic lead reseat (#309 part B)
+- **autoreseat**: Frozen unpinned-twin edge for the lead floor (#309 B)
+- **autoreseat**: A derived twin is exempt from the lead floor only when its model is read (#309 B)
+- **reseat**: Frozen locked-source late floor oracle (#309 B)
+- **reseat**: The late lead floor judges the source read under the lifecycle lock (#309 B)
+- **autoreseat**: Parse_floor reads the value with if let (#309 B)
+- **leadfloor2**: Re-freeze lint attributes and doc backticks in the frozen specs (#309 B)
+- **reseat**: The cover row judges no per-seat lead floor (#309 B)
+- **fuzz**: Rustfmt the config_parse lead floor lines (#309 B)
+- **doctor**: Frozen floor warnings reach the reseat-floor rows (#309 B)
+- **reseat**: Lead floor exemptions need a readable model; unpinned twin is judged (#309 B)
+- **leadfloor2**: Frozen discriminators for the final survivors (#309 B)
+- **autoreseat**: Build the late-origin journal without format-collect
+- **autoreseat**: Wire the lead floor specs above the terminal test module (#309 B)
+
 ## [v2026.11.21] - 2026-11-05
 - **effort**: Count tied quota readings as one logical window
 - **effort**: Validate tied readings before settling; state restore conditions in docs
