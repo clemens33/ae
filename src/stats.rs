@@ -40,6 +40,7 @@ pub enum SourceGap {
 }
 
 /// One journal as the reader found it.
+#[derive(Debug)]
 pub struct Source {
     label: String,
     session: Option<String>,
@@ -1500,6 +1501,117 @@ impl Tally {
         if let Some(range) = &other.range {
             self.widen(range);
         }
+    }
+
+    /// [`Tally::add`] that refuses to saturate: `None`, and these counts
+    /// untouched, when any sum would pass `u64`. A total kept by adding and
+    /// taking away groups stays exact only while nothing saturates.
+    pub(crate) fn checked_add(&mut self, other: &Self) -> Option<()> {
+        let mut sum = self.clone();
+        for (cells, count) in &other.joint {
+            let held = sum.joint.entry(cells.clone()).or_default();
+            *held = held.checked_add(*count)?;
+        }
+        sum.legacy = sum.legacy.checked_add(other.legacy)?;
+        for (word, count) in &other.unproved {
+            let held = sum.unproved.entry(word.clone()).or_default();
+            *held = held.checked_add(*count)?;
+        }
+        for (key, count) in &other.notes {
+            let held = sum.notes.entry(key.clone()).or_default();
+            *held = held.checked_add(*count)?;
+        }
+        for (held, count) in sum.excluded.iter_mut().zip(other.excluded) {
+            *held = held.checked_add(count)?;
+        }
+        sum.read = sum.read.checked_add(other.read)?;
+        sum.sources = sum.sources.checked_add(other.sources)?;
+        if let Some(range) = &other.range {
+            sum.widen(range);
+        }
+        *self = sum;
+        Some(())
+    }
+
+    /// Take a group's counts away again: `None`, and these counts untouched,
+    /// when `other` holds more of anything than these do. The date range is
+    /// left as it is: a range cannot be taken apart, so whoever keeps a total
+    /// this way keeps its endpoints apart and sets the range itself.
+    pub(crate) fn sub(&mut self, other: &Self) -> Option<()> {
+        fn take<K: Ord + Clone>(
+            held: &mut BTreeMap<K, u64>,
+            other: &BTreeMap<K, u64>,
+        ) -> Option<()> {
+            for (key, count) in other {
+                let left = held.get(key).copied().unwrap_or(0).checked_sub(*count)?;
+                if left == 0 {
+                    held.remove(key);
+                } else {
+                    held.insert(key.clone(), left);
+                }
+            }
+            Some(())
+        }
+        let mut left = self.clone();
+        take(&mut left.joint, &other.joint)?;
+        left.legacy = left.legacy.checked_sub(other.legacy)?;
+        take(&mut left.unproved, &other.unproved)?;
+        take(&mut left.notes, &other.notes)?;
+        for (held, count) in left.excluded.iter_mut().zip(other.excluded) {
+            *held = held.checked_sub(count)?;
+        }
+        left.read = left.read.checked_sub(other.read)?;
+        left.sources = left.sources.checked_sub(other.sources)?;
+        *self = left;
+        Some(())
+    }
+
+    /// The counts a scope was laid out from: `None` unless laying these out
+    /// again gives exactly `scoped`, so a scope no tally makes is refused.
+    pub(crate) fn of_scoped(scoped: &Scoped) -> Option<Self> {
+        let mut tally = Self {
+            legacy: scoped.legacy,
+            read: scoped.sources_read,
+            sources: scoped.sources_total,
+            range: scoped.range.clone(),
+            ..Self::default()
+        };
+        for row in &scoped.joint {
+            let cells: [Cell; 4] = row.cells.clone().try_into().ok()?;
+            if tally.joint.insert(cells, row.count).is_some() {
+                return None;
+            }
+        }
+        for gap in &scoped.gaps {
+            match &gap.reason {
+                Reason::Unproved { model, word } if gap.source.is_none() => {
+                    let held = tally.unproved.entry((*model, word.clone())).or_default();
+                    *held = held.checked_add(gap.count)?;
+                }
+                Reason::LegacyExcluded { sessions, a, b } if gap.source.is_none() => {
+                    tally.excluded = [*sessions, *a, *b];
+                }
+                reason => {
+                    let held = tally
+                        .notes
+                        .entry((reason.clone(), gap.source.clone()))
+                        .or_default();
+                    *held = held.checked_add(gap.count)?;
+                }
+            }
+        }
+        (tally.scoped() == *scoped).then_some(tally)
+    }
+
+    /// The dates these counts span.
+    pub(crate) const fn range(&self) -> Option<&(String, String)> {
+        self.range.as_ref()
+    }
+
+    /// Set the span outright: a total kept by taking groups away cannot
+    /// narrow its own range, so its keeper does.
+    pub(crate) fn set_range(&mut self, range: Option<(String, String)>) {
+        self.range = range;
     }
 
     /// What of a session-less group reaches every session's scope: its notes

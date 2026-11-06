@@ -4,9 +4,11 @@
 //! no size cutoff of its own: it is limited by the scan's byte budget, and what
 //! the fold keeps of it by the retained-state budget. A journal bigger than
 //! `chunk` stays open between steps. Reads only: no store, no lock, no temp
-//! file, no process. Every byte of content, a source's meta or an archive's
-//! validation included, comes under one budget; a directory listing has no
-//! bound, so one enormous archive costs its own step that long.
+//! file, no process. The store `ae app` maintains meanwhile (`app::maintainer`)
+//! is neither read nor waited on until S5 cuts the tab over. Every byte of
+//! content, a source's meta or an archive's validation included, comes under
+//! one budget; a directory listing has no bound, so one enormous archive costs
+//! its own step that long.
 //!
 //! A step reads at most `chunk` journal bytes. The first step of a source adds
 //! its open work: a live meta (at most 1 MiB) or an archive's validation (at

@@ -419,3 +419,10 @@ path = "fuzz_targets/autoreseat_episode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "stats_disk"
+path = "fuzz_targets/stats_disk.rs"
+test = false
+doc = false
+bench = false

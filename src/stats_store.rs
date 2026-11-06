@@ -2,8 +2,12 @@
 //! source leaves, kept up to date as lines arrive, and the counts the tab shows,
 //! kept beside it so that reading them is a read and never a fold.
 //!
-//! Pure: no IO, no lock, no clock. A source is a caller-chosen id over one
-//! journal; [`Store::chunk`] consumes it in order from a byte cursor, and
+//! This module is pure: no IO, no lock, no clock. Its children are not:
+//! [`disk`] keeps the model on disk under `<root>/stats/` and `stats.lock`,
+//! and [`maint`] is the upkeep step `ae app`'s thread runs.
+//!
+//! A source is a caller-chosen id over one journal; [`Store::chunk`]
+//! consumes it in order from a byte cursor, and
 //! [`Store::event`] takes a certificate or a linked `spawn` at its journal
 //! offset as it is written, ahead of the cursor. What a source keeps is reduced:
 //! a family record keeps its envelope and family members, a legacy `spawn`
@@ -26,6 +30,12 @@ use crate::stats::{
     self, Cell, Fold, Gap, Reading, Reason, Row, Scoped, SourceGap, Tally, ThisSession, View,
 };
 use crate::time::Timestamp;
+
+pub mod disk;
+mod doc;
+pub mod maint;
+#[cfg(test)]
+mod s2_spec;
 
 /// The evidence format this core reads and writes.
 const VERSION: i64 = 1;
@@ -197,27 +207,48 @@ impl Evidence {
         }
     }
 
-    /// One journal line at `offset`, LF excluded, read in order.
-    fn consume(&mut self, offset: u64, line: &[u8], limit: usize) {
-        if matches!(self.origin, Origin::Unreadable { .. }) {
-            return;
+    /// A digested read applied: the event-time records in its range give way
+    /// to the ordered read, and the cursor moves to its end.
+    fn absorb(&mut self, digest: Digest) {
+        let early: Vec<u64> = self
+            .lines
+            .range(digest.start..digest.end)
+            .map(|(at, _)| *at)
+            .collect();
+        for offset in early {
+            self.forget(offset);
         }
-        if line.len() > limit {
-            self.line_limit = self.line_limit.saturating_add(1);
-            return;
-        }
-        if line.trim_ascii().is_empty() {
-            return;
-        }
-        match classify(line, self.origin.session()) {
-            Class::Malformed => self.malformed = self.malformed.saturating_add(1),
-            Class::Dated(date) => {
-                if let Some(date) = date {
-                    self.widen(&date);
+        if !matches!(self.origin, Origin::Unreadable { .. }) {
+            for (offset, item) in digest.items {
+                match item {
+                    Item::OverLimit => self.line_limit = self.line_limit.saturating_add(1),
+                    Item::Malformed => self.malformed = self.malformed.saturating_add(1),
+                    Item::Dated(Some(date)) => self.widen(&date),
+                    Item::Dated(None) => {}
+                    Item::Kept(kept) => self.keep(offset, kept),
                 }
             }
-            Class::Kept(kept, _) => self.keep(offset, kept),
         }
+        self.cursor = digest.end;
+    }
+
+    /// What a certificate or linked `spawn` `line` at `offset` adds, written
+    /// as it happens: `None` when the ordered read has passed it, the source
+    /// keeps no lines, or it is kept already.
+    fn take_event(&self, offset: u64, line: &[u8], limit: usize) -> Result<Option<Line>, Error> {
+        if line.len() > limit || line.contains(&b'\n') {
+            return Err(Error::NotAnEvent);
+        }
+        let Class::Kept(kept, true) = classify(line, self.origin.session()) else {
+            return Err(Error::NotAnEvent);
+        };
+        if offset < self.cursor
+            || matches!(self.origin, Origin::Unreadable { .. })
+            || self.lines.get(&offset) == Some(&kept)
+        {
+            return Ok(None);
+        }
+        Ok(Some(kept))
     }
 
     /// The whole source into `fold`: its reading, or its gap.
@@ -289,6 +320,107 @@ enum Class {
     Kept(Line, bool),
 }
 
+/// One line of a read, judged before any store is touched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Item {
+    OverLimit,
+    Malformed,
+    Dated(Option<String>),
+    Kept(Line),
+}
+
+/// A read framed and judged without the store, so that the judging can run
+/// outside any lock: what [`Evidence::absorb`] applies at the cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Digest {
+    start: u64,
+    end: u64,
+    items: Vec<(u64, Item)>,
+}
+
+impl Digest {
+    /// `bytes` read from `start` under a source proving `session`: every line
+    /// ending in LF, and with `eof` the unterminated last line too.
+    pub(crate) fn of(
+        session: Option<&str>,
+        start: u64,
+        bytes: &[u8],
+        eof: bool,
+        limit: usize,
+    ) -> Result<Self, Error> {
+        let consumed = match bytes.iter().rposition(|byte| *byte == b'\n') {
+            _ if eof => bytes.len(),
+            Some(last) => last + 1,
+            None => 0,
+        };
+        let end = u64::try_from(consumed)
+            .ok()
+            .and_then(|consumed| start.checked_add(consumed))
+            .ok_or(Error::Offset)?;
+        let mut items = Vec::new();
+        let mut at = start;
+        let read = bytes.get(..consumed).unwrap_or_default();
+        let mut lines = read.split(|byte| *byte == b'\n').peekable();
+        while let Some(line) = lines.next() {
+            if lines.peek().is_none() && line.is_empty() {
+                break;
+            }
+            if let Some(item) = judge(line, session, limit) {
+                items.push((at, item));
+            }
+            let width = u64::try_from(line.len()).unwrap_or(u64::MAX);
+            at = at.saturating_add(width).saturating_add(1);
+        }
+        Ok(Self { start, end, items })
+    }
+
+    /// The bytes `[start, end)` of one line known to pass the limit: counted
+    /// once, nothing else read.
+    pub(crate) fn over_long(start: u64, end: u64) -> Self {
+        Self {
+            start,
+            end,
+            items: vec![(start, Item::OverLimit)],
+        }
+    }
+
+    /// The bytes `[start, end)` of a line already counted over the limit:
+    /// read past, nothing counted.
+    pub(crate) const fn passed(start: u64, end: u64) -> Self {
+        Self {
+            start,
+            end,
+            items: Vec::new(),
+        }
+    }
+
+    /// This read, its range widened back to `start` over bytes it passes.
+    pub(crate) fn widened(mut self, start: u64) -> Self {
+        self.start = start.min(self.start);
+        self
+    }
+
+    /// Where the cursor stands once this read is applied.
+    pub(crate) const fn end(&self) -> u64 {
+        self.end
+    }
+}
+
+/// What one line, LF excluded, leaves: nothing for a blank one.
+fn judge(line: &[u8], session: Option<&str>, limit: usize) -> Option<Item> {
+    if line.len() > limit {
+        return Some(Item::OverLimit);
+    }
+    if line.trim_ascii().is_empty() {
+        return None;
+    }
+    Some(match classify(line, session) {
+        Class::Malformed => Item::Malformed,
+        Class::Dated(date) => Item::Dated(date),
+        Class::Kept(kept, _) => Item::Kept(kept),
+    })
+}
+
 /// Read one line under a source proving `session`.
 fn classify(line: &[u8], session: Option<&str>) -> Class {
     let Some((text, value, event)) = std::str::from_utf8(line).ok().and_then(|text| {
@@ -351,6 +483,55 @@ fn keep_members(
 /// A record's `YYYY-MM-DD`.
 fn date_of(event: &Event) -> Option<String> {
     event.ts.to_string().get(..DATE_LEN).map(ToOwned::to_owned)
+}
+
+/// The kinds of persisted document the store parses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Doc {
+    Epoch,
+    Intent,
+    RootView,
+    SessionView,
+    Evidence,
+    /// A document [`Store::parse`] reads.
+    Store,
+}
+
+impl Doc {
+    const fn index(self) -> usize {
+        match self {
+            Self::Epoch => 0,
+            Self::Intent => 1,
+            Self::RootView => 2,
+            Self::SessionView => 3,
+            Self::Evidence => 4,
+            Self::Store => 5,
+        }
+    }
+}
+
+thread_local! {
+    /// This thread's parses by [`Doc::index`].
+    static PARSES: std::cell::Cell<[u64; 6]> = const { std::cell::Cell::new([0; 6]) };
+}
+
+/// This thread's count of parses of documents of `kind` that were attempted,
+/// accepted or refused as damaged. A read refused over its cap adds nothing:
+/// the parser is never reached.
+#[must_use]
+pub fn parse_count(kind: Doc) -> u64 {
+    PARSES.with(|parses| parses.get().get(kind.index()).copied().unwrap_or_default())
+}
+
+/// One parse of `kind` begins: counted before any byte is examined.
+fn counted(kind: Doc) {
+    PARSES.with(|parses| {
+        let mut held = parses.get();
+        if let Some(count) = held.get_mut(kind.index()) {
+            *count = count.saturating_add(1);
+        }
+        parses.set(held);
+    });
 }
 
 /// The maintained store: every source's evidence and the counts it makes.
@@ -475,18 +656,9 @@ impl Store {
     pub fn event(&mut self, id: &str, offset: u64, line: &[u8]) -> Result<(), Error> {
         let limit = self.line_limit;
         let evidence = self.readable(id)?;
-        if line.len() > limit || line.contains(&b'\n') {
-            return Err(Error::NotAnEvent);
-        }
-        let Class::Kept(kept, true) = classify(line, evidence.origin.session()) else {
-            return Err(Error::NotAnEvent);
-        };
-        if offset < evidence.cursor
-            || matches!(evidence.origin, Origin::Unreadable { .. })
-            || evidence.lines.get(&offset) == Some(&kept)
-        {
+        let Some(kept) = evidence.take_event(offset, line, limit)? else {
             return Ok(());
-        }
+        };
         let mut touched = evidence.groups();
         evidence.keep(offset, kept);
         touched.extend(evidence.groups());
@@ -510,36 +682,10 @@ impl Store {
                 start,
             });
         }
-        let consumed = match bytes.iter().rposition(|byte| *byte == b'\n') {
-            _ if eof => bytes.len(),
-            Some(last) => last + 1,
-            None => 0,
-        };
-        let end = u64::try_from(consumed)
-            .ok()
-            .and_then(|consumed| start.checked_add(consumed))
-            .ok_or(Error::Offset)?;
+        let digest = Digest::of(evidence.origin.session(), start, bytes, eof, limit)?;
+        let end = digest.end;
         let mut touched = evidence.groups();
-        let early: Vec<u64> = evidence
-            .lines
-            .range(start..end)
-            .map(|(at, _)| *at)
-            .collect();
-        for offset in early {
-            evidence.forget(offset);
-        }
-        let mut at = start;
-        let read = bytes.get(..consumed).unwrap_or_default();
-        let mut lines = read.split(|byte| *byte == b'\n').peekable();
-        while let Some(line) = lines.next() {
-            if lines.peek().is_none() && line.is_empty() {
-                break;
-            }
-            evidence.consume(at, line, limit);
-            let width = u64::try_from(line.len()).unwrap_or(u64::MAX);
-            at = at.saturating_add(width).saturating_add(1);
-        }
-        evidence.cursor = end;
+        evidence.absorb(digest);
         touched.extend(evidence.groups());
         self.recount(touched);
         Ok(end)
@@ -636,6 +782,7 @@ impl Store {
     ///
     /// [`Error::Damaged`] for anything [`Store::render`] would not write.
     pub fn parse(text: &str) -> Result<Self, Error> {
+        counted(Doc::Store);
         let body = text
             .strip_suffix('\n')
             .ok_or(Error::Damaged("no final LF"))?;
@@ -781,6 +928,12 @@ fn optional_text(value: &Value) -> Result<Option<String>, Error> {
 }
 
 fn render_source(out: &mut String, id: &str, evidence: &Evidence) {
+    line(out, &source_fields(id, evidence));
+    render_lines(out, evidence);
+}
+
+/// A source record's fields, in the order [`parse_source`] expects them.
+fn source_fields<'a>(id: &'a str, evidence: &'a Evidence) -> Vec<(&'static str, Value)> {
     let mut fields = vec![("source", Value::str(id))];
     match &evidence.origin {
         Origin::Live {
@@ -828,7 +981,11 @@ fn render_source(out: &mut String, id: &str, evidence: &Evidence) {
         ("from", optional(from)),
         ("to", optional(to)),
     ]);
-    line(out, &fields);
+    fields
+}
+
+/// A source's kept records, one `at` record each, in offset order.
+fn render_lines(out: &mut String, evidence: &Evidence) {
     for (offset, kept) in &evidence.lines {
         line(
             out,
@@ -843,12 +1000,22 @@ fn render_source(out: &mut String, id: &str, evidence: &Evidence) {
 const TAIL: [&str; 5] = ["cursor", "malformed", "over_limit", "from", "to"];
 
 fn parse_source(fields: &[(String, Value)]) -> Result<(String, Evidence), Error> {
+    parse_source_with(fields, &[])
+}
+
+/// [`parse_source`] of a record that carries `extra` keys after its own, which
+/// the caller reads.
+fn parse_source_with(
+    fields: &[(String, Value)],
+    extra: &[&str],
+) -> Result<(String, Evidence), Error> {
     let id = text(fields, "source")?.to_owned();
     let label = text(fields, "label")?.to_owned();
     let kind = text(fields, "kind")?;
     let with = |head: &[&str]| -> Vec<String> {
         head.iter()
             .chain(TAIL.iter())
+            .chain(extra.iter())
             .map(|key| (*key).to_owned())
             .collect()
     };

@@ -143,6 +143,8 @@ pub(super) enum Wake {
     Keys(Instant, Vec<u8>),
     Closed,
     Answer(Box<Answer>),
+    /// One line for the flash, from the Statistics store's upkeep thread.
+    Notice(String),
 }
 
 /// One answer from the reader.

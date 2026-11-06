@@ -83,6 +83,7 @@ mod lanemd_cache_spec;
 #[path = "app/linkhint_spec.rs"]
 mod linkhint_spec;
 mod loader;
+mod maintainer;
 pub mod markdown;
 #[cfg(test)]
 #[path = "app/mdreader_spec.rs"]
@@ -4344,6 +4345,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     let (keep, landed) = handed_on(handed);
     let own = (caller.clone(), pane.clone());
     let reader = reader_of(&root, home.clone(), own, landed);
+    let notices = wake.clone();
     let started = forward(reads, wake.clone()).and_then(|()| loader::spawn(reader, wake));
     let (ask, reader) = match started {
         Ok(started) => started,
@@ -4352,6 +4354,9 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             return Ok(crate::EXIT_UNAVAILABLE);
         }
     };
+    // The store's upkeep: an app that cannot start it runs without it. Every
+    // return below drops it, which stops the thread.
+    let upkeep = maintainer::start(root.clone(), notices).ok();
     if hint {
         // Best effort: a stderr that cannot be written must not stop an app that opened before.
         let _ = writeln!(err, "{HINT}");
@@ -4427,7 +4432,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             Step::Quit(code) => return Ok(code),
         }
     };
-    end(tty, app, code, restart, err)
+    end(tty, app, upkeep, code, restart, err)
 }
 
 /// The reader of an app for `home`, in the `own` server and pane tmux names,
@@ -4558,10 +4563,15 @@ fn says_hint(in_pane: bool, stamp: Option<&str>) -> bool {
 fn end(
     tty: tty::Tty,
     mut app: App,
+    upkeep: Option<maintainer::Running>,
     code: u8,
     restart: Option<(String, toggle::Restart)>,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
+    // The store's upkeep stops before anything else, an exec restart above all.
+    if let Some(upkeep) = upkeep {
+        upkeep.stop(maintainer::STOP_BOUND);
+    }
     drop(tty);
     app.finish_flight(err, FLIGHT_QUIT_BOUND)?;
     let in_tmux = app.server.is_some();
@@ -4653,6 +4663,11 @@ fn drain(
             }
             Wake::Answer(answer) => {
                 app.answer(*answer);
+                redraw = true;
+                continue;
+            }
+            Wake::Notice(line) => {
+                app.flash = Some((line, Instant::now()));
                 redraw = true;
                 continue;
             }

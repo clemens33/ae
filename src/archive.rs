@@ -709,7 +709,11 @@ pub(crate) mod purge;
 mod request_states;
 pub(crate) mod retained;
 mod store;
+
 use request_states::{RequestRow, request_states};
+/// The entry paths directly under a directory: the archive's listing door,
+/// also the statistics store's.
+pub(crate) use store::read_dir as read_entries;
 
 pub(crate) mod publish;
 

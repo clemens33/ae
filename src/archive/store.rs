@@ -305,10 +305,10 @@ pub(super) fn read_file(path: &Path) -> io::Result<Vec<u8>> {
 
 /// The entry paths directly under `dir` (no recursion here; the caller
 /// classifies each).
-pub(super) fn read_dir(dir: &Path) -> io::Result<Vec<PathBuf>> {
+pub(crate) fn read_dir(dir: &Path) -> io::Result<Vec<PathBuf>> {
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: lists messages/ or a tree for staging/validation — see clippy.toml"
+        reason = "a door: lists messages/ or a tree for staging/validation, or the statistics payload's own directories — see clippy.toml"
     )]
     let read = std::fs::read_dir(dir)?;
     // Propagate EVERY DirEntry error — a destructive/validation consumer must

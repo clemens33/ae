@@ -1221,6 +1221,39 @@ fn truncation_gap(path: &Path, cap: u64) -> crate::stats::SourceGap {
     }
 }
 
+/// At most `max` bytes of the journal at `path` from `from`, with the file's
+/// device, inode and length: one bounded read for the maintained statistics
+/// store, under [`open_regular`]'s own checks. A file read is the file checked.
+pub(crate) fn journal_window(
+    path: &Path,
+    from: u64,
+    max: u64,
+) -> Result<(u64, u64, u64, Vec<u8>), crate::stats::SourceGap> {
+    use crate::stats::SourceGap;
+    use std::io::{Seek as _, SeekFrom};
+    use std::os::unix::fs::MetadataExt as _;
+    let mut budget = Budget::local(u64::MAX);
+    let Opened { mut file, len, .. } = match open_regular(path, u64::MAX, &mut budget) {
+        Ok(Some(opened)) => opened,
+        Ok(None) => return Err(SourceGap::Missing),
+        Err(Coverage::Truncated) => return Err(SourceGap::Budget),
+        Err(_) => return Err(SourceGap::Unreadable),
+    };
+    let identity = file.metadata().map_err(|_| SourceGap::Unreadable)?;
+    let start = from.min(len);
+    let take = max.min(len - start);
+    file.seek(SeekFrom::Start(start))
+        .map_err(|_| SourceGap::Unreadable)?;
+    let mut bytes = Vec::new();
+    file.take(take)
+        .read_to_end(&mut bytes)
+        .map_err(|_| SourceGap::Unreadable)?;
+    if u64::try_from(bytes.len()) != Ok(take) {
+        return Err(SourceGap::Unreadable);
+    }
+    Ok((identity.dev(), identity.ino(), len, bytes))
+}
+
 /// One journal line handed to a sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Line<'a> {
