@@ -1990,7 +1990,7 @@ pub fn event(
 /// payload. Then leftover temps, and an intent rebuilt from its primary
 /// group's evidence as it stands; a primary staged but never committed keeps
 /// its temp until the intent is gone. Applied whole, a second call plans
-/// nothing, and so does every prefix of it.
+/// nothing; any prefix of it is a crash a later call still recovers.
 ///
 /// # Errors
 ///
