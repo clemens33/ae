@@ -361,3 +361,5 @@ fn leadfloor_real_human_manual_model_change_remains_available() {
         "manual move has no automatic done"
     );
 }
+#[path = "leadfloor2_spec.rs"]
+mod leadfloor2_spec;
