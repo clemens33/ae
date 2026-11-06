@@ -1245,6 +1245,19 @@ impl SessionStore {
     /// and is deliberately ignored: resume retention has always been a best
     /// effort step.
     pub fn retain_events(&self, keep: usize, pin: impl Fn(&str) -> bool) {
+        self.retain_events_holding(keep, pin, |dropped, _| vec![false; dropped.len()]);
+    }
+
+    /// [`Self::retain_events`], also keeping every dropped line `hold` marks,
+    /// in place: `hold` sees the lines the cut would drop and the newest `keep`
+    /// it keeps, both oldest first, and answers one flag per dropped line (a
+    /// missing flag keeps nothing).
+    pub fn retain_events_holding(
+        &self,
+        keep: usize,
+        pin: impl Fn(&str) -> bool,
+        hold: impl FnOnce(&[&str], &[&str]) -> Vec<bool>,
+    ) {
         let path = self.events_path();
         let Ok(_held) = lock(&lock_path(&path), LOCK_WAIT) else {
             return;
@@ -1266,10 +1279,15 @@ impl SessionStore {
             .iter()
             .rposition(|line| pin(line))
             .filter(|_| !window.iter().any(|line| pin(line)));
+        let marked = hold(dropped, window);
         let kept = dropped
             .iter()
             .enumerate()
-            .filter(|(at, line)| Some(*at) == pinned || crate::birth::durable_line(line))
+            .filter(|(at, line)| {
+                Some(*at) == pinned
+                    || marked.get(*at).copied().unwrap_or(false)
+                    || crate::birth::durable_line(line)
+            })
             .map(|(_, line)| *line);
         let mut retained = String::new();
         for line in kept.chain(window.iter().copied()) {

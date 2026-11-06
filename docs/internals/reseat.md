@@ -332,7 +332,10 @@ record's `from` and `to` spell `profile@client` wherever a client applies
 All three arms also REMOVE every `effort.<slot>` line, bare, damaged and CR-ended
 ones included: a quota-driven effort record belongs to the setup that is
 leaving, and the `reseat` record resets the seat's effort fold in the journal.
-A resume decides the same record in `effort::on_resume`, first rule wins:
+A resume decides the same record in `effort::on_resume`, first rule wins. It
+folds the journal AFTER the resume trim, which keeps a live record's episode
+evidence (`effort::retained`): an episode older than the newest 1000 lines
+still proves the record, so its replay and its later restore stay reachable.
 
 | Seat on resume | Effort record |
 |---|---|

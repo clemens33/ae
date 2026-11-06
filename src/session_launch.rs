@@ -24,6 +24,12 @@ use crate::{deliver, roster, tmux, transport};
 
 pub(crate) mod assets;
 pub(crate) mod capture;
+#[cfg(test)]
+#[path = "session_launch/effort_trim_damage_spec.rs"]
+mod effort_trim_damage_spec;
+#[cfg(test)]
+#[path = "session_launch/effort_trim_spec.rs"]
+mod effort_trim_spec;
 pub(crate) mod name;
 #[cfg(test)]
 #[path = "../tests/it/planattach_spec.rs"]
@@ -6403,9 +6409,42 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Cap `events.jsonl` to its newest lines on resume.
+/// Cap `events.jsonl` to its newest lines on resume. A seat whose meta still
+/// holds a live effort record keeps the journal evidence its episode stands on
+/// ([`crate::effort::retained`]), or the resume that keeps the record would
+/// fold a journal that no longer proves it and hold in doubt for good.
 fn trim_events(dir: &Path) {
-    crate::store::open(dir).retain_events(EVENTS_KEEP, crate::restore::pins_clean_stop);
+    // An absent meta holds no effort record. Any other failed read leaves no
+    // telling which records the cut must keep proving, and retention is a
+    // best effort step: skip it.
+    let bytes = match meta::read_bytes(dir) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => return,
+    };
+    let parsed = Meta::parse(&String::from_utf8_lossy(&bytes));
+    let live: Vec<crate::effort::Live<'_>> = parsed
+        .roster()
+        .iter()
+        .filter_map(|seat| match crate::effort::stored(&bytes, &seat.slot) {
+            crate::effort::Stored::Present(record) => Some(crate::effort::Live {
+                slot: &seat.slot,
+                agent: &seat.name,
+                episode: record.episode,
+            }),
+            crate::effort::Stored::Absent | crate::effort::Stored::Damaged(_) => None,
+        })
+        .collect();
+    let name = dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or_default();
+    let session = crate::events::SessionKey::new(name, parsed.session_id().unwrap_or_default());
+    crate::store::open(dir).retain_events_holding(
+        EVENTS_KEEP,
+        crate::restore::pins_clean_stop,
+        |dropped, window| crate::effort::retained(dropped, window, session, &live),
+    );
 }
 
 /// One spawned seat recovered from a resuming session's own meta.

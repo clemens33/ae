@@ -1247,6 +1247,100 @@ pub fn fold(events: &[Event], session: SessionKey<'_>, slot: &str, agent: &str) 
     }
 }
 
+/// A seat whose meta holds a live effort record, as a resume trim reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Live<'a> {
+    /// The roster slot.
+    pub slot: &'a str,
+    /// The agent name at that slot.
+    pub agent: &'a str,
+    /// The record's episode key.
+    pub episode: i64,
+}
+
+/// Whether [`fold`] reads `event` for this seat: addressed to it, and a
+/// `spawn`, a `reseat` or a watchdog `effort-*` record.
+fn fold_reads(event: &Event, session: SessionKey<'_>, slot: &str, agent: &str) -> bool {
+    crate::watchdog::event_is_addressed_to_in(event, session, slot, agent)
+        && (matches!(event.action.as_str(), "spawn" | "reseat")
+            || event.actor == "watchdog" && event.action.starts_with("effort-"))
+}
+
+/// Which of `dropped`, the lines a resume trim would cut before the kept
+/// `window`, it must keep so every [`Live`] record keeps exactly the journal
+/// authority it had. With any live record, a non-blank line
+/// [`Event::parse_line`] refuses stays: the strict resume reader
+/// ([`crate::autotrust`]'s ledger) doubts the whole journal on it, and dropping
+/// it would turn that doubt into a replay. Per seat, the lines [`fold`] reads
+/// for it stay from the FIRST watchdog [`EPISODE`] opening the record's episode
+/// on, so a later yield, discard, reset, duplicate opening or malformed record
+/// stays with it; when that cut would fold differently from the whole journal
+/// (doubt or a reset before the opening, or no opening left to find), every
+/// line the fold reads for the seat stays instead, which folds the same by
+/// construction.
+///
+/// The bound is the live records: while any stands, every damaged line and
+/// every line its seat's fold needs survive each trim, so such a journal does
+/// not shrink below them until a reseat, discard or resume clears the meta
+/// record. With none, the trim is the plain newest-`keep` cut.
+#[must_use]
+pub fn retained(
+    dropped: &[&str],
+    window: &[&str],
+    session: SessionKey<'_>,
+    live: &[Live<'_>],
+) -> Vec<bool> {
+    if live.is_empty() {
+        return vec![false; dropped.len()];
+    }
+    let events: Vec<Option<Event>> = dropped
+        .iter()
+        .map(|line| Event::parse_line(line).ok())
+        .collect();
+    let newest: Vec<Event> = window
+        .iter()
+        .filter_map(|line| Event::parse_line(line).ok())
+        .collect();
+    let mut keep: Vec<bool> = dropped
+        .iter()
+        .zip(&events)
+        .map(|(line, event)| event.is_none() && !line.trim().is_empty())
+        .collect();
+    for seat in live {
+        let reads = |event: &Event| fold_reads(event, session, seat.slot, seat.agent);
+        let opens = |event: &Event| {
+            reads(event)
+                && event.actor == "watchdog"
+                && event.action == EPISODE
+                && event.reference.as_deref().and_then(epoch) == Some(seat.episode)
+        };
+        let folded = |from: usize| {
+            let seen: Vec<Event> = events
+                .iter()
+                .skip(from)
+                .flatten()
+                .chain(&newest)
+                .filter(|event| reads(event))
+                .cloned()
+                .collect();
+            fold(&seen, session, seat.slot, seat.agent)
+        };
+        let opening = events
+            .iter()
+            .position(|event| event.as_ref().is_some_and(opens))
+            .unwrap_or(events.len());
+        let from = if folded(opening) == folded(0) {
+            opening
+        } else {
+            0
+        };
+        for (kept, event) in keep.iter_mut().zip(&events).skip(from) {
+            *kept |= event.as_ref().is_some_and(reads);
+        }
+    }
+    keep
+}
+
 /// Everything one decision reads, already read.
 #[derive(Debug, Clone, Copy)]
 pub struct Inputs<'a> {
