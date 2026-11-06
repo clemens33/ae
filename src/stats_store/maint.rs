@@ -50,6 +50,11 @@ pub enum Outcome {
         from: u64,
         to: u64,
     },
+    /// A quiet source's journal checked against its witness at cursor `at`:
+    /// nothing new.
+    Checked {
+        at: u64,
+    },
     /// Prepared work dropped under the lock, nothing written.
     Discarded(Why),
     /// The lock was busy: nothing done.

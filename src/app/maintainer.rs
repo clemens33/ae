@@ -57,11 +57,14 @@ impl Watch {
     }
 }
 
-/// Whether the thread waits between steps: observed only by tests.
+/// Whether the thread waits between steps, and the gate a test holds it at:
+/// observed only by tests.
 #[derive(Clone, Default)]
 struct Probe {
     #[cfg(test)]
     parked: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    gate: Arc<Gate>,
 }
 
 impl Probe {
@@ -77,14 +80,27 @@ impl Probe {
         #[cfg(not(test))]
         let _ = on;
     }
+
+    /// The top of a step: a test's armed gate holds the thread here, active,
+    /// until its [`Hold`] is dropped.
+    #[cfg_attr(not(test), allow(clippy::unused_self, reason = "held only by tests"))]
+    fn pass(&self) {
+        #[cfg(test)]
+        {
+            self.gate.pass();
+        }
+    }
 }
 
 /// Start the upkeep of the store under `root`, its notices sent on `notices`.
 pub(super) fn start(root: PathBuf, notices: Sender<Wake>) -> std::io::Result<Running> {
+    spawn(root, notices, Probe::default())
+}
+
+fn spawn(root: PathBuf, notices: Sender<Wake>, probe: Probe) -> std::io::Result<Running> {
     let (stop, stopped) = mpsc::channel();
     let (finished, done) = mpsc::channel();
     let token = Arc::new(());
-    let probe = Probe::default();
     let watch = Watch::of(&token, &probe);
     let worker = std::thread::Builder::new()
         .name("ae-app-stats".to_owned())
@@ -107,6 +123,7 @@ fn upkeep(root: &Path, stop: &Receiver<()>, notices: &Sender<Wake>, probe: &Prob
     let mut maintainer = Maintainer::new(root, LIMITS, LOCK_WAIT);
     let mut told = false;
     loop {
+        probe.pass();
         let turn = maintainer.step();
         match &turn.outcome {
             Outcome::Repaired { file, reason } => {
@@ -176,6 +193,13 @@ impl Drop for Running {
 /// that failed.
 pub(super) struct Upkeep {
     running: Option<Running>,
+    /// A stopped thread still finishing its step: observed only by tests.
+    #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "observed by the r7 spec's stop-timeout regression"
+    )]
+    stopping: Option<Running>,
     root: PathBuf,
     notices: Sender<Wake>,
 }
@@ -185,6 +209,8 @@ impl Upkeep {
     pub(super) fn start(root: PathBuf, notices: Sender<Wake>) -> Self {
         Self {
             running: start(root.clone(), notices.clone()).ok(),
+            #[cfg(test)]
+            stopping: None,
             root,
             notices,
         }
@@ -215,6 +241,127 @@ impl Upkeep {
     pub(super) fn running(&self) -> Option<&Running> {
         self.running.as_ref()
     }
+
+    /// The stopped thread this owner still waits for, if any.
+    #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "observed by the r7 spec's stop-timeout regression"
+    )]
+    pub(super) fn stopping(&self) -> Option<&Running> {
+        self.stopping.as_ref()
+    }
+
+    /// [`Upkeep::start`], its thread held at the top of its first step until
+    /// the returned [`Hold`] is dropped: armed before the thread starts.
+    #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "observed by the r7 spec's stop-timeout regression"
+    )]
+    pub(super) fn start_holding(root: PathBuf, notices: Sender<Wake>) -> (Self, Hold) {
+        let probe = Probe::default();
+        probe.gate.arm();
+        let hold = Hold(Arc::clone(&probe.gate));
+        let upkeep = Self {
+            running: spawn(root.clone(), notices.clone(), probe).ok(),
+            stopping: None,
+            root,
+            notices,
+        };
+        (upkeep, hold)
+    }
+}
+
+/// Where a test holds the thread: armed, entered, released.
+#[cfg(test)]
+#[derive(Default)]
+struct Gate {
+    state: std::sync::Mutex<GateState>,
+    turned: std::sync::Condvar,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct GateState {
+    armed: bool,
+    entered: bool,
+    released: bool,
+}
+
+#[cfg(test)]
+impl Gate {
+    fn state(&self) -> std::sync::MutexGuard<'_, GateState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "observed by the r7 spec's stop-timeout regression"
+    )]
+    fn arm(&self) {
+        self.state().armed = true;
+    }
+
+    /// Hold the calling thread while armed and not released, once.
+    fn pass(&self) {
+        let mut state = self.state();
+        if !state.armed {
+            return;
+        }
+        state.entered = true;
+        self.turned.notify_all();
+        let mut state = self
+            .turned
+            .wait_while(state, |state| !state.released)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.armed = false;
+    }
+
+    #[allow(
+        dead_code,
+        reason = "observed by the r7 spec's stop-timeout regression"
+    )]
+    fn release(&self) {
+        self.state().released = true;
+        self.turned.notify_all();
+    }
+}
+
+/// A test's hold on the upkeep thread: dropping it, on any return or
+/// unwind, lets the thread go on.
+#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "observed by the r7 spec's stop-timeout regression"
+)]
+pub(super) struct Hold(Arc<Gate>);
+
+#[cfg(test)]
+impl Hold {
+    /// Whether the thread reached the gate within `within`.
+    #[allow(
+        dead_code,
+        reason = "observed by the r7 spec's stop-timeout regression"
+    )]
+    pub(super) fn entered(&self, within: Duration) -> bool {
+        let state = self.0.state();
+        let (state, _) = self
+            .0
+            .turned
+            .wait_timeout_while(state, within, |state| !state.entered)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.entered
+    }
+}
+
+#[cfg(test)]
+impl Drop for Hold {
+    fn drop(&mut self) {
+        self.0.release();
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +385,15 @@ pub(super) struct Ended(std::sync::Weak<()>);
 impl Ended {
     pub(super) fn is_ended(&self) -> bool {
         self.0.upgrade().is_none()
+    }
+
+    /// Whether `other` is the completion of the same thread.
+    #[allow(
+        dead_code,
+        reason = "observed by the r7 spec's stop-timeout regression"
+    )]
+    pub(super) fn same_worker(&self, other: &Self) -> bool {
+        std::sync::Weak::ptr_eq(&self.0, &other.0)
     }
 }
 
