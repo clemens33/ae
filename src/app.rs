@@ -100,6 +100,9 @@ mod paneview;
 mod paneview_spec;
 pub mod peek;
 pub mod reader;
+#[cfg(test)]
+#[path = "app/readerlink_spec.rs"]
+mod readerlink_spec;
 pub(crate) mod route;
 pub mod select;
 #[cfg(test)]
@@ -1058,6 +1061,9 @@ impl App {
         });
         self.reader_generation = ask.generation;
         self.model.open_reader(ask.generation);
+        // A visual file is not read: the panel holds the note at once, and the
+        // reader thread is told to drop any ask for the file left behind.
+        let visual = reader::visual(&ask.path);
         self.reader = ReaderPane {
             generation: ask.generation,
             path: ask.path.clone(),
@@ -1066,11 +1072,12 @@ impl App {
             files: found,
             base: ask.base.clone(),
             index,
+            body: visual.map(|kind| reader::Body::Gap(reader::visual_note(kind))),
             raw: ask.line.is_some(),
             ..ReaderPane::default()
         };
         if let Some(tx) = &self.ask {
-            let _ = tx.send(Request::Read(Some(ask)));
+            let _ = tx.send(Request::Read(visual.is_none().then_some(ask)));
         }
     }
 

@@ -22,6 +22,50 @@ pub const BINARY_PROBE: usize = 8192;
 /// The rows of context kept above a line the view jumps to.
 const CONTEXT: usize = 3;
 
+/// The files a browser opens natively and the reader cannot show: each
+/// extension (matched without regard to case) and the kind the note names. Raw
+/// markup (HTML, SVG) or a binary refusal (images, PDF) would be the reader's
+/// only answer for them.
+const VISUAL: [(&str, &str); 13] = [
+    ("html", "HTML page"),
+    ("htm", "HTML page"),
+    ("xhtml", "HTML page"),
+    ("svg", "SVG image"),
+    ("png", "image"),
+    ("jpg", "image"),
+    ("jpeg", "image"),
+    ("gif", "image"),
+    ("webp", "image"),
+    ("avif", "image"),
+    ("bmp", "image"),
+    ("ico", "image"),
+    ("pdf", "PDF document"),
+];
+
+/// The kind of visual file `path` names by its extension, if it is one. The
+/// extension alone decides: such a file is never read, so no content is
+/// looked at, and a leading dot alone (`.html`) is a name, not an extension.
+#[must_use]
+pub fn visual(path: &str) -> Option<&'static str> {
+    let ext = std::path::Path::new(path).extension()?.to_str()?;
+    VISUAL
+        .iter()
+        .find(|(known, _)| known.eq_ignore_ascii_case(ext))
+        .map(|(_, kind)| *kind)
+}
+
+/// What the panel says instead of a visual file's content: the kind, that ae
+/// does not render it, the way back to the link in the lane and the hint row's
+/// own words for opening a link — the terminal's link, not ae, opens the file.
+#[must_use]
+pub fn visual_note(kind: &str) -> String {
+    format!(
+        "{kind}: ae does not render this file. Press Esc, then on the link: {}. \
+         Your system opens it in your browser or default app.",
+        crate::console::link::open_hint()
+    )
+}
+
 /// The cells a gutter takes for a file of `lines` lines: the line numbers'
 /// digits, right-aligned, and one blank.
 #[must_use]

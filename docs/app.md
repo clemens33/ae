@@ -598,6 +598,21 @@ lossily; every line is neutralised when painted (a control character or escape
 shows as `�`), a tab expands and a line wraps to the column with its
 continuation rows two cells in. A line over 2000 characters ends in `…`.
 
+A link to a file a browser opens is not read at all. The extension decides, without
+regard to case and before any read: `.html`, `.htm`, `.xhtml`, `.svg`, `.png`,
+`.jpg`, `.jpeg`, `.gif`, `.webp`, `.avif`, `.bmp`, `.ico` and `.pdf` (a `:line`
+suffix does not hide it). For these the reader shows neither the raw markup nor
+`binary file (NUL byte)`. The header says `not read`, and the panel names the kind
+and the one action that opens it, with the hint row's own words for the platform:
+`HTML page: ae does not render this file. Press Esc, then on the link:
+Shift+Cmd+click to open link. Your system opens it in your browser or default app.`
+(`SVG image`, `image` and `PDF document` are the other kinds; elsewhere the hint is
+`Ctrl+click or Shift+click to open link`, and [Links](#links) has the modifier per
+terminal). A click, `r` and `n` / `p` give the same note, and `Esc` returns to the
+lane, where the link is still the same terminal hyperlink. ae opens nothing itself,
+does not check that the file exists and never looks inside it, so a file with
+another name or extension, such as an unlisted binary, keeps today's answer.
+
 Markdown files (`.md` or `.markdown`, case-insensitive) open rendered: headings,
 nested lists, emphasis, code, quotes, rules and tables. One blank row separates
 blocks, but not the items of a tight list. Link targets remain dim
@@ -797,7 +812,8 @@ untouched. For other terminals, verify OSC 8 support and configure a matching
 `terminal-features` entry in your tmux setup; unforwarded links show plain text.
 Following a file link inside ae uses a plain click or
 [`r`](#reading-a-linked-file) on a marked turn; memos and request threads have no
-reader. Dragging over a link selects and copies the visible text, as ever.
+reader. For an HTML, SVG, image or PDF file the reader shows the note that names this
+hint instead of the file. Dragging over a link selects and copies the visible text, as ever.
 
 ## Settings
 
