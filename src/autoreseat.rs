@@ -697,14 +697,14 @@ fn parse_floor(
             (said.clone(), said)
         }
         (Ok(None), _) => return (FloorSetting::None, None),
-        (Ok(Some(raw)), _) => match parse_tier_number(&raw) {
-            Some(floor) => return (FloorSetting::At(floor), None),
-            None => {
-                let said = format!("{FLOOR_KEY} = {:?}", raw.trim());
-                let why = format!("{said} is not a whole number from 0 to 255");
-                (said, why)
+        (Ok(Some(raw)), _) => {
+            if let Some(floor) = parse_tier_number(&raw) {
+                return (FloorSetting::At(floor), None);
             }
-        },
+            let said = format!("{FLOOR_KEY} = {:?}", raw.trim());
+            let why = format!("{said} is not a whole number from 0 to 255");
+            (said, why)
+        }
     };
     let note = format!("{why}; a lead seat takes no model change until it is fixed");
     (FloorSetting::Unusable(detail), Some(note))
