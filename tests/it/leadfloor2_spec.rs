@@ -2,7 +2,6 @@
 //! Install as tests/it/leadfloor2_spec.rs, child module of leadfloor_spec.rs.
 
 use super::*;
-use std::fmt::Write as _;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
