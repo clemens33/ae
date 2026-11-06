@@ -35,7 +35,7 @@ const ID: &str = "birth";
 /// The family version member.
 const FAMILY_VERSION: &str = "birth_v";
 /// Every member this family reads off a record.
-const MEMBERS: [&str; 14] = [
+pub(crate) const MEMBERS: [&str; 14] = [
     FAMILY_VERSION,
     ID,
     "birth_tool",

@@ -1,0 +1,21 @@
+{"stats_view":1}
+{"scope":"all","total":2,"legacy":1,"model_known":1,"effort_known":1,"from":"2026-10-01","to":"2026-10-01","sources_read":1,"sources_total":2}
+{"scope":"all","table":"harness","cells":["=codex"],"count":1}
+{"scope":"all","table":"harness","cells":["unknown"],"count":1}
+{"scope":"all","table":"client","cells":["direct"],"count":1}
+{"scope":"all","table":"client","cells":["unknown"],"count":1}
+{"scope":"all","table":"model_effort","cells":["=sol","none set"],"count":1}
+{"scope":"all","table":"model_effort","cells":["unknown","unknown"],"count":1}
+{"scope":"all","table":"joint","cells":["=codex","direct","=sol","none set"],"count":1}
+{"scope":"all","table":"joint","cells":["unknown","unknown","unknown","unknown"],"count":1}
+{"scope":"all","gap":"source","of":"missing","source":"global-gap","count":1}
+{"scope":"this","total":2,"legacy":1,"model_known":1,"effort_known":1,"from":"2026-10-01","to":"2026-10-01","sources_read":1,"sources_total":2}
+{"scope":"this","table":"harness","cells":["=codex"],"count":1}
+{"scope":"this","table":"harness","cells":["unknown"],"count":1}
+{"scope":"this","table":"client","cells":["direct"],"count":1}
+{"scope":"this","table":"client","cells":["unknown"],"count":1}
+{"scope":"this","table":"model_effort","cells":["=sol","none set"],"count":1}
+{"scope":"this","table":"model_effort","cells":["unknown","unknown"],"count":1}
+{"scope":"this","table":"joint","cells":["=codex","direct","=sol","none set"],"count":1}
+{"scope":"this","table":"joint","cells":["unknown","unknown","unknown","unknown"],"count":1}
+{"scope":"this","gap":"source","of":"missing","source":"global-gap","count":1}

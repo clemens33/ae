@@ -191,6 +191,8 @@ mod shorthelper;
 mod sidecompact_spec;
 mod spawn;
 mod staleheadroom_spec;
+mod stats_store_s1_spec;
+mod stats_store_s1_supplement;
 mod support;
 mod support_spec;
 mod teardown;

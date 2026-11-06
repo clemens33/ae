@@ -1,0 +1,6 @@
+{"stats_store":1,"line_limit":4194304}
+{"source":"known","kind":"live","label":"known","session":"11111111-1111-4111-8111-111111111111","seats":[],"cursor":643,"malformed":0,"over_limit":0,"from":null,"to":null}
+{"at":0,"line":"{\"ts\":\"2026-10-01T10:00:00Z\",\"actor\":\"lead\",\"action\":\"worker-birth\",\"target\":\"scout\",\"target_slot\":\"spawned.0\",\"target_session_id\":\"11111111-1111-4111-8111-111111111111\",\"birth_v\":1,\"birth\":\"aaaaaaaa-aaaa-4aaa-8aaa-000000000001\",\"birth_tool\":\"codex\",\"birth_profile\":\"preset\",\"birth_model\":\"sol\"}"}
+{"at":296,"line":"{\"ts\":\"2026-10-01T10:00:00Z\",\"actor\":\"lead\",\"action\":\"spawn\",\"target\":\"scout\",\"birth\":\"aaaaaaaa-aaaa-4aaa-8aaa-000000000001\"}"}
+{"at":493,"line":"{\"ts\":\"2026-10-01T10:00:00Z\",\"actor\":\"lead\",\"action\":\"spawn\",\"target\":\"scout\",\"legacy\":\"0c469603c9ad074d7f99742f23e2399972eb86f4ff136ce61936bfe0a0fef7b4\"}"}
+{"source":"unread","kind":"failed","label":"global-gap","session":null,"gap":"missing","cursor":0,"malformed":0,"over_limit":0,"from":null,"to":null}

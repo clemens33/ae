@@ -1318,6 +1318,270 @@ impl Reason {
     }
 }
 
+/// A live meta's session id and its spawned seats' `(slot, name)`.
+pub(crate) type Proved = (Option<String>, Vec<(String, String)>);
+
+/// What a live meta proves to the fold: its session id and its spawned seats.
+/// `None` when the meta is not text, which proves no identity.
+pub(crate) fn identity(meta: &[u8]) -> Option<Proved> {
+    let text = std::str::from_utf8(meta).ok()?;
+    Some((session_id(text), roster(text)))
+}
+
+impl Reading {
+    /// A source read before, opened again from what a store kept of it: its
+    /// label, the session it proved and its live roster.
+    ///
+    /// # Errors
+    ///
+    /// The failed [`Source`] to add in its place, as [`Reading::live`].
+    pub(crate) fn resume(
+        label: &str,
+        session: Option<&str>,
+        seats: Vec<(String, String)>,
+        room: u64,
+    ) -> Result<Self, Source> {
+        Self::open(
+            label.to_owned(),
+            session.map(ToOwned::to_owned),
+            seats,
+            room,
+        )
+    }
+
+    /// Lines a store read before and kept only the counts and dates of: the
+    /// same effect on this source as reading those lines again.
+    pub(crate) fn carry(&mut self, malformed: u64, line_limit: u64, range: Option<(&str, &str)>) {
+        self.malformed = self.malformed.saturating_add(malformed);
+        self.line_limit = self.line_limit.saturating_add(line_limit);
+        if let Some((from, to)) = range {
+            self.pass.widen(from);
+            self.pass.widen(to);
+        }
+    }
+}
+
+impl Pass {
+    /// Stretch the range to cover `date`, as a record of that date does.
+    fn widen(&mut self, date: &str) {
+        match &mut self.range {
+            Some((from, to)) => {
+                least(from, date);
+                if date > to.as_str() {
+                    date.clone_into(to);
+                }
+            }
+            empty => *empty = Some((date.to_owned(), date.to_owned())),
+        }
+    }
+}
+
+impl Fold {
+    /// The part of everything read whose session is exactly `group`: what
+    /// [`Fold::finish`] would count for it, settled by the same judgment. The
+    /// parts of disjoint groups add up to the all-sessions scope, and a
+    /// session's part plus the session-less part's [`Tally::covering`] is that
+    /// session's scope.
+    pub(crate) fn finish_exact(self, group: Option<&str>) -> Tally {
+        self.settle().exact(group)
+    }
+}
+
+impl Ledger {
+    /// Every entry whose session is exactly `group`, as counts.
+    fn exact(&self, group: Option<&str>) -> Tally {
+        let mine = |session: Option<&String>| session.map(String::as_str) == group;
+        let mut tally = Tally::default();
+        for spawn in self
+            .spawns
+            .iter()
+            .filter(|spawn| mine(spawn.session.as_ref()))
+        {
+            bump(tally.joint.entry(spawn.cells.clone()).or_default(), 1);
+            if spawn.legacy {
+                bump(&mut tally.legacy, 1);
+            }
+            for (model, word) in [(true, &spawn.words[0]), (false, &spawn.words[1])] {
+                if let Some(word) = word {
+                    bump(tally.unproved.entry((model, word.clone())).or_default(), 1);
+                }
+            }
+        }
+        for note in self.notes.iter().filter(|note| mine(note.session.as_ref())) {
+            let key = (note.reason.clone(), note.source.clone());
+            bump(tally.notes.entry(key).or_default(), note.count);
+        }
+        for seen in self.seen.iter().filter(|seen| mine(seen.session.as_ref())) {
+            bump(&mut tally.sources, 1);
+            if seen.read {
+                bump(&mut tally.read, 1);
+            }
+            if let Some(range) = &seen.range {
+                tally.widen(range);
+            }
+        }
+        for (session, shortest, longest) in &self.excluded {
+            if mine(Some(session)) {
+                let [sessions, a, b] = &mut tally.excluded;
+                bump(sessions, 1);
+                bump(a, u64::try_from(*shortest).unwrap_or(u64::MAX));
+                bump(b, u64::try_from(*longest).unwrap_or(u64::MAX));
+            }
+        }
+        tally
+    }
+}
+
+/// Add `count` to `held`, stopping at the top rather than wrapping.
+fn bump(held: &mut u64, count: u64) {
+    *held = held.saturating_add(count);
+}
+
+/// One group's settled entries as counts: what a scope is made of, kept so
+/// that groups add up without being read again.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Tally {
+    /// Spawns by their four cells.
+    joint: BTreeMap<[Cell; 4], u64>,
+    legacy: u64,
+    /// Spawns by an unproved flag's `(model?, word)`.
+    unproved: BTreeMap<(bool, String), u64>,
+    /// Coverage notes by `(reason, source)`.
+    notes: BTreeMap<(Reason, Option<String>), u64>,
+    /// Divergent legacy histories: sessions, shortest and longest lists summed.
+    excluded: [u64; 3],
+    read: u64,
+    sources: u64,
+    range: Option<(String, String)>,
+}
+
+impl Tally {
+    fn widen(&mut self, (first, last): &(String, String)) {
+        match &mut self.range {
+            Some((from, to)) => {
+                least(from, first);
+                if last.as_str() > to.as_str() {
+                    last.clone_into(to);
+                }
+            }
+            empty => *empty = Some((first.clone(), last.clone())),
+        }
+    }
+
+    /// Counts of spawns by their four cells and nothing else; `None` when
+    /// they sum past `u64`.
+    pub(crate) fn of_joint(joint: &BTreeMap<[Cell; 4], u64>) -> Option<Self> {
+        joint
+            .values()
+            .try_fold(0_u64, |sum, count| sum.checked_add(*count))?;
+        Some(Self {
+            joint: joint.clone(),
+            ..Self::default()
+        })
+    }
+
+    /// Add another group's counts to these.
+    pub(crate) fn add(&mut self, other: &Self) {
+        for (cells, count) in &other.joint {
+            bump(self.joint.entry(cells.clone()).or_default(), *count);
+        }
+        bump(&mut self.legacy, other.legacy);
+        for (word, count) in &other.unproved {
+            bump(self.unproved.entry(word.clone()).or_default(), *count);
+        }
+        for (key, count) in &other.notes {
+            bump(self.notes.entry(key.clone()).or_default(), *count);
+        }
+        for (held, count) in self.excluded.iter_mut().zip(other.excluded) {
+            bump(held, count);
+        }
+        bump(&mut self.read, other.read);
+        bump(&mut self.sources, other.sources);
+        if let Some(range) = &other.range {
+            self.widen(range);
+        }
+    }
+
+    /// What of a session-less group reaches every session's scope: its notes
+    /// and its sources, never its spawns or its dates (see [`covers`]).
+    pub(crate) fn covering(&self) -> Self {
+        Self {
+            notes: self.notes.clone(),
+            read: self.read,
+            sources: self.sources,
+            ..Self::default()
+        }
+    }
+
+    /// The scope these counts make, laid out as [`Ledger::scoped`] lays it.
+    pub(crate) fn scoped(&self) -> Scoped {
+        let sum = |test: &dyn Fn(&[Cell; 4]) -> bool| {
+            self.joint
+                .iter()
+                .filter(|(cells, _)| test(cells))
+                .fold(0_u64, |sum, (_, count)| sum.saturating_add(*count))
+        };
+        let known = |index: usize| {
+            move |cells: &[Cell; 4]| matches!(cells[index], Cell::Value(_) | Cell::NoneSet)
+        };
+        Scoped {
+            total: sum(&|_| true),
+            legacy: self.legacy,
+            model_known: sum(&known(MODEL)),
+            effort_known: sum(&known(EFFORT)),
+            range: self.range.clone(),
+            sources_read: self.read,
+            sources_total: self.sources,
+            harness: self.table(&[0]),
+            client: self.table(&[1]),
+            model_effort: self.table(&[MODEL, EFFORT]),
+            joint: self.table(&[0, 1, MODEL, EFFORT]),
+            gaps: self.gaps(),
+        }
+    }
+
+    /// One table over `columns`, ordered as [`table`] orders it.
+    fn table(&self, columns: &[usize]) -> Vec<Row> {
+        let mut counts: BTreeMap<Vec<&Cell>, u64> = BTreeMap::new();
+        for (cells, count) in &self.joint {
+            let key = columns.iter().map(|column| &cells[*column]).collect();
+            bump(counts.entry(key).or_default(), *count);
+        }
+        let mut rows: Vec<Row> = counts
+            .into_iter()
+            .map(|(cells, count)| Row {
+                cells: cells.into_iter().cloned().collect(),
+                count,
+            })
+            .collect();
+        rows.sort_by_key(|row| std::cmp::Reverse(row.count));
+        rows
+    }
+
+    /// The coverage lines, as [`Ledger::gaps`] makes them.
+    fn gaps(&self) -> Vec<Gap> {
+        let mut gaps = self.notes.clone();
+        for ((model, word), count) in &self.unproved {
+            let reason = Reason::Unproved {
+                model: *model,
+                word: word.clone(),
+            };
+            bump(gaps.entry((reason, None)).or_default(), *count);
+        }
+        let [sessions, a, b] = self.excluded;
+        if sessions > 0 {
+            gaps.insert((Reason::LegacyExcluded { sessions, a, b }, None), sessions);
+        }
+        gaps.into_iter()
+            .map(|((reason, source), count)| Gap {
+                source,
+                reason,
+                count,
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 #[path = "stats_spec.rs"]
 mod spec;

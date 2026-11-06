@@ -29,6 +29,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "stats_store"
+path = "fuzz_targets/stats_store.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "quota_history"
 path = "fuzz_targets/quota_history.rs"
 test = false

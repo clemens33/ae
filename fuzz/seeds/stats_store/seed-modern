@@ -1,0 +1,2 @@
+{"ts":"2026-10-01T10:00:00Z","actor":"lead","action":"worker-birth","target":"scout","target_slot":"spawned.0","target_session_id":"11111111-1111-4111-8111-111111111111","birth_v":1,"birth":"aaaaaaaa-aaaa-4aaa-8aaa-000000000001","birth_tool":"codex","birth_model":"sol","birth_effort":"high","summary":"PRIVATE-PROMPT-BRIEF-COMMAND-TOKEN-https://private.invalid"}
+{"ts":"2026-10-01T10:00:00Z","actor":"lead","action":"spawn","target":"scout","birth":"aaaaaaaa-aaaa-4aaa-8aaa-000000000001","summary":"PRIVATE-PROMPT-BRIEF-COMMAND-TOKEN-https://private.invalid"}

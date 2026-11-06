@@ -14,6 +14,10 @@ src/                — Rust sources. main.rs thin (argv in, exit code out); lib
                       never held), fuzzed as `stats_fold`; src/app/loader/stats.rs is its stepped
                       read, one chunk of one source a step under a scan byte budget and a
                       retained-state budget; usage.rs's `LineReader` frames the lines.
+                      stats_store.rs is the maintained Statistics store's pure model (dark until
+                      S5): per-source reduced evidence, per-session group counts re-counted by
+                      stats.rs's own fold, and the materialized view a read takes without a fold;
+                      fuzzed as `stats_store`.
                       tool.rs::BoardSpec is the board's one per-tool read decision
                       (stream, export or unsupported). fleet_read.rs owns one fleet read:
                       the socket proof cache, discovery and the snapshot's assembly

@@ -102,6 +102,7 @@ pub mod state;
 pub mod stats;
 #[cfg(test)]
 mod stats_fixture;
+pub mod stats_store;
 pub mod store;
 pub mod teardown;
 pub mod telegram;
