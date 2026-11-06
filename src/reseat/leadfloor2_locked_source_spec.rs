@@ -41,11 +41,12 @@ fn leadfloor2_late_floor_uses_locked_source_not_admitted_source() {
         std::fs::create_dir_all(path).expect("private fixture directory");
     }
     for slot in ["main", "worker.0"] {
-        for (floor, locked_profile, refused) in [
-            ("3", "high", true),
-            ("3", "unreadable", true),
-            ("3", "low", false),
-            ("", "high", false),
+        for (floor, locked_profile, locked_agent, refused) in [
+            ("3", "high", "subject", true),
+            ("3", "unreadable", "subject", true),
+            ("3", "low", "replacement", true),
+            ("3", "low", "subject", false),
+            ("", "high", "subject", false),
         ] {
             let floor = if floor.is_empty() {
                 String::new()
@@ -122,7 +123,11 @@ fn leadfloor2_late_floor_uses_locked_source_not_admitted_source() {
                 now: Timestamp::from_epoch(1_800_000_000),
             };
             // The lifecycle predecessor has now published its different source.
-            let locked = meta(locked_profile);
+            // A different agent at the old slot is not this seat's source either.
+            let locked = meta(locked_profile).replace(
+                &format!("seat.{slot}=subject"),
+                &format!("seat.{slot}={locked_agent}"),
+            );
             std::fs::write(dir.join("meta"), &locked).expect("current locked metadata");
             let mut err = Vec::new();
             let result = prepare(&ask, &seat, locked.as_bytes(), &mut err);
@@ -133,7 +138,7 @@ fn leadfloor2_late_floor_uses_locked_source_not_admitted_source() {
                         result,
                         Err(Halt::End(Ended::Refused(CauseClass::FloorChanged)))
                     ),
-                    "{slot}: locked source {locked_profile} must remove the stale same-model exemption: {err}"
+                    "{slot}: locked source {locked_profile}/{locked_agent} must remove the stale same-model exemption: {err}"
                 );
                 assert!(err.contains("tier 1 is below the lead floor 3"), "{err}");
                 assert!(err.contains("nothing was stopped"), "{err}");

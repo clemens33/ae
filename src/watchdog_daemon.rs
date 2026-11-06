@@ -20434,3 +20434,7 @@ mod tests {
     include!("../tests/unit/unreach_episode.rs");
     include!("../tests/unit/unreach_motion_a4.rs");
 }
+
+#[cfg(test)]
+#[path = "watchdog_daemon/leadfloor2_notice_spec.rs"]
+mod leadfloor2_notice_spec;
