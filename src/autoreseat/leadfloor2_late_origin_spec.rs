@@ -6,6 +6,7 @@
 )]
 
 use super::*;
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -20,9 +21,15 @@ impl Drop for Root {
 fn chain_journal(slot: &str) -> String {
     const NOW: i64 = 1_800_000_000;
     let key = Timestamp::from_epoch(NOW - 100).to_string();
-    [
+    let mut journal = String::new();
+    for (offset, action, reference, summary) in [
         (-100, "limit", "", String::new()),
-        (-99, super::super::ATTEMPT_ACTION, key.as_str(), String::new()),
+        (
+            -99,
+            super::super::ATTEMPT_ACTION,
+            key.as_str(),
+            String::new(),
+        ),
         (
             -98,
             "reseat",
@@ -30,15 +37,15 @@ fn chain_journal(slot: &str) -> String {
             format!("reseated subject (pane %1, slot {slot}) to source, seed submitted"),
         ),
         (-97, super::super::DONE_ACTION, "origin", "moved".to_owned()),
-    ]
-    .into_iter()
-    .map(|(offset, action, reference, summary)| {
-        format!(
-            "{{\"ts\":\"{}\",\"actor\":\"watchdog\",\"action\":\"{action}\",\"target\":\"subject\",\"target_slot\":\"{slot}\",\"target_session\":\"check\",\"ref\":\"{reference}\",\"summary\":\"{summary}\"}}\n",
+    ] {
+        writeln!(
+            journal,
+            "{{\"ts\":\"{}\",\"actor\":\"watchdog\",\"action\":\"{action}\",\"target\":\"subject\",\"target_slot\":\"{slot}\",\"target_session\":\"check\",\"ref\":\"{reference}\",\"summary\":\"{summary}\"}}",
             Timestamp::from_epoch(NOW + offset)
         )
-    })
-    .collect()
+        .expect("string journal");
+    }
+    journal
 }
 
 #[test]
