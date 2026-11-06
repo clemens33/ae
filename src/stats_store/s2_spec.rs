@@ -8,6 +8,9 @@
 #[path = "s2_cases.rs"]
 mod cases;
 
+#[path = "s2_regression_spec.rs"]
+mod regression;
+
 use super::disk::{
     self, Decision, Dir, Files, Journal, Limits, Memory, MemoryJournals, Next, Op, Payload, Plan,
     Prepared, Read, Refused, Shown, SourceSpec, Why,

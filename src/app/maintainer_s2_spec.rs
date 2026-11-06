@@ -124,3 +124,144 @@ fn s2_repair_notice_names_the_file_and_reason() {
     assert!(text.len() > "stats/view".len(), "repair names a reason");
     assert!(running.stop(STOP_BOUND));
 }
+
+#[test]
+fn s2_f10_damaged_intent_takeover_reports_intent_and_removes_temps() {
+    use crate::app::loader::Wake;
+    use crate::stats_store::disk::{self, Dir, Files, Limits};
+    use crate::stats_store::maint::{Maintainer, Outcome};
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the fixed 64 KiB intent cap fits usize on every supported target"
+    )]
+    for hostile in [
+        b"bad intent".to_vec(),
+        vec![b'x'; disk::INTENT_CAP as usize + 1],
+    ] {
+        let root = Root::new();
+        let session = root.0.join("sessions/a");
+        std::fs::create_dir_all(&session).expect("fixture session");
+        std::fs::write(session.join("meta"), format!("session_id={}\n", cases::S))
+            .expect("fixture meta");
+        std::fs::write(session.join("events.jsonl"), cases::birth(cases::S, 1))
+            .expect("fixture journal");
+        let mut m = Maintainer::new(
+            &root.0,
+            Limits {
+                chunk: 4 << 20,
+                line: 4 << 20,
+            },
+            Duration::ZERO,
+        );
+        let mut idle = false;
+        for _ in 0..10 {
+            if matches!(m.step().outcome, Outcome::Idle) {
+                idle = true;
+                break;
+            }
+        }
+        assert!(idle);
+        drop(m);
+        std::fs::write(root.0.join("stats/intent"), hostile).expect("damage intent");
+        std::fs::write(root.0.join("stats/view.tmp"), b"root stage").expect("root temp");
+        std::fs::write(
+            root.0.join("stats/session/orphan.view.tmp"),
+            b"session stage",
+        )
+        .expect("session temp");
+        let (tx, rx) = mpsc::channel();
+        let running = start(root.0.clone(), tx).expect("start damaged-intent worker");
+        let Wake::Notice(notice) = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("repair notice")
+        else {
+            panic!("damaged intent reports through Notice");
+        };
+        assert!(
+            notice.contains("stats/intent"),
+            "takeover must name the intent: {notice}"
+        );
+        assert!(running.stop(STOP_BOUND));
+        let mut files = Files::at(&root.0);
+        assert_eq!(
+            files.read("stats/intent", disk::INTENT_CAP),
+            disk::Read::Absent
+        );
+        assert_eq!(
+            files.read("stats/view.tmp", disk::ROOT_VIEW_CAP),
+            disk::Read::Absent
+        );
+        assert_eq!(
+            files.read("stats/session/orphan.view.tmp", disk::SESSION_VIEW_CAP),
+            disk::Read::Absent
+        );
+    }
+}
+
+#[test]
+fn s2_f10_valid_intent_takeover_notice_names_damaged_primary() {
+    use crate::app::loader::Wake;
+    use crate::stats_store::disk::{self, Dir, Files};
+    let root = Root::new();
+    let mut rig = cases::Rig::new(
+        vec![cases::Feed::live(
+            "a",
+            Some(cases::S),
+            cases::birth(cases::S, 1),
+        )],
+        4096,
+        4096,
+    );
+    rig.catchup(0);
+    rig.feeds[0].bytes.extend(cases::birth(cases::S, 2));
+    rig.sync(0);
+    let work = rig.ready(0);
+    let plan = cases::published(
+        disk::publish(&mut rig.dir, &mut rig.journals, &work).expect("valid intent plan"),
+    );
+    let primary = format!("stats/session/{}.evidence", cases::S);
+    let cut = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, disk::Op::Rename { to, .. } if to == &primary))
+        .expect("primary rename")
+        + 1;
+    plan.apply(&mut rig.dir, cut)
+        .expect("crash after primary publication");
+    rig.dir.plant(&primary, b"damaged primary");
+    for name in rig.dir.names() {
+        let path = root.0.join(&name);
+        std::fs::create_dir_all(path.parent().expect("fixture parent"))
+            .expect("fixture payload directories");
+        std::fs::write(path, rig.dir.file(&name).expect("fixture bytes"))
+            .expect("install interrupted payload");
+    }
+    let (tx, rx) = mpsc::channel();
+    let running = start(root.0.clone(), tx).expect("worker starts on interrupted payload");
+    let Wake::Notice(text) = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("primary damage notice")
+    else {
+        panic!("repair Notice");
+    };
+    assert!(
+        text.contains(&primary),
+        "notice must name proven damage: {text}"
+    );
+    assert!(
+        text.contains("rebuilding"),
+        "damage takeover repairs once: {text}"
+    );
+    assert!(running.stop(STOP_BOUND));
+    let mut files = Files::at(&root.0);
+    assert_eq!(
+        files.read("stats/intent", disk::INTENT_CAP),
+        disk::Read::Absent
+    );
+    assert!(
+        disk::recovery(&mut files)
+            .expect("takeover complete")
+            .ops
+            .is_empty()
+    );
+}

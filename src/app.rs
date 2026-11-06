@@ -5316,6 +5316,7 @@ mod tests {
     mod menu_acceptance;
     mod menu_records;
     mod menu_units;
+    mod s2_exec_spec;
 
     pub(in crate::app) const ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
 
