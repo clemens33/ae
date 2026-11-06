@@ -24,16 +24,14 @@ fuzz_target!(|data: &[u8]| {
         // The lead floor: every written `[model_tiers]` pin, plus pins no row
         // names, read under both pin rules and judged for two tools, so a row
         // text cannot panic the match or the verdict.
-        let pins = reseat
-            .tiers
-            .iter()
-            .map(|row| row.pin.as_str())
-            .chain(["opus55x", "claude-opus-5-5", "gpt-5.5", ""]);
+        let pins = reseat.tiers.iter().map(|row| row.pin.as_str()).chain([
+            "opus55x",
+            "claude-opus-5-5",
+            "gpt-5.5",
+            "",
+        ]);
         for pin in pins {
-            for rule in [
-                ae::tool::PinMatch::Exact,
-                ae::tool::PinMatch::FamilyVersion,
-            ] {
+            for rule in [ae::tool::PinMatch::Exact, ae::tool::PinMatch::FamilyVersion] {
                 let _ = std::hint::black_box(reseat.tier_of(pin, rule));
             }
             for tool in [ae::tool::ToolKind::Claude, ae::tool::ToolKind::Codex] {
