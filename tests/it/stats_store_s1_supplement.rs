@@ -70,3 +70,40 @@ fn the_fuzz_harness_journal_mode_runs_on_mode_zero_inputs() {
         crate::stats_store_s1_spec::fuzz_case(data);
     }
 }
+
+#[test]
+fn a_date_the_calendar_does_not_have_is_refused_and_year_zero_is_kept() {
+    let memo = "{\"ts\":\"2026-10-02T10:00:00Z\",\"actor\":\"lead\",\"action\":\"memo\"}\n";
+    let mut store = Store::default();
+    let meta = format!("session_id={S}\n");
+    assert!(store.live_source("a", "live", meta.as_bytes()).is_ok());
+    assert!(store.chunk("a", 0, memo.as_bytes(), true).is_ok());
+    let Ok(evidence) = store.render() else {
+        panic!("a bounded store renders");
+    };
+    let view = render_view(&store.view(Some(S)));
+    // Evidence holds the range once; the view holds it in both scopes.
+    assert_eq!(evidence.matches("\"2026-10-02\"").count(), 2, "{evidence}");
+    assert_eq!(view.matches("\"2026-10-02\"").count(), 4, "{view}");
+    let swap = |text: &str, date: &str| text.replace("\"2026-10-02\"", &format!("\"{date}\""));
+    for date in [
+        "2026-02-30",
+        "2026-13-01",
+        "2026-00-00",
+        "2025-02-29",
+        "1900-02-29",
+    ] {
+        assert!(
+            Store::parse(&swap(&evidence, date)).is_err(),
+            "evidence {date}"
+        );
+        assert!(parse_view(&swap(&view, date)).is_err(), "view {date}");
+    }
+    for date in ["0000-02-29", "0000-01-01", "2024-02-29", "9999-12-31"] {
+        assert!(
+            Store::parse(&swap(&evidence, date)).is_ok(),
+            "evidence {date}"
+        );
+        assert!(parse_view(&swap(&view, date)).is_ok(), "view {date}");
+    }
+}

@@ -25,6 +25,7 @@ use crate::json::{self, Value};
 use crate::stats::{
     self, Cell, Fold, Gap, Reading, Reason, Row, Scoped, SourceGap, Tally, ThisSession, View,
 };
+use crate::time::Timestamp;
 
 /// The evidence format this core reads and writes.
 const VERSION: i64 = 1;
@@ -986,14 +987,10 @@ fn is_reduced(kept: &str, again: &str) -> bool {
         }
 }
 
-/// Whether `text` is spelled `YYYY-MM-DD` in digits.
+/// Whether `text` is a `YYYY-MM-DD` a record's timestamp can carry: the
+/// calendar check is [`Timestamp::parse`]'s own.
 fn is_date(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    bytes.len() == DATE_LEN
-        && bytes.iter().enumerate().all(|(index, byte)| match index {
-            4 | 7 => *byte == b'-',
-            _ => byte.is_ascii_digit(),
-        })
+    text.len() == DATE_LEN && Timestamp::parse(&format!("{text}T00:00:00Z")).is_some()
 }
 
 // --- the materialized view ------------------------------------------------
