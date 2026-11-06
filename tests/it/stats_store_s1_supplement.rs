@@ -203,7 +203,7 @@ fn an_event_is_one_line_within_the_inclusive_line_limit() {
     let before = rendered(&over);
     assert!(
         over.event("a", 0, line.as_bytes()).is_err(),
-        "a longer line is a line-limit gap, never a spawn"
+        "an event longer than the limit is refused and records nothing, not even a line-limit gap"
     );
     assert_eq!(rendered(&over), before);
     let mut store = fresh(1024);
