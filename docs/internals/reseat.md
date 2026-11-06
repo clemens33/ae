@@ -759,9 +759,10 @@ invocation's global config and cwd overlay, `spawn` and `reseat` the session's
 recorded config, and a session with no recorded `config=` row gets no nudge; a
 suggestion may name a profile the operator keeps for rare use. The verdict also
 reads a profile and not a seat (#309): a profile whose only exit is a derived
-sibling on another proven account reads as covered, and a lead-pair seat cannot
-use that sibling (below), so for the lead pair the row can over-promise. A
-seat-aware warning is not built.
+sibling on another proven account reads as covered, and with no lead floor set a lead-pair seat
+cannot use that sibling (below), while with a floor set only a sibling at or over
+it is usable, so for the lead pair the row can over-promise: it judges accounts
+and profiles, never a per-seat floor. A seat-aware warning is not built.
 
 A LEAD-PAIR SEAT NEVER TAKES A DERIVED SIBLING (#309). `autoreseat::lead_seat`
 (`main` and `worker.0` of a `layout = lead-pair` session, the classifier

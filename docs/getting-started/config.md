@@ -601,8 +601,13 @@ go on. With `auto_reseat = off` the row reads `skipped (auto_reseat off)` and
 nothing warns. A model of the same tool is a sibling but not an exit: it shares
 the account's allowance. A profile ae cannot place on an account is reported as
 unproven, never as covered. The row and the warnings read a profile, not a seat:
-a lead-pair seat cannot use a derived sibling, so a profile whose only exit is a
-sibling on another account reads as covered here but not for the lead pair. `ae doctor` also prints a `reseat-floor` row: `OK` with the floor and the number of tier rows (or `no lead floor set`), or one `WARN` per unusable floor value, ignored `[model_tiers]` row or conflicting rows; it reads `skipped (auto_reseat off)` with the switch off.
+with no lead floor set, a lead-pair seat cannot use a derived sibling, so a
+profile whose only exit is a sibling on another account reads as covered here but
+not for the lead pair. With a floor set a sibling at or over it is usable again,
+but the row does not judge tiers per seat, so it can still over-promise for a
+lead whose sibling is under the floor.
+
+`ae doctor` also prints a `reseat-floor` row: `OK` with the floor and the number of tier rows (or `no lead floor set`), or one `WARN` per unusable floor value, ignored `[model_tiers]` row or conflicting rows; it reads `skipped (auto_reseat off)` with the switch off.
 
 Names show in pane borders and are how agents address each other. Each window
 keeps its first agent's name as its stable tmux routing name; later splits do
