@@ -14,6 +14,9 @@ mod regression;
 #[path = "s2_batch2_spec.rs"]
 mod batch2;
 
+#[path = "s2_mutants_spec.rs"]
+mod mutants;
+
 use super::disk::{
     self, Decision, Dir, Files, Journal, Limits, Memory, MemoryJournals, Next, Op, Payload, Plan,
     Prepared, Read, Refused, Shown, SourceSpec, Why,
