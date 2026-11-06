@@ -193,7 +193,9 @@ pub(crate) const fn ineligible_summary(why: Ineligible) -> &'static str {
 /// store the seat RECORDS — never a model it was followed to. A config or a
 /// seat command ae cannot read derives nothing. A lead-pair seat
 /// ([`super::lead_seat`]) keeps its derived siblings on the list as
-/// [`Provenance::LeadSibling`], which the chooser passes over (#309).
+/// [`Provenance::LeadSibling`], which the chooser passes over (#309), and
+/// marks a declared candidate on the seat's own model [`Provenance::DeclaredTwin`]
+/// (the lead floor exempts it).
 pub(crate) fn listed(
     dir: &Path,
     bytes: &[u8],
@@ -227,26 +229,33 @@ pub(crate) fn listed(
             };
             let profiles = shapes(&cfg, home);
             let raw = command.as_str().to_owned();
-            Some(super::listed(
-                declared,
-                (
-                    profile,
-                    &Shape {
-                        words,
-                        pin,
-                        store,
-                        raw,
-                        tool,
-                    },
-                ),
-                &profiles,
-            ))
+            let own = Shape {
+                words,
+                pin,
+                store,
+                raw,
+                tool,
+            };
+            let list = super::listed(declared, (profile, &own), &profiles);
+            // The declared candidates on the very model the seat pins, both read.
+            let same: Vec<String> = declared
+                .iter()
+                .filter(|name| {
+                    profiles
+                        .iter()
+                        .find(|(key, _)| key == *name)
+                        .is_some_and(|(_, shape)| same_model(&own, shape))
+                })
+                .cloned()
+                .collect();
+            Some((list, same))
         });
-    let list = derived.unwrap_or_else(|| {
-        declared
+    let (list, same) = derived.unwrap_or_else(|| {
+        let plain = declared
             .iter()
             .map(|name| (name.clone(), Provenance::Declared))
-            .collect()
+            .collect();
+        (plain, Vec::new())
     });
     // A lead-pair seat never changes model on its own (#309): its derived
     // siblings stay listed, so the chooser names them, but are never taken.
@@ -258,11 +267,18 @@ pub(crate) fn listed(
         .map(|(name, provenance)| {
             let barred = match provenance {
                 Provenance::Derived(super::Kin::Sibling, step) => Provenance::LeadSibling(step),
+                Provenance::Declared if same.contains(&name) => Provenance::DeclaredTwin,
                 other => other,
             };
             (name, barred)
         })
         .collect()
+}
+
+/// Whether two profiles pin the very same model: both pins READ, byte-equal,
+/// on one tool. An unreadable model is never the same as another (#309).
+fn same_model(one: &Shape, other: &Shape) -> bool {
+    one.pin.is_some() && one.pin == other.pin && one.tool == other.tool
 }
 
 /// A resolved command's family skeleton and its tool.
@@ -521,6 +537,65 @@ pub(crate) fn pair_changed(dir: &Path, locked: &[u8], slot: &str, command: &str)
     ))
 }
 
+/// THE LATE FLOOR GATE (#309), asked by an automatic reseat under the session's
+/// lifecycle lock and before any stop, over `settings` (the GLOBAL config, read
+/// again under that lock) and `locked`, the meta read under it: why a move of
+/// the seat at `slot` to the profile `to`, running `destination`, no longer
+/// passes the lead floor, or `None` when it does, no floor is set, or the seat
+/// is not a lead. A floor raised, a tier row edited or a profile re-pinned
+/// since the choice cannot bypass it. Exempt, only on positive reads: a
+/// destination on the very model the seat's own command pins (both read, same
+/// tool), and a RETURN whose destination is the origin of the chain proven
+/// again now.
+pub(crate) fn floor_changed(
+    settings: &Settings,
+    (dir, locked): (&Path, &[u8]),
+    (session, slot, agent): (&str, &str, &str),
+    (from, to, destination): (Option<&str>, &str, &super::Model),
+    returning: bool,
+) -> Option<String> {
+    let lead_pair = crate::lifecycle::meta_value(locked, "layout") == "lead-pair";
+    let view = settings.seat_view(lead_pair, slot);
+    if !view.lead_seat {
+        return None;
+    }
+    let own = from.map(model_of_command).unwrap_or_default();
+    if own.pin.is_some()
+        && own.pin == destination.pin
+        && own.tool.is_some()
+        && own.tool == destination.tool
+    {
+        return None;
+    }
+    if returning {
+        let events = crate::watchdog_daemon::read_events(dir);
+        if super::chain(&events, session, slot, agent).is_some_and(|chain| chain.origin == to) {
+            return None;
+        }
+    }
+    let (floor, detail) = view.floor_refuses(destination)?;
+    Some(format!(
+        "auto reseat: the lead floor changed before the stop: {to}{detail} ({}) — nothing was \
+         stopped",
+        skip_word(Skip::Floor(floor))
+    ))
+}
+
+/// The model a resolved command pins and the tool that reads it; no pin when
+/// the command pins none or does not read.
+fn model_of_command(command: &str) -> super::Model {
+    let Ok(lexed) = crate::launch_cmd::lex_simple_command(command) else {
+        return super::Model::default();
+    };
+    let tool = lexed.tool();
+    let pin = crate::launch_cmd::family_skeleton(command, tool, crate::launch_cmd::Account::Drop)
+        .and_then(|(_, pin)| pin);
+    super::Model {
+        pin,
+        tool: Some(tool),
+    }
+}
+
 /// The listed candidates as the chooser judges them, joined with `quota`:
 /// the windows that bind each one's account, per account and window only the
 /// newest usable reading ([`super::current`]), and whether another seat of the
@@ -586,6 +661,11 @@ pub(crate) fn candidates(
                     .find(|(taken, _)| taken == profile)
                     .map(|(_, at)| at.epoch()),
                 left_on_headroom: left_on_headroom.iter().any(|taken| taken == profile),
+                model: super::Model {
+                    pin: pin.map(str::to_owned),
+                    tool: resolved.as_ref().map(|found| found.tool),
+                },
+                floor: None,
             }
         })
         .collect()
@@ -1102,17 +1182,31 @@ pub(crate) fn pair_pressure(root: &Path, dir: &Path, now: Timestamp) -> Vec<(Str
 }
 
 /// Why a candidate was passed over, as a record says it.
-const fn skip_word(skip: Skip) -> &'static str {
+fn skip_word(skip: Skip) -> std::borrow::Cow<'static, str> {
+    use std::borrow::Cow::{Borrowed, Owned};
     match skip {
-        Skip::Unconfigured => "not configured here",
-        Skip::PeerLatched => "another seat is latched on its account",
-        Skip::Exhausted => "exhausted",
-        Skip::LeftOnLimit => "left on its limit",
-        Skip::NoRoom => "no headroom",
-        Skip::LeftOnHeadroom => "left on headroom",
-        Skip::PairProvider => "partner's provider",
-        Skip::PairUnproven => "provider unproven",
-        Skip::LeadSibling => "a lead seat never changes model unasked",
+        Skip::Unconfigured => Borrowed("not configured here"),
+        Skip::PeerLatched => Borrowed("another seat is latched on its account"),
+        Skip::Exhausted => Borrowed("exhausted"),
+        Skip::LeftOnLimit => Borrowed("left on its limit"),
+        Skip::NoRoom => Borrowed("no headroom"),
+        Skip::LeftOnHeadroom => Borrowed("left on headroom"),
+        Skip::PairProvider => Borrowed("partner's provider"),
+        Skip::PairUnproven => Borrowed("provider unproven"),
+        Skip::LeadSibling => Borrowed("a lead seat never changes model unasked"),
+        Skip::Floor(super::Floor::Below { tier, floor }) => {
+            Owned(format!("tier {tier} is below the lead floor {floor}"))
+        }
+        Skip::Floor(super::Floor::NoTier) => {
+            Borrowed("no tier for its model; set one under [model_tiers]")
+        }
+        Skip::Floor(super::Floor::NoModel) => {
+            Borrowed("its model cannot be read, so it has no tier")
+        }
+        Skip::Floor(super::Floor::Ambiguous) => {
+            Borrowed("its model matches tier rows that disagree")
+        }
+        Skip::Floor(super::Floor::Unusable) => Borrowed("the lead floor is unusable"),
     }
 }
 
@@ -1391,7 +1485,15 @@ pub(crate) fn run(
     } else {
         threshold
     };
-    let choice = super::choose_paired(&judged, now.epoch(), bar, pair.as_ref());
+    let route = match &home_now {
+        Some(back) if homeward => super::Route::Return {
+            origin: &back.origin,
+        },
+        _ => super::Route::Move {
+            seat_profile: &profile,
+        },
+    };
+    let choice = super::choose_seat(&settings, route, &judged, now.epoch(), bar, pair.as_ref());
     let named = |pick: &str| format!("{pick}{}", choice.provenance.word());
     let Some((pick, tier)) = choice.pick else {
         if let Some(why) = observed_ending(dir, &argv.slot).map(|why| tagged(&why, &cause)) {
@@ -1677,7 +1779,10 @@ pub(crate) fn plan_paired(
         let why = Ineligible::Unmapped;
         return Plan::Decline(format!("not eligible ({why:?})"));
     }
-    let choice = super::choose_paired(&judged, now.epoch(), room, pair);
+    let route = super::Route::Move {
+        seat_profile: seat.profile,
+    };
+    let choice = super::choose_seat(settings, route, &judged, now.epoch(), room, pair);
     let cause = found.cause();
     let Some((to, _)) = &choice.pick else {
         let (class, why) = refusal(&choice, pair);
@@ -1725,7 +1830,12 @@ pub(crate) fn plan_return(
     if decision != super::Decision::Attempt {
         return Plan::Decline(format!("not due ({decision:?})"));
     }
-    let choice = super::choose_paired(
+    let route = super::Route::Return {
+        origin: &home.origin,
+    };
+    let choice = super::choose_seat(
+        settings,
+        route,
         &judge(&home.origin),
         now.epoch(),
         settings.headroom_at,
@@ -1753,15 +1863,23 @@ pub(crate) fn plan_return(
 }
 
 /// What a headroom attempt's summary adds after `from <a> to <b>`: its trigger,
-/// then each candidate passed over and why. A limit attempt adds nothing.
+/// then each candidate passed over and why. A limit attempt adds nothing,
+/// except each candidate the lead floor refused: the pick came after a row the
+/// human wrote, and the record says why that row was not taken (#309).
 fn attempt_note(cause: &str, skipped: &[(String, Skip)]) -> String {
-    if cause.is_empty() {
-        return String::new();
-    }
+    let limit = cause.is_empty();
     let named: Vec<String> = skipped
         .iter()
+        .filter(|(_, skip)| !limit || matches!(skip, Skip::Floor(_)))
         .map(|(to, skip)| format!("{to} ({})", skip_word(*skip)))
         .collect();
+    if limit {
+        return if named.is_empty() {
+            String::new()
+        } else {
+            format!("; passed over {}", named.join(", "))
+        };
+    }
     if named.is_empty() {
         format!(" ({cause})")
     } else {
@@ -2965,7 +3083,12 @@ mod tests {
         .expect("a well-formed record");
         let left = left_profiles(&[done], "aedev", "spawned.3", "scout");
         let list = words(&["ghost", "sol6x", "opus55x", "astrax"]);
-        let resolve = |profile: &str| (profile != "ghost").then_some(Resolved { pin: None });
+        let resolve = |profile: &str| {
+            (profile != "ghost").then_some(Resolved {
+                pin: None,
+                tool: crate::tool::ToolKind::Claude,
+            })
+        };
         let choice = choose(
             &candidates(&declared(&list), resolve, (&left, &[]), None, &[], 0),
             0,
@@ -3243,6 +3366,7 @@ mod tests {
                     .iter()
                     .find(|(named, _)| *named == profile)
                     .map(|(_, pin)| (*pin).to_owned()),
+                tool: crate::tool::ToolKind::Claude,
             })
         };
         choose(
@@ -3586,6 +3710,8 @@ mod tests {
             }],
             left_at: None,
             left_on_headroom: false,
+            model: crate::autoreseat::Model::default(),
+            floor: None,
         };
         let full = candidate(
             "full",
@@ -3649,7 +3775,12 @@ mod tests {
                 now,
             };
             let quota = read_quota(&dir, &inputs);
-            let resolve = |_: &str| Some(Resolved { pin: None });
+            let resolve = |_: &str| {
+                Some(Resolved {
+                    pin: None,
+                    tool: crate::tool::ToolKind::Claude,
+                })
+            };
             let judged = candidates(
                 &declared(&words(&["spent"])),
                 resolve,
@@ -3727,6 +3858,10 @@ mod tests {
             headroom_at: None,
             headroom_note: None,
             lead: crate::autoreseat::Lead::default(),
+            floor: crate::autoreseat::FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
             notes: Vec::new(),
         };
         let seat = Seat {
@@ -3756,7 +3891,12 @@ mod tests {
         let usable = |list: &[String], left: (&[(String, Timestamp)], &[String])| {
             candidates(
                 &declared(list),
-                |_| Some(Resolved { pin: None }),
+                |_| {
+                    Some(Resolved {
+                        pin: None,
+                        tool: crate::tool::ToolKind::Claude,
+                    })
+                },
                 left,
                 None,
                 &[],
@@ -3879,6 +4019,10 @@ mod tests {
             headroom_at: None,
             headroom_note: None,
             lead: crate::autoreseat::Lead::default(),
+            floor: crate::autoreseat::FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
             notes: Vec::new(),
         };
         let seat = Seat {
@@ -3900,7 +4044,12 @@ mod tests {
         let usable = |list: &[String], left: (&[(String, Timestamp)], &[String])| {
             candidates(
                 &declared(list),
-                |_| Some(Resolved { pin: None }),
+                |_| {
+                    Some(Resolved {
+                        pin: None,
+                        tool: crate::tool::ToolKind::Claude,
+                    })
+                },
                 left,
                 None,
                 &[],
@@ -4500,6 +4649,10 @@ mod tests {
             headroom_at,
             headroom_note: None,
             lead: crate::autoreseat::Lead::default(),
+            floor: crate::autoreseat::FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
             notes: Vec::new(),
         };
         let seat = Seat {
@@ -4538,6 +4691,8 @@ mod tests {
                         }],
                         left_at: None,
                         left_on_headroom: false,
+                        model: crate::autoreseat::Model::default(),
+                        floor: None,
                     })
                     .collect()
             }

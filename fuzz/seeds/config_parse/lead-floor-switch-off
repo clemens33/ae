@@ -1,0 +1,4 @@
+[workspace]
+auto_reseat_lead_floor = 3
+[model_tiers]
+small = haiku, 1

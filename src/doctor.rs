@@ -290,6 +290,8 @@ pub struct Facts {
     pub bindings: Vec<BindingsFacts>,
     /// Whether every profile has an auto-reseat exit off its own account.
     pub reseat_cover: ReseatCover,
+    /// What the lead floor's config says (#309).
+    pub reseat_floor: ReseatFloor,
 }
 
 /// The `workspace.fleet_order` row: the human's chosen strip order, and the ONE
@@ -349,6 +351,7 @@ pub fn report(facts: &Facts) -> Report {
     install_rows(facts, &mut out);
     quota_feed_rows(facts, &mut out);
     reseat_cover_rows(&facts.reseat_cover, &mut out);
+    reseat_floor_rows(&facts.reseat_floor, &mut out);
     session_rows(facts, &mut out);
     seat_identity_rows(&facts.seats, &mut out);
     for damaged in &facts.damaged_records {
@@ -587,6 +590,52 @@ pub enum ReseatCover {
     Off,
     /// Every `[profiles]` entry, in config order.
     Judged(Vec<crate::autoreseat::ProfileCover>),
+}
+
+/// What `ae doctor` knows about the lead floor (#309) of auto reseat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReseatFloor {
+    /// `[workspace] auto_reseat` is off, so nothing is judged.
+    Off,
+    /// The floor as written and what the config said about it.
+    Judged {
+        /// `auto_reseat_lead_floor` as judged.
+        floor: crate::autoreseat::FloorSetting,
+        /// Usable `[model_tiers]` rows.
+        tiers: usize,
+        /// One line per unusable floor, ignored or conflicting tier row.
+        notes: Vec<String>,
+    },
+}
+
+/// The `reseat-floor` rows: one WARN per config problem of the floor, because
+/// an unusable floor or a conflicting tier makes a lead seat refuse a move
+/// that the human expects, and nothing else says so before a limit hits. A
+/// WARN never costs the exit code.
+fn reseat_floor_rows(floor: &ReseatFloor, out: &mut Report) {
+    use crate::autoreseat::FloorSetting;
+    const LABEL: &str = "reseat-floor";
+    let ReseatFloor::Judged {
+        floor,
+        tiers,
+        notes,
+    } = floor
+    else {
+        out.push(Level::Ok, LABEL, "skipped (auto_reseat off)");
+        return;
+    };
+    for note in notes {
+        out.push(Level::Warn, LABEL, note);
+    }
+    if !notes.is_empty() {
+        return;
+    }
+    let detail = match floor {
+        FloorSetting::None => "no lead floor set".to_owned(),
+        FloorSetting::At(at) => format!("lead floor {at}, {tiers} model tier row(s)"),
+        FloorSetting::Unusable(why) => format!("lead floor unusable: {why}"),
+    };
+    out.push(Level::Ok, LABEL, &detail);
 }
 
 /// The `reseat-cover` rows. A profile with no exit off its account is a seat
@@ -959,11 +1008,27 @@ fn is_executable_file(path: &Path) -> bool {
 /// ones, as a move resolves them.
 fn reseat_cover_facts(
     identity: &crate::config::IdentityConfig,
-    config: &Path,
+    settings: &crate::autoreseat::Settings,
     home: Option<&Path>,
 ) -> ReseatCover {
-    crate::autoreseat::leg::covers(identity, &crate::autoreseat::settings(Some(config)), home)
+    crate::autoreseat::leg::covers(identity, settings, home)
         .map_or(ReseatCover::Off, ReseatCover::Judged)
+}
+
+/// The lead floor as the global file writes it, judged as the watchdog reads it.
+fn reseat_floor_facts(settings: &crate::autoreseat::Settings) -> ReseatFloor {
+    if settings.switch == crate::autoreseat::Switch::Off {
+        return ReseatFloor::Off;
+    }
+    ReseatFloor::Judged {
+        floor: settings.floor.clone(),
+        tiers: settings.tiers.len(),
+        notes: settings
+            .floor_notes()
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    }
 }
 
 /// Read every fact the report needs.
@@ -1036,7 +1101,9 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
     let sessions = session_facts(root);
     let seats = seat_facts(root, &sessions);
     let bindings = bindings_facts(&sessions, root, &config, core.as_deref());
-    let reseat_cover = reseat_cover_facts(&identity, &config, home.as_deref());
+    let reseat_settings = crate::autoreseat::settings(Some(&config));
+    let reseat_cover = reseat_cover_facts(&identity, &reseat_settings, home.as_deref());
+    let reseat_floor = reseat_floor_facts(&reseat_settings);
     let now = crate::time::Timestamp::now().epoch();
     let quota = quota_facts(&crate::quota::Inputs {
         home: home.as_deref(),
@@ -1083,6 +1150,7 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         damaged_records: damaged_records(root),
         bindings,
         reseat_cover,
+        reseat_floor,
         boot: crate::doors::boot_time(crate::shape::current()),
     }
 }
@@ -1778,6 +1846,7 @@ mod tests {
             damaged_records: Vec::new(),
             bindings: Vec::new(),
             reseat_cover: ReseatCover::Off,
+            reseat_floor: ReseatFloor::Off,
         }
     }
 
@@ -2712,6 +2781,70 @@ mod tests {
         let mut input = facts();
         input.reseat_cover = ReseatCover::Judged(rows);
         input
+    }
+
+    fn floor_facts(floor: crate::autoreseat::FloorSetting, notes: &[&str]) -> Facts {
+        let mut input = facts();
+        input.reseat_floor = ReseatFloor::Judged {
+            floor,
+            tiers: 2,
+            notes: notes.iter().map(|note| (*note).to_owned()).collect(),
+        };
+        input
+    }
+
+    #[test]
+    fn the_floor_row_reads_skipped_when_auto_reseat_is_off() {
+        assert_eq!(
+            rows_labelled(&facts(), "reseat-floor"),
+            vec![Row {
+                level: Level::Ok,
+                label: "reseat-floor".to_owned(),
+                detail: "skipped (auto_reseat off)".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_floor_row_says_the_floor_and_how_many_tier_rows_it_reads() {
+        use crate::autoreseat::FloorSetting;
+        let found = |floor| rows_labelled(&floor_facts(floor, &[]), "reseat-floor");
+        assert_eq!(
+            found(FloorSetting::None),
+            vec![Row {
+                level: Level::Ok,
+                label: "reseat-floor".to_owned(),
+                detail: "no lead floor set".to_owned(),
+            }]
+        );
+        assert_eq!(
+            found(FloorSetting::At(3)),
+            vec![Row {
+                level: Level::Ok,
+                label: "reseat-floor".to_owned(),
+                detail: "lead floor 3, 2 model tier row(s)".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn every_floor_problem_is_its_own_warn_row_and_replaces_the_ok_row() {
+        use crate::autoreseat::FloorSetting;
+        let found = rows_labelled(
+            &floor_facts(
+                FloorSetting::Unusable("auto_reseat_lead_floor = \"high\"".to_owned()),
+                &[
+                    "auto_reseat_lead_floor = \"high\" is not a whole number",
+                    "[model_tiers] one = 1, two = 3 differ",
+                ],
+            ),
+            "reseat-floor",
+        );
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(
+            found.iter().all(|row| row.level == Level::Warn),
+            "{found:?}"
+        );
     }
 
     #[test]

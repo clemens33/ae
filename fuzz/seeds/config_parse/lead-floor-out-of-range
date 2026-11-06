@@ -1,0 +1,3 @@
+[workspace]
+auto_reseat = all
+auto_reseat_lead_floor = 256

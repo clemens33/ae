@@ -1115,7 +1115,7 @@ one account has no exit once that account's window is spent. It reads `OK` when 
 `skipped (auto_reseat off)` while the switch is off, and otherwise one `WARN` row per account
 scope naming the uncovered profiles and the line to add under `[auto_reseat]`; a profile whose
 account ae cannot prove has a `WARN` row of its own, saying whether its own or a candidate's
-account is the one in doubt. It never fails the command. `ae spawn` and
+account is the one in doubt. It never fails the command. A `reseat-floor` row reads the lead floor (`auto_reseat_lead_floor` and `[model_tiers]`): `OK` with the floor and the number of tier rows, `no lead floor set`, or `skipped (auto_reseat off)`, and one `WARN` row per floor value ae cannot use, tier row it ignored or set of rows that disagree on one model. It never fails the command either. `ae spawn` and
 [`ae reseat --using`](#ae-reseat-session-agent---using-profileclient---stop-unknown) print the same finding as one
 stderr line for the profile you pick, and carry on.
 The `agent:<profile>` row of an OpenCode profile whose resolved `--model` or `-m` value contains a

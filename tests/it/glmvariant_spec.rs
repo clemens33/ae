@@ -10,7 +10,7 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::PathBuf;
 
-use ae::doctor::{Facts, Level, ProfileFacts, Report, ReseatCover, Row, report};
+use ae::doctor::{Facts, Level, ProfileFacts, Report, ReseatCover, ReseatFloor, Row, report};
 
 const MODEL: &str = "opencode-go/glm-5.3-flash#max";
 const GOLDEN: &str = "opencode; current profile requests \"opencode-go/glm-5.3-flash#max\"; effective variant and availability cannot be verified; native saved preferences or a session selection may override it";
@@ -49,6 +49,7 @@ fn facts(command: &str) -> Facts {
         damaged_records: vec![],
         bindings: vec![],
         reseat_cover: ReseatCover::Off,
+        reseat_floor: ReseatFloor::Off,
     }
 }
 

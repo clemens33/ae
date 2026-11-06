@@ -1523,6 +1523,8 @@ pub(crate) fn run_as_watchdog(
 pub(crate) struct Resolved {
     /// The model its `--model` flag pins, when it pins one.
     pub(crate) pin: Option<String>,
+    /// The tool whose pin rule reads `pin`.
+    pub(crate) tool: ToolKind,
 }
 
 /// Profile `profile` for the seat whose session dir is `dir`, resolved exactly
@@ -1531,7 +1533,10 @@ pub(crate) fn resolved(dir: &Path, profile: &str) -> Option<Resolved> {
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
     resolve_profile(dir, &bytes, profile, "")
         .ok()
-        .map(|moving| Resolved { pin: moving.pin })
+        .map(|moving| Resolved {
+            pin: moving.pin,
+            tool: moving.tool,
+        })
 }
 
 /// The move itself, from a parsed argv and the caller rule's verdict. Every
@@ -1940,6 +1945,33 @@ fn prepare(
     {
         writeln!(err, "Error: {why}")?;
         return Err(Halt::End(Ended::Refused(CauseClass::ReturnChanged)));
+    }
+    // THE LEAD FLOOR, read again under the same lock (#309): the global config and
+    // the destination as they stand now, so a floor raised or a profile re-pinned
+    // after the choice cannot carry a lead past it. A manual reseat never asks.
+    if ask.parsed.automatic {
+        let global = crate::autoreseat::settings(Some(&crate::doors::config_file(
+            crate::shape::current(),
+            ask.root,
+        )));
+        let destination = crate::autoreseat::Model {
+            pin: moving.pin.clone(),
+            tool: Some(moving.tool),
+        };
+        if let Some(why) = crate::autoreseat::leg::floor_changed(
+            &global,
+            (&seat.dir, locked),
+            (&ask.parsed.session, &target.slot, &target.agent),
+            (
+                seat.from_command.as_deref(),
+                &ask.parsed.profile,
+                &destination,
+            ),
+            ask.parsed.expect.is_some(),
+        ) {
+            writeln!(err, "Error: {why}")?;
+            return Err(Halt::End(Ended::Refused(CauseClass::FloorChanged)));
+        }
     }
     let prior = crate::lifecycle::meta_value(locked, &format!("harness_session.{}", target.slot));
     // DOES THE SEAT KEEP ITS CONVERSATION? From the records under the lock. A

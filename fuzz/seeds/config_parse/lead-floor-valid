@@ -1,0 +1,7 @@
+[workspace]
+auto_reseat = all
+auto_reseat_lead_floor = 3
+[model_tiers]
+small = haiku, 1
+large = opus, 4
+mid = claude-sonnet-5-5, 3

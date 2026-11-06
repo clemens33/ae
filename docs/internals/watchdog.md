@@ -521,7 +521,8 @@ quota observation — its name followed by `, derived twin` or `, derived siblin
 when it is derived;
 `, target already critical` is appended when that candidate is already
 critical; `ae cannot move <agent>: <why>` names each candidate passed over and
-why. It is a forecast — the legs choose again when
+why, a lead seat's candidate under the lead floor included
+(`reseat.md`, the lead floor). It is a forecast — the legs choose again when
 they act — and a seat the switch does not admit gets no line at all.
 
 The same step also judges every eligible seat whose limit latch does not stand
@@ -533,8 +534,8 @@ the key) on strict relief, each under the seat's lock, decides a due episode as
 above, and lets its due seats share the one trigger with the limit ones. An
 attempt in flight of either kind decides its seat until it ends, so no second
 attempt opens beside it, and a refusal or failure under either live key closes
-both kinds. An unusable `auto_reseat_at` or `auto_reseat_lead_at` is journaled once per daemon
-start, each its own note. Each seat is decided on the threshold that applies to
+both kinds. An unusable `auto_reseat_at`, `auto_reseat_lead_at` or `auto_reseat_lead_floor` is
+journaled once per daemon start, each its own note. Each seat is decided on the threshold that applies to
 it (`auto_acts_with` takes `Settings::seat_view` per seat: the lead pair of a
 lead-pair session reads `auto_reseat_lead_at` when set). A
 headroom attempt whose leg finds that threshold turned `off` since the trigger

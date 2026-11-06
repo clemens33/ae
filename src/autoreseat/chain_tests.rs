@@ -498,6 +498,10 @@ fn a_return_is_in_flight_only_between_its_attempt_and_outcome_within_the_bound()
         headroom_at: None,
         headroom_note: None,
         lead: crate::autoreseat::Lead::default(),
+        floor: crate::autoreseat::FloorSetting::None,
+        floor_note: None,
+        tiers: Vec::new(),
+        lead_seat: false,
         notes: Vec::new(),
     };
     let off = Settings {

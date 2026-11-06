@@ -118,6 +118,9 @@ pub enum CauseClass {
     /// Under the lifecycle lock the seat is no longer on the automatic chain or
     /// the profile its return was chosen from: a hold (#305).
     ReturnChanged,
+    /// Under the lifecycle lock the lead floor, read again, no longer lets the
+    /// destination chosen before it pass: a hold, tried again (#309).
+    FloorChanged,
     /// Every other refusal, every failure, and the give-up after the last round.
     Other,
 }
@@ -140,6 +143,7 @@ impl CauseClass {
             Self::PairProvider => "pair-provider",
             Self::PairChanged => "pair-changed",
             Self::ReturnChanged => "return-changed",
+            Self::FloorChanged => "floor-changed",
             Self::Other => "other",
         }
     }
@@ -154,6 +158,7 @@ impl CauseClass {
                 | Self::ObservedChoice
                 | Self::PairChanged
                 | Self::ReturnChanged
+                | Self::FloorChanged
         )
     }
 
@@ -181,6 +186,10 @@ const HEADROOM_FLOOR: u8 = 50;
 const HEADROOM_KEY: &str = "auto_reseat_at";
 /// The lead pair's own `auto_reseat_at`: absent means the lead pair shares it.
 const LEAD_KEY: &str = "auto_reseat_lead_at";
+/// The lead pair's capability floor: a tier from `[model_tiers]` (#309).
+const FLOOR_KEY: &str = "auto_reseat_lead_floor";
+/// The section that gives a model its tier.
+const TIERS_SECTION: &str = "model_tiers";
 
 /// Attempts one episode may make: one, and one more after a transient hold.
 pub const MAX_ATTEMPTS: u8 = 2;
@@ -371,6 +380,78 @@ pub struct Lead {
     pub applied: bool,
 }
 
+/// What `auto_reseat_lead_floor` says about the lead pair's capability floor
+/// (#309).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum FloorSetting {
+    /// Absent: no floor, and the lead pair never takes a derived sibling (#309
+    /// part A) exactly as before.
+    #[default]
+    None,
+    /// The lowest [`TierRow::tier`] a model-changing candidate of a lead seat
+    /// may have.
+    At(u8),
+    /// Written, and ae cannot use it: what it said, key first. The human asked
+    /// for a floor, so a lead seat takes no model change until it is fixed.
+    Unusable(String),
+}
+
+/// One usable `[model_tiers]` row: a model pin and the tier the human gave it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TierRow {
+    pub alias: String,
+    /// Matched by the tool's own pin rule ([`crate::model_drift::satisfies`]).
+    pub pin: String,
+    pub tier: u8,
+    pub line: usize,
+}
+
+/// What the `[model_tiers]` rows say about one model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TierRead {
+    Found(u8),
+    /// No row names it.
+    Missing,
+    /// Rows equally specific for it give different tiers: each row's alias
+    /// and tier, in file order. A less specific row never settles it.
+    Ambiguous(Vec<(String, u8)>),
+}
+
+/// The model a candidate runs, as its profile pins it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Model {
+    /// The profile's `--model` value; `None` when it pins none.
+    pub pin: Option<String>,
+    /// The tool whose pin rule reads the pin.
+    pub tool: Option<ToolKind>,
+}
+
+/// Why the lead floor passes a candidate over (#309).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Floor {
+    /// The model's tier is under the floor.
+    Below { tier: u8, floor: u8 },
+    /// No `[model_tiers]` row names the model.
+    NoTier,
+    /// The candidate's profile pins no model ae can read.
+    NoModel,
+    /// Rows equally specific for the model give different tiers.
+    Ambiguous,
+    /// `auto_reseat_lead_floor` is written and unusable.
+    Unusable,
+}
+
+/// How the candidates of a move were reached, for the lead floor.
+#[derive(Debug, Clone, Copy)]
+pub enum Route<'a> {
+    /// A move off the seat's profile `seat_profile`: its declared row and its
+    /// derived family.
+    Move { seat_profile: &'a str },
+    /// The return to `origin`, the profile a proven chain of automatic moves
+    /// left first ([`Chain::origin`]): the human's own choice.
+    Return { origin: &'a str },
+}
+
 /// Everything the global config says about auto reseat, judged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
@@ -391,6 +472,16 @@ pub struct Settings {
     pub headroom_note: Option<String>,
     /// `auto_reseat_lead_at`: the lead pair's own threshold row.
     pub lead: Lead,
+    /// `auto_reseat_lead_floor`: the lead pair's capability floor (#309).
+    pub floor: FloorSetting,
+    /// The note an unusable `auto_reseat_lead_floor` left, also in `notes`:
+    /// journaled once per watchdog start.
+    pub floor_note: Option<String>,
+    /// The usable `[model_tiers]` rows, in file order.
+    pub tiers: Vec<TierRow>,
+    /// Set only in a [`Self::seat_view`] of a lead-pair seat that a floor
+    /// judges: the one place a chooser learns the seat is a lead.
+    pub lead_seat: bool,
     /// One line per entry ignored or knob refused, for the operator.
     pub notes: Vec<String>,
 }
@@ -405,6 +496,10 @@ impl Settings {
             headroom_at: None,
             headroom_note: None,
             lead: Lead::default(),
+            floor: FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
             notes,
         }
     }
@@ -416,17 +511,27 @@ impl Settings {
     /// and a view of a view is itself.
     #[must_use]
     pub fn seat_view(&self, lead_pair: bool, slot: &str) -> std::borrow::Cow<'_, Self> {
-        let at = match self.lead.at {
-            LeadAt::Same => return std::borrow::Cow::Borrowed(self),
-            LeadAt::Off => None,
-            LeadAt::At(at) => Some(at),
-        };
-        if self.lead.applied || !lead_seat(lead_pair, slot) {
+        let judged = self.floor != FloorSetting::None;
+        if (self.lead.at == LeadAt::Same && !judged)
+            || self.lead.applied
+            || self.lead_seat
+            || !lead_seat(lead_pair, slot)
+        {
             return std::borrow::Cow::Borrowed(self);
         }
         let mut view = self.clone();
-        view.headroom_at = at;
-        view.lead.applied = true;
+        match self.lead.at {
+            LeadAt::Same => {}
+            LeadAt::Off => {
+                view.headroom_at = None;
+                view.lead.applied = true;
+            }
+            LeadAt::At(at) => {
+                view.headroom_at = Some(at);
+                view.lead.applied = true;
+            }
+        }
+        view.lead_seat = judged;
         std::borrow::Cow::Owned(view)
     }
 
@@ -441,6 +546,19 @@ impl Settings {
         }
     }
 
+    /// The lead floor's own notes among [`Self::notes`], for `ae doctor`: the
+    /// unusable `auto_reseat_lead_floor` and every `[model_tiers]` row ignored
+    /// or in conflict.
+    #[must_use]
+    pub fn floor_notes(&self) -> Vec<&str> {
+        let tiers = format!("[{TIERS_SECTION}]");
+        self.notes
+            .iter()
+            .map(String::as_str)
+            .filter(|note| note.starts_with(FLOOR_KEY) || note.starts_with(&tiers))
+            .collect()
+    }
+
     /// The candidates declared for `profile`, in order.
     #[must_use]
     pub fn candidates(&self, profile: &str) -> Option<&[String]> {
@@ -448,6 +566,74 @@ impl Settings {
             .iter()
             .find(|(key, _)| key == profile)
             .map(|(_, list)| list.as_slice())
+    }
+
+    /// The tier the `[model_tiers]` rows give the model `pin`, read under the
+    /// tool's `pin_match` rule: a row matches as a pin matches a model
+    /// ([`crate::model_drift::satisfies`]). Of the rows that match, those naming
+    /// a version are the more specific and alone decide when any match; the
+    /// tier is found only when every row of the deciding group agrees. Rows
+    /// that disagree are never settled by order or by a less specific row.
+    #[must_use]
+    pub fn tier_of(&self, pin: &str, pin_match: crate::tool::PinMatch) -> TierRead {
+        let matching: Vec<&TierRow> = self
+            .tiers
+            .iter()
+            .filter(|row| crate::model_drift::satisfies(&row.pin, pin, pin_match))
+            .collect();
+        let specific: Vec<&TierRow> = matching
+            .iter()
+            .copied()
+            .filter(|row| crate::model_drift::pin_names_a_version(&row.pin))
+            .collect();
+        let group = if specific.is_empty() {
+            matching
+        } else {
+            specific
+        };
+        let Some(first) = group.first() else {
+            return TierRead::Missing;
+        };
+        if group.iter().all(|row| row.tier == first.tier) {
+            return TierRead::Found(first.tier);
+        }
+        TierRead::Ambiguous(
+            group
+                .iter()
+                .map(|row| (row.alias.clone(), row.tier))
+                .collect(),
+        )
+    }
+
+    /// Why the lead floor refuses a candidate running `model`, with the
+    /// detail a record adds to the candidate's name, or `None` when it passes
+    /// or no floor is set. A floor ae cannot use refuses every model; a model
+    /// ae cannot read, or no row names, or rows disagree on, has no tier.
+    #[must_use]
+    pub fn floor_refuses(&self, model: &Model) -> Option<(Floor, String)> {
+        let floor = match &self.floor {
+            FloorSetting::None => return None,
+            FloorSetting::Unusable(said) => return Some((Floor::Unusable, format!(", {said}"))),
+            FloorSetting::At(floor) => *floor,
+        };
+        let (Some(pin), Some(tool)) = (model.pin.as_deref(), model.tool) else {
+            return Some((Floor::NoModel, String::new()));
+        };
+        match self.tier_of(pin, tool.adapter().pin_match) {
+            TierRead::Found(tier) if tier >= floor => None,
+            TierRead::Found(tier) => Some((Floor::Below { tier, floor }, String::new())),
+            TierRead::Missing => Some((Floor::NoTier, String::new())),
+            TierRead::Ambiguous(rows) => {
+                let rows: Vec<String> = rows
+                    .iter()
+                    .map(|(alias, tier)| format!("{alias} = {tier}"))
+                    .collect();
+                Some((
+                    Floor::Ambiguous,
+                    format!(", [{TIERS_SECTION}] {}", rows.join(", ")),
+                ))
+            }
+        }
     }
 }
 
@@ -482,10 +668,130 @@ pub fn settings_in(file: &Path, text: &str) -> Settings {
                     applied: false,
                 };
                 settled.notes.extend(note);
+                let (floor, note) = parse_floor(read(FLOOR_KEY), times(FLOOR_KEY));
+                settled.floor = floor;
+                settled.notes.extend(note.clone());
+                settled.floor_note = note;
+                settled.tiers = parse_tiers(
+                    crate::config::section_entries(file, text, TIERS_SECTION),
+                    &mut settled.notes,
+                );
             }
             settled
         }
     }
+}
+
+/// `auto_reseat_lead_floor` as written. Absent is [`FloorSetting::None`]; a
+/// value ae cannot use is [`FloorSetting::Unusable`] with the one note that
+/// says why: the human asked for a floor, so a typo must not relax it. A value
+/// is echoed escaped.
+fn parse_floor(
+    raw: Result<Option<String>, String>,
+    times: Result<usize, String>,
+) -> (FloorSetting, Option<String>) {
+    let (detail, why) = match (raw, times) {
+        (Err(why), _) | (_, Err(why)) => (why.clone(), why),
+        (Ok(_), Ok(times)) if times > 1 => {
+            let said = format!("{FLOOR_KEY} is set {times} times");
+            (said.clone(), said)
+        }
+        (Ok(None), _) => return (FloorSetting::None, None),
+        (Ok(Some(raw)), _) => match parse_tier_number(&raw) {
+            Some(floor) => return (FloorSetting::At(floor), None),
+            None => {
+                let said = format!("{FLOOR_KEY} = {:?}", raw.trim());
+                let why = format!("{said} is not a whole number from 0 to 255");
+                (said, why)
+            }
+        },
+    };
+    let note = format!("{why}; a lead seat takes no model change until it is fixed");
+    (FloorSetting::Unusable(detail), Some(note))
+}
+
+/// A tier or floor number: digits only, `0` to `255`, no sign.
+fn parse_tier_number(text: &str) -> Option<u8> {
+    let text = text.trim();
+    (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| text.parse::<u8>().ok())
+        .flatten()
+}
+
+/// The `[model_tiers]` rows ae can use, in file order, each ignored row named
+/// in `notes`. A row is `alias = <model pin>, <tier>`: the alias is a config
+/// key because a model id may hold dots and slashes, the pin runs to the LAST
+/// comma. A repeated alias keeps its later row, in that row's place. Rows that
+/// give one pin different tiers all stay: the disagreement is evidence, and a
+/// lead seat refuses the model by it ([`Settings::tier_of`]).
+fn parse_tiers(
+    entries: Result<Vec<SectionEntry>, String>,
+    notes: &mut Vec<String>,
+) -> Vec<TierRow> {
+    let entries = match entries {
+        Ok(entries) => entries,
+        Err(why) => {
+            notes.push(format!("[{TIERS_SECTION}] unreadable, no tiers: {why}"));
+            return Vec::new();
+        }
+    };
+    let mut rows: Vec<TierRow> = Vec::new();
+    for entry in &entries {
+        let at = format!("[{TIERS_SECTION}] line {}", entry.line);
+        let key = entry.key.as_str();
+        if !crate::config::is_config_key(key) {
+            notes.push(format!("{at}: {key:?} is not a model alias, ignored"));
+            continue;
+        }
+        let Some(value) = entry.value.as_deref() else {
+            notes.push(format!("{at}: {key} names no model and tier, ignored"));
+            continue;
+        };
+        let Some((pin, tier)) = value.rsplit_once(',') else {
+            notes.push(format!("{at}: {key} is not `model, tier`, ignored"));
+            continue;
+        };
+        let pin = pin.trim();
+        if !crate::usage::is_model_id(pin) || pin.contains(',') {
+            notes.push(format!("{at}: {key} names no usable model, ignored"));
+            continue;
+        }
+        let Some(tier) = parse_tier_number(tier) else {
+            notes.push(format!(
+                "{at}: {key} tier {:?} is not a whole number from 0 to 255, ignored",
+                tier.trim()
+            ));
+            continue;
+        };
+        if rows.iter().any(|row| row.alias == key) {
+            notes.push(format!("{at}: {key} repeats an alias, the later row wins"));
+            rows.retain(|row| row.alias != key);
+        }
+        rows.push(TierRow {
+            alias: key.to_owned(),
+            pin: pin.to_owned(),
+            tier,
+            line: entry.line,
+        });
+    }
+    let mut by_pin: std::collections::BTreeMap<&str, Vec<&TierRow>> =
+        std::collections::BTreeMap::new();
+    for row in &rows {
+        by_pin.entry(row.pin.as_str()).or_default().push(row);
+    }
+    for (pin, group) in by_pin {
+        if group.iter().any(|row| row.tier != group[0].tier) {
+            let names: Vec<String> = group
+                .iter()
+                .map(|row| format!("{} = {}", row.alias, row.tier))
+                .collect();
+            notes.push(format!(
+                "[{TIERS_SECTION}] {} give {pin:?} different tiers; a lead seat refuses it",
+                names.join(", ")
+            ));
+        }
+    }
+    rows
 }
 
 /// The percent row `key` as written: `Ok(Some(at))` a percent, `Ok(None)` for
@@ -611,6 +917,10 @@ fn settle(
         headroom_at: None,
         headroom_note: None,
         lead: Lead::default(),
+        floor: FloorSetting::None,
+        floor_note: None,
+        tiers: Vec::new(),
+        lead_seat: false,
         notes,
     }
 }
@@ -803,6 +1113,11 @@ pub enum Provenance {
     /// model on its own (#309). It stays listed so the chooser names it
     /// ([`Skip::LeadSibling`]); only `leg::listed` makes one.
     LeadSibling(Step),
+    /// A declared candidate of a lead-pair seat whose profile pins the very
+    /// model the seat's own profile pins, both read: no capability change, so
+    /// the lead floor exempts it like a derived twin (#309). Only
+    /// `leg::listed` makes one; everywhere else it is [`Self::Declared`].
+    DeclaredTwin,
 }
 
 impl Provenance {
@@ -811,7 +1126,7 @@ impl Provenance {
     #[must_use]
     pub const fn word(self) -> &'static str {
         match self {
-            Self::Declared => "",
+            Self::Declared | Self::DeclaredTwin => "",
             Self::Derived(Kin::Twin, _) => ", derived twin",
             Self::Derived(Kin::Sibling, _) | Self::LeadSibling(_) => ", derived sibling",
         }
@@ -819,7 +1134,7 @@ impl Provenance {
 
     const fn step(self) -> Option<Step> {
         match self {
-            Self::Declared => None,
+            Self::Declared | Self::DeclaredTwin => None,
             Self::Derived(_, step) | Self::LeadSibling(step) => Some(step),
         }
     }
@@ -2221,6 +2536,12 @@ pub struct Candidate {
     pub left_at: Option<i64>,
     /// That move closed a headroom episode.
     pub left_on_headroom: bool,
+    /// The model the profile pins, for the lead floor (#309).
+    pub model: Model,
+    /// The lead floor's refusal, stamped by [`choose_seat`] and nothing else,
+    /// with the detail a record adds to the candidate's name. `None`: no
+    /// floor judged it, or it passed.
+    pub floor: Option<(Skip, String)>,
 }
 
 /// Why a candidate was passed over.
@@ -2242,6 +2563,9 @@ pub enum Skip {
     /// A derived sibling of a lead-pair seat: the lead never changes model on
     /// its own ([`Provenance::LeadSibling`], #309).
     LeadSibling,
+    /// The lead floor passes it over: its model is under the floor or has no
+    /// tier ([`choose_seat`], #309).
+    Floor(Floor),
 }
 
 /// What links a seat to its pair partner, from the roster alone (#305).
@@ -2450,6 +2774,64 @@ pub fn choose_paired(
     guarded
 }
 
+/// [`choose_paired`] for a seat whose lead floor `settings` judge (#309): the
+/// ONE chooser every automatic route asks, so no route can bypass the floor.
+///
+/// With no floor, or for a seat that is not a lead, it is [`choose_paired`]
+/// exactly (a lead seat's derived sibling stays barred, part A). With a floor
+/// on a lead-pair seat's [`Settings::seat_view`], the blanket sibling bar is
+/// replaced: every candidate that would change the model is judged by its
+/// model's tier ([`Settings::floor_refuses`]) and a refused one stays listed
+/// and named. Exempt: a derived twin and a declared candidate on the seat's
+/// own model ([`Provenance::DeclaredTwin`]), and on a [`Route::Return`] the
+/// origin, the human's own choice a proven chain of automatic moves left. The
+/// pair guard still filters after it.
+#[must_use]
+pub fn choose_seat(
+    settings: &Settings,
+    route: Route<'_>,
+    judged: &[Candidate],
+    now: i64,
+    room: Option<u8>,
+    pair: Option<&PairGuard>,
+) -> Choice {
+    if !settings.lead_seat || settings.floor == FloorSetting::None {
+        return choose_paired(judged, now, room, pair);
+    }
+    let stamped: Vec<Candidate> = judged
+        .iter()
+        .map(|candidate| stamp_floor(settings, route, candidate))
+        .collect();
+    choose_paired(&stamped, now, room, pair)
+}
+
+/// `candidate` with the lead floor's verdict on it ([`choose_seat`]).
+fn stamp_floor(settings: &Settings, route: Route<'_>, candidate: &Candidate) -> Candidate {
+    let mut out = candidate.clone();
+    if let Provenance::LeadSibling(step) = out.provenance {
+        out.provenance = Provenance::Derived(Kin::Sibling, step);
+    }
+    let exempt = match (out.provenance, route) {
+        (Provenance::Derived(Kin::Twin, _) | Provenance::DeclaredTwin, _) => true,
+        (_, Route::Return { origin }) => out.profile == origin,
+        _ => false,
+    };
+    if exempt {
+        return out;
+    }
+    if let Some((floor, detail)) = settings.floor_refuses(&out.model) {
+        let row = match (out.provenance, route) {
+            (Provenance::Declared, Route::Move { seat_profile }) => {
+                format!(", declared in [auto_reseat] {seat_profile}")
+            }
+            _ => String::new(),
+        };
+        let model = out.model.pin.as_deref().unwrap_or("unknown");
+        out.floor = Some((Skip::Floor(floor), format!("{row}, model {model}{detail}")));
+    }
+    out
+}
+
 /// [`choose_paired`] with the pair's `judge` a filter after every other rule.
 fn choose_guarded(
     candidates: &[Candidate],
@@ -2463,8 +2845,18 @@ fn choose_guarded(
     let mut best: Option<(&Candidate, Rank)> = None;
     for candidate in candidates {
         let guarded = || pair.and_then(|pair| judge(pair, &candidate.profile));
-        if let Some(skip) = passed_over(candidate, now, room).or_else(guarded) {
-            let named = format!("{}{}", candidate.profile, candidate.provenance.word());
+        let floored = candidate.floor.as_ref();
+        let passed = floored
+            .map(|(skip, _)| *skip)
+            .or_else(|| passed_over(candidate, now, room))
+            .or_else(guarded);
+        if let Some(skip) = passed {
+            let detail = floored.map_or("", |(_, detail)| detail.as_str());
+            let named = format!(
+                "{}{}{detail}",
+                candidate.profile,
+                candidate.provenance.word()
+            );
             skipped.push((named, skip));
             continue;
         }
@@ -3382,6 +3774,10 @@ mod tests {
             headroom_at: Some(DEFAULT_HEADROOM_AT),
             headroom_note: None,
             lead: crate::autoreseat::Lead::default(),
+            floor: crate::autoreseat::FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
             notes: Vec::new(),
         }
     }
@@ -3877,6 +4273,8 @@ mod tests {
             windows,
             left_at: None,
             left_on_headroom: false,
+            model: Model::default(),
+            floor: None,
         }
     }
 

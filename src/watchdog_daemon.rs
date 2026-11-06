@@ -6149,7 +6149,14 @@ impl Cycle<'_> {
             self.lead_pair,
             slot,
         );
-        let choice = crate::autoreseat::choose_paired(&judged, now, None, pair.as_ref());
+        // The seat's own view carries the lead floor, so the forecast never
+        // promises a move the leg would refuse (#309).
+        let auto = self.auto.seat_view(self.lead_pair, slot);
+        let route = crate::autoreseat::Route::Move {
+            seat_profile: &profile,
+        };
+        let choice =
+            crate::autoreseat::choose_seat(&auto, route, &judged, now, None, pair.as_ref());
         Some(crate::autoreseat::leg::deadline(
             agent,
             &choice,
@@ -7851,17 +7858,22 @@ impl Cycle<'_> {
         Ok(())
     }
 
-    /// Journal the note an unusable `auto_reseat_at` or `auto_reseat_lead_at`
-    /// left, target-less, once per daemon start and note: the operator sees the
-    /// threshold ae fell back to without a move having to say it.
+    /// Journal the note an unusable `auto_reseat_at`, `auto_reseat_lead_at` or
+    /// `auto_reseat_lead_floor` left, target-less, once per daemon start and
+    /// note: the operator sees the threshold ae fell back to, or the floor that
+    /// holds every lead seat, without a move having to say it.
     fn auto_note(&self, noted: &mut Vec<String>, err: &mut impl Write) -> crate::Result<()> {
         let journal = Journal {
             meta_dir: self.meta_dir,
             session: self.session,
         };
-        for note in [&self.auto.headroom_note, &self.auto.lead.note]
-            .into_iter()
-            .flatten()
+        for note in [
+            &self.auto.headroom_note,
+            &self.auto.lead.note,
+            &self.auto.floor_note,
+        ]
+        .into_iter()
+        .flatten()
         {
             if noted.contains(note) {
                 continue;
@@ -15053,6 +15065,10 @@ mod tests {
                 headroom_at: Some(95),
                 headroom_note: None,
                 lead: crate::autoreseat::Lead::default(),
+                floor: crate::autoreseat::FloorSetting::None,
+                floor_note: None,
+                tiers: Vec::new(),
+                lead_seat: false,
                 notes: Vec::new(),
             },
             auto_trust: crate::config::AutoTrust::Off,
@@ -15312,6 +15328,10 @@ mod tests {
             headroom_at: None,
             headroom_note: None,
             lead: crate::autoreseat::Lead::default(),
+            floor: crate::autoreseat::FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
             notes: Vec::new(),
         };
         let (one, two) = (
@@ -15529,6 +15549,10 @@ mod tests {
             headroom_at: None,
             headroom_note: None,
             lead: crate::autoreseat::Lead::default(),
+            floor: crate::autoreseat::FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
             notes: Vec::new(),
         };
         let acts = |seats: &[AutoSeat], events: &[Event], now: i64| {
@@ -15670,6 +15694,10 @@ mod tests {
                 headroom_at: None,
                 headroom_note: None,
                 lead: crate::autoreseat::Lead::default(),
+                floor: crate::autoreseat::FloorSetting::None,
+                floor_note: None,
+                tiers: Vec::new(),
+                lead_seat: false,
                 notes: Vec::new(),
             },
             auto_trust: crate::config::AutoTrust::Off,
@@ -15884,6 +15912,10 @@ mod tests {
             headroom_at: Some(95),
             headroom_note: None,
             lead: crate::autoreseat::Lead::default(),
+            floor: crate::autoreseat::FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
             notes: Vec::new(),
         };
         let acts = |settings: &Settings, seat: AutoSeat, events: &[Event], now: i64| {
@@ -16101,6 +16133,10 @@ mod tests {
             headroom_at: None,
             headroom_note: None,
             lead: crate::autoreseat::Lead::default(),
+            floor: crate::autoreseat::FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
             notes: Vec::new(),
         };
         let key = crate::time::Timestamp::from_epoch(100);
@@ -16282,6 +16318,10 @@ mod tests {
             headroom_at: threshold.then_some(95),
             headroom_note: None,
             lead: crate::autoreseat::Lead::default(),
+            floor: crate::autoreseat::FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
             notes: Vec::new(),
         }
     }

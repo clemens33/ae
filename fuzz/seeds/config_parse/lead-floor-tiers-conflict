@@ -1,0 +1,6 @@
+[workspace]
+auto_reseat = all
+auto_reseat_lead_floor = 2
+[model_tiers]
+one = opus, 1
+two = opus, 3

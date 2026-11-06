@@ -35,6 +35,10 @@ fn settings() -> Settings {
         headroom_at: Some(95),
         headroom_note: None,
         lead: crate::autoreseat::Lead::default(),
+        floor: crate::autoreseat::FloorSetting::None,
+        floor_note: None,
+        tiers: Vec::new(),
+        lead_seat: false,
         notes: Vec::new(),
     }
 }

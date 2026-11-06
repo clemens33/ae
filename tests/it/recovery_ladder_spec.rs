@@ -74,6 +74,8 @@ fn judge(
                 .map_or_else(Vec::new, |(_, rows)| rows.clone()),
             left_at: None,
             left_on_headroom: false,
+            model: ae::autoreseat::Model::default(),
+            floor: None,
         })
         .collect();
     if room.is_some() {

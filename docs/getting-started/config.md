@@ -240,6 +240,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `auto_reseat_grace_secs` | Whole seconds a usage-limit or headroom episode waits before its seat may move. `0` is legal: the first cycle past the latch is due, the client-input hold retires, and a Draft or Busy frame still holds | `600` |
 | `auto_reseat_at` | The judged percentage of a seat's OWN account at which auto reseat moves it before any limit (`50`-`100`, or `off`). Only a usable window proven at least one day long counts, the weekly one, never the 5-hour session window, judged as `ae quota`'s `EFFECTIVE` column. An unusable value means `95`, with one note the watchdog journals once per start. Global config only | `95` |
 | `auto_reseat_lead_at` | The headroom threshold of the lead pair alone: `main` and `worker.0` of a `layout = lead-pair` session (`50`-`100`, or `off`), in place of `auto_reseat_at` for those two seats. Every other seat, the main seat of any other layout and the orchestrator keep `auto_reseat_at`. Absent means the lead pair uses `auto_reseat_at`, exactly as without the row; an unusable value (out of range, written twice or unreadable) does too, with one note the watchdog journals once per start. `off` means headroom never moves a lead seat; a drawn vendor usage limit or an urgent start still moves it, and a seat so moved can still return home once its origin reads under `off`'s band of 90. The value may sit below `auto_reseat_at` and works with `auto_reseat_at = off`. It changes the bar, not who may move: `auto_reseat = on` still leaves the main seat alone. A threshold set or raised does not close a headroom episode already open (it stays due while the account reads within 5 points of the threshold). Needs `auto_reseat` on. Global config only | `auto_reseat_at` |
+| `auto_reseat_lead_floor` | A capability floor for the lead pair alone: `main` and `worker.0` of a `layout = lead-pair` session. A whole number `0`-`255`, digits only. Absent means no floor and the part-A rule stands: a lead never takes a derived sibling. With a floor set, an automatic move of a lead seat that CHANGES the model (a derived sibling, a row you declared under `[auto_reseat]`, or the return route) needs the candidate's tier under `[model_tiers]` to be at least the floor; the pass bar replaces the blanket sibling bar. A candidate with no tier, an unreadable model, tiers that disagree, or a floor ae cannot use (not a whole number, empty, written twice, out of range) is refused with the model and the missing piece named, so a typo never relaxes the floor. A derived twin and a move back to the profile a proven chain left first need no tier. Every other seat and a manual `ae reseat --using` ignore the floor. Needs `auto_reseat` on. Global config only | none |
 | `auto_effort` | `on` lets the watchdog step a lead-pair seat's reasoning effort down ONE level, live, once a usable window of its own account at least a day long judges `80`% (`ae quota`'s `EFFECTIVE`), and back up once every window that moved it reads under `75`% again or has passed its recorded reset, while no long window of that account judges `80`%: an in-place restart that keeps the pane, profile, account, model and conversation. Only the main seat and the colead, only claude and codex; never a spawned seat or the orchestrator. The target is always the profile's own effort: another effort is `ae reseat <session> <agent> --using <profile>`, and a change made in the pane yields the episode and is never restored over. While headroom auto reseat is on with the threshold that applies to that seat (`auto_reseat_lead_at` for the lead pair when set, else `auto_reseat_at`) at most `80`, no new step down starts for that seat (one note per watchdog start, naming the row). `off` or absent changes nothing, and a resume then drops a recorded move. Global config only | `off` |
 | `opencode_go_key_file` | Path of a file holding an OpenCode Console key with usage access, separate from the key opencode uses for model calls (`~/`, `$HOME/` or absolute), which lets `ae quota` show the Go subscription's windows. Absent means ae reads no Go quota; see [OpenCode Go quota](#opencode-go-quota). Global config only | none |
 | `copilot_token_file` | Path of a private file holding your GitHub token (`~/`, `$HOME/` or absolute). Opts into the display-only premium allowance; see [GitHub Copilot quota](#github-copilot-quota). Global config only | none |
@@ -553,6 +554,41 @@ a lead as they move any seat, so to let a lead fall back to a weaker or another
 model, name that profile under `[auto_reseat]`. Every other seat is unchanged,
 and so is a manual `ae reseat --using`.
 
+**The lead floor.** Declared rows are the human's own choice, but a row can
+still put a lead on a model too weak for the work, and a sibling is useful only
+when it is strong enough. `auto_reseat_lead_floor = <n>` together with
+`[model_tiers]` (below) lets you say how strong: with a floor set, every
+automatic move of a lead seat that would CHANGE the model must reach it. The
+rule covers a derived sibling, a row you declared under `[auto_reseat]` and the
+return route, and it replaces the blanket sibling bar above: a sibling whose
+model is at or over the floor is available again. A candidate passes when its
+tier is at least the floor. Not covered, and never refused by the floor:
+
+- a derived TWIN (the same setup and model, so nothing is lost);
+- a declared candidate that runs the seat's own model on another profile;
+- the move back to the profile a proven chain of automatic moves left first;
+- every other seat, and a manual `ae reseat --using`, whatever the tiers say.
+
+The floor fails closed. A candidate is refused, with the model named, when:
+
+| Case | The record says |
+|---|---|
+| its tier is under the floor | `<profile>, derived sibling, model <m> (tier 2 is below the lead floor 3)` |
+| no `[model_tiers]` row names its model | `<profile>, declared in [auto_reseat] <seat profile>, model <m> (no tier for its model; set one under [model_tiers])` |
+| its profile pins no model ae can read | `<profile>, model unknown (its model cannot be read, so it has no tier)` |
+| rows equally specific for its model disagree | `<profile>, model <m>, [model_tiers] one = 1, two = 3 (its model matches tier rows that disagree)` |
+| the floor is written and unusable | `<profile>, model <m>, auto_reseat_lead_floor = "high" (the lead floor is unusable)` |
+
+A refused move ends as `no usable candidate` in the class you already know, the
+seat stays where it is, and nothing is stopped. Tier every model your lead
+profiles pin, plus every model a row of yours may reach: the floor never guesses
+a tier, so an untiered model is never chosen for a lead. The same floor is
+checked once more after the choice, just before the seat is stopped: if you
+raise it or fix a tier while a move is being prepared, the move refuses with
+class `floor-changed` and `nothing was stopped`, and the next cycle judges again.
+A project overlay never relaxes the floor: both the key and `[model_tiers]` are
+global config only.
+
 **Is every profile covered?** A profile whose declared row and derived family
 all run on ONE account has no exit when that account's window is spent: its
 seats just sit on the limit. With `auto_reseat` on, `ae doctor` prints one
@@ -566,7 +602,7 @@ nothing warns. A model of the same tool is a sibling but not an exit: it shares
 the account's allowance. A profile ae cannot place on an account is reported as
 unproven, never as covered. The row and the warnings read a profile, not a seat:
 a lead-pair seat cannot use a derived sibling, so a profile whose only exit is a
-sibling on another account reads as covered here but not for the lead pair.
+sibling on another account reads as covered here but not for the lead pair. `ae doctor` also prints a `reseat-floor` row: `OK` with the floor and the number of tier rows (or `no lead floor set`), or one `WARN` per unusable floor value, ignored `[model_tiers]` row or conflicting rows; it reads `skipped (auto_reseat off)` with the switch off.
 
 Names show in pane borders and are how agents address each other. Each window
 keeps its first agent's name as its stable tmux routing name; later splits do
@@ -636,6 +672,38 @@ when the watchdog is stopped.
 > named agents and marks.
 > `theme = off` turns all of that off and still publishes every `@ae_*` value, so your own
 > `status-right` can read ae's facts in your own layout.
+
+### `[model_tiers]`: what each model is worth to a lead
+
+One row per model, `alias = <model>, <tier>`. The tier is a whole number from `0`
+to `255`, and a higher number is a stronger model. Only the lead floor
+(`auto_reseat_lead_floor`) reads it, and only for the lead pair. Tiers belong to
+MODELS, not to profiles, so every profile that pins a model reads the same row.
+
+```ini
+[workspace]
+auto_reseat_lead_floor = 3
+
+[model_tiers]
+large = opus, 4
+mid   = claude-sonnet-5-5, 3
+small = haiku, 1
+```
+
+- The alias is a config key (letters, digits, `-` and `_`, starting with a letter or `_`). It only names the
+  row, because a model id can hold dots and slashes that a key cannot. The model
+  runs to the LAST comma, the tier follows it.
+- A row matches a profile's `--model` pin the way the tool matches a model: for
+  Claude `opus` covers every Opus version, `claude-opus-5-5` only that version.
+  When rows that name a version match, only they decide, so a family row never
+  admits a model that its version rows disagree on.
+- A later row with the same alias replaces the earlier one. Rows for one model
+  that give different tiers all stay, and a lead refuses that model by name: the
+  disagreement is never settled by order.
+- A row ae cannot read (no comma, an unusable model, a tier that is not a whole
+  number) is ignored with a note. `ae doctor` prints it as a `reseat-floor`
+  WARN, and the watchdog journals an unusable floor once per start.
+- The section is global config only, like the floor key.
 
 ## Copy modes
 

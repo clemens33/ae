@@ -1,0 +1,10 @@
+[workspace]
+auto_reseat = all
+auto_reseat_lead_floor = 2
+[model_tiers]
+nocomma = haiku
+bare
+too = haiku, many
+bad = , 3
+neg = haiku, -1
+big = haiku, 300

@@ -652,6 +652,10 @@ fn auto_reseat_waits_for_a_near_short_reset_and_moves_otherwise() {
         headroom_at: None,
         headroom_note: None,
         lead: crate::autoreseat::Lead::default(),
+        floor: crate::autoreseat::FloorSetting::None,
+        floor_note: None,
+        tiers: Vec::new(),
+        lead_seat: false,
         notes: Vec::new(),
     };
     let acts = |settings: &Settings, seats: &[AutoSeat], events: &[Event], now: i64| {

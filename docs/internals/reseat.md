@@ -782,9 +782,57 @@ still read true, the leg and the trigger reach the chooser rather than the
 candidate and a derived twin are unchanged for every seat, the return to the
 origin judges one declared candidate and is untouched, every other seat and a
 manual `ae reseat --using` are byte-identical, and pure `listed` and `cover` stay
-seat-free. Named residual: a lead on a weak model cannot auto-move to a STRONGER
-sibling either; the human's `[auto_reseat]` row is the way until a model tier
-ranking is ruled.
+seat-free. THE LEAD FLOOR (#309 part B) replaces the blanket bar when
+`[workspace] auto_reseat_lead_floor` is written, and settles the residual that a
+lead on a weak model could not move to a stronger sibling; with NO floor, part A
+is byte for byte what is above.
+
+`[model_tiers]` (`alias = <model pin>, <tier>`, global only) gives each MODEL a
+tier `0`-`255`; no profile ranking exists and no tier is ever derived or
+guessed. `Settings::tier_of(pin, PinMatch)` reads the rows by the tool's own pin
+rule (`model_drift::satisfies`, so the claude family/version rule and the other
+tools' byte equality both apply): of the rows that match, those naming a version
+(`pin_names_a_version`) decide when any exist, else all matches; equal tiers are
+`Found`, different ones `Ambiguous` (alias and tier of every row, never settled
+by order or by a family row) and none `Missing`. A row is `alias = pin, tier`
+with the alias a config key (a model id holds dots and slashes) and the pin the
+text before the LAST comma; a repeated alias keeps its later row, an unreadable
+row is ignored with a note, and rows for one pin with different tiers both stay
+with a note. `parse_floor` accepts digits only, `0`-`255`: absent is
+`FloorSetting::None`, written and unusable (empty, twice, `+3`, out of range) is
+`FloorSetting::Unusable` — fail closed, a lead then takes no model change, and
+the note is journaled once per watchdog start (`auto_note`).
+
+`Settings::seat_view` marks `lead_seat` on the view of a lead seat only when a
+floor is written (a view of a view is itself), so the choosers need no new
+argument. ONE chooser entry, `autoreseat::choose_seat(settings, route, ...)`,
+stamps each candidate's `floor` verdict from `Settings::floor_refuses(&Model)`
+and then runs the unchanged chooser, whose `choose_guarded` reads that verdict
+before every quota rule: `Skip::Floor(Floor::{Below, NoTier, NoModel, Ambiguous,
+Unusable})`, named on the record as `<profile><provenance word> <detail>`
+(`derived sibling, model m (tier 2 is below the lead floor 3)`, `declared in
+[auto_reseat] <profile>, model m (no tier for its model...)`). With a floor set
+the part-A bar is lifted from a derived sibling (`stamp_floor` unbars
+`LeadSibling`), so a sibling at or over the floor is a candidate again.
+`Route::Move` is a move off the seat's profile, `Route::Return` the human's own
+return to the proven chain origin. Exempt from the floor: a derived `Twin`,
+`Provenance::DeclaredTwin` (a declared candidate on the seat's own model: both
+pins readable, byte-equal, the same tool; set only in `leg::listed`) and, on a
+return route, the candidate equal to `Chain::origin` as `leg::home` proved it.
+`None == None` never exempts: an unreadable model has no tier. Every automatic
+route goes through `choose_seat` — the leg (limit and headroom), the trigger,
+`plan_paired`, `plan_return` and the daemon's deadline forecast; the manual
+`ae reseat --using` never does, and no effort is judged.
+
+A floor raised between the choice and the stop is caught under the lifecycle
+lock: `reseat::prepare`, automatic only, after `pair_changed` and `return_changed`,
+calls `leg::floor_changed`, which re-reads the global config through
+`doors::config_file` and `autoreseat::settings`, re-judges the destination with
+the seat's view and holds as `auto-reseat-held` `floor-changed` (transient) with
+`the lead floor changed before the stop: <to>... — nothing was stopped`. The
+same-model destination and a return to the re-proven chain origin stay exempt.
+`ae doctor` prints a `reseat-floor` row: the floor and its tier-row count, or one
+WARN per unusable value or ignored/conflicting row (`Settings::floor_notes`).
 
 The chooser takes the first usable candidate of the best tier, in listed order —
 and every declared candidate outranks every derived one: a declared candidate on
@@ -866,9 +914,10 @@ and no long limit proves they may end), `lock`
 (the operator's rules say this seat does not move), `observed-choice` (the
 seat's persisted observed model or effort choice stands), `pair-provider` (no
 usable candidate keeps the seat's review pair on two proven providers),
-`pair-changed` (under the lifecycle lock the chosen destination no longer does)
-and `other` (the rest, and the give-up hold of a spent limit episode). `busy`,
-`lock`, `observed-choice` and `pair-changed` are transient classes: their record
+`pair-changed` (under the lifecycle lock the chosen destination no longer does),
+`floor-changed` (under the lifecycle lock the lead floor no longer lets the chosen
+destination pass) and `other` (the rest, and the give-up hold of a spent limit episode). `busy`,
+`lock`, `observed-choice`, `pair-changed` and `floor-changed` are transient classes: their record
 is a hold, every other class a refusal. `ae reseat` itself prints its messages unchanged.
 
 ### The pair guard (#305)

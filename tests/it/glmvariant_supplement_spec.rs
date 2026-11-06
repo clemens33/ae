@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use ae::doctor::{Facts, ProfileFacts, ReseatCover, report};
+use ae::doctor::{Facts, ProfileFacts, ReseatCover, ReseatFloor, report};
 
 const TAIL: &str = "; effective variant and availability cannot be verified; native saved preferences or a session selection may override it";
 
@@ -41,6 +41,7 @@ fn facts(command: &str) -> Facts {
         damaged_records: vec![],
         bindings: vec![],
         reseat_cover: ReseatCover::Off,
+        reseat_floor: ReseatFloor::Off,
     }
 }
 

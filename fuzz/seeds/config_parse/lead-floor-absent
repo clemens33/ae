@@ -1,0 +1,4 @@
+[workspace]
+auto_reseat = all
+[model_tiers]
+small = haiku, 1
