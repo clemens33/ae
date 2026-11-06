@@ -11,6 +11,9 @@ mod cases;
 #[path = "s2_regression_spec.rs"]
 mod regression;
 
+#[path = "s2_batch2_spec.rs"]
+mod batch2;
+
 use super::disk::{
     self, Decision, Dir, Files, Journal, Limits, Memory, MemoryJournals, Next, Op, Payload, Plan,
     Prepared, Read, Refused, Shown, SourceSpec, Why,
@@ -760,6 +763,7 @@ fn s2_pacing_covers_every_outcome() {
             r#gen: 1,
         },
         Outcome::Holding { from: 0, to: 1 },
+        Outcome::Checked { at: 1 },
         Outcome::Discarded(Why::Stamp),
         Outcome::Deferred,
         Outcome::Idle,
