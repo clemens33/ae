@@ -1958,15 +1958,20 @@ fn prepare(
             pin: moving.pin.clone(),
             tool: Some(moving.tool),
         };
+        // The SOURCE is read from the locked bytes too: `seat.from_command` was
+        // read before the lock, and a reseat that won the lock in between would
+        // leave it naming the model the seat no longer runs. A row or command
+        // ae cannot read now is no model, so nothing is exempt by it.
+        let source = crate::meta::Meta::parse(&String::from_utf8_lossy(locked))
+            .roster()
+            .iter()
+            .find(|row| row.slot == target.slot && row.name == target.agent)
+            .and_then(|row| recorded_command(&seat.dir, locked, row));
         if let Some(why) = crate::autoreseat::leg::floor_changed(
             &global,
             (&seat.dir, locked),
             (&ask.parsed.session, &target.slot, &target.agent),
-            (
-                seat.from_command.as_deref(),
-                &ask.parsed.profile,
-                &destination,
-            ),
+            (source.as_deref(), &ask.parsed.profile, &destination),
             ask.parsed.expect.is_some(),
         ) {
             writeln!(err, "Error: {why}")?;
