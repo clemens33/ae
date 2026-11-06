@@ -330,3 +330,66 @@ fn s2_fuzz_repeated_completed_catchup_is_an_oracle_checked_noop() {
         "completed source cursors stay fixed"
     );
 }
+
+#[test]
+fn s2_retired_alias_names_do_not_create_recovery_work() {
+    // Lead ruling A: only canonical retired names belong to recovery. A foreign
+    // alias must not strand a healthy store behind RecoveryOwed.
+    for alias in ["stats.old.01", "stats.old.+1"] {
+        let mut dir = Memory::new();
+        let (_, feeds) = seed(&mut dir);
+        let baseline = disk::repair(&mut dir).expect("repair without a foreign alias");
+        dir.apply(&Op::MakeDir(alias.to_owned()))
+            .expect("plant a foreign alias directory");
+        let top = dir.list("").expect("top-level fixture names");
+        assert!(top.iter().any(|name| name == alias), "alias fixture exists");
+        let before: Vec<_> = dir
+            .names()
+            .into_iter()
+            .map(|name| {
+                let bytes = dir.file(&name).expect("persisted fixture file").to_vec();
+                (name, bytes)
+            })
+            .collect();
+        assert!(
+            !disk::owes(&mut dir).expect("inspect recovery debt"),
+            "foreign alias {alias} does not create recovery debt"
+        );
+        let recovery = disk::recovery(&mut dir).expect("healthy store recovery");
+        assert!(
+            recovery.ops.is_empty(),
+            "foreign alias {alias} requires no recovery: {recovery:?}"
+        );
+        let repair = disk::repair(&mut dir).expect("healthy store repair");
+        assert_eq!(
+            repair, baseline,
+            "foreign alias {alias} does not change the normal rebuild plan"
+        );
+        assert!(
+            !repair.ops.iter().any(|op| match op {
+                Op::Write { name, .. }
+                | Op::Remove(name)
+                | Op::MakeDir(name)
+                | Op::RemoveTree(name) => name == alias,
+                Op::Rename { from, to } => from == alias || to == alias,
+            }),
+            "repair never names the foreign alias {alias}"
+        );
+        assert_eq!(dir.list("").expect("unchanged top-level names"), top);
+        let after: Vec<_> = dir
+            .names()
+            .into_iter()
+            .map(|name| {
+                let bytes = dir.file(&name).expect("persisted fixture file").to_vec();
+                (name, bytes)
+            })
+            .collect();
+        assert_eq!(
+            after, before,
+            "foreign alias {alias} changes no durable file"
+        );
+        // The fold oracle does not interpret retired names. Do not use the
+        // maximum_proof crash oracle, which intentionally assumes canonical names.
+        check(&mut dir, &feeds, limits().line);
+    }
+}
