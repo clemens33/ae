@@ -816,8 +816,9 @@ Unusable})`, named on the record as `<profile><provenance word> <detail>`
 the part-A bar is lifted from a derived sibling (`stamp_floor` unbars
 `LeadSibling`), so a sibling at or over the floor is a candidate again.
 `Route::Move` is a move off the seat's profile, `Route::Return` the human's own
-return to the proven chain origin. Exempt from the floor: a derived `Twin`,
-`Provenance::DeclaredTwin` (a declared candidate on the seat's own model: both
+return to the proven chain origin. Exempt from the floor: a derived `Twin` whose
+model pin and tool are READ (`stamp_floor`: an unpinned twin is judged and refused
+as `NoModel`, ruling 6), `Provenance::DeclaredTwin` (a declared candidate on the seat's own model: both
 pins readable, byte-equal, the same tool; set only in `leg::listed`) and, on a
 return route, the candidate equal to `Chain::origin` as `leg::home` proved it.
 `None == None` never exempts: an unreadable model has no tier. Every automatic

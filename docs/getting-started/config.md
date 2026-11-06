@@ -240,7 +240,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `auto_reseat_grace_secs` | Whole seconds a usage-limit or headroom episode waits before its seat may move. `0` is legal: the first cycle past the latch is due, the client-input hold retires, and a Draft or Busy frame still holds | `600` |
 | `auto_reseat_at` | The judged percentage of a seat's OWN account at which auto reseat moves it before any limit (`50`-`100`, or `off`). Only a usable window proven at least one day long counts, the weekly one, never the 5-hour session window, judged as `ae quota`'s `EFFECTIVE` column. An unusable value means `95`, with one note the watchdog journals once per start. Global config only | `95` |
 | `auto_reseat_lead_at` | The headroom threshold of the lead pair alone: `main` and `worker.0` of a `layout = lead-pair` session (`50`-`100`, or `off`), in place of `auto_reseat_at` for those two seats. Every other seat, the main seat of any other layout and the orchestrator keep `auto_reseat_at`. Absent means the lead pair uses `auto_reseat_at`, exactly as without the row; an unusable value (out of range, written twice or unreadable) does too, with one note the watchdog journals once per start. `off` means headroom never moves a lead seat; a drawn vendor usage limit or an urgent start still moves it, and a seat so moved can still return home once its origin reads under `off`'s band of 90. The value may sit below `auto_reseat_at` and works with `auto_reseat_at = off`. It changes the bar, not who may move: `auto_reseat = on` still leaves the main seat alone. A threshold set or raised does not close a headroom episode already open (it stays due while the account reads within 5 points of the threshold). Needs `auto_reseat` on. Global config only | `auto_reseat_at` |
-| `auto_reseat_lead_floor` | A capability floor for the lead pair alone: `main` and `worker.0` of a `layout = lead-pair` session. A whole number `0`-`255`, digits only. Absent means no floor and the part-A rule stands: a lead never takes a derived sibling. With a floor set, an automatic move of a lead seat that CHANGES the model (a derived sibling, a row you declared under `[auto_reseat]`, or the return route) needs the candidate's tier under `[model_tiers]` to be at least the floor; the pass bar replaces the blanket sibling bar. A candidate with no tier, an unreadable model, tiers that disagree, or a floor ae cannot use (not a whole number, empty, written twice, out of range) is refused with the model and the missing piece named, so a typo never relaxes the floor. A derived twin and a move back to the profile a proven chain left first need no tier. Every other seat and a manual `ae reseat --using` ignore the floor. Needs `auto_reseat` on. Global config only | none |
+| `auto_reseat_lead_floor` | A capability floor for the lead pair alone: `main` and `worker.0` of a `layout = lead-pair` session. A whole number `0`-`255`, digits only. Absent means no floor and the part-A rule stands: a lead never takes a derived sibling. With a floor set, an automatic move of a lead seat that CHANGES the model (a derived sibling, a row you declared under `[auto_reseat]`, or the return route) needs the candidate's tier under `[model_tiers]` to be at least the floor; the pass bar replaces the blanket sibling bar. A candidate with no tier, an unreadable model, tiers that disagree, or a floor ae cannot use (not a whole number, empty, written twice, out of range) is refused with the model and the missing piece named, so a typo never relaxes the floor. A derived twin, a declared row on the seat's own model and a move back to the profile a proven chain left first need no tier, but a twin or a same-model row only while its model pin is readable: an unpinned twin is judged and refused as `model unknown`. Every other seat and a manual `ae reseat --using` ignore the floor. Needs `auto_reseat` on. Global config only | none |
 | `auto_effort` | `on` lets the watchdog step a lead-pair seat's reasoning effort down ONE level, live, once a usable window of its own account at least a day long judges `80`% (`ae quota`'s `EFFECTIVE`), and back up once every window that moved it reads under `75`% again or has passed its recorded reset, while no long window of that account judges `80`%: an in-place restart that keeps the pane, profile, account, model and conversation. Only the main seat and the colead, only claude and codex; never a spawned seat or the orchestrator. The target is always the profile's own effort: another effort is `ae reseat <session> <agent> --using <profile>`, and a change made in the pane yields the episode and is never restored over. While headroom auto reseat is on with the threshold that applies to that seat (`auto_reseat_lead_at` for the lead pair when set, else `auto_reseat_at`) at most `80`, no new step down starts for that seat (one note per watchdog start, naming the row). `off` or absent changes nothing, and a resume then drops a recorded move. Global config only | `off` |
 | `opencode_go_key_file` | Path of a file holding an OpenCode Console key with usage access, separate from the key opencode uses for model calls (`~/`, `$HOME/` or absolute), which lets `ae quota` show the Go subscription's windows. Absent means ae reads no Go quota; see [OpenCode Go quota](#opencode-go-quota). Global config only | none |
 | `copilot_token_file` | Path of a private file holding your GitHub token (`~/`, `$HOME/` or absolute). Opts into the display-only premium allowance; see [GitHub Copilot quota](#github-copilot-quota). Global config only | none |
@@ -550,8 +550,9 @@ and are passed over with `a lead seat never changes model unasked`; a move that
 finds nothing else refuses with `no usable candidate` and names each sibling and
 that reason, and the seat stays where it is. A declared candidate (your row) and
 a derived twin — the same setup and model on another proven account — still move
-a lead as they move any seat, so to let a lead fall back to a weaker or another
-model, name that profile under `[auto_reseat]`. Every other seat is unchanged,
+a lead as they move any seat while no floor is set (with a floor, see below: a
+twin needs a readable model pin), so to let a lead fall back to a weaker or
+another model, name that profile under `[auto_reseat]`. Every other seat is unchanged,
 and so is a manual `ae reseat --using`.
 
 **The lead floor.** Declared rows are the human's own choice, but a row can
@@ -564,10 +565,19 @@ return route, and it replaces the blanket sibling bar above: a sibling whose
 model is at or over the floor is available again. A candidate passes when its
 tier is at least the floor. Not covered, and never refused by the floor:
 
-- a derived TWIN (the same setup and model, so nothing is lost);
-- a declared candidate that runs the seat's own model on another profile;
-- the move back to the profile a proven chain of automatic moves left first;
+- a derived TWIN whose model pin is READ (the same setup and the same model, so
+  nothing is lost). An unpinned twin takes the tool's default model, which can
+  differ per account plan, so it is judged like any candidate and refused as
+  `model unknown` (two unread pins are never "equal");
+- a declared candidate that runs the seat's own model on another profile, when
+  both models are read and equal; a model ae cannot read on either side is judged;
+- the move back to the profile a proven chain of automatic moves left first (the
+  recorded origin). With no chain, or one ae cannot prove, nothing is exempt, and
+  the pair guard still applies;
 - every other seat, and a manual `ae reseat --using`, whatever the tiers say.
+
+A floor ae cannot use refuses every other candidate of a lead, so these
+exemptions are the only moves left until you fix it.
 
 The floor fails closed. A candidate is refused, with the model named, when:
 
