@@ -442,6 +442,21 @@ fn seat_identity_rows(seats: &[SeatFacts], out: &mut Report) {
     );
 }
 
+/// What ae cannot establish about a `#` model request, said beside the profile.
+const REQUEST_UNVERIFIED: &str = "effective variant and availability cannot be verified; \
+                                  native saved preferences or a session selection may override it";
+
+/// The detail of an `agent:<profile>` row whose executable resolves: the
+/// executable, and for an `OpenCode` command whose model word carries a `#` the
+/// current profile's request, quoted, with what ae cannot verify about it. It
+/// reads the resolved profile only, never the seat or the state `OpenCode` keeps.
+fn agent_detail(exec: &str, command: &str) -> String {
+    let Some(model) = crate::launch_cmd::requested_model(command) else {
+        return exec.to_owned();
+    };
+    format!("{exec}; current profile requests {model:?}; {REQUEST_UNVERIFIED}")
+}
+
 /// The rows about the INSTALL: the binary, its dependencies, its config.
 fn install_rows(facts: &Facts, out: &mut Report) {
     out.push(Level::Ok, "ae", &format!("version {}", facts.version));
@@ -526,7 +541,10 @@ fn install_rows(facts: &Facts, out: &mut Report) {
                     &label,
                     &format!("could not determine executable from '{}'", profile.command),
                 ),
-                (Some(exec), true) => out.push(Level::Ok, &label, exec),
+                (Some(exec), true) => {
+                    let detail = agent_detail(exec, &profile.command);
+                    out.push(Level::Ok, &label, &detail);
+                }
                 (Some(exec), false) => {
                     out.push(Level::Fail, &label, &format!("command '{exec}' not found"));
                 }

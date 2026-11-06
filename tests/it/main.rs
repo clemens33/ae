@@ -95,6 +95,8 @@ mod fleet_read_spec;
 mod floor;
 mod gate;
 mod git;
+mod glmvariant_spec;
+mod glmvariant_supplement_spec;
 mod goquota_spec;
 mod harness_smoke;
 mod honeststatus_spec;

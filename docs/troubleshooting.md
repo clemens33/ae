@@ -10,7 +10,24 @@ Install tmux and rerun `ae doctor`. ae fails fast on startup if tmux is missing.
 ae doctor
 ```
 
-Look at the `agent:<alias>` lines. Each one verifies the agent's executable is on `PATH`. Fix the command in `~/.ae/config` or add the CLI to `PATH`.
+Look at the `agent:<alias>` lines. Each one verifies the agent's executable is on `PATH`. Fix the command in `~/.ae/config` or add the CLI to `PATH`. An OpenCode alias whose model ends in `#…` also shows what the profile requests; see [OpenCode model variants](getting-started/config.md#opencode-model-variants).
+
+## An OpenCode seat shows a different variant than the profile's `#…`, or none
+
+`ae doctor` prints what the current profile requests on its `agent:<alias>` line. It cannot say what a
+running OpenCode selected, so the request and the seat can differ. Causes ae cannot tell apart from
+here, none confirmed by `ae doctor`:
+
+- For a new session, OpenCode 2.2.5 prefers a saved per-model variant preference, an explicit Default
+  included, over the variant in the model word.
+- A stored session selection can outrank both when the session's agent is absent or equals the current
+  agent.
+- The model's catalog may not offer the variant; OpenCode then drops it without saying so.
+- The label in the seat is not readable, so the variant is not displayed.
+
+OpenCode's own `/variants` command picks a variant for a session, and it writes OpenCode's shared
+per-model preference, which can change later selections of that model in other sessions. ae never
+writes that preference for you. Details: [OpenCode model variants](getting-started/config.md#opencode-model-variants).
 
 ## `ae <word>` says `looks like a mistyped ae command`
 

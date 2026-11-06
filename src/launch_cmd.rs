@@ -1156,6 +1156,27 @@ pub(crate) fn opencode_launch(cmd: &str) -> Result<OpenCodeLaunch, String> {
     })
 }
 
+/// The model an `OpenCode` profile command requests when that model word
+/// carries a `#`, exactly as the launch translation reads it, else `None`.
+///
+/// `ae doctor` quotes it beside the profile so a variant request is visible. The
+/// value is the whole opaque model word after quote resolution: ae never splits
+/// it at the `#` or judges what follows. Another tool's command, a model with
+/// no `#` and every command the launch translation refuses all give `None`, so
+/// a profile this names is one ae would launch. The tool check is the adapter's
+/// config-file channel, the channel whose profile commands the launch
+/// translation reads.
+#[must_use]
+pub fn requested_model(cmd: &str) -> Option<String> {
+    if !ToolKind::from_cmd(cmd).needs_generated_context() {
+        return None;
+    }
+    opencode_launch(cmd).ok()?;
+    let command = lex_simple_command(cmd).ok()?;
+    let model = opencode_flag(&command, &["--model", "-m"]).ok()??;
+    model.contains('#').then_some(model)
+}
+
 /// The config home a resolved launch command will give its tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {
@@ -1608,6 +1629,10 @@ pub(crate) fn is_assignment(word: &str) -> bool {
     matches!(bytes.next(), Some(b) if b.is_ascii_alphabetic() || b == b'_')
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
+
+#[cfg(test)]
+#[path = "launch_cmd_glmvariant_spec.rs"]
+mod glmvariant_spec;
 
 #[cfg(test)]
 #[path = "launch_cmd_birth_spec.rs"]

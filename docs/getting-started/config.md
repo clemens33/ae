@@ -69,6 +69,30 @@ contracts are verified.
 
 Register any CLI tool as a profile — a reusable launch recipe. The value is the shell command to launch it. ae extracts the executable name from the command and verifies it's on `PATH` during `ae doctor`.
 
+### OpenCode model variants
+
+An OpenCode profile can request a model variant by ending the model word in `#<variant>`, for example
+`opencode --agent build --model opencode-go/glm-5.3-flash#max`. ae passes the whole model word to
+OpenCode in the inline config layer and does not parse, validate or rewrite what follows the `#`. It is
+a request, not an enforcement: ae cannot see or set the variant a running OpenCode selects.
+
+Write the whole profile value in double quotes, as in
+`go = "opencode --agent build --model p/m#max"`. Outside a fully double-quoted value the config reader
+treats `#` as the start of a comment and drops the rest of the line, so the model would lose its suffix.
+
+What OpenCode 2.2.5 does with the request was read from its source at commit `9bbb8ce1`, not measured
+by ae, and later releases may differ. A new session takes the saved per-model variant preference if one
+exists, an explicit Default included, before the agent model's variant and then the root model's
+variant, and drops a variant the model's catalog does not list. An existing session first uses an
+in-memory selection, then its stored model variant when the session's agent is absent or equals the
+current agent. The saved preference is shared by the OpenCode sessions that use the same preference store, and OpenCode's
+`/variants` command writes it; ae never does.
+
+A recorded session id that ae can use resumes with `--session <id>` and the same inline layer, and
+ae never learns whether OpenCode still has that session; an absent or unusable id starts fresh, and so
+does a changed model. `ae doctor` names what the current profile requests on its `agent:<profile>` row
+and says the effective variant cannot be verified; see [ae doctor](../reference/commands.md#ae-doctor).
+
 ### Multiple identities of one CLI
 
 One binary can serve several logins/subscriptions. Give each non-default account a client, then

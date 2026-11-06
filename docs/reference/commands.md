@@ -1118,6 +1118,15 @@ account ae cannot prove has a `WARN` row of its own, saying whether its own or a
 account is the one in doubt. It never fails the command. `ae spawn` and
 [`ae reseat --using`](#ae-reseat-session-agent---using-profileclient---stop-unknown) print the same finding as one
 stderr line for the profile you pick, and carry on.
+The `agent:<profile>` row of an OpenCode profile whose resolved `--model` or `-m` value contains a
+`#` carries a longer detail: `<executable>; current profile requests "<model>"; effective variant and
+availability cannot be verified; native saved preferences or a session selection may override it`.
+The model is the whole word after quote resolution, shown with Rust string escaping; ae does not
+parse what follows the `#`. It states what the configuration `ae doctor` reads now requests (the
+`.ae/config` layering below applies), not a seat's launch, a past request or the variant OpenCode
+selected, so the row stays `OK` and the `Summary:` counts and the exit code do not change. On an `OK` row, a command
+the launch translation refuses, a model without a `#` and every other tool print the executable
+alone. See [OpenCode model variants](../getting-started/config.md#opencode-model-variants).
 A `local-config` row appears when `--local`, or a `.ae/config` in the directory `ae doctor` runs
 from, layers a second file over the global config; it carries that file's path. No such file, no row,
 and a file the reader could not read is the `config` row's failure, never a `local-config` claim.

@@ -1,0 +1,1 @@
+opencode --agent build --model p/m#max --variant max

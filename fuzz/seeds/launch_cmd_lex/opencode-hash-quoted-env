@@ -1,0 +1,1 @@
+env FOO=bar opencode --standalone --agent build --model 'a b#c"d'
