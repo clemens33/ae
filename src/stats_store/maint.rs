@@ -108,6 +108,27 @@ pub struct Maintainer {
     rebuilding: bool,
     /// Damage met again while rebuilding: the upkeep stopped.
     stopped: Option<Refused>,
+    #[cfg(test)]
+    recheck: Recheck,
+}
+
+/// A test's hook, run before the lock is requested for a damage recheck.
+#[cfg(test)]
+type Hook = Box<dyn FnMut(&Path) + Send>;
+
+#[cfg(test)]
+#[derive(Default)]
+struct Recheck(Option<Hook>);
+
+#[cfg(test)]
+impl std::fmt::Debug for Recheck {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str(if self.0.is_some() {
+            "Recheck(hook)"
+        } else {
+            "Recheck"
+        })
+    }
 }
 
 impl Maintainer {
@@ -127,7 +148,17 @@ impl Maintainer {
             archives: BTreeMap::new(),
             rebuilding: false,
             stopped: None,
+            #[cfg(test)]
+            recheck: Recheck::default(),
         }
+    }
+
+    /// Run `hook` after an unlocked read was refused with damage and before
+    /// the lock is requested for the recheck: another writer healing the
+    /// store before this one gets the lock.
+    #[cfg(test)]
+    pub fn on_recheck(&mut self, hook: impl FnMut(&Path) + Send + 'static) {
+        self.recheck = Recheck(Some(Box::new(hook)));
     }
 
     /// Whether repeated damage stopped the upkeep.
@@ -384,6 +415,10 @@ impl Maintainer {
     fn refused_unlocked(&mut self, spec: &SourceSpec, refused: Refused) -> Outcome {
         if refused.damage().is_none() {
             return Outcome::Refused(refused);
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.recheck.0.as_mut() {
+            hook(&self.root);
         }
         let Ok(lock) = Payload::at(&self.root).lock(self.lock_wait) else {
             return Outcome::Deferred;

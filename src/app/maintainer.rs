@@ -30,10 +30,29 @@ pub(super) struct Running {
     stop: Option<Sender<()>>,
     done: Option<Receiver<()>>,
     worker: Option<JoinHandle<()>>,
+    #[cfg_attr(not(test), allow(dead_code, reason = "observed only by tests"))]
+    watch: Watch,
+}
+
+/// What tests observe of the thread: nothing in the product.
+struct Watch {
     #[cfg(test)]
     ended: std::sync::Weak<()>,
     #[cfg(test)]
     parked: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Watch {
+    /// The completion `token` the thread holds, and its `probe`.
+    #[cfg_attr(not(test), allow(unused_variables, reason = "observed only by tests"))]
+    fn of(token: &Arc<()>, probe: &Probe) -> Self {
+        Self {
+            #[cfg(test)]
+            ended: Arc::downgrade(token),
+            #[cfg(test)]
+            parked: Arc::clone(&probe.parked),
+        }
+    }
 }
 
 /// Whether the thread waits between steps: observed only by tests.
@@ -50,7 +69,9 @@ impl Probe {
     )]
     fn park(&self, on: bool) {
         #[cfg(test)]
-        self.parked.store(on, std::sync::atomic::Ordering::SeqCst);
+        {
+            self.parked.store(on, std::sync::atomic::Ordering::SeqCst);
+        }
         #[cfg(not(test))]
         let _ = on;
     }
@@ -61,11 +82,8 @@ pub(super) fn start(root: PathBuf, notices: Sender<Wake>) -> std::io::Result<Run
     let (stop, stopped) = mpsc::channel();
     let (finished, done) = mpsc::channel();
     let token = Arc::new(());
-    #[cfg(test)]
-    let ended = Arc::downgrade(&token);
     let probe = Probe::default();
-    #[cfg(test)]
-    let parked = Arc::clone(&probe.parked);
+    let watch = Watch::of(&token, &probe);
     let worker = std::thread::Builder::new()
         .name("ae-app-stats".to_owned())
         .spawn(move || {
@@ -78,10 +96,7 @@ pub(super) fn start(root: PathBuf, notices: Sender<Wake>) -> std::io::Result<Run
         stop: Some(stop),
         done: Some(done),
         worker: Some(worker),
-        #[cfg(test)]
-        ended,
-        #[cfg(test)]
-        parked,
+        watch,
     })
 }
 
@@ -154,16 +169,47 @@ impl Drop for Running {
     }
 }
 
+/// The app's one owner of the upkeep thread, when it could start one.
+pub(super) struct Upkeep {
+    running: Option<Running>,
+}
+
+impl Upkeep {
+    /// Start the thread; an app that cannot start it runs without it.
+    pub(super) fn start(root: PathBuf, notices: Sender<Wake>) -> Self {
+        Self {
+            running: start(root, notices).ok(),
+        }
+    }
+
+    /// Stop the thread within `bound`.
+    pub(super) fn stop(self, bound: Duration) {
+        if let Some(running) = self.running {
+            running.stop(bound);
+        }
+    }
+
+    /// The thread this owner runs, if any.
+    #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "observed by the r6 spec's exec-restart regressions"
+    )]
+    pub(super) fn running(&self) -> Option<&Running> {
+        self.running.as_ref()
+    }
+}
+
 #[cfg(test)]
 impl Running {
     /// The thread's completion, observable after the handle is gone.
     pub(super) fn ended(&self) -> Ended {
-        Ended(self.ended.clone())
+        Ended(self.watch.ended.clone())
     }
 
     /// Whether the thread is waiting between steps.
     pub(super) fn parked(&self) -> bool {
-        self.parked.load(std::sync::atomic::Ordering::SeqCst)
+        self.watch.parked.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

@@ -4356,7 +4356,7 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
     };
     // The store's upkeep: an app that cannot start it runs without it. Every
     // return below drops it, which stops the thread.
-    let upkeep = maintainer::start(root.clone(), notices).ok();
+    let mut upkeep = maintainer::Upkeep::start(root.clone(), notices);
     if hint {
         // Best effort: a stderr that cannot be written must not stop an app that opened before.
         let _ = writeln!(err, "{HINT}");
@@ -4423,7 +4423,11 @@ pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate
             terminal.clear()?;
             dirty = true;
         }
-        match step(&mut app, &tty, &mut terminal, &typed, err)? {
+        let mut outside = Real {
+            tty: &tty,
+            terminal: &mut terminal,
+        };
+        match step(&mut app, &mut outside, &mut upkeep, &typed, err)? {
             Step::Stay(redraw) => dirty |= redraw,
             Step::Respawn(version, respawn) => {
                 restart = Some((version, respawn));
@@ -4484,10 +4488,10 @@ enum Step {
 /// as on quit — exec keeps the pid, so the shell that started it stays. An
 /// exec returns only when it failed: the SAME terminal is taken back and the
 /// app told why, so it never tries that version again.
-fn step<W: Write>(
+fn step(
     app: &mut App,
-    tty: &tty::Tty,
-    terminal: &mut Terminal<backend::Ansi<W>>,
+    outside: &mut dyn Outside,
+    _upkeep: &mut maintainer::Upkeep,
     typed: &[String],
     err: &mut impl Write,
 ) -> crate::Result<Step> {
@@ -4502,16 +4506,60 @@ fn step<W: Write>(
     let view = app.handover(&pid, &version, Timestamp::now().epoch());
     let view = view.map(|handover| handover.render());
     let argv = upgrade::exec_argv(&link, typed, view, &version, crate::VERSION);
-    tty.suspend();
-    let why = crate::run::exec_unchanged(&argv).to_string();
-    if let Err(lost) = tty.resume() {
+    outside.suspend();
+    let why = outside.exec(&argv).to_string();
+    if let Err(lost) = outside.resume() {
         let said = format!("ae app: could not restart into ae {version} - {why}; {lost}");
         writeln!(err, "{}", terminal_text(&said))?;
         return Ok(Step::Quit(crate::entry::EXIT_FAILED));
     }
     app.failed = Some((version, why));
-    terminal.clear()?;
+    outside.clear()?;
     Ok(Step::Stay(true))
+}
+
+/// What a due restart touches outside the app: the terminal and the process.
+trait Outside {
+    /// Give the terminal back before an exec.
+    fn suspend(&mut self);
+    /// Replace this process with `argv`: returns only when that failed.
+    fn exec(&mut self, argv: &[String]) -> std::io::Error;
+    /// Take the terminal back after a failed exec.
+    ///
+    /// # Errors
+    ///
+    /// The terminal could not be taken back, and why.
+    fn resume(&mut self) -> Result<(), String>;
+    /// Clear the frame, so the next one is drawn whole.
+    ///
+    /// # Errors
+    ///
+    /// The terminal could not be written.
+    fn clear(&mut self) -> std::io::Result<()>;
+}
+
+/// The app's own terminal, and the real exec.
+struct Real<'a, W: Write> {
+    tty: &'a tty::Tty,
+    terminal: &'a mut Terminal<backend::Ansi<W>>,
+}
+
+impl<W: Write> Outside for Real<'_, W> {
+    fn suspend(&mut self) {
+        self.tty.suspend();
+    }
+
+    fn exec(&mut self, argv: &[String]) -> std::io::Error {
+        crate::run::exec_unchanged(argv)
+    }
+
+    fn resume(&mut self) -> Result<(), String> {
+        self.tty.resume()
+    }
+
+    fn clear(&mut self) -> std::io::Result<()> {
+        self.terminal.clear()
+    }
 }
 
 /// `ae app`'s operands.
@@ -4563,15 +4611,13 @@ fn says_hint(in_pane: bool, stamp: Option<&str>) -> bool {
 fn end(
     tty: tty::Tty,
     mut app: App,
-    upkeep: Option<maintainer::Running>,
+    upkeep: maintainer::Upkeep,
     code: u8,
     restart: Option<(String, toggle::Restart)>,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
-    // The store's upkeep stops before anything else, an exec restart above all.
-    if let Some(upkeep) = upkeep {
-        upkeep.stop(maintainer::STOP_BOUND);
-    }
+    // The store's upkeep stops before anything else.
+    upkeep.stop(maintainer::STOP_BOUND);
     drop(tty);
     app.finish_flight(err, FLIGHT_QUIT_BOUND)?;
     let in_tmux = app.server.is_some();

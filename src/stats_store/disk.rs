@@ -84,6 +84,8 @@ pub enum Read {
     /// Longer than the cap: never handed to a parser.
     Oversized,
     Unreadable(String),
+    /// A node no payload file has the shape of: a directory, a link.
+    Invalid(String),
 }
 
 /// One file operation, named relative to the root: `stats/view`,
@@ -218,6 +220,10 @@ impl Dir for Files {
                     .create_new(true)
                     .mode(0o600)
                     .open(self.path(name)?)?;
+                #[cfg(test)]
+                {
+                    observe::file(FileEvent::Created(name.clone()));
+                }
                 file.write_all(bytes)
             }
             Op::Rename { from, to } => std::fs::rename(self.path(from)?, self.path(to)?),
@@ -226,7 +232,12 @@ impl Dir for Files {
                 .mode(0o700)
                 .create(self.path(name)?),
             Op::RemoveTree(name) => std::fs::remove_dir_all(self.path(name)?),
+        }?;
+        #[cfg(test)]
+        {
+            observe::applied(op);
         }
+        Ok(())
     }
 
     fn list(&mut self, dir: &str) -> io::Result<Vec<String>> {
@@ -241,6 +252,118 @@ impl Dir for Files {
             .collect();
         names.sort();
         Ok(names)
+    }
+}
+
+/// What `Files` did on this thread, in order (`cfg(test)` only): see
+/// [`take_file_events`].
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileEvent {
+    /// After the exclusive create of this payload name.
+    Created(String),
+    /// After the real `sync_all` of this name returned, and how long it took.
+    Synced {
+        name: String,
+        took: Duration,
+    },
+    Renamed {
+        from: String,
+        to: String,
+    },
+    Removed(String),
+    MadeDir(String),
+    RemovedTree(String),
+}
+
+/// What `Files` did on this thread since the last call, in order.
+#[cfg(test)]
+#[must_use]
+pub fn take_file_events() -> Vec<FileEvent> {
+    observe::FILES.with(std::cell::RefCell::take)
+}
+
+/// Make the next sync of `name` on this thread fail, before it would be
+/// recorded as [`FileEvent::Synced`].
+#[cfg(test)]
+pub fn fail_next_sync(name: &str) {
+    observe::SYNC_FAULT.with(|fault| *fault.borrow_mut() = Some(name.to_owned()));
+}
+
+/// Journal bytes [`FileJournals`] returned on this thread (`cfg(test)` only).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JournalReads {
+    pub total: u64,
+    /// Of `total`, those read while this thread held a [`Payload`] lock.
+    pub under_lock: u64,
+}
+
+/// The journal bytes read on this thread since the last call.
+#[cfg(test)]
+#[must_use]
+pub fn take_journal_reads() -> JournalReads {
+    observe::JOURNALS.with(std::cell::Cell::take)
+}
+
+/// The test observers' state: per thread, so parallel tests never mix.
+#[cfg(test)]
+mod observe {
+    use std::cell::{Cell, RefCell};
+
+    use super::{FileEvent, JournalReads, Op};
+
+    thread_local! {
+        pub(super) static FILES: RefCell<Vec<FileEvent>> = const { RefCell::new(Vec::new()) };
+        pub(super) static SYNC_FAULT: RefCell<Option<String>> = const { RefCell::new(None) };
+        pub(super) static JOURNALS: Cell<JournalReads> = const {
+            Cell::new(JournalReads { total: 0, under_lock: 0 })
+        };
+        /// Payload locks this thread holds.
+        pub(super) static LOCKS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn file(event: FileEvent) {
+        FILES.with(|events| events.borrow_mut().push(event));
+    }
+
+    /// Every operation but a write, which records its create itself.
+    pub(super) fn applied(op: &Op) {
+        let event = match op {
+            Op::Write { .. } => return,
+            Op::Rename { from, to } => FileEvent::Renamed {
+                from: from.clone(),
+                to: to.clone(),
+            },
+            Op::Remove(name) => FileEvent::Removed(name.clone()),
+            Op::MakeDir(name) => FileEvent::MadeDir(name.clone()),
+            Op::RemoveTree(name) => FileEvent::RemovedTree(name.clone()),
+        };
+        file(event);
+    }
+
+    pub(super) fn journal(bytes: usize) {
+        let width = u64::try_from(bytes).unwrap_or(u64::MAX);
+        let locked = LOCKS.with(Cell::get) > 0;
+        JOURNALS.with(|reads| {
+            let mut now = reads.get();
+            now.total = now.total.saturating_add(width);
+            if locked {
+                now.under_lock = now.under_lock.saturating_add(width);
+            }
+            reads.set(now);
+        });
+    }
+
+    pub(super) fn locked(by: i8) {
+        LOCKS.with(|locks| {
+            let now = locks.get();
+            locks.set(if by > 0 {
+                now.saturating_add(1)
+            } else {
+                now.saturating_sub(1)
+            });
+        });
     }
 }
 
@@ -507,6 +630,10 @@ impl Journal for FileJournals {
     fn window(&mut self, source: &str, from: u64, max: u64) -> Result<Window, SourceGap> {
         let path = self.path(source).ok_or(SourceGap::Missing)?;
         let (dev, ino, len, bytes) = crate::usage::journal_window(&path, from, max)?;
+        #[cfg(test)]
+        {
+            observe::journal(bytes.len());
+        }
         Ok(Window {
             dev,
             ino,
@@ -1083,6 +1210,9 @@ pub enum Refused {
     RecoveryOwed,
     /// An event line that is not one certificate or linked `spawn`.
     NotAnEvent,
+    /// A payload no surviving evidence proves the epoch of: a repair would
+    /// have to guess one.
+    EpochUnproven,
 }
 
 impl Refused {
@@ -1096,6 +1226,7 @@ impl Refused {
             Self::UnknownSource(id) => format!("no source {id}"),
             Self::RecoveryOwed => "an interrupted update is not recovered".to_owned(),
             Self::NotAnEvent => "not a certificate or linked spawn line".to_owned(),
+            Self::EpochUnproven => "nothing left proves the store's epoch".to_owned(),
         }
     }
 
@@ -1144,7 +1275,7 @@ fn fetch(dir: &mut dyn Dir, name: &str, cap: u64) -> Result<Option<Vec<u8>>, Ref
             file: name.to_owned(),
             cap,
         }),
-        Read::Unreadable(why) => Err(Refused::Damaged {
+        Read::Unreadable(why) | Read::Invalid(why) => Err(Refused::Damaged {
             file: name.to_owned(),
             reason: why,
         }),
@@ -1852,6 +1983,10 @@ impl Payload {
     /// a lock path that cannot be opened.
     pub fn lock(&self, wait: Duration) -> io::Result<Locked> {
         let held = crate::store::lock(&self.root.join(LOCK), wait)?;
+        #[cfg(test)]
+        {
+            observe::locked(1);
+        }
         Ok(Locked {
             _held: held,
             root: self.root.clone(),
@@ -1864,6 +1999,13 @@ impl Payload {
 pub struct Locked {
     _held: std::fs::File,
     root: PathBuf,
+}
+
+#[cfg(test)]
+impl Drop for Locked {
+    fn drop(&mut self) {
+        observe::locked(-1);
+    }
 }
 
 impl Locked {
