@@ -1806,6 +1806,10 @@ pub fn shims_render(dir: &Path, tail: &[String], err: &mut impl Write) -> crate:
 }
 
 #[cfg(test)]
+#[path = "doctor/leadfloor2_warnings_spec.rs"]
+mod leadfloor2_warnings_spec;
+
+#[cfg(test)]
 #[allow(
     clippy::disallowed_methods,
     reason = "tests read back what the doors wrote; the boundary is on product code — see clippy.toml"
@@ -2998,7 +3002,3 @@ mod tests {
         assert_eq!(document.warnings(), 6, "{}", document.render());
     }
 }
-
-#[cfg(test)]
-#[path = "doctor/leadfloor2_warnings_spec.rs"]
-mod leadfloor2_warnings_spec;

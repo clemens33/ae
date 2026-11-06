@@ -2845,6 +2845,10 @@ fn record(dir: &Path, at: &Record<'_>, target: &Target, outcome: &str, mentions:
 }
 
 #[cfg(test)]
+#[path = "reseat/leadfloor2_locked_source_spec.rs"]
+mod leadfloor2_locked_source_spec;
+
+#[cfg(test)]
 mod tests {
     use std::path::Path;
 
@@ -4195,7 +4199,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "reseat/leadfloor2_locked_source_spec.rs"]
-mod leadfloor2_locked_source_spec;

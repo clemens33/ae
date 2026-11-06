@@ -2889,6 +2889,17 @@ mod effort_scope_spec {
 mod leg_limitwake_spec;
 
 #[cfg(test)]
+#[path = "leadfloor2_spec.rs"]
+mod leadfloor2_spec;
+#[cfg(test)]
+#[path = "leadfloor2_unpinned_spec.rs"]
+mod leadfloor2_unpinned_spec;
+
+#[cfg(test)]
+#[path = "leadfloor2_late_origin_spec.rs"]
+mod leadfloor2_late_origin_spec;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::autoreseat::{
@@ -5008,13 +5019,3 @@ mod tests {
         }
     }
 }
-#[cfg(test)]
-#[path = "leadfloor2_spec.rs"]
-mod leadfloor2_spec;
-#[cfg(test)]
-#[path = "leadfloor2_unpinned_spec.rs"]
-mod leadfloor2_unpinned_spec;
-
-#[cfg(test)]
-#[path = "leadfloor2_late_origin_spec.rs"]
-mod leadfloor2_late_origin_spec;

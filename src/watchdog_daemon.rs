@@ -8859,6 +8859,10 @@ mod limitwake_readers {
 }
 
 #[cfg(test)]
+#[path = "watchdog_daemon/leadfloor2_notice_spec.rs"]
+mod leadfloor2_notice_spec;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn history_state_is_known_at_900_seconds_and_unknown_at_901() {
@@ -20434,7 +20438,3 @@ mod tests {
     include!("../tests/unit/unreach_episode.rs");
     include!("../tests/unit/unreach_motion_a4.rs");
 }
-
-#[cfg(test)]
-#[path = "watchdog_daemon/leadfloor2_notice_spec.rs"]
-mod leadfloor2_notice_spec;
