@@ -2953,6 +2953,8 @@ mod tests {
                 "Use your session; another session requires explicit human authorization naming its target and --cross-session.",
                 "Need an answer to go on? ask, then declare waiting-agent.",
                 "The request id the helper prints is not the answer; the reply arrives later as a new message.",
+                // #225 lead ruling D4: a send is information, never work.
+                "A send does not end the receiver's done; work it must act on and answer goes as ask.",
                 "Bodies to agents: meaning first, full sentences, no filler; keep file:line, commands, ids, error text, verdict words exact.",
                 "Evidence over 20 lines goes to a file under .local/; send the path.",
                 "A review reply lists every finding, one line each, no cap.",

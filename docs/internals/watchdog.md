@@ -236,6 +236,9 @@ send cannot see a human's half-typed draft, so an ask may land mid-input there. 
 
 Launch persists `[workspace] idle_nudge_secs` too (default 300, `0` disables).
 It also persists `done_confirmations` (default 2, range 0–9); zero in either row preserves immediate done.
+`done_confirmations` counts credited proofs, and since #225 the LAST of them may be an OBSERVED
+unchanged proof rather than a later declaration (see *Unchanged proofs* below); the first is always a
+real answer to a pasted challenge.
 This clock starts when the current Claude Code or Codex frame is positively
 recognized as an empty input box. A Claude Code frame qualifies only when the
 input box is framed by both borders and is followed by the status line (`🧠`)
@@ -358,6 +361,7 @@ In source order:
    - A seat is matched on its ROUTING KEY wherever the writer recorded one (`session::is_actor`, the same rule a declaration is matched by), and only on the display name for a legacy record that carries no key. A rename churns the name; it must not hand a seat somebody else's open work, nor lose its own.
    - A spawn defers only while its seat is actually HELD, decided on the cycle's own evidence: the Dead verdict does not hold, and the pane is not sitting at a bare shell — the two conjuncts `ae list` renders, so the publisher's decision and the human's explanation cannot disagree. A spawned tool that exited into its retained shell excuses nobody. UNKNOWN policy is two cases, not one rule, because the pane's foreground command is read first: a pane at a bare shell holds no seat whatever the snapshot says, so an uncertain snapshot never rescues it; a pane running a real tool keeps its seat when the snapshot cannot confirm the process, because the Dead verdict demands positive absence and a probe gap is not proof of death. That second deferral is retained rather than unbounded — the same two clocks end it.
    - `ae list` prints the same reason on the agent's line (`· waiting on 2 requests, 1 spawn`), so the human reads why a seat is quiet without opening its pane.
+   - **A live task of the seat's tool also DEFERS it** (#283). `procs::task_running` reads the cycle's one `ps` (now `pid,ppid,stat,comm`): a session-leading (`s`), live (not `Z`) DIRECT child of the seat's tool chain (one launcher/inner ancestor chain of the seat's kind; parallel roots are unknown) that is a non-shell command — a shell that exec-ed into it, as codex 0.167 does — or a shell with a live non-shell descendant, as claude 2.1.x keeps. An idle tool's MCP children are not session leaders and its session-leading MCP processes are grandchildren, so neither counts. The lease runs from the first sighting of an unbroken run, for `CHILD_ACTIVITY_CAP` (24) × `idle_nudge_secs` — 2 h at the default, since a whole `just release` ran 82 min — and only a positively observed gap reopens it: output, events and declarations never renew it, an unknown reading keeps it without deferring. Past it the ordinary budget resumes. The verdict stays `Idle`; the legacy Unknown-frame stale reminder (branch 8) is deferred the same way and reads `Active`. Residual: a daemon restart grants at most one more cap.
 8. **Unknown frame** — run the legacy hash/event heuristic: changed or recently changed is active; a recent ae event is active; otherwise send the legacy status check, then alert at the same maximum.
 
 After the per-pane pass:
@@ -373,9 +377,43 @@ relaunch is visible. Legacy metadata uses the newest `launch_time.main` or
 `launch_time.worker.*` as the boundary; only sessions lacking both clock forms
 keep the prior behavior.
 
+## Unchanged proofs (#225)
+
+A challenge whose answer is already known costs a turn and adds nothing: over the aedev journal
+60 % of wait challenges came with no record since the seat's last declaration, and 28 % with
+information only. The watchdog therefore usually asks only when something CHANGED since the seat's
+last proof (its newest own declaration of the tracked state, credited or proactive), and every skip
+is bounded. Two exceptions still ask: done's FIRST challenge is always a real one, and a wait is
+challenged again once `(OWN_WORK_AGE_CAP − 1)` cadences have passed since its proof.
+
+- **Journal half** — `watchdog::done_progress_proof` / `wait_progress_proof`, the same folds as
+  `done_progress` / `wait_progress`, return a `ProofQuiet`: the proof, whether an ACTIONABLE record
+  followed it (information and the watchdog's own records do not), and the settle point — the
+  newest of the proof and any information after it. Information also keeps a wait's earned
+  two-cadence spacing.
+- **Pane half** — `watchdog_daemon::proof_frame_step`, daemon memory. One interval after the settle
+  point (moved also by the watchdog's own newest painting delivery) the first non-Busy capture is
+  the baseline; a later hash off it, or a Busy frame past the settle window, is motion, and motion
+  STICKS until a new proof, a new incarnation or a restart. Information retakes the baseline but
+  never forgets motion. A failed capture, a restart or a missing baseline never proves the frame
+  unchanged.
+- **Waits** — a due wait challenge is HELD while both halves say unchanged and the proof is younger
+  than `watchdog::quiet_ceiling` = `(OWN_WORK_AGE_CAP − 1) × idle_nudge_secs` (900 s at the
+  default), measured from the proof and renewed only by a new proof. That lands the held challenge
+  one cadence before the `waiting-agent` ceiling, so a healthy unchanged wait never reads `blocked`
+  and a hung seat still meets a challenge, lapses and spends the nudge budget as before. Overflow
+  falls back to one cadence.
+- **Done** — the first challenge is always pasted (the premature-done catch). When the LAST required
+  confirmation falls due after a real answered one and both halves say unchanged, the daemon
+  journals `done-held` (actor `watchdog`, ref the launch witness, summary `confirmation n/m`, no
+  paste) instead; `done_progress` credits it only for the same launch, with an episode, no
+  outstanding challenge, at least one credit and exactly one remaining. Anything else is ignored.
+  It paints nothing, so it is no delivery for `last_watchdog_delivery`; an older core skips it.
+- `ae list` needs no change: its cells already read a due challenge as unconfirmed.
+
 ## Quiet states and how they're invalidated
 
-`watchdog::quiet_reason` returns an agent's current quiet state (`done` / `waiting-user` / `waiting-agent` / `blocked`), or none. It reads the *latest relevant event* for the agent: a `state` declaration (or a `mark-done`/`done` event, mapped to `done`) stays current until a newer record ends it or a challenge footprint disqualifies it. ONE table, `watchdog::ends_quiet`, says which records are news against it. The seat's own re-declaration and the human's chat-bridge message (`telegram:`/`discord:` actors) end every quiet state. A reply to one of the seat's OWN asks or reviews (matched by `ref`) also ends `waiting-agent`. Any other record that is neither of the worker birth family (`worker-birth`, `worker-fact`) nor the watchdog's — the seat's own sends, memos and replies, a peer's send, ask or review — ends `done` alone: a wait outlives its own chasing and its peers' traffic. No watchdog record is news: alerts, `human-prompt`, the quota advisory and checkpoint (and their drops), and the orchestrator's overview prompt, booked as its own `sweep-nudge` action so a changed overview no longer lapses a provisional `done` (#145). Its challenge footprints still decide currency inside an episode (`watchdog::declaration_current`): a matching challenge or abandonment preserves its own episode, the idle `nudge` is the lapse mark of `done`, a crossed challenge disqualifies any declaration, and for `waiting-user` every challenge and abandoned challenge does. The folds read a challenge summary through ONE grammar, `watchdog::challenge_named`, fuzzed as `challenge_summary`. A challenge the send helper refuses BEFORE its paste is journaled as an `[unconfirmed]` attempt of that same challenge with `; refused pre-paste: <why>` appended, so both folds count it toward `undelivered_max` and the one unreachable alert fires (#148). Named residuals: an `AE_SENDER_OVERRIDE` can journal a bridge actor; a pane-less sender journals `human`, which is not human evidence; a `relay`'s chat ask is journaled as `console:local` in its target's ledger; sweep records an older core wrote as `nudge` still lapse a `done` for one cycle.
+`watchdog::quiet_reason` returns an agent's current quiet state (`done` / `waiting-user` / `waiting-agent` / `blocked`), or none. It reads the *latest relevant event* for the agent: a `state` declaration (or a `mark-done`/`done` event, mapped to `done`) stays current until a newer record ends it or a challenge footprint disqualifies it. ONE table, `watchdog::ends_quiet`, says which records are news against it. The seat's own re-declaration and the human's chat-bridge message (`telegram:`/`discord:` actors) end every quiet state. A reply to one of the seat's OWN asks or reviews (matched by `ref`) also ends `waiting-agent`. Any other ACTIONABLE record that is neither of the worker birth family (`worker-birth`, `worker-fact`) nor the watchdog's — the seat's own ask, review, spawn or accept, a peer's ask, review or reply, any action the table does not know — ends `done` alone: a wait outlives its own chasing and its peers' traffic. INFORMATION ends nothing (#225, F576; `watchdog::is_informational`, read only through this table and the two proof folds): a `send` addressed to the seat, and the seat's own `send`, `memo`, `reply`, `retire` or `cancel`. A done seat that answers a status message or retires its workers therefore stays done and is not re-challenged; work that needs the receiver to act and answer goes as an `ask`, which the generated guidance says. Residual: a seat that takes new work from a `send` without declaring `working` keeps reading `done`. No watchdog record is news: alerts, `human-prompt`, the quota advisory and checkpoint (and their drops), and the orchestrator's overview prompt, booked as its own `sweep-nudge` action so a changed overview no longer lapses a provisional `done` (#145). Its challenge footprints still decide currency inside an episode (`watchdog::declaration_current`): a matching challenge or abandonment preserves its own episode, the idle `nudge` is the lapse mark of `done`, a crossed challenge disqualifies any declaration, and for `waiting-user` every challenge and abandoned challenge does. The folds read a challenge summary through ONE grammar, `watchdog::challenge_named`, fuzzed as `challenge_summary`. A challenge the send helper refuses BEFORE its paste is journaled as an `[unconfirmed]` attempt of that same challenge with `; refused pre-paste: <why>` appended, so both folds count it toward `undelivered_max` and the one unreachable alert fires (#148). Named residuals: an `AE_SENDER_OVERRIDE` can journal a bridge actor; a pane-less sender journals `human`, which is not human evidence; a `relay`'s chat ask is journaled as `console:local` in its target's ledger; sweep records an older core wrote as `nudge` still lapse a `done` for one cycle.
 
 **A `--on` target's move is told once.** `wait_on::moved` (one pure fold, shared with `ae list`) replays the journal over a same-session `waiting-agent --on B` wait: B declaring `done` or `blocked` from a different state, or being retired while active, is one transition; B's own later chatter never re-arms it, a peer's inbound record that `ends_quiet` counts does, and a wait begun after the move does not see it. The daemon books ordinal N as the watchdog record `target-moved` (`ref` N) and pastes the nudge through the send helper; the paste is owed while N exceeds the highest booked ordinal and the attempt count stays under `undelivered_max`, so a restart re-derives the same state from the journal and never tells twice. A due wait challenge yields only when a move paste is actually attempted. The nudge quotes B's reason through `seatpack::neutralise`, clipped to 200 cells, and ends no declaration. Named residuals: a target that never had a live pane before its `done` shows only its retire; a replaced agent of the same name; cross-session targets; a move booked before the waiter restarted is not re-told; a crash between the paste and the helper's journal append can repeat the nudge once after a restart.
 

@@ -435,6 +435,98 @@ pub(crate) fn background_task(table: Option<&[(Proc, String)]>, tool: u32) -> Op
     }))
 }
 
+/// The seat's tool under `pane_pid`: every row named `bin` there, which must
+/// form ONE ancestor chain (a launcher and its inner process of the same
+/// kind), outermost first. No row, a row ae cannot place, or two rows on
+/// parallel branches is `None`: ae cannot say which process is the seat.
+fn tool_chain(procs: &[Proc], pane_pid: u32, bin: &str) -> Option<Vec<u32>> {
+    let mut chain: Vec<u32> = Vec::new();
+    for proc in procs.iter().filter(|proc| name_matches(&proc.comm, bin)) {
+        if proc.pid != pane_pid {
+            match lineage(procs, pane_pid, proc.pid) {
+                Lineage::Under => {}
+                Lineage::Clear => continue,
+                Lineage::Broken(_) => return None,
+            }
+        }
+        chain.push(proc.pid);
+    }
+    let under = |a: u32, b: u32| lineage(procs, a, b) == Lineage::Under;
+    // A total order by ancestry, or no single seat.
+    for (index, a) in chain.iter().enumerate() {
+        if chain[index + 1..]
+            .iter()
+            .any(|b| !under(*a, *b) && !under(*b, *a))
+        {
+            return None;
+        }
+    }
+    let members = chain.clone();
+    chain.sort_by_key(|pid| chain_depth(procs, &members, *pid));
+    (!chain.is_empty()).then_some(chain)
+}
+
+/// How many other chain members sit above `pid`.
+fn chain_depth(procs: &[Proc], chain: &[u32], pid: u32) -> usize {
+    chain
+        .iter()
+        .filter(|ancestor| lineage(procs, **ancestor, pid) == Lineage::Under)
+        .count()
+}
+
+/// Whether the seat's tool runs a live TASK (#283): a session-leading (`s`),
+/// live (not `Z`) DIRECT child of the tool chain that is either a non-shell
+/// command — a shell that exec-ed into it (codex 0.167: `codex -> sleep Ss`)
+/// — or a shell with a live non-shell descendant at any depth (claude
+/// 2.1.x: `claude -> zsh Ss -> cargo`). An idle tool's MCP children are not
+/// session leaders, and its session-leading MCP processes are grandchildren
+/// (measured, `.local/chal225/ptree-*.txt` of the slice), so neither counts.
+/// `None` is unknown: no table, no single tool chain, or a row under the tool
+/// ae cannot read.
+#[must_use]
+pub fn task_running(table: Option<&[(Proc, String)]>, pane_pid: u32, bin: &str) -> Option<bool> {
+    let table = table?;
+    let procs: Vec<Proc> = table.iter().map(|(proc, _)| proc.clone()).collect();
+    let chain = tool_chain(&procs, pane_pid, bin)?;
+    let root = *chain.first()?;
+    if table.iter().any(|(proc, stat)| {
+        !readable_stat(proc, stat)
+            && (proc.pid == root || lineage(&procs, root, proc.pid) != Lineage::Clear)
+    }) {
+        return None;
+    }
+    let live = |stat: &str| !stat.starts_with('Z');
+    let shell = |proc: &Proc| {
+        let base = proc.comm.rsplit('/').next().unwrap_or(&proc.comm);
+        crate::watchdog::command_is_shell(base.trim_start_matches('-'))
+    };
+    Some(table.iter().any(|(task, stat)| {
+        chain.contains(&task.ppid)
+            && !chain.contains(&task.pid)
+            && stat.contains('s')
+            && live(stat)
+            && (!shell(task)
+                || table.iter().any(|(below, below_stat)| {
+                    live(below_stat)
+                        && !shell(below)
+                        && lineage(&procs, task.pid, below.pid) == Lineage::Under
+                }))
+    }))
+}
+
+/// The plain `pid ppid comm` table a stat reading stands in for, with
+/// [`parse_table`]'s validity: a row with no command name makes it `None`
+/// (unknown), so the liveness readers see exactly what the plain snapshot
+/// would have given them. The stat flags are not part of that contract.
+#[must_use]
+pub fn plain_table(stat: Option<&[(Proc, String)]>) -> Option<Vec<Proc>> {
+    let rows = stat?;
+    if rows.iter().any(|(proc, _)| proc.comm.is_empty()) {
+        return None;
+    }
+    Some(rows.iter().map(|(proc, _)| proc.clone()).collect())
+}
+
 /// The live state table; failed reads or structural damage yield `None`.
 #[must_use]
 pub(crate) fn stat_snapshot() -> Option<Vec<(Proc, String)>> {
@@ -461,6 +553,9 @@ pub fn own_tty() -> Option<String> {
 mod statrow_verdict_spec;
 
 #[cfg(test)]
+#[path = "../tests/it/procs_task225_spec.rs"]
+mod procs_task225_spec;
+#[cfg(test)]
 #[path = "../tests/it/statrow_tool_spec.rs"]
 mod statrow_tool_spec;
 
@@ -471,6 +566,29 @@ mod tests {
     /// Shapes measured in `.local/effort/idle-trees.md`: an idle claude keeps
     /// an MCP wrapper `/bin/sh` (`S+`) running docker; a command either tool
     /// runs is a `/bin/zsh` session leader (`Ss`).
+    /// R1 (chal225 review): the daemon's ONE `ps` became the stat reading;
+    /// its plain projection must keep the plain parser's verdict, or an
+    /// unnamed tool row turns an unknown snapshot into a dead seat.
+    #[test]
+    fn the_plain_projection_of_a_stat_reading_keeps_the_plain_parsers_verdict() {
+        // The same process table read by both doors: `pid ppid comm` and
+        // `pid ppid stat comm`. An unnamed row makes the plain door unknown.
+        let plain = "1 0 launchd\n90 1 -zsh\n100 90 \n";
+        let stat = "1 0 Ss launchd\n90 1 Ss -zsh\n100 90 S+\n";
+        assert_eq!(super::parse_table(plain), None, "the plain door: unknown");
+        let reading = super::parse_stat_table(stat);
+        assert!(reading.is_some(), "the stat parser keeps the row");
+        assert_eq!(super::plain_table(reading.as_deref()), None);
+        let plain = "1 0 launchd\n90 1 -zsh\n100 90 claude\n";
+        let stat = "1 0 Ss launchd\n90 1 Ss -zsh\n100 90 S+ claude\n";
+        assert!(super::parse_table(plain).is_some());
+        assert_eq!(
+            super::plain_table(super::parse_stat_table(stat).as_deref()),
+            super::parse_table(plain)
+        );
+        assert_eq!(super::plain_table(None), None);
+    }
+
     #[test]
     fn only_a_session_leading_shell_beneath_the_tool_is_a_background_task() {
         let idle = "  1     0 Ss   /sbin/launchd\n 90     1 Ss   -zsh\n100    90 S+   claude\n\

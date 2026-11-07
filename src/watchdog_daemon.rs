@@ -267,6 +267,211 @@ pub struct PaneState {
     pub client_activity: Option<(u64, u64)>,
     /// The orchestrator sweep branch's carry.
     pub sweep: SweepState,
+    /// The pane half of "nothing changed since the seat's last proof" (#225),
+    /// [`proof_frame_step`]'s carry. `None` is NO knowledge — a fresh carry or
+    /// a restart — which never proves an unchanged frame.
+    pub proof_frame: Option<ProofFrame>,
+    /// The first cycle of the unbroken run in which the seat's tool was seen
+    /// running a task ([`task_lease`], #283). Memory only: a restart grants
+    /// at most one more cap.
+    pub task_since: Option<i64>,
+}
+
+/// What the cycle knows BESIDE its [`Observation`] (#225, #283): carried as a
+/// separate value so the observation's shape — built literally by many specs
+/// — does not change. [`Activity::default`] is exactly today's accounting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Activity {
+    /// [`crate::procs::task_running`] for the seat this cycle.
+    pub task_running: Option<bool>,
+    /// The TRACKED quiet state's proof reading (done or wait). `None` leaves
+    /// the proof frame carry untouched and holds nothing.
+    pub proof: Option<crate::watchdog::ProofQuiet>,
+    /// The watchdog's newest painting delivery to the seat, epoch seconds.
+    pub painting: Option<i64>,
+}
+
+/// The pane frame of one proof (#225): when it settled and whether it moved.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProofFrame {
+    /// Epoch of the proof this frame belongs to.
+    pub proof: Option<i64>,
+    /// The settle point: newest of the proof, information and the
+    /// watchdog's own painting delivery.
+    pub settle: Option<i64>,
+    /// The frame hash taken one interval after the settle point.
+    pub baseline: Option<u64>,
+    /// A baseline has been taken at least once for this proof.
+    pub settled: bool,
+    /// Motion seen after a baseline. STICKY for the proof: only a new proof,
+    /// a new incarnation or a restart forgets it.
+    pub moved: bool,
+}
+
+/// What [`proof_frame_step`] proves about the pane since the proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameVerdict {
+    /// Motion since the proof, or no way to know.
+    Moved,
+    /// No baseline to compare yet.
+    Settling,
+    /// This cycle's read matches the baseline and nothing moved before it.
+    Unmoved,
+}
+
+/// One cycle's pane reading for [`proof_frame_step`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameSample {
+    /// The capture succeeded.
+    pub capture_ok: bool,
+    /// The harness frame is positively Busy.
+    pub busy: bool,
+    /// [`crate::watchdog::quiet_hash`] of the capture.
+    pub hash: u64,
+}
+
+/// One step of the proof frame (#225). Rules, in order: no proof → a known
+/// empty frame; no prior knowledge → MOVED (a restart cannot know what
+/// happened since an old proof); a new proof → a fresh frame; a moved settle
+/// point → retake the baseline, keeping `moved` and `settled`. Then, on a
+/// successful read only: Busy past the settle window moves; the first non-Busy
+/// read past it takes the baseline; a hash off the baseline moves. A failed
+/// read changes nothing and never proves Unmoved.
+#[must_use]
+pub fn proof_frame_step(
+    prior: Option<ProofFrame>,
+    proof: Option<i64>,
+    settle: Option<i64>,
+    sample: FrameSample,
+    now: i64,
+    interval_secs: u64,
+) -> (Option<ProofFrame>, FrameVerdict) {
+    if proof.is_none() {
+        return (Some(ProofFrame::default()), FrameVerdict::Moved);
+    }
+    let mut frame = match prior {
+        None => ProofFrame {
+            proof,
+            settle,
+            moved: true,
+            ..ProofFrame::default()
+        },
+        // Two proofs in the same second share an epoch and so a frame. That
+        // reuse is harmless: a baseline is taken only an interval after the
+        // proof, so within that second the frame holds none, and `moved` can
+        // only be the conservative restart value.
+        Some(held) if held.proof != proof => ProofFrame {
+            proof,
+            settle,
+            ..ProofFrame::default()
+        },
+        Some(held) if held.settle != settle => ProofFrame {
+            settle,
+            baseline: None,
+            ..held
+        },
+        Some(held) => held,
+    };
+    if !sample.capture_ok {
+        let frame = prior.filter(|held| held.proof == proof).unwrap_or(frame);
+        let verdict = if frame.moved {
+            FrameVerdict::Moved
+        } else {
+            FrameVerdict::Settling
+        };
+        return (Some(frame), verdict);
+    }
+    let settled_at = frame.settle.or(frame.proof).map_or(now, |at| {
+        at.saturating_add(i64::try_from(interval_secs).unwrap_or(i64::MAX))
+    });
+    let past = now >= settled_at;
+    if sample.busy && past {
+        frame.moved = true;
+    }
+    match frame.baseline {
+        None if past && !sample.busy => {
+            frame.baseline = Some(sample.hash);
+            frame.settled = true;
+        }
+        Some(baseline) if baseline != sample.hash => frame.moved = true,
+        _ => {}
+    }
+    let verdict = if frame.moved {
+        FrameVerdict::Moved
+    } else if frame.baseline.is_some() {
+        FrameVerdict::Unmoved
+    } else {
+        FrameVerdict::Settling
+    };
+    (Some(frame), verdict)
+}
+
+/// Whether an UNCHANGED wait holds its due challenge this cycle (#225, D1):
+/// no actionable record since the proof, a frame proven unmoved, and the
+/// proof younger than [`crate::watchdog::quiet_ceiling`].
+#[must_use]
+pub fn wait_held(
+    progress: WaitProgress,
+    proof: crate::watchdog::ProofQuiet,
+    frame: FrameVerdict,
+    cadence: u64,
+) -> bool {
+    matches!(
+        progress,
+        WaitProgress::ChallengeDue { wait_age_secs, .. }
+            if wait_age_secs < crate::watchdog::quiet_ceiling(cadence)
+    ) && proof.unchanged
+        && frame == FrameVerdict::Unmoved
+}
+
+/// Whether the due done challenge is the LAST confirmation of an unchanged
+/// proof after a real answered one, so `done-held` is journaled instead
+/// (#225, D2/P3). The first challenge is always asked.
+#[must_use]
+pub fn done_held_due(
+    progress: DoneProgress,
+    proof: crate::watchdog::ProofQuiet,
+    frame: FrameVerdict,
+) -> bool {
+    matches!(
+        progress,
+        DoneProgress::ChallengeDue { confirmations, required, .. }
+            if confirmations >= 1 && confirmations.saturating_add(1) == required
+    ) && proof.unchanged
+        && frame == FrameVerdict::Unmoved
+}
+
+/// The task lease's start (#283): a running task keeps the first sighting, a
+/// positively absent one clears it, an unknown reading keeps it unrenewed.
+#[must_use]
+pub const fn task_lease(prior: Option<i64>, running: Option<bool>, now: i64) -> Option<i64> {
+    match running {
+        Some(true) => match prior {
+            Some(since) => Some(since),
+            None => Some(now),
+        },
+        Some(false) => None,
+        None => prior,
+    }
+}
+
+/// Whether a live task defers the idle wording this cycle (#283): running
+/// now, and its lease younger than [`crate::watchdog::CHILD_ACTIVITY_CAP`]
+/// cadences. Zero `idle_nudge_secs` has no nudge to defer.
+#[must_use]
+pub fn task_deferred(
+    task_since: Option<i64>,
+    running: Option<bool>,
+    now: i64,
+    knobs: &Knobs,
+) -> bool {
+    if running != Some(true) || knobs.idle_nudge_secs == 0 {
+        return false;
+    }
+    let cap = knobs
+        .idle_nudge_secs
+        .saturating_mul(crate::watchdog::CHILD_ACTIVITY_CAP);
+    task_since.is_some_and(|since| age_secs(now, since) < cap)
 }
 
 /// What the cycle saw about one pane, after [`crate::watchdog`]'s pure
@@ -486,6 +691,9 @@ pub enum Effect {
         required: u8,
         done_age_secs: u64,
     },
+    /// Journal `done-held` instead of the LAST done challenge (#225): an
+    /// unchanged proof fills it. Paints nothing.
+    DoneHeld { confirmations: u8, required: u8 },
     /// Deliver a wait proof challenge for the RAW declared `state`;
     /// `escalated` is [`waiting_agent_escalates`]'s answer for this cycle.
     WaitChallenge {
@@ -2223,6 +2431,8 @@ fn clear_death_latch(
         limit_wake_attempts: 0,
         limit_armed: None,
         human_prompt_streak: 0,
+        proof_frame: None,
+        task_since: None,
         ..next.clone()
     })
 }
@@ -2244,6 +2454,20 @@ pub fn account_with_trust(
     knobs: &Knobs,
     trust: Option<&crate::autotrust::Due>,
 ) -> Accounting {
+    account_with_activity(prior, seen, knobs, trust, &Activity::default())
+}
+
+/// [`account_with_trust`], with the cycle's [`Activity`]: the proof holds
+/// (#225) and the task lease (#283). `Activity::default()` is exactly
+/// [`account_with_trust`].
+#[must_use]
+pub fn account_with_activity(
+    prior: &PaneState,
+    seen: &Observation,
+    knobs: &Knobs,
+    trust: Option<&crate::autotrust::Due>,
+    activity: &Activity,
+) -> Accounting {
     let reset = PaneState::default();
     let mut prior = if prior
         .identity
@@ -2255,6 +2479,7 @@ pub fn account_with_trust(
     };
     let mut next = prior.clone();
     next.identity = Some(seen.identity);
+    next.task_since = task_lease(prior.task_since, activity.task_running, seen.now_epoch);
     let mut effects = Vec::new();
     book_unknown(&mut next, &mut effects, seen.descendancy);
     if seen.failed_elsewhere {
@@ -2304,7 +2529,7 @@ pub fn account_with_trust(
         };
     }
 
-    let mut accounted = account_ordinary(prior, next, effects, (seen, trust), knobs);
+    let mut accounted = account_ordinary(prior, next, effects, (seen, trust, activity), knobs);
     // The ONE unreachable failure outranks every verdict but dead. A prompt
     // keeps its own here for the brief and notice gates; the cycle publishes
     // it as unreachable.
@@ -2330,9 +2555,36 @@ fn account_ordinary(
     prior: &PaneState,
     mut next: PaneState,
     mut effects: Vec<Effect>,
-    (seen, trust): (&Observation, Option<&crate::autotrust::Due>),
+    (seen, trust, activity): (&Observation, Option<&crate::autotrust::Due>, &Activity),
     knobs: &Knobs,
 ) -> Accounting {
+    // The pane half of "unchanged since the proof" (#225), every cycle.
+    let quiet_proof = activity.proof.unwrap_or_default();
+    let frame = match activity.proof {
+        None => FrameVerdict::Moved,
+        Some(proof) => {
+            let settle = proof
+                .settle
+                .map(crate::time::Timestamp::epoch)
+                .max(activity.painting);
+            let sample = FrameSample {
+                capture_ok: seen.capture_ok,
+                busy: seen.harness.frame == HarnessState::Busy,
+                hash: seen.hash,
+            };
+            let (carried, verdict) = proof_frame_step(
+                prior.proof_frame,
+                proof.proof.map(crate::time::Timestamp::epoch),
+                settle,
+                sample,
+                seen.now_epoch,
+                knobs.interval_secs,
+            );
+            next.proof_frame = carried;
+            verdict
+        }
+    };
+
     // 3.
     if let Some(verdict) = book_sweep(prior, &mut next, &mut effects, seen, knobs) {
         next.idle_since_epoch = None;
@@ -2410,12 +2662,19 @@ fn account_ordinary(
         attempts,
     } = seen.done_progress
     {
-        let challenge = Effect::DoneChallenge {
-            confirmations,
-            required,
-            done_age_secs,
-        };
-        effects.extend(bounded(attempts, seen, knobs, challenge, done_age_secs));
+        if done_held_due(seen.done_progress, quiet_proof, frame) {
+            effects.push(Effect::DoneHeld {
+                confirmations,
+                required,
+            });
+        } else {
+            let challenge = Effect::DoneChallenge {
+                confirmations,
+                required,
+                done_age_secs,
+            };
+            effects.extend(bounded(attempts, seen, knobs, challenge, done_age_secs));
+        }
     }
 
     // The wait push, gated on the pane hold; the state comes from the hold
@@ -2435,7 +2694,14 @@ fn account_ordinary(
         .any(|effect| matches!(effect, Effect::TargetMoved { .. }));
     let alerted = !moves.is_empty() && !pasting;
     effects.extend(moves);
+    let held = wait_held(
+        seen.wait_progress,
+        quiet_proof,
+        frame,
+        knobs.idle_nudge_secs,
+    );
     if !pasting
+        && !held
         && let (
             Some(wait_state),
             WaitProgress::ChallengeDue {
@@ -2566,7 +2832,8 @@ fn account_ordinary(
     }
 
     // 9. Harness frames outrank the legacy motion heuristic.
-    if let Some(verdict) = account_harness(prior, &mut next, &mut effects, seen, knobs) {
+    if let Some(verdict) = account_harness(prior, &mut next, &mut effects, (seen, activity), knobs)
+    {
         return Accounting {
             next,
             effects,
@@ -2576,7 +2843,7 @@ fn account_ordinary(
     }
 
     // 10. Unknown frames retain the legacy motion and actor-event rule.
-    account_unknown(prior, next, effects, seen, knobs)
+    account_unknown(prior, next, effects, (seen, activity), knobs)
 }
 
 /// Positive harness-frame branches. `None` means the caller must use the
@@ -2585,7 +2852,7 @@ fn account_harness(
     prior: &PaneState,
     next: &mut PaneState,
     effects: &mut Vec<Effect>,
-    seen: &Observation,
+    (seen, activity): (&Observation, &Activity),
     knobs: &Knobs,
 ) -> Option<Verdict> {
     // A human draft is recovery of the idle episode but remains Unknown as an
@@ -2629,6 +2896,12 @@ fn account_harness(
             if knobs.idle_nudge_secs > 0
                 && idle_age >= knobs.idle_nudge_secs
                 && !deferred(seen.own_work, seen.now_epoch, idle_age, knobs)
+                && !task_deferred(
+                    next.task_since,
+                    activity.task_running,
+                    seen.now_epoch,
+                    knobs,
+                )
             {
                 book_stale(prior, next, effects, knobs, idle_age);
             }
@@ -2654,7 +2927,7 @@ fn account_unknown(
     prior: &PaneState,
     mut next: PaneState,
     mut effects: Vec<Effect>,
-    seen: &Observation,
+    (seen, activity): (&Observation, &Activity),
     knobs: &Knobs,
 ) -> Accounting {
     let hash_unchanged = prior.prev_hash == Some(seen.hash);
@@ -2685,7 +2958,16 @@ fn account_unknown(
         false, // the quiet branch already returned
         false, // and so did the throttled one
     );
-    if !stale {
+    // A live task of the seat's tool is activity the frame cannot show
+    // (#283), within its lease.
+    if !stale
+        || task_deferred(
+            next.task_since,
+            activity.task_running,
+            seen.now_epoch,
+            knobs,
+        )
+    {
         return Accounting {
             next,
             effects,
@@ -6421,7 +6703,10 @@ impl Cycle<'_> {
             )?;
             return Ok(());
         };
-        let table = procs::snapshot();
+        // ONE `ps` per cycle, with each process's state flags: the task
+        // sensor (#283) needs them, every other reader takes the projection.
+        let stat_table = procs::stat_snapshot();
+        let table = procs::plain_table(stat_table.as_deref());
         let events = read_events(self.meta_dir);
         let now = Timestamp::now().epoch();
         let overview = if self.meta_agent && self.knobs.sweep.enabled() {
@@ -6527,7 +6812,7 @@ impl Cycle<'_> {
             let carried = entry_mut(&mut carry.panes, &pane.pane_id);
             restore_idle(carried, &pane.observed, identity);
             let launch = launch_id_for(&self.launch_ids, &slot);
-            let done_progress = crate::watchdog::done_progress(
+            let (done_progress, done_proof) = crate::watchdog::done_progress_proof(
                 &events,
                 self.session,
                 &slot,
@@ -6556,19 +6841,43 @@ impl Cycle<'_> {
                 Some(QuietKind::Blocked) => Some(WaitState::Blocked),
                 _ => None,
             };
-            let wait_progress = wait_state.map_or(WaitProgress::None, |state| {
-                crate::watchdog::wait_progress(
+            let (wait_progress, wait_proof) = wait_state.map_or(
+                (WaitProgress::None, crate::watchdog::ProofQuiet::default()),
+                |state| {
+                    crate::watchdog::wait_progress_proof(
+                        &events,
+                        self.session,
+                        &slot,
+                        agent,
+                        launch,
+                        Timestamp::from_epoch(now),
+                        self.knobs.idle_nudge_secs,
+                        self.knobs.done_confirmations,
+                        state,
+                    )
+                },
+            );
+            // The tracked quiet state's proof, the watchdog's last paint and
+            // the seat tool's task: what `account_with_activity` adds (#225,
+            // #283).
+            let activity = Activity {
+                task_running: pane
+                    .pane_pid
+                    .zip(agent_bin.as_deref())
+                    .and_then(|(pid, bin)| procs::task_running(stat_table.as_deref(), pid, bin)),
+                proof: Some(if wait_state.is_some() {
+                    wait_proof
+                } else {
+                    done_proof
+                }),
+                painting: crate::watchdog::last_watchdog_delivery(
                     &events,
                     self.session,
                     &slot,
                     agent,
-                    launch,
-                    Timestamp::from_epoch(now),
-                    self.knobs.idle_nudge_secs,
-                    self.knobs.done_confirmations,
-                    state,
                 )
-            });
+                .map(Timestamp::epoch),
+            };
             let alerts =
                 crate::session::alerts_since_in(&events, self.session, &slot, agent, self.started);
             let start = table
@@ -6687,7 +6996,8 @@ impl Cycle<'_> {
                 .client_activity
                 .and_then(|(_, at)| i64::try_from(at).ok());
             let trust = self.trust_due(&seen, (&slot, &pane.pane_id), agent_bin.as_deref(), input);
-            let booked = account_with_trust(carried, &seen, &self.knobs, trust.as_ref());
+            let booked =
+                account_with_activity(carried, &seen, &self.knobs, trust.as_ref(), &activity);
             *carried = booked.next;
             self.apply_booked(&booked.effects, &acting, carried, &mut quota_refresh, err)?;
             if crate::effort::leg::eligible(&slot) && !self.meta_agent {
@@ -7497,6 +7807,29 @@ impl Cycle<'_> {
                     .deliver(agent, &text, "done-challenge", &summary, launch)
                     .code;
                 self.reachable_again(on, "done-challenge", code, err)
+            }
+            Effect::DoneHeld {
+                confirmations,
+                required,
+            } => {
+                // Journal only: the record IS the credit the fold admits, so
+                // it carries the launch witness exactly as a challenge does.
+                let summary = crate::watchdog::challenge_summary(
+                    crate::watchdog::Challenge::Done,
+                    confirmations.saturating_add(1),
+                    *required,
+                );
+                Journal {
+                    meta_dir: self.meta_dir,
+                    session: self.session,
+                }
+                .record_referring(
+                    crate::watchdog::DONE_HELD_ACTION,
+                    agent,
+                    launch_id_for(&self.launch_ids, on.slot).unwrap_or_default(),
+                    &summary,
+                    err,
+                )
             }
             Effect::TargetMoved { moved, age_secs } => {
                 let target =
@@ -8858,6 +9191,9 @@ mod limitwake_readers {
     }
 }
 
+#[cfg(test)]
+#[path = "watchdog_daemon/activity225_spec.rs"]
+mod activity225_spec;
 #[cfg(test)]
 #[path = "watchdog_daemon/leadfloor2_notice_spec.rs"]
 mod leadfloor2_notice_spec;

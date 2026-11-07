@@ -20,6 +20,12 @@ mod muse_standing_tests;
 #[cfg(test)]
 #[path = "watchdog/muse_task_tests.rs"]
 mod muse_task_tests;
+#[cfg(test)]
+#[path = "watchdog/proof225_spec.rs"]
+mod proof225_spec;
+#[cfg(test)]
+#[path = "watchdog/quiet225_spec.rs"]
+mod quiet225_spec;
 
 /// The shells the dead-check treats as "no agent in the foreground".
 #[must_use]
@@ -1643,6 +1649,11 @@ pub(crate) const LIMIT_WAKE_ACTION: &str = "limit-wake";
 /// challenges by action, and sharing one would let a wait challenge arm a done
 /// confirmation. Both wait states share it, so the summary names the state.
 pub(crate) const WAIT_CHALLENGE_ACTION: &str = "wait-challenge";
+/// The watchdog's journal-only record that an unchanged `done` proof filled
+/// its LAST confirmation instead of a pasted challenge (#225). It paints no
+/// pane: the ref is the launch witness, the summary the existing
+/// `confirmation n/m` grammar, which no fold parses for it.
+pub const DONE_HELD_ACTION: &str = "done-held";
 
 /// Which proof challenge a watchdog record carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1718,7 +1729,10 @@ pub(crate) const HUMAN_BRIDGE_ACTORS: [&str; 2] = ["telegram:", "discord:"];
 ///   own chasing, a peer's message, pane churn;
 /// - `waiting-agent` also ends on a reply to one of the seat's OWN asks or
 ///   reviews (`own_requests`, their request ids) — the answer it waits for;
-/// - `done`, and every state that quiets nothing, end on any other record.
+/// - `done` ends on any other record that is not [`is_informational`] — a
+///   send to the seat, or its own send, memo, reply, retire or cancel, asks
+///   nothing of it (#225, F576);
+/// - every state that quiets nothing ends on any other record.
 #[must_use]
 pub fn ends_quiet(state: &str, event: &Event, is_own: bool, own_requests: &[&str]) -> bool {
     if event.actor == WATCHDOG_ACTOR
@@ -1750,7 +1764,41 @@ pub fn ends_quiet(state: &str, event: &Event, is_own: bool, own_requests: &[&str
                     .as_deref()
                     .is_some_and(|id| own_requests.contains(&id))
         }
+        // #225 / F576: a `done` seat stays done through traffic that asks it
+        // for nothing.
+        "done" => !is_informational(event, is_own),
         _ => true,
+    }
+}
+
+/// The seat's OWN actions that carry information and ask nothing of anyone:
+/// a message, a memo, an answer, a retire or a withdrawal.
+const OWN_INFORMATIONAL: [&str; 5] = [
+    crate::send::ACTION,
+    "memo",
+    crate::reply::ACTION,
+    "retire",
+    "cancel",
+];
+
+/// Whether `event` is information that asks nothing of the seat (#225, F576):
+/// the seat's own send, memo, reply, retire or cancel, or a `send` addressed to
+/// it. Everything else — an ask, a review, a reply to the seat, a spawn, an
+/// accept, the human, an action this table does not know — is actionable,
+/// the safe direction. The watchdog's and the birth family's records are
+/// neither: [`ends_quiet`] judges them first.
+///
+/// ONE table, read only through [`ends_quiet`] and the two proof folds, so the
+/// daemon and `ae list` cannot split on it.
+#[must_use]
+pub fn is_informational(event: &Event, is_own: bool) -> bool {
+    if event.actor == WATCHDOG_ACTOR || crate::birth::is_family(&event.action) {
+        return false;
+    }
+    if is_own {
+        OWN_INFORMATIONAL.contains(&event.action.as_str())
+    } else {
+        event.action == crate::send::ACTION
     }
 }
 
@@ -1990,6 +2038,12 @@ enum Step {
     Proof,
     /// A record the wait outlives that is not the watchdog's (#225).
     News,
+    /// Information the quiet state outlives that asks nothing of the seat
+    /// ([`is_informational`]): it moves the settle point, never the proof.
+    Info,
+    /// The watchdog's `done-held` record: an observed unchanged proof that may
+    /// fill the LAST confirmation (#225, admission in [`done_progress_proof`]).
+    Held,
 }
 
 /// The fold's OWN challenge record, past any state filter: another
@@ -2022,10 +2076,18 @@ fn done_step(event: &Event, own: bool, launch: Option<&str>) -> Step {
         }
     } else if watchdog && event.action == NUDGE_ACTION {
         Step::Skip
+    } else if watchdog && event.action == DONE_HELD_ACTION {
+        if launch_matches(event, launch) {
+            Step::Held
+        } else {
+            Step::Skip
+        }
     } else if own && event.declared_state() == Some("done") {
         Step::Proof
     } else if is_challenge(event) || ends_quiet("done", event, own, &[]) {
         Step::Reset
+    } else if is_informational(event, own) {
+        Step::Info
     } else {
         Step::Skip
     }
@@ -2064,6 +2126,8 @@ fn wait_step(
         Step::Reset
     } else if watchdog {
         Step::Skip
+    } else if is_informational(event, own) {
+        Step::Info
     } else {
         Step::News
     }
@@ -2073,7 +2137,8 @@ fn wait_step(
 /// [`wait_progress`] both carry forward through the journal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Episode {
-    /// Proofs credited by answering a delivered challenge.
+    /// Proofs credited by answering a delivered challenge — and, for `done`,
+    /// at most the LAST one admitted from a `done-held` record (#225).
     confirmations: u8,
     /// The declaration the challenge cadence runs from.
     anchor: crate::time::Timestamp,
@@ -2228,6 +2293,39 @@ pub enum DoneProgress {
     Confirmed,
 }
 
+/// What a proof fold knows about the seat's newest proof (#225): the
+/// journal half of "nothing changed since the seat's last proof". The pane
+/// half is the daemon's (`watchdog_daemon::proof_frame_step`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProofQuiet {
+    /// Newest own declaration of the tracked state in the live episode,
+    /// credited or proactive.
+    pub proof: Option<crate::time::Timestamp>,
+    /// No ACTIONABLE relevant record after `proof`: information
+    /// ([`is_informational`]) and the watchdog's own records do not count.
+    pub unchanged: bool,
+    /// Newest of `proof` and every informational relevant record after it.
+    pub settle: Option<crate::time::Timestamp>,
+}
+
+impl ProofQuiet {
+    /// A fresh proof at `at`.
+    const fn proved(at: crate::time::Timestamp) -> Self {
+        Self {
+            proof: Some(at),
+            unchanged: true,
+            settle: Some(at),
+        }
+    }
+
+    /// Information at `at` moves the settle point, never behind the proof.
+    fn inform(&mut self, at: crate::time::Timestamp) {
+        if self.proof.is_some() {
+            self.settle = self.settle.max(Some(at));
+        }
+    }
+}
+
 /// Fold existing parsed records. Without a launch witness, only ref-less
 /// challenges count; lifecycle/inbound boundaries still prevent inheritance.
 #[must_use]
@@ -2245,7 +2343,35 @@ pub fn done_progress(
     cadence: u64,
     required: u8,
 ) -> DoneProgress {
+    done_progress_proof(events, session, slot, agent, launch, now, cadence, required).0
+}
+
+/// [`done_progress`] and its [`ProofQuiet`] — the SAME fold, one owner.
+///
+/// A `done-held` record ([`DONE_HELD_ACTION`]) of this launch is credited
+/// only when it can be nothing but the LAST confirmation of a live episode
+/// whose earlier one was a real answered challenge: an episode exists, no
+/// challenge is outstanding, at least one confirmation is credited and exactly
+/// one remains. Anything else is ignored — it never opens an episode, never
+/// confirms from zero and never fills more than that one slot. An actionable
+/// record in between has already reset the episode.
+#[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the public fold signature every reader calls: journal, seat routing key, launch witness, clock and both knobs"
+)]
+pub fn done_progress_proof(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+    launch: Option<&str>,
+    now: crate::time::Timestamp,
+    cadence: u64,
+    required: u8,
+) -> (DoneProgress, ProofQuiet) {
     let mut episode: Option<Episode> = None;
+    let mut quiet = ProofQuiet::default();
     let mut last_done: Option<(crate::time::Timestamp, Option<&str>)> = None;
     for event in events {
         let own = event_is_actor(event, session, slot, agent);
@@ -2255,8 +2381,19 @@ pub fn done_progress(
         }
         match done_step(event, own, launch) {
             Step::Skip | Step::News => {}
+            Step::Info => quiet.inform(event.ts),
+            Step::Held => {
+                if let Some(current) = episode.as_mut().filter(|current| {
+                    current.outstanding.is_none()
+                        && current.confirmations >= 1
+                        && current.confirmations.saturating_add(1) == required
+                }) {
+                    current.confirmations = current.confirmations.saturating_add(1);
+                }
+            }
             Step::Reset => {
                 episode = None;
+                quiet = ProofQuiet::default();
                 last_done = None;
             }
             Step::Attempt => {
@@ -2275,12 +2412,13 @@ pub fn done_progress(
                 if last_done != Some(signature) {
                     last_done = Some(signature);
                     Episode::prove(&mut episode, event.ts);
+                    quiet = ProofQuiet::proved(event.ts);
                 }
             }
         }
     }
     let Some(episode) = episode else {
-        return DoneProgress::None;
+        return (DoneProgress::None, ProofQuiet::default());
     };
     let Episode {
         confirmations,
@@ -2289,9 +2427,9 @@ pub fn done_progress(
     } = episode;
     // Confirmation outranks every phase, an outstanding challenge included.
     if required == 0 || cadence == 0 || confirmations >= required {
-        return DoneProgress::Confirmed;
+        return (DoneProgress::Confirmed, quiet);
     }
-    match episode.phase(now, cadence, cadence) {
+    let progress = match episode.phase(now, cadence, cadence) {
         Phase::Provisional => DoneProgress::Provisional {
             confirmations,
             required,
@@ -2310,7 +2448,8 @@ pub fn done_progress(
             confirmations,
             required,
         },
-    }
+    };
+    (progress, quiet)
 }
 
 /// Which wait state a [`wait_progress`] episode tracks. STRICTLY one: a
@@ -2384,9 +2523,9 @@ pub enum WaitProgress {
 /// Spacing (#225): an anchor that is a CREDITED proof — a same-state
 /// declaration answering a delivered challenge, or the re-arming Nth proof —
 /// with no news after it waits [`unchanged_wait_spacing`]. News is any relevant
-/// record that is not the watchdog's and leaves the wait standing, own or
-/// addressed, judged in append order; it and an uncredited re-declaration keep
-/// the base cadence.
+/// record that is neither the watchdog's nor information ([`is_informational`])
+/// and leaves the wait standing, own or addressed, judged in append order; it
+/// and an uncredited re-declaration keep the base cadence.
 #[must_use]
 #[allow(
     clippy::too_many_arguments,
@@ -2403,10 +2542,37 @@ pub fn wait_progress(
     required: u8,
     state: WaitState,
 ) -> WaitProgress {
+    wait_progress_proof(
+        events, session, slot, agent, launch, now, cadence, required, state,
+    )
+    .0
+}
+
+/// [`wait_progress`] and its [`ProofQuiet`] — the SAME fold, one owner.
+/// Information ([`is_informational`]) moves the settle point and keeps both
+/// the earned spacing and `unchanged`; other news the wait outlives clears
+/// both.
+#[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the public fold signature every reader calls: journal, seat routing key, launch witness, clock, both knobs and the wait state"
+)]
+pub fn wait_progress_proof(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+    launch: Option<&str>,
+    now: crate::time::Timestamp,
+    cadence: u64,
+    required: u8,
+    state: WaitState,
+) -> (WaitProgress, ProofQuiet) {
     if required == 0 || cadence == 0 {
-        return WaitProgress::None;
+        return (WaitProgress::None, ProofQuiet::default());
     }
     let mut episode: Option<WaitEpisode> = None;
+    let mut quiet = ProofQuiet::default();
     let mut own_requests: Vec<&str> = Vec::new();
     for event in events {
         let own = event_is_actor(event, session, slot, agent);
@@ -2420,8 +2586,12 @@ pub fn wait_progress(
             own_requests.push(id);
         }
         match wait_step(event, own, launch, state, &own_requests) {
-            Step::Skip => {}
-            Step::Reset => episode = None,
+            Step::Skip | Step::Held => {}
+            Step::Info => quiet.inform(event.ts),
+            Step::Reset => {
+                episode = None;
+                quiet = ProofQuiet::default();
+            }
             Step::Attempt => {
                 if let Some(current) = episode.as_mut() {
                     current.episode.attempt();
@@ -2432,17 +2602,22 @@ pub fn wait_progress(
                     current.episode.deliver(event.ts);
                 }
             }
-            Step::Proof => WaitEpisode::prove(&mut episode, event.ts, required),
-            // News the wait outlives: the next challenge keeps the base cadence.
+            Step::Proof => {
+                WaitEpisode::prove(&mut episode, event.ts, required);
+                quiet = ProofQuiet::proved(event.ts);
+            }
+            // News the wait outlives: the next challenge keeps the base
+            // cadence, and something changed since the proof.
             Step::News => {
                 if let Some(current) = episode.as_mut() {
                     current.earned = false;
                 }
+                quiet.unchanged = false;
             }
         }
     }
     let Some(WaitEpisode { episode, earned }) = episode else {
-        return WaitProgress::None;
+        return (WaitProgress::None, ProofQuiet::default());
     };
     let Episode {
         confirmations,
@@ -2454,7 +2629,7 @@ pub fn wait_progress(
     } else {
         cadence
     };
-    match episode.phase(now, cadence, spacing) {
+    let progress = match episode.phase(now, cadence, spacing) {
         Phase::Provisional => WaitProgress::Provisional {
             confirmations,
             required,
@@ -2473,7 +2648,8 @@ pub fn wait_progress(
             confirmations,
             required,
         },
-    }
+    };
+    (progress, quiet)
 }
 
 /// How many cadences an unchanged wait waits after a credited proof (#225).
@@ -2488,6 +2664,25 @@ fn unchanged_wait_spacing(cadence: u64) -> u64 {
         .and_then(|_| cadence.checked_mul(UNCHANGED_WAIT_CADENCES))
         .unwrap_or(cadence)
 }
+
+/// How long an UNCHANGED proof holds its wait challenge (#225): one cadence
+/// short of the `waiting-agent` ceiling (`cadence × OWN_WORK_AGE_CAP`), so a
+/// healthy unchanged wait is asked before it would read `blocked`, and a hung
+/// seat still meets a challenge. Measured from the proof, renewed only by a
+/// new proof. Overflow falls back to the base cadence.
+#[must_use]
+pub fn quiet_ceiling(cadence: u64) -> u64 {
+    OWN_WORK_AGE_CAP
+        .checked_sub(1)
+        .and_then(|cadences| cadence.checked_mul(cadences))
+        .unwrap_or(cadence)
+}
+
+/// How many idle-nudge cadences a live child task of the seat's tool defers
+/// the idle wording (#283; lead ruling D3: 2 h at the default 300 s — a
+/// whole `just release` ran 82 min). Measured from the task's first sighting
+/// in an unbroken run, never renewed by output, events or declarations.
+pub const CHILD_ACTIVITY_CAP: u64 = 24;
 
 /// Seconds of continuously observed idle before the state reminder; zero
 /// disables it. THE default: the watchdog's own `Knobs` and every reader of a
@@ -3394,7 +3589,26 @@ mod tests {
                 false,
                 Step::Reset,
             ),
-            ("peer", "send", "", "", false, Step::Reset),
+            // #225 / F576 (lead ruling D4): a send to the seat is information.
+            ("peer", "send", "", "", false, Step::Info),
+            ("peer", "ask", "r1", "", false, Step::Reset),
+            ("seat", "memo", "", "", true, Step::Info),
+            (
+                "watchdog",
+                "done-held",
+                "L1",
+                "confirmation 2/2",
+                false,
+                Step::Held,
+            ),
+            (
+                "watchdog",
+                "done-held",
+                "L2",
+                "confirmation 2/2",
+                false,
+                Step::Skip,
+            ),
             ("peer", "state", "done", "", false, Step::Reset),
         ];
         for (actor, action, reference, summary, own, want) in rows {
@@ -3481,8 +3695,10 @@ mod tests {
             ("watchdog", "done-challenge", "L1", "", false, Step::Reset),
             ("seat", "state", "blocked", "dep", true, Step::Proof),
             ("seat", "state", "waiting-agent", "", true, Step::Reset),
-            ("seat", "send", "", "", true, Step::News),
-            ("peer", "send", "", "", false, Step::News),
+            // #225: information keeps the earned spacing; other news does not.
+            ("seat", "send", "", "", true, Step::Info),
+            ("peer", "send", "", "", false, Step::Info),
+            ("peer", "ask", "r1", "", false, Step::News),
             ("telegram:1", "send", "", "", false, Step::Reset),
         ];
         for (actor, action, reference, summary, own, want) in rows {
@@ -3932,7 +4148,8 @@ mod tests {
                 required: 2,
             }
         );
-        let inbound = r#"{"ts":"2026-08-29T04:02:00Z","actor":"lead","action":"send","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
+        // An ACTIONABLE inbound record: since #225 a plain `send` is information.
+        let inbound = r#"{"ts":"2026-08-29T04:02:00Z","actor":"lead","action":"ask","ref":"ae-1","target":"opus5:builder","target_slot":"main","target_session":"aerewrite"}"#;
         assert_eq!(
             progress(
                 &[DONE_0, CHALLENGE_1, inbound, &late],
@@ -5303,7 +5520,7 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
         // stitched from two generations).
         let events = log(&[
             r#"{"ts":"2026-08-29T04:09:00Z","actor":"opus5:builder","action":"state","ref":"done"}"#,
-            r#"{"ts":"2026-08-29T04:00:00Z","actor":"fable5:lead","action":"send","target":"opus5:builder","summary":"answered"}"#,
+            r#"{"ts":"2026-08-29T04:00:00Z","actor":"fable5:lead","action":"ask","ref":"ae-1","target":"opus5:builder","summary":"answered"}"#,
         ]);
         let found = latest_relevant_event(&events, "aerewrite", "main", "opus5:builder")
             .expect("something is relevant");
@@ -5393,10 +5610,13 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
         let me = "opus5:builder";
         let judged = [
             (me, "state", r#","ref":"working""#, [true; 4]),
-            (me, "memo", r#","ref":"arch""#, DONE_ONLY),
-            (me, "send", r#","target":"colead""#, DONE_ONLY),
+            // #225 / F576 (lead ruling D4): the seat's own information
+            // leaves done standing; its own ask does not.
+            (me, "memo", r#","ref":"arch""#, [false; 4]),
+            (me, "send", r#","target":"colead""#, [false; 4]),
             (me, "ask", r#","ref":"ae-2","target":"colead""#, DONE_ONLY),
-            (me, "reply", r#","ref":"ae-7","target":"lead""#, DONE_ONLY),
+            (me, "reply", r#","ref":"ae-7","target":"lead""#, [false; 4]),
+            ("lead", "send", r#","ref":"ae-8""#, [false; 4]),
             (
                 "lead",
                 "reply",
@@ -5458,7 +5678,6 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
         }));
         // Every other peer delivery, and the brief records its spawner writes.
         for action in [
-            "send",
             "ask",
             "review",
             "interrupt",
