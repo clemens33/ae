@@ -35,7 +35,6 @@ fn s5_small_full_view_keeps_noise_dates_malformed_utf8_and_escaped_actions() {
     bytes.extend(
         f::birth(S, 20, &f::fields("codex", None, Some("sol"), Some("high")))
             .replace("worker-birth", "worker-\\u0062irth")
-            .trim_end_matches('\n')
             .bytes(),
     );
     let meta = format!("session_id={S}\n");
@@ -66,6 +65,29 @@ fn s5_small_full_view_keeps_noise_dates_malformed_utf8_and_escaped_actions() {
         "the whole pre-existing projection remains unchanged"
     );
     assert!(!format!("{actual:?}").contains(f::PRIVATE));
+}
+
+#[test]
+fn s5_archive_unterminated_escaped_final_birth_is_counted() {
+    let root = Fixture::new();
+    let bytes = f::birth(S, 20, &f::fields("codex", None, Some("sol"), Some("high")))
+        .replace("worker-birth", "worker-\\u0062irth")
+        .trim_end_matches('\n')
+        .as_bytes()
+        .to_vec();
+    assert!(
+        !bytes.ends_with(b"\n"),
+        "finite archive fixture exercises final EOF"
+    );
+    let expected = stats::fold(vec![Source::archive(S, Ok(bytes.clone()))], Some(S));
+    assert_eq!(expected.all.total, 1);
+    root.archive(S, &bytes);
+    root.build();
+    assert_eq!(
+        published(&root, Some(S)),
+        expected,
+        "a retained archive has a final EOF, unlike a live growing journal"
+    );
 }
 
 #[test]
