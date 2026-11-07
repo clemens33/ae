@@ -869,8 +869,12 @@ the snapshot age remain visible. Quota contains the quota table alone.
 
 Statistics, the seventh tab (`7`), counts recorded worker spawns from the
 journals retained in this state root: live sessions and validated kept
-archives, read by the one background reader, one source per job, on the first
-frame the tab shows and once per open. `m` switches the same read between All
+archives. `ae app` keeps those counts in the Statistics store under
+`<root>/stats/` on its own thread, and a spawn counts its own records as it
+journals them. The tab reads only the store's small view files, never a
+journal: at once when the tab is shown, then every 5 seconds while it stays
+shown, so a build in progress and its end land in the open tab. A hidden tab or
+a closed Settings reads nothing. `m` switches the same read between All
 retained and This session, the session Settings opened on; a session with no
 session id shows nothing rather than borrow All retained. One spawn is one
 `worker-birth` certificate, or one linked `spawn` whose certificate is lost,
@@ -882,21 +886,38 @@ selection as resolved at spawn. `none set` is no flag in the command, never a
 claim about the model the harness chose; `direct` is no `[clients]` label, a
 route and not an account; `unproved` is a command that proves neither a value
 nor an absence; `unknown` is no trusted record. No current meta or profile fills
-a cell. `Coverage: complete` means every source was read and every record
-trusted; otherwise `Partial` names the range, and each gap names its source: a
-missing, oversized, invalid or claimed source, a malformed or damaged record, a
-lost certificate, a conflict. An unproved flag and a live seat with no birth are
-notes, not gaps in coverage. One scan reads at most 512 sources and 256 MiB of
-content, 4 MiB of any one file, an archive's own meta and digest included, and
-says so past any of them. Directory listings have no such bound: one archive of
-millions of files costs its own step that long. The tab keeps no store of its
-own yet: a purge or a removed archive removes those spawns from the count.
-Meanwhile `ae app` maintains the Statistics store under `<root>/stats/` on its
-own thread, which the tab does not read yet. If the app finds a store file
+a cell. A live journal's last record counts once its line ends; an archive's
+last line counts as it is.
+
+`Coverage: complete` means every source the store registered is up to date,
+every source was read and every record trusted. Otherwise the numbers as last
+published stay drawn under a `Partial` line: `Partial: <k> of <n> sources not
+yet up to date` while the store catches up, `Partial: an update is in progress`
+while a publication is in flight, and `Partial: covers <range>` with one line
+per gap, each naming its source: a missing, oversized, invalid or claimed
+source, a malformed or damaged record, a lost certificate, a conflict. `<n>`
+counts the sources the store has registered, not a census of the state root. An
+unproved flag and a live seat with no birth are notes, not gaps in coverage.
+Before the first publication the tab says `Statistics are being built: no
+source read yet`; a damaged or oversized view says `Statistics are being built:
+<file> <reason>`, an unreadable one `Statistics cannot be read: <why>`, and
+neither draws a number. A session the store has not registered yet, or whose own
+view is damaged, shows that under This session while All retained keeps its
+numbers. A purge removes its archive's counts at once; a deleted session or
+archive drops out at the next update.
+
+`r` on the tab rebuilds the store from the journals: the upkeep thread swaps the
+store for an empty one under its lock and builds it again, and the tab says
+`Statistics are being built` until the first publication. A lock still held
+after 1 second leaves every file as it was and says `Statistics: the store is
+busy; nothing was removed. Press r again.` An `r` while no upkeep thread runs,
+across a restart, says `rebuild waits: statistics upkeep is not running` and
+runs once when one runs again; an app that exits first drops it. Only the
+Settings open that asked draws the outcome. If the app finds a store file
 damaged, it flashes `Statistics: <file> was damaged (<reason>); rebuilding the
 store` and rebuilds the store once. Damage met again during that rebuild flashes
 `Statistics: the store was damaged again (<reason>); upkeep stopped`, and the
-upkeep stays stopped until the next `ae app` run.
+upkeep stays stopped until `r` or the next `ae app` run.
 
 Quota and Clients show retained values at once, under a line `last updated <age> ago — refreshing` (the first open of a run says `loading`), and replace them in place when the read lands, the line going with them; a read that fails outright keeps the values under `refresh failed · showing values from <age> ago`. The existing snapshots refresh while Settings is open; config, about and instructions read
 once per open. A torn config shows one honest row naming the file. The
