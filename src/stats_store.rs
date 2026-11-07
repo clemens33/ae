@@ -104,6 +104,14 @@ mod s3_purge_recovery;
     clippy::disallowed_methods,
     clippy::match_wildcard_for_single_variants,
     clippy::semicolon_if_nothing_returned,
+    reason = "frozen S3 amendment: fixture IO changes and reads the real state root, and reuses the frozen S3 cases module"
+)]
+mod s3_purge_retired;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    clippy::semicolon_if_nothing_returned,
     clippy::similar_names,
     reason = "frozen S3 amendment: reuses the frozen S3 cases module and its fold oracle; frozen binding names"
 )]
