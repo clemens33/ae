@@ -2602,24 +2602,157 @@ pub enum Reset {
     Busy,
 }
 
-/// The tab's answer: the four bounded view files only, never a journal.
+/// The tab's answer, read without the lock from the epoch, the root view,
+/// the intent and the session's view alone: never a journal, a meta or an
+/// archive. A damaged or missing root refuses the answer; a session's own
+/// trouble stays in [`ThisProgress`], the root's counts still shown.
 #[must_use]
 pub fn glance(dir: &mut dyn Dir, this: Option<&str>) -> Glance {
-    // B0 seam: no reading yet.
-    let _ = (dir, this);
-    Glance::Building
+    glance_of(dir, this).unwrap_or_else(Glance::Refused)
 }
 
-/// Replace the payload with an empty one in the next epoch, under
-/// `stats.lock` taken within `wait`.
+/// What the store holds for one canonical session, read beside a root.
+enum Session {
+    Unregistered,
+    Damaged(Refused),
+    Ready(Box<stats::Scoped>, Progress),
+}
+
+/// [`shown_of`]'s reads, each scope kept apart: a session view of another
+/// generation than its row is read again with the root, at most [`READS`]
+/// times, and still differing it is that session's damage alone.
+fn glance_of(dir: &mut dyn Dir, this: Option<&str>) -> Result<Glance, Refused> {
+    let key: Option<Key> = this
+        .filter(|id| is_canonical_uuid(id))
+        .map(|id| Some(id.to_owned()));
+    let mut first = None;
+    let mut moved = false;
+    let mut differing = None;
+    for _ in 0..READS {
+        let Some(epoch) = read_epoch(dir)? else {
+            return Ok(Glance::Building);
+        };
+        let Some(root) = load_root(dir, epoch)? else {
+            return Ok(Glance::Building);
+        };
+        moved |= *first.get_or_insert(root.generation) != root.generation;
+        let updating = !matches!(dir.read(INTENT, INTENT_CAP), Read::Absent);
+        let session = match key.as_ref().map(|key| session_of(dir, epoch, &root, key)) {
+            None => None,
+            Some(Ok(session)) => Some(session),
+            Some(Err(name)) => {
+                differing = Some((epoch, root, updating, name));
+                continue;
+            }
+        };
+        return Ok(ready(epoch, &root, updating, session));
+    }
+    let Some((epoch, root, updating, name)) = differing else {
+        return Ok(Glance::Building);
+    };
+    let damaged = Session::Damaged(wrong(&name, "generation differs from the root"));
+    Ok(ready(epoch, &root, updating || moved, Some(damaged)))
+}
+
+/// Session `key`'s counts beside `root`, the id-less group's included; the
+/// view's name when its generation is not the one the root's row records (a
+/// publication between the two reads, or damage).
+fn session_of(dir: &mut dyn Dir, epoch: u64, root: &Root, key: &Key) -> Result<Session, String> {
+    let Some(row) = root.rows.get(key) else {
+        return Ok(Session::Unregistered);
+    };
+    let name = view_name(key);
+    match load_view(dir, epoch, key) {
+        Ok(Some(view)) if view.generation == row.generation => {
+            let mut scope = root.covering.clone();
+            scope.add(&view.tally);
+            let progress = Progress {
+                listed: row.listed,
+                pending: row.pending,
+            };
+            Ok(Session::Ready(Box::new(scope.scoped()), progress))
+        }
+        Ok(Some(_)) => Err(name),
+        Ok(None) => Ok(Session::Damaged(wrong(&name, "missing"))),
+        Err(refused) => Ok(Session::Damaged(refused)),
+    }
+}
+
+/// The answer of `root` read at `epoch`, with `session` when one was asked.
+fn ready(epoch: u64, root: &Root, updating: bool, session: Option<Session>) -> Glance {
+    let (this, progress) = match session {
+        None => (ThisSession::NoUuid, ThisProgress::NoUuid),
+        Some(Session::Ready(scoped, progress)) => {
+            (ThisSession::Ready(scoped), ThisProgress::Ready(progress))
+        }
+        Some(Session::Unregistered) => (ThisSession::NoUuid, ThisProgress::Unregistered),
+        Some(Session::Damaged(refused)) => (ThisSession::NoUuid, ThisProgress::Damaged(refused)),
+    };
+    Glance::Ready {
+        view: View {
+            all: root.all.scoped(),
+            this,
+        },
+        epoch,
+        r#gen: root.generation,
+        updating,
+        all: Progress {
+            listed: root.listed(),
+            pending: root.pending(),
+        },
+        this: progress,
+    }
+}
+
+/// The `r` of the Statistics tab: under `stats.lock` taken within `wait`,
+/// recovery applied whole, then the payload replaced by an empty one in the
+/// next epoch ([`repair`]'s swap, reading under the lock as a repair may),
+/// so the upkeep rebuilds it from the journals. The lock and the journals
+/// are never touched. A lock held past `wait`, or every attempt stale, is
+/// [`Reset::Busy`] with nothing written.
 ///
 /// # Errors
 ///
-/// Recovery or the repair refused.
+/// An IO error, recovery or the repair refused, or a warm over its cap.
 pub fn reset(root: &Path, wait: Duration) -> Result<Reset, Refused> {
-    // B0 seam: nothing touched yet.
-    let _ = (root, wait);
-    Ok(Reset::Busy)
+    let mut files = Files::at(root);
+    let applied = |files: &mut Files, plan: &Plan| {
+        plan.apply(files, plan.ops.len())
+            .map_err(|why| Refused::Io(why.to_string()))
+    };
+    let mut held = Duration::ZERO;
+    let taken = transact(
+        root,
+        &mut files,
+        &mut FileJournals::at(root),
+        wait,
+        &mut held,
+        |files, _| {
+            // The F1 exception: a reset is a repair, which reads under the lock.
+            files.exception(|files| {
+                match recovery(files) {
+                    Ok(owed) => applied(files, &owed)?,
+                    // Damage recovery cannot get past: the repair takes it over.
+                    Err(refused) if refused.damage().is_some() => {}
+                    Err(refused) => return Err(refused),
+                }
+                let plan = repair(files)?;
+                if plan.ops.is_empty() {
+                    return Ok(Reset::Empty);
+                }
+                applied(files, &plan)?;
+                let epoch = read_epoch(files)?.ok_or_else(|| wrong(EPOCH, "missing"))?;
+                Ok(Reset::Rebuilt { epoch })
+            })
+        },
+    );
+    match taken {
+        Taken::Done(outcome) => outcome,
+        Taken::Unlocked(why) if why.kind() == io::ErrorKind::WouldBlock => Ok(Reset::Busy),
+        Taken::Contended => Ok(Reset::Busy),
+        Taken::Unlocked(why) => Err(Refused::Io(format!("{LOCK}: {why}"))),
+        Taken::Over { recorded, cap } => Err(Refused::Snapshot { recorded, cap }),
+    }
 }
 
 /// Every [`Files`] read on this thread since the last call: the payload
