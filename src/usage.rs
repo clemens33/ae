@@ -1178,7 +1178,7 @@ fn read_regular(path: &Path, cap: u64, budget: &mut Budget) -> Result<RegularRea
     Ok(Some((bytes, modified)))
 }
 
-/// A session meta for the statistics scan, under the same cap every reader of
+/// A session meta for the Statistics store, under the same cap every reader of
 /// one uses.
 pub(crate) fn meta_bytes(
     path: &Path,
@@ -1187,7 +1187,7 @@ pub(crate) fn meta_bytes(
     bounded_bytes(path, SESSION_META_MAX_BYTES, budget)
 }
 
-/// One bounded whole file for the statistics scan, with [`read_regular`]'s own
+/// One bounded whole file for the Statistics store, with [`read_regular`]'s own
 /// checks: a link or special file never opens, and the file read is the file
 /// checked. A file over `cap` and a spent budget both truncate there, so the
 /// size tells them apart.
