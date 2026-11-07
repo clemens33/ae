@@ -67,6 +67,14 @@ mod s3_census;
     clippy::semicolon_if_nothing_returned,
     reason = "frozen S3 amendment: fixture IO changes and reads the real state root, and reuses the frozen S3 cases module"
 )]
+mod s3_chore_busy;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    clippy::semicolon_if_nothing_returned,
+    reason = "frozen S3 amendment: fixture IO changes and reads the real state root, and reuses the frozen S3 cases module"
+)]
 mod s3_commit_source;
 #[cfg(test)]
 #[allow(
