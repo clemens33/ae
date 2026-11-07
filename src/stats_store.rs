@@ -1790,3 +1790,11 @@ fn within(this: &Scoped, all: &Scoped) -> Result<(), Error> {
         Err(Error::Damaged("this scope outside all"))
     }
 }
+#[cfg(test)]
+pub(crate) mod s5_fixture;
+#[cfg(test)]
+mod s5_requirements;
+#[cfg(test)]
+mod s5_retained;
+#[cfg(test)]
+mod s5_store;

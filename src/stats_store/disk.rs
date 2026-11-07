@@ -768,8 +768,9 @@ impl DirStatus {
     }
 }
 
-impl Dir for Files {
-    fn read(&mut self, name: &str, cap: u64) -> Read {
+impl Files {
+    /// One read in this `Files`' mode, before the test observer sees it.
+    fn read_unobserved(&mut self, name: &str, cap: u64) -> Read {
         let path = match self.path(name) {
             Ok(path) => path,
             Err(why) => return Read::Unreadable(why.to_string()),
@@ -783,6 +784,21 @@ impl Dir for Files {
                 warmed.read
             }
         }
+    }
+}
+
+impl Dir for Files {
+    fn read(&mut self, name: &str, cap: u64) -> Read {
+        let read = self.read_unobserved(name, cap);
+        #[cfg(test)]
+        {
+            let bytes = match &read {
+                Read::Bytes(bytes) => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                _ => 0,
+            };
+            observe::NAMES.with(|names| names.borrow_mut().push((name.to_owned(), bytes)));
+        }
+        read
     }
 
     fn apply(&mut self, op: &Op) -> io::Result<()> {
@@ -931,6 +947,8 @@ mod observe {
 
     thread_local! {
         pub(super) static FILES: RefCell<Vec<FileEvent>> = const { RefCell::new(Vec::new()) };
+        /// Each `Files` read: the payload name and the bytes it returned.
+        pub(super) static NAMES: RefCell<Vec<(String, u64)>> = const { RefCell::new(Vec::new()) };
         pub(super) static SYNC_FAULT: RefCell<Option<String>> = const { RefCell::new(None) };
         pub(super) static JOURNALS: Cell<JournalReads> = const {
             Cell::new(JournalReads { total: 0, under_lock: 0 })
@@ -2524,6 +2542,92 @@ pub enum Shown {
         listed: u64,
     },
     Refused(Refused),
+}
+
+// --- the tab's read and reset (S5) ---------------------------------------------
+
+/// How long a reset waits for `stats.lock`.
+pub const RESET_WAIT: Duration = Duration::from_secs(1);
+
+/// One scope's sources: those the store has registered, and of them those
+/// whose reading has not reached what was seen of the journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Progress {
+    pub listed: u64,
+    pub pending: u64,
+}
+
+/// What the store holds for the session the tab was opened on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThisProgress {
+    /// No canonical session id was asked for.
+    NoUuid,
+    /// The root has no row for the session yet.
+    Unregistered,
+    /// The session's view could not be read in agreement with the root.
+    Damaged(Refused),
+    Ready(Progress),
+}
+
+/// What the Statistics tab shows, read without the lock: [`Shown`] with
+/// each scope's sources, and a session's damage kept to its own scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "read once per refresh and matched at once; boxing the view buys nothing"
+)]
+pub enum Glance {
+    /// No published answer to show.
+    Building,
+    Ready {
+        view: View,
+        epoch: u64,
+        r#gen: u64,
+        /// A publication is in flight or a crash left one.
+        updating: bool,
+        all: Progress,
+        this: ThisProgress,
+    },
+    Refused(Refused),
+}
+
+/// What a reset did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reset {
+    /// The payload replaced by an empty one in this epoch.
+    Rebuilt { epoch: u64 },
+    /// Nothing to replace.
+    Empty,
+    /// The lock was held elsewhere past the wait: nothing touched.
+    Busy,
+}
+
+/// The tab's answer: the four bounded view files only, never a journal.
+#[must_use]
+pub fn glance(dir: &mut dyn Dir, this: Option<&str>) -> Glance {
+    // B0 seam: no reading yet.
+    let _ = (dir, this);
+    Glance::Building
+}
+
+/// Replace the payload with an empty one in the next epoch, under
+/// `stats.lock` taken within `wait`.
+///
+/// # Errors
+///
+/// Recovery or the repair refused.
+pub fn reset(root: &Path, wait: Duration) -> Result<Reset, Refused> {
+    // B0 seam: nothing touched yet.
+    let _ = (root, wait);
+    Ok(Reset::Busy)
+}
+
+/// Every [`Files`] read on this thread since the last call: the payload
+/// name and the content bytes it returned (0 for any answer but bytes).
+#[cfg(test)]
+#[must_use]
+pub fn take_payload_names() -> Vec<(String, u64)> {
+    observe::NAMES.with(std::cell::RefCell::take)
 }
 
 // --- event time (S4) ------------------------------------------------------------

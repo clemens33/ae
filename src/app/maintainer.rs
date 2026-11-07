@@ -93,10 +93,32 @@ impl Probe {
 
 /// Start the upkeep of the store under `root`, its notices sent on `notices`.
 pub(super) fn start(root: PathBuf, notices: Sender<Wake>) -> std::io::Result<Running> {
-    spawn(root, notices, Probe::default())
+    spawn(root, notices, Probe::default(), None)
 }
 
-fn spawn(root: PathBuf, notices: Sender<Wake>, probe: Probe) -> std::io::Result<Running> {
+/// What the app hands the thread: stop, or reset the store for the
+/// Statistics tab of an overlay generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Command {
+    Stop,
+    Reset(u64),
+}
+
+/// Where a reset went: to a running thread, or held until one runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Handed {
+    Sent,
+    Held,
+}
+
+/// Start the thread over `seed` when given, else over a new maintainer
+/// made inside the thread.
+fn spawn(
+    root: PathBuf,
+    notices: Sender<Wake>,
+    probe: Probe,
+    seed: Option<Maintainer>,
+) -> std::io::Result<Running> {
     let (stop, stopped) = mpsc::channel();
     let (finished, done) = mpsc::channel();
     let token = Arc::new(());
@@ -105,7 +127,7 @@ fn spawn(root: PathBuf, notices: Sender<Wake>, probe: Probe) -> std::io::Result<
     let worker = std::thread::Builder::new()
         .name("ae-app-stats".to_owned())
         .spawn(move || {
-            upkeep(&root, &stopped, &notices, &probe);
+            upkeep(&root, seed, &stopped, &notices, &probe);
             // Completion is the token gone, before the done signal.
             drop(token);
             let _ = finished.send(());
@@ -120,8 +142,14 @@ fn spawn(root: PathBuf, notices: Sender<Wake>, probe: Probe) -> std::io::Result<
 }
 
 /// Step until stopped.
-fn upkeep(root: &Path, stop: &Receiver<()>, notices: &Sender<Wake>, probe: &Probe) {
-    let mut maintainer = Maintainer::new(root, LIMITS, LOCK_WAIT);
+fn upkeep(
+    root: &Path,
+    seed: Option<Maintainer>,
+    stop: &Receiver<()>,
+    notices: &Sender<Wake>,
+    probe: &Probe,
+) {
+    let mut maintainer = seed.unwrap_or_else(|| Maintainer::new(root, LIMITS, LOCK_WAIT));
     let mut told = false;
     loop {
         probe.pass();
@@ -271,6 +299,21 @@ impl Upkeep {
         }
     }
 
+    /// Hand the thread a reset for the Statistics tab of `generation`; held
+    /// once while no thread runs, and handed when one runs again.
+    pub(super) fn reset(&mut self, generation: u64) -> Handed {
+        // B0 seam: nothing handed yet.
+        let _ = generation;
+        Handed::Held
+    }
+
+    /// The reset held until a thread runs, if any.
+    #[cfg(test)]
+    pub(super) fn owed_reset(&self) -> Option<u64> {
+        // B0 seam: nothing held yet.
+        None
+    }
+
     /// The thread this owner runs, if any.
     #[cfg(test)]
     pub(super) fn running(&self) -> Option<&Running> {
@@ -291,7 +334,28 @@ impl Upkeep {
         probe.gate.arm();
         let hold = Hold(Arc::clone(&probe.gate));
         let upkeep = Self {
-            running: spawn(root.clone(), notices.clone(), probe).ok(),
+            running: spawn(root.clone(), notices.clone(), probe, None).ok(),
+            stopping: None,
+            owed: false,
+            root,
+            notices,
+        };
+        (upkeep, hold)
+    }
+
+    /// [`Upkeep::start_holding`] over the given `maintainer` instead of a
+    /// new one: a test drives a real one to the state it needs first.
+    #[cfg(test)]
+    pub(super) fn start_with_holding(
+        root: PathBuf,
+        notices: Sender<Wake>,
+        maintainer: Maintainer,
+    ) -> (Self, Hold) {
+        let probe = Probe::default();
+        probe.gate.arm();
+        let hold = Hold(Arc::clone(&probe.gate));
+        let upkeep = Self {
+            running: spawn(root.clone(), notices.clone(), probe, Some(maintainer)).ok(),
             stopping: None,
             owed: false,
             root,
@@ -405,6 +469,9 @@ impl Ended {
     }
 }
 
+#[cfg(test)]
+#[path = "s5_upkeep.rs"]
+mod s5_upkeep;
 #[cfg(test)]
 #[path = "maintainer_s2_spec.rs"]
 mod spec;

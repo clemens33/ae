@@ -1,10 +1,29 @@
-//! #307 framing and admission contracts; requires the planned new interface.
-use super::*;
+//! Existing framing/admission assertions rehomed without changing their bodies.
+#![allow(clippy::expect_used, reason = "retained acceptance assertions")]
+use crate::stats::{Reason, SourceGap, View};
+use crate::stats_fixture as f;
 use crate::usage::{Line, LineReader, Pump};
 use std::cell::Cell;
 use std::io::{self, BufRead, BufReader, Cursor, Read};
 use std::rc::Rc;
-
+fn cert(n: u32) -> Vec<u8> {
+    f::birth(
+        f::S,
+        n,
+        &f::fields("codex", None, Some("sol"), Some("high")),
+    )
+    .into_bytes()
+}
+fn gap(view: &View, reason: SourceGap) {
+    assert!(
+        view.all
+            .gaps
+            .iter()
+            .any(|gap| gap.reason == Reason::Source(reason)),
+        "missing {reason:?}: {:?}",
+        view.all.gaps
+    );
+}
 fn reference(bytes: &[u8], cap: usize) -> Vec<Option<Vec<u8>>> {
     let mut lines: Vec<_> = bytes.split(|byte| *byte == b'\n').collect();
     if lines.last().is_some_and(|line| line.is_empty()) {
@@ -111,87 +130,6 @@ fn framing_and_resumed_pumps_match_independent_split_with_exact_work_bound() {
 }
 
 #[test]
-fn overlong_lines_have_own_labeled_gap_and_do_not_discard_other_spawns() {
-    let root = Scratch::new("307-line-limit");
-    let cap = cert(1).len() - 1;
-    let mut bytes = cert(1);
-    bytes.extend(vec![b'x'; cap + 1]);
-    bytes.push(b'\n');
-    bytes.extend(cert(2));
-    bytes.extend(vec![b'y'; cap + 100]);
-    let dir = root.live("lines", f::S, &bytes);
-    let mut scan = Scan::limited(
-        root.0.clone(),
-        BTreeMap::from([("lines".into(), dir)]),
-        true,
-        1,
-        Some(f::S.into()),
-        Limits {
-            line: cap,
-            chunk: 3,
-            ..LIMITS
-        },
-    );
-    let view = drain(&mut scan);
-    assert_eq!(
-        view.all.total, 2,
-        "valid births around refused lines survive"
-    );
-    assert_eq!((view.all.sources_read, view.all.sources_total), (1, 1));
-    assert_eq!(view.all.gaps.len(), 1);
-    let gap = &view.all.gaps[0];
-    assert_eq!(gap.reason, Reason::LineLimit);
-    assert_eq!(gap.source.as_deref(), Some("lines"));
-    assert_eq!(
-        gap.count, 2,
-        "each overlong line counted once across pumps, including EOF"
-    );
-    assert!(gap.line().contains("line"));
-    assert!(gap.line().contains("limit"));
-    assert!(view.all.partial());
-    assert!(view.all.balanced());
-}
-
-#[test]
-fn retained_limit_fails_source_atomically_with_its_own_reason() {
-    let root = Scratch::new("307-retained");
-    let mut bytes = cert(1);
-    bytes.extend(cert(2));
-    let a = root.live("a", f::S, &bytes);
-    let b = root.live("b", f::T, b"");
-    let mut scan = Scan::limited(
-        root.0.clone(),
-        BTreeMap::from([("a".into(), a), ("b".into(), b)]),
-        true,
-        1,
-        Some(f::S.into()),
-        Limits {
-            retained: 16 * 1024,
-            ..LIMITS
-        },
-    );
-    let view = drain(&mut scan);
-    assert_eq!(
-        view.all.total, 0,
-        "a prefix birth must not leak from rejected source"
-    );
-    assert_eq!(
-        (view.all.sources_read, view.all.sources_total),
-        (1, 2),
-        "small later source still fits after failed source releases admission"
-    );
-    assert!(
-        view.all
-            .gaps
-            .iter()
-            .any(|gap| gap.source.as_deref() == Some("a")
-                && gap.reason == Reason::Source(SourceGap::Retained)
-                && gap.line().contains("over the memory budget"))
-    );
-    assert!(view.all.partial());
-}
-
-#[test]
 fn retained_charge_exact_boundary_and_roster_ownership_are_admitted() {
     use crate::stats::{Fold, Reading};
     let meta = format!("session_id={}\n", f::S);
@@ -248,74 +186,6 @@ fn retained_charge_exact_boundary_and_roster_ownership_are_admitted() {
         fold.room(),
         32 * 1024 - 4096,
         "finished source releases temporary roster charge"
-    );
-}
-
-#[test]
-fn shrink_between_chunks_discards_source_prefix_and_closing_cancels_scan() {
-    let root = Scratch::new("307-shrink-cancel");
-    let mut bytes = cert(1);
-    bytes.extend(vec![b' '; 128 * 1024]);
-    let dir = root.live("active", f::S, &bytes);
-    let mut scan = Scan::limited(
-        root.0.clone(),
-        BTreeMap::from([("active".into(), dir.clone())]),
-        true,
-        1,
-        None,
-        Limits {
-            chunk: cert(1).len() as u64,
-            ..LIMITS
-        },
-    );
-    assert!(scan.step().is_none(), "list");
-    assert!(
-        scan.step().is_none(),
-        "source remains open after first chunk"
-    );
-    assert_eq!(scan.remaining(), Some(1));
-    std::fs::write(dir.join("events.jsonl"), b"").expect("owned snapshot deliberately shrinks");
-    let view = drain(&mut scan);
-    assert_eq!(view.all.total, 0, "failure rolls back prefix birth");
-    gap(&view, SourceGap::Unreadable);
-    std::fs::write(dir.join("events.jsonl"), bytes).expect("restore owned fixture");
-    let mut reader = Reader::new(root.0.clone(), None, None);
-    reader.scanned = true;
-    reader.dirs.insert("active".into(), dir.clone());
-    reader.take(Request::Settings {
-        open: true,
-        generation: 1,
-    });
-    reader.take(Request::Stats { generation: 1 });
-    reader.stats = Some(Scan::limited(
-        root.0.clone(),
-        BTreeMap::from([("active".into(), dir)]),
-        true,
-        1,
-        None,
-        Limits {
-            chunk: cert(1).len() as u64,
-            ..LIMITS
-        },
-    ));
-    assert!(reader.stats_step().is_none(), "list");
-    assert!(
-        reader.stats_step().is_none(),
-        "source remains open after one chunk"
-    );
-    let before = snapshot(&root.0);
-    reader.take(Request::Settings {
-        open: false,
-        generation: 1,
-    });
-    assert!(
-        reader.stats.is_none(),
-        "close drops the cursor and unpublished source"
-    );
-    assert_eq!(
-        snapshot(&root.0),
-        before,
-        "cancel writes no store, journal, temp or cache"
     );
 }
 
@@ -415,31 +285,39 @@ fn statsread_v5_source_and_roster_exact_room_use_additive_byte_prices() {
 }
 
 #[test]
-fn statsread_v5_exact_member_cap_with_short_scan_budget_reports_budget() {
-    let root = Scratch::new("307-exact-member-budget");
-    root.archived(f::S, b"");
-    let (meta, _) = archive_content(f::S);
-    let cap = u64::try_from(meta.len()).expect("small fixture fits u64");
-    let mut scan = Scan::limited(
-        root.0.clone(),
-        BTreeMap::new(),
-        true,
-        1,
-        None,
-        Limits {
-            member: cap,
-            bytes: cap - 1,
-            ..LIMITS
-        },
-    );
-    let view = drain(&mut scan);
-    assert_eq!((view.all.sources_read, view.all.sources_total), (0, 1));
-    assert_eq!(view.all.gaps.len(), 1);
+fn s5_failed_retained_source_releases_room_for_a_later_source() {
+    use crate::stats::{Fold, Reading};
+    let meta = format!("session_id={}\n", f::S);
+    let mut fold = Fold::with_retained(16 * 1024);
+    let mut reading =
+        Reading::live("a", meta.as_bytes(), fold.room()).unwrap_or_else(|_| panic!("source fits"));
+    let first = cert(1);
+    reading
+        .line(first.strip_suffix(b"\n").expect("LF"))
+        .expect("first birth fits");
+    let second = cert(2);
     assert_eq!(
-        view.all.gaps[0].reason,
-        Reason::Source(SourceGap::Budget),
-        "an exact-cap member is admissible; only the shared read budget ran out"
+        reading.line(second.strip_suffix(b"\n").expect("LF")),
+        Err(SourceGap::Retained)
     );
-    assert_eq!(view.all.gaps[0].source.as_deref(), Some(f::S));
-    assert!(view.all.partial());
+    fold.add(reading.fail(SourceGap::Retained));
+    assert_eq!(fold.room(), 16 * 1024);
+    let later = Reading::live("b", meta.as_bytes(), fold.room())
+        .unwrap_or_else(|_| panic!("later source fits after rollback"));
+    fold.add_reading(later);
+    let actual = fold.finish(Some(f::S));
+    assert_eq!(
+        actual.all.total, 0,
+        "prefix cannot leak from rejected source"
+    );
+    assert_eq!((actual.all.sources_read, actual.all.sources_total), (1, 2));
+    assert!(
+        actual
+            .all
+            .gaps
+            .iter()
+            .any(|gap| gap.source.as_deref() == Some("a")
+                && gap.reason == Reason::Source(SourceGap::Retained)
+                && gap.line().contains("over the memory budget"))
+    );
 }

@@ -799,7 +799,7 @@ impl App {
                     self.settings_bodies.live_seats = Some(seats);
                 }
             }
-            Answer::Stats { generation, view } => self.stats_landed(generation, view),
+            Answer::Stats { generation, glance } => self.stats_landed(generation, &glance),
             Answer::Core(seen) => self.upgrade = seen,
             Answer::Handover { view, at } => {
                 self.keep = (!self.touched).then_some(Keep { view, at });
@@ -1271,16 +1271,30 @@ impl App {
             if let Some(ask) = &self.ask {
                 let _ = ask.send(Request::Stats {
                     generation: open.generation,
+                    shown: true,
                 });
             }
         }
     }
 
     /// A finished scan, for the open it was asked for and no other.
-    fn stats_landed(&mut self, generation: u64, view: Box<crate::stats::View>) {
+    fn stats_landed(&mut self, generation: u64, glance: &crate::stats_store::disk::Glance) {
+        // B0 seam adapter: the numbers only, as before.
+        let (view, _store) = settings::StoreLine::of(glance);
         if self.model.settings_generation(generation) {
-            self.settings_bodies.stats.view = Some(view);
+            self.settings_bodies.stats.view = view;
         }
+    }
+
+    /// `r` on the Statistics tab: a reset owed to the upkeep.
+    fn ask_reset(&mut self) {
+        // B0 seam: no reset asked yet.
+    }
+
+    /// The reset owed to the upkeep, handed over once.
+    fn take_reset(&mut self) -> Option<u64> {
+        // B0 seam: none owed yet.
+        None
     }
 
     /// Show the other scope of the read already held.
@@ -4724,6 +4738,8 @@ fn drain(
                 redraw = true;
                 continue;
             }
+            // B0 seam: a reset's outcome is not drawn yet.
+            Wake::StatsReset { .. } => continue,
             Wake::Closed => return None,
         };
         redraw |= take_keys(app, keyed)?;
@@ -5250,6 +5266,8 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
             app.flip_stats_scope();
             Some(true)
         }
+        // B0 seam: `r` asks for nothing yet.
+        model::Act::StatsReset => Some(false),
         model::Act::Compose => {
             app.write(true);
             Some(true)
@@ -11735,3 +11753,5 @@ mod tests {
         );
     }
 }
+#[cfg(test)]
+mod s5_app;

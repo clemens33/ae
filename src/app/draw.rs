@@ -7976,4 +7976,6 @@ mod tests {
     }
 }
 #[cfg(test)]
+mod s5_draw;
+#[cfg(test)]
 mod s5_retention;

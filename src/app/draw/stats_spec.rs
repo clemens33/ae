@@ -74,8 +74,8 @@ fn statistics_header_explains_configured_evidence_ranges_gaps_and_retention() {
         "[clients]",
         "route, not an account",
         "purge",
-        "removed archive",
-        "No store",
+        "archive's counts at once",
+        "from a store kept up to date",
         "Legacy spawns: 2",
         "lower bound",
     ] {

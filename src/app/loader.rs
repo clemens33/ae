@@ -40,8 +40,6 @@ mod read_spec;
 #[cfg(test)]
 mod records_spec;
 mod stats;
-#[cfg(test)]
-mod stats_spec;
 
 /// The most sessions whose consoles are kept read, home and the selection
 /// among them.
@@ -65,8 +63,9 @@ pub(super) enum Request {
     Records(Option<Box<RecordsAsk>>),
     /// An End just handed to its owner: watch for its result.
     Ending(Box<EndingAsk>),
-    /// The Statistics tab was first shown under this overlay generation.
-    Stats { generation: u64 },
+    /// The Statistics tab is shown (`shown`) or no longer shown under this
+    /// overlay generation.
+    Stats { generation: u64, shown: bool },
 }
 
 /// What an open peek panel asks the reader to capture, every refresh: the
@@ -145,6 +144,11 @@ pub(super) enum Wake {
     Answer(Box<Answer>),
     /// One line for the flash, from the Statistics store's upkeep thread.
     Notice(String),
+    /// What became of the reset the Statistics tab of `generation` asked for.
+    StatsReset {
+        generation: u64,
+        outcome: Result<crate::stats_store::disk::Reset, crate::stats_store::disk::Refused>,
+    },
 }
 
 /// One answer from the reader.
@@ -211,10 +215,10 @@ pub(super) enum Answer {
         name: String,
         line: String,
     },
-    /// One finished statistics scan for `generation`.
+    /// What the Statistics store shows, read for `generation`.
     Stats {
         generation: u64,
-        view: Box<crate::stats::View>,
+        glance: Box<crate::stats_store::disk::Glance>,
     },
     /// How pressed each lead-pair seat of session `name` (bound to `id`) is,
     /// by seat name: its own account's judged quota, `None` when unknown.
@@ -600,8 +604,8 @@ impl Reader {
                 self.endings.retain(|held| held.name != ask.name);
                 self.endings.push(*ask);
             }
-            Request::Stats { generation } => {
-                if matches!(self.settings, Some((open, _)) if open == generation) {
+            Request::Stats { generation, shown } => {
+                if shown && matches!(self.settings, Some((open, _)) if open == generation) {
                     self.stats = Some(self.stats_scan(generation));
                 }
             }
@@ -620,11 +624,36 @@ impl Reader {
 
     /// One step of the statistics scan: the answer when it is the last.
     fn stats_step(&mut self) -> Option<Answer> {
+        use crate::stats_store::disk::{Glance, Progress, ThisProgress};
         let scan = self.stats.as_mut()?;
-        let view = Box::new(scan.step()?);
+        let view = scan.step()?;
         let generation = scan.generation();
         self.stats = None;
-        Some(Answer::Stats { generation, view })
+        // B0 seam adapter: the scan's view in the store's answer shape.
+        let this = match view.this {
+            crate::stats::ThisSession::Ready(_) => ThisProgress::Ready(Progress::default()),
+            crate::stats::ThisSession::NoUuid => ThisProgress::NoUuid,
+        };
+        let glance = Glance::Ready {
+            view,
+            epoch: 0,
+            r#gen: 0,
+            updating: false,
+            all: Progress::default(),
+            this,
+        };
+        Some(Answer::Stats {
+            generation,
+            glance: Box::new(glance),
+        })
+    }
+
+    /// One read of the Statistics store for the watched tab, stamped `now`:
+    /// an answer only when what it shows changed.
+    pub(super) fn stats_read(&mut self, now: Instant) -> Option<Answer> {
+        // B0 seam: no store read yet.
+        let _ = now;
+        None
     }
 
     /// Whether session `name` has a console to read through.
@@ -2900,5 +2929,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0, "no flight");
     }
 }
+#[cfg(test)]
+mod s5_loader;
 #[cfg(test)]
 mod s5_red;

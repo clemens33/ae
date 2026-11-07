@@ -1,4 +1,4 @@
-//! #287 slice2: real App wire, once-per-open reads, scope and generation gates.
+//! #287 contracts adapted for S5 shown watches, preserving scope and generation assertions.
 use std::sync::mpsc::{self, Receiver};
 use std::time::Instant;
 
@@ -45,7 +45,10 @@ fn key(app: &mut App, word: &str) {
 fn requests(rx: &Receiver<Request>) -> Vec<u64> {
     rx.try_iter()
         .filter_map(|request| match request {
-            Request::Stats { generation } => Some(generation),
+            Request::Stats {
+                generation,
+                shown: true,
+            } => Some(generation),
             _ => None,
         })
         .collect()
@@ -53,7 +56,22 @@ fn requests(rx: &Receiver<Request>) -> Vec<u64> {
 fn answer(app: &mut App, generation: u64) {
     app.answer(Answer::Stats {
         generation,
-        view: Box::new(view()),
+        glance: Box::new(crate::stats_store::disk::Glance::Ready {
+            view: view(),
+            epoch: 1,
+            r#gen: 1,
+            updating: false,
+            all: crate::stats_store::disk::Progress {
+                listed: 2,
+                pending: 0,
+            },
+            this: crate::stats_store::disk::ThisProgress::Ready(
+                crate::stats_store::disk::Progress {
+                    listed: 1,
+                    pending: 0,
+                },
+            ),
+        }),
     });
 }
 
@@ -75,7 +93,7 @@ fn digit_seven_and_tab_cycle_route_statistics_and_m_is_local_to_that_tab() {
 }
 
 #[test]
-fn first_statistics_frame_asks_once_scope_toggle_and_quota_frames_do_not_read() {
+fn first_statistics_frame_arms_once_scope_is_local_and_revisit_rearms() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(None, None, None, Some(tx));
     app.fleeted = true;
@@ -118,9 +136,10 @@ fn first_statistics_frame_asks_once_scope_toggle_and_quota_frames_do_not_read() 
     frame(&mut app);
     key(&mut app, "7");
     frame(&mut app);
-    assert!(
-        requests(&rx).is_empty(),
-        "scope, quota repaint, and revisiting tab do not reread"
+    assert_eq!(
+        requests(&rx),
+        vec![generation],
+        "revisiting a shown tab re-arms its watch"
     );
 }
 

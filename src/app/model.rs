@@ -97,6 +97,8 @@ pub enum Act {
     Redraw,
     /// The Statistics tab's scope flips; the body lives in the App.
     StatsScope,
+    /// `r` on the Statistics tab: the store rebuilt from the journals.
+    StatsReset,
     Select(String),
     Compose,
     /// Open the focused seat's pane.

@@ -143,11 +143,68 @@ impl StatsScope {
     }
 }
 
+/// What the Statistics store says of one scope, beside its numbers.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum ScopeLine {
+    /// The numbers and their coverage lines; "loading" while there are none.
+    #[default]
+    Plain,
+    /// The published numbers, some sources not yet up to date or an update
+    /// in flight: never complete.
+    Partial {
+        pending: u64,
+        listed: u64,
+        updating: bool,
+    },
+    /// No published answer for this scope yet.
+    Building,
+    /// A store file damaged: the upkeep rebuilds it.
+    Damaged { file: String, reason: String },
+    /// The store could not be read.
+    Unreadable(String),
+}
+
+/// Where the reset `r` asked for stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResetLine {
+    Requested,
+    /// No upkeep thread runs to take it: it waits for one.
+    Waiting,
+    Rebuilt,
+    Busy,
+    Refused(String),
+}
+
+/// The store's status lines for both scopes, and a reset's.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct StoreLine {
+    pub(crate) all: ScopeLine,
+    pub(crate) this: ScopeLine,
+    pub(crate) reset: Option<ResetLine>,
+}
+
+impl StoreLine {
+    /// What `glance` shows: the numbers to draw, if any, and each scope's
+    /// line. A reset's line is not the store's to say: `None`.
+    pub(crate) fn of(
+        glance: &crate::stats_store::disk::Glance,
+    ) -> (Option<Box<crate::stats::View>>, Self) {
+        // B0 seam adapter: the numbers only, no status line yet.
+        match glance {
+            crate::stats_store::disk::Glance::Ready { view, .. } => {
+                (Some(Box::new(view.clone())), Self::default())
+            }
+            _ => (None, Self::default()),
+        }
+    }
+}
+
 /// The Statistics tab's body: both scopes once read, and which one is shown.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct StatsBody {
     pub(crate) scope: StatsScope,
     pub(crate) view: Option<Box<crate::stats::View>>,
+    pub(crate) store: StoreLine,
 }
 
 /// Everything the overlay draws. Cold until the first answer lands.
