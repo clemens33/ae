@@ -1282,7 +1282,10 @@ fn fold_reads(event: &Event, session: SessionKey<'_>, slot: &str, agent: &str) -
 /// The bound is the live records: while any stands, every damaged line and
 /// every line its seat's fold needs survive each trim, so such a journal does
 /// not shrink below them until a reseat, discard or resume clears the meta
-/// record. With none, the trim is the plain newest-`keep` cut.
+/// record. A `spawn` or `reseat` addressed to a live-meta seat after its
+/// opening is such a line: it stays with the episode evidence, one line per
+/// reset, until the stale meta record clears. With no live record, the trim is the
+/// plain newest-`keep` cut.
 #[must_use]
 pub fn retained(
     dropped: &[&str],
