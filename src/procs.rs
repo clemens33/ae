@@ -481,18 +481,29 @@ fn chain_depth(procs: &[Proc], chain: &[u32], pid: u32) -> usize {
 /// 2.1.x: `claude -> zsh Ss -> cargo`). An idle tool's MCP children are not
 /// session leaders, and its session-leading MCP processes are grandchildren
 /// (measured, `.local/chal225/ptree-*.txt` of the slice), so neither counts.
-/// `None` is unknown: no table, no single tool chain, or a row under the tool
-/// ae cannot read.
+/// `None` is unknown: no table, no single tool chain, a tool row ae cannot
+/// read, or no task proven while a row at or beneath the tool cannot be read
+/// (it may be the task or its witness).
+///
+/// A task is PROVEN by readable rows alone (#312): the task root and its
+/// witness (the root itself when it is a non-shell command, else a live
+/// non-shell descendant) must each read, and the pid/ppid walk between them
+/// needs no state. A transient `?N (ae)` row — a process between fork/exec or
+/// exit, present almost all the time under a running test suite on macOS —
+/// can therefore neither void a proven task nor be told apart from a hidden
+/// one when none is proven.
 #[must_use]
 pub fn task_running(table: Option<&[(Proc, String)]>, pane_pid: u32, bin: &str) -> Option<bool> {
     let table = table?;
     let procs: Vec<Proc> = table.iter().map(|(proc, _)| proc.clone()).collect();
     let chain = tool_chain(&procs, pane_pid, bin)?;
     let root = *chain.first()?;
-    if table.iter().any(|(proc, stat)| {
-        !readable_stat(proc, stat)
-            && (proc.pid == root || lineage(&procs, root, proc.pid) != Lineage::Clear)
-    }) {
+    // The tool's own rows name the seat; one that cannot be read is unknown
+    // whatever else the table shows.
+    if table
+        .iter()
+        .any(|(proc, stat)| chain.contains(&proc.pid) && !readable_stat(proc, stat))
+    {
         return None;
     }
     let live = |stat: &str| !stat.starts_with('Z');
@@ -500,18 +511,28 @@ pub fn task_running(table: Option<&[(Proc, String)]>, pane_pid: u32, bin: &str) 
         let base = proc.comm.rsplit('/').next().unwrap_or(&proc.comm);
         crate::watchdog::command_is_shell(base.trim_start_matches('-'))
     };
-    Some(table.iter().any(|(task, stat)| {
-        chain.contains(&task.ppid)
+    let proven = table.iter().any(|(task, stat)| {
+        readable_stat(task, stat)
+            && chain.contains(&task.ppid)
             && !chain.contains(&task.pid)
             && stat.contains('s')
             && live(stat)
             && (!shell(task)
                 || table.iter().any(|(below, below_stat)| {
-                    live(below_stat)
+                    readable_stat(below, below_stat)
+                        && live(below_stat)
                         && !shell(below)
                         && lineage(&procs, task.pid, below.pid) == Lineage::Under
                 }))
-    }))
+    });
+    if proven {
+        return Some(true);
+    }
+    let hidden = table.iter().any(|(proc, stat)| {
+        !readable_stat(proc, stat)
+            && (proc.pid == root || lineage(&procs, root, proc.pid) != Lineage::Clear)
+    });
+    (!hidden).then_some(false)
 }
 
 /// The plain `pid ppid comm` table a stat reading stands in for, with
@@ -555,6 +576,9 @@ mod statrow_verdict_spec;
 #[cfg(test)]
 #[path = "../tests/it/procs_task225_spec.rs"]
 mod procs_task225_spec;
+#[cfg(test)]
+#[path = "../tests/it/procs_transient312_spec.rs"]
+mod procs_transient312_spec;
 #[cfg(test)]
 #[path = "../tests/it/statrow_tool_spec.rs"]
 mod statrow_tool_spec;
