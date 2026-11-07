@@ -94,6 +94,15 @@ mod s3_failed_gap;
 mod s3_fragment_absence;
 #[cfg(test)]
 #[allow(
+    clippy::cloned_ref_to_slice_refs,
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    clippy::semicolon_if_nothing_returned,
+    reason = "frozen S3 amendment: fixture IO changes and reads the real state root, reuses the frozen S3 cases module, and its frozen fixture clones into a slice"
+)]
+mod s3_judge_cache;
+#[cfg(test)]
+#[allow(
     clippy::disallowed_methods,
     clippy::match_wildcard_for_single_variants,
     clippy::semicolon_if_nothing_returned,
@@ -140,6 +149,14 @@ mod s3_prune_legacy;
     reason = "frozen S3 amendment: reuses the frozen S3 cases module and its fold oracle"
 )]
 mod s3_prune_view;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    clippy::semicolon_if_nothing_returned,
+    reason = "frozen S3 amendment: fixture IO changes and reads the real state root, and reuses the frozen S3 cases module"
+)]
+mod s3_purge_no_store;
 #[cfg(test)]
 #[allow(
     clippy::disallowed_methods,
