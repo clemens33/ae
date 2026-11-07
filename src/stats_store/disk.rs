@@ -789,6 +789,15 @@ impl Files {
 
 impl Dir for Files {
     fn read(&mut self, name: &str, cap: u64) -> Read {
+        // A test's injected IO fault, taken only by a read under the lock in
+        // the exception: a warm's discarded run never consumes it.
+        #[cfg(test)]
+        let read = if self.snap.mode == Mode::Exception && observe::read_faulted(name) {
+            Read::Unreadable("injected payload read IO".to_owned())
+        } else {
+            self.read_unobserved(name, cap)
+        };
+        #[cfg(not(test))]
         let read = self.read_unobserved(name, cap);
         #[cfg(test)]
         {
@@ -919,6 +928,14 @@ pub fn fail_next_sync(name: &str) {
     observe::SYNC_FAULT.with(|fault| *fault.borrow_mut() = Some(name.to_owned()));
 }
 
+/// Make the next [`Files`] read of payload `name` on this thread under the
+/// lock in an exception answer an IO error, once. Warm, held and open reads
+/// never take it.
+#[cfg(test)]
+pub fn fail_next_exception_read(name: &str) {
+    observe::READ_FAULT.with(|fault| *fault.borrow_mut() = Some(name.to_owned()));
+}
+
 /// Journal bytes [`FileJournals`] returned on this thread (`cfg(test)` only).
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -950,6 +967,7 @@ mod observe {
         /// Each `Files` read: the payload name and the bytes it returned.
         pub(super) static NAMES: RefCell<Vec<(String, u64)>> = const { RefCell::new(Vec::new()) };
         pub(super) static SYNC_FAULT: RefCell<Option<String>> = const { RefCell::new(None) };
+        pub(super) static READ_FAULT: RefCell<Option<String>> = const { RefCell::new(None) };
         pub(super) static JOURNALS: Cell<JournalReads> = const {
             Cell::new(JournalReads { total: 0, under_lock: 0 })
         };
@@ -978,6 +996,19 @@ mod observe {
     /// Whether the sync of `name` is the one a test made fail: taken once.
     pub(super) fn faulted(name: &str) -> bool {
         SYNC_FAULT.with(|fault| {
+            let mut fault = fault.borrow_mut();
+            let hit = fault.as_deref() == Some(name);
+            if hit {
+                *fault = None;
+            }
+            hit
+        })
+    }
+
+    /// Whether this exception read of `name` is the one a test made fail:
+    /// taken once.
+    pub(super) fn read_faulted(name: &str) -> bool {
+        READ_FAULT.with(|fault| {
             let mut fault = fault.borrow_mut();
             let hit = fault.as_deref() == Some(name);
             if hit {
