@@ -589,6 +589,46 @@ mod tests {
         assert_eq!(super::plain_table(None), None);
     }
 
+    /// Another seat's tool, in another pane, is not part of this seat's
+    /// chain: every machine running two codex seats has one.
+    #[test]
+    fn a_tool_in_another_pane_neither_joins_nor_spoils_the_seats_chain() {
+        let table = "1 0 Ss launchd\n90 1 Ss -zsh\n100 90 S+ codex\n110 100 Ss cargo\n\
+                     190 1 Ss -zsh\n200 190 S+ codex\n";
+        let rows = super::parse_stat_table(table);
+        assert_eq!(
+            super::task_running(rows.as_deref(), 90, "codex"),
+            Some(true)
+        );
+        assert_eq!(
+            super::task_running(rows.as_deref(), 190, "codex"),
+            Some(false)
+        );
+        // A tool exec-ed as the pane's own process is the chain's root.
+        let execed = "1 0 Ss launchd\n90 1 Ss codex\n110 90 Ss cargo\n";
+        let rows = super::parse_stat_table(execed);
+        assert_eq!(
+            super::task_running(rows.as_deref(), 90, "codex"),
+            Some(true)
+        );
+    }
+
+    /// The chain's root is its OUTERMOST member whatever order `ps` lists
+    /// them in, so an unreadable row under the launcher alone stays unknown.
+    #[test]
+    fn the_chain_root_is_the_outermost_tool_even_when_listed_inner_first() {
+        let table = "1 0 Ss launchd\n90 1 Ss -zsh\n95 100 S /opt/codex/bin/codex\n\
+                     100 90 S+ codex\n110 100 ? cargo\n";
+        let rows = super::parse_stat_table(table);
+        assert_eq!(super::task_running(rows.as_deref(), 90, "codex"), None);
+        let readable = table.replace("110 100 ? cargo", "110 100 Ss cargo");
+        let rows = super::parse_stat_table(&readable);
+        assert_eq!(
+            super::task_running(rows.as_deref(), 90, "codex"),
+            Some(true)
+        );
+    }
+
     #[test]
     fn only_a_session_leading_shell_beneath_the_tool_is_a_background_task() {
         let idle = "  1     0 Ss   /sbin/launchd\n 90     1 Ss   -zsh\n100    90 S+   claude\n\

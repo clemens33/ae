@@ -20773,4 +20773,210 @@ mod tests {
     }
     include!("../tests/unit/unreach_episode.rs");
     include!("../tests/unit/unreach_motion_a4.rs");
+
+    /// Mutant closure for the death latch (chal225): a seat back from a
+    /// death carries neither its pre-death proof frame nor its child lease.
+    mod recovery_forgets_activity {
+        use super::super::{Activity, Effect, PaneState, ProofFrame, account_with_activity};
+        use super::{Knobs, seen};
+        use crate::harness_state::HarnessState;
+        use crate::time::Timestamp;
+        use crate::watchdog::{DoneProgress, ProofQuiet, QuietKind};
+
+        fn idle(now: i64) -> super::Observation {
+            let mut observation = seen();
+            observation.now_epoch = now;
+            observation.harness.frame = HarnessState::Idle;
+            observation.last_actor_event_age_secs = 10_000;
+            observation
+        }
+
+        fn any(effects: &[Effect], wanted: fn(&Effect) -> bool) -> bool {
+            effects.iter().any(wanted)
+        }
+
+        /// A frame proven unmoved before the death proves nothing after it:
+        /// the recovery cycle asks done's last confirmation for real.
+        #[test]
+        fn a_pre_death_unmoved_frame_does_not_hold_a_recovered_done() {
+            let at = 9_000;
+            let stable = PaneState {
+                identity: Some(1),
+                proof_frame: Some(ProofFrame {
+                    proof: Some(at),
+                    settle: Some(at),
+                    baseline: Some(7),
+                    settled: true,
+                    moved: false,
+                }),
+                ..PaneState::default()
+            };
+            let mut observation = idle(10_000);
+            observation.quiet = Some(QuietKind::Done);
+            observation.done_progress = DoneProgress::ChallengeDue {
+                confirmations: 1,
+                required: 2,
+                done_age_secs: 1_000,
+                attempts: 0,
+            };
+            let activity = Activity {
+                proof: Some(ProofQuiet {
+                    proof: Some(Timestamp::from_epoch(at)),
+                    unchanged: true,
+                    settle: Some(Timestamp::from_epoch(at)),
+                }),
+                ..Activity::default()
+            };
+            let knobs = Knobs::default();
+            let alive = account_with_activity(&stable, &observation, &knobs, None, &activity);
+            assert!(
+                any(&alive.effects, |effect| matches!(
+                    effect,
+                    Effect::DoneHeld { .. }
+                )),
+                "control: the same frame holds a seat that never died"
+            );
+            let latched = PaneState {
+                dead_latched: true,
+                ..stable
+            };
+            let back = account_with_activity(&latched, &observation, &knobs, None, &activity);
+            assert!(any(&back.effects, |effect| matches!(
+                effect,
+                Effect::Emit {
+                    action: "dead-cleared",
+                    ..
+                }
+            )));
+            assert!(!any(&back.effects, |effect| matches!(
+                effect,
+                Effect::DoneHeld { .. }
+            )));
+        }
+
+        /// A lease spent before the death does not deny the recovered seat's
+        /// task its own lease: the idle nudge after recovery is deferred.
+        #[test]
+        fn a_pre_death_spent_lease_does_not_deny_a_recovered_task() {
+            let knobs = Knobs::default();
+            let running = Activity {
+                task_running: Some(true),
+                ..Activity::default()
+            };
+            let spent = PaneState {
+                identity: Some(1),
+                dead_latched: true,
+                task_since: Some(1_000),
+                ..PaneState::default()
+            };
+            let nudged = |activity: &Activity| {
+                let back = account_with_activity(&spent, &idle(10_000), &knobs, None, activity);
+                let later =
+                    account_with_activity(&back.next, &idle(10_300), &knobs, None, activity);
+                any(&later.effects, |effect| matches!(effect, Effect::Nudge))
+            };
+            assert!(
+                nudged(&Activity::default()),
+                "control: an idle recovered seat is nudged"
+            );
+            assert!(!nudged(&running), "a recovered task starts a fresh lease");
+        }
+    }
+
+    /// Mutant closure for [`super::proof_frame_step`] (chal225): the frame
+    /// sequences the frozen specs leave open. Interval 300 throughout.
+    mod frame_sequences {
+        use super::super::{FrameSample, FrameVerdict, ProofFrame, proof_frame_step};
+
+        fn read(hash: u64) -> FrameSample {
+            FrameSample {
+                capture_ok: true,
+                busy: false,
+                hash,
+            }
+        }
+
+        /// A restart cannot know what happened since an old proof: its
+        /// `moved` holds for that proof on every later stable read.
+        #[test]
+        fn a_restart_stays_moved_for_the_same_proof() {
+            let (mut frame, verdict) =
+                proof_frame_step(None, Some(1000), Some(1000), read(7), 2000, 300);
+            assert_eq!(verdict, FrameVerdict::Moved);
+            for now in [2300, 2600, 2900] {
+                let (next, verdict) =
+                    proof_frame_step(frame, Some(1000), Some(1000), read(7), now, 300);
+                assert_eq!(verdict, FrameVerdict::Moved, "at {now}");
+                frame = next;
+            }
+        }
+
+        /// Information after the proof moves the settle point: the old
+        /// baseline is dropped, a new one waits a full interval past the new
+        /// settle point, and the painted frame then reads Unmoved.
+        #[test]
+        fn a_moved_settle_point_retakes_the_baseline_one_interval_later() {
+            let (frame, verdict) = proof_frame_step(
+                Some(ProofFrame {
+                    proof: Some(1000),
+                    settle: Some(1000),
+                    ..ProofFrame::default()
+                }),
+                Some(1000),
+                Some(1000),
+                read(7),
+                1300,
+                300,
+            );
+            assert_eq!(verdict, FrameVerdict::Unmoved);
+            let (frame, verdict) =
+                proof_frame_step(frame, Some(1000), Some(1400), read(8), 1500, 300);
+            assert_eq!(verdict, FrameVerdict::Settling);
+            let held = frame.expect("frame");
+            assert_eq!(
+                (held.settle, held.baseline, held.moved),
+                (Some(1400), None, false)
+            );
+            let (_, verdict) = proof_frame_step(frame, Some(1000), Some(1400), read(8), 1700, 300);
+            assert_eq!(verdict, FrameVerdict::Unmoved);
+        }
+
+        /// A new proof with later information waits for the SETTLE window,
+        /// not the proof's.
+        #[test]
+        fn a_new_proof_waits_for_its_settle_window() {
+            let old = ProofFrame {
+                proof: Some(500),
+                settle: Some(500),
+                baseline: Some(7),
+                settled: true,
+                moved: false,
+            };
+            let (frame, verdict) =
+                proof_frame_step(Some(old), Some(1000), Some(1200), read(7), 1350, 300);
+            assert_eq!(verdict, FrameVerdict::Settling);
+            assert_eq!(frame.and_then(|held| held.baseline), None);
+        }
+
+        /// A failed read changes nothing, even when the settle point moved.
+        #[test]
+        fn a_failed_read_keeps_the_prior_frame_exactly() {
+            let prior = ProofFrame {
+                proof: Some(1000),
+                settle: Some(1000),
+                baseline: Some(7),
+                settled: true,
+                moved: false,
+            };
+            let failed = FrameSample {
+                capture_ok: false,
+                busy: false,
+                hash: 0,
+            };
+            let (frame, verdict) =
+                proof_frame_step(Some(prior), Some(1000), Some(1400), failed, 1500, 300);
+            assert_eq!(frame, Some(prior));
+            assert_eq!(verdict, FrameVerdict::Settling);
+        }
+    }
 }

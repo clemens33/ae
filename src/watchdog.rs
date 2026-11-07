@@ -5603,6 +5603,28 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
         }
     }
 
+    /// `is_informational` holds its own contract, not only its callers':
+    /// a watchdog record is never information, even one spelled like a send,
+    /// and a birth-family record never is either.
+    #[test]
+    fn a_watchdog_record_is_never_information_whatever_its_action() {
+        let record = |actor: &str, action: &str| {
+            Event::parse_line(&format!(
+                r#"{{"ts":"2026-11-07T00:00:00Z","actor":"{actor}","action":"{action}"}}"#
+            ))
+            .expect("fixture")
+        };
+        assert!(super::is_informational(&record("peer", "send"), false));
+        assert!(!super::is_informational(
+            &record(super::WATCHDOG_ACTOR, "send"),
+            false
+        ));
+        assert!(!super::is_informational(
+            &record(super::WATCHDOG_ACTOR, "memo"),
+            true
+        ));
+    }
+
     /// T1's rows: a record, whether it ends done, waiting-user, waiting-agent
     /// and blocked, and whether the episode fold is pinned beside the walk.
     fn quiet_rows() -> Vec<(String, [bool; 4], bool)> {
