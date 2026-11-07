@@ -5331,8 +5331,21 @@ mod tests {
     pub(in crate::app) struct Root(pub(in crate::app) PathBuf);
     impl Root {
         pub(in crate::app) fn new(tag: &str) -> Self {
-            let root = std::env::temp_dir().join(format!("ae-app-{}-{tag}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&root);
+            // A state root this call created exclusively: the process id plus a
+            // process-wide nonce names it, so no two calls share a path, even
+            // with the same tag. A candidate that already exists (a stale root
+            // of a reused process id) is skipped, never removed or reused.
+            static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let root = loop {
+                let nonce = NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let candidate = std::env::temp_dir()
+                    .join(format!("ae-app-{}-{nonce}-{tag}", std::process::id()));
+                match std::fs::create_dir(&candidate) {
+                    Ok(()) => break candidate,
+                    Err(why) if why.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(why) => panic!("state root {}: {why}", candidate.display()),
+                }
+            };
             let dir = root.join("sessions").join("api");
             std::fs::create_dir_all(&dir).expect("session dir");
             let meta = format!(
@@ -5346,6 +5359,55 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// A fixture belongs to the `Root` that created it: a later `Root` with the
+    /// same tag gets its own state root, and neither its construction nor its
+    /// drop touches the files of the first while the first is alive.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back the fixture files it created"
+    )]
+    fn a_later_root_with_the_same_tag_leaves_the_first_root_alone() {
+        let read = |path: &PathBuf| std::fs::read(path).map_err(|why| why.kind());
+        let first = Root::new("owned-twice");
+        let marker = first.0.join("marker");
+        std::fs::write(&marker, "first fixture bytes").expect("marker");
+        let meta_path = first.0.join("sessions").join("api").join("meta");
+        let meta = read(&meta_path).expect("the first root's session metadata");
+        assert!(
+            !meta.is_empty(),
+            "the first root must hold session metadata"
+        );
+
+        let second = Root::new("owned-twice");
+        assert_eq!(
+            read(&marker),
+            Ok(b"first fixture bytes".to_vec()),
+            "a later root erased the marker of the first root"
+        );
+        assert_eq!(
+            read(&meta_path),
+            Ok(meta.clone()),
+            "a later root changed the session metadata of the first root"
+        );
+        assert_ne!(
+            first.0, second.0,
+            "a repeated tag must not share a state root"
+        );
+
+        drop(second);
+        assert_eq!(
+            read(&marker),
+            Ok(b"first fixture bytes".to_vec()),
+            "dropping a later root erased the marker of the first root"
+        );
+        assert_eq!(
+            read(&meta_path),
+            Ok(meta),
+            "dropping a later root changed the session metadata of the first root"
+        );
     }
 
     fn text(buf: &Buffer) -> String {
