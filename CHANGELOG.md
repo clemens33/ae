@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.25] - 2026-11-07
+- **stats**: Frozen S3 lifecycle specs and stats_disk seeds
+- **stats**: S3 store lifecycle: removal, transfer, archive identity, purge
+- **stats**: Frozen real-file standing of an archive
+- **stats**: Frozen real-file standing of a live session
+- **stats**: Frozen replacement of a failed row with no gap key
+- **stats**: Frozen census contract
+- **stats**: Frozen rebind boundary at the donor cursor
+- **stats**: Frozen prune keeps nonempty evidence
+- **stats**: Frozen prune keeps a counted view without evidence
+- **stats**: Frozen prune refuses a legacy counted row over an empty group
+- **stats**: Frozen purge recovers a retired-only payload
+- **stats**: Frozen commit keeps each preparation's bookkeeping
+- **stats**: Frozen healed archive namespace drops its failed source
+- **stats**: Frozen listed siblings are never donors
+- **stats**: Frozen busy chore defers and retries
+- **stats**: Frozen busy move reports one removal
+- **stats**: Frozen live completeness ignores archive failure
+- **stats**: Frozen judge cache reuse and purge without a store
+
 ## [v2026.11.24] - 2026-11-07
 - **watchdog**: Frozen specs for unchanged-proof challenges and the child-task lease (#225, #283)
 - **watchdog**: Fewer challenges on unchanged proofs, and a live child task defers the idle nudge (#225, #283)
