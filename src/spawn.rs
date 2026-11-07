@@ -493,12 +493,26 @@ fn run_spawn_inner(
         },
         &crate::birth::configured(command, tool, &parsed.profile),
     );
-    if let Err(why) = store::open(dir).append_event(&certificate) {
-        let _ = writeln!(
-            err,
-            "ae: '{}' birth record not journaled ({why}); the spawn goes on.",
-            parsed.name
-        );
+    // Journaled, then counted in the statistics store under the same journal
+    // lock; a count that did not land never changes the spawn's outcome, and
+    // this site says so in one line.
+    match store::open(dir).append_event_counted(&certificate) {
+        Err(why) => {
+            let _ = writeln!(
+                err,
+                "ae: '{}' birth record not journaled ({why}); the spawn goes on.",
+                parsed.name
+            );
+        }
+        Ok(counted) => {
+            if let Some(reason) = counted.reason() {
+                let _ = writeln!(
+                    err,
+                    "ae: '{}' birth not counted in statistics yet ({reason}); ae app counts it from the journal.",
+                    parsed.name
+                );
+            }
+        }
     }
     crate::session_launch::wait_for_agent_start(&facts.server, &pane, tool, "");
     // Preserve the post-exec lifecycle stamp separately from the pre-exec
@@ -1216,7 +1230,8 @@ fn record_spawn(
         body_file: "",
     };
     let line = tracked::event_line_with(&fields, "", &[("birth", birth)]);
-    let _ = store::open(dir).append_event(&line);
+    // Counted like the certificate, silently: the journal stays authoritative.
+    let _ = store::open(dir).append_event_counted(&line);
 }
 
 /// The event's actor: the caller's stamp, or the human.

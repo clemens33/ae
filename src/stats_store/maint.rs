@@ -33,8 +33,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::disk::{
-    self, Census, Decision, FileJournals, Files, Held, Life, Limits, Next, Payload, Prepared,
-    Refused, SourceSpec, Tail, Why,
+    self, Census, Decision, FileJournals, Files, Held, Life, Limits, Next, Prepared, Refused,
+    SourceSpec, Tail, Taken, Why,
 };
 use super::doc::Key;
 use crate::quota::Budget;
@@ -101,11 +101,13 @@ pub struct Step {
 
 /// The wait after `step`: never less than the step itself took, so the
 /// upkeep holds at most about half a core. An IO error, which stops nothing,
-/// waits as long as an idle round before it is met again.
+/// waits as long as an idle round before it is met again; so does a snapshot
+/// refusal, because the cap is fixed and warming the same payload again at
+/// once would only meet it again (a hot warm loop).
 #[must_use]
 pub fn pause(step: &Step) -> Duration {
     let least = match step.outcome {
-        Outcome::Idle | Outcome::Refused(Refused::Io(_)) => REFRESH,
+        Outcome::Idle | Outcome::Refused(Refused::Io(_) | Refused::Snapshot { .. }) => REFRESH,
         Outcome::Deferred => BUSY,
         _ => BREATH,
     };
@@ -331,16 +333,27 @@ impl Maintainer {
         if !disk::owes(&mut self.files).unwrap_or(false) {
             return (Duration::ZERO, None);
         }
-        let Ok(lock) = Payload::at(&self.root).lock(self.lock_wait) else {
-            return (Duration::ZERO, None);
+        let rebuilding = self.rebuilding;
+        let mut held = Duration::ZERO;
+        let taken = disk::transact(
+            &self.root,
+            &mut self.files,
+            &mut self.journals,
+            self.lock_wait,
+            &mut held,
+            |files, _| {
+                recover(files)
+                    .err()
+                    .map(|refused| damaged(files, rebuilding, refused))
+            },
+        );
+        let refused = match taken {
+            Taken::Done(damage) => damage.map(|damage| self.after(damage)),
+            Taken::Over { recorded, cap } => {
+                Some(Outcome::Refused(Refused::Snapshot { recorded, cap }))
+            }
+            Taken::Unlocked(_) | Taken::Contended => None,
         };
-        let taken = Instant::now();
-        let refused = self
-            .recover()
-            .err()
-            .map(|refused| self.refused_locked(refused));
-        let held = taken.elapsed();
-        drop(lock);
         (held, refused)
     }
 
@@ -567,9 +580,33 @@ impl Maintainer {
             Chore::Remove { id, .. } => Some(id.clone()),
             Chore::Prune(_) => None,
         };
-        let lock = match Payload::at(&self.root).lock(self.lock_wait) {
-            Ok(lock) => lock,
-            Err(why) => {
+        let rebuilding = self.rebuilding;
+        let mut held = Duration::ZERO;
+        let taken = disk::transact(
+            &self.root,
+            &mut self.files,
+            &mut self.journals,
+            self.lock_wait,
+            &mut held,
+            |files, _| {
+                let decided = recover(files).and_then(|()| match &chore {
+                    Chore::Remove { key, id, stamp } => {
+                        disk::remove(files, key.as_deref(), id, Some(*stamp))
+                    }
+                    Chore::Prune(key) => disk::prune(files, key.as_deref()).map(Decision::Publish),
+                });
+                match decided {
+                    Ok(Decision::Publish(plan)) => match plan.apply(files, plan.ops.len()) {
+                        Ok(()) => Ok(plan.generation()),
+                        Err(why) => Err(Damage::Plain(Refused::Io(why.to_string()))),
+                    },
+                    Ok(Decision::Discard(why)) => Err(Damage::Discarded(why)),
+                    Err(refused) => Err(damaged(files, rebuilding, refused)),
+                }
+            },
+        );
+        let outcome = match taken {
+            Taken::Unlocked(why) => {
                 let outcome = if why.kind() == std::io::ErrorKind::WouldBlock {
                     Outcome::Deferred
                 } else {
@@ -578,36 +615,38 @@ impl Maintainer {
                 if !matches!(chore, Chore::Remove { .. }) || self.queue.is_empty() {
                     self.chores.push_front(chore);
                 }
-                return Self::finished(source, outcome, 0, started);
+                // An earlier stale attempt's hold still counts.
+                let mut step = Self::finished(source, outcome, 0, started);
+                step.held = held;
+                return step;
             }
-        };
-        let taken = Instant::now();
-        if let Chore::Remove { id, .. } = &chore {
-            self.census.sources.remove(id);
-        }
-        let decided = self.recover().and_then(|()| match &chore {
-            Chore::Remove { key, id, stamp } => {
-                disk::remove(&mut self.files, key.as_deref(), id, Some(*stamp))
+            Taken::Contended => {
+                if !matches!(chore, Chore::Remove { .. }) || self.queue.is_empty() {
+                    self.chores.push_front(chore);
+                }
+                let mut step = Self::finished(source, Outcome::Deferred, 0, started);
+                step.held = held;
+                return step;
             }
-            Chore::Prune(key) => {
-                disk::prune(&mut self.files, key.as_deref()).map(Decision::Publish)
-            }
-        });
-        let outcome = match decided {
-            Ok(Decision::Publish(plan)) => match plan.apply(&mut self.files, plan.ops.len()) {
-                Ok(()) => match chore {
+            Taken::Over { recorded, cap } => Outcome::Refused(Refused::Snapshot { recorded, cap }),
+            Taken::Done(Ok(generation)) => {
+                if let Chore::Remove { id, .. } = &chore {
+                    self.census.sources.remove(id);
+                }
+                match chore {
                     Chore::Remove { .. } => Outcome::Removed {
-                        r#gen: plan.generation().unwrap_or_default(),
+                        r#gen: generation.unwrap_or_default(),
                     },
                     Chore::Prune(_) => Outcome::Pruned,
-                },
-                Err(why) => Outcome::Refused(Refused::Io(why.to_string())),
-            },
-            Ok(Decision::Discard(why)) => Outcome::Discarded(why),
-            Err(refused) => self.refused_locked(refused),
+                }
+            }
+            Taken::Done(Err(damage)) => {
+                if let Chore::Remove { id, .. } = &chore {
+                    self.census.sources.remove(id);
+                }
+                self.after(damage)
+            }
         };
-        let held = taken.elapsed();
-        drop(lock);
         let mut step = Self::finished(source, outcome, 0, started);
         step.held = held;
         step
@@ -748,9 +787,28 @@ impl Maintainer {
     ) -> Step {
         let source = Some(work.source().to_owned());
         let (from, to) = work.span();
-        let lock = match Payload::at(&self.root).lock(self.lock_wait) {
-            Ok(lock) => lock,
-            Err(why) => {
+        let rebuilding = self.rebuilding;
+        let mut held = Duration::ZERO;
+        let taken = disk::transact(
+            &self.root,
+            &mut self.files,
+            &mut self.journals,
+            self.lock_wait,
+            &mut held,
+            |files, journals| {
+                let decided = recover(files).and_then(|()| disk::publish(files, journals, work));
+                match decided {
+                    Ok(Decision::Publish(plan)) => match plan.apply(files, plan.ops.len()) {
+                        Ok(()) => Ok(plan.generation().unwrap_or_default()),
+                        Err(why) => Err(Damage::Plain(Refused::Io(why.to_string()))),
+                    },
+                    Ok(Decision::Discard(why)) => Err(Damage::Discarded(why)),
+                    Err(refused) => Err(damaged(files, rebuilding, refused)),
+                }
+            },
+        );
+        let outcome = match taken {
+            Taken::Unlocked(why) => {
                 let busy = why.kind() == std::io::ErrorKind::WouldBlock;
                 if let Some(spec) = spec {
                     self.queue.push_front(spec);
@@ -760,36 +818,37 @@ impl Maintainer {
                 } else {
                     Outcome::Refused(Refused::Io(format!("stats.lock: {why}")))
                 };
-                return Self::finished(source, outcome, read, Instant::now());
+                // An earlier stale attempt's hold still counts.
+                let mut step = Self::finished(source, outcome, read, Instant::now());
+                step.held = held;
+                return step;
             }
-        };
-        let taken = Instant::now();
-        let decided = self
-            .recover()
-            .and_then(|()| disk::publish(&mut self.files, &mut self.journals, work));
-        let outcome = match decided {
-            Ok(Decision::Publish(plan)) => match plan.apply(&mut self.files, plan.ops.len()) {
-                Ok(()) => {
-                    let generation = plan.generation().unwrap_or_default();
-                    if work.more()
-                        && let Some(spec) = spec
-                    {
-                        self.queue.push_back(spec);
-                    }
-                    // Consumed to its end: the next round looks at the
-                    // journal's status alone.
-                    if let Some(tail) = work.settled(generation, &mut self.journals, prior) {
-                        self.tails.insert(work.source().to_owned(), tail);
-                    }
-                    Outcome::Published {
-                        from,
-                        to,
-                        r#gen: generation,
-                    }
+            Taken::Contended => {
+                if let Some(spec) = spec {
+                    self.queue.push_front(spec);
                 }
-                Err(why) => Outcome::Refused(Refused::Io(why.to_string())),
-            },
-            Ok(Decision::Discard(why)) => {
+                Outcome::Deferred
+            }
+            Taken::Over { recorded, cap } => Outcome::Refused(Refused::Snapshot { recorded, cap }),
+            Taken::Done(Ok(generation)) => {
+                if work.more()
+                    && let Some(spec) = spec
+                {
+                    self.queue.push_back(spec);
+                }
+                // Consumed to its end: the next round looks at the journal's
+                // status alone. Taken after the lock is released: it reads
+                // the journal's status.
+                if let Some(tail) = work.settled(generation, &mut self.journals, prior) {
+                    self.tails.insert(work.source().to_owned(), tail);
+                }
+                Outcome::Published {
+                    from,
+                    to,
+                    r#gen: generation,
+                }
+            }
+            Taken::Done(Err(Damage::Discarded(why))) => {
                 // Owned elsewhere, or gone: the next round's census and
                 // listing decide again. Anything else is tried again.
                 if !matches!(why, Why::Owned | Why::Gone)
@@ -799,10 +858,8 @@ impl Maintainer {
                 }
                 Outcome::Discarded(why)
             }
-            Err(refused) => self.refused_locked(refused),
+            Taken::Done(Err(damage)) => self.after(damage),
         };
-        let held = taken.elapsed();
-        drop(lock);
         Step {
             source,
             outcome,
@@ -810,13 +867,6 @@ impl Maintainer {
             active: Duration::ZERO,
             held,
         }
-    }
-
-    /// Under the lock: finish what a crash left.
-    fn recover(&mut self) -> Result<(), Refused> {
-        let plan = disk::recovery(&mut self.files)?;
-        plan.apply(&mut self.files, plan.ops.len())
-            .map_err(|why| Refused::Io(why.to_string()))
     }
 
     /// A refusal met while preparing `spec`: the damage is met again under
@@ -832,39 +882,40 @@ impl Maintainer {
         if let Some(hook) = self.recheck.0.as_mut() {
             hook(&self.root);
         }
-        let Ok(lock) = Payload::at(&self.root).lock(self.lock_wait) else {
-            return (Outcome::Deferred, Duration::ZERO);
+        let rebuilding = self.rebuilding;
+        let mut held = Duration::ZERO;
+        let taken = disk::transact(
+            &self.root,
+            &mut self.files,
+            &mut self.journals,
+            self.lock_wait,
+            &mut held,
+            |files, _| {
+                recover(files)
+                    .and_then(|()| disk::verify(files, spec))
+                    .err()
+                    .map(|refused| damaged(files, rebuilding, refused))
+            },
+        );
+        let outcome = match taken {
+            Taken::Done(Some(damage)) => self.after(damage),
+            Taken::Over { recorded, cap } => Outcome::Refused(Refused::Snapshot { recorded, cap }),
+            Taken::Done(None) | Taken::Unlocked(_) | Taken::Contended => Outcome::Deferred,
         };
-        let taken = Instant::now();
-        let again = self
-            .recover()
-            .and_then(|()| disk::verify(&mut self.files, spec))
-            .err();
-        let outcome = match again {
-            Some(refused) => self.refused_locked(refused),
-            None => Outcome::Deferred,
-        };
-        let held = taken.elapsed();
-        drop(lock);
         (outcome, held)
     }
 
-    /// Under the lock: damage repaired once per rebuild; met again before the
-    /// rebuild caught up, the upkeep stops.
-    fn refused_locked(&mut self, refused: Refused) -> Outcome {
-        let Some((file, reason)) = refused.damage() else {
-            return Outcome::Refused(refused);
-        };
-        if self.rebuilding {
-            self.stopped = Some(refused.clone());
-            return Outcome::Refused(refused);
-        }
-        let repaired = disk::repair(&mut self.files).and_then(|plan| {
-            plan.apply(&mut self.files, plan.ops.len())
-                .map_err(|why| Refused::Io(why.to_string()))
-        });
-        match repaired {
-            Ok(()) => {
+    /// What the lock found, applied to the upkeep: damage repaired once per
+    /// rebuild; met again before the rebuild caught up, the upkeep stops.
+    fn after(&mut self, damage: Damage) -> Outcome {
+        match damage {
+            Damage::Plain(refused) => Outcome::Refused(refused),
+            Damage::Discarded(why) => Outcome::Discarded(why),
+            Damage::Again(refused) | Damage::Unrepaired(refused) => {
+                self.stopped = Some(refused.clone());
+                Outcome::Refused(refused)
+            }
+            Damage::Repaired { file, reason } => {
                 self.rebuilding = true;
                 self.queue.clear();
                 self.tails.clear();
@@ -873,13 +924,57 @@ impl Maintainer {
                 (self.held, self.round.listed, self.round.worked) = (None, false, false);
                 Outcome::Repaired { file, reason }
             }
-            // An IO error is not the damage met again: the next step asks again.
-            Err(why @ Refused::Io(_)) => Outcome::Refused(why),
-            Err(why) => {
-                self.stopped = Some(why.clone());
-                Outcome::Refused(why)
-            }
         }
+    }
+}
+
+/// What a step under the lock met besides its own result.
+#[derive(Debug)]
+enum Damage {
+    /// A refusal that stops nothing: not damage, or an IO error repairing it.
+    Plain(Refused),
+    /// Prepared work dropped.
+    Discarded(Why),
+    /// Damage met again while rebuilding.
+    Again(Refused),
+    /// A repair refused for another reason than IO.
+    Unrepaired(Refused),
+    Repaired {
+        file: String,
+        reason: String,
+    },
+}
+
+/// Under the lock: finish what a crash left.
+fn recover(files: &mut Files) -> Result<(), Refused> {
+    let plan = disk::recovery(files)?;
+    if plan.ops.is_empty() {
+        return Ok(());
+    }
+    plan.apply(files, plan.ops.len())
+        .map_err(|why| Refused::Io(why.to_string()))
+}
+
+/// Under the lock: `refused` met; damage repaired once per rebuild (the
+/// exception: a repair reads under the lock).
+fn damaged(files: &mut Files, rebuilding: bool, refused: Refused) -> Damage {
+    let Some((file, reason)) = refused.damage() else {
+        return Damage::Plain(refused);
+    };
+    if rebuilding {
+        return Damage::Again(refused);
+    }
+    let repaired = files.exception(|files| {
+        disk::repair(files).and_then(|plan| {
+            plan.apply(files, plan.ops.len())
+                .map_err(|why| Refused::Io(why.to_string()))
+        })
+    });
+    match repaired {
+        Ok(()) => Damage::Repaired { file, reason },
+        // An IO error is not the damage met again: the next step asks again.
+        Err(why @ Refused::Io(_)) => Damage::Plain(why),
+        Err(why) => Damage::Unrepaired(why),
     }
 }
 

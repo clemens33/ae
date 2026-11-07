@@ -16,6 +16,9 @@ mod s3_cases;
 #[path = "../../src/stats_store/s3_keys.rs"]
 mod s3_keys;
 
+#[path = "../../src/stats_store/s4_cases.rs"]
+mod s4_cases;
+
 use cases::{Rig, S, T, birth, complete, published, recover};
 
 // The cap decision at the real Files door is tested by the frozen unit tests. This
@@ -220,4 +223,5 @@ fuzz_target!(|data: &[u8]| {
     exercise(data);
     s3_cases::fuzz_case(data);
     s3_keys::exercise(data);
+    s4_cases::exercise(data);
 });

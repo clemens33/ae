@@ -201,6 +201,71 @@ mod s3_spec;
 mod s3_standing_files;
 #[cfg(test)]
 mod s3_standing_live;
+#[cfg(test)]
+mod s4_accounting;
+#[cfg(test)]
+#[allow(
+    clippy::doc_markdown,
+    reason = "frozen S4 acceptance: its frozen bytes are not edited"
+)]
+mod s4_behavior;
+#[cfg(test)]
+mod s4_chore_retry;
+#[cfg(test)]
+mod s4_deadline;
+#[cfg(test)]
+#[allow(
+    clippy::doc_markdown,
+    clippy::duration_suboptimal_units,
+    clippy::match_wildcard_for_single_variants,
+    clippy::semicolon_if_nothing_returned,
+    clippy::too_many_lines,
+    reason = "frozen S4 acceptance (s4_event with its s4_cases oracle): its frozen bytes are not edited"
+)]
+mod s4_event;
+#[cfg(test)]
+mod s4_held_identity;
+#[cfg(test)]
+mod s4_held_shape;
+#[cfg(test)]
+#[allow(
+    clippy::naive_bytecount,
+    reason = "frozen S4 acceptance: its frozen bytes are not edited"
+)]
+mod s4_identity;
+#[cfg(test)]
+#[allow(
+    clippy::naive_bytecount,
+    reason = "frozen S4 acceptance: its frozen bytes are not edited"
+)]
+mod s4_legacy_owner;
+#[cfg(test)]
+#[allow(
+    const_item_mutation,
+    clippy::err_expect,
+    reason = "frozen S4 acceptance: its frozen bytes are not edited"
+)]
+mod s4_listing;
+#[cfg(test)]
+mod s4_listing_proof;
+#[cfg(test)]
+mod s4_listing_siblings;
+#[cfg(test)]
+mod s4_own_writes;
+#[cfg(test)]
+mod s4_pause;
+#[cfg(test)]
+mod s4_payload_budget;
+#[cfg(test)]
+mod s4_remaining_guards;
+#[cfg(test)]
+mod s4_rename_target;
+#[cfg(test)]
+mod s4_shape_proof;
+#[cfg(test)]
+mod s4_snapshot_boundary;
+#[cfg(test)]
+mod s4_transaction;
 
 /// The evidence format this core reads and writes.
 const VERSION: i64 = 1;

@@ -222,7 +222,7 @@ pub enum SourceRead {
 /// node whose kind nobody enumerated is refused as "an unrecognized node"
 /// rather than opened, because a fallback that proceeds is how a node no gate
 /// classified still gets opened.
-fn nonregular_leg(kind: std::fs::FileType) -> Option<&'static str> {
+pub(crate) fn nonregular_leg(kind: std::fs::FileType) -> Option<&'static str> {
     use std::os::unix::fs::FileTypeExt as _;
     if kind.is_file() {
         None
@@ -282,6 +282,25 @@ pub struct Oversized;
 ///
 /// [`Oversized`] for a regular file longer than `cap`.
 pub fn read_capped(path: &Path, cap: u64) -> Result<SourceRead, Oversized> {
+    read_capped_identified(path, cap).read
+}
+
+/// One [`read_capped_identified`]: the read, the identity of the file it
+/// opened, taken from the open handle BEFORE its bytes were read (`None` when
+/// nothing was opened, or the handle's status failed), and the node status
+/// (lstat) that classified the path before any open, or that status's
+/// error kind.
+#[derive(Debug)]
+pub(crate) struct CappedRead {
+    pub(crate) read: Result<SourceRead, Oversized>,
+    pub(crate) opened: Option<Identity>,
+    pub(crate) node: Result<std::fs::Metadata, io::ErrorKind>,
+}
+
+/// [`read_capped`], also naming the identity of the handle the bytes came
+/// from, so a later status equal to it proves the same bytes (the in-place
+/// same-length rewrite inside one timestamp tick excepted).
+pub(crate) fn read_capped_identified(path: &Path, cap: u64) -> CappedRead {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: classifies the node itself WITHOUT following a link, before any open — see clippy.toml"
@@ -289,11 +308,26 @@ pub fn read_capped(path: &Path, cap: u64) -> Result<SourceRead, Oversized> {
     let observed = std::fs::symlink_metadata(path);
     let shape = match observed {
         Ok(meta) => meta,
-        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(SourceRead::Absent),
-        Err(why) => return Ok(SourceRead::Unreadable(why.to_string())),
+        Err(why) => {
+            let read = if why.kind() == io::ErrorKind::NotFound {
+                SourceRead::Absent
+            } else {
+                SourceRead::Unreadable(why.to_string())
+            };
+            return CappedRead {
+                read: Ok(read),
+                opened: None,
+                node: Err(why.kind()),
+            };
+        }
+    };
+    let read = |read| CappedRead {
+        read,
+        opened: None,
+        node: Ok(shape.clone()),
     };
     if let Some(what) = nonregular_leg(shape.file_type()) {
-        return Ok(SourceRead::Invalid(what.to_owned()));
+        return read(Ok(SourceRead::Invalid(what.to_owned())));
     }
     #[allow(
         clippy::disallowed_methods,
@@ -302,19 +336,28 @@ pub fn read_capped(path: &Path, cap: u64) -> Result<SourceRead, Oversized> {
     let opened = File::open(path);
     let file = match opened {
         Ok(file) => file,
-        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(SourceRead::Absent),
-        Err(why) => return Ok(SourceRead::Unreadable(why.to_string())),
+        Err(why) if why.kind() == io::ErrorKind::NotFound => return read(Ok(SourceRead::Absent)),
+        Err(why) => return read(Ok(SourceRead::Unreadable(why.to_string()))),
+    };
+    let identity = file
+        .metadata()
+        .ok()
+        .and_then(|meta| Identity::from_meta(&meta));
+    let done = |result| CappedRead {
+        read: result,
+        opened: identity,
+        node: Ok(shape.clone()),
     };
     let mut body = Vec::new();
     if let Err(why) =
         io::Read::read_to_end(&mut io::Read::take(file, cap.saturating_add(1)), &mut body)
     {
-        return Ok(SourceRead::Unreadable(why.to_string()));
+        return done(Ok(SourceRead::Unreadable(why.to_string())));
     }
     if body.len() as u64 > cap {
-        return Err(Oversized);
+        return done(Err(Oversized));
     }
-    Ok(SourceRead::Ready(body))
+    done(Ok(SourceRead::Ready(body)))
 }
 
 /// [`read_capped`] of the one file `name` directly inside `dir`, where `dir`
@@ -489,12 +532,7 @@ pub enum SourcePresence {
 /// it, so a caller that only asks whether something is there reads no bytes.
 #[must_use]
 pub fn source_presence(path: &Path) -> SourcePresence {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: whether a session source is there, by its own metadata alone — never followed, never opened — see clippy.toml"
-    )]
-    let observed = std::fs::symlink_metadata(path);
-    match observed {
+    match node_meta(path) {
         Ok(meta) => match nonregular_leg(meta.file_type()) {
             None => SourcePresence::Regular,
             Some(what) => SourcePresence::Irregular(what.to_owned()),
@@ -502,6 +540,28 @@ pub fn source_presence(path: &Path) -> SourcePresence {
         Err(why) if why.kind() == io::ErrorKind::NotFound => SourcePresence::Absent,
         Err(why) => SourcePresence::Irregular(why.to_string()),
     }
+}
+
+/// The node at `path` by its own metadata: never followed, never opened. The
+/// statistics store validates what it read before its lock by this status
+/// alone while it holds the lock.
+///
+/// # Errors
+///
+/// The status read's own failure, `NotFound` included.
+pub(crate) fn node_meta(path: &Path) -> io::Result<std::fs::Metadata> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: whether a session source is there, by its own metadata alone — never followed, never opened — see clippy.toml"
+    )]
+    let observed = std::fs::symlink_metadata(path);
+    observed
+}
+
+/// A journal's [`Identity`], read through a link as the journal readers open
+/// it: `None` for anything but a regular file.
+pub(crate) fn followed_identity(path: &Path) -> Option<Identity> {
+    Identity::of(path, true)
 }
 
 /// What a regular file's own metadata says it is, read through a link as the
@@ -549,6 +609,11 @@ impl Identity {
 
     pub(crate) const fn file_key(self) -> (u64, u64) {
         (self.dev, self.ino)
+    }
+
+    /// Device, inode, length, and modification and change times.
+    pub(crate) const fn status(self) -> (u64, u64, u64, (i64, i64), (i64, i64)) {
+        (self.dev, self.ino, self.len, self.mtime, self.ctime)
     }
 
     /// The file's length in bytes.
@@ -1053,6 +1118,90 @@ impl SessionStore {
         append_locked(&self.events_path(), stamp_event_records(line).as_bytes())
     }
 
+    /// [`Self::append_event`], then the line counted in the statistics store
+    /// under the same journal lock (`stats_store::disk::counted`). `Err` only
+    /// when the append failed: nothing is counted then. An append whose
+    /// identity cannot be read after its commit is `Ok`, a refused count.
+    ///
+    /// # Errors
+    ///
+    /// [`Error`] — which step of the append failed, on which path.
+    pub fn append_event_counted(
+        &self,
+        line: &str,
+    ) -> Result<crate::stats_store::disk::Counted, Error> {
+        #[cfg(test)]
+        {
+            counted_split::mark(0);
+        }
+        let path = self.events_path();
+        let stamped = stamp_event_records(line);
+        let lock_path = lock_path(&path);
+        let _held = lock(&lock_path, LOCK_WAIT)
+            .map_err(|why| Error::Lock(lock_path.display().to_string(), why))?;
+        let (at, appended) = append_seen(&path, stamped.as_bytes())
+            .map_err(|why| Error::Append(path.display().to_string(), why))?;
+        #[cfg(test)]
+        {
+            counted_split::mark(1);
+        }
+        // Still under the journal lock: journal first, then stats.lock. The
+        // line is durable now, so an unproved identity is a counted refusal,
+        // never an append failure.
+        let counted = match appended {
+            Ok(appended) => self.counted(&stamped, at, &appended),
+            Err(why) => crate::stats_store::disk::Counted::Refused(
+                crate::stats_store::disk::Refused::Io(format!(
+                    "{}: the appended journal identity is unproved: {why}",
+                    path.display()
+                )),
+            ),
+        };
+        #[cfg(test)]
+        {
+            counted_split::mark(2);
+        }
+        Ok(counted)
+    }
+
+    /// The appended `stamped` line, written at `at` and seen as `appended`
+    /// (the fstat of the appended handle), counted in the statistics store
+    /// of this session's state root (`<root>/sessions/<name>`).
+    fn counted(
+        &self,
+        stamped: &str,
+        at: u64,
+        appended: &std::fs::Metadata,
+    ) -> crate::stats_store::disk::Counted {
+        use crate::stats_store::disk::{self, Counted, Refused, Seen, SourceSpec, Why};
+        let seen = Seen {
+            dev: appended.dev(),
+            ino: appended.ino(),
+            len: appended.len(),
+        };
+        let (Some(root), Some(label)) = (
+            self.dir.parent().and_then(Path::parent),
+            self.dir.file_name().and_then(|name| name.to_str()),
+        ) else {
+            return Counted::Refused(Refused::Io(format!(
+                "{}: no state root above the session",
+                self.dir.display()
+            )));
+        };
+        let mut budget = crate::quota::Budget::local(u64::MAX);
+        let Ok(meta) = crate::usage::meta_bytes(&self.dir.join(META), &mut budget) else {
+            return Counted::Skipped(Why::Unreadable);
+        };
+        let spec = SourceSpec::Live {
+            id: format!("live/{label}"),
+            label: label.to_owned(),
+            meta,
+        };
+        // One record, its LF excluded.
+        let line = stamped.strip_suffix('\n').unwrap_or(stamped);
+        disk::counted(root, &spec, at, line.as_bytes(), seen, disk::EVENT_WAIT)
+    }
+
     /// Append the event line `decide` chooses from the container as it stands
     /// ([`read_source`]'s classification), under ONE hold of the container's
     /// lock from that read through the append; `decide`'s `Err` appends nothing.
@@ -1549,12 +1698,34 @@ fn refuse_nonregular_lock_path(path: &Path) -> io::Result<()> {
 /// The lock path being anything but absent or a regular file, the lock file not
 /// being openable, or the lock still held at `wait`.
 pub fn lock(path: &Path, wait: Duration) -> io::Result<File> {
+    lock_timed(path, wait).map(|(file, _)| file)
+}
+
+/// The lock file at `path`, made when absent, NOT locked: a writer that must
+/// see its directory settled before it takes the lock makes it first.
+///
+/// # Errors
+///
+/// The lock path being anything but absent or a regular file, or the lock
+/// file not being openable.
+pub(crate) fn lock_file(path: &Path) -> io::Result<File> {
     refuse_nonregular_lock_path(path)?;
-    let file = OpenOptions::new().append(true).create(true).open(path)?;
+    OpenOptions::new().append(true).create(true).open(path)
+}
+
+/// [`lock`], with the instant `flock` was acquired: the identity proof after
+/// it runs under the lock, so a hold is timed from that instant.
+///
+/// # Errors
+///
+/// As [`lock`].
+pub(crate) fn lock_timed(path: &Path, wait: Duration) -> io::Result<(File, Instant)> {
+    let file = lock_file(path)?;
     let started = Instant::now();
     loop {
         match file.try_lock() {
             Ok(()) => {
+                let acquired = Instant::now();
                 #[allow(
                     clippy::disallowed_methods,
                     reason = "a door: proves the acquired lock still names its own regular inode after a queued wait"
@@ -1574,7 +1745,7 @@ pub fn lock(path: &Path, wait: Duration) -> io::Result<File> {
                         path.display()
                     )));
                 }
-                return Ok(file);
+                return Ok((file, acquired));
             }
             Err(TryLockError::WouldBlock) => {
                 if started.elapsed() >= wait {
@@ -1587,6 +1758,80 @@ pub fn lock(path: &Path, wait: Duration) -> io::Result<File> {
             }
             Err(TryLockError::Error(why)) => return Err(why),
         }
+    }
+}
+
+/// The last counted append's split on this thread (`cfg(test)` only, for the
+/// profile): the journal append (lock, write, sync) and the count it added.
+#[cfg(test)]
+pub(crate) mod counted_split {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        static MARKS: Cell<[Option<Instant>; 3]> = const { Cell::new([None; 3]) };
+    }
+
+    /// Mark point `at` (0 call, 1 appended, 2 counted) now; a call (0)
+    /// clears the marks a previous call left.
+    pub(crate) fn mark(at: usize) {
+        MARKS.with(|marks| {
+            let mut now = if at == 0 { [None; 3] } else { marks.get() };
+            if let Some(slot) = now.get_mut(at) {
+                *slot = Some(Instant::now());
+            }
+            marks.set(now);
+        });
+    }
+
+    /// `(append, added)` of the last complete counted append, then cleared.
+    pub(crate) fn take() -> Option<(Duration, Duration)> {
+        let [call, appended, counted] = MARKS.with(|marks| marks.replace([None; 3]));
+        Some((appended? - call?, counted? - appended?))
+    }
+}
+
+/// [`append`], with where the bytes start and the appended handle's status
+/// after the write: the offset and identity an event-time count needs. The
+/// outer `Err` is an append failure; the inner one, read after the commit,
+/// leaves the bytes appended.
+fn append_seen(path: &Path, bytes: &[u8]) -> io::Result<(u64, io::Result<std::fs::Metadata>)> {
+    let mut file = OpenOptions::new().append(true).create(true).open(path)?;
+    let at = Sink::len(&mut file)?;
+    commit(&mut file, bytes)?;
+    Ok((at, appended_identity(&file)))
+}
+
+/// The appended handle's status, read after the commit: the event-time
+/// count's identity of the journal it wrote.
+fn appended_identity(file: &File) -> io::Result<std::fs::Metadata> {
+    #[cfg(test)]
+    {
+        if identity_fault::take() {
+            return Err(io::Error::other("injected post-append identity fault"));
+        }
+    }
+    file.metadata()
+}
+
+/// A one-shot fault on the post-append identity read (`cfg(test)` only):
+/// the journal bytes are already committed when it fires.
+#[cfg(test)]
+pub(crate) mod identity_fault {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ARMED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The next post-append identity read on this thread fails, once.
+    pub(crate) fn arm() {
+        ARMED.with(|armed| armed.set(true));
+    }
+
+    /// Whether a fault was armed; disarms it.
+    pub(super) fn take() -> bool {
+        ARMED.with(Cell::take)
     }
 }
 
@@ -2473,5 +2718,25 @@ mod tests {
         assert_eq!(store.console_draft(), socket_read);
         drop(socket);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn a_counted_append_records_its_append_and_added_split_once() {
+        let root = scratch("counted-split");
+        let dir = root.join("sessions").join("alpha");
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "fixture session");
+        assert!(
+            std::fs::write(
+                dir.join(META),
+                "session_id=11111111-1111-4111-8111-111111111111\n"
+            )
+            .is_ok(),
+            "fixture meta"
+        );
+        let _ = super::counted_split::take();
+        let counted = open(&dir).append_event_counted("{\"action\":\"send\"}\n");
+        assert!(counted.is_ok(), "the journal append itself succeeds");
+        assert!(super::counted_split::take().is_some(), "both halves marked");
+        assert!(super::counted_split::take().is_none(), "taken once");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

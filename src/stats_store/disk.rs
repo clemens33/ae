@@ -179,9 +179,165 @@ impl Plan {
 
 /// The payload as real files under a root: the product's [`Dir`]. Reads go
 /// through the capped file door; writes create new files only, mode 0600.
+///
+/// A writer that holds `stats.lock` never reads a payload file's content or
+/// lists a directory in the steady state (ruling 19, option A): it first runs
+/// its whole decision WARM, without the lock, recording what each read and
+/// listing found with the status of what it opened; under the lock, HELD, a
+/// read or listing is answered from that record only while a status read of
+/// the node still matches it, else the attempt is STALE: nothing is opened,
+/// nothing is written, and the writer tries again from a new warm. Only the
+/// replay of an owed intent and a repair read under the lock (the EXCEPTION).
 #[derive(Debug, Clone)]
 pub struct Files {
     root: PathBuf,
+    snap: Snap,
+}
+
+/// How [`Files`] reads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Mode {
+    /// Plain reads: readers, and writers outside a transaction.
+    #[default]
+    Open,
+    /// Reads recorded, no write.
+    Warm,
+    /// Answers from the record while a status read matches it.
+    Held,
+    /// Reads under the lock in a replay or a repair, recorded.
+    Exception,
+}
+
+/// What a warm read of one name found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Found {
+    Absent,
+    /// A regular file's bytes, with the status of the handle they came from.
+    Bytes(crate::store::Identity, Vec<u8>),
+    /// A regular file opened and refused (over its cap, a read failed).
+    Opened(crate::store::Identity, Read),
+    /// What the node's own status said: not a regular file, or no status;
+    /// with the proof of that status: the full status of the node the warm
+    /// lstat classified, or that lstat's error.
+    Shape(DirProof, Read),
+}
+
+/// One real capped read: its answer, the identity of the handle it read,
+/// and the node status that classified the path (or that status's error).
+struct Warmed {
+    read: Read,
+    opened: Option<crate::store::Identity>,
+    node: Result<std::fs::Metadata, io::ErrorKind>,
+}
+
+/// What a warm listing of one directory found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Listed {
+    Absent,
+    Names(DirStatus, Vec<String>),
+    /// A listing that failed, with what the directory's own status said
+    /// before it: served again while that proof still holds.
+    Failed(DirProof, Failure),
+}
+
+/// What a directory's own status (lstat) said: the proof a recorded
+/// listing failure is checked against under the lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DirProof {
+    /// A directory, with its status.
+    Status(DirStatus),
+    /// A node that is no directory, by its own full status (its mode
+    /// carries its type), whatever kind it is.
+    Other(DirStatus),
+    /// The status itself failed.
+    Error(io::ErrorKind, String),
+}
+
+impl DirProof {
+    fn of(path: &Path) -> Self {
+        match crate::store::node_meta(path) {
+            Ok(meta) => Self::of_meta(&meta),
+            Err(why) => Self::Error(why.kind(), why.to_string()),
+        }
+    }
+
+    fn of_meta(meta: &std::fs::Metadata) -> Self {
+        DirStatus::of(meta).map_or_else(|| Self::Other(DirStatus::node(meta)), Self::Status)
+    }
+}
+
+/// A listing's error, kept so the same error can be answered again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Failure {
+    kind: io::ErrorKind,
+    os: Option<i32>,
+    text: String,
+}
+
+impl Failure {
+    fn of(why: &io::Error) -> Self {
+        Self {
+            kind: why.kind(),
+            os: why.raw_os_error(),
+            text: why.to_string(),
+        }
+    }
+
+    fn error(&self) -> io::Error {
+        self.os.map_or_else(
+            || io::Error::new(self.kind, self.text.clone()),
+            io::Error::from_raw_os_error,
+        )
+    }
+}
+
+/// A directory's status: an entry added, removed or renamed moves its times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DirStatus {
+    dev: u64,
+    ino: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+    mode: u32,
+}
+
+impl DirStatus {
+    fn of(meta: &std::fs::Metadata) -> Option<Self> {
+        meta.is_dir().then(|| Self::node(meta))
+    }
+
+    /// The same status fields of a node of any kind (lstat: a symlink is
+    /// its own node).
+    fn node(meta: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt as _;
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+            ctime: (meta.ctime(), meta.ctime_nsec()),
+            mode: meta.mode(),
+        }
+    }
+}
+
+/// One transaction's record of what its warm found.
+#[derive(Debug, Clone, Default)]
+struct Snap {
+    mode: Mode,
+    files: BTreeMap<String, Found>,
+    dirs: BTreeMap<String, Listed>,
+    /// Bytes this attempt wrote, by name, until renamed.
+    written: BTreeMap<String, Vec<u8>>,
+    /// Bytes recorded: file contents.
+    recorded: u64,
+    /// A held answer did not match: this attempt writes nothing.
+    stale: bool,
+    /// A held attempt applied an operation.
+    wrote: bool,
+}
+
+fn stale() -> io::Error {
+    io::Error::other("a dependency changed since it was read")
 }
 
 impl Files {
@@ -189,6 +345,7 @@ impl Files {
     pub fn at(root: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
+            snap: Snap::default(),
         }
     }
 
@@ -209,6 +366,406 @@ impl Files {
         }
         Ok(self.root.join(name))
     }
+
+    /// Start a warm: a fresh record, reads recorded, writes refused.
+    pub(super) fn warm(&mut self) {
+        self.snap = Snap {
+            mode: Mode::Warm,
+            ..Snap::default()
+        };
+    }
+
+    /// Hold: answer from the record.
+    pub(super) fn hold(&mut self) {
+        self.snap.mode = Mode::Held;
+        self.snap.stale = false;
+        self.snap.wrote = false;
+        self.snap.written.clear();
+    }
+
+    /// Back to plain reads, the record dropped.
+    pub(super) fn open(&mut self) {
+        self.snap = Snap::default();
+    }
+
+    /// Bytes the warm recorded.
+    pub(super) const fn recorded(&self) -> u64 {
+        self.snap.recorded
+    }
+
+    /// Whether a held answer did not match its record.
+    pub(super) const fn stale(&self) -> bool {
+        self.snap.stale
+    }
+
+    /// Whether this held attempt applied an operation.
+    pub(super) const fn wrote(&self) -> bool {
+        self.snap.wrote
+    }
+
+    /// Run `body` as the exception: under the lock, reads open and are
+    /// recorded. In any other mode than held, `body` runs as it is.
+    pub(super) fn exception<T>(&mut self, body: impl FnOnce(&mut Self) -> T) -> T {
+        if self.snap.mode != Mode::Held {
+            return body(self);
+        }
+        self.snap.mode = Mode::Exception;
+        let done = body(self);
+        self.snap.mode = Mode::Held;
+        done
+    }
+
+    fn mark_stale(&mut self) {
+        self.snap.stale = true;
+    }
+
+    /// A real capped read, with what it opened.
+    #[cfg_attr(
+        not(test),
+        allow(
+            unused_variables,
+            reason = "the exception count reaches only the tests"
+        )
+    )]
+    fn read_now(path: &Path, cap: u64, exception: bool) -> Warmed {
+        let seen = crate::store::read_capped_identified(path, cap);
+        #[cfg(test)]
+        if seen.opened.is_some() {
+            observe::payload(true, exception);
+        }
+        let read = match seen.read {
+            Ok(crate::store::SourceRead::Absent) => Read::Absent,
+            Ok(crate::store::SourceRead::Ready(bytes)) => Read::Bytes(bytes),
+            Ok(crate::store::SourceRead::Invalid(why)) => Read::Invalid(why),
+            Ok(crate::store::SourceRead::Unreadable(why)) => Read::Unreadable(why),
+            Err(crate::store::Oversized) => Read::Oversized,
+        };
+        Warmed {
+            read,
+            opened: seen.opened,
+            node: seen.node,
+        }
+    }
+
+    /// What a warm read found, recorded.
+    fn record(&mut self, name: &str, seen: &Warmed) {
+        let read = &seen.read;
+        // The proof of a shape answer is the lstat that classified the path.
+        let proof = match (&seen.node, read) {
+            (Ok(meta), _) => DirProof::of_meta(meta),
+            (Err(kind), Read::Unreadable(text)) => DirProof::Error(*kind, text.clone()),
+            (Err(kind), _) => DirProof::Error(*kind, String::new()),
+        };
+        let found = match (read, seen.opened) {
+            (Read::Absent, _) => Found::Absent,
+            (Read::Bytes(bytes), Some(identity)) => {
+                let width = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                self.snap.recorded = self.snap.recorded.saturating_add(width);
+                Found::Bytes(identity, bytes.clone())
+            }
+            (other, Some(identity)) => Found::Opened(identity, other.clone()),
+            // Bytes with no handle status prove nothing: never served.
+            (Read::Bytes(_), None) => return,
+            // A regular node that would not open (permissions): the same
+            // answer while the status that classified it stays the same.
+            (Read::Unreadable(_), None) => match seen
+                .node
+                .as_ref()
+                .ok()
+                .filter(|meta| crate::store::nonregular_leg(meta.file_type()).is_none())
+                .and_then(crate::store::Identity::from_meta)
+            {
+                Some(identity) => Found::Opened(identity, read.clone()),
+                None => Found::Shape(proof, read.clone()),
+            },
+            (other, None) => Found::Shape(proof, other.clone()),
+        };
+        self.snap.files.insert(name.to_owned(), found);
+    }
+
+    /// Under the lock: the recorded answer for `name` while its status says
+    /// the same, else stale. Never opens.
+    fn held_read(&mut self, path: &Path, name: &str, cap: u64) -> Read {
+        let now = match crate::store::node_meta(path) {
+            Ok(meta) => match crate::store::nonregular_leg(meta.file_type()) {
+                Some(what) => {
+                    Found::Shape(DirProof::of_meta(&meta), Read::Invalid(what.to_owned()))
+                }
+                None => match crate::store::Identity::from_meta(&meta) {
+                    Some(identity) => Found::Opened(identity, Read::Absent),
+                    None => Found::Shape(
+                        DirProof::of_meta(&meta),
+                        Read::Unreadable("no status".to_owned()),
+                    ),
+                },
+            },
+            Err(why) if why.kind() == io::ErrorKind::NotFound => Found::Absent,
+            Err(why) => {
+                let text = why.to_string();
+                Found::Shape(
+                    DirProof::Error(why.kind(), text.clone()),
+                    Read::Unreadable(text),
+                )
+            }
+        };
+        let answer = match (self.snap.files.get(name), &now) {
+            (Some(Found::Absent), Found::Absent) => Some(Read::Absent),
+            // The same answer while the classifying status proves the same
+            // node (or the same lstat error).
+            (Some(Found::Shape(was_proof, was)), Found::Shape(is_proof, is))
+                if was_proof == is_proof && was == is =>
+            {
+                Some(was.clone())
+            }
+            (Some(Found::Bytes(was, bytes)), Found::Opened(is, _)) if was == is => {
+                Some(if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > cap {
+                    Read::Oversized
+                } else {
+                    Read::Bytes(bytes.clone())
+                })
+            }
+            (Some(Found::Opened(was, read)), Found::Opened(is, _)) if was == is => {
+                Some(read.clone())
+            }
+            _ => None,
+        };
+        answer.unwrap_or_else(|| {
+            self.mark_stale();
+            Read::Unreadable("a dependency changed since it was read".to_owned())
+        })
+    }
+
+    /// A real listing, with the directory's status taken before it.
+    fn list_now(&mut self, dir: &str) -> (io::Result<Vec<String>>, Listed) {
+        let path = match self.path(dir) {
+            Ok(path) => path,
+            Err(why) => {
+                let failed = Listed::Failed(
+                    DirProof::Error(why.kind(), why.to_string()),
+                    Failure::of(&why),
+                );
+                return (Err(why), failed);
+            }
+        };
+        let proof = DirProof::of(&path);
+        #[cfg(test)]
+        {
+            observe::listed(self.snap.mode == Mode::Exception);
+        }
+        let paths = match crate::archive::read_entries(&path) {
+            Ok(paths) => paths,
+            Err(why) if why.kind() == io::ErrorKind::NotFound => {
+                return (Ok(Vec::new()), Listed::Absent);
+            }
+            Err(why) => {
+                let failed = Listed::Failed(proof, Failure::of(&why));
+                return (Err(why), failed);
+            }
+        };
+        let mut names: Vec<String> = paths
+            .iter()
+            .filter_map(|path| path.file_name()?.to_str().map(ToOwned::to_owned))
+            .collect();
+        names.sort();
+        // Listed, but its status proves no directory (a symlink to one, or
+        // a status read that failed): held, that is an error, never names.
+        let listed = match proof {
+            DirProof::Status(status) => Listed::Names(status, names.clone()),
+            other => Listed::Failed(other, Failure::of(&io::Error::other("no directory status"))),
+        };
+        (Ok(names), listed)
+    }
+
+    /// Under the lock: the recorded listing of `dir` while its status says
+    /// the same, else stale. Never lists.
+    fn held_list(&mut self, dir: &str) -> io::Result<Vec<String>> {
+        let path = self.path(dir)?;
+        let now = DirProof::of(&path);
+        let answer = match (self.snap.dirs.get(dir), &now) {
+            (Some(Listed::Absent), DirProof::Error(kind, _))
+                if *kind == io::ErrorKind::NotFound =>
+            {
+                Some(Ok(Vec::new()))
+            }
+            (Some(Listed::Names(was, names)), DirProof::Status(is)) if is == was => {
+                Some(Ok(names.clone()))
+            }
+            // The same failure while the directory's status says the same.
+            (Some(Listed::Failed(was, failure)), is) if was == is => Some(Err(failure.error())),
+            _ => None,
+        };
+        answer.unwrap_or_else(|| {
+            self.mark_stale();
+            Err(stale())
+        })
+    }
+
+    /// After an operation applied under the lock: the record follows it, so
+    /// the rest of this attempt reads its own writes by status alone.
+    fn follow(&mut self, op: &Op) {
+        match op {
+            Op::Write { name, bytes } => {
+                self.snap.written.insert(name.clone(), bytes.clone());
+                self.restat_file(name, Some(bytes.clone()));
+                self.entered(name);
+            }
+            Op::Rename { from, to } => {
+                let bytes =
+                    self.snap
+                        .written
+                        .remove(from)
+                        .or_else(|| match self.snap.files.get(from) {
+                            Some(Found::Bytes(_, bytes)) => Some(bytes.clone()),
+                            _ => None,
+                        });
+                self.snap.files.insert(from.clone(), Found::Absent);
+                self.moved(from, to);
+                if self.snap.dirs.contains_key(to) {
+                    self.restat_dir(to);
+                } else {
+                    self.restat_file(to, bytes);
+                }
+                self.left(from);
+                self.entered(to);
+            }
+            Op::Remove(name) => {
+                self.snap.written.remove(name);
+                self.snap.files.insert(name.clone(), Found::Absent);
+                self.left(name);
+            }
+            Op::MakeDir(name) => {
+                self.snap
+                    .dirs
+                    .insert(name.clone(), Listed::Names(DirStatus::zero(), Vec::new()));
+                self.restat_dir(name);
+                self.entered(name);
+            }
+            Op::RemoveTree(name) => {
+                let inside = format!("{name}/");
+                self.snap.files.retain(|key, _| !key.starts_with(&inside));
+                self.snap.dirs.retain(|key, _| !key.starts_with(&inside));
+                self.snap.files.insert(name.clone(), Found::Absent);
+                self.snap.dirs.insert(name.clone(), Listed::Absent);
+                self.left(name);
+            }
+        }
+    }
+
+    /// Records under `from` now under `to`: a directory renamed.
+    fn moved(&mut self, from: &str, to: &str) {
+        let inside = format!("{from}/");
+        let target = format!("{to}/");
+        let files: Vec<(String, Found)> = self
+            .snap
+            .files
+            .iter()
+            .filter(|(key, _)| key.starts_with(&inside))
+            .map(|(key, found)| (key.clone(), found.clone()))
+            .collect();
+        self.snap.files.retain(|key, _| !key.starts_with(&target));
+        for (key, found) in files {
+            self.snap.files.remove(&key);
+            let rest = key.get(inside.len()..).unwrap_or_default();
+            self.snap.files.insert(format!("{target}{rest}"), found);
+        }
+        let dirs: Vec<(String, Listed)> = self
+            .snap
+            .dirs
+            .iter()
+            .filter(|(key, _)| *key == from || key.starts_with(&inside))
+            .map(|(key, listed)| (key.clone(), listed.clone()))
+            .collect();
+        self.snap
+            .dirs
+            .retain(|key, _| key != to && !key.starts_with(&target));
+        for (key, listed) in dirs {
+            self.snap.dirs.remove(&key);
+            let renamed = if key == from {
+                to.to_owned()
+            } else {
+                format!("{target}{}", key.get(inside.len()..).unwrap_or_default())
+            };
+            self.snap.dirs.insert(renamed, listed);
+        }
+        if self.snap.dirs.contains_key(to) {
+            self.snap.dirs.insert(from.to_owned(), Listed::Absent);
+        }
+    }
+
+    /// The status of `name` written by this attempt, with its bytes.
+    fn restat_file(&mut self, name: &str, bytes: Option<Vec<u8>>) {
+        let found = self
+            .path(name)
+            .ok()
+            .and_then(|path| crate::store::node_meta(&path).ok())
+            .and_then(|meta| crate::store::Identity::from_meta(&meta))
+            .zip(bytes)
+            .map(|(identity, bytes)| Found::Bytes(identity, bytes));
+        match found {
+            Some(found) => self.snap.files.insert(name.to_owned(), found),
+            None => self.snap.files.remove(name),
+        };
+    }
+
+    /// The status of a directory this attempt changed, its names kept.
+    fn restat_dir(&mut self, dir: &str) {
+        let status = self
+            .path(dir)
+            .ok()
+            .and_then(|path| crate::store::node_meta(&path).ok())
+            .and_then(|meta| DirStatus::of(&meta));
+        let names = match self.snap.dirs.get(dir) {
+            Some(Listed::Names(_, names)) => Some(names.clone()),
+            _ => None,
+        };
+        match (status, names) {
+            (Some(status), Some(names)) => {
+                self.snap
+                    .dirs
+                    .insert(dir.to_owned(), Listed::Names(status, names));
+            }
+            _ => {
+                self.snap.dirs.remove(dir);
+            }
+        }
+    }
+
+    /// `name` now in its directory's recorded listing.
+    fn entered(&mut self, name: &str) {
+        self.relisted(name, true);
+    }
+
+    /// `name` no longer in its directory's recorded listing.
+    fn left(&mut self, name: &str) {
+        self.relisted(name, false);
+    }
+
+    fn relisted(&mut self, name: &str, present: bool) {
+        let (dir, leaf) = name.rsplit_once('/').unwrap_or(("", name));
+        if let Some(Listed::Names(_, names)) = self.snap.dirs.get_mut(dir) {
+            names.retain(|have| have != leaf);
+            if present {
+                names.push(leaf.to_owned());
+                names.sort();
+            }
+        }
+        if matches!(self.snap.dirs.get(dir), Some(Listed::Absent)) && present {
+            self.snap.dirs.remove(dir);
+        }
+        self.restat_dir(dir);
+    }
+}
+
+impl DirStatus {
+    const fn zero() -> Self {
+        Self {
+            dev: 0,
+            ino: 0,
+            mtime: (0, 0),
+            ctime: (0, 0),
+            mode: 0,
+        }
+    }
 }
 
 impl Dir for Files {
@@ -217,17 +774,26 @@ impl Dir for Files {
             Ok(path) => path,
             Err(why) => return Read::Unreadable(why.to_string()),
         };
-        match crate::store::read_capped(&path, cap) {
-            Ok(crate::store::SourceRead::Absent) => Read::Absent,
-            Ok(crate::store::SourceRead::Ready(bytes)) => Read::Bytes(bytes),
-            Ok(crate::store::SourceRead::Invalid(why)) => Read::Invalid(why),
-            Ok(crate::store::SourceRead::Unreadable(why)) => Read::Unreadable(why),
-            Err(crate::store::Oversized) => Read::Oversized,
+        match self.snap.mode {
+            Mode::Open => Self::read_now(&path, cap, false).read,
+            Mode::Held => self.held_read(&path, name, cap),
+            Mode::Warm | Mode::Exception => {
+                let warmed = Self::read_now(&path, cap, self.snap.mode == Mode::Exception);
+                self.record(name, &warmed);
+                warmed.read
+            }
         }
     }
 
     fn apply(&mut self, op: &Op) -> io::Result<()> {
         use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+        match self.snap.mode {
+            // A warm writes nothing: what follows reads the files as they
+            // are; the held run follows its own writes.
+            Mode::Warm => return Ok(()),
+            Mode::Held | Mode::Exception if self.snap.stale => return Err(stale()),
+            _ => {}
+        }
         match op {
             Op::Write { name, bytes } => {
                 let mut file = std::fs::OpenOptions::new()
@@ -253,21 +819,23 @@ impl Dir for Files {
         {
             observe::applied(op);
         }
+        if matches!(self.snap.mode, Mode::Held | Mode::Exception) {
+            self.snap.wrote = true;
+            self.follow(op);
+        }
         Ok(())
     }
 
     fn list(&mut self, dir: &str) -> io::Result<Vec<String>> {
-        let paths = match crate::archive::read_entries(&self.path(dir)?) {
-            Ok(paths) => paths,
-            Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(why) => return Err(why),
-        };
-        let mut names: Vec<String> = paths
-            .iter()
-            .filter_map(|path| path.file_name()?.to_str().map(ToOwned::to_owned))
-            .collect();
-        names.sort();
-        Ok(names)
+        match self.snap.mode {
+            Mode::Open => self.list_now(dir).0,
+            Mode::Held => self.held_list(dir),
+            Mode::Warm | Mode::Exception => {
+                let (names, listed) = self.list_now(dir);
+                self.snap.dirs.insert(dir.to_owned(), listed);
+                names
+            }
+        }
     }
 }
 
@@ -356,7 +924,10 @@ pub fn take_journal_reads() -> JournalReads {
 mod observe {
     use std::cell::{Cell, RefCell};
 
-    use super::{FileEvent, JournalReads, Op};
+    use super::{Attempt, FileEvent, Hold, JournalReads, Op, PayloadReads};
+
+    /// A spec's hook between a warm and its lock request.
+    pub(super) type BeforeLock = Box<dyn FnMut(&std::path::Path, u32)>;
 
     thread_local! {
         pub(super) static FILES: RefCell<Vec<FileEvent>> = const { RefCell::new(Vec::new()) };
@@ -366,6 +937,20 @@ mod observe {
         };
         /// Payload locks this thread holds.
         pub(super) static LOCKS: Cell<u64> = const { Cell::new(0) };
+        pub(super) static PAYLOAD: Cell<PayloadReads> = const {
+            Cell::new(PayloadReads {
+                opened: 0,
+                opened_under_lock: 0,
+                opened_under_lock_exception: 0,
+                listed: 0,
+                listed_under_lock: 0,
+                listed_under_lock_exception: 0,
+            })
+        };
+        pub(super) static ATTEMPTS: RefCell<Vec<Attempt>> = const { RefCell::new(Vec::new()) };
+        pub(super) static CAP: Cell<Option<u64>> = const { Cell::new(None) };
+        pub(super) static HOLDS: RefCell<Vec<Hold>> = const { RefCell::new(Vec::new()) };
+        pub(super) static BEFORE: RefCell<Option<BeforeLock>> = const { RefCell::new(None) };
     }
 
     pub(super) fn file(event: FileEvent) {
@@ -397,6 +982,66 @@ mod observe {
             Op::RemoveTree(name) => FileEvent::RemovedTree(name.clone()),
         };
         file(event);
+    }
+
+    /// A payload content open by `Files`; `exception` while it reads under
+    /// the lock in a replay or a repair.
+    pub(super) fn payload(opened: bool, exception: bool) {
+        let locked = LOCKS.with(Cell::get) > 0;
+        PAYLOAD.with(|reads| {
+            let mut now = reads.get();
+            if opened {
+                now.opened += 1;
+                if locked && exception {
+                    now.opened_under_lock_exception += 1;
+                } else if locked {
+                    now.opened_under_lock += 1;
+                }
+            }
+            reads.set(now);
+        });
+    }
+
+    /// A directory listing by `Files`.
+    pub(super) fn listed(exception: bool) {
+        let locked = LOCKS.with(Cell::get) > 0;
+        PAYLOAD.with(|reads| {
+            let mut now = reads.get();
+            now.listed += 1;
+            if locked && exception {
+                now.listed_under_lock_exception += 1;
+            } else if locked {
+                now.listed_under_lock += 1;
+            }
+            reads.set(now);
+        });
+    }
+
+    pub(super) fn hold(hold: Hold) {
+        HOLDS.with(|holds| holds.borrow_mut().push(hold));
+    }
+
+    pub(super) fn attempt(attempt: Attempt) {
+        ATTEMPTS.with(|attempts| attempts.borrow_mut().push(attempt));
+    }
+
+    /// The snapshot cap in force on this thread.
+    pub(super) fn cap() -> Option<u64> {
+        CAP.with(Cell::get)
+    }
+
+    /// Run the spec's hook, if one is installed.
+    pub(super) fn before(root: &std::path::Path, attempt: u32) {
+        let hook = BEFORE.with(|held| held.borrow_mut().take());
+        if let Some(mut hook) = hook {
+            hook(root, attempt);
+            BEFORE.with(|held| {
+                let mut held = held.borrow_mut();
+                if held.is_none() {
+                    *held = Some(hook);
+                }
+            });
+        }
     }
 
     pub(super) fn journal(bytes: usize) {
@@ -693,6 +1338,17 @@ pub enum Standing {
 pub struct FileJournals {
     root: PathBuf,
     paths: BTreeMap<String, PathBuf>,
+    snap: Windows,
+}
+
+/// One transaction's journal windows, as [`Files`] records payload reads: a
+/// held window is the recorded one while the journal's status says the same.
+#[derive(Debug, Clone, Default)]
+struct Windows {
+    mode: Mode,
+    seen: BTreeMap<(String, u64, u64), Window>,
+    recorded: u64,
+    stale: bool,
 }
 
 impl FileJournals {
@@ -701,7 +1357,35 @@ impl FileJournals {
         Self {
             root: root.to_path_buf(),
             paths: BTreeMap::new(),
+            snap: Windows::default(),
         }
+    }
+
+    /// Start a warm: windows read and recorded.
+    pub(super) fn warm(&mut self) {
+        self.snap = Windows {
+            mode: Mode::Warm,
+            ..Windows::default()
+        };
+    }
+
+    /// Hold: windows answered from the record.
+    pub(super) fn hold(&mut self) {
+        self.snap.mode = Mode::Held;
+        self.snap.stale = false;
+    }
+
+    /// Back to plain reads, the record dropped.
+    pub(super) fn open(&mut self) {
+        self.snap = Windows::default();
+    }
+
+    pub(super) const fn recorded(&self) -> u64 {
+        self.snap.recorded
+    }
+
+    pub(super) const fn stale(&self) -> bool {
+        self.snap.stale
     }
 
     /// Read `source` from `journal`.
@@ -770,12 +1454,31 @@ impl Journal for FileJournals {
 
     fn window(&mut self, source: &str, from: u64, max: u64) -> Result<Window, SourceGap> {
         let path = self.path(source).ok_or(SourceGap::Missing)?;
+        let key = (source.to_owned(), from, max);
+        if self.snap.mode == Mode::Held {
+            // The window the warm read, while the journal's status is the
+            // status of the handle it was read from; else stale, unread.
+            let now = crate::store::followed_identity(&path).map(crate::store::Identity::status);
+            if let Some(window) = self.snap.seen.get(&key).filter(|window| {
+                now == Some((
+                    window.dev,
+                    window.ino,
+                    window.len,
+                    window.changed.mtime,
+                    window.changed.ctime,
+                ))
+            }) {
+                return Ok(window.clone());
+            }
+            self.snap.stale = true;
+            return Err(SourceGap::Unreadable);
+        }
         let read = crate::usage::journal_window(&path, from, max)?;
         #[cfg(test)]
         {
             observe::journal(read.bytes.len());
         }
-        Ok(Window {
+        let window = Window {
             dev: read.dev,
             ino: read.ino,
             len: read.len,
@@ -784,7 +1487,13 @@ impl Journal for FileJournals {
                 ctime: read.ctime,
             },
             bytes: read.bytes,
-        })
+        };
+        if self.snap.mode == Mode::Warm {
+            let width = u64::try_from(window.bytes.len()).unwrap_or(u64::MAX);
+            self.snap.recorded = self.snap.recorded.saturating_add(width);
+            self.snap.seen.insert(key, window.clone());
+        }
+        Ok(window)
     }
 }
 
@@ -1713,6 +2422,16 @@ pub enum Why {
     /// Under the lock the source is gone, or an archive that would count is
     /// claimed.
     Gone,
+    /// Event time: the source's row is a failed registration.
+    Failed,
+    /// Event time: the row's journal device and inode differ from what the
+    /// append saw, or the journal is now shorter than the row's cursor.
+    Journal,
+    /// Event time: the source's meta could not be read, or is not text
+    /// (`stats::identity` gives nothing): the birth would not be counted. A
+    /// text meta without a session id is not this: it registers in the
+    /// id-less group.
+    Unreadable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1742,6 +2461,15 @@ pub enum Refused {
     /// A payload no surviving evidence proves the epoch of: a repair would
     /// have to guess one.
     EpochUnproven,
+    /// One warm recorded more than the snapshot cap: refused before the lock,
+    /// nothing taken, nothing written.
+    Snapshot {
+        recorded: u64,
+        cap: u64,
+    },
+    /// Every held attempt found a dependency changed since its warm: nothing
+    /// written.
+    Contended,
 }
 
 impl Refused {
@@ -1756,6 +2484,10 @@ impl Refused {
             Self::RecoveryOwed => "an interrupted update is not recovered".to_owned(),
             Self::NotAnEvent => "not a certificate or linked spawn line".to_owned(),
             Self::EpochUnproven => "nothing left proves the store's epoch".to_owned(),
+            Self::Snapshot { recorded, cap } => {
+                format!("a store snapshot of {recorded} bytes is over its cap of {cap} bytes")
+            }
+            Self::Contended => "the statistics store was busy".to_owned(),
         }
     }
 
@@ -1792,6 +2524,477 @@ pub enum Shown {
         listed: u64,
     },
     Refused(Refused),
+}
+
+// --- event time (S4) ------------------------------------------------------------
+
+/// The journal as a spawn's append left it: the appended handle's status,
+/// taken under the journal lock after the write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Seen {
+    pub dev: u64,
+    pub ino: u64,
+    pub len: u64,
+}
+
+/// What one event-time count did. `Published` and `Kept` are the successes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Counted {
+    /// The record, and for an absent source its registration, published.
+    Published { r#gen: u64 },
+    /// Nothing to write: kept already, or the ordered read of this same
+    /// journal passed it.
+    Kept,
+    /// `stats.lock` not taken before the call's one deadline.
+    Busy,
+    /// Every held attempt was stale.
+    Contended,
+    /// A state only the maintainer resolves.
+    Skipped(Why),
+    /// Damage, an IO error, over the snapshot cap, or not an event line.
+    Refused(Refused),
+}
+
+impl Counted {
+    /// Whether the birth is in the store now.
+    #[must_use]
+    pub const fn counted(&self) -> bool {
+        matches!(self, Self::Published { .. } | Self::Kept)
+    }
+
+    /// Why the birth is in the journal only, for one line on stderr; `None`
+    /// for a success.
+    #[must_use]
+    pub fn reason(&self) -> Option<String> {
+        match self {
+            Self::Published { .. } | Self::Kept => None,
+            Self::Busy => Some("the statistics store is locked".to_owned()),
+            Self::Contended => Some(Refused::Contended.describe()),
+            Self::Skipped(Why::Owned) => {
+                Some("another session's statistics own this source".to_owned())
+            }
+            Self::Skipped(Why::Failed) => {
+                Some("the statistics hold this source as unreadable".to_owned())
+            }
+            Self::Skipped(Why::Journal) => {
+                Some("the journal changed since the statistics read it".to_owned())
+            }
+            Self::Skipped(Why::Unreadable) => Some("the session meta is unreadable".to_owned()),
+            Self::Skipped(why) => Some(format!("{why:?}").to_lowercase()),
+            Self::Refused(refused) => Some(refused.describe()),
+        }
+    }
+}
+
+/// The `stats.lock` poll budget of one counted call: one deadline across
+/// every attempt.
+pub const EVENT_WAIT: Duration = Duration::from_millis(200);
+/// Held attempts per taker call.
+pub const ATTEMPTS: u32 = 3;
+/// Bytes one warm may record before it is refused.
+pub const SNAPSHOT_CAP: u64 = 256 << 20;
+
+/// Under the stats lock: the event-time rules for `spec`'s certificate or
+/// linked `spawn` `line` at journal `offset`, the append having seen `seen`.
+///
+/// # Errors
+///
+/// Owed recovery, a line that is no such record, or a payload file over its
+/// cap or damaged.
+pub fn event_counted(
+    dir: &mut dyn Dir,
+    spec: &SourceSpec,
+    offset: u64,
+    line: &[u8],
+    seen: Seen,
+) -> Result<Decision, Refused> {
+    owed(dir)?;
+    let SourceSpec::Live { id: source, .. } = spec else {
+        return Err(Refused::UnknownSource(spec.id().to_owned()));
+    };
+    let (key, origin) = spec.origin();
+    // Not a certificate or linked `spawn` of this source: nothing, first.
+    let kept = Evidence::new(origin.clone())
+        .take_event(offset, line, LINE_LIMIT)
+        .map_err(|_| Refused::NotAnEvent)?;
+    if matches!(origin, Origin::Unreadable { .. }) {
+        return Ok(Decision::Discard(Why::Unreadable));
+    }
+    let epoch = read_epoch(dir)?.unwrap_or(0);
+    let mut root = load_root(dir, epoch)?;
+    // The ownership proof below reads the index: made first when an earlier
+    // format did not write it.
+    if let Some(generation) = root
+        .as_ref()
+        .filter(|root| !root.indexed())
+        .map(|root| root.generation)
+    {
+        root = Some(resummed(dir, epoch, generation)?);
+    }
+    let generation = root
+        .as_ref()
+        .map_or(0, |root| root.generation)
+        .checked_add(1)
+        .ok_or_else(|| Refused::Io("generation".to_owned()))?;
+    let mut primary = load_group(dir, epoch, &key)?.unwrap_or_else(|| Group::new(key.clone()));
+    let mut touched = BTreeSet::new();
+    match primary.own.get_mut(source) {
+        None => {
+            if root
+                .as_ref()
+                .is_some_and(|root| root.owner(source).is_some())
+            {
+                return Ok(Decision::Discard(Why::Owned));
+            }
+            // Registered pending: the maintainer reads it from 0 and the
+            // empty witness holds on this same journal.
+            let Some(kept) = kept else {
+                return Ok(Decision::Publish(Plan::of(Vec::new())));
+            };
+            let mut own = Own {
+                evidence: Evidence::new(origin),
+                provenance: Provenance {
+                    seen: seen.len,
+                    dev: seen.dev,
+                    ino: seen.ino,
+                    ..Provenance::none(generation)
+                },
+            };
+            own.evidence.keep(offset, kept);
+            touched.extend(own.evidence.groups());
+            primary.own.insert(source.clone(), own);
+        }
+        Some(own) => {
+            match &own.evidence.origin {
+                Origin::Failed { .. } => return Ok(Decision::Discard(Why::Failed)),
+                Origin::Unreadable { .. } => return Ok(Decision::Discard(Why::Unreadable)),
+                Origin::Live { .. } | Origin::Archive { .. } => {}
+            }
+            if (own.provenance.dev, own.provenance.ino) != (seen.dev, seen.ino)
+                || seen.len < own.evidence.cursor
+            {
+                return Ok(Decision::Discard(Why::Journal));
+            }
+            // Below the cursor the ordered read of this same journal passed
+            // it; an equal record is kept already.
+            let Some(kept) = own
+                .evidence
+                .take_event(offset, line, LINE_LIMIT)
+                .map_err(|_| Refused::NotAnEvent)?
+            else {
+                return Ok(Decision::Publish(Plan::of(Vec::new())));
+            };
+            touched.extend(own.evidence.groups());
+            own.evidence.keep(offset, kept);
+            touched.extend(own.evidence.groups());
+        }
+    }
+    touched.insert(key);
+    commit(dir, epoch, root, primary, touched, generation).map(Decision::Publish)
+}
+
+/// The event taker: `event_counted` for `spec` under `stats.lock`, warm then
+/// held, at most [`ATTEMPTS`] times within one poll deadline of `wait`; no
+/// warm starts once that deadline has passed ([`Counted::Busy`]).
+/// Never reads a journal; never repairs (the maintainer does).
+#[must_use]
+pub fn counted(
+    root: &Path,
+    spec: &SourceSpec,
+    offset: u64,
+    line: &[u8],
+    seen: Seen,
+    wait: Duration,
+) -> Counted {
+    let mut held = Duration::ZERO;
+    let taken = attempted(
+        root,
+        &mut Files::at(root),
+        &mut FileJournals::at(root),
+        wait,
+        &mut held,
+        Rewarm::WithinDeadline,
+        |files, _| {
+            let decided = recovery(files)
+                .and_then(|plan| {
+                    plan.apply(files, plan.ops.len())
+                        .map_err(|why| Refused::Io(why.to_string()))
+                })
+                .and_then(|()| event_counted(files, spec, offset, line, seen))?;
+            match decided {
+                Decision::Publish(plan) => {
+                    plan.apply(files, plan.ops.len())
+                        .map_err(|why| Refused::Io(why.to_string()))?;
+                    Ok(plan
+                        .generation()
+                        .map_or(Counted::Kept, |r#gen| Counted::Published { r#gen }))
+                }
+                Decision::Discard(why) => Ok(Counted::Skipped(why)),
+            }
+        },
+    );
+    match taken {
+        Taken::Done(Ok(counted)) => counted,
+        Taken::Done(Err(refused)) => Counted::Refused(refused),
+        Taken::Unlocked(why) if why.kind() == io::ErrorKind::WouldBlock => Counted::Busy,
+        Taken::Unlocked(why) => Counted::Refused(Refused::Io(format!("{LOCK}: {why}"))),
+        Taken::Contended => Counted::Contended,
+        Taken::Over { recorded, cap } => Counted::Refused(Refused::Snapshot { recorded, cap }),
+    }
+}
+
+/// Payload reads `Files` made on this thread (`cfg(test)` only).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PayloadReads {
+    /// Content opens by `Files::read`, in every mode.
+    pub opened: u64,
+    /// Of `opened`, under a steady-state hold of the lock.
+    pub opened_under_lock: u64,
+    /// Of `opened`, under the lock in an owed-intent replay or a repair.
+    pub opened_under_lock_exception: u64,
+    /// Directory listings by `Files::list`.
+    pub listed: u64,
+    pub listed_under_lock: u64,
+    pub listed_under_lock_exception: u64,
+}
+
+/// The payload reads since the last call.
+#[cfg(test)]
+#[must_use]
+pub fn take_payload_reads() -> PayloadReads {
+    observe::PAYLOAD.with(std::cell::Cell::take)
+}
+
+/// One lock-taking attempt of a taker (`cfg(test)` only).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attempt {
+    /// The lock was not taken before the deadline.
+    Busy,
+    /// A dependency had changed: released, nothing written.
+    Stale,
+    /// Decided with nothing to apply.
+    Decided,
+    /// A plan applied.
+    Applied,
+}
+
+/// The attempts since the last call, in order.
+#[cfg(test)]
+#[must_use]
+pub fn take_attempts() -> Vec<Attempt> {
+    observe::ATTEMPTS.with(std::cell::RefCell::take)
+}
+
+/// Override [`SNAPSHOT_CAP`] on this thread; `None` restores it.
+#[cfg(test)]
+pub fn set_snapshot_cap(cap: Option<u64>) {
+    observe::CAP.with(|held| held.set(cap));
+}
+
+/// Install `hook`, called by every taker after each warm and before that
+/// attempt's lock request with the root and the attempt number, until
+/// [`clear_before_lock`].
+#[cfg(test)]
+pub fn before_lock(hook: impl FnMut(&Path, u32) + 'static) {
+    observe::BEFORE.with(|held| *held.borrow_mut() = Some(Box::new(hook)));
+}
+
+/// Remove the hook [`before_lock`] installed.
+#[cfg(test)]
+pub fn clear_before_lock() {
+    observe::BEFORE.with(|held| *held.borrow_mut() = None);
+}
+
+// --- the transaction (ruling 19, option A) --------------------------------------
+
+/// How one taker call ended.
+#[derive(Debug)]
+pub(super) enum Taken<T> {
+    /// Decided under the lock (whatever `T` says).
+    Done(T),
+    /// The lock was not taken: held past the deadline (`WouldBlock`), or the
+    /// lock path refused.
+    Unlocked(io::Error),
+    /// Every attempt was stale.
+    Contended,
+    /// The warm recorded more than the snapshot cap.
+    Over { recorded: u64, cap: u64 },
+}
+
+/// Whether `recorded` bytes pass `cap`: the one comparison the product and
+/// the tests' lowered cap share.
+const fn over_budget(recorded: u64, cap: u64) -> bool {
+    recorded > cap
+}
+
+/// The snapshot cap in force.
+fn snapshot_cap() -> u64 {
+    #[cfg(test)]
+    {
+        if let Some(cap) = observe::cap() {
+            return cap;
+        }
+    }
+    SNAPSHOT_CAP
+}
+
+/// Run `run` as a writer holding `stats.lock` must (ruling 19): warm, without
+/// the lock, then take the lock within what is left of ONE deadline of `wait`
+/// and run it held; a stale attempt released and tried again from a new warm,
+/// at most [`ATTEMPTS`] times. `held` gains each attempt's hold, from the
+/// lock taken to the lock released.
+pub(super) fn transact<T>(
+    root: &Path,
+    files: &mut Files,
+    journals: &mut FileJournals,
+    wait: Duration,
+    held: &mut Duration,
+    run: impl FnMut(&mut Files, &mut FileJournals) -> T,
+) -> Taken<T> {
+    attempted(root, files, journals, wait, held, Rewarm::Always, run)
+}
+
+/// Whether a stale attempt warms again once the call's deadline has passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rewarm {
+    /// Every attempt warms (the maintainer and purge: a deferral costs a round).
+    Always,
+    /// No warm starts after the deadline: the call gives up as busy (an
+    /// event-time count, whose journal stays authoritative; lead ruling r2.4).
+    WithinDeadline,
+}
+
+/// [`transact`], with the re-warm rule `rewarm`.
+fn attempted<T>(
+    root: &Path,
+    files: &mut Files,
+    journals: &mut FileJournals,
+    wait: Duration,
+    held: &mut Duration,
+    rewarm: Rewarm,
+    mut run: impl FnMut(&mut Files, &mut FileJournals) -> T,
+) -> Taken<T> {
+    let mut deadline: Option<std::time::Instant> = None;
+    #[cfg_attr(
+        not(test),
+        allow(
+            unused_variables,
+            reason = "the attempt number and the times reach only the tests' observers"
+        )
+    )]
+    for attempt in 1..=ATTEMPTS {
+        if rewarm == Rewarm::WithinDeadline
+            && deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            #[cfg(test)]
+            {
+                observe::attempt(Attempt::Busy);
+            }
+            return Taken::Unlocked(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "the deadline passed before another warm",
+            ));
+        }
+        let warmed = std::time::Instant::now();
+        let mut rewarmed = false;
+        loop {
+            files.warm();
+            journals.warm();
+            drop(run(files, journals));
+            let recorded = files.recorded().saturating_add(journals.recorded());
+            let cap = snapshot_cap();
+            if over_budget(recorded, cap) {
+                files.open();
+                journals.open();
+                return Taken::Over { recorded, cap };
+            }
+            // A root's first taker makes the lock file, which changes the
+            // root listing this warm recorded: made unlocked, warmed again,
+            // once.
+            if rewarmed || !Payload::at(root).made() {
+                break;
+            }
+            rewarmed = true;
+        }
+        let warm = warmed.elapsed();
+        #[cfg(test)]
+        {
+            observe::before(root, attempt);
+        }
+        let now = std::time::Instant::now();
+        let left = deadline
+            .get_or_insert_with(|| now + wait)
+            .saturating_duration_since(now);
+        let lock = match Payload::at(root).lock(left) {
+            Ok(lock) => lock,
+            Err(why) => {
+                #[cfg(test)]
+                {
+                    observe::attempt(Attempt::Busy);
+                }
+                files.open();
+                journals.open();
+                return Taken::Unlocked(why);
+            }
+        };
+        let taken = lock.acquired();
+        files.hold();
+        journals.hold();
+        let done = run(files, journals);
+        let stale = files.stale() || journals.stale();
+        let wrote = files.wrote();
+        drop(lock);
+        let span = taken.elapsed();
+        *held = held.saturating_add(span);
+        #[cfg(test)]
+        {
+            observe::hold(Hold {
+                waited: taken.saturating_duration_since(now),
+                warm,
+                held: span,
+            });
+        }
+        files.open();
+        journals.open();
+        if stale {
+            #[cfg(test)]
+            {
+                observe::attempt(Attempt::Stale);
+            }
+            continue;
+        }
+        #[cfg(test)]
+        {
+            observe::attempt(if wrote {
+                Attempt::Applied
+            } else {
+                Attempt::Decided
+            });
+        }
+        return Taken::Done(done);
+    }
+    Taken::Contended
+}
+
+/// One lock-holding attempt's times (`cfg(test)` only, for the profile).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hold {
+    /// From the lock requested to the lock taken.
+    pub waited: Duration,
+    /// The warm before it.
+    pub warm: Duration,
+    /// From the lock taken to the lock released.
+    pub held: Duration,
+}
+
+/// The holds since the last call.
+#[cfg(test)]
+#[must_use]
+pub fn take_holds() -> Vec<Hold> {
+    observe::HOLDS.with(std::cell::RefCell::take)
 }
 
 // --- reads --------------------------------------------------------------------
@@ -2635,39 +3838,53 @@ pub fn purged(root: &Path, aid: &str, wait: Duration) -> Result<Purged, Refused>
     if !any {
         return Ok(Purged::Absent);
     }
-    let lock = Payload::at(root)
-        .lock(wait)
-        .map_err(|why| Refused::Io(format!("{LOCK}: {why}")))?;
     let applied = |files: &mut Files, plan: &Plan| {
         plan.apply(files, plan.ops.len())
             .map_err(|why| Refused::Io(why.to_string()))
     };
     let source = format!("archive/{aid}");
-    let removed = recovery(&mut files)
-        .and_then(|plan| applied(&mut files, &plan))
-        .and_then(|()| remove(&mut files, Some(aid), &source, None))
-        .and_then(|decision| match decision {
-            Decision::Publish(plan) => applied(&mut files, &plan),
-            Decision::Discard(_) => Ok(()),
-        })
-        // A removal recovered from a crash, or one whose prune a crash cut
-        // short, leaves the archive's empty group naming it: pruned too,
-        // whether or not the source was still there.
-        .and_then(|()| prune(&mut files, Some(aid)))
-        .and_then(|plan| applied(&mut files, &plan));
-    let outcome = match removed {
-        Ok(()) => Purged::Removed,
-        Err(refused) => {
-            let Some((file, reason)) = refused.damage() else {
-                return Err(refused);
-            };
-            let plan = repair(&mut files)?;
-            applied(&mut files, &plan)?;
-            Purged::Reset { file, reason }
-        }
-    };
-    drop(lock);
-    Ok(outcome)
+    let mut held = Duration::ZERO;
+    let taken = transact(
+        root,
+        &mut files,
+        &mut FileJournals::at(root),
+        wait,
+        &mut held,
+        |files, _| {
+            let removed = recovery(files)
+                .and_then(|plan| applied(files, &plan))
+                .and_then(|()| remove(files, Some(aid), &source, None))
+                .and_then(|decision| match decision {
+                    Decision::Publish(plan) => applied(files, &plan),
+                    Decision::Discard(_) => Ok(()),
+                })
+                // A removal recovered from a crash, or one whose prune a
+                // crash cut short, leaves the archive's empty group naming
+                // it: pruned too, whether or not the source was still there.
+                .and_then(|()| prune(files, Some(aid)))
+                .and_then(|plan| applied(files, &plan));
+            match removed {
+                Ok(()) => Ok(Purged::Removed),
+                Err(refused) => {
+                    let Some((file, reason)) = refused.damage() else {
+                        return Err(refused);
+                    };
+                    // The F1 exception: a repair reads under the lock.
+                    files.exception(|files| {
+                        let plan = repair(files)?;
+                        applied(files, &plan)
+                    })?;
+                    Ok(Purged::Reset { file, reason })
+                }
+            }
+        },
+    );
+    match taken {
+        Taken::Done(outcome) => outcome,
+        Taken::Unlocked(why) => Err(Refused::Io(format!("{LOCK}: {why}"))),
+        Taken::Contended => Err(Refused::Contended),
+        Taken::Over { recorded, cap } => Err(Refused::Snapshot { recorded, cap }),
+    }
 }
 
 /// Under the stats lock: the plan that adds a certificate or linked `spawn`
@@ -3156,15 +4373,24 @@ impl Payload {
     /// The lock held elsewhere past `wait` ([`io::ErrorKind::WouldBlock`]), or
     /// a lock path that cannot be opened.
     pub fn lock(&self, wait: Duration) -> io::Result<Locked> {
-        let held = crate::store::lock(&self.root.join(LOCK), wait)?;
+        let (held, acquired) = crate::store::lock_timed(&self.root.join(LOCK), wait)?;
         #[cfg(test)]
         {
             observe::locked(1);
         }
         Ok(Locked {
             _held: held,
+            acquired,
             root: self.root.clone(),
         })
+    }
+
+    /// Make the lock file when it is absent, without locking it: `true` when
+    /// it was made now (the root directory changed under a warm).
+    fn made(&self) -> bool {
+        let path = self.root.join(LOCK);
+        crate::store::node_meta(&path).is_err_and(|why| why.kind() == io::ErrorKind::NotFound)
+            && crate::store::lock_file(&path).is_ok()
     }
 }
 
@@ -3172,7 +4398,17 @@ impl Payload {
 #[derive(Debug)]
 pub struct Locked {
     _held: std::fs::File,
+    /// When `flock` was acquired, before the door's identity proof.
+    acquired: std::time::Instant,
     root: PathBuf,
+}
+
+impl Locked {
+    /// The instant the lock was acquired: a hold is timed from it.
+    #[must_use]
+    pub const fn acquired(&self) -> std::time::Instant {
+        self.acquired
+    }
 }
 
 #[cfg(test)]
