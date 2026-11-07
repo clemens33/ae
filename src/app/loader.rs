@@ -41,6 +41,10 @@ mod peek_spec;
 mod read_spec;
 #[cfg(test)]
 mod records_spec;
+#[cfg(test)]
+mod s5_loader;
+#[cfg(test)]
+mod s5_red;
 
 /// The most sessions whose consoles are kept read, home and the selection
 /// among them.
@@ -2940,7 +2944,3 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0, "no flight");
     }
 }
-#[cfg(test)]
-mod s5_loader;
-#[cfg(test)]
-mod s5_red;

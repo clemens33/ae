@@ -105,6 +105,8 @@ pub mod reader;
 #[path = "app/readerlink_spec.rs"]
 mod readerlink_spec;
 pub(crate) mod route;
+#[cfg(test)]
+mod s5_app;
 pub mod select;
 #[cfg(test)]
 mod select_spec;
@@ -11833,5 +11835,3 @@ mod tests {
         );
     }
 }
-#[cfg(test)]
-mod s5_app;

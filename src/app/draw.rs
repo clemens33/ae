@@ -3461,6 +3461,10 @@ fn put_line(buf: &mut Buffer, x: u16, y: u16, line: &Line<'_>, max: u16) -> u16 
 mod accounts_spec;
 
 #[cfg(test)]
+mod s5_draw;
+#[cfg(test)]
+mod s5_retention;
+#[cfg(test)]
 mod seatjoin_spec;
 #[cfg(test)]
 mod stats_spec;
@@ -7975,7 +7979,3 @@ mod tests {
         );
     }
 }
-#[cfg(test)]
-mod s5_draw;
-#[cfg(test)]
-mod s5_retention;

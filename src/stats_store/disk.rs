@@ -792,12 +792,12 @@ impl Dir for Files {
         // A test's injected IO fault, taken only by a read under the lock in
         // the exception: a warm's discarded run never consumes it.
         #[cfg(test)]
-        let read = if self.snap.mode == Mode::Exception && observe::read_faulted(name) {
-            Read::Unreadable("injected payload read IO".to_owned())
-        } else {
-            self.read_unobserved(name, cap)
-        };
-        #[cfg(not(test))]
+        {
+            if self.snap.mode == Mode::Exception && observe::read_faulted(name) {
+                observe::NAMES.with(|names| names.borrow_mut().push((name.to_owned(), 0)));
+                return Read::Unreadable("injected payload read IO".to_owned());
+            }
+        }
         let read = self.read_unobserved(name, cap);
         #[cfg(test)]
         {
