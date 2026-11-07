@@ -83,6 +83,14 @@ mod s3_prune_evidence;
     clippy::semicolon_if_nothing_returned,
     reason = "frozen S3 amendment: reuses the frozen S3 cases module and its fold oracle"
 )]
+mod s3_prune_legacy;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    clippy::semicolon_if_nothing_returned,
+    reason = "frozen S3 amendment: reuses the frozen S3 cases module and its fold oracle"
+)]
 mod s3_prune_view;
 #[cfg(test)]
 #[allow(
