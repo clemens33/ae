@@ -2900,3 +2900,5 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0, "no flight");
     }
 }
+#[cfg(test)]
+mod s5_red;
