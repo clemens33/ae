@@ -57,6 +57,14 @@ mod s3_census;
     clippy::disallowed_methods,
     clippy::match_wildcard_for_single_variants,
     clippy::semicolon_if_nothing_returned,
+    reason = "frozen S3 amendment: fixture IO changes and reads the real state root, and reuses the frozen S3 cases module"
+)]
+mod s3_commit_source;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    clippy::semicolon_if_nothing_returned,
     reason = "frozen S3 amendment: reuses the frozen S3 cases module and its fold oracle"
 )]
 mod s3_failed_gap;
