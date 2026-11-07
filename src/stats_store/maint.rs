@@ -19,15 +19,24 @@
 //! rebuild has caught up (a round that could not list every source has not)
 //! stops this maintainer, refused, for the rest of its life; the next one (the
 //! next `ae app` run) repairs once again. An IO error stops nothing.
+//!
+//! Each round also takes a census of what the store holds. A source listed
+//! under another group than the one holding it moves: it is removed from the
+//! old group first and registered on its next turn. After the listed
+//! sources, every source the store holds that the round did not list is
+//! removed, but only from a namespace the round listed completely, and then
+//! groups a crash left empty are pruned. An archive is validated again only
+//! when its tree's stat identity moved since a validation proved it valid.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::disk::{
-    self, Decision, FileJournals, Files, Held, Limits, Next, Payload, Prepared, Refused,
-    SourceSpec, Tail, Why,
+    self, Census, Decision, FileJournals, Files, Held, Life, Limits, Next, Payload, Prepared,
+    Refused, SourceSpec, Tail, Why,
 };
+use super::doc::Key;
 use crate::quota::Budget;
 use crate::stats::SourceGap;
 
@@ -69,6 +78,12 @@ pub enum Outcome {
         file: String,
         reason: String,
     },
+    /// A vanished or moved source removed (and any emptied group pruned).
+    Removed {
+        r#gen: u64,
+    },
+    /// An emptied group's leftover files pruned.
+    Pruned,
 }
 
 /// One step's report.
@@ -121,15 +136,25 @@ pub struct Maintainer {
     round: Round,
     /// The line held for the source at the queue's front.
     held: Option<Held>,
-    /// The source the last prepared work is of, its time and its read.
-    prepared: Option<(SourceSpec, Duration, u64)>,
-    /// Each archive's validated journal, or why it gave none: archives do not
-    /// change.
-    archives: BTreeMap<String, Result<PathBuf, SourceGap>>,
+    /// The source the last prepared work is of, its time, its read and what
+    /// the read before it was told.
+    prepared: Option<(SourceSpec, Duration, u64, Option<Tail>)>,
+    /// Each archive's verdict and the tree identity it was judged at: an
+    /// archive is judged again only when that identity moves.
+    judged: BTreeMap<String, Judged>,
     /// A repair's rebuild has not caught up yet.
     rebuilding: bool,
     /// Damage met again while rebuilding: the upkeep stopped.
     stopped: Option<Refused>,
+    /// What the store held when the round was listed.
+    census: Census,
+    /// The ids the round listed.
+    listed: BTreeSet<String>,
+    /// Each listed archive's tree hash, when a validation proved that tree
+    /// valid.
+    fingerprints: BTreeMap<String, String>,
+    /// The round's removals and prunes, done once its sources are.
+    chores: VecDeque<Chore>,
     /// What each source's last read that found nothing new saw: an unchanged
     /// journal is passed over on its length alone.
     tails: BTreeMap<String, Tail>,
@@ -137,6 +162,28 @@ pub struct Maintainer {
     begun: bool,
     #[cfg(test)]
     recheck: Recheck,
+    #[cfg(test)]
+    validated: Recheck,
+}
+
+/// An archive's verdict at one tree identity.
+#[derive(Debug, Clone)]
+struct Judged {
+    identity: String,
+    verdict: Result<PathBuf, SourceGap>,
+}
+
+/// Work a round does under the lock once its sources are done.
+#[derive(Debug, Clone)]
+enum Chore {
+    /// A source removed from `key` while it has `stamp`.
+    Remove {
+        key: Key,
+        id: String,
+        stamp: (u64, u64),
+    },
+    /// An empty group's files removed.
+    Prune(Key),
 }
 
 /// A test's hook, run before the lock is requested for a damage recheck.
@@ -171,13 +218,19 @@ impl Maintainer {
             round: Round::default(),
             held: None,
             prepared: None,
-            archives: BTreeMap::new(),
+            judged: BTreeMap::new(),
             rebuilding: false,
             stopped: None,
+            census: Census::default(),
+            listed: BTreeSet::new(),
+            fingerprints: BTreeMap::new(),
+            chores: VecDeque::new(),
             tails: BTreeMap::new(),
             begun: false,
             #[cfg(test)]
             recheck: Recheck::default(),
+            #[cfg(test)]
+            validated: Recheck::default(),
         }
     }
 
@@ -187,6 +240,14 @@ impl Maintainer {
     #[cfg(test)]
     pub fn on_recheck(&mut self, hook: impl FnMut(&Path) + Send + 'static) {
         self.recheck = Recheck(Some(Box::new(hook)));
+    }
+
+    /// Run `hook` with an archive's path right after its full validation
+    /// and before its tree identity is taken again: a tree that changes
+    /// while it is validated.
+    #[cfg(test)]
+    pub fn on_validated(&mut self, hook: impl FnMut(&Path) + Send + 'static) {
+        self.validated = Recheck(Some(Box::new(hook)));
     }
 
     /// Whether repeated damage stopped the upkeep.
@@ -203,8 +264,8 @@ impl Maintainer {
     /// The finished step when there is no work to publish.
     pub fn prepare(&mut self) -> Result<Prepared, Step> {
         let started = Instant::now();
-        self.next_work(started).map(|(work, spec, read)| {
-            self.prepared = Some((spec, started.elapsed(), read));
+        self.next_work(started).map(|(work, spec, read, prior)| {
+            self.prepared = Some((spec, started.elapsed(), read, prior));
             work
         })
     }
@@ -216,11 +277,13 @@ impl Maintainer {
     )]
     pub fn commit(&mut self, work: Prepared) -> Step {
         let started = Instant::now();
-        let (spec, before, read) = match self.prepared.take() {
-            Some((spec, spent, read)) if spec.id() == work.source() => (Some(spec), spent, read),
-            _ => (None, Duration::ZERO, 0),
+        let (spec, before, read, prior) = match self.prepared.take() {
+            Some((spec, spent, read, prior)) if spec.id() == work.source() => {
+                (Some(spec), spent, read, prior)
+            }
+            _ => (None, Duration::ZERO, 0, None),
         };
-        let mut step = self.publish(&work, spec, read);
+        let mut step = self.publish(&work, spec, read, prior.as_ref());
         step.active = before.saturating_add(started.elapsed());
         step
     }
@@ -291,7 +354,10 @@ impl Maintainer {
         }
     }
 
-    fn next_work(&mut self, started: Instant) -> Result<(Prepared, SourceSpec, u64), Step> {
+    fn next_work(
+        &mut self,
+        started: Instant,
+    ) -> Result<(Prepared, SourceSpec, u64, Option<Tail>), Step> {
         if let Some(stopped) = &self.stopped {
             return Err(Self::finished(
                 None,
@@ -301,13 +367,18 @@ impl Maintainer {
             ));
         }
         loop {
+            if self.queue.is_empty()
+                && let Some(chore) = self.chores.pop_front()
+            {
+                return Err(self.chore(chore, started));
+            }
             if self.queue.is_empty() {
                 if self.round.listed && !self.round.worked {
                     return Err(self.idle(started));
                 }
                 self.queue = self.list().into();
                 (self.round.listed, self.round.worked) = (true, false);
-                if self.queue.is_empty() {
+                if self.queue.is_empty() && self.chores.is_empty() {
                     return Err(self.idle(started));
                 }
             }
@@ -315,22 +386,31 @@ impl Maintainer {
                 continue;
             };
             let id = spec.id().to_owned();
+            // Held under another group: out of that one first, so the source
+            // never has two owners at a commit.
+            if let Some(chore) = self.moved(&spec) {
+                self.queue.push_front(spec);
+                self.round.worked = true;
+                return Err(self.chore(chore, started));
+            }
             let held = self.held.take().filter(|held| held.source() == id);
-            let prepared = Prepared::read_observed(
+            let life = self.life(&spec);
+            let prepared = Prepared::read_life(
                 &mut self.files,
                 &mut self.journals,
                 &spec,
                 self.limits,
                 held,
                 self.tails.get(&id),
+                &life,
             );
             let prepared =
                 prepared.map(|seen| (seen.next, seen.read, seen.touched, seen.cursor, seen.tail));
             match prepared {
                 Ok((Next::Work(work), more, ..)) => {
-                    self.tails.remove(&id);
+                    let prior = self.tails.remove(&id);
                     self.round.worked = true;
-                    return Ok((work, spec, more));
+                    return Ok((work, spec, more, prior));
                 }
                 Ok((Next::Holding(held), more, ..)) => {
                     self.tails.remove(&id);
@@ -375,17 +455,22 @@ impl Maintainer {
                         ));
                     }
                 }
-                Err(refused) => {
-                    let (outcome, held) = self.refused_unlocked(&spec, refused);
-                    if outcome == Outcome::Deferred {
-                        self.queue.push_front(spec);
-                    }
-                    let mut step = Self::finished(Some(id), outcome, 0, started);
-                    step.held = held;
-                    return Err(step);
-                }
+                Err(refused) => return Err(self.refused_step(spec, refused, started)),
             }
         }
+    }
+
+    /// The step of a preparation that was refused: a source deferred by a
+    /// busy recheck keeps its turn.
+    fn refused_step(&mut self, spec: SourceSpec, refused: Refused, started: Instant) -> Step {
+        let (outcome, held) = self.refused_unlocked(&spec, refused);
+        let id = spec.id().to_owned();
+        if outcome == Outcome::Deferred {
+            self.queue.push_front(spec);
+        }
+        let mut step = Self::finished(Some(id), outcome, 0, started);
+        step.held = held;
+        step
     }
 
     /// The round found nothing to read. A rebuild has caught up only when
@@ -402,13 +487,135 @@ impl Maintainer {
     /// root that would not enumerate is one failed source named for it, as
     /// the loader names it, never an empty answer.
     fn list(&mut self) -> Vec<SourceSpec> {
-        let specs = self.listed_specs();
-        let ids: BTreeSet<&str> = specs.iter().map(SourceSpec::id).collect();
-        self.tails.retain(|id, _| ids.contains(id.as_str()));
+        // A census that cannot be taken proves nothing absent: the round
+        // moves and removes nothing, and its reads meet the damage.
+        let census = disk::census(&mut self.files, &self.census);
+        let known = census.is_ok();
+        self.census = census.unwrap_or_default();
+        self.fingerprints.clear();
+        let (specs, live, archives) = self.listed_specs();
+        self.listed = specs.iter().map(|spec| spec.id().to_owned()).collect();
+        self.tails.retain(|id, _| self.listed.contains(id));
+        self.judged
+            .retain(|id, _| self.listed.contains(&format!("archive/{id}")));
+        self.chores.clear();
+        if known {
+            let whole = |id: &str| {
+                if id == "sessions" || id.starts_with("live/") {
+                    live
+                } else if id == "archive" || id.starts_with("archive/") {
+                    archives
+                } else {
+                    false
+                }
+            };
+            for (id, entry) in &self.census.sources {
+                if !self.listed.contains(id) && whole(id) {
+                    self.chores.push_back(Chore::Remove {
+                        key: entry.key.clone(),
+                        id: id.clone(),
+                        stamp: entry.stamp,
+                    });
+                }
+            }
+            for key in &self.census.empty {
+                self.chores.push_back(Chore::Prune(key.clone()));
+            }
+        }
         specs
     }
 
-    fn listed_specs(&mut self) -> Vec<SourceSpec> {
+    /// The removal from its old group that a source listed under another
+    /// group needs first.
+    fn moved(&self, spec: &SourceSpec) -> Option<Chore> {
+        let entry = self.census.sources.get(spec.id())?;
+        (entry.key != spec.key()).then(|| Chore::Remove {
+            key: entry.key.clone(),
+            id: spec.id().to_owned(),
+            stamp: entry.stamp,
+        })
+    }
+
+    /// The lifecycle inputs to preparing `spec`: its archive's proven tree
+    /// hash, and the sources of its group whose evidence a read from 0 may
+    /// copy: those the round did not list (a renamed session), and, for an
+    /// archive, the live sessions it was made from.
+    fn life(&self, spec: &SourceSpec) -> Life {
+        let key = spec.key();
+        let archive = matches!(spec, SourceSpec::Archive { .. });
+        let donors = self
+            .census
+            .sources
+            .iter()
+            .filter(|(id, entry)| {
+                entry.key == key
+                    && entry.counted
+                    && id.as_str() != spec.id()
+                    && (!self.listed.contains(id.as_str()) || (archive && id.starts_with("live/")))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        Life {
+            fingerprint: self.fingerprints.get(spec.id()).cloned(),
+            donors,
+        }
+    }
+
+    /// A removal or a prune under the lock, recovering first.
+    fn chore(&mut self, chore: Chore, started: Instant) -> Step {
+        let source = match &chore {
+            Chore::Remove { id, .. } => Some(id.clone()),
+            Chore::Prune(_) => None,
+        };
+        let lock = match Payload::at(&self.root).lock(self.lock_wait) {
+            Ok(lock) => lock,
+            Err(why) => {
+                let outcome = if why.kind() == std::io::ErrorKind::WouldBlock {
+                    Outcome::Deferred
+                } else {
+                    Outcome::Refused(Refused::Io(format!("stats.lock: {why}")))
+                };
+                if !matches!(chore, Chore::Remove { .. }) || self.queue.is_empty() {
+                    self.chores.push_front(chore);
+                }
+                return Self::finished(source, outcome, 0, started);
+            }
+        };
+        let taken = Instant::now();
+        if let Chore::Remove { id, .. } = &chore {
+            self.census.sources.remove(id);
+        }
+        let decided = self.recover().and_then(|()| match &chore {
+            Chore::Remove { key, id, stamp } => {
+                disk::remove(&mut self.files, key.as_deref(), id, Some(*stamp))
+            }
+            Chore::Prune(key) => {
+                disk::prune(&mut self.files, key.as_deref()).map(Decision::Publish)
+            }
+        });
+        let outcome = match decided {
+            Ok(Decision::Publish(plan)) => match plan.apply(&mut self.files, plan.ops.len()) {
+                Ok(()) => match chore {
+                    Chore::Remove { .. } => Outcome::Removed {
+                        r#gen: plan.generation().unwrap_or_default(),
+                    },
+                    Chore::Prune(_) => Outcome::Pruned,
+                },
+                Err(why) => Outcome::Refused(Refused::Io(why.to_string())),
+            },
+            Ok(Decision::Discard(why)) => Outcome::Discarded(why),
+            Err(refused) => self.refused_locked(refused),
+        };
+        let held = taken.elapsed();
+        drop(lock);
+        let mut step = Self::finished(source, outcome, 0, started);
+        step.held = held;
+        step
+    }
+
+    /// The round's sources, and whether the live sessions and the archives
+    /// were each listed completely.
+    fn listed_specs(&mut self) -> (Vec<SourceSpec>, bool, bool) {
         let mut specs = Vec::new();
         let roots = crate::inventory::Roots::under(&self.root);
         let scan = crate::inventory::durable_meta_records(&roots);
@@ -444,7 +651,7 @@ impl Maintainer {
         let Ok(kept) = crate::archive::kept_archives(&self.root) else {
             self.round.incomplete = true;
             specs.push(failed("archive"));
-            return specs;
+            return (specs, !lost, false);
         };
         for kept in kept {
             let id = format!("archive/{}", kept.id);
@@ -457,12 +664,7 @@ impl Maintainer {
                 });
                 continue;
             }
-            let validated = self
-                .archives
-                .entry(kept.id.clone())
-                .or_insert_with(|| validate(&kept))
-                .clone();
-            match validated {
+            match self.judge(&id, &kept) {
                 Ok(journal) => {
                     self.journals.track(&id, journal);
                     specs.push(SourceSpec::Archive { id, uuid: kept.id });
@@ -475,10 +677,75 @@ impl Maintainer {
                 }),
             }
         }
-        specs
+        (specs, !lost, true)
     }
 
-    fn publish(&mut self, work: &Prepared, spec: Option<SourceSpec>, read: u64) -> Step {
+    /// An archive's journal once its whole tree proves valid. The verdict
+    /// holds while the tree's stat identity does: judged at this identity
+    /// before, or stored with the counted row as the identity a validation
+    /// proved, it is not validated again. A validation counts only when the
+    /// identity is the same after it as before; a valid tree's identity is
+    /// what the round tells the archive's preparation to store.
+    fn judge(
+        &mut self,
+        id: &str,
+        kept: &crate::archive::KeptArchive,
+    ) -> Result<PathBuf, SourceGap> {
+        // A tree with no identity proves nothing valid: its gap, or Invalid.
+        let unproved = |verdict: Result<PathBuf, SourceGap>| verdict.and(Err(SourceGap::Invalid));
+        let Ok(before) = crate::archive::tree_identity(&kept.path) else {
+            self.judged.remove(&kept.id);
+            note_validation(&kept.id);
+            return unproved(validate(kept));
+        };
+        let stored = self
+            .census
+            .sources
+            .get(id)
+            .filter(|entry| entry.counted)
+            .and_then(|entry| entry.fp.as_deref())
+            == Some(before.as_str());
+        let verdict = match self.judged.get(&kept.id) {
+            Some(judged) if judged.identity == before => judged.verdict.clone(),
+            _ if stored => Ok(kept.path.join(crate::store::EVENTS)),
+            _ => {
+                note_validation(&kept.id);
+                let verdict = validate(kept);
+                #[cfg(test)]
+                if let Some(hook) = self.validated.0.as_mut() {
+                    hook(&kept.path);
+                }
+                // The tree moved while it was validated: nothing is proved
+                // this round, and nothing is kept.
+                if crate::archive::tree_identity(&kept.path).ok().as_deref()
+                    != Some(before.as_str())
+                {
+                    self.judged.remove(&kept.id);
+                    return unproved(verdict);
+                }
+                verdict
+            }
+        };
+        self.judged.insert(
+            kept.id.clone(),
+            Judged {
+                identity: before.clone(),
+                verdict: verdict.clone(),
+            },
+        );
+        if verdict.is_ok() {
+            self.fingerprints.insert(id.to_owned(), before);
+        }
+        verdict
+    }
+
+    fn publish(
+        &mut self,
+        work: &Prepared,
+        spec: Option<SourceSpec>,
+        read: u64,
+        prior: Option<&Tail>,
+    ) -> Step {
         let source = Some(work.source().to_owned());
         let (from, to) = work.span();
         let lock = match Payload::at(&self.root).lock(self.lock_wait) {
@@ -503,21 +770,31 @@ impl Maintainer {
         let outcome = match decided {
             Ok(Decision::Publish(plan)) => match plan.apply(&mut self.files, plan.ops.len()) {
                 Ok(()) => {
+                    let generation = plan.generation().unwrap_or_default();
                     if work.more()
                         && let Some(spec) = spec
                     {
                         self.queue.push_back(spec);
                     }
+                    // Consumed to its end: the next round looks at the
+                    // journal's status alone.
+                    if let Some(tail) = work.settled(generation, &mut self.journals, prior) {
+                        self.tails.insert(work.source().to_owned(), tail);
+                    }
                     Outcome::Published {
                         from,
                         to,
-                        r#gen: plan.generation().unwrap_or_default(),
+                        r#gen: generation,
                     }
                 }
                 Err(why) => Outcome::Refused(Refused::Io(why.to_string())),
             },
             Ok(Decision::Discard(why)) => {
-                if let Some(spec) = spec {
+                // Owned elsewhere, or gone: the next round's census and
+                // listing decide again. Anything else is tried again.
+                if !matches!(why, Why::Owned | Why::Gone)
+                    && let Some(spec) = spec
+                {
                     self.queue.push_back(spec);
                 }
                 Outcome::Discarded(why)
@@ -591,6 +868,8 @@ impl Maintainer {
                 self.rebuilding = true;
                 self.queue.clear();
                 self.tails.clear();
+                self.chores.clear();
+                self.census = Census::default();
                 (self.held, self.round.listed, self.round.worked) = (None, false, false);
                 Outcome::Repaired { file, reason }
             }
@@ -613,6 +892,28 @@ fn failed(root: &str) -> SourceSpec {
         gap: SourceGap::Unreadable,
     }
 }
+
+#[cfg(test)]
+thread_local! {
+    static VALIDATIONS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The archive ids this thread validated in full since the last call.
+#[cfg(test)]
+#[must_use]
+pub fn take_validations() -> Vec<String> {
+    VALIDATIONS.with(|seen| std::mem::take(&mut *seen.borrow_mut()))
+}
+
+/// Counts a full archive validation for [`take_validations`].
+#[cfg(test)]
+fn note_validation(id: &str) {
+    VALIDATIONS.with(|seen| seen.borrow_mut().push(id.to_owned()));
+}
+
+/// Nothing outside tests counts validations.
+#[cfg(not(test))]
+const fn note_validation(_id: &str) {}
 
 /// An archive's journal once its whole tree proves valid.
 fn validate(kept: &crate::archive::KeptArchive) -> Result<PathBuf, SourceGap> {

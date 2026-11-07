@@ -41,7 +41,7 @@ use std::time::Duration;
 use super::doc::{self, Group, Intent, Key, Own, Provenance, Root, SessionView, WITNESS};
 use super::{Digest, Error, Evidence, LINE_LIMIT, Origin};
 use crate::archive::is_canonical_uuid;
-use crate::stats::{self, SourceGap, ThisSession, View};
+use crate::stats::{self, SourceGap, Tally, ThisSession, View};
 
 /// The largest root view read or written.
 pub const ROOT_VIEW_CAP: u64 = 1 << 20;
@@ -664,6 +664,26 @@ pub trait Journal {
     ///
     /// The source's gap when its journal cannot be read.
     fn window(&mut self, source: &str, from: u64, max: u64) -> Result<Window, SourceGap>;
+
+    /// Where `source` stands in the state root now, asked under the lock
+    /// before a publication: [`Standing::Unknown`], no check, unless the
+    /// journals know.
+    fn standing(&mut self, _source: &str) -> Standing {
+        Standing::Unknown
+    }
+}
+
+/// What a source's place in the state root says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// Its directory is there.
+    Present,
+    /// It is not: removed, purged or renamed away.
+    Gone,
+    /// An archive under a publisher's or a purge's claim.
+    Claimed,
+    /// Not known: nothing is checked.
+    Unknown,
 }
 
 /// Journals as real files: the product's [`Journal`]. `live/<name>` is
@@ -716,6 +736,38 @@ impl FileJournals {
 }
 
 impl Journal for FileJournals {
+    /// `live/<name>` by its meta file, `archive/<uuid>` by its claim marker
+    /// and its directory, each by its own metadata; anything else, or a look
+    /// that failed, is unknown.
+    fn standing(&mut self, source: &str) -> Standing {
+        let plain =
+            |name: &&str| !name.is_empty() && *name != "." && *name != ".." && !name.contains('/');
+        if let Some(name) = source.strip_prefix("live/").filter(plain) {
+            let meta = self
+                .root
+                .join("sessions")
+                .join(name)
+                .join(crate::store::META);
+            return match crate::store::source_presence(&meta) {
+                crate::store::SourcePresence::Absent => Standing::Gone,
+                crate::store::SourcePresence::Regular => Standing::Present,
+                crate::store::SourcePresence::Irregular(_) => Standing::Unknown,
+            };
+        }
+        if let Some(uuid) = source
+            .strip_prefix("archive/")
+            .filter(|uuid| is_canonical_uuid(uuid))
+        {
+            return match crate::archive::standing(&self.root, uuid) {
+                Some((_, true)) => Standing::Claimed,
+                Some((true, false)) => Standing::Present,
+                Some((false, false)) => Standing::Gone,
+                None => Standing::Unknown,
+            };
+        }
+        Standing::Unknown
+    }
+
     fn window(&mut self, source: &str, from: u64, max: u64) -> Result<Window, SourceGap> {
         let path = self.path(source).ok_or(SourceGap::Missing)?;
         let read = crate::usage::journal_window(&path, from, max)?;
@@ -742,6 +794,7 @@ impl Journal for FileJournals {
 pub struct MemoryJournals {
     journals: BTreeMap<String, (u64, u64, Vec<u8>, i64)>,
     writes: i64,
+    standings: BTreeMap<String, Standing>,
 }
 
 impl MemoryJournals {
@@ -756,9 +809,22 @@ impl MemoryJournals {
         self.journals
             .insert(source.to_owned(), (dev, ino, bytes.to_vec(), self.writes));
     }
+
+    /// `source` now stands so; an unset source answers
+    /// [`Standing::Unknown`].
+    pub fn stand(&mut self, source: &str, standing: Standing) {
+        self.standings.insert(source.to_owned(), standing);
+    }
 }
 
 impl Journal for MemoryJournals {
+    fn standing(&mut self, source: &str) -> Standing {
+        self.standings
+            .get(source)
+            .copied()
+            .unwrap_or(Standing::Unknown)
+    }
+
     fn window(&mut self, source: &str, from: u64, max: u64) -> Result<Window, SourceGap> {
         let (dev, ino, bytes, write) = self.journals.get(source).ok_or(SourceGap::Missing)?;
         let len = bytes.len();
@@ -807,6 +873,11 @@ impl SourceSpec {
         match self {
             Self::Live { id, .. } | Self::Archive { id, .. } | Self::Failed { id, .. } => id,
         }
+    }
+
+    /// The group the source belongs to now.
+    pub(super) fn key(&self) -> Key {
+        self.origin().0
     }
 
     /// The group the source belongs to, and its origin when registered.
@@ -865,6 +936,30 @@ pub const LIMITS: Limits = Limits {
     chunk: 4 << 20,
     line: LINE_LIMIT,
 };
+
+/// Lifecycle inputs to one preparation, from the maintainer's round.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Life {
+    /// The archive tree hash its walk-validate-walk just proved valid (A3);
+    /// `None`: not judged, the persisted one is kept.
+    pub fingerprint: Option<String>,
+    /// Same-group source ids whose evidence a read from 0 may copy, tried in
+    /// order.
+    pub donors: Vec<String>,
+}
+
+/// What prepared work does beyond reading its journal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Shift {
+    /// A read, a registration or a reset (S2).
+    Read,
+    /// A counted source keeps its lines and cursor; its origin (when given)
+    /// and its tree hash are replaced.
+    Refresh(Option<Origin>),
+    /// A read from 0 copies `donor`'s evidence up to the donor's cursor,
+    /// while the donor still has `stamp`.
+    Rebind { donor: String, stamp: (u64, u64) },
+}
 
 /// What a prepared read assumed of the payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -929,6 +1024,9 @@ pub struct Prepared {
     digest: Option<Digest>,
     skipping: bool,
     witness: Option<Witness>,
+    shift: Shift,
+    /// The archive tree hash to keep with the source.
+    fp: Option<String>,
 }
 
 /// A line longer than one read, held in memory between reads; never written.
@@ -1065,6 +1163,20 @@ impl Reader<'_> {
         )
     }
 
+    /// A read from 0: a donor's evidence copied when one holds, else the
+    /// journal read.
+    fn fresh_life(
+        &mut self,
+        fresh: Fresh,
+        donors: &[String],
+        view: Option<&SessionView>,
+    ) -> Result<Next, Refused> {
+        if let Some(next) = self.rebound(&fresh, donors, view) {
+            return Ok(next);
+        }
+        self.fresh(fresh)
+    }
+
     /// A source with no journal, registered as it is.
     fn registered(&self, origin: Origin) -> Next {
         Next::Work(Prepared {
@@ -1079,7 +1191,93 @@ impl Reader<'_> {
             digest: None,
             skipping: false,
             witness: None,
+            shift: Shift::Read,
+            fp: None,
         })
+    }
+
+    /// A source registered again as it now is: its evidence replaced.
+    /// A failed source: registered failed when it has no row, nothing when
+    /// its failed row already names this gap and origin, else registered
+    /// failed again in place of what its row holds.
+    fn failed(&self, row: Option<&doc::SourceRow>, gap: SourceGap, origin: Origin) -> Next {
+        let org = doc::origin_hash(&origin);
+        match row {
+            None => self.registered(origin),
+            Some(row)
+                if row.failed
+                    && row.gap == Some(gap)
+                    && row.org.as_deref() == Some(org.as_str()) =>
+            {
+                Next::Nothing
+            }
+            Some(_) => self.replaced(origin),
+        }
+    }
+
+    fn replaced(&self, origin: Origin) -> Next {
+        let mut next = self.registered(origin);
+        if let Next::Work(work) = &mut next
+            && let Some(fresh) = &mut work.fresh
+        {
+            fresh.reset = true;
+        }
+        next
+    }
+
+    /// A read from 0 that copies the first donor whose consumed bytes this
+    /// journal holds: its length reaches the donor's cursor and the bytes
+    /// before it hash as the donor's witness. `None` when no donor holds.
+    fn rebound(
+        &mut self,
+        fresh: &Fresh,
+        donors: &[String],
+        view: Option<&SessionView>,
+    ) -> Option<Next> {
+        let view = view?;
+        let own = self.id.to_owned();
+        for donor in donors.iter().filter(|donor| **donor != own) {
+            let Some(row) = view
+                .rows
+                .get(donor)
+                .filter(|row| !row.failed && row.cursor > 0)
+            else {
+                continue;
+            };
+            let cursor = row.cursor;
+            let back = cursor.min(WITNESS);
+            let Ok(tail) = self.window(cursor.saturating_sub(back), back) else {
+                continue;
+            };
+            let holds = tail.len >= cursor
+                && u64::try_from(tail.bytes.len()) == Ok(back)
+                && doc::hash(&tail.bytes) == row.provenance.hash;
+            if !holds {
+                continue;
+            }
+            return Some(Next::Work(Prepared {
+                source: self.id.to_owned(),
+                key: self.key.clone(),
+                base: self.base.clone(),
+                fresh: Some(fresh.clone()),
+                start: 0,
+                digest: None,
+                skipping: row.provenance.skipping,
+                witness: Some(Witness {
+                    dev: tail.dev,
+                    ino: tail.ino,
+                    seen: tail.len,
+                    read: cursor,
+                    hash: row.provenance.hash.clone(),
+                }),
+                shift: Shift::Rebind {
+                    donor: donor.clone(),
+                    stamp: (row.provenance.incarnation, cursor),
+                },
+                fp: None,
+            }));
+        }
+        None
     }
 
     /// Read on from a registered source's cursor; `None` when the journal is
@@ -1211,6 +1409,8 @@ impl Reader<'_> {
                 read: read_end,
                 hash: doc::hash(witnessed),
             }),
+            shift: Shift::Read,
+            fp: None,
         }))
     }
 }
@@ -1266,9 +1466,33 @@ impl Prepared {
         held: Option<Held>,
         quiet: Option<&Tail>,
     ) -> Result<Observed, Refused> {
+        Self::read_life(dir, journal, source, limits, held, quiet, &Life::default())
+    }
+
+    /// [`Prepared::read_observed`] with the round's lifecycle inputs. Before
+    /// any journal read: a failed source whose row is counted or names another
+    /// gap or origin is registered failed again (its evidence replaced); a
+    /// counted source whose origin or proven tree hash moved is refreshed, its
+    /// lines and cursor kept. A read from 0 first tries `life.donors`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Prepared::read`].
+    pub fn read_life(
+        dir: &mut dyn Dir,
+        journal: &mut dyn Journal,
+        source: &SourceSpec,
+        limits: Limits,
+        held: Option<Held>,
+        quiet: Option<&Tail>,
+        life: &Life,
+    ) -> Result<Observed, Refused> {
         let epoch = read_epoch(dir)?.unwrap_or(0);
         let (key, origin) = source.origin();
-        let row = load_view(dir, epoch, &key)?.and_then(|view| view.rows.get(source.id()).cloned());
+        let view = load_view(dir, epoch, &key)?;
+        let row = view
+            .as_ref()
+            .and_then(|view| view.rows.get(source.id()).cloned());
         let base = Base {
             epoch,
             stamp: row
@@ -1294,14 +1518,34 @@ impl Prepared {
             cursor,
             tail,
         };
-        if matches!(source, SourceSpec::Failed { .. }) {
-            let next = if row.is_some() {
-                Next::Nothing
-            } else {
-                reader.registered(origin)
-            };
+        if let SourceSpec::Failed { gap, .. } = source {
+            let next = reader.failed(row.as_ref(), *gap, origin);
             return Ok(seen(next, &reader, None));
         }
+        let fingerprint = life
+            .fingerprint
+            .clone()
+            .filter(|_| matches!(source, SourceSpec::Archive { .. }));
+        if held.is_none()
+            && let Some(work) = Self::refreshed(
+                source,
+                &key,
+                &base,
+                row.as_ref(),
+                &origin,
+                fingerprint.as_ref(),
+            )
+        {
+            return Ok(seen(Next::Work(work), &reader, None));
+        }
+        let stamped = |mut next: Next| {
+            if let Next::Work(work) = &mut next
+                && work.fp.is_none()
+            {
+                work.fp.clone_from(&fingerprint);
+            }
+            next
+        };
         if held.is_none()
             && let Some(quiet) = quiet.filter(|quiet| quiet.base == base)
             && reader
@@ -1313,25 +1557,21 @@ impl Prepared {
         if let Some(held) = held.filter(|held| held.source == source.id() && held.base == base)
             && let Some(next) = reader.resume(held)?
         {
-            return Ok(seen(next, &reader, None));
+            return Ok(seen(stamped(next), &reader, None));
         }
+        let fresh = |reset: bool| Fresh {
+            origin: origin.clone(),
+            reset,
+        };
         let next = match &row {
             Some(row) if !row.failed => match reader.continued(row)? {
                 Some(next) => next,
-                None => reader.fresh(Fresh {
-                    origin,
-                    reset: true,
-                })?,
+                None => reader.fresh_life(fresh(true), &life.donors, view.as_ref())?,
             },
-            Some(_) => reader.fresh(Fresh {
-                origin,
-                reset: true,
-            })?,
-            None => reader.fresh(Fresh {
-                origin,
-                reset: false,
-            })?,
+            Some(_) => reader.fresh_life(fresh(true), &life.donors, view.as_ref())?,
+            None => reader.fresh_life(fresh(false), &life.donors, view.as_ref())?,
         };
+        let next = stamped(next);
         let tail = match (&next, reader.quiet) {
             (Next::Nothing, Some(quiet)) => Some(Tail {
                 base: base.clone(),
@@ -1347,11 +1587,99 @@ impl Prepared {
         &self.source
     }
 
+    /// A counted source whose origin, or whose proven archive tree hash,
+    /// moved: the work that stores the new one and keeps its lines and
+    /// cursor, with no journal read.
+    fn refreshed(
+        source: &SourceSpec,
+        key: &Key,
+        base: &Base,
+        row: Option<&doc::SourceRow>,
+        origin: &Origin,
+        fingerprint: Option<&String>,
+    ) -> Option<Self> {
+        let row = row.filter(|row| !row.failed)?;
+        let org = doc::origin_hash(origin);
+        let moved = (row.org.as_deref() != Some(org.as_str())).then(|| origin.clone());
+        let fp = fingerprint
+            .filter(|fp| row.provenance.fp.as_ref() != Some(*fp))
+            .cloned();
+        (moved.is_some() || fp.is_some()).then(|| Self {
+            source: source.id().to_owned(),
+            key: key.clone(),
+            base: base.clone(),
+            fresh: None,
+            start: row.cursor,
+            digest: None,
+            skipping: row.provenance.skipping,
+            witness: None,
+            shift: Shift::Refresh(moved),
+            fp,
+        })
+    }
+
+    /// The donor whose evidence this work copies.
+    #[must_use]
+    pub fn donor(&self) -> Option<&str> {
+        match &self.shift {
+            Shift::Rebind { donor, .. } => Some(donor),
+            Shift::Read | Shift::Refresh(_) => None,
+        }
+    }
+
     /// The durable cursor before and after this work applies.
     #[must_use]
     pub fn span(&self) -> (u64, u64) {
+        if let Shift::Rebind { .. } = self.shift {
+            return (0, self.witness.as_ref().map_or(0, |seen| seen.read));
+        }
         let end = self.digest.as_ref().map_or(self.start, Digest::end);
         (self.start, end)
+    }
+
+    /// After this work published at `generation`: what to tell the next read
+    /// of the source so that it looks at the journal's status alone, when the
+    /// work consumed the journal to its end and the journal is still the one
+    /// read, with no byte more. `prior` is what the read before this work was
+    /// told; a refresh, which reads nothing, keeps its journal identity.
+    pub(super) fn settled(
+        &self,
+        generation: u64,
+        journal: &mut dyn Journal,
+        prior: Option<&Tail>,
+    ) -> Option<Tail> {
+        let renewed = self.fresh.is_some() || !matches!(self.shift, Shift::Read);
+        let incarnation = if renewed {
+            generation
+        } else {
+            self.base.stamp?.0
+        };
+        let end = self.span().1;
+        let base = Base {
+            epoch: self.base.epoch,
+            stamp: Some((incarnation, end)),
+        };
+        let Some(witness) = &self.witness else {
+            return match self.shift {
+                Shift::Refresh(_) => {
+                    prior
+                        .filter(|prior| prior.base == self.base)
+                        .map(|prior| Tail {
+                            base,
+                            seen: prior.seen,
+                        })
+                }
+                Shift::Read | Shift::Rebind { .. } => None,
+            };
+        };
+        if end != witness.seen || self.skipping {
+            return None;
+        }
+        let now = journal.window(&self.source, end, 0).ok()?;
+        ((now.dev, now.ino, now.len) == (witness.dev, witness.ino, end)).then(|| Tail {
+            base,
+            seen: now.identity(),
+        })
     }
 
     /// Whether this work replaces the source from its start.
@@ -1380,6 +1708,11 @@ pub enum Why {
     Stamp,
     /// The journal no longer holds what was read.
     Witness,
+    /// Another group's row of the root's ownership index lists the source.
+    Owned,
+    /// Under the lock the source is gone, or an archive that would count is
+    /// claimed.
+    Gone,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1640,6 +1973,104 @@ fn all_views(
     Ok(views)
 }
 
+/// One source the store holds, as the session view of its group shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Entry {
+    pub(super) key: Key,
+    /// Its incarnation and cursor: what a removal of it is checked against.
+    pub(super) stamp: (u64, u64),
+    pub(super) counted: bool,
+    /// The archive tree hash a validation proved, when one was stored.
+    pub(super) fp: Option<String>,
+}
+
+/// What the store holds, read without the lock: every source with its
+/// group, and the groups whose files hold no source and no count, which a
+/// crash after a removal's commit may have left.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Census {
+    pub(super) sources: BTreeMap<String, Entry>,
+    pub(super) empty: Vec<Key>,
+    /// The epoch read, and each indexed group's generation with the sources
+    /// its view held then: a group whose root row still names that
+    /// generation is not read again.
+    epoch: Option<u64>,
+    groups: BTreeMap<Key, (u64, Vec<(String, Entry)>)>,
+}
+
+/// The maintainer's census of the store. Only the root, the directory
+/// listing and the session views whose generation moved since `prior` are
+/// read: O(changed groups) per round.
+///
+/// # Errors
+///
+/// A payload file over its cap or damaged, or an IO error.
+pub(super) fn census(dir: &mut dyn Dir, prior: &Census) -> Result<Census, Refused> {
+    let mut census = Census::default();
+    let Some(epoch) = read_epoch(dir)? else {
+        return Ok(census);
+    };
+    census.epoch = Some(epoch);
+    let rows: BTreeMap<Key, u64> = load_root(dir, epoch)?
+        .map(|root| {
+            root.rows
+                .into_iter()
+                .map(|(key, row)| (key, row.generation))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut keys: BTreeSet<Key> = rows.keys().cloned().collect();
+    for name in list(dir, SESSIONS)? {
+        if let Some(key) = name
+            .strip_suffix(".view")
+            .or_else(|| name.strip_suffix(".evidence"))
+            .and_then(doc::key_of)
+        {
+            keys.insert(key);
+        }
+    }
+    for key in keys {
+        let generation = rows.get(&key).copied();
+        let kept = prior
+            .groups
+            .get(&key)
+            .filter(|(seen, _)| prior.epoch == Some(epoch) && generation == Some(*seen));
+        let entries = if let Some((_, entries)) = kept {
+            entries.clone()
+        } else {
+            let view = load_view(dir, epoch, &key)?;
+            if view
+                .as_ref()
+                .is_none_or(|view| view.rows.is_empty() && view.tally == Tally::default())
+            {
+                census.empty.push(key.clone());
+                continue;
+            }
+            view.iter()
+                .flat_map(|view| &view.rows)
+                .map(|(id, row)| {
+                    let entry = Entry {
+                        key: key.clone(),
+                        stamp: (row.provenance.incarnation, row.cursor),
+                        counted: !row.failed,
+                        fp: row.provenance.fp.clone(),
+                    };
+                    (id.clone(), entry)
+                })
+                .collect()
+        };
+        census.sources.extend(
+            entries
+                .iter()
+                .map(|(id, entry)| (id.clone(), entry.clone())),
+        );
+        if let Some(generation) = generation {
+            census.groups.insert(key, (generation, entries));
+        }
+    }
+    Ok(census)
+}
+
 fn intent_of(dir: &mut dyn Dir) -> Result<Option<Intent>, Refused> {
     fetch(dir, INTENT, INTENT_CAP)?
         .map(|bytes| doc::parse_intent(utf8(INTENT, &bytes)?).map_err(damaged(INTENT)))
@@ -1805,7 +2236,23 @@ fn commit(
         .iter()
         .map(|group| SessionView::of(group, epoch, generation))
         .collect();
-    let root = rooted(dir, epoch, root, &views, generation)?;
+    let mut root = rooted(dir, epoch, root, &views, generation)?;
+    // A group left with no source and no fragment goes: its row now, its
+    // files once the intent is gone, so recovery never meets it missing.
+    let empty: Vec<Key> = groups
+        .iter()
+        .filter(|group| group.own.is_empty() && group.fragments.is_empty())
+        .map(|group| group.key.clone())
+        .collect();
+    if !empty.is_empty() {
+        for key in &empty {
+            root.rows.remove(key);
+            if key.is_none() {
+                root.covering = Tally::default();
+            }
+        }
+        root.all.set_range(root.range());
+    }
     let mut first = Vec::new();
     if built(dir)? {
         if !list(dir, PAYLOAD)?.iter().any(|name| name == "session") {
@@ -1856,7 +2303,12 @@ fn commit(
             .unwrap_or_default(),
         touched,
     };
-    Ok(staged(first, files, &intent))
+    let mut plan = staged(first, files, &intent);
+    for key in &empty {
+        plan.ops.push(Op::Remove(view_name(key)));
+        plan.ops.push(Op::Remove(evidence_name(key)));
+    }
+    Ok(plan)
 }
 
 /// Under the stats lock, after [`recovery`]: the plan that publishes `work`,
@@ -1877,7 +2329,16 @@ pub fn publish(
     if epoch != work.base.epoch {
         return Ok(Decision::Discard(Why::Epoch));
     }
-    let root = load_root(dir, epoch)?;
+    let mut root = load_root(dir, epoch)?;
+    // An index an earlier format did not write is made from the views first:
+    // the ownership proof below reads it.
+    if let Some(generation) = root
+        .as_ref()
+        .filter(|root| !root.indexed())
+        .map(|root| root.generation)
+    {
+        root = Some(resummed(dir, epoch, generation)?);
+    }
     let mut primary =
         load_group(dir, epoch, &work.key)?.unwrap_or_else(|| Group::new(work.key.clone()));
     let stamp = primary
@@ -1887,6 +2348,34 @@ pub fn publish(
     if stamp != work.base.stamp {
         return Ok(Decision::Discard(Why::Stamp));
     }
+    if work.base.stamp.is_none()
+        && root
+            .as_ref()
+            .is_some_and(|root| root.owner(&work.source).is_some())
+    {
+        return Ok(Decision::Discard(Why::Owned));
+    }
+    let failed = matches!(
+        work.fresh.as_ref().map(|fresh| &fresh.origin),
+        Some(Origin::Failed { .. })
+    );
+    match journal.standing(&work.source) {
+        Standing::Gone => return Ok(Decision::Discard(Why::Gone)),
+        Standing::Claimed if !failed => return Ok(Decision::Discard(Why::Gone)),
+        Standing::Claimed | Standing::Present | Standing::Unknown => {}
+    }
+    let copied = match &work.shift {
+        Shift::Rebind { donor, stamp } => {
+            let Some(own) = primary.own.get(donor).filter(|own| {
+                (own.provenance.incarnation, own.evidence.cursor) == *stamp
+                    && !matches!(own.evidence.origin, Origin::Failed { .. })
+            }) else {
+                return Ok(Decision::Discard(Why::Stamp));
+            };
+            Some(own.evidence.clone())
+        }
+        Shift::Read | Shift::Refresh(_) => None,
+    };
     if let Some(witness) = &work.witness
         && !witness.holds(journal, &work.source, work.span().1)
     {
@@ -1915,23 +2404,270 @@ pub fn publish(
         .own
         .get_mut(&work.source)
         .ok_or_else(|| Refused::UnknownSource(work.source.clone()))?;
-    if let Some(digest) = &work.digest {
-        own.evidence.absorb(digest.clone());
-    }
-    if let Some(seen) = &work.witness {
-        own.provenance = Provenance {
-            incarnation: own.provenance.incarnation,
-            seen: seen.seen,
-            read: seen.read,
-            dev: seen.dev,
-            ino: seen.ino,
-            hash: seen.hash.clone(),
-            skipping: work.skipping,
-        };
-    }
+    shifted(own, work, generation, copied)?;
     touched.extend(own.evidence.groups());
     touched.insert(work.key.clone());
     commit(dir, epoch, root, primary, touched, generation).map(Decision::Publish)
+}
+
+/// `work` applied to its source's record `own`, at `generation`: a read's
+/// lines absorbed, a refresh's origin and incarnation, or a rebind's copy of
+/// the donor's evidence (`copied`) up to its cursor.
+fn shifted(
+    own: &mut Own,
+    work: &Prepared,
+    generation: u64,
+    copied: Option<Evidence>,
+) -> Result<(), Refused> {
+    match &work.shift {
+        Shift::Read => {
+            if let Some(digest) = &work.digest {
+                own.evidence.absorb(digest.clone());
+            }
+            if let Some(seen) = &work.witness {
+                own.provenance = Provenance {
+                    incarnation: own.provenance.incarnation,
+                    seen: seen.seen,
+                    read: seen.read,
+                    dev: seen.dev,
+                    ino: seen.ino,
+                    hash: seen.hash.clone(),
+                    skipping: work.skipping,
+                    fp: own.provenance.fp.clone(),
+                };
+            }
+        }
+        Shift::Refresh(origin) => {
+            if let Some(origin) = origin {
+                own.evidence.origin = origin.clone();
+            }
+            own.provenance.incarnation = generation;
+        }
+        Shift::Rebind { .. } => {
+            let (Some(mut evidence), Some(seen)) = (copied, work.witness.as_ref()) else {
+                return Err(Refused::UnknownSource(work.source.clone()));
+            };
+            evidence.origin = own.evidence.origin.clone();
+            let cursor = evidence.cursor;
+            drop(evidence.lines.split_off(&cursor));
+            for offsets in evidence.named.values_mut() {
+                offsets.retain(|offset| *offset < cursor);
+            }
+            evidence.named.retain(|_, offsets| !offsets.is_empty());
+            own.evidence = evidence;
+            own.provenance = Provenance {
+                incarnation: generation,
+                seen: seen.seen,
+                read: seen.read,
+                dev: seen.dev,
+                ino: seen.ino,
+                hash: seen.hash.clone(),
+                skipping: work.skipping,
+                fp: None,
+            };
+        }
+    }
+    if let Some(fp) = &work.fp {
+        own.provenance.fp = Some(fp.clone());
+    }
+    Ok(())
+}
+
+/// The root added up again from every session view: an index an earlier
+/// format did not write, made.
+fn resummed(dir: &mut dyn Dir, epoch: u64, generation: u64) -> Result<Root, Refused> {
+    let views = all_views(dir, epoch, &BTreeSet::new())?;
+    Ok(Root::sum(epoch, generation, views.values()))
+}
+
+/// Under the stats lock, after [`recovery`]: the plan that drops `source`
+/// from `group` and everything it counted, its records about other groups
+/// included. `base = Some(stamp)` drops it only while it has that stamp;
+/// `None` whatever its stamp (a purge). A source not there is an empty plan.
+/// A group the removal leaves with no source and no fragment is pruned in the
+/// same plan, after the intent is gone.
+///
+/// # Errors
+///
+/// Owed recovery, or a payload file over its cap or damaged.
+pub fn remove(
+    dir: &mut dyn Dir,
+    group: Option<&str>,
+    source: &str,
+    base: Option<(u64, u64)>,
+) -> Result<Decision, Refused> {
+    owed(dir)?;
+    let nothing = || Ok(Decision::Publish(Plan::of(Vec::new())));
+    if group.is_some_and(|id| !is_canonical_uuid(id)) {
+        return nothing();
+    }
+    let key: Key = group.map(ToOwned::to_owned);
+    let Some(epoch) = read_epoch(dir)? else {
+        return nothing();
+    };
+    let root = load_root(dir, epoch)?;
+    let Some(mut primary) = load_group(dir, epoch, &key)? else {
+        return nothing();
+    };
+    let Some(own) = primary.own.get(source) else {
+        return nothing();
+    };
+    if base.is_some_and(|base| base != (own.provenance.incarnation, own.evidence.cursor)) {
+        return Ok(Decision::Discard(Why::Stamp));
+    }
+    let mut touched = own.evidence.groups();
+    touched.insert(key);
+    primary.own.remove(source);
+    let generation = root
+        .as_ref()
+        .map_or(0, |root| root.generation)
+        .checked_add(1)
+        .ok_or_else(|| Refused::Io("generation".to_owned()))?;
+    commit(dir, epoch, root, primary, touched, generation).map(Decision::Publish)
+}
+
+/// Under the stats lock, after [`recovery`]: an empty group's leftover files
+/// removed, the root's row first: what a crash after a removal's commit left.
+/// A group with a source or a fragment, or none at all, is an empty plan.
+///
+/// # Errors
+///
+/// Owed recovery, or a payload file over its cap or damaged.
+pub fn prune(dir: &mut dyn Dir, group: Option<&str>) -> Result<Plan, Refused> {
+    owed(dir)?;
+    let nothing = || Ok(Plan::of(Vec::new()));
+    if group.is_some_and(|id| !is_canonical_uuid(id)) {
+        return nothing();
+    }
+    let key: Key = group.map(ToOwned::to_owned);
+    let Some(epoch) = read_epoch(dir)? else {
+        return nothing();
+    };
+    let evidence = load_group(dir, epoch, &key)?;
+    if evidence
+        .as_ref()
+        .is_some_and(|group| !group.own.is_empty() || !group.fragments.is_empty())
+    {
+        return nothing();
+    }
+    let view = load_view(dir, epoch, &key)?;
+    if view
+        .as_ref()
+        .is_some_and(|view| !view.rows.is_empty() || view.tally != Tally::default())
+    {
+        return nothing();
+    }
+    let mut ops = Vec::new();
+    let root = load_root(dir, epoch)?.filter(|root| root.rows.contains_key(&key));
+    // A missing document is no proof of an empty group. A root row is
+    // removed only before its view, so a row whose view is gone may still
+    // count fragments the root adds up, and a row that lists sources over an
+    // empty view disagrees with it: both are damage, the root kept for repair.
+    if root
+        .as_ref()
+        .and_then(|root| root.rows.get(&key))
+        .is_some_and(|row| {
+            view.is_none()
+                || row.listed > 0
+                || row.pending > 0
+                || row.ids.as_ref().is_some_and(|ids| !ids.is_empty())
+        })
+    {
+        return Err(wrong(&view_name(&key), "missing for a counted group"));
+    }
+    if let Some(mut root) = root {
+        root.rows.remove(&key);
+        if key.is_none() {
+            root.covering = Tally::default();
+        }
+        root.all.set_range(root.range());
+        root.generation = root
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| Refused::Io("generation".to_owned()))?;
+        let (name, text) = capped(ROOT.to_owned(), doc::render_root(&root), ROOT_VIEW_CAP)?;
+        ops.push(Op::Write {
+            name: temp(&name),
+            bytes: text.into_bytes(),
+        });
+        ops.push(Op::Rename {
+            from: temp(&name),
+            to: name,
+        });
+    }
+    if view.is_some() {
+        ops.push(Op::Remove(view_name(&key)));
+    }
+    if evidence.is_some() {
+        ops.push(Op::Remove(evidence_name(&key)));
+    }
+    Ok(Plan::of(ops))
+}
+
+/// How long `_archive-purge` waits for `stats.lock`. The hold after it is
+/// not bounded.
+pub const PURGE_WAIT: Duration = Duration::from_secs(2);
+
+/// What a purge did to the store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Purged {
+    /// There is no payload.
+    Absent,
+    /// The archive's source is gone from it, or was never in it.
+    Removed,
+    /// Damage met: the payload was repaired, empty, in a later epoch.
+    Reset { file: String, reason: String },
+}
+
+/// `_archive-purge`'s store step for archive `aid` under the state root
+/// `root`: under `stats.lock` (within `wait`), recovery applied whole, then
+/// the archive's source removed and its group's empty leftovers pruned. Damage met on the way repairs the payload
+/// instead, once, so nothing names the archive after it either way.
+///
+/// # Errors
+///
+/// The lock not taken within `wait`, an IO error, or a repair refused.
+pub fn purged(root: &Path, aid: &str, wait: Duration) -> Result<Purged, Refused> {
+    let mut files = Files::at(root);
+    let any = list(&mut files, "")?
+        .iter()
+        .any(|name| name == PAYLOAD || name == STAGING || retired(name).is_some());
+    if !any {
+        return Ok(Purged::Absent);
+    }
+    let lock = Payload::at(root)
+        .lock(wait)
+        .map_err(|why| Refused::Io(format!("{LOCK}: {why}")))?;
+    let applied = |files: &mut Files, plan: &Plan| {
+        plan.apply(files, plan.ops.len())
+            .map_err(|why| Refused::Io(why.to_string()))
+    };
+    let source = format!("archive/{aid}");
+    let removed = recovery(&mut files)
+        .and_then(|plan| applied(&mut files, &plan))
+        .and_then(|()| remove(&mut files, Some(aid), &source, None))
+        .and_then(|decision| match decision {
+            Decision::Publish(plan) => applied(&mut files, &plan),
+            Decision::Discard(_) => Ok(()),
+        })
+        // A removal recovered from a crash, or one whose prune a crash cut
+        // short, leaves the archive's empty group naming it: pruned too,
+        // whether or not the source was still there.
+        .and_then(|()| prune(&mut files, Some(aid)))
+        .and_then(|plan| applied(&mut files, &plan));
+    let outcome = match removed {
+        Ok(()) => Purged::Removed,
+        Err(refused) => {
+            let Some((file, reason)) = refused.damage() else {
+                return Err(refused);
+            };
+            let plan = repair(&mut files)?;
+            applied(&mut files, &plan)?;
+            Purged::Reset { file, reason }
+        }
+    };
+    drop(lock);
+    Ok(outcome)
 }
 
 /// Under the stats lock: the plan that adds a certificate or linked `spawn`
@@ -2372,7 +3108,7 @@ pub fn resum(dir: &mut dyn Dir) -> Result<Shown, Refused> {
         return Ok(Shown::Building);
     };
     let views = all_views(dir, epoch, &BTreeSet::new())?;
-    if views.is_empty() {
+    if views.is_empty() && load_root(dir, epoch)?.is_none() {
         return Ok(Shown::Building);
     }
     let generation = views

@@ -11,6 +11,11 @@ use libfuzzer_sys::fuzz_target;
 #[path = "../../src/stats_store/s2_cases.rs"]
 mod cases;
 
+#[path = "../../src/stats_store/s3_cases.rs"]
+mod s3_cases;
+#[path = "../../src/stats_store/s3_keys.rs"]
+mod s3_keys;
+
 use cases::{Rig, S, T, birth, complete, published, recover};
 
 // The cap decision at the real Files door is tested by the frozen unit tests. This
@@ -213,4 +218,6 @@ fn exercise(data: &[u8]) {
 
 fuzz_target!(|data: &[u8]| {
     exercise(data);
+    s3_cases::fuzz_case(data);
+    s3_keys::exercise(data);
 });

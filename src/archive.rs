@@ -63,6 +63,81 @@ pub(crate) fn validated_journal(
     Ok(path.join(crate::store::EVENTS))
 }
 
+/// The identity of every node a validation of the archive at `path` judges,
+/// hashed: the directory, each top-level entry, `messages/` and its entries,
+/// and `retained/` all the way down, each as its relative path, type, mode,
+/// device, inode, length and modification and change times. Metadata only,
+/// no content read: a `chmod`, an added or removed entry or a rewritten node
+/// moves it, a same-length rewrite inside one timestamp tick with the change
+/// time kept does not.
+///
+/// # Errors
+///
+/// A node that cannot be looked at or a directory that cannot be listed.
+pub(crate) fn tree_identity(path: &Path) -> Result<String, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let mut nodes: Vec<String> = Vec::new();
+    // (path, relative name, descend into it when it is a real directory)
+    let mut pending: Vec<(PathBuf, String, bool)> = vec![(path.to_path_buf(), String::new(), true)];
+    while let Some((node, rel, descend)) = pending.pop() {
+        let meta = store::symlink_meta(&node).map_err(|why| format!("{rel}: {why}"))?;
+        let kind = if meta.file_type().is_symlink() {
+            'l'
+        } else if meta.is_dir() {
+            'd'
+        } else if meta.is_file() {
+            'f'
+        } else {
+            'o'
+        };
+        nodes.push(format!(
+            "{rel}\t{kind}\t{:o}\t{}\t{}\t{}\t{}.{}\t{}.{}",
+            meta.mode(),
+            meta.dev(),
+            meta.ino(),
+            meta.len(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.ctime(),
+            meta.ctime_nsec()
+        ));
+        if kind != 'd' || !descend {
+            continue;
+        }
+        for child in store::read_dir(&node).map_err(|why| format!("{rel}/: {why}"))? {
+            let name = child
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let rel = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
+            // The top level, messages/ and retained/ (whole) are judged.
+            let deeper = rel == "messages" || rel == "retained" || rel.starts_with("retained/");
+            pending.push((child, rel, deeper));
+        }
+    }
+    nodes.sort();
+    Ok(crate::install::sha256_hex(nodes.join("\n").as_bytes()))
+}
+
+/// Where kept archive `id` under `root` stands, as `(present, claimed)`: a
+/// claim marker of a publisher or a purge, and the archive directory itself.
+/// `None` when either cannot be looked at.
+pub(crate) fn standing(root: &Path, id: &str) -> Option<(bool, bool)> {
+    let archive = root.join("archive");
+    let there = |path: &Path| match store::symlink_meta(path) {
+        Ok(_) => Some(true),
+        Err(why) if why.kind() == io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    };
+    let claimed = there(&store::claim_path(&archive, id))?;
+    let present = there(&archive.join(id))?;
+    Some((present, claimed))
+}
+
 /// Read the archive index without inspecting tmux or making a session runnable.
 pub(crate) fn ended(root: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Result<u8> {
     let archive = root.join("archive");

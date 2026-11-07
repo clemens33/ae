@@ -65,7 +65,9 @@ pub(crate) fn run(
     match require_real_root(&root, false) {
         // A real root: proceed.
         Ok(RootState::Present) => {}
-        Ok(RootState::Absent) => return Ok(0),
+        // No archive namespace: no bytes to purge, but the statistics store
+        // may still hold the archive (the store-only retry).
+        Ok(RootState::Absent) => return Ok(store_step(&root, &aid, err)?.unwrap_or(0)),
         // A symlinked root has already been refused, loudly, by the proof itself.
         Err(line) => {
             writeln!(err, "{line}")?;
@@ -113,15 +115,15 @@ fn purge_owned(
 ) -> io::Result<u8> {
     let target = root.join(aid);
     if !exists(&target) {
-        // Absent target after OUR claim: nothing to purge — clear the claim
-        // durably and succeed with no output.
-        return match clear_claim(root, claim) {
-            Ok(()) => Ok(0),
-            Err(diag) => {
-                writeln!(err, "{diag}")?;
-                Ok(EXIT_FAILED)
-            }
-        };
+        // Absent target after OUR claim: no archive bytes to purge — clear
+        // the claim durably, then remove what the statistics store still
+        // holds of it (the retry of a purge whose store step failed), with
+        // no output.
+        if let Err(diag) = clear_claim(root, claim) {
+            writeln!(err, "{diag}")?;
+            return Ok(EXIT_FAILED);
+        }
+        return Ok(store_step(root, aid, err)?.unwrap_or(0));
     }
     // A real archive directory, never a link or other node.
     if !symlink_meta(&target).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) {
@@ -212,9 +214,44 @@ fn purge_owned(
         return postcommit_removed_unsynced(err, &target, &format!("fsync root: {why}"));
     }
 
-    // The archive is gone and the removal is durable.
+    // The archive is gone and the removal is durable: the statistics store
+    // forgets it too before the purge reports success.
+    if let Some(code) = store_step(root, aid, err)? {
+        return Ok(code);
+    }
     write!(out, "{}", target.display())?;
     Ok(0)
+}
+
+/// The statistics store's step of a purge, once the archive bytes are gone:
+/// under `stats.lock`, nothing under the state root's `stats` names the
+/// archive after it. A damaged store is reset instead, which also names
+/// nothing. `None` when the step completed; the purge's exit code otherwise.
+fn store_step(root: &Path, aid: &str, err: &mut impl Write) -> io::Result<Option<u8>> {
+    use crate::stats_store::disk::{PURGE_WAIT, Purged, purged};
+    let state = root.parent().unwrap_or(root);
+    match purged(state, aid, PURGE_WAIT) {
+        Ok(Purged::Absent | Purged::Removed) => Ok(None),
+        Ok(Purged::Reset { file, reason }) => {
+            writeln!(
+                err,
+                "archive: the statistics store was damaged ({file}: {reason}) and was reset; `ae app` rebuilds it."
+            )?;
+            Ok(None)
+        }
+        Err(why) => postcommit_store_kept(err, aid, &why.describe()).map(Some),
+    }
+}
+
+/// A POST-removal failure of the store step: the archive bytes are GONE, but
+/// the statistics store still holds entries for the archive. Re-running the
+/// same purge reaches the absent-target branch, which removes them.
+fn postcommit_store_kept(err: &mut impl Write, aid: &str, reason: &str) -> io::Result<u8> {
+    writeln!(
+        err,
+        "archive: PURGE INCOMPLETE for {aid} — the archive bytes are removed, but the statistics store still holds entries for it ({reason}). Re-run the same purge to remove them."
+    )?;
+    Ok(EXIT_FAILED)
 }
 
 /// Remove our own claim and fsync the root.

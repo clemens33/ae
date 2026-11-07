@@ -36,6 +36,44 @@ mod doc;
 pub mod maint;
 #[cfg(test)]
 mod s2_spec;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    reason = "frozen S3 amendment: fixture IO removes and reads real store files"
+)]
+mod s3_absence;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    clippy::semicolon_if_nothing_returned,
+    reason = "frozen S3 amendment: reuses the frozen S3 cases module and its fold oracle"
+)]
+mod s3_fragment_absence;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    reason = "frozen S3 amendment: fixture IO walks and reads the real store, and asserts one plan variant"
+)]
+mod s3_purge_recovery;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    reason = "frozen S3 amendment: fixture IO changes the real archive tree"
+)]
+mod s3_sandwich;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::duplicate_mod,
+    clippy::match_wildcard_for_single_variants,
+    clippy::semicolon_if_nothing_returned,
+    reason = "frozen S3 acceptance: fixture IO reads real files, shares the S2 fold oracle module, asserts one plan variant, and its frozen bytes are not reformatted"
+)]
+mod s3_spec;
 
 /// The evidence format this core reads and writes.
 const VERSION: i64 = 1;

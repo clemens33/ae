@@ -9,13 +9,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    Doc, Error, Evidence, Origin, count, counted, expect_keys, field, line, number, object,
-    optional, optional_text, parse_entry, parse_head, parse_line, parse_source_with, render_lines,
-    render_scope, source_fields, text,
+    Doc, Error, Evidence, Origin, count, counted, expect_keys, field, gap_of, gap_word, line,
+    number, object, optional, optional_text, parse_entry, parse_head, parse_line,
+    parse_source_with, render_lines, render_scope, source_fields, text,
 };
 use crate::archive::is_canonical_uuid;
 use crate::json::Value;
-use crate::stats::{Fold, Scoped, Tally};
+use crate::stats::{Fold, Scoped, SourceGap, Tally};
 
 /// The format of every document this core writes.
 const FORMAT: i64 = 1;
@@ -74,6 +74,51 @@ pub(super) fn hash(bytes: &[u8]) -> String {
 
 /// One record of a document: its fields in order.
 type Record = Vec<(String, Value)>;
+/// A record's optional members, by name.
+type Optional<'a> = BTreeMap<&'a str, &'a Value>;
+/// A record split into its core members and its optional ones.
+type Split<'a> = (&'a [(String, Value)], Optional<'a>);
+
+/// A record's fields before the optional ones it ends with, and those by
+/// name, each named at most once and in any order: the keys a later format
+/// added, absent from what an earlier one wrote.
+fn split_optional<'a>(
+    fields: &'a [(String, Value)],
+    optional: &[&str],
+) -> Result<Split<'a>, Error> {
+    let width = fields
+        .iter()
+        .rev()
+        .take_while(|(key, _)| optional.contains(&key.as_str()))
+        .count();
+    let (core, tail) = fields.split_at(fields.len() - width);
+    let mut extra = BTreeMap::new();
+    for (key, value) in tail {
+        if extra.insert(key.as_str(), value).is_some() {
+            return Err(Error::Damaged("key twice"));
+        }
+    }
+    Ok((core, extra))
+}
+
+/// An optional hash member: absent, or a hex SHA-256.
+fn optional_hash(extra: &BTreeMap<&str, &Value>, key: &str) -> Result<Option<String>, Error> {
+    extra
+        .get(key)
+        .map(|value| match value {
+            Value::Str(hash) if is_hash(hash) => Ok(hash.clone()),
+            _ => Err(Error::Damaged("hash")),
+        })
+        .transpose()
+}
+
+/// The hash a session view keeps of a source's origin: a change to the
+/// label, the session, the roster or the gap moves it.
+pub(super) fn origin_hash(origin: &Origin) -> String {
+    let mut out = String::new();
+    line(&mut out, &source_fields("", &Evidence::new(origin.clone())));
+    hash(out.as_bytes())
+}
 
 /// Records of a document, its final LF and its `end` record checked and taken
 /// off.
@@ -208,6 +253,9 @@ pub(super) struct Provenance {
     /// Inside a line already counted over the limit: the next read passes
     /// through its first LF without counting.
     pub(super) skipping: bool,
+    /// An archive's tree hash its validation proved (A3); `None` for a live
+    /// source or one not yet judged.
+    pub(super) fp: Option<String>,
 }
 
 impl Provenance {
@@ -221,11 +269,18 @@ impl Provenance {
             ino: 0,
             hash: hash(b""),
             skipping: false,
+            fp: None,
         }
     }
 }
 
 const PROVENANCE: [&str; 7] = ["inc", "seen", "read", "dev", "ino", "hash", "skipping"];
+/// The members an own source's record may end with.
+const SOURCE_OPTIONAL: [&str; 1] = ["fp"];
+/// The members a session view's row may end with.
+const ROW_OPTIONAL: [&str; 3] = ["fp", "org", "gap"];
+/// The members a root row may end with.
+const ROOT_OPTIONAL: [&str; 1] = ["ids"];
 
 /// One of a group's own sources: its evidence and its provenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,6 +356,11 @@ impl Group {
                         failed: matches!(own.evidence.origin, Origin::Failed { .. }),
                         cursor: own.evidence.cursor,
                         provenance: own.provenance.clone(),
+                        gap: match own.evidence.origin {
+                            Origin::Failed { gap, .. } => Some(gap),
+                            _ => None,
+                        },
+                        org: Some(origin_hash(&own.evidence.origin)),
                     },
                 )
             })
@@ -354,6 +414,9 @@ pub(super) fn render_group(group: &Group, epoch: u64) -> String {
             ("hash", Value::str(mark.hash.as_str())),
             ("skipping", Value::Bool(mark.skipping)),
         ]);
+        if let Some(fp) = &mark.fp {
+            fields.push(("fp", Value::str(fp.as_str())));
+        }
         line(&mut out, &fields);
         render_lines(&mut out, &own.evidence);
     }
@@ -396,7 +459,8 @@ pub(super) fn parse_group(input: &str) -> Result<(Group, u64), Error> {
                 if !group.fragments.is_empty() {
                     return Err(Error::Damaged("source after fragments"));
                 }
-                let (id, evidence) = parse_source_with(fields, &PROVENANCE)?;
+                let (core, extra) = split_optional(fields, &SOURCE_OPTIONAL)?;
+                let (id, evidence) = parse_source_with(core, &PROVENANCE)?;
                 if evidence.origin.session() != group.key.as_deref() {
                     return Err(Error::Damaged("source of another group"));
                 }
@@ -407,7 +471,8 @@ pub(super) fn parse_group(input: &str) -> Result<(Group, u64), Error> {
                 {
                     return Err(Error::Damaged("source order"));
                 }
-                let provenance = parse_provenance(fields)?;
+                let mut provenance = parse_provenance(core)?;
+                provenance.fp = optional_hash(&extra, "fp")?;
                 if matches!(evidence.origin, Origin::Failed { .. }) && provenance.skipping {
                     return Err(Error::Damaged("skipping a source with no lines"));
                 }
@@ -475,6 +540,7 @@ fn parse_provenance(fields: &[(String, Value)]) -> Result<Provenance, Error> {
         ino: number(field(fields, "ino")?)?,
         hash: hash.to_owned(),
         skipping: flag(field(fields, "skipping")?)?,
+        fp: None,
     })
 }
 
@@ -519,6 +585,12 @@ pub(super) struct SourceRow {
     pub(super) failed: bool,
     pub(super) cursor: u64,
     pub(super) provenance: Provenance,
+    /// A failed source's gap; `None` on a counted row, or a failed row an
+    /// earlier format wrote.
+    pub(super) gap: Option<SourceGap>,
+    /// The hash of the source's origin ([`origin_hash`]); `None` when an
+    /// earlier format wrote the row.
+    pub(super) org: Option<String>,
 }
 
 /// One group's counts, kept beside its evidence.
@@ -570,21 +642,28 @@ pub(super) fn render_session(view: &SessionView) -> String {
     render_scope(&mut out, "tally", &view.tally.scoped());
     for (id, row) in &view.rows {
         let mark = &row.provenance;
-        line(
-            &mut out,
-            &[
-                ("row", Value::str(id.as_str())),
-                ("failed", Value::Bool(row.failed)),
-                ("cursor", count(row.cursor)),
-                ("inc", count(mark.incarnation)),
-                ("seen", count(mark.seen)),
-                ("read", count(mark.read)),
-                ("dev", count(mark.dev)),
-                ("ino", count(mark.ino)),
-                ("hash", Value::str(mark.hash.as_str())),
-                ("skipping", Value::Bool(mark.skipping)),
-            ],
-        );
+        let mut fields = vec![
+            ("row", Value::str(id.as_str())),
+            ("failed", Value::Bool(row.failed)),
+            ("cursor", count(row.cursor)),
+            ("inc", count(mark.incarnation)),
+            ("seen", count(mark.seen)),
+            ("read", count(mark.read)),
+            ("dev", count(mark.dev)),
+            ("ino", count(mark.ino)),
+            ("hash", Value::str(mark.hash.as_str())),
+            ("skipping", Value::Bool(mark.skipping)),
+        ];
+        if let Some(fp) = &mark.fp {
+            fields.push(("fp", Value::str(fp.as_str())));
+        }
+        if let Some(org) = &row.org {
+            fields.push(("org", Value::str(org.as_str())));
+        }
+        if let Some(gap) = row.gap {
+            fields.push(("gap", Value::str(gap_word(gap))));
+        }
+        line(&mut out, &fields);
     }
     close(out)
 }
@@ -600,6 +679,7 @@ pub(super) fn parse_session(input: &str) -> Result<SessionView, Error> {
     let (tally, rest) = scope_of(body, "tally")?;
     let mut rows = BTreeMap::new();
     for fields in rest {
+        let (fields, extra) = split_optional(fields, &ROW_OPTIONAL)?;
         expect_keys(
             fields,
             &[
@@ -613,10 +693,22 @@ pub(super) fn parse_session(input: &str) -> Result<SessionView, Error> {
         {
             return Err(Error::Damaged("row order"));
         }
+        let mut provenance = parse_provenance(fields)?;
+        provenance.fp = optional_hash(&extra, "fp")?;
+        let failed = flag(field(fields, "failed")?)?;
+        let gap = extra
+            .get("gap")
+            .map(|value| value.as_str().ok_or(Error::Damaged("gap")).and_then(gap_of))
+            .transpose()?;
+        if gap.is_some() && !failed {
+            return Err(Error::Damaged("gap on a counted row"));
+        }
         let row = SourceRow {
-            failed: flag(field(fields, "failed")?)?,
+            failed,
             cursor: number(field(fields, "cursor")?)?,
-            provenance: parse_provenance(fields)?,
+            provenance,
+            gap,
+            org: optional_hash(&extra, "org")?,
         };
         rows.insert(id, row);
     }
@@ -654,6 +746,9 @@ pub(super) struct RootRow {
     pub(super) listed: u64,
     pub(super) pending: u64,
     pub(super) range: Option<(String, String)>,
+    /// The ids of the group's own sources, sorted: the ownership index
+    /// (s3-plan-r2 D1). `None` when an earlier format wrote the row.
+    pub(super) ids: Option<Vec<String>>,
 }
 
 impl RootRow {
@@ -663,6 +758,7 @@ impl RootRow {
             listed: view.listed(),
             pending: view.pending(),
             range: view.tally.range().cloned(),
+            ids: Some(view.rows.keys().cloned().collect()),
         }
     }
 }
@@ -687,6 +783,21 @@ impl Root {
             covering: Tally::default(),
             rows: BTreeMap::new(),
         }
+    }
+
+    /// Whether every row carries its ownership index.
+    pub(super) fn indexed(&self) -> bool {
+        self.rows.values().all(|row| row.ids.is_some())
+    }
+
+    /// The group whose own sources the index lists `source` among.
+    pub(super) fn owner(&self, source: &str) -> Option<&Key> {
+        self.rows.iter().find_map(|(key, row)| {
+            row.ids
+                .as_ref()
+                .is_some_and(|ids| ids.binary_search_by(|id| id.as_str().cmp(source)).is_ok())
+                .then_some(key)
+        })
     }
 
     /// The dates every group spans together.
@@ -748,19 +859,39 @@ pub(super) fn render_root(root: &Root) -> String {
         let (from, to) = row.range.as_ref().map_or((None, None), |(from, to)| {
             (Some(from.as_str()), Some(to.as_str()))
         });
-        line(
-            &mut out,
-            &[
-                ("group", key_value(key)),
-                ("gen", count(row.generation)),
-                ("sources", count(row.listed)),
-                ("pending", count(row.pending)),
-                ("from", optional(from)),
-                ("to", optional(to)),
-            ],
-        );
+        let mut fields = vec![
+            ("group", key_value(key)),
+            ("gen", count(row.generation)),
+            ("sources", count(row.listed)),
+            ("pending", count(row.pending)),
+            ("from", optional(from)),
+            ("to", optional(to)),
+        ];
+        if let Some(ids) = &row.ids {
+            fields.push((
+                "ids",
+                Value::Arr(ids.iter().map(|id| Value::str(id.as_str())).collect()),
+            ));
+        }
+        line(&mut out, &fields);
     }
     close(out)
+}
+
+/// A root row's ownership index: source ids, strictly sorted.
+fn ids_of(value: &Value) -> Result<Vec<String>, Error> {
+    let Value::Arr(list) = value else {
+        return Err(Error::Damaged("ids"));
+    };
+    let mut ids: Vec<String> = Vec::with_capacity(list.len());
+    for id in list {
+        let id = id.as_str().ok_or(Error::Damaged("ids"))?;
+        if ids.last().is_some_and(|last| last.as_str() >= id) {
+            return Err(Error::Damaged("ids order"));
+        }
+        ids.push(id.to_owned());
+    }
+    Ok(ids)
 }
 
 pub(super) fn parse_root(input: &str) -> Result<Root, Error> {
@@ -774,7 +905,9 @@ pub(super) fn parse_root(input: &str) -> Result<Root, Error> {
     let (all, rest) = scope_of(body, "all")?;
     let (covering, rest) = scope_of(rest, "covering")?;
     let mut rows = BTreeMap::new();
+    let mut owned = BTreeSet::new();
     for fields in rest {
+        let (fields, extra) = split_optional(fields, &ROOT_OPTIONAL)?;
         expect_keys(
             fields,
             &["group", "gen", "sources", "pending", "from", "to"],
@@ -794,14 +927,26 @@ pub(super) fn parse_root(input: &str) -> Result<Root, Error> {
             (Some(from), Some(to)) if from <= to => Some((from, to)),
             _ => return Err(Error::Damaged("range")),
         };
+        let ids = extra.get("ids").map(|value| ids_of(value)).transpose()?;
         let row = RootRow {
             generation: number(field(fields, "gen")?)?,
             listed: number(field(fields, "sources")?)?,
             pending: number(field(fields, "pending")?)?,
             range,
+            ids,
         };
         if row.pending > row.listed {
             return Err(Error::Damaged("pending"));
+        }
+        if let Some(ids) = &row.ids {
+            if u64::try_from(ids.len()).ok() != Some(row.listed) {
+                return Err(Error::Damaged("ids"));
+            }
+            for id in ids {
+                if !owned.insert(id.clone()) {
+                    return Err(Error::Damaged("a source owned by two groups"));
+                }
+            }
         }
         rows.insert(key, row);
     }
