@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.23] - 2026-11-07
+- **stats_store**: S2 batch 1 as reviewed, the RED base for the r6 regressions
+- **stats_store**: S2 seam commit H, observation only for the r6 regressions
+- **stats_store**: Install the frozen r6.3 S2 regressions
+- **stats_store**: S2 batch 2, answer the batch-1 review F1-F10
+- **stats_store**: Observation seams for the r7 stop-timeout regression
+- **stats_store**: Install the frozen r7.1 S2 batch-2 regressions
+- **stats_store**: S2 batch 3, answer the batch-2 review R1-R5
+- **stats_store**: A recovery prefix is recoverable, only the whole plan leaves nothing
+- **stats_store**: Install the frozen r8 S2 mutant-killing regressions
+- **stats_store**: Install the frozen r8.2 S2 fixture fix and completed-catchup control
+- **stats_store**: Install the frozen r8.3 retired alias regression
+- **effort**: Frozen specs for the resume trim orphaning an applied episode (#308)
+- **effort**: Resume trim keeps a live effort record's journal proof (#308)
+- **effort**: Frozen spec for bounded trim retention (#308)
+- **effort**: A reset addressed to a live-meta seat stays with its episode evidence (#308)
+
 ## [v2026.11.22] - 2026-11-06
 - **app**: A linked HTML, SVG, image or PDF file shows an open note instead of raw source or a refusal
 - **chat**: A reply to the human stands alone; a substantial report is one local file
