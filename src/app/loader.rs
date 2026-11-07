@@ -677,8 +677,8 @@ impl Reader {
     /// neighbours, the rest — else a wait until the earliest falls due.
     /// The open overlay's settings read immediately, then every refresh,
     /// below the looks so it never starves the main view. The shown
-    /// Statistics tab reads its store last of all: at once when shown, then
-    /// every store refresh, and only when nothing else is due.
+    /// Statistics tab's first read per show follows the selection and fleet,
+    /// before the other sessions; every later refresh only when nothing is due.
     fn next(&self, now: Instant) -> Job {
         let Some(fleet_at) = self.fleet_at else {
             return Job::Fleet;
