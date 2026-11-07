@@ -1405,55 +1405,6 @@ pub fn each_line<R: BufRead>(
 /// The buffer a journal read holds beside its pending line.
 const JOURNAL_BUFFER: usize = 64 * 1024;
 
-/// One journal open for the statistics scan, read a chunk of work at a time.
-/// The file is the one checked at open, read to the length reserved from the
-/// budget; a path replaced afterwards does not matter to it.
-pub(crate) struct Journal {
-    lines: LineReader<BufReader<std::io::Take<File>>>,
-    len: u64,
-}
-
-/// Open `path` for a stepped read, its whole length reserved from `budget`
-/// before the first byte. Over the budget is [`SourceGap::Budget`]: there is no
-/// size cutoff of its own.
-pub(crate) fn open_journal(
-    path: &Path,
-    line: usize,
-    budget: &mut Budget,
-) -> Result<Journal, crate::stats::SourceGap> {
-    use crate::stats::SourceGap;
-    match open_regular(path, u64::MAX, budget) {
-        Ok(Some(Opened { file, len, .. })) => Ok(Journal {
-            lines: LineReader::new(
-                BufReader::with_capacity(JOURNAL_BUFFER, file.take(len)),
-                line,
-            ),
-            len,
-        }),
-        Ok(None) => Err(SourceGap::Missing),
-        Err(Coverage::Truncated) => Err(SourceGap::Budget),
-        Err(_) => Err(SourceGap::Unreadable),
-    }
-}
-
-impl Journal {
-    /// Read up to `work` more bytes into `sink`: `true` once the journal is
-    /// read through. A journal that ends short of the length opened is
-    /// unreadable.
-    pub(crate) fn pump(
-        &mut self,
-        work: u64,
-        sink: &mut dyn FnMut(Line<'_>),
-    ) -> Result<bool, crate::stats::SourceGap> {
-        use crate::stats::SourceGap;
-        match self.lines.pump(work, sink) {
-            Ok(Pump::More) => Ok(false),
-            Ok(Pump::Done(read)) if read == self.len => Ok(true),
-            Ok(Pump::Done(_)) | Err(_) => Err(SourceGap::Unreadable),
-        }
-    }
-}
-
 #[cfg(unix)]
 fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt as _;

@@ -27,6 +27,8 @@ use crate::digest::Status;
 use crate::inventory::{FailedSource, ServerId};
 use crate::listing::World;
 use crate::session_menu::{self, CellRow};
+use crate::stats_store::disk;
+use crate::stats_store::maint::REFRESH as STATS_REFRESH;
 use crate::time::Timestamp;
 use crate::{theme, tmux, transport};
 
@@ -39,7 +41,6 @@ mod peek_spec;
 mod read_spec;
 #[cfg(test)]
 mod records_spec;
-mod stats;
 
 /// The most sessions whose consoles are kept read, home and the selection
 /// among them.
@@ -147,7 +148,7 @@ pub(super) enum Wake {
     /// What became of the reset the Statistics tab of `generation` asked for.
     StatsReset {
         generation: u64,
-        outcome: Result<crate::stats_store::disk::Reset, crate::stats_store::disk::Refused>,
+        outcome: Result<disk::Reset, disk::Refused>,
     },
 }
 
@@ -218,7 +219,7 @@ pub(super) enum Answer {
     /// What the Statistics store shows, read for `generation`.
     Stats {
         generation: u64,
-        glance: Box<crate::stats_store::disk::Glance>,
+        glance: Box<disk::Glance>,
     },
     /// How pressed each lead-pair seat of session `name` (bound to `id`) is,
     /// by seat name: its own account's judged quota, `None` when unknown.
@@ -318,9 +319,17 @@ enum Job {
     Read(Box<ReadAsk>),
     Records(Box<RecordsAsk>),
     Peek(Box<PeekAsk>),
-    /// One step of the statistics scan.
+    /// One read of the shown Statistics tab's store.
     Stats,
     Wait(Instant),
+}
+
+/// The shown Statistics tab's watch on the store: the overlay generation it
+/// answers, when its last read completed, and what that read answered.
+struct Watch {
+    generation: u64,
+    last: Option<Instant>,
+    sent: Option<disk::Glance>,
 }
 
 /// The paths the settings reads resolve through, selected once by the UI.
@@ -393,10 +402,8 @@ pub(super) struct Reader {
     flight: Option<Flight>,
     /// The fleet's journals as last read.
     journals: Journals,
-    /// The open overlay's statistics scan, one source per job.
-    stats: Option<stats::Scan>,
-    /// The last fleet read proved every durable record.
-    scanned: bool,
+    /// The shown Statistics tab's watch on the store, if any.
+    stats: Option<Watch>,
     /// Sessions whose last stage read was answered: one still staging is due
     /// again at once, one whose read failed waits its tier.
     answered: BTreeSet<String>,
@@ -474,7 +481,6 @@ impl Reader {
             flight: None,
             journals: Journals::default(),
             stats: None,
-            scanned: false,
             answered: BTreeSet::new(),
             pressure: BTreeMap::new(),
         }
@@ -516,7 +522,8 @@ impl Reader {
                     Err(TryRecvError::Disconnected) => return,
                 }
             }
-            let job = self.next(Instant::now());
+            let now = Instant::now();
+            let job = self.next(now);
             let fleet = matches!(job, Job::Fleet);
             let answers = match job {
                 Job::Fleet => self.fleet(),
@@ -526,7 +533,7 @@ impl Reader {
                 Job::Read(ask) => vec![self.read(&ask)],
                 Job::Records(ask) => vec![self.records(&ask)],
                 Job::Peek(ask) => vec![self.peek(&ask)],
-                Job::Stats => self.stats_step().into_iter().collect(),
+                Job::Stats => self.stats_read(now).into_iter().collect(),
                 Job::Wait(until) => {
                     match asks.recv_timeout(until.saturating_duration_since(Instant::now())) {
                         Ok(request) => self.take(request),
@@ -604,56 +611,45 @@ impl Reader {
                 self.endings.retain(|held| held.name != ask.name);
                 self.endings.push(*ask);
             }
+            // Hidden, the watch goes; shown, a fresh one is due at once and
+            // answers whatever it reads. A stale overlay's arm is dropped.
             Request::Stats { generation, shown } => {
-                if shown && matches!(self.settings, Some((open, _)) if open == generation) {
-                    self.stats = Some(self.stats_scan(generation));
+                if !shown {
+                    self.stats = None;
+                } else if matches!(self.settings, Some((open, _)) if open == generation) {
+                    self.stats = Some(Watch {
+                        generation,
+                        last: None,
+                        sent: None,
+                    });
                 }
             }
         }
     }
 
-    /// A scan of what this reader knows now, for the overlay's session.
-    fn stats_scan(&self, generation: u64) -> stats::Scan {
-        let this = (self.settings_session.as_ref())
-            .and_then(|name| self.ids.get(name))
-            .filter(|id| crate::archive::is_canonical_uuid(id))
-            .cloned();
-        let (root, dirs) = (self.root.clone(), self.dirs.clone());
-        stats::Scan::new(root, dirs, self.scanned, generation, this)
-    }
-
-    /// One step of the statistics scan: the answer when it is the last.
-    fn stats_step(&mut self) -> Option<Answer> {
-        use crate::stats_store::disk::{Glance, Progress, ThisProgress};
-        let scan = self.stats.as_mut()?;
-        let view = scan.step()?;
-        let generation = scan.generation();
-        self.stats = None;
-        // B0 seam adapter: the scan's view in the store's answer shape.
-        let this = match view.this {
-            crate::stats::ThisSession::Ready(_) => ThisProgress::Ready(Progress::default()),
-            crate::stats::ThisSession::NoUuid => ThisProgress::NoUuid,
-        };
-        let glance = Glance::Ready {
-            view,
-            epoch: 0,
-            r#gen: 0,
-            updating: false,
-            all: Progress::default(),
-            this,
-        };
+    /// One read of the Statistics store for the watched tab, completed at
+    /// `now`: an answer only when what it shows changed since the last one.
+    /// The overlay's session is resolved at each read, so an id the fleet
+    /// learns after the tab opened is used from the next read on.
+    pub(super) fn stats_read(&mut self, now: Instant) -> Option<Answer> {
+        let this = (self.settings_session.as_ref()).and_then(|name| self.ids.get(name));
+        let watch = self.stats.as_mut()?;
+        let glance = disk::glance(&mut disk::Files::at(&self.root), this.map(String::as_str));
+        watch.last = Some(now);
+        if watch.sent.as_ref() == Some(&glance) {
+            return None;
+        }
+        watch.sent = Some(glance.clone());
         Some(Answer::Stats {
-            generation,
+            generation: watch.generation,
             glance: Box::new(glance),
         })
     }
 
-    /// One read of the Statistics store for the watched tab, stamped `now`:
-    /// an answer only when what it shows changed.
-    pub(super) fn stats_read(&mut self, now: Instant) -> Option<Answer> {
-        // B0 seam: no store read yet.
-        let _ = now;
-        None
+    /// When the watched Statistics tab reads next, `None` with no watch.
+    fn stats_due(&self, now: Instant) -> Option<Instant> {
+        let watch = self.stats.as_ref()?;
+        Some(watch.last.map_or(now, |at| at + STATS_REFRESH))
     }
 
     /// Whether session `name` has a console to read through.
@@ -680,7 +676,9 @@ impl Reader {
     /// read, a reread, a look, the selection, the fleet, home, the
     /// neighbours, the rest — else a wait until the earliest falls due.
     /// The open overlay's settings read immediately, then every refresh,
-    /// below the looks so it never starves the main view.
+    /// below the looks so it never starves the main view. The shown
+    /// Statistics tab reads its store last of all: at once when shown, then
+    /// every store refresh, and only when nothing else is due.
     fn next(&self, now: Instant) -> Job {
         let Some(fleet_at) = self.fleet_at else {
             return Job::Fleet;
@@ -725,12 +723,14 @@ impl Reader {
         {
             return name.clone().map_or(Job::Fleet, Job::View);
         }
-        if self.stats.is_some() {
+        let stats = self.stats_due(now);
+        if stats.is_some_and(|due| due <= now) {
             return Job::Stats;
         }
         let until = candidates
             .iter()
             .filter_map(|(_, due)| *due)
+            .chain(stats)
             .fold(fleet_at + REFRESH, Instant::min);
         // A first settings read never waits: it is due at once, above.
         let until = match self.settings {
@@ -827,7 +827,6 @@ impl Reader {
         );
         let lost = |source: &FailedSource| !matches!(source, FailedSource::Server(_));
         read.scanned = !snapshot.incomplete.iter().any(lost);
-        self.scanned = read.scanned;
         self.fleet_at = Some(Instant::now());
         self.dirs.clone_from(&read.dirs);
         self.ids.clone_from(&read.ids);
