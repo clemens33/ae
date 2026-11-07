@@ -2,6 +2,8 @@
 //!
 //! Oracle: first/proactive/news waits use one cadence; an answered, delivered
 //! same-state challenge earns two cadences until news or a proactive declaration.
+//! Migrated under lead ruling ae-20261107T042841Z-4a9facd4: information keeps
+//! earned spacing; actionable news still restores the base cadence.
 //! The declaration-age ceiling, retry bound, and done timeline stay unchanged.
 //! Times/counts below are requirements, never obtained from the fold or cap function.
 //! Each fixture is a real JSONL journal read through `RecordSnapshot`, then consumed
@@ -108,11 +110,21 @@ impl Journal {
     }
 
     fn peer_news(&mut self, seconds: i64) {
-        self.lines.push(row(seconds, "peer", "send", TARGET));
+        self.lines.push(row(
+            seconds,
+            "peer",
+            "ask",
+            &format!(r#"{TARGET},"ref":"peer-news""#),
+        ));
     }
 
     fn own_news(&mut self, seconds: i64) {
-        self.lines.push(row(seconds, AGENT, "send", ACTOR));
+        self.lines.push(row(
+            seconds,
+            AGENT,
+            "ask",
+            &format!(r#"{ACTOR},"target":"peer","ref":"own-news""#),
+        ));
     }
 
     fn snapshot(&self) -> RecordSnapshot {
@@ -354,6 +366,24 @@ fn own_and_addressed_news_restore_base_spacing_without_ending_a_wait() {
 }
 
 #[test]
+fn informational_sends_keep_earned_spacing_in_both_wait_states() {
+    for state in [WaitState::WaitingAgent, WaitState::Blocked] {
+        for own in [false, true] {
+            let mut journal = Journal::proof(state);
+            let (actor, extra) = if own {
+                (AGENT, ACTOR)
+            } else {
+                ("peer", TARGET)
+            };
+            journal.lines.push(row(400, actor, "send", extra));
+            journal.check(630, state, provisional(1, 2));
+            journal.check(929, state, provisional(1, 2));
+            journal.check(930, state, due(1, 2, 600, 0));
+        }
+    }
+}
+
+#[test]
 fn a_later_proof_clears_old_news_but_not_news_after_that_proof() {
     for state in [WaitState::WaitingAgent, WaitState::Blocked] {
         let mut journal = Journal::proof(state);
@@ -508,7 +538,12 @@ fn routing_owners_select_news_instead_of_stale_display_names() {
             r#","actor_slot":"main","actor_session":"spacing""#,
         ] {
             let mut journal = Journal::proof(state);
-            journal.lines.push(row(400, "old-name", "send", extra));
+            journal.lines.push(row(
+                400,
+                "old-name",
+                "ask",
+                &format!(r#"{extra},"ref":"routed-news""#),
+            ));
             journal.check(630, state, due(1, 2, 300, 0));
         }
         for (actor, extra) in [
@@ -527,7 +562,12 @@ fn routing_owners_select_news_instead_of_stale_display_names() {
             ),
         ] {
             let mut journal = Journal::proof(state);
-            journal.lines.push(row(400, actor, "send", extra));
+            journal.lines.push(row(
+                400,
+                actor,
+                "ask",
+                &format!(r#"{extra},"ref":"foreign-news""#),
+            ));
             journal.check(630, state, provisional(1, 2));
         }
     }
@@ -549,7 +589,7 @@ fn non_news_watchdog_footprints_and_unrelated_records_preserve_spacing() {
 }
 
 #[test]
-fn own_memo_chase_and_inbound_task_are_news_without_becoming_wait_answers() {
+fn own_memo_keeps_spacing_while_chase_and_inbound_task_restore_base_without_answering() {
     for state in [WaitState::WaitingAgent, WaitState::Blocked] {
         for (actor, action, extra) in [
             (AGENT, "memo", ACTOR.to_owned()),
@@ -562,7 +602,13 @@ fn own_memo_chase_and_inbound_task_are_news_without_becoming_wait_answers() {
         ] {
             let mut journal = Journal::proof(state);
             journal.lines.push(row(400, actor, action, &extra));
-            journal.check(630, state, due(1, 2, 300, 0));
+            if action == "memo" {
+                journal.check(630, state, provisional(1, 2));
+                journal.check(929, state, provisional(1, 2));
+                journal.check(930, state, due(1, 2, 600, 0));
+            } else {
+                journal.check(630, state, due(1, 2, 300, 0));
+            }
         }
     }
 }

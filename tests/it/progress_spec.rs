@@ -8,6 +8,9 @@
 //! and pinned as-is, never fixed here. G-numbers: `.local/progress/plan.md`
 //! section 6 (G1-G10) and the nav critique (G11-G19).
 //!
+//! G13 migrated under lead ruling ae-20261107T042841Z-4a9facd4: an ask resets
+//! done; information preserves its episode and failed-attempt budget.
+//!
 //! Pure calls over parsed journal lines: no filesystem, tmux or harness.
 //! Cadence 60 and required 2 unless a pin says otherwise; times are seconds
 //! from one fixed origin, appended in slice order (append order rules).
@@ -615,7 +618,8 @@ fn progress_g13_attempts_do_not_carry_across_a_reset() {
         decl(0, "done", "x"),
         unconfirmed(10),
         unconfirmed(20),
-        ev(30, "peer", "send", TO),
+        // #225 D4: an actionable ask is the boundary; a send is information.
+        ev(30, "peer", "ask", &format!(r#"{TO},"ref":"new-work""#)),
         decl(40, "done", "new"),
     ];
     assert_eq!(done(&events, 100), d_due(0, 60, 0));
@@ -631,6 +635,30 @@ fn progress_g13_attempts_do_not_carry_across_a_reset() {
         decl(30, "blocked", "new"),
     ];
     assert_eq!(wait(&events, 90, WaitState::Blocked), w_due(0, 60, 0));
+}
+
+/// #225 D4: information keeps the existing done episode and failed-delivery
+/// budget. A proactive declaration still leaves its original anchor standing.
+#[test]
+fn progress_g13_information_keeps_the_current_attempt_budget() {
+    let events = [
+        decl(0, "done", "x"),
+        wd(
+            10,
+            "done-challenge",
+            Some("L1"),
+            Some("[unconfirmed] confirmation 1/2"),
+        ),
+        wd(
+            20,
+            "done-challenge",
+            Some("L1"),
+            Some("[unconfirmed] confirmation 1/2"),
+        ),
+        ev(30, "peer", "send", TO),
+        decl(40, "done", "new"),
+    ];
+    assert_eq!(done(&events, 100), d_due(0, 100, 2));
 }
 
 /// G14 (oracle: doc, dual-emit legacy `done`): a bare `action=done` record
