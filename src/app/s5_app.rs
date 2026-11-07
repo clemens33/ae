@@ -4,6 +4,7 @@
     reason = "acceptance assertions and channel setup"
 )]
 use super::loader::{Answer, Request, Wake};
+use super::maintainer::Upkeep;
 use super::settings::{ResetLine, StatsScope};
 use super::{App, take_keys};
 use crate::console::input;
@@ -13,7 +14,7 @@ use crate::stats_store::disk::{Glance, Progress, Reset, ThisProgress};
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
 use std::sync::mpsc::{self, Receiver};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn published() -> Glance {
     let bytes = f::birth(
@@ -230,4 +231,150 @@ fn s5_app_reset_completion_rearms_only_its_original_overlay_generation() {
         !shown.contains("Recorded worker spawns:"),
         "reset success must not leave old counts as a complete answer"
     );
+}
+
+// Only terminal/process effects are substituted. The app, turn, reset queue,
+// worker, disk reset and completion below are the real implementations.
+struct NoOutside;
+impl super::Outside for NoOutside {
+    fn suspend(&mut self) {
+        panic!("reset handover must not suspend the terminal");
+    }
+    fn exec(&mut self, _argv: &[String]) -> std::io::Error {
+        panic!("reset handover must not exec");
+    }
+    fn resume(&mut self) -> Result<(), String> {
+        panic!("reset handover must not resume the terminal");
+    }
+    fn clear(&mut self) -> std::io::Result<()> {
+        panic!("reset handover must not clear the terminal");
+    }
+}
+
+fn actual_reset_completion(
+    app: &mut App,
+    upkeep: &mut Upkeep,
+    rx: &Receiver<Wake>,
+    generation: u64,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        upkeep.tend();
+        if let Ok(Wake::StatsReset {
+            generation: got,
+            outcome,
+        }) = rx.recv_timeout(Duration::from_millis(10))
+        {
+            assert_eq!(
+                got, generation,
+                "the actual worker retains the asking generation"
+            );
+            assert!(matches!(outcome, Ok(Reset::Rebuilt { .. })), "{outcome:?}");
+            app.reset_landed(got, outcome);
+            return;
+        }
+    }
+    panic!("the actual worker must finish the handed reset");
+}
+
+#[test]
+fn s5_app_step_held_reset_draws_waiting_and_runs_after_resume() {
+    use crate::stats_store::s5_fixture::{Fixture, S, birth};
+    let root = Fixture::new();
+    root.live("alpha", S, &birth(S, 1));
+    root.build();
+    let (tx, rx) = mpsc::channel();
+    let (mut upkeep, hold) = Upkeep::start_holding(root.0.clone(), tx);
+    assert!(hold.entered(Duration::from_secs(3)));
+    upkeep.pause(Duration::ZERO);
+    let mut app = App::new(None, None, None, None);
+    app.fleeted = true;
+    app.open_settings();
+    key(&mut app, "7");
+    frame(&mut app);
+    let generation = app.model.settings().expect("open").generation;
+    key(&mut app, "r");
+    let mut sink = Vec::new();
+    let turn =
+        super::step(&mut app, &mut NoOutside, &mut upkeep, &[], &mut sink).expect("real app turn");
+    assert!(
+        matches!(turn, super::Step::Stay(true)),
+        "Waiting needs a redraw"
+    );
+    assert_eq!(upkeep.owed_reset(), Some(generation));
+    assert_eq!(
+        app.take_reset(),
+        None,
+        "the app hands the request only once"
+    );
+    assert_eq!(
+        app.settings_bodies.stats.store.reset,
+        Some(ResetLine::Waiting)
+    );
+    let shown = frame(&mut app);
+    assert!(
+        shown.contains("rebuild waits: statistics upkeep is not running"),
+        "{shown}"
+    );
+    assert!(
+        matches!(
+            super::step(&mut app, &mut NoOutside, &mut upkeep, &[], &mut sink)
+                .expect("following app turn"),
+            super::Step::Stay(false)
+        ),
+        "an already handed request does not repeatedly demand a redraw"
+    );
+    assert_eq!(upkeep.owed_reset(), Some(generation));
+    drop(hold);
+    upkeep.resume();
+    actual_reset_completion(&mut app, &mut upkeep, &rx, generation);
+    assert_eq!(upkeep.owed_reset(), None);
+    assert_eq!(
+        app.settings_bodies.stats.store.reset,
+        Some(ResetLine::Rebuilt)
+    );
+    upkeep.stop(Duration::from_secs(1));
+}
+
+#[test]
+fn s5_app_step_sent_reset_stays_requested_without_waiting() {
+    use crate::stats_store::s5_fixture::{Fixture, S, birth};
+    let root = Fixture::new();
+    root.live("alpha", S, &birth(S, 1));
+    root.build();
+    let (tx, rx) = mpsc::channel();
+    let (mut upkeep, hold) = Upkeep::start_holding(root.0.clone(), tx);
+    assert!(hold.entered(Duration::from_secs(3)));
+    let mut app = App::new(None, None, None, None);
+    app.fleeted = true;
+    app.open_settings();
+    key(&mut app, "7");
+    frame(&mut app);
+    let generation = app.model.settings().expect("open").generation;
+    key(&mut app, "r");
+    let mut sink = Vec::new();
+    let turn =
+        super::step(&mut app, &mut NoOutside, &mut upkeep, &[], &mut sink).expect("real app turn");
+    assert!(
+        matches!(turn, super::Step::Stay(false)),
+        "a sent reset is not held"
+    );
+    assert_eq!(upkeep.owed_reset(), None);
+    assert_eq!(
+        app.take_reset(),
+        None,
+        "the app hands the request only once"
+    );
+    assert_eq!(
+        app.settings_bodies.stats.store.reset,
+        Some(ResetLine::Requested)
+    );
+    assert!(!frame(&mut app).contains("rebuild waits:"));
+    drop(hold);
+    actual_reset_completion(&mut app, &mut upkeep, &rx, generation);
+    assert_eq!(
+        app.settings_bodies.stats.store.reset,
+        Some(ResetLine::Rebuilt)
+    );
+    upkeep.stop(Duration::from_secs(1));
 }

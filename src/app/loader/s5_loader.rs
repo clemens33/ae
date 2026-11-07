@@ -353,3 +353,139 @@ fn s5_loader_roots_never_mix() {
         "same session name in two roots cannot borrow scope data"
     );
 }
+
+// Lead F1 ruling: a first glance yields to visible work but precedes the
+// background View sweep. Later reads remain lowest, one first read per show.
+fn priority_reader(root: &Fixture, now: Instant) -> Reader {
+    root.live("alpha", S, &birth(S, 1));
+    root.live("beta", T, &birth(T, 2));
+    root.build();
+    let mut reader = reader(root, now);
+    reader.rows = vec!["alpha".into(), "beta".into()];
+    for name in ["alpha", "beta"] {
+        reader
+            .dirs
+            .insert(name.into(), root.0.join("sessions").join(name));
+    }
+    reader.selected = Some("alpha".into());
+    reader.focus_at = now;
+    reader.read_at.insert("alpha".into(), now);
+    reader
+}
+
+#[test]
+fn s5_loader_first_glance_precedes_due_background_view_sweep() {
+    let root = Fixture::new();
+    let now = Instant::now();
+    let mut reader = priority_reader(&root, now);
+    assert!(
+        matches!(reader.next(now), Job::Stats),
+        "a never-read shown tab must not queue behind an unrelated session View"
+    );
+    let _ = answer(reader.stats_read(now));
+    assert!(
+        matches!(reader.next(now), Job::View(name) if name == "beta"),
+        "the first glance leaves the background work runnable"
+    );
+}
+
+#[test]
+fn s5_loader_first_glance_yields_to_selected_view_fleet_and_records() {
+    let root = Fixture::new();
+    let now = Instant::now();
+    let mut reader = priority_reader(&root, now);
+    reader.read_at.remove("alpha");
+    assert!(
+        matches!(reader.next(now), Job::View(name) if name == "alpha"),
+        "the visible selected session stays ahead of the first glance"
+    );
+    reader.read_at.insert("alpha".into(), now);
+    reader.fleet_at = None;
+    assert!(
+        matches!(reader.next(now), Job::Fleet),
+        "initial fleet stays first"
+    );
+    reader.fleet_at = Some(now.checked_sub(super::super::REFRESH).expect("due fleet"));
+    assert!(
+        matches!(reader.next(now), Job::Fleet),
+        "due fleet stays ahead"
+    );
+    reader.fleet_at = Some(now);
+    reader.records = Some(Box::new(super::RecordsAsk {
+        generation: 1,
+        dialog: crate::app::menu::Dialog::Activity,
+        session: "alpha".into(),
+        uuid: S.into(),
+        dir: root.0.join("sessions/alpha"),
+        live: false,
+    }));
+    assert!(
+        matches!(reader.next(now), Job::Records(_)),
+        "due Activity stays ahead"
+    );
+    reader.records = None;
+    assert!(
+        matches!(reader.next(now), Job::Stats),
+        "once visible work is satisfied the first glance precedes beta"
+    );
+}
+
+#[test]
+fn s5_loader_later_glance_remains_below_due_background_view() {
+    let root = Fixture::new();
+    let now = Instant::now();
+    let mut reader = priority_reader(&root, now);
+    let _ = answer(reader.stats_read(now));
+    let due = now + REFRESH;
+    arm_others(&mut reader, due);
+    reader.read_at.insert("alpha".into(), due);
+    assert!(
+        matches!(reader.next(due), Job::View(name) if name == "beta"),
+        "a periodic store refresh never jumps ahead of a due background View"
+    );
+    reader.read_at.insert("beta".into(), due);
+    assert!(
+        matches!(reader.next(due), Job::Stats),
+        "finite background work still leaves the periodic glance runnable"
+    );
+    assert!(
+        reader.stats_read(due).is_none(),
+        "unchanged answer stays silent"
+    );
+    assert!(matches!(reader.next(due), Job::Wait(_)));
+}
+
+#[test]
+fn s5_loader_one_first_glance_per_show_cannot_starve_background_work() {
+    let root = Fixture::new();
+    let now = Instant::now();
+    let mut reader = priority_reader(&root, now);
+    for _ in 0..3 {
+        assert!(matches!(reader.next(now), Job::Stats));
+        let _ = answer(reader.stats_read(now));
+        assert!(
+            matches!(reader.next(now), Job::View(name) if name == "beta"),
+            "one first glance must hand scheduling back to the due sweep"
+        );
+        reader.read_at.insert("beta".into(), now);
+        for _ in 0..3 {
+            assert!(
+                matches!(reader.next(now), Job::Wait(_)),
+                "repainting a shown tab does not create another first glance"
+            );
+        }
+        reader.take(Request::Stats {
+            generation: 7,
+            shown: false,
+        });
+        reader.read_at.remove("beta");
+        assert!(
+            matches!(reader.next(now), Job::View(name) if name == "beta"),
+            "hidden Statistics leaves only the background work"
+        );
+        reader.take(Request::Stats {
+            generation: 7,
+            shown: true,
+        });
+    }
+}
