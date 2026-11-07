@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.27] - 2026-11-07
+- Isolate app test fixture roots
+- **stats**: Count a spawn's events in the statistics store as they are journaled
+
 ## [v2026.11.26] - 2026-11-07
 - Isolate render test scratch directories
 - **state**: Number options and decisions in state reasons
