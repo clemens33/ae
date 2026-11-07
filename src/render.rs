@@ -1301,17 +1301,48 @@ mod tests {
     };
     use std::path::{Path, PathBuf};
 
+    /// A fresh directory this call created exclusively. The process id plus a
+    /// process-wide nonce names it, so no two calls share a path, even with the
+    /// same tag. A candidate that already exists (a stale root of a reused
+    /// process id) is skipped, never removed or reused.
     fn scratch(tag: &str) -> PathBuf {
-        let dir = PathBuf::from(format!("/tmp/ae-render-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let nonce = NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = PathBuf::from(format!(
+                "/tmp/ae-render-{}-{nonce}-{tag}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(why) if why.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(why) => panic!("scratch {}: {why}", dir.display()),
+            }
+        }
     }
 
     fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, text).unwrap();
         path
+    }
+
+    /// A fixture belongs to the call that created it: a later call with the
+    /// same tag gets its own empty directory and leaves the first one alone.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads back the fixture files and directory it created"
+    )]
+    fn scratch_gives_each_call_its_own_directory_even_for_a_repeated_tag() {
+        let first = scratch("owned-twice");
+        let marker = write(&first, "marker", "first fixture bytes");
+        let second = scratch("owned-twice");
+        assert_ne!(first, second, "a repeated tag must not share a directory");
+        assert_eq!(std::fs::read(&marker).unwrap(), b"first fixture bytes");
+        assert!(std::fs::read_dir(&second).unwrap().next().is_none());
+        let _ = std::fs::remove_dir_all(&first);
+        let _ = std::fs::remove_dir_all(&second);
     }
 
     /// Collapse every whitespace run to one space. The plan's line breaks are
