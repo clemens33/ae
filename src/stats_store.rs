@@ -45,6 +45,14 @@ mod s2_spec;
 mod s3_absence;
 #[cfg(test)]
 #[allow(
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    clippy::semicolon_if_nothing_returned,
+    reason = "frozen S3 amendment: fixture IO changes and reads the real state root, and reuses the frozen S3 cases module"
+)]
+mod s3_archive_namespace;
+#[cfg(test)]
+#[allow(
     clippy::case_sensitive_file_extension_comparisons,
     clippy::disallowed_methods,
     clippy::match_wildcard_for_single_variants,
