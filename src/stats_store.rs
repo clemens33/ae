@@ -76,6 +76,8 @@ mod s3_sandwich;
 mod s3_spec;
 #[cfg(test)]
 mod s3_standing_files;
+#[cfg(test)]
+mod s3_standing_live;
 
 /// The evidence format this core reads and writes.
 const VERSION: i64 = 1;
