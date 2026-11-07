@@ -1793,6 +1793,8 @@ fn within(this: &Scoped, all: &Scoped) -> Result<(), Error> {
 #[cfg(test)]
 pub(crate) mod s5_fixture;
 #[cfg(test)]
+mod s5_mutants_store;
+#[cfg(test)]
 mod s5_requirements;
 #[cfg(test)]
 mod s5_retained;
