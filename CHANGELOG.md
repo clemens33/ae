@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.28] - 2026-11-07
+- **stats**: Pin the tab on the published store and the store retention text (red)
+- **stats**: Install the S5 cutover specs and their seams: store read, reset, upkeep command (no behaviour)
+- **stats**: Read the published Statistics view and reset the store under its lock
+- **stats**: Complete the live journal's last line in the small full view spec and pin an archive's unterminated last line (spec v2)
+- **stats**: Name the archive message as the validator accepts and grow one journal at fixed widths in the loader specs (spec v3)
+- **app**: The Statistics tab watches the published store every refresh while shown; the per-open scan is gone
+- **app**: The Statistics tab names the store's state, and r rebuilds the store on the upkeep thread
+- **stats**: Make the S5 specs lint clean and pin the padded birth's length (spec v4)
+- **stats**: The Statistics tab reads the maintained store, refreshes while shown and rebuilds it on r
+- **usage**: Name the Statistics store as the bounded reads' consumer
+- **stats**: A one-shot exception read fault for the reset spec
+- **stats**: Install the S5 spec v5.1 mutant-kill tests
+- **app**: Install the S5 spec v6 first-glance and held-reset tests
+- **app**: A just-shown Statistics tab reads before the background view sweep
+- **app**: The loader comment names the first-glance priority
+- **stats**: The read-fault seam and the S5 test modules fit the source-scan guards
+
 ## [v2026.11.27] - 2026-11-07
 - Isolate app test fixture roots
 - **stats**: Count a spawn's events in the statistics store as they are journaled
