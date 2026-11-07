@@ -224,12 +224,14 @@ fn s5_loader_payload_read_set_is_independent_of_all_authoritative_source_content
         let dir = root.live("alpha", S, &live);
         fs::write(dir.join("memo.tsv"), b"private memo").expect("live memo");
         let archive = root.archive(T, &archived);
-        fs::write(archive.join("messages/note"), b"private message").expect("archive message");
+        fs::write(archive.join("messages/note.txt"), b"private message").expect("archive message");
         fs::set_permissions(
-            archive.join("messages/note"),
+            archive.join("messages/note.txt"),
             fs::Permissions::from_mode(0o600),
         )
         .expect("private message mode");
+        crate::archive::validated_journal(&archive, T, &mut |node| fs::read(node))
+            .expect("message-bearing archive is independently valid before build");
         root.build();
         let expected = crate::stats::fold(
             vec![
@@ -250,7 +252,7 @@ fn s5_loader_payload_read_set_is_independent_of_all_authoritative_source_content
             archive.join("events.jsonl"),
             archive.join("memo.tsv"),
             archive.join("digest.md"),
-            archive.join("messages/note"),
+            archive.join("messages/note.txt"),
         ];
         for member in members {
             fs::rename(&member, member.with_extension("saved"))
@@ -285,15 +287,25 @@ fn s5_loader_payload_read_set_is_independent_of_all_authoritative_source_content
 
 #[test]
 fn s5_loader_x1_x4_journal_and_birth_growth_has_identical_view_read_bytes() {
+    use std::os::unix::fs::MetadataExt as _;
+    let root = Fixture::new();
+    let dir = root.live("alpha", S, b"");
+    let source = dir.join("events.jsonl");
+    let identity = fs::metadata(&source).expect("stable source identity");
     let mut measured = Vec::new();
     for factor in [1, 4] {
-        let root = Fixture::new();
         let mut journal = Vec::new();
         for n in 1..=factor {
-            journal.extend(birth(S, n));
+            let mut line = birth(S, n);
+            assert_eq!(line.pop(), Some(b'\n'), "birth is newline terminated");
+            // JSON permits trailing whitespace. Positions 2048 and 8192 have the same width.
+            line.resize(2047, b' ');
+            line.push(b'\n');
+            journal.extend(line);
         }
-        // Dates and fixed-width birth IDs keep bucket cardinality and view digit widths fixed.
-        let dir = root.live("alpha", S, &journal);
+        fs::write(&source, &journal).expect("append-equivalent source growth preserves inode");
+        let after = fs::metadata(&source).expect("same source identity after growth");
+        assert_eq!((after.dev(), after.ino()), (identity.dev(), identity.ino()));
         root.build();
         let expected = oracle(&dir, "alpha", Some(S));
         assert_eq!(expected.all.total, u64::from(factor));
