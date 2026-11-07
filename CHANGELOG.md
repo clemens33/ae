@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.26] - 2026-11-07
+- Isolate render test scratch directories
+- **state**: Number options and decisions in state reasons
+- **watchdog**: A transient unreadable ps row no longer voids a proven child task (#312)
+
 ## [v2026.11.25] - 2026-11-07
 - **stats**: Frozen S3 lifecycle specs and stats_disk seeds
 - **stats**: S3 store lifecycle: removal, transfer, archive identity, purge
