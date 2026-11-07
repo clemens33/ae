@@ -45,10 +45,11 @@ mod s2_spec;
 mod s3_absence;
 #[cfg(test)]
 #[allow(
+    clippy::case_sensitive_file_extension_comparisons,
     clippy::disallowed_methods,
     clippy::match_wildcard_for_single_variants,
     clippy::semicolon_if_nothing_returned,
-    reason = "frozen S3 amendment: reuses the frozen S3 cases module and its fold oracle"
+    reason = "frozen S3 amendment: reuses the frozen S3 cases module and its fold oracle, and matches store file names exactly"
 )]
 mod s3_census;
 #[cfg(test)]
@@ -74,6 +75,15 @@ mod s3_fragment_absence;
     reason = "frozen S3 amendment: fixture IO walks and reads the real store, and asserts one plan variant"
 )]
 mod s3_purge_recovery;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::match_wildcard_for_single_variants,
+    clippy::semicolon_if_nothing_returned,
+    clippy::similar_names,
+    reason = "frozen S3 amendment: reuses the frozen S3 cases module and its fold oracle; frozen binding names"
+)]
+mod s3_rebind_boundary;
 #[cfg(test)]
 #[allow(
     clippy::disallowed_methods,
