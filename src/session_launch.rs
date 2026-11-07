@@ -25,6 +25,9 @@ use crate::{deliver, roster, tmux, transport};
 pub(crate) mod assets;
 pub(crate) mod capture;
 #[cfg(test)]
+#[path = "session_launch/effort_trim_bounded_spec.rs"]
+mod effort_trim_bounded_spec;
+#[cfg(test)]
 #[path = "session_launch/effort_trim_damage_spec.rs"]
 mod effort_trim_damage_spec;
 #[cfg(test)]
