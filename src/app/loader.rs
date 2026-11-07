@@ -716,11 +716,23 @@ impl Reader {
             candidates.push(first);
         }
         candidates.push((None, Some(fleet_at + REFRESH)));
+        // What the visible UI waits on: the selected session's view and the fleet.
+        let visible = candidates.len();
         candidates.extend(order);
-        if let Some((name, _)) = candidates
-            .iter()
-            .find(|(_, due)| due.is_some_and(|due| due <= now))
+        let due = |(_, due): &&(Option<String>, Option<Instant>)| due.is_some_and(|due| due <= now);
+        if let Some((name, _)) = candidates[..visible].iter().find(due) {
+            return name.clone().map_or(Job::Fleet, Job::View);
+        }
+        // A tab just shown reads its first glance before the background sweep
+        // of the other sessions, once per show; every later read waits below.
+        if self
+            .stats
+            .as_ref()
+            .is_some_and(|watch| watch.last.is_none())
         {
+            return Job::Stats;
+        }
+        if let Some((name, _)) = candidates[visible..].iter().find(due) {
             return name.clone().map_or(Job::Fleet, Job::View);
         }
         let stats = self.stats_due(now);
