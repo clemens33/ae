@@ -1,4 +1,4 @@
-//! Baseline-compatible requirement pin. Install as a child of app::draw.
+//! Baseline-compatible requirement pin. Install as a child of `app::draw`.
 #[test]
 fn s5_red_retention_text_describes_the_maintained_store_exactly() {
     let expected = "Counts retained records in this state root, from a store kept up to date as workers spawn. A purge removes its archive's counts at once; a deleted session or archive drops out at the next update.";

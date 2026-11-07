@@ -158,11 +158,12 @@ fn s5_repeated_damage_stopped_maintainer_still_serves_explicit_reset() {
     let end = Instant::now() + Duration::from_secs(5);
     let mut rebuilt = false;
     while Instant::now() < end {
-        if let Glance::Ready { view, all, .. } = disk::glance(&mut Files::at(&root.0), Some(S)) {
-            if all.pending == 0 && view == expected {
-                rebuilt = true;
-                break;
-            }
+        if let Glance::Ready { view, all, .. } = disk::glance(&mut Files::at(&root.0), Some(S))
+            && all.pending == 0
+            && view == expected
+        {
+            rebuilt = true;
+            break;
         }
         std::thread::sleep(Duration::from_millis(10));
     }

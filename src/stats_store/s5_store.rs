@@ -185,7 +185,11 @@ fn s5_missing_root_is_building_and_corrupt_unsupported_oversized_root_is_named()
             .expect("UTF8 root")
             .replacen("\"stats_root\":1", "\"stats_root\":999", 1)
             .into_bytes(),
-        vec![b'x'; disk::ROOT_VIEW_CAP as usize + 1],
+        vec![
+            b'x';
+            usize::try_from(disk::ROOT_VIEW_CAP).expect("root cap fits the fixture address space")
+                + 1
+        ],
     ] {
         assert_ne!(
             bytes, valid,

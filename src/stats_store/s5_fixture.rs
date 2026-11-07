@@ -1,4 +1,4 @@
-//! Shared S5 acceptance fixture. Install as cfg(test) pub(crate) mod in stats_store.
+//! Shared S5 acceptance fixture. Install as cfg(test) pub(crate) mod in `stats_store`.
 #![allow(
     clippy::disallowed_methods,
     clippy::expect_used,

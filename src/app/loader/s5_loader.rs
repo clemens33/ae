@@ -59,7 +59,9 @@ fn s5_loader_refresh_deadline_uses_supplied_clock_and_unchanged_answer_is_silent
         ready(answer(reader.stats_read(now))),
         oracle(&dir, "alpha", Some(S))
     );
-    let before_due = now + REFRESH - Duration::from_nanos(1);
+    let before_due = (now + REFRESH)
+        .checked_sub(Duration::from_nanos(1))
+        .expect("one nanosecond before the refresh deadline");
     arm_others(&mut reader, before_due);
     assert!(
         matches!(reader.next(before_due), Job::Wait(until) if until == now + REFRESH),
@@ -72,7 +74,9 @@ fn s5_loader_refresh_deadline_uses_supplied_clock_and_unchanged_answer_is_silent
         reader.stats_read(due).is_none(),
         "unchanged full state emits no answer"
     );
-    let before_second = due + REFRESH - Duration::from_nanos(1);
+    let before_second = (due + REFRESH)
+        .checked_sub(Duration::from_nanos(1))
+        .expect("one nanosecond before the refresh deadline");
     arm_others(&mut reader, before_second);
     assert!(
         matches!(reader.next(before_second), Job::Wait(until) if until == due + REFRESH),
@@ -259,7 +263,7 @@ fn s5_loader_payload_read_set_is_independent_of_all_authoritative_source_content
                 .expect("hide authoritative content");
             if unreadable {
                 fs::write(&member, b"opposed unreadable bytes").expect("replacement content");
-                fs::set_permissions(&member, fs::Permissions::from_mode(0))
+                fs::set_permissions(&member, fs::Permissions::from_mode(0o0))
                     .expect("mode 000 replacement");
             }
         }
@@ -299,6 +303,7 @@ fn s5_loader_x1_x4_journal_and_birth_growth_has_identical_view_read_bytes() {
             let mut line = birth(S, n);
             assert_eq!(line.pop(), Some(b'\n'), "birth is newline terminated");
             // JSON permits trailing whitespace. Positions 2048 and 8192 have the same width.
+            assert!(line.len() < 2047, "birth must fit before inert padding");
             line.resize(2047, b' ');
             line.push(b'\n');
             journal.extend(line);

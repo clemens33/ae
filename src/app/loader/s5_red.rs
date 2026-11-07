@@ -1,4 +1,4 @@
-//! Baseline-compatible S5 acceptance. Install as a child of app::loader.
+//! Baseline-compatible S5 acceptance. Install as a child of `app::loader`.
 //! Oracle: the published store is authoritative for the tab; journal changes await upkeep.
 #![allow(
     clippy::disallowed_methods,
