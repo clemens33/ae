@@ -129,12 +129,18 @@ fn shaped<'a>(pieces: &[&'a str]) -> (&'a str, Vec<&'a str>, &'a str) {
 }
 
 /// Where the first option starts inside the first piece: at its own label when
-/// the second option opens with the next one (`1 `…`2 `), else after the
-/// piece's last sentence, else after its first `: `, else at its start.
+/// the second option opens with the next one (`1 `…`2 `) and the label follows
+/// the piece's start or a sentence end or a colon, else after the piece's last
+/// sentence, else after its first `: `, else at its start.
 fn option_start(first: &str, second: Option<&str>) -> usize {
     if let Some(label) = second.and_then(family) {
         let found = first.match_indices(label).find_map(|(at, _)| {
-            (at == 0 || first[..at].ends_with(". ") || first[..at].ends_with(": ")).then_some(at)
+            let head = &first[..at];
+            (at == 0
+                || [". ", "? ", "! ", ": "]
+                    .iter()
+                    .any(|stop| head.ends_with(stop)))
+            .then_some(at)
         });
         if let Some(at) = found {
             return at;
@@ -392,6 +398,43 @@ mod tests {
             [
                 (Role::Option { label: 0 }, "a"),
                 (Role::Option { label: 0 }, "b"),
+            ]
+        );
+    }
+
+    /// The human needs numbered options whatever mark closes the question: an
+    /// agent writes `Which layout? 1. A | 2. B` as readily as `layout: 1. A`.
+    #[test]
+    fn a_question_or_an_exclamation_before_the_first_label_still_numbers_both_options() {
+        assert_eq!(
+            texts(&layout(
+                "Which layout? 1. Vertical | 2. Horizontal (recommend 1 because it reads well)"
+            )),
+            [
+                (Role::Text, "Which layout?"),
+                (Role::Gap, ""),
+                (Role::Option { label: 3 }, "1. Vertical"),
+                (Role::Option { label: 3 }, "2. Horizontal"),
+                (Role::Gap, ""),
+                (Role::Text, "(recommend 1 because it reads well)"),
+            ]
+        );
+        assert_eq!(
+            texts(&layout("Ship it now! 1. yes | 2. no")),
+            [
+                (Role::Text, "Ship it now!"),
+                (Role::Gap, ""),
+                (Role::Option { label: 3 }, "1. yes"),
+                (Role::Option { label: 3 }, "2. no"),
+            ]
+        );
+        assert_eq!(
+            texts(&layout("Layout: 1. Vertical | 2. Horizontal")),
+            [
+                (Role::Text, "Layout:"),
+                (Role::Gap, ""),
+                (Role::Option { label: 3 }, "1. Vertical"),
+                (Role::Option { label: 3 }, "2. Horizontal"),
             ]
         );
     }

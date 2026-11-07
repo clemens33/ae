@@ -330,7 +330,7 @@ const LEADERSHIP_RULES: &str = r" (6) ${meta_dir}/memo add [--topic <topic>] <te
 
 const QUOTA_GUIDANCE: &str = r" Before each delegation batch, session creation, init profile choice, or later independent spawn choice, query ${meta_dir}/quota once; query again after a worker reports throttling. One query covers one batch or creation, not each worker in a fan-out. Apply the result to every selected profile: public `--lead`, `--colead`, `--seat`, init choices, and `spawn --using`. Never knowingly choose a profile whose applicable EFFECTIVE window is exhausted or blocked. When configured defaults are unsuitable, pass an explicit override; ae never substitutes a profile for you. Treat missing, stale, ambiguous, or uncorrelated evidence as unknown and say so. An unknown quota counts as USABLE, for every client alike: a profile whose scope ae cannot read (unsupported, stale, no window) is chosen like one with headroom until its own pane shows a usage limit; then step away from it. Correlation is an agent inference, not product enforcement: an account-wide window applies to every profile on its client scope; a model-scoped qualifier applies only when it clearly matches the selected profile's model family. `weekly_scoped Fable` blocks a Fable profile but does not by itself block Opus on the same Claude config home; unclear correlation is unknown, neither blocks nor proves headroom. Among the profiles that fit the task and the review rules, prefer one whose buckets have headroom; an unknown bucket counts as headroom, and only a reading near or past its limit is a reason to pass a profile over. Judge a bucket by its EFFECTIVE column whenever that column is filled in: a scope with POSITIVE declared manual resets or unlimited credits is not near its limit at a high raw percentage, while a `spend-cap` scope is blocked until credits or that cap change and no window reset frees it. A declared count is the operator's own claim and ae never consumes it: after a manual reset is used the row must be updated, so claimed headroom is only as true as that declaration is current. Read PACE beside EFFECTIVE: `!` or an ETA before RESETS is a forecast, never a stop. It steers NEW work toward lower effort, more EFFECTIVE headroom and sensible concurrency, task quality kept. A short window near its reset returns soon; weekly headroom is the scarce one: at 80% EFFECTIVE weekly step effort down, at 95% park the scope (no NEW work). Only exhausted, blocked, spend-cap or a vendor usage-limit line removes a scope now; parking one never stops the others. Report a forecast with its adjustment and uncertainty. `unknown` or `-` neither blocks nor proves headroom; PACE never replaces EFFECTIVE. `ae quota` shows a `plan:` label beside a scope when the client's own settings report one, naming the account or seat tier the vendor states and the age of that report, and it is a billing plan only, never a capacity, a bucket size or a safe pace, so judge the bucket by its own EFFECTIVE and PACE and treat the plan as evidence of neither. At low or critical WEEKLY headroom, or when a seat's spend (`${meta_dir}/usage`) is out of proportion to its task class, step DOWN before switching provider: effort xhigh → high for bounded work, a cheaper chore-tier profile for chores; xhigh stays for judgment seats only. Fanning out to a lower tier is a tuning lever on the shared quota, not a separate allowance: a lead that does its own chores spends judgment-class quota on chore-class work.";
 
-const STATE_GUIDANCE: &str = " STATE REASONS: The human decides from this text ALONE, without opening your pane. Write 2–5 sentences (80–600 chars): the decision, each option with its impact, your recommendation and why, and the path to the long form (`.local/<file>` or memo `<topic>`). A pointer such as `see pane`, `as discussed`, `elaboration given` is a violation of this rule. Shape: `<decision>: <option A and impact> | <option B and impact> (recommend A because <reason>; details: .local/<file> or memo <topic>)`. For `waiting-agent`, name the agent you wait on, what you need from them, and the long-form path. For `blocked`, state what blocks, who or what unblocks it, what you tried, and the long-form path. Good: `Which layout should we use? Vertical keeps panes readable; horizontal shows more context. Recommend vertical because readability matters; details: .local/layout.md`. Bad: `S3 elaboration given in pane`.\n";
+const STATE_GUIDANCE: &str = " STATE REASONS: The human decides from this text ALONE, without opening your pane. Write 2–5 sentences (80–600 chars): the decision, each option with its impact, your recommendation and why, and the path to the long form (`.local/<file>` or memo `<topic>`). A pointer such as `see pane`, `as discussed`, `elaboration given` is a violation of this rule. Shape: `<decision>: 1. <option and impact> | 2. <option and impact> (recommend 1 because <reason>; details: .local/<file> or memo <topic>)`. Number the options and name the recommended one by its number, so the human answers by number. With several open decisions, number each decision too, with its numbered options and recommendation in one parenthesis: `Decide by number: 1. <decision> (1 <option and impact>, 2 <option and impact>; recommend 1 because <reason>) | 2. <decision> (1 <option and impact>, 2 <option and impact>; recommend 2 because <reason>). Details: .local/<file> or memo <topic>`. If they do not fit 600 chars, show the first decision here and number all of them in the long form. For `waiting-agent`, name the agent you wait on, what you need from them, and the long-form path. For `blocked`, state what blocks, who or what unblocks it, what you tried, and the long-form path. Good: `Layout for the split panes: 1. Vertical keeps panes readable | 2. Horizontal shows more context (recommend 1 because readability matters; details: .local/layout.md)`. Bad: `S3 elaboration given in pane`.\n";
 
 /// The `lead-pair` shared role block.
 const PEER_ROLE: &str = r" LEADERSHIP PEER: you are one of two EQUAL leads (lead and colead are interchangeable, same level — no implicit seniority; the main slot is only a technical lifecycle anchor, not rank). Both peers interface with the human, triage, decide, delegate, gate, and review; your tokens are for JUDGMENT. NEVER BUILD: a lead writes no product code, tests or docs into the tree — not a one-liner, not a 'quick fix', not 'while I am here', not because the worker is slow. Every tree change goes through a spawned worker with a brief, the gate and a review. A lead's own hands touch only briefs and plans under .local/, memos, and the merge/release from the live checkout. A lead that builds loses its context to the build and stops gating — that is the failure, not the slowness. If you find yourself editing src/, tests/ or docs/, stop and spawn. Every decision gets ONE explicitly assigned owner — whoever opens a topic proposes its owner; the other peer stress-tests it: challenge once, concretely, with evidence, log dissent via memo so it survives — then the OWNER RULES and both commit, no stalemates. Escalate to the human only when ownership itself is unclear or disputed, or when safety or irreversibility warrants it. Run second reads on each other's gated diffs and hunt the blind spots in each other's reasoning. FAN OUT execution by DEFAULT (implementation, tests, docs, chores, research, scoping, evidence) per rule 9 — in parallel, one fresh worker per slice; a peer that does chores itself spends the pair's judgment quota on chore-class work; each peer owns review and retirement of its OWN spawns and never retires its peer's worker without an explicit handoff. Before you declare done: SWEEP YOUR SPAWNS — every worker you started is retired or explicitly reassigned; a leaked worker is a failed slice.";
@@ -1295,9 +1295,9 @@ pub fn run_context(
 mod tests {
     use super::{
         Audience, CONTEXT_HEAD, GenericRule, LEAD_ROLE, MANIFEST_TEMPLATE, PEER_ROLE,
-        QUOTA_GUIDANCE, SeatRole, WORKER_ROLE, config_entries, config_value, context_document,
-        expand, generic_rules, manifest_document, profile_inventory, prompt_instructions,
-        seat_role, tool_label,
+        QUOTA_GUIDANCE, STATE_GUIDANCE, SeatRole, WORKER_ROLE, config_entries, config_value,
+        context_document, expand, generic_rules, manifest_document, profile_inventory,
+        prompt_instructions, seat_role, tool_label,
     };
     use std::path::{Path, PathBuf};
 
@@ -3602,5 +3602,106 @@ mod tests {
     fn the_quota_guidance_says_what_a_plan_label_is_and_is_not() {
         const SENTENCE: &str = "`ae quota` shows a `plan:` label beside a scope when the client's own settings report one, naming the account or seat tier the vendor states and the age of that report, and it is a billing plan only, never a capacity, a bucket size or a safe pace, so judge the bucket by its own EFFECTIVE and PACE and treat the plan as evidence of neither.";
         assert!(QUOTA_GUIDANCE.contains(SENTENCE), "{QUOTA_GUIDANCE}");
+    }
+
+    /// The backtick-quoted example that follows `marker` in [`STATE_GUIDANCE`].
+    fn guidance_example(marker: &str) -> &'static str {
+        let at = STATE_GUIDANCE
+            .find(marker)
+            .unwrap_or_else(|| panic!("the guidance lost {marker:?}: {STATE_GUIDANCE}"))
+            + marker.len();
+        let rest = &STATE_GUIDANCE[at..];
+        let open = rest.find('`').expect("an example opens with a backtick") + 1;
+        let close = rest[open..]
+            .find('`')
+            .expect("an example closes with a backtick")
+            + open;
+        &rest[open..close]
+    }
+
+    /// The options of `example` as the chat lays them out: label width and text.
+    fn laid_out_options(example: &str) -> Vec<(usize, &str)> {
+        use crate::console::card::{Role, layout};
+        layout(example)
+            .into_iter()
+            .filter_map(|part| match part.role {
+                Role::Option { label } => Some((label, part.text)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The human answers a decision card by number, so what the guidance teaches
+    /// must come out of the chat's layout as the options `1. ` and `2. `, and the
+    /// recommendation must name its option by number. The oracle is that
+    /// requirement, not the text the guidance happens to carry today.
+    #[test]
+    fn the_state_guidance_shape_and_good_examples_lay_out_as_numbered_options() {
+        for marker in ["Shape:", "Good:"] {
+            let example = guidance_example(marker);
+            let options = laid_out_options(example);
+            assert_eq!(options.len(), 2, "{marker} {example:?}: {options:?}");
+            for (n, (label, text)) in options.iter().enumerate() {
+                let want = format!("{}. ", n + 1);
+                assert_eq!(*label, want.len(), "{marker} option {}: {text:?}", n + 1);
+                assert_eq!(&text[..*label], want, "{marker}: {text:?}");
+            }
+            assert!(
+                example.contains("(recommend 1 because"),
+                "{marker}: {example}"
+            );
+        }
+        let good = guidance_example("Good:").chars().count();
+        assert!(
+            (80..=600).contains(&good),
+            "the Good example breaks the 80–600 rule it teaches: {good} chars"
+        );
+    }
+
+    /// Several open decisions: each decision is a numbered item that holds its
+    /// own numbered choices and its recommendation by number, and the details
+    /// pointer still closes the card as the evidence line.
+    #[test]
+    fn the_state_guidance_several_decisions_example_numbers_decisions_and_choices() {
+        use crate::console::card::{Role, layout};
+        let example = guidance_example("several open decisions");
+        let options = laid_out_options(example);
+        assert_eq!(options.len(), 2, "{example:?}: {options:?}");
+        for (n, (label, text)) in options.iter().enumerate() {
+            let want = format!("{}. ", n + 1);
+            assert_eq!(*label, want.len(), "decision {}: {text:?}", n + 1);
+            assert_eq!(&text[..*label], want, "{text:?}");
+            assert!(
+                text.contains("(1 <option and impact>, 2 <option and impact>;"),
+                "decision {} lost its numbered choices: {text:?}",
+                n + 1
+            );
+            assert!(
+                text.contains(&format!("recommend {} because", n + 1)),
+                "decision {} names no choice number: {text:?}",
+                n + 1
+            );
+        }
+        let parts = layout(example);
+        let last = parts.last().expect("the example lays out");
+        assert_eq!(last.role, Role::Evidence, "{parts:?}");
+        assert!(last.text.starts_with("Details:"), "{:?}", last.text);
+    }
+
+    /// The old letter shape taught `Yes: … | No: …` answers, which the human
+    /// could not number. The guidance names no lettered option and says why
+    /// the options carry numbers.
+    #[test]
+    fn the_state_guidance_teaches_numbers_and_no_lettered_options() {
+        for letters in ["<option A", "<option B", "recommend A", "recommend B"] {
+            assert!(
+                !STATE_GUIDANCE.contains(letters),
+                "{letters:?} is back: {STATE_GUIDANCE}"
+            );
+        }
+        assert!(
+            STATE_GUIDANCE.contains("so the human answers by number"),
+            "{STATE_GUIDANCE}"
+        );
     }
 }

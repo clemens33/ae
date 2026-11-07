@@ -371,7 +371,7 @@ session's agents, by severity:
 (`dead`/`stale`/`throttled`/`limit` reuse the watchdog's own alert events;
 `waiting-user`/`blocked` are self-declared and require a reason. A `waiting-user`
 reason is a self-contained 2–5 sentence decision in 80–600 characters after trimming:
-each option gets one clause, the recommendation gives its reason, and the text points
+each option gets one numbered clause (`1. … | 2. …`), the recommendation names its option number and gives its reason, several open decisions are numbered too, and the text points
 to any long form in `.local/<file>` or a memo topic. Never use pointers such as “see
 pane” or “as discussed.” A spawned (`spawned.<n>`) seat cannot declare `waiting-user`
 — it exits 2, because the seat's spawner owns the human question: the seat declares

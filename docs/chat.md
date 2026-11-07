@@ -53,12 +53,17 @@ the window on demand. See [Keys](#keys).
   `DECISION <seat>`, the watchdog's `human-prompt` as `NEEDS YOU <seat>`.
   In chat and `ae app` a card's reason is laid out for reading, every word kept
   and in its order: the question on its own lines, each ` | `-separated option
-  on its own line behind its `1 `/`a)` label or a bullet (`•`, `-` when icons
+  on its own line behind its `1.`/`1 `/`a)` label or a bullet (`•`, `-` when icons
   are off or on a plain pipe) with wrapped rows hanging under its words, the
   prose after it one sentence per line, and a trailing evidence pointer
   (`.local/…`, `details:`, `Evidence:`, `memo <topic>`, a bare `file:line`)
   last, dim where the look is drawn. One empty row separates those blocks. A
-  reason with no ` | ` is split into sentences the same way.
+  reason with no ` | ` is split into sentences the same way. The seat guidance
+  (`STATE_GUIDANCE`) asks for numbered options, `1. … | 2. …`, with the
+  recommendation naming its number, so you answer by number; with several open
+  decisions it asks for numbered decisions that hold their numbered choices in
+  one parenthesis. The first label stays when the question ends in `:`, `.`,
+  `?` or `!`.
   `--follow` prints `-- closed: …` when one stops standing.
 - **Closed decisions**: a card that stopped standing stays in the chat, whole
   and in the same layout, at the time it was declared, headed `DECISION <seat>

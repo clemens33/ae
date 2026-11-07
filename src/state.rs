@@ -45,7 +45,7 @@ pub const VALUES: [&str; 5] = [
 /// The usage text.
 pub const USAGE: &str = "Usage: state <working|waiting-user|waiting-agent|blocked|done> [reason]\n       state waiting-agent --on <agent|session:agent|@session> <reason>\n       state                              # print current state\n\n  working        actively making progress\n  waiting-user   needs human input\n  waiting-agent  waiting on another ae agent — REASON REQUIRED\n  blocked        stuck on external dep — REASON REQUIRED\n  done           complete or paused\n";
 
-const REASON_SHAPE: &str = "Reason required: waiting-user gives a self-contained decision in 80–600 characters: '<what you need decided>: <option A and impact> | <option B and impact> (recommend A because <reason>; details: .local/<file> or memo <topic>)'; waiting-agent names who you wait on, what you need from them, and a long-form path in 80–600 characters; blocked names what blocks, who/what unblocks it, what you tried, and a long-form path in 80–600 characters";
+const REASON_SHAPE: &str = "Reason required: waiting-user gives a self-contained decision in 80–600 characters: '<what you need decided>: 1. <option and impact> | 2. <option and impact> (recommend 1 because <reason>; details: .local/<file> or memo <topic>)', options numbered so the human answers by number; waiting-agent names who you wait on, what you need from them, and a long-form path in 80–600 characters; blocked names what blocks, who/what unblocks it, what you tried, and a long-form path in 80–600 characters";
 
 /// The refusal when the caller has no pane identity.
 pub const NO_IDENTITY: &str =
@@ -612,6 +612,17 @@ mod tests {
             Usage::WaitingUserNeedsReason
                 .render()
                 .contains("<what you need decided>")
+        );
+        // The refusal shows the same numbered shape the seat guidance teaches:
+        // the human answers a waiting-user card by option number.
+        let shape = Usage::WaitingUserNeedsReason.render();
+        assert!(
+            shape.contains("1. <option and impact> | 2. <option and impact> (recommend 1 because"),
+            "{shape}"
+        );
+        assert!(
+            !shape.contains("<option A") && !shape.contains("recommend A"),
+            "{shape}"
         );
         assert!(
             Usage::WaitingAgentNeedsReason
