@@ -694,6 +694,13 @@ impl Model {
             {
                 Act::StatsScope
             }
+            Key::Read
+                if self
+                    .settings
+                    .is_some_and(|open| open.tab == SettingsTab::Statistics) =>
+            {
+                Act::StatsReset
+            }
             Key::Up => self.settings_scroll_by(-1),
             Key::Down => self.settings_scroll_by(1),
             Key::PageUp => self.settings_page_by(false),

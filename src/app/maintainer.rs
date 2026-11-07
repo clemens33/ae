@@ -11,6 +11,13 @@
 //!
 //! A repair, and the stop after damage met again, reach the app as one
 //! [`Wake::Notice`] each, naming the file and why.
+//!
+//! The Statistics tab's `r` reaches the thread as a [`Command::Reset`] on the
+//! same channel as its stop, so one handed before a stop still runs. The
+//! thread resets the store under its lock, waiting at most
+//! [`disk::RESET_WAIT`], starts over with a fresh maintainer when the reset
+//! took (one stopped on damage included), and answers exactly one
+//! [`Wake::StatsReset`] per reset it was handed.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -19,7 +26,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use super::loader::Wake;
-use crate::stats_store::disk::LIMITS;
+use crate::stats_store::disk::{self, LIMITS};
 use crate::stats_store::maint::{self, Maintainer, Outcome};
 
 /// How long a stop waits for the thread to finish its step.
@@ -30,7 +37,8 @@ const LOCK_WAIT: Duration = Duration::from_millis(100);
 
 /// The running upkeep thread.
 pub(super) struct Running {
-    stop: Option<Sender<()>>,
+    /// The command channel; taken once the thread is told to stop.
+    stop: Option<Sender<Command>>,
     done: Option<Receiver<()>>,
     worker: Option<JoinHandle<()>>,
     /// The completion token the thread holds: gone once its loop is over.
@@ -145,7 +153,7 @@ fn spawn(
 fn upkeep(
     root: &Path,
     seed: Option<Maintainer>,
-    stop: &Receiver<()>,
+    commands: &Receiver<Command>,
     notices: &Sender<Wake>,
     probe: &Probe,
 ) {
@@ -176,10 +184,26 @@ fn upkeep(
             maint::pause(&turn)
         };
         probe.park(true);
-        let woke = stop.recv_timeout(wait);
+        let woke = commands.recv_timeout(wait);
         probe.park(false);
-        if !matches!(woke, Err(RecvTimeoutError::Timeout)) {
-            return;
+        match woke {
+            Err(RecvTimeoutError::Timeout) => {}
+            Ok(Command::Reset(generation)) => {
+                let outcome = disk::reset(root, disk::RESET_WAIT);
+                if matches!(
+                    outcome,
+                    Ok(disk::Reset::Rebuilt { .. } | disk::Reset::Empty)
+                ) {
+                    // A fresh maintainer: a stopped one stays stopped otherwise.
+                    maintainer = Maintainer::new(root, LIMITS, LOCK_WAIT);
+                    told = false;
+                }
+                let _ = notices.send(Wake::StatsReset {
+                    generation,
+                    outcome,
+                });
+            }
+            Ok(Command::Stop) | Err(RecvTimeoutError::Disconnected) => return,
         }
     }
 }
@@ -196,7 +220,7 @@ impl Running {
     /// so a later call waits for the same thread again.
     fn halt(&mut self, bound: Duration) -> bool {
         if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
+            let _ = stop.send(Command::Stop);
         }
         let Some(done) = self.done.take() else {
             return self.worker.is_none();
@@ -209,6 +233,12 @@ impl Running {
             let _ = worker.join();
         }
         true
+    }
+
+    /// Hand the thread a reset: `false` when it was told to stop or is gone.
+    /// Commands queue in order, so one handed before a stop runs first.
+    fn reset(&self, generation: u64) -> bool {
+        (self.stop.as_ref()).is_some_and(|stop| stop.send(Command::Reset(generation)).is_ok())
     }
 
     /// Whether the thread's loop is over: its token is gone.
@@ -240,6 +270,9 @@ pub(super) struct Upkeep {
     stopping: Option<Running>,
     /// A thread is owed again: an exec failed after the stop.
     owed: bool,
+    /// The reset of the Statistics tab of this generation, held while no
+    /// thread runs: handed, once, to the next one that does.
+    reset_owed: Option<u64>,
     root: PathBuf,
     notices: Sender<Wake>,
 }
@@ -251,6 +284,7 @@ impl Upkeep {
             running: start(root.clone(), notices.clone()).ok(),
             stopping: None,
             owed: false,
+            reset_owed: None,
             root,
             notices,
         }
@@ -287,6 +321,11 @@ impl Upkeep {
             self.owed = false;
             self.running = start(self.root.clone(), self.notices.clone()).ok();
         }
+        if let Some(generation) = self.reset_owed
+            && (self.running.as_ref()).is_some_and(|running| running.reset(generation))
+        {
+            self.reset_owed = None;
+        }
     }
 
     /// Stop the thread within `bound`: the running one, or else the one
@@ -299,19 +338,22 @@ impl Upkeep {
         }
     }
 
-    /// Hand the thread a reset for the Statistics tab of `generation`; held
-    /// once while no thread runs, and handed when one runs again.
+    /// Hand the thread a reset for the Statistics tab of `generation`. With
+    /// no thread to take it (paused, stopping, never started) it is held,
+    /// the latest replacing an earlier one, and [`Upkeep::tend`] hands it
+    /// once a thread runs again. The process ending first drops it.
     pub(super) fn reset(&mut self, generation: u64) -> Handed {
-        // B0 seam: nothing handed yet.
-        let _ = generation;
+        if (self.running.as_ref()).is_some_and(|running| running.reset(generation)) {
+            return Handed::Sent;
+        }
+        self.reset_owed = Some(generation);
         Handed::Held
     }
 
     /// The reset held until a thread runs, if any.
     #[cfg(test)]
-    pub(super) fn owed_reset(&self) -> Option<u64> {
-        // B0 seam: nothing held yet.
-        None
+    pub(super) const fn owed_reset(&self) -> Option<u64> {
+        self.reset_owed
     }
 
     /// The thread this owner runs, if any.
@@ -337,6 +379,7 @@ impl Upkeep {
             running: spawn(root.clone(), notices.clone(), probe, None).ok(),
             stopping: None,
             owed: false,
+            reset_owed: None,
             root,
             notices,
         };
@@ -358,6 +401,7 @@ impl Upkeep {
             running: spawn(root.clone(), notices.clone(), probe, Some(maintainer)).ok(),
             stopping: None,
             owed: false,
+            reset_owed: None,
             root,
             notices,
         };

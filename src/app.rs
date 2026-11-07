@@ -554,8 +554,10 @@ struct App {
     quota_failed: bool,
     /// The generation the next open mints; answers pin to the open one.
     settings_generation: u64,
-    /// The open generation that already asked for statistics.
-    stats_asked: Option<u64>,
+    /// The open generation whose shown Statistics tab the reader watches.
+    stats_shown: Option<u64>,
+    /// The open generation whose `r` is owed to the upkeep, not yet handed.
+    stats_reset: Option<u64>,
     /// The open peek panel's captures, and the generation the next open mints.
     peek: PeekPane,
     peek_generation: u64,
@@ -712,7 +714,8 @@ impl App {
             quota_at: None,
             quota_failed: false,
             settings_generation: 0,
-            stats_asked: None,
+            stats_shown: None,
+            stats_reset: None,
             peek: PeekPane::default(),
             peek_generation: 0,
             reader: ReaderPane::default(),
@@ -1260,41 +1263,96 @@ impl App {
         self.ask_stats();
     }
 
-    /// Ask the reader for statistics, once an open, on the first frame the
-    /// tab shows: no other tab, and no later frame, reads a journal for it.
+    /// Tell the reader, before a frame, when the Statistics tab became shown
+    /// or stopped being shown under the open overlay: shown, it watches the
+    /// store; hidden, it reads nothing for it. A repaint asks nothing.
     fn ask_stats(&mut self) {
-        let shown = self.model.settings().filter(|open| {
-            open.tab == model::SettingsTab::Statistics && self.stats_asked != Some(open.generation)
-        });
-        if let Some(open) = shown {
-            self.stats_asked = Some(open.generation);
-            if let Some(ask) = &self.ask {
-                let _ = ask.send(Request::Stats {
-                    generation: open.generation,
-                    shown: true,
-                });
-            }
+        let shown = (self.model.settings())
+            .filter(|open| open.tab == model::SettingsTab::Statistics)
+            .map(|open| open.generation);
+        if shown == self.stats_shown {
+            return;
+        }
+        let (generation, now) = match (shown, self.stats_shown) {
+            (Some(generation), _) => (generation, true),
+            (None, Some(generation)) => (generation, false),
+            (None, None) => return,
+        };
+        self.stats_shown = shown;
+        self.ask_stats_for(generation, now);
+    }
+
+    /// Tell the reader the Statistics tab of `generation` is `shown` or not.
+    fn ask_stats_for(&self, generation: u64, shown: bool) {
+        if let Some(ask) = &self.ask {
+            let _ = ask.send(Request::Stats { generation, shown });
         }
     }
 
-    /// A finished scan, for the open it was asked for and no other.
+    /// What the store shows, for the open it was read for and no other. A
+    /// reset's line stays until the next reset or the overlay closes.
     fn stats_landed(&mut self, generation: u64, glance: &crate::stats_store::disk::Glance) {
-        // B0 seam adapter: the numbers only, as before.
-        let (view, _store) = settings::StoreLine::of(glance);
-        if self.model.settings_generation(generation) {
-            self.settings_bodies.stats.view = view;
+        if !self.model.settings_generation(generation) {
+            return;
         }
+        let (view, mut store) = settings::StoreLine::of(glance);
+        let stats = &mut self.settings_bodies.stats;
+        store.reset = stats.store.reset.take();
+        stats.view = view;
+        stats.store = store;
     }
 
-    /// `r` on the Statistics tab: a reset owed to the upkeep.
+    /// `r` on the Statistics tab: a reset owed to the upkeep, for this open.
     fn ask_reset(&mut self) {
-        // B0 seam: no reset asked yet.
+        let shown = (self.model.settings())
+            .filter(|open| open.tab == model::SettingsTab::Statistics)
+            .map(|open| open.generation);
+        if let Some(generation) = shown {
+            self.stats_reset = Some(generation);
+            self.settings_bodies.stats.store.reset = Some(settings::ResetLine::Requested);
+        }
     }
 
     /// The reset owed to the upkeep, handed over once.
-    fn take_reset(&mut self) -> Option<u64> {
-        // B0 seam: none owed yet.
-        None
+    const fn take_reset(&mut self) -> Option<u64> {
+        self.stats_reset.take()
+    }
+
+    /// No upkeep thread took the reset of `generation`: it waits for one.
+    fn reset_waits(&mut self, generation: u64) {
+        if self.model.settings_generation(generation) {
+            self.settings_bodies.stats.store.reset = Some(settings::ResetLine::Waiting);
+        }
+    }
+
+    /// What became of the reset of `generation`, drawn only under that open.
+    /// A reset that took drops the old numbers, and the watch reads the
+    /// store again at once.
+    fn reset_landed(
+        &mut self,
+        generation: u64,
+        outcome: Result<crate::stats_store::disk::Reset, crate::stats_store::disk::Refused>,
+    ) {
+        use crate::stats_store::disk::Reset;
+        use settings::{ResetLine, ScopeLine};
+        if !self.model.settings_generation(generation) {
+            return;
+        }
+        let stats = &mut self.settings_bodies.stats;
+        let line = match outcome {
+            Ok(Reset::Rebuilt { .. } | Reset::Empty) => {
+                stats.view = None;
+                stats.store.all = ScopeLine::Building;
+                stats.store.this = ScopeLine::Building;
+                if self.stats_shown == Some(generation) {
+                    self.ask_stats_for(generation, true);
+                }
+                ResetLine::Rebuilt
+            }
+            Ok(Reset::Busy) => ResetLine::Busy,
+            Err(why) => ResetLine::Refused(why.describe()),
+        };
+        self.settings_bodies.stats.store.reset = Some(line);
     }
 
     /// Show the other scope of the read already held.
@@ -1307,6 +1365,8 @@ impl App {
     /// always tells: the model may already hold the close the key caused.
     fn close_settings(&mut self) {
         self.model.close_settings();
+        // The close below drops the reader's watch with the overlay.
+        self.stats_shown = None;
         if let Some(ask) = &self.ask {
             let _ = ask.send(Request::Settings {
                 open: false,
@@ -4512,8 +4572,16 @@ fn step(
     // A thread a failed exec owes starts here, on the first turn after the
     // stopped one ended.
     upkeep.tend();
+    // `r` on the Statistics tab goes to the thread, or waits for one to run.
+    let mut waits = false;
+    if let Some(generation) = app.take_reset()
+        && upkeep.reset(generation) == maintainer::Handed::Held
+    {
+        app.reset_waits(generation);
+        waits = true;
+    }
     let (version, link) = match app.restart_due(Instant::now()) {
-        None => return Ok(Step::Stay(false)),
+        None => return Ok(Step::Stay(waits)),
         Some((version, upgrade::Via::Respawn(respawn))) => {
             return Ok(Step::Respawn(version, respawn));
         }
@@ -4738,8 +4806,14 @@ fn drain(
                 redraw = true;
                 continue;
             }
-            // B0 seam: a reset's outcome is not drawn yet.
-            Wake::StatsReset { .. } => continue,
+            Wake::StatsReset {
+                generation,
+                outcome,
+            } => {
+                app.reset_landed(generation, outcome);
+                redraw = true;
+                continue;
+            }
             Wake::Closed => return None,
         };
         redraw |= take_keys(app, keyed)?;
@@ -5243,6 +5317,10 @@ fn settings_act(app: &mut App, key: model::Key) -> bool {
             app.flip_stats_scope();
             true
         }
+        model::Act::StatsReset => {
+            app.ask_reset();
+            true
+        }
         _ => false,
     }
 }
@@ -5266,8 +5344,10 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
             app.flip_stats_scope();
             Some(true)
         }
-        // B0 seam: `r` asks for nothing yet.
-        model::Act::StatsReset => Some(false),
+        model::Act::StatsReset => {
+            app.ask_reset();
+            Some(true)
+        }
         model::Act::Compose => {
             app.write(true);
             Some(true)

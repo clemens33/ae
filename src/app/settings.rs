@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::render::{Audience, GenericRule};
+use crate::stats_store::disk::{Glance, Progress, Refused, ThisProgress};
 
 /// Where one config row's value came from, most specific first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,14 +165,43 @@ pub(crate) enum ScopeLine {
     Unreadable(String),
 }
 
+impl ScopeLine {
+    /// A Ready scope: plain when its sources are all up to date and no
+    /// update is in flight, else partial.
+    const fn progress(progress: Progress, updating: bool) -> Self {
+        if progress.pending == 0 && !updating {
+            Self::Plain
+        } else {
+            Self::Partial {
+                pending: progress.pending,
+                listed: progress.listed,
+                updating,
+            }
+        }
+    }
+
+    /// A scope the store refused: damage the upkeep rebuilds, or a read
+    /// failure named as it is.
+    fn refused(why: &Refused) -> Self {
+        match why.damage() {
+            Some((file, reason)) => Self::Damaged { file, reason },
+            None => Self::Unreadable(why.describe()),
+        }
+    }
+}
+
 /// Where the reset `r` asked for stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResetLine {
+    /// Handed to the upkeep thread, its outcome not yet back.
     Requested,
     /// No upkeep thread runs to take it: it waits for one.
     Waiting,
+    /// The store was reset and is being built again from the journals.
     Rebuilt,
+    /// The store's lock stayed held: nothing was removed.
     Busy,
+    /// The reset failed, named.
     Refused(String),
 }
 
@@ -186,15 +216,40 @@ pub(crate) struct StoreLine {
 impl StoreLine {
     /// What `glance` shows: the numbers to draw, if any, and each scope's
     /// line. A reset's line is not the store's to say: `None`.
-    pub(crate) fn of(
-        glance: &crate::stats_store::disk::Glance,
-    ) -> (Option<Box<crate::stats::View>>, Self) {
-        // B0 seam adapter: the numbers only, no status line yet.
+    pub(crate) fn of(glance: &Glance) -> (Option<Box<crate::stats::View>>, Self) {
         match glance {
-            crate::stats_store::disk::Glance::Ready { view, .. } => {
-                (Some(Box::new(view.clone())), Self::default())
+            Glance::Ready {
+                view,
+                updating,
+                all,
+                this,
+                ..
+            } => {
+                let this = match this {
+                    // The view's own no-id sentence says it.
+                    ThisProgress::NoUuid => ScopeLine::Plain,
+                    ThisProgress::Unregistered => ScopeLine::Building,
+                    ThisProgress::Damaged(why) => ScopeLine::refused(why),
+                    ThisProgress::Ready(progress) => ScopeLine::progress(*progress, *updating),
+                };
+                let line = Self {
+                    all: ScopeLine::progress(*all, *updating),
+                    this,
+                    reset: None,
+                };
+                (Some(Box::new(view.clone())), line)
             }
-            _ => (None, Self::default()),
+            Glance::Building => (None, Self::both(&ScopeLine::Building)),
+            Glance::Refused(why) => (None, Self::both(&ScopeLine::refused(why))),
+        }
+    }
+
+    /// The same line for both scopes.
+    fn both(line: &ScopeLine) -> Self {
+        Self {
+            all: line.clone(),
+            this: line.clone(),
+            reset: None,
         }
     }
 }

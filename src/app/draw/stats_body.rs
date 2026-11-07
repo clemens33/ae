@@ -1,9 +1,10 @@
-//! The Statistics tab's rows: one scope of a read already finished.
+//! The Statistics tab's rows: one scope of the store's last read, or the
+//! state that stands in for its numbers, under a reset's line.
 
 use ratatui_core::style::{Modifier, Style};
 
 use super::{LEFT, Paint, drawn_cols, fit};
-use crate::app::settings::{StatsBody, StatsScope};
+use crate::app::settings::{ResetLine, ScopeLine, StatsBody, StatsScope};
 use crate::board::terminal_text;
 use crate::console::wrap::wrap_in;
 use crate::stats::{Cell, Row, Scoped, ThisSession};
@@ -14,35 +15,77 @@ const CELL_JOIN: &str = " · ";
 const EVIDENCE: &str = "Evidence: configured launch selection, resolved at spawn";
 const NONE_SET: &str = "none set is no flag, not no model.";
 const DIRECT: &str = "direct has no [clients] label: a route, not an account.";
-const RETENTION: &str = "Counts retained records in this state root. A purge or a removed archive removes them. No store is kept.";
+const RETENTION: &str = "Counts retained records in this state root, from a store kept up to date as workers spawn. A purge removes its archive's counts at once; a deleted session or archive drops out at the next update.";
+/// A scope with no published numbers yet.
+const BUILDING: &str = "Statistics are being built: no source read yet";
+const ALL_TITLE: &str = "All retained  ·  m: This session  ·  r: rebuild";
+const THIS_TITLE: &str = "This session  ·  m: All retained  ·  r: rebuild";
 
-/// The rows of `body` at `width`.
+/// The rows of `body` at `width`: a reset's line first, then the scope's
+/// numbers, or the state that stands in for them.
 pub(super) fn rows(body: &StatsBody, paint: Paint, width: u16) -> Vec<(String, Style)> {
     let dim = paint.fg(|p| p.dim);
-    let Some(view) = &body.view else {
-        return vec![("loading".to_owned(), dim)];
-    };
     let mut page = Page {
         rows: Vec::new(),
         text: paint.fg(|p| p.text),
         dim,
         room: width.saturating_sub(LEFT),
     };
+    if let Some(reset) = &body.store.reset {
+        page.sentence(&reset_line(reset), page.text);
+    }
+    let line = match body.scope {
+        StatsScope::All => &body.store.all,
+        StatsScope::ThisSession => &body.store.this,
+    };
+    let Some(view) = &body.view else {
+        let state = unavailable(line).unwrap_or_else(|| "loading".to_owned());
+        page.sentence(&state, dim);
+        return page.rows;
+    };
     let (title, shown) = match (body.scope, &view.this) {
-        (StatsScope::All, _) => ("All retained  ·  m: This session", Some(&view.all)),
-        (StatsScope::ThisSession, ThisSession::Ready(scoped)) => {
-            ("This session  ·  m: All retained", Some(&**scoped))
-        }
-        (StatsScope::ThisSession, ThisSession::NoUuid) => {
-            ("This session  ·  m: All retained", None)
-        }
+        (StatsScope::All, _) => (ALL_TITLE, Some(&view.all)),
+        (StatsScope::ThisSession, ThisSession::Ready(scoped)) => (THIS_TITLE, Some(&**scoped)),
+        (StatsScope::ThisSession, ThisSession::NoUuid) => (THIS_TITLE, None),
     };
     page.sentence(title, page.text.add_modifier(Modifier::BOLD));
+    if let Some(state) = unavailable(line) {
+        page.sentence(&state, dim);
+        return page.rows;
+    }
     match shown {
-        Some(scoped) => page.scoped(scoped),
+        Some(scoped) => page.scoped(scoped, line),
         None => page.sentence("This session has no session id: nothing to show", dim),
     }
     page.rows
+}
+
+/// The sentence that stands in for a scope's numbers, `None` when they can
+/// be drawn.
+fn unavailable(line: &ScopeLine) -> Option<String> {
+    match line {
+        ScopeLine::Plain | ScopeLine::Partial { .. } => None,
+        ScopeLine::Building => Some(BUILDING.to_owned()),
+        ScopeLine::Damaged { file, reason } => {
+            Some(format!("Statistics are being built: {file} {reason}"))
+        }
+        ScopeLine::Unreadable(why) => Some(format!("Statistics cannot be read: {why}")),
+    }
+}
+
+/// Where the reset `r` asked for stands, as one line.
+fn reset_line(reset: &ResetLine) -> String {
+    match reset {
+        ResetLine::Requested => "Statistics: resetting the store…".to_owned(),
+        ResetLine::Waiting => "rebuild waits: statistics upkeep is not running".to_owned(),
+        ResetLine::Rebuilt => {
+            "Statistics: the store was reset and is built again from the journals.".to_owned()
+        }
+        ResetLine::Busy => {
+            "Statistics: the store is busy; nothing was removed. Press r again.".to_owned()
+        }
+        ResetLine::Refused(why) => format!("Statistics: the store was not reset: {why}"),
+    }
 }
 
 /// The rows so far, and how they are drawn.
@@ -64,7 +107,8 @@ impl Page {
         );
     }
 
-    fn scoped(&mut self, scoped: &Scoped) {
+    /// One scope's numbers; `line` says whether the store is up to date.
+    fn scoped(&mut self, scoped: &Scoped, line: &ScopeLine) {
         let (text, dim) = (self.text, self.dim);
         let total = scoped.total;
         let range = scoped
@@ -89,10 +133,26 @@ impl Page {
             ),
             text,
         );
+        if let ScopeLine::Partial {
+            pending,
+            listed,
+            updating,
+        } = line
+        {
+            if *pending > 0 {
+                self.sentence(
+                    &format!("Partial: {pending} of {listed} sources not yet up to date"),
+                    text,
+                );
+            }
+            if *updating {
+                self.sentence("Partial: an update is in progress", text);
+            }
+        }
         if scoped.partial() {
             let covers = range.as_deref().unwrap_or("nothing read");
             self.sentence(&format!("Partial: covers {covers}"), text);
-        } else {
+        } else if *line == ScopeLine::Plain {
             self.sentence("Coverage: complete", dim);
         }
         for gap in &scoped.gaps {
