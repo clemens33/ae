@@ -38,6 +38,8 @@ Send a message to another agent by name:
 ```bash
 {{DIR}}/send [--cross-session] "<agent_name>" "your message"
 ```
+A send is information: it never ends the receiver's `done`. Work the receiver must act on and
+answer goes as `ask`.
 
 Ask another agent a question and require a reply:
 ```bash

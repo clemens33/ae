@@ -93,6 +93,8 @@ Send a message to another agent by name:
 ```bash
 ${sessions_dir}/send [--cross-session] "<agent_name>" "your message"
 ```
+A send is information: it never ends the receiver's `done`. Work the receiver must act on and
+answer goes as `ask`.
 
 Ask another agent a question and require a reply:
 ```bash
@@ -2953,8 +2955,6 @@ mod tests {
                 "Use your session; another session requires explicit human authorization naming its target and --cross-session.",
                 "Need an answer to go on? ask, then declare waiting-agent.",
                 "The request id the helper prints is not the answer; the reply arrives later as a new message.",
-                // #225 lead ruling D4: a send is information, never work.
-                "A send does not end the receiver's done; work it must act on and answer goes as ask.",
                 "Bodies to agents: meaning first, full sentences, no filler; keep file:line, commands, ids, error text, verdict words exact.",
                 "Evidence over 20 lines goes to a file under .local/; send the path.",
                 "A review reply lists every finding, one line each, no cap.",
@@ -3382,6 +3382,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #225 lead ruling D4: the manifest's send section says a send never
+    /// ends `done` and routes actionable work to `ask`, right under the
+    /// send helper line; the short core stays without it.
+    #[test]
+    fn the_manifest_send_section_routes_actionable_work_to_ask() {
+        const RULE: &str = "A send is information: it never ends the receiver's `done`. Work the receiver must act on and\nanswer goes as `ask`.\n";
+        let dir = scratch("sc-d4");
+        std::fs::write(dir.join("meta"), "mode=local\nseat.main=lead\n").unwrap();
+        let manifest = manifest_document(&dir, "d4", "/w", "/o", "local", "%0", &[]);
+        let send = manifest
+            .find("/send [--cross-session] \"<agent_name>\" \"your message\"\n```\n")
+            .expect("the send helper block");
+        assert_eq!(manifest[send..].find(RULE).map(|at| at > 0), Some(true));
+        assert!(
+            manifest[send..].find(RULE) < manifest[send..].find("Ask another agent"),
+            "the rule sits in the send section, before the ask helper"
+        );
+        let core = context_document(&dir, "d4", "/w", "worker.1", &[]);
+        assert!(
+            !core.contains("never ends the receiver's"),
+            "core stays unchanged"
+        );
     }
 
     /// Invariant 14: the manifest is byte-identical for the same inputs.
