@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.24] - 2026-11-07
+- **watchdog**: Frozen specs for unchanged-proof challenges and the child-task lease (#225, #283)
+- **watchdog**: Fewer challenges on unchanged proofs, and a live child task defers the idle nudge (#225, #283)
+- **watchdog**: Close the chain, classifier, proof-frame and recovery mutants (#225, #283)
+- **render**: The send-never-ends-done guidance lives in the workspace send section, not the short core (#225)
+- **watchdog**: Migrate the spacing and progress pins to information-is-never-news (#225)
+
 ## [v2026.11.23] - 2026-11-07
 - **stats_store**: S2 batch 1 as reviewed, the RED base for the r6 regressions
 - **stats_store**: S2 seam commit H, observation only for the r6 regressions
