@@ -74,6 +74,8 @@ mod s3_sandwich;
     reason = "frozen S3 acceptance: fixture IO reads real files, shares the S2 fold oracle module, asserts one plan variant, and its frozen bytes are not reformatted"
 )]
 mod s3_spec;
+#[cfg(test)]
+mod s3_standing_files;
 
 /// The evidence format this core reads and writes.
 const VERSION: i64 = 1;
