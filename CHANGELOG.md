@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.30] - 2026-11-08
+- **test**: Verify fixture server teardown before removing roots
+
 ## [v2026.11.29] - 2026-11-08
 - Validate expected seat identity during delivery
 - **delivery**: Reject malformed expected seat slots
