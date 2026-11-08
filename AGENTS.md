@@ -5,8 +5,8 @@ Module map: [Structure](docs/reference/contract.md#structure).
 
 ## Read before acting
 
-Role doctrine: [docs/gatekeeping.md](docs/gatekeeping.md) before gating or reviewing;
-[docs/design-patterns.md](docs/design-patterns.md) for the coordination patterns.
+Role doctrine: before gating or reviewing, run [The protocol](docs/gatekeeping.md#the-protocol) and [the second protocol](docs/gatekeeping.md#the-second-protocol--reviewing-a-claim-a-criterion-or-a-body-of-evidence), and read an entry from [Which entry do I need?](docs/gatekeeping.md#which-entry-do-i-need) when its symptom matches.
+Use [docs/design-patterns.md](docs/design-patterns.md) for the coordination patterns.
 
 Doors: every ambient read and process start uses a named door carrying its reason; never read the world ad hoc. See [Environment doors](docs/reference/contract.md#environment-doors).
 

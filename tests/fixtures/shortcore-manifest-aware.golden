@@ -72,7 +72,7 @@ Declare your current work state. It shows in `ae list` (per agent). Your `waitin
 {{DIR}}/state                                                # print current state
 ```
 
-`mark-done "<summary>"` is preserved as shorthand for `state done`. Declare `working` on every new task, `waiting-user` only after asking the human a question you cannot continue without (an optional offer is `done`, named in the reason), `waiting-agent` when you wait on another agent (name them in the reason), `blocked` only with a concrete EXTERNAL blocker: a dependency, a service, a human decision elsewhere, a broken host.
+`mark-done "<summary>"` is preserved as shorthand for `state done`. A human decision elsewhere also counts as an external `blocked` impediment.
 
 Record durable findings, decisions, and handoffs in shared session memory:
 ```bash
@@ -195,16 +195,11 @@ worker and reviewer who hold its context.
 a clear stop condition and verifiable result (tests, grep, focused review):
 test/CI runs, scoped mechanical edits, callers/usage scans, log triage,
 doc syncs, independent review lanes. That is a brief floor, not a delegation
-threshold. **Prefer ae
-`spawn` over your harness's own
-subagents** (e.g. Claude Code's Task tool) for anything beyond a quick or
-bursty read-only lookup/fan-out consumed immediately (a ten-window parallel
-scan is noise — harness-native fan-out is right there): ae workers are
-visible to the human (own window),
-orchestrator-monitored, messageable, and survive your context compaction —
-internal subagents are invisible to everyone but you. Internal subagents
-remain fine for fast same-harness reads whose result you consume
-immediately.
+threshold. **Prefer ae `spawn` over your harness's own subagents** (e.g.
+Claude Code's Task tool) for anything beyond a quick or bursty read-only
+lookup/fan-out consumed immediately: ae workers are visible to the human
+(own window), orchestrator-monitored, messageable, and survive your context
+compaction — internal subagents are invisible to everyone but you.
 
 Conventions:
 - Profile = the model (whatever ~/.ae/config defines); name = role. Good:
@@ -264,4 +259,3 @@ List all agents across all running sessions:
 
 - Coordinate file edits -- don't modify the same file simultaneously
 - The human can see all panes and may intervene at any time
-- Always use the send helper above to communicate with other agents (never raw tmux send-keys)
