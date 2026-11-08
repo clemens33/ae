@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.29] - 2026-11-08
+- Validate expected seat identity during delivery
+- **delivery**: Reject malformed expected seat slots
+
 ## [v2026.11.28] - 2026-11-07
 - **stats**: Pin the tab on the published store and the store retention text (red)
 - **stats**: Install the S5 cutover specs and their seams: store read, reset, upkeep command (no behaviour)
