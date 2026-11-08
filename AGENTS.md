@@ -21,7 +21,7 @@ Doors: every ambient read and process start uses a named door carrying its reaso
 | any src/ module; find its named owner before editing | [Key invariants](docs/reference/contract.md#key-invariants) |
 | src/config.rs, src/meta.rs, config grammar | [Config](docs/reference/contract.md#config) |
 
-The focus here is code quality, architecture and guardrails: a new automation feature must earn its place by daily use.
+Automation features are allowed again, but the focus stays on code quality, architecture and guardrails: a new one must earn its place by daily use.
 
 One Rust core in one immutable versioned install, published read-only. tmux is the runtime.
 Rationale, retired rules and measurement narrative: [docs/history.md](docs/history.md).
@@ -85,8 +85,9 @@ Other rules of the loop:
   (`-g`) option, never `#()` in a format, and prove a look change by rendering it in `ae-dev`
   before it touches a live session. The launch also stamps, by main-pane ID, a session-scoped
   focus hook guarded by its captured session ID and a lead-pair window-scoped resize hook,
-  never by name or globally. Binds cannot be session-scoped: launch and upgrade write the binds
-  and remove stock right-click menus on ae-owned servers only; the user's tmux is untouched.
+  never by name or globally. Binds cannot be session-scoped: launch and upgrade add
+  `xterm-ghostty:hyperlinks` once, preserving existing terminal features, write the binds and
+  remove stock right-click menus on ae-owned servers only; the user's tmux is untouched.
   Bindings and the rest: [docs/internals/theme.md](docs/internals/theme.md).
 - **Workers get their own git worktree.** `git worktree add <path> -b <branch> main`.
 - **Land a slice with `git merge --ff-only`** after the worker rebases onto the main tip. Never `--no-ff`: `just release` runs `git pull --rebase` and flattens merge commits.
