@@ -2301,6 +2301,68 @@ pub(crate) fn spawn_detached(
     spawn(program, argv.as_args(), &[], Streams::Detached, None).is_some()
 }
 
+// Insert before the tests module in src/transport.rs. Acceptance support only.
+#[cfg(test)]
+pub(crate) mod fixture_tmux {
+    use crate::inventory::ServerId;
+    use crate::meta::Selector;
+
+    #[derive(Debug)]
+    pub(crate) struct Read {
+        pub(crate) ok: bool,
+        pub(crate) stdout: String,
+        pub(crate) stderr: String,
+    }
+
+    impl Read {
+        pub(crate) fn proven(&self) -> bool {
+            !self.ok && crate::tmux::read_failure(&self.stderr) == crate::tmux::Absence::Proven
+        }
+    }
+
+    fn run(server: &ServerId, words: &[&str]) -> Read {
+        if !matches!(server, ServerId::Selected(Selector::Socket(_))) {
+            return Read {
+                ok: false,
+                stdout: String::new(),
+                stderr: "fixture operation requires an owned socket".to_owned(),
+            };
+        }
+        let mut args = crate::tmux::server_args(server);
+        args.extend(words.iter().map(|word| (*word).to_owned()));
+        let (ok, stdout, stderr) = super::run_captured(super::PROGRAM, &args);
+        Read { ok, stdout, stderr }
+    }
+
+    pub(crate) fn end(server: &ServerId) -> Read {
+        run(server, &["kill-server"])
+    }
+
+    // Rescue only. Every server in these acceptance arms starts exactly api.
+    pub(crate) fn end_api_session(server: &ServerId) -> Read {
+        run(server, &["kill-session", "-t", "=api"])
+    }
+
+    pub(crate) fn exit_empty(server: &ServerId, value: &str) -> Read {
+        run(server, &["set-option", "-s", "exit-empty", value])
+    }
+
+    pub(crate) fn read_exit_empty(server: &ServerId) -> Read {
+        run(server, &["show-options", "-sv", "exit-empty"])
+    }
+
+    pub(crate) fn probe(server: &ServerId) -> Read {
+        run(server, &["list-sessions"])
+    }
+
+    pub(crate) fn unrefuse(server: &ServerId, index: u32) -> Read {
+        run(
+            server,
+            &["set-option", "-su", &format!("command-alias[{index}]")],
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     thread_local! {

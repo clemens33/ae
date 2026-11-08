@@ -5427,9 +5427,22 @@ mod tests {
 
     pub(in crate::app) const ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
 
-    /// A state root holding one lead-pair session, `api`, removed on drop.
-    pub(in crate::app) struct Root(pub(in crate::app) PathBuf);
+    /// A state root holding one lead-pair session, `api`, removed on drop
+    /// unless a private server it hosts may still be live. The flag is shared
+    /// with every fixture cleanup owner of a socket under this root: an owner
+    /// still registered, or an owner that could not prove its server ended,
+    /// keeps the root and its sockets reachable.
+    pub(in crate::app) struct Root(
+        pub(in crate::app) PathBuf,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    );
     impl Root {
+        /// The retention flag a socket cleanup owner holds and sets on an
+        /// unproven server end.
+        pub(in crate::app) fn retention(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+            std::sync::Arc::clone(&self.1)
+        }
+
         pub(in crate::app) fn new(tag: &str) -> Self {
             // A state root this call created exclusively: the process id plus a
             // process-wide nonce names it, so no two calls share a path, even
@@ -5452,12 +5465,32 @@ mod tests {
                 "schema=2\nsession_id={ID}\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\n"
             );
             std::fs::write(dir.join("meta"), meta).expect("meta");
-            Self(root)
+            Self(root, std::sync::Arc::default())
         }
     }
     impl Drop for Root {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            use std::io::Write as _;
+            // Exclusive access first: `get_mut` succeeds only when no other
+            // owner holds the flag, and it synchronizes with every earlier
+            // owner's final store and drop, so the read below cannot miss a
+            // retention set by an owner that released concurrently.
+            let reason = match std::sync::Arc::get_mut(&mut self.1) {
+                None => "a server cleanup owner is still registered",
+                Some(retained) => {
+                    if *retained.get_mut() {
+                        "an owned server end was not proven"
+                    } else {
+                        let _ = std::fs::remove_dir_all(&self.0);
+                        return;
+                    }
+                }
+            };
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "fixture: retaining root {}: {reason}",
+                self.0.display()
+            );
         }
     }
 
