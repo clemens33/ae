@@ -56,13 +56,13 @@ anything. Run live upgrade probes in a sandboxed `$HOME`, never in `ae-dev`.
 
 Other rules of the loop:
 
-- **Persistent development goes in the `ae-dev` namespace** — `~/.local/bin/ae-dev`: own
-  `~/.ae-dev` home and config, own tmux server (`-L ae-dev`), checkout binary. NEVER the
-  default server or `~/.ae`. A one-shot launch probe gets a fresh private `TMUX_TMPDIR`, clears
-  `TMUX` / `TMUX_PANE`, and uses scratch state; never let checkout `-L ae` reach the real socket:
-  `probe=$(mktemp -d)` then
+- Persistent development goes in the `ae-dev` namespace: `~/.local/bin/ae-dev`, with its own
+  `~/.ae-dev` home and config, its own tmux server (`-L ae-dev`) and the checkout binary; never
+  the default server or `~/.ae`. A one-shot launch probe gets a fresh private `TMUX_TMPDIR`,
+  clears `TMUX` / `TMUX_PANE` and uses scratch state, so checkout `-L ae` never reaches the real
+  socket: `probe=$(mktemp -d)` then
   `TMUX_TMPDIR="$probe" AE_HOME="$probe/state" CONFIG_FILE="$probe/config" env -u TMUX -u TMUX_PANE target/debug/ae …`.
-  `TMUX_TMPDIR` must EXIST — tmux silently falls back to the real socket dir otherwise (3.7b).
+  `TMUX_TMPDIR` must exist: otherwise tmux silently falls back to the real socket dir (tmux 3.7b).
 - **A session's LOOK is session-scoped, and it has four writers with one job each.**
   `src/theme.rs` owns the palettes and every format. A LAUNCH writes the layout, the look facts
   and the attention SEED, and stamps each WINDOW. A RENAME rewrites the layout and the facts and
@@ -73,27 +73,26 @@ Other rules of the loop:
   format or layout option MUST bump `theme::FORMAT_VERSION`, because that stamp change is the
   only thing that makes the watchdog repaint a running session's layout. Never write a global
   (`-g`) option, never `#()` in a format, and prove a look change by rendering it in `ae-dev`
-  before it touches a live session. The launch also stamps, by main-pane ID, a session-scoped
-  focus hook guarded by its captured session ID and a lead-pair window-scoped resize hook,
-  never by name or globally. Binds cannot be session-scoped: launch and upgrade add
-  `xterm-ghostty:hyperlinks` once, preserving existing terminal features, write the binds and
-  remove stock right-click menus on ae-owned servers only; the user's tmux is untouched.
-  Bindings and the rest: [docs/internals/theme.md](docs/internals/theme.md).
+  before it touches a live session. Binds are server-global, never session-scoped: on ae-owned
+  servers only, launch and upgrade reassert the canonical input map, remove the stock
+  right-click menus and add `xterm-ghostty:hyperlinks` once, preserving existing terminal
+  features; the user's tmux is untouched.
 - **Workers get their own git worktree.** `git worktree add <path> -b <branch> main`.
 - **Land a slice with `git merge --ff-only`** after the worker rebases onto the main tip. Never `--no-ff`: `just release` runs `git pull --rebase` and flattens merge commits.
 - **One writer per file.** Other agents edit this tree concurrently; coordinate before
   reverting or overwriting anything you did not change.
 - **No lifecycle commands against a live session you do not own** — no `ae end`, `ae stop`,
-  `ae rm`, no `retire` of someone else's agent. An unforced `ae stop` or `ae end` from
-  inside a session delegates confirmation to the attached human's tmux client; agents must
-  not answer that prompt or pass `-y` / `-f` unless the human explicitly authorized it.
-- **Never `export HOME=… AE_HOME="$HOME/.ae"` in ONE statement.** The shell expands every
-  word before any assignment, so `AE_HOME` binds to the REAL home and clobbers `~/.ae`.
-  Separate the statements, or assign both from the literal temp path.
+  `ae rm`, no `retire` of someone else's agent. An unforced `ae stop` or `ae end` from inside a
+  session asks the attached human's tmux client to confirm; never answer that prompt or pass
+  `-y` / `-f` unless the human explicitly authorized it.
+- **Never `export HOME=… AE_HOME="$HOME/.ae"` in ONE statement.** The shell expands
+  `$HOME` before the assignment, so `AE_HOME` points at the real `~/.ae` and clobbers it.
+  Use two statements, or assign both from the literal temp path.
 - **CI pins too**: runner images are exact (`ubuntu-24.04`, `macos-15`, never `-latest`), and
   actions are first-party and SHA-pinned with the version in a trailing comment.
 - **Port behaviour, not code.** Drop features on the way rather than transliterating.
-- **A bug report carries the facts in docs/troubleshooting.md §Filing a bug** (platform, tmux, terminal, locale, harness versions, `ae version`/`ae doctor`) — an issue or a triage without them asks for them first.
+- A bug report or its triage first collects the facts listed in
+  [docs/troubleshooting.md §Filing a bug](docs/troubleshooting.md#filing-a-bug).
 
 ## Hard rules — never do these
 
@@ -103,23 +102,21 @@ Other rules of the loop:
   enumerated doors; each door is named and carries its reason. `tests/it/doors.rs` pins the exact
   per-file counts, so a new door is a review, not a diff. Inventory and counting rule:
   [Environment doors](docs/reference/contract.md#environment-doors).
-- No clap, serde, anyhow, thiserror, chrono or nix. Adding any runtime dependency is a
-  ruling, not a commit (researched line and triggers: docs/history.md §11). Carve-outs:
-  thiserror TRANSITIVELY only (kasuari and ratatui-core, under `ae app`), never a direct ae
-  dependency and no ae code imports it; #251 owner ruling permits exact-pinned pulldown-cmark
-  (default features off), tables + strikethrough only; inert output, no tui-markdown.
-- **No new Bash.** `install` is policy-frozen. There is no other bash file and none may
-  be added. The ONE shell literal is the chat's pane argv `src/console/toggle.rs::TTY_SETUP`
-  (`stty`, then `exec`; termios needs libc or `unsafe`): not a bash file, not a door, one site.
-  The chat's and the app's `!<command>` runs the HUMAN's own line, through the fixed
-  `/bin/sh -c` outside tmux or the tmux server's default shell in a popup; ae authors no
-  script text there.
+- No clap, serde, anyhow, thiserror, chrono or nix. A new runtime dependency is a ruling, not a
+  commit (docs/history.md §11). Carve-outs: thiserror only transitively (kasuari and
+  ratatui-core, under `ae app`), never a direct dependency or an import in ae code; the #251
+  owner ruling permits exact-pinned pulldown-cmark (default features off), tables +
+  strikethrough only, inert output, no tui-markdown.
+- **No new Bash.** `install` is policy-frozen, and no other bash file may be added. The one
+  shell literal is the chat's pane argv `src/console/toggle.rs::TTY_SETUP` (termios needs libc
+  or `unsafe`): not a bash file, not a door, one site. The chat's and the
+  app's `!<command>` runs the human's own line, through the fixed `/bin/sh -c` outside tmux or
+  the tmux server's default shell in a popup; ae authors no script text there.
 - **No Python anywhere in the product.**
 - **Never write through a helper path.** `>`, `>>`, `chmod`, `cp`, `sed -i` FOLLOW the
   symlink and corrupt the shared core binary. `rm -f` first. Fixtures are where this bites.
-- **Pass a helper message as ONE shell argument, single-quoted.** Double quotes do NOT
-  word-split, but they DO interpolate `$`, backticks and `$(…)`; unquoted also splits and
-  globs. Write a literal single quote inside the body with the `'\''` idiom.
+- Pass a helper message as one single-quoted shell argument, and write a literal single quote
+  as `'\''`: double quotes still expand `$`, backticks and `$(…)`.
 - **Never `tmux send-keys` by hand.** Deliver through the helpers: they own the literal
   send, the busy/dead-pane refusal, and the submit verification.
 - No `--force`, `--no-verify` or `-f` to get past a check. Fix the cause.
