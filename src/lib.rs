@@ -3105,14 +3105,20 @@ pub(crate) fn send_defer() -> std::time::Duration {
 /// The event-field contract of the send body, read off this process's
 /// environment:
 /// `AE_SENDER_OVERRIDE` and the seven `_AE_EVENT_*` members, an unset or empty
-/// variable being none.
+/// variable being none; and the three private `_AE_EXPECT_*` expected-seat members,
+/// kept raw (an empty or non-UTF-8 value stays distinct from unset) so that
+/// [`send::expectation`] can refuse a supplied but unusable expectation.
 fn send_env() -> send::Env {
+    /// The door's one read: a variable's raw value, unset being `None`.
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: the frozen _AE_EVENT_*/AE_SENDER_OVERRIDE contract every caller of the send helper writes — see clippy.toml"
+        reason = "a door: the frozen _AE_EVENT_*/AE_SENDER_OVERRIDE contract every caller of the send helper writes, and the private _AE_EXPECT_* expected-seat members that only narrow admission — see clippy.toml"
     )]
-    let read = |name: &str| {
+    fn raw(name: &str) -> Option<std::ffi::OsString> {
         std::env::var_os(name)
+    }
+    let read = |name: &str| {
+        raw(name)
             .filter(|value| !value.is_empty())
             .map(|value| value.to_string_lossy().into_owned())
     };
@@ -3125,6 +3131,7 @@ fn send_env() -> send::Env {
         actor_session: read("_AE_EVENT_ACTOR_SESSION").unwrap_or_default(),
         target_slot: read("_AE_EVENT_TARGET_SLOT").unwrap_or_default(),
         target_session: read("_AE_EVENT_TARGET_SESSION").unwrap_or_default(),
+        expect: ["_AE_EXPECT_SLOT", "_AE_EXPECT_LAUNCH", "_AE_EXPECT_LEGACY"].map(raw),
     }
 }
 

@@ -113,6 +113,56 @@ pub struct Env {
     pub target_slot: String,
     /// `_AE_EVENT_TARGET_SESSION`, or empty.
     pub target_session: String,
+    /// The private expected-seat members `_AE_EXPECT_SLOT`, `_AE_EXPECT_LAUNCH` and
+    /// `_AE_EXPECT_LEGACY`, raw: unset is `None`, and a set value keeps its exact
+    /// bytes, empty included, so a supplied member is never mistaken for an absent one.
+    pub expect: [Option<std::ffi::OsString>; 3],
+}
+
+/// The expected seat the private members name (#218 P1): `_AE_EXPECT_SLOT` plus
+/// exactly one of `_AE_EXPECT_LAUNCH=<exact token>` or `_AE_EXPECT_LEGACY=1` (a
+/// positively absent launch, returned as `""`). No member set is no expectation;
+/// any other combination, an empty or non-UTF-8 value, or a legacy value other than
+/// `1` is unusable and refuses: it never falls back to the unexpected path.
+///
+/// ```
+/// use ae::send::{expectation, Env};
+///
+/// let env = |slot: Option<&str>, launch: Option<&str>, legacy: Option<&str>| Env {
+///     expect: [slot, launch, legacy].map(|v| v.map(Into::into)),
+///     ..Env::default()
+/// };
+/// assert_eq!(expectation(&Env::default()), Ok(None));
+/// assert_eq!(expectation(&env(Some("main"), Some(" 1 "), None)), Ok(Some(("main", " 1 "))));
+/// assert_eq!(expectation(&env(Some("main"), None, Some("1"))), Ok(Some(("main", ""))));
+/// assert!(expectation(&env(Some("main"), None, None)).is_err());
+/// assert!(expectation(&env(None, Some("tok"), None)).is_err());
+/// assert!(expectation(&env(Some("main"), Some("tok"), Some("1"))).is_err());
+/// assert!(expectation(&env(Some("main"), None, Some("2"))).is_err());
+/// assert!(expectation(&env(Some("main"), Some(""), None)).is_err());
+/// assert!(expectation(&env(Some(""), None, Some("1"))).is_err());
+/// ```
+///
+/// # Errors
+///
+/// The reason a supplied expectation is unusable.
+pub fn expectation(env: &Env) -> Result<Option<(&str, &str)>, &'static str> {
+    /// A set member's exact text; empty or non-UTF-8 is unusable, never unset.
+    fn text(value: Option<&std::ffi::OsStr>) -> Result<Option<&str>, ()> {
+        value
+            .map(|raw| raw.to_str().filter(|text| !text.is_empty()).ok_or(()))
+            .transpose()
+    }
+    let [slot, launch, legacy] = env.expect.each_ref().map(Option::as_deref);
+    if slot.is_none() && launch.is_none() && legacy.is_none() {
+        return Ok(None);
+    }
+    let unusable = "its expected seat members are incomplete, conflicting or malformed";
+    match (text(slot), text(launch), text(legacy)) {
+        (Ok(Some(slot)), Ok(Some(token)), Ok(None)) => Ok(Some((slot, token))),
+        (Ok(Some(slot)), Ok(None), Ok(Some("1"))) => Ok(Some((slot, ""))),
+        _ => Err(unusable),
+    }
 }
 
 /// The first `[ae-…]` or `[review-…]`
@@ -392,8 +442,14 @@ pub fn run(
         event.target_slot = &resolved.slot;
         event.target_session = &resolved.session;
     }
-    let delivery = tracked::deliver_addressed(&request, &resolved, err)?;
+    let (delivery, lost) = tracked::deliver_expected(&request, &resolved, expectation(env), err)?;
     write_retryable_marker(&action, &delivery, out)?;
+    // A refusal by the expected seat itself is booked once, by its `refused` record:
+    // never an attempt of the action the helper carried (#218 P1). Any other
+    // failure, under a matching expectation too, keeps its ordinary record.
+    if lost && matches!(delivery, Err(deliver::Failure::Refused { .. })) {
+        return Ok(EXIT_FAILED);
+    }
     let cross = cross_session.then_some(tracked::CrossSession {
         caller: caller_session,
         target: &resolved.session,

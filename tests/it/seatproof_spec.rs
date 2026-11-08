@@ -124,7 +124,7 @@ impl World {
         let rig = Rig::new(tag);
         let script = AGENT.replace("__META__", &rig.dir("s").join("meta").display().to_string());
         executable(&rig.scratch.join("claude"), &script);
-        let main = rig.create("s", A)[0].clone();
+        let [main, colead] = rig.create("s", A);
         let out = rig.scratch.join("kid");
         let agent = rig.scratch.join("claude");
         let command = format!("exec perl {} {}", agent.display(), out.display());
@@ -153,6 +153,7 @@ impl World {
             rig.tmux(&["capture-pane", "-p", "-t", &pane])
                 .contains("fake-model")
         });
+        rig.world218_capture(tag, [&main, &colead, &pane]);
         Self {
             rig,
             main,
@@ -794,3 +795,16 @@ fn a_pane_restamped_as_another_complete_seat_between_resolution_and_admission_is
     w.refuse(&output, "could not be proven");
     w.untouched(&before);
 }
+
+#[path = "seatproof_residual218_spec.rs"]
+mod residual218_spec;
+
+#[path = "seatproof_malformed218_p4_spec.rs"]
+mod malformed218_p4;
+
+include!("seatproof_admission218_p1_spec.rs");
+
+include!("seatproof_frontiers218_p1_spec.rs");
+
+#[path = "seatproof_accounting218_b5_spec.rs"]
+mod accounting218_b5;

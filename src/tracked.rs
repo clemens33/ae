@@ -1246,20 +1246,68 @@ pub(crate) fn deliver_request(
     deliver_addressed(request, &target, err)
 }
 
+/// A helper's private expected seat (#218 P1): its slot and exact launch token, `""`
+/// being a positively absent (legacy) launch. `Err` is a supplied expectation that
+/// cannot be used; it refuses before input and never falls back to no expectation.
+pub(crate) type Expectation<'a> = Result<Option<(&'a str, &'a str)>, &'static str>;
+
 pub(crate) fn deliver_addressed(
     request: &crate::deliver::Request<'_>,
     target: &Resolved,
     err: &mut impl Write,
 ) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
+    deliver_expected(request, target, Ok(None), err).map(|(delivery, _)| delivery)
+}
+
+/// [`deliver_addressed`] narrowed by a `send` helper's expected seat; the flag says
+/// the expected seat itself refused (malformed, or its comparison failed at admission
+/// or at any re-proof), so the refusal is no attempt of the action it carried.
+pub(crate) fn deliver_expected(
+    request: &crate::deliver::Request<'_>,
+    target: &Resolved,
+    expect: Expectation<'_>,
+    err: &mut impl Write,
+) -> io::Result<(
+    Result<crate::deliver::Delivered, crate::deliver::Failure>,
+    bool,
+)> {
     let mode = address_mode(request.actor);
-    match admit_agent_address(request.dir, request.server, target, mode) {
+    // The expectation only narrows admission: it never selects the mode, so Role,
+    // cross-session and caller proof are exactly those of the same request without it.
+    let want = match expect {
+        Ok(None) => None,
+        Ok(Some((slot, launch))) if is_slot(slot) => Some(Seat {
+            slot: slot.to_owned(),
+            name: target.agent.clone(),
+            launch: launch.to_owned(),
+        }),
+        unusable => {
+            let why = unusable.err().unwrap_or("its expected slot is malformed");
+            let reason = Refusal::Seat(format!(
+                "seat {} ({}) could not be proven: {why}",
+                target.agent, target.slot
+            ));
+            refuse_as(request.dir, request.actor, &reason, Stage::BeforeInput, err)?;
+            return Ok((Err(crate::deliver::refused("", Stage::BeforeInput)), true));
+        }
+    };
+    match admit(
+        request.dir,
+        request.server,
+        target,
+        mode,
+        None,
+        want.as_ref(),
+    ) {
         Ok(guard) => {
             let guard = guard.acting(request.actor);
-            crate::deliver::deliver_checked(request, Some(&guard), false, err)
+            let delivery = crate::deliver::deliver_checked(request, Some(&guard), false, err)?;
+            Ok((delivery, guard.expected_lost.get()))
         }
         Err(why) => {
             refuse_as(request.dir, request.actor, &why, Stage::BeforeInput, err)?;
-            Ok(Err(crate::deliver::refused("", Stage::BeforeInput)))
+            let lost = matches!(why, Refusal::Expected(_));
+            Ok((Err(crate::deliver::refused("", Stage::BeforeInput)), lost))
         }
     }
 }
@@ -1357,6 +1405,9 @@ fn proven_caller(
 pub(crate) enum Refusal {
     Role(String),
     Seat(String),
+    /// A helper's expected seat itself refused (#218 P1): shown and audited as the
+    /// inner refusal; the origin only tells the helper it was no carried attempt.
+    Expected(Box<Self>),
 }
 
 impl<T: AsRef<str> + ?Sized> From<&T> for Refusal {
@@ -1459,16 +1510,11 @@ fn current_seat(
         }
         _ => return Err(unproven("damaged or duplicate launch rows")),
     };
-    match expected {
-        Some(want) if (want.slot.as_str(), want.launch.as_str()) != (slot, launch) => {
-            Err(want.replaced())
-        }
-        _ => Ok(Some(Seat {
-            slot: slot.to_owned(),
-            name: name.to_owned(),
-            launch: launch.to_owned(),
-        })),
-    }
+    Ok(Some(Seat {
+        slot: slot.to_owned(),
+        name: name.to_owned(),
+        launch: launch.to_owned(),
+    }))
 }
 
 /// A snapshot's `session_id` AS WRITTEN: the one row's raw bytes, and whether any row exists.
@@ -1487,6 +1533,10 @@ pub(crate) struct AddressGuard<'a> {
         Option<Seat>,
         meta::MetaAgentRole,
     ),
+    /// A helper's expected seat, re-proven at every check; never a mode or privilege.
+    expected: Option<Seat>,
+    /// Whether a check refused because that expected seat itself no longer held.
+    expected_lost: std::cell::Cell<bool>,
     aborted: std::cell::Cell<bool>,
 }
 
@@ -1498,16 +1548,42 @@ pub(crate) fn admit_agent_address<'a>(
     target: &Resolved,
     mode: AddressMode<'a>,
 ) -> Result<AddressGuard<'a>, Refusal> {
-    admit(dir, server, target, mode, None)
+    admit(dir, server, target, mode, None, None)
 }
 
 /// [`admit_agent_address`] naming `bound`, the seat a guard or a leg bound, in refusals.
+/// `want` is a helper's expected seat: it adds a refusal and changes nothing else.
 fn admit<'a>(
     dir: &'a Path,
     server: &'a ServerId,
     target: &Resolved,
     mode: AddressMode<'a>,
     bound: Option<&Seat>,
+    want: Option<&Seat>,
+) -> Result<AddressGuard<'a>, Refusal> {
+    let mut induced = false;
+    let admitted = admit_proving(dir, server, target, mode, bound, want, &mut induced);
+    // Once the snapshot shows the expected seat itself refused, every later exit keeps
+    // that origin, the Role checks' included, in their own order and words (#218 F3).
+    admitted.map_err(|refusal| {
+        if induced {
+            Refusal::Expected(Box::new(refusal))
+        } else {
+            refusal
+        }
+    })
+}
+
+/// [`admit`]'s proof from ONE snapshot; it sets `induced` once that snapshot shows a
+/// helper's expected seat refusing what the same facts admit without it.
+fn admit_proving<'a>(
+    dir: &'a Path,
+    server: &'a ServerId,
+    target: &Resolved,
+    mode: AddressMode<'a>,
+    bound: Option<&Seat>,
+    want: Option<&Seat>,
+    induced: &mut bool,
 ) -> Result<AddressGuard<'a>, Refusal> {
     let (_, bytes) = address_meta(dir, &target.session).map_err(Refusal::Role)?;
     let role = meta::meta_agent_role(&bytes);
@@ -1518,17 +1594,30 @@ fn admit<'a>(
             name: target.agent.clone(),
             launch: launch.to_owned(),
         }),
-        _ => None,
+        _ => want.cloned(),
     };
     let observed = (viewer.as_ref(), physical.is_some());
     let named = bound.or(expected.as_ref());
-    let seat =
-        current_seat(&bytes, target, observed, expected.as_ref(), named).map_err(|refusal| {
-            match refusal {
-                Refusal::Seat(why) if role != meta::MetaAgentRole::Absent => Refusal::Role(why),
-                refusal => refusal,
-            }
-        });
+    let wrap = |refusal: Refusal| match refusal {
+        Refusal::Seat(why) if role != meta::MetaAgentRole::Absent => Refusal::Role(why),
+        refusal => refusal,
+    };
+    let seat = current_seat(&bytes, target, observed, expected.as_ref(), named);
+    // The expected seat's own comparison, last as it always was; a leg's stays ordinary.
+    let lost = match (&seat, expected.as_ref()) {
+        (Ok(Some(now)), Some(want)) if (&want.slot, &want.launch) != (&now.slot, &now.launch) => {
+            Some(want.replaced())
+        }
+        _ => None,
+    };
+    let compared = lost.map_or(seat, Err);
+    // A helper's expectation refused what the same facts admit without it (a mismatch,
+    // or a positively observed raw pane); `admit` carries that origin past this point.
+    *induced = want.is_some()
+        && !matches!(mode, AddressMode::Leg(..))
+        && compared.is_err()
+        && current_seat(&bytes, target, observed, None, bound).is_ok();
+    let seat = compared.map_err(wrap);
     let viewer = viewer.unwrap_or_default();
     // The same snapshot's id AS WRITTEN; two rows stamp apart from none.
     let sid = (
@@ -1586,6 +1675,8 @@ fn admit<'a>(
         mode,
         actor: "",
         stamp: (physical, sid, seat?, role),
+        expected: want.cloned(),
+        expected_lost: std::cell::Cell::new(false),
         aborted: std::cell::Cell::new(false),
     })
 }
@@ -1614,6 +1705,7 @@ impl<'a> AddressGuard<'a> {
             &self.target,
             self.mode.clone(),
             bound,
+            self.expected.as_ref(),
         );
         let who = bound.map_or_else(|| format!("target pane {}", self.target.pane), Seat::label);
         let reason = match fresh {
@@ -1631,6 +1723,8 @@ impl<'a> AddressGuard<'a> {
             },
             Err(reason) => reason,
         };
+        self.expected_lost
+            .set(matches!(reason, Refusal::Expected(_)));
         self.aborted.set(true);
         refuse_as(self.dir, self.actor, &reason, stage, err)?;
         Ok(false)
@@ -1659,6 +1753,8 @@ pub(crate) fn refuse_as(
     err: &mut impl Write,
 ) -> io::Result<()> {
     let reason = match why {
+        // The origin is the helper's; the line and audit are the refusal shown.
+        Refusal::Expected(shown) => return refuse_as(dir, actor, shown, stage, err),
         Refusal::Role(reason) => format!(
             "ae: delivery REFUSED — {reason}; nothing further typed. Report through your own lead; owner routes for an orchestrator role: pane, ae chat, ae app, Telegram."
         ),

@@ -11,6 +11,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::cli::{OwnedScratch, Runner, ae, helper};
+use super::parity::{
+    Invocation,
+    capture::{ExitOutcome, raw},
+};
 use super::phase2::run_tmux;
 
 pub(super) const A: &str = "0199c0de-1111-4890-abcd-ef0123456789";
@@ -58,12 +62,286 @@ pub(super) struct Rig {
     pub(super) config: PathBuf,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the frozen receipt tag inventory explicit so selection changes remain reviewable."
+)]
+fn world218_selected(tag: &str) -> bool {
+    matches!(
+        tag,
+        "r218-same-name"
+            | "r218-other-slot"
+            | "r218-other-slot-control"
+            | "r218-lock-wait"
+            | "r218-audit-control"
+            | "r218-legacy-control"
+            | "r218-legacy-replaced"
+            | "r218-malformed-slot-only"
+            | "r218-malformed-launch-only"
+            | "r218-malformed-legacy-only"
+            | "r218-malformed-conflicting"
+            | "r218-malformed-legacy-value"
+            | "r218-malformed-empty-token"
+            | "r218-literal-token-0"
+            | "r218-literal-token-1"
+            | "r218-literal-token-2"
+            | "r218-p4-slot-only"
+            | "r218-p4-launch-only"
+            | "r218-p4-legacy-only"
+            | "r218-p4-conflicting"
+            | "r218-p4-legacy-value"
+            | "r218-p4-empty-token"
+            | "r218-p1-removed"
+            | "r218-p1-session-gone"
+            | "r218-p1-stamp"
+            | "r218-p1-absent"
+            | "r218-p1-quota-stale-a"
+            | "r218-p1-quota-stale-c"
+            | "r218-p1-quota-match-a"
+            | "r218-p1-quota-match-c"
+            | "r218-p1-draft"
+            | "r218-p1f-role-outside"
+            | "r218-p1f-role-inside"
+            | "r218-p1f-cross-refused"
+            | "r218-p1f-cross-allowed"
+            | "r218-p1f-physical-failed"
+            | "r218-p1f-physical-control"
+            | "r218-p1f-unconfirmed"
+            | "r218-p1f-submit-control"
+            | "r218-p1f-draft-occupied"
+            | "r218-b5-stale-done"
+            | "r218-b5-stale-wait"
+            | "r218-b5-stale-moved"
+            | "r218-b5-malformed-done"
+            | "r218-b5-malformed-wait"
+            | "r218-b5-malformed-moved"
+            | "r218-b5-conflict-done"
+            | "r218-b5-conflict-wait"
+            | "r218-b5-conflict-moved"
+            | "r218-b5-slot-done"
+            | "r218-b5-slot-wait"
+            | "r218-b5-slot-moved"
+            | "r218-b5-role-allowed-done"
+            | "r218-b5-role-allowed-wait"
+            | "r218-b5-role-allowed-moved"
+            | "r218-b5-role-early-done"
+            | "r218-b5-role-early-wait"
+            | "r218-b5-role-early-moved"
+            | "r218-b5-role-matching-done"
+            | "r218-b5-role-matching-wait"
+            | "r218-b5-role-matching-moved"
+            | "r218-b5-role-absent-done"
+            | "r218-b5-role-absent-wait"
+            | "r218-b5-role-absent-moved"
+            | "r218-b5-guard-done"
+            | "r218-b5-guard-wait"
+            | "r218-b5-guard-moved"
+            | "r218-b5-seat-matching-done"
+            | "r218-b5-seat-matching-wait"
+            | "r218-b5-seat-matching-moved"
+            | "r218-b5-seat-absent-done"
+            | "r218-b5-seat-absent-wait"
+            | "r218-b5-seat-absent-moved"
+            | "r218-b5-raw-expected-done"
+            | "r218-b5-raw-expected-wait"
+            | "r218-b5-raw-expected-moved"
+            | "r218-b5-raw-absent-done"
+            | "r218-b5-raw-absent-wait"
+            | "r218-b5-raw-absent-moved"
+            | "r218-b5-raw-physical-expected-done"
+            | "r218-b5-raw-physical-expected-wait"
+            | "r218-b5-raw-physical-expected-moved"
+            | "r218-b5-raw-physical-absent-done"
+            | "r218-b5-raw-physical-absent-wait"
+            | "r218-b5-raw-physical-absent-moved"
+            | "r218-b5-pasted-expected-done"
+            | "r218-b5-pasted-expected-wait"
+            | "r218-b5-pasted-expected-moved"
+            | "r218-b5-pasted-absent-done"
+            | "r218-b5-pasted-absent-wait"
+            | "r218-b5-pasted-absent-moved"
+            | "r218-b5-entered-expected-done"
+            | "r218-b5-entered-expected-wait"
+            | "r218-b5-entered-expected-moved"
+            | "r218-b5-entered-absent-done"
+            | "r218-b5-entered-absent-wait"
+            | "r218-b5-entered-absent-moved"
+            | "r218-b5-guard-absent-done"
+            | "r218-b5-guard-absent-wait"
+            | "r218-b5-guard-absent-moved"
+            | "sp-retry-ready"
+            | "sp-retry-lock"
+    )
+}
+
+fn world218_note(args: std::fmt::Arguments<'_>) {
+    // Missing diagnostics are INCOMPLETE; observation never changes an oracle.
+    let _ = std::io::Write::write_fmt(&mut std::io::stderr().lock(), args);
+    let _ = std::io::Write::write_all(&mut std::io::stderr().lock(), b"\n");
+}
+
+fn world218_query(rig: &Rig, tag: &str, label: &str, command: &Invocation) -> Option<String> {
+    let out = rig.scratch.join(format!("world218-{label}.out"));
+    let err = rig.scratch.join(format!("world218-{label}.err"));
+    let ok = match raw::run(command, &rig.scratch, &out, &err) {
+        Ok(status) => match status.outcome() {
+            ExitOutcome::Code(code) => {
+                world218_note(format_args!(
+                    "world218 QUERY tag={tag} label={label} root={} native code {code}",
+                    rig.root.display()
+                ));
+                code == 0
+            }
+            ExitOutcome::Signalled => {
+                world218_note(format_args!(
+                    "INCOMPLETE: world218 tag={tag} label={label} signalled"
+                ));
+                false
+            }
+        },
+        Err(error) => {
+            world218_note(format_args!(
+                "INCOMPLETE: world218 tag={tag} label={label} acquisition/run: {error}"
+            ));
+            false
+        }
+    };
+    // Copy both native streams before ordinary OwnedScratch cleanup can delete them.
+    for (name, path) in [("out", &out), ("err", &err)] {
+        world218_note(format_args!(
+            "world218 BEGIN tag={tag} label={label}.{name} path={}",
+            path.display()
+        ));
+        match fs::read(path) {
+            Ok(bytes) => {
+                let _ = std::io::Write::write_all(&mut std::io::stderr().lock(), &bytes);
+            }
+            Err(error) => world218_note(format_args!(
+                "INCOMPLETE: world218 tag={tag} label={label}.{name}: {error}"
+            )),
+        }
+        world218_note(format_args!("world218 END tag={tag} label={label}.{name}"));
+    }
+    if !ok {
+        world218_note(format_args!(
+            "INCOMPLETE: world218 tag={tag} label={label} acquisition failed"
+        ));
+        return None;
+    }
+    match fs::read_to_string(out) {
+        Ok(text) => Some(text),
+        Err(error) => {
+            world218_note(format_args!(
+                "INCOMPLETE: world218 tag={tag} label={label} stdout: {error}"
+            ));
+            None
+        }
+    }
+}
+
 impl Rig {
+    pub(super) fn world218_capture(&self, tag: &str, panes: [&str; 3]) {
+        if world218_selected(tag) && self.world218_capture_inner(tag, panes).is_none() {
+            world218_note(format_args!(
+                "INCOMPLETE: world218 CAPTURE missing tag={tag} root={}",
+                self.root.display()
+            ));
+        }
+    }
+
+    fn world218_capture_inner(&self, tag: &str, panes: [&str; 3]) -> Option<()> {
+        let mut endpoints = Vec::new();
+        // These are the three known ready panes, not a process-discovery search.
+        for (seat, pane) in ["main", "colead", "kid"].into_iter().zip(panes) {
+            let output = world218_query(
+                self,
+                tag,
+                seat,
+                &Invocation::new("tmux")
+                    .arg("-S")
+                    .arg(&self.socket)
+                    .arg("display-message")
+                    .arg("-p")
+                    .arg("-t")
+                    .arg(pane)
+                    .arg("#{pid} #{pane_pid}")
+                    .env("LC_ALL", "C"),
+            )?;
+            let fields: Vec<_> = output.split_whitespace().collect();
+            if fields.len() != 2 {
+                return None;
+            }
+            let server = fields[0].parse::<u32>().ok().filter(|pid| *pid > 0)?;
+            let payload = fields[1].parse::<u32>().ok().filter(|pid| *pid > 0)?;
+            if endpoints.is_empty() {
+                endpoints.push(server);
+            }
+            if endpoints[0] != server || endpoints.contains(&payload) {
+                return None;
+            }
+            endpoints.push(payload);
+            world218_note(format_args!(
+                "world218 ENDPOINT tag={tag} socket={} seat={seat} pane={pane} server_pid={server} payload_pid={payload}",
+                self.socket.display()
+            ));
+        }
+        let pid_list = endpoints
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        world218_note(format_args!(
+            "world218 BIRTH tag={tag} executable=/bin/ps LC_ALL=C pids={pid_list}"
+        ));
+        let output = world218_query(
+            self,
+            tag,
+            "birth",
+            &Invocation::new("/bin/ps")
+                .arg("-p")
+                .arg(&pid_list)
+                .arg("-o")
+                .arg("pid=,lstart=")
+                .env("LC_ALL", "C"),
+        )?;
+        let mut seen = Vec::new();
+        for row in output.lines() {
+            let fields: Vec<_> = row.split_whitespace().collect();
+            // LC_ALL=C lstart is weekday, month, day, time, year.
+            if fields.len() != 6 {
+                return None;
+            }
+            let pid = fields[0].parse::<u32>().ok()?;
+            if !endpoints.contains(&pid) || seen.contains(&pid) {
+                return None;
+            }
+            seen.push(pid);
+        }
+        if seen.len() != 4 {
+            return None;
+        }
+        world218_note(format_args!(
+            "world218 CAPTURED tag={tag} scratch={} root={} socket={} server_main_colead_kid={pid_list}",
+            self.scratch.display(),
+            self.root.display(),
+            self.socket.display()
+        ));
+        Some(())
+    }
+
     pub(super) fn new(tag: &str) -> Self {
         let mut scratch = OwnedScratch::root("rt", tag);
         let root = scratch.join("state");
         let socket = scratch.join("sock");
         scratch.add_tmux_server(socket.clone());
+        if world218_selected(tag) {
+            world218_note(format_args!(
+                "world218 INTENT tag={tag} scratch={} root={} socket={}",
+                scratch.display(),
+                root.display(),
+                socket.display()
+            ));
+        }
         fs::create_dir_all(root.join("sessions")).expect("scratch sessions");
         let agent = scratch.join("claude");
         fs::write(&agent, AGENT).expect("fixture agent");
