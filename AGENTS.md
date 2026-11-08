@@ -127,24 +127,28 @@ Other rules of the loop:
 
 ## Toolchain pins
 
-Pins, not channels: `rust-toolchain.toml` and the justfile `*_VERSION` are the single sources, so CI, laptop and agent sandbox resolve to the same compiler. Versions and where each is declared: [docs/development.md](docs/development.md#pinned-versions).
-The fuzz compiler is a separate exact nightly (justfile `FUZZ_TOOLCHAIN`, the only source): the product compiler does not move, there is no `fuzz/rust-toolchain.toml`, the lane passes `cargo +<pin>`.
-tmux floor `3.4`: a launch and the picker REFUSE below it; `list`/`version`/`doctor`/`upgrade` do not (`src/tmux_floor.rs`).
+`rust-toolchain.toml` and the justfile `*_VERSION` values are the single sources of exact pins,
+not channels, so CI, laptop and agent sandbox use the same compiler
+([docs/development.md](docs/development.md#pinned-versions)). The fuzz compiler is a separate
+exact nightly, only in the justfile `FUZZ_TOOLCHAIN`: there is no `fuzz/rust-toolchain.toml`,
+the lane passes `cargo +<pin>`, and the product compiler does not move.
+tmux floor `3.4`: a launch and the picker refuse below it; `list`, `version`, `doctor` and
+`upgrade` do not (`src/tmux_floor.rs`).
 
-`--locked` on every graph-consuming lane. Spellings differ: `cargo deny --locked check`
-(global option), `cargo mutants --cargo-arg=--locked` (no native flag), `cargo fmt` exempt.
+`--locked` on every graph-consuming lane: `cargo deny --locked check` (global option),
+`cargo mutants --cargo-arg=--locked` (no native flag); `cargo fmt` is exempt.
 
 ## Lanes
 
-Every recipe, in full: [docs/development.md](docs/development.md#lane-reference). Those with a rule:
+Every recipe: [docs/development.md](docs/development.md#lane-reference). These carry a rule:
 
 | Recipe | What it is |
 |---|---|
 | `just test` / `just rust-check` | **the gate**: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test` (nextest AND doctests: nextest does not run doctests) |
 | `just pre` | **ADVISORY, NOT the gate**, never cited as it: `rust-fmt-check` + `rust-lint` + the unit tests + the `doors`, `floor` and `gate` guard modules of `tests/it`, through the lane's filtered arm. No doctests, no fuzz compile, no retries; `just test` stays exact |
-| `just lane-lock claim <name> [secs]` / `release <name>` / `status` | the gate lane lock, one gate per machine: the MAIN checkout's `.local/locks/gate` (resolved from a linked worktree). `release` refuses any other owner; it never steals or clears a stale lock, it reports one (`status` exit 1 while held) |
-| `just rust-mutants` | does the suite discriminate? A product slice runs it `--in-diff` over its own diff before freeze and answers every survivor in the freeze report (test added, or named equivalent); budget bounded, LOCAL, no percentage ever cited or gated (docs/development.md §Mutation testing). `rust-cov` reports, never gates |
-| `just rust-fuzz target=<name> secs=60` / `rust-fuzz-all secs=60` | human-run cargo-fuzz over the hostile parsers, on an exact nightly. REPORTS — CI carries no nightly and never runs it (`fuzz/README.md`) |
-| `just rust-deny` / `rust-vet` | supply chain. The TLS graph is EXEMPTED, not audited (docs/history.md §11) |
-| `just rust-prune` / `rust-prune apply=yes` | THIS checkout's stale `ae` build output: the report is the default and removes nothing. Own tree only, never during a gate (`docs/development.md`) |
-| `just rust-linux` / `rust-linux-26` / `rust-linux-smoke` / `harness-smoke [control]` | ON DEMAND, never reached by `just test`, `just pre` or `just release`. `harness-smoke` runs a few short turns against the REAL harness binaries and logins and is never in the gate, CI or mutants; control = hang shim, no spend |
+| `just lane-lock claim <name> [secs]` / `release <name>` / `status` | one gate per machine, locked in the main checkout's `.local/locks/gate` (also from a linked worktree). `release` refuses any other owner and never steals or clears a stale lock; `status` reports one and exits 1 while held |
+| `just rust-mutants` | A product slice runs it `--in-diff` over its own diff before freeze and answers every survivor in the freeze report (test added, or named equivalent). Budget bounded, local; no percentage is ever cited or gated (docs/development.md §Mutation testing). `rust-cov` reports and never gates |
+| `just rust-fuzz target=<name> secs=60` / `rust-fuzz-all secs=60` | human-run cargo-fuzz over the hostile parsers on the exact nightly; it reports, and CI never runs it (`fuzz/README.md`) |
+| `just rust-deny` / `rust-vet` | supply chain. The TLS graph is exempted, not audited (docs/history.md §11) |
+| `just rust-prune` / `rust-prune apply=yes` | stale `ae` build output of this checkout only; the default is a report that removes nothing. Never during a gate (`docs/development.md`) |
+| `just rust-linux` / `rust-linux-26` / `rust-linux-smoke` / `harness-smoke [control]` | on demand only, never reached by `just test`, `just pre` or `just release`. `harness-smoke` runs a few short turns against the real harness binaries and logins and is never in the gate, CI or mutants; `control` uses a hang shim and spends nothing |
