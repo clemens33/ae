@@ -3,7 +3,7 @@
 Distilled 2026-07-07 by the phase-3 session lead (Fable 5) from the s16–s20 gate record,
 written so a lead on any capable model can run the same gates. The method is general;
 the exhibits are ae's. Companion: `design-patterns.md` (what good designs look like),
-`lead-handover.md` (where this codebase specifically bites).
+`lead-handover.md` (historical; superseded 2026-08-31).
 
 The gate exists because two other strong agents — a builder and a cross-model reviewer —
 have already passed the code green. Whatever the gate contributes must therefore be
