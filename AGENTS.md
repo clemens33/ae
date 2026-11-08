@@ -3,29 +3,23 @@
 Before touching a module, read its matching topic below.
 Module map: [Structure](docs/reference/contract.md#structure).
 
-## Read before acting
-
-Role doctrine: before gating or reviewing, run [The protocol](docs/gatekeeping.md#the-protocol) and [the second protocol](docs/gatekeeping.md#the-second-protocol--reviewing-a-claim-a-criterion-or-a-body-of-evidence), and read an entry from [Which entry do I need?](docs/gatekeeping.md#which-entry-do-i-need) when its symptom matches.
-Use [docs/design-patterns.md](docs/design-patterns.md) for the coordination patterns.
-
-Doors: every ambient read and process start uses a named door carrying its reason; never read the world ad hoc. See [Environment doors](docs/reference/contract.md#environment-doors).
-
-| Touching | Read first |
+| When | Read first |
 |---|---|
+| gating or reviewing | run [The protocol](docs/gatekeeping.md#the-protocol) and [the second protocol](docs/gatekeeping.md#the-second-protocol--reviewing-a-claim-a-criterion-or-a-body-of-evidence); read an entry from [Which entry do I need?](docs/gatekeeping.md#which-entry-do-i-need) when its symptom matches |
+| coordination design | [docs/design-patterns.md](docs/design-patterns.md) |
 | src/shim.rs, helper commands | [Session helpers](docs/reference/contract.md#session-helpers) |
 | src/tool.rs, adapters, src/run.rs, src/launch.rs | [Agent tool capabilities](docs/reference/contract.md#agent-tool-capabilities) |
 | src/doors.rs, src/transport.rs, environment reads | [Environment doors](docs/reference/contract.md#environment-doors) |
 | src/theme.rs, status formats, tmux hooks and binds | [docs/internals/theme.md](docs/internals/theme.md) |
 | src/upgrade.rs, `ae upgrade` | [docs/upgrade.md](docs/upgrade.md) |
-| shell commands on macOS or Linux | [GNU vs BSD — check the command YOU are about to type](docs/reference/contract.md#gnu-vs-bsd--check-the-command-you-are-about-to-type) |
+| shell commands on macOS or Linux | [GNU vs BSD](docs/reference/contract.md#gnu-vs-bsd--check-the-command-you-are-about-to-type) |
 | any src/ module; find its named owner before editing | [Key invariants](docs/reference/contract.md#key-invariants) |
 | src/config.rs, src/meta.rs, config grammar | [Config](docs/reference/contract.md#config) |
 
 Automation features are allowed again, but the focus stays on code quality, architecture and guardrails: a new one must earn its place by daily use.
 
-One Rust core in one immutable versioned install, published read-only. tmux is the runtime.
-Rationale, retired rules and measurement narrative: [docs/history.md](docs/history.md).
-Product direction: [VISION.md](VISION.md).
+One Rust core in one immutable versioned install, published read-only; tmux is the runtime.
+Rationale and retired rules: [docs/history.md](docs/history.md). Product direction: [VISION.md](VISION.md).
 
 ## What ae is NOT
 
@@ -40,29 +34,25 @@ Product direction: [VISION.md](VISION.md).
 
 The loop, in order:
 
-1. `just test` — THE GATE. Exactly `just rust-check`. There is no per-commit fast/slow split;
-   run the whole thing. `just pre` is ADVISORY and never cited as the gate. The lane sizes its
-   threads and build jobs from `jobs-budget` when installed and runs cargo niced (docs/development.md).
-2. `just check` — only when you touched `install` (shellcheck + shfmt).
+1. `just test` is the gate: exactly `just rust-check`, run whole, with no per-commit fast/slow split.
+   `just pre` is ADVISORY and never cited as the gate.
+2. `just check` only when you touched `install` (shellcheck + shfmt).
 3. Cross-model review BEFORE the commit, for anything significant. Route it through ae
    (`<session>/ask`, `<session>/review`, `<session>/spawn <alias>:reviewer`) — never shell
    out to another CLI, never a harness-internal subagent.
 4. Commit on green, after the review findings are answered. Plain message, no trailers,
    no AI attribution of any kind.
-5. `just release` — local, one machine: check, test, rust-deny, CalVer bump, both bundles, tag, push,
-   assets. Nothing waits on a runner.
+5. `just release` runs locally on one machine: check, test, rust-deny, CalVer bump, both bundles,
+   tag, push, assets. Nothing waits on a runner.
 
-Prefer small vertical slices: commit, release, push and roll out standalone intermediate state
-or sub-features rather than waiting for a feature to finish. A slice ships when it is green,
-reviewed and leaves the product coherent; `just test`, cross-model review, the freeze protocol
-and every hard rule remain mandatory.
+Ship small vertical slices: commit, release and roll out standalone intermediate state or
+sub-features instead of waiting for the whole feature. A slice ships when it is green, reviewed
+and leaves the product coherent; `just test`, cross-model review, the freeze protocol and every
+hard rule stay mandatory.
 
-An upgrade migrates, repoints and relinks every placeable session
-before it moves the command link, then prunes unreferenced versions.
-A publish is `$HOME`-pinned, so a checkout run whose state root differs
-REFUSES `ae upgrade` before downloading anything.
-Live upgrade probes therefore go in a sandboxed `$HOME`, never `ae-dev`. Why and the rest:
-[docs/upgrade.md](docs/upgrade.md).
+`ae upgrade` migrates and relinks every placeable session before it moves the command link,
+then prunes unreferenced versions. A publish is `$HOME`-pinned, so a checkout whose state root differs refuses `ae upgrade` before it downloads
+anything. Run live upgrade probes in a sandboxed `$HOME`, never in `ae-dev`.
 
 Other rules of the loop:
 
@@ -109,10 +99,9 @@ Other rules of the loop:
 
 - `unsafe_code` is **forbid**.
 - No `unwrap()` / `expect()` in production code. `-D warnings` makes it fail the gate.
-- No `std::process::Command` outside the enumerated doors.
-  `tests/it/doors.rs` pins the exact per-file counts, so a new door is a review, not a diff.
-  Same for the world-reading methods in `clippy.toml`'s `disallowed-methods`. The product's
-  door inventory and the counting rule:
+- No `std::process::Command` and no `clippy.toml` `disallowed-methods` world read outside the
+  enumerated doors; each door is named and carries its reason. `tests/it/doors.rs` pins the exact
+  per-file counts, so a new door is a review, not a diff. Inventory and counting rule:
   [Environment doors](docs/reference/contract.md#environment-doors).
 - No clap, serde, anyhow, thiserror, chrono or nix. Adding any runtime dependency is a
   ruling, not a commit (researched line and triggers: docs/history.md §11). Carve-outs:
