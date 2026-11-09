@@ -250,6 +250,8 @@ struct Clock<'a> {
     results: VecDeque<(Duration, Waited)>,
     waits: Vec<(Instant, Instant)>,
     attach_on_wait: Option<&'a Rig>,
+    scheduled_attach: Option<(Instant, &'a Rig)>,
+    attached_at: Option<Instant>,
     frame_probe: Option<&'a Rig>,
     frame_receipts: Vec<Instant>,
 }
@@ -261,9 +263,32 @@ impl Clock<'_> {
             results: results.into_iter().collect(),
             waits: Vec::new(),
             attach_on_wait: None,
+            scheduled_attach: None,
+            attached_at: None,
             frame_probe: None,
             frame_receipts: Vec::new(),
         }
+    }
+
+    fn advance_to(&mut self, until: Instant) {
+        if self
+            .scheduled_attach
+            .as_ref()
+            .is_some_and(|(at, _)| *at <= until)
+        {
+            let (at, rig) = self
+                .scheduled_attach
+                .take()
+                .expect("scheduled external attach");
+            assert!(
+                at >= self.now,
+                "the fixture cannot attach in the virtual past"
+            );
+            self.now = at;
+            rig.attach("current", 0);
+            self.attached_at = Some(at);
+        }
+        self.now = until;
     }
 }
 
@@ -281,7 +306,7 @@ impl Pace for Clock<'_> {
                 self.frame_receipts.push(self.now);
             }
         }
-        self.now += duration;
+        self.advance_to(self.now + duration);
     }
 
     fn wait(
@@ -300,16 +325,27 @@ impl Pace for Clock<'_> {
         // before a hypothetical atomic attachment read could have seen it.
         if let Some(rig) = self.attach_on_wait.take() {
             rig.attach("current", 0);
+            self.attached_at = Some(self.now);
         }
         let (elapsed, result) = self
             .results
             .pop_front()
             .unwrap_or((Duration::ZERO, Waited::TimedOut));
-        if result == Waited::TimedOut {
-            self.now = deadline;
+        let until = if result == Waited::TimedOut {
+            deadline
         } else {
-            self.now += elapsed.min(deadline.saturating_duration_since(self.now));
-        }
+            // If a faster implementation re-arms before the scheduled arrival,
+            // its controlled Attached wait includes that external arrival too.
+            let start = if result == Waited::Attached {
+                self.scheduled_attach
+                    .as_ref()
+                    .map_or(self.now, |(at, _)| self.now.max(*at))
+            } else {
+                self.now
+            };
+            start + elapsed.min(deadline.saturating_duration_since(start))
+        };
+        self.advance_to(until);
         result
     }
 }
@@ -423,10 +459,9 @@ fn quietwd_each_wake_enters_real_attached_motion_before_the_unchanged_deadline()
             "a wake must enter the real joined-read/frame-write consumer: {calls:?}"
         );
         assert!(
-            clock
-                .frame_receipts
-                .iter()
-                .any(|at| { *at < deadline && at.duration_since(began) <= Duration::from_secs(2) }),
+            clock.frame_receipts.iter().any(|at| {
+                *at < deadline && at.duration_since(began) <= Duration::from_millis(500)
+            }),
             "a real frame must land within the stated attach bound, before the next cycle"
         );
         assert_eq!(
@@ -435,6 +470,68 @@ fn quietwd_each_wake_enters_real_attached_motion_before_the_unchanged_deadline()
         );
         assert!(clock.waits.iter().all(|(_, end)| *end == deadline));
     }
+}
+
+#[test]
+fn quietwd_attach_during_stale_wake_rearm_draws_within_the_restated_virtual_bound() {
+    let rig = Rig::new("stale-rearm");
+    let mut carry = detached_carry(&rig, true);
+    assert!(
+        carry
+            .motion
+            .panes
+            .iter()
+            .all(|pane| pane.session_attached == 0)
+    );
+    assert!(rig.option("-p", &rig.pane, "@ae_pane_state").is_empty());
+    // The first stale wake is followed by a real detached reading. The external
+    // client arrives at 100 ms inside the re-arm sleep, not after that sleep.
+    // The next wait sees it. Only the Clock's virtual time drives the bound.
+    let mut clock = Clock::new([
+        (Duration::ZERO, Waited::Woke),
+        (Duration::from_millis(50), Waited::Attached),
+    ]);
+    let began = clock.now;
+    let attached = began + Duration::from_millis(100);
+    clock.scheduled_attach = Some((attached, &rig));
+    clock.frame_probe = Some(&rig);
+    let interval = Duration::from_secs(5);
+    let deadline = began + interval;
+    let ((), calls) = spawns_during(|| {
+        wait_between_cycles_with(&rig.server, "current", &mut carry, interval, &mut clock);
+    });
+    assert_eq!(
+        clock.attached_at,
+        Some(attached),
+        "the scheduled real client must arrive"
+    );
+    assert!(
+        clock.waits.len() >= 2,
+        "stale wake and subsequent armed wait must execute"
+    );
+    assert!(
+        calls.iter().any(|call| {
+            ["list-panes", "set-option", "@ae_pane_state"]
+                .iter()
+                .all(|required| call.iter().any(|word| word.as_str() == *required))
+        }),
+        "the actual joined reader and frame writer must run"
+    );
+    let first = *clock
+        .frame_receipts
+        .first()
+        .expect("an actual frame must land");
+    assert!(first >= attached && first < deadline);
+    assert!(
+        first.duration_since(attached) <= Duration::from_millis(2_500),
+        "P7-a stale-rearm frame exceeded the restated virtual bound: {:?}",
+        first.duration_since(attached)
+    );
+    assert_eq!(
+        clock.now, deadline,
+        "the wake cannot advance the verdict cycle"
+    );
+    assert!(clock.waits.iter().all(|(_, end)| *end == deadline));
 }
 
 #[test]

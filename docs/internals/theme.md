@@ -160,9 +160,12 @@ until the last observation is 500 ms old. Detached sessions receive no
 ticker writes: the first tick that reads a detached session still lands the frame
 it carried, and the next draws nothing. A last visible frame can remain cached
 until the next verdict cycle republishes the static working glyph, but no client
-can see it. While a session is detached and its cycle proved the wake hook, the
+can see it. While a session is detached, has no adopted peer
+([watchdog.md](watchdog.md)) and its cycle proved the wake hook, the
 ticker holds one tmux waiter instead of observing every two seconds; an attach
-or a switch into the session wakes it within the interval. The
+or a switch into the session wakes it within the interval. With healthy tmux, an
+attach to the armed waiter starts its first frame within 0.5 s. An attach during
+stale-wake re-arm or adopted-peer polling can take up to 2.5 s. The
 pulse declares the cached verdict; it does not infer terminal motion.
 Liveness belongs to the 60-second verdict
 cycle, which changes an inactive pane to stale. Tmux redraws changed user
