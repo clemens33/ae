@@ -30,25 +30,41 @@ pub const DEFAULT_DEFER: Duration = Duration::from_secs(30);
 /// within a second or two is still met within about 0.4 s.
 const DEFER_POLL: Duration = Duration::from_millis(400);
 
-/// The longest gap between two reads of a held target.
+/// The longest gap between two reads of a held target, and between two
+/// captures of a staged-chip settle wait.
 ///
 /// Every read of a held target costs tmux children (a capture, a client list
 /// and, under an address guard, three re-proof reads), and a pane that stays
 /// unreadable stays unreadable. A fixed [`DEFER_POLL`] made one refused
 /// delivery read about 75 times in the default 30 s deferral, about 330 tmux
 /// children measured in a sandbox. Doubling to this cap makes it 11 reads:
-/// [`defer_gap`].
+/// [`defer_gap`]. The settle wait of a pane that never stops redrawing took
+/// 101 captures at a fixed [`VERIFY_POLL`]; the same doubling makes it 12:
+/// [`settle_gap`].
 const DEFER_POLL_CAP: Duration = Duration::from_secs(4);
 
-/// The gap after `reads` reads that found the target held: [`DEFER_POLL`],
-/// doubled per read up to [`DEFER_POLL_CAP`], and never past `left`, the
-/// deferral still to run, so the last read lands on the deadline.
-fn defer_gap(reads: u32, left: Duration) -> Duration {
+/// The gap after `reads` reads of a wait that starts at `first`: `first`,
+/// doubled per read up to [`DEFER_POLL_CAP`], and never past `left`, the wait
+/// still to run, so the last read lands on the deadline. The ONE backoff of
+/// the deferral and of the settle wait.
+fn backoff(first: Duration, reads: u32, left: Duration) -> Duration {
     let doubled = 1u32.checked_shl(reads).unwrap_or(u32::MAX);
-    DEFER_POLL
-        .saturating_mul(doubled)
-        .min(DEFER_POLL_CAP)
-        .min(left)
+    first.saturating_mul(doubled).min(DEFER_POLL_CAP).min(left)
+}
+
+/// The gap after `reads` reads that found the target held: [`DEFER_POLL`]
+/// backed off ([`backoff`]) within `left`, the deferral still to run.
+fn defer_gap(reads: u32, left: Duration) -> Duration {
+    backoff(DEFER_POLL, reads, left)
+}
+
+/// The gap after `reads` captures of the staged-chip settle wait that found
+/// the pane still changing: [`VERIFY_POLL`] backed off ([`backoff`]) within
+/// `left`, the budget still to run. It is never under [`VERIFY_POLL`], even
+/// at the deadline: "the pane stopped redrawing" is two captures a real
+/// interval apart, never two back-to-back reads.
+fn settle_gap(reads: u32, left: Duration) -> Duration {
+    backoff(VERIFY_POLL, reads, left).max(VERIFY_POLL)
 }
 
 /// The deferral loop's clock: the wall clock in production, a virtual one in
@@ -1023,7 +1039,8 @@ impl Snapshot {
 ///
 /// The wait lasts the whole deferral, but its reads back off ([`defer_gap`]):
 /// 11 in the default 30 s. A composer read occupied adds ONE settle wait,
-/// [`flush_staged_chip`]; an unreadable one adds none.
+/// [`flush_staged_chip`], whose captures back off too ([`settle_gap`]): 12 in
+/// the default 30 s; an unreadable composer adds none.
 fn wait_for_quiet(
     request: &Request<'_>,
     model: InputModel,
@@ -1069,7 +1086,7 @@ fn wait_for_quiet_paced(
             flushed = true;
             let budget = request.defer.saturating_sub(pace.waited());
             let chip = (model, budget, Stage::BeforeInput);
-            let _ = flush_staged_chip(request.server, request.pane, chip, guard, err)?;
+            let _ = flush_staged_chip(request.server, request.pane, chip, guard, pace, err)?;
         }
         let waited = pace.waited();
         if waited >= request.defer {
@@ -1243,24 +1260,37 @@ fn staged_chip_present(server: &ServerId, pane: &str, model: InputModel) -> bool
 /// paste over it. `None` when the settle wait ran out, so the write is bounded.
 /// Residue: a human's own untouched chip would drain too, which is why no human
 /// attention may be recent at the call sites.
+///
+/// "Settled" is two captures a gap apart that match. The first gap is
+/// [`VERIFY_POLL`], so a pane already quiet is met at 0.3 s; the gaps then
+/// double to [`DEFER_POLL_CAP`] ([`settle_gap`]), so a pane that never stops
+/// redrawing costs 12 captures in a 30 s budget, not 101. The price is a late
+/// settle: it is seen within two gaps of settling, at most 8 s, and only while
+/// two captures remain in the budget. A settle inside the last gap is missed
+/// and the wait ends `None`, as it did at the fixed 0.3 s.
 fn flush_staged_chip(
     server: &ServerId,
     pane: &str,
     (model, budget, stage): (InputModel, Duration, Stage),
     guard: Option<&crate::tracked::AddressGuard<'_>>,
+    clock: &mut impl Pace,
     err: &mut impl Write,
 ) -> io::Result<Option<SubmitState>> {
-    let started = Instant::now();
+    let started = clock.waited();
     let proven = |err: &mut _| guard.map_or(Ok(true), |guard| guard.check_at(stage, err));
     let mut previous = transport::capture_screen(server, pane, Styling::Plain);
+    let mut reads: u32 = 0;
     loop {
-        std::thread::sleep(VERIFY_POLL);
+        let waited = clock.waited().saturating_sub(started);
+        clock.pause(settle_gap(reads, budget.saturating_sub(waited)));
+        reads = reads.saturating_add(1);
         let current = transport::capture_screen(server, pane, Styling::Plain);
         if pane_settled(previous.as_deref(), current.as_deref()) {
             break;
         }
         // A capture that stopped answering may be a retired pane: stop waiting.
-        if started.elapsed() >= budget || (current.is_none() && !proven(err)?) {
+        if clock.waited().saturating_sub(started) >= budget || (current.is_none() && !proven(err)?)
+        {
             return Ok(None);
         }
         previous = current;
@@ -1273,7 +1303,7 @@ fn flush_staged_chip(
         // is not ours to submit, and the chip may have drained on its own.
         SubmitState::StillStaged if staged_chip_present(server, pane, model) => {
             let _ = transport::send_key(server, pane, Key::Enter);
-            std::thread::sleep(VERIFY_POLL);
+            clock.pause(VERIFY_POLL);
             Some(still_staged(server, pane, model))
         }
         observed => Some(observed),
@@ -1701,7 +1731,8 @@ fn submit(
     // interrupt.
     if staged_chip_present(server, pane, model) {
         let chip = (model, request.defer, Stage::Entered);
-        match flush_staged_chip(server, pane, chip, guard, err)? {
+        let clock = &mut WallClock(Instant::now());
+        match flush_staged_chip(server, pane, chip, guard, clock, err)? {
             Some(SubmitState::Submitted) => return Ok(Ok(DeliveryVerification::Verified)),
             Some(SubmitState::Unknown(reason)) => {
                 return Ok(Ok(DeliveryVerification::Unverifiable(reason)));
@@ -2624,6 +2655,50 @@ mod tests {
         );
     }
 
+    /// The staged-chip settle wait of a pane that never stops redrawing (a
+    /// tool that is busy elsewhere with a composer read occupied) costs a
+    /// bounded number of captures. It polled every 0.3 s for the whole budget:
+    /// the default 30 s deferral made 101 captures per refused delivery, one
+    /// tmux child each. The wait still lasts the whole budget and presses
+    /// nothing; only the number of reads inside it is bounded. A pane ae
+    /// cannot capture never settles either (`None` is not a settled frame), so
+    /// the absent server is the never-settling pane here.
+    #[test]
+    fn a_chip_settle_wait_on_a_pane_that_never_settles_reads_it_a_bounded_number_of_times() {
+        const MAX_CAPTURES: usize = 12;
+        let server = absent_server();
+        let mut clock = Virtual(Duration::ZERO);
+        let chip = (
+            InputModel::BorderDelimited,
+            super::DEFAULT_DEFER,
+            super::Stage::BeforeInput,
+        );
+        let (flushed, spawns) = crate::transport::spawns_during(|| {
+            super::flush_staged_chip(&server, "%3", chip, None, &mut clock, &mut std::io::sink())
+        });
+        assert_eq!(
+            flushed.unwrap(),
+            None,
+            "a pane that never settles ends the wait with nothing pressed"
+        );
+        assert!(
+            clock.0 >= super::DEFAULT_DEFER,
+            "the wait still lasts its whole budget, waited {:?}",
+            clock.0
+        );
+        assert!(
+            spawns
+                .iter()
+                .all(|argv| argv[0] == "tmux" && argv.iter().any(|word| word == "capture-pane")),
+            "the wait only captures the pane: {spawns:?}"
+        );
+        assert!(
+            spawns.len() <= MAX_CAPTURES,
+            "one settle wait spawned {} captures; at most {MAX_CAPTURES} are allowed",
+            spawns.len()
+        );
+    }
+
     /// The schedule: fast first reads (a target that frees up within a second
     /// is still met at once), a cap on the gap, and a last read ON the
     /// deadline, never past it.
@@ -2667,6 +2742,68 @@ mod tests {
                 .is_some_and(|gap| gap <= DEFER_POLL_CAP)),
             "no gap passes the cap"
         );
+    }
+
+    /// The settle wait's schedule: the same doubling as the deferral from its
+    /// own first gap, so a pane already quiet is still met at 0.3 s; a last
+    /// capture ON the deadline; and never a gap under the first one, because
+    /// two captures taken back to back prove nothing about a pane settling.
+    #[test]
+    fn the_chip_settle_wait_backs_off_from_its_first_gap_and_ends_on_its_deadline() {
+        use super::{DEFER_POLL_CAP, VERIFY_POLL, settle_gap};
+        let plenty = Duration::from_hours(1);
+        assert_eq!(
+            settle_gap(0, plenty),
+            VERIFY_POLL,
+            "the first comparison stays at 0.3 s"
+        );
+        assert_eq!(settle_gap(1, plenty), VERIFY_POLL * 2);
+        assert_eq!(settle_gap(2, plenty), VERIFY_POLL * 4);
+        assert_eq!(settle_gap(3, plenty), VERIFY_POLL * 8);
+        for reads in [4, 5, 31, 32, u32::MAX] {
+            assert_eq!(settle_gap(reads, plenty), DEFER_POLL_CAP, "read {reads}");
+        }
+        assert_eq!(
+            settle_gap(9, Duration::from_millis(1500)),
+            Duration::from_millis(1500),
+            "a gap stops at the deadline while it holds more than the first gap"
+        );
+        for left in [Duration::from_millis(50), Duration::ZERO] {
+            assert_eq!(settle_gap(9, left), VERIFY_POLL, "left {left:?}");
+        }
+        // Walk the default budget as the loop does: one capture before the
+        // first gap, one after each.
+        let (mut at, mut reads, mut seen) = (Duration::ZERO, 0u32, vec![Duration::ZERO]);
+        while at < super::DEFAULT_DEFER {
+            at += settle_gap(reads, super::DEFAULT_DEFER.saturating_sub(at));
+            reads += 1;
+            seen.push(at);
+        }
+        assert_eq!(
+            at,
+            super::DEFAULT_DEFER,
+            "the last capture lands on the deadline"
+        );
+        assert_eq!(seen.len(), 12, "captures at {seen:?}");
+    }
+
+    /// A settle wait handed no budget still lets the pane show it settled:
+    /// one first gap passes between its two captures, as it always did.
+    #[test]
+    fn a_chip_settle_wait_with_no_budget_left_still_waits_one_gap_between_two_captures() {
+        let server = absent_server();
+        let mut clock = Virtual(Duration::ZERO);
+        let chip = (
+            InputModel::BorderDelimited,
+            Duration::ZERO,
+            super::Stage::BeforeInput,
+        );
+        let (flushed, spawns) = crate::transport::spawns_during(|| {
+            super::flush_staged_chip(&server, "%3", chip, None, &mut clock, &mut std::io::sink())
+        });
+        assert_eq!(flushed.unwrap(), None);
+        assert_eq!(clock.0, VERIFY_POLL, "one first gap, no more");
+        assert_eq!(spawns.len(), 2, "the capture before and the one after");
     }
 
     #[test]
