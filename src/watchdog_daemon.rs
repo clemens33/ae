@@ -3895,7 +3895,22 @@ fn enumerate_adoption(
     // META ONLY: the picker's read. Identities and the `placed` rule, never a
     // session's journal — nothing here is derived from events.
     let scan = crate::inventory::durable_meta_records(&crate::inventory::Roots::under(&root));
-    let mut sockets = crate::fleet_read::SocketPaths::live();
+    // The OWNERSHIP proof, made once per name this server is actually showing.
+    // A record whose session is not on this server costs nothing, and neither
+    // does this daemon's own: it is never a target and never vouched for, so
+    // probing it would buy two tmux spawns a cycle and no answer anyone reads.
+    let names: Vec<String> = scan
+        .records
+        .iter()
+        .map(|record| record.name.clone())
+        .filter(|name| name != session)
+        .filter(|name| listing.iter().any(|row| &row.name == name))
+        .collect();
+    let read = transport::observe_peer_ownership(server, &names);
+    let mut sockets = match read.socket {
+        Some(path) => crate::fleet_read::SocketPaths::for_caller(server, Some(path)),
+        None => crate::fleet_read::SocketPaths::live(),
+    };
     // Warm the cache ONLY for a spelling that is not already ours: two records
     // naming the same server the same way need no tmux probe to be equivalent.
     for candidate in &scan.records {
@@ -3906,21 +3921,11 @@ fn enumerate_adoption(
             }
         }
     }
-    // The OWNERSHIP proof, made once per name this server is actually showing.
-    // A record whose session is not on this server costs nothing, and neither
-    // does this daemon's own: it is never a target and never vouched for, so
-    // probing it would buy two tmux spawns a cycle and no answer anyone reads.
-    let proven: Vec<crate::inventory::DiscoveredSession> = scan
-        .records
-        .iter()
-        .map(|record| record.name.clone())
-        .filter(|name| name != session)
-        .filter(|name| listing.iter().any(|row| &row.name == name))
-        .map(|name| crate::inventory::DiscoveredSession {
-            marker: proven_ownership(
-                transport::observe_session_ownership(server, &name).as_ref(),
-                &root,
-            ),
+    let proven: Vec<crate::inventory::DiscoveredSession> = read
+        .peers
+        .into_iter()
+        .map(|(name, owned)| crate::inventory::DiscoveredSession {
+            marker: proven_ownership(owned.as_ref(), &root),
             name,
         })
         .collect();
@@ -4102,6 +4107,13 @@ fn adoption_due(last: &mut Option<Instant>, now: Instant) -> bool {
     *last = Some(now);
     true
 }
+
+/// Draw THIS session's row of a fleet listing with the rank this cycle
+/// decided, whatever the listing caught of the published option.
+///
+/// P0a: the rank is written before the listing is read, so the listing
+/// already carries it and there is nothing to overlay yet.
+fn overlay_current_rank(_rows: &mut [tmux::FleetListingRow], _session_id: &str, _rank: Mark) {}
 
 /// The fleet target the orchestrator segment may jump to: absent for this session
 /// when it is itself the orchestrator, or when the fleet has none. The exact
@@ -4568,90 +4580,114 @@ fn wait_between_cycles(
     carry: &mut Carry,
     interval_secs: u64,
 ) {
-    let interval = Duration::from_secs(interval_secs);
+    wait_between_cycles_with(
+        server,
+        session,
+        carry,
+        Duration::from_secs(interval_secs),
+        &mut RealPace,
+    );
+}
+
+/// The clock and the external wait the interval loop runs on.
+///
+/// Production is [`RealPace`]; a test replaces time and the wait's answer
+/// only, never a ticker decision.
+trait Pace {
+    /// The current instant.
+    fn now(&self) -> Instant;
+    /// Rest for `duration`.
+    fn sleep(&mut self, duration: Duration);
+    /// Wait until `session` has a client, `channel` is signalled, or
+    /// `deadline` passes.
+    #[allow(
+        dead_code,
+        reason = "P0a seam: the interval loop calls it once the wake leg lands (P3)"
+    )]
+    fn wait(
+        &mut self,
+        server: &crate::inventory::ServerId,
+        session: &str,
+        channel: &str,
+        deadline: Instant,
+    ) -> transport::Waited;
+}
+
+/// The wall clock and the real tmux wait.
+struct RealPace;
+
+impl Pace for RealPace {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&mut self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+
+    fn wait(
+        &mut self,
+        server: &crate::inventory::ServerId,
+        session: &str,
+        channel: &str,
+        deadline: Instant,
+    ) -> transport::Waited {
+        transport::run_tmux_wait(server, session, channel, deadline)
+    }
+}
+
+/// [`wait_between_cycles`] over an explicit [`Pace`]: the ONE interval loop
+/// production runs. The deadline is the interval's end, whatever happens in
+/// between.
+fn wait_between_cycles_with(
+    server: &crate::inventory::ServerId,
+    session: &str,
+    carry: &mut Carry,
+    interval: Duration,
+    pace: &mut impl Pace,
+) {
     let Some(look) = carry.look else {
         // No look has EVER answered, so this session draws nothing of its own —
         // but a peer it is filling still has a line to keep.
-        wait_idle_between_cycles(server, carry, interval);
+        wait_idle_between_cycles(server, carry, interval, pace);
         return;
     };
     match ticker_mode(carry.look.as_ref()) {
-        TickerMode::Idle => {
-            wait_idle_between_cycles(server, carry, interval);
-            return;
-        }
+        TickerMode::Idle => wait_idle_between_cycles(server, carry, interval, pace),
         TickerMode::Static => {
-            wait_static_between_cycles(server, session, carry, &look, interval);
-            return;
+            wait_static_between_cycles(server, session, carry, &look, interval, pace);
         }
-        TickerMode::Animated => {}
+        TickerMode::Animated => run_ticker(server, session, carry, &look, interval, pace),
     }
-    let started = Instant::now();
-    let mut cadence = ATTACHED_MOTION_TICK;
-    let mut ticks_since_observation = MOTION_OBSERVATION_TICKS;
-    let mut failures = 0_u8;
-    let mut adopted_at: Option<Instant> = None;
+}
+
+/// Drive one [`MotionTicker`] to the end of the interval, then hand its
+/// state back to the carry.
+fn run_ticker(
+    server: &crate::inventory::ServerId,
+    session: &str,
+    carry: &mut Carry,
+    look: &Look,
+    interval: Duration,
+    pace: &mut impl Pace,
+) {
+    let started = pace.now();
+    let mut ticker = MotionTicker::new(carry.motion.clone(), carry.adoption.clone());
     loop {
-        let remaining = interval.saturating_sub(started.elapsed());
+        let remaining = interval.saturating_sub(pace.now().saturating_duration_since(started));
         if remaining.is_zero() {
             break;
         }
-        let mut next = carry.motion.clone();
-        // STAGED like the motion carry beside it: a batch tmux refused must
-        // leave both write-on-change memories where they were.
-        let mut adoption = carry.adoption.clone();
-        let mut adopted: Vec<tmux::OptionWrite> = Vec::new();
-        let observed = motion_observation_due(ticks_since_observation);
-        if observed {
-            let reading = transport::observe_motion_panes(server, session);
-            let fleet = transport::observe_fleet_listing(server);
-            let (Some(reading), Some(fleet)) = (reading, fleet) else {
-                let failed = motion_failure(failures);
-                failures = failed.0;
-                let remaining = interval.saturating_sub(started.elapsed());
-                if failed.1 {
-                    std::thread::sleep(remaining);
-                    break;
-                }
-                std::thread::sleep(cadence.min(remaining));
-                continue;
-            };
-            cadence = motion_cadence(&reading);
-            next.replace_observation(reading, &fleet, &carry.adoption.known, session);
-            // Adoption's own cadence, inside the branch that just read the
-            // fleet: one listing per tick, never two, and never a frame this
-            // daemon's own attachment gates.
-            if adoption_due(&mut adopted_at, Instant::now()) {
-                adopted = adoption_writes(&mut adoption, &fleet, &next.fleet_order);
-            }
+        let next = ticker.tick(server, session, look, pace.now());
+        let remaining = interval.saturating_sub(pace.now().saturating_duration_since(started));
+        if next.stopped {
+            pace.sleep(remaining);
+            break;
         }
-        let mut writes = next.step(&look);
-        writes.extend(adopted);
-        if !writes.is_empty() && !transport::publish_options(server, &writes) {
-            ticks_since_observation = MOTION_OBSERVATION_TICKS;
-            let failed = motion_publish_failure(failures, observed);
-            failures = failed.0;
-            let remaining = interval.saturating_sub(started.elapsed());
-            if failed.1 {
-                std::thread::sleep(remaining);
-                break;
-            }
-            std::thread::sleep(cadence.min(remaining));
-            continue;
-        }
-        failures = 0;
-        carry.motion = next;
-        carry.adoption = adoption;
-        ticks_since_observation = if cadence == DETACHED_MOTION_TICK {
-            MOTION_OBSERVATION_TICKS
-        } else if observed {
-            1
-        } else {
-            ticks_since_observation.saturating_add(1)
-        };
-        let remaining = interval.saturating_sub(started.elapsed());
-        std::thread::sleep(cadence.min(remaining));
+        pace.sleep(next.after.min(remaining));
     }
+    carry.motion = ticker.motion;
+    carry.adoption = ticker.adoption;
 }
 
 /// Wait for the next verdict cycle with nothing of this session's OWN to draw.
@@ -4669,17 +4705,18 @@ fn wait_idle_between_cycles(
     server: &crate::inventory::ServerId,
     carry: &mut Carry,
     interval: Duration,
+    pace: &mut impl Pace,
 ) {
     // Decided ONCE: the target set is the verdict cycle's to change, so a
     // daemon with none sleeps exactly as it did before adoption existed.
     if carry.adoption.targets.is_empty() {
-        std::thread::sleep(interval);
+        pace.sleep(interval);
         return;
     }
-    let started = Instant::now();
+    let started = pace.now();
     let mut failures = 0_u8;
     loop {
-        let remaining = interval.saturating_sub(started.elapsed());
+        let remaining = interval.saturating_sub(pace.now().saturating_duration_since(started));
         if remaining.is_zero() {
             break;
         }
@@ -4694,77 +4731,201 @@ fn wait_idle_between_cycles(
         if !landed {
             let failed = motion_failure(failures);
             failures = failed.0;
-            let remaining = interval.saturating_sub(started.elapsed());
+            let remaining = interval.saturating_sub(pace.now().saturating_duration_since(started));
             if failed.1 {
-                std::thread::sleep(remaining);
+                pace.sleep(remaining);
                 break;
             }
-            std::thread::sleep(ADOPTION_TICK.min(remaining));
+            pace.sleep(ADOPTION_TICK.min(remaining));
             continue;
         }
         failures = 0;
         carry.adoption = adoption;
-        let remaining = interval.saturating_sub(started.elapsed());
-        std::thread::sleep(ADOPTION_TICK.min(remaining));
+        let remaining = interval.saturating_sub(pace.now().saturating_duration_since(started));
+        pace.sleep(ADOPTION_TICK.min(remaining));
     }
 }
 
 /// Wait for the next verdict cycle while keeping the fleet strip fresh at
 /// the observation cadence, without animation frames. Same three-failure
-/// rule as the animated ticker.
+/// rule as the animated ticker: the same [`MotionTicker`], which takes its
+/// static arm from the look.
 fn wait_static_between_cycles(
     server: &crate::inventory::ServerId,
     session: &str,
     carry: &mut Carry,
     look: &Look,
     interval: Duration,
+    pace: &mut impl Pace,
 ) {
-    let started = Instant::now();
-    let mut cadence = static_observe_cadence(&carry.motion.panes);
-    let mut failures = 0_u8;
-    let mut adopted_at: Option<Instant> = None;
-    loop {
-        let remaining = interval.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            break;
+    run_ticker(server, session, carry, look, interval, pace);
+}
+
+/// What one ticker iteration asks of the interval loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TickNext {
+    /// Rest this long before the next tick; the loop caps it at the interval's
+    /// remainder.
+    after: Duration,
+    /// The failure limit was reached: rest the remainder of the interval
+    /// without further motion work.
+    stopped: bool,
+}
+
+/// The motion ticker between two verdict cycles: the state it commits and
+/// the memory it schedules by. One is made per interval from the carry.
+#[derive(Debug, Clone)]
+struct MotionTicker {
+    /// The committed motion observation and write-on-change memory.
+    motion: MotionState,
+    /// The committed adoption targets and their write-on-change memory.
+    adoption: Adoption,
+    /// Consecutive failed ticks.
+    failures: u8,
+    /// The cadence the last observation chose; `None` before the first tick.
+    cadence: Option<Duration>,
+    /// Animated ticks since the last observation.
+    ticks_since_observation: u8,
+    /// When the adopted strips were last drawn.
+    adopted_at: Option<Instant>,
+}
+
+impl MotionTicker {
+    /// A ticker starting from the carry's committed state.
+    const fn new(motion: MotionState, adoption: Adoption) -> Self {
+        Self {
+            motion,
+            adoption,
+            failures: 0,
+            cadence: None,
+            ticks_since_observation: MOTION_OBSERVATION_TICKS,
+            adopted_at: None,
         }
-        let mut next = carry.motion.clone();
-        let mut adoption = carry.adoption.clone();
-        let reading = transport::observe_motion_panes(server, session);
-        let fleet = transport::observe_fleet_listing(server);
-        let (Some(reading), Some(fleet)) = (reading, fleet) else {
-            let failed = motion_failure(failures);
-            failures = failed.0;
-            let remaining = interval.saturating_sub(started.elapsed());
-            if failed.1 {
-                std::thread::sleep(remaining);
-                break;
+    }
+
+    /// One tick: observe when due, publish what changed, commit what landed.
+    /// `look` picks the arm — animated frames, or the static observer for
+    /// `motion = off`.
+    fn tick(
+        &mut self,
+        server: &crate::inventory::ServerId,
+        session: &str,
+        look: &Look,
+        now: Instant,
+    ) -> TickNext {
+        if ticker_mode(Some(look)) == TickerMode::Static {
+            self.tick_static(server, session, look, now)
+        } else {
+            self.tick_animated(server, session, look, now)
+        }
+    }
+
+    fn tick_animated(
+        &mut self,
+        server: &crate::inventory::ServerId,
+        session: &str,
+        look: &Look,
+        now: Instant,
+    ) -> TickNext {
+        let cadence = *self.cadence.get_or_insert(ATTACHED_MOTION_TICK);
+        let mut next = self.motion.clone();
+        // STAGED like the motion state beside it: a batch tmux refused must
+        // leave both write-on-change memories where they were.
+        let mut adoption = self.adoption.clone();
+        let mut adopted: Vec<tmux::OptionWrite> = Vec::new();
+        let observed = motion_observation_due(self.ticks_since_observation);
+        let mut cadence = cadence;
+        if observed {
+            let Some((reading, fleet)) =
+                transport::exchange_motion(server, session, true, &[]).reading
+            else {
+                let failed = motion_failure(self.failures);
+                self.failures = failed.0;
+                return TickNext {
+                    after: cadence,
+                    stopped: failed.1,
+                };
+            };
+            cadence = motion_cadence(&reading);
+            self.cadence = Some(cadence);
+            next.replace_observation(reading, &fleet, &self.adoption.known, session);
+            // Adoption's own cadence, inside the branch that just read the
+            // fleet: one listing per tick, never two, and never a frame this
+            // daemon's own attachment gates.
+            if adoption_due(&mut self.adopted_at, now) {
+                adopted = adoption_writes(&mut adoption, &fleet, &next.fleet_order);
             }
-            std::thread::sleep(cadence.min(remaining));
-            continue;
+        }
+        let mut writes = next.step(look);
+        writes.extend(adopted);
+        if transport::exchange_motion(server, session, false, &writes).published == Some(false) {
+            self.ticks_since_observation = MOTION_OBSERVATION_TICKS;
+            let failed = motion_publish_failure(self.failures, observed);
+            self.failures = failed.0;
+            return TickNext {
+                after: cadence,
+                stopped: failed.1,
+            };
+        }
+        self.failures = 0;
+        self.motion = next;
+        self.adoption = adoption;
+        self.ticks_since_observation = if cadence == DETACHED_MOTION_TICK {
+            MOTION_OBSERVATION_TICKS
+        } else if observed {
+            1
+        } else {
+            self.ticks_since_observation.saturating_add(1)
         };
-        cadence = static_observe_cadence(&reading);
-        next.replace_observation(reading, &fleet, &carry.adoption.known, session);
+        TickNext {
+            after: cadence,
+            stopped: false,
+        }
+    }
+
+    fn tick_static(
+        &mut self,
+        server: &crate::inventory::ServerId,
+        session: &str,
+        look: &Look,
+        now: Instant,
+    ) -> TickNext {
+        let cadence = *self
+            .cadence
+            .get_or_insert_with(|| static_observe_cadence(&self.motion.panes));
+        let mut next = self.motion.clone();
+        let mut adoption = self.adoption.clone();
+        let Some((reading, fleet)) = transport::exchange_motion(server, session, true, &[]).reading
+        else {
+            let failed = motion_failure(self.failures);
+            self.failures = failed.0;
+            return TickNext {
+                after: cadence,
+                stopped: failed.1,
+            };
+        };
+        let cadence = static_observe_cadence(&reading);
+        self.cadence = Some(cadence);
+        next.replace_observation(reading, &fleet, &self.adoption.known, session);
         let mut writes = next.step_static(look);
-        if adoption_due(&mut adopted_at, Instant::now()) {
+        if adoption_due(&mut self.adopted_at, now) {
             writes.extend(adoption_writes(&mut adoption, &fleet, &next.fleet_order));
         }
-        if !writes.is_empty() && !transport::publish_options(server, &writes) {
-            let failed = motion_publish_failure(failures, true);
-            failures = failed.0;
-            let remaining = interval.saturating_sub(started.elapsed());
-            if failed.1 {
-                std::thread::sleep(remaining);
-                break;
-            }
-            std::thread::sleep(cadence.min(remaining));
-            continue;
+        if transport::exchange_motion(server, session, false, &writes).published == Some(false) {
+            let failed = motion_publish_failure(self.failures, true);
+            self.failures = failed.0;
+            return TickNext {
+                after: cadence,
+                stopped: failed.1,
+            };
         }
-        failures = 0;
-        carry.motion = next;
-        carry.adoption = adoption;
-        let remaining = interval.saturating_sub(started.elapsed());
-        std::thread::sleep(cadence.min(remaining));
+        self.failures = 0;
+        self.motion = next;
+        self.adoption = adoption;
+        TickNext {
+            after: cadence,
+            stopped: false,
+        }
     }
 }
 
@@ -4959,6 +5120,13 @@ struct Carry {
     /// look either, and a default would be that same guess — so nothing which
     /// depends on the look is published at all until one arrives.
     look: Option<Look>,
+    /// The wake channel this cycle's publication proved installed on this
+    /// session, and `None` when it did not: no waiter is held without it.
+    #[allow(
+        dead_code,
+        reason = "P0a seam: the interval loop reads it once the wake leg lands (P3)"
+    )]
+    wake: Option<String>,
 }
 
 impl Carry {
@@ -4976,6 +5144,7 @@ impl Carry {
             trust_noted: Vec::new(),
             effort: crate::effort::leg::Carry::default(),
             look: None,
+            wake: None,
         }
     }
 
@@ -7339,69 +7508,68 @@ impl Cycle<'_> {
         }
         let look = published.look;
         let set = |name: &str, value: &str| {
-            let _ = transport::publish_option(
-                self.server,
+            tmux::CycleOp::Set(tmux::OptionWrite::new(
                 OptionScope::Session,
                 &session_id,
                 name,
                 value,
-            );
+            ))
         };
-        set(tmux::WATCHDOG_STATUS_OPTION, &watch_segment(published));
+        let unset = |name: &str| tmux::CycleOp::Unset {
+            scope: OptionScope::Session,
+            target: session_id.clone(),
+            name: name.to_owned(),
+        };
+        let mut ops = vec![set(tmux::WATCHDOG_STATUS_OPTION, &watch_segment(published))];
         // THE SESSION'S OWN ATTENTION, published as three facts: the glyph it
         // draws with, the rank another session's strip sorts on, and the style
         // its name segment is drawn in. Any session on this server can read
         // them, which is what makes the strip one tmux call rather than a walk
         // of every session's state.
-        set(
+        ops.push(set(
             theme::ATTENTION_GLYPH_OPTION,
             published.attention.glyph(look.icons),
-        );
-        set(
+        ));
+        ops.push(set(
             theme::ATTENTION_RANK_OPTION,
             &published.attention.rank().to_string(),
-        );
-        set(
+        ));
+        ops.push(set(
             theme::ATTENTION_STYLE_OPTION,
             &theme::attention_style(&look.palette, published.attention),
-        );
-        match published.agents {
+        ));
+        ops.push(match published.agents {
             Some(agents) => set(theme::AGENTS_OPTION, agents),
-            None => {
-                let _ = transport::clear_option(
-                    self.server,
-                    OptionScope::Session,
-                    &session_id,
-                    theme::AGENTS_OPTION,
-                );
-            }
-        }
+            None => unset(theme::AGENTS_OPTION),
+        });
         // The GOAL, ahead of the path on the right: what this session is for
         // outranks where its files are, and the path is the fact the reader's
         // own shell prompt already carries.
-        match self
-            .goal
-            .as_deref()
-            .map(str::trim)
-            .filter(|g| !g.is_empty())
-        {
-            Some(goal) => set(
-                theme::GOAL_OPTION,
-                &format!(" {}", theme::bar_text(goal, theme::GOAL_WIDTH)),
-            ),
-            None => {
-                let _ = transport::clear_option(
-                    self.server,
-                    OptionScope::Session,
-                    &session_id,
+        ops.push(
+            match self
+                .goal
+                .as_deref()
+                .map(str::trim)
+                .filter(|g| !g.is_empty())
+            {
+                Some(goal) => set(
                     theme::GOAL_OPTION,
-                );
-            }
-        }
+                    &format!(" {}", theme::bar_text(goal, theme::GOAL_WIDTH)),
+                ),
+                None => unset(theme::GOAL_OPTION),
+            },
+        );
         // The core THIS daemon runs on. An upgrade restarts the daemon on the
         // new core, so the value moves with the install and never with a launch.
-        set(theme::VERSION_OPTION, &crate::version_line());
-        self.publish_fleet(look, carry, table);
+        ops.push(set(theme::VERSION_OPTION, &crate::version_line()));
+        let batch = tmux::CycleBatch {
+            session: session_id.clone(),
+            channel: None,
+            ops,
+        };
+        let outcome = transport::publish_cycle(self.server, &batch);
+        carry.wake = batch.channel.filter(|_| outcome.hook_proven);
+        self.publish_fleet(look, carry, table, &session_id, published.attention);
         self.publish_windows(published, &mut carry.motion);
     }
 
@@ -7413,10 +7581,19 @@ impl Cycle<'_> {
     /// the read that happens every cycle whatever the ticker is doing, so it is
     /// the only place a daemon with no targets — and therefore no tick of its
     /// own — can ever discover its first one.
-    fn publish_fleet(&self, look: &Look, carry: &mut Carry, table: Option<&[procs::Proc]>) {
-        let Some(sessions) = transport::observe_fleet_listing(self.server) else {
+    fn publish_fleet(
+        &self,
+        look: &Look,
+        carry: &mut Carry,
+        table: Option<&[procs::Proc]>,
+        session_id: &str,
+        attention: Mark,
+    ) {
+        let Some(mut sessions) = transport::observe_fleet_listing(self.server) else {
             return;
         };
+        // This cycle's own rank, whatever the listing caught of it.
+        overlay_current_rank(&mut sessions, session_id, attention);
         // A listing that did not answer is not evidence that a peer is gone, so
         // the enumeration is simply not run and the adoption already held
         // stands until the next cycle.

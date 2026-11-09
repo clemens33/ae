@@ -1379,6 +1379,30 @@ pub(crate) fn set_options_args(server: &ServerId, writes: &[OptionWrite]) -> Vec
     args
 }
 
+/// One operation a verdict cycle publishes: an option value, or its removal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CycleOp {
+    /// `set-option` of one value.
+    Set(OptionWrite),
+    /// `set-option -u` of one user option.
+    Unset {
+        scope: OptionScope,
+        target: String,
+        name: String,
+    },
+}
+
+/// What one verdict cycle publishes, in the order it decided it.
+///
+/// `session` is the `$<n>` id the wake hook belongs to and `channel` the
+/// wake channel to install it for; `None` installs no hook.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CycleBatch {
+    pub(crate) session: String,
+    pub(crate) channel: Option<String>,
+    pub(crate) ops: Vec<CycleOp>,
+}
+
 /// Remove one user option from `target` — `set-option -u`.
 #[must_use]
 pub fn unset_option_args(

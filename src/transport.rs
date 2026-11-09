@@ -1339,6 +1339,138 @@ pub(crate) fn publish_options(server: &ServerId, writes: &[tmux::OptionWrite]) -
     run(PROGRAM, &tmux::set_options_args(server, writes)).0
 }
 
+/// What one verdict cycle's publication proved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CycleOutcome {
+    /// The wake hook is installed on the batch's session.
+    pub(crate) hook_proven: bool,
+    /// Whether each operation landed, index for index with the batch's ops.
+    pub(crate) landed: Vec<bool>,
+}
+
+/// Publish one verdict cycle's operations.
+///
+/// P0a: today's shape — one tmux process per operation, each with the argv
+/// its old call site used, and no wake hook installed.
+#[must_use]
+pub(crate) fn publish_cycle(server: &ServerId, batch: &tmux::CycleBatch) -> CycleOutcome {
+    let landed = batch
+        .ops
+        .iter()
+        .map(|op| match op {
+            tmux::CycleOp::Set(write) => {
+                addressable(server)
+                    && run(
+                        PROGRAM,
+                        &tmux::set_options_args(server, std::slice::from_ref(write)),
+                    )
+                    .0
+            }
+            tmux::CycleOp::Unset {
+                scope,
+                target,
+                name,
+            } => clear_option(server, *scope, target, name),
+        })
+        .collect();
+    CycleOutcome {
+        hook_proven: false,
+        landed,
+    }
+}
+
+/// How a wait for this session's attach ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "P0a seam: only TimedOut exists before the wake leg lands (P3)"
+)]
+pub(crate) enum Waited {
+    /// The read before the wait saw a client on the session.
+    Attached,
+    /// The channel was signalled.
+    Woke,
+    /// The deadline passed; the waiter was killed and reaped.
+    TimedOut,
+    /// The waiter did not start, or its read did not answer.
+    Failed,
+}
+
+/// Wait until `session` on `server` has a client, `channel` is signalled, or
+/// `deadline` passes.
+///
+/// P0a: no wake mechanism exists yet, so this rests until the deadline — what
+/// a detached interval amounts to today — and reports `TimedOut`.
+#[allow(
+    dead_code,
+    reason = "P0a seam: the production wait lands with the wake leg (P3)"
+)]
+pub(crate) fn run_tmux_wait(
+    _server: &ServerId,
+    _session: &str,
+    _channel: &str,
+    deadline: std::time::Instant,
+) -> Waited {
+    std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
+    Waited::TimedOut
+}
+
+/// The ownership proofs one verdict cycle reads, in the order asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PeerOwnershipRead {
+    /// The socket path this server answered with, when the read asked it.
+    pub(crate) socket: Option<String>,
+    /// Every requested peer, with its proof or `None`.
+    pub(crate) peers: Vec<(String, Option<SessionOwnership>)>,
+}
+
+/// Read the ownership pair of every peer in `peers` on `server`.
+///
+/// P0a: today's reads — two per peer, and no socket read of its own.
+#[must_use]
+pub(crate) fn observe_peer_ownership(server: &ServerId, peers: &[String]) -> PeerOwnershipRead {
+    PeerOwnershipRead {
+        socket: None,
+        peers: peers
+            .iter()
+            .map(|peer| (peer.clone(), observe_session_ownership(server, peer)))
+            .collect(),
+    }
+}
+
+/// What one motion exchange observed and published, kept apart: a reading
+/// that completed stands even when the writes after it were refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MotionExchange {
+    /// The pane and fleet listings, or `None` when either did not answer.
+    pub(crate) reading: Option<(Vec<tmux::MotionPane>, Vec<tmux::FleetListingRow>)>,
+    /// `None` when there was nothing to write; else whether the writes landed.
+    pub(crate) published: Option<bool>,
+}
+
+/// The motion ticker's I/O: read `session`'s panes and the fleet when
+/// `observe`, and publish `writes`.
+///
+/// P0a: today's shape — the two listings as two processes, then the writes as
+/// one batched process.
+#[must_use]
+pub(crate) fn exchange_motion(
+    server: &ServerId,
+    session: &str,
+    observe: bool,
+    writes: &[tmux::OptionWrite],
+) -> MotionExchange {
+    let reading = if observe {
+        let panes = observe_motion_panes(server, session);
+        let fleet = observe_fleet_listing(server);
+        panes.zip(fleet)
+    } else {
+        None
+    };
+    let published = (!writes.is_empty()).then(|| publish_options(server, writes));
+    MotionExchange { reading, published }
+}
+
 /// Remove one user option from `target`.
 #[must_use]
 pub fn clear_option(server: &ServerId, scope: tmux::OptionScope, target: &str, name: &str) -> bool {
