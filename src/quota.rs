@@ -22,6 +22,14 @@ pub mod view;
 #[path = "quota/pace_history_spec.rs"]
 mod pace_history_spec;
 
+#[cfg(test)]
+#[path = "quota/credits_spec.rs"]
+mod credits_spec;
+
+#[cfg(test)]
+#[path = "quota/credits_api_spec.rs"]
+mod credits_api_spec;
+
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
@@ -162,7 +170,9 @@ pub enum Credits {
     Unreported,
     /// Credits are declared unlimited, so a window percentage does not bind.
     Unlimited,
-    /// A spendable balance, kept as the vendor's own literal.
+    /// A spendable balance: the vendor's plain decimal literal, normalized
+    /// exactly by [`normalize_balance`] and never longer than
+    /// [`CREDIT_BALANCE_MAX`].
     Available(String),
     /// Credits are available in an amount the client did not state in a form
     /// ae can show exactly. A clipped literal is a different number, so the
@@ -202,7 +212,19 @@ impl Account {
         matches!(self.spend_control_reached, Some(true))
     }
 
-    /// Whether an unlimited-credit claim may relieve a window observed at
+    /// Whether the account reports credits work can run on: unlimited, a
+    /// balance above zero, or credits available in an unstated amount. These
+    /// are the second pool beside the window percentage.
+    #[must_use]
+    pub fn credits_usable(&self) -> bool {
+        match &self.credits {
+            Credits::Unlimited | Credits::AvailableUnknown => true,
+            Credits::Available(balance) => balance.bytes().any(|byte| matches!(byte, b'1'..=b'9')),
+            Credits::Unreported | Credits::Exhausted => false,
+        }
+    }
+
+    /// Whether a usable-credit claim may relieve a window observed at
     /// `window`.
     ///
     /// Credits are the one account fact that ADDS apparent headroom, so the
@@ -211,7 +233,7 @@ impl Account {
     /// says nothing at all.
     #[must_use]
     pub fn credits_relieve(&self, window: Option<i64>) -> bool {
-        self.credits == Credits::Unlimited
+        self.credits_usable()
             && match (self.credits_observed_at, window) {
                 (Some(credits), Some(window)) => credits >= window,
                 _ => false,
@@ -303,6 +325,33 @@ impl Policy {
 /// one is reported as available-without-an-amount, never clipped.
 pub(crate) const CREDIT_BALANCE_MAX: usize = 9;
 
+/// A vendor balance literal that is a plain non-negative decimal, normalized
+/// exactly: trailing fractional zeros dropped, then a bare trailing dot. The
+/// value never changes and nothing is rounded. Any other spelling is `None`.
+///
+/// The accepted spelling is the unsigned half of `machine::decimal`'s rule
+/// (digits, no leading zero on the whole part, a non-empty fraction), so a
+/// stored [`Credits::Available`] literal always renders as a JSON number.
+#[must_use]
+pub(crate) fn normalize_balance(literal: &str) -> Option<String> {
+    let (whole, fraction) = match literal.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (literal, None),
+    };
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    let plain =
+        digits(whole) && (whole == "0" || !whole.starts_with('0')) && fraction.is_none_or(digits);
+    if !plain {
+        return None;
+    }
+    Some(
+        match fraction.map(|fraction| fraction.trim_end_matches('0')) {
+            Some(kept) if !kept.is_empty() => format!("{whole}.{kept}"),
+            _ => whole.to_owned(),
+        },
+    )
+}
+
 /// The percentage ae judges a window by, and how it got there.
 ///
 /// The raw window percentage answers "how much of this window is gone", which
@@ -316,6 +365,9 @@ pub(crate) enum Effective {
     Resets { resets: u8, percent: f64 },
     /// Credits are unlimited, so the window does not constrain new work.
     Unlimited,
+    /// A usable credit balance carries the window: it binds no threshold
+    /// while credits last, but its own percentage `used` stays visible.
+    Credits { used: f64 },
     /// The account's spend control is reached: no headroom at any window.
     SpendCapped,
 }
@@ -326,8 +378,17 @@ impl Effective {
         match self {
             Self::Raw => used,
             Self::Resets { percent, .. } => percent,
-            Self::Unlimited => 0.0,
+            Self::Unlimited | Self::Credits { .. } => 0.0,
             Self::SpendCapped => 100.0,
+        }
+    }
+
+    /// The percentage a reader is shown: the judged one, except that a window
+    /// carried by a credit balance keeps its own visible percentage.
+    pub(crate) fn shown(self, used: f64) -> f64 {
+        match self {
+            Self::Credits { used } => used,
+            _ => self.judged(used),
         }
     }
 
@@ -340,6 +401,7 @@ impl Effective {
                 format!("{} x{resets}", percent_label(&format!("{percent:.1}")))
             }
             Self::Unlimited => "0%".to_owned(),
+            Self::Credits { used } => format!("{} cr", percent_label(&format!("{used:.1}"))),
             Self::SpendCapped => "100%".to_owned(),
         }
     }
@@ -353,19 +415,28 @@ impl Effective {
                 percent_label(&format!("{percent:.1}"))
             )),
             Self::Unlimited => Some("credits unlimited".to_owned()),
+            Self::Credits { .. } => Some(CREDITS_DERIVATION.to_owned()),
             Self::SpendCapped => Some("spend cap reached".to_owned()),
         }
     }
 }
 
+/// How a window carried by a credit balance is named.
+const CREDITS_DERIVATION: &str = "runs on credits";
+
 /// Derive the judged headroom for one window from what was declared and
-/// reported. A spend cap outranks credits, which outrank declared resets.
+/// reported. A spend cap outranks usable credits, which outrank declared
+/// resets.
 pub(crate) fn effective(policy: &Policy, used: f64, window: Option<i64>) -> Effective {
     if policy.account.spend_capped() {
         return Effective::SpendCapped;
     }
     if policy.account.credits_relieve(window) {
-        return Effective::Unlimited;
+        return if policy.account.credits == Credits::Unlimited {
+            Effective::Unlimited
+        } else {
+            Effective::Credits { used }
+        };
     }
     match policy.manual_resets {
         Some(resets) => Effective::Resets {
@@ -415,6 +486,12 @@ impl Derived {
         self.effective.judged(self.used)
     }
 
+    /// The percentage a reader is shown: [`Self::judged`], except that a
+    /// window carried by a credit balance keeps its own percentage.
+    pub(crate) fn shown(self) -> f64 {
+        self.effective.shown(self.used)
+    }
+
     /// The EFFECTIVE cell the table renders.
     pub(crate) fn cell(self) -> String {
         self.effective.cell()
@@ -429,6 +506,7 @@ impl Derived {
             Effective::Raw | Effective::Resets { resets: 0, .. } => judged(),
             Effective::Resets { resets, .. } => format!("{} x{resets}", judged()),
             Effective::Unlimited => "0% unlimited".to_owned(),
+            Effective::Credits { used } => format!("{} credits", pct_label(used)),
             Effective::SpendCapped => "100% spend-cap".to_owned(),
         }
     }
@@ -563,6 +641,7 @@ pub(crate) fn history_sample(
         Effective::Raw | Effective::Resets { resets: 0, .. } => "raw",
         Effective::Resets { .. } => "resets",
         Effective::Unlimited => "unlimited",
+        Effective::Credits { .. } => "credits",
         Effective::SpendCapped => "spend-cap",
     };
     Some(history::Sample {
@@ -1556,7 +1635,15 @@ impl Observation {
             .window_minutes
             .map_or_else(|| "-".to_owned(), window_label);
         let used = advisory_percent(row.used_percent.as_deref());
-        let derivation = reading.derived().derivation();
+        let derived = reading.derived();
+        // A window on a credit balance names the balance it runs on: the
+        // presentation joins two facts of this one reading, judging nothing.
+        let derivation = match (derived.effective, &reading.policy.account.credits) {
+            (Effective::Credits { .. }, Credits::Available(balance)) => {
+                Some(format!("{CREDITS_DERIVATION} {balance}"))
+            }
+            _ => derived.derivation(),
+        };
         Advisory {
             tool: group.tool,
             scope,
@@ -1751,7 +1838,9 @@ impl SettingsScope {
     ) -> view::Window {
         let row = &reading.reading.row;
         let derived = derived(&self.policy, row);
-        let judged = derived.map(Derived::judged);
+        // The SHOWN percentage: the judged one, except that a window a credit
+        // balance carries keeps its own figure, so the bar never reads empty.
+        let judged = derived.map(Derived::shown);
         let raw = derived.map(|derived| pct_label(derived.used));
         // COUNTS names the judged percentage only where it reads differently
         // from the vendor's: a reset in hand that saturates at 100% moved
@@ -1763,6 +1852,7 @@ impl SettingsScope {
         let why = derived.and_then(|derived| match derived.effective {
             Effective::Resets { resets, .. } if resets > 0 => Some(view::Why::Resets(resets)),
             Effective::Unlimited => Some(view::Why::Unlimited),
+            Effective::Credits { .. } => Some(view::Why::Credits),
             Effective::SpendCapped => Some(view::Why::SpendCap),
             Effective::Raw | Effective::Resets { .. } => None,
         });
@@ -1790,14 +1880,17 @@ impl SettingsScope {
 
     /// How fast this window fills, read from the ONE verdict the `PACE` column draws: no
     /// second rate, and no burn where the judged percentage is already settled by an
-    /// account constraint (unlimited credits, a spend cap).
+    /// account fact (unlimited credits, a credit balance carrying the window, a spend cap).
     fn burn_view(
         &self,
         pace: &pace::PaceTable,
         row: &Row,
         why: Option<view::Why>,
     ) -> Option<view::Burn> {
-        if matches!(why, Some(view::Why::Unlimited | view::Why::SpendCap)) {
+        if matches!(
+            why,
+            Some(view::Why::Unlimited | view::Why::Credits | view::Why::SpendCap)
+        ) {
             return None;
         }
         let Some(source) = self.group.source.as_deref() else {
@@ -4891,7 +4984,7 @@ fn collect_notes(notes: &mut Vec<String>, group: &Group) {
     }
 }
 
-/// Say once why a reported unlimited-credit claim did not relieve this scope.
+/// Say once why a reported usable-credit claim did not relieve this scope.
 ///
 /// The claim is simply not used. Every other rule still applies to each window
 /// here, so the note says what was ignored rather than what `EFFECTIVE` shows:
@@ -4899,9 +4992,17 @@ fn collect_notes(notes: &mut Vec<String>, group: &Group) {
 fn untrusted_credit_note(group: &Group) -> Option<String> {
     let newest = group.rows.iter().filter_map(|row| row.observed_at).max();
     let account = &group.policy.account;
-    (account.credits == Credits::Unlimited && !account.credits_relieve(newest)).then(|| {
-        "credits unlimited was reported older than the newest window here, so the claim is ignored; EFFECTIVE follows the remaining rules".to_owned()
-    })
+    if !account.credits_usable() || account.credits_relieve(newest) {
+        return None;
+    }
+    let claim = match &account.credits {
+        Credits::Available(balance) => balance.as_str(),
+        Credits::AvailableUnknown => "available",
+        _ => "unlimited",
+    };
+    Some(format!(
+        "credits {claim} was reported older than the newest window here, so the claim is ignored; EFFECTIVE follows the remaining rules"
+    ))
 }
 
 /// The EFFECTIVE cell for one window, or `None` when its percentage is absent.
@@ -6787,8 +6888,8 @@ mod tests {
         );
         assert_eq!(
             case(None, &balance, 95.0),
-            ("-".to_owned(), 95.0),
-            "an unquantifiable balance never invents headroom"
+            ("95% cr".to_owned(), 0.0),
+            "a usable balance carries the window: no threshold binds, its percentage stays shown"
         );
         let label = |account: &Account| credits_label(&Policy::new(None, account.clone()));
         assert_eq!(label(&plain), "-");
@@ -7166,6 +7267,35 @@ mod tests {
             (Some("10m"), Some("1m"))
         );
         assert_eq!(scope.windows[1].counts.as_deref(), Some("6%"));
+    }
+
+    #[test]
+    fn a_source_less_window_states_no_burn_once_an_account_fact_settles_it() {
+        let burn = |credits: Credits| {
+            let mut group = declared_group(None, "96");
+            group.source = None;
+            group.policy = Policy::new(
+                None,
+                Account {
+                    credits,
+                    credits_observed_at: Some(9_900),
+                    ..Account::default()
+                },
+            );
+            viewed(vec![group])[0].windows[0].burn.clone()
+        };
+        assert_eq!(
+            burn(Credits::Unreported),
+            Some(super::view::Burn::NoHistory),
+            "control: an unsettled window with no source says it has no history"
+        );
+        assert_eq!(burn(Credits::Unlimited), None);
+        assert_eq!(
+            burn(Credits::Available("62500".to_owned())),
+            None,
+            "a balance carrying the window settles it as unlimited credits do"
+        );
+        assert_eq!(burn(Credits::AvailableUnknown), None);
     }
 
     #[test]

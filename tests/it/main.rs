@@ -75,6 +75,7 @@ mod console_p36_spec;
 mod console_p3_spec;
 mod console_replies_spec;
 mod copilot_spec;
+mod credits_doctrine_spec;
 mod daemons;
 mod dechist_spec;
 mod declared_task_spec;

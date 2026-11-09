@@ -58,9 +58,11 @@ would require half your conversation (the hygiene gain is gone). A worker
 starts with fresh context and one brief, preserving the lead's judgment
 context; lower tiers tune shared quota, never create separate headroom. Read
 headroom from `ae quota`'s `EFFECTIVE` column when it is filled in, not from
-the raw window: a declared manual reset or unlimited credits means the client
-is not at its limit, while a `spend-cap` scope is blocked until the cap or the
-credits change. Cut
+the raw window: a declared manual reset, unlimited credits, or a usable credit
+balance means the client is not at its limit, while a `spend-cap` scope is
+blocked until the cap or the credits change. A scope that runs on credits spends
+a paid balance: choose it only when no scope with window headroom fits the task
+and the review rules, and step effort down there. Cut
 independent work into parallel slices with one writer per file. (All of this
 quota guidance assumes the default `[workspace] quota = on`; with `quota = off`
 ae neither tells agents about quota nor advises on it.) Give every

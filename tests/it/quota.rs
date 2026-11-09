@@ -317,10 +317,11 @@ fn ae_quota_json_states_declared_resets_credits_and_a_spend_cap() {
         "\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12.50\"},\"spend_control_reached\":false",
     );
     let scope = first_scope(&run_quota_json(&root));
-    // 95% spread over 1 + 1 windows is 47.5%; the balance keeps its exact digits.
+    // A fresh balance outranks the declared reset: the window runs on credits,
+    // so no threshold binds it, and the balance reads normalized, never rounded.
     assert_eq!(
         scope.get("credits"),
-        ae::json::parse(r#"{"state":"available","balance":12.50}"#)
+        ae::json::parse(r#"{"state":"available","balance":12.5}"#)
             .ok()
             .as_ref()
     );
@@ -328,9 +329,9 @@ fn ae_quota_json_states_declared_resets_credits_and_a_spend_cap() {
     assert_eq!(window.get("used_percent"), Some(&ae::json::Value::Num(95)));
     assert_eq!(
         window.get("effective_percent"),
-        Some(&ae::json::Value::Raw("47.5".to_owned()))
+        ae::json::parse("0").ok().as_ref()
     );
-    assert_eq!(window.get_str("derivation"), Some("x1"));
+    assert_eq!(window.get_str("derivation"), Some("credits"));
     let _ = std::fs::remove_dir_all(&root);
 
     let capped = rig("json-capped");
@@ -491,8 +492,8 @@ fn declared_manual_resets_and_reported_credits_drive_the_effective_columns() {
         "both derived columns are present: {text}"
     );
     assert!(
-        text.contains(" 95%   47.5% x1   12.50"),
-        "one declared reset halves the judged percentage: {text}"
+        text.contains(" 95%   95% cr     12.5 "),
+        "a fresh balance outranks the declared reset and keeps the window shown: {text}"
     );
     assert!(
         text.lines().all(|line| line.chars().count() <= 200),
@@ -2018,6 +2019,8 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         "src/quota/history.rs",
         "src/quota/history/store.rs",
         "src/quota/pace_history_spec.rs",
+        "src/quota/credits_spec.rs",
+        "src/quota/credits_api_spec.rs",
         "src/watchdog_daemon.rs",
         "tests/it/quota.rs",
     ] {
@@ -2046,7 +2049,11 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
     // `history/store.rs` the thirteenth, bounded history file I/O that builds
     // none of those quota values; `pace_history_spec.rs` the fourteenth, the
     // frozen #243 P2 acceptance spec of the history-fed PACE, a test-only
-    // module that builds no policy, level or reading). Two
+    // module that builds no policy, level or reading; `credits_spec.rs` and
+    // `credits_api_spec.rs` the fifteenth and sixteenth, the frozen credits
+    // acceptance specs, test-only modules that build policies and readings
+    // only through `Policy::for_tests`, `Reading::of` and `Classified::first`,
+    // the same constructors every caller uses). Two
     // descendants it cannot see: a module written INLINE inside
     // `src/quota.rs`, because the owner file is skipped whole, and a
     // `#[path]`-attributed module whose file lives outside this directory, which is scanned with the Outside needles and
@@ -2056,7 +2063,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         seen.iter()
             .filter(|name| name.starts_with("src/quota/"))
             .count(),
-        14,
+        16,
         "the quota directory gained or lost a file, and each one needs the \
          child scan: {seen:?}"
     );

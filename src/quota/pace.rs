@@ -324,7 +324,7 @@ impl Pace {
         let derived = Derived::judge(policy, newest.used, Some(newest.observed_at));
         if matches!(
             derived.effective,
-            Effective::Unlimited | Effective::SpendCapped
+            Effective::Unlimited | Effective::Credits { .. } | Effective::SpendCapped
         ) {
             return (Self::Absent, None);
         }

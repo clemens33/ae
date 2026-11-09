@@ -72,6 +72,7 @@ fn derivation(derived: Derived) -> Value {
     match derived.effective {
         Effective::Resets { resets, .. } if resets > 0 => Value::str(format!("x{resets}")),
         Effective::Unlimited => Value::str("unlimited"),
+        Effective::Credits { .. } => Value::str("credits"),
         Effective::SpendCapped => Value::str("spend-cap"),
         Effective::Raw | Effective::Resets { .. } => Value::Null,
     }

@@ -34,6 +34,8 @@ pub enum Why {
     Resets(u8),
     /// Credits are unlimited.
     Unlimited,
+    /// A usable credit balance carries the window.
+    Credits,
     /// The account's spend cap is reached.
     SpendCap,
 }
@@ -76,9 +78,10 @@ pub struct Window {
     pub name: String,
     /// The vendor's own percentage.
     pub raw: Option<String>,
-    /// The judged percentage, only when a derivation moved the label.
+    /// The shown percentage, only when a derivation moved the label: the
+    /// judged one, or the window's own while a credit balance carries it.
     pub counts: Option<String>,
-    /// Filled bar cells of the judged percentage, `0..=8`.
+    /// Filled bar cells of the shown percentage, `0..=8`.
     pub fill: Option<u8>,
     pub why: Option<Why>,
     pub level: Level,
@@ -161,6 +164,8 @@ pub(crate) fn note(window: &Window, long: bool) -> String {
         (Some(Why::Resets(count)), false) => parts.push(format!("{count} resets")),
         (Some(Why::Unlimited), true) => parts.push("credits unlimited".to_owned()),
         (Some(Why::Unlimited), false) => parts.push("unlimited".to_owned()),
+        (Some(Why::Credits), true) => parts.push("runs on credits".to_owned()),
+        (Some(Why::Credits), false) => parts.push("credits".to_owned()),
         (Some(Why::SpendCap), true) => parts.push("spend cap reached".to_owned()),
         (Some(Why::SpendCap), false) => parts.push("spend cap".to_owned()),
         (None, _) => {}

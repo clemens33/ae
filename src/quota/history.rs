@@ -313,7 +313,7 @@ pub fn parse(line: &str) -> Result<Row, Error> {
                     && b.bytes().all(|c| c.is_ascii_digit())
             }))?;
             let derivation = string(&v, "derivation")?;
-            word(&derivation, "raw resets unlimited spend-cap")?;
+            word(&derivation, "raw resets unlimited credits spend-cap")?;
             Ok(Row::Sample(Sample {
                 producer,
                 incarnation,

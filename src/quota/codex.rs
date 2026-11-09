@@ -7,7 +7,7 @@ use crate::json::{self, Value};
 use super::pace::{Point, Series, thin};
 use super::{
     Account, CREDIT_BALANCE_MAX, Credits, FUTURE_SKEW_SECS, ParseError, Row, Status, epoch,
-    freshness, minutes, percent, vendor_timestamp,
+    freshness, minutes, normalize_balance, percent, vendor_timestamp,
 };
 
 /// Readings of one window by (bucket, plan, window minutes).
@@ -196,13 +196,16 @@ fn reported_credits(credits: Option<&Value>) -> Option<Credits> {
     if credits.get("has_credits") != Some(&Value::Bool(true)) {
         return None;
     }
-    // Credits exist. Their amount is shown only when it can be shown exactly.
-    Some(match credits.get_str("balance") {
-        Some(balance) if balance.chars().count() <= CREDIT_BALANCE_MAX => {
-            Credits::Available(balance.to_owned())
-        }
-        Some(_) | None => Credits::AvailableUnknown,
-    })
+    // Credits exist. Their amount is shown only when it can be shown exactly:
+    // a plain decimal, normalized without changing its value, that fits.
+    Some(
+        match credits.get_str("balance").and_then(normalize_balance) {
+            Some(balance) if balance.chars().count() <= CREDIT_BALANCE_MAX => {
+                Credits::Available(balance)
+            }
+            Some(_) | None => Credits::AvailableUnknown,
+        },
+    )
 }
 
 /// One usable spend-control report, or `None` for absent, null or malformed.
@@ -357,7 +360,8 @@ mod tests {
         ));
         assert_eq!(
             balance.account.credits,
-            Credits::Available("12.50".to_owned())
+            Credits::Available("12.5".to_owned()),
+            "the balance literal is normalized exactly"
         );
         assert_eq!(balance.account.spend_control_reached, Some(true));
 
@@ -523,7 +527,7 @@ mod tests {
             );
             assert_eq!(
                 held.credits,
-                Credits::Available("5.00".to_owned()),
+                Credits::Available("5".to_owned()),
                 "{label} still updates the field it does report"
             );
             assert_eq!(
@@ -579,7 +583,7 @@ mod tests {
             .account
             .credits
         };
-        assert_eq!(credits("12.50"), Credits::Available("12.50".to_owned()));
+        assert_eq!(credits("12.50"), Credits::Available("12.5".to_owned()));
         assert_eq!(
             credits("123456789"),
             Credits::Available("123456789".to_owned())

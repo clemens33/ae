@@ -764,8 +764,9 @@ then one indented row per window. A window's name is plain (`Session 5h`, `Weekl
 judged percentage in eighths (`█`/`░`, or `#`/`.` when the session's icons are off), `USED`
 is the vendor's own percentage, and `COUNTS` (`→ 48.5%`) appears only when the judged
 percentage reads differently — a reset in hand, `unlimited` credits or a reached spend cap
-— with `NOTE` naming the reason (`1 reset in hand`, `credits unlimited`, `spend cap
-reached`), the level (`low`, `critical`) and `stale`. `RESETS` is the window-reset
+— with `NOTE` naming the reason (`1 reset in hand`, `credits unlimited`, `runs on credits`,
+`spend cap reached`), the level (`low`, `critical`) and `stale`. A window running on a credit
+balance keeps its vendor percentage, so `COUNTS` stays absent and `NOTE` carries `runs on credits`. `RESETS` is the window-reset
 countdown and `SEEN` the age of the observation. Like `ae quota`, determinable scopes come
 first, most available first: available headroom is 100 minus the worst judged percentage
 among the newest usable fresh or stale readings per window, under the scope's merged account
@@ -1243,7 +1244,10 @@ ae uses only the ones it was told or was given:
   none and simply states that the raw window is the whole story.
 - **Reported credits.** Codex rollouts carry `credits` and `spend_control_reached`. `CREDITS` shows
   the balance literal, `unlimited`, `none`, `available` when credits exist in an amount ae cannot
-  state exactly, or `spend-cap`, and `-` when the client reports nothing.
+  state exactly, or `spend-cap`, and `-` when the client reports nothing. A balance literal that
+  is a plain non-negative decimal reads normalized — trailing fractional zeros dropped, then a bare
+  trailing dot (`62500.0000000000` reads `62500`, `12.50` reads `12.5`) — never rounded or clipped;
+  a literal longer than 9 characters after that, or not a plain decimal, reads `available`.
 
 Account facts are read FIELD by FIELD, each with the stamp of the record that last usably reported
 it. A record moves only the fields it actually asserts, and only when it names its own bucket and
@@ -1253,8 +1257,9 @@ merge applies that rule everywhere — between two records of one read, between 
 scope, and between two cycles of the watchdog — so a later reading can never replace an account
 wholesale. Every ambiguity resolves toward LESS apparent headroom, because overstating headroom is
 what sends work to a client that is already capped. Age alone therefore never lifts a spend cap,
-while an unlimited-credit claim — the one fact that ADDS headroom — relieves a window only when it
-was reported no earlier than that window's own observation. A claim ae will not use is still shown
+while a usable-credit claim — unlimited credits, a balance above zero, or credits available in an
+unstated amount; the one fact that ADDS headroom — relieves a window only when it was reported no
+earlier than that window's own observation. A claim ae will not use is still shown
 in `CREDITS`, with a note under the table saying the claim was ignored; every other rule still
 decides the cells, so a declared reset or a cap may well be what `EFFECTIVE` shows.
 
@@ -1266,7 +1271,8 @@ now. What ae holds is retained evidence, not a current assertion by the vendor.
 `EFFECTIVE` is the percentage ae judges by, and it is `-` whenever nothing was declared or reported.
 With `n` declared resets the same usage is spread over `1 + n` windows, so the cell reads
 `47.5% x1` for a 95% window with one reset in hand. Unlimited credits read `0%`, because the window
-does not bind. A reached spend cap reads `100%` and outranks every declared reset: no window reset
+does not bind. A usable credit balance reads the window's own percentage with a `cr` mark
+(`96% cr`), because the window binds no threshold while credits carry it. A reached spend cap reads `100%` and outranks every declared reset: no window reset
 frees it. The watchdog advisory and the delegation guidance read this percentage, not `USED`.
 
 ### Pace: `PACE`
@@ -1283,7 +1289,7 @@ Maturity is a third of the legacy lookback (a fifth of the window, clamped to
 means one of: the row is not trusted (`unknown`, expired or clock-skewed; a `stale` row up to an
 hour old IS trusted), no reusable local history (agy) or no quota (opencode, muse, gemini, or a
 grok whose log holds no usable window), the account
-is unlimited or spend-capped, another row of the same window is newer or higher (the cell sits
+is unlimited or spend-capped, or the window runs on a credit balance, another row of the same window is newer or higher (the cell sits
 only beside the USED it was computed from; identical rollouts draw one), or that newest row is in
 a rollout the table does not show.
 
@@ -1393,8 +1399,8 @@ exists. Fields are only ever added, under `version`. A new field is absent until
   and the epoch it was reported, where `reported_at` is `null` exactly when the table says only
   `reported` (no stamp, or one in the future). A name, never a capacity: no verdict reads it.
 - `credits.state` is `unreported`, `unlimited`, `available`, `none` or `spend-cap` (the CREDITS
-  cell). `balance` is the vendor's exact decimal literal as a number token, with no float round
-  trip, or `null` when ae holds no exact amount.
+  cell). `balance` is the vendor's decimal literal, normalized as the `CREDITS` cell normalizes
+  it, as a number token, with no float round trip, or `null` when ae holds no exact amount.
 - `summary` is non-`null` on the entry that stands for the table's `+N rollouts not shown` line:
   `hidden_rollouts`, `unreadable_rollouts`, `oldest_observed_at`, `not_read` and `status`. That
   entry has no `windows`.
@@ -1406,8 +1412,8 @@ exists. Fields are only ever added, under `version`. A new field is absent until
   unrounded: the table's EFFECTIVE cell rounds it to one decimal, so a window at 89.96 reads
   `90%` there and `89.96` here, which is the figure a threshold classifies. On a scope with
   nothing declared or reported it equals `used_percent` and `derivation` is `null`, where the
-  cell shows `-`; otherwise `derivation` is `"xN"` (N declared resets), `"unlimited"` or
-  `"spend-cap"`.
+  cell shows `-`; otherwise `derivation` is `"xN"` (N declared resets), `"unlimited"`,
+  `"credits"` (a usable balance carries the window) or `"spend-cap"`.
 - `pace` is `null` where the PACE cell is `-`, else `{"kind":"unknown"}`,
   `{"kind":"bound","per_h":…}` or `{"kind":"rate","per_h":…,"eta_secs":…,"before_reset":…}`,
   rounded exactly as the cell rounds them.
@@ -1531,8 +1537,8 @@ Each session watchdog reuses this bounded local observation every
 sample establishes a
 baseline. Later transitions into `low` (80%), `critical` (95%), or back to `headroom` are pasted to
 that session's main seat and, for a lead-pair, its colead. The thresholds classify the `EFFECTIVE`
-percentage, so a window with a declared reset in hand or unlimited credits does not raise one, and a
-spend-capped scope is critical whatever its window says — the line then names the cap and does not
+percentage, so a window with a declared reset in hand, unlimited credits, or a usable credit balance does
+not raise one, and a spend-capped scope is critical whatever its window says — the line then names the cap and does not
 send the reader to a reset. Each line names the window's reset and, when the scope holds one, its
 account-wide weekly reading (`resets in 25m; weekly 32%`).
 
