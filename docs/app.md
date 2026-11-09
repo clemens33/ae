@@ -919,6 +919,51 @@ store` and rebuilds the store once. Damage met again during that rebuild flashes
 `Statistics: the store was damaged again (<reason>); upkeep stopped`, and the
 upkeep stays stopped until `r` or the next `ae app` run.
 
+The tab has four pages: Spawns, Skills, MCP servers and Tools. `n` and `p`
+page between them, and an open shows Spawns first. The three tool pages count
+observed skill loads, MCP calls and tool calls in the Claude and Codex
+conversations of the seats this state root recorded. Other harnesses are not
+read and show as `unsupported harness (<tool>: <n> conversations not read)`.
+`m` switches between All retained and This session as on Spawns. `]` and `[`
+step to the next or previous filter the shown numbers offer: `all` first, then
+a harness, client, model or effort value. Each page draws its table with a
+Total row and a more line when rows were left out. It adds Detail (item by
+harness, client, model and effort) when the page has detail rows and at least
+40 columns after its left margin. Once the numbers have loaded, notes under
+the table say what is and is not read: `No observed use in covered sources !=
+unused.`
+
+`ae app` keeps the tool counts in the same store, under `<root>/stats/tools/`,
+on the same upkeep thread, the only thread that reads a transcript. The first
+build reads every conversation once, in steps of at most 4 MiB and 256 file
+status reads, and says `Partial: <k> of <n> conversations read` until it
+ends. A later update of a grown file reads the gained bytes, plus at most
+1 MiB to check the last block it read before and at most 1 MiB of a record
+that had no line end yet. A file whose size stayed the same but whose status
+changed is checked block by block over everything read before. A file that
+was rewritten, truncated or replaced, or that fails that check, is read again
+from its start, and `recounting <n> changed` says so while that runs. One
+limit is accepted: an edit before the last checked block together with growth
+in the same round is not seen, because histories are appended to, never
+edited. The page reads only the small store files: at once when it is shown,
+then while it stays shown. `Covers <n> conversations, <first> .. <last>` names
+what the numbers cover. One line per gap follows, each a count and never a
+path, for example `line over cap <n>`, `malformed <n>`, `source gone <n>` or
+`view over cap <n>`.
+
+The store keeps counts and identities, never transcript text: no prompt,
+argument, result or credential, and no path a transcript named (those are
+kept only as digests). It keeps tool, skill and server names, conversation and
+session ids, slots and client labels. The one kind of path it keeps is a root
+ae itself recorded for a seat (the store root, config home and work dir), in
+`tools/sources`. A deleted transcript keeps its counts and shows as
+`source gone <n>`. `r` on the Spawns page rebuilds the whole store from what
+exists, so the counts of deleted transcripts are lost then; on a tool page
+`r` does nothing. The same loss happens without `r` when a conversation's own
+stored record is damaged or in another format: that conversation is rebuilt
+from its present sources, and the page says `rebuilt from source: <n>
+conversations (counts of deleted sources there are lost)` until the next `r`.
+
 Quota and Clients show retained values at once, under a line `last updated <age> ago — refreshing` (the first open of a run says `loading`), and replace them in place when the read lands, the line going with them; a read that fails outright keeps the values under `refresh failed · showing values from <age> ago`. The existing snapshots refresh while Settings is open; config, about and instructions read
 once per open. A torn config shows one honest row naming the file. The
 Instructions head states the residual below: this is today's render, not what
