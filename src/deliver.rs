@@ -1075,7 +1075,7 @@ fn wait_for_quiet_paced(
         if waited >= request.defer {
             return Ok(Some(snapshot));
         }
-        pace.pause(defer_gap(reads, request.defer - waited));
+        pace.pause(defer_gap(reads, request.defer.saturating_sub(waited)));
         reads = reads.saturating_add(1);
     }
 }
@@ -2630,7 +2630,7 @@ mod tests {
     #[test]
     fn the_deferral_backs_off_to_a_cap_and_ends_on_its_deadline() {
         use super::{DEFER_POLL, DEFER_POLL_CAP, defer_gap};
-        let plenty = Duration::from_secs(3600);
+        let plenty = Duration::from_hours(1);
         assert_eq!(
             defer_gap(0, plenty),
             DEFER_POLL,
@@ -2652,7 +2652,7 @@ mod tests {
             if at >= super::DEFAULT_DEFER {
                 break;
             }
-            at += defer_gap(reads, super::DEFAULT_DEFER - at);
+            at += defer_gap(reads, super::DEFAULT_DEFER.saturating_sub(at));
             reads += 1;
         }
         assert_eq!(
@@ -2662,8 +2662,9 @@ mod tests {
         );
         assert_eq!(seen.len(), 11, "reads at {seen:?}");
         assert!(
-            seen.windows(2)
-                .all(|pair| pair[1] - pair[0] <= DEFER_POLL_CAP),
+            seen.windows(2).all(|pair| pair[1]
+                .checked_sub(pair[0])
+                .is_some_and(|gap| gap <= DEFER_POLL_CAP)),
             "no gap passes the cap"
         );
     }
