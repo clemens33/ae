@@ -2496,6 +2496,9 @@ pub(crate) mod fixture_tmux {
 }
 
 #[cfg(test)]
+pub(crate) mod quietwd_spec;
+
+#[cfg(test)]
 mod tests {
     thread_local! {
         static SPAWNS: std::cell::RefCell<Option<Vec<Vec<String>>>> =

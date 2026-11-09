@@ -9374,6 +9374,8 @@ mod activity225_spec;
 #[cfg(test)]
 #[path = "watchdog_daemon/leadfloor2_notice_spec.rs"]
 mod leadfloor2_notice_spec;
+#[cfg(test)]
+mod quietwd_spec;
 
 #[cfg(test)]
 mod tests {
