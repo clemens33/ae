@@ -233,7 +233,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
 | `quota` | Whether ae acts on vendor quota at all (`on` / `off`); absent means `on`. When `off`, agents are never told about quota, the watchdog books no quota advisory, sends no checkpoint ask and renders no quota throttle line, and the settings menu carries no quota entry. While `on`, a scope entering `low` or worse asks every seat on it, once, to write a durable checkpoint before its subscription runs dry. `ae quota` works identically in both states. `off` wins over `quota_every_secs`; the auto reseat chooser then reads no vendor numbers and moves in declared order | `on` |
 | `quota_every_secs` | Watchdog cadence in seconds for the quota observation, rounded to whole watchdog cycles (`0` disables it) | `300` |
-| `idle_nudge_secs` | Continuous positively observed empty-input time before the watchdog reminds the seat (`0` disables) | `300` |
+| `idle_nudge_secs` | Continuous positively observed empty-input time before the watchdog reminds the seat (`0` disables those reminders and the done/wait challenges, not the legacy reminder of a frame ae cannot classify, below) | `300` |
 | `done_confirmations` | Delivered proof challenges a later `done`/`waiting-agent`/`blocked` must answer (`waiting-user` never challenged; a wait proof with no news since is next challenged after two `idle_nudge_secs` periods; `0` disables; range `0`–`9`) | `2` |
 | `auto_reseat` | Which seats the watchdog may move off a vendor usage limit (`off` / `on` / `all`); absent means `off`. `on` moves fixed non-main and spawned seats, `all` moves the main seat too; an orchestrator session's seats never move. Global config only | `off` |
 | `auto_reseat_sessions` | Comma-separated sessions auto reseat acts in; absent means every session. An entry that is not a session name, or is named twice, is ignored with a note | every session |
@@ -819,6 +819,11 @@ effective observation period is the requested seconds rounded up to that grid.
 Idle reminders use `[workspace] idle_nudge_secs`, also persisted at launch and
 validated as unsigned integer seconds. The default is 300; `0` disables idle
 reminders, done challenges included, without disabling legacy stale detection for unmodeled frames.
+That legacy detection nudges a seat whose frame ae cannot classify (a TUI ae does not model, a
+modal, a pane that draws nothing readable) after 15 minutes without pane or event activity, at
+most twice, then raises one alert. `idle_nudge_secs` does not govern it, so a sandbox of fake
+agents still sees those nudges at `0`; its nudge summary reads `no recent ae activity`, never
+`harness waiting at input`.
 `done_confirmations` is persisted too; bad input falls back to 2 with a note. A resumed session
 keeps its recorded value, so config changes apply on relaunch; a session without the row records 2.
 

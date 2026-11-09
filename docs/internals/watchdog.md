@@ -234,7 +234,7 @@ at a shell. **Residual, named not fixed:** on the tools whose TUI ae does not mo
 send cannot see a human's half-typed draft, so an ask may land mid-input there. Modelled tools
 (Claude Code, Codex, Muse) defer on that draft through the existing readiness check.
 
-Launch persists `[workspace] idle_nudge_secs` too (default 300, `0` disables).
+Launch persists `[workspace] idle_nudge_secs` too (default 300, `0` disables the branch 7 reminders and the done/wait challenges; branch 8's legacy Unknown-frame reminder keeps its own 900 s clock and is not this knob's).
 It also persists `done_confirmations` (default 2, range 0–9); zero in either row preserves immediate done.
 `done_confirmations` counts credited proofs, and since #225 the LAST of them may be an OBSERVED
 unchanged proof rather than a later declaration (see *Unchanged proofs* below); the first is always a

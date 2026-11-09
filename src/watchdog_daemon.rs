@@ -14639,6 +14639,53 @@ mod tests {
         assert_eq!(booked.next.idle_since_epoch, due.idle_since_epoch);
     }
 
+    /// `idle_nudge_secs = 0` silences the reminder of a positively idle frame.
+    /// The legacy reminder of a frame ae cannot classify runs on its own
+    /// `stale_secs` clock and is not that knob's (docs/getting-started/config.md):
+    /// a sandbox whose fake agent drew no readable frame was nudged at 15
+    /// minutes under `idle_nudge_secs = 0` for this reason.
+    #[test]
+    fn a_zero_idle_cadence_silences_idle_frames_but_not_the_unknown_frame_reminder() {
+        let off = Knobs {
+            idle_nudge_secs: 0,
+            ..Knobs::default()
+        };
+        let mut idle = seen();
+        idle.harness.frame = crate::harness_state::HarnessState::Idle;
+        let waiting = PaneState {
+            identity: Some(idle.identity),
+            idle_since_epoch: Some(idle.now_epoch - 3600),
+            ..PaneState::default()
+        };
+        assert!(
+            account(&waiting, &idle, &Knobs::default())
+                .effects
+                .contains(&Effect::Nudge),
+            "control: the default cadence nudges this idle seat"
+        );
+        assert!(
+            !account(&waiting, &idle, &off)
+                .effects
+                .contains(&Effect::Nudge),
+            "zero silences the idle-frame reminder"
+        );
+
+        let mut unknown = seen();
+        unknown.last_actor_event_age_secs = off.stale_secs + 1;
+        let silent = PaneState {
+            identity: Some(unknown.identity),
+            prev_hash: Some(unknown.hash),
+            last_hash_change: Some(unknown.now_epoch - i64::try_from(off.stale_secs + 1).unwrap()),
+            ..PaneState::default()
+        };
+        let legacy = account(&silent, &unknown, &off);
+        assert_eq!(legacy.verdict, Verdict::Stale);
+        assert!(
+            legacy.effects.contains(&Effect::Nudge),
+            "zero leaves the legacy reminder of an unclassifiable frame"
+        );
+    }
+
     #[test]
     fn repeated_idle_frames_exhaust_once_and_stay_stale_until_real_recovery() {
         let knobs = Knobs::default();
