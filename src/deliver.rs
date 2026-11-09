@@ -26,8 +26,52 @@ use region::Occupancy;
 /// `AE_SEND_DEFER_SEC`'s default.
 pub const DEFAULT_DEFER: Duration = Duration::from_secs(30);
 
-/// How often the deferral loop re-reads the target.
+/// The first gap between two reads of a held target. A target that frees up
+/// within a second or two is still met within about 0.4 s.
 const DEFER_POLL: Duration = Duration::from_millis(400);
+
+/// The longest gap between two reads of a held target.
+///
+/// Every read of a held target costs tmux children (a capture, a client list
+/// and, under an address guard, three re-proof reads), and a pane that stays
+/// unreadable stays unreadable. A fixed [`DEFER_POLL`] made one refused
+/// delivery read about 75 times in the default 30 s deferral, about 330 tmux
+/// children measured in a sandbox. Doubling to this cap makes it 11 reads:
+/// [`defer_gap`].
+const DEFER_POLL_CAP: Duration = Duration::from_secs(4);
+
+/// The gap after `reads` reads that found the target held: [`DEFER_POLL`],
+/// doubled per read up to [`DEFER_POLL_CAP`], and never past `left`, the
+/// deferral still to run, so the last read lands on the deadline.
+fn defer_gap(reads: u32, left: Duration) -> Duration {
+    let doubled = 1u32.checked_shl(reads).unwrap_or(u32::MAX);
+    DEFER_POLL
+        .saturating_mul(doubled)
+        .min(DEFER_POLL_CAP)
+        .min(left)
+}
+
+/// The deferral loop's clock: the wall clock in production, a virtual one in
+/// the tests, so a whole 30 s deferral can be counted without waiting it out.
+trait Pace {
+    /// Time spent in the deferral so far.
+    fn waited(&self) -> Duration;
+    /// Let `gap` pass.
+    fn pause(&mut self, gap: Duration);
+}
+
+/// The production [`Pace`].
+struct WallClock(Instant);
+
+impl Pace for WallClock {
+    fn waited(&self) -> Duration {
+        self.0.elapsed()
+    }
+
+    fn pause(&mut self, gap: Duration) {
+        std::thread::sleep(gap);
+    }
+}
 
 /// A client's quiet period, past which it is no longer evidence of a human at
 /// the pane.
@@ -851,7 +895,7 @@ impl DeferHeld {
         }
     }
 
-    /// The composer half held — the staged-chip flush's question.
+    /// The composer half held, read or not — the evidence line's question.
     #[must_use]
     pub const fn composer_held(self) -> bool {
         match self {
@@ -976,6 +1020,10 @@ impl Snapshot {
 /// the observed halves so the operator can pick a workaround: a draft wants
 /// waiting, while the attention half holds only while a client keeps the
 /// pane active within its grace window.
+///
+/// The wait lasts the whole deferral, but its reads back off ([`defer_gap`]):
+/// 11 in the default 30 s. A composer read occupied adds ONE settle wait,
+/// [`flush_staged_chip`]; an unreadable one adds none.
 fn wait_for_quiet(
     request: &Request<'_>,
     model: InputModel,
@@ -983,8 +1031,25 @@ fn wait_for_quiet(
     guard: Option<&crate::tracked::AddressGuard<'_>>,
     err: &mut impl Write,
 ) -> io::Result<Option<Snapshot>> {
-    let started = Instant::now();
+    wait_for_quiet_paced(
+        request,
+        (model, tool),
+        guard,
+        &mut WallClock(Instant::now()),
+        err,
+    )
+}
+
+/// [`wait_for_quiet`] on an injected clock.
+fn wait_for_quiet_paced(
+    request: &Request<'_>,
+    (model, tool): (InputModel, Option<ToolKind>),
+    guard: Option<&crate::tracked::AddressGuard<'_>>,
+    pace: &mut impl Pace,
+    err: &mut impl Write,
+) -> io::Result<Option<Snapshot>> {
     let mut flushed = false;
+    let mut reads: u32 = 0;
     loop {
         if !address_check(guard, err)? {
             return Ok(None);
@@ -996,16 +1061,22 @@ fn wait_for_quiet(
         if held == DeferHeld::HumanPrompt {
             return Ok(Some(snapshot)); // only the human clears it: no flush, no wait
         }
-        if held.composer_held() && !flushed && !held.viewed() {
+        // Only a composer POSITIVELY read occupied can hold a chip ae can own:
+        // an unreadable one holds none it can prove, and its settle wait would
+        // poll the pane for the whole deferral for nothing. A later read that
+        // finds the chip still flushes, because `flushed` stays false here.
+        if held == DeferHeld::ComposerOccupied && !flushed {
             flushed = true;
-            let budget = request.defer.saturating_sub(started.elapsed());
+            let budget = request.defer.saturating_sub(pace.waited());
             let chip = (model, budget, Stage::BeforeInput);
             let _ = flush_staged_chip(request.server, request.pane, chip, guard, err)?;
         }
-        if started.elapsed() >= request.defer {
+        let waited = pace.waited();
+        if waited >= request.defer {
             return Ok(Some(snapshot));
         }
-        std::thread::sleep(DEFER_POLL);
+        pace.pause(defer_gap(reads, request.defer - waited));
+        reads = reads.saturating_add(1);
     }
 }
 
@@ -2441,6 +2512,117 @@ mod tests {
             }
             .body_file(),
             "/m/z.txt"
+        );
+    }
+
+    /// A virtual clock: a pause advances it and nothing sleeps.
+    struct Virtual(Duration);
+
+    impl super::Pace for Virtual {
+        fn waited(&self) -> Duration {
+            self.0
+        }
+
+        fn pause(&mut self, gap: Duration) {
+            self.0 += gap;
+        }
+    }
+
+    /// A send refused for an unreadable composer costs the machine a bounded
+    /// number of tmux children. Measured in a sandbox on the unpatched loop,
+    /// a pane ae could not read cost about 330 tmux children per refusal: one
+    /// read every 400 ms for the whole 30 s deferral, five children a read
+    /// with an address guard. The deferral still lasts the whole 30 s and
+    /// still refuses; only the number of reads inside it is bounded: at most
+    /// 12, so at most 60 children with the guard, 24 without it.
+    #[test]
+    fn a_refused_delivery_reads_the_pane_a_bounded_number_of_times() {
+        const MAX_READS: usize = 12;
+        // One capture and one client list per read; the guard's three
+        // re-proof reads are not part of this seam.
+        const CHILDREN_PER_READ: usize = 2;
+        let absent = std::env::temp_dir()
+            .join(format!("ae-defer-{}-absent", std::process::id()))
+            .join("tmux.sock");
+        let server = ServerId::Selected(crate::meta::Selector::Socket(absent));
+        let request = Request {
+            server: &server,
+            ..request("lead", "hello", Shape::Send)
+        };
+        let mut clock = Virtual(Duration::ZERO);
+        let (held, spawns) = crate::transport::spawns_during(|| {
+            super::wait_for_quiet_paced(
+                &request,
+                (InputModel::BorderDelimited, None),
+                None,
+                &mut clock,
+                &mut std::io::sink(),
+            )
+        });
+        let held = held.unwrap();
+        assert_eq!(
+            held.map(|snapshot| snapshot.held),
+            Some(DeferHeld::ComposerUnreadable),
+            "an unreadable composer still refuses"
+        );
+        assert!(
+            clock.0 >= super::DEFAULT_DEFER,
+            "the refusal still waits the whole deferral, waited {:?}",
+            clock.0
+        );
+        assert!(
+            spawns.iter().all(|argv| argv[0] == "tmux"),
+            "the wait reads the pane through tmux alone: {spawns:?}"
+        );
+        assert!(
+            spawns.len() <= MAX_READS * CHILDREN_PER_READ,
+            "one refused delivery spawned {} children; at most {} are allowed",
+            spawns.len(),
+            MAX_READS * CHILDREN_PER_READ
+        );
+    }
+
+    /// The schedule: fast first reads (a target that frees up within a second
+    /// is still met at once), a cap on the gap, and a last read ON the
+    /// deadline, never past it.
+    #[test]
+    fn the_deferral_backs_off_to_a_cap_and_ends_on_its_deadline() {
+        use super::{DEFER_POLL, DEFER_POLL_CAP, defer_gap};
+        let plenty = Duration::from_secs(3600);
+        assert_eq!(
+            defer_gap(0, plenty),
+            DEFER_POLL,
+            "the first gap stays short"
+        );
+        assert_eq!(defer_gap(1, plenty), DEFER_POLL * 2);
+        assert_eq!(defer_gap(2, plenty), DEFER_POLL * 4);
+        for reads in [4, 5, 31, 32, u32::MAX] {
+            assert_eq!(defer_gap(reads, plenty), DEFER_POLL_CAP, "read {reads}");
+        }
+        assert_eq!(
+            defer_gap(9, Duration::from_millis(50)),
+            Duration::from_millis(50)
+        );
+        // Walk the default deferral as the loop does.
+        let (mut at, mut reads, mut seen) = (Duration::ZERO, 0u32, Vec::new());
+        loop {
+            seen.push(at);
+            if at >= super::DEFAULT_DEFER {
+                break;
+            }
+            at += defer_gap(reads, super::DEFAULT_DEFER - at);
+            reads += 1;
+        }
+        assert_eq!(
+            at,
+            super::DEFAULT_DEFER,
+            "the last read lands on the deadline"
+        );
+        assert_eq!(seen.len(), 11, "reads at {seen:?}");
+        assert!(
+            seen.windows(2)
+                .all(|pair| pair[1] - pair[0] <= DEFER_POLL_CAP),
+            "no gap passes the cap"
         );
     }
 
