@@ -53,11 +53,17 @@ fn launch_grace(stamp: crate::tmux::Evidence, now_epoch: i64, interval_secs: u64
     bound.is_some_and(|bound| at <= now_epoch && now_epoch - at < bound)
 }
 
-/// Motion cadence while at least one client can see the session.
-const ATTACHED_MOTION_TICK: Duration = Duration::from_millis(100);
+/// Motion cadence while a client can see a working surface: 5 fps.
+const ATTACHED_MOTION_TICK: Duration = Duration::from_millis(200);
 
-/// Attached animation frames between process and fleet observations.
-const MOTION_OBSERVATION_TICKS: u8 = 5;
+/// The pulse phases one frame advances: every second phase of the 20-phase
+/// [`theme::working_frame`] pulse, so 5 fps keeps its two-second period and
+/// still reaches both the dim and the bright end.
+const FRAME_PHASES: u64 = 2;
+
+/// The attached observation cadence when no frame carries a read: as often as
+/// a client can see the session, and no more.
+const ATTACHED_OBSERVATION: Duration = Duration::from_millis(500);
 
 /// Motion cadence while nobody can see the session.
 const DETACHED_MOTION_TICK: Duration = Duration::from_secs(2);
@@ -3647,27 +3653,47 @@ impl MotionState {
         true
     }
 
-    /// Advance every attached working surface from the cached observation.
-    fn step(&mut self, look: &Look) -> Vec<tmux::OptionWrite> {
-        if !self.panes.iter().any(|pane| pane.session_attached > 0) {
-            return Vec::new();
-        }
-        let working: Vec<&MotionVerdict> = self
-            .verdicts
+    /// The cached verdicts whose pane is a live agent drawing the working mark.
+    /// Field by field, so a caller may advance the spin while it holds them.
+    fn working<'a>(
+        verdicts: &'a [MotionVerdict],
+        panes: &[tmux::MotionPane],
+    ) -> Vec<&'a MotionVerdict> {
+        verdicts
             .iter()
             .filter(|entry| entry.verdict.mark() == Mark::Working)
             .filter(|entry| {
-                self.panes.iter().any(|pane| {
+                panes.iter().any(|pane| {
                     pane.pane_id == entry.pane
                         && pane.agent.as_deref().is_some_and(|agent| {
                             !agent.is_empty() && !NON_AGENT_PANES.contains(&agent)
                         })
                 })
             })
-            .collect();
-        let fleet_working = self.fleet.iter().any(|row| row.mark == Mark::Working);
+            .collect()
+    }
+
+    /// Whether the fleet strip carries a working row, which pulses too.
+    fn fleet_working(&self) -> bool {
+        self.fleet.iter().any(|row| row.mark == Mark::Working)
+    }
+
+    /// Whether [`MotionState::step`] draws a frame from this observation: a
+    /// client can see the session, and something on it is working.
+    fn animates(&self) -> bool {
+        session_attached(&self.panes)
+            && (!Self::working(&self.verdicts, &self.panes).is_empty() || self.fleet_working())
+    }
+
+    /// Advance every attached working surface from the cached observation.
+    fn step(&mut self, look: &Look) -> Vec<tmux::OptionWrite> {
+        if !self.panes.iter().any(|pane| pane.session_attached > 0) {
+            return Vec::new();
+        }
+        let working = Self::working(&self.verdicts, &self.panes);
+        let fleet_working = self.fleet_working();
         if !working.is_empty() || fleet_working {
-            self.spin = self.spin.wrapping_add(1);
+            self.spin = self.spin.wrapping_add(FRAME_PHASES);
         }
         let frame = theme::working_frame(self.spin, &look.palette, look.icons);
         let mut writes = Vec::new();
@@ -4142,9 +4168,11 @@ fn orchestrator_id_for<'a>(
         .map(|entry| entry.id.as_str())
 }
 
-/// Whether the attached ticker must refresh its cached observations now.
-const fn motion_observation_due(ticks_since_observation: u8) -> bool {
-    ticks_since_observation >= MOTION_OBSERVATION_TICKS
+/// Whether a tick that carries no write must still observe: none has been
+/// committed yet, or the last is [`ATTACHED_OBSERVATION`] old. A tick that
+/// writes always observes, because its read rides the same invocation.
+fn motion_observation_due(observed_at: Option<Instant>, now: Instant) -> bool {
+    observed_at.is_none_or(|at| now.saturating_duration_since(at) >= ATTACHED_OBSERVATION)
 }
 
 /// Whether this look permits periodic redraws at all.
@@ -4174,10 +4202,10 @@ const fn ticker_mode(look: Option<&Look>) -> TickerMode {
 }
 
 /// The observation cadence when motion is off: the SAME cadence the
-/// animated ticker observes at — every fifth attached tick, every detached.
+/// animated ticker observes at when nothing animates.
 fn static_observe_cadence(panes: &[tmux::MotionPane]) -> Duration {
     if session_attached(panes) {
-        ATTACHED_MOTION_TICK.saturating_mul(u32::from(MOTION_OBSERVATION_TICKS))
+        ATTACHED_OBSERVATION
     } else {
         DETACHED_MOTION_TICK
     }
@@ -4188,12 +4216,14 @@ fn session_attached(panes: &[tmux::MotionPane]) -> bool {
     panes.iter().any(|pane| pane.session_attached > 0)
 }
 
-/// The next observation cadence from the current attachment reading.
-fn motion_cadence(panes: &[tmux::MotionPane]) -> Duration {
-    if session_attached(panes) {
+/// The animated ticker's next rest from its committed observation: a frame
+/// every [`ATTACHED_MOTION_TICK`] while something visible is working, else
+/// the static observer's cadence.
+fn motion_cadence(state: &MotionState) -> Duration {
+    if state.animates() {
         ATTACHED_MOTION_TICK
     } else {
-        DETACHED_MOTION_TICK
+        static_observe_cadence(&state.panes)
     }
 }
 
@@ -4207,6 +4237,11 @@ const fn motion_failure(prior: u8) -> (u8, bool) {
 /// A write against cached pane identities may fail because the fleet changed
 /// since observation. Refresh it without spending the transport failure
 /// budget; only a write against fresh identities proves a ticker failure.
+///
+/// Every write rides a read and is drawn from the observation before it, so
+/// the identities are fresh once the observation that came with a refused
+/// write has been committed: `observed` is whether the previous publication
+/// was refused too.
 const fn motion_publish_failure(prior: u8, observed: bool) -> (u8, bool) {
     if observed {
         motion_failure(prior)
@@ -4921,8 +4956,11 @@ struct MotionTicker {
     failures: u8,
     /// The cadence the last observation chose; `None` before the first tick.
     cadence: Option<Duration>,
-    /// Animated ticks since the last observation.
-    ticks_since_observation: u8,
+    /// When the last observation committed; `None` before the first.
+    observed_at: Option<Instant>,
+    /// The last publication was refused, so the observation committed with
+    /// it is the fresh one the next write is drawn from.
+    refused: bool,
     /// When the adopted strips were last drawn.
     adopted_at: Option<Instant>,
 }
@@ -4935,14 +4973,15 @@ impl MotionTicker {
             adoption,
             failures: 0,
             cadence: None,
-            ticks_since_observation: MOTION_OBSERVATION_TICKS,
+            observed_at: None,
+            refused: false,
             adopted_at: None,
         }
     }
 
-    /// One tick: observe when due, publish what changed, commit what landed.
-    /// `look` picks the arm — animated frames, or the static observer for
-    /// `motion = off`.
+    /// One tick: publish what the committed observation draws, observe in
+    /// the same invocation, commit what landed. `look` picks the arm —
+    /// animated frames, or the static observer for `motion = off`.
     fn tick(
         &mut self,
         server: &crate::inventory::ServerId,
@@ -4965,59 +5004,18 @@ impl MotionTicker {
         now: Instant,
     ) -> TickNext {
         let cadence = *self.cadence.get_or_insert(ATTACHED_MOTION_TICK);
-        let mut next = self.motion.clone();
-        // STAGED like the motion state beside it: a batch tmux refused must
-        // leave both write-on-change memories where they were.
-        let mut adoption = self.adoption.clone();
-        let mut adopted: Vec<tmux::OptionWrite> = Vec::new();
-        let observed = motion_observation_due(self.ticks_since_observation);
-        let mut cadence = cadence;
-        if observed {
-            let Some((reading, fleet)) =
-                transport::exchange_motion(server, session, true, &[]).reading
-            else {
-                let failed = motion_failure(self.failures);
-                self.failures = failed.0;
-                return TickNext {
-                    after: cadence,
-                    stopped: failed.1,
-                };
-            };
-            cadence = motion_cadence(&reading);
-            self.cadence = Some(cadence);
-            next.replace_observation(reading, &fleet, &self.adoption.known, session);
-            // Adoption's own cadence, inside the branch that just read the
-            // fleet: one listing per tick, never two, and never a frame this
-            // daemon's own attachment gates.
-            if adoption_due(&mut self.adopted_at, now) {
-                adopted = adoption_writes(&mut adoption, &fleet, &next.fleet_order);
-            }
-        }
-        let mut writes = next.step(look);
-        writes.extend(adopted);
-        if transport::exchange_motion(server, session, false, &writes).published == Some(false) {
-            self.ticks_since_observation = MOTION_OBSERVATION_TICKS;
-            let failed = motion_publish_failure(self.failures, observed);
-            self.failures = failed.0;
+        // STAGED: the frame is drawn from the committed observation, and its
+        // write-on-change memory commits only once tmux took the writes.
+        let mut drawn = self.motion.clone();
+        let writes = drawn.step(look);
+        if writes.is_empty() && !motion_observation_due(self.observed_at, now) {
             return TickNext {
                 after: cadence,
-                stopped: failed.1,
+                stopped: false,
             };
         }
-        self.failures = 0;
-        self.motion = next;
-        self.adoption = adoption;
-        self.ticks_since_observation = if cadence == DETACHED_MOTION_TICK {
-            MOTION_OBSERVATION_TICKS
-        } else if observed {
-            1
-        } else {
-            self.ticks_since_observation.saturating_add(1)
-        };
-        TickNext {
-            after: cadence,
-            stopped: false,
-        }
+        let exchange = transport::exchange_motion(server, session, true, &writes);
+        self.commit(server, session, exchange, drawn, now, motion_cadence)
     }
 
     fn tick_static(
@@ -5027,13 +5025,39 @@ impl MotionTicker {
         look: &Look,
         now: Instant,
     ) -> TickNext {
-        let cadence = *self
-            .cadence
+        self.cadence
             .get_or_insert_with(|| static_observe_cadence(&self.motion.panes));
-        let mut next = self.motion.clone();
-        let mut adoption = self.adoption.clone();
-        let Some((reading, fleet)) = transport::exchange_motion(server, session, true, &[]).reading
-        else {
+        let mut drawn = self.motion.clone();
+        let writes = drawn.step_static(look);
+        let exchange = transport::exchange_motion(server, session, true, &writes);
+        self.commit(server, session, exchange, drawn, now, |state| {
+            static_observe_cadence(&state.panes)
+        })
+    }
+
+    /// Commit what one exchange proved, and nothing it did not.
+    ///
+    /// - The reading is unusable: a read did not complete (tmux then ran none
+    ///   of the writes), or today's interpreter refused a section (the writes
+    ///   may have landed). No state commits, and the failure counts; a write
+    ///   that landed anyway is asserted again by the next tick.
+    /// - It is usable: the observation commits, whatever became of the writes.
+    /// - The writes landed (or there were none): `drawn`'s spin and
+    ///   write-on-change memory commit too, and the adopted strips are drawn
+    ///   from this fresh listing when their cadence is due.
+    /// - The writes were refused: the spin and the memory stay, so the next
+    ///   tick draws the same phase again from the fresh observation.
+    fn commit(
+        &mut self,
+        server: &crate::inventory::ServerId,
+        session: &str,
+        exchange: transport::MotionExchange,
+        drawn: MotionState,
+        now: Instant,
+        cadence_of: impl Fn(&MotionState) -> Duration,
+    ) -> TickNext {
+        let cadence = self.cadence.unwrap_or(ATTACHED_MOTION_TICK);
+        let Some((panes, fleet)) = exchange.reading else {
             let failed = motion_failure(self.failures);
             self.failures = failed.0;
             return TickNext {
@@ -5041,24 +5065,42 @@ impl MotionTicker {
                 stopped: failed.1,
             };
         };
-        let cadence = static_observe_cadence(&reading);
-        self.cadence = Some(cadence);
-        next.replace_observation(reading, &fleet, &self.adoption.known, session);
-        let mut writes = next.step_static(look);
-        if adoption_due(&mut self.adopted_at, now) {
-            writes.extend(adoption_writes(&mut adoption, &fleet, &next.fleet_order));
+        let landed = exchange.published != Some(false);
+        if landed {
+            self.motion = drawn;
         }
-        if transport::exchange_motion(server, session, false, &writes).published == Some(false) {
-            let failed = motion_publish_failure(self.failures, true);
+        self.motion
+            .replace_observation(panes, &fleet, &self.adoption.known, session);
+        self.observed_at = Some(now);
+        let cadence = cadence_of(&self.motion);
+        self.cadence = Some(cadence);
+        if !landed {
+            let failed = motion_publish_failure(self.failures, self.refused);
             self.failures = failed.0;
+            self.refused = true;
             return TickNext {
                 after: cadence,
                 stopped: failed.1,
             };
         }
+        self.refused = false;
+        // Adoption's own cadence, off the listing this tick just read: never
+        // a frame this daemon's own attachment gates. Its writes change only
+        // when a strip does, so they cost an invocation of their own only then.
+        if adoption_due(&mut self.adopted_at, now) {
+            let mut adoption = self.adoption.clone();
+            let writes = adoption_writes(&mut adoption, &fleet, &self.motion.fleet_order);
+            if !writes.is_empty() && !transport::publish_options(server, &writes) {
+                let failed = motion_failure(self.failures);
+                self.failures = failed.0;
+                return TickNext {
+                    after: cadence,
+                    stopped: failed.1,
+                };
+            }
+            self.adoption = adoption;
+        }
         self.failures = 0;
-        self.motion = next;
-        self.adoption = adoption;
         TickNext {
             after: cadence,
             stopped: false,
@@ -9000,7 +9042,7 @@ impl Cycle<'_> {
     }
 }
 
-/// A completed verdict cycle is a foreground-safe scheduling edge. The 100 ms
+/// A completed verdict cycle is a foreground-safe scheduling edge. The 200 ms
 /// motion ticker never calls this; cadence prevents redundant later children.
 fn schedule_automatic_upgrade() {
     crate::autoupgrade::schedule();
@@ -13162,21 +13204,21 @@ mod tests {
                 "-t",
                 "%1",
                 "@ae_pane_state",
-                "#[fg=#537187]●#[default] working",
+                "#[fg=#57758C]●#[default] working",
                 ";",
                 "set-option",
                 "-p",
                 "-t",
                 "%6",
                 "@ae_pane_state",
-                "#[fg=#537187]●#[default] working (sweeping)",
+                "#[fg=#57758C]●#[default] working (sweeping)",
                 ";",
                 "set-option",
                 "-w",
                 "-t",
                 "@7",
                 "@ae_window_agents",
-                "#[fg=#537187]●#[default]active #[fg=#6A8759]✓#[default]done #[fg=#CC7832]⚠#[default]blocked #[fg=#FF6B68]✖#[default]dead #[fg=#537187]●#[default]sweeping",
+                "#[fg=#57758C]●#[default]active #[fg=#6A8759]✓#[default]done #[fg=#CC7832]⚠#[default]blocked #[fg=#FF6B68]✖#[default]dead #[fg=#57758C]●#[default]sweeping",
             ]
         );
         let second = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
@@ -13225,8 +13267,8 @@ mod tests {
         };
         let args = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
         for expected in [
-            "#[fg=#537187]●#[default] working",
-            "#[fg=#537187]●#[default] working (sweeping)",
+            "#[fg=#57758C]●#[default] working",
+            "#[fg=#57758C]●#[default] working (sweeping)",
         ] {
             assert!(
                 args.iter().any(|word| word == expected),
@@ -13261,8 +13303,30 @@ mod tests {
         let attached = motion("%1", "lead");
         let mut detached = attached.clone();
         detached.session_attached = 0;
-        assert_eq!(motion_cadence(&[attached]), Duration::from_millis(100));
-        assert_eq!(motion_cadence(&[detached]), Duration::from_secs(2));
+        let working = |pane: &crate::tmux::MotionPane| MotionState {
+            verdicts: vec![MotionVerdict {
+                pane: "%1".to_owned(),
+                window: "@7".to_owned(),
+                verdict: Verdict::Active,
+            }],
+            panes: vec![pane.clone()],
+            ..MotionState::default()
+        };
+        assert_eq!(
+            motion_cadence(&working(&attached)),
+            Duration::from_millis(200),
+            "5 fps while a visible agent works"
+        );
+        let still = MotionState {
+            panes: vec![attached],
+            ..MotionState::default()
+        };
+        assert_eq!(
+            motion_cadence(&still),
+            Duration::from_millis(500),
+            "nothing to draw: the observation cadence"
+        );
+        assert_eq!(motion_cadence(&working(&detached)), Duration::from_secs(2));
         assert!(motion_ticker_enabled(&Look::DEFAULT));
         assert!(!motion_ticker_enabled(&Look {
             motion: false,
@@ -13275,20 +13339,20 @@ mod tests {
     }
 
     #[test]
-    fn attached_observation_is_every_fifth_motion_tick() {
-        assert_eq!(super::MOTION_OBSERVATION_TICKS, 5);
-        let mut ticks_since_observation = super::MOTION_OBSERVATION_TICKS;
-        let observed: Vec<u8> = (0..=10)
-            .filter(|_| {
-                let due = motion_observation_due(ticks_since_observation);
-                if due {
-                    ticks_since_observation = 0;
-                }
-                ticks_since_observation = ticks_since_observation.saturating_add(1);
-                due
-            })
-            .collect();
-        assert_eq!(observed, [0, 5, 10]);
+    fn a_tick_without_a_write_observes_every_half_second() {
+        let start = std::time::Instant::now();
+        assert!(
+            motion_observation_due(None, start),
+            "the first tick observes"
+        );
+        assert!(!motion_observation_due(
+            Some(start),
+            start + Duration::from_millis(499)
+        ));
+        assert!(motion_observation_due(
+            Some(start),
+            start + Duration::from_millis(500)
+        ));
     }
 
     #[test]
@@ -13296,7 +13360,6 @@ mod tests {
         let (failures, stop) = motion_publish_failure(2, false);
         assert_eq!(failures, 2);
         assert!(!stop);
-        assert!(motion_observation_due(super::MOTION_OBSERVATION_TICKS));
 
         let (failures, stop) = motion_publish_failure(failures, true);
         assert_eq!(failures, 3);
@@ -13408,7 +13471,7 @@ mod tests {
         let attached = [motion("%1", "lead")];
         assert_eq!(
             static_observe_cadence(&attached),
-            super::ATTACHED_MOTION_TICK.saturating_mul(u32::from(super::MOTION_OBSERVATION_TICKS)),
+            Duration::from_millis(500)
         );
         let mut pane = motion("%1", "lead");
         pane.session_attached = 0;
@@ -18976,6 +19039,124 @@ mod tests {
         );
     }
 
+    /// Every frame is drawn from the observation the tick before committed, so
+    /// a first refusal may only mean the fleet moved under it: it costs no
+    /// budget. The observation it carried is fresh, so each refusal after it
+    /// counts, and three stop the ticker, as three refusals on fresh
+    /// identities always did. A refused frame never advances the phase.
+    #[test]
+    fn a_refused_frame_spends_the_budget_only_once_its_fresh_observation_is_refused_too() {
+        let rig = crate::transport::quietwd_spec::Rig::new("refused-budget");
+        rig.attach("current", 0);
+        let panes =
+            crate::transport::observe_motion_panes(&rig.server, "current").expect("pane read");
+        let fleet = crate::transport::observe_fleet_listing(&rig.server).expect("fleet read");
+        let mut motion = MotionState::default();
+        motion.replace_observation(panes, &fleet, &[], "current");
+        // A window no observation can correct: every frame's window write is
+        // refused, however fresh the panes are.
+        motion.replace_verdicts(vec![MotionVerdict {
+            pane: rig.pane.clone(),
+            window: "@999999".to_owned(),
+            verdict: Verdict::Active,
+        }]);
+        let mut ticker = super::MotionTicker::new(motion, Adoption::default());
+        let start = std::time::Instant::now();
+        for n in 0..4_u8 {
+            let next = ticker.tick(
+                &rig.server,
+                "current",
+                &Look::DEFAULT,
+                start + Duration::from_millis(200 * u64::from(n)),
+            );
+            assert_eq!(ticker.motion.spin, 0, "tick {n}: the phase stays");
+            assert_eq!(ticker.failures, n, "tick {n}");
+            assert_eq!(next.stopped, n == 3, "tick {n}");
+        }
+    }
+
+    /// Ten 200 ms frames step through every second phase of the two-second
+    /// pulse, so the breath still reaches its bright and its dim end.
+    #[test]
+    fn the_five_fps_pulse_reaches_both_ends_of_the_two_second_breath() {
+        let mut state = MotionState {
+            verdicts: vec![MotionVerdict {
+                pane: "%1".to_owned(),
+                window: "@7".to_owned(),
+                verdict: Verdict::Active,
+            }],
+            panes: vec![motion("%1", "lead")],
+            ..MotionState::default()
+        };
+        let frame = |phase: u64| {
+            crate::theme::pane_state_frame(
+                &crate::theme::working_frame(phase, &Look::DEFAULT.palette, true),
+                "working",
+            )
+        };
+        let frames: Vec<String> = (0..10)
+            .map(|_| {
+                let args =
+                    crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
+                args[5].clone()
+            })
+            .collect();
+        assert_eq!(frames[4], frame(10), "the fifth frame is the bright end");
+        assert_eq!(frames[9], frame(0), "the tenth frame is the dim end");
+        assert_eq!(state.spin, 20, "two phases a frame");
+    }
+
+    /// The adopted strips keep their own cadence on the animated ticker and
+    /// are drawn from the listing the tick just read; their writes cost an
+    /// invocation of their own only when a strip changed.
+    #[test]
+    fn an_adopted_strip_is_drawn_from_the_fresh_listing_and_written_only_when_it_changed() {
+        let rig = crate::transport::quietwd_spec::Rig::new("adopt-tick");
+        let (peer, _, _) = rig.add_session("peer");
+        rig.must(&["set-option", "-t", "=peer:", "@ae_attn_rank", "1"]);
+        let adoption = Adoption {
+            known: vec!["peer".to_owned()],
+            targets: vec![Adopted {
+                name: "peer".to_owned(),
+                id: peer.clone(),
+                meta_dir: rig.path("unwatched-peer"),
+                enum_pid: None,
+                published: None,
+            }],
+        };
+        let mut ticker = super::MotionTicker::new(MotionState::default(), adoption);
+        let start = std::time::Instant::now();
+        let (next, calls) = crate::transport::spawns_during(|| {
+            ticker.tick(&rig.server, "current", &Look::DEFAULT, start)
+        });
+        assert!(!next.stopped);
+        assert_eq!(calls.len(), 2, "the read, then the new strip: {calls:?}");
+        assert!(calls[1].contains(&format!("={peer}:")), "{calls:?}");
+        assert!(
+            calls[1]
+                .iter()
+                .any(|word| word == crate::theme::FLEET_STRIP_OPTION)
+        );
+        assert!(
+            rig.option("", "=peer:", crate::theme::FLEET_STRIP_OPTION)
+                .contains("peer")
+        );
+        let (next, calls) = crate::transport::spawns_during(|| {
+            ticker.tick(
+                &rig.server,
+                "current",
+                &Look::DEFAULT,
+                start + Duration::from_secs(2),
+            )
+        });
+        assert!(!next.stopped);
+        assert_eq!(
+            calls.len(),
+            1,
+            "an unchanged strip rides nothing: {calls:?}"
+        );
+    }
+
     #[test]
     fn automatic_upgrade_scheduling_is_on_a_verdict_cycle_never_the_motion_ticker() {
         let source = include_str!("watchdog_daemon.rs");
@@ -18996,7 +19177,7 @@ mod tests {
             .expect("the motion ticker is bounded by tick_pane_duties");
         assert!(
             !ticker.contains("autoupgrade"),
-            "the 100 ms motion ticker must never schedule a child"
+            "the 200 ms motion ticker must never schedule a child"
         );
     }
 

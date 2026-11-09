@@ -149,14 +149,21 @@ reason beside the mark says which of the two it was.
 
 A ticker runs between the watchdog's 60-second verdict cycles. Every attached
 pane whose latest verdict mark is working gets one pulsing `●` frame every
-100 ms: its foreground breathes from a dim working accent to a bright working accent
-over two seconds. One batched tmux invocation advances its pane border,
-window entry and fleet strip together. Every fifth frame refreshes the pane and
-fleet observations; the four frames between reuse that snapshot, keeping tmux
-reads at 500 ms while animation runs at 10 fps. Detached sessions receive no
-ticker writes; a last visible frame can remain cached until the next verdict
-cycle republishes the static working glyph, but no client can see it. The
-the pulse declares the cached verdict; it does not infer terminal motion.
+200 ms: its foreground breathes from a dim working accent to a bright working accent
+over two seconds, ten frames that step through every second phase of the pulse.
+Each tick is ONE tmux invocation: it reads the pane and fleet observations, then
+writes the frame for the pane border, window entry and fleet strip, drawn from the
+observation the tick before committed. The read commits whenever it completes; the
+frame's phase advances only when tmux took the writes, so a refused frame is drawn
+again from the fresh observation. A tick with nothing to draw starts no process
+until the last observation is 500 ms old. Detached sessions receive no
+ticker writes: the first tick that reads a detached session still lands the frame
+it carried, and the next draws nothing. A last visible frame can remain cached
+until the next verdict cycle republishes the static working glyph, but no client
+can see it. While a session is detached and its cycle proved the wake hook, the
+ticker holds one tmux waiter instead of observing every two seconds; an attach
+or a switch into the session wakes it within the interval. The
+pulse declares the cached verdict; it does not infer terminal motion.
 Liveness belongs to the 60-second verdict
 cycle, which changes an inactive pane to stale. Tmux redraws changed user
 options for every attached client without waiting for `status-interval`, so no
@@ -168,7 +175,7 @@ The pulse is subordinate to the state: it stands in for the working glyph and
 nothing else, so done, needs-you, dead, stale, waiting-agent and idle panes stay still.
 `[workspace] icons = off` selects the ASCII column. `theme = off` disables the ticker; `motion = off`
 freezes the pulse but the ticker keeps re-observing the fleet at the observation cadence (0.5 s attached, 2 s
-detached) and republishes the strip on change. The watchdog re-reads the look every cycle, so flipping either
+detached) and republishes the strip on change, in the same invocation as the next observation. The watchdog re-reads the look every cycle, so flipping either
 knob on a live session takes effect on the next one.
 
 ## What goes when the bar runs out of room
