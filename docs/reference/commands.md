@@ -1804,8 +1804,8 @@ Workers/spawned agents in the same session keep the normal watchdog.
 Sweep nudges are **delivery-checked**. A nudge can fail to land — the target's shell
 is dead (refused), or it stayed busy / a human was typing in it (abandoned after
 `AE_SEND_DEFER_SEC`). A failed nudge is logged as `sweep nudge FAILED` with the
-reason, and is retried after `AE_WATCHDOG_SWEEP_RETRY_SEC` (default 30) rather than
-waiting a full sweep window. After `AE_WATCHDOG_SWEEP_RETRY_MAX` (default 6) fast
+reason, and is retried after the sweep retry delay (30 seconds, fixed) rather than
+waiting a full sweep window. After the sweep retry limit (6, fixed) fast
 retries the watchdog falls back to the normal spacing and raises one
 `meta-agent unreachable` alert, cleared when a nudge next lands. Delivery is
 **at-least-once**: a nudge that lands but fails to write its event or overview

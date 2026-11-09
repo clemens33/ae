@@ -792,20 +792,21 @@ SPEND POLICY: chores go to the cheap profile.
 
 ## Watchdog defaults
 
-The watchdog reads its tunables from environment variables (set them in the session shell before `ae <name>`, or via your shell rc):
+The watchdog reads one environment variable, `AE_WATCHDOG_SWEEP_SEC`. Its other tunables are fixed internal defaults that only the knob flags of `ae watchdog start <name> -- <flags>` change (for example `--stale-secs 600`); no config key or environment variable sets them:
 
-| Variable | Default | Meaning |
+| Tunable (knob flag) | Default | Meaning |
 |---|---|---|
-| `AE_WATCHDOG_INTERVAL_SEC` | 60 | Cycle length in seconds |
-| `AE_WATCHDOG_STALE_MIN` | 15 | Idle minutes before a nudge |
-| `AE_WATCHDOG_MAX_NUDGES` | 2 | Nudges before escalating to alert |
-| `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` | 5 | Cycles of continuous upstream throttle before alert |
-| `AE_WATCHDOG_TG_SUPERVISE_SEC` | 120 | Telegram-bridge revive cadence in seconds (`0` disables) |
+| cycle length (`--interval`) | 60 | Seconds between verdict cycles |
+| stale window (`--stale-secs`) | 900 | Seconds without pane or event activity before the legacy reminder of an unclassifiable frame |
+| max nudges (`--max-nudges`) | 2 | Legacy reminders delivered before one alert replaces them |
+| throttle alert cycles (`--throttle-alert-cycles`) | 5 | Cycles of continuous upstream throttle before alert |
+| Telegram supervise (`--tg-supervise-secs`) | 120 | Telegram-bridge revive cadence in seconds (`0` disables) |
+| undelivered max (`--undelivered-max`) | 3 | Consecutive undelivered nudges before attempts stop and one alert fires |
+| sweep retry secs (`--sweep-retry-secs`) | 30 | After an undelivered sweep nudge, retry this soon (clamped to the sweep spacing) |
+| sweep retry max (`--sweep-retry-max`) | 6 | Fast retries before falling back to normal cadence and one `meta-agent unreachable` alert |
 | `AE_WATCHDOG_SWEEP_SEC` | 120 | Orchestrator changed-overview minimum-spacing fallback when `[workspace] sweep` is absent or invalid (`0` falls back to the normal watchdog; positive values below `60` become `60`) |
-| `AE_WATCHDOG_SWEEP_RETRY_SEC` | 30 | After an UNDELIVERED sweep nudge, retry this soon instead of waiting a full `AE_WATCHDOG_SWEEP_SEC` (clamped to it; floor — lands on the next poll) |
-| `AE_WATCHDOG_SWEEP_RETRY_MAX` | 6 | Fast retries allowed before falling back to normal cadence and raising one `meta-agent unreachable` alert |
 
-The legacy `AE_LOOP_*` names are still honoured as fallbacks for each tunable. To turn the watchdog off for a single session, run `~/.ae/sessions/<name>/watchdog stop` once. The setting persists across resume.
+To turn the watchdog off for a single session, run `~/.ae/sessions/<name>/watchdog stop` once. The setting persists across resume.
 
 Quota observation is configured by `[workspace] quota_every_secs`, not an environment fallback.
 Launch persists the value in session meta so rename and resume keep the same cadence. It accepts
