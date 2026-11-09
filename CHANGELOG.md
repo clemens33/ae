@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.32] - 2026-11-09
+- Condense conversational dictation faithfully, keep quoted and verbatim text exact
+- Read the Copilot reset from quota_reset_date_utc and accept a bare reset date
+
 ## [v2026.11.31] - 2026-11-09
 - **agents**: Trim AGENTS.md and add read-first rows for theme and upgrade
 - **prompt**: One owner per rule in the lead context and workspace.md, and a scoped gatekeeping pointer
