@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.34] - 2026-11-09
+- Back off the staged-chip settle captures of a pane that never settles
+
 ## [v2026.11.33] - 2026-11-09
 - Back off the quiet-gate reads and skip the chip drain for an unreadable composer
 - Pin that idle_nudge_secs = 0 leaves the unknown-frame reminder, and say so in the docs
