@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.31] - 2026-11-09
+- **agents**: Trim AGENTS.md and add read-first rows for theme and upgrade
+- **prompt**: One owner per rule in the lead context and workspace.md, and a scoped gatekeeping pointer
+- **agents**: Restore the automation ruling and the Ghostty hyperlinks entry the trim dropped
+- **agents**: One read-first table, a tighter loop and one doors rule
+- **agents**: Tighter loop and hard rules; the hook stamping rule moves to the theme doc
+- **agents**: Condense the toolchain pins and the lane rows
+- **agents**: Drop weight-only emphasis, keep defined terms
+- Show the exact Codex credit balance and treat usable credits as a second pool
+
 ## [v2026.11.30] - 2026-11-08
 - **test**: Verify fixture server teardown before removing roots
 
