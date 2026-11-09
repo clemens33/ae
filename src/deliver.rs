@@ -2528,23 +2528,65 @@ mod tests {
         }
     }
 
+    /// A tmux server that is not there: every read of it fails at once, and
+    /// nothing is ever started.
+    fn absent_server() -> ServerId {
+        let absent = std::env::temp_dir()
+            .join(format!("ae-defer-{}-absent", std::process::id()))
+            .join("tmux.sock");
+        ServerId::Selected(crate::meta::Selector::Socket(absent))
+    }
+
+    /// The production clock sleeps for the gap it is given and reports real
+    /// elapsed time.
+    #[test]
+    fn the_wall_clock_sleeps_and_counts_real_time() {
+        use super::Pace;
+        let gap = Duration::from_millis(30);
+        let mut clock = super::WallClock(std::time::Instant::now());
+        clock.pause(gap);
+        assert!(clock.waited() >= gap, "waited {:?}", clock.waited());
+    }
+
+    /// A deferral that is not a whole number of gaps still ends ON its
+    /// deadline: the last gap is clamped to the time left, never past it.
+    #[test]
+    fn a_deferral_ends_exactly_on_its_deadline_not_a_gap_past_it() {
+        let server = absent_server();
+        let defer = Duration::from_secs(5);
+        let request = Request {
+            server: &server,
+            defer,
+            ..request("lead", "hello", Shape::Send)
+        };
+        let mut clock = Virtual(Duration::ZERO);
+        let held = super::wait_for_quiet_paced(
+            &request,
+            (InputModel::BorderDelimited, None),
+            None,
+            &mut clock,
+            &mut std::io::sink(),
+        )
+        .unwrap();
+        assert!(held.is_some(), "an unreadable composer still refuses");
+        assert_eq!(clock.0, defer, "reads at 0, 0.4, 1.2, 2.8 and 5 s");
+    }
+
     /// A send refused for an unreadable composer costs the machine a bounded
     /// number of tmux children. Measured in a sandbox on the unpatched loop,
     /// a pane ae could not read cost about 330 tmux children per refusal: one
     /// read every 400 ms for the whole 30 s deferral, five children a read
     /// with an address guard. The deferral still lasts the whole 30 s and
     /// still refuses; only the number of reads inside it is bounded: at most
-    /// 12, so at most 60 children with the guard, 24 without it.
+    /// 12, so at most 24 children here and about 70 in all with the guard and
+    /// the fixed setup, as measured end to end in the sandbox.
     #[test]
     fn a_refused_delivery_reads_the_pane_a_bounded_number_of_times() {
         const MAX_READS: usize = 12;
         // One capture and one client list per read; the guard's three
         // re-proof reads are not part of this seam.
         const CHILDREN_PER_READ: usize = 2;
-        let absent = std::env::temp_dir()
-            .join(format!("ae-defer-{}-absent", std::process::id()))
-            .join("tmux.sock");
-        let server = ServerId::Selected(crate::meta::Selector::Socket(absent));
+        let server = absent_server();
         let request = Request {
             server: &server,
             ..request("lead", "hello", Shape::Send)
