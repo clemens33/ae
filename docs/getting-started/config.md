@@ -338,7 +338,9 @@ With none configured, the group still appears with `-` in PROFILES. Only the clo
 USED is `(entitlement - remaining) / entitlement * 100` when both counts are valid integers;
 only when both are absent does it use `100 - percent_remaining`. Partial or invalid counts,
 missing fields and unknown shapes yield notes, never invented numbers. `unlimited: true`
-reads `unlimited` in CREDITS. RESETS comes from `quota_reset_date`; the monthly WINDOW has
+reads `unlimited` in CREDITS. RESETS comes from `quota_reset_date_utc` (an RFC 3339 instant), else from
+`quota_reset_date` (an RFC 3339 instant or a bare `YYYY-MM-DD`, read as 00:00:00Z of that day). The `_utc`
+field wins when both parse, and a date the calendar lacks counts as unreadable. The monthly WINDOW has
 no fixed length and supplies no PACE history or weekly quota-ladder input.
 
 Unlike Go, Copilot has no watchdog refresh or advisory feed. The settings quota dialog reads
