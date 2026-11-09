@@ -1544,6 +1544,176 @@ fn command_bytes(words: &[String]) -> usize {
     words.iter().map(|word| word.len() + 1).sum()
 }
 
+/// The line prefix of the ownership read's socket answer.
+const OWNERSHIP_SOCKET_STEM: &str = "ae-wd:k|";
+
+/// The section name of the ownership read's socket answer.
+const OWNERSHIP_SOCKET_SECTION: &str = "k";
+
+/// The completion marker after one section of an ownership read. The `nonce`
+/// is 64 random bits fresh per read, so an environment value set before the
+/// read prints a line that passes for a marker only by guessing them.
+fn ownership_marker(nonce: &str, section: &str) -> String {
+    format!("ae-wd!{nonce}!{section}")
+}
+
+/// One queued invocation of [`ownership_read_args`]: its argv, and how many of
+/// the requested peers, from the first, it asks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnershipQuery {
+    pub(crate) args: Vec<String>,
+    pub(crate) peers: usize,
+}
+
+/// ONE queued invocation reading the ownership pair of as many of `peers` as
+/// [`COMMAND_BYTES`] allows (at least one), led by this server's socket path
+/// when `socket` is set.
+///
+/// Each value is today's exact read — `display-message -p '#{socket_path}'`,
+/// [`marker_args`], [`environment_value_args`] for [`HOME_VARIABLE`] — followed
+/// by its completion marker. tmux stops a `;` list at the first failure, so a
+/// vanished peer or an unset variable ends the invocation at that peer; the
+/// caller resumes with the next one.
+#[must_use]
+pub(crate) fn ownership_read_args(
+    server: &ServerId,
+    nonce: &str,
+    socket: bool,
+    peers: &[String],
+) -> OwnershipQuery {
+    let marker = |section: &str| {
+        vec![
+            "display-message".to_owned(),
+            "-p".to_owned(),
+            ownership_marker(nonce, section),
+        ]
+    };
+    let mut commands: Vec<Vec<String>> = Vec::new();
+    if socket {
+        commands.push(vec![
+            "display-message".to_owned(),
+            "-p".to_owned(),
+            format!("{OWNERSHIP_SOCKET_STEM}#{{socket_path}}"),
+        ]);
+        commands.push(marker(OWNERSHIP_SOCKET_SECTION));
+    }
+    let bytes = |commands: &[Vec<String>]| {
+        commands
+            .iter()
+            .map(|words| command_bytes(words) + 2)
+            .sum::<usize>()
+    };
+    let mut asked = 0;
+    for (index, peer) in peers.iter().enumerate() {
+        let read = |variable: &str| {
+            vec![
+                "show-environment".to_owned(),
+                "-t".to_owned(),
+                session_target(peer),
+                variable.to_owned(),
+            ]
+        };
+        let group = [
+            read(OWNERSHIP_VARIABLE),
+            marker(&format!("{index}m")),
+            read(HOME_VARIABLE),
+            marker(&format!("{index}h")),
+        ];
+        if asked > 0 && bytes(&commands) + bytes(&group) > COMMAND_BYTES {
+            break;
+        }
+        commands.extend(group);
+        asked += 1;
+    }
+    let mut args = server_args(server);
+    for (index, command) in commands.into_iter().enumerate() {
+        if index > 0 {
+            args.push(";".to_owned());
+        }
+        args.extend(command);
+    }
+    OwnershipQuery { args, peers: asked }
+}
+
+/// What one [`ownership_read_args`] invocation proved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct OwnershipAnswer {
+    /// The socket path, when it was asked and its section completed.
+    pub(crate) socket: Option<String>,
+    /// One entry per DECIDED peer, from the first asked: `(marker, home)` when
+    /// both its sections completed with today's one valid line each, else
+    /// `None`. The peer whose read stopped the invocation is decided as
+    /// `None`; the peers after it are not decided and are asked again.
+    pub(crate) peers: Vec<Option<(String, String)>>,
+}
+
+/// Interpret one [`ownership_read_args`] invocation that asked `peers` peers.
+///
+/// A section counts only once its marker arrived, and only with exactly one
+/// line: a value that spans lines is refused, as today's readers refuse it.
+/// When the socket was asked and its section did not complete, nothing after
+/// it ran and no peer is decided.
+///
+/// Lines split at LF ONLY. `str::lines` would also drop a CR before the LF,
+/// and tmux prints a value's trailing CR raw, so a value today's reader keeps
+/// as `/home\r` would reach the same reader here as `/home`: the framing must
+/// hand every section's line over byte for byte.
+#[must_use]
+pub(crate) fn interpret_ownership_read(
+    stdout: &str,
+    nonce: &str,
+    socket: bool,
+    peers: usize,
+) -> OwnershipAnswer {
+    let stem = ownership_marker(nonce, "");
+    let mut completed: Vec<(&str, Vec<&str>)> = Vec::new();
+    let mut lines: Vec<&str> = Vec::new();
+    for line in stdout.strip_suffix('\n').unwrap_or(stdout).split('\n') {
+        if let Some(section) = line.strip_prefix(stem.as_str()) {
+            completed.push((section, std::mem::take(&mut lines)));
+        } else {
+            lines.push(line);
+        }
+    }
+    let mut sections = completed.into_iter();
+    let mut next = |expected: &str| {
+        sections
+            .next()
+            .filter(|(section, _)| *section == expected)
+            .map(|(_, lines)| lines)
+    };
+    let one = |lines: Vec<&str>| match lines.as_slice() {
+        [line] => Some(format!("{line}\n")),
+        _ => None,
+    };
+    let mut answer = OwnershipAnswer::default();
+    if socket {
+        let Some(lines) = next(OWNERSHIP_SOCKET_SECTION) else {
+            return answer;
+        };
+        answer.socket = one(lines)
+            .and_then(|line| line.strip_prefix(OWNERSHIP_SOCKET_STEM).map(str::to_owned))
+            .and_then(|line| interpret_display_value(true, &line));
+    }
+    for index in 0..peers {
+        let Some(marker) = next(&format!("{index}m")) else {
+            answer.peers.push(None);
+            return answer;
+        };
+        let Some(home) = next(&format!("{index}h")) else {
+            answer.peers.push(None);
+            return answer;
+        };
+        let marker = one(marker)
+            .and_then(|line| interpret_marker(true, &line))
+            .filter(|value| !value.is_empty());
+        let home =
+            one(home).and_then(|line| interpret_environment_value(true, &line, HOME_VARIABLE));
+        answer.peers.push(marker.zip(home));
+    }
+    answer
+}
+
 /// Remove one user option from `target` — `set-option -u`.
 #[must_use]
 pub fn unset_option_args(
@@ -5759,6 +5929,124 @@ mod tests {
         for channel in ["", "a b", "a;b", "a'b", "a\"b", "a\\b", "ä", "a\nb", "#{x}"] {
             assert!(!super::is_wake_channel(channel), "{channel:?}");
         }
+    }
+
+    #[test]
+    fn the_ownership_read_is_todays_reads_each_behind_a_nonce_marker() {
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        let query = super::ownership_read_args(&server, "n1", true, &["peer".to_owned()]);
+        assert_eq!(query.peers, 1);
+        assert_eq!(
+            query.args,
+            [
+                "-L",
+                "ae",
+                "display-message",
+                "-p",
+                "ae-wd:k|#{socket_path}",
+                ";",
+                "display-message",
+                "-p",
+                "ae-wd!n1!k",
+                ";",
+                "show-environment",
+                "-t",
+                "=peer",
+                "AE_SESSION",
+                ";",
+                "display-message",
+                "-p",
+                "ae-wd!n1!0m",
+                ";",
+                "show-environment",
+                "-t",
+                "=peer",
+                "AE_HOME",
+                ";",
+                "display-message",
+                "-p",
+                "ae-wd!n1!0h",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hostile_multi_line_value_spoils_only_its_own_proof() {
+        // Peer 0's AE_SESSION carries lines shaped like another peer's
+        // sections; without the nonce they are just extra lines in ITS section.
+        let stdout = "ae-wd:k|/tmp/s\nae-wd!N!k\n\
+                      AE_SESSION=1\nae-wd!fake!1m\nAE_HOME=/forged\nae-wd!N!0m\n\
+                      AE_HOME=/h0\nae-wd!N!0h\n\
+                      AE_SESSION=1\nae-wd!N!1m\nAE_HOME=/h1\nae-wd!N!1h\n";
+        let answer = super::interpret_ownership_read(stdout, "N", true, 2);
+        assert_eq!(answer.socket.as_deref(), Some("/tmp/s"));
+        assert_eq!(
+            answer.peers,
+            [None, Some(("1".to_owned(), "/h1".to_owned()))]
+        );
+    }
+
+    #[test]
+    fn an_ownership_read_stopped_at_a_peer_decides_it_and_nothing_after_it() {
+        // Peer 1's AE_HOME is unset: tmux stopped the list after its first marker.
+        let stdout = "AE_SESSION=1\nae-wd!N!0m\nAE_HOME=/h0\nae-wd!N!0h\n\
+                      AE_SESSION=1\nae-wd!N!1m\n";
+        let answer = super::interpret_ownership_read(stdout, "N", false, 3);
+        assert_eq!(
+            answer.peers,
+            [Some(("1".to_owned(), "/h0".to_owned())), None],
+            "peer 1 is decided unproven; peer 2 is asked again"
+        );
+        // A socket section that never completed means nothing after it ran.
+        let answer = super::interpret_ownership_read("", "N", true, 3);
+        assert_eq!(answer, super::OwnershipAnswer::default());
+        // Without the socket, the first peer is always decided.
+        let answer = super::interpret_ownership_read("", "N", false, 3);
+        assert_eq!(answer.peers, [None]);
+        // An empty marker is no proof, and neither is a removed variable.
+        let stdout = "AE_SESSION=\nae-wd!N!0m\nAE_HOME=/h\nae-wd!N!0h\n\
+                      -AE_SESSION\nae-wd!N!1m\nAE_HOME=/h\nae-wd!N!1h\n";
+        assert_eq!(
+            super::interpret_ownership_read(stdout, "N", false, 2).peers,
+            [None, None]
+        );
+    }
+
+    #[test]
+    fn an_ownership_read_stays_inside_the_command_bound() {
+        use super::COMMAND_BYTES;
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        let peers: Vec<String> = (0..200).map(|n| format!("{n:0>40}")).collect();
+        let query = super::ownership_read_args(&server, "n1", true, &peers);
+        assert!(query.peers > 0 && query.peers < peers.len());
+        assert!(chunk_bytes(&server, &query.args) <= COMMAND_BYTES);
+        // One peer is always asked, even past the bound.
+        let huge = ["x".repeat(COMMAND_BYTES)];
+        assert_eq!(
+            super::ownership_read_args(&server, "n1", false, &huge).peers,
+            1
+        );
+    }
+
+    #[test]
+    fn the_ownership_framing_hands_each_line_over_byte_for_byte() {
+        // tmux 3.7b prints a value's trailing CR raw (probed); today's reader
+        // keeps it, so the joined read must too.
+        let alone = "AE_HOME=/qw/home\r\n";
+        assert_eq!(
+            super::interpret_environment_value(true, alone, super::HOME_VARIABLE).as_deref(),
+            Some("/qw/home\r")
+        );
+        let joined = "AE_SESSION=1\r\nae-wd!N!0m\nAE_HOME=/qw/home\r\nae-wd!N!0h\n";
+        assert_eq!(
+            super::interpret_ownership_read(joined, "N", false, 1).peers,
+            [Some(("1".to_owned(), "/qw/home\r".to_owned()))],
+            "the marker trims as today's interpret_marker does; the home keeps its CR"
+        );
     }
 
     /// Failure and unset are different readings. The conflating `Option`

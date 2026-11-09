@@ -1450,18 +1450,60 @@ pub(crate) struct PeerOwnershipRead {
     pub(crate) peers: Vec<(String, Option<SessionOwnership>)>,
 }
 
-/// Read the ownership pair of every peer in `peers` on `server`.
+/// Read the ownership pair of every peer in `peers` on `server`, fresh, with
+/// this server's socket path riding along: ONE process for a fleet whose peers
+/// all answer.
 ///
-/// P0a: today's reads — two per peer, and no socket read of its own.
+/// Each answer is today's per-peer read ([`observe_session_ownership`]). A peer
+/// whose read fails stops tmux's queued list there and is `None`, exactly as
+/// before; one more invocation resumes with the next peer, so a vanished peer
+/// costs one process and never another peer's proof. No peers asks nothing,
+/// and the socket is then asked only where it is needed, as before.
 #[must_use]
 pub(crate) fn observe_peer_ownership(server: &ServerId, peers: &[String]) -> PeerOwnershipRead {
-    PeerOwnershipRead {
+    let mut read = PeerOwnershipRead {
         socket: None,
-        peers: peers
-            .iter()
-            .map(|peer| (peer.clone(), observe_session_ownership(server, peer)))
-            .collect(),
+        peers: Vec::with_capacity(peers.len()),
+    };
+    if !addressable(server) {
+        read.peers = peers.iter().map(|peer| (peer.clone(), None)).collect();
+        return read;
     }
+    let nonce = read_nonce();
+    let mut socket = !peers.is_empty();
+    while read.peers.len() < peers.len() {
+        let rest = peers.get(read.peers.len()..).unwrap_or_default();
+        let query = tmux::ownership_read_args(server, &nonce, socket, rest);
+        let (_, stdout) = run(PROGRAM, &query.args);
+        let answer = tmux::interpret_ownership_read(&stdout, &nonce, socket, query.peers);
+        if socket {
+            read.socket = answer.socket;
+            socket = false;
+        } else if answer.peers.is_empty() {
+            // Unreachable by construction — a read without the socket section
+            // always decides its first peer — but a loop must not hang on it.
+            break;
+        }
+        for (peer, proof) in rest.iter().zip(answer.peers) {
+            read.peers.push((
+                peer.clone(),
+                proof.map(|(marker, home)| SessionOwnership { marker, home }),
+            ));
+        }
+    }
+    for peer in peers.get(read.peers.len()..).unwrap_or_default() {
+        read.peers.push((peer.clone(), None));
+    }
+    read
+}
+
+/// The token the completion markers of one queued read carry: 64 random bits
+/// from [`crate::entropy`], fresh per read. A value set before the read could
+/// print a line that passes for a marker only by guessing them, a 1 in 2^64
+/// chance per read; any other line is only an extra line in its own section,
+/// which the one-line rule refuses.
+fn read_nonce() -> String {
+    format!("{:016x}", crate::entropy())
 }
 
 /// What one motion exchange observed and published, kept apart: a reading
