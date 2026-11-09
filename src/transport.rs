@@ -1064,7 +1064,10 @@ pub fn observe_watch_panes(server: &ServerId, session: &str) -> Option<Vec<tmux:
     tmux::interpret_watch_panes(succeeded, &stdout)
 }
 
-/// The motion ticker's single pane observation for `session` on `server`.
+/// The motion ticker's pane observation for `session` on `server`, as one
+/// process of its own. Production reads it inside [`exchange_motion`]; tests
+/// read it alone.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn observe_motion_panes(
     server: &ServerId,
@@ -1691,10 +1694,16 @@ pub(crate) struct MotionExchange {
 }
 
 /// The motion ticker's I/O: read `session`'s panes and the fleet when
-/// `observe`, and publish `writes`.
+/// `observe`, and publish `writes` — ONE process for both.
 ///
-/// P0a: today's shape — the two listings as two processes, then the writes as
-/// one batched process.
+/// The reads are today's two listings, the motion `list-panes` and
+/// [`observe_fleet_listing`]'s `list-sessions`, queued with their completion
+/// markers ahead of
+/// the writes ([`tmux::motion_exchange_args`]). A read that fails ends tmux's
+/// list there, so no write lands past a missing read, and a write that is
+/// refused leaves the completed reading standing. Writes too large to ride
+/// along go as their own process, and only once the reads ran. Without
+/// `observe`, the writes alone are one process, as before.
 #[must_use]
 pub(crate) fn exchange_motion(
     server: &ServerId,
@@ -1702,15 +1711,59 @@ pub(crate) fn exchange_motion(
     observe: bool,
     writes: &[tmux::OptionWrite],
 ) -> MotionExchange {
-    let reading = if observe {
-        let panes = observe_motion_panes(server, session);
-        let fleet = observe_fleet_listing(server);
-        panes.zip(fleet)
-    } else {
-        None
-    };
-    let published = (!writes.is_empty()).then(|| publish_options(server, writes));
+    let write = !writes.is_empty();
+    if !observe {
+        let published = write.then(|| publish_options(server, writes));
+        return MotionExchange {
+            reading: None,
+            published,
+        };
+    }
+    if !addressable(server) {
+        return MotionExchange {
+            reading: None,
+            published: write.then_some(false),
+        };
+    }
+    let nonce = read_nonce();
+    let query = tmux::motion_exchange_args(server, session, &nonce, writes);
+    let (succeeded, stdout) = run(PROGRAM, &query.args);
+    let reading = tmux::interpret_motion_exchange(&stdout, &nonce);
+    let published = write.then(|| {
+        if query.writes {
+            succeeded
+        } else {
+            succeeded && publish_options(server, writes)
+        }
+    });
     MotionExchange { reading, published }
+}
+
+/// `session`'s look and then each session option of `options`, fresh, in ONE
+/// process ([`tmux::session_look_read_args`]).
+///
+/// Each answer is today's separate read ([`observe_look`],
+/// [`observe_session_option`]). A read that fails ends tmux's queued list
+/// there, so it and every later answer are `None`, as a failed separate read
+/// was.
+#[must_use]
+pub(crate) fn observe_session_look(
+    server: &ServerId,
+    session: &str,
+    options: &[&str],
+) -> tmux::SessionLookRead {
+    if !addressable(server) {
+        return tmux::SessionLookRead {
+            look: None,
+            options: vec![None; options.len()],
+        };
+    }
+    let nonce = read_nonce();
+    let (_, stdout) = run(
+        PROGRAM,
+        &tmux::session_look_read_args(server, session, &nonce, options),
+    );
+    tmux::interpret_session_look_read(&stdout, &nonce, options.len())
 }
 
 /// Remove one user option from `target`.
@@ -3708,6 +3761,116 @@ mod tests {
             result,
             Waited::TimedOut,
             "the waiter's own read did not count itself"
+        );
+    }
+
+    /// The joined motion read answers exactly what the two separate reads
+    /// answer, for values with a CR and for a value with a newline that prints
+    /// a fleet-like row: every section reaches today's interpreter unchanged.
+    #[test]
+    fn the_joined_motion_read_answers_exactly_as_the_two_separate_reads_do() {
+        let rig = super::quietwd_spec::Rig::new("same");
+        rig.must(&["set-option", "-p", "-t", &rig.pane, "@ae_agent", "lead\r"]);
+        rig.must(&["set-option", "-t", "=current:", "@ae_palette", "b\r"]);
+        let _ = rig.add_session("other");
+        rig.must(&[
+            "set-option",
+            "-t",
+            "=other:",
+            "@ae_look",
+            "on\nforged | $77 | 2 |  |  |  | ",
+        ]);
+        let separate = super::observe_motion_panes(&rig.server, "current")
+            .zip(super::observe_fleet_listing(&rig.server));
+        assert!(separate.is_some(), "both separate reads answer");
+        let (joined, calls) =
+            spawns_during(|| super::exchange_motion(&rig.server, "current", true, &[]));
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(joined.reading, separate);
+        assert_eq!(joined.published, None, "nothing to write");
+    }
+
+    /// Writes too large to ride with the reads go as their own process, after
+    /// the reads, and still never past a missing read.
+    #[test]
+    fn writes_past_the_command_bound_go_alone_and_only_after_a_completed_read() {
+        use crate::tmux::{COMMAND_BYTES, OptionScope, OptionWrite};
+        let rig = super::quietwd_spec::Rig::new("oversized");
+        let big = "x".repeat(COMMAND_BYTES);
+        let writes = [OptionWrite::new(
+            OptionScope::Pane,
+            &rig.pane,
+            "@qw_big",
+            &big,
+        )];
+        let (result, calls) =
+            spawns_during(|| super::exchange_motion(&rig.server, "current", true, &writes));
+        assert_eq!(
+            calls.len(),
+            2,
+            "the reads, then the writes: {}",
+            calls.len()
+        );
+        assert!(
+            !calls[0].iter().any(|word| word == "set-option"),
+            "the reads travel alone"
+        );
+        assert!(result.reading.is_some());
+        // tmux 3.4 refuses a command this long and later releases accept it;
+        // either way the result is the write's own.
+        let landed = rig.option("-p", &rig.pane, "@qw_big") == big;
+        assert_eq!(result.published, Some(landed));
+        let held = [OptionWrite::new(
+            OptionScope::Pane,
+            &rig.pane,
+            "@qw_big_after_missing",
+            &big,
+        )];
+        let (result, calls) =
+            spawns_during(|| super::exchange_motion(&rig.server, "absent", true, &held));
+        assert_eq!(calls.len(), 1, "a missing read sends no writes");
+        assert!(result.reading.is_none());
+        assert_eq!(result.published, Some(false));
+        assert_eq!(rig.option("-p", &rig.pane, "@qw_big_after_missing"), "");
+    }
+
+    /// The cycle's look read is one process, and each answer is what its
+    /// separate read answers.
+    #[test]
+    fn a_session_look_read_is_one_process_and_answers_as_the_separate_reads_do() {
+        let rig = super::quietwd_spec::Rig::new("look");
+        rig.must(&["set-option", "-t", "=current:", "@ae_icons", "off"]);
+        rig.must(&["set-option", "-t", "=current:", "@ae_palette", "b\r"]);
+        rig.must(&["set-option", "-t", "=current:", "@qw_stamp", "s1"]);
+        rig.must(&["set-option", "-t", "=current:", "@qw_set", "123"]);
+        let options = ["@qw_stamp", "@qw_unset", "@qw_set"];
+        let look = super::observe_look(&rig.server, "current");
+        assert!(look.is_some());
+        let each: Vec<_> = options
+            .iter()
+            .map(|name| super::observe_session_option(&rig.server, "current", name))
+            .collect();
+        let (read, calls) =
+            spawns_during(|| super::observe_session_look(&rig.server, "current", &options));
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(read.look, look);
+        assert_eq!(read.options, each);
+        assert_eq!(
+            read.options,
+            [Some("s1".to_owned()), None, Some("123".to_owned())]
+        );
+        // `display-message` resolves its target with CMD_FIND_CANFAIL, so the
+        // look of an absent session answers an empty format, separate or
+        // joined; the first `show-options` then fails and ends the read.
+        let (read, calls) =
+            spawns_during(|| super::observe_session_look(&rig.server, "absent", &options));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            read,
+            crate::tmux::SessionLookRead {
+                look: super::observe_look(&rig.server, "absent"),
+                options: vec![None; 3],
+            }
         );
     }
 }

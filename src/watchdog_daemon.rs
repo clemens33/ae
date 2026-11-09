@@ -4227,6 +4227,27 @@ fn menu_open_expired(opened: &str, now_epoch: i64, interval_secs: u64) -> bool {
     now_epoch.saturating_sub(opened_epoch) >= interval
 }
 
+/// The session options the cycle reads beside its look, in ONE queued read
+/// ([`Cycle::look`]): the stamp the layout was written for, then the two menu
+/// markers [`Cycle::publish`] expires.
+const CYCLE_LOOK_OPTIONS: [&str; 3] = [
+    theme::LOOK_STAMP_OPTION,
+    theme::MENU_OPEN_OPTION,
+    theme::SETTINGS_OPEN_OPTION,
+];
+
+/// What the cycle's one look read found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CycleLookRead {
+    /// The look, or `None` when its read did not answer.
+    look: Option<Look>,
+    /// [`theme::LOOK_STAMP_OPTION`], `None` when unset or not answered.
+    stamp: Option<String>,
+    /// [`theme::MENU_OPEN_OPTION`], then [`theme::SETTINGS_OPEN_OPTION`], each
+    /// `None` when unset or not answered.
+    opened: [Option<String>; 2],
+}
+
 /// Everything one cycle publishes, gathered so the call reads as one statement.
 struct Published<'a> {
     /// The watch bar's own glyph.
@@ -7494,17 +7515,17 @@ impl Cycle<'_> {
         // theme-off session gets repainted by the daemon that is meant to
         // respect it.
         let read = self.look();
-        let Some(look) = read.or(carry.look) else {
+        let Some(look) = read.look.or(carry.look) else {
             // No look has EVER answered on this session. Publishing now would
             // mean choosing colours ae was never told to use, and restamping
             // every window in them; the next cycle asks again.
             return Ok(());
         };
         carry.look = Some(look);
-        if read.is_some()
+        if read.look.is_some()
             && let Some(session_id) = carry.pending.session_id()
         {
-            self.reconcile_look(session_id, &look, &mut carry.motion);
+            self.reconcile_look(session_id, &look, read.stamp.as_deref(), &mut carry.motion);
         }
         // The roster still contributes slots whose panes are missing to the
         // session rollup. It is no longer drawn as a separate session strip:
@@ -7546,6 +7567,7 @@ impl Cycle<'_> {
                 attention: session_mark(by_pane, &slots),
                 look: &look,
             },
+            &read.opened,
             carry,
             table,
         );
@@ -7561,11 +7583,17 @@ impl Cycle<'_> {
     /// is what the layout was written FOR; when it and the live look disagree,
     /// the layout is written again — or taken off, which unsets the session
     /// options and hands the user's own global status line back.
-    fn reconcile_look(&self, session_id: &str, look: &Look, motion: &mut MotionState) {
-        let stamped =
-            transport::observe_session_option(self.server, self.session, theme::LOOK_STAMP_OPTION)
-                .unwrap_or_default();
-        if stamped == look.stamp() {
+    ///
+    /// `stamped` is the stamp the cycle's look read found ([`Cycle::look`]); a
+    /// stamp that is unset or did not answer reads as empty, as it always has.
+    fn reconcile_look(
+        &self,
+        session_id: &str,
+        look: &Look,
+        stamped: Option<&str>,
+        motion: &mut MotionState,
+    ) {
+        if stamped.unwrap_or_default() == look.stamp() {
             return;
         }
         // The strip value may be unchanged while tmux's layout was removed or
@@ -7637,29 +7665,43 @@ impl Cycle<'_> {
         ok
     }
 
-    /// The look this session is drawn in, as its own options declare it.
-    fn look(&self) -> Option<Look> {
-        let read = transport::observe_look(self.server, self.session)?;
-        Some(Look::read(
-            &read.icons,
-            &read.palette,
-            &read.drawn,
-            &read.motion,
-        ))
+    /// The look this session is drawn in, as its own options declare it, with
+    /// the session options the rest of the cycle reads beside it: ONE process.
+    fn look(&self) -> CycleLookRead {
+        let read = transport::observe_session_look(self.server, self.session, &CYCLE_LOOK_OPTIONS);
+        let mut options = read.options.into_iter();
+        let mut next = || options.next().flatten();
+        CycleLookRead {
+            look: read
+                .look
+                .map(|read| Look::read(&read.icons, &read.palette, &read.drawn, &read.motion)),
+            stamp: next(),
+            opened: [next(), next()],
+        }
     }
 
     /// Publish this cycle's verdicts as tmux user options.
     ///
     /// Nothing is sent here: every value joins the cycle's ONE batch
-    /// ([`flush_cycle`]), and every value is asserted again each cycle.
-    fn publish(&self, published: &Published<'_>, carry: &mut Carry, table: Option<&[procs::Proc]>) {
+    /// ([`flush_cycle`]), and every value is asserted again each cycle. The
+    /// only immediate write is the clear of an expired menu marker, judged on
+    /// `opened`, the markers the cycle's look read found.
+    fn publish(
+        &self,
+        published: &Published<'_>,
+        opened: &[Option<String>; 2],
+        carry: &mut Carry,
+        table: Option<&[procs::Proc]>,
+    ) {
         let Some(session_id) = carry.pending.session_id().map(str::to_owned) else {
             return;
         };
-        for option in [theme::MENU_OPEN_OPTION, theme::SETTINGS_OPEN_OPTION] {
-            if let Some(opened) =
-                transport::observe_session_option(self.server, self.session, option)
-                && menu_open_expired(&opened, Timestamp::now().epoch(), self.knobs.interval_secs)
+        for (option, opened) in [theme::MENU_OPEN_OPTION, theme::SETTINGS_OPEN_OPTION]
+            .into_iter()
+            .zip(opened)
+        {
+            if let Some(opened) = opened
+                && menu_open_expired(opened, Timestamp::now().epoch(), self.knobs.interval_secs)
             {
                 let _ =
                     transport::clear_option(self.server, OptionScope::Session, &session_id, option);
@@ -18844,6 +18886,93 @@ mod tests {
         assert!(
             close.contains("carry.look = Some(look);"),
             "and a successful read is remembered for the next failed one"
+        );
+    }
+
+    /// The cycle reads its look, the layout stamp and both menu markers in ONE
+    /// process, each answering as its separate read did; `publish` then judges
+    /// the markers that read found and reads none of them again.
+    #[test]
+    fn the_cycle_reads_its_look_stamp_and_menu_markers_in_one_process() {
+        let rig = crate::transport::quietwd_spec::Rig::new("cycle-look");
+        let meta = rig.path("meta");
+        let helper = SendHelper::for_session(&meta);
+        let cycle = Cycle {
+            knobs: Knobs::default(),
+            meta_dir: &meta,
+            helper: &helper,
+            server: &rig.server,
+            session: "current",
+            goal: None,
+            roster: Vec::new(),
+            local_config: None,
+            lead_pair: false,
+            fleet_order: crate::theme::FleetOrder::EMPTY,
+            auto: crate::autoreseat::settings(None),
+            auto_trust: crate::config::AutoTrust::Off,
+            meta_agent: false,
+            launch_ids: Vec::new(),
+            started: None,
+            settled: None,
+        };
+        let set = |name: &str, value: &str| {
+            rig.must(&["set-option", "-t", "=current:", name, value]);
+        };
+        set(crate::theme::LOOK_STAMP_OPTION, "stamp-1");
+        set(crate::theme::MENU_OPEN_OPTION, "100");
+        let (read, calls) = crate::transport::spawns_during(|| cycle.look());
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let look = crate::transport::observe_look(&rig.server, "current")
+            .map(|read| Look::read(&read.icons, &read.palette, &read.drawn, &read.motion));
+        assert!(look.is_some());
+        assert_eq!(
+            read,
+            super::CycleLookRead {
+                look,
+                stamp: Some("stamp-1".to_owned()),
+                opened: [Some("100".to_owned()), None],
+            }
+        );
+        // An expired marker set after the read is not judged: publish acts on
+        // what the read found, so the menu marker clears and this one stays.
+        set(crate::theme::SETTINGS_OPEN_OPTION, "100");
+        let mut carry = Carry::new();
+        carry.pending = super::PendingCycle::new(crate::transport::observe_session_identity(
+            &rig.server,
+            "current",
+        ));
+        let drawn = look.unwrap_or(Look::DEFAULT);
+        let ((), calls) = crate::transport::spawns_during(|| {
+            cycle.publish(
+                &super::Published {
+                    bar: "",
+                    active: 0,
+                    total: 0,
+                    by_pane: &[],
+                    agents: None,
+                    attention: Mark::Idle,
+                    look: &drawn,
+                },
+                &read.opened,
+                &mut carry,
+                None,
+            );
+        });
+        assert!(
+            !calls.iter().any(|call| call
+                .iter()
+                .any(|word| word == crate::theme::MENU_OPEN_OPTION
+                    || word == crate::theme::SETTINGS_OPEN_OPTION)
+                && call.iter().any(|word| word == "show-options")),
+            "publish reads no marker again: {calls:?}"
+        );
+        assert_eq!(
+            rig.option("", "=current:", crate::theme::MENU_OPEN_OPTION),
+            ""
+        );
+        assert_eq!(
+            rig.option("", "=current:", crate::theme::SETTINGS_OPEN_OPTION),
+            "100"
         );
     }
 

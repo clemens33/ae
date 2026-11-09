@@ -1049,14 +1049,24 @@ pub(crate) struct MotionPane {
     pub session_attached: u32,
 }
 
-/// The ticker's `list-panes -s -t <session> -F <MOTION_PANE_FORMAT>` argv.
+/// The ticker's `list-panes -s -t <session> -F <MOTION_PANE_FORMAT>` argv, as
+/// one invocation of its own. Production reads it inside the motion exchange
+/// ([`motion_exchange_args`]); tests read it alone.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn motion_panes_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["list-panes", "-s", "-t"].map(ToOwned::to_owned));
-    args.push(session_target(session));
-    args.extend(["-F", MOTION_PANE_FORMAT].map(ToOwned::to_owned));
+    args.extend(motion_panes_words(session));
     args
+}
+
+/// The `list-panes -s -t <session> -F <MOTION_PANE_FORMAT>` command, without
+/// the server words.
+fn motion_panes_words(session: &str) -> Vec<String> {
+    let mut words: Vec<String> = ["list-panes", "-s", "-t"].map(ToOwned::to_owned).into();
+    words.push(session_target(session));
+    words.extend(["-F", MOTION_PANE_FORMAT].map(ToOwned::to_owned));
+    words
 }
 
 /// Interpret one complete motion observation. Any malformed row refuses the
@@ -1624,10 +1634,11 @@ const OWNERSHIP_SOCKET_STEM: &str = "ae-wd:k|";
 /// The section name of the ownership read's socket answer.
 const OWNERSHIP_SOCKET_SECTION: &str = "k";
 
-/// The completion marker after one section of an ownership read. The `nonce`
-/// is 64 random bits fresh per read, so an environment value set before the
-/// read prints a line that passes for a marker only by guessing them.
-fn ownership_marker(nonce: &str, section: &str) -> String {
+/// The completion marker after one section of a queued read (the ownership
+/// read, the motion exchange, the session look read). The `nonce` is 64 random
+/// bits fresh per read, so a value set before the read prints a line that
+/// passes for a marker only by guessing them.
+fn read_marker(nonce: &str, section: &str) -> String {
     format!("ae-wd!{nonce}!{section}")
 }
 
@@ -1659,7 +1670,7 @@ pub(crate) fn ownership_read_args(
         vec![
             "display-message".to_owned(),
             "-p".to_owned(),
-            ownership_marker(nonce, section),
+            read_marker(nonce, section),
         ]
     };
     let mut commands: Vec<Vec<String>> = Vec::new();
@@ -1739,7 +1750,7 @@ pub(crate) fn interpret_ownership_read(
     socket: bool,
     peers: usize,
 ) -> OwnershipAnswer {
-    let stem = ownership_marker(nonce, "");
+    let stem = read_marker(nonce, "");
     let mut completed: Vec<(&str, Vec<&str>)> = Vec::new();
     let mut lines: Vec<&str> = Vec::new();
     for line in stdout.strip_suffix('\n').unwrap_or(stdout).split('\n') {
@@ -1788,6 +1799,221 @@ pub(crate) fn interpret_ownership_read(
     answer
 }
 
+/// The commands of one queued read: each read of `sections`, in order, followed
+/// by its completion marker ([`read_marker`]). tmux stops a `;` list at the
+/// first failure, so a marker on stdout proves that its read ran to completion,
+/// and nothing after a failed read runs at all.
+fn queued_read_commands(nonce: &str, sections: Vec<(String, Vec<String>)>) -> Vec<Vec<String>> {
+    let mut commands = Vec::with_capacity(2 * sections.len());
+    for (section, read) in sections {
+        commands.push(read);
+        commands.push(vec![
+            "display-message".to_owned(),
+            "-p".to_owned(),
+            read_marker(nonce, &section),
+        ]);
+    }
+    commands
+}
+
+/// `commands` behind `server`'s words, as one queued invocation.
+fn queued_args(server: &ServerId, commands: Vec<Vec<String>>) -> Vec<String> {
+    let mut args = server_args(server);
+    for (index, command) in commands.into_iter().enumerate() {
+        if index > 0 {
+            args.push(";".to_owned());
+        }
+        args.extend(command);
+    }
+    args
+}
+
+/// What tmux counts of a queued list: every command, and a `;` word (two bytes
+/// with its NUL) between each two.
+fn queued_bytes(commands: &[Vec<String>]) -> usize {
+    commands
+        .iter()
+        .map(|words| command_bytes(words))
+        .sum::<usize>()
+        + 2 * commands.len().saturating_sub(1)
+}
+
+/// The stdout of one queued read, cut into the sections `sections` names, in
+/// the order they were asked.
+///
+/// Each completed section is EXACTLY the bytes its command printed, as the
+/// same command run on its own prints them, so today's interpreter reads it
+/// unchanged. The first section whose marker is missing did not complete, and
+/// it and every section after it are `None`.
+///
+/// Lines split at LF ONLY and keep every other byte, CR included. A line counts
+/// as a marker only when it IS the expected marker, nonce and all: a value that
+/// prints a marker-like line without the nonce stays a line of its section. A
+/// line that carries the nonce and is not the expected marker is framing this
+/// read never printed, and it ends the read there.
+fn queued_sections(stdout: &str, nonce: &str, sections: &[String]) -> Vec<Option<String>> {
+    let stem = read_marker(nonce, "");
+    let mut found: Vec<Option<String>> = Vec::with_capacity(sections.len());
+    let mut lines = stdout.strip_suffix('\n').unwrap_or(stdout).split('\n');
+    for section in sections {
+        let marker = read_marker(nonce, section);
+        let mut bytes = String::new();
+        let mut complete = false;
+        for line in lines.by_ref() {
+            if line == marker {
+                complete = true;
+                break;
+            }
+            if line.starts_with(&stem) {
+                break;
+            }
+            bytes.push_str(line);
+            bytes.push('\n');
+        }
+        if !complete {
+            break;
+        }
+        found.push(Some(bytes));
+    }
+    found.resize(sections.len(), None);
+    found
+}
+
+/// The motion exchange's section holding [`motion_panes_words`]'s listing.
+const MOTION_PANES_SECTION: &str = "p";
+
+/// The motion exchange's section holding [`fleet_listing_args`]'s listing.
+const MOTION_FLEET_SECTION: &str = "s";
+
+/// The two sections of a motion exchange, in the order it reads them.
+fn motion_sections() -> Vec<String> {
+    vec![
+        MOTION_PANES_SECTION.to_owned(),
+        MOTION_FLEET_SECTION.to_owned(),
+    ]
+}
+
+/// One queued motion exchange: its argv, and whether the writes ride in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MotionQuery {
+    pub(crate) args: Vec<String>,
+    /// `true` when every write rides behind the reads (always, with none). It
+    /// is `false` only when the writes would carry the invocation past
+    /// [`COMMAND_BYTES`]; the caller then publishes them as their own
+    /// invocation, and only after the reads completed.
+    pub(crate) writes: bool,
+}
+
+/// ONE queued invocation of the motion ticker: [`motion_panes_words`]'s read of
+/// `session` and [`fleet_listing_args`]'s read, each followed by its completion
+/// marker, then every write of `writes` as [`set_options_args`] spells it.
+///
+/// Both reads are today's commands verbatim. A read that fails — the session is
+/// gone or renamed — ends tmux's list before any write, so a frame computed
+/// from an older snapshot never lands past a missing read. The writes stay
+/// behind only when they would pass [`COMMAND_BYTES`]: tmux 3.4 would refuse
+/// the reads with them.
+#[must_use]
+pub(crate) fn motion_exchange_args(
+    server: &ServerId,
+    session: &str,
+    nonce: &str,
+    writes: &[OptionWrite],
+) -> MotionQuery {
+    let reads = vec![motion_panes_words(session), fleet_listing_words()];
+    let mut commands =
+        queued_read_commands(nonce, motion_sections().into_iter().zip(reads).collect());
+    let read_commands = commands.len();
+    commands.extend(writes.iter().map(set_option_words));
+    let fits = commands.len() == read_commands || queued_bytes(&commands) <= COMMAND_BYTES;
+    if !fits {
+        commands.truncate(read_commands);
+    }
+    MotionQuery {
+        args: queued_args(server, commands),
+        writes: fits,
+    }
+}
+
+/// The pane and fleet listings one [`motion_exchange_args`] invocation read,
+/// each by today's interpreter over exactly the bytes its command printed — or
+/// `None` unless both sections completed and both interpreters accept them.
+#[must_use]
+pub(crate) fn interpret_motion_exchange(
+    stdout: &str,
+    nonce: &str,
+) -> Option<(Vec<MotionPane>, Vec<FleetListingRow>)> {
+    let mut sections = queued_sections(stdout, nonce, &motion_sections()).into_iter();
+    let panes = interpret_motion_panes(true, &sections.next().flatten()?)?;
+    let fleet = interpret_fleet_listing(true, &sections.next().flatten()?)?;
+    Some((panes, fleet))
+}
+
+/// The session look read's section holding [`look_args`]'s answer.
+const LOOK_SECTION: &str = "l";
+
+/// The sections of a session look read of `options` options: the look, then
+/// one per option by its index.
+fn session_look_sections(options: usize) -> Vec<String> {
+    let mut sections = vec![LOOK_SECTION.to_owned()];
+    sections.extend((0..options).map(|index| index.to_string()));
+    sections
+}
+
+/// ONE queued invocation reading `session`'s look ([`look_args`]) and then each
+/// session option of `options` ([`session_option_args`]), each followed by its
+/// completion marker. Every read is today's command verbatim.
+#[must_use]
+pub(crate) fn session_look_read_args(
+    server: &ServerId,
+    session: &str,
+    nonce: &str,
+    options: &[&str],
+) -> Vec<String> {
+    let mut reads = vec![look_words(session)];
+    reads.extend(
+        options
+            .iter()
+            .map(|name| session_option_words(session, name)),
+    );
+    let sections = session_look_sections(options.len())
+        .into_iter()
+        .zip(reads)
+        .collect();
+    queued_args(server, queued_read_commands(nonce, sections))
+}
+
+/// What one [`session_look_read_args`] invocation read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SessionLookRead {
+    /// The look, as [`interpret_look`] reads it, or `None` when its read did
+    /// not complete.
+    pub(crate) look: Option<LookOptions>,
+    /// One entry per option asked, in order, as [`interpret_session_option`]
+    /// reads it: `None` for an unset option and for a read that did not
+    /// complete, exactly as a separate read gave `None` for both.
+    pub(crate) options: Vec<Option<String>>,
+}
+
+/// Interpret one [`session_look_read_args`] invocation that asked `options`
+/// options.
+#[must_use]
+pub(crate) fn interpret_session_look_read(
+    stdout: &str,
+    nonce: &str,
+    options: usize,
+) -> SessionLookRead {
+    let mut sections = queued_sections(stdout, nonce, &session_look_sections(options)).into_iter();
+    let look = sections
+        .next()
+        .flatten()
+        .and_then(|section| interpret_look(true, &section));
+    let options = sections
+        .map(|section| section.and_then(|section| interpret_session_option(true, &section)))
+        .collect();
+    SessionLookRead { look, options }
+}
+
 /// Remove one user option from `target` — `set-option -u`.
 #[must_use]
 pub fn unset_option_args(
@@ -1830,10 +2056,17 @@ pub const BRANCH_OPTION: &str = "@ae_branch_name";
 #[must_use]
 pub fn session_option_args(server: &ServerId, session: &str, name: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["show-options", "-t"].map(ToOwned::to_owned));
-    args.push(format!("{}:", session_target(session)));
-    args.extend(["-qv", name].map(ToOwned::to_owned));
+    args.extend(session_option_words(session, name));
     args
+}
+
+/// The `show-options` command of [`session_option_args`], without the server
+/// words.
+fn session_option_words(session: &str, name: &str) -> Vec<String> {
+    let mut words: Vec<String> = ["show-options", "-t"].map(ToOwned::to_owned).into();
+    words.push(format!("{}:", session_target(session)));
+    words.extend(["-qv", name].map(ToOwned::to_owned));
+    words
 }
 
 /// The value a completed [`session_option_args`] run reported, or `None`.
@@ -3594,8 +3827,16 @@ pub struct FleetListingRow {
 #[must_use]
 pub fn fleet_listing_args(server: &ServerId) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["list-sessions", "-F", FLEET_LISTING_FORMAT].map(ToOwned::to_owned));
+    args.extend(fleet_listing_words());
     args
+}
+
+/// The `list-sessions` command of [`fleet_listing_args`], without the server
+/// words.
+fn fleet_listing_words() -> Vec<String> {
+    ["list-sessions", "-F", FLEET_LISTING_FORMAT]
+        .map(ToOwned::to_owned)
+        .into()
 }
 
 /// What a completed [`fleet_listing_args`] run means.
@@ -4461,10 +4702,18 @@ pub struct LookOptions {
 #[must_use]
 pub fn look_args(server: &ServerId, session: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["display-message", "-p", "-t"].map(ToOwned::to_owned));
-    args.push(format!("{}:", session_target(session)));
-    args.push(LOOK_FORMAT.to_owned());
+    args.extend(look_words(session));
     args
+}
+
+/// The `display-message` command of [`look_args`], without the server words.
+fn look_words(session: &str) -> Vec<String> {
+    let mut words: Vec<String> = ["display-message", "-p", "-t"]
+        .map(ToOwned::to_owned)
+        .into();
+    words.push(format!("{}:", session_target(session)));
+    words.push(LOOK_FORMAT.to_owned());
+    words
 }
 
 /// The same question with NO target, so tmux answers for the session the
@@ -6197,6 +6446,208 @@ mod tests {
             super::interpret_ownership_read(joined, "N", false, 1).peers,
             [Some(("1".to_owned(), "/qw/home\r".to_owned()))],
             "the marker trims as today's interpret_marker does; the home keeps its CR"
+        );
+    }
+
+    /// The command words of `args`, without the server words in front.
+    fn command_words(server: &crate::inventory::ServerId, args: &[String]) -> Vec<String> {
+        args[super::server_args(server).len()..].to_vec()
+    }
+
+    /// A queued read's marker command, behind its `;`.
+    fn marker_words(marker: &str) -> Vec<String> {
+        [";", "display-message", "-p", marker]
+            .map(ToOwned::to_owned)
+            .into()
+    }
+
+    #[test]
+    fn the_motion_exchange_is_todays_two_reads_each_behind_a_nonce_marker_then_the_writes() {
+        use super::{OptionScope, OptionWrite};
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        let writes = [
+            OptionWrite::new(OptionScope::Pane, "%3", "@ae_pane_state", "working"),
+            OptionWrite::new(OptionScope::Window, "@2", "@ae_window_agents", "x"),
+        ];
+        let mut reads = super::server_args(&server);
+        reads.extend(command_words(
+            &server,
+            &super::motion_panes_args(&server, "s"),
+        ));
+        reads.extend(marker_words("ae-wd!n1!p"));
+        reads.push(";".to_owned());
+        reads.extend(command_words(&server, &super::fleet_listing_args(&server)));
+        reads.extend(marker_words("ae-wd!n1!s"));
+        let alone = super::motion_exchange_args(&server, "s", "n1", &[]);
+        assert!(alone.writes, "no writes leaves nothing behind");
+        assert_eq!(alone.args, reads);
+        let mut joined = reads;
+        joined.push(";".to_owned());
+        joined.extend(command_words(
+            &server,
+            &super::set_options_args(&server, &writes),
+        ));
+        let query = super::motion_exchange_args(&server, "s", "n1", &writes);
+        assert!(query.writes);
+        assert_eq!(query.args, joined);
+    }
+
+    #[test]
+    fn writes_that_would_pass_the_command_bound_stay_behind_the_reads() {
+        use super::{COMMAND_BYTES, OptionScope, OptionWrite};
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        let write = |value: &str| [OptionWrite::new(OptionScope::Pane, "%3", "@v", value)];
+        let exchange = |value: &str| super::motion_exchange_args(&server, "s", "n1", &write(value));
+        let reads = chunk_bytes(
+            &server,
+            &super::motion_exchange_args(&server, "s", "n1", &[]).args,
+        );
+        let room = COMMAND_BYTES - chunk_bytes(&server, &exchange("").args);
+        let full = exchange(&"x".repeat(room));
+        assert!(
+            full.writes,
+            "a write that reaches the bound exactly still rides"
+        );
+        assert_eq!(chunk_bytes(&server, &full.args), COMMAND_BYTES);
+        let over = exchange(&"x".repeat(room + 1));
+        assert!(!over.writes, "one byte more and it stays behind");
+        assert_eq!(
+            chunk_bytes(&server, &over.args),
+            reads,
+            "the reads then travel alone"
+        );
+    }
+
+    #[test]
+    fn a_queued_read_hands_each_section_over_byte_for_byte() {
+        let sections = ["p".to_owned(), "s".to_owned()];
+        let split = |stdout: &str| super::queued_sections(stdout, "N", &sections);
+        let some = |section: &str| Some(section.to_owned());
+        // tmux prints a value's CR raw; a separate read would hand it on.
+        let panes = "%1 | lead\r | 1\n%2 |  | 1\r\n";
+        let fleet = "current | $0 | 2 |  | b\r |  | \n";
+        let stdout = format!("{panes}ae-wd!N!p\n{fleet}ae-wd!N!s\n");
+        assert_eq!(split(&stdout), [some(panes), some(fleet)]);
+        assert_eq!(split("ae-wd!N!p\nae-wd!N!s\n"), [some(""), some("")]);
+        assert_eq!(
+            split("ae-wd!N!p\nae-wd!N!s\nafter\n"),
+            [some(""), some("")],
+            "lines after the last marker belong to no section"
+        );
+        assert_eq!(
+            split(&format!("{panes}ae-wd!N!p\n{fleet}")),
+            [some(panes), None]
+        );
+        assert_eq!(split(""), [None, None], "nothing ran");
+        assert_eq!(split(panes), [None, None]);
+        // Marker-like lines without the nonce are lines of their section.
+        let forged = "ae-wd!p\nae-wd!M!p\nae-wd:s|x\n";
+        assert_eq!(
+            split(&format!("{forged}ae-wd!N!p\nae-wd!N!s\n")),
+            [some(forged), some("")]
+        );
+        // A line carrying the nonce that is not the expected marker is framing
+        // this read never printed: the read ends there.
+        for stray in ["ae-wd!N!p\r", "ae-wd!N!s", "ae-wd!N!", "ae-wd!N!px"] {
+            assert_eq!(
+                split(&format!("{stray}\nae-wd!N!p\nae-wd!N!s\n")),
+                [None, None],
+                "{stray:?}"
+            );
+        }
+        assert_eq!(
+            split("ae-wd!N!p\nae-wd!N!p\nae-wd!N!s\n"),
+            [some(""), None],
+            "a repeated marker is not the next section's"
+        );
+    }
+
+    #[test]
+    fn a_motion_exchange_reads_each_section_with_todays_interpreter() {
+        let panes = "%1 | lead\r | 1\n%2 |  | 1\n";
+        let fleet = "current | $0 | 2 |  |  |  | \nbad row\n";
+        let today = super::interpret_motion_panes(true, panes)
+            .zip(super::interpret_fleet_listing(true, fleet));
+        assert!(today.is_some());
+        let stdout = format!("{panes}ae-wd!N!p\n{fleet}ae-wd!N!s\n");
+        assert_eq!(super::interpret_motion_exchange(&stdout, "N"), today);
+        assert_eq!(
+            super::interpret_motion_exchange(&format!("{panes}ae-wd!N!p\n{fleet}"), "N"),
+            None,
+            "a fleet section that did not complete is no fleet"
+        );
+        assert_eq!(
+            super::interpret_motion_exchange(
+                &format!("{panes}x\nae-wd!N!p\n{fleet}ae-wd!N!s\n"),
+                "N"
+            ),
+            None,
+            "a malformed pane row refuses the whole reading, as today"
+        );
+    }
+
+    #[test]
+    fn the_session_look_read_is_todays_reads_each_behind_a_nonce_marker() {
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        let mut expected = super::server_args(&server);
+        expected.extend(command_words(&server, &super::look_args(&server, "s")));
+        expected.extend(marker_words("ae-wd!n1!l"));
+        expected.push(";".to_owned());
+        expected.extend(command_words(
+            &server,
+            &super::session_option_args(&server, "s", "@a"),
+        ));
+        expected.extend(marker_words("ae-wd!n1!0"));
+        expected.push(";".to_owned());
+        expected.extend(command_words(
+            &server,
+            &super::session_option_args(&server, "s", "@b"),
+        ));
+        expected.extend(marker_words("ae-wd!n1!1"));
+        assert_eq!(
+            super::session_look_read_args(&server, "s", "n1", &["@a", "@b"]),
+            expected
+        );
+    }
+
+    #[test]
+    fn a_session_look_read_answers_as_the_separate_reads_did() {
+        use super::{SessionLookRead, interpret_look, interpret_session_look_read};
+        let look = "off | b\r | on | off\n";
+        let stdout = format!("{look}ae-wd!N!l\nstamp\r\nae-wd!N!0\nae-wd!N!1\n\nae-wd!N!2\n");
+        assert_eq!(
+            interpret_session_look_read(&stdout, "N", 3),
+            SessionLookRead {
+                look: interpret_look(true, look),
+                options: vec![
+                    super::interpret_session_option(true, "stamp\r\n"),
+                    None,
+                    None
+                ],
+            },
+            "unset prints nothing or an empty line, and both are None, as today"
+        );
+        let cut = format!("{look}ae-wd!N!l\nstamp\nae-wd!N!0\n");
+        assert_eq!(
+            interpret_session_look_read(&cut, "N", 3),
+            SessionLookRead {
+                look: interpret_look(true, look),
+                options: vec![Some("stamp".to_owned()), None, None],
+            },
+            "a read that stopped answers up to its last marker"
+        );
+        assert_eq!(
+            interpret_session_look_read("", "N", 3),
+            SessionLookRead {
+                look: None,
+                options: vec![None; 3],
+            }
         );
     }
 
