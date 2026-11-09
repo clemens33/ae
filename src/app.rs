@@ -560,6 +560,9 @@ struct App {
     settings_generation: u64,
     /// The open generation whose shown Statistics tab the reader watches.
     stats_shown: Option<u64>,
+    /// The tool-statistics page the reader was last told is shown: its open
+    /// generation and its ask.
+    tools_asked: Option<(u64, crate::tool_stats::Ask)>,
     /// The open generation whose `r` is owed to the upkeep, not yet handed.
     stats_reset: Option<u64>,
     /// The open peek panel's captures, and the generation the next open mints.
@@ -719,6 +722,7 @@ impl App {
             quota_failed: false,
             settings_generation: 0,
             stats_shown: None,
+            tools_asked: None,
             stats_reset: None,
             peek: PeekPane::default(),
             peek_generation: 0,
@@ -1266,6 +1270,7 @@ impl App {
     fn settings_due(&mut self) {
         self.spell_kept();
         self.ask_stats();
+        self.ask_tools();
     }
 
     /// Tell the reader, before a frame, when the Statistics tab became shown
@@ -1309,6 +1314,10 @@ impl App {
 
     /// `r` on the Statistics tab: a reset owed to the upkeep, for this open.
     fn ask_reset(&mut self) {
+        // The store reset belongs to the Spawns page alone.
+        if self.settings_bodies.stats.page != settings::StatsPage::Spawns {
+            return;
+        }
         let shown = (self.model.settings())
             .filter(|open| open.tab == model::SettingsTab::Statistics)
             .map(|open| open.generation);
@@ -1364,32 +1373,132 @@ impl App {
     fn flip_stats_scope(&mut self) {
         let stats = &mut self.settings_bodies.stats;
         stats.scope = stats.scope.flip();
+        // A tool page waits for the other scope's own answer.
+        if stats.page != settings::StatsPage::Spawns {
+            stats.tools = None;
+        }
     }
 
-    /// `n` or `p` on the Statistics tab: the next or previous page. B4 wires it.
+    /// `n` or `p` on the Statistics tab: the next or previous page. A new
+    /// page draws `loading` with no filter until its own answer lands.
     fn stats_page(&mut self, next: bool) -> bool {
-        let _ = (next, &self.settings_bodies.stats.page);
-        false
+        use settings::StatsPage;
+        let stats = &mut self.settings_bodies.stats;
+        let order = [
+            StatsPage::Spawns,
+            StatsPage::Skills,
+            StatsPage::Mcp,
+            StatsPage::Tools,
+        ];
+        let at = order
+            .iter()
+            .position(|page| *page == stats.page)
+            .unwrap_or(0);
+        let step = if next { 1 } else { order.len() - 1 };
+        stats.page = order[(at + step) % order.len()];
+        stats.filter = crate::tool_stats::Filter::All;
+        stats.tools = None;
+        true
     }
 
-    /// `]` or `[` on the Statistics tab: the next or previous filter. B4 wires it.
+    /// `]` or `[` on a tool page: the next or previous filter the shown
+    /// answer offers (`all` first). The numbers stay until the filtered
+    /// answer lands.
     fn stats_filter(&mut self, next: bool) -> bool {
-        let _ = (next, &self.settings_bodies.stats.filter);
-        false
+        let stats = &mut self.settings_bodies.stats;
+        let Some(view) = &stats.tools else {
+            return false;
+        };
+        let filters = &view.filters;
+        if filters.is_empty() {
+            return false;
+        }
+        let at = filters
+            .iter()
+            .position(|filter| *filter == stats.filter)
+            .unwrap_or(0);
+        let step = if next { 1 } else { filters.len() - 1 };
+        stats.filter = filters[(at + step) % filters.len()].clone();
+        true
     }
 
-    /// A tool-statistics answer: kept only for the current overlay generation
-    /// (a stale one is dropped). B4 wires it.
+    /// The tool page the open Statistics tab shows, as the reader is asked
+    /// for it: `None` on the Spawns page or with the tab not shown. `m` asks
+    /// for this session: the selection's recorded id, else home's.
+    fn tools_ask(&self) -> Option<(u64, crate::tool_stats::Ask)> {
+        use crate::tool_stats::{Ask, Page, Scope};
+        let open = self
+            .model
+            .settings()
+            .filter(|open| open.tab == model::SettingsTab::Statistics)?;
+        let stats = &self.settings_bodies.stats;
+        let page = match stats.page {
+            settings::StatsPage::Spawns => return None,
+            settings::StatsPage::Skills => Page::Skills,
+            settings::StatsPage::Mcp => Page::Mcp,
+            settings::StatsPage::Tools => Page::Tools,
+        };
+        let scope = match stats.scope {
+            settings::StatsScope::All => Scope::All,
+            settings::StatsScope::ThisSession => {
+                let name = self.model.selected().or(self.home.as_deref());
+                Scope::This(name.and_then(|name| self.ids.get(name)).cloned())
+            }
+        };
+        Some((
+            open.generation,
+            Ask {
+                page,
+                scope,
+                filter: stats.filter.clone(),
+            },
+        ))
+    }
+
+    /// Tell the reader, before a frame, which tool page is shown, or that
+    /// none is any more. A repaint asks nothing.
+    fn ask_tools(&mut self) {
+        let shown = self.tools_ask();
+        if shown == self.tools_asked {
+            return;
+        }
+        let request = match (&shown, &self.tools_asked) {
+            (Some((generation, ask)), _) => Request::Tools {
+                generation: *generation,
+                shown: true,
+                ask: ask.clone(),
+            },
+            (None, Some((generation, ask))) => Request::Tools {
+                generation: *generation,
+                shown: false,
+                ask: ask.clone(),
+            },
+            (None, None) => return,
+        };
+        self.tools_asked = shown;
+        if let Some(ask) = &self.ask {
+            let _ = ask.send(request);
+        }
+    }
+
+    /// A tool-statistics answer: kept only for the open overlay and the page
+    /// it shows now (a stale or another page's answer is dropped).
     fn tools_landed(&mut self, generation: u64, view: Box<crate::tool_stats::View>) {
-        let _ = (generation, view, &self.settings_bodies.stats.tools);
+        if !self.model.settings_generation(generation) {
+            return;
+        }
+        if self.tools_ask().is_some_and(|(_, ask)| ask == view.ask) {
+            self.settings_bodies.stats.tools = Some(view);
+        }
     }
 
     /// Close the overlay and tell the reader to stop reading for it. It
     /// always tells: the model may already hold the close the key caused.
     fn close_settings(&mut self) {
         self.model.close_settings();
-        // The close below drops the reader's watch with the overlay.
+        // The close below drops the reader's watches with the overlay.
         self.stats_shown = None;
+        self.tools_asked = None;
         if let Some(ask) = &self.ask {
             let _ = ask.send(Request::Settings {
                 open: false,

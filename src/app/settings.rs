@@ -147,7 +147,6 @@ impl StatsScope {
 /// Which page the Statistics tab shows: the recorded spawns, or one of the
 /// observed skill / MCP / tool tables (#288).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code, reason = "#288 B0 seam: B4 selects the tool pages")]
 pub(crate) enum StatsPage {
     #[default]
     Spawns,

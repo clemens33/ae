@@ -28,14 +28,6 @@
 //! [`Unit`]'s counters are the actual receipt of its door calls
 //! ([`super::receipt`]); store IO is counted at the document reads and
 //! writes.
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3 seam: the upkeep thread wires the reader in P4"
-    )
-)]
-
 use super::lines::{Framed, LINE_CAP, Lines};
 use super::receipt::{Counts, Guard};
 use super::{Entry, claude_calls, codex_calls};
@@ -50,8 +42,10 @@ use crate::tool_stats::incr::{
 };
 use crate::tool_stats::store::{self, Loaded, StoreError};
 use crate::tool_stats::{
-    Adapter, Ask, Caps, Conversation, Event, GapKind, Membership, Parsed, Role, StreamRole, View,
+    Adapter, Caps, Conversation, Event, GapKind, Membership, Parsed, Role, StreamRole,
 };
+#[cfg(test)]
+use crate::tool_stats::{Ask, View};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -763,9 +757,23 @@ impl Reader {
         self.round.is_some()
     }
 
+    /// Whether the last load proved an active S5 epoch to publish under.
+    pub(crate) const fn proven(&self) -> bool {
+        self.publishing()
+    }
+
+    /// End the round in progress before its next unit: the upkeep's answer
+    /// to a load that proved no epoch, before any discovery.
+    pub(crate) fn abandon(&mut self) {
+        self.round = None;
+        self.recounting = 0;
+    }
+
     /// The page `ask` over the published view, with the coverage lines and
     /// the recount count: what a loader draws from `tools/view` and
     /// `tools/coverage` of one generation.
+    /// The test oracle: production draws from the store (`app::loader`).
+    #[cfg(test)]
     pub(crate) fn view(&self, ask: &Ask) -> View {
         // The prefix the view of this state is published with: the held
         // generation, or the next one while a change awaits publication.
@@ -811,6 +819,7 @@ impl Reader {
 
     /// The association records: memberships, flags and discovery gaps; no
     /// observation (the privacy surface besides the view).
+    #[cfg(test)]
     pub(crate) fn conversations(&self) -> &[Conversation] {
         &self.conversations
     }
@@ -1329,10 +1338,12 @@ fn digest_hex(domain: &[u8], bytes: &[u8]) -> String {
 /// The completeness group of a source key: a session's meta and journal
 /// share one, an archive is its own.
 fn group_of(key: &str) -> String {
-    match key.split_once(':') {
-        Some(("meta" | "journal", digest)) => digest.to_owned(),
-        _ => key.to_owned(),
-    }
+    // Whole prefixes: the bare word of a session file is spelled in
+    // src/store.rs alone (tests/it doors).
+    key.strip_prefix("meta:")
+        .or_else(|| key.strip_prefix("journal:"))
+        .unwrap_or(key)
+        .to_owned()
 }
 
 /// Whether a source's evidence is whole: a journal read to its end with no
@@ -2888,6 +2899,7 @@ fn mark_gone(round: &Round, key: &Key, conv: &mut Conv) {
 
 /// A cold reader run through one whole round: it never reads or changes
 /// `<root>/stats`.
+#[cfg(test)]
 pub(crate) fn scan(state_root: PathBuf, home: Option<PathBuf>, caps: Caps) -> Reader {
     let mut reader = Reader::with(state_root, home, caps, false);
     reader.round();

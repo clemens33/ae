@@ -705,6 +705,18 @@ impl Model {
             {
                 Act::StatsReset
             }
+            Key::SeatNext | Key::SeatPrev | Key::TurnOlder | Key::TurnNewer
+                if self
+                    .settings
+                    .is_some_and(|open| open.tab == SettingsTab::Statistics) =>
+            {
+                match key {
+                    Key::SeatNext => Act::StatsPage(true),
+                    Key::SeatPrev => Act::StatsPage(false),
+                    Key::TurnNewer => Act::StatsFilter(true),
+                    _ => Act::StatsFilter(false),
+                }
+            }
             Key::Up => self.settings_scroll_by(-1),
             Key::Down => self.settings_scroll_by(1),
             Key::PageUp => self.settings_page_by(false),

@@ -1443,15 +1443,20 @@ pub fn parse_assoc(bytes: &[u8]) -> Result<Assoc, DocError> {
 /// directory's digest), or `archive:` and a canonical archive id.
 fn source_key(value: &Value) -> Parsed<String> {
     let name = text(value)?;
-    let valid = match name.split_once(':') {
-        Some(("meta" | "journal", hex)) => {
-            hex.len() == 32
-                && hex
-                    .bytes()
-                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-        }
-        Some(("archive", id)) => crate::archive::is_canonical_uuid(id),
-        _ => false,
+    // Whole prefixes: the bare word of a session file is spelled in
+    // src/store.rs alone (tests/it doors).
+    let valid = if let Some(hex) = name
+        .strip_prefix("meta:")
+        .or_else(|| name.strip_prefix("journal:"))
+    {
+        hex.len() == 32
+            && hex
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    } else if let Some(id) = name.strip_prefix("archive:") {
+        crate::archive::is_canonical_uuid(id)
+    } else {
+        false
     };
     if valid { Ok(name) } else { damaged("source") }
 }

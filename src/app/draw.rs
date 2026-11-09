@@ -34,6 +34,7 @@ use crate::time::Timestamp;
 
 mod accounts_summary;
 mod stats_body;
+mod tool_body;
 
 /// Everything one frame draws.
 #[derive(Debug, Clone, Copy)]

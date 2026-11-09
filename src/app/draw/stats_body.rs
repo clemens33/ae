@@ -4,7 +4,7 @@
 use ratatui_core::style::{Modifier, Style};
 
 use super::{LEFT, Paint, drawn_cols, fit};
-use crate::app::settings::{ResetLine, ScopeLine, StatsBody, StatsScope};
+use crate::app::settings::{ResetLine, ScopeLine, StatsBody, StatsPage, StatsScope};
 use crate::board::terminal_text;
 use crate::console::wrap::wrap_in;
 use crate::stats::{Cell, Row, Scoped, ThisSession};
@@ -24,6 +24,9 @@ const THIS_TITLE: &str = "This session  ·  m: All retained  ·  r: rebuild";
 /// The rows of `body` at `width`: a reset's line first, then the scope's
 /// numbers, or the state that stands in for them.
 pub(super) fn rows(body: &StatsBody, paint: Paint, width: u16) -> Vec<(String, Style)> {
+    if body.page != StatsPage::Spawns {
+        return super::tool_body::rows(body, paint, width);
+    }
     let dim = paint.fg(|p| p.dim);
     let mut page = Page {
         rows: Vec::new(),

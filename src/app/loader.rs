@@ -30,6 +30,8 @@ use crate::session_menu::{self, CellRow};
 use crate::stats_store::disk;
 use crate::stats_store::maint::REFRESH as STATS_REFRESH;
 use crate::time::Timestamp;
+use crate::tool_stats::incr::Coverage;
+use crate::tool_stats::store::{self, Loaded};
 use crate::{theme, tmux, transport};
 
 #[cfg(test)]
@@ -76,7 +78,6 @@ pub(super) enum Request {
     Stats { generation: u64, shown: bool },
     /// A Skills, MCP servers or Tools page of the Statistics tab is shown
     /// (`shown`) for `ask`, or no longer shown, under this overlay generation.
-    #[allow(dead_code, reason = "#288 B0 seam: B4 sends it")]
     Tools {
         generation: u64,
         shown: bool,
@@ -237,7 +238,6 @@ pub(super) enum Answer {
         glance: Box<disk::Glance>,
     },
     /// The shown tool-statistics page, folded for `generation`.
-    #[allow(dead_code, reason = "#288 B0 seam: B4 answers it")]
     Tools {
         generation: u64,
         view: Box<crate::tool_stats::View>,
@@ -343,7 +343,6 @@ enum Job {
     /// One read of the shown Statistics tab's store.
     Stats,
     /// One unit of the tool-statistics reader, and the shown page's answer.
-    #[allow(dead_code, reason = "#288 B0 seam: B4 schedules it")]
     Tools,
     Wait(Instant),
 }
@@ -355,6 +354,19 @@ struct Watch {
     last: Option<Instant>,
     sent: Option<disk::Glance>,
 }
+
+/// The shown tool-statistics page's watch: the overlay generation and the
+/// page it answers, when its last read completed, and what it answered.
+struct ToolsWatch {
+    generation: u64,
+    ask: crate::tool_stats::Ask,
+    last: Option<Instant>,
+    sent: Option<crate::tool_stats::View>,
+}
+
+/// How often the shown tool-statistics page reads its small documents again;
+/// an always-due background sweep cannot hold it off longer.
+const TOOLS_REFRESH: Duration = Duration::from_secs(1);
 
 /// The paths the settings reads resolve through, selected once by the UI.
 #[derive(Debug, Clone, Default)]
@@ -428,6 +440,16 @@ pub(super) struct Reader {
     journals: Journals,
     /// The shown Statistics tab's watch on the store, if any.
     stats: Option<Watch>,
+    /// The shown tool-statistics page's watch, if any.
+    tools: Option<ToolsWatch>,
+    /// The tool-statistics view and its coverage as last read from
+    /// `stats/tools/`, and the epoch read before them: the coverage only
+    /// when its generation is the view's.
+    tools_cache: Option<(
+        crate::tool_stats::incr::Published,
+        Option<Coverage>,
+        Option<u64>,
+    )>,
     /// Sessions whose last stage read was answered: one still staging is due
     /// again at once, one whose read failed waits its tier.
     answered: BTreeSet<String>,
@@ -505,6 +527,8 @@ impl Reader {
             flight: None,
             journals: Journals::default(),
             stats: None,
+            tools: None,
+            tools_cache: None,
             answered: BTreeSet::new(),
             pressure: BTreeMap::new(),
         }
@@ -619,6 +643,7 @@ impl Reader {
             Request::Writing(binding) => self.writing = binding,
             Request::Settings { open, generation } => {
                 self.stats = None;
+                self.tools = None;
                 if open {
                     self.settings = Some((generation, None));
                     self.settings_full = false;
@@ -649,8 +674,25 @@ impl Reader {
                     });
                 }
             }
-            // B4 wires the tool-statistics watch.
-            Request::Tools { .. } => {}
+            // Hidden, the watch goes (the cache stays); shown, the page of
+            // `ask` answers at once, then on every change. A stale overlay's
+            // arm is dropped.
+            Request::Tools {
+                generation,
+                shown,
+                ask,
+            } => {
+                if !shown {
+                    self.tools = None;
+                } else if matches!(self.settings, Some((open, _)) if open == generation) {
+                    self.tools = Some(ToolsWatch {
+                        generation,
+                        ask,
+                        last: None,
+                        sent: None,
+                    });
+                }
+            }
         }
     }
 
@@ -673,12 +715,75 @@ impl Reader {
         })
     }
 
-    /// One unit of the tool-statistics reader at `now`, then the shown
-    /// page's answer when it changed. B4 wires it.
-    #[allow(clippy::unused_self, reason = "#288 B0 seam: B4 reads the reader")]
+    /// One read of the shown tool-statistics page at `now`: the small
+    /// coverage document, the view only when its generation moved, then the
+    /// page's answer when it changed. Never a transcript: the upkeep thread
+    /// alone reads those (plan r4 §5).
     pub(super) fn tools_step(&mut self, now: Instant) -> Option<Answer> {
-        let _ = now;
-        None
+        let watch = self.tools.as_ref()?;
+        let ask = watch.ask.clone();
+        let generation = watch.generation;
+        let mut files = disk::Files::at(&self.root);
+        // A reset or a repair starts the generations again under a new
+        // epoch, so the held view is the store's only for the epoch read
+        // here, before the documents: a view read after it is never older.
+        let epoch = disk::active_epoch(&mut files).ok().flatten();
+        let coverage = match store::load_coverage(&mut files) {
+            Loaded::Ok(coverage) => Some(coverage),
+            _ => None,
+        };
+        // A view of another epoch is never drawn, even while the new
+        // epoch has no view of its own yet.
+        if (self.tools_cache.as_ref()).is_some_and(|(_, _, at)| *at != epoch) {
+            self.tools_cache = None;
+        }
+        let held = (self.tools_cache.as_ref()).map(|(view, _, at)| (*at, view.generation));
+        let moved = (coverage.as_ref()).map(|coverage| (epoch, coverage.generation));
+        if (held.is_none() || moved != held)
+            && let Loaded::Ok(view) = store::load_view(&mut files)
+        {
+            self.tools_cache = Some((view, None, epoch));
+        }
+        if let Some((view, held, _)) = &mut self.tools_cache {
+            // Never two generations in one answer.
+            *held = coverage.filter(|coverage| coverage.generation == view.generation);
+        }
+        let caps = crate::tool_stats::Caps::SLICE;
+        let view = if let Some((published, coverage, _)) = &self.tools_cache {
+            let mut view = crate::tool_stats::incr::combine(published, &ask, &caps);
+            if let Some(coverage) = coverage {
+                coverage.apply(&mut view, &ask);
+            }
+            view
+        } else {
+            // Nothing published yet: the first build is under way.
+            let empty = crate::tool_stats::incr::Published {
+                generation: 0,
+                convs: Vec::new(),
+                over_cap: 0,
+            };
+            let mut view = crate::tool_stats::incr::combine(&empty, &ask, &caps);
+            if view.state == crate::tool_stats::State::NoSupported {
+                view.state = crate::tool_stats::State::Numbers;
+            }
+            view
+        };
+        let watch = self.tools.as_mut()?;
+        watch.last = Some(now);
+        if watch.sent.as_ref() == Some(&view) {
+            return None;
+        }
+        watch.sent = Some(view.clone());
+        Some(Answer::Tools {
+            generation,
+            view: Box::new(view),
+        })
+    }
+
+    /// When the shown tool-statistics page reads next, `None` with no watch.
+    fn tools_due(&self, now: Instant) -> Option<Instant> {
+        let watch = self.tools.as_ref()?;
+        Some(watch.last.map_or(now, |at| at + TOOLS_REFRESH))
     }
 
     /// When the watched Statistics tab reads next, `None` with no watch.
@@ -767,6 +872,13 @@ impl Reader {
         {
             return Job::Stats;
         }
+        // The shown tool page answers next (cached or progress, no transcript
+        // IO), then once a second ahead of the background sweep: one small
+        // read, then the sweep goes on.
+        let tools = self.tools_due(now);
+        if tools.is_some_and(|due| due <= now) {
+            return Job::Tools;
+        }
         if let Some((name, _)) = candidates[visible..].iter().find(due) {
             return name.clone().map_or(Job::Fleet, Job::View);
         }
@@ -778,6 +890,7 @@ impl Reader {
             .iter()
             .filter_map(|(_, due)| *due)
             .chain(stats)
+            .chain(tools)
             .fold(fleet_at + REFRESH, Instant::min);
         // A first settings read never waits: it is due at once, above.
         let until = match self.settings {
@@ -2973,5 +3086,234 @@ mod tests {
         let quota = quotacache_read(&mut reader);
         assert!(!quota.is_empty(), "locals answer");
         assert_eq!(calls.load(Ordering::SeqCst), 0, "no flight");
+    }
+
+    /// P4 / Q2 = A: the Tools answer draws a coverage line that the real
+    /// tool-statistics reader produced (one unsupported grok seat), from
+    /// `tools/coverage` of the view's generation, and equals the reader's
+    /// own page: the loader reads the store, never a transcript.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "owned fixture IO: the epoch and coverage files this test made"
+    )]
+    fn tools_answer_draws_a_reader_produced_coverage_line() {
+        use super::{Answer, Reader, Request};
+        use crate::tool_stats::{Ask, Caps, Filter, GapKind, Page, Scope};
+        use crate::tool_stats_fixture::{self as f, Fixture};
+        let root = Fixture::new();
+        let home = root.store("store-a");
+        let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a")
+            + &format!(
+                "seat.g1=g1\nprofile.g1=fixture-profile\nagent_bin.g1=grok\nconfig_home.g1={}\nharness_session.g1={}\n",
+                home.display(),
+                f::D
+            );
+        root.live("alpha", &meta, "");
+        let mut maintainer = crate::stats_store::maint::Maintainer::new(
+            &root.0,
+            crate::stats_store::disk::LIMITS,
+            std::time::Duration::from_millis(100),
+        );
+        for _ in 0..100 {
+            let _ = maintainer.step();
+            if root.0.join("stats/epoch").is_file() {
+                break;
+            }
+        }
+        assert!(root.0.join("stats/epoch").is_file(), "an epoch is proven");
+        root.claude("store-a", f::C, f::CLASSES.as_bytes());
+        let mut tools =
+            crate::usage::calls_read::Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+        tools.round();
+        while tools.step().is_some() {}
+        assert!(
+            root.0.join("stats/tools/coverage").is_file(),
+            "positive control: the reader published its coverage"
+        );
+        let ask = Ask {
+            page: Page::Tools,
+            scope: Scope::All,
+            filter: Filter::All,
+        };
+        let mut loader = Reader::new(root.0.clone(), None, None);
+        // The settings overlay of generation 7 is open: only its arm counts.
+        loader.settings = Some((7, Some(std::time::Instant::now())));
+        loader.take(Request::Tools {
+            generation: 7,
+            shown: true,
+            ask: ask.clone(),
+        });
+        let Some(Answer::Tools {
+            generation: 7,
+            view,
+        }) = loader.tools_step(std::time::Instant::now())
+        else {
+            panic!("the shown page is answered");
+        };
+        assert!(
+            view.gaps
+                .iter()
+                .any(|line| line.kind == GapKind::Unsupported("grok".into()) && line.count == 1),
+            "the reader's coverage line is drawn: {:?}",
+            view.gaps
+        );
+        assert_eq!(*view, tools.view(&ask), "the reader's own page");
+    }
+
+    /// The store a P4-1 reset test builds, publishes and reads back.
+    #[allow(
+        clippy::disallowed_methods,
+        clippy::expect_used,
+        reason = "owned fixture IO: the epoch these tests made"
+    )]
+    mod reset_store {
+        use crate::stats_store::disk;
+        use crate::tool_stats::Caps;
+        use crate::tool_stats_fixture::Fixture;
+
+        /// A real S5 first build: the epoch.
+        pub(super) fn build(root: &Fixture) {
+            let mut maintainer = crate::stats_store::maint::Maintainer::new(
+                &root.0,
+                disk::LIMITS,
+                std::time::Duration::from_millis(100),
+            );
+            for _ in 0..100 {
+                let _ = maintainer.step();
+                if root.0.join("stats/epoch").is_file() {
+                    break;
+                }
+            }
+        }
+
+        /// A real tool-statistics reader's whole round: its publication.
+        pub(super) fn publish(root: &Fixture) -> crate::usage::calls_read::Reader {
+            let mut tools = crate::usage::calls_read::Reader::new(
+                root.0.clone(),
+                Some(root.home()),
+                Caps::SLICE,
+            );
+            tools.round();
+            while tools.step().is_some() {}
+            tools
+        }
+
+        pub(super) fn epoch(root: &Fixture) -> Option<u64> {
+            disk::active_epoch(&mut disk::Files::at(&root.0)).expect("a readable epoch")
+        }
+
+        pub(super) fn generation(root: &Fixture) -> u64 {
+            match crate::tool_stats::store::load_view(&mut disk::Files::at(&root.0)) {
+                crate::tool_stats::store::Loaded::Ok(view) => view.generation,
+                _ => panic!("a published view"),
+            }
+        }
+    }
+
+    /// #288 P4 r1 P4-1: one loader across a real store reset. The view the
+    /// rebuilt store publishes has the generation of the view the loader
+    /// drew before, but other counts: the loader draws the new view.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        clippy::expect_used,
+        reason = "owned fixture IO: the epoch this test made"
+    )]
+    fn tools_answer_follows_a_reset_that_reuses_the_generation() {
+        use super::{Answer, Reader, Request};
+        use crate::stats_store::disk;
+        use crate::tool_stats::{Ask, Filter, Page, Scope};
+        use crate::tool_stats_fixture::{self as f, Fixture};
+        use reset_store::{build, epoch, generation, publish};
+        fn shown(loader: &mut Reader, ask: &Ask, shown: bool) {
+            loader.take(Request::Tools {
+                generation: 7,
+                shown,
+                ask: ask.clone(),
+            });
+        }
+        let root = Fixture::new();
+        root.live(
+            "alpha",
+            &root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a"),
+            &f::event("ordinary", "epoch fixture"),
+        );
+        build(&root);
+        let before = epoch(&root);
+        assert!(before.is_some(), "an epoch is proven");
+        let transcript = root.claude(
+            "store-a",
+            f::C,
+            f::call("one", "one", "Read", "model-a", "{}").as_bytes(),
+        );
+        let first = publish(&root);
+        let held = generation(&root);
+        let ask = Ask {
+            page: Page::Tools,
+            scope: Scope::All,
+            filter: Filter::All,
+        };
+        let mut loader = Reader::new(root.0.clone(), None, None);
+        loader.settings = Some((7, Some(std::time::Instant::now())));
+        shown(&mut loader, &ask, true);
+        let Some(Answer::Tools { view: drawn, .. }) = loader.tools_step(std::time::Instant::now())
+        else {
+            panic!("the shown page is answered");
+        };
+        assert_eq!(*drawn, first.view(&ask), "control: the first view is drawn");
+        shown(&mut loader, &ask, false);
+        assert!(
+            disk::reset(&root.0, disk::RESET_WAIT).is_ok(),
+            "the store is reset"
+        );
+        build(&root);
+        assert_ne!(epoch(&root), before, "control: the reset moved the epoch");
+        assert!(
+            matches!(
+                crate::tool_stats::store::load_view(&mut disk::Files::at(&root.0)),
+                crate::tool_stats::store::Loaded::Absent
+            ),
+            "control: the new epoch has no Tools publication yet"
+        );
+        // r2 P4-1 continuation: shown before the new epoch's first Tools
+        // publication, the old epoch's view is not drawn as current numbers.
+        shown(&mut loader, &ask, true);
+        let Some(Answer::Tools { view: early, .. }) = loader.tools_step(std::time::Instant::now())
+        else {
+            panic!("the shown page is answered before the first publication");
+        };
+        assert!(
+            early.rows.is_empty() && early.items == 0,
+            "the old epoch's numbers are not drawn: {:?}",
+            early.rows
+        );
+        shown(&mut loader, &ask, false);
+        Fixture::rewrite(
+            &transcript,
+            (f::call("one", "one", "Grep", "model-b", "{}")
+                + &f::call("two", "two", "Grep", "model-b", "{}"))
+                .as_bytes(),
+        );
+        let second = publish(&root);
+        assert_eq!(
+            generation(&root),
+            held,
+            "control: the rebuilt view reuses the generation"
+        );
+        assert_ne!(
+            second.view(&ask),
+            first.view(&ask),
+            "control: the rebuilt view counts other calls"
+        );
+        shown(&mut loader, &ask, true);
+        let Some(Answer::Tools { view, .. }) = loader.tools_step(std::time::Instant::now()) else {
+            panic!("the shown page is answered again");
+        };
+        assert_eq!(
+            *view,
+            second.view(&ask),
+            "the rebuilt store's view is drawn"
+        );
     }
 }

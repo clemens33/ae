@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::loader::Wake;
 use crate::stats_store::disk::{self, LIMITS};
@@ -72,6 +72,8 @@ struct Probe {
     parked: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(test)]
     gate: Arc<Gate>,
+    #[cfg(test)]
+    turns: Arc<std::sync::Mutex<Vec<Beat>>>,
 }
 
 impl Probe {
@@ -98,45 +100,250 @@ impl Probe {
         }
     }
 
-    /// The turns recorded since the last call. P0 seam stub: none yet.
+    /// Keep `turn` for [`Self::take_turns`] (tests only).
+    #[cfg_attr(
+        not(test),
+        allow(clippy::unused_self, reason = "observed only by tests")
+    )]
+    fn record(&self, turn: &Beat) {
+        #[cfg(test)]
+        if let Ok(mut turns) = self.turns.lock() {
+            turns.push(turn.clone());
+        }
+        #[cfg(not(test))]
+        let _ = turn;
+    }
+
+    /// The turns recorded since the last call.
     #[cfg(test)]
-    #[allow(clippy::unused_self, reason = "P0 seam stub")]
-    fn take_turns(&self) -> Vec<Turn> {
-        Vec::new()
+    fn take_turns(&self) -> Vec<Beat> {
+        self.turns
+            .lock()
+            .map(|mut turns| std::mem::take(&mut *turns))
+            .unwrap_or_default()
     }
 }
 
+/// While S5 has work, the longest Tools waits for its next unit.
+const TOOLS_FAIR: Duration = Duration::from_secs(1);
+/// How long a finished Tools round rests before the next one starts.
+const TOOLS_ROUND: Duration = Duration::from_secs(30);
+/// The wait between turns while a Tools round is in progress.
+const TOOLS_BREATH: Duration = Duration::from_millis(10);
+
 /// One upkeep turn: the S5 step, then at most one Tools unit, on `thread`.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(test), allow(dead_code, reason = "P0 seam stub, wired in P3"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the Tools unit and thread are observed only by tests"
+    )
+)]
 pub(super) struct Turn {
     pub s5: maint::Step,
     pub tools: Option<crate::usage::calls_read::Unit>,
     pub thread: std::thread::ThreadId,
 }
 
-/// The production loop body: the S5 step first, then the Tools work.
-/// P0 seam stub: no Tools unit yet.
-#[cfg_attr(not(test), allow(dead_code, reason = "P0 seam stub, wired in P3"))]
-pub(super) struct UpkeepStep {
-    maintainer: Maintainer,
+/// What one wake of the upkeep thread did: a [`Turn`] when S5 was due (its
+/// step), else at most one Tools unit. What tests observe.
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the Tools unit and thread are observed only by tests"
+    )
+)]
+pub(super) struct Beat {
+    pub s5: Option<maint::Step>,
+    pub tools: Option<crate::usage::calls_read::Unit>,
+    pub thread: std::thread::ThreadId,
 }
 
-#[cfg_attr(not(test), allow(dead_code, reason = "P0 seam stub, wired in P3"))]
-impl UpkeepStep {
-    pub(super) fn new(root: &Path) -> Self {
+impl From<Turn> for Beat {
+    fn from(turn: Turn) -> Self {
         Self {
-            maintainer: Maintainer::new(root, LIMITS, LOCK_WAIT),
+            s5: Some(turn.s5),
+            tools: turn.tools,
+            thread: turn.thread,
+        }
+    }
+}
+
+/// The loop body (#288 plan r4 §5). S5 steps when its own pause after its
+/// last step has passed: [`maint::pause`] after the step's end, at least
+/// [`maint::REFRESH`] once it stopped. That step is a [`Turn`]: the S5 step
+/// first, then at most one Tools unit. Between S5 steps, a Tools round in
+/// progress takes one unit per wake, never an S5 step. Tools runs only when
+/// S5 last found nothing to do, or when it has not run for [`TOOLS_FAIR`]:
+/// a busy S5 keeps its priority, and cannot starve Tools. Each Tools unit
+/// waits at least as long as it took (and [`TOOLS_BREATH`]) before the next,
+/// so Tools too holds at most about half a core. A round's first unit reads
+/// the S5 epoch: without a proven one the round ends there, before any
+/// discovery or transcript read. This thread is the only reader of
+/// transcripts.
+pub(super) struct UpkeepStep {
+    maintainer: Maintainer,
+    tools: crate::usage::calls_read::Reader,
+    /// When the last Tools unit ran.
+    ran: Option<Instant>,
+    /// When the last Tools round ended.
+    rested: Option<Instant>,
+    /// When S5 steps next: `None` at once.
+    s5_due: Option<Instant>,
+    /// Whether S5's last step found nothing to do.
+    s5_idle: bool,
+    /// When the next Tools unit may run: `None` at once.
+    tools_due: Option<Instant>,
+}
+
+impl UpkeepStep {
+    #[cfg_attr(not(test), allow(dead_code, reason = "the thread starts from a seed"))]
+    pub(super) fn new(root: &Path) -> Self {
+        Self::with(root, Maintainer::new(root, LIMITS, LOCK_WAIT))
+    }
+
+    fn with(root: &Path, maintainer: Maintainer) -> Self {
+        Self {
+            maintainer,
+            tools: crate::usage::calls_read::Reader::new(
+                root.to_owned(),
+                crate::doors::home(),
+                crate::tool_stats::Caps::SLICE,
+            ),
+            ran: None,
+            rested: None,
+            s5_due: None,
+            s5_idle: false,
+            tools_due: None,
         }
     }
 
-    pub(super) fn turn(&mut self, now: std::time::Instant) -> Turn {
-        let _ = now;
-        Turn {
-            s5: self.maintainer.step(),
-            tools: None,
+    /// The S5 step, then at most one Tools unit: what [`Self::beat`] does
+    /// when S5 is due.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the thread beats; the frozen specs turn")
+    )]
+    pub(super) fn turn(&mut self, now: Instant) -> Turn {
+        self.turn_with(now, Maintainer::step)
+    }
+
+    /// One wake of the upkeep thread at `now`.
+    fn beat(&mut self, now: Instant) -> Beat {
+        self.beat_with(now, Maintainer::step)
+    }
+
+    /// [`Self::beat`] with the S5 step taken by `s5`: tests drive the
+    /// schedule with synthetic steps on a simulated clock.
+    fn beat_with(&mut self, now: Instant, s5: impl FnOnce(&mut Maintainer) -> maint::Step) -> Beat {
+        if self.s5_due.is_none_or(|due| now >= due) {
+            return self.turn_with(now, s5).into();
+        }
+        let began = Instant::now();
+        let tools = if self.tools.busy() && self.tools_allowed(now) {
+            self.tools_unit(now, began)
+        } else {
+            None
+        };
+        Beat {
+            s5: None,
+            tools,
             thread: std::thread::current().id(),
         }
+    }
+
+    fn turn_with(&mut self, now: Instant, s5: impl FnOnce(&mut Maintainer) -> maint::Step) -> Turn {
+        let began = Instant::now();
+        let s5 = s5(&mut self.maintainer);
+        let pause = if self.maintainer.stopped() {
+            maint::pause(&s5).max(maint::REFRESH)
+        } else {
+            maint::pause(&s5)
+        };
+        self.s5_due = now.checked_add(s5.active.saturating_add(pause));
+        self.s5_idle = s5.outcome == Outcome::Idle;
+        let tools = if self.tools_allowed(now) {
+            self.tools_unit(now, began)
+        } else {
+            None
+        };
+        Turn {
+            s5,
+            tools,
+            thread: std::thread::current().id(),
+        }
+    }
+
+    /// Whether a Tools unit may run at `now`: S5 last idle or Tools owed its
+    /// fair turn, and the last unit's own wait over.
+    fn tools_allowed(&self, now: Instant) -> bool {
+        let fair = self
+            .ran
+            .is_none_or(|ran| now.saturating_duration_since(ran) >= TOOLS_FAIR);
+        (self.s5_idle || fair) && self.tools_due.is_none_or(|due| now >= due)
+    }
+
+    /// One unit of the Tools round, starting one once the last has rested.
+    /// `began` is the real time the wake at `now` began, so the unit's own
+    /// wait counts from its end.
+    fn tools_unit(
+        &mut self,
+        now: Instant,
+        began: Instant,
+    ) -> Option<crate::usage::calls_read::Unit> {
+        if !self.tools.busy() {
+            if self
+                .rested
+                .is_some_and(|rested| now.saturating_duration_since(rested) < TOOLS_ROUND)
+            {
+                return None;
+            }
+            self.tools.round();
+        }
+        let started = Instant::now();
+        let unit = self.tools.step();
+        let spent = started.elapsed();
+        if let Some(unit) = unit {
+            self.ran = Some(now);
+            let end = now.checked_add(began.elapsed());
+            self.tools_due = end.and_then(|end| end.checked_add(spent.max(TOOLS_BREATH)));
+            if unit.kind == crate::usage::calls_read::UnitKind::Load && !self.tools.proven() {
+                // No proven S5 epoch: no discovery and no transcript read.
+                self.tools.abandon();
+            }
+        } else {
+            self.rested = Some(now);
+            self.tools_due = None;
+        }
+        unit
+    }
+
+    /// The wait after a wake at `now`: until S5 is due, or sooner the next
+    /// Tools unit of a round in progress.
+    fn wait(&self, now: Instant) -> Duration {
+        let mut wake = self.s5_due.unwrap_or(now);
+        if self.tools.busy() {
+            let due = self.tools_due.unwrap_or(now);
+            let allowed = if self.s5_idle {
+                due
+            } else {
+                due.max(
+                    (self.ran)
+                        .and_then(|ran| ran.checked_add(TOOLS_FAIR))
+                        .unwrap_or(now),
+                )
+            };
+            wake = wake.min(allowed);
+        }
+        wake.saturating_duration_since(now)
+    }
+
+    /// S5 steps at the next wake: its maintainer was replaced.
+    fn restart_s5(&mut self) {
+        self.s5_due = None;
     }
 }
 
@@ -198,18 +405,21 @@ fn upkeep(
     notices: &Sender<Wake>,
     probe: &Probe,
 ) {
-    let mut maintainer = seed.unwrap_or_else(|| Maintainer::new(root, LIMITS, LOCK_WAIT));
+    let maintainer = seed.unwrap_or_else(|| Maintainer::new(root, LIMITS, LOCK_WAIT));
+    let mut step = UpkeepStep::with(root, maintainer);
     let mut told = false;
     loop {
         probe.pass();
-        let turn = maintainer.step();
-        match &turn.outcome {
-            Outcome::Repaired { file, reason } => {
+        let turn = step.beat(Instant::now());
+        probe.record(&turn);
+        let maintainer = &step.maintainer;
+        match turn.s5.as_ref().map(|s5| &s5.outcome) {
+            Some(Outcome::Repaired { file, reason }) => {
                 let line =
                     format!("Statistics: {file} was damaged ({reason}); rebuilding the store");
                 let _ = notices.send(Wake::Notice(line));
             }
-            Outcome::Refused(why) if maintainer.stopped() && !told => {
+            Some(Outcome::Refused(why)) if maintainer.stopped() && !told => {
                 told = true;
                 let line = format!(
                     "Statistics: the store was damaged again ({}); upkeep stopped",
@@ -219,11 +429,7 @@ fn upkeep(
             }
             _ => {}
         }
-        let wait = if maintainer.stopped() {
-            maint::pause(&turn).max(maint::REFRESH)
-        } else {
-            maint::pause(&turn)
-        };
+        let wait = step.wait(Instant::now());
         probe.park(true);
         let woke = commands.recv_timeout(wait);
         probe.park(false);
@@ -236,7 +442,9 @@ fn upkeep(
                     Ok(disk::Reset::Rebuilt { .. } | disk::Reset::Empty)
                 ) {
                     // A fresh maintainer: a stopped one stays stopped otherwise.
-                    maintainer = Maintainer::new(root, LIMITS, LOCK_WAIT);
+                    // The Tools reader sees the new epoch at its next load.
+                    step.maintainer = Maintainer::new(root, LIMITS, LOCK_WAIT);
+                    step.restart_s5();
                     told = false;
                 }
                 let _ = notices.send(Wake::StatsReset {
@@ -563,3 +771,6 @@ mod spec;
 #[cfg(test)]
 #[path = "maintainer_tools_spec.rs"]
 mod tools_spec;
+#[cfg(test)]
+#[path = "maintainer_turn_tests.rs"]
+mod turn_tests;

@@ -624,6 +624,10 @@ fn q1_transcript_paths_never_persist_and_only_recorded_roots_do() {
             .any(|path| path.starts_with(tools_dir.join("conv"))),
         "positive control: a conversation document is persisted"
     );
+    assert!(
+        paths.contains(&tools_dir.join("coverage")),
+        "positive control: the coverage document is scanned too"
+    );
     for path in &paths {
         let bytes = fs::read(path).expect("persisted bytes");
         assert!(
