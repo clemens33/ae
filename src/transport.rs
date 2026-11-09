@@ -362,7 +362,11 @@ fn command_for<A: AsRef<std::ffi::OsStr>>(
 fn note_spawn<'a>(_: &std::ffi::OsStr, _: impl Iterator<Item = &'a std::ffi::OsStr>) {}
 
 #[cfg(test)]
-pub(crate) use tests::{note_spawn, spawns_during};
+pub(crate) use tests::{note_spawn, note_waiter_exit, spawns_during, waiter_exits_during};
+
+/// How each waiter [`run_tmux_wait`] started ended is observed by tests alone.
+#[cfg(not(test))]
+const fn note_waiter_exit(_: u32, _: std::process::ExitStatus) {}
 
 /// Run `program` with `args`; report whether it succeeded, and what it printed.
 fn spawn<A: AsRef<std::ffi::OsStr>>(
@@ -1407,38 +1411,208 @@ fn publish_cycle_op(server: &ServerId, op: &tmux::CycleOp) -> bool {
 
 /// How a wait for this session's attach ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "P0a seam: only TimedOut exists before the wake leg lands (P3)"
-)]
 pub(crate) enum Waited {
     /// The read before the wait saw a client on the session.
     Attached,
     /// The channel was signalled.
     Woke,
-    /// The deadline passed; the waiter was killed and reaped.
+    /// The deadline passed; the waiter was released and reaped.
     TimedOut,
     /// The waiter did not start, or its read did not answer.
     Failed,
 }
 
+/// How often a waiter's output and exit are looked at.
+const WAIT_POLL: Duration = Duration::from_millis(50);
+
+/// How often a released waiter is looked at while it exits.
+const RELEASE_POLL: Duration = Duration::from_millis(10);
+
+/// How long a released waiter gets to exit before the backstop kills it.
+const RELEASE_GRACE: Duration = Duration::from_secs(1);
+
 /// Wait until `session` on `server` has a client, `channel` is signalled, or
-/// `deadline` passes.
+/// `deadline` passes: ONE tmux client, [`tmux::waiter_args`], whose read and
+/// registration are one queued pass.
 ///
-/// P0a: no wake mechanism exists yet, so this rests until the deadline — what
-/// a detached interval amounts to today — and reports `TimedOut`.
-#[allow(
-    dead_code,
-    reason = "P0a seam: the production wait lands with the wake leg (P3)"
-)]
+/// No waiter outlives the call. One that ends by itself has said everything:
+/// `Attached` when its read counted a client, `Woke` when the channel was
+/// signalled, `Failed` otherwise. One ae stops waiting for — a client counted
+/// while it still waits, a malformed read, the deadline — is RELEASED with a
+/// signal on its own channel and reaped: a killed `wait-for` client leaves its
+/// queued item and a server descriptor behind until the channel's next signal.
 pub(crate) fn run_tmux_wait(
-    _server: &ServerId,
-    _session: &str,
-    _channel: &str,
+    server: &ServerId,
+    session: &str,
+    channel: &str,
     deadline: std::time::Instant,
 ) -> Waited {
-    std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
-    Waited::TimedOut
+    if !addressable(server) || !tmux::is_wake_channel(channel) {
+        return Waited::Failed;
+    }
+    let Some(scratch) = CaptureScratch::tagged("wait") else {
+        return Waited::Failed;
+    };
+    let Ok(handle) = scratch.file().try_clone() else {
+        return Waited::Failed;
+    };
+    // No pipe: stdout is a scratch file ae reads back by position.
+    let Some(mut child) =
+        start_wait_client(&tmux::waiter_args(server, session, channel), handle.into())
+    else {
+        return Waited::Failed;
+    };
+    loop {
+        let Ok(exited) = child.try_wait() else {
+            return release_waiter(server, channel, &mut child, Waited::Failed);
+        };
+        // Read after the exit check: a child seen exited has written all it
+        // will write.
+        let read = tmux::interpret_wait_read(&waiter_output(&scratch));
+        if let Some(status) = exited {
+            note_waiter_exit(child.id(), status);
+            return match read {
+                tmux::WaitRead::Attached(count) if count > 0 => Waited::Attached,
+                tmux::WaitRead::Attached(_) if status.success() => Waited::Woke,
+                tmux::WaitRead::Attached(_)
+                | tmux::WaitRead::Pending
+                | tmux::WaitRead::Malformed => Waited::Failed,
+            };
+        }
+        match read {
+            tmux::WaitRead::Attached(count) if count > 0 => {
+                return release_waiter(server, channel, &mut child, Waited::Attached);
+            }
+            tmux::WaitRead::Malformed => {
+                return release_waiter(server, channel, &mut child, Waited::Failed);
+            }
+            tmux::WaitRead::Attached(_) | tmux::WaitRead::Pending => {}
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return release_waiter(server, channel, &mut child, Waited::TimedOut);
+        }
+        std::thread::sleep(WAIT_POLL.min(deadline.saturating_duration_since(now)));
+    }
+}
+
+/// One tmux client of the wait leg, built by [`command_for`] like every child
+/// and counted like every child: stdin and stderr closed, stdout where the
+/// caller says.
+fn start_wait_client(args: &[String], stdout: std::process::Stdio) -> Option<std::process::Child> {
+    let mut command = command_for(PROGRAM, args, &[], true);
+    note_spawn(command.get_program(), command.get_args());
+    command.stdin(std::process::Stdio::null());
+    command.stdout(stdout);
+    command.stderr(std::process::Stdio::null());
+    command.spawn().ok()
+}
+
+/// What a waiter printed so far, at most a few lines' worth.
+///
+/// Read by POSITION: the waiter writes through a clone of this handle, and a
+/// clone shares the file offset, so a seek here would move where the waiter's
+/// next write lands.
+fn waiter_output(scratch: &CaptureScratch) -> String {
+    use std::os::unix::fs::FileExt as _;
+    const CAP: usize = 256;
+    let mut stdout = vec![0_u8; CAP];
+    let mut filled = 0;
+    while let (Some(rest), Ok(offset)) = (stdout.get_mut(filled..), u64::try_from(filled)) {
+        if rest.is_empty() {
+            break;
+        }
+        match scratch.file().read_at(rest, offset) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(why) if why.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => {
+                filled = 0;
+                break;
+            }
+        }
+    }
+    stdout.truncate(filled);
+    String::from_utf8_lossy(&stdout).into_owned()
+}
+
+/// Release a waiter ae is done with, then reap it, and report `outcome`.
+///
+/// The signal ends the waiter's `wait-for`, so tmux frees its queued item. If
+/// the waiter had already been woken, the signal is one stale wake for the
+/// next waiter: an early return the interval loop re-arms past, never an early
+/// cycle.
+///
+/// The release is a child of its own inside the same [`RELEASE_GRACE`], so a
+/// server that stopped answering holds neither it nor the waiter past the
+/// grace. Past it, the backstop kills and reaps whatever still runs, and only
+/// THEN says so on stderr, best effort: a killed waiter may leave its item
+/// behind. Every backstop reports `Failed`, whichever child it had to kill,
+/// so the interval polls from there instead of trusting a stalled server.
+fn release_waiter(
+    server: &ServerId,
+    channel: &str,
+    waiter: &mut std::process::Child,
+    outcome: Waited,
+) -> Waited {
+    use std::io::Write as _;
+    let mut release = start_wait_client(
+        &tmux::wake_release_args(server, channel),
+        std::process::Stdio::null(),
+    );
+    let grace = std::time::Instant::now() + RELEASE_GRACE;
+    let mut reaped = false;
+    loop {
+        if !reaped {
+            match waiter.try_wait() {
+                Ok(Some(status)) => {
+                    note_waiter_exit(waiter.id(), status);
+                    reaped = true;
+                }
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+        if let Some(client) = release.as_mut() {
+            match client.try_wait() {
+                Ok(Some(_)) => release = None,
+                Ok(None) => {}
+                Err(_) => break,
+            }
+        }
+        if reaped && release.is_none() {
+            return outcome;
+        }
+        if std::time::Instant::now() >= grace {
+            break;
+        }
+        std::thread::sleep(RELEASE_POLL);
+    }
+    // The mandatory cleanup first, each step's result kept for the line below.
+    let mut cleaned = true;
+    if !reaped {
+        cleaned &= waiter.kill().is_ok();
+        match waiter.wait() {
+            Ok(status) => note_waiter_exit(waiter.id(), status),
+            Err(_) => cleaned = false,
+        }
+    }
+    if let Some(mut client) = release {
+        cleaned &= client.kill().is_ok();
+        cleaned &= client.wait().is_ok();
+    }
+    let what = if reaped { "release" } else { "waiter" };
+    let done = if cleaned {
+        "killed and reaped"
+    } else {
+        "the kill or the reap failed"
+    };
+    let _ = writeln!(
+        std::io::stderr(),
+        "ae: watchdog: the {what} on {channel} did not exit within {}s of the release; {done}",
+        RELEASE_GRACE.as_secs()
+    );
+    Waited::Failed
 }
 
 /// The ownership proofs one verdict cycle reads, in the order asked.
@@ -2563,6 +2737,8 @@ pub(crate) mod fixture_tmux {
     }
 }
 
+// The quiet idle acceptance. Its child-absence checks assume nextest's one test per
+// process, not a concurrent plain `cargo test`.
 #[cfg(test)]
 pub(crate) mod quietwd_spec;
 
@@ -2571,6 +2747,39 @@ mod tests {
     thread_local! {
         static SPAWNS: std::cell::RefCell<Option<Vec<Vec<String>>>> =
             const { std::cell::RefCell::new(None) };
+        static WAITER_EXITS: std::cell::RefCell<Option<Vec<(u32, std::process::ExitStatus)>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Record how one waiter of [`super::run_tmux_wait`] ended: its pid and the
+    /// status its reap returned, when this thread is inside
+    /// [`waiter_exits_during`]. The release client is not a waiter.
+    pub(crate) fn note_waiter_exit(pid: u32, status: std::process::ExitStatus) {
+        WAITER_EXITS.with(|seen| {
+            if let Some(seen) = seen.borrow_mut().as_mut() {
+                seen.push((pid, status));
+            }
+        });
+    }
+
+    /// Run `body`, returning what it returned and every waiter this thread's
+    /// [`super::run_tmux_wait`] reaped meanwhile, with the status the reap
+    /// returned. Observes only: nothing is replaced.
+    pub(crate) fn waiter_exits_during<T>(
+        body: impl FnOnce() -> T,
+    ) -> (T, Vec<(u32, std::process::ExitStatus)>) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                WAITER_EXITS.with(|seen| seen.borrow_mut().take());
+            }
+        }
+        WAITER_EXITS.with(|seen| *seen.borrow_mut() = Some(Vec::new()));
+        let reset = Reset;
+        let out = body();
+        let seen = WAITER_EXITS.with(|seen| seen.borrow_mut().take().unwrap_or_default());
+        drop(reset);
+        (out, seen)
     }
 
     /// Record one child [`super::spawn`] is about to start, its built argv
@@ -3274,5 +3483,231 @@ mod tests {
             "relative socket refused"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_waiter_ae_stops_for_is_released_exits_normally_and_leaves_no_stale_signal() {
+        use super::{Waited, run_tmux_wait, spawns_during, waiter_exits_during};
+        use std::time::Instant;
+        let rig = super::quietwd_spec::Rig::new("release");
+        let wait = |within: Duration| {
+            waiter_exits_during(|| {
+                spawns_during(|| {
+                    run_tmux_wait(
+                        &rig.server,
+                        "current",
+                        "qw-release",
+                        Instant::now() + within,
+                    )
+                })
+            })
+        };
+        let ((result, calls), exits) = wait(Duration::from_millis(150));
+        assert_eq!(result, Waited::TimedOut);
+        assert_eq!(calls.len(), 2, "the waiter and its release: {calls:?}");
+        assert!(
+            calls[1].ends_with(&[
+                "wait-for".to_owned(),
+                "-S".to_owned(),
+                "qw-release".to_owned()
+            ]),
+            "the second child releases the waiter's own channel: {calls:?}"
+        );
+        assert_eq!(exits.len(), 1, "the waiter was reaped before the return");
+        assert_eq!(
+            exits[0].1.code(),
+            Some(0),
+            "released, never killed: {:?}",
+            exits[0].1
+        );
+        // The release met a registered waiter, so it left no toggled signal: the
+        // next waiter waits its whole deadline instead of returning at once.
+        let began = Instant::now();
+        let ((result, _), _) = wait(Duration::from_millis(300));
+        assert_eq!(result, Waited::TimedOut);
+        assert!(began.elapsed() >= Duration::from_millis(300));
+        rig.attach("current", 0);
+        let ((result, calls), exits) = wait(Duration::from_secs(5));
+        assert_eq!(result, Waited::Attached);
+        assert_eq!(calls.len(), 2, "a counted client releases the waiter too");
+        assert_eq!(exits.len(), 1);
+        assert_eq!(exits[0].1.code(), Some(0), "released, never killed");
+    }
+
+    #[test]
+    fn polling_a_waiters_output_leaves_the_writers_cursor_where_it_was() {
+        use std::io::{Seek as _, Write as _};
+        // The child writes through a clone of this handle, and a clone shares
+        // the file offset: a poll that moves it moves where the child writes.
+        let scratch = CaptureScratch::tagged("wait-cursor").expect("scratch");
+        let mut writer = scratch.file().try_clone().expect("the child's clone");
+        let long = "x".repeat(300);
+        writer.write_all(long.as_bytes()).expect("write");
+        let seen = super::waiter_output(&scratch);
+        assert_eq!(seen.len(), 256, "the poll reads at most its cap");
+        assert_eq!(
+            writer.stream_position().expect("cursor"),
+            300,
+            "the poll moved the writer's cursor"
+        );
+        writer
+            .write_all(b"\nae-wd:a|0\n")
+            .expect("the child's next write");
+        let mut whole = String::new();
+        let mut file = scratch.file();
+        file.seek(std::io::SeekFrom::Start(0)).expect("rewind");
+        std::io::Read::read_to_string(&mut file, &mut whole).expect("read");
+        assert_eq!(
+            whole,
+            format!("{long}\nae-wd:a|0\n"),
+            "nothing was overwritten"
+        );
+    }
+
+    #[test]
+    fn a_stalled_server_cannot_hold_the_wait_or_its_release_past_their_bounds() {
+        use super::{Waited, run_tmux_wait, waiter_exits_during};
+        use std::time::Instant;
+        // A socket that accepts and never answers: every tmux client on it,
+        // the waiter and its release alike, hangs until it is killed.
+        let dir = std::env::temp_dir().join(format!("qwst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).expect("fixture dir");
+        let socket = dir.join("s");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("mute server");
+        let server = ServerId::Selected(Selector::Socket(socket));
+        let (tell, told) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let began = Instant::now();
+            let (result, exits) = waiter_exits_during(|| {
+                run_tmux_wait(
+                    &server,
+                    "current",
+                    "qw-stall",
+                    Instant::now() + Duration::from_millis(200),
+                )
+            });
+            let _ = tell.send((result, exits, began.elapsed()));
+        });
+        let (result, exits, took) = told
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a stalled release blocked the wait past every bound");
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(result, Waited::Failed, "a forced cleanup is no outcome");
+        assert!(took < Duration::from_secs(3), "bounded: {took:?}");
+        assert_eq!(exits.len(), 1, "the waiter was reaped");
+        let own = std::process::id();
+        let children: Vec<_> = crate::procs::snapshot()
+            .expect("process table")
+            .into_iter()
+            .filter(|proc| proc.ppid == own && !crate::procs::name_matches(&proc.comm, "ps"))
+            .collect();
+        assert!(
+            children.is_empty(),
+            "a child outlived the wait: {children:?}"
+        );
+    }
+
+    #[test]
+    fn a_stalled_release_alone_still_ends_the_wait_failed_after_its_cleanup() {
+        use super::{Waited, run_tmux_wait, waiter_exits_during};
+        use std::time::Instant;
+        // The waiter connects first and the mute server holds it; once its
+        // release connects too, the server drops the waiter, which exits by
+        // itself, and holds the release unanswered.
+        let dir = std::env::temp_dir().join(format!("qwsr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).expect("fixture dir");
+        let socket = dir.join("s");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("mute server");
+        let server = ServerId::Selected(Selector::Socket(socket));
+        let (hand_over, handed) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (waiter, _) = listener.accept().expect("the waiter connects");
+            let (release, _) = listener.accept().expect("the release connects");
+            drop(waiter);
+            let _ = hand_over.send(release);
+        });
+        let (tell, told) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let began = Instant::now();
+            let (result, exits) = waiter_exits_during(|| {
+                run_tmux_wait(
+                    &server,
+                    "current",
+                    "qw-stall-release",
+                    Instant::now() + Duration::from_millis(200),
+                )
+            });
+            let _ = tell.send((result, exits, began.elapsed()));
+        });
+        let held = handed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the waiter and then its release connect");
+        let (result, exits, took) = told
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a stalled release blocked the wait past every bound");
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            result,
+            Waited::Failed,
+            "every forced cleanup reports Failed, even when the waiter left by itself"
+        );
+        assert!(took < Duration::from_secs(3), "bounded: {took:?}");
+        assert_eq!(exits.len(), 1, "the waiter was reaped once");
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&exits[0].1),
+            None,
+            "the waiter left by itself, unkilled"
+        );
+        let own = std::process::id();
+        let children: Vec<_> = crate::procs::snapshot()
+            .expect("process table")
+            .into_iter()
+            .filter(|proc| proc.ppid == own && !crate::procs::name_matches(&proc.comm, "ps"))
+            .collect();
+        assert!(
+            children.is_empty(),
+            "a child outlived the wait: {children:?}"
+        );
+    }
+
+    #[test]
+    fn a_waiter_is_no_client_of_the_session_it_waits_on() {
+        use super::{Waited, run_tmux_wait};
+        use std::time::Instant;
+        let rig = super::quietwd_spec::Rig::new("invisible");
+        let result = std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| {
+                run_tmux_wait(
+                    &rig.server,
+                    "current",
+                    "qw-ghost",
+                    Instant::now() + Duration::from_millis(800),
+                )
+            });
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(rig.must(&["list-clients", "-F", "#{client_name}"]), "");
+            assert_eq!(
+                rig.must(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    "=current:",
+                    "#{session_attached}"
+                ])
+                .trim(),
+                "0",
+                "a waiter must never count as an attachment"
+            );
+            waiting.join().expect("waiter thread")
+        });
+        assert_eq!(
+            result,
+            Waited::TimedOut,
+            "the waiter's own read did not count itself"
+        );
     }
 }

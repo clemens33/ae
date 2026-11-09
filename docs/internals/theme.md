@@ -23,10 +23,12 @@ ae writes them on its own sessions. The pane borders, the window entries and the
 **window** options — measured on tmux 3.7b, `set-option -t <session>` on one of
 those lands on that session's *current* window and silently leaves the others on
 the global table — so ae stamps each window individually and never touches `-g`.
-The launch also stamps, by main-pane ID, a session-scoped `client-session-changed`
+The launch also stamps, by main-pane ID, a session-scoped `client-session-changed[0]`
 hook guarded by its captured session ID that selects the lead window and pane by
 pane id; it is a focus rule, not a look option, and is present when `theme = off`
-too. In a lead pair the launch also stamps a window-scoped resize hook. Neither
+too. It touches index 0 alone: the watchdog's cycle batch owns index 9 of the same
+hook, a `wait-for -S` on the session's wake channel, and is no look option either.
+In a lead pair the launch also stamps a window-scoped resize hook. Neither
 hook is ever stamped by name or globally. Input rules cannot be
 session-scoped: on a positively selected ae-owned server, launch binds
 `prefix a` and `prefix v` and installs one capability-canonical status map

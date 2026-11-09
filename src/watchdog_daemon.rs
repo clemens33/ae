@@ -62,6 +62,10 @@ const MOTION_OBSERVATION_TICKS: u8 = 5;
 /// Motion cadence while nobody can see the session.
 const DETACHED_MOTION_TICK: Duration = Duration::from_secs(2);
 
+/// The least time between two waiters of one interval: a stale signal, which
+/// returns a waiter at once, costs at most what polling did.
+const WAKE_REARM: Duration = DETACHED_MOTION_TICK;
+
 /// Consecutive ticker failures before the daemon preserves the rest of the
 /// verdict interval without further motion work.
 const MOTION_FAILURE_LIMIT: u8 = 3;
@@ -4172,16 +4176,21 @@ const fn ticker_mode(look: Option<&Look>) -> TickerMode {
 /// The observation cadence when motion is off: the SAME cadence the
 /// animated ticker observes at — every fifth attached tick, every detached.
 fn static_observe_cadence(panes: &[tmux::MotionPane]) -> Duration {
-    if panes.iter().any(|pane| pane.session_attached > 0) {
+    if session_attached(panes) {
         ATTACHED_MOTION_TICK.saturating_mul(u32::from(MOTION_OBSERVATION_TICKS))
     } else {
         DETACHED_MOTION_TICK
     }
 }
 
+/// Whether an observation saw a client on this session.
+fn session_attached(panes: &[tmux::MotionPane]) -> bool {
+    panes.iter().any(|pane| pane.session_attached > 0)
+}
+
 /// The next observation cadence from the current attachment reading.
 fn motion_cadence(panes: &[tmux::MotionPane]) -> Duration {
-    if panes.iter().any(|pane| pane.session_attached > 0) {
+    if session_attached(panes) {
         ATTACHED_MOTION_TICK
     } else {
         DETACHED_MOTION_TICK
@@ -4436,9 +4445,11 @@ fn flush_cycle(server: &crate::inventory::ServerId, carry: &mut Carry) {
         carry.wake = None;
         return;
     };
+    // The hook rides first in the batch on this incarnation's own channel.
+    let channel = tmux::wake_channel(&identity);
     let batch = tmux::CycleBatch {
         session: identity.id,
-        channel: None,
+        channel,
         ops: pending.ops,
     };
     let outcome = transport::publish_cycle(server, &batch);
@@ -4670,10 +4681,6 @@ trait Pace {
     fn sleep(&mut self, duration: Duration);
     /// Wait until `session` has a client, `channel` is signalled, or
     /// `deadline` passes.
-    #[allow(
-        dead_code,
-        reason = "P0a seam: the interval loop calls it once the wake leg lands (P3)"
-    )]
     fn wait(
         &mut self,
         server: &crate::inventory::ServerId,
@@ -4733,6 +4740,16 @@ fn wait_between_cycles_with(
 
 /// Drive one [`MotionTicker`] to the end of the interval, then hand its
 /// state back to the carry.
+///
+/// While the session is detached and this cycle proved its wake hook, the
+/// loop holds ONE waiter instead of observing every two seconds. A wake, or a
+/// client the waiter's own read counted, proves nothing by itself: the next
+/// tick observes fresh, and that observation decides between motion and the
+/// next wait, which starts no sooner than [`WAKE_REARM`] after the last. The
+/// interval ends at its deadline whatever happens in between, so a wake never
+/// starts a verdict cycle early. A failed wait polls for the rest of the
+/// interval; an adopter always polls, because its peer's strip is a duty no
+/// hook of this session announces.
 fn run_ticker(
     server: &crate::inventory::ServerId,
     session: &str,
@@ -4742,9 +4759,38 @@ fn run_ticker(
     pace: &mut impl Pace,
 ) {
     let started = pace.now();
+    let deadline = started + interval;
     let mut ticker = MotionTicker::new(carry.motion.clone(), carry.adoption.clone());
+    let mut wake = carry
+        .wake
+        .clone()
+        .filter(|_| carry.adoption.targets.is_empty());
+    let mut waited_at: Option<Instant> = None;
     loop {
-        let remaining = interval.saturating_sub(pace.now().saturating_duration_since(started));
+        let now = pace.now();
+        if now >= deadline {
+            break;
+        }
+        if let Some(channel) = wake.as_deref()
+            && !session_attached(&ticker.motion.panes)
+        {
+            if let Some(earliest) = waited_at.map(|at| at + WAKE_REARM)
+                && now < earliest
+            {
+                pace.sleep(earliest.min(deadline).saturating_duration_since(now));
+                continue;
+            }
+            waited_at = Some(now);
+            match pace.wait(server, session, channel, deadline) {
+                transport::Waited::TimedOut => continue,
+                transport::Waited::Failed => {
+                    wake = None;
+                    continue;
+                }
+                transport::Waited::Woke | transport::Waited::Attached => {}
+            }
+        }
+        let remaining = deadline.saturating_duration_since(pace.now());
         if remaining.is_zero() {
             break;
         }
@@ -5193,10 +5239,6 @@ struct Carry {
     look: Option<Look>,
     /// The wake channel this cycle's publication proved installed on this
     /// session, and `None` when it did not: no waiter is held without it.
-    #[allow(
-        dead_code,
-        reason = "P0a seam: the interval loop reads it once the wake leg lands (P3)"
-    )]
     wake: Option<String>,
     /// The publication the running cycle has decided and not yet sent.
     pending: PendingCycle,

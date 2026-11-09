@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use crate::inventory::ServerId;
 use crate::meta::Selector;
 use crate::tmux::{
-    MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION,
+    FOCUS_HOOK, MOUSE_DOWN_STATUS_MENU_ACTION, MOUSE_STATUS_PICKER, MOUSE_STATUS_SESSION,
     MOUSE_STATUS_SETTINGS, MOUSE_STATUS_WINDOW, hotkey_console_shell, hotkey_picker_shell,
     hotkey_reader_shell, mouse_dispatch_literal, server_args, session_target,
     status_picker_command, status_settings_command, tmux_current_format_double_quote,
@@ -200,7 +200,7 @@ pub(crate) enum Op<'a> {
     /// `select-window -t <pane>` — the `focus` helper's window switch, which
     /// `select-pane` alone does not do.
     SelectWindow { pane: &'a str },
-    /// `set-hook -t <pane> client-session-changed <guarded focus command>` —
+    /// `set-hook -t <pane> client-session-changed[0] <guarded focus command>` —
     /// keep a client's view on the lead pane whenever it enters this pane's
     /// session, while the pane still belongs to the captured session id.
     /// `set-hook` takes a target-PANE, so the pane id makes this session-scoped
@@ -216,7 +216,8 @@ pub(crate) enum Op<'a> {
         chat: Option<(&'a str, &'a str)>,
     },
     /// Remove the session-scoped focus hook when its pane or session identity
-    /// cannot be proven.
+    /// cannot be proven. Both touch index 0 alone: the watchdog's wake owns
+    /// index 9 of the same hook, and an unindexed write would clear it.
     UnsetClientSessionHook { target: &'a str },
     /// `set-hook -w -t <pane> window-resized <layout command>` — keep the
     /// lead-pair ratio when its window follows a client resize.
@@ -448,13 +449,11 @@ pub(crate) fn argv(server: &ServerId, op: &Op<'_>) -> TmuxArgv {
                      {{ select-window -t {pane} ; select-pane -t {pane} }} }}"
                 ),
             };
-            args.extend(["set-hook", "-t", pane, "client-session-changed"].map(ToOwned::to_owned));
+            args.extend(["set-hook", "-t", pane, FOCUS_HOOK].map(ToOwned::to_owned));
             args.push(command);
         }
         Op::UnsetClientSessionHook { target } => {
-            args.extend(
-                ["set-hook", "-u", "-t", target, "client-session-changed"].map(ToOwned::to_owned),
-            );
+            args.extend(["set-hook", "-u", "-t", target, FOCUS_HOOK].map(ToOwned::to_owned));
         }
         Op::SetLeadPairResizeHook { pane } => {
             args.extend(
@@ -1301,7 +1300,7 @@ mod tests {
                 "set-hook".to_owned(),
                 "-t".to_owned(),
                 "%9".to_owned(),
-                "client-session-changed".to_owned(),
+                "client-session-changed[0]".to_owned(),
                 format!(
                     "if-shell -F -t %9 \"#{{==:#{{session_id}},$7}}\" \
                      {{ if-shell -F -t '$7:^' \
@@ -1325,13 +1324,19 @@ mod tests {
                 "set-hook",
                 "-t",
                 "%9",
-                "client-session-changed",
+                "client-session-changed[0]",
                 "if-shell -F -t %9 \"#{==:#{session_id},$7}\" \"select-window -t %9 ; select-pane -t %9\""
             ]
         );
         assert_eq!(
             words(&Op::UnsetClientSessionHook { target: "=gone:" }),
-            vec!["set-hook", "-u", "-t", "=gone:", "client-session-changed"]
+            vec![
+                "set-hook",
+                "-u",
+                "-t",
+                "=gone:",
+                "client-session-changed[0]"
+            ]
         );
     }
 

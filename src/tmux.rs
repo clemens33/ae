@@ -1432,6 +1432,80 @@ pub(crate) struct CycleBatch {
 /// hook's, and an indexed set leaves every other index alone.
 pub(crate) const WAKE_HOOK: &str = "client-session-changed[9]";
 
+/// The hook index the launch focus hook owns. An UNINDEXED set or unset would
+/// replace or clear the whole array, the wake's [`WAKE_HOOK`] with it.
+pub(crate) const FOCUS_HOOK: &str = "client-session-changed[0]";
+
+/// The wake channel of one session incarnation: `ae-wake-<n>-<created>`.
+/// Channels live in the server, so a new server, or a new session under the
+/// same name, starts on a channel nothing has signalled. `None` when the
+/// identity is not the `$<digits>` id and digit epoch tmux prints.
+#[must_use]
+pub(crate) fn wake_channel(identity: &SessionIdentity) -> Option<String> {
+    let number = identity.id.strip_prefix('$')?;
+    let digits = |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    (digits(number) && digits(&identity.created))
+        .then(|| format!("ae-wake-{number}-{}", identity.created))
+}
+
+/// The line prefix of the waiter's attachment read.
+const WAIT_READ_STEM: &str = "ae-wd:a|";
+
+/// The ONE invocation a detached interval holds: the session's attachment
+/// read, then the wait on `channel`. Both are items of one queued command, so
+/// tmux runs them in one pass with no other client in between: an attach is
+/// either before the read, which then counts it, or after the registration,
+/// which its hook then signals.
+#[must_use]
+pub(crate) fn waiter_args(server: &ServerId, session: &str, channel: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend([
+        "display-message".to_owned(),
+        "-p".to_owned(),
+        "-t".to_owned(),
+        option_target(OptionScope::Session, session),
+        format!("{WAIT_READ_STEM}#{{session_attached}}"),
+        ";".to_owned(),
+        "wait-for".to_owned(),
+        channel.to_owned(),
+    ]);
+    args
+}
+
+/// The signal that releases a waiter on `channel`. A killed `wait-for` client
+/// leaves its queued item, and with it a server descriptor, until the channel's
+/// next signal, so a waiter ae is done with is released, never killed.
+#[must_use]
+pub(crate) fn wake_release_args(server: &ServerId, channel: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["wait-for".to_owned(), "-S".to_owned(), channel.to_owned()]);
+    args
+}
+
+/// What a waiter's output says so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WaitRead {
+    /// The attachment line has not arrived in full.
+    Pending,
+    /// The session's attached-client count.
+    Attached(u64),
+    /// The first line is not the attachment read.
+    Malformed,
+}
+
+/// Read a waiter's output: its first LF-terminated line must be exactly the
+/// stem and a decimal count.
+#[must_use]
+pub(crate) fn interpret_wait_read(stdout: &str) -> WaitRead {
+    let Some((line, _)) = stdout.split_once('\n') else {
+        return WaitRead::Pending;
+    };
+    line.strip_prefix(WAIT_READ_STEM)
+        .filter(|count| !count.is_empty() && count.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|count| count.parse().ok())
+        .map_or(WaitRead::Malformed, WaitRead::Attached)
+}
+
 /// The line the cycle batch prints right after it installed the wake hook.
 /// tmux drops the rest of a `;` group after an error, so the line is printed
 /// only when the installation ran.
@@ -5928,6 +6002,83 @@ mod tests {
         }
         for channel in ["", "a b", "a;b", "a'b", "a\"b", "a\\b", "ä", "a\nb", "#{x}"] {
             assert!(!super::is_wake_channel(channel), "{channel:?}");
+        }
+    }
+
+    #[test]
+    fn a_wake_channel_names_one_session_incarnation() {
+        let identity = |id: &str, created: &str| super::SessionIdentity {
+            id: id.to_owned(),
+            created: created.to_owned(),
+        };
+        assert_eq!(
+            super::wake_channel(&identity("$3", "1731000000")).as_deref(),
+            Some("ae-wake-3-1731000000")
+        );
+        assert_ne!(
+            super::wake_channel(&identity("$3", "1731000000")),
+            super::wake_channel(&identity("$3", "1731000001")),
+            "a new session under a reused id is a new channel"
+        );
+        for (id, created) in [
+            ("3", "1"),
+            ("$", "1"),
+            ("$3", ""),
+            ("$3a", "1"),
+            ("$3", "1 2"),
+            ("@3", "1"),
+        ] {
+            assert_eq!(
+                super::wake_channel(&identity(id, created)),
+                None,
+                "{id:?} {created:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_waiter_reads_attachment_then_waits_and_its_release_names_the_same_channel() {
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        assert_eq!(
+            super::waiter_args(&server, "s1", "ae-wake-3-9"),
+            [
+                "-L",
+                "ae",
+                "display-message",
+                "-p",
+                "-t",
+                "=s1:",
+                "ae-wd:a|#{session_attached}",
+                ";",
+                "wait-for",
+                "ae-wake-3-9"
+            ]
+        );
+        assert_eq!(
+            super::wake_release_args(&server, "ae-wake-3-9"),
+            ["-L", "ae", "wait-for", "-S", "ae-wake-3-9"]
+        );
+    }
+
+    #[test]
+    fn a_waiter_read_is_one_whole_count_line() {
+        use super::WaitRead::{Attached, Malformed, Pending};
+        assert_eq!(super::interpret_wait_read(""), Pending);
+        assert_eq!(super::interpret_wait_read("ae-wd:a|1"), Pending);
+        assert_eq!(super::interpret_wait_read("ae-wd:a|0\n"), Attached(0));
+        assert_eq!(super::interpret_wait_read("ae-wd:a|12\n"), Attached(12));
+        for bad in [
+            "ae-wd:a|\n",
+            "ae-wd:a|1\r\n",
+            "ae-wd:a|-1\n",
+            "ae-wd:a|+1\n",
+            "x\nae-wd:a|1\n",
+            "ae-wd:k|1\n",
+            "ae-wd:a|99999999999999999999999\n",
+        ] {
+            assert_eq!(super::interpret_wait_read(bad), Malformed, "{bad:?}");
         }
     }
 

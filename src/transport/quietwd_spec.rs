@@ -10,7 +10,9 @@ use super::{PROGRAM, Waited, spawns_during};
 use crate::inventory::ServerId;
 use crate::meta::Selector;
 use crate::tmux::{self, CycleBatch, CycleOp, OptionScope, OptionWrite};
+use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 /// A fixture, never a production I/O adapter. All commands name owned sockets.
@@ -426,24 +428,59 @@ fn quietwd_a_renamed_session_cannot_publish_past_a_missing_read_section() {
     );
 }
 
+fn assert_no_unreaped_children() {
+    let own = std::process::id();
+    let children: Vec<_> = crate::procs::snapshot()
+        .expect("the existing process-table door must answer")
+        .into_iter()
+        .filter(|proc| proc.ppid == own && !crate::procs::name_matches(&proc.comm, "ps"))
+        .collect();
+    assert!(
+        children.is_empty(),
+        "the wait call left a live or unreaped child: {children:?}"
+    );
+}
+
+fn assert_normal_waiter_exit(exits: &[(u32, ExitStatus)]) {
+    assert_eq!(
+        exits.len(),
+        1,
+        "exactly one real registered waiter must be reaped"
+    );
+    let (pid, status) = &exits[0];
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "waiter {pid} must exit normally after release: {status:?}"
+    );
+    assert_eq!(
+        status.signal(),
+        None,
+        "normal timeout cleanup must not kill waiter {pid}"
+    );
+    assert_no_unreaped_children();
+}
+
 #[test]
-fn quietwd_detached_wait_is_one_child_with_an_atomic_read_before_registration() {
+fn quietwd_detached_wait_has_one_atomic_waiter_and_at_most_one_release_child() {
     let rig = Rig::new("timeout");
-    let (result, calls) = spawns_during(|| {
-        super::run_tmux_wait(
-            &rig.server,
-            "current",
-            "qw-timeout",
-            Instant::now() + Duration::from_millis(180),
-        )
+    let ((result, calls), exits) = super::waiter_exits_during(|| {
+        spawns_during(|| {
+            super::run_tmux_wait(
+                &rig.server,
+                "current",
+                "qw-timeout",
+                Instant::now() + Duration::from_millis(180),
+            )
+        })
     });
     assert_eq!(result, Waited::TimedOut);
     assert_private_calls(&calls);
-    assert_eq!(
-        calls.len(),
-        1,
-        "one held waiter, no observation-tick children"
+    assert!(
+        (1..=2).contains(&calls.len()),
+        "one atomic waiter plus at most one release child, never observation polling: {calls:?}"
     );
+    assert_normal_waiter_exit(&exits);
     let call = &calls[0];
     let read = call
         .iter()
@@ -467,23 +504,52 @@ fn quietwd_detached_wait_is_one_child_with_an_atomic_read_before_registration() 
 }
 
 #[test]
+fn quietwd_three_timed_out_waiters_each_release_exit_normally_and_leave_no_child() {
+    let rig = Rig::new("reap-three");
+    for attempt in 0..3 {
+        let ((result, calls), exits) = super::waiter_exits_during(|| {
+            spawns_during(|| {
+                super::run_tmux_wait(
+                    &rig.server,
+                    "current",
+                    "qw-reap-three",
+                    Instant::now() + Duration::from_millis(180),
+                )
+            })
+        });
+        assert_eq!(result, Waited::TimedOut, "timeout {attempt}");
+        assert!(
+            (1..=2).contains(&calls.len()),
+            "timeout {attempt}: {calls:?}"
+        );
+        assert_private_calls(&calls);
+        // PID/status are observed from the actual Child reap, not synthesized.
+        // Kill-at-deadline fails here on a signal exit, even if it reaps the PID.
+        assert_normal_waiter_exit(&exits);
+    }
+}
+
+#[test]
 fn quietwd_a_preexisting_client_wins_even_after_two_toggled_signals() {
     let rig = Rig::new("attached");
     rig.attach("current", 0);
     rig.attach("current", 1);
     rig.must(&["wait-for", "-S", "qw-attached"]);
     rig.must(&["wait-for", "-S", "qw-attached"]);
-    let result = super::run_tmux_wait(
-        &rig.server,
-        "current",
-        "qw-attached",
-        Instant::now() + Duration::from_secs(2),
-    );
+    let (result, exits) = super::waiter_exits_during(|| {
+        super::run_tmux_wait(
+            &rig.server,
+            "current",
+            "qw-attached",
+            Instant::now() + Duration::from_secs(2),
+        )
+    });
     assert_eq!(
         result,
         Waited::Attached,
         "the fresh read must see two real clients without a stored signal"
     );
+    assert_normal_waiter_exit(&exits);
 }
 
 #[test]
@@ -508,6 +574,7 @@ fn quietwd_signal_is_only_a_wake_and_a_missing_session_is_a_failure() {
         ),
         Waited::Failed
     );
+    assert_no_unreaped_children();
 }
 
 #[test]
