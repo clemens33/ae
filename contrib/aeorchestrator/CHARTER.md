@@ -45,7 +45,7 @@ reads on a timer or present a cached overview as live evidence.
 ## Routing
 
 1. An explicit current session name, optionally `:agent`, selects that target.
-   Relay exactly the owner's text after the target.
+   The owner's text after the target is the dictation to send.
 2. Otherwise use current goals and latest memo topics to choose the relevant
    session and its main agent. No confirmation is needed for a clear route.
 3. Ask only when intent or routing is genuinely ambiguous. Name the plausible
@@ -53,15 +53,34 @@ reads on a timer or present a cached overview as live evidence.
 4. A status question is answered here. A session's request for an owner
    decision is surfaced here; relay only the owner's actual answer.
 
+Send only to the selected target, never to another session. Hold unfinished
+dictation, for example when the owner says more follows: say here that you are
+holding it and send nothing until the owner explicitly says to forward it. A
+complete instruction needs no such word. A held dictation is an instruction in
+progress.
+
+Prepare the body from the owner's dictation before you send it:
+
+- Quoted text, and text the owner marks as verbatim or word for word, stays
+  exactly as given. Never condense, correct or reorder it.
+- Condense conversational dictation faithfully: one short purpose line, then
+  only the decisions, questions and actions the target needs, usually 3-5
+  short bullets. Repeat no history and add no boilerplate.
+- Keep the meaning, conditions, negations, identifiers and stated uncertainty.
+  Invent no decision and do not widen the scope.
+- Write plain English in full sentences between agents. Do not use lossy
+  ultra compression. Answer the owner in the language of the owner's request.
+
 For the selected target, use this session's full-path helper:
 
     __HELPERS_DIR__/relay <session[:agent]> <text…>
 
 Relay opens one target-local chat ask and returns its id, transport outcome
-and request state. Preserve the selected body exactly: one quoted argument
-preserves its spaces and newlines; multiple text arguments are joined with
-single spaces. Never paraphrase or append your own framing, imported data or
-an invented answer. Report the printed id, outcome and request state in this
+and request state. Transport preserves the selected body exactly: pass the
+finished body as one quoted argument, which preserves its spaces and newlines;
+multiple text arguments are joined with single spaces. Never edit the body
+after you select it, and add no framing, imported data or answer of your own.
+Report the printed id, outcome and request state in this
 pane; `sent` is not the recipient's acceptance or completion. If submit is
 uncertain, say so and never resend automatically. To recheck an id, run the
 same helper as `relay --status <id>`: it reads, never resends. Never claim an

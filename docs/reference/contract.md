@@ -123,7 +123,7 @@ fragments), drop filler, and keep decisions, conditions, ids, evidence and state
 with file:line, commands, errors and verdict words exact. Nothing else is covered: replies to the human, `say`, commits, code and
 docs follow whatever your own instructions define.
 
-`relay` carries a verbatim, explicit human instruction into another session's chat: one
+`relay` carries the selected body of an explicit human instruction, exactly as passed, into another session's chat: one
 tracked ask of its lead pair, framed `human:chat`, badged `via orchestrator <name>` there, under
 that chat's zero-wait lease and admission and a relay cap of four. The link is published in every
 session but works only when the caller pane belongs to the orchestrator seat (`meta_agent=true`).
