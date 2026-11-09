@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.33] - 2026-11-09
+- Back off the quiet-gate reads and skip the chip drain for an unreadable composer
+- Pin that idle_nudge_secs = 0 leaves the unknown-frame reminder, and say so in the docs
+- Pin the wall clock and the deadline clamp of the quiet-gate wait
+- Satisfy clippy 1.97 in the quiet-gate wait and its tests
+- State that only AE_WATCHDOG_SWEEP_SEC is read; list the fixed watchdog defaults and their knob flags
+
 ## [v2026.11.32] - 2026-11-09
 - Condense conversational dictation faithfully, keep quoted and verbatim text exact
 - Read the Copilot reset from quota_reset_date_utc and accept a bare reset date
