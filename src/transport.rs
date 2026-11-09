@@ -1348,34 +1348,60 @@ pub(crate) struct CycleOutcome {
     pub(crate) landed: Vec<bool>,
 }
 
-/// Publish one verdict cycle's operations.
+/// Publish one verdict cycle's operations as ONE tmux process — or a few, only
+/// when the batch passes tmux's command size ([`tmux::cycle_batch_chunks`]).
 ///
-/// P0a: today's shape — one tmux process per operation, each with the argv
-/// its old call site used, and no wake hook installed.
+/// The wake hook comes first when the batch names a channel, followed by a
+/// marker line: tmux drops the rest of a `;` group after an error, so the
+/// marker on stdout is the proof that the installation ran, whatever happened
+/// to the operations after it. An invocation that did not exit 0 is followed
+/// by today's individual calls, one per operation, so one refused operation
+/// (a pane that vanished since the cycle read it) cannot cost the others
+/// their write. Every value is asserted again each cycle, so running an
+/// already-landed operation again changes nothing.
 #[must_use]
 pub(crate) fn publish_cycle(server: &ServerId, batch: &tmux::CycleBatch) -> CycleOutcome {
-    let landed = batch
-        .ops
-        .iter()
-        .map(|op| match op {
-            tmux::CycleOp::Set(write) => {
-                addressable(server)
-                    && run(
-                        PROGRAM,
-                        &tmux::set_options_args(server, std::slice::from_ref(write)),
-                    )
-                    .0
+    let channel = batch
+        .channel
+        .as_deref()
+        .filter(|channel| tmux::is_wake_channel(channel));
+    if !addressable(server) || (batch.ops.is_empty() && channel.is_none()) {
+        return CycleOutcome {
+            hook_proven: false,
+            landed: vec![false; batch.ops.len()],
+        };
+    }
+    let mut hook_proven = false;
+    let mut landed = vec![false; batch.ops.len()];
+    let chunks = tmux::cycle_batch_chunks(server, &batch.session, channel, &batch.ops);
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        let (succeeded, stdout) = run(PROGRAM, &chunk.args);
+        // The hook block only ever rides the FIRST invocation.
+        if index == 0 && channel.is_some() {
+            hook_proven = stdout.lines().any(|line| line == tmux::WAKE_HOOK_MARKER);
+        }
+        for op in chunk.ops {
+            if let (Some(slot), Some(operation)) = (landed.get_mut(op), batch.ops.get(op)) {
+                *slot = succeeded || publish_cycle_op(server, operation);
             }
-            tmux::CycleOp::Unset {
-                scope,
-                target,
-                name,
-            } => clear_option(server, *scope, target, name),
-        })
-        .collect();
+        }
+    }
     CycleOutcome {
-        hook_proven: false,
+        hook_proven,
         landed,
+    }
+}
+
+/// One cycle operation as its own process, with the argv its call site used
+/// before the cycle was batched.
+fn publish_cycle_op(server: &ServerId, op: &tmux::CycleOp) -> bool {
+    match op {
+        tmux::CycleOp::Set(write) => publish_options(server, std::slice::from_ref(write)),
+        tmux::CycleOp::Unset {
+            scope,
+            target,
+            name,
+        } => clear_option(server, *scope, target, name),
     }
 }
 

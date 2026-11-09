@@ -86,36 +86,43 @@ pub fn branch_reading(work_dir: Option<&str>) -> Option<BranchReading> {
 
 /// Publish (or retract) the two branch options on `session_id`.
 pub fn publish_branch(server: &ServerId, session_id: &str, reading: Option<&BranchReading>) {
-    let Some(reading) = reading else {
-        let _ = transport::clear_option(
-            server,
+    let _ = transport::publish_cycle(
+        server,
+        &tmux::CycleBatch {
+            session: session_id.to_owned(),
+            channel: None,
+            ops: branch_ops(session_id, reading),
+        },
+    );
+}
+
+/// The two branch operations on `session_id`: both values, or the full name
+/// unset and the status segment blanked. The verdict cycle sends them in its
+/// own batch; [`publish_branch`] sends them alone.
+#[must_use]
+pub(crate) fn branch_ops(session_id: &str, reading: Option<&BranchReading>) -> Vec<tmux::CycleOp> {
+    let set = |name: &str, value: &str| {
+        tmux::CycleOp::Set(tmux::OptionWrite::new(
             OptionScope::Session,
             session_id,
-            tmux::BRANCH_OPTION,
-        );
-        let _ = transport::publish_option(
-            server,
-            OptionScope::Session,
-            session_id,
-            BRANCH_STATUS_OPTION,
-            "",
-        );
-        return;
+            name,
+            value,
+        ))
     };
-    let _ = transport::publish_option(
-        server,
-        OptionScope::Session,
-        session_id,
-        tmux::BRANCH_OPTION,
-        &reading.full,
-    );
-    let _ = transport::publish_option(
-        server,
-        OptionScope::Session,
-        session_id,
-        BRANCH_STATUS_OPTION,
-        &reading.display,
-    );
+    match reading {
+        Some(reading) => vec![
+            set(tmux::BRANCH_OPTION, &reading.full),
+            set(BRANCH_STATUS_OPTION, &reading.display),
+        ],
+        None => vec![
+            tmux::CycleOp::Unset {
+                scope: OptionScope::Session,
+                target: session_id.to_owned(),
+                name: tmux::BRANCH_OPTION.to_owned(),
+            },
+            set(BRANCH_STATUS_OPTION, ""),
+        ],
+    }
 }
 
 /// Retract both branch options — the exit half of

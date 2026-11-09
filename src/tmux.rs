@@ -1365,18 +1365,42 @@ pub(crate) fn set_options_args(server: &ServerId, writes: &[OptionWrite]) -> Vec
         if index > 0 {
             args.push(";".to_owned());
         }
-        args.push("set-option".to_owned());
-        if let Some(flag) = write.scope.flag() {
-            args.push(flag.to_owned());
-        }
-        args.push("-t".to_owned());
-        args.push(match write.scope {
-            OptionScope::Session => format!("{}:", session_target(&write.target)),
-            OptionScope::Window | OptionScope::Pane => write.target.clone(),
-        });
-        args.extend([write.name.clone(), write.value.clone()]);
+        args.extend(set_option_words(write));
     }
     args
+}
+
+/// One `set-option` command of a queued invocation, without the server words.
+fn set_option_words(write: &OptionWrite) -> Vec<String> {
+    let mut words = vec!["set-option".to_owned()];
+    if let Some(flag) = write.scope.flag() {
+        words.push(flag.to_owned());
+    }
+    words.push("-t".to_owned());
+    words.push(option_target(write.scope, &write.target));
+    words.extend([write.name.clone(), write.value.clone()]);
+    words
+}
+
+/// One `set-option -u` command of a queued invocation, without the server words.
+fn unset_option_words(scope: OptionScope, target: &str, name: &str) -> Vec<String> {
+    let mut words = vec!["set-option".to_owned()];
+    if let Some(flag) = scope.flag() {
+        words.push(flag.to_owned());
+    }
+    words.extend(["-u", "-t"].map(ToOwned::to_owned));
+    words.push(option_target(scope, target));
+    words.push(name.to_owned());
+    words
+}
+
+/// The `-t` an option command names: an exact session table, or a window or
+/// pane id as given.
+fn option_target(scope: OptionScope, target: &str) -> String {
+    match scope {
+        OptionScope::Session => format!("{}:", session_target(target)),
+        OptionScope::Window | OptionScope::Pane => target.to_owned(),
+    }
 }
 
 /// One operation a verdict cycle publishes: an option value, or its removal.
@@ -1392,7 +1416,8 @@ pub(crate) enum CycleOp {
     },
 }
 
-/// What one verdict cycle publishes, in the order it decided it.
+/// What one verdict cycle publishes, in the order it decided it, sent as ONE
+/// tmux invocation by `transport::publish_cycle`.
 ///
 /// `session` is the `$<n>` id the wake hook belongs to and `channel` the
 /// wake channel to install it for; `None` installs no hook.
@@ -1401,6 +1426,122 @@ pub(crate) struct CycleBatch {
     pub(crate) session: String,
     pub(crate) channel: Option<String>,
     pub(crate) ops: Vec<CycleOp>,
+}
+
+/// The hook index the watchdog's wake owns. Index 0 is the launch focus
+/// hook's, and an indexed set leaves every other index alone.
+pub(crate) const WAKE_HOOK: &str = "client-session-changed[9]";
+
+/// The line the cycle batch prints right after it installed the wake hook.
+/// tmux drops the rest of a `;` group after an error, so the line is printed
+/// only when the installation ran.
+pub(crate) const WAKE_HOOK_MARKER: &str = "ae-wd!w";
+
+/// Whether `channel` can be named inside the hook's command string as one
+/// bare word: tmux parses that string again when the hook fires.
+#[must_use]
+pub(crate) fn is_wake_channel(channel: &str) -> bool {
+    !channel.is_empty()
+        && channel
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// The most command bytes one queued invocation carries. tmux 3.4 refuses a
+/// command whose words, each with its terminating NUL, exceed `MAX_IMSGSIZE`
+/// (16384) less its 4-byte header: "command too long" (client.c:375). Later
+/// releases accept more, so the 3.4 floor bounds every server ae runs on.
+pub(crate) const COMMAND_BYTES: usize = 16_000;
+
+/// One queued invocation of a cycle batch: its argv, and the operations it
+/// carries as a range of the batch's `ops`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CycleChunk {
+    pub(crate) args: Vec<String>,
+    pub(crate) ops: std::ops::Range<usize>,
+}
+
+/// One verdict cycle as queued tmux invocations: the wake hook and its marker
+/// first when `channel` is given, then every operation in order, in as FEW
+/// invocations as [`COMMAND_BYTES`] allows — one for any ordinary cycle. A
+/// single command over the bound travels alone, and tmux refuses it exactly as
+/// it refused that write before the cycle was batched.
+///
+/// `channel` must satisfy [`is_wake_channel`]; the caller passes `None`
+/// otherwise.
+#[must_use]
+pub(crate) fn cycle_batch_chunks(
+    server: &ServerId,
+    session: &str,
+    channel: Option<&str>,
+    ops: &[CycleOp],
+) -> Vec<CycleChunk> {
+    let mut chunks: Vec<(Vec<Vec<String>>, usize, std::ops::Range<usize>)> = Vec::new();
+    let mut first: Vec<Vec<String>> = Vec::new();
+    if let Some(channel) = channel {
+        first.push(vec![
+            "set-hook".to_owned(),
+            "-t".to_owned(),
+            option_target(OptionScope::Session, session),
+            WAKE_HOOK.to_owned(),
+            format!("wait-for -S {channel}"),
+        ]);
+        first.push(vec![
+            "display-message".to_owned(),
+            "-p".to_owned(),
+            "-t".to_owned(),
+            option_target(OptionScope::Session, session),
+            WAKE_HOOK_MARKER.to_owned(),
+        ]);
+    }
+    let first_bytes = first
+        .iter()
+        .map(|words| command_bytes(words))
+        .sum::<usize>()
+        + 2 * first.len().saturating_sub(1);
+    chunks.push((first, first_bytes, 0..0));
+    for (index, op) in ops.iter().enumerate() {
+        let words = match op {
+            CycleOp::Set(write) => set_option_words(write),
+            CycleOp::Unset {
+                scope,
+                target,
+                name,
+            } => unset_option_words(*scope, target, name),
+        };
+        let bytes = command_bytes(&words);
+        let fits = chunks.last().is_some_and(|(commands, used, _)| {
+            commands.is_empty() || used + 2 + bytes <= COMMAND_BYTES
+        });
+        if !fits {
+            chunks.push((Vec::new(), 0, index..index));
+        }
+        if let Some((commands, used, range)) = chunks.last_mut() {
+            // `;` is a word of its own: two bytes with its NUL.
+            *used += bytes + if commands.is_empty() { 0 } else { 2 };
+            commands.push(words);
+            range.end = index + 1;
+        }
+    }
+    chunks
+        .into_iter()
+        .filter(|(commands, _, _)| !commands.is_empty())
+        .map(|(commands, _, ops)| {
+            let mut args = server_args(server);
+            for (index, command) in commands.into_iter().enumerate() {
+                if index > 0 {
+                    args.push(";".to_owned());
+                }
+                args.extend(command);
+            }
+            CycleChunk { args, ops }
+        })
+        .collect()
+}
+
+/// What tmux counts of one command: every word with its terminating NUL.
+fn command_bytes(words: &[String]) -> usize {
+    words.iter().map(|word| word.len() + 1).sum()
 }
 
 /// Remove one user option from `target` — `set-option -u`.
@@ -1412,16 +1553,7 @@ pub fn unset_option_args(
     name: &str,
 ) -> Vec<String> {
     let mut args = server_args(server);
-    args.push("set-option".to_owned());
-    if let Some(flag) = scope.flag() {
-        args.push(flag.to_owned());
-    }
-    args.extend(["-u", "-t"].map(ToOwned::to_owned));
-    args.push(match scope {
-        OptionScope::Session => format!("{}:", session_target(target)),
-        OptionScope::Window | OptionScope::Pane => target.to_owned(),
-    });
-    args.push(name.to_owned());
+    args.extend(unset_option_words(scope, target, name));
     args
 }
 
@@ -5483,6 +5615,150 @@ mod tests {
                 "[⠋lead ◌builder]",
             ]
         );
+    }
+
+    /// The command bytes tmux counts for one chunk: its words after the
+    /// server's own, each with its NUL.
+    fn chunk_bytes(server: &crate::inventory::ServerId, args: &[String]) -> usize {
+        args[super::server_args(server).len()..]
+            .iter()
+            .map(|word| word.len() + 1)
+            .sum()
+    }
+
+    #[test]
+    fn an_ordinary_cycle_is_one_invocation_with_the_wake_hook_first() {
+        use super::{CycleOp, OptionScope, OptionWrite, WAKE_HOOK, WAKE_HOOK_MARKER};
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        let ops = [
+            CycleOp::Set(OptionWrite::new(OptionScope::Session, "$3", "@a", "1")),
+            CycleOp::Unset {
+                scope: OptionScope::Window,
+                target: "@7".to_owned(),
+                name: "@b".to_owned(),
+            },
+            CycleOp::Set(OptionWrite::new(OptionScope::Pane, "%2", "@c", "x y")),
+        ];
+        let chunks = super::cycle_batch_chunks(&server, "$3", Some("ae-wake-3-17"), &ops);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].ops, 0..3);
+        assert_eq!(
+            chunks[0].args,
+            [
+                "-L",
+                "ae",
+                "set-hook",
+                "-t",
+                "=$3:",
+                WAKE_HOOK,
+                "wait-for -S ae-wake-3-17",
+                ";",
+                "display-message",
+                "-p",
+                "-t",
+                "=$3:",
+                WAKE_HOOK_MARKER,
+                ";",
+                "set-option",
+                "-t",
+                "=$3:",
+                "@a",
+                "1",
+                ";",
+                "set-option",
+                "-w",
+                "-u",
+                "-t",
+                "@7",
+                "@b",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                "%2",
+                "@c",
+                "x y",
+            ]
+        );
+        // No hook and no operation is no invocation at all.
+        assert!(super::cycle_batch_chunks(&server, "$3", None, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_cycle_past_the_command_bound_splits_on_whole_commands_in_order() {
+        use super::{COMMAND_BYTES, CycleOp, OptionScope, OptionWrite, WAKE_HOOK_MARKER};
+        use crate::inventory::ServerId;
+        use crate::meta::Selector;
+        let server = ServerId::Selected(Selector::Name("ae".to_owned()));
+        let wide = "x".repeat(5_000);
+        let ops: Vec<CycleOp> = (0..7)
+            .map(|n| {
+                CycleOp::Set(OptionWrite::new(
+                    OptionScope::Session,
+                    "$3",
+                    &format!("@v{n}"),
+                    &wide,
+                ))
+            })
+            .collect();
+        let chunks = super::cycle_batch_chunks(&server, "$3", Some("ae-wake-3-17"), &ops);
+        assert!(chunks.len() > 1, "35 KB cannot be one 3.4 command");
+        let mut next = 0;
+        for (index, chunk) in chunks.iter().enumerate() {
+            assert!(
+                chunk_bytes(&server, &chunk.args) <= COMMAND_BYTES,
+                "chunk {index} passes tmux 3.4's bound"
+            );
+            assert_eq!(chunk.ops.start, next, "the operations stay in order");
+            next = chunk.ops.end;
+            assert_eq!(
+                chunk.args.iter().any(|word| word == WAKE_HOOK_MARKER),
+                index == 0,
+                "the hook block rides the first invocation only"
+            );
+            assert_eq!(
+                chunk
+                    .args
+                    .iter()
+                    .filter(|word| *word == "set-option")
+                    .count(),
+                chunk.ops.len(),
+                "a chunk carries exactly its own operations"
+            );
+        }
+        assert_eq!(next, ops.len(), "every operation is carried once");
+
+        // One command over the bound travels alone, as it did unbatched.
+        let huge = [
+            CycleOp::Set(OptionWrite::new(OptionScope::Session, "$3", "@a", "1")),
+            CycleOp::Set(OptionWrite::new(
+                OptionScope::Session,
+                "$3",
+                "@huge",
+                &"y".repeat(COMMAND_BYTES),
+            )),
+            CycleOp::Set(OptionWrite::new(OptionScope::Session, "$3", "@b", "2")),
+        ];
+        let chunks = super::cycle_batch_chunks(&server, "$3", None, &huge);
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| chunk.ops.clone())
+                .collect::<Vec<_>>(),
+            [0..1, 1..2, 2..3]
+        );
+    }
+
+    #[test]
+    fn a_wake_channel_is_one_bare_word_of_the_hook_command() {
+        for channel in ["ae-wake-3-1731000000", "qw_switch"] {
+            assert!(super::is_wake_channel(channel), "{channel}");
+        }
+        for channel in ["", "a b", "a;b", "a'b", "a\"b", "a\\b", "ä", "a\nb", "#{x}"] {
+            assert!(!super::is_wake_channel(channel), "{channel:?}");
+        }
     }
 
     /// Failure and unset are different readings. The conflating `Option`

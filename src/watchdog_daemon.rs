@@ -4111,9 +4111,16 @@ fn adoption_due(last: &mut Option<Instant>, now: Instant) -> bool {
 /// Draw THIS session's row of a fleet listing with the rank this cycle
 /// decided, whatever the listing caught of the published option.
 ///
-/// P0a: the rank is written before the listing is read, so the listing
-/// already carries it and there is nothing to overlay yet.
-fn overlay_current_rank(_rows: &mut [tmux::FleetListingRow], _session_id: &str, _rank: Mark) {}
+/// The cycle sends its writes as one batch at its end, so the listing it reads
+/// still carries LAST cycle's rank. The rank is the only cycle-written fact the
+/// listing feeds back into the strip and the adoption scan. A peer's row is never
+/// touched: this daemon does not vouch for another session's verdict, and a
+/// listing without this session's id gains no row.
+fn overlay_current_rank(rows: &mut [tmux::FleetListingRow], session_id: &str, rank: Mark) {
+    for row in rows.iter_mut().filter(|row| row.id == session_id) {
+        row.rank = Some(rank.rank().to_string());
+    }
+}
 
 /// The fleet target the orchestrator segment may jump to: absent for this session
 /// when it is itself the orchestrator, or when the fleet has none. The exact
@@ -4380,6 +4387,73 @@ pub fn run(
     code
 }
 
+/// One verdict cycle, then the pane's own duties, with everything both decide
+/// to publish sent as ONE batch at the end.
+fn run_cycle(
+    cycle: &Cycle<'_>,
+    carry: &mut Carry,
+    meta: &Meta,
+    deferred: &mut crate::watchdog_glue::Deferred,
+    journal: &Journal<'_>,
+    err: &mut impl Write,
+) -> crate::Result<()> {
+    // ONE identity read per cycle, handed to every writer.
+    carry.pending = PendingCycle::new(transport::observe_session_identity(
+        cycle.server,
+        cycle.session,
+    ));
+    let ran = cycle.run(carry, err);
+    // The pane's own per-cycle duties, in order: the branch pair, which is a
+    // git read no cycle owns, then the recovery and the revive.
+    let duties = if ran.is_ok() {
+        tick_pane_duties(
+            cycle.server,
+            cycle.meta_dir,
+            cycle.session,
+            meta,
+            deferred,
+            journal,
+            &mut carry.pending,
+            err,
+        )
+    } else {
+        Ok(())
+    };
+    // What the cycle decided goes out even when a later step failed: each
+    // write used to land the moment it was made.
+    flush_cycle(cycle.server, carry);
+    ran?;
+    duties
+}
+
+/// Send the cycle's ONE publication batch, then commit what it proved: the
+/// fleet's write-on-change memories once every fleet operation landed, and the
+/// wake channel once its hook is proven installed.
+fn flush_cycle(server: &crate::inventory::ServerId, carry: &mut Carry) {
+    let pending = std::mem::take(&mut carry.pending);
+    let Some(identity) = pending.identity else {
+        // Nothing was decided without an identity, and no hook was installed.
+        carry.wake = None;
+        return;
+    };
+    let batch = tmux::CycleBatch {
+        session: identity.id,
+        channel: None,
+        ops: pending.ops,
+    };
+    let outcome = transport::publish_cycle(server, &batch);
+    if let Some(staged) = pending.fleet
+        && outcome
+            .landed
+            .get(staged.ops.clone())
+            .is_some_and(|landed| landed.iter().all(|ok| *ok))
+    {
+        carry.motion = staged.motion;
+        carry.adoption = staged.adoption;
+    }
+    carry.wake = batch.channel.filter(|_| outcome.hook_proven);
+}
+
 /// Publish the two things a pane that is UP says before its first cycle: the
 /// starting health segment and the branch pair.
 fn announce_start(server: &crate::inventory::ServerId, session: &str, work_dir: Option<&str>) {
@@ -4540,11 +4614,7 @@ fn watch(
                             })
                             .collect(),
                     };
-                    cycle.run(&mut carry, err)?;
-                    // The pane's own per-cycle duties, in order: the branch
-                    // pair, which is a git read no cycle owns, then the
-                    // recovery and the revive.
-                    tick_pane_duties(&server, meta_dir, session, meta, deferred, journal, err)?;
+                    run_cycle(&cycle, &mut carry, meta, deferred, journal, err)?;
                 }
                 true
             }
@@ -4943,14 +5013,15 @@ fn tick_pane_duties(
     meta: &Meta,
     deferred: &mut crate::watchdog_glue::Deferred,
     journal: &Journal<'_>,
+    pending: &mut PendingCycle,
     err: &mut impl Write,
 ) -> crate::Result<()> {
-    if let Some(session_id) = transport::observe_session_id(server, session) {
-        crate::watchdog_glue::publish_branch(
-            server,
-            &session_id,
+    if let Some(session_id) = pending.session_id() {
+        let ops = crate::watchdog_glue::branch_ops(
+            session_id,
             crate::watchdog_glue::branch_reading(meta.work_dir()).as_ref(),
         );
+        pending.ops.extend(ops);
     }
     for row in crate::watchdog_glue::recover(meta_dir, meta.roster()) {
         // The DURABLE record of a post-launch capture.
@@ -5127,6 +5198,49 @@ struct Carry {
         reason = "P0a seam: the interval loop reads it once the wake leg lands (P3)"
     )]
     wake: Option<String>,
+    /// The publication the running cycle has decided and not yet sent.
+    pending: PendingCycle,
+}
+
+/// One verdict cycle's publication while the cycle is still deciding it: every
+/// option write and removal the cycle and its pane duties make, sent as ONE
+/// tmux invocation once both are done ([`flush_cycle`]).
+#[derive(Default)]
+struct PendingCycle {
+    /// This session's immutable identity, read once at the cycle's start and
+    /// handed to every writer; `None` when it did not answer, which publishes
+    /// nothing this cycle.
+    identity: Option<tmux::SessionIdentity>,
+    /// The operations, in the order the cycle decided them.
+    ops: Vec<tmux::CycleOp>,
+    /// The fleet publication's write-on-change memories, waiting for the batch.
+    fleet: Option<StagedFleet>,
+}
+
+impl PendingCycle {
+    /// A publication for the session `identity` names.
+    fn new(identity: Option<tmux::SessionIdentity>) -> Self {
+        Self {
+            identity,
+            ops: Vec::new(),
+            fleet: None,
+        }
+    }
+
+    /// This session's `$<n>` id, when the cycle's identity read answered.
+    fn session_id(&self) -> Option<&str> {
+        self.identity.as_ref().map(|identity| identity.id.as_str())
+    }
+}
+
+/// The motion and adoption state the fleet publication computed, committed
+/// only once every operation it rides on is proven landed: a write-on-change
+/// memory advanced past a write tmux refused would never retry it.
+struct StagedFleet {
+    motion: MotionState,
+    adoption: Adoption,
+    /// The fleet's operations inside [`PendingCycle::ops`].
+    ops: std::ops::Range<usize>,
 }
 
 impl Carry {
@@ -5145,6 +5259,7 @@ impl Carry {
             effort: crate::effort::leg::Carry::default(),
             look: None,
             wake: None,
+            pending: PendingCycle::default(),
         }
     }
 
@@ -7344,8 +7459,10 @@ impl Cycle<'_> {
             return Ok(());
         };
         carry.look = Some(look);
-        if read.is_some() {
-            self.reconcile_look(&look, &mut carry.motion);
+        if read.is_some()
+            && let Some(session_id) = carry.pending.session_id()
+        {
+            self.reconcile_look(session_id, &look, &mut carry.motion);
         }
         // The roster still contributes slots whose panes are missing to the
         // session rollup. It is no longer drawn as a separate session strip:
@@ -7402,10 +7519,7 @@ impl Cycle<'_> {
     /// is what the layout was written FOR; when it and the live look disagree,
     /// the layout is written again — or taken off, which unsets the session
     /// options and hands the user's own global status line back.
-    fn reconcile_look(&self, look: &Look, motion: &mut MotionState) {
-        let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
-            return;
-        };
+    fn reconcile_look(&self, session_id: &str, look: &Look, motion: &mut MotionState) {
         let stamped =
             transport::observe_session_option(self.server, self.session, theme::LOOK_STAMP_OPTION)
                 .unwrap_or_default();
@@ -7426,7 +7540,7 @@ impl Cycle<'_> {
                 ok &= transport::publish_option(
                     self.server,
                     OptionScope::Session,
-                    &session_id,
+                    session_id,
                     &option,
                     &value,
                 );
@@ -7434,7 +7548,7 @@ impl Cycle<'_> {
         } else {
             for option in theme::LAYOUT_OPTIONS {
                 ok &=
-                    transport::clear_option(self.server, OptionScope::Session, &session_id, option);
+                    transport::clear_option(self.server, OptionScope::Session, session_id, option);
             }
         }
         ok &= self.reconcile_windows(look);
@@ -7444,7 +7558,7 @@ impl Cycle<'_> {
         let _ = transport::publish_option(
             self.server,
             OptionScope::Session,
-            &session_id,
+            session_id,
             theme::LOOK_STAMP_OPTION,
             &look.stamp(),
         );
@@ -7493,8 +7607,11 @@ impl Cycle<'_> {
     }
 
     /// Publish this cycle's verdicts as tmux user options.
+    ///
+    /// Nothing is sent here: every value joins the cycle's ONE batch
+    /// ([`flush_cycle`]), and every value is asserted again each cycle.
     fn publish(&self, published: &Published<'_>, carry: &mut Carry, table: Option<&[procs::Proc]>) {
-        let Some(session_id) = transport::observe_session_id(self.server, self.session) else {
+        let Some(session_id) = carry.pending.session_id().map(str::to_owned) else {
             return;
         };
         for option in [theme::MENU_OPEN_OPTION, theme::SETTINGS_OPEN_OPTION] {
@@ -7562,15 +7679,11 @@ impl Cycle<'_> {
         // The core THIS daemon runs on. An upgrade restarts the daemon on the
         // new core, so the value moves with the install and never with a launch.
         ops.push(set(theme::VERSION_OPTION, &crate::version_line()));
-        let batch = tmux::CycleBatch {
-            session: session_id.clone(),
-            channel: None,
-            ops,
-        };
-        let outcome = transport::publish_cycle(self.server, &batch);
-        carry.wake = batch.channel.filter(|_| outcome.hook_proven);
+        carry.pending.ops.extend(ops);
+        // The windows first: they decide this cycle's verdicts, and the fleet
+        // stages a copy of the motion state that must already hold them.
+        self.publish_windows(published, &mut carry.motion, &mut carry.pending.ops);
         self.publish_fleet(look, carry, table, &session_id, published.attention);
-        self.publish_windows(published, &mut carry.motion);
     }
 
     /// The fleet strip: every ae session on THIS server, as each one's own
@@ -7660,18 +7773,29 @@ impl Cycle<'_> {
         // this session's own line and every line it is filling for a peer.
         let mut adoption = carry.adoption.clone();
         writes.extend(adoption_writes(&mut adoption, &sessions, &next.fleet_order));
-        if writes.is_empty() || transport::publish_options(self.server, &writes) {
-            carry.motion = next;
-            // Committed only on a landed batch: a write-on-change memory
-            // advanced past a write tmux refused would never retry it.
-            carry.adoption = adoption;
-        }
+        // STAGED, not committed: the batch runs at the cycle's end, and the
+        // memories advance only once its writes are proven landed.
+        let start = carry.pending.ops.len();
+        carry
+            .pending
+            .ops
+            .extend(writes.into_iter().map(tmux::CycleOp::Set));
+        carry.pending.fleet = Some(StagedFleet {
+            motion: next,
+            adoption,
+            ops: start..carry.pending.ops.len(),
+        });
     }
 
     /// Per-window marks and per-pane state, grouped from the SAME per-pane
     /// verdicts in pane order — and the theme, restamped on any window that
     /// appeared since the launch dressed the session.
-    fn publish_windows(&self, published: &Published<'_>, motion: &mut MotionState) {
+    fn publish_windows(
+        &self,
+        published: &Published<'_>,
+        motion: &mut MotionState,
+        ops: &mut Vec<tmux::CycleOp>,
+    ) {
         let Some(panes) = transport::observe_window_panes(self.server, self.session) else {
             return;
         };
@@ -7688,13 +7812,12 @@ impl Cycle<'_> {
             // the border format reads the label — so an unbackfilled pane, the
             // monitor's own included, would draw a blank title from the moment
             // the look reached it.
-            let _ = transport::publish_option(
-                self.server,
+            ops.push(tmux::CycleOp::Set(tmux::OptionWrite::new(
                 OptionScope::Pane,
                 &pane.pane_id,
                 theme::AGENT_LABEL_OPTION,
                 &theme::agent_label(agent),
-            );
+            )));
             if NON_AGENT_PANES.contains(&agent) {
                 continue;
             }
@@ -7704,7 +7827,11 @@ impl Cycle<'_> {
                 .find(|entry| entry.pane == pane.pane_id);
             let mark = found.map_or(Mark::Idle, |entry| entry.verdict.mark());
             agents.push((theme::agent_label(agent), mark));
-            self.publish_pane_state(&pane.pane_id, found, look);
+            ops.extend(
+                Self::pane_state_writes(&pane.pane_id, found, look)
+                    .into_iter()
+                    .map(tmux::CycleOp::Set),
+            );
             if let Some(entry) = found {
                 verdicts.push(MotionVerdict {
                     pane: pane.pane_id.clone(),
@@ -7715,22 +7842,20 @@ impl Cycle<'_> {
         }
         for (window_id, agents) in &windows {
             let line = window_agents_line(agents, look, None);
-            let _ = if line.is_empty() {
-                transport::clear_option(
-                    self.server,
-                    OptionScope::Window,
-                    window_id,
-                    theme::WINDOW_AGENTS_OPTION,
-                )
+            ops.push(if line.is_empty() {
+                tmux::CycleOp::Unset {
+                    scope: OptionScope::Window,
+                    target: window_id.clone(),
+                    name: theme::WINDOW_AGENTS_OPTION.to_owned(),
+                }
             } else {
-                transport::publish_option(
-                    self.server,
+                tmux::CycleOp::Set(tmux::OptionWrite::new(
                     OptionScope::Window,
                     window_id,
                     theme::WINDOW_AGENTS_OPTION,
                     &line,
-                )
-            };
+                ))
+            });
         }
         // A window created after the launch — by a spawn on an older core, or
         // by the human — carries no stamp, so it is dressed here rather than
@@ -7747,10 +7872,15 @@ impl Cycle<'_> {
         motion.replace_verdicts(verdicts);
     }
 
-    /// One pane's border state: its mark, and the word behind it.
-    fn publish_pane_state(&self, pane: &str, found: Option<&PaneMark>, look: &Look) {
+    /// One pane's border state: its mark, and the word behind it. Nothing
+    /// when the pane has no verdict this cycle.
+    fn pane_state_writes(
+        pane: &str,
+        found: Option<&PaneMark>,
+        look: &Look,
+    ) -> Vec<tmux::OptionWrite> {
         let Some(entry) = found else {
-            return;
+            return Vec::new();
         };
         let mark = entry.verdict.mark();
         let state = theme::pane_state(
@@ -7762,7 +7892,7 @@ impl Cycle<'_> {
         // The ACCENT alone, for the active border: a style option is
         // format-expanded, so the border colour follows the pane it belongs to
         // without a style written per pane.
-        let writes = [
+        vec![
             tmux::OptionWrite::new(OptionScope::Pane, pane, theme::PANE_STATE_OPTION, &state),
             tmux::OptionWrite::new(
                 OptionScope::Pane,
@@ -7776,8 +7906,7 @@ impl Cycle<'_> {
                 theme::OBSERVED_OPTION,
                 &entry.observed,
             ),
-        ];
-        let _ = transport::publish_options(self.server, &writes);
+        ]
     }
 
     /// The recorded binary for a slot, or `None` when the roster has none —
