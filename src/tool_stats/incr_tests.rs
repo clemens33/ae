@@ -297,8 +297,11 @@ fn a_live_update_past_u64_rebuilds_the_conversation_and_a_representable_one_stay
     let max = u64::MAX;
     let mut conv = loaded_near(Adapter::Claude, max - 1);
     assert_eq!(conv.note(&child(), 2, 0), Err(Overflow));
+    // B2 (lead ae-20261109T165907Z-00e19e67): the reset leaves only the
+    // visible damage mark.
     assert!(
-        conv.resume.lines.is_empty() && conv.summary.gaps.is_empty(),
+        conv.resume.lines.is_empty()
+            && conv.summary.gaps == BTreeMap::from([(GapKind::RebuiltFromSource, 1)]),
         "rebuilt from the sources: {:?}",
         conv.summary.gaps
     );
@@ -406,4 +409,41 @@ fn a_view_holds_each_conversation_once_in_order() {
     newer.summary.read = true;
     loaded.admit(newer.clone()).expect("replaces");
     assert_eq!(loaded.convs, vec![a, newer, codex]);
+}
+
+/// R3-2: a read from 0 taken into a refused conversation replaces the
+/// stream's line counts and never adds to them.
+#[test]
+fn a_restart_replaces_line_counts_even_when_refused() {
+    let mut conv = Conv::new(Adapter::Claude, "c1");
+    conv.note(&child(), 2, 1).expect("representable");
+    conv.refuse(Refused::Observations);
+    conv.restart(&child());
+    conv.note(&child(), 2, 1).expect("representable");
+    assert_eq!(conv.resume.lines.get(&child()), Some(&(2, 1)));
+}
+
+/// B2 (lead ae-20261109T165907Z-00e19e67): held counts no real source makes
+/// reset the conversation whole and mark it, visibly; a later source
+/// rebuild and the codec keep the mark.
+#[test]
+fn a_damage_reset_marks_the_conversation_and_every_rebuild_keeps_it() {
+    let mut conv = loaded_near(Adapter::Claude, u64::MAX - 1);
+    assert_eq!(
+        conv.summary.gaps.get(&GapKind::RebuiltFromSource),
+        None,
+        "control: not damaged yet"
+    );
+    assert_eq!(conv.note(&child(), 2, 0), Err(Overflow));
+    assert!(conv.resume.rebuilt, "the reset marks it");
+    assert_eq!(conv.summary.gaps.get(&GapKind::RebuiltFromSource), Some(&1));
+    conv.rebuild();
+    assert!(conv.resume.rebuilt, "a source rebuild keeps it");
+    let round = super::super::doc::parse_conv(&super::super::doc::render_conv(&conv))
+        .expect("an accepted document");
+    assert!(round.resume.rebuilt, "the document keeps it");
+    assert_eq!(
+        round.summary.gaps.get(&GapKind::RebuiltFromSource),
+        Some(&1)
+    );
 }

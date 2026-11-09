@@ -40,6 +40,17 @@ impl Lines {
         }
     }
 
+    /// A framer resumed at a persisted `cursor`, an over-cap line still open
+    /// when `skipping` (#288 P3).
+    #[must_use]
+    pub const fn resume(cap: usize, cursor: u64, skipping: bool) -> Self {
+        Self {
+            cap,
+            cursor,
+            skipping,
+        }
+    }
+
     /// Bytes consumed: where the next step's bytes start.
     #[must_use]
     pub const fn cursor(&self) -> u64 {

@@ -20,7 +20,6 @@ mod fold;
 pub mod incr;
 pub mod store;
 pub use fold::fold;
-pub(crate) use fold::{Weight, event_floor, prefix, weigh};
 
 /// The longest normalized identity component, in bytes. A joined Codex display
 /// name `namespace/name` holds two components and may reach 129 bytes.
@@ -408,6 +407,11 @@ pub enum GapKind {
     SourceGone,
     /// Conversations left out of the published view by its cap.
     ViewOverCap,
+    /// P6 boundary: the conversation was rebuilt whole from its sources
+    /// (its document damaged, oversized or of another format, or its held
+    /// counts damaged); counts of its deleted sources are lost. Sticky
+    /// until `r`.
+    RebuiltFromSource,
 }
 
 /// One coverage line: `conversation` is a short conversation id, never a path.
@@ -446,6 +450,9 @@ impl GapLine {
             GapKind::UnprovenReadsDropped => format!("unproven reads dropped {count}"),
             GapKind::SourceGone => format!("source gone {count}"),
             GapKind::ViewOverCap => format!("view over cap {count}"),
+            GapKind::RebuiltFromSource => format!(
+                "rebuilt from source: {count} conversations (counts of deleted sources there are lost)"
+            ),
         };
         if let Some(id) = self.conversation.as_deref().and_then(short_id) {
             let _ = write!(out, " · conversation {id}");
@@ -556,6 +563,8 @@ pub struct Caps {
     pub conv_cap: u64,
     /// Bytes of the rendered view document.
     pub view_cap: u64,
+    /// Bytes of the rendered coverage document.
+    pub coverage_cap: u64,
 }
 
 impl Caps {
@@ -569,6 +578,7 @@ impl Caps {
         turns: 4096,
         conv_cap: doc::CONV_CAP,
         view_cap: doc::VIEW_CAP,
+        coverage_cap: doc::COVERAGE_CAP,
     };
 }
 

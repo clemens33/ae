@@ -9,13 +9,17 @@
 //! a successful parse re-renders exactly and no hand edit is half-trusted.
 //!
 //! The documents hold identities ([`Ident`] names, conversation and session
-//! ids, slots, client labels, child stream file names), digests ([`Key`],
-//! [`Dir`], [`Resource`], store roots, witness blocks), counts and enums:
-//! never a prompt, an argument, a result, a path or a native call id.
+//! ids, slots, client labels), digests ([`Key`], [`Dir`], [`Resource`], a
+//! child stream's opaque identity (a digest of its native file stem, never
+//! the stem), store copies, the recorded-roots digest, witness blocks),
+//! counts and enums: never a prompt, an argument, a result or a native call
+//! id. The one path a document holds is a root ae itself recorded for a
+//! seat (store, config home, work dir) in the association cache `sources`
+//! (lead ruling Q1 = A); never a path a transcript named.
 
 use super::incr::{
-    self, Association, Conv, FileState, Memberships, Published, PublishedConv, Refused, Source,
-    StreamKey, Summary,
+    self, Association, Conv, Coverage, FileState, Memberships, Published, PublishedConv, Refused,
+    Source, StreamKey, Summary,
 };
 use super::{
     Adapter, Cols, Dir, Event, GapKind, Ident, Item, Key, Kind, Load, McpCols, McpOutcome,
@@ -36,6 +40,8 @@ pub const VIEW_CAP: u64 = 8 << 20;
 pub const ASSOC_CAP: u64 = 8 << 20;
 /// The cap of the publication intent.
 pub const INTENT_CAP: u64 = 4096;
+/// The cap of the coverage document.
+pub const COVERAGE_CAP: u64 = 4 << 20;
 
 /// Why a document is not used.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +61,47 @@ pub struct Assoc {
     pub sources: BTreeMap<String, FileState>,
     pub memberships: Memberships,
 }
+
+/// The longest root ae records that a sources document keeps.
+pub const ROOT_MAX: usize = 4096;
+/// The longest session id, slot or client label a sources document keeps:
+/// the reader's own membership field limit.
+pub const FIELD_MAX: usize = 256;
+
+/// One seat an association source names (lead ruling Q1 = A): the
+/// conversation, the membership, and the roots ae ITSELF recorded for the
+/// seat (store root, config homes, work dirs). Never a path a transcript
+/// named: those stay digests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seat {
+    pub adapter: Adapter,
+    pub id: String,
+    pub membership: Membership,
+    pub store: Option<String>,
+    pub config_homes: Vec<String>,
+    pub work_dirs: Vec<String>,
+}
+
+/// What one association source (a session meta, a session journal, an
+/// archive record) gave, as of its status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceRecord {
+    pub status: FileState,
+    pub complete: bool,
+    /// Memberships not kept for a field over [`FIELD_MAX`].
+    pub oversize: u64,
+    /// A session meta's own session id: its journal's retire records name
+    /// members of this session.
+    pub session: Option<String>,
+    pub seats: Vec<Seat>,
+    /// Unsupported seats: (tool word, conversation id, session).
+    pub unsupported: BTreeSet<(String, String, Option<String>)>,
+    /// Conversation ids a `reseat` record named.
+    pub reseats: BTreeSet<String>,
+}
+
+/// The reader's association cache: every source by its opaque key.
+pub type Sources = BTreeMap<String, SourceRecord>;
 
 /// An interrupted publication's record: the conversation document it
 /// commits and the view generation it makes.
@@ -217,6 +264,7 @@ fn gap(kind: &GapKind) -> Value {
         GapKind::UnprovenReadsDropped => "unproven_reads_dropped",
         GapKind::SourceGone => "source_gone",
         GapKind::ViewOverCap => "view_over_cap",
+        GapKind::RebuiltFromSource => "rebuilt_from_source",
     };
     Value::str(word)
 }
@@ -379,6 +427,7 @@ pub fn render_conv(conv: &Conv) -> Vec<u8> {
                 optional(summary.refused, |refused| Value::str(refused_word(refused))),
             ),
             ("fallback", Value::Bool(resume.fallback)),
+            ("rebuilt", Value::Bool(resume.rebuilt)),
         ],
     );
     files(&mut out, &summary.files);
@@ -398,6 +447,9 @@ pub fn render_conv(conv: &Conv) -> Vec<u8> {
     for key in &resume.dropped {
         out.record(vec![("dropped", hex(&key.0))]);
     }
+    if let Some(roots) = resume.roots() {
+        out.record(vec![("roots", hex(&roots.0))]);
+    }
     for (key, events) in &resume.streams {
         out.record(vec![("stream", stream(key))]);
         for one in events {
@@ -410,14 +462,51 @@ pub fn render_conv(conv: &Conv) -> Vec<u8> {
 /// The derived view: every published conversation's counters and scope.
 #[must_use]
 pub fn render_view(view: &Published) -> Vec<u8> {
-    let mut out = Out::head(
+    let mut out = view_head(view.generation, view.over_cap);
+    for conv in &view.convs {
+        view_conv(&mut out, conv);
+    }
+    out.close()
+}
+
+fn view_head(generation: u64, over_cap: u64) -> Out {
+    Out::head(
         "tools_view",
         vec![
-            ("generation", number(view.generation)),
-            ("over_cap", number(view.over_cap)),
+            ("generation", number(generation)),
+            ("over_cap", number(over_cap)),
         ],
-    );
-    for conv in &view.convs {
+    )
+}
+
+/// One conversation's part of a rendered view: its bytes and its records.
+/// A view's size is [`view_frame`] plus the parts of its conversations, so
+/// the view cap's prefix is sized without rendering every candidate.
+#[must_use]
+pub fn view_part(conv: &PublishedConv) -> (u64, u64) {
+    let mut out = Out {
+        text: String::new(),
+        records: 0,
+    };
+    view_conv(&mut out, conv);
+    (
+        u64::try_from(out.text.len()).unwrap_or(u64::MAX),
+        out.records,
+    )
+}
+
+/// The bytes of a view's head and end record around `records` records of
+/// conversations.
+#[must_use]
+pub fn view_frame(generation: u64, over_cap: u64, records: u64) -> u64 {
+    let mut out = view_head(generation, over_cap);
+    out.records = out.records.saturating_add(records);
+    let all = out.close().len();
+    u64::try_from(all).unwrap_or(u64::MAX)
+}
+
+fn view_conv(out: &mut Out, conv: &PublishedConv) {
+    {
         let summary = &conv.summary;
         out.record(vec![
             ("conv", Value::str(adapter_word(summary.adapter))),
@@ -447,7 +536,7 @@ pub fn render_view(view: &Published) -> Vec<u8> {
         for session in &conv.sessions {
             out.record(vec![("session", Value::str(session.as_str()))]);
         }
-        files(&mut out, &summary.files);
+        files(out, &summary.files);
         for (kind, count) in &summary.gaps {
             out.record(vec![("gap", gap(kind)), ("count", number(*count))]);
         }
@@ -483,7 +572,6 @@ pub fn render_view(view: &Published) -> Vec<u8> {
             ]);
         }
     }
-    out.close()
 }
 
 /// The association: session sources and every conversation's memberships.
@@ -501,18 +589,95 @@ pub fn render_assoc(assoc: &Assoc) -> Vec<u8> {
             ("reseated", Value::Bool(association.reseated)),
         ]);
         for member in &association.memberships {
-            let client = match &member.client {
-                RecordedClient::Missing => Value::Null,
-                RecordedClient::Label(label) => Value::str(label.as_str()),
-                RecordedClient::Invalid => Value::Arr(vec![Value::str("invalid")]),
-            };
             out.record(vec![
                 ("member", optional(member.session.as_deref(), Value::str)),
                 ("slot", Value::str(member.slot.as_str())),
                 ("role", Value::str(role_word(member.role))),
-                ("client", client),
+                ("client", client_value(&member.client)),
             ]);
         }
+    }
+    out.close()
+}
+
+fn client_value(client: &RecordedClient) -> Value {
+    match client {
+        RecordedClient::Missing => Value::Null,
+        RecordedClient::Label(label) => Value::str(label.as_str()),
+        RecordedClient::Invalid => Value::Arr(vec![Value::str("invalid")]),
+    }
+}
+
+/// The association cache: each source's status, then what it gave.
+#[must_use]
+pub fn render_sources(sources: &Sources) -> Vec<u8> {
+    let mut out = Out::head("tools_sources", Vec::new());
+    for (name, record) in sources {
+        let mut fields = status_fields("source", Value::str(name.as_str()), &record.status);
+        fields.push(("complete", Value::Bool(record.complete)));
+        fields.push(("oversize", number(record.oversize)));
+        fields.push(("session", optional(record.session.as_deref(), Value::str)));
+        out.record(fields);
+        for seat in &record.seats {
+            let member = &seat.membership;
+            out.record(vec![
+                ("seat", Value::str(adapter_word(seat.adapter))),
+                ("id", Value::str(seat.id.as_str())),
+                ("member", optional(member.session.as_deref(), Value::str)),
+                ("slot", Value::str(member.slot.as_str())),
+                ("role", Value::str(role_word(member.role))),
+                ("client", client_value(&member.client)),
+                ("store", optional(seat.store.as_deref(), Value::str)),
+                (
+                    "homes",
+                    Value::Arr(seat.config_homes.iter().map(Value::str).collect()),
+                ),
+                (
+                    "dirs",
+                    Value::Arr(seat.work_dirs.iter().map(Value::str).collect()),
+                ),
+            ]);
+        }
+        for (tool, id, session) in &record.unsupported {
+            out.record(vec![
+                ("unsupported", Value::str(tool.as_str())),
+                ("id", Value::str(id.as_str())),
+                ("member", optional(session.as_deref(), Value::str)),
+            ]);
+        }
+        for id in &record.reseats {
+            out.record(vec![("reseat", Value::str(id.as_str()))]);
+        }
+    }
+    out.close()
+}
+
+/// The coverage beside a view (lead ruling Q2 = A).
+#[must_use]
+pub fn render_coverage(coverage: &Coverage) -> Vec<u8> {
+    let mut out = Out::head(
+        "tools_coverage",
+        vec![
+            ("generation", number(coverage.generation)),
+            ("hidden", number(coverage.hidden)),
+            ("oversize", number(coverage.oversize)),
+            ("recounting", number(coverage.recounting)),
+            ("omitted", number(coverage.omitted)),
+        ],
+    );
+    for (tool, sessions) in &coverage.unsupported {
+        out.record(vec![
+            ("unsupported", Value::str(tool.as_str())),
+            (
+                "sessions",
+                Value::Arr(
+                    sessions
+                        .iter()
+                        .map(|session| optional(session.as_deref(), Value::str))
+                        .collect(),
+                ),
+            ),
+        ]);
     }
     out.close()
 }
@@ -786,6 +951,7 @@ fn parse_gap(value: &Value) -> Parsed<GapKind> {
         "unproven_reads_dropped" => GapKind::UnprovenReadsDropped,
         "source_gone" => GapKind::SourceGone,
         "view_over_cap" => GapKind::ViewOverCap,
+        "rebuilt_from_source" => GapKind::RebuiltFromSource,
         _ => return damaged("gap"),
     })
 }
@@ -988,6 +1154,7 @@ pub fn parse_conv(bytes: &[u8]) -> Result<Conv, DocError> {
     conv.summary.read = flag(field(head, "read")?)?;
     conv.summary.refused = parse_refused(field(head, "refused")?)?;
     conv.resume.fallback = flag(field(head, "fallback")?)?;
+    conv.resume.rebuilt = flag(field(head, "rebuilt")?)?;
     let mut current: Option<StreamKey> = None;
     for fields in body {
         let lead = fields.first().map(|(_, value)| value);
@@ -1018,6 +1185,7 @@ pub fn parse_conv(bytes: &[u8]) -> Result<Conv, DocError> {
             ("dropped", Some(value)) => {
                 conv.resume.dropped.insert(key(value)?);
             }
+            ("roots", Some(value)) => conv.resume.set_roots(Some(key(value)?)),
             ("stream", Some(value)) => {
                 let stream = parse_stream(value)?;
                 conv.resume.streams.entry(stream.clone()).or_default();
@@ -1271,6 +1439,141 @@ pub fn parse_assoc(bytes: &[u8]) -> Result<Assoc, DocError> {
     canonical(bytes, assoc, render_assoc)
 }
 
+/// A source key: `meta:` or `journal:` and 32 hex digits (a session
+/// directory's digest), or `archive:` and a canonical archive id.
+fn source_key(value: &Value) -> Parsed<String> {
+    let name = text(value)?;
+    let valid = match name.split_once(':') {
+        Some(("meta" | "journal", hex)) => {
+            hex.len() == 32
+                && hex
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        }
+        Some(("archive", id)) => crate::archive::is_canonical_uuid(id),
+        _ => false,
+    };
+    if valid { Ok(name) } else { damaged("source") }
+}
+
+/// A conversation id as the reader keeps one.
+fn conv_id(value: &Value) -> Parsed<String> {
+    let id = text(value)?;
+    if crate::archive::is_canonical_uuid(&id) {
+        Ok(id)
+    } else {
+        damaged("conversation id")
+    }
+}
+
+/// A session id or slot within [`FIELD_MAX`].
+fn short(value: &Value) -> Parsed<String> {
+    let field = text(value)?;
+    if field.is_empty() || field.len() > FIELD_MAX {
+        return damaged("field");
+    }
+    Ok(field)
+}
+
+/// Whether `path` is a root a sources document keeps: absolute, plain
+/// components, no NUL, within [`ROOT_MAX`].
+#[must_use]
+pub fn valid_root(path: &str) -> bool {
+    let plain = path.strip_prefix('/').is_some_and(|rest| {
+        rest.is_empty()
+            || rest
+                .split('/')
+                .all(|part| !part.is_empty() && part != "." && part != "..")
+    });
+    plain && path.len() <= ROOT_MAX && !path.contains('\0')
+}
+
+fn root(value: &Value) -> Parsed<String> {
+    let path = text(value)?;
+    if valid_root(&path) {
+        Ok(path)
+    } else {
+        damaged("root")
+    }
+}
+
+fn roots(value: &Value) -> Parsed<Vec<String>> {
+    array(value)?.iter().map(root).collect()
+}
+
+fn parse_seat(fields: &Fields, adapter: &Value) -> Parsed<Seat> {
+    let client = parse_client(field(fields, "client")?)?;
+    if matches!(&client, RecordedClient::Label(label) if label.len() > FIELD_MAX) {
+        return damaged("client");
+    }
+    Ok(Seat {
+        adapter: parse_adapter(adapter)?,
+        id: conv_id(field(fields, "id")?)?,
+        membership: Membership {
+            session: maybe(field(fields, "member")?, short)?,
+            slot: short(field(fields, "slot")?)?,
+            role: parse_role(field(fields, "role")?)?,
+            client,
+        },
+        store: maybe(field(fields, "store")?, root)?,
+        config_homes: roots(field(fields, "homes")?)?,
+        work_dirs: roots(field(fields, "dirs")?)?,
+    })
+}
+
+/// # Errors
+///
+/// As [`parse_conv`], under [`ASSOC_CAP`]: a key, an id, a field or a root
+/// outside its grammar is damage.
+pub fn parse_sources(bytes: &[u8]) -> Result<Sources, DocError> {
+    let records = records(bytes, ASSOC_CAP, "tools_sources")?;
+    let (_, body) = records.split_first().ok_or(DocError::Damaged("empty"))?;
+    let mut sources = Sources::new();
+    let mut current: Option<String> = None;
+    for fields in body {
+        let lead = fields.first().map(|(_, value)| value);
+        if let ("source", Some(value)) = (first_key(fields), lead) {
+            let name = source_key(value)?;
+            let record = SourceRecord {
+                status: parse_status(fields)?,
+                complete: flag(field(fields, "complete")?)?,
+                oversize: count(field(fields, "oversize")?)?,
+                session: maybe(field(fields, "session")?, short)?,
+                seats: Vec::new(),
+                unsupported: BTreeSet::new(),
+                reseats: BTreeSet::new(),
+            };
+            sources.insert(name.clone(), record);
+            current = Some(name);
+            continue;
+        }
+        let Some(record) = current.as_ref().and_then(|name| sources.get_mut(name)) else {
+            return damaged("record outside a source");
+        };
+        match (first_key(fields), lead) {
+            ("seat", Some(value)) => record.seats.push(parse_seat(fields, value)?),
+            ("unsupported", Some(value)) => {
+                let tool = text(value)?;
+                if super::ident(Kind::Tool, &tool) != Ident::Name(tool.clone())
+                    && tool != "unresolved"
+                {
+                    return damaged("unsupported tool");
+                }
+                record.unsupported.insert((
+                    tool,
+                    conv_id(field(fields, "id")?)?,
+                    maybe(field(fields, "member")?, short)?,
+                ));
+            }
+            ("reseat", Some(value)) => {
+                record.reseats.insert(conv_id(value)?);
+            }
+            _ => return damaged("sources record"),
+        }
+    }
+    canonical(bytes, sources, render_sources)
+}
+
 /// # Errors
 ///
 /// As [`parse_conv`], under [`INTENT_CAP`].
@@ -1285,6 +1588,92 @@ pub fn parse_intent(bytes: &[u8]) -> Result<Intent, DocError> {
         generation: count(field(head, "generation")?)?,
     };
     canonical(bytes, intent, render_intent)
+}
+
+/// `coverage` as it can be published under `cap`: whole when it fits, else
+/// the longest prefix of its unsupported records that fits, the rest
+/// counted in `omitted` (a visible over-cap line, never silent).
+///
+/// A record costs far more bytes than the omitted count and the `end`
+/// trailer can shift by one record (each moves by at most one digit), so
+/// the rendered size grows strictly with the kept count. The estimate from
+/// per-record costs is then settled by rendering the actual candidate, with
+/// its own omitted count and trailer, one record at a time.
+#[must_use]
+pub fn fit_coverage(coverage: &Coverage, cap: u64) -> Coverage {
+    let size = |one: &Coverage| u64::try_from(render_coverage(one).len()).unwrap_or(u64::MAX);
+    if size(coverage) <= cap {
+        return coverage.clone();
+    }
+    let total = coverage.unsupported.len();
+    let candidate = |kept: usize| {
+        let left = u64::try_from(total.saturating_sub(kept)).unwrap_or(u64::MAX);
+        Coverage {
+            unsupported: coverage.unsupported[..kept].to_vec(),
+            omitted: coverage.omitted.saturating_add(left),
+            ..coverage.clone()
+        }
+    };
+    let head = candidate(0);
+    let base = size(&head);
+    let mut spent = base;
+    let mut kept = 0;
+    for record in &coverage.unsupported {
+        let one = size(&Coverage {
+            unsupported: vec![record.clone()],
+            ..head.clone()
+        })
+        .saturating_sub(base);
+        if spent.saturating_add(one) > cap {
+            break;
+        }
+        spent = spent.saturating_add(one);
+        kept += 1;
+    }
+    while kept > 0 && size(&candidate(kept)) > cap {
+        kept -= 1;
+    }
+    while kept < total && size(&candidate(kept + 1)) <= cap {
+        kept += 1;
+    }
+    candidate(kept)
+}
+
+/// # Errors
+///
+/// As [`parse_conv`], under [`COVERAGE_CAP`]: a tool word, a session or an
+/// order outside the grammar is damage.
+pub fn parse_coverage(bytes: &[u8]) -> Result<Coverage, DocError> {
+    let records = records(bytes, COVERAGE_CAP, "tools_coverage")?;
+    let (head, body) = records.split_first().ok_or(DocError::Damaged("empty"))?;
+    let mut coverage = Coverage {
+        generation: count(field(head, "generation")?)?,
+        hidden: count(field(head, "hidden")?)?,
+        oversize: count(field(head, "oversize")?)?,
+        recounting: count(field(head, "recounting")?)?,
+        unsupported: Vec::new(),
+        omitted: count(field(head, "omitted")?)?,
+    };
+    for fields in body {
+        let ("unsupported", Some(value)) =
+            (first_key(fields), fields.first().map(|(_, value)| value))
+        else {
+            return damaged("coverage record");
+        };
+        let tool = text(value)?;
+        if super::ident(Kind::Tool, &tool) != Ident::Name(tool.clone()) && tool != "unresolved" {
+            return damaged("unsupported tool");
+        }
+        let mut sessions = BTreeSet::new();
+        for session in array(field(fields, "sessions")?)? {
+            sessions.insert(maybe(session, short)?);
+        }
+        coverage.unsupported.push((tool, sessions));
+    }
+    if !coverage.unsupported.is_sorted() {
+        return damaged("coverage order");
+    }
+    canonical(bytes, coverage, render_coverage)
 }
 
 #[cfg(test)]

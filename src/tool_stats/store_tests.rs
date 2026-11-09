@@ -121,6 +121,82 @@ fn a_crash_inside_any_recovery_still_reads_one_whole_generation() {
     }
 }
 
+/// Q2 = A: the coverage published beside the view at every crash prefix and
+/// inside any recovery: the pair is one whole generation, and a coverage
+/// whose generation equals the view's is that generation's own (the loader
+/// shows coverage only then), never another's.
+#[test]
+fn a_crash_at_any_paired_coverage_prefix_never_mixes_generations() {
+    let (old, new) = (conv(100), conv(200));
+    let (old_view, new_view) = (view(&old, 1), view(&new, 2));
+    let coverage = |generation: u64, hidden: u64| Coverage {
+        generation,
+        hidden,
+        ..Coverage::default()
+    };
+    let (old_cov, new_cov) = (coverage(1, 3), coverage(2, 5));
+    let mut base = Memory::new();
+    base.plant("stats/epoch", b"1\n");
+    publish_with(&mut base, &old, &old_view, &old_cov)
+        .expect("first plan")
+        .apply(&mut base, usize::MAX)
+        .expect("old state");
+    let plan = publish_with(&mut base, &new, &new_view, &new_cov).expect("next plan");
+    let name = conv_name(Adapter::Claude, ID);
+    let commit = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, Op::Rename { to, .. } if *to == name))
+        .expect("one commit point");
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, Op::Rename { to, .. } if to == COVERAGE)),
+        "positive control: the coverage is renamed in the same plan"
+    );
+    for upto in 0..=plan.ops.len() {
+        let mut crashed = base.clone();
+        plan.apply(&mut crashed, upto)
+            .expect("real publication prefix");
+        let expected = if upto > commit {
+            (&new, &new_view)
+        } else {
+            (&old, &old_view)
+        };
+        settle(&crashed, 0, &format!("p{upto}"), &|dir, trail| {
+            let (conv, view) = pair(dir);
+            assert_eq!(
+                (&conv, &view),
+                expected,
+                "one whole generation after {trail}"
+            );
+            let held = match load_coverage(dir) {
+                Loaded::Ok(held) => held,
+                other => panic!("readable coverage after {trail}: {other:?}"),
+            };
+            let own = if held.generation == 2 {
+                &new_cov
+            } else {
+                &old_cov
+            };
+            assert_eq!(&held, own, "a generation's own coverage after {trail}");
+            if upto == plan.ops.len() {
+                assert_eq!(held.generation, view.generation, "paired at the end");
+            }
+            let left = disk::Dir::list(dir, TOOLS).expect("listable");
+            assert!(
+                !left.iter().any(|one| {
+                    std::path::Path::new(one)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+                        || one == "intent"
+                }),
+                "nothing staged left after {trail}: {left:?}"
+            );
+        });
+    }
+}
+
 /// A payload whose view cannot be read: an IO error, not damage.
 struct Unreadable(Memory);
 

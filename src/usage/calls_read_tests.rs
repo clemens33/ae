@@ -1,9 +1,7 @@
-//! #288 B3 driver regression (B2 review r1 F2 objection 2, the ownership
-//! boundary): the reader keeps every retained stream canonical, each
-//! distinct event once at exact capacity, because the fold charges only the
-//! canonical conversation. Not frozen spec; the oracle is that invariant
-//! and a reader of the same file without the repeat, never the reader's own
-//! count.
+//! #288 driver regressions of the persisted reader (not frozen spec). Each
+//! oracle is a fixture fact (a file length, a hand count, a fresh scan of the
+//! same tree, a reader of the same file without the repeat) or a stated
+//! invariant, never the reader's own count.
 #![allow(
     clippy::disallowed_methods,
     clippy::expect_used,
@@ -11,7 +9,7 @@
 )]
 
 use super::Reader;
-use crate::tool_stats::{Caps, Conversation};
+use crate::tool_stats::{Adapter, Caps};
 use crate::tool_stats_fixture::{self as f, Fixture};
 
 fn settle(reader: &mut Reader) {
@@ -35,115 +33,35 @@ fn read(bytes: &[u8]) -> (Fixture, Reader, std::path::PathBuf) {
     (root, reader, path)
 }
 
-fn assert_canonical(conversations: &[Conversation]) {
-    for conversation in conversations {
-        for (index, stream) in conversation.streams.iter().enumerate() {
-            assert!(
-                stream.events.windows(2).all(|pair| pair[0] < pair[1]),
-                "each distinct event once"
-            );
-            assert_eq!(
-                stream.events.capacity(),
-                stream.events.len(),
-                "exact capacity"
-            );
-            assert!(
-                conversation.streams[..index]
-                    .iter()
-                    .all(|seen| (&seen.role, seen.copy) != (&stream.role, stream.copy)),
-                "one stream per (role, copy)"
-            );
-        }
-    }
+/// The distinct observations the reader holds for `(adapter, id)`.
+fn observed(reader: &Reader, adapter: Adapter, id: &str) -> usize {
+    reader
+        .convs
+        .get(&(adapter, id.to_owned()))
+        .map_or(0, |held| held.conv.summary.observations)
 }
 
 /// A record repeated in one read, and the same record appended again in a
-/// later round, is retained once: the streams equal those of the file that
+/// later round, is held once: the conversation equals that of the file that
 /// holds it once.
 #[test]
 fn b3_a_repeated_record_is_retained_once() {
     let call = f::call("first", "first", "Read", "model-a", "{}");
     let (_once_root, once, _) = read(call.as_bytes());
-    assert_canonical(once.conversations());
-    let held = |reader: &Reader| -> usize {
-        reader
-            .conversations()
-            .iter()
-            .flat_map(|conversation| &conversation.streams)
-            .map(|stream| stream.events.len())
-            .sum()
-    };
+    let held = |reader: &Reader| observed(reader, Adapter::Claude, f::C);
     assert!(held(&once) > 0, "the call is read");
+    assert_eq!(attempts(&tools(&once)), 1);
 
     let doubled = format!("{call}{call}");
     let (_root, mut reader, path) = read(doubled.as_bytes());
-    assert_canonical(reader.conversations());
     assert_eq!(held(&reader), held(&once), "a repeat in one read");
+    assert_eq!(attempts(&tools(&reader)), 1);
 
     let tripled = format!("{doubled}{call}");
     Fixture::rewrite(&path, tripled.as_bytes());
     settle(&mut reader);
-    assert_canonical(reader.conversations());
     assert_eq!(held(&reader), held(&once), "a repeat appended later");
-}
-
-/// D1 (lead brief, before B4): one full first build over a sandboxed COPY
-/// of a real history. Ignored; run by hand with `AE_D1_STATE` (the copied
-/// ae state root) and `AE_D1_HOME` (the copied home). It prints structure
-/// only: counts, bytes and time, never a name, path or record.
-#[test]
-#[ignore = "D1 measurement over a sandboxed history copy, run by hand"]
-fn d1_first_build_measure() {
-    let state = std::env::var_os("AE_D1_STATE").expect("AE_D1_STATE names the copied state root");
-    let home = std::env::var_os("AE_D1_HOME").expect("AE_D1_HOME names the copied home");
-    let started = std::time::Instant::now();
-    let mut reader = Reader::new(state.into(), Some(home.into()), Caps::SLICE);
-    reader.round();
-    let (mut units, mut bytes, mut lstats, mut listings, mut opens) =
-        (0_u64, 0, 0_u64, 0_u64, 0_u64);
-    while let Some(unit) = reader.step() {
-        units += 1;
-        bytes += unit.bytes;
-        lstats += u64::from(unit.lstats);
-        listings += u64::from(unit.listings);
-        opens += u64::from(unit.opens);
-    }
-    let read_ms = started.elapsed().as_millis();
-    let ask = crate::tool_stats::Ask {
-        page: crate::tool_stats::Page::Tools,
-        scope: crate::tool_stats::Scope::All,
-        filter: crate::tool_stats::Filter::All,
-    };
-    let view = reader.view(&ask);
-    let total_ms = started.elapsed().as_millis();
-    let conversations = reader.conversations();
-    let streams: usize = conversations.iter().map(|one| one.streams.len()).sum();
-    let events: usize = conversations
-        .iter()
-        .flat_map(|one| &one.streams)
-        .map(|stream| stream.events.len())
-        .sum();
-    let gap = |kind: &crate::tool_stats::GapKind| -> u64 {
-        view.gaps
-            .iter()
-            .filter(|line| line.kind == *kind)
-            .map(|line| line.count)
-            .sum()
-    };
-    println!(
-        "D1 units={units} bytes={bytes} lstats={lstats} listings={listings} opens={opens} \
-         read_ms={read_ms} total_ms={total_ms} conversations={} streams={streams} \
-         events={events} event_bytes_floor={} listed={} read={} ledger_refused={} \
-         unreadable={} changed={} partial={}",
-        conversations.len(),
-        events * size_of::<crate::tool_stats::Event>(),
-        view.listed,
-        view.read,
-        gap(&crate::tool_stats::GapKind::Ledger),
-        gap(&crate::tool_stats::GapKind::Unreadable),
-        gap(&crate::tool_stats::GapKind::Changed),
-        view.partial(),
-    );
+    assert_eq!(attempts(&tools(&reader)), 1);
 }
 
 // --- B3 review r1 regressions (driver; not frozen spec) ---------------------
@@ -153,7 +71,7 @@ fn d1_first_build_measure() {
 
 use super::{LSTATS, STEP, Unit, UnitKind, scan};
 use crate::stats::Cell;
-use crate::tool_stats::{Ask, Filter, GapKind, Page, Scope, VIEW_RESERVE, View};
+use crate::tool_stats::{Ask, Filter, GapKind, Page, Scope, View};
 use std::fs;
 
 const U: &str = "33333333-3333-4333-8333-333333333333";
@@ -214,20 +132,6 @@ fn global(view: &View, kind: &GapKind) -> bool {
         .any(|line| line.kind == *kind && line.conversation.is_none() && line.count > 0)
 }
 
-fn held(reader: &Reader, id: &str) -> usize {
-    reader
-        .conversations()
-        .iter()
-        .filter(|conversation| conversation.id == id)
-        .flat_map(|conversation| &conversation.streams)
-        .map(|stream| stream.events.len())
-        .sum()
-}
-
-fn tracked(reader: &Reader, id: &str) -> bool {
-    reader.files.keys().any(|place| place.conversation.1 == id)
-}
-
 fn equals_fresh(root: &Fixture, cached: &Reader) {
     let fresh = scan(root.0.clone(), Some(root.home()), Caps::SLICE);
     for page in [Page::Skills, Page::Mcp, Page::Tools] {
@@ -243,97 +147,12 @@ fn equals_fresh(root: &Fixture, cached: &Reader) {
     }
 }
 
-/// The events `calls(n)` retains, by hand count of the fixture (lead ruling
-/// ae-20261108T151321Z-defcb7d1): each `f::call` line is one assistant record with
-/// one `tool_use`, so one `Attempt` (its own id) and one `Stamp`; every
-/// fixture call carries the same timestamp `2026-11-01T00:00:01Z`, so the
-/// stamps are ONE distinct event: n attempts + 1 stamp.
-const fn events_of_calls(n: usize) -> usize {
-    n + 1
-}
-
 fn calls(count: usize) -> String {
     (0..count)
         .map(|n| f::call(&format!("c{n}"), &format!("m{n}"), "Read", "model-a", "{}"))
         .collect()
 }
 
-/// B3-1: a raw cap of only the view reserve retains no observation and no
-/// file state, and says so.
-#[test]
-fn b3_1_view_reserve_cap_retains_nothing() {
-    let root = Fixture::new();
-    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
-    root.live("alpha", &meta, "");
-    root.claude("store-a", f::C, calls(3).as_bytes());
-    let caps = Caps {
-        ledger: VIEW_RESERVE,
-        ..Caps::SLICE
-    };
-    let mut reader = Reader::new(root.0.clone(), Some(root.home()), caps);
-    drain(&mut reader);
-    assert_eq!(held(&reader, f::C), 0, "no observation retained");
-    assert!(reader.files.is_empty(), "no file state retained");
-    assert!(
-        global(&tools(&reader), &GapKind::Unreadable),
-        "coverage says so"
-    );
-}
-
-/// B3-1: a conversation over its observation cap is refused alone, its
-/// observations and file state evicted; another conversation stays.
-#[test]
-fn b3_1_oversized_conversation_is_refused_alone() {
-    let root = Fixture::new();
-    let alpha = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
-    let beta = root.meta("beta", f::T, "claude", f::D, Some("work"), "store-b");
-    root.live("alpha", &alpha, "");
-    root.live("beta", &beta, "");
-    root.claude("store-a", f::C, calls(5).as_bytes());
-    root.claude("store-b", f::D, calls(1).as_bytes());
-    let caps = Caps {
-        per_conversation: 2,
-        ..Caps::SLICE
-    };
-    let mut reader = Reader::new(root.0.clone(), Some(root.home()), caps);
-    drain(&mut reader);
-    assert_eq!(held(&reader, f::C), 0, "five calls over a cap of two");
-    assert!(!tracked(&reader, f::C), "its file state is evicted");
-    assert_eq!(
-        held(&reader, f::D),
-        events_of_calls(1),
-        "the other conversation stays"
-    );
-    assert!(gap(&tools(&reader), &GapKind::Ledger) > 0);
-}
-
-/// B3-1: growth past the cap on a later round evicts what was admitted.
-#[test]
-fn b3_1_growth_past_the_cap_evicts() {
-    let root = Fixture::new();
-    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
-    root.live("alpha", &meta, "");
-    let path = root.claude("store-a", f::C, calls(1).as_bytes());
-    let caps = Caps {
-        per_conversation: 2,
-        ..Caps::SLICE
-    };
-    let mut reader = Reader::new(root.0.clone(), Some(root.home()), caps);
-    drain(&mut reader);
-    assert_eq!(
-        held(&reader, f::C),
-        events_of_calls(1),
-        "admitted while under the cap"
-    );
-    Fixture::rewrite(&path, calls(5).as_bytes());
-    drain(&mut reader);
-    assert_eq!(held(&reader, f::C), 0, "grown past the cap");
-    assert!(!tracked(&reader, f::C), "its file state is evicted");
-    assert!(gap(&tools(&reader), &GapKind::Ledger) > 0);
-}
-
-/// B3-3: the consumed prefix edited in place between two chunks of one
-/// pass is a changed file this round, and the next round equals a fresh scan.
 #[test]
 fn b3_3_prefix_edit_between_chunks_is_changed() {
     let root = Fixture::new();
@@ -515,7 +334,10 @@ fn b3_2_missing_sessions_root_lists_nothing() {
     fs::remove_dir(root.0.join("sessions")).expect("drop sessions root");
     let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
     let units = drain(&mut reader);
-    let sessions = units.first().expect("the sessions unit runs first");
+    let sessions = units
+        .iter()
+        .find(|unit| unit.kind != UnitKind::Load)
+        .expect("the sessions unit runs after the load");
     assert_eq!(sessions.kind, UnitKind::Listing);
     assert_eq!(sessions.listings, 0, "no listing happened");
     assert!(sessions.lstats >= 1, "the status did happen");
@@ -556,49 +378,6 @@ fn attempts(view: &View) -> u64 {
     match view.totals {
         crate::tool_stats::Cols::Tool(cols) => cols.attempts,
         other => panic!("Tools: {other:?}"),
-    }
-}
-
-fn caps_at(ledger: usize) -> Caps {
-    Caps {
-        ledger,
-        ..Caps::SLICE
-    }
-}
-
-fn scan_at(root: &Fixture, ledger: usize) -> Reader {
-    scan(root.0.clone(), Some(root.home()), caps_at(ledger))
-}
-
-/// The least ledger (bytes) at which `admits` holds, by bisection over the
-/// fixture's fresh scans; `admits` is monotone in the ledger.
-fn smallest_ledger(admits: impl Fn(usize) -> bool) -> usize {
-    let (mut lo, mut hi) = (VIEW_RESERVE, Caps::SLICE.ledger);
-    assert!(admits(hi), "the slice cap admits the fixture");
-    assert!(!admits(lo), "the view reserve alone does not");
-    while lo + 1 < hi {
-        let mid = lo + (hi - lo) / 2;
-        if admits(mid) {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
-    }
-    hi
-}
-
-fn equals_fresh_at(root: &Fixture, cached: &Reader, ledger: usize) {
-    let fresh = scan_at(root, ledger);
-    for page in [Page::Skills, Page::Mcp, Page::Tools] {
-        let asked = Ask {
-            page,
-            ..ask(Scope::All)
-        };
-        assert_eq!(
-            cached.view(&asked),
-            fresh.view(&asked),
-            "cached equals fresh {page:?} at ledger {ledger}"
-        );
     }
 }
 
@@ -670,11 +449,11 @@ fn b3_2_link_spelling_is_an_extra_copy_with_unchanged_counts() {
     root.codex("store-a", f::C, codex_one_call().as_bytes());
     let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
     drain(&mut reader);
-    let copies: BTreeSet<u32> = reader
-        .conversations()
-        .iter()
-        .filter(|conversation| conversation.id == f::C)
-        .flat_map(|conversation| &conversation.streams)
+    let copies: BTreeSet<[u8; 16]> = reader.convs[&(Adapter::Codex, f::C.to_owned())]
+        .conv
+        .summary
+        .files
+        .keys()
         .map(|stream| stream.copy)
         .collect();
     assert_eq!(copies.len(), 2, "two spellings, two copies: {copies:?}");
@@ -685,7 +464,7 @@ fn b3_2_link_spelling_is_an_extra_copy_with_unchanged_counts() {
 
 /// A deep store holding one Claude call, recorded either directly or through
 /// a 20-link chain from a shallow name.
-fn deep_store(chain: bool) -> (Fixture, Vec<Unit>, usize) {
+fn deep_store(chain: bool) -> (Fixture, Vec<Unit>, u64) {
     let root = Fixture::new();
     let store = "deep/a/b/c/d/e";
     let recorded = if chain {
@@ -704,7 +483,7 @@ fn deep_store(chain: bool) -> (Fixture, Vec<Unit>, usize) {
     root.claude(store, f::C, calls(1).as_bytes());
     let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
     let units = drain(&mut reader);
-    let count = held(&reader, f::C);
+    let count = attempts(&tools(&reader));
     (root, units, count)
 }
 
@@ -714,12 +493,7 @@ fn deep_store(chain: bool) -> (Fixture, Vec<Unit>, usize) {
 fn b3_2_link_chain_costs_one_receipt_per_syscall() {
     let (_direct_root, direct, direct_held) = deep_store(false);
     let (_chain_root, chained, chain_held) = deep_store(true);
-    let one = events_of_calls(1);
-    assert_eq!(
-        (direct_held, chain_held),
-        (one, one),
-        "both spellings locate"
-    );
+    assert_eq!((direct_held, chain_held), (1, 1), "both spellings locate");
     assert_eq!(
         calls_made(&chained),
         calls_made(&direct),
@@ -743,7 +517,7 @@ fn b3_2_deep_recorded_store_is_located() {
     root.claude(&store, f::C, calls(1).as_bytes());
     let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
     drain(&mut reader);
-    assert_eq!(held(&reader, f::C), events_of_calls(1));
+    assert_eq!(attempts(&tools(&reader)), 1);
     assert_eq!(gap(&tools(&reader), &GapKind::Unlocated), 0);
 }
 
@@ -772,626 +546,1218 @@ fn b3_2_many_seats_add_no_resolution_io() {
     assert!(four <= one + 3 * 2, "three missing stores: {one} -> {four}");
 }
 
-/// B3-1a: Codex day listings over several days stay inside a small ledger
-/// after every unit, beside the observations held.
-#[test]
-fn b3_1a_day_listings_stay_inside_a_small_ledger_after_every_unit() {
-    let root = Fixture::new();
-    let meta = root.meta("alpha", f::S, "codex", f::C, Some("work"), "store-a");
-    root.live("alpha", &meta, "");
-    root.codex("store-a", f::C, codex_one_call().as_bytes());
-    let sessions = root.store("store-a").join("sessions");
-    for day in crate::quota::codex_rollout_dirs(&sessions, f::C).expect("days") {
-        fs::create_dir_all(&day).expect("day");
-        for n in 0..500 {
-            fs::write(day.join(format!("{n:04}-{}", "x".repeat(200))), b"").expect("filler");
+// --- P3 Q1 = A (lead ruling ae-20261109T145706Z-e8d89b84) --------------------
+
+/// A path-shaped sentinel the fixture root does not carry.
+const HOSTILE: &str = "HOSTILE_PATH_SENTINEL";
+
+/// Run the real S5 maintainer until it proves an epoch.
+fn prove_epoch(root: &Fixture) {
+    let mut maintainer = crate::stats_store::maint::Maintainer::new(
+        &root.0,
+        crate::stats_store::disk::LIMITS,
+        std::time::Duration::from_millis(100),
+    );
+    for _ in 0..100 {
+        let _ = maintainer.step();
+        if root.0.join("stats/epoch").is_file() {
+            return;
         }
     }
-    let space = 64 << 10;
-    let mut reader = Reader::new(
-        root.0.clone(),
-        Some(root.home()),
-        caps_at(VIEW_RESERVE + space),
+    panic!("the S5 maintainer proves an epoch");
+}
+
+fn stats_files(directory: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in fs::read_dir(directory).expect("owned stats directory") {
+        let path = entry.expect("stats entry").path();
+        if path.is_dir() {
+            stats_files(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
+}
+
+/// Q1 = A: a transcript whose cwd, tool-argument paths and skill base
+/// directory carry a sentinel leaves no sentinel byte under `stats/`, and
+/// the association cache holds exactly the roots the session meta recorded.
+#[test]
+fn q1_transcript_paths_never_persist_and_only_recorded_roots_do() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    let hostile = format!("/{HOSTILE}/project");
+    let bytes = format!(
+        "{{\"type\":\"user\",\"cwd\":\"{hostile}\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"hi\"}}]}}}}\n"
+    ) + &f::call(
+        "skill-id",
+        "skill-message",
+        "Skill",
+        "model-a",
+        "{\"skill\":\"allowed-skill\"}",
+    ) + &f::result("skill-id", false, Some(true))
+        + &f::base("skill-id", &format!("{hostile}/skills/allowed-skill"))
+        + &f::call(
+            "read-id",
+            "read-message",
+            "Read",
+            "model-a",
+            &format!("{{\"file_path\":\"{hostile}/skills/allowed-skill/a.md\"}}"),
+        )
+        + &f::result("read-id", false, None);
+    root.claude("store-a", f::C, bytes.as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    assert_eq!(
+        attempts(&tools(&reader)),
+        2,
+        "positive control: both calls read"
     );
-    reader.round();
-    for _ in 0..20_000 {
-        let Some(unit) = reader.step() else {
-            return;
-        };
-        assert!(unit.listings <= 1, "{unit:?}");
-        let days = reader
-            .round
-            .as_ref()
-            .map_or(0, |round| round.days.retained());
-        let events: usize = reader
-            .conversations()
+
+    let mut paths = Vec::new();
+    stats_files(&root.0.join("stats"), &mut paths);
+    let tools_dir = root.0.join("stats/tools");
+    assert!(
+        paths
             .iter()
-            .flat_map(|conversation| &conversation.streams)
-            .map(|stream| stream.events.len() * size_of::<crate::tool_stats::Event>())
-            .sum();
+            .any(|path| path.starts_with(tools_dir.join("conv"))),
+        "positive control: a conversation document is persisted"
+    );
+    for path in &paths {
+        let bytes = fs::read(path).expect("persisted bytes");
         assert!(
-            days + events <= space,
-            "live {days} + {events} past {space} after {unit:?}"
+            !bytes
+                .windows(HOSTILE.len())
+                .any(|part| part == HOSTILE.as_bytes()),
+            "a transcript path persisted in {:?}",
+            path.strip_prefix(&root.0)
         );
     }
-    panic!("finite fixture reader did not settle");
+
+    let sources = crate::tool_stats::doc::parse_sources(
+        &fs::read(tools_dir.join("sources")).expect("the association cache"),
+    )
+    .expect("the cache parses");
+    crate::tool_stats::doc::parse_assoc(
+        &fs::read(tools_dir.join("assoc")).expect("the association document"),
+    )
+    .expect("the association document parses");
+    let mut roots = BTreeSet::new();
+    for record in sources.values() {
+        for seat in &record.seats {
+            roots.extend(seat.store.iter().cloned());
+            roots.extend(seat.config_homes.iter().cloned());
+            roots.extend(seat.work_dirs.iter().cloned());
+        }
+    }
+    let recorded: BTreeSet<String> = [root.store("store-a"), root.0.join("work")]
+        .iter()
+        .map(|path| path.to_str().expect("utf-8 fixture root").to_owned())
+        .collect();
+    assert_eq!(roots, recorded, "exactly the roots the meta recorded");
 }
 
-/// B3-1b: duplicates charge once: at the least ledger that admits a file
-/// once, the same records repeated in one chunk are admitted, and a warm
-/// reader that saw them appended equals a fresh scan.
-#[test]
-fn b3_1b_duplicate_records_charge_once_at_the_ledger_boundary() {
-    let root = Fixture::new();
-    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
-    root.live("alpha", &meta, "");
-    let once = calls(50);
-    let whole = events_of_calls(50);
-    let path = root.claude("store-a", f::C, once.as_bytes());
-    let ledger = smallest_ledger(|ledger| held(&scan_at(&root, ledger), f::C) == whole);
-    let mut warm = Reader::new(root.0.clone(), Some(root.home()), caps_at(ledger));
-    drain(&mut warm);
-    assert_eq!(held(&warm, f::C), whole, "admitted once");
-    Fixture::rewrite(&path, once.repeat(16).as_bytes());
-    assert_eq!(
-        held(&scan_at(&root, ledger), f::C),
-        whole,
-        "repeats in one chunk charge once"
-    );
-    drain(&mut warm);
-    assert_eq!(held(&warm, f::C), whole);
-    equals_fresh_at(&root, &warm, ledger);
-}
+// --- P3 review r1 regressions (driver; review-20261109T153353Z-f8d89344) ----
+//
+// Each oracle is a fixture fact, a cold scan of the same tree, or a stated
+// invariant (no rollback, the cap holds, a document is not replaced).
 
-/// B3-1b: identical retire records add no discovery charge after the first.
-#[test]
-fn b3_1b_repeated_retire_records_charge_once() {
-    let root = Fixture::new();
-    let meta = root.meta("alpha", f::S, "claude", f::D, Some("work"), "store-a");
-    let summary = format!(
-        "tool=claude profile=fixture-profile config_home={} config_home_base=",
-        root.store("store-a").display()
-    );
-    let retire = format!(
-        "{{\"ts\":\"2026-11-01T00:00:00Z\",\"actor\":\"lead\",\"action\":\"retire\",\"target\":\"old-worker\",\"target_slot\":\"spawned.0\",\"ref\":\"{}\",\"summary\":\"{summary}\"}}\n",
-        f::C
-    );
-    let journal = root.live("alpha", &meta, &retire).join("events.jsonl");
-    root.claude("store-a", f::D, b"");
-    root.claude("store-a", f::C, calls(1).as_bytes());
-    let complete = |reader: &Reader| !global(&tools(reader), &GapKind::Unreadable);
-    // The least ledger at which the single-retire fixture is complete AND
-    // holds its one call (two events): both must stay true with 2000.
-    let ledger = smallest_ledger(|ledger| {
-        let scan = scan_at(&root, ledger);
-        complete(&scan) && held(&scan, f::C) == events_of_calls(1)
-    });
-    Fixture::rewrite(&journal, retire.repeat(2000).as_bytes());
-    let fresh = scan_at(&root, ledger);
-    assert!(
-        complete(&fresh),
-        "2000 identical retires are one membership"
-    );
-    assert_eq!(held(&fresh, f::C), events_of_calls(1));
-}
+use crate::stats_store::disk;
+use crate::tool_stats::doc;
+use crate::tool_stats::incr;
+use crate::tool_stats::store::{self, Loaded};
 
-/// B3-7: refusals are not sticky: once an earlier conversation shrinks, a
-/// later one it excluded is admitted again, as in a fresh scan.
-#[test]
-fn b3_7_shrunk_earlier_conversation_readmits_the_later_one() {
-    let root = Fixture::new();
-    let alpha = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
-    let beta = root.meta("beta", f::T, "claude", f::D, Some("work"), "store-b");
-    root.live("alpha", &alpha, "");
-    root.live("beta", &beta, "");
-    let path = root.claude("store-a", f::C, calls(400).as_bytes());
-    let (large, one) = (events_of_calls(400), events_of_calls(1));
-    root.claude("store-b", f::D, calls(1).as_bytes());
-    let ledger = smallest_ledger(|ledger| held(&scan_at(&root, ledger), f::C) == large);
-    let mut warm = Reader::new(root.0.clone(), Some(root.home()), caps_at(ledger));
-    drain(&mut warm);
-    assert_eq!(
-        (held(&warm, f::C), held(&warm, f::D)),
-        (large, 0),
-        "the large earlier conversation excludes the later one"
-    );
-    Fixture::rewrite(&path, calls(1).as_bytes());
-    drain(&mut warm);
-    assert_eq!((held(&warm, f::C), held(&warm, f::D)), (one, one));
-    equals_fresh_at(&root, &warm, ledger);
-}
-
-/// B3-7 r3: an unchanged warm round at the least ledger that admits a fresh
-/// scan keeps what the fresh scan keeps: discovery pressure on the cached
-/// observations is temporary, never a terminal refusal.
-#[test]
-fn b3_7_unchanged_warm_round_at_the_least_ledger_equals_fresh() {
-    let root = Fixture::new();
-    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
-    root.live("alpha", &meta, "");
-    root.claude("store-a", f::C, calls(400).as_bytes());
-    let whole = events_of_calls(400);
-    let ledger = smallest_ledger(|ledger| held(&scan_at(&root, ledger), f::C) == whole);
-    let mut warm = Reader::new(root.0.clone(), Some(root.home()), caps_at(ledger));
-    drain(&mut warm);
-    assert_eq!(held(&warm, f::C), whole, "the first round admits it");
-    drain(&mut warm);
-    assert_eq!(held(&warm, f::C), whole, "the unchanged round keeps it");
-    equals_fresh_at(&root, &warm, ledger);
-}
-
-/// The bytes the reader owns after a unit, measured without its ledger
-/// accounting: every conversation's fold charge (a refused one's kept record
-/// too), its files' state, the refusal entries, the task queue's live
-/// allocation and the day cache. The ledger must charge at least that.
-fn owned_within_charged(reader: &Reader, unit: &Unit) {
-    let Some(round) = reader.round.as_ref() else {
-        return;
+/// The Tools attempts of the view document published under `root`.
+fn published_attempts(root: &Fixture) -> u64 {
+    let mut files = disk::Files::at(&root.0);
+    let Loaded::Ok(view) = store::load_view(&mut files) else {
+        panic!("a published view");
     };
-    let conversations: usize = reader
-        .conversations()
-        .iter()
-        .map(|conversation| crate::tool_stats::weigh(conversation, &reader.caps).charge)
-        .sum();
-    let files: usize = reader
-        .files
-        .iter()
-        .map(|(place, tracked)| super::tracked_bytes(place, tracked))
-        .sum();
-    let refusals: usize = reader
-        .refused
-        .keys()
-        .map(|(_, id)| {
-            size_of::<((crate::tool_stats::Adapter, String), super::Refusal)>() + id.len()
-        })
-        .sum();
-    let queue = round.tasks.capacity() * size_of::<super::Task>();
-    let owned = conversations + files + refusals + queue + round.days.retained();
-    let charged = round.bytes + reader.held();
+    attempts(&incr::combine(&view, &ask(Scope::All), &Caps::SLICE))
+}
+
+/// P3-1: a writer that loses the generation comparison never publishes its
+/// older counts past the winner, in that round or the next.
+#[test]
+fn p3_1_stale_writer_cannot_roll_back_the_view() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    let one = calls(1);
+    let path = root.claude("store-a", f::C, one.as_bytes());
+    let mut winner = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut winner);
+    let mut loser = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut loser);
+    assert_eq!(published_attempts(&root), 1, "positive control");
+
+    let two = one + &f::call("second", "second", "Glob", "model-a", "{}");
+    Fixture::rewrite(&path, two.as_bytes());
+    loser.round();
+    for _ in 0..20_000 {
+        let front = loser.round.as_ref().and_then(|round| round.tasks.front());
+        if matches!(front, Some(super::Task::Publish(_))) {
+            break;
+        }
+        assert!(loser.step().is_some(), "the loser reaches its publication");
+    }
+    let three = two + &f::call("third", "third", "Bash", "model-a", "{}");
+    Fixture::rewrite(&path, three.as_bytes());
+    drain(&mut winner);
+    assert_eq!(published_attempts(&root), 3, "the winner published");
+    drain(&mut loser);
+    assert_eq!(
+        published_attempts(&root),
+        3,
+        "the loser's round rolled back"
+    );
+    drain(&mut loser);
+    assert_eq!(published_attempts(&root), 3, "the loser's next round");
+    let cold = scan(root.0.clone(), Some(root.home()), Caps::SLICE);
+    assert_eq!(attempts(&tools(&cold)), 3, "the fixture holds three calls");
+}
+
+/// P3-2: a native child file name never reaches `stats/`, and the child's
+/// calls still count as their own stream.
+#[test]
+fn p3_2_child_file_names_never_persist() {
+    const CHILD: &str = "CHILD_STEM_SENTINEL";
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    root.claude("store-a", f::C, calls(1).as_bytes());
+    root.child(
+        "store-a",
+        f::C,
+        &format!("agent-{CHILD}"),
+        f::call("child", "child", "Glob", "model-a", "{}").as_bytes(),
+    );
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    assert_eq!(attempts(&tools(&reader)), 2, "positive control: both files");
+    let mut paths = Vec::new();
+    stats_files(&root.0.join("stats"), &mut paths);
     assert!(
-        owned <= charged,
-        "owned {owned} (conversations {conversations}, files {files}, refusals {refusals}, \
-         queue {queue}) past charged {charged} after {unit:?}"
+        paths
+            .iter()
+            .any(|path| path.starts_with(root.0.join("stats/tools/conv"))),
+        "positive control: a conversation document is persisted"
+    );
+    for path in &paths {
+        let bytes = fs::read(path).expect("persisted bytes");
+        assert!(
+            !bytes
+                .windows(CHILD.len())
+                .any(|part| part == CHILD.as_bytes()),
+            "a child file name persisted in {:?}",
+            path.strip_prefix(&root.0)
+        );
+    }
+    let mut reopened = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    let units = drain(&mut reopened);
+    assert!(
+        units
+            .iter()
+            .all(|unit| unit.kind != UnitKind::Read || unit.bytes == 0),
+        "the persisted child identity resumes: {units:?}"
+    );
+    assert_eq!(attempts(&tools(&reopened)), 2);
+}
+
+/// P3-3: a recorded work dir edit reclassifies an unchanged transcript as a
+/// cold scan does, warm and reopened; a client-only relabel reads no byte.
+#[test]
+fn p3_3_recorded_root_edit_rebuilds_and_client_relabel_reads_nothing() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    let session = root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    let other = root.0.join("other");
+    let skill = other.join(".claude/skills/demo/SKILL.md");
+    let bytes = f::call(
+        "read",
+        "read",
+        "Read",
+        "model-a",
+        &format!("{{\"file_path\":\"{}\"}}", skill.display()),
+    ) + &f::result("read", false, None);
+    root.claude("store-a", f::C, bytes.as_bytes());
+    let mut warm = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut warm);
+    equals_fresh(&root, &warm);
+    let skills = Ask {
+        page: Page::Skills,
+        ..ask(Scope::All)
+    };
+    let before = scan(root.0.clone(), Some(root.home()), Caps::SLICE).view(&skills);
+
+    let work = root.0.join("work").display().to_string();
+    let moved = meta.replace(&work, &other.display().to_string());
+    assert_ne!(moved, meta);
+    Fixture::rewrite(&session.join("meta"), moved.as_bytes());
+    let after = scan(root.0.clone(), Some(root.home()), Caps::SLICE).view(&skills);
+    assert_ne!(before, after, "positive control: the root classifies");
+    drain(&mut warm);
+    equals_fresh(&root, &warm);
+    let mut reopened = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reopened);
+    equals_fresh(&root, &reopened);
+
+    let relabeled = moved.replace("client.main=work", "client.main=home");
+    assert_ne!(relabeled, moved);
+    Fixture::rewrite(&session.join("meta"), relabeled.as_bytes());
+    let units = drain(&mut warm);
+    assert!(
+        units
+            .iter()
+            .all(|unit| !matches!(unit.kind, UnitKind::Read | UnitKind::Verify)),
+        "a client relabel reads no transcript byte: {units:?}"
+    );
+    equals_fresh(&root, &warm);
+}
+
+/// P3-4: a journal prefix rewritten between two chunks of one scan is not
+/// trusted under its new status: the next round equals a cold scan.
+#[test]
+fn p3_4_journal_rewrite_between_chunks_is_not_trusted() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    let retire = |id: &str| {
+        let summary = format!(
+            "tool=claude profile=fixture-profile config_home={} config_home_base=",
+            root.store("store-a").display()
+        );
+        format!(
+            "{{\"ts\":\"2026-11-01T00:00:00Z\",\"actor\":\"lead\",\"action\":\"retire\",\"target\":\"old-worker\",\"target_slot\":\"spawned.0\",\"ref\":\"{id}\",\"summary\":\"{summary}\"}}\n"
+        )
+    };
+    let pad = format!("{}\n", " ".repeat(1000)).repeat(5000);
+    let original = retire(U) + &pad;
+    assert!(
+        u64::try_from(original.len()).expect("length") > STEP,
+        "two chunks at least"
+    );
+    let session = root.live("alpha", &meta, &original);
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    until(&mut reader, UnitKind::Journal);
+    until(&mut reader, UnitKind::Journal);
+    let rewritten = retire(E) + &pad;
+    assert_eq!(rewritten.len(), original.len());
+    Fixture::rewrite(&session.join("events.jsonl"), rewritten.as_bytes());
+    drain(&mut reader);
+    drain(&mut reader);
+    let cold = scan(root.0.clone(), Some(root.home()), Caps::SLICE);
+    assert!(
+        cold.conversations().iter().any(|one| one.id == E),
+        "positive control: the rewritten record associates"
+    );
+    assert_eq!(reader.conversations(), cold.conversations());
+}
+
+/// P3-5: an unreadable association cache is never replaced: the IO refusal
+/// stands and nothing is renamed over it.
+#[test]
+fn p3_5_unreadable_sources_are_not_replaced() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    root.claude("store-a", f::C, calls(1).as_bytes());
+    let mut first = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut first);
+    let sources = root.0.join("stats/tools/sources");
+    assert!(
+        sources.is_file(),
+        "positive control: the cache is published"
+    );
+    let beta = root.meta("beta", U, "claude", E, Some("home"), "store-a");
+    root.live("beta", &beta, "");
+    let before = fs::metadata(&sources).expect("cache status").ino();
+    fs::set_permissions(&sources, fs::Permissions::from_mode(0o000)).expect("deny reads");
+    let mut second = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut second);
+    let status = fs::metadata(&sources).expect("cache status");
+    let (ino, mode) = (status.ino(), status.mode() & 0o777);
+    fs::set_permissions(&sources, fs::Permissions::from_mode(0o600)).expect("restore");
+    assert_eq!(
+        (ino, mode),
+        (before, 0),
+        "the unreadable cache was replaced"
     );
 }
 
-/// Steps one round, checking [`owned_within_charged`] after every unit.
-fn drain_checked(reader: &mut Reader) {
+/// Run the real S5 maintainer until the active epoch is proven again.
+fn repair_epoch(root: &Fixture) -> u64 {
+    let mut maintainer = crate::stats_store::maint::Maintainer::new(
+        &root.0,
+        disk::LIMITS,
+        std::time::Duration::from_millis(100),
+    );
+    for _ in 0..200 {
+        let _ = maintainer.step();
+        if let Ok(Some(epoch)) = disk::active_epoch(&mut disk::Files::at(&root.0)) {
+            return epoch;
+        }
+    }
+    panic!("the S5 maintainer proves an epoch again");
+}
+
+/// P3-6: an epoch proof lost and then proven again by an S5 repair never
+/// lets held counts of the old payload into the new one.
+#[test]
+fn p3_6_lost_epoch_proof_never_resurrects_old_counts() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    let old = disk::active_epoch(&mut disk::Files::at(&root.0)).expect("a proven epoch");
+    let path = root.claude("store-a", f::C, calls(1).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    fs::remove_file(&path).expect("the source goes");
+    drain(&mut reader);
+    assert_eq!(
+        attempts(&tools(&reader)),
+        1,
+        "positive control: P6 keeps it"
+    );
+    fs::write(root.0.join("stats/epoch"), b"damaged\n").expect("damage the proof");
+    assert!(disk::active_epoch(&mut disk::Files::at(&root.0)).is_err());
+    drain(&mut reader);
+    let new = repair_epoch(&root);
+    assert_ne!(Some(new), old, "positive control: a new payload");
+    drain(&mut reader);
+    assert_eq!(attempts(&tools(&reader)), 0, "old counts resurrected");
+    let cold = scan(root.0.clone(), Some(root.home()), Caps::SLICE);
+    assert_eq!(attempts(&tools(&cold)), 0);
+}
+
+/// P3-7: the published prefix fits the exact view cap at the generation it
+/// is published with, across a decimal-width boundary.
+#[test]
+fn p3_7_view_fits_its_cap_at_the_actual_generation() {
+    let conv = incr::publish(&incr::Conv::new(Adapter::Claude, f::C).summary, None);
+    let size = |generation: u64| {
+        doc::render_view(&incr::Published {
+            generation,
+            convs: vec![conv.clone()],
+            over_cap: 0,
+        })
+        .len()
+    };
+    assert_eq!(size(10), size(9) + 1, "positive control: one more digit");
+    let mut caps = Caps::SLICE;
+    caps.view_cap = u64::try_from(size(9)).expect("small");
+    let mut reader = Reader::with(std::path::PathBuf::from("/nonexistent"), None, caps, false);
+    reader.generation = 8;
+    reader
+        .enter(&(Adapter::Claude, f::C.to_owned()), Some(conv.clone()))
+        .expect("admitted");
+    assert_eq!(
+        doc::render_view(&reader.capped(9)).len(),
+        size(9),
+        "fits at 9"
+    );
+    let ten = doc::render_view(&reader.capped(10));
+    assert!(
+        u64::try_from(ten.len()).expect("small") <= caps.view_cap,
+        "over the cap by {} at 10",
+        ten.len() - size(9)
+    );
+}
+
+/// P3-3 r2 (lead ae-20261109T160844Z-8b530340, no P6 amendment): a root edit
+/// reads the present streams again under the new roots, and a gone stream
+/// keeps its counts under the classification it was read with, until `r`.
+#[test]
+fn p3_3_root_edit_keeps_gone_stream_counts_under_their_classification() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    let session = root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    let read = |id: &str, path: &std::path::Path| {
+        f::call(
+            id,
+            id,
+            "Read",
+            "model-a",
+            &format!("{{\"file_path\":\"{}\"}}", path.display()),
+        ) + &f::result(id, false, None)
+    };
+    let work = root.0.join("work");
+    let other = root.0.join("other");
+    root.claude(
+        "store-a",
+        f::C,
+        read("parent", &other.join(".claude/skills/demo/SKILL.md")).as_bytes(),
+    );
+    let child = root.child(
+        "store-a",
+        f::C,
+        "agent-a",
+        read("child", &work.join(".claude/skills/old/SKILL.md")).as_bytes(),
+    );
+    let skills = Ask {
+        page: Page::Skills,
+        ..ask(Scope::All)
+    };
+    let reads = |view: &View| match view.totals {
+        crate::tool_stats::Cols::Skill(cols) => cols.reads,
+        other => panic!("Skills: {other:?}"),
+    };
+    let mut warm = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut warm);
+    assert_eq!(reads(&warm.view(&skills)), 1, "positive control: old only");
+    fs::remove_file(&child).expect("the child goes");
+    drain(&mut warm);
+    assert_eq!(reads(&warm.view(&skills)), 1, "P6 keeps the gone child");
+
+    let moved = meta.replace(&work.display().to_string(), &other.display().to_string());
+    assert_ne!(moved, meta);
+    Fixture::rewrite(&session.join("meta"), moved.as_bytes());
+    drain(&mut warm);
+    let view = warm.view(&skills);
+    let rows = format!("{:?}", view.rows);
+    assert!(
+        rows.contains("\"demo\""),
+        "the present stream reclassified: {rows}"
+    );
+    assert!(
+        rows.contains("\"old\""),
+        "the gone stream kept its count: {rows}"
+    );
+    assert_eq!(reads(&view), 2);
+    assert!(gap(&warm.view(&ask(Scope::All)), &GapKind::SourceGone) > 0);
+    let mut reopened = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reopened);
+    assert_eq!(reopened.view(&skills), view, "the reopened store agrees");
+}
+
+// --- P3 review r3 regressions (driver; review-20261109T162852Z-478953be) ----
+
+use std::collections::BTreeMap;
+
+/// Every way a counted conversation is rebuilt from its sources.
+#[derive(Clone, Copy, Debug)]
+enum Trigger {
+    /// The parent is another file (a new inode).
+    IdentityChange,
+    /// The parent is cut below what was consumed of it.
+    Truncation,
+    /// The parent keeps its length, but its consumed bytes differ.
+    WitnessMismatch,
+    /// The parent grows, but its consumed bytes differ.
+    AppendConflict,
+    /// The recorded roots change: every event is classified again.
+    RootEdit,
+}
+
+const TRIGGERS: [Trigger; 5] = [
+    Trigger::IdentityChange,
+    Trigger::Truncation,
+    Trigger::WitnessMismatch,
+    Trigger::AppendConflict,
+    Trigger::RootEdit,
+];
+
+fn named_calls(prefix: &str, tool: &str, count: usize) -> String {
+    (0..count)
+        .map(|n| {
+            let id = format!("{prefix}{n}");
+            f::call(&id, &id, tool, "model-a", "{}")
+        })
+        .collect()
+}
+
+/// Each tool's attempts on the Tools page.
+fn tool_attempts(view: &View) -> BTreeMap<String, u64> {
+    view.rows
+        .iter()
+        .filter_map(|row| match (&row.item, row.cols) {
+            (
+                crate::tool_stats::Item::Tool(crate::tool_stats::Ident::Name(name)),
+                crate::tool_stats::Cols::Tool(cols),
+            ) => Some((name.clone(), cols.attempts)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A parent with three `Read` calls and a child with one `Grep` call.
+struct Family {
+    root: Fixture,
+    meta: String,
+    session: std::path::PathBuf,
+    parent: std::path::PathBuf,
+    child: std::path::PathBuf,
+}
+
+impl Family {
+    fn new() -> Self {
+        let root = Fixture::new();
+        let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+        let session = root.live("alpha", &meta, "");
+        prove_epoch(&root);
+        let parent = root.claude("store-a", f::C, named_calls("p", "Read", 3).as_bytes());
+        let child = root.child(
+            "store-a",
+            f::C,
+            "agent-a",
+            named_calls("k", "Grep", 1).as_bytes(),
+        );
+        Self {
+            root,
+            meta,
+            session,
+            parent,
+            child,
+        }
+    }
+
+    fn reader(&self) -> Reader {
+        Reader::new(self.root.0.clone(), Some(self.root.home()), Caps::SLICE)
+    }
+
+    /// Apply `trigger` and return the parent's counts it must then show.
+    fn trigger(&self, trigger: Trigger) -> BTreeMap<String, u64> {
+        let old = named_calls("p", "Read", 3);
+        let counts = |pairs: &[(&str, u64)]| {
+            pairs
+                .iter()
+                .map(|(tool, count)| ((*tool).to_owned(), *count))
+                .collect::<BTreeMap<_, _>>()
+        };
+        match trigger {
+            Trigger::IdentityChange => {
+                fs::remove_file(&self.parent).expect("the old parent goes");
+                Fixture::rewrite(&self.parent, named_calls("p", "Glob", 2).as_bytes());
+                counts(&[("Glob", 2)])
+            }
+            Trigger::Truncation => {
+                let short = named_calls("p", "Glob", 1);
+                assert!(short.len() < old.len(), "positive control: shorter");
+                Fixture::rewrite(&self.parent, short.as_bytes());
+                counts(&[("Glob", 1)])
+            }
+            Trigger::WitnessMismatch => {
+                let same = old.replace("Read", "Bash");
+                assert_eq!(same.len(), old.len(), "positive control: same length");
+                Fixture::rewrite(&self.parent, same.as_bytes());
+                counts(&[("Bash", 3)])
+            }
+            Trigger::AppendConflict => {
+                let grown = old.replace("Read", "Bash") + &named_calls("w", "Write", 1);
+                Fixture::rewrite(&self.parent, grown.as_bytes());
+                counts(&[("Bash", 3), ("Write", 1)])
+            }
+            Trigger::RootEdit => {
+                let work = self.root.0.join("work").display().to_string();
+                let other = self.root.0.join("other").display().to_string();
+                let moved = self.meta.replace(&work, &other);
+                assert_ne!(moved, self.meta, "positive control: the roots move");
+                Fixture::rewrite(&self.session.join("meta"), moved.as_bytes());
+                counts(&[("Read", 3)])
+            }
+        }
+    }
+}
+
+/// Step the round until every file is listed and none is checked yet: the
+/// locate phase has no task left, so the next step queues the lstats and
+/// runs the first batch.
+fn until_lstats(reader: &mut Reader) {
     reader.round();
     for _ in 0..20_000 {
-        let Some(unit) = reader.step() else {
+        let listed = reader.round.as_ref().is_some_and(|round| {
+            matches!(round.phase, super::Phase::Locate) && round.tasks.is_empty()
+        });
+        if listed {
             return;
-        };
-        owned_within_charged(reader, &unit);
+        }
+        reader.step().expect("the round reaches its lstats");
     }
-    panic!("finite fixture reader did not settle");
+    panic!("no lstats unit");
 }
 
-/// B3-1a r3: a drained task queue keeps its allocation; the ledger charges
-/// it while it is live. 3000 empty project directories queue 3000 project
-/// listings at once.
-#[test]
-fn b3_1a_drained_queue_allocation_stays_charged() {
-    let root = Fixture::new();
-    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
-    root.live("alpha", &meta, "");
-    root.claude("store-a", f::C, calls(1).as_bytes());
-    let projects = root.store("store-a").join("projects");
-    for n in 0..3000 {
-        fs::create_dir_all(projects.join(format!("p{n:04}"))).expect("empty project");
-    }
-    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
-    drain_checked(&mut reader);
-    assert_eq!(held(&reader, f::C), events_of_calls(1));
+/// The counted view with the gone child kept and `parent` from its source.
+fn kept(parent: &BTreeMap<String, u64>) -> BTreeMap<String, u64> {
+    let mut want = parent.clone();
+    *want.entry("Grep".to_owned()).or_default() += 1;
+    want
 }
 
-/// B3-1a r3: a conversation refused alone keeps its record (memberships,
-/// streams, gaps) and its refusal entry; the ledger charges them.
+/// R3-2 (lead ae-20261109T160844Z-8b530340 and the r3 ruling): P6 holds
+/// across every rebuild. A counted child that is gone keeps its count when
+/// the present parent is then rebuilt, by every trigger, through a durable
+/// reopen; and the rebuilt parent shows only its new source.
 #[test]
-fn b3_1a_refused_records_stay_charged() {
-    let root = Fixture::new();
-    let store = root.store("store-a");
-    let mut meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
-    for n in 0..20 {
-        let id = format!("55555555-5555-4555-8555-{n:012x}");
-        meta.push_str(&seat(&format!("w{n}"), "claude", &store, &id));
-        root.claude("store-a", &id, calls(150).as_bytes());
+fn r3_2_every_rebuild_trigger_keeps_a_gone_streams_counts() {
+    every_row(gone_then_rebuilt);
+}
+
+/// Run `row` for every trigger; every failing row is named, not only the
+/// first.
+fn every_row(row: fn(Trigger)) {
+    let failed: Vec<Trigger> = TRIGGERS
+        .into_iter()
+        .filter(|trigger| std::panic::catch_unwind(|| row(*trigger)).is_err())
+        .collect();
+    assert!(failed.is_empty(), "failing rows: {failed:?}");
+}
+
+fn gone_then_rebuilt(trigger: Trigger) {
+    {
+        let family = Family::new();
+        let mut warm = family.reader();
+        drain(&mut warm);
+        let tools_page = ask(Scope::All);
+        assert_eq!(
+            tool_attempts(&warm.view(&tools_page)),
+            kept(&BTreeMap::from([("Read".to_owned(), 3)])),
+            "{trigger:?}: positive control"
+        );
+        fs::remove_file(&family.child).expect("the child goes");
+        drain(&mut warm);
+        assert!(
+            gap(&warm.view(&tools_page), &GapKind::SourceGone) > 0,
+            "{trigger:?}"
+        );
+        let parent = family.trigger(trigger);
+        drain(&mut warm);
+        let view = warm.view(&tools_page);
+        assert_eq!(tool_attempts(&view), kept(&parent), "{trigger:?}: rebuilt");
+        assert!(
+            gap(&view, &GapKind::SourceGone) > 0,
+            "{trigger:?}: still gone"
+        );
+        let mut reopened = family.reader();
+        drain(&mut reopened);
+        assert_eq!(
+            tool_attempts(&reopened.view(&tools_page)),
+            kept(&parent),
+            "{trigger:?}: the reopened store agrees"
+        );
     }
+}
+
+/// R3-2: a child listed, then deleted before its own lstat, in the round
+/// that rebuilds its conversation, is classified gone by that lstat and
+/// keeps its counts: nothing clears it first.
+#[test]
+fn r3_2_a_child_deleted_between_listing_and_its_lstat_keeps_its_counts() {
+    every_row(deleted_after_listing);
+}
+
+fn deleted_after_listing(trigger: Trigger) {
+    {
+        let family = Family::new();
+        let mut warm = family.reader();
+        drain(&mut warm);
+        let tools_page = ask(Scope::All);
+        let parent = family.trigger(trigger);
+        until_lstats(&mut warm);
+        fs::remove_file(&family.child).expect("the child goes after listing");
+        drain(&mut warm);
+        let view = warm.view(&tools_page);
+        assert_eq!(tool_attempts(&view), kept(&parent), "{trigger:?}: rebuilt");
+        assert!(gap(&view, &GapKind::SourceGone) > 0, "{trigger:?}: gone");
+        let mut reopened = family.reader();
+        drain(&mut reopened);
+        assert_eq!(
+            tool_attempts(&reopened.view(&tools_page)),
+            kept(&parent),
+            "{trigger:?}: the reopened store agrees"
+        );
+    }
+}
+
+/// R3-2, the damage row: a damaged conversation document is the one
+/// rebuild with no evidence left to carry, because the document is the
+/// only durable copy of a gone stream's counts. The present parent is
+/// rebuilt from its source alone (no stale or doubled count), and the
+/// reopened store agrees. The gone child's count is lost with the damaged
+/// bytes. This boundary is reported to lead; it is not P6 by design.
+#[test]
+fn r3_2_a_damaged_document_rebuilds_the_present_sources_only() {
+    let family = Family::new();
+    let mut warm = family.reader();
+    drain(&mut warm);
+    fs::remove_file(&family.child).expect("the child goes");
+    drain(&mut warm);
+    drop(warm);
+    let tools_page = ask(Scope::All);
+    let name = store::conv_name(Adapter::Claude, f::C);
+    let path = family.root.0.join(name);
+    assert!(path.exists(), "positive control: {}", path.display());
+    Fixture::rewrite(&path, b"not a conversation\n");
+    let mut reopened = family.reader();
+    drain(&mut reopened);
+    let parent = BTreeMap::from([("Read".to_owned(), 3)]);
+    assert_eq!(tool_attempts(&reopened.view(&tools_page)), parent);
+    let mut again = family.reader();
+    drain(&mut again);
+    assert_eq!(tool_attempts(&again.view(&tools_page)), parent);
+}
+
+// --- Lead ruling B2 (ae-20261109T165907Z-00e19e67): visible damage loss ----
+
+/// The damage mark's line on the Tools page, if any.
+fn damage_lines(view: &View) -> Vec<String> {
+    view.gaps
+        .iter()
+        .filter(|line| line.kind == GapKind::RebuiltFromSource)
+        .map(crate::tool_stats::GapLine::line)
+        .collect()
+}
+
+/// B2: a conversation rebuilt from a damaged document carries a sticky,
+/// visible mark in its own document: it survives every later source
+/// rebuild and a reopen, a second damage sets it again (once), and only
+/// `r` clears it. A conversation never damaged has none.
+#[test]
+fn b2_a_damaged_document_marks_its_conversation_until_reset() {
+    let family = Family::new();
+    let tools_page = ask(Scope::All);
+    let mut warm = family.reader();
+    drain(&mut warm);
+    fs::remove_file(&family.child).expect("the child goes");
+    drain(&mut warm);
+    assert_eq!(
+        damage_lines(&warm.view(&tools_page)),
+        Vec::<String>::new(),
+        "control: never damaged, no mark"
+    );
+    drop(warm);
+    let path = family.root.0.join(store::conv_name(Adapter::Claude, f::C));
+    let one = vec![
+        "rebuilt from source: 1 conversations (counts of deleted sources there are lost)"
+            .to_owned(),
+    ];
+    Fixture::rewrite(&path, b"not a conversation\n");
+    let mut reopened = family.reader();
+    drain(&mut reopened);
+    assert_eq!(damage_lines(&reopened.view(&tools_page)), one, "marked");
+    // A later source rebuild keeps the mark: it is not a damage.
+    family.trigger(Trigger::IdentityChange);
+    drain(&mut reopened);
+    assert_eq!(damage_lines(&reopened.view(&tools_page)), one, "sticky");
+    drop(reopened);
+    let mut again = family.reader();
+    drain(&mut again);
+    assert_eq!(damage_lines(&again.view(&tools_page)), one, "durable");
+    drop(again);
+    // Damage of the marked document loses the mark with it; the new damage
+    // sets it again on the rebuilt conversation, so the line stays true.
+    Fixture::rewrite(&path, b"damaged again\n");
+    let mut twice = family.reader();
+    drain(&mut twice);
+    assert_eq!(
+        damage_lines(&twice.view(&tools_page)),
+        one,
+        "set again, once"
+    );
+    drop(twice);
+    assert!(!matches!(
+        disk::reset(&family.root.0, std::time::Duration::ZERO).expect("statistics reset"),
+        disk::Reset::Busy
+    ));
+    let mut fresh = family.reader();
+    drain(&mut fresh);
+    assert_eq!(
+        damage_lines(&fresh.view(&tools_page)),
+        Vec::<String>::new(),
+        "r clears the mark"
+    );
+}
+
+/// R3-2: the conversation-wide rebuild every other trigger takes (a count
+/// that cannot be added up, a view that cannot) keeps every stream's
+/// evidence and its source mark, and forgets only the file states: each
+/// file is checked by its own lstat and read again from 0.
+#[test]
+fn r3_2_a_conversation_rebuild_keeps_evidence_and_forgets_file_states() {
+    let family = Family::new();
+    let mut warm = family.reader();
+    drain(&mut warm);
+    fs::remove_file(&family.child).expect("the child goes");
+    drain(&mut warm);
+    let key = (Adapter::Claude, f::C.to_owned());
+    let held = warm
+        .convs
+        .get(&key)
+        .expect("the conversation is held")
+        .conv
+        .clone();
+    let streams: Vec<_> = held.summary.files.keys().cloned().collect();
+    assert_eq!(streams.len(), 2, "positive control: two files");
+    assert!(
+        streams
+            .iter()
+            .all(|stream| held.resume.file(stream).is_some()),
+        "positive control: both files have a state"
+    );
+    let mut rebuilt = held.clone();
+    rebuilt.rebuild();
+    // The summary as its held evidence makes it: a document round trip
+    // derives it again from the events, so a kept summary over cleared
+    // events does not pass.
+    let derived = doc::parse_conv(&doc::render_conv(&rebuilt)).expect("canonical");
+    assert_eq!(
+        derived.summary, held.summary,
+        "every count and source mark kept"
+    );
+    assert!(
+        streams
+            .iter()
+            .all(|stream| rebuilt.resume.file(stream).is_none()),
+        "every file is read again from 0"
+    );
+}
+
+// --- P3 review r2 regressions (driver; review-20261109T160806Z-734d0fe3) ----
+
+fn coverage_size(coverage: &incr::Coverage) -> u64 {
+    u64::try_from(doc::render_coverage(coverage).len()).expect("small document")
+}
+
+/// R2-2: produced coverage fits its exact cap: whole at its own size, the
+/// longest prefix below it, the rest counted in a visible over-cap line.
+#[test]
+fn r2_2_coverage_fits_its_exact_cap_with_a_visible_omission() {
+    let coverage = incr::Coverage {
+        generation: 9,
+        unsupported: (0..5)
+            .map(|n| ("grok".to_owned(), BTreeSet::from([Some(format!("s{n}"))])))
+            .collect(),
+        ..incr::Coverage::default()
+    };
+    let whole = coverage_size(&coverage);
+    assert_eq!(doc::fit_coverage(&coverage, whole), coverage, "fits whole");
+    let three = incr::Coverage {
+        unsupported: coverage.unsupported[..3].to_vec(),
+        omitted: 2,
+        ..coverage.clone()
+    };
+    assert_eq!(
+        doc::fit_coverage(&coverage, coverage_size(&three)),
+        three,
+        "the exact boundary keeps three"
+    );
+    let fitted = doc::fit_coverage(&coverage, whole - 1);
+    assert!(coverage_size(&fitted) < whole, "under the cap");
+    assert!(fitted.omitted > 0);
+    assert_eq!(
+        u64::try_from(fitted.unsupported.len()).expect("small") + fitted.omitted,
+        5,
+        "every conversation is listed or counted"
+    );
+    assert_eq!(
+        doc::parse_coverage(&doc::render_coverage(&fitted)),
+        Ok(fitted.clone())
+    );
+    let mut view = tools_of_empty(9);
+    fitted.apply(&mut view, &ask(Scope::All));
+    let lines: Vec<String> = view
+        .gaps
+        .iter()
+        .map(crate::tool_stats::GapLine::line)
+        .collect();
+    assert!(
+        lines.contains(&format!("over cap, not counted {}", fitted.omitted)),
+        "{lines:?}"
+    );
+}
+
+/// `coverage` keeping its first `kept` records, the rest counted as
+/// omitted: the candidate a fitter may return.
+fn kept_prefix(coverage: &incr::Coverage, kept: usize) -> incr::Coverage {
+    let left = coverage.unsupported.len() - kept;
+    incr::Coverage {
+        unsupported: coverage.unsupported[..kept].to_vec(),
+        omitted: coverage.omitted + u64::try_from(left).expect("small"),
+        ..coverage.clone()
+    }
+}
+
+fn equal_records(count: usize) -> incr::Coverage {
+    incr::Coverage {
+        generation: 9,
+        unsupported: (0..count)
+            .map(|_| ("grok".to_owned(), BTreeSet::from([Some("s".to_owned())])))
+            .collect(),
+        ..incr::Coverage::default()
+    }
+}
+
+/// R3-1: the document trailer counts the kept records, so it grows a digit
+/// at 9 -> 10, 99 -> 100 and 999 -> 1000 kept. The review's counterexample:
+/// 99 equal records, E the empty document with omitted = 99, L one record's
+/// cost. At cap E + 9L, keeping nine renders end=10, one byte past the cap.
+#[test]
+fn r3_1_coverage_fit_accounts_for_trailer_digit_growth() {
+    let coverage = equal_records(99);
+    let empty = coverage_size(&kept_prefix(&coverage, 0));
+    let one = coverage_size(&kept_prefix(&coverage, 1)) - empty;
+    let cap = empty + 9 * one;
+    let fitted = doc::fit_coverage(&coverage, cap);
+    assert!(
+        coverage_size(&fitted) <= cap,
+        "kept {} renders {} over cap {cap}",
+        fitted.unsupported.len(),
+        coverage_size(&fitted)
+    );
+    assert_eq!(
+        fitted,
+        kept_prefix(&coverage, 8),
+        "the longest fitting prefix"
+    );
+    // Every trailer and omitted-digit boundary: at the exact size of the
+    // k-prefix the fitter keeps exactly k, one byte less keeps exactly k - 1.
+    for count in [10, 11, 99, 100, 101, 1_000, 1_001] {
+        let coverage = equal_records(count);
+        for kept in [0, 1, 8, 9, 10, 11, 98, 99, 100, 101, 998, 999, 1_000] {
+            if kept >= count {
+                continue;
+            }
+            let cap = coverage_size(&kept_prefix(&coverage, kept));
+            let fitted = doc::fit_coverage(&coverage, cap);
+            assert_eq!(
+                fitted,
+                kept_prefix(&coverage, kept),
+                "{count} records, cap of {kept}"
+            );
+            if kept > 0 {
+                let fitted = doc::fit_coverage(&coverage, cap - 1);
+                assert!(coverage_size(&fitted) < cap, "{count} records under {cap}");
+                assert_eq!(
+                    fitted,
+                    kept_prefix(&coverage, kept - 1),
+                    "{count} records, one byte under the cap of {kept}"
+                );
+            }
+        }
+    }
+}
+
+/// The Tools page of an empty published view of `generation`.
+fn tools_of_empty(generation: u64) -> View {
+    incr::combine(
+        &incr::Published {
+            generation,
+            convs: Vec::new(),
+            over_cap: 0,
+        },
+        &ask(Scope::All),
+        &Caps::SLICE,
+    )
+}
+
+/// R2-2: a coverage document over its cap is never written: the paired
+/// publication refuses, so nothing unreadable is ever marked published.
+#[test]
+fn r2_2_store_refuses_coverage_over_its_cap() {
+    let root = Fixture::new();
+    root.live(
+        "alpha",
+        &root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a"),
+        "",
+    );
+    prove_epoch(&root);
+    let session = "s".repeat(200);
+    let huge = incr::Coverage {
+        generation: 1,
+        unsupported: (0..30_000)
+            .map(|n| {
+                (
+                    format!("tool{n:05}"),
+                    BTreeSet::from([Some(session.clone())]),
+                )
+            })
+            .collect(),
+        ..incr::Coverage::default()
+    };
+    assert!(coverage_size(&huge) > doc::COVERAGE_CAP, "positive control");
+    let view = incr::Published {
+        generation: 1,
+        convs: Vec::new(),
+        over_cap: 0,
+    };
+    let planned = disk::tools(&root.0, std::time::Duration::from_secs(1), |dir, _| {
+        (None, store::publish_view_with(dir, &view, &huge).is_ok())
+    });
+    assert!(
+        matches!(planned, disk::Tools::Done { value: false, .. }),
+        "an over-cap coverage publication is refused"
+    );
+}
+
+/// R2-2: a real reader's coverage over a small cap is published readable,
+/// with its over-cap line, and a durable reopen draws the same lines.
+#[test]
+fn r2_2_reader_coverage_over_cap_publishes_a_readable_line() {
+    let root = Fixture::new();
+    let home = root.store("store-a");
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a")
+        + &seat("g1", "grok", &home, U)
+        + &seat("g2", "grok", &home, E)
+        + &seat("g3", "grok", &home, f::D);
     root.live("alpha", &meta, "");
+    prove_epoch(&root);
     root.claude("store-a", f::C, calls(1).as_bytes());
     let caps = Caps {
-        per_conversation: 100,
+        coverage_cap: 160,
         ..Caps::SLICE
     };
     let mut reader = Reader::new(root.0.clone(), Some(root.home()), caps);
-    drain_checked(&mut reader);
-    assert_eq!(held(&reader, f::C), events_of_calls(1));
-    assert_eq!(
-        reader.refused.len(),
-        20,
-        "each 151-event conversation is over 100"
-    );
-}
-
-/// The membership strings the reader retains, counted outside its ledger
-/// accounting: every session, slot and client label held by the round's
-/// association and by the conversations.
-fn membership_strings(reader: &Reader) -> usize {
-    let bytes = |membership: &crate::tool_stats::Membership| {
-        membership.session.as_ref().map_or(0, String::len)
-            + membership.slot.len()
-            + match &membership.client {
-                crate::meta::RecordedClient::Label(label) => label.len(),
-                crate::meta::RecordedClient::Missing | crate::meta::RecordedClient::Invalid => 0,
-            }
+    drain(&mut reader);
+    let mut files = disk::Files::at(&root.0);
+    let Loaded::Ok(coverage) = store::load_coverage(&mut files) else {
+        panic!("a readable coverage document");
     };
-    let discovery: usize = reader.round.as_ref().map_or(0, |round| {
-        round
-            .assoc
-            .values()
-            .flat_map(|assoc| &assoc.memberships)
-            .map(bytes)
-            .sum()
-    });
-    let held: usize = reader
-        .conversations()
-        .iter()
-        .flat_map(|conversation| &conversation.memberships)
-        .map(bytes)
-        .sum();
-    discovery + held
+    let Loaded::Ok(view) = store::load_view(&mut files) else {
+        panic!("a published view");
+    };
+    assert_eq!(coverage.generation, view.generation, "one generation");
+    assert!(coverage_size(&coverage) <= 160, "under the cap");
+    assert!(coverage.omitted > 0, "positive control: the cap bites");
+    assert_eq!(
+        u64::try_from(coverage.unsupported.len()).expect("small") + coverage.omitted,
+        3
+    );
+    let mut drawn = incr::combine(&view, &ask(Scope::All), &Caps::SLICE);
+    coverage.apply(&mut drawn, &ask(Scope::All));
+    let line = format!("over cap, not counted {}", coverage.omitted);
+    assert!(
+        drawn.gaps.iter().any(|gap| gap.line() == line),
+        "{:?}",
+        drawn.gaps
+    );
+    assert_eq!(
+        drawn,
+        reader.view(&ask(Scope::All)),
+        "the reader draws the same"
+    );
+    let mut reopened = Reader::new(root.0.clone(), Some(root.home()), caps);
+    drain(&mut reopened);
+    assert_eq!(
+        reopened.view(&ask(Scope::All)),
+        drawn,
+        "the reopened reader"
+    );
 }
 
-/// B3-1a r4: hostile session metas cannot make the retained membership
-/// strings exceed the reader's share of the cap. 170 sessions each hold one
-/// seat whose slot is 200,000 bytes, all naming the same conversation; the
-/// strings alone, kept twice, would pass 64 MiB. Each meta names the slot
-/// three times (seat, agent, conversation), about 600 KB, under the 1 MiB
-/// meta cap (asserted: a meta over it is truncated and never read, which
-/// would make this case pass without testing anything).
-///
-/// Expected (hand count): each meta's hostile seat is one membership of C
-/// over the field limit and is not kept, so the gap line counts 170. Each
-/// meta's main seat is kept: C holds 170 memberships, one per meta, each
-/// with slot `main` and that meta's distinct session id, and none with the
-/// hostile slot. No client is proven, and the gap makes the view Partial
-/// (the frozen B2 rule that every gap does).
+/// R2-3: an unreadable coverage document is never replaced; a damaged one is
+/// rebuilt by the next publication.
 #[test]
-fn b3_1a_hostile_membership_strings_stay_inside_the_cap() {
+fn r2_3_unreadable_coverage_is_not_replaced_and_damaged_is_rebuilt() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     let root = Fixture::new();
-    let slot = "x".repeat(200_000);
-    for n in 0..170 {
-        let session = format!("{n:08x}-1111-4111-8111-111111111111");
-        let meta = root.meta(&format!("s{n}"), &session, "claude", f::C, None, "store-a")
-            + &format!(
-                "seat.{slot}=w\nagent_bin.{slot}=claude\nharness_session.{slot}={}\n",
-                f::C
-            );
-        assert!(
-            u64::try_from(meta.len()).is_ok_and(|len| len < crate::usage::SESSION_META_MAX_BYTES),
-            "precondition: fixture meta {} bytes is read whole",
-            meta.len()
-        );
-        root.live(&format!("s{n}"), &meta, "");
-    }
-    root.claude("store-a", f::C, calls(1).as_bytes());
-    let caps = Caps::SLICE;
-    let space = caps.ledger - VIEW_RESERVE;
-    let mut reader = Reader::new(root.0.clone(), Some(root.home()), caps);
-    reader.round();
-    for _ in 0..20_000 {
-        let Some(unit) = reader.step() else {
-            let view = tools(&reader);
-            let lines: Vec<String> = view
-                .gaps
-                .iter()
-                .filter(|line| line.conversation.is_none())
-                .map(crate::tool_stats::GapLine::line)
-                .collect();
-            assert!(
-                lines.contains(&"membership over field limit 170".to_owned()),
-                "the memberships not kept are a gap naming its reason: {lines:?}"
-            );
-            assert_eq!(gap(&view, &GapKind::Unreadable), 0, "no IO failed");
-            assert!(view.partial(), "the field-limit gap makes the view Partial");
-            let kept: Vec<&Conversation> = reader
-                .conversations()
-                .iter()
-                .filter(|conversation| conversation.id == f::C)
-                .collect();
-            assert_eq!(kept.len(), 1);
-            let sessions: BTreeSet<Option<&str>> = kept[0]
-                .memberships
-                .iter()
-                .map(|membership| membership.session.as_deref())
-                .collect();
-            assert_eq!(kept[0].memberships.len(), 170, "one main seat per meta");
-            assert_eq!(sessions.len(), 170, "each meta's own session id");
-            assert!(
-                kept[0]
-                    .memberships
-                    .iter()
-                    .all(|membership| membership.slot == "main"),
-                "no hostile slot is kept"
-            );
-            assert!(!kept[0].evidence_complete, "no client is proven");
-            return;
-        };
-        let strings = membership_strings(&reader);
-        assert!(
-            strings <= space,
-            "membership strings {strings} past {space} after {unit:?}"
-        );
-    }
-    panic!("finite fixture reader did not settle");
+    root.live(
+        "alpha",
+        &root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a"),
+        "",
+    );
+    prove_epoch(&root);
+    let mut held = calls(1);
+    let path = root.claude("store-a", f::C, held.as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let coverage = root.0.join("stats/tools/coverage");
+    assert!(
+        coverage.is_file(),
+        "positive control: coverage is published"
+    );
+    let before = fs::metadata(&coverage).expect("coverage status").ino();
+    fs::set_permissions(&coverage, fs::Permissions::from_mode(0o000)).expect("deny reads");
+    held += &f::call("more", "more", "Glob", "model-a", "{}");
+    Fixture::rewrite(&path, held.as_bytes());
+    drain(&mut reader);
+    let status = fs::metadata(&coverage).expect("coverage status");
+    let (ino, mode) = (status.ino(), status.mode() & 0o777);
+    fs::set_permissions(&coverage, fs::Permissions::from_mode(0o600)).expect("restore");
+    assert_eq!(
+        (ino, mode),
+        (before, 0),
+        "the unreadable coverage was replaced"
+    );
+
+    fs::write(&coverage, b"damaged\n").expect("damage the document");
+    held += &f::call("last", "last", "Bash", "model-a", "{}");
+    Fixture::rewrite(&path, held.as_bytes());
+    drain(&mut reader);
+    assert!(
+        matches!(
+            store::load_coverage(&mut disk::Files::at(&root.0)),
+            Loaded::Ok(_)
+        ),
+        "a damaged document is rebuilt"
+    );
+    assert_eq!(published_attempts(&root), 3);
 }
 
-/// The bytes the retained memberships own at least, counted outside the
-/// reader's accounting from what is allocated: each membership vector's
-/// capacity in struct slots and each string's capacity, in the round's
-/// association and in the published conversations (B3 review r6: spare
-/// slots are retained memory too).
-fn membership_floor(reader: &Reader) -> usize {
-    fn allocated(memberships: &Vec<crate::tool_stats::Membership>) -> usize {
-        memberships.capacity() * size_of::<crate::tool_stats::Membership>()
-            + memberships
-                .iter()
-                .map(|membership| {
-                    membership.session.as_ref().map_or(0, String::capacity)
-                        + membership.slot.capacity()
-                        + match &membership.client {
-                            crate::meta::RecordedClient::Label(label) => label.capacity(),
-                            crate::meta::RecordedClient::Missing
-                            | crate::meta::RecordedClient::Invalid => 0,
-                        }
-                })
-                .sum::<usize>()
-    }
-    let discovery: usize = reader.round.as_ref().map_or(0, |round| {
-        round
-            .assoc
-            .values()
-            .map(|assoc| allocated(&assoc.memberships))
-            .sum()
-    });
-    let published: usize = reader
-        .conversations()
-        .iter()
-        .map(|conversation| allocated(&conversation.memberships))
-        .sum();
-    discovery + published
-}
+// --- P3 review r4 regression (driver; review-20261109T165800Z-2807a8cf) ----
 
-/// Memberships the round's association holds now.
-fn associated(reader: &Reader) -> usize {
-    reader.round.as_ref().map_or(0, |round| {
-        round
-            .assoc
-            .values()
-            .map(|assoc| assoc.memberships.len())
-            .sum()
-    })
-}
-
-/// B3-1a r5: many memberships whose fields are all within `FIELD_MAX` cannot
-/// make the two retained copies (association and the published
-/// conversation) exceed a small raw cap. 8 metas, each with a main seat on
-/// C and 1000 more seats on C whose slots are exactly `FIELD_MAX` bytes and
-/// distinct, each with its own seat name (a repeated name drops those
-/// seats); the supplied payload (about 3 MB) passes a 2 MiB cap, so only
-/// admission bounds what is kept. A warm round then equals a fresh scan at
-/// the same cap.
+/// R4-1: replacing every file of a conversation at its exact cap is
+/// admitted as the conversation it becomes, never as a mixture of new and
+/// superseded evidence. With `per_conversation` = 4: parent 2 + child 2
+/// attempts, both replaced, parent 3 + child 1. Taking the parent first
+/// against the old child saw 5 > 4 and refused the conversation for good,
+/// although the final four fit, as a cold rebuild shows.
 #[test]
-fn b3_1a_many_in_limit_memberships_stay_inside_a_small_cap() {
-    use std::fmt::Write as _;
-    const METAS: usize = 8;
-    const SEATS: usize = 1000;
+fn r4_1_replacing_every_file_at_the_cap_admits_the_final_conversation() {
+    let caps = Caps {
+        per_conversation: 4,
+        ..Caps::SLICE
+    };
     let root = Fixture::new();
-    let mut supplied = 0;
-    for n in 0..METAS {
-        let session = format!("{n:08x}-3333-4333-8333-333333333333");
-        let mut meta = root.meta(&format!("s{n}"), &session, "claude", f::C, None, "store-a");
-        for seat in 0..SEATS {
-            let slot = format!("{seat:04}{}", "y".repeat(super::FIELD_MAX - 4));
-            assert_eq!(slot.len(), super::FIELD_MAX, "precondition: in limit");
-            write!(
-                meta,
-                "seat.{slot}=w{seat}\nagent_bin.{slot}=claude\nharness_session.{slot}={}\n",
-                f::C
-            )
-            .expect("fixture meta text");
-            supplied += size_of::<crate::tool_stats::Membership>() + slot.len() + session.len();
-        }
-        assert!(
-            u64::try_from(meta.len()).is_ok_and(|len| len < crate::usage::SESSION_META_MAX_BYTES),
-            "precondition: fixture meta {} bytes is read whole",
-            meta.len()
-        );
-        root.live(&format!("s{n}"), &meta, "");
-    }
-    root.claude("store-a", f::C, calls(1).as_bytes());
-    let space = 2 << 20;
-    let caps = caps_at(VIEW_RESERVE + space);
-    assert!(
-        supplied > space,
-        "precondition: the payload ({supplied} B) passes the cap, so admission alone bounds it"
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    let parent = root.claude("store-a", f::C, named_calls("p", "Bash", 2).as_bytes());
+    let child = root.child(
+        "store-a",
+        f::C,
+        "agent-a",
+        named_calls("k", "Grep", 2).as_bytes(),
     );
-    let mut reader = Reader::new(root.0.clone(), Some(root.home()), caps);
-    let mut peak = 0;
-    for round in 0..2 {
-        reader.round();
-        let mut settled = false;
-        for _ in 0..20_000 {
-            let Some(unit) = reader.step() else {
-                settled = true;
-                break;
-            };
-            peak = peak.max(associated(&reader));
-            let floor = membership_floor(&reader);
-            assert!(
-                floor <= space,
-                "round {round}: memberships own {floor} B past {space} after {unit:?}"
-            );
-            every_kept_conversation_has_memberships(&reader);
-        }
-        assert!(settled, "finite fixture reader did not settle");
-    }
-    assert!(
-        peak >= SEATS / 2,
-        "precondition: in-limit memberships are admitted (peak {peak})"
-    );
-    let fresh = scan(root.0.clone(), Some(root.home()), caps);
-    for page in [Page::Skills, Page::Mcp, Page::Tools] {
-        let asked = Ask {
-            page,
-            ..ask(Scope::All)
-        };
-        assert_eq!(
-            reader.view(&asked),
-            fresh.view(&asked),
-            "warm equals fresh {page:?}"
-        );
-    }
-}
-
-/// B3-1a r6: the spare slots of the membership vectors are retained memory
-/// too, so admission covers them. 160 metas, each with 129 seats (unique
-/// names, short slots) on its own conversation: each conversation gathers
-/// 129 memberships from one source, one past a doubling boundary, so its
-/// association vector holds about twice the slots it uses. Short strings
-/// make the struct slots the larger share. The floor counts capacity
-/// (`membership_floor`) after every unit of two rounds, under a 2 MiB raw
-/// cap; a warm round then equals a fresh scan at the same cap.
-#[test]
-fn b3_1a_membership_vector_slack_stays_inside_a_small_cap() {
-    use std::fmt::Write as _;
-    const METAS: usize = 160;
-    const SEATS: usize = 129;
-    let root = Fixture::new();
-    let mut supplied = 0;
-    for n in 0..METAS {
-        let session = format!("{n:08x}-5555-4555-8555-555555555555");
-        let conversation = format!("{n:08x}-6666-4666-8666-666666666666");
-        let mut meta = format!("meta_version=3\nsession=s{n}\nsession_id={session}\n");
-        for seat in 0..SEATS {
-            let slot = format!("k{seat}");
-            assert!(slot.len() <= super::FIELD_MAX, "precondition: in limit");
-            write!(
-                meta,
-                "seat.{slot}=w{seat}\nagent_bin.{slot}=claude\nharness_session.{slot}={conversation}\n"
-            )
-            .expect("fixture meta text");
-            supplied += size_of::<crate::tool_stats::Membership>() + slot.len() + session.len();
-        }
-        assert!(
-            u64::try_from(meta.len()).is_ok_and(|len| len < crate::usage::SESSION_META_MAX_BYTES),
-            "precondition: fixture meta {} bytes is read whole",
-            meta.len()
-        );
-        root.live(&format!("s{n}"), &meta, "");
-    }
-    let space = 2 << 20;
-    let caps = caps_at(VIEW_RESERVE + space);
-    assert!(
-        supplied > space,
-        "precondition: the payload ({supplied} B) passes the cap, so admission alone bounds it"
-    );
-    let mut reader = Reader::new(root.0.clone(), Some(root.home()), caps);
-    let mut peak = 0;
-    for round in 0..2 {
-        reader.round();
-        let mut settled = false;
-        for _ in 0..20_000 {
-            let Some(unit) = reader.step() else {
-                settled = true;
-                break;
-            };
-            peak = peak.max(associated(&reader));
-            let floor = membership_floor(&reader);
-            assert!(
-                floor <= space,
-                "round {round}: memberships own {floor} B past {space} after {unit:?}"
-            );
-            every_kept_conversation_has_memberships(&reader);
-        }
-        assert!(settled, "finite fixture reader did not settle");
-    }
-    assert!(
-        peak >= 4 * SEATS,
-        "precondition: several whole conversations are admitted (peak {peak})"
-    );
-    let fresh = scan(root.0.clone(), Some(root.home()), caps);
-    for page in [Page::Skills, Page::Mcp, Page::Tools] {
-        let asked = Ask {
-            page,
-            ..ask(Scope::All)
-        };
-        assert_eq!(
-            reader.view(&asked),
-            fresh.view(&asked),
-            "warm equals fresh {page:?}"
-        );
-    }
-}
-
-/// Lead ruling ae-20261108T170544Z-0d20805a (3): every conversation the
-/// reader keeps has its memberships, so no View (`Reader::view` folds
-/// exactly `Reader::conversations`) sees one without them; a conversation
-/// association displaces is removed whole.
-fn every_kept_conversation_has_memberships(reader: &Reader) {
-    for conversation in reader.conversations() {
-        assert!(
-            !conversation.memberships.is_empty(),
-            "conversation {} kept without its memberships",
-            conversation.id
-        );
-    }
-}
-
-/// Lead ruling ae-20261108T170544Z-0d20805a (1), (2): refused records do
-/// not narrow the next round's discovery. Six conversations, each the main
-/// seat of its own session, each with a 300-call transcript. At the least
-/// ledger at which a fresh scan's discovery is complete (no global gap),
-/// the transcripts do not fit, so round 1 ends with refused records pinned.
-/// A warm round 2 at that exact ledger equals the fresh scan.
-#[test]
-fn b3_7_refused_records_give_way_at_the_least_complete_discovery_ledger() {
-    let root = Fixture::new();
-    for n in 0..6 {
-        let session = format!("{n:08x}-7777-4777-8777-777777777777");
-        let conversation = format!("{n:08x}-8888-4888-8888-888888888888");
-        let meta = root.meta(
-            &format!("s{n}"),
-            &session,
-            "claude",
-            &conversation,
-            None,
-            "store-a",
-        );
-        root.live(&format!("s{n}"), &meta, "");
-        root.claude("store-a", &conversation, calls(300).as_bytes());
-    }
-    let complete = |reader: &Reader| !global(&tools(reader), &GapKind::Unreadable);
-    let ledger = smallest_ledger(|ledger| complete(&scan_at(&root, ledger)));
-    let fresh = scan_at(&root, ledger);
-    assert!(
-        gap(&tools(&fresh), &GapKind::Ledger) > 0,
-        "precondition: the transcripts do not all fit at this ledger"
-    );
-    let mut warm = Reader::new(root.0.clone(), Some(root.home()), caps_at(ledger));
+    let tools_page = ask(Scope::All);
+    let mut warm = Reader::new(root.0.clone(), Some(root.home()), caps);
     drain(&mut warm);
-    assert!(
-        !warm.refused.is_empty(),
-        "precondition: round 1 ends with refused records pinned"
+    let before = warm.view(&tools_page);
+    assert_eq!(
+        tool_attempts(&before),
+        BTreeMap::from([("Bash".to_owned(), 2), ("Grep".to_owned(), 2)]),
+        "positive control: exactly at the cap, admitted"
     );
-    warm.round();
-    for _ in 0..20_000 {
-        if warm.step().is_none() {
-            break;
-        }
-        every_kept_conversation_has_memberships(&warm);
+    assert_eq!(gap(&before, &GapKind::Ledger), 0);
+    for (path, bytes) in [
+        (&parent, named_calls("q", "Glob", 3)),
+        (&child, named_calls("j", "Write", 1)),
+    ] {
+        fs::remove_file(path).expect("the old file goes");
+        Fixture::rewrite(path, bytes.as_bytes());
     }
-    assert!(!warm.busy(), "finite fixture reader did not settle");
-    assert!(complete(&warm), "round 2 discovery is complete, as fresh");
-    equals_fresh_at(&root, &warm, ledger);
+    drain(&mut warm);
+    let want = BTreeMap::from([("Glob".to_owned(), 3), ("Write".to_owned(), 1)]);
+    let view = warm.view(&tools_page);
+    assert_eq!(
+        gap(&view, &GapKind::Ledger),
+        0,
+        "not refused: {:?}",
+        view.gaps
+    );
+    assert_eq!(tool_attempts(&view), want, "the final four");
+    let cold = scan(root.0.clone(), Some(root.home()), caps);
+    assert_eq!(view, cold.view(&tools_page), "warm == cold");
+    let mut reopened = Reader::new(root.0.clone(), Some(root.home()), caps);
+    drain(&mut reopened);
+    assert_eq!(
+        reopened.view(&tools_page),
+        view,
+        "the reopened store agrees"
+    );
 }

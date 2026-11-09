@@ -5513,30 +5513,6 @@ impl DayListings {
             self.0.get(dir).and_then(|names| names.as_deref()),
         ))
     }
-
-    /// Drop `dir`'s cached listing: a caller whose ledger refused to keep
-    /// it releases it (#288 B3 r2 B3-1a).
-    pub(crate) fn forget(&mut self, dir: &Path) {
-        self.0.remove(dir);
-    }
-
-    /// The bytes the cache holds: each day's path and its names (#288
-    /// B3 r1 B3-1a, the reader's live retention check).
-    #[cfg(test)]
-    pub(crate) fn retained(&self) -> usize {
-        self.0
-            .iter()
-            .map(|(dir, names)| {
-                dir.as_os_str().len()
-                    + names.as_ref().map_or(0, |names| {
-                        names
-                            .iter()
-                            .map(|name| size_of::<std::ffi::OsString>() + name.len())
-                            .sum()
-                    })
-            })
-            .sum()
-    }
 }
 
 /// One day directory's entry names, each entry claimed against the budget.

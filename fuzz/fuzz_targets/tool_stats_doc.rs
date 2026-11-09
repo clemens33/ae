@@ -80,7 +80,7 @@ fuzz_target!(|data: &[u8]| {
     let Some((&kind, bytes)) = data.split_first() else {
         return;
     };
-    match kind % 4 {
+    match kind % 6 {
         0 => {
             if let Ok(conv) = doc::parse_conv(bytes) {
                 assert_eq!(doc::render_conv(&conv), bytes);
@@ -144,9 +144,36 @@ fuzz_target!(|data: &[u8]| {
                 assert_eq!(doc::render_assoc(&assoc), bytes);
             }
         }
-        _ => {
+        3 => {
             if let Ok(intent) = doc::parse_intent(bytes) {
                 assert_eq!(doc::render_intent(&intent), bytes);
+            }
+        }
+        4 => {
+            if let Ok(sources) = doc::parse_sources(bytes) {
+                assert_eq!(doc::render_sources(&sources), bytes);
+            }
+        }
+        _ => {
+            if let Ok(coverage) = doc::parse_coverage(bytes) {
+                assert_eq!(doc::render_coverage(&coverage), bytes);
+                // Applied to any page it adds only path-free lines.
+                let ask = Ask {
+                    page: Page::Tools,
+                    scope: Scope::All,
+                    filter: Filter::All,
+                };
+                let mut view = incr::combine(
+                    &Published {
+                        generation: coverage.generation,
+                        convs: Vec::new(),
+                        over_cap: 0,
+                    },
+                    &ask,
+                    &Caps::SLICE,
+                );
+                coverage.apply(&mut view, &ask);
+                assert!(view.gaps.iter().all(|gap| gap.conversation.is_none()));
             }
         }
     }

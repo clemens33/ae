@@ -1,23 +1,39 @@
 //! The tool-statistics reader: association discovery and stepped, validated
-//! transcript reads at the usage door (plan-r3 §5, §6).
+//! transcript reads at the usage door, persisted under `<root>/stats/tools/`
+//! (plan-r3 §5, §6; plan r4 §2-§5).
 //!
-//! One [`Reader`] per app process, owned by the loader thread. A round lists
-//! the ae-associated conversations (live seats and their priors, `retire`
-//! records, kept archives' `harness.tsv`), locates each one's Claude or Codex
-//! files, and reads them in units: one [`Reader::step`] does ONE unit of
-//! bounded IO and returns what the doors did ([`Unit`]). Per-file state (dev,
-//! ino, len, mtime, ctime, cursor, skipping, SHA-256 over the consumed prefix)
-//! decides between no read, a verified resume and a reread from 0. Paths live
-//! only in that per-file state, never in a [`Conversation`] or a [`View`].
+//! One [`Reader`] per process, owned by the upkeep thread. A round loads what
+//! the store holds (once per payload epoch), lists the ae-associated
+//! conversations (live seats and their priors, `retire` records, kept
+//! archives' `harness.tsv`), locates each one's Claude or Codex files, and
+//! reads only what is new, in units: one [`Reader::step`] does ONE unit of
+//! bounded IO and returns what the doors did ([`Unit`]).
 //!
-//! Every IO goes through an existing usage or quota door; the one door this
-//! reader added is [`super::names_only`]. A [`Unit`]'s counters are the
-//! actual receipt of its door calls ([`super::receipt`]), read through one
-//! scoped guard per unit on the loader thread.
-#![allow(
-    dead_code,
-    clippy::unused_self,
-    reason = "B0 seam: the loader wires the reader in B4"
+//! Every conversation is one [`Conv`]: its counters and its resume state, one
+//! document under `stats/tools/conv/`. A file whose status (dev, ino, len,
+//! mtime, ctime) is unchanged reads no byte. A grown file re-hashes its last
+//! witness block (1 MiB) and resumes at its cursor; a same-length change
+//! re-hashes every block; any mismatch, a new identity or a truncation below
+//! the cursor rebuilds the conversation from 0. Association sources are
+//! cached the same way (`stats/tools/sources`): an unchanged meta, journal or
+//! archive record is not read again, a grown journal resumes at its cursor.
+//! The cache keeps the roots ae itself recorded for each seat (lead ruling
+//! Q1 = A), never a path a transcript named.
+//!
+//! Publication runs through [`disk::tools`] under `stats.lock` in a proven S5
+//! epoch: Tools never makes the payload. Before an epoch exists, or for a
+//! cold [`scan`], everything stays in memory.
+//!
+//! Every transcript, journal and meta read goes through a usage door, and a
+//! [`Unit`]'s counters are the actual receipt of its door calls
+//! ([`super::receipt`]); store IO is counted at the document reads and
+//! writes.
+#![cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3 seam: the upkeep thread wires the reader in P4"
+    )
 )]
 
 use super::lines::{Framed, LINE_CAP, Lines};
@@ -25,10 +41,16 @@ use super::receipt::{Counts, Guard};
 use super::{Entry, claude_calls, codex_calls};
 use crate::meta::{RecordedClient, RecordedConfigHome, RecordedWorkDir, RosterEntry};
 use crate::quota::{Bounded, Budget, DayListings};
+use crate::stats_store::disk;
 use crate::tool::{ToolKind, UsageSource};
+use crate::tool_stats::doc::{self, Seat, SourceRecord, Sources};
+use crate::tool_stats::incr::{
+    self, Association, Conv, Coverage, FileState, Memberships, Published, PublishedConv, Source,
+    StreamKey,
+};
+use crate::tool_stats::store::{self, Loaded, StoreError};
 use crate::tool_stats::{
-    Adapter, Ask, Caps, Conversation, Event, GapKind, GapLine, Membership, Parsed, Role, Scope,
-    Stream, StreamRole, VIEW_RESERVE, View, Weight, event_floor, prefix, weigh,
+    Adapter, Ask, Caps, Conversation, Event, GapKind, Membership, Parsed, Role, StreamRole, View,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -38,25 +60,23 @@ use std::time::Duration;
 pub(crate) const STEP: u64 = 4 << 20;
 /// The most lstats one unit makes.
 pub(crate) const LSTATS: u32 = 256;
-/// A shown page's discovery round period.
-pub(crate) const TOOLS_ROUND: Duration = Duration::from_secs(30);
 /// An archive's `harness.tsv` cap (the archive module's own byte cap).
 const HARNESS_MAX: u64 = 1 << 20;
 /// The longest membership field (session id, slot, client label) the reader
-/// retains. Session metas are hostile input: a membership with a longer field
-/// is not kept and counts in a visible gap, so each kept membership costs at
-/// most a fixed size on the ledger (B3 review r4 B3-1a).
-const FIELD_MAX: usize = 256;
-/// The most one kept membership owns: its struct and its three strings
-/// (session id, slot, client label), each at most [`FIELD_MAX`] bytes.
-const MEMBERSHIP_MAX: usize = size_of::<Membership>() + 3 * FIELD_MAX;
+/// keeps. Session metas are hostile input: a membership with a longer field
+/// is not kept and counts in a visible gap.
+const FIELD_MAX: usize = doc::FIELD_MAX;
+/// One witness block: SHA-256 per this many bytes of a consumed prefix.
+const BLOCK: u64 = 1 << 20;
+/// How long one publication waits for `stats.lock`.
+const LOCK_WAIT: Duration = Duration::from_millis(50);
 
 /// What one unit was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnitKind {
-    /// A session meta read.
+    /// A session meta status or read.
     Meta,
-    /// One journal chunk of a session's retire/reseat scan.
+    /// One journal status, witness or chunk of a session's retire/reseat scan.
     Journal,
     /// An archive's `harness.tsv`.
     Archive,
@@ -81,7 +101,7 @@ pub(crate) enum UnitKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Unit {
     pub(crate) kind: UnitKind,
-    /// Transcript and journal bytes read.
+    /// Transcript, journal and meta bytes read.
     pub(crate) bytes: u64,
     /// Bytes of `stats/tools/` read or written.
     pub(crate) store_bytes: u64,
@@ -91,12 +111,12 @@ pub(crate) struct Unit {
 }
 
 impl Unit {
-    fn of(kind: UnitKind, counts: Counts) -> Self {
+    fn of(kind: UnitKind, counts: Counts, store_bytes: u64) -> Self {
         let narrow = |count: u64| u32::try_from(count).unwrap_or(u32::MAX);
         Self {
             kind,
             bytes: counts.bytes,
-            store_bytes: 0,
+            store_bytes,
             lstats: narrow(counts.stats),
             listings: narrow(counts.listings),
             opens: narrow(counts.opens),
@@ -111,12 +131,11 @@ fn stats(guard: &Guard) -> u64 {
 
 type Key = (Adapter, String);
 
-/// Where a located file's observations go.
+/// Where a located file's observations go: its conversation and stream.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Place {
     conversation: Key,
-    role: StreamRole,
-    copy: u32,
+    stream: StreamKey,
 }
 
 /// A file's identity as one status reported it.
@@ -127,6 +146,10 @@ struct Identity {
     len: u64,
     mtime: (i64, i64),
     ctime: (i64, i64),
+}
+
+fn stamp((seconds, nanos): (i64, i64)) -> (i64, u32) {
+    (seconds, u32::try_from(nanos).unwrap_or(0))
 }
 
 impl Identity {
@@ -150,6 +173,140 @@ impl Identity {
             ctime: window.ctime,
         }
     }
+
+    fn state(&self, cursor: u64, skipping: bool, blocks: Vec<[u8; 32]>) -> FileState {
+        FileState {
+            dev: self.dev,
+            ino: self.ino,
+            len: self.len,
+            mtime: stamp(self.mtime),
+            ctime: stamp(self.ctime),
+            cursor,
+            skipping,
+            blocks,
+        }
+    }
+
+    /// The status `state` recorded, unchanged.
+    fn same(&self, state: &FileState) -> bool {
+        self.dev == state.dev
+            && self.ino == state.ino
+            && self.len == state.len
+            && stamp(self.mtime) == state.mtime
+            && stamp(self.ctime) == state.ctime
+    }
+
+    /// Another file, or one cut below what was consumed of it.
+    const fn replaced(&self, state: &FileState) -> bool {
+        self.dev != state.dev || self.ino != state.ino || self.len < state.cursor
+    }
+}
+
+fn finish(context: ring::digest::Context) -> [u8; 32] {
+    let mut out = [0_u8; 32];
+    out.copy_from_slice(context.finish().as_ref());
+    out
+}
+
+fn sha() -> ring::digest::Context {
+    ring::digest::Context::new(&ring::digest::SHA256)
+}
+
+/// The block witness of a consumed prefix, built forward.
+#[derive(Clone)]
+struct Witness {
+    /// Every full block's digest.
+    blocks: Vec<[u8; 32]>,
+    /// The open block's hash and its bytes so far.
+    open: ring::digest::Context,
+    filled: u64,
+}
+
+impl Witness {
+    fn new() -> Self {
+        Self {
+            blocks: Vec::new(),
+            open: sha(),
+            filled: 0,
+        }
+    }
+
+    fn feed(&mut self, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            let room = usize::try_from(BLOCK - self.filled).unwrap_or(usize::MAX);
+            let (now, rest) = bytes.split_at(room.min(bytes.len()));
+            self.open.update(now);
+            self.filled += u64::try_from(now.len()).unwrap_or(u64::MAX);
+            bytes = rest;
+            if self.filled == BLOCK {
+                let full = std::mem::replace(&mut self.open, sha());
+                self.blocks.push(finish(full));
+                self.filled = 0;
+            }
+        }
+    }
+
+    /// The persisted form: every full block, then the open one if partial.
+    fn blocks(&self) -> Vec<[u8; 32]> {
+        let mut all = self.blocks.clone();
+        if self.filled > 0 {
+            all.push(finish(self.open.clone()));
+        }
+        all
+    }
+}
+
+/// A re-hash of a consumed prefix against its recorded blocks, from block
+/// `index` on.
+struct Check {
+    expect: Vec<[u8; 32]>,
+    index: usize,
+    at: u64,
+    end: u64,
+    witness: Witness,
+}
+
+impl Check {
+    /// The check of `state`'s prefix: every block when `all`, else the last
+    /// one only. `None` when its block list cannot be that prefix's.
+    fn of(state: &FileState, all: bool) -> Option<Self> {
+        let cursor = state.cursor;
+        let last = cursor.checked_sub(1)? / BLOCK;
+        let count = usize::try_from(last).ok()?.checked_add(1)?;
+        if state.blocks.len() != count {
+            return None;
+        }
+        let index = if all { 0 } else { count - 1 };
+        let mut witness = Witness::new();
+        witness.blocks = state.blocks.get(..index)?.to_vec();
+        Some(Self {
+            expect: state.blocks.clone(),
+            index,
+            at: u64::try_from(index).ok()? * BLOCK,
+            end: cursor,
+            witness,
+        })
+    }
+
+    /// Feed the next bytes of the prefix; `false` on a mismatch.
+    fn feed(&mut self, bytes: &[u8]) -> bool {
+        let before = self.witness.blocks.len();
+        self.witness.feed(bytes);
+        self.at += u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let done = &self.witness.blocks[before..];
+        for (offset, block) in done.iter().enumerate() {
+            if self.expect.get(before + offset) != Some(block) {
+                return false;
+            }
+        }
+        self.index = self.witness.blocks.len();
+        true
+    }
+
+    /// At the end: whether the open partial block matches too.
+    fn closes(&self) -> bool {
+        self.witness.blocks() == self.expect
+    }
 }
 
 /// The seat roots a Claude conversation's skill directories classify by.
@@ -159,60 +316,57 @@ struct Roots {
     work_dirs: Vec<PathBuf>,
 }
 
-/// One located file's read state (plan §6). The path lives only here.
-struct Tracked {
-    path: PathBuf,
-    identity: Identity,
-    lines: Lines,
-    hash: ring::digest::Context,
-    roots: Roots,
-    /// The last read reached the end of the file as its status then said:
-    /// only then may an unchanged status skip the file.
-    done: bool,
-}
-
-impl Tracked {
-    fn new(path: PathBuf, roots: Roots) -> Self {
-        Self {
-            path,
-            identity: Identity::default(),
-            lines: Lines::new(LINE_CAP),
-            hash: ring::digest::Context::new(&ring::digest::SHA256),
-            roots,
-            done: false,
-        }
-    }
-}
-
-/// One conversation's association evidence, gathered over a round.
+/// One conversation's association this round.
 #[derive(Debug, Default)]
 struct Assoc {
     memberships: Vec<Membership>,
-    /// The session directories and archives whose evidence it rests on.
-    sources: BTreeSet<String>,
-    /// Each store holding a copy, in copy order.
+    /// The session groups and archives whose evidence it rests on.
+    groups: BTreeSet<String>,
+    /// Each store holding a copy.
     stores: BTreeSet<PathBuf>,
     roots: Roots,
 }
 
-/// Unsupported seats' conversations (B3 review r1 B3-5, B3-6): per
-/// (normalized tool, conversation id), the sessions holding a membership of
-/// it. One conversation counts once per tool however many memberships list
-/// it, and only in the scopes its memberships reach.
+/// Unsupported seats' conversations: per (normalized tool, conversation id),
+/// the sessions holding a membership of it.
 type Unsupported = BTreeMap<(String, String), BTreeSet<Option<String>>>;
+
+/// A journal scan under way.
+struct Scan {
+    key: String,
+    lines: Lines,
+    witness: Witness,
+    /// A witness check before the scan resumes.
+    check: Option<Check>,
+    record: SourceRecord,
+    damaged: bool,
+    /// The status the scan's first window saw: every later window, check or
+    /// chunk, must see it too, or the scan ends without mixing evidence.
+    anchor: Option<Identity>,
+}
+
+impl Scan {
+    /// Whether `window` saw the scan's status (the first window sets it).
+    fn anchored(&mut self, window: &super::JournalWindow) -> bool {
+        let identity = Identity::window(window);
+        *self.anchor.get_or_insert(identity) == identity
+    }
+}
 
 /// One unit of work.
 enum Task {
+    Load,
+    Recover,
     Sessions,
     Meta {
         dir: PathBuf,
-        name: String,
+        group: String,
     },
     Journal {
         dir: PathBuf,
-        name: String,
+        group: String,
         session: Option<String>,
-        lines: Lines,
+        scan: Option<Box<Scan>>,
     },
     Archives,
     Archive {
@@ -238,19 +392,19 @@ enum Task {
         root: PathBuf,
         id: String,
     },
+    LoadConv(Key),
     Lstats(Vec<(Place, PathBuf)>),
-    /// `anchor` is the status every chunk of this pass must still see (B3
-    /// review r1 B3-3): the lstat's that queued the pass, then each chunk's.
     Verify {
         place: Place,
-        at: u64,
-        hash: Box<ring::digest::Context>,
-        anchor: Identity,
+        generation: u64,
     },
     Read {
         place: Place,
-        anchor: Option<Identity>,
+        generation: u64,
     },
+    Publish(Key),
+    PublishView,
+    PublishSources,
 }
 
 impl Task {
@@ -268,6 +422,9 @@ impl Task {
             Self::CodexFind { .. } | Self::Lstats(_) => UnitKind::Lstats,
             Self::Verify { .. } => UnitKind::Verify,
             Self::Read { .. } => UnitKind::Read,
+            Self::Load | Self::LoadConv(_) => UnitKind::Load,
+            Self::Publish(_) | Self::PublishView | Self::PublishSources => UnitKind::Publish,
+            Self::Recover => UnitKind::Recover,
         }
     }
 }
@@ -275,29 +432,68 @@ impl Task {
 /// Where a round is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
+    Load,
     Associate,
     Locate,
     Check,
+    Publish,
 }
 
-/// One round's discovery state.
+/// A file's reading this round.
+enum Stage {
+    /// Re-hashing the consumed prefix before resuming.
+    Verifying(Box<Verifying>),
+    Reading(Box<Reading>),
+}
+
+/// A consumed prefix being re-hashed.
+struct Verifying {
+    path: PathBuf,
+    anchor: Identity,
+    check: Check,
+    state: FileState,
+}
+
+/// New bytes of one file being read.
+struct Reading {
+    path: PathBuf,
+    roots: Roots,
+    lines: Lines,
+    witness: Witness,
+    /// The status every chunk must still see.
+    anchor: Identity,
+    /// The status of the last chunk taken.
+    identity: Identity,
+    events: Vec<Event>,
+    malformed: u64,
+    over_cap: u64,
+    /// Bytes were taken: the file's state moves at settlement.
+    took: bool,
+    done: bool,
+    /// Read from 0: once taken, it replaces what the stream held.
+    fresh: bool,
+}
+
+/// One file's stage and the generation its queued tasks carry.
+struct Work {
+    generation: u64,
+    stage: Stage,
+}
+
+/// One round's discovery and reading state.
 struct Round {
     phase: Phase,
     tasks: VecDeque<Task>,
-    assoc: BTreeMap<Key, Assoc>,
-    /// Per session directory or archive: was its evidence complete.
-    complete: BTreeMap<String, bool>,
-    /// The archive listing itself was read.
+    /// This round's association records, by source key.
+    fresh: Sources,
+    /// Session groups and archives whose evidence was unavailable.
+    incomplete: BTreeSet<String>,
+    sessions_listed: bool,
     archives_listed: bool,
+    assoc: BTreeMap<Key, Assoc>,
     reseated: BTreeSet<String>,
-    /// Bytes of discovery state this round retains, the task queue's live
-    /// allocation included, charged on the ledger beside the conversations
-    /// (plan §7).
-    bytes: usize,
-    limit: usize,
     unsupported: Unsupported,
-    /// Memberships not kept because a field passed [`FIELD_MAX`].
-    oversize: usize,
+    oversize: u64,
     /// Claude: (store, id) → every project file `<id>.jsonl` found.
     parents: BTreeMap<(PathBuf, String), Vec<PathBuf>>,
     /// Claude: (store, id) → its `subagents/` files, by stem.
@@ -305,36 +501,42 @@ struct Round {
     /// Stores or roots whose listing failed or was cut.
     broken: BTreeSet<PathBuf>,
     days: DayListings,
-    /// Day directories whose listing (or proven absence) is cached.
     listed_days: BTreeSet<PathBuf>,
-    /// Codex: (root, id) → the rollout, or why not.
     rollouts: BTreeMap<(PathBuf, String), Result<Option<PathBuf>, GapKind>>,
-    /// Resolves an implicit harness store.
-    home: Option<PathBuf>,
-    /// What the admitted conversations and their files hold, and what the
-    /// refused ones keep (their records and refusal entries), refreshed
-    /// before every unit and every queued task: discovery shares the ledger
-    /// with them (B3 review r2 B3-1a, r3 B3-1a). Association and location
-    /// may displace what is held (it is a cache, read again when room
-    /// frees, B3 review r3 B3-7); association also what is pinned, as it
-    /// rebuilds every record (lead ruling ae-20261108T170544Z-0d20805a);
-    /// checking may not.
-    held: usize,
-    pinned: usize,
+    located: BTreeMap<Place, PathBuf>,
+    with_parent: BTreeSet<Key>,
+    marks: BTreeMap<Key, Vec<GapKind>>,
+    /// Per conversation, its located streams not settled yet this round.
+    open: BTreeMap<Key, BTreeSet<StreamKey>>,
+    work: BTreeMap<Place, Work>,
+    /// Streams that changed under a read, or vanished, this round.
+    changed: BTreeSet<Place>,
+    missing: BTreeSet<Place>,
+    /// Streams whose own lstat this round found them on disk.
+    statted: BTreeSet<Place>,
+    /// Conversations rebuilt this round.
+    rebuilt: BTreeSet<Key>,
 }
 
 impl Round {
-    fn new(limit: usize, home: Option<PathBuf>) -> Self {
-        let tasks = VecDeque::from([Task::Sessions, Task::Archives]);
+    fn new(load: bool) -> Self {
+        let (phase, tasks) = if load {
+            (Phase::Load, VecDeque::from([Task::Load]))
+        } else {
+            (
+                Phase::Associate,
+                VecDeque::from([Task::Sessions, Task::Archives]),
+            )
+        };
         Self {
-            phase: Phase::Associate,
-            bytes: tasks.capacity() * SLOT + tasks.iter().map(task_bytes).sum::<usize>(),
+            phase,
             tasks,
-            assoc: BTreeMap::new(),
-            complete: BTreeMap::new(),
+            fresh: Sources::new(),
+            incomplete: BTreeSet::new(),
+            sessions_listed: true,
             archives_listed: true,
+            assoc: BTreeMap::new(),
             reseated: BTreeSet::new(),
-            limit,
             unsupported: Unsupported::new(),
             oversize: 0,
             parents: BTreeMap::new(),
@@ -343,11 +545,42 @@ impl Round {
             days: DayListings::default(),
             listed_days: BTreeSet::new(),
             rollouts: BTreeMap::new(),
-            home,
-            held: 0,
-            pinned: 0,
+            located: BTreeMap::new(),
+            with_parent: BTreeSet::new(),
+            marks: BTreeMap::new(),
+            open: BTreeMap::new(),
+            work: BTreeMap::new(),
+            changed: BTreeSet::new(),
+            missing: BTreeSet::new(),
+            statted: BTreeSet::new(),
+            rebuilt: BTreeSet::new(),
         }
     }
+}
+
+/// The association cache and the view await publication.
+#[derive(Debug, Clone, Copy)]
+struct Dirty {
+    sources: bool,
+    view: bool,
+}
+
+/// Where the held state stands against the store's epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Proof {
+    /// Nothing loaded yet.
+    Cold,
+    /// Loaded, and this round's epoch read proved the held epoch.
+    Proven,
+    /// Loaded, but the last epoch read failed: nothing is published.
+    Lost,
+}
+
+/// One conversation the reader holds.
+struct Held {
+    conv: Conv,
+    /// Changed since its last durable publication.
+    dirty: bool,
 }
 
 /// The reader's whole state.
@@ -355,118 +588,171 @@ pub(crate) struct Reader {
     state_root: PathBuf,
     home: Option<PathBuf>,
     caps: Caps,
-    /// Sorted by `(adapter, id)`: the fold's input.
+    /// Publishes to `<root>/stats/tools/`; a cold [`scan`] does not.
+    durable: bool,
+    /// Whether what the store held was loaded, and whether this round's
+    /// epoch read proved `epoch`: only then is anything published.
+    proof: Proof,
+    /// The epoch the held state belongs to (`None`: no payload yet): kept
+    /// while a proof fails, so a payload proven again under another epoch
+    /// still drops it.
+    epoch: Option<u64>,
+    /// The association cache could not be read: it is never replaced until
+    /// a later read answers.
+    sources_blocked: bool,
+    /// The last view generation loaded or published.
+    generation: u64,
+    convs: BTreeMap<Key, Held>,
+    /// The association cache as last published (or loaded).
+    sources: Sources,
+    /// What awaits publication besides the conversations.
+    dirty: Dirty,
+    /// Every associated conversation, in `(adapter, id)` order.
+    all: Published,
+    /// Each one's part of a rendered view, aligned with `all.convs`.
+    parts: Vec<(u64, u64)>,
+    association: Memberships,
     conversations: Vec<Conversation>,
-    files: BTreeMap<Place, Tracked>,
-    /// Files reset to 0 this round and not yet read again.
-    recounting: BTreeSet<Place>,
-    /// Unsupported seats from the last association.
     unsupported: Unsupported,
     /// Association sources whose evidence was unavailable last round.
     hidden: usize,
-    /// Memberships last round's association did not keep because a field
-    /// passed [`FIELD_MAX`].
-    oversize: usize,
-    /// Each conversation's ledger weight, aligned with `conversations`;
-    /// recomputed only when that conversation's evidence changes.
-    weights: Vec<Weight>,
-    /// Conversations the reader's ledger refused this round: their evidence
-    /// and file state are evicted (plan §7, B3 review r1 B3-1). One refused
-    /// by the prefix rule is read again once the room before it grew (B3
-    /// review r2 B3-7); one refused alone waits for the next round.
-    refused: BTreeMap<Key, Refusal>,
-    /// The conversation a readmission is reading again, until the queue
-    /// drains.
-    retrying: Option<usize>,
-    /// Times something held shrank (a recount, an alone refusal): a
-    /// conversation refused during its own readmission waits for the next.
-    shrinks: u64,
+    oversize: u64,
+    /// Files being read again from 0 this round.
+    recounting: u64,
+    /// Generation of the next file stage.
+    next: u64,
     round: Option<Round>,
-}
-
-/// Why the ledger refused a conversation this round.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Refusal {
-    /// Over the observation or turn cap, whatever the room.
-    Alone,
-    /// By the prefix rule, when `room` bytes of the ledger were left before
-    /// it (0 when an earlier conversation was refused already); `settled`
-    /// is the shrink count when it was refused during its own readmission.
-    Prefix { room: usize, settled: Option<u64> },
+    /// The coverage last published beside the view (its generation 0).
+    covered: Option<Coverage>,
 }
 
 impl std::fmt::Debug for Reader {
     /// Counts only: the per-file state holds paths, which never leave it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Reader")
-            .field("conversations", &self.conversations.len())
-            .field("files", &self.files.len())
+            .field("conversations", &self.convs.len())
             .field("busy", &self.busy())
             .finish_non_exhaustive()
     }
+}
+
+/// A [`disk::Dir`] that counts the document bytes read through it.
+struct Counted<'a> {
+    dir: &'a mut dyn disk::Dir,
+    bytes: u64,
+}
+
+impl disk::Dir for Counted<'_> {
+    fn read(&mut self, name: &str, cap: u64) -> disk::Read {
+        let read = self.dir.read(name, cap);
+        if let disk::Read::Bytes(bytes) = &read {
+            self.bytes = self
+                .bytes
+                .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        }
+        read
+    }
+
+    fn apply(&mut self, op: &disk::Op) -> std::io::Result<()> {
+        self.dir.apply(op)
+    }
+
+    fn list(&mut self, dir: &str) -> std::io::Result<Vec<String>> {
+        self.dir.list(dir)
+    }
+}
+
+/// The bytes a plan writes.
+fn written(plan: &disk::Plan) -> u64 {
+    plan.ops
+        .iter()
+        .map(|op| match op {
+            disk::Op::Write { bytes, .. } => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            _ => 0,
+        })
+        .fold(0, u64::saturating_add)
+}
+
+/// How one publication attempt ended.
+enum Outcome {
+    /// The held state belongs to another payload epoch.
+    Moved,
+    Recovered(u64),
+    Published(u64),
+    Stale,
+    Failed,
 }
 
 impl Reader {
     /// A reader of the ae state root `state_root`; `home` resolves an implicit
     /// harness store. Nothing is read until [`Self::round`].
     pub(crate) const fn new(state_root: PathBuf, home: Option<PathBuf>, caps: Caps) -> Self {
+        Self::with(state_root, home, caps, true)
+    }
+
+    const fn with(state_root: PathBuf, home: Option<PathBuf>, caps: Caps, durable: bool) -> Self {
         Self {
             state_root,
             home,
             caps,
+            durable,
+            proof: Proof::Cold,
+            epoch: None,
+            sources_blocked: false,
+            generation: 0,
+            convs: BTreeMap::new(),
+            sources: Sources::new(),
+            dirty: Dirty {
+                sources: false,
+                view: false,
+            },
+            all: Published {
+                generation: 0,
+                convs: Vec::new(),
+                over_cap: 0,
+            },
+            parts: Vec::new(),
+            association: Memberships::new(),
             conversations: Vec::new(),
-            files: BTreeMap::new(),
-            recounting: BTreeSet::new(),
             unsupported: Unsupported::new(),
             hidden: 0,
             oversize: 0,
-            weights: Vec::new(),
-            refused: BTreeMap::new(),
-            retrying: None,
-            shrinks: 0,
+            recounting: 0,
+            next: 0,
             round: None,
+            covered: None,
         }
     }
 
-    /// Start a discovery round (on show, then every [`TOOLS_ROUND`]); a round
+    /// Start a discovery round (on show, then every upkeep period); a round
     /// in progress continues.
     pub(crate) fn round(&mut self) {
         if self.round.is_none() {
-            self.round = Some(Round::new(
-                self.caps.ledger.saturating_sub(VIEW_RESERVE),
-                self.home.clone(),
-            ));
+            self.round = Some(Round::new(self.durable));
         }
     }
 
     /// Do ONE unit of the round; `None` when the round is done.
     pub(crate) fn step(&mut self) -> Option<Unit> {
         loop {
-            let now = self.holding();
-            let round = self.round.as_mut()?;
-            let Some(task) = round.pop() else {
-                if !self.advance() {
-                    self.round = None;
-                    return None;
+            let mut round = self.round.take()?;
+            let Some(task) = round.tasks.pop_front() else {
+                if self.advance(&mut round) {
+                    self.round = Some(round);
+                    continue;
                 }
-                continue;
+                self.recounting = 0;
+                return None;
             };
-            // A queued task is discovery state until it runs; what is held
-            // and what the refused keep share the ledger with what the unit
-            // may keep (B3 review r2 B3-1a, r3 B3-1a).
-            round.held = now.admitted;
-            round.pinned = now.pinned;
             // The unit's receipt is what the doors actually did on this
-            // thread between its start and its end (lead ruling
-            // ae-20261108T141228Z-383a41ad, B3 review r1 B3-2).
+            // thread between its start and its end.
             let kind = task.kind();
-            let guard = super::receipt::Guard::start();
-            self.run(task, &guard);
-            let unit = Unit::of(kind, guard.delta());
-            // Discovery the unit kept may have displaced held observations:
-            // the ledger decides again before the next unit (B3 review r3
-            // B3-7).
-            self.enforce();
+            let guard = Guard::start();
+            let store = self.run(&mut round, task, &guard);
+            let unit = Unit::of(kind, guard.delta(), store);
+            if self.round.is_none() {
+                self.round = Some(round);
+            }
             observed(unit);
             return Some(unit);
         }
@@ -477,151 +763,800 @@ impl Reader {
         self.round.is_some()
     }
 
-    /// The page `ask` over everything admitted so far, with the unsupported
-    /// seats' coverage lines and the recount count.
+    /// The page `ask` over the published view, with the coverage lines and
+    /// the recount count: what a loader draws from `tools/view` and
+    /// `tools/coverage` of one generation.
     pub(crate) fn view(&self, ask: &Ask) -> View {
-        let mut view = crate::tool_stats::fold(&self.conversations, ask, &self.caps);
-        let mut unsupported: BTreeMap<&str, u64> = BTreeMap::new();
-        for ((tool, _), sessions) in &self.unsupported {
-            let shown = match &ask.scope {
-                Scope::All => true,
-                Scope::This(None) => false,
-                Scope::This(Some(session)) => sessions
-                    .iter()
-                    .any(|held| held.as_deref() == Some(session.as_str())),
-            };
-            if shown {
-                *unsupported.entry(tool).or_default() += 1;
-            }
-        }
-        for (tool, count) in unsupported {
-            view.gaps.push(GapLine {
-                kind: GapKind::Unsupported(tool.to_owned()),
-                conversation: None,
-                count,
-            });
-        }
-        if self.hidden > 0 {
-            view.gaps.push(GapLine {
-                kind: GapKind::Unreadable,
-                conversation: None,
-                count: u64::try_from(self.hidden).unwrap_or(u64::MAX),
-            });
-        }
-        if self.oversize > 0 {
-            view.gaps.push(GapLine {
-                kind: GapKind::FieldOverLimit,
-                conversation: None,
-                count: u64::try_from(self.oversize).unwrap_or(u64::MAX),
-            });
-        }
-        view.gaps.sort();
-        view.recounting = u64::try_from(self.recounting.len()).unwrap_or(u64::MAX);
+        // The prefix the view of this state is published with: the held
+        // generation, or the next one while a change awaits publication.
+        let generation = self
+            .generation
+            .saturating_add(u64::from(self.dirty.view || self.generation == 0));
+        let kept = self.fitted(generation);
+        let left = u64::try_from(self.all.convs.len() - kept).unwrap_or(u64::MAX);
+        let mut view = incr::combine_parts(&self.all.convs[..kept], left, ask, &self.caps);
+        self.coverage(self.generation).apply(&mut view, ask);
         view
     }
 
-    /// The retained observations (the privacy surface besides the view).
+    /// The coverage beside the view of `generation` (lead ruling Q2 = A), as
+    /// published: under the coverage cap, any record left out counted in a
+    /// visible over-cap line.
+    fn coverage(&self, generation: u64) -> Coverage {
+        let whole = Coverage {
+            generation,
+            ..self.unfitted()
+        };
+        doc::fit_coverage(&whole, self.caps.coverage_cap)
+    }
+
+    /// What the coverage says before its cap, at generation 0: what a
+    /// publication is compared by.
+    fn unfitted(&self) -> Coverage {
+        let mut unsupported: Vec<(String, BTreeSet<Option<String>>)> = self
+            .unsupported
+            .iter()
+            .map(|((tool, _), sessions)| (tool.clone(), sessions.clone()))
+            .collect();
+        unsupported.sort();
+        Coverage {
+            generation: 0,
+            hidden: u64::try_from(self.hidden).unwrap_or(u64::MAX),
+            oversize: self.oversize,
+            recounting: self.recounting,
+            unsupported,
+            omitted: 0,
+        }
+    }
+
+    /// The association records: memberships, flags and discovery gaps; no
+    /// observation (the privacy surface besides the view).
     pub(crate) fn conversations(&self) -> &[Conversation] {
         &self.conversations
     }
 
-    fn run(&mut self, task: Task, guard: &Guard) {
+    /// Run one task; returns the store bytes it read or wrote.
+    fn run(&mut self, round: &mut Round, task: Task, guard: &Guard) -> u64 {
         match task {
-            Task::Sessions => self.sessions(),
-            Task::Meta { dir, name } => self.meta(&dir, name),
+            Task::Load => return self.load(round),
+            Task::Recover => return self.recover(round),
+            Task::Sessions => self.sessions(round),
+            Task::Meta { dir, group } => self.meta(round, &dir, group),
             Task::Journal {
                 dir,
-                name,
+                group,
                 session,
-                lines,
-            } => self.journal(dir, name, session, lines),
-            Task::Archives => self.archives(),
-            Task::Archive { dir, id } => self.archive(&dir, &id),
-            Task::ClaudeStore { store } => self.claude_store(store),
-            Task::ClaudeProject { store, project } => self.claude_project(store, &project),
-            Task::Subagents { store, id, dir } => self.subagents(store, id, &dir),
-            Task::CodexDay { dir } => self.codex_day(&dir),
-            Task::CodexFind { root, id } => self.codex_find(root, id),
-            Task::Lstats(batch) => self.lstats(batch, guard),
-            Task::Verify {
-                place,
-                at,
-                hash,
-                anchor,
-            } => self.verify(place, at, hash, anchor),
-            Task::Read { place, anchor } => self.read(place, anchor),
+                scan,
+            } => self.journal(round, dir, group, session, scan),
+            Task::Archives => self.archives(round),
+            Task::Archive { dir, id } => self.archive(round, &dir, &id),
+            Task::ClaudeStore { store } => claude_store(round, store),
+            Task::ClaudeProject { store, project } => claude_project(round, store, &project),
+            Task::Subagents { store, id, dir } => subagents(round, store, id, &dir),
+            Task::CodexDay { dir } => codex_day(round, &dir),
+            Task::CodexFind { root, id } => codex_find(round, root, id),
+            Task::LoadConv(key) => return self.load_conv(round, &key),
+            Task::Lstats(batch) => self.lstats(round, batch, guard),
+            Task::Verify { place, generation } => self.verify(round, place, generation),
+            Task::Read { place, generation } => self.read(round, place, generation),
+            Task::Publish(key) => return self.publish(round, &key),
+            Task::PublishView => return self.publish_view(round),
+            Task::PublishSources => return self.publish_sources(round),
         }
+        0
     }
 
     /// Move to the next phase when the queue ran dry; `false` when the round
     /// is over.
-    fn advance(&mut self) -> bool {
-        let Some(round) = self.round.as_mut() else {
-            return false;
-        };
+    fn advance(&mut self, round: &mut Round) -> bool {
         match round.phase {
+            Phase::Load => {
+                round.phase = Phase::Associate;
+                round.tasks.extend([Task::Sessions, Task::Archives]);
+                true
+            }
             Phase::Associate => {
                 round.phase = Phase::Locate;
-                self.associate();
+                self.associate(round);
+                queue_locate(round);
                 true
             }
             Phase::Locate => {
-                // The lstats are location's last discovery: queued before
-                // checking starts, so they may displace held observations.
-                self.place();
-                if let Some(round) = self.round.as_mut() {
-                    round.phase = Phase::Check;
+                round.phase = Phase::Check;
+                self.place(round);
+                true
+            }
+            Phase::Check => {
+                round.phase = Phase::Publish;
+                // Every read of the round is settled: nothing is being recounted,
+                // and a coverage that moved is published with the view.
+                self.recounting = 0;
+                if self.covered.as_ref() != Some(&self.unfitted()) {
+                    self.dirty.view = true;
+                }
+                if self.publishing() {
+                    if self.dirty.sources {
+                        round.tasks.push_back(Task::PublishSources);
+                    }
+                    if self.dirty.view {
+                        round.tasks.push_back(Task::PublishView);
+                    }
                 }
                 true
             }
-            // Drained: a conversation the prefix refused earlier this round
-            // may fit now that discovery was released or earlier ones shrank
-            // (B3 review r2 B3-7, r3 B3-7).
-            Phase::Check => {
-                self.retrying = None;
-                self.readmit()
-            }
+            Phase::Publish => false,
         }
+    }
+
+    /// Whether publications are made: a durable reader in a proven epoch.
+    const fn publishing(&self) -> bool {
+        self.durable && matches!(self.proof, Proof::Proven) && self.epoch.is_some()
     }
 }
 
-// --- Association (plan §5) -------------------------------------------------
+// --- The store (plan r4 §2) ------------------------------------------------------
 
 impl Reader {
-    fn sessions(&mut self) {
-        let root = self.state_root.join("sessions");
-        let Some(round) = self.round.as_mut() else {
-            return;
+    /// Each round: the active epoch, read without the lock. Another epoch than
+    /// the held state's (a reset `r`, a repair) drops it, and what the new
+    /// payload holds is loaded.
+    fn load(&mut self, round: &mut Round) -> u64 {
+        let mut files = disk::Files::at(&self.state_root);
+        let mut dir = Counted {
+            dir: &mut files,
+            bytes: 0,
         };
+        let Ok(epoch) = disk::active_epoch(&mut dir) else {
+            // Damage S5 repairs: nothing is published until it does. The
+            // held epoch stays, so a repair under another epoch drops the
+            // held state at the next proof.
+            self.lose_proof();
+            return dir.bytes;
+        };
+        if self.proof != Proof::Cold && self.epoch.is_some() && epoch != self.epoch {
+            self.forget();
+        }
+        if self.proof != Proof::Cold {
+            self.epoch = epoch;
+            self.proof = Proof::Proven;
+            if self.sources_blocked && epoch.is_some() {
+                // Retried until the cache answers; only then may it be replaced.
+                self.sources_blocked =
+                    matches!(store::load_sources(&mut dir), Loaded::Unreadable(_));
+            }
+            return dir.bytes;
+        }
+        self.epoch = epoch;
+        self.proof = Proof::Proven;
+        if epoch.is_none() {
+            return dir.bytes;
+        }
+        if let Loaded::Ok(view) = store::load_view(&mut dir) {
+            self.generation = view.generation;
+            // The published entries are the held view: a conversation that
+            // settles to its own entry again publishes nothing, so a reopened
+            // reader does not move the generation under another writer.
+            self.parts = view.convs.iter().map(doc::view_part).collect();
+            self.all = Published {
+                generation: view.generation,
+                convs: view.convs.clone(),
+                over_cap: 0,
+            };
+            // The coverage published beside that view needs no new publication.
+            if let Loaded::Ok(coverage) = store::load_coverage(&mut dir)
+                && coverage.generation == view.generation
+            {
+                self.covered = Some(Coverage {
+                    generation: 0,
+                    ..coverage
+                });
+            }
+        }
+        match store::load_sources(&mut dir) {
+            Loaded::Ok(sources) => self.sources = sources,
+            Loaded::Absent | Loaded::Rebuild(_) => self.sources = Sources::new(),
+            Loaded::Unreadable(_) => {
+                // An IO refusal is not an empty cache: everything is read
+                // again, and the document is not replaced.
+                self.sources = Sources::new();
+                self.sources_blocked = true;
+            }
+        }
+        round.tasks.push_back(Task::Recover);
+        dir.bytes
+    }
+
+    /// The epoch could not be proven: nothing is published until it is.
+    fn lose_proof(&mut self) {
+        if self.proof != Proof::Cold {
+            self.proof = Proof::Lost;
+        }
+    }
+
+    /// Drop everything held: the payload under it was replaced.
+    fn forget(&mut self) {
+        let fresh = Self::with(
+            self.state_root.clone(),
+            self.home.clone(),
+            self.caps,
+            self.durable,
+        );
+        *self = fresh;
+    }
+
+    /// Finish or undo an interrupted publication before any other.
+    fn recover(&mut self, _round: &mut Round) -> u64 {
+        let held = self.epoch;
+        let outcome = disk::tools(&self.state_root, LOCK_WAIT, |dir, epoch| {
+            if held != Some(epoch) {
+                return (None, 0);
+            }
+            match store::recovery(dir) {
+                Ok(plan) if !plan.ops.is_empty() => {
+                    let bytes = written(&plan);
+                    (Some(plan), bytes)
+                }
+                Ok(_) | Err(_) => (None, 0),
+            }
+        });
+        match outcome {
+            disk::Tools::Done { value, .. } => value,
+            _ => 0,
+        }
+    }
+
+    /// One conversation's durable document, or a fresh one to build.
+    fn load_conv(&mut self, round: &mut Round, key: &Key) -> u64 {
+        let mut files = disk::Files::at(&self.state_root);
+        let mut dir = Counted {
+            dir: &mut files,
+            bytes: 0,
+        };
+        // A mark set here is published even when no count moves.
+        let (conv, dirty) = match store::load_conv(&mut dir, key.0, &key.1) {
+            Loaded::Ok(conv) => (conv, false),
+            Loaded::Absent => (Conv::new(key.0, &key.1), false),
+            // Damaged, oversized or of another format: rebuilt from 0, and
+            // marked: counts of its deleted sources are lost (P6 boundary).
+            Loaded::Rebuild(_) => {
+                let mut conv = Conv::new(key.0, &key.1);
+                conv.mark_rebuilt();
+                (conv, true)
+            }
+            Loaded::Unreadable(_) => {
+                // Never rebuilt over an IO error: not read this round.
+                let streams: Vec<StreamKey> = round
+                    .open
+                    .get(key)
+                    .map(|open| open.iter().cloned().collect())
+                    .unwrap_or_default();
+                for stream in streams {
+                    round.changed.insert(Place {
+                        conversation: key.clone(),
+                        stream,
+                    });
+                }
+                round.open.remove(key);
+                return dir.bytes;
+            }
+        };
+        let bytes = dir.bytes;
+        self.convs.insert(key.clone(), Held { conv, dirty });
+        if round.open.get(key).is_some_and(BTreeSet::is_empty) {
+            self.settle(round, key);
+        }
+        bytes
+    }
+
+    /// Publish one conversation and the view.
+    fn publish(&mut self, round: &mut Round, key: &Key) -> u64 {
+        if !self.publishing() {
+            return 0;
+        }
+        let Some(held) = self.convs.get(key) else {
+            return 0;
+        };
+        if !held.dirty {
+            return 0;
+        }
+        let generation = self.generation.saturating_add(1);
+        let view = self.capped(generation);
+        let coverage = self.coverage(generation);
+        let conv = &held.conv;
+        let epoch = self.epoch;
+        let outcome = disk::tools(&self.state_root, LOCK_WAIT, |dir, now| {
+            if epoch != Some(now) {
+                return (None, Outcome::Moved);
+            }
+            let mut dir = Counted { dir, bytes: 0 };
+            match store::recovery(&mut dir) {
+                Ok(plan) if !plan.ops.is_empty() => {
+                    let bytes = written(&plan).saturating_add(dir.bytes);
+                    return (Some(plan), Outcome::Recovered(bytes));
+                }
+                Ok(_) => {}
+                Err(_) => return (None, Outcome::Failed),
+            }
+            match store::publish_with(&mut dir, conv, &view, &coverage) {
+                Ok(plan) => {
+                    let bytes = written(&plan).saturating_add(dir.bytes);
+                    (Some(plan), Outcome::Published(bytes))
+                }
+                Err(StoreError::Stale) => (None, Outcome::Stale),
+                Err(StoreError::Io(_)) => (None, Outcome::Failed),
+            }
+        });
+        self.after(round, outcome, Some(key), generation)
+    }
+
+    /// Publish the view alone: the association moved without a count.
+    fn publish_view(&mut self, round: &mut Round) -> u64 {
+        if !self.publishing() || !self.dirty.view {
+            return 0;
+        }
+        let generation = self.generation.saturating_add(1);
+        let view = self.capped(generation);
+        let coverage = self.coverage(generation);
+        let epoch = self.epoch;
+        let outcome = disk::tools(&self.state_root, LOCK_WAIT, |dir, now| {
+            if epoch != Some(now) {
+                return (None, Outcome::Moved);
+            }
+            let mut dir = Counted { dir, bytes: 0 };
+            match store::publish_view_with(&mut dir, &view, &coverage) {
+                Ok(plan) => {
+                    let bytes = written(&plan).saturating_add(dir.bytes);
+                    (Some(plan), Outcome::Published(bytes))
+                }
+                Err(StoreError::Stale) => (None, Outcome::Stale),
+                Err(StoreError::Io(_)) => (None, Outcome::Failed),
+            }
+        });
+        self.after(round, outcome, None, generation)
+    }
+
+    /// Publish the association cache and its derived document.
+    fn publish_sources(&mut self, round: &mut Round) -> u64 {
+        if !self.publishing() || !self.dirty.sources || self.sources_blocked {
+            return 0;
+        }
+        // A cache that would not read back is never written: its sources
+        // are read again by the next process instead.
+        let sources = self.sources.clone();
+        if doc::parse_sources(&doc::render_sources(&sources)).as_ref() != Ok(&sources) {
+            self.dirty.sources = false;
+            return 0;
+        }
+        let assoc = doc::Assoc {
+            sources: sources
+                .iter()
+                .map(|(key, record)| (key.clone(), record.status.clone()))
+                .collect(),
+            memberships: self.association.clone(),
+        };
+        let epoch = self.epoch;
+        let outcome = disk::tools(&self.state_root, LOCK_WAIT, |dir, now| {
+            if epoch != Some(now) {
+                return (None, Outcome::Moved);
+            }
+            match store::publish_assoc(dir, &sources, &assoc) {
+                Ok(plan) => {
+                    let bytes = written(&plan);
+                    (Some(plan), Outcome::Published(bytes))
+                }
+                Err(_) => (None, Outcome::Failed),
+            }
+        });
+        match outcome {
+            disk::Tools::Done {
+                value: Outcome::Published(bytes),
+                ..
+            } => {
+                self.dirty.sources = false;
+                bytes
+            }
+            disk::Tools::Done {
+                value: Outcome::Moved,
+                ..
+            } => {
+                self.forget();
+                round.tasks.clear();
+                0
+            }
+            _ => 0,
+        }
+    }
+
+    /// What a publication attempt's outcome does to the held state.
+    fn after(
+        &mut self,
+        round: &mut Round,
+        outcome: disk::Tools<Outcome>,
+        key: Option<&Key>,
+        generation: u64,
+    ) -> u64 {
+        let retry = |round: &mut Round| {
+            round
+                .tasks
+                .push_front(key.map_or(Task::PublishView, |key| Task::Publish(key.clone())));
+        };
+        match outcome {
+            disk::Tools::Done { value, .. } => match value {
+                Outcome::Published(bytes) => {
+                    self.generation = generation;
+                    self.dirty.view = false;
+                    self.covered = Some(self.unfitted());
+                    if let Some(held) = key.and_then(|key| self.convs.get_mut(key)) {
+                        held.dirty = false;
+                    }
+                    bytes
+                }
+                Outcome::Recovered(bytes) => {
+                    retry(round);
+                    bytes
+                }
+                // Another writer published since this state was loaded (every
+                // publication moves the view generation, so the comparison
+                // under the lock covers each conversation's revision too):
+                // the held state may be older than the store's. It is dropped
+                // and the next round loads the store's own.
+                Outcome::Stale | Outcome::Moved => {
+                    self.forget();
+                    round.tasks.clear();
+                    0
+                }
+                Outcome::Failed => 0,
+            },
+            disk::Tools::NoEpoch => {
+                self.lose_proof();
+                0
+            }
+            disk::Tools::Busy | disk::Tools::Failed(_) => 0,
+        }
+    }
+
+    /// The view as published: the longest `(adapter, id)` prefix of every
+    /// associated conversation whose document fits the view cap.
+    fn capped(&self, generation: u64) -> Published {
+        let kept = self.fitted(generation);
+        Published {
+            generation,
+            convs: self.all.convs[..kept].to_vec(),
+            over_cap: u64::try_from(self.all.convs.len() - kept).unwrap_or(u64::MAX),
+        }
+    }
+
+    /// Replace `key`'s entry in the view by `conv` (none: drop it).
+    ///
+    /// # Errors
+    ///
+    /// [`incr::Overflow`] when the view could no longer be added up: it is
+    /// kept as it was.
+    fn enter(&mut self, key: &Key, conv: Option<PublishedConv>) -> Result<(), incr::Overflow> {
+        let at = self.all.convs.binary_search_by(|one| {
+            (one.summary.adapter, one.summary.id.as_str()).cmp(&(key.0, key.1.as_str()))
+        });
+        match (conv, at) {
+            (Some(conv), Ok(index)) => {
+                if self.all.convs[index] == conv {
+                    return Ok(());
+                }
+                let part = doc::view_part(&conv);
+                self.all.admit(conv)?;
+                self.parts[index] = part;
+            }
+            (Some(conv), Err(index)) => {
+                let part = doc::view_part(&conv);
+                self.all.admit(conv)?;
+                self.parts.insert(index, part);
+            }
+            (None, Ok(index)) => {
+                self.all.convs.remove(index);
+                self.parts.remove(index);
+            }
+            (None, Err(_)) => return Ok(()),
+        }
+        self.dirty.view = true;
+        Ok(())
+    }
+
+    /// The longest prefix whose view, rendered with `generation`, fits the
+    /// view cap: the generation's digits are part of the document.
+    fn fitted(&self, generation: u64) -> usize {
+        let count = self.parts.len();
+        let mut bytes = 0_u64;
+        let mut records = 0_u64;
+        let mut kept = 0;
+        for (index, (part, recs)) in self.parts.iter().enumerate() {
+            let over = u64::try_from(count - index - 1).unwrap_or(u64::MAX);
+            let total = bytes.saturating_add(*part).saturating_add(doc::view_frame(
+                generation,
+                over,
+                records.saturating_add(*recs),
+            ));
+            if total > self.caps.view_cap {
+                break;
+            }
+            bytes = bytes.saturating_add(*part);
+            records = records.saturating_add(*recs);
+            kept = index + 1;
+        }
+        kept
+    }
+}
+
+// --- Association (plan §5; cached per source, Q1 = A) ----------------------------
+
+/// The digest naming a session directory in the association cache.
+fn session_group(name: &str) -> String {
+    digest_hex(b"tools-session", name.as_bytes())
+}
+
+/// The persisted identity of a Claude child file: a digest of its native
+/// file stem, never the stem (P2). Distinct stems stay distinct streams, and
+/// the same stem resumes the same stream.
+fn child_id(stem: &str) -> String {
+    digest_hex(b"tools-child", stem.as_bytes())
+}
+
+/// The digest of the roots a Claude conversation's events are classified
+/// by: each list counted, each root length-prefixed.
+fn roots_digest(roots: &Roots) -> crate::tool_stats::Key {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut bytes = Vec::new();
+    for list in [&roots.config_homes, &roots.work_dirs] {
+        bytes.extend_from_slice(&u64::try_from(list.len()).unwrap_or(u64::MAX).to_le_bytes());
+        for root in list {
+            let root = root.as_os_str().as_bytes();
+            bytes.extend_from_slice(&u64::try_from(root.len()).unwrap_or(u64::MAX).to_le_bytes());
+            bytes.extend_from_slice(root);
+        }
+    }
+    crate::tool_stats::Key::of(b"tools-roots", &bytes)
+}
+
+/// 32 lowercase hex digits of the 16-byte digest of `bytes` in `domain`.
+fn digest_hex(domain: &[u8], bytes: &[u8]) -> String {
+    let key = crate::tool_stats::Key::of(domain, bytes);
+    let mut out = String::with_capacity(32);
+    for byte in key.0 {
+        out.push(char::from(b"0123456789abcdef"[usize::from(byte >> 4)]));
+        out.push(char::from(b"0123456789abcdef"[usize::from(byte & 15)]));
+    }
+    out
+}
+
+/// The completeness group of a source key: a session's meta and journal
+/// share one, an archive is its own.
+fn group_of(key: &str) -> String {
+    match key.split_once(':') {
+        Some(("meta" | "journal", digest)) => digest.to_owned(),
+        _ => key.to_owned(),
+    }
+}
+
+/// Whether a source's evidence is whole: a journal read to its end with no
+/// damaged line and no open over-cap line.
+fn whole(key: &str, record: &SourceRecord) -> bool {
+    if key.starts_with("journal:") {
+        record.complete && !record.status.skipping && record.status.cursor == record.status.len
+    } else {
+        record.complete
+    }
+}
+
+/// The digest of a store root: a stream's copy.
+fn copy_of(store: &Path) -> [u8; 16] {
+    use std::os::unix::ffi::OsStrExt as _;
+    crate::tool_stats::Key::of(b"tools-store", store.as_os_str().as_bytes()).0
+}
+
+fn utf8(path: &Path) -> Option<String> {
+    path.to_str()
+        .filter(|text| doc::valid_root(text))
+        .map(str::to_owned)
+}
+
+/// A new empty record of a source's status.
+fn record(status: FileState, session: Option<String>) -> SourceRecord {
+    SourceRecord {
+        status,
+        complete: true,
+        oversize: 0,
+        session,
+        seats: Vec::new(),
+        unsupported: BTreeSet::new(),
+        reseats: BTreeSet::new(),
+    }
+}
+
+/// A membership with a field over [`FIELD_MAX`] is not kept.
+fn over_limit(membership: &Membership) -> bool {
+    membership
+        .session
+        .as_ref()
+        .is_some_and(|session| session.len() > FIELD_MAX)
+        || membership.slot.len() > FIELD_MAX
+        || matches!(&membership.client, RecordedClient::Label(label) if label.len() > FIELD_MAX)
+}
+
+/// Add one membership of `id` held by `seat` to `record`, with the roots ae
+/// recorded for the seat.
+fn add(
+    record: &mut SourceRecord,
+    home: Option<&Path>,
+    seat: &RosterEntry,
+    id: &str,
+    membership: Membership,
+    roots: &Roots,
+) {
+    if over_limit(&membership) || membership.slot.is_empty() {
+        record.oversize = record.oversize.saturating_add(1);
+        return;
+    }
+    let Some(adapter) = adapter_of(seat.binary.as_deref()) else {
+        let tool = unsupported_tool(seat.binary.as_deref());
+        record
+            .unsupported
+            .insert((tool, id.to_owned(), membership.session));
+        return;
+    };
+    let usage = match adapter {
+        Adapter::Claude => UsageSource::ClaudeTranscripts,
+        Adapter::Codex => UsageSource::CodexRollout,
+    };
+    // The store as the meta recorded it, resolved without IO; none leaves
+    // the conversation listed and unlocated.
+    let store = super::source_lexical(seat, usage, home).ok();
+    let mut keep = |path: &PathBuf| {
+        let text = utf8(path);
+        if text.is_none() {
+            // A root the cache cannot keep: the evidence is not whole.
+            record.complete = false;
+        }
+        text
+    };
+    let store = store.as_ref().and_then(&mut keep);
+    let config_homes = roots.config_homes.iter().filter_map(&mut keep).collect();
+    let work_dirs = roots.work_dirs.iter().filter_map(&mut keep).collect();
+    let seat = Seat {
+        adapter,
+        id: id.to_owned(),
+        membership,
+        store,
+        config_homes,
+        work_dirs,
+    };
+    if !record.seats.contains(&seat) {
+        record.seats.push(seat);
+    }
+}
+
+/// One journal record: `retire` adds a retired seat, `reseat` names the ids
+/// it moved.
+fn journal_record(
+    record: &mut SourceRecord,
+    home: Option<&Path>,
+    event: &crate::events::Event,
+    session: Option<&str>,
+) {
+    match event.action.as_str() {
+        "reseat" => {
+            record
+                .reseats
+                .extend(reseat_ids(event.summary.as_deref().unwrap_or("")));
+        }
+        "retire" => {
+            let Some(id) = super::valid_id(event.reference.as_deref()) else {
+                return;
+            };
+            let Some((tool, profile, home_row, base)) =
+                event.summary.as_deref().and_then(super::retired_fields)
+            else {
+                return;
+            };
+            let slot = event.target_slot.value().unwrap_or("?").to_owned();
+            let seat = RosterEntry {
+                slot: slot.clone(),
+                name: String::new(),
+                profile: Some(profile),
+                client: RecordedClient::Missing,
+                harness_session: Some(id.clone()),
+                config_home: if home_row.is_empty() {
+                    RecordedConfigHome::Missing
+                } else {
+                    RecordedConfigHome::parse(&home_row)
+                },
+                config_home_base: if base.is_empty() {
+                    crate::meta::RecordedConfigHomeBase::Missing
+                } else {
+                    crate::meta::RecordedConfigHomeBase::parse(&base)
+                },
+                binary: Some(tool),
+                work_dir: RecordedWorkDir::Missing,
+            };
+            let roots = roots_of(&seat, None);
+            let membership = Membership {
+                session: session.map(str::to_owned),
+                slot,
+                role: Role::Retired,
+                client: RecordedClient::Missing,
+            };
+            add(record, home, &seat, &id, membership, &roots);
+        }
+        _ => {}
+    }
+}
+
+impl Reader {
+    fn sessions(&mut self, round: &mut Round) {
+        let root = self.state_root.join("sessions");
         match crate::quota::session_paths(&root, &mut Budget::local(u64::MAX)) {
             Ok(Bounded::Ready(paths)) => {
                 for dir in paths {
                     let name = dir
                         .file_name()
                         .and_then(|name| name.to_str())
-                        .map(str::to_owned);
-                    if let Some(name) = name {
-                        round.push(Task::Meta { dir, name });
+                        .map(session_group);
+                    if let Some(group) = name {
+                        round.tasks.push_back(Task::Meta { dir, group });
                     }
                 }
             }
-            Ok(Bounded::Truncated) | Err(_) => round.mark("sessions/", false),
+            Ok(Bounded::Truncated) | Err(_) => round.sessions_listed = false,
         }
     }
 
-    fn meta(&mut self, dir: &Path, name: String) {
+    fn meta(&mut self, round: &mut Round, dir: &Path, group: String) {
+        let key = format!("meta:{group}");
+        let path = dir.join(crate::meta::FILE);
         let mut budget = Budget::local(u64::MAX);
-        let bytes = super::meta_bytes(&dir.join(crate::meta::FILE), &mut budget);
-        let Some(round) = self.round.as_mut() else {
+        let Ok(Some(file)) = super::locate_transcript(&path, &mut budget) else {
+            round.incomplete.insert(group);
             return;
         };
-        let Some(text) = bytes.ok().and_then(|bytes| String::from_utf8(bytes).ok()) else {
-            round.mark(&name, false);
-            return;
+        let identity = Identity::of(&file.metadata);
+        let cached = self
+            .sources
+            .get(&key)
+            .filter(|cached| identity.same(&cached.status))
+            .cloned();
+        let fresh = if let Some(cached) = cached {
+            cached
+        } else {
+            let bytes = super::meta_bytes(&path, &mut budget);
+            let Some(text) = bytes.ok().and_then(|bytes| String::from_utf8(bytes).ok()) else {
+                round.incomplete.insert(group);
+                return;
+            };
+            self.meta_record(identity, &text)
         };
-        let meta = crate::meta::Meta::parse(&text);
+        let session = fresh.session.clone();
+        round.fresh.insert(key, fresh);
+        round.tasks.push_back(Task::Journal {
+            dir: dir.to_owned(),
+            group,
+            session,
+            scan: None,
+        });
+    }
+
+    /// What one meta records: its live seats and their priors.
+    fn meta_record(&self, identity: Identity, text: &str) -> SourceRecord {
+        let meta = crate::meta::Meta::parse(text);
         let session = meta.session_id().map(str::to_owned);
         let session_dir = meta.work_dir().map(PathBuf::from);
+        let mut fresh = record(
+            identity.state(identity.len, false, Vec::new()),
+            session.clone(),
+        );
+        if session
+            .as_ref()
+            .is_some_and(|session| session.len() > FIELD_MAX)
+        {
+            fresh.session = None;
+        }
+        let home = self.home.as_deref();
         for entry in meta.roster() {
             let roots = roots_of(entry, session_dir.as_deref());
             let membership = |role: Role, client: RecordedClient| Membership {
@@ -631,10 +1566,11 @@ impl Reader {
                 client,
             };
             if let Some(id) = super::valid_id(entry.harness_session.as_deref()) {
-                round.add(
+                add(
+                    &mut fresh,
+                    home,
                     entry,
                     &id,
-                    &name,
                     membership(Role::Live, entry.client.clone()),
                     &roots,
                 );
@@ -654,39 +1590,137 @@ impl Reader {
                 }
                 seat.harness_session = Some(prior.id.to_owned());
                 if let Some(id) = super::valid_id(Some(prior.id)) {
-                    round.add(
+                    add(
+                        &mut fresh,
+                        home,
                         &seat,
                         &id,
-                        &name,
                         membership(Role::Prior, RecordedClient::Missing),
                         &roots,
                     );
                 }
             }
         }
-        round.mark(&name, true);
-        round.push(Task::Journal {
-            dir: dir.to_owned(),
-            name,
-            session,
-            lines: Lines::new(LINE_CAP),
-        });
+        fresh
     }
 
-    fn journal(&mut self, dir: PathBuf, name: String, session: Option<String>, mut lines: Lines) {
+    /// One unit of a session journal: its status, a witness chunk, or a
+    /// chunk of new records.
+    fn journal(
+        &mut self,
+        round: &mut Round,
+        dir: PathBuf,
+        group: String,
+        session: Option<String>,
+        scan: Option<Box<Scan>>,
+    ) {
         let path = dir.join(crate::store::EVENTS);
-        let Some(round) = self.round.as_mut() else {
-            return;
+        let next = match scan {
+            None => self.journal_open(round, &path, &group, session.as_ref()),
+            Some(scan) if scan.check.is_some() => {
+                journal_check(round, &path, &group, session.as_ref(), scan)
+            }
+            Some(scan) => self.journal_chunk(round, &path, &group, session.as_ref(), scan),
         };
-        // A missing journal is unavailable evidence, never an empty one (B3
-        // review r1 B3-4): it could have held a retire or reseat.
-        let Ok(window) = super::journal_window(&path, lines.cursor(), STEP) else {
-            round.mark(&name, false);
-            return;
+        if let Some(scan) = next {
+            round.tasks.push_back(Task::Journal {
+                dir,
+                group,
+                session,
+                scan: Some(scan),
+            });
+        }
+    }
+
+    /// A journal's status: an unchanged one is taken from the cache, a grown
+    /// one resumes at its cursor once its last block is proven, anything
+    /// else is read from 0.
+    fn journal_open(
+        &self,
+        round: &mut Round,
+        path: &Path,
+        group: &str,
+        session: Option<&String>,
+    ) -> Option<Box<Scan>> {
+        // A missing journal is unavailable evidence, never an empty one: it
+        // could have held a retire or reseat.
+        let key = format!("journal:{group}");
+        let Ok(Some(file)) = super::locate_transcript(path, &mut Budget::local(u64::MAX)) else {
+            round.incomplete.insert(group.to_owned());
+            return None;
         };
+        let identity = Identity::of(&file.metadata);
+        let cached = self
+            .sources
+            .get(&key)
+            .filter(|cached| cached.session.as_ref() == session)
+            .cloned();
+        let scan = match cached {
+            Some(cached) if identity.same(&cached.status) => {
+                round.fresh.insert(key, cached);
+                return None;
+            }
+            Some(cached) if !identity.replaced(&cached.status) && cached.status.cursor > 0 => {
+                let all = identity.len == cached.status.len;
+                match Check::of(&cached.status, all) {
+                    Some(check) => Scan {
+                        key,
+                        lines: Lines::resume(
+                            LINE_CAP,
+                            cached.status.cursor,
+                            cached.status.skipping,
+                        ),
+                        witness: Witness::new(),
+                        check: Some(check),
+                        damaged: !cached.complete,
+                        record: cached,
+                        anchor: None,
+                    },
+                    None => fresh_scan(key, identity, session.cloned()),
+                }
+            }
+            _ => fresh_scan(key, identity, session.cloned()),
+        };
+        Some(Box::new(scan))
+    }
+
+    /// One chunk of new journal records from the cursor.
+    fn journal_chunk(
+        &self,
+        round: &mut Round,
+        path: &Path,
+        group: &str,
+        session: Option<&String>,
+        mut scan: Box<Scan>,
+    ) -> Option<Box<Scan>> {
+        let Ok(window) = super::journal_window(path, scan.lines.cursor(), STEP) else {
+            round.incomplete.insert(group.to_owned());
+            return None;
+        };
+        if !scan.anchored(&window) {
+            // Changed between chunks: what was read so far keeps the status
+            // it was read under, never the new one, so the next round checks
+            // the prefix again; this round lacks the journal.
+            round.incomplete.insert(group.to_owned());
+            let Scan {
+                key,
+                lines,
+                witness,
+                mut record,
+                damaged,
+                anchor,
+                ..
+            } = *scan;
+            let anchor = anchor?;
+            record.complete = !damaged;
+            record.session = session.cloned();
+            record.status = anchor.state(lines.cursor(), lines.skipping(), witness.blocks());
+            round.fresh.insert(key, record);
+            return None;
+        }
         let mut damaged = false;
         let mut records = Vec::new();
-        let consumed = lines.step(&window.bytes, &mut |framed| match framed {
+        let consumed = scan.lines.step(&window.bytes, &mut |framed| match framed {
             Framed::OverCap => damaged = true,
             Framed::Line(line) => {
                 if line.iter().all(u8::is_ascii_whitespace) {
@@ -701,34 +1735,39 @@ impl Reader {
                 }
             }
         });
+        let used = usize::try_from(consumed).unwrap_or(window.bytes.len());
+        scan.witness
+            .feed(&window.bytes[..used.min(window.bytes.len())]);
         for event in &records {
-            round.record(event, &name, session.as_deref());
+            journal_record(
+                &mut scan.record,
+                self.home.as_deref(),
+                event,
+                session.map(String::as_str),
+            );
         }
-        if damaged || lines.skipping() {
-            round.mark(&name, false);
+        scan.damaged |= damaged;
+        let identity = Identity::window(&window);
+        if consumed > 0 && scan.lines.cursor() < window.len {
+            return Some(scan);
         }
-        // Bytes past the cursor remain: read on while a step consumes; a step
-        // that consumes nothing left only a tail with no LF, an unfinished
-        // record, so the scan is not complete.
-        if lines.cursor() < window.len {
-            if consumed > 0 {
-                round.push(Task::Journal {
-                    dir,
-                    name,
-                    session,
-                    lines,
-                });
-            } else {
-                round.mark(&name, false);
-            }
-        }
+        let Scan {
+            key,
+            lines,
+            witness,
+            mut record,
+            damaged,
+            ..
+        } = *scan;
+        record.complete = !damaged;
+        record.session = session.cloned();
+        record.status = identity.state(lines.cursor(), lines.skipping(), witness.blocks());
+        round.fresh.insert(key, record);
+        None
     }
 
-    fn archives(&mut self) {
+    fn archives(&mut self, round: &mut Round) {
         let root = self.state_root.clone();
-        let Some(round) = self.round.as_mut() else {
-            return;
-        };
         let mut budget = Budget::local(u64::MAX);
         let dir = match super::derived_directory(&root, "archive", &mut budget) {
             Ok(Some(dir)) => dir,
@@ -742,7 +1781,7 @@ impl Reader {
             Ok(Bounded::Ready(names)) => {
                 for (id, kind) in names {
                     if kind == Entry::Dir && crate::archive::is_canonical_uuid(&id) {
-                        round.push(Task::Archive {
+                        round.tasks.push_back(Task::Archive {
                             dir: dir.join(&id),
                             id,
                         });
@@ -753,25 +1792,36 @@ impl Reader {
         }
     }
 
-    fn archive(&mut self, dir: &Path, id: &str) {
-        let Some(round) = self.round.as_mut() else {
-            return;
-        };
-        let source = format!("archive/{id}");
+    fn archive(&mut self, round: &mut Round, dir: &Path, id: &str) {
+        let key = format!("archive:{id}");
         let path = dir.join(crate::archive::harness::FILE);
+        let mut budget = Budget::local(u64::MAX);
         // A kept archive without its harness record may hide memberships.
-        let Ok(bytes) = super::bounded_bytes(&path, HARNESS_MAX, &mut Budget::local(u64::MAX))
-        else {
-            round.mark(&source, false);
+        let Ok(Some(file)) = super::locate_transcript(&path, &mut budget) else {
+            round.incomplete.insert(key);
             return;
         };
-        let Ok(record) = crate::archive::harness::parse(&bytes, id) else {
-            round.mark(&source, false);
+        let identity = Identity::of(&file.metadata);
+        if let Some(cached) = self
+            .sources
+            .get(&key)
+            .filter(|cached| identity.same(&cached.status))
+        {
+            round.fresh.insert(key, cached.clone());
+            return;
+        }
+        let Ok(bytes) = super::bounded_bytes(&path, HARNESS_MAX, &mut budget) else {
+            round.incomplete.insert(key);
+            return;
+        };
+        let Ok(harness) = crate::archive::harness::parse(&bytes, id) else {
+            round.incomplete.insert(key);
             round.archives_listed = false;
             return;
         };
-        round.mark(&source, true);
-        for slot in &record.slots {
+        let mut fresh = record(identity.state(identity.len, false, Vec::new()), None);
+        let home = self.home.clone();
+        for slot in &harness.slots {
             let seat = RosterEntry {
                 slot: slot.slot.clone(),
                 name: String::new(),
@@ -792,110 +1842,158 @@ impl Reader {
                 }
                 seat.harness_session = Some(conversation.id.clone());
                 let membership = Membership {
-                    session: Some(record.archive_id.clone()),
+                    session: Some(harness.archive_id.clone()),
                     slot: slot.slot.clone(),
                     role: Role::Archived,
                     client: RecordedClient::Missing,
                 };
-                round.add(&seat, &conversation.id, &source, membership, &roots);
+                add(
+                    &mut fresh,
+                    home.as_deref(),
+                    &seat,
+                    &conversation.id,
+                    membership,
+                    &roots,
+                );
             }
         }
+        round.fresh.insert(key, fresh);
     }
 
-    /// Association is done: publish memberships and evidence onto the
-    /// conversations, drop the ones no longer associated, queue the locate
-    /// listings.
-    fn associate(&mut self) {
-        let Some(round) = self.round.as_mut() else {
-            return;
-        };
-        self.unsupported = std::mem::take(&mut round.unsupported);
-        self.refused.clear();
-        self.retrying = None;
-        // Any source whose evidence is unavailable (a session meta, journal,
-        // archive record, or a listing) may hide a membership of ANY
-        // conversation, so no client is proven this round (plan §5 (a), B3
-        // review r1 B3-4); the count is a path-free coverage line.
-        self.hidden = round
-            .complete
-            .values()
-            .filter(|complete| !**complete)
-            .count()
-            + usize::from(!round.archives_listed);
-        // A membership not kept may be any conversation's: no client is
-        // proven this round either.
-        self.oversize = round.oversize;
-        let hidden = self.hidden > 0 || self.oversize > 0;
-        let complete = |sources: &BTreeSet<String>| {
-            !hidden
-                && sources
-                    .iter()
-                    .all(|source| round.complete.get(source).copied().unwrap_or(false))
-        };
-        let mut old: BTreeMap<Key, Conversation> = std::mem::take(&mut self.conversations)
-            .into_iter()
-            .map(|conversation| {
-                (
-                    (conversation.adapter, conversation.id.clone()),
-                    conversation,
-                )
-            })
-            .collect();
-        let mut next = Vec::with_capacity(round.assoc.len());
-        let mut moved = 0_usize;
-        for (key, assoc) in &mut round.assoc {
-            let mut conversation = old.remove(key).unwrap_or_else(|| Conversation {
-                adapter: key.0,
-                id: key.1.clone(),
-                memberships: Vec::new(),
-                evidence_complete: false,
-                reseated: false,
-                streams: Vec::new(),
-                gaps: Vec::new(),
-                read: false,
-            });
-            // One owner (lead ruling ae-20261108T170544Z-0d20805a): the
-            // memberships MOVE to the conversation, and what add reserved for
-            // them leaves discovery for the record charge (weigh, and their
-            // spare slots in `spare_bytes`). The old list is freed.
-            let mut memberships = std::mem::take(&mut assoc.memberships);
-            moved = moved
-                .saturating_add(memberships.len().saturating_mul(MEMBERSHIP_MAX))
-                .saturating_add(memberships.capacity() * size_of::<Membership>());
-            memberships.shrink_to_fit();
-            conversation.memberships = memberships;
-            conversation.evidence_complete = complete(&assoc.sources);
-            conversation.reseated = round.reseated.contains(&key.1);
-            conversation.gaps.clear();
-            if assoc
-                .sources
-                .iter()
-                .any(|source| !round.complete.get(source).copied().unwrap_or(false))
-            {
-                conversation.gaps.push(GapKind::Unreadable);
+    /// Association is done: derive every conversation's memberships, groups,
+    /// stores and roots from the sources in key order, so a warm round and
+    /// a cold one derive the same.
+    fn associate(&mut self, round: &mut Round) {
+        for (key, record) in &round.fresh {
+            let group = group_of(key);
+            if !whole(key, record) {
+                round.incomplete.insert(group.clone());
             }
-            next.push(conversation);
+            round.oversize = round.oversize.saturating_add(record.oversize);
+            round.reseated.extend(record.reseats.iter().cloned());
+            for (tool, id, session) in &record.unsupported {
+                round
+                    .unsupported
+                    .entry((tool.clone(), id.clone()))
+                    .or_default()
+                    .insert(session.clone());
+            }
+            for seat in &record.seats {
+                let assoc = round
+                    .assoc
+                    .entry((seat.adapter, seat.id.clone()))
+                    .or_default();
+                if !assoc.memberships.contains(&seat.membership) {
+                    assoc.memberships.push(seat.membership.clone());
+                }
+                assoc.groups.insert(group.clone());
+                if let Some(store) = &seat.store {
+                    assoc.stores.insert(PathBuf::from(store));
+                }
+                for home in &seat.config_homes {
+                    let home = PathBuf::from(home);
+                    if !assoc.roots.config_homes.contains(&home) {
+                        assoc.roots.config_homes.push(home);
+                    }
+                }
+                for dir in &seat.work_dirs {
+                    let dir = PathBuf::from(dir);
+                    if !assoc.roots.work_dirs.contains(&dir) {
+                        assoc.roots.work_dirs.push(dir);
+                    }
+                }
+                assoc.roots.config_homes.sort();
+                assoc.roots.work_dirs.sort();
+            }
         }
-        round.bytes = round.bytes.saturating_sub(moved);
-        self.conversations = next;
-        let caps = self.caps;
-        self.weights = self
-            .conversations
-            .iter()
-            .map(|conversation| weigh(conversation, &caps))
-            .collect();
-        self.files
-            .retain(|place, _| round.assoc.contains_key(&place.conversation));
-        let now = holding(
-            &self.conversations,
-            &self.weights,
-            &self.files,
-            &self.refused,
-        );
-        round.held = now.admitted;
-        round.pinned = now.pinned;
-        queue_locate(round);
+        if round.fresh != self.sources {
+            self.sources.clone_from(&round.fresh);
+            self.dirty.sources = true;
+        }
+        // Any source whose evidence is unavailable may hide a membership of
+        // ANY conversation, so no client is proven this round; the count is
+        // a path-free coverage line.
+        self.hidden = round.incomplete.len()
+            + usize::from(!round.archives_listed)
+            + usize::from(!round.sessions_listed);
+        self.oversize = round.oversize;
+        self.unsupported = std::mem::take(&mut round.unsupported);
+        let hidden = self.hidden > 0 || self.oversize > 0;
+        let mut association = Memberships::new();
+        for (key, assoc) in &round.assoc {
+            let complete = !hidden
+                && assoc
+                    .groups
+                    .iter()
+                    .all(|group| !round.incomplete.contains(group));
+            association.insert(
+                key.clone(),
+                Association {
+                    memberships: assoc.memberships.clone(),
+                    evidence_complete: complete,
+                    reseated: round.reseated.contains(&key.1),
+                },
+            );
+        }
+        if association != self.association {
+            self.association = association;
+            self.dirty.sources = true;
+        }
     }
+}
+
+/// A journal scan from 0.
+fn fresh_scan(key: String, identity: Identity, session: Option<String>) -> Scan {
+    Scan {
+        key,
+        lines: Lines::new(LINE_CAP),
+        witness: Witness::new(),
+        check: None,
+        record: record(identity.state(0, false, Vec::new()), session),
+        damaged: false,
+        anchor: None,
+    }
+}
+
+/// One chunk re-hashing a journal's consumed prefix: a mismatch reads the
+/// journal again from 0.
+fn journal_check(
+    round: &mut Round,
+    path: &Path,
+    group: &str,
+    session: Option<&String>,
+    mut scan: Box<Scan>,
+) -> Option<Box<Scan>> {
+    let mut check = scan.check.take()?;
+    let take = STEP.min(check.end.saturating_sub(check.at));
+    let Ok(window) = super::journal_window(path, check.at, take) else {
+        round.incomplete.insert(group.to_owned());
+        return None;
+    };
+    if !scan.anchored(&window) {
+        // Changed during the check: the cached record stands under its own
+        // status, so the next round checks again; this round lacks it.
+        round.incomplete.insert(group.to_owned());
+        let Scan { key, record, .. } = *scan;
+        round.fresh.insert(key, record);
+        return None;
+    }
+    let same = check.feed(&window.bytes) && (check.at < check.end || check.closes());
+    if !same || window.bytes.is_empty() && check.at < check.end {
+        // Not the prefix it was: read again from 0.
+        let key = scan.key.clone();
+        return Some(Box::new(fresh_scan(
+            key,
+            Identity::window(&window),
+            session.cloned(),
+        )));
+    }
+    if check.at < check.end {
+        scan.check = Some(check);
+    } else {
+        scan.witness = check.witness;
+    }
+    Some(scan)
 }
 
 /// Queue the locate listings of every associated store: one per Claude
@@ -916,264 +2014,24 @@ fn queue_locate(round: &mut Round) {
         }
     }
     for store in claude {
-        round.push(Task::ClaudeStore { store });
+        round.tasks.push_back(Task::ClaudeStore { store });
     }
     let mut days = BTreeSet::new();
     for (root, id) in &codex {
         if let Some(dirs) = crate::quota::codex_rollout_dirs(root, id) {
             days.extend(dirs);
-        } else if round.keep(rollout_bytes(root, id, &Ok(None))) {
-            // No id day: proven absent, kept as a rollout outcome.
+        } else {
+            // No id day: proven absent.
             round.rollouts.insert((root.clone(), id.clone()), Ok(None));
         }
     }
     for dir in days {
-        round.push(Task::CodexDay { dir });
+        round.tasks.push_back(Task::CodexDay { dir });
     }
     for (root, id) in codex {
         if !round.rollouts.contains_key(&(root.clone(), id.clone())) {
-            round.push(Task::CodexFind { root, id });
+            round.tasks.push_back(Task::CodexFind { root, id });
         }
-    }
-}
-
-/// One Codex rollout outcome kept in [`Round::rollouts`].
-fn rollout_bytes(root: &Path, id: &str, outcome: &Result<Option<PathBuf>, GapKind>) -> usize {
-    ENTRY * size_of::<((PathBuf, String), Result<Option<PathBuf>, GapKind>)>()
-        + root.as_os_str().len()
-        + id.len()
-        + match outcome {
-            Ok(Some(path)) => path.as_os_str().len(),
-            _ => 0,
-        }
-}
-
-/// What the conversations hold on the ledger (B3 review r2 B3-1a, r3
-/// B3-1a): the admitted ones their charge and their files' state; the
-/// refused ones (pinned) the record evict keeps and their refusal entry.
-#[derive(Debug, Clone, Copy, Default)]
-struct Holding {
-    admitted: usize,
-    pinned: usize,
-}
-
-fn holding(
-    conversations: &[Conversation],
-    weights: &[Weight],
-    files: &BTreeMap<Place, Tracked>,
-    refused: &BTreeMap<Key, Refusal>,
-) -> Holding {
-    let mut sum = Holding::default();
-    for (conversation, weight) in conversations.iter().zip(weights) {
-        let key = (conversation.adapter, conversation.id.clone());
-        let charge = weight.charge.saturating_add(spare_bytes(conversation));
-        if !refused.is_empty() && refused.contains_key(&key) {
-            sum.pinned = sum
-                .pinned
-                .saturating_add(charge)
-                .saturating_add(refusal_bytes(&key));
-        } else {
-            sum.admitted = sum.admitted.saturating_add(charge);
-        }
-    }
-    // A refused conversation's files are dropped at eviction.
-    sum.admitted = files
-        .iter()
-        .map(|(place, tracked)| tracked_bytes(place, tracked))
-        .fold(sum.admitted, usize::saturating_add);
-    sum
-}
-
-/// The record charge counts the memberships a conversation uses; their
-/// vector's spare slots are retained beside them (B3 review r6 B3-1a).
-fn spare_bytes(conversation: &Conversation) -> usize {
-    conversation
-        .memberships
-        .capacity()
-        .saturating_sub(conversation.memberships.len())
-        * size_of::<Membership>()
-}
-
-/// One entry of [`Reader::refused`].
-fn refusal_bytes(key: &Key) -> usize {
-    ENTRY * size_of::<(Key, Refusal)>() + key.1.len()
-}
-
-/// The std B-tree model of the fold's ledger (`tool_stats::fold`'s `TREE`):
-/// a map's nodes and edges stay within this many times its entries.
-const ENTRY: usize = 3;
-
-/// The `complete` key that says the ledger refused some discovery state.
-const LEDGER: &str = "ledger/";
-
-/// One task queue slot.
-const SLOT: usize = size_of::<Task>();
-
-/// The fewest slots a growing queue allocates (std grows a queue to at
-/// least four slots, then doubles it).
-const MIN_SLOTS: usize = 4;
-
-/// The most a vector's allocation may come to once `adding` more elements
-/// are pushed one by one: nothing new while they fit, else a doubling (at
-/// least [`MIN_SLOTS`] slots, std's least for elements up to 1 KiB) past
-/// the length they need. An upper bound for the check; the charge is the
-/// capacity actually grown.
-fn growth<T>(vec: &Vec<T>, adding: usize) -> usize {
-    let need = vec.len().saturating_add(adding);
-    if adding == 0 || need <= vec.capacity() {
-        0
-    } else {
-        need.saturating_mul(2)
-            .max(MIN_SLOTS)
-            .saturating_mul(size_of::<T>())
-    }
-}
-
-/// What one `Round::add` keeps that `held` (the association so far) does
-/// not: its owned bytes, and the most its vectors' allocations may grow.
-fn admission(
-    held: Option<&Assoc>,
-    id: &str,
-    source: &str,
-    membership: &Membership,
-    store: Option<&PathBuf>,
-    roots: &Roots,
-) -> (usize, usize) {
-    let new_path = |path: &PathBuf, held: Option<&Vec<PathBuf>>| {
-        if held.is_some_and(|held| held.contains(path)) {
-            0
-        } else {
-            size_of::<PathBuf>() + path.as_os_str().len()
-        }
-    };
-    let entry = if held.is_none() {
-        ENTRY * size_of::<(Key, Assoc)>() + id.len()
-    } else {
-        0
-    };
-    // The most one membership can own, at a fixed size (lead ruling
-    // ae-20261108T170544Z-0d20805a): it has ONE owner, and `associate`
-    // moves it, with this charge, to the conversation record.
-    let fresh = !held.is_some_and(|held| held.memberships.contains(membership));
-    let member = if fresh { MEMBERSHIP_MAX } else { 0 };
-    let from = if held.is_some_and(|held| held.sources.contains(source)) {
-        0
-    } else {
-        ENTRY * size_of::<String>() + source.len()
-    };
-    let located = match store {
-        Some(store) if !held.is_some_and(|held| held.stores.contains(store)) => {
-            ENTRY * size_of::<PathBuf>() + store.as_os_str().len()
-        }
-        _ => 0,
-    };
-    let homes: usize = roots
-        .config_homes
-        .iter()
-        .map(|home| new_path(home, held.map(|held| &held.roots.config_homes)))
-        .sum();
-    let dirs: usize = roots
-        .work_dirs
-        .iter()
-        .map(|dir| new_path(dir, held.map(|held| &held.roots.work_dirs)))
-        .sum();
-    // The vectors' spare slots are retained too (B3 review r6
-    // B3-1a): reserve the most each may grow by these pushes.
-    let empty = Assoc::default();
-    let held = held.unwrap_or(&empty);
-    let adding =
-        |new: &[PathBuf], vec: &Vec<PathBuf>| new.iter().filter(|path| !vec.contains(path)).count();
-    let slots = growth(&held.memberships, usize::from(fresh))
-        + growth(
-            &held.roots.config_homes,
-            adding(&roots.config_homes, &held.roots.config_homes),
-        )
-        + growth(
-            &held.roots.work_dirs,
-            adding(&roots.work_dirs, &held.roots.work_dirs),
-        );
-    (entry + member + from + located + homes + dirs, slots)
-}
-
-fn roots_bytes(roots: &Roots) -> usize {
-    roots
-        .config_homes
-        .iter()
-        .chain(&roots.work_dirs)
-        .map(|path| size_of::<PathBuf>() + path.as_os_str().len())
-        .sum()
-}
-
-/// The slot bytes an association's vectors have allocated.
-fn vector_bytes(assoc: &Assoc) -> usize {
-    assoc.memberships.capacity() * size_of::<Membership>()
-        + (assoc.roots.config_homes.capacity() + assoc.roots.work_dirs.capacity())
-            * size_of::<PathBuf>()
-}
-
-/// A membership field the reader would retain is longer than [`FIELD_MAX`].
-/// The seat's harness binary is not retained (only an [`ident`]-bounded tool
-/// name is), so it is not bounded here.
-///
-/// [`ident`]: crate::tool_stats::ident
-fn over_limit(membership: &Membership) -> bool {
-    let client = match &membership.client {
-        RecordedClient::Label(label) => label.len(),
-        RecordedClient::Missing | RecordedClient::Invalid => 0,
-    };
-    membership.session.as_ref().map_or(0, String::len) > FIELD_MAX
-        || membership.slot.len() > FIELD_MAX
-        || client > FIELD_MAX
-}
-
-fn unsupported_bytes(tool: &str, id: &str, session: Option<&str>) -> usize {
-    ENTRY * size_of::<((String, String), BTreeSet<Option<String>>)>()
-        + tool.len()
-        + id.len()
-        + ENTRY * size_of::<Option<String>>()
-        + session.map_or(0, str::len)
-}
-
-/// The bytes one tracked file keeps beside its conversation: its map entry,
-/// its key's owned strings, its path and its roots.
-fn tracked_bytes(place: &Place, tracked: &Tracked) -> usize {
-    ENTRY * size_of::<(Place, Tracked)>()
-        + place_bytes(place)
-        + tracked.path.as_os_str().len()
-        + roots_bytes(&tracked.roots)
-}
-
-/// The names a [`Place`] owns.
-fn place_bytes(place: &Place) -> usize {
-    place.conversation.1.len()
-        + match &place.role {
-            StreamRole::Parent => 0,
-            StreamRole::Child(name) => name.len(),
-        }
-}
-
-/// The bytes one queued task owns beyond its queue slot (B3 review r2
-/// B3-1a): the paths and names. The slots are charged as the queue's live
-/// allocation ([`Round::push`]).
-fn task_bytes(task: &Task) -> usize {
-    let path = |path: &PathBuf| path.as_os_str().len();
-    match task {
-        Task::Sessions | Task::Archives => 0,
-        Task::Meta { dir, name } => path(dir) + name.len(),
-        Task::Journal {
-            dir, name, session, ..
-        } => path(dir) + name.len() + session.as_ref().map_or(0, String::len),
-        Task::Archive { dir, id } => path(dir) + id.len(),
-        Task::ClaudeStore { store } | Task::CodexDay { dir: store } => path(store),
-        Task::ClaudeProject { store, project } => path(store) + path(project),
-        Task::Subagents { store, id, dir } => path(store) + id.len() + path(dir),
-        Task::CodexFind { root, id } => path(root) + id.len(),
-        Task::Lstats(batch) => batch
-            .iter()
-            .map(|(place, file)| size_of::<(Place, PathBuf)>() + place_bytes(place) + path(file))
-            .sum(),
-        Task::Verify { place, .. } => size_of::<ring::digest::Context>() + place_bytes(place),
-        Task::Read { place, .. } => place_bytes(place),
     }
 }
 
@@ -1205,10 +2063,9 @@ fn adapter_of(binary: Option<&str>) -> Option<Adapter> {
     }
 }
 
-/// An unsupported seat's tool as the coverage line may keep it (B3 review r1
-/// B3-5): the recorded binary's base name only when it passes the plan §3
-/// identity rule, else the fixed word `unresolved`. Normalized BEFORE it is
-/// retained, so no raw recorded text reaches a [`View`] or its `Debug`.
+/// An unsupported seat's tool as the coverage line may keep it: the
+/// recorded binary's base name only when it passes the plan §3 identity
+/// rule, else the fixed word `unresolved`. Normalized BEFORE it is retained.
 fn unsupported_tool(binary: Option<&str>) -> String {
     let name = binary
         .and_then(|binary| Path::new(binary).file_name())
@@ -1242,513 +2099,143 @@ fn reseat_ids(summary: &str) -> Vec<String> {
         .collect()
 }
 
-impl Round {
-    /// Whether `bytes` more discovery state fits the ledger beside what the
-    /// refused conversations keep and, while checking, what is held.
-    /// Association and location may displace held observations: the unit's
-    /// closing [`Reader::enforce`] evicts them, and they are read again
-    /// once room frees (B3 review r3 B3-7).
-    fn fits(&self, bytes: usize) -> bool {
-        let held = if self.phase == Phase::Check {
-            self.held
-        } else {
-            0
-        };
-        // Association rebuilds every record, so last round's (pinned too)
-        // give way to discovery as in a fresh scan; `Reader::displace`
-        // removes them after the unit (lead ruling
-        // ae-20261108T170544Z-0d20805a).
-        let pinned = if self.phase == Phase::Associate {
-            0
-        } else {
-            self.pinned
-        };
-        self.bytes
-            .checked_add(bytes)
-            .and_then(|all| all.checked_add(pinned))
-            .and_then(|all| all.checked_add(held))
-            .is_some_and(|all| all <= self.limit)
-    }
+// --- Locating (plan §6) ----------------------------------------------------
 
-    /// Charge `bytes` of discovery state the round is about to retain (plan
-    /// §7, B3 review r1 B3-1), BEFORE it is retained. Past the ledger nothing
-    /// more is kept and the round's evidence is incomplete, so no client is
-    /// proven from it.
-    fn keep(&mut self, bytes: usize) -> bool {
-        if self.fits(bytes) {
-            self.bytes = self.bytes.saturating_add(bytes);
-            true
-        } else {
-            self.complete.insert(LEDGER.to_owned(), false);
-            false
-        }
-    }
-
-    /// Queue `task`, charged until it runs; `false` when the ledger refused
-    /// it. The queue's allocation is charged as it is live (B3 review r3
-    /// B3-1a): the check reserves a growth by the most the queue may grow
-    /// (doubling, at least [`MIN_SLOTS`]), and the charge is then the
-    /// capacity it actually has.
-    fn push(&mut self, task: Task) -> bool {
-        let capacity = self.tasks.capacity();
-        let growth = if self.tasks.len() == capacity {
-            capacity.max(MIN_SLOTS) * SLOT
-        } else {
-            0
-        };
-        let owned = task_bytes(&task);
-        if !self.fits(owned.saturating_add(growth)) {
-            self.complete.insert(LEDGER.to_owned(), false);
-            return false;
-        }
-        self.tasks.push_back(task);
-        let grown = self.tasks.capacity().saturating_sub(capacity) * SLOT;
-        self.bytes = self.bytes.saturating_add(owned).saturating_add(grown);
-        true
-    }
-
-    /// The next task, its charge released; a drained queue releases its
-    /// allocation too.
-    fn pop(&mut self) -> Option<Task> {
-        let task = self.tasks.pop_front()?;
-        self.bytes = self.bytes.saturating_sub(task_bytes(&task));
-        if self.tasks.is_empty() {
-            self.bytes = self.bytes.saturating_sub(self.tasks.capacity() * SLOT);
-            self.tasks = VecDeque::new();
-        }
-        Some(task)
-    }
-
-    /// Record whether `source`'s evidence was complete; an incomplete one
-    /// never turns complete. A new entry is charged first.
-    fn mark(&mut self, source: &str, complete: bool) {
-        if let Some(held) = self.complete.get_mut(source) {
-            *held &= complete;
-        } else if self.keep(ENTRY * size_of::<(String, bool)>() + source.len()) {
-            self.complete.insert(source.to_owned(), complete);
-        }
-    }
-
-    /// Record that `store`'s listing failed or was cut.
-    fn broke(&mut self, store: PathBuf) {
-        if !self.broken.contains(&store)
-            && self.keep(ENTRY * size_of::<PathBuf>() + store.as_os_str().len())
-        {
-            self.broken.insert(store);
-        }
-    }
-
-    /// Add one membership of `id` held by `seat`, from evidence `source`.
-    /// Only what is new is charged, before it is kept (B3 review r2 B3-1b):
-    /// a repeated record adds no discovery state.
-    fn add(
-        &mut self,
-        seat: &RosterEntry,
-        id: &str,
-        source: &str,
-        membership: Membership,
-        roots: &Roots,
-    ) {
-        if over_limit(&membership) {
-            self.oversize = self.oversize.saturating_add(1);
+fn claude_store(round: &mut Round, store: PathBuf) {
+    let mut budget = Budget::local(u64::MAX);
+    let projects = match super::derived_directory(&store, "projects", &mut budget) {
+        Ok(Some(projects)) => projects,
+        Ok(None) => return,
+        Err(_) => {
+            round.broken.insert(store);
             return;
         }
-        let Some(adapter) = adapter_of(seat.binary.as_deref()) else {
-            let tool = unsupported_tool(seat.binary.as_deref());
-            let sessions = self.unsupported.get(&(tool.clone(), id.to_owned()));
-            let bytes = match sessions {
-                None => unsupported_bytes(&tool, id, membership.session.as_deref()),
-                Some(sessions) if sessions.contains(&membership.session) => 0,
-                Some(_) => {
-                    ENTRY * size_of::<Option<String>>()
-                        + membership.session.as_ref().map_or(0, String::len)
-                }
-            };
-            if bytes > 0 && self.keep(bytes) {
-                self.unsupported
-                    .entry((tool, id.to_owned()))
-                    .or_default()
-                    .insert(membership.session);
-            }
-            return;
-        };
-        let usage = match adapter {
-            Adapter::Claude => UsageSource::ClaudeTranscripts,
-            Adapter::Codex => UsageSource::CodexRollout,
-        };
-        // The store as the meta recorded it, resolved without IO (lead ruling
-        // ae-20261108T144928Z-d9d1c43b); none leaves the conversation listed
-        // and unlocated.
-        let store = super::source_lexical(seat, usage, self.home.as_deref()).ok();
-        let key = (adapter, id.to_owned());
-        let (bytes, slots) = admission(
-            self.assoc.get(&key),
-            id,
-            source,
-            &membership,
-            store.as_ref(),
-            roots,
-        );
-        if (bytes > 0 || slots > 0) && !self.fits(bytes.saturating_add(slots)) {
-            self.complete.insert(LEDGER.to_owned(), false);
-            return;
-        }
-        self.bytes = self.bytes.saturating_add(bytes);
-        let assoc = self.assoc.entry(key).or_default();
-        let before = vector_bytes(assoc);
-        if !assoc.memberships.contains(&membership) {
-            assoc.memberships.push(membership);
-        }
-        assoc.sources.insert(source.to_owned());
-        if let Some(store) = store {
-            assoc.stores.insert(store);
-        }
-        for home in &roots.config_homes {
-            if !assoc.roots.config_homes.contains(home) {
-                assoc.roots.config_homes.push(home.clone());
-            }
-        }
-        for dir in &roots.work_dirs {
-            if !assoc.roots.work_dirs.contains(dir) {
-                assoc.roots.work_dirs.push(dir.clone());
-            }
-        }
-        assoc.roots.config_homes.sort();
-        assoc.roots.work_dirs.sort();
-        let grown = vector_bytes(assoc).saturating_sub(before);
-        self.bytes = self.bytes.saturating_add(grown);
-    }
-
-    /// One journal record: `retire` adds a retired membership, `reseat`
-    /// names the ids it moved.
-    fn record(&mut self, event: &crate::events::Event, source: &str, session: Option<&str>) {
-        match event.action.as_str() {
-            "reseat" => {
-                for id in reseat_ids(event.summary.as_deref().unwrap_or("")) {
-                    if !self.reseated.contains(&id)
-                        && self.keep(ENTRY * size_of::<String>() + id.len())
-                    {
-                        self.reseated.insert(id);
-                    }
+    };
+    match super::names_only(&projects, &mut budget) {
+        Ok(Bounded::Ready(names)) => {
+            for (name, kind) in names {
+                if kind == Entry::Dir {
+                    round.tasks.push_back(Task::ClaudeProject {
+                        store: store.clone(),
+                        project: projects.join(name),
+                    });
                 }
             }
-            "retire" => {
-                let Some(id) = super::valid_id(event.reference.as_deref()) else {
-                    return;
-                };
-                let Some((tool, profile, home_row, base)) =
-                    event.summary.as_deref().and_then(super::retired_fields)
-                else {
-                    return;
-                };
-                let slot = event.target_slot.value().unwrap_or("?").to_owned();
-                let seat = RosterEntry {
-                    slot: slot.clone(),
-                    name: String::new(),
-                    profile: Some(profile),
-                    client: RecordedClient::Missing,
-                    harness_session: Some(id.clone()),
-                    config_home: if home_row.is_empty() {
-                        RecordedConfigHome::Missing
-                    } else {
-                        RecordedConfigHome::parse(&home_row)
-                    },
-                    config_home_base: if base.is_empty() {
-                        crate::meta::RecordedConfigHomeBase::Missing
-                    } else {
-                        crate::meta::RecordedConfigHomeBase::parse(&base)
-                    },
-                    binary: Some(tool),
-                    work_dir: RecordedWorkDir::Missing,
-                };
-                let roots = roots_of(&seat, None);
-                let membership = Membership {
-                    session: session.map(str::to_owned),
-                    slot,
-                    role: Role::Retired,
-                    client: RecordedClient::Missing,
-                };
-                self.add(&seat, &id, source, membership, &roots);
-            }
-            _ => {}
+        }
+        Ok(Bounded::Truncated) | Err(_) => {
+            round.broken.insert(store);
         }
     }
 }
 
-// --- Locating (plan §6) ----------------------------------------------------
-
-impl Reader {
-    fn claude_store(&mut self, store: PathBuf) {
-        let Some(round) = self.round.as_mut() else {
+fn claude_project(round: &mut Round, store: PathBuf, project: &Path) {
+    let names = match super::names_only(project, &mut Budget::local(u64::MAX)) {
+        Ok(Bounded::Ready(names)) => names,
+        Ok(Bounded::Truncated) | Err(_) => {
+            round.broken.insert(store);
             return;
-        };
-        let mut budget = Budget::local(u64::MAX);
-        let projects = match super::derived_directory(&store, "projects", &mut budget) {
-            Ok(Some(projects)) => projects,
-            Ok(None) => return,
-            Err(_) => {
-                round.broke(store);
-                return;
-            }
-        };
-        match super::names_only(&projects, &mut budget) {
-            Ok(Bounded::Ready(names)) => {
-                for (name, kind) in names {
-                    if kind == Entry::Dir {
-                        round.push(Task::ClaudeProject {
-                            store: store.clone(),
-                            project: projects.join(name),
-                        });
-                    }
-                }
-            }
-            Ok(Bounded::Truncated) | Err(_) => {
-                round.broke(store);
-            }
         }
-    }
-
-    fn claude_project(&mut self, store: PathBuf, project: &Path) {
-        let Some(round) = self.round.as_mut() else {
-            return;
-        };
-        let names = match super::names_only(project, &mut Budget::local(u64::MAX)) {
-            Ok(Bounded::Ready(names)) => names,
-            Ok(Bounded::Truncated) | Err(_) => {
-                round.broke(store);
-                return;
-            }
-        };
-        let wanted: BTreeSet<&str> = round
-            .assoc
-            .iter()
-            .filter(|((adapter, _), assoc)| {
-                *adapter == Adapter::Claude && assoc.stores.contains(&store)
-            })
-            .map(|((_, id), _)| id.as_str())
-            .collect();
-        let mut found = Vec::new();
-        let mut children = Vec::new();
-        for (name, kind) in names {
-            match kind {
-                Entry::File => {
-                    if let Some(id) = name.strip_suffix(".jsonl")
-                        && wanted.contains(id)
-                    {
-                        found.push((id.to_owned(), project.join(&name)));
-                    }
-                }
-                Entry::Dir if wanted.contains(name.as_str()) => {
-                    children.push((name.clone(), project.join(&name)));
-                }
-                Entry::Dir | Entry::Other => {}
-            }
-        }
-        for (id, path) in found {
-            let bytes = ENTRY * size_of::<((PathBuf, String), Vec<PathBuf>)>()
-                + store.as_os_str().len()
-                + id.len()
-                + size_of::<PathBuf>()
-                + path.as_os_str().len();
-            if round.keep(bytes) {
-                round
-                    .parents
-                    .entry((store.clone(), id))
-                    .or_default()
-                    .push(path);
-            }
-        }
-        for (id, dir) in children {
-            round.push(Task::Subagents {
-                store: store.clone(),
-                id,
-                dir,
-            });
-        }
-    }
-
-    fn subagents(&mut self, store: PathBuf, id: String, dir: &Path) {
-        let Some(round) = self.round.as_mut() else {
-            return;
-        };
-        let mut budget = Budget::local(u64::MAX);
-        let subagents = match super::derived_directory(dir, "subagents", &mut budget) {
-            Ok(Some(subagents)) => subagents,
-            Ok(None) => return,
-            Err(_) => {
-                round.broke(store);
-                return;
-            }
-        };
-        match super::names_only(&subagents, &mut budget) {
-            Ok(Bounded::Ready(names)) => {
-                let mut kept = BTreeMap::new();
-                for (name, kind) in names {
-                    if kind == Entry::File
-                        && let Some(stem) = name.strip_suffix(".jsonl")
-                    {
-                        let path = subagents.join(&name);
-                        let bytes = ENTRY * size_of::<(String, PathBuf)>()
-                            + stem.len()
-                            + path.as_os_str().len();
-                        if round.keep(bytes) {
-                            kept.insert(stem.to_owned(), path);
-                        }
-                    }
-                }
-                let bytes = ENTRY * size_of::<((PathBuf, String), BTreeMap<String, PathBuf>)>()
-                    + store.as_os_str().len()
-                    + id.len();
-                if round.keep(bytes) {
-                    round.children.entry((store, id)).or_default().extend(kept);
-                }
-            }
-            Ok(Bounded::Truncated) | Err(_) => {
-                round.broke(store);
-            }
-        }
-    }
-
-    fn codex_day(&mut self, dir: &Path) {
-        let Some(round) = self.round.as_mut() else {
-            return;
-        };
-        // The cache keeps a complete listing (or a proven absence); a failed
-        // or cut one is not cached, and the find then reports its ids
-        // unreadable without listing it again.
-        let kept = match round.days.names(dir, &mut Budget::local(u64::MAX)) {
-            Ok(Bounded::Ready(names)) => names.map_or(0, |names| {
-                names
-                    .iter()
-                    .map(|name| size_of::<std::ffi::OsString>() + name.len())
-                    .sum::<usize>()
-            }),
-            Ok(Bounded::Truncated) | Err(_) => return,
-        };
-        // The listing is charged before it counts as kept (B3 review r2
-        // B3-1a): one the ledger refuses is released at once, and its ids
-        // then read as unreadable.
-        let bytes = ENTRY * size_of::<(PathBuf, Option<Vec<std::ffi::OsString>>)>()
-            + dir.as_os_str().len()
-            + kept
-            + ENTRY * size_of::<PathBuf>()
-            + dir.as_os_str().len();
-        if round.keep(bytes) {
-            round.listed_days.insert(dir.to_owned());
-        } else {
-            round.days.forget(dir);
-        }
-    }
-
-    fn codex_find(&mut self, root: PathBuf, id: String) {
-        let Some(round) = self.round.as_mut() else {
-            return;
-        };
-        // The find only consults day listings its own units cached: a day
-        // whose listing failed or was cut is never listed again inside this
-        // lstat unit (one listing per unit at most, B3 review r1 B3-2).
-        let cached = crate::quota::codex_rollout_dirs(&root, &id)
-            .is_some_and(|dirs| dirs.iter().all(|dir| round.listed_days.contains(dir)));
-        let found = if cached {
-            crate::quota::find_codex_rollout_listed(
-                &root,
-                &id,
-                &mut Budget::local(u64::MAX),
-                &mut round.days,
-            )
-        } else {
-            Ok(Bounded::Truncated)
-        };
-        let outcome = match found {
-            Ok(Bounded::Ready(Some(file))) => Ok(Some(file.path().to_owned())),
-            Ok(Bounded::Ready(None)) => Ok(None),
-            Err(error) if error.to_string().contains("not unique") => Err(GapKind::NotUnique),
-            Ok(Bounded::Truncated) | Err(_) => Err(GapKind::Unreadable),
-        };
-        if round.keep(rollout_bytes(&root, &id, &outcome)) {
-            round.rollouts.insert((root, id), outcome);
-        }
-    }
-
-    /// Locating is done: give every located file its place and stream,
-    /// record unlocated and non-unique conversations, queue the lstats.
-    fn place(&mut self) {
-        let Some(round) = self.round.as_mut() else {
-            return;
-        };
-        let (located, with_parent) = locate(round, &mut self.conversations);
-        self.files
-            .retain(|place, tracked| located.get(place).is_some_and(|path| *path == tracked.path));
-        let files = &self.files;
-        self.recounting.retain(|place| files.contains_key(place));
-        // The lstats are discovery: they may displace held observations,
-        // which the closing enforce evicts and a later readmission reads
-        // again (B3 review r3 B3-7). A conversation whose lstats the ledger
-        // cannot queue at all is refused, visibly and recoverably.
-        let mut short: BTreeSet<Key> = BTreeSet::new();
-        let batch: Vec<(Place, PathBuf)> = located.into_iter().collect();
-        for chunk in batch.chunks(usize::try_from(LSTATS).unwrap_or(256)) {
-            if !round.push(Task::Lstats(chunk.to_vec())) {
-                short.extend(chunk.iter().map(|(place, _)| place.conversation.clone()));
-            }
-        }
-        // Discovery state the ledger refused may hide a membership of any
-        // conversation: no client is proven this round.
-        if round.complete.get(LEDGER) == Some(&false) {
-            self.hidden = round
-                .complete
-                .values()
-                .filter(|complete| !**complete)
-                .count()
-                + usize::from(!round.archives_listed);
-            for conversation in &mut self.conversations {
-                conversation.evidence_complete = false;
-            }
-        }
-        // Read only when located and every located file was read to its end;
-        // the lstats that follow clear it for any file they queue.
-        for index in 0..self.conversations.len() {
-            let Some(key) = self
-                .conversations
-                .get(index)
-                .map(|conversation| (conversation.adapter, conversation.id.clone()))
-            else {
-                continue;
-            };
-            let read = with_parent.contains(&key) && self.settled(&key);
-            if let Some(conversation) = self.conversations.get_mut(index) {
-                conversation.read = read;
-            }
-        }
-        // Streams and file state changed: the ledger decides again before
-        // any read of this round.
-        self.reweigh_all();
-        for key in short {
-            if let Some(index) = self.index(&key) {
-                self.evict(index);
-            }
-        }
-        self.enforce();
-    }
-
-    /// Whether every located file of `key` is tracked and was read to its end.
-    fn settled(&self, key: &Key) -> bool {
-        let Ok(at) = self.conversations.binary_search_by(|seen| {
-            (seen.adapter, seen.id.as_str()).cmp(&(key.0, key.1.as_str()))
-        }) else {
-            return false;
-        };
-        self.conversations.get(at).is_some_and(|conversation| {
-            conversation.streams.iter().all(|stream| {
-                let place = Place {
-                    conversation: key.clone(),
-                    role: stream.role.clone(),
-                    copy: stream.copy,
-                };
-                self.files.get(&place).is_some_and(|tracked| tracked.done)
-            })
+    };
+    let wanted: BTreeSet<&str> = round
+        .assoc
+        .iter()
+        .filter(|((adapter, _), assoc)| {
+            *adapter == Adapter::Claude && assoc.stores.contains(&store)
         })
+        .map(|((_, id), _)| id.as_str())
+        .collect();
+    let mut found = Vec::new();
+    let mut children = Vec::new();
+    for (name, kind) in names {
+        match kind {
+            Entry::File => {
+                if let Some(id) = name.strip_suffix(".jsonl")
+                    && wanted.contains(id)
+                {
+                    found.push((id.to_owned(), project.join(&name)));
+                }
+            }
+            Entry::Dir if wanted.contains(name.as_str()) => {
+                children.push((name.clone(), project.join(&name)));
+            }
+            Entry::Dir | Entry::Other => {}
+        }
     }
+    for (id, path) in found {
+        round
+            .parents
+            .entry((store.clone(), id))
+            .or_default()
+            .push(path);
+    }
+    for (id, dir) in children {
+        round.tasks.push_back(Task::Subagents {
+            store: store.clone(),
+            id,
+            dir,
+        });
+    }
+}
+
+fn subagents(round: &mut Round, store: PathBuf, id: String, dir: &Path) {
+    let mut budget = Budget::local(u64::MAX);
+    let subagents = match super::derived_directory(dir, "subagents", &mut budget) {
+        Ok(Some(subagents)) => subagents,
+        Ok(None) => return,
+        Err(_) => {
+            round.broken.insert(store);
+            return;
+        }
+    };
+    match super::names_only(&subagents, &mut budget) {
+        Ok(Bounded::Ready(names)) => {
+            let mut kept = BTreeMap::new();
+            for (name, kind) in names {
+                if kind == Entry::File
+                    && let Some(stem) = name.strip_suffix(".jsonl")
+                {
+                    kept.insert(stem.to_owned(), subagents.join(&name));
+                }
+            }
+            round.children.entry((store, id)).or_default().extend(kept);
+        }
+        Ok(Bounded::Truncated) | Err(_) => {
+            round.broken.insert(store);
+        }
+    }
+}
+
+fn codex_day(round: &mut Round, dir: &Path) {
+    // The cache keeps a complete listing (or a proven absence); a failed or
+    // cut one is not cached, and the find then reports its ids unreadable
+    // without listing it again.
+    if let Ok(Bounded::Ready(_)) = round.days.names(dir, &mut Budget::local(u64::MAX)) {
+        round.listed_days.insert(dir.to_owned());
+    }
+}
+
+fn codex_find(round: &mut Round, root: PathBuf, id: String) {
+    // The find only consults day listings its own units cached: a day whose
+    // listing failed or was cut is never listed again inside this unit.
+    let cached = crate::quota::codex_rollout_dirs(&root, &id)
+        .is_some_and(|dirs| dirs.iter().all(|dir| round.listed_days.contains(dir)));
+    let found = if cached {
+        crate::quota::find_codex_rollout_listed(
+            &root,
+            &id,
+            &mut Budget::local(u64::MAX),
+            &mut round.days,
+        )
+    } else {
+        Ok(Bounded::Truncated)
+    };
+    let outcome = match found {
+        Ok(Bounded::Ready(Some(file))) => Ok(Some(file.path().to_owned())),
+        Ok(Bounded::Ready(None)) => Ok(None),
+        Err(error) if error.to_string().contains("not unique") => Err(GapKind::NotUnique),
+        Ok(Bounded::Truncated) | Err(_) => Err(GapKind::Unreadable),
+    };
+    round.rollouts.insert((root, id), outcome);
 }
 
 /// What locating found for one conversation.
@@ -1759,24 +2246,22 @@ struct Found {
 }
 
 /// The files the round's listings located for conversation `key`, whether
-/// one is its parent, and the gaps its stores show. Pure over the round's
-/// discovery state, so a readmission locates the same files again (B3
-/// review r3 B3-7).
+/// one is its parent, and the gaps its stores show.
 fn found(round: &Round, key: &Key, assoc: &Assoc) -> Found {
     let mut found = Found {
         files: Vec::new(),
         parent: false,
         gaps: Vec::new(),
     };
-    for (copy, store) in (0_u32..).zip(&assoc.stores) {
+    for store in &assoc.stores {
         if round.broken.contains(store) {
             found.gaps.push(GapKind::Unreadable);
             continue;
         }
+        let copy = copy_of(store);
         let at = |role: StreamRole| Place {
             conversation: key.clone(),
-            role,
-            copy,
+            stream: StreamKey { role, copy },
         };
         match key.0 {
             Adapter::Claude => {
@@ -1789,10 +2274,10 @@ fn found(round: &Round, key: &Key, assoc: &Assoc) -> Found {
                     Some([_, _, ..]) => found.gaps.push(GapKind::NotUnique),
                     _ => {}
                 }
-                for (name, path) in round.children.get(&pair).into_iter().flatten() {
+                for (stem, path) in round.children.get(&pair).into_iter().flatten() {
                     found
                         .files
-                        .push((at(StreamRole::Child(name.clone())), path.clone()));
+                        .push((at(StreamRole::Child(child_id(stem))), path.clone()));
                 }
             }
             Adapter::Codex => match round.rollouts.get(&(store.clone(), key.1.clone())) {
@@ -1808,786 +2293,603 @@ fn found(round: &Round, key: &Key, assoc: &Assoc) -> Found {
     found
 }
 
-/// Each associated conversation's located files by place, and the
-/// conversations with a parent file; marks the unlocated, unreadable and
-/// non-unique ones and lines their streams up with the located files.
-fn locate(
-    round: &Round,
-    conversations: &mut [Conversation],
-) -> (BTreeMap<Place, PathBuf>, BTreeSet<Key>) {
-    let mut located: BTreeMap<Place, PathBuf> = BTreeMap::new();
-    let mut with_parent: BTreeSet<Key> = BTreeSet::new();
-    for conversation in conversations {
-        let key = (conversation.adapter, conversation.id.clone());
-        let Some(assoc) = round.assoc.get(&key) else {
-            continue;
-        };
-        let found = found(round, &key, assoc);
-        conversation.gaps.extend(found.gaps);
-        if !found.parent && !conversation.gaps.contains(&GapKind::NotUnique) {
-            conversation.gaps.push(GapKind::Unlocated);
-        }
-        conversation.gaps.sort();
-        conversation.gaps.dedup();
-        if found.parent {
-            with_parent.insert(key.clone());
-        }
-        conversation.streams.retain(|stream| {
-            found
+impl Reader {
+    /// Locating is done: every associated conversation's files and gaps;
+    /// its held state loaded first, then the lstats.
+    fn place(&mut self, round: &mut Round) {
+        let keys: Vec<Key> = round.assoc.keys().cloned().collect();
+        let mut conversations = Vec::with_capacity(keys.len());
+        for key in &keys {
+            let Some(assoc) = round.assoc.get(key) else {
+                continue;
+            };
+            let found = found(round, key, assoc);
+            let mut marks = found.gaps;
+            if assoc
+                .groups
+                .iter()
+                .any(|group| round.incomplete.contains(group))
+            {
+                marks.push(GapKind::Unreadable);
+            }
+            if !found.parent && !marks.contains(&GapKind::NotUnique) {
+                marks.push(GapKind::Unlocated);
+            }
+            marks.sort();
+            marks.dedup();
+            if found.parent {
+                round.with_parent.insert(key.clone());
+            }
+            let association = self.association.get(key);
+            conversations.push(Conversation {
+                adapter: key.0,
+                id: key.1.clone(),
+                memberships: assoc.memberships.clone(),
+                evidence_complete: association.is_some_and(|one| one.evidence_complete),
+                reseated: association.is_some_and(|one| one.reseated),
+                streams: Vec::new(),
+                gaps: marks.clone(),
+                read: false,
+            });
+            round.marks.insert(key.clone(), marks);
+            let open: BTreeSet<StreamKey> = found
                 .files
                 .iter()
-                .any(|(place, _)| place.role == stream.role && place.copy == stream.copy)
-        });
-        for (place, path) in found.files {
-            let present = conversation
-                .streams
-                .iter()
-                .any(|stream| stream.role == place.role && stream.copy == place.copy);
-            if !present {
-                conversation.streams.push(Stream {
-                    role: place.role.clone(),
-                    copy: place.copy,
-                    events: Vec::new(),
-                    malformed: 0,
-                    over_cap: 0,
-                });
-            }
-            located.insert(place, path);
+                .map(|(place, _)| place.stream.clone())
+                .collect();
+            round.open.insert(key.clone(), open);
+            round.located.extend(found.files);
         }
-    }
-    (located, with_parent)
-}
-
-// --- Ledger (plan §7, B3 review r1 B3-1) -------------------------------------
-
-impl Reader {
-    /// The ledger the admitted conversations share: the cap less the fixed
-    /// view reserve, the discovery state kept beside them (the round's, or
-    /// between rounds the unsupported coverage) and what the refused ones
-    /// keep.
-    fn budget(&self) -> usize {
-        self.caps
-            .ledger
-            .saturating_sub(VIEW_RESERVE)
-            .saturating_sub(self.discovery())
-            .saturating_sub(self.pinned())
-    }
-
-    /// The discovery state kept beside the conversations: the round's, or
-    /// between rounds the unsupported coverage.
-    fn discovery(&self) -> usize {
-        self.round.as_ref().map_or_else(
-            || {
-                self.unsupported
-                    .iter()
-                    .map(|((tool, id), sessions)| {
-                        sessions
-                            .iter()
-                            .map(|session| unsupported_bytes(tool, id, session.as_deref()))
-                            .sum::<usize>()
-                    })
-                    .sum()
-            },
-            |round| round.bytes,
-        )
-    }
-
-    /// What the refused conversations keep: the record evict leaves and
-    /// their refusal entries (B3 review r3 B3-1a).
-    fn pinned(&self) -> usize {
-        self.refused
-            .keys()
-            .map(|key| {
-                self.index(key)
-                    .and_then(|index| {
-                        let weight = self.weights.get(index)?;
-                        let conversation = self.conversations.get(index)?;
-                        Some(weight.charge.saturating_add(spare_bytes(conversation)))
-                    })
-                    .unwrap_or(0)
-                    .saturating_add(refusal_bytes(key))
-            })
-            .fold(0_usize, usize::saturating_add)
-    }
-
-    fn index(&self, key: &Key) -> Option<usize> {
-        self.conversations
-            .binary_search_by(|seen| (seen.adapter, seen.id.as_str()).cmp(&(key.0, key.1.as_str())))
-            .ok()
-    }
-
-    /// Recompute every weight (the conversations or their streams changed).
-    fn reweigh_all(&mut self) {
-        let caps = self.caps;
-        self.weights = self
-            .conversations
+        self.conversations = conversations;
+        // The view lists the associated conversations only.
+        let gone: Vec<Key> = self
+            .all
+            .convs
             .iter()
-            .map(|conversation| weigh(conversation, &caps))
+            .map(|one| (one.summary.adapter, one.summary.id.clone()))
+            .filter(|key| !round.assoc.contains_key(key))
             .collect();
-    }
-
-    /// Recompute one conversation's weight after its evidence changed.
-    fn reweigh(&mut self, key: &Key) {
-        let caps = self.caps;
-        if let Some(index) = self.index(key)
-            && let Some(conversation) = self.conversations.get(index)
-            && let Some(weight) = self.weights.get_mut(index)
-        {
-            *weight = weigh(conversation, &caps);
+        for key in gone {
+            let _ = self.enter(&key, None);
         }
-    }
-
-    /// What the conversations hold now.
-    fn holding(&self) -> Holding {
-        holding(
-            &self.conversations,
-            &self.weights,
-            &self.files,
-            &self.refused,
-        )
-    }
-
-    /// Everything the conversations hold on the ledger, admitted or pinned.
-    fn held(&self) -> usize {
-        let now = self.holding();
-        now.admitted.saturating_add(now.pinned)
-    }
-
-    /// Per conversation in `(adapter, id)` order: the file-state bytes kept
-    /// beside it.
-    fn kept(&self) -> Vec<usize> {
-        let mut kept = vec![0_usize; self.conversations.len()];
-        for (place, tracked) in &self.files {
-            if let Some(slot) = self
-                .index(&place.conversation)
-                .and_then(|index| kept.get_mut(index))
-            {
-                *slot = slot.saturating_add(tracked_bytes(place, tracked));
-            }
-        }
-        kept
-    }
-
-    /// The refusal of conversation `index`, if any.
-    fn refusal(&self, index: usize) -> Option<Refusal> {
-        if self.refused.is_empty() {
-            return None;
-        }
-        let conversation = self.conversations.get(index)?;
-        self.refused
-            .get(&(conversation.adapter, conversation.id.clone()))
-            .copied()
-    }
-
-    /// Per conversation in `(adapter, id)` order: its weight, a refused one
-    /// weighing as refused, and the file-state bytes kept beside it.
-    fn weighed(&self) -> Vec<(Weight, usize)> {
-        self.weights
-            .iter()
-            .zip(self.kept())
-            .enumerate()
-            .map(|(index, (weight, kept))| {
-                let weight = match self.refusal(index) {
-                    Some(Refusal::Alone) => Weight {
-                        charge: 0,
-                        alone: true,
-                    },
-                    Some(Refusal::Prefix { .. }) => Weight {
-                        charge: usize::MAX,
-                        alone: false,
-                    },
-                    None => Weight {
-                        charge: weight
-                            .charge
-                            .saturating_add(self.conversations.get(index).map_or(0, spare_bytes)),
-                        alone: weight.alone,
-                    },
-                };
-                (weight, kept)
-            })
-            .collect()
-    }
-
-    /// The ledger left before conversation `index`, the readmission measure
-    /// (B3 review r3 B3-7): the cap less the view reserve, the discovery
-    /// state and what every EARLIER conversation holds (its charge and files
-    /// when admitted, its record and refusal entry when refused). It leaves
-    /// out the conversation itself and the ones after it, whose refusal
-    /// status changes as it is refused, so it grows only when discovery is
-    /// released or an earlier conversation shrinks.
-    fn room_before(&self, index: usize) -> usize {
-        let used = self
-            .weights
-            .iter()
-            .zip(self.kept())
-            .enumerate()
-            .take(index)
-            .map(|(at, (weight, kept))| self.holds(at, *weight, kept))
-            .fold(0_usize, usize::saturating_add);
-        self.caps
-            .ledger
-            .saturating_sub(VIEW_RESERVE)
-            .saturating_sub(self.discovery())
-            .saturating_sub(used)
-    }
-
-    /// What conversation `index` holds on the ledger: its record and refusal
-    /// entry when refused, else its charge and files; its membership
-    /// vector's spare slots either way.
-    fn holds(&self, index: usize, weight: Weight, kept: usize) -> usize {
-        let Some(conversation) = self.conversations.get(index) else {
-            return 0;
-        };
-        let own = if self.refusal(index).is_some() {
-            refusal_bytes(&(conversation.adapter, conversation.id.clone()))
-        } else {
-            kept
-        };
-        weight
-            .charge
-            .saturating_add(spare_bytes(conversation))
-            .saturating_add(own)
-    }
-
-    /// Association (lead ruling ae-20261108T170544Z-0d20805a): every
-    /// conversation is last round's and is rebuilt at `associate` from this
-    /// round's association alone, so discovery takes its room as in a fresh
-    /// scan (`Round::fits` leaves the records out in this phase). After each
-    /// unit the longest `(adapter, id)` prefix whose holdings fit beside
-    /// discovery stays as a cache; the rest are removed WHOLE (record,
-    /// memberships, files, refusal), so no conversation is ever kept without
-    /// its memberships and none reaches a View that way.
-    fn displace(&mut self) {
-        let room = self
-            .caps
-            .ledger
-            .saturating_sub(VIEW_RESERVE)
-            .saturating_sub(self.discovery());
-        let kept = self.kept();
-        let mut used = 0_usize;
-        let mut cut = self.conversations.len();
-        for (index, (weight, kept)) in self.weights.iter().zip(kept).enumerate() {
-            let holds = self.holds(index, *weight, kept);
-            if used.saturating_add(holds) > room {
-                cut = index;
-                break;
-            }
-            used = used.saturating_add(holds);
-        }
-        if cut >= self.conversations.len() {
-            return;
-        }
-        let gone: BTreeSet<Key> = self
-            .conversations
-            .drain(cut..)
-            .map(|conversation| (conversation.adapter, conversation.id))
-            .collect();
-        self.weights.truncate(cut);
-        self.files
-            .retain(|place, _| !gone.contains(&place.conversation));
-        self.recounting
-            .retain(|place| !gone.contains(&place.conversation));
-        self.refused.retain(|key, _| !gone.contains(key));
-    }
-
-    /// Evict every conversation the shared ledger refuses now. An eviction
-    /// pins the record it keeps, which narrows the budget, so this repeats
-    /// until nothing more is refused.
-    fn enforce(&mut self) {
-        if self
-            .round
-            .as_ref()
-            .is_some_and(|round| round.phase == Phase::Associate)
-        {
-            self.displace();
-            return;
-        }
-        loop {
-            let admitted = prefix(self.weighed(), self.budget());
-            let mut evicted = false;
-            for (index, admitted) in admitted.into_iter().enumerate() {
-                if !admitted && self.refusal(index).is_none() {
-                    self.evict(index);
-                    evicted = true;
-                }
-            }
-            if !evicted {
-                return;
-            }
-        }
-    }
-
-    /// The queue drained: read again the first conversation the prefix rule
-    /// refused, when the room before it grew since (B3 review r2 B3-7, r3
-    /// B3-7). One refused during its own readmission is tried again only
-    /// after a later shrink, so the round ends. Its files are located again
-    /// from the round's listings. `false` when none may be read again, so
-    /// the round is over.
-    fn readmit(&mut self) -> bool {
-        let first = (0..self.conversations.len()).find_map(|index| match self.refusal(index) {
-            Some(Refusal::Prefix { room, settled }) => Some((index, room, settled)),
-            Some(Refusal::Alone) | None => None,
-        });
-        let Some((index, room, settled)) = first else {
-            return false;
-        };
-        let shrinks = self.shrinks;
-        if self.room_before(index) <= room || settled.is_some_and(|at| at >= shrinks) {
-            return false;
-        }
-        let Some(conversation) = self.conversations.get_mut(index) else {
-            return false;
-        };
-        let key = (conversation.adapter, conversation.id.clone());
-        conversation.gaps.retain(|gap| *gap != GapKind::Ledger);
-        self.refused.remove(&key);
-        self.reweigh(&key);
-        self.retrying = Some(index);
-        let files = self
-            .round
-            .as_ref()
-            .and_then(|round| {
-                round
-                    .assoc
-                    .get(&key)
-                    .map(|assoc| found(round, &key, assoc).files)
-            })
-            .unwrap_or_default();
-        for chunk in files.chunks(usize::try_from(LSTATS).unwrap_or(256)) {
-            if !self.push(Task::Lstats(chunk.to_vec())) {
-                self.evict(index);
-                break;
-            }
-        }
-        true
-    }
-
-    /// Queue `task` on the round, charged against the ledger as it stands
-    /// now; `false` when the ledger refused it (or no round runs).
-    fn push(&mut self, task: Task) -> bool {
-        let now = self.holding();
-        self.round.as_mut().is_some_and(|round| {
-            round.held = now.admitted;
-            round.pinned = now.pinned;
-            round.push(task)
-        })
-    }
-
-    /// The bytes conversation `index` may still gather before the ledger
-    /// refuses it; `None` when it is refused already.
-    fn room(&self, index: usize) -> Option<usize> {
-        let weighed: Vec<(Weight, usize)> = self.weighed().into_iter().take(index + 1).collect();
-        let admitted = prefix(weighed.iter().copied(), self.budget());
-        if !admitted.last().copied().unwrap_or(false) {
-            return None;
-        }
-        let used = weighed
-            .iter()
-            .zip(&admitted)
-            .filter(|(_, admitted)| **admitted)
-            .map(|((weight, kept), _)| weight.charge.saturating_add(*kept))
-            .fold(0_usize, usize::saturating_add);
-        Some(self.budget().saturating_sub(used))
-    }
-
-    /// Refuse conversation `index`: drop its observations and its files'
-    /// state and keep a path-free `over cap` line. Only [`Self::readmit`]
-    /// reads it again this round.
-    fn evict(&mut self, index: usize) {
-        if self.refusal(index).is_some() {
-            return;
-        }
-        let caps = self.caps;
-        let refusal = if self.weights.get(index).is_some_and(|weight| weight.alone) {
-            // What it held is free for the conversations after it.
-            self.shrinks = self.shrinks.saturating_add(1);
-            Refusal::Alone
-        } else {
-            let cascade =
-                (0..index).any(|at| matches!(self.refusal(at), Some(Refusal::Prefix { .. })));
-            Refusal::Prefix {
-                room: if cascade { 0 } else { self.room_before(index) },
-                settled: (self.retrying == Some(index)).then_some(self.shrinks),
-            }
-        };
-        let Some(conversation) = self.conversations.get_mut(index) else {
-            return;
-        };
-        let key = (conversation.adapter, conversation.id.clone());
-        for stream in &mut conversation.streams {
-            stream.events = Vec::new();
-            stream.malformed = 0;
-            stream.over_cap = 0;
-        }
-        if !conversation.gaps.contains(&GapKind::Ledger) {
-            conversation.gaps.push(GapKind::Ledger);
-            conversation.gaps.sort();
-        }
-        conversation.read = false;
-        if let Some(weight) = self.weights.get_mut(index) {
-            *weight = weigh(conversation, &caps);
-        }
-        self.files.retain(|place, _| place.conversation != key);
-        self.recounting.retain(|place| place.conversation != key);
-        self.refused.insert(key, refusal);
-    }
-}
-
-// --- Reading (plan §6) -----------------------------------------------------
-
-impl Reader {
-    fn lstats(&mut self, batch: Vec<(Place, PathBuf)>, guard: &Guard) {
-        let mut batch = batch.into_iter();
-        while let Some((place, path)) = batch.next() {
-            if self.refused.contains_key(&place.conversation) {
+        for key in &keys {
+            if self.convs.contains_key(key) {
                 continue;
             }
-            // One lstat per located file: the rest waits for its own unit
-            // once this one's receipt reaches the bound.
+            if self.durable && self.proof != Proof::Cold && self.epoch.is_some() {
+                round.tasks.push_back(Task::LoadConv(key.clone()));
+            } else {
+                self.convs.insert(
+                    key.clone(),
+                    Held {
+                        conv: Conv::new(key.0, &key.1),
+                        dirty: true,
+                    },
+                );
+            }
+        }
+        let batch: Vec<(Place, PathBuf)> = round
+            .located
+            .iter()
+            .map(|(place, path)| (place.clone(), path.clone()))
+            .collect();
+        for chunk in batch.chunks(usize::try_from(LSTATS).unwrap_or(256)) {
+            round.tasks.push_back(Task::Lstats(chunk.to_vec()));
+        }
+        for key in &keys {
+            if self.convs.contains_key(key) && round.open.get(key).is_some_and(BTreeSet::is_empty) {
+                self.settle(round, key);
+            }
+        }
+    }
+}
+
+// --- Reading (plan r4 §3) ----------------------------------------------------
+
+impl Reader {
+    fn lstats(&mut self, round: &mut Round, batch: Vec<(Place, PathBuf)>, guard: &Guard) {
+        let mut batch = batch.into_iter();
+        while let Some((place, path)) = batch.next() {
+            // One lstat per located file: the rest waits for its own unit once
+            // this one's receipt reaches the bound.
             if stats(guard) >= u64::from(LSTATS) {
                 let rest: Vec<(Place, PathBuf)> =
                     std::iter::once((place, path)).chain(batch).collect();
-                self.requeue(rest);
+                round.tasks.push_back(Task::Lstats(rest));
                 break;
             }
-            let found = super::locate_transcript(&path, &mut Budget::local(u64::MAX));
-            let Ok(Some(file)) = found else {
-                // Gone or refused since it was listed: unreadable this round.
-                self.reset(&place);
-                self.files.remove(&place);
-                self.recounting.remove(&place);
-                if let Some(conversation) = self.conversation(&place) {
-                    conversation.read = false;
-                    if !conversation.gaps.contains(&GapKind::Unreadable) {
-                        conversation.gaps.push(GapKind::Unreadable);
-                    }
-                }
+            if round.work.contains_key(&place) {
+                // Queued already by a rebuild of its conversation.
                 continue;
+            }
+            let key = place.conversation.clone();
+            let Some(held) = self.convs.get(&key) else {
+                // Its document could not be read: not read this round.
+                self.done(round, &place);
+                continue;
+            };
+            if held.conv.summary.refused.is_some() {
+                // Refused whole: only a reset retries it.
+                self.done(round, &place);
+                continue;
+            }
+            // Its events were classified by other roots: it is rebuilt, and
+            // this file is still checked by its own lstat below.
+            self.reclassify(round, &key);
+            let Some(held) = self.convs.get(&key) else {
+                continue;
+            };
+            let file = match super::locate_transcript(&path, &mut Budget::local(u64::MAX)) {
+                Ok(Some(file)) => {
+                    round.statted.insert(place.clone());
+                    file
+                }
+                Ok(None) => {
+                    round.missing.insert(place.clone());
+                    self.done(round, &place);
+                    continue;
+                }
+                Err(_) => {
+                    round.changed.insert(place.clone());
+                    self.done(round, &place);
+                    continue;
+                }
             };
             let identity = Identity::of(&file.metadata);
-            let roots = self
-                .round
-                .as_ref()
-                .and_then(|round| round.assoc.get(&place.conversation))
-                .map_or_else(Roots::default, |assoc| assoc.roots.clone());
-            let fresh = match self.files.get(&place) {
-                None => true,
-                Some(tracked) => {
-                    tracked.roots != roots
-                        || tracked.identity.dev != identity.dev
-                        || tracked.identity.ino != identity.ino
-                        || identity.len < tracked.lines.cursor()
+            let state = held.conv.resume.file(&place.stream).cloned();
+            match state {
+                None => self.start(round, place, path, identity),
+                Some(state) if identity.same(&state) => self.done(round, &place),
+                Some(state) if identity.replaced(&state) => {
+                    self.rebuild(round, &key);
                 }
-            };
-            if fresh {
-                // Reset first: a tracked file with a cursor is a recount.
-                self.reset(&place);
-                self.files.insert(place.clone(), Tracked::new(path, roots));
-                self.queue(Task::Read {
-                    place,
-                    anchor: Some(identity),
-                });
-                continue;
-            }
-            let Some(tracked) = self.files.get(&place) else {
-                continue;
-            };
-            if tracked.done && tracked.identity == identity {
-                continue;
-            }
-            if tracked.lines.cursor() == 0 {
-                self.queue(Task::Read {
-                    place,
-                    anchor: Some(identity),
-                });
-            } else {
-                let hash = Box::new(ring::digest::Context::new(&ring::digest::SHA256));
-                self.queue(Task::Verify {
-                    place,
-                    at: 0,
-                    hash,
-                    anchor: identity,
-                });
-            }
-        }
-        // The new file state is held on the ledger beside its conversation.
-        self.enforce();
-    }
-
-    /// Queue the lstats of a batch's `rest` for a later unit; a conversation
-    /// whose files the ledger cannot keep queued is refused, visibly.
-    fn requeue(&mut self, rest: Vec<(Place, PathBuf)>) {
-        let owners: BTreeSet<Key> = rest
-            .iter()
-            .map(|(place, _)| place.conversation.clone())
-            .collect();
-        if !self.push(Task::Lstats(rest)) {
-            for key in owners {
-                if let Some(index) = self.index(&key) {
-                    self.evict(index);
+                Some(state) if state.cursor == 0 => self.start(round, place, path, identity),
+                Some(state) => {
+                    let all = identity.len == state.len;
+                    match Check::of(&state, all) {
+                        Some(check) => {
+                            self.next += 1;
+                            round.work.insert(
+                                place.clone(),
+                                Work {
+                                    generation: self.next,
+                                    stage: Stage::Verifying(Box::new(Verifying {
+                                        path,
+                                        anchor: identity,
+                                        check,
+                                        state,
+                                    })),
+                                },
+                            );
+                            round.tasks.push_back(Task::Verify {
+                                place,
+                                generation: self.next,
+                            });
+                        }
+                        None => self.rebuild(round, &key),
+                    }
                 }
             }
         }
     }
 
-    fn queue(&mut self, task: Task) {
-        let owner = match &task {
-            Task::Verify { place, .. } | Task::Read { place, .. } => Some(place.clone()),
-            _ => None,
-        };
-        if let Some(place) = &owner {
-            if let Some(tracked) = self.files.get_mut(place) {
-                tracked.done = false;
-            }
-            if let Some(conversation) = self.conversation(place) {
-                conversation.read = false;
-            }
-        }
-        // A task the ledger cannot keep refuses its conversation, visibly.
-        if !self.push(task)
-            && let Some(index) = owner.and_then(|place| self.index(&place.conversation))
-        {
-            self.evict(index);
-        }
-    }
-
-    fn conversation(&mut self, place: &Place) -> Option<&mut Conversation> {
-        let (adapter, id) = &place.conversation;
-        self.conversations
-            .binary_search_by(|seen| (seen.adapter, seen.id.as_str()).cmp(&(*adapter, id.as_str())))
-            .ok()
-            .and_then(|at| self.conversations.get_mut(at))
-    }
-
-    fn stream(&mut self, place: &Place) -> Option<&mut Stream> {
-        let (role, copy) = (place.role.clone(), place.copy);
-        self.conversation(place)?
-            .streams
-            .iter_mut()
-            .find(|stream| stream.role == role && stream.copy == copy)
-    }
-
-    /// Drop a file's observations and read it again from 0.
-    fn reset(&mut self, place: &Place) {
-        if let Some(tracked) = self.files.get_mut(place) {
-            let had = tracked.lines.cursor() > 0;
-            tracked.lines = Lines::new(LINE_CAP);
-            tracked.hash = ring::digest::Context::new(&ring::digest::SHA256);
-            tracked.identity = Identity::default();
-            tracked.done = false;
-            if had {
-                self.recounting.insert(place.clone());
-                self.shrinks = self.shrinks.saturating_add(1);
-            }
-        }
-        if let Some(stream) = self.stream(place) {
-            stream.events = Vec::new();
-            stream.malformed = 0;
-            stream.over_cap = 0;
-        }
-        self.reweigh(&place.conversation);
-    }
-
-    /// One chunk re-hashing the consumed prefix `[at, cursor)`. Every chunk
-    /// must see the status `anchor` the pass started from (B3 review r1
-    /// B3-3); a file that changed under the pass ends it as changed, and the
-    /// next round verifies again from 0.
-    fn verify(
-        &mut self,
-        place: Place,
-        at: u64,
-        hash: Box<ring::digest::Context>,
-        anchor: Identity,
-    ) {
-        let mut hash = *hash;
-        let Some(tracked) = self.files.get(&place) else {
-            return;
-        };
-        let cursor = tracked.lines.cursor();
-        let window = super::journal_window(&tracked.path, at, STEP.min(cursor.saturating_sub(at)));
-        let Ok(window) = window else {
-            self.finish(&place, false);
-            return;
-        };
-        if Identity::window(&window) != anchor {
-            self.finish(&place, false);
-            return;
-        }
-        hash.update(&window.bytes);
-        let at = at.saturating_add(u64::try_from(window.bytes.len()).unwrap_or(u64::MAX));
-        if window.bytes.is_empty() && at < cursor {
-            self.reset(&place);
-            self.queue(Task::Read {
-                place,
-                anchor: Some(anchor),
-            });
-            return;
-        }
-        if at < cursor {
-            self.queue(Task::Verify {
-                place,
-                at,
-                hash: Box::new(hash),
-                anchor,
-            });
-            return;
-        }
-        let same = self.files.get(&place).is_some_and(|tracked| {
-            tracked.hash.clone().finish().as_ref() == hash.finish().as_ref()
+    /// Read `place` from 0.
+    fn start(&mut self, round: &mut Round, place: Place, path: PathBuf, anchor: Identity) {
+        let roots = round
+            .assoc
+            .get(&place.conversation)
+            .map(|assoc| assoc.roots.clone())
+            .unwrap_or_default();
+        self.next += 1;
+        round.work.insert(
+            place.clone(),
+            Work {
+                generation: self.next,
+                stage: Stage::Reading(Box::new(Reading {
+                    path,
+                    roots,
+                    lines: Lines::new(LINE_CAP),
+                    witness: Witness::new(),
+                    anchor,
+                    identity: anchor,
+                    events: Vec::new(),
+                    malformed: 0,
+                    over_cap: 0,
+                    took: false,
+                    done: false,
+                    fresh: true,
+                })),
+            },
+        );
+        round.tasks.push_back(Task::Read {
+            place,
+            generation: self.next,
         });
-        if !same {
-            self.reset(&place);
+    }
+
+    /// Rebuild `key` when its held events were classified by other recorded
+    /// roots than this round's. A conversation with no file read yet only
+    /// takes this round's roots. A client label is not a root, so a relabel
+    /// reads nothing.
+    fn reclassify(&mut self, round: &mut Round, key: &Key) {
+        let want = classified_by(round, key);
+        let Some(held) = self.convs.get_mut(key) else {
+            return;
+        };
+        if held.conv.resume.roots() == want.as_ref() {
+            return;
+        }
+        if held.conv.summary.files.is_empty() {
+            held.conv.resume.set_roots(want);
+            return;
+        }
+        self.rebuild(round, key);
+    }
+
+    /// The one rebuild seam (P6 holds across every trigger): `key` is read
+    /// again from its sources under this round's roots, and no evidence is
+    /// dropped here ([`Conv::rebuild`]). A file whose own lstat already
+    /// found it on disk this round is read again from 0 now. Every other
+    /// located file is read from 0 by its own lstat when that finds it, and
+    /// is classified gone, with its counts kept, when it does not. A read
+    /// from 0 replaces its stream's evidence only when it is taken.
+    fn rebuild(&mut self, round: &mut Round, key: &Key) {
+        let roots = classified_by(round, key);
+        let places: Vec<(Place, PathBuf)> = round
+            .located
+            .iter()
+            .filter(|(place, _)| place.conversation == *key && !round.missing.contains(place))
+            .map(|(place, path)| (place.clone(), path.clone()))
+            .collect();
+        let Some(held) = self.convs.get_mut(key) else {
+            return;
+        };
+        held.conv.rebuild();
+        held.conv.resume.set_roots(roots);
+        held.dirty = true;
+        round.rebuilt.insert(key.clone());
+        self.recounting = self
+            .recounting
+            .saturating_add(u64::try_from(places.len()).unwrap_or(u64::MAX));
+        let statted: Vec<(Place, PathBuf)> = places
+            .into_iter()
+            .filter(|(place, _)| round.statted.contains(place))
+            .collect();
+        let open = round.open.entry(key.clone()).or_default();
+        for (place, _) in &statted {
+            open.insert(place.stream.clone());
+        }
+        for (place, path) in statted {
+            round.work.remove(&place);
+            round.changed.remove(&place);
+            let anchor = Identity::default();
+            self.start(round, place.clone(), path, anchor);
+            // A read from 0 takes the status its first chunk sees.
+            if let Some(Work {
+                stage: Stage::Reading(reading),
+                ..
+            }) = round.work.get_mut(&place)
+            {
+                reading.took = false;
+                reading.anchor = Identity::default();
+            }
+        }
+    }
+
+    /// One chunk re-hashing the consumed prefix. Every chunk must see the
+    /// status the pass started from; a file that changed under the pass ends
+    /// it as changed, and the next round checks again.
+    fn verify(&mut self, round: &mut Round, place: Place, generation: u64) {
+        let Some(work) = round.work.get_mut(&place) else {
+            return;
+        };
+        if work.generation != generation {
+            return;
+        }
+        let Stage::Verifying(verifying) = &mut work.stage else {
+            return;
+        };
+        let Verifying {
+            path,
+            anchor,
+            check,
+            state,
+        } = &mut **verifying;
+        let take = STEP.min(check.end.saturating_sub(check.at));
+        let window = super::journal_window(path, check.at, take);
+        let Ok(window) = window else {
+            round.changed.insert(place.clone());
+            round.work.remove(&place);
+            self.done(round, &place);
+            return;
+        };
+        if Identity::window(&window) != *anchor {
+            round.changed.insert(place.clone());
+            round.work.remove(&place);
+            self.done(round, &place);
+            return;
+        }
+        let fed = check.feed(&window.bytes);
+        if !fed || window.bytes.is_empty() && check.at < check.end {
+            let key = place.conversation;
+            self.rebuild(round, &key);
+            return;
+        }
+        if check.at < check.end {
+            round.tasks.push_back(Task::Verify { place, generation });
+            return;
+        }
+        if !check.closes() {
+            let key = place.conversation;
+            self.rebuild(round, &key);
+            return;
         }
         // The read resumes under the status the prefix was verified at.
-        self.queue(Task::Read {
-            place,
-            anchor: Some(anchor),
-        });
+        let witness = check.witness.clone();
+        let lines = Lines::resume(LINE_CAP, state.cursor, state.skipping);
+        let path = path.clone();
+        let anchor = *anchor;
+        let roots = round
+            .assoc
+            .get(&place.conversation)
+            .map(|assoc| assoc.roots.clone())
+            .unwrap_or_default();
+        work.stage = Stage::Reading(Box::new(Reading {
+            path,
+            roots,
+            lines,
+            witness,
+            anchor,
+            identity: anchor,
+            events: Vec::new(),
+            malformed: 0,
+            over_cap: 0,
+            took: false,
+            done: false,
+            fresh: false,
+        }));
+        round.tasks.push_back(Task::Read { place, generation });
     }
 
-    /// One chunk of new bytes from the cursor. With an `anchor`, the chunk
-    /// must see that status (the lstat's, the verify's or the previous
-    /// chunk's); otherwise the file changed between units: the chunk is
-    /// dropped, the file ends this round as changed with its last
-    /// consistent status kept, so the next round verifies the consumed
-    /// prefix (B3 review r1 B3-3).
-    fn read(&mut self, place: Place, anchor: Option<Identity>) {
-        let Some(index) = self.index(&place.conversation) else {
+    /// One chunk of new bytes from the cursor. Each chunk must see the
+    /// status the previous one saw; otherwise the file changed between
+    /// units: the chunk is dropped and the file ends this round as changed
+    /// with its last consistent state, so the next round checks again.
+    fn read(&mut self, round: &mut Round, place: Place, generation: u64) {
+        let Some(work) = round.work.get_mut(&place) else {
             return;
         };
-        // The ledger first (plan §7, B3 review r1 B3-1): a conversation the
-        // prefix already refuses is evicted without reading.
-        let Some(room) = self.room(index) else {
-            self.evict(index);
+        if work.generation != generation {
+            return;
+        }
+        let Stage::Reading(reading) = &mut work.stage else {
             return;
         };
-        let Some(tracked) = self.files.get_mut(&place) else {
-            return;
-        };
-        let window = super::journal_window(&tracked.path, tracked.lines.cursor(), STEP);
+        let window = super::journal_window(&reading.path, reading.lines.cursor(), STEP);
         let Ok(window) = window else {
-            self.finish(&place, false);
+            round.changed.insert(place.clone());
+            self.done(round, &place);
             return;
         };
         let identity = Identity::window(&window);
-        if anchor.is_some_and(|anchor| anchor != identity) {
-            self.finish(&place, false);
+        let first = reading.anchor == Identity::default();
+        if !first && identity != reading.anchor {
+            round.changed.insert(place.clone());
+            self.done(round, &place);
             return;
         }
         let adapter = place.conversation.0;
-        let roots = tracked.roots.clone();
-        let mut lines = tracked.lines.clone();
-        // The stream's held events (sorted, distinct) leave it while the
-        // chunk is gathered, so a new event's floor counts only once.
-        let held = self
-            .stream(&place)
-            .map(|stream| std::mem::take(&mut stream.events))
-            .unwrap_or_default();
-        // Each new distinct event once: one already held or already gathered
-        // from this chunk adds nothing to the floor (B3 review r2 B3-1b).
-        let mut gathered: BTreeSet<Event> = BTreeSet::new();
-        let mut parsed_events = Vec::new();
+        let mut parsed = Vec::new();
         let mut malformed = 0_u64;
         let mut over_cap = 0_u64;
-        let mut floor = 0_usize;
-        let mut over = false;
         let consumed = {
             let claude = claude_calls::Roots {
-                config_homes: &roots.config_homes,
-                work_dirs: &roots.work_dirs,
+                config_homes: &reading.roots.config_homes,
+                work_dirs: &reading.roots.work_dirs,
             };
-            lines.step(&window.bytes, &mut |framed| match framed {
-                Framed::OverCap => over_cap += 1,
-                Framed::Line(line) => {
-                    let parsed = match adapter {
-                        Adapter::Claude => claude_calls::line(line, &claude, &mut parsed_events),
-                        Adapter::Codex => codex_calls::line(line, &mut parsed_events),
-                    };
-                    if parsed == Parsed::Malformed {
-                        malformed += 1;
-                    }
-                    for event in parsed_events.drain(..) {
-                        if held.binary_search(&event).is_err() && !gathered.contains(&event) {
-                            floor = floor.saturating_add(event_floor(&event));
-                            gathered.insert(event);
+            let events = &mut reading.events;
+            reading
+                .lines
+                .step(&window.bytes, &mut |framed| match framed {
+                    Framed::OverCap => over_cap += 1,
+                    Framed::Line(line) => {
+                        let outcome = match adapter {
+                            Adapter::Claude => claude_calls::line(line, &claude, &mut parsed),
+                            Adapter::Codex => codex_calls::line(line, &mut parsed),
+                        };
+                        if outcome == Parsed::Malformed {
+                            malformed += 1;
                         }
+                        events.append(&mut parsed);
                     }
-                    // Past its room by the events' own floor, the conversation
-                    // is refused whatever else it holds: stop gathering, so
-                    // the chunk never holds more than its room plus one line.
-                    over |= floor > room;
-                    if over {
-                        gathered.clear();
-                    }
-                }
-            })
-        };
-        if over {
-            self.evict(index);
-            return;
-        }
-        let Some(tracked) = self.files.get_mut(&place) else {
-            return;
+                })
         };
         let used = usize::try_from(consumed).unwrap_or(window.bytes.len());
-        tracked
-            .hash
-            .update(&window.bytes[..used.min(window.bytes.len())]);
-        tracked.lines = lines;
-        tracked.identity = identity;
-        let more = consumed > 0 && tracked.lines.cursor() < identity.len;
-        if let Some(stream) = self.stream(&place) {
-            // Canonical retention (B2 F2 ownership boundary): each distinct
-            // event once, at exact capacity, so what the reader keeps is
-            // what the fold charges. The held events are one sorted run and
-            // the chunk's new events a second, disjoint from the first; the
-            // stable sort merges the runs.
-            stream.events = held;
-            stream.events.extend(gathered);
-            stream.events.sort();
-            stream.events.dedup();
-            stream.events.shrink_to_fit();
-            stream.malformed += malformed;
-            stream.over_cap += over_cap;
-        }
-        self.reweigh(&place.conversation);
-        self.enforce();
-        if !self.files.contains_key(&place) {
-            // Refused by this chunk's growth: evicted, read no more.
+        reading
+            .witness
+            .feed(&window.bytes[..used.min(window.bytes.len())]);
+        reading.malformed = reading.malformed.saturating_add(malformed);
+        reading.over_cap = reading.over_cap.saturating_add(over_cap);
+        reading.anchor = identity;
+        reading.identity = identity;
+        reading.took = true;
+        if consumed > 0 && reading.lines.cursor() < identity.len {
+            round.tasks.push_back(Task::Read { place, generation });
             return;
         }
-        if more {
-            self.queue(Task::Read {
-                place,
-                anchor: Some(identity),
-            });
-        } else {
-            self.finish(&place, true);
+        reading.done = true;
+        self.done(round, &place);
+    }
+
+    /// `place` is settled this round.
+    fn done(&mut self, round: &mut Round, place: &Place) {
+        let key = place.conversation.clone();
+        let Some(open) = round.open.get_mut(&key) else {
+            return;
+        };
+        open.remove(&place.stream);
+        if open.is_empty() && self.convs.contains_key(&key) {
+            self.settle(round, &key);
         }
     }
 
-    /// A file's reading ended this round; `whole` when it reached the end.
-    fn finish(&mut self, place: &Place, whole: bool) {
-        self.recounting.remove(place);
-        if let Some(tracked) = self.files.get_mut(place) {
-            tracked.done = whole;
+    /// Every located file of `key` is settled: take what was read into its
+    /// conversation, mark its sources, gaps and read state, and publish.
+    fn settle(&mut self, round: &mut Round, key: &Key) {
+        let places: Vec<Place> = round
+            .work
+            .keys()
+            .filter(|place| place.conversation == *key)
+            .cloned()
+            .collect();
+        let Some(held) = self.convs.get_mut(key) else {
+            return;
+        };
+        let before = held.conv.summary.clone();
+        let (moved, overflow) = take_readings(round, places, &mut held.conv, &self.caps);
+        if overflow {
+            // Counts no source makes: rebuilt from the sources next round.
+            held.conv.rebuild();
+            held.dirty = true;
         }
-        let settled = self.settled(&place.conversation);
-        if let Some(conversation) = self.conversation(place) {
-            if !whole && !conversation.gaps.contains(&GapKind::Changed) {
-                conversation.gaps.push(GapKind::Changed);
-                conversation.gaps.sort();
-            }
-            conversation.read = settled
-                && !conversation.gaps.contains(&GapKind::Unlocated)
-                && !conversation.gaps.contains(&GapKind::Changed);
+        mark_gone(round, key, &mut held.conv);
+        let mut marks = round.marks.get(key).cloned().unwrap_or_default();
+        let changed = round.changed.iter().any(|place| place.conversation == *key);
+        if changed && !marks.contains(&GapKind::Changed) {
+            marks.push(GapKind::Changed);
+            marks.sort();
+        }
+        if held.conv.set_gaps(marks.clone()).is_err() {
+            held.dirty = true;
+        }
+        let read = round.with_parent.contains(key)
+            && !changed
+            && !marks.contains(&GapKind::Unlocated)
+            && !marks.contains(&GapKind::Changed);
+        held.conv.summary.read = read;
+        if moved || held.conv.summary != before || round.rebuilt.contains(key) {
+            let caps = self.caps;
+            held.conv.bound(&caps, |conv| {
+                u64::try_from(doc::render_conv(conv).len()).unwrap_or(u64::MAX)
+            });
+            held.dirty = true;
+        }
+        // The records are built in key order: one search, not a scan.
+        if let Ok(index) = self
+            .conversations
+            .binary_search_by(|one| (one.adapter, one.id.as_str()).cmp(&(key.0, key.1.as_str())))
+        {
+            self.conversations[index].read = read;
+            self.conversations[index].gaps = marks;
+        }
+        let published = incr::publish(&held.conv.summary, self.association.get(key));
+        let mut dirty = held.dirty;
+        if self.enter(key, Some(published)).is_err()
+            && let Some(held) = self.convs.get_mut(key)
+        {
+            // The view could not add it up: rebuilt from its sources.
+            held.conv.rebuild();
+            held.dirty = true;
+            dirty = true;
+        }
+        if dirty && self.publishing() {
+            round.tasks.push_back(Task::Publish(key.clone()));
         }
     }
 }
 
-/// A fresh reader run through one whole round.
+/// The digest of the roots this round classifies `key`'s events by: Claude
+/// only, as Codex events name no skill directory.
+fn classified_by(round: &Round, key: &Key) -> Option<crate::tool_stats::Key> {
+    match key.0 {
+        Adapter::Claude => round.assoc.get(key).map(|assoc| roots_digest(&assoc.roots)),
+        Adapter::Codex => None,
+    }
+}
+
+/// Take what was read of `places` into `conv`: each file's events, line
+/// counts and new state. Returns whether a file state moved and whether a
+/// count overflowed (the conversation is then rebuilt).
+fn take_readings(
+    round: &mut Round,
+    places: Vec<Place>,
+    conv: &mut Conv,
+    caps: &Caps,
+) -> (bool, bool) {
+    let mut moved = false;
+    let mut taken: Vec<(Place, Reading)> = Vec::new();
+    for place in places {
+        let Some(work) = round.work.remove(&place) else {
+            continue;
+        };
+        let Stage::Reading(reading) = work.stage else {
+            continue;
+        };
+        if reading.took {
+            taken.push((place, *reading));
+        }
+    }
+    // Committed only now, and all before any admission: every taken read
+    // from 0 drops what its stream held, so the cap sees the conversation
+    // as it will be, never new evidence beside the superseded one (R4-1).
+    // Counts only grow as evidence is added, so the final conversation
+    // fitting means every step toward it fits. A read from 0 that took
+    // nothing, and a gone stream, keep their evidence as it was.
+    for (place, reading) in &taken {
+        if reading.fresh {
+            conv.restart(&place.stream);
+        }
+    }
+    for (place, reading) in taken {
+        let stream = &place.stream;
+        conv.apply(stream, &reading.events, caps);
+        if conv
+            .note(stream, reading.malformed, reading.over_cap)
+            .is_err()
+        {
+            return (moved, true);
+        }
+        let state = reading.identity.state(
+            reading.lines.cursor(),
+            reading.lines.skipping(),
+            reading.witness.blocks(),
+        );
+        if conv.resume.file(stream) != Some(&state) {
+            conv.resume.set_file(stream.clone(), state);
+            moved = true;
+        }
+        conv.source_present(stream);
+    }
+    (moved, false)
+}
+
+/// A counted file no longer listed, or gone at its lstat, keeps its counts,
+/// visibly (P6); a store whose listing failed proves nothing.
+fn mark_gone(round: &Round, key: &Key, conv: &mut Conv) {
+    let broken: BTreeSet<[u8; 16]> = round.broken.iter().map(|store| copy_of(store)).collect();
+    let streams: Vec<StreamKey> = conv
+        .summary
+        .files
+        .iter()
+        .filter(|(_, source)| **source == Source::Present)
+        .map(|(stream, _)| stream.clone())
+        .collect();
+    for stream in streams {
+        let place = Place {
+            conversation: key.clone(),
+            stream: stream.clone(),
+        };
+        let listed = round.located.contains_key(&place) && !round.missing.contains(&place);
+        if !listed && !broken.contains(&stream.copy) {
+            conv.source_gone(&stream);
+        }
+    }
+}
+
+/// A cold reader run through one whole round: it never reads or changes
+/// `<root>/stats`.
 pub(crate) fn scan(state_root: PathBuf, home: Option<PathBuf>, caps: Caps) -> Reader {
-    let mut reader = Reader::new(state_root, home, caps);
+    let mut reader = Reader::with(state_root, home, caps, false);
     reader.round();
     while reader.step().is_some() {}
     reader

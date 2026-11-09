@@ -1,0 +1,5 @@
+{"tools_coverage":1,"generation":3,"hidden":1,"oversize":0,"recounting":2,"omitted":1}
+{"unsupported":"grok","sessions":[null,"s1"]}
+{"unsupported":"grok","sessions":["s2"]}
+{"unsupported":"unresolved","sessions":["s1"]}
+{"end":4}

@@ -2786,6 +2786,80 @@ pub fn reset(root: &Path, wait: Duration) -> Result<Reset, Refused> {
     }
 }
 
+/// How one write to the tools subtree `<root>/stats/tools/` ended (#288 P3).
+#[derive(Debug)]
+pub enum Tools<T> {
+    /// Decided under `stats.lock` in the active `epoch`: the plan the
+    /// builder made, if any, was applied whole.
+    Done { epoch: u64, value: T },
+    /// No active epoch: S5 has not built the payload, or a swap is under way.
+    /// Tools never makes the payload or its epoch.
+    NoEpoch,
+    /// The lock was held past the wait, or every attempt was stale: nothing
+    /// was written.
+    Busy,
+    /// An IO error, a damaged epoch, or a warm over its cap.
+    Failed(String),
+}
+
+/// The one writer entry of the tools subtree (#288 P3, owner condition S5):
+/// `build` reads through the payload [`Dir`] and returns the plan to apply
+/// with its result; it runs warm without the lock, then held under
+/// `stats.lock` taken within `wait`, as every writer here does (ruling 19).
+/// The active epoch is read under the lock first and handed to `build`, so a
+/// plan never lands in a payload it did not see. `tools::store` builds the
+/// plans; this module stays the one executor of writes under `<root>/stats/`.
+pub fn tools<T>(
+    root: &Path,
+    wait: Duration,
+    mut build: impl FnMut(&mut dyn Dir, u64) -> (Option<Plan>, T),
+) -> Tools<T> {
+    let mut files = Files::at(root);
+    let mut held = Duration::ZERO;
+    let taken = transact(
+        root,
+        &mut files,
+        &mut FileJournals::at(root),
+        wait,
+        &mut held,
+        |files, _| {
+            let epoch = match read_epoch(files) {
+                Ok(Some(epoch)) => epoch,
+                Ok(None) => return Ok(None),
+                Err(refused) => return Err(refused.describe()),
+            };
+            let (plan, value) = build(files, epoch);
+            if let Some(plan) = plan {
+                plan.apply(files, plan.ops.len())
+                    .map_err(|why| why.to_string())?;
+            }
+            Ok(Some((epoch, value)))
+        },
+    );
+    match taken {
+        Taken::Done(Ok(Some((epoch, value)))) => Tools::Done { epoch, value },
+        Taken::Done(Ok(None)) => Tools::NoEpoch,
+        Taken::Done(Err(why)) => Tools::Failed(why),
+        Taken::Unlocked(why) if why.kind() == io::ErrorKind::WouldBlock => Tools::Busy,
+        Taken::Contended => Tools::Busy,
+        Taken::Unlocked(why) => Tools::Failed(format!("{LOCK}: {why}")),
+        Taken::Over { recorded, cap } => {
+            Tools::Failed(format!("warm recorded {recorded} bytes over the cap {cap}"))
+        }
+    }
+}
+
+/// The active epoch as a reader sees it, without the lock: `None` before
+/// S5's first build. The tools reader compares it each round, so a reset or
+/// a repair that moved the payload aside drops what it held.
+///
+/// # Errors
+///
+/// A damaged or unreadable epoch, described.
+pub fn active_epoch(dir: &mut dyn Dir) -> Result<Option<u64>, String> {
+    read_epoch(dir).map_err(|refused| refused.describe())
+}
+
 /// Every [`Files`] read on this thread since the last call: the payload
 /// name and the content bytes it returned (0 for any answer but bytes).
 #[cfg(test)]

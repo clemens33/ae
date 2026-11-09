@@ -140,6 +140,31 @@ fn incremental(conversation: &Conversation, split: u8, caps: &Caps) -> Conv {
     conv
 }
 
+/// P6 across a rebuild: the streams `split` marks gone keep their evidence
+/// as read, each other stream is read again from 0 and replaces its own,
+/// and the conversation is exactly the one before the rebuild.
+fn rebuilt(conversation: &Conversation, conv: &Conv, split: u8, caps: &Caps) {
+    let mut rebuilt = conv.clone();
+    rebuilt.rebuild();
+    for (at, stream) in conversation.streams.iter().enumerate() {
+        if (split >> (at % 8)) & 1 == 1 {
+            continue;
+        }
+        rebuilt.restart(&key(stream));
+        rebuilt.apply(&key(stream), &stream.events, caps);
+        assert_eq!(
+            rebuilt.note(&key(stream), stream.malformed, stream.over_cap),
+            Ok(()),
+            "real line counts add up"
+        );
+    }
+    assert_eq!(
+        doc::parse_conv(&doc::render_conv(&rebuilt)).map(|one| one.summary),
+        Ok(conv.summary.clone()),
+        "a rebuild keeps every gone stream and replaces each one read again"
+    );
+}
+
 /// The view as the reader publishes it: each conversation admitted, in any
 /// order, real counts always adding up.
 fn published(input: &[Conversation], convs: &[Conv]) -> Published {
@@ -190,6 +215,9 @@ fuzz_target!(|data: &[u8]| {
         .map(|conversation| {
             let conv = incremental(conversation, split, &caps);
             assert_eq!(conv, whole(conversation, &caps), "any split and order");
+            if conv.summary.refused.is_none() {
+                rebuilt(conversation, &conv, split, &caps);
+            }
             conv
         })
         .collect();

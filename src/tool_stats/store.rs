@@ -14,8 +14,8 @@
 
 use super::Adapter;
 use super::Key;
-use super::doc::{self, ASSOC_CAP, Assoc, CONV_CAP, DocError, Intent};
-use super::incr::{Conv, Published};
+use super::doc::{self, ASSOC_CAP, Assoc, CONV_CAP, COVERAGE_CAP, DocError, Intent, Sources};
+use super::incr::{Conv, Coverage, Published};
 use crate::stats_store::disk::{self, Op, Read};
 
 /// The tools subtree.
@@ -28,6 +28,10 @@ const INTENT: &str = "stats/tools/intent";
 const STAGED_CONV: &str = "stats/tools/conv.tmp";
 const STAGED_VIEW: &str = "stats/tools/view.tmp";
 const STAGED_ASSOC: &str = "stats/tools/assoc.tmp";
+const SOURCES: &str = "stats/tools/sources";
+const STAGED_SOURCES: &str = "stats/tools/sources.tmp";
+const COVERAGE: &str = "stats/tools/coverage";
+const STAGED_COVERAGE: &str = "stats/tools/coverage.tmp";
 
 /// One document as a load found it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +108,16 @@ pub fn load_assoc(dir: &mut dyn disk::Dir) -> Loaded<Assoc> {
     load(dir, ASSOC, ASSOC_CAP, doc::parse_assoc)
 }
 
+/// The coverage beside the view (lead ruling Q2 = A).
+pub fn load_coverage(dir: &mut dyn disk::Dir) -> Loaded<Coverage> {
+    load(dir, COVERAGE, COVERAGE_CAP, doc::parse_coverage)
+}
+
+/// The reader's association cache.
+pub fn load_sources(dir: &mut dyn disk::Dir) -> Loaded<Sources> {
+    load(dir, SOURCES, ASSOC_CAP, doc::parse_sources)
+}
+
 /// The names under the tools subtree, `stats/` required: Tools never makes
 /// the S5 payload.
 fn listing(dir: &mut dyn disk::Dir) -> Result<(Vec<String>, Vec<Op>), StoreError> {
@@ -143,6 +157,29 @@ pub fn publish(
     conv: &Conv,
     view: &Published,
 ) -> Result<disk::Plan, StoreError> {
+    publication(dir, conv, view, None)
+}
+
+/// [`publish`] with the view's `coverage`, renamed right after the view.
+///
+/// # Errors
+///
+/// As [`publish`].
+pub fn publish_with(
+    dir: &mut dyn disk::Dir,
+    conv: &Conv,
+    view: &Published,
+    coverage: &Coverage,
+) -> Result<disk::Plan, StoreError> {
+    publication(dir, conv, view, Some(coverage))
+}
+
+fn publication(
+    dir: &mut dyn disk::Dir,
+    conv: &Conv,
+    view: &Published,
+    coverage: Option<&Coverage>,
+) -> Result<disk::Plan, StoreError> {
     let (names, mut ops) = listing(dir)?;
     let held = |name: &str| names.iter().any(|one| one == leaf(name));
     if held(INTENT) {
@@ -156,7 +193,9 @@ pub fn publish(
         Loaded::Unreadable(kind) => return Err(StoreError::Io(kind.into())),
         Loaded::Ok(_) | Loaded::Absent | Loaded::Rebuild(_) => {}
     }
-    for staged in [STAGED_CONV, STAGED_VIEW, STAGED_ASSOC] {
+    let coverage = coverage_bytes(dir, coverage)?;
+    let paired = coverage.is_some();
+    for staged in [STAGED_CONV, STAGED_VIEW, STAGED_ASSOC, STAGED_COVERAGE] {
         if held(staged) {
             ops.push(Op::Remove(staged.to_owned()));
         }
@@ -170,6 +209,12 @@ pub fn publish(
         name: STAGED_VIEW.to_owned(),
         bytes: doc::render_view(view),
     });
+    if let Some(bytes) = coverage {
+        ops.push(Op::Write {
+            name: STAGED_COVERAGE.to_owned(),
+            bytes,
+        });
+    }
     ops.push(Op::Write {
         name: INTENT.to_owned(),
         bytes: doc::render_intent(&Intent {
@@ -185,29 +230,141 @@ pub fn publish(
         from: STAGED_VIEW.to_owned(),
         to: VIEW.to_owned(),
     });
+    if paired {
+        ops.push(Op::Rename {
+            from: STAGED_COVERAGE.to_owned(),
+            to: COVERAGE.to_owned(),
+        });
+    }
     ops.push(Op::Remove(INTENT.to_owned()));
     Ok(disk::Plan::of(ops))
 }
 
-/// The plan that writes the association document whole: it carries no
-/// counts, so a crash leaves the old or the new one.
+/// The coverage document of a paired publication: refused while the one held
+/// cannot be read (never replaced over an IO error; a damaged one is
+/// rebuilt), and when the new one is over its cap (never written unreadable).
+fn coverage_bytes(
+    dir: &mut dyn disk::Dir,
+    coverage: Option<&Coverage>,
+) -> Result<Option<Vec<u8>>, StoreError> {
+    let Some(coverage) = coverage else {
+        return Ok(None);
+    };
+    if let Loaded::Unreadable(kind) = load_coverage(dir) {
+        return Err(StoreError::Io(kind.into()));
+    }
+    let bytes = doc::render_coverage(coverage);
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > COVERAGE_CAP {
+        return Err(StoreError::Io(std::io::ErrorKind::InvalidData.into()));
+    }
+    Ok(Some(bytes))
+}
+
+/// The plan that writes the association cache and the association document
+/// each whole. Neither carries counts: the reader trusts only the cache, the
+/// association document is derived from it, so a crash between the two
+/// renames leaves a cache that is old or new whole.
 ///
 /// # Errors
 ///
 /// As [`publish`].
-pub fn publish_assoc(dir: &mut dyn disk::Dir, assoc: &Assoc) -> Result<disk::Plan, StoreError> {
+pub fn publish_assoc(
+    dir: &mut dyn disk::Dir,
+    sources: &Sources,
+    assoc: &Assoc,
+) -> Result<disk::Plan, StoreError> {
     let (names, mut ops) = listing(dir)?;
-    if names.iter().any(|one| one == leaf(STAGED_ASSOC)) {
-        ops.push(Op::Remove(STAGED_ASSOC.to_owned()));
+    for staged in [STAGED_SOURCES, STAGED_ASSOC] {
+        if names.iter().any(|one| one == leaf(staged)) {
+            ops.push(Op::Remove(staged.to_owned()));
+        }
     }
+    ops.push(Op::Write {
+        name: STAGED_SOURCES.to_owned(),
+        bytes: doc::render_sources(sources),
+    });
     ops.push(Op::Write {
         name: STAGED_ASSOC.to_owned(),
         bytes: doc::render_assoc(assoc),
     });
     ops.push(Op::Rename {
+        from: STAGED_SOURCES.to_owned(),
+        to: SOURCES.to_owned(),
+    });
+    ops.push(Op::Rename {
         from: STAGED_ASSOC.to_owned(),
         to: ASSOC.to_owned(),
     });
+    Ok(disk::Plan::of(ops))
+}
+
+/// The plan that replaces the derived view alone (a relabel, a view-cap
+/// change): no conversation document moves.
+///
+/// # Errors
+///
+/// As [`publish`].
+pub fn publish_view(dir: &mut dyn disk::Dir, view: &Published) -> Result<disk::Plan, StoreError> {
+    view_publication(dir, view, None)
+}
+
+/// [`publish_view`] with the view's `coverage`, renamed right after it.
+///
+/// # Errors
+///
+/// As [`publish`].
+pub fn publish_view_with(
+    dir: &mut dyn disk::Dir,
+    view: &Published,
+    coverage: &Coverage,
+) -> Result<disk::Plan, StoreError> {
+    view_publication(dir, view, Some(coverage))
+}
+
+fn view_publication(
+    dir: &mut dyn disk::Dir,
+    view: &Published,
+    coverage: Option<&Coverage>,
+) -> Result<disk::Plan, StoreError> {
+    let (names, mut ops) = listing(dir)?;
+    let held = |name: &str| names.iter().any(|one| one == leaf(name));
+    if held(INTENT) {
+        return Err(StoreError::Stale);
+    }
+    match load_view(dir) {
+        Loaded::Ok(current) if current.generation >= view.generation => {
+            return Err(StoreError::Stale);
+        }
+        Loaded::Unreadable(kind) => return Err(StoreError::Io(kind.into())),
+        Loaded::Ok(_) | Loaded::Absent | Loaded::Rebuild(_) => {}
+    }
+    let coverage = coverage_bytes(dir, coverage)?;
+    let paired = coverage.is_some();
+    for staged in [STAGED_VIEW, STAGED_COVERAGE] {
+        if held(staged) {
+            ops.push(Op::Remove(staged.to_owned()));
+        }
+    }
+    ops.push(Op::Write {
+        name: STAGED_VIEW.to_owned(),
+        bytes: doc::render_view(view),
+    });
+    if let Some(bytes) = coverage {
+        ops.push(Op::Write {
+            name: STAGED_COVERAGE.to_owned(),
+            bytes,
+        });
+    }
+    ops.push(Op::Rename {
+        from: STAGED_VIEW.to_owned(),
+        to: VIEW.to_owned(),
+    });
+    if paired {
+        ops.push(Op::Rename {
+            from: STAGED_COVERAGE.to_owned(),
+            to: COVERAGE.to_owned(),
+        });
+    }
     Ok(disk::Plan::of(ops))
 }
 
@@ -228,19 +385,26 @@ pub fn recovery(dir: &mut dyn disk::Dir) -> Result<disk::Plan, StoreError> {
         if held(STAGED_CONV) {
             // Undo: the staged view goes first, so the staged conversation
             // still marks the publication uncommitted until it goes too.
-            if held(STAGED_VIEW) {
-                ops.push(Op::Remove(STAGED_VIEW.to_owned()));
+            for staged in [STAGED_VIEW, STAGED_COVERAGE] {
+                if held(staged) {
+                    ops.push(Op::Remove(staged.to_owned()));
+                }
             }
             ops.push(Op::Remove(STAGED_CONV.to_owned()));
-        } else if held(STAGED_VIEW) {
-            ops.push(Op::Rename {
-                from: STAGED_VIEW.to_owned(),
-                to: VIEW.to_owned(),
-            });
+        } else {
+            // Committed: the view, then its coverage, as the plan renames them.
+            for (staged, to) in [(STAGED_VIEW, VIEW), (STAGED_COVERAGE, COVERAGE)] {
+                if held(staged) {
+                    ops.push(Op::Rename {
+                        from: staged.to_owned(),
+                        to: to.to_owned(),
+                    });
+                }
+            }
         }
         ops.push(Op::Remove(INTENT.to_owned()));
     } else {
-        for staged in [STAGED_CONV, STAGED_VIEW] {
+        for staged in [STAGED_CONV, STAGED_VIEW, STAGED_COVERAGE] {
             if held(staged) {
                 ops.push(Op::Remove(staged.to_owned()));
             }

@@ -9,6 +9,7 @@ use super::{LSTATS, Reader, STEP, Unit, UnitKind};
 use crate::stats_store::disk;
 use crate::tool_stats::{Ask, Caps, Cols, Filter, GapKind, Page, Scope, View};
 use crate::tool_stats_fixture::{self as f, Fixture};
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -116,6 +117,34 @@ fn cold_equal(bytes: &[u8], reader: &Reader, attempts: u64, returned: u64) {
     }
 }
 
+// Lead ruling 2026-11-09: damage history has no counterpart in a cold root.
+// Remove exactly its one asserted gap; compare every other View field intact.
+fn cold_equal_after_damage(bytes: &[u8], reader: &Reader, attempts: u64, returned: u64) {
+    let (cold, _) = fixture(bytes);
+    let mut rebuilt = open(&cold);
+    round(&mut rebuilt);
+    expect(reader, attempts, returned);
+    expect(&rebuilt, attempts, returned);
+    for page in [Page::Skills, Page::Mcp, Page::Tools] {
+        let mut view = reader.view(&ask(page));
+        let damage: Vec<usize> = view
+            .gaps
+            .iter()
+            .enumerate()
+            .filter_map(|(index, gap)| (gap.kind == GapKind::RebuiltFromSource).then_some(index))
+            .collect();
+        assert_eq!(damage.len(), 1, "exactly one damage gap on {page:?}");
+        let gap = view.gaps.remove(damage[0]);
+        assert_eq!(gap.count, 1, "one rebuilt conversation on {page:?}");
+        assert_eq!(gap.conversation, None, "conversation-wide damage total");
+        assert_eq!(
+            gap.line(),
+            "rebuilt from source: 1 conversations (counts of deleted sources there are lost)"
+        );
+        assert_eq!(view, rebuilt.view(&ask(page)), "persisted == cold {page:?}");
+    }
+}
+
 fn first() -> String {
     f::call(
         "first-native-secret-id",
@@ -171,6 +200,111 @@ fn projection_files(root: &Fixture) -> Vec<PathBuf> {
         }
     }
     result
+}
+
+// Q1b permits only roots ae recorded in this fixture's meta. Mask only
+// their JSON string contents in association documents, never equal bytes
+// in another field or another file. Keep all offsets and other bytes intact.
+fn mask_recorded_roots(bytes: &[u8], recorded: &BTreeSet<String>) -> Option<Vec<u8>> {
+    use crate::json::Value;
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut masked = bytes.to_vec();
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let Value::Obj(fields) = crate::json::parse(line.trim_end_matches('\n')).ok()? else {
+            return None;
+        };
+        for (key, value) in fields {
+            let roots = match (key.as_str(), &value) {
+                ("store", Value::Null) => Vec::new(),
+                ("store", Value::Str(root)) => vec![root.as_str()],
+                ("homes" | "dirs", Value::Arr(roots)) => roots
+                    .iter()
+                    .map(Value::as_str)
+                    .collect::<Option<Vec<_>>>()?,
+                ("store" | "homes" | "dirs", _) => return None,
+                _ => continue,
+            };
+            let encoded_value = value.render();
+            let prefix = format!("{}:", Value::str(&key).render());
+            let field = format!("{prefix}{encoded_value}");
+            let start = offset + line.find(&field)? + prefix.len();
+            let mut cursor = 0;
+            for root in roots {
+                if !recorded.contains(root) {
+                    return None;
+                }
+                let encoded = Value::str(root).render();
+                let at = cursor + encoded_value[cursor..].find(&encoded)?;
+                // Preserve the quotes and array punctuation too.
+                masked[start + at + 1..start + at + encoded.len() - 1].fill(b' ');
+                cursor = at + encoded.len();
+            }
+        }
+        offset += line.len();
+    }
+    Some(masked)
+}
+
+fn projection_bytes(root: &Fixture, path: &Path) -> Vec<u8> {
+    let bytes = fs::read(path).expect("persisted fixture projection");
+    if path.parent().and_then(Path::file_name) != Some(std::ffi::OsStr::new("tools")) {
+        return bytes;
+    }
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("assoc" | "assoc.tmp") => {
+            crate::tool_stats::doc::parse_assoc(&bytes).expect("valid association document");
+        }
+        Some("sources" | "sources.tmp") => {
+            crate::tool_stats::doc::parse_sources(&bytes).expect("valid association sources");
+        }
+        _ => return bytes,
+    }
+    let meta =
+        fs::read_to_string(root.0.join("sessions/alpha/meta")).expect("fixture-recorded meta");
+    let recorded: BTreeSet<_> = meta
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .filter(|(key, _)| key.starts_with("config_home.") || key.starts_with("work_dir."))
+        .map(|(_, value)| value.to_owned())
+        .collect();
+    assert!(!recorded.is_empty(), "positive recorded-root control");
+    mask_recorded_roots(&bytes, &recorded)
+        .expect("every association root must equal a fixture-recorded meta root")
+}
+
+#[test]
+fn q1b_root_mask_preserves_non_root_bytes_and_refuses_unrecorded_roots() {
+    let root = format!("/fixture/{}", f::PRIVATE);
+    let recorded = BTreeSet::from([root.clone()]);
+    let bytes = format!(
+        "{{\"store\":\"{root}\",\"homes\":[\"{root}\"],\"dirs\":[\"{root}\"],\"other\":\"{root}\"}}\n"
+    );
+    let spaces = " ".repeat(root.len());
+    let expected = format!(
+        "{{\"store\":\"{spaces}\",\"homes\":[\"{spaces}\"],\"dirs\":[\"{spaces}\"],\"other\":\"{root}\"}}\n"
+    );
+    let masked = mask_recorded_roots(bytes.as_bytes(), &recorded).expect("recorded roots only");
+    assert_eq!(
+        masked,
+        expected.as_bytes(),
+        "all other bytes stay identical"
+    );
+    assert!(
+        masked
+            .windows(f::PRIVATE.len())
+            .any(|part| part == f::PRIVATE.as_bytes()),
+        "an equal root in a non-root field must still fail the sentinel scan"
+    );
+    for field in ["store", "homes", "dirs"] {
+        let value = if field == "store" {
+            format!("\"{root}/unrecorded\"")
+        } else {
+            format!("[\"{root}/unrecorded\"]")
+        };
+        let unrecorded = format!("{{\"{field}\":{value}}}\n");
+        assert!(mask_recorded_roots(unrecorded.as_bytes(), &recorded).is_none());
+    }
 }
 
 #[test]
@@ -249,8 +383,7 @@ fn p3_partial_record_survives_publication_and_restart_without_raw_tail_storage()
     expect(&reader, 1, 0);
     for path in projection_files(&root) {
         assert!(
-            !fs::read(&path)
-                .expect("projection bytes")
+            !projection_bytes(&root, &path)
                 .windows(f::PRIVATE.len())
                 .any(|part| part == f::PRIVATE.as_bytes()),
             "raw partial JSON escaped to {path:?}"
@@ -471,7 +604,7 @@ fn p2_persisted_projection_contains_only_allowlisted_words_and_opaque_keys() {
     );
     let mut found_identity = false;
     for path in paths {
-        let bytes = fs::read(path).expect("persisted fixture projection");
+        let bytes = projection_bytes(&root, &path);
         found_identity |= bytes
             .windows(b"allowed-skill".len())
             .any(|part| part == b"allowed-skill");
@@ -539,7 +672,7 @@ fn p1_future_conversation_format_rebuilds_from_source_instead_of_reusing_stale_c
         read >= u64::try_from(current.len()).expect("whole-source rebuild size"),
         "wrong version forces a real source rebuild"
     );
-    cold_equal(current.as_bytes(), &reader, 2, 0);
+    cold_equal_after_damage(current.as_bytes(), &reader, 2, 0);
 }
 
 fn load_skill(id: &str, name: &str, directory: &str) -> String {
@@ -753,7 +886,7 @@ fn p1_damaged_and_oversized_conversation_documents_rebuild_the_whole_source() {
             read >= u64::try_from(bytes.len()).expect("whole source size"),
             "damage/oversize rebuilds from zero"
         );
-        cold_equal(bytes.as_bytes(), &reopened, 2, 0);
+        cold_equal_after_damage(bytes.as_bytes(), &reopened, 2, 0);
         drop(reopened);
         let mut again = open(&root);
         assert_eq!(

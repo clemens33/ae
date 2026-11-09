@@ -1,0 +1,8 @@
+{"tools_sources":1}
+{"source":"journal:0123456789abcdef0123456789abcdef","dev":1,"ino":3,"len":20,"mtime":[3,0],"ctime":[4,0],"cursor":20,"skipping":false,"blocks":["5555555555555555555555555555555555555555555555555555555555555555"],"complete":true,"oversize":0,"session":"s1"}
+{"seat":"codex","id":"22222222-2222-4222-8222-222222222222","member":"s1","slot":"w1","role":"retired","client":null,"store":"/home/a/.codex","homes":["/home/a/.codex"],"dirs":[]}
+{"reseat":"22222222-2222-4222-8222-222222222222"}
+{"source":"meta:0123456789abcdef0123456789abcdef","dev":1,"ino":2,"len":10,"mtime":[3,0],"ctime":[4,0],"cursor":10,"skipping":false,"blocks":[],"complete":true,"oversize":1,"session":"s1"}
+{"seat":"claude","id":"11111111-1111-4111-8111-111111111111","member":"s1","slot":"main","role":"live","client":"work","store":"/home/a/.claude","homes":["/home/a/.claude"],"dirs":["/work"]}
+{"unsupported":"grok","id":"11111111-1111-4111-8111-111111111111","member":"s1"}
+{"end":7}

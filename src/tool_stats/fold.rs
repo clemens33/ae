@@ -996,17 +996,15 @@ fn stream_role_bytes(role: &StreamRole) -> usize {
 }
 
 /// What admission needs to know of one conversation: its [`charge`] and
-/// whether it is over the observation or turn cap (refused alone). The
-/// reader keeps one per conversation and recomputes it only when that
-/// conversation's evidence changes (B3 review r1 B3-1).
+/// whether it is over the observation or turn cap (refused alone).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Weight {
-    pub(crate) charge: usize,
-    pub(crate) alone: bool,
+struct Weight {
+    charge: usize,
+    alone: bool,
 }
 
 /// The [`Weight`] of one conversation under `caps`.
-pub(crate) fn weigh(conversation: &Conversation, caps: &Caps) -> Weight {
+fn weigh(conversation: &Conversation, caps: &Caps) -> Weight {
     let canonical = canonical(conversation);
     Weight {
         charge: charge(conversation),
@@ -1014,21 +1012,11 @@ pub(crate) fn weigh(conversation: &Conversation, caps: &Caps) -> Weight {
     }
 }
 
-/// The least bytes one retained event costs the ledger: its fixed size and
-/// the names it owns. A gatherer that has passed its room by this floor is
-/// over the ledger whatever the rest of [`charge`] adds.
-pub(crate) fn event_floor(event: &Event) -> usize {
-    size_of::<Event>() + owned(event)
-}
-
 /// Canonical admission (plan §7) over weights in `(adapter, id)` order:
 /// the longest prefix whose charges, each plus the bytes its holder keeps
 /// beside it, fit `budget` is admitted, the rest refused whole; a
 /// conversation over the observation or turn cap is refused alone.
-pub(crate) fn prefix(
-    weights: impl IntoIterator<Item = (Weight, usize)>,
-    budget: usize,
-) -> Vec<bool> {
+fn prefix(weights: impl IntoIterator<Item = (Weight, usize)>, budget: usize) -> Vec<bool> {
     let mut used = 0_usize;
     let mut full = false;
     weights

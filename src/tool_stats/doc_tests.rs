@@ -12,6 +12,8 @@ const CONV: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/conv");
 const VIEW: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/view");
 const ASSOC: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/assoc");
 const INTENT: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/intent");
+const SOURCES: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/sources");
+const COVERAGE: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/coverage");
 
 #[test]
 fn every_seed_parses_and_renders_its_own_bytes() {
@@ -24,6 +26,12 @@ fn every_seed_parses_and_renders_its_own_bytes() {
     assert_eq!(render_assoc(&assoc), seed(ASSOC));
     let intent = parse_intent(seed(INTENT)).expect("intent seed");
     assert_eq!(render_intent(&intent), seed(INTENT));
+    let sources = parse_sources(seed(SOURCES)).expect("association cache seed");
+    assert_eq!(render_sources(&sources), seed(SOURCES));
+    assert_eq!(sources.len(), 2, "a journal and a meta record");
+    let coverage = parse_coverage(seed(COVERAGE)).expect("coverage seed");
+    assert_eq!(render_coverage(&coverage), seed(COVERAGE));
+    assert_eq!(coverage.unsupported.len(), 3, "one record per conversation");
 }
 
 #[test]
@@ -54,7 +62,7 @@ fn a_non_canonical_or_cut_or_mistyped_document_is_damage() {
 /// `(role, malformed)`: `None` is the parent.
 fn lines_only(lines: &[(Option<&str>, u64)]) -> String {
     let mut out = vec![
-        "{\"tools_conv\":1,\"adapter\":\"claude\",\"id\":\"c1\",\"read\":true,\"refused\":null,\"fallback\":false}".to_owned(),
+        "{\"tools_conv\":1,\"adapter\":\"claude\",\"id\":\"c1\",\"read\":true,\"refused\":null,\"fallback\":false,\"rebuilt\":false}".to_owned(),
     ];
     out.extend(lines.iter().map(|(role, malformed)| {
         let role = role.map_or_else(|| "null".to_owned(), |name| format!("\"{name}\""));
@@ -92,15 +100,16 @@ fn a_count_past_the_bound_is_damage_not_an_overflow() {
             (other, _) => panic!("{text}: {other:?}"),
         }
     }
-    // The view seed adds up 1 + 1 (cols) and 1 (a name) besides these.
+    // The view seed adds up 1 + 1 (cols), 1 (a name) and 1 (its
+    // rebuilt_from_source gap) besides these.
     let text = std::str::from_utf8(seed(VIEW)).expect("UTF-8 seed");
     let at = |cols: u64| text.replace("\"cols\":[1,0,0,1]", &format!("\"cols\":[{cols},0,0,0]"));
     assert!(
-        parse_view(at(max - 1).as_bytes()).is_ok(),
+        parse_view(at(max - 2).as_bytes()).is_ok(),
         "a total of exactly u64::MAX"
     );
     for bad in [
-        at(max),
+        at(max - 1),
         text.replace("\"orphans\":0", &format!("\"orphans\":{max}")),
         text.replace("\"over_cap\":0", &format!("\"over_cap\":{max}")),
     ] {

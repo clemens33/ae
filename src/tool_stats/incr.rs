@@ -147,12 +147,31 @@ pub struct Resume {
     pub(super) dropped: BTreeSet<Key>,
     /// O2: set once the fallback ran; later unproven Reads are dropped too.
     pub(super) fallback: bool,
+    /// The digest of the recorded roots the held events were classified by
+    /// (Claude only): another one rebuilds the conversation.
+    pub(super) roots: Option<Key>,
+    /// The conversation was rebuilt whole from its sources (P6 boundary):
+    /// its document was damaged, oversized or of another format, or its held
+    /// counts were damaged, so counts of its deleted sources are lost. Kept by every later rebuild; only a
+    /// store reset (`r`) clears it.
+    pub(super) rebuilt: bool,
 }
 
 impl Resume {
     #[must_use]
     pub fn file(&self, stream: &StreamKey) -> Option<&FileState> {
         self.files.get(stream)
+    }
+
+    /// The digest of the roots the held events were classified by.
+    #[must_use]
+    pub const fn roots(&self) -> Option<&Key> {
+        self.roots.as_ref()
+    }
+
+    /// Record the roots digest the held events are classified by.
+    pub const fn set_roots(&mut self, roots: Option<Key>) {
+        self.roots = roots;
     }
 
     /// Insert or replace `stream`'s status; the summary is untouched.
@@ -291,7 +310,7 @@ impl Conv {
     ///
     /// [`Overflow`] when the conversation's gap lines could no longer be
     /// added up ([`line_total`]): held counts no real source makes, so the
-    /// conversation is DAMAGED and rebuilt ([`Self::rebuild`]); the reader
+    /// conversation is DAMAGED and reset whole, nothing carried; the reader
     /// reads every file again from its start. Nothing of the update is kept.
     pub fn note(
         &mut self,
@@ -337,20 +356,59 @@ impl Conv {
         Ok(())
     }
 
-    /// Route the conversation to damage: rebuilt from its sources.
+    /// Route the conversation to damage: its held counts are ones no real
+    /// source makes, so nothing of them is carried, as with a damaged
+    /// document. It is reset whole and rebuilt from its sources; identity
+    /// and a refusal are kept, as a refusal is retried only by a store reset.
     fn damaged(&mut self) -> Overflow {
-        self.rebuild();
-        Overflow
-    }
-
-    /// Reset the counts and the resume state: every file is read again from
-    /// its start. Identity and a refusal are kept: a refusal is retried
-    /// only by a store reset.
-    pub fn rebuild(&mut self) {
         let refused = self.summary.refused;
         *self = Self::new(self.summary.adapter, &self.summary.id);
         if let Some(reason) = refused {
             self.refuse(reason);
+        }
+        self.mark_rebuilt();
+        Overflow
+    }
+
+    /// The conversation is rebuilt whole from its sources (P6 boundary): the
+    /// counts of its deleted sources are lost, so it carries a visible mark
+    /// that every later rebuild keeps and only a store reset clears.
+    pub fn mark_rebuilt(&mut self) {
+        if !self.resume.rebuilt {
+            self.resume.rebuilt = true;
+            self.summarize();
+        }
+    }
+
+    /// Rebuild the conversation from its sources: every file's state is
+    /// forgotten, so each file still on disk is read again from its start.
+    /// No evidence is dropped here: each stream keeps its events, line
+    /// counts and source mark until a read of it from 0 is taken
+    /// ([`Self::restart`]). So a stream that is gone, or is found gone by
+    /// its own lstat, keeps its counts (P6, until `r`), under the
+    /// classification it was read with. The O2 state, the roots digest and a
+    /// refusal are kept: a refusal is retried only by a store reset.
+    pub fn rebuild(&mut self) {
+        self.resume.files.clear();
+    }
+
+    /// A read of `stream` from its start is taken: it replaces the events
+    /// and line counts held for it. The source mark stays until the taken
+    /// read marks it present. A refused conversation forgets them too: the
+    /// taken read's line counts replace, never add to, the held ones.
+    pub fn restart(&mut self, stream: &StreamKey) {
+        let events = self.resume.streams.remove(stream);
+        let lines = self.resume.lines.remove(stream);
+        if events.is_some() || lines.is_some() {
+            self.summarize();
+        }
+    }
+
+    /// `stream` was read: it is on disk again if it had gone.
+    pub fn source_present(&mut self, stream: &StreamKey) {
+        if self.summary.files.get(stream) != Some(&Source::Present) {
+            self.summary.files.insert(stream.clone(), Source::Present);
+            self.summarize();
         }
     }
 
@@ -458,6 +516,7 @@ impl Conv {
         for (kind, count) in [
             (GapKind::SourceGone, gone),
             (GapKind::UnprovenReadsDropped, dropped),
+            (GapKind::RebuiltFromSource, usize::from(self.resume.rebuilt)),
         ] {
             if count > 0 {
                 gaps.insert(kind, u64::try_from(count).unwrap_or(u64::MAX));
@@ -595,13 +654,91 @@ fn name_item(names: &Names, item: &Item) -> Item {
 /// The page of `ask` over `published`.
 #[must_use]
 pub fn combine(published: &Published, ask: &Ask, caps: &Caps) -> View {
+    combine_parts(&published.convs, published.over_cap, ask, caps)
+}
+
+/// The view-wide coverage only the reader knows (lead ruling Q2 = A): the
+/// association sources whose evidence was unavailable, the memberships not
+/// kept for a field over the limit, the files being read again, and each
+/// unsupported conversation as its tool word and the ae sessions holding
+/// it. Written beside the view in the same plan, with its generation; no
+/// conversation id, path or transcript byte.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Coverage {
+    pub generation: u64,
+    pub hidden: u64,
+    pub oversize: u64,
+    pub recounting: u64,
+    /// One entry per unsupported conversation, sorted.
+    pub unsupported: Vec<(String, BTreeSet<Option<String>>)>,
+    /// Unsupported conversations left out to keep the document under its
+    /// cap: drawn as one visible over-cap line, never dropped silently.
+    pub omitted: u64,
+}
+
+impl Coverage {
+    /// Add the coverage lines `ask`'s scope reaches to `view`.
+    pub fn apply(&self, view: &mut View, ask: &Ask) {
+        let mut unsupported: BTreeMap<&str, u64> = BTreeMap::new();
+        for (tool, sessions) in &self.unsupported {
+            let shown = match &ask.scope {
+                Scope::All => true,
+                Scope::This(None) => false,
+                Scope::This(Some(session)) => sessions
+                    .iter()
+                    .any(|held| held.as_deref() == Some(session.as_str())),
+            };
+            if shown {
+                let count = unsupported.entry(tool).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+        for (tool, count) in unsupported {
+            view.gaps.push(super::GapLine {
+                kind: GapKind::Unsupported(tool.to_owned()),
+                conversation: None,
+                count,
+            });
+        }
+        if self.hidden > 0 {
+            view.gaps.push(super::GapLine {
+                kind: GapKind::Unreadable,
+                conversation: None,
+                count: self.hidden,
+            });
+        }
+        if self.oversize > 0 {
+            view.gaps.push(super::GapLine {
+                kind: GapKind::FieldOverLimit,
+                conversation: None,
+                count: self.oversize,
+            });
+        }
+        // Left out of the document by its cap: which session holds them is
+        // not kept, so every scope that shows a session says so.
+        if self.omitted > 0 && ask.scope != Scope::This(None) {
+            view.gaps.push(super::GapLine {
+                kind: GapKind::Ledger,
+                conversation: None,
+                count: self.omitted,
+            });
+        }
+        view.gaps.sort();
+        view.recounting = self.recounting;
+    }
+}
+
+/// The page of `ask` over the published conversations `convs`, `over_cap`
+/// more left out of the view by its cap.
+#[must_use]
+pub fn combine_parts(convs: &[PublishedConv], over_cap: u64, ask: &Ask, caps: &Caps) -> View {
     let mut view = fold::blank(ask);
     if ask.scope == Scope::This(None) {
         view.state = State::NoSessionId;
         return view;
     }
     let mut keep: BTreeMap<Kind, BTreeSet<String>> = BTreeMap::new();
-    for conv in &published.convs {
+    for conv in convs {
         for (kind, set) in &conv.summary.names {
             keep.entry(*kind).or_default().extend(set.iter().cloned());
         }
@@ -609,7 +746,7 @@ pub fn combine(published: &Published, ask: &Ask, caps: &Caps) -> View {
     let names = Names::of(keep, caps.idents);
     let mut lines = Lines::default();
     let mut obs = Vec::new();
-    for conv in &published.convs {
+    for conv in convs {
         let summary = &conv.summary;
         let in_scope = match &ask.scope {
             Scope::All => true,
@@ -623,7 +760,10 @@ pub fn combine(published: &Published, ask: &Ask, caps: &Caps) -> View {
         view.listed += 1;
         view.read += u64::from(summary.read);
         for (kind, count) in &summary.gaps {
-            lines.add(kind.clone(), Some(&summary.id), *count);
+            // The rebuilt-from-source mark is one line summed over the
+            // conversations.
+            let id = (*kind != GapKind::RebuiltFromSource).then_some(summary.id.as_str());
+            lines.add(kind.clone(), id, *count);
         }
         if summary.refused.is_some() {
             continue;
@@ -671,7 +811,7 @@ pub fn combine(published: &Published, ask: &Ask, caps: &Caps) -> View {
         }
     }
     lines.add(GapKind::IdentCap, None, names.dropped);
-    lines.add(GapKind::ViewOverCap, None, published.over_cap);
+    lines.add(GapKind::ViewOverCap, None, over_cap);
     view.gaps = lines.finish();
     if view.listed == 0 {
         view.state = State::NoSupported;
