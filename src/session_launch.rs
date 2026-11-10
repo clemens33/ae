@@ -4372,18 +4372,15 @@ fn watch_trust(
     pending: &[(&Launching, String)],
     err: &mut impl Write,
 ) {
-    if shape.resuming || !crate::autotrust::on(at.dir) {
-        return;
-    }
-    let deadline = std::time::Instant::now() + TRUST_WATCH;
+    let answering = crate::autotrust::on(at.dir);
+    let deadline = trust_deadline(std::time::Instant::now());
     for agent in launching.iter().filter(|agent| {
-        !agent.pane.is_empty()
-            && agent
-                .tool
-                .adapter()
-                .prompt
-                .is_some_and(|spec| spec.trust.is_some())
-            && !pending.iter().any(|(turn, _)| turn.slot == agent.slot)
+        watches(
+            (shape.resuming, answering),
+            &agent.pane,
+            agent.tool,
+            pending.iter().any(|(turn, _)| turn.slot == agent.slot),
+        )
     }) {
         let input = agent.tool.adapter().input;
         watched(
@@ -4402,16 +4399,51 @@ fn watch_trust(
                         .and_then(|frame| {
                             crate::watchdog::human_prompt_class(&frame, agent.tool.adapter().name)
                         });
-                match prompt {
-                    Some(asked) if asked.trust.is_some() => WatchRead::Trust(
-                        crate::autotrust::in_wait(at.dir, at.server, &agent.slot, &agent.pane, err),
-                    ),
-                    Some(asked) => WatchRead::Other(asked.question),
-                    None => WatchRead::Nothing,
-                }
+                classify(prompt, || {
+                    crate::autotrust::in_wait(at.dir, at.server, &agent.slot, &agent.pane, err)
+                })
             },
-            || std::time::Instant::now() < deadline,
+            || before(std::time::Instant::now(), deadline),
         );
+    }
+}
+
+/// Whether a launch watches one seat: a FRESH launch with `auto_trust` on
+/// (`launch`: resuming, answering), a seat with a pane, whose tool measured a
+/// trust block, and that gets no launch turn of its own.
+fn watches(launch: (bool, bool), pane: &str, tool: ToolKind, turn: bool) -> bool {
+    let (resuming, answering) = launch;
+    !resuming
+        && answering
+        && !pane.is_empty()
+        && tool
+            .adapter()
+            .prompt
+            .is_some_and(|spec| spec.trust.is_some())
+        && !turn
+}
+
+/// The one deadline a launch's whole watch runs under.
+fn trust_deadline(now: std::time::Instant) -> std::time::Instant {
+    now + TRUST_WATCH
+}
+
+/// Whether `now` is still before `deadline`: another read may START.
+fn before(now: std::time::Instant, deadline: std::time::Instant) -> bool {
+    now < deadline
+}
+
+/// What a non-ready read shows: a measured trust block, handed to `answer`
+/// (the in-wait answerer, asked only then); another prompt by its question;
+/// or nothing yet.
+fn classify(
+    prompt: Option<crate::watchdog::HumanPrompt>,
+    answer: impl FnOnce() -> crate::autotrust::InWait,
+) -> WatchRead {
+    match prompt {
+        Some(asked) if asked.trust.is_some() => WatchRead::Trust(answer()),
+        Some(asked) => WatchRead::Other(asked.question),
+        None => WatchRead::Nothing,
     }
 }
 
@@ -4465,8 +4497,120 @@ fn watched(mut read: impl FnMut() -> WatchRead, mut open: impl FnMut() -> bool) 
 
 #[cfg(test)]
 mod watch_spec {
-    use super::{WatchRead, Watched, watched};
+    use super::{WatchRead, Watched, before, classify, trust_deadline, watched, watches};
     use crate::autotrust::InWait;
+    use crate::tool::ToolKind;
+    use std::time::{Duration, Instant};
+
+    /// PINS (contract.md:337, "a FRESH session launch watches each seat that
+    /// gets no launch turn and whose tool measured a trust block"; `auto_trust`
+    /// off answers nothing): resuming skips, `auto_trust` off skips, and a
+    /// non-matching seat (no pane, no measured trust block, its own launch turn)
+    /// is ignored. Each case flips ONE condition of a watched seat.
+    #[test]
+    fn a_launch_watches_only_fresh_turnless_trust_capable_seats_with_auto_trust_on() {
+        let fresh = (false, true);
+        assert!(watches(fresh, "%1", ToolKind::Claude, false));
+        assert!(watches(fresh, "%1", ToolKind::Codex, false));
+        assert!(watches(fresh, "%1", ToolKind::Agy, false));
+        for (launch, pane, tool, turn, why) in [
+            (
+                (true, true),
+                "%1",
+                ToolKind::Claude,
+                false,
+                "a resumed launch",
+            ),
+            (
+                (false, false),
+                "%1",
+                ToolKind::Claude,
+                false,
+                "auto_trust off",
+            ),
+            (
+                (true, false),
+                "%1",
+                ToolKind::Claude,
+                false,
+                "resumed and off",
+            ),
+            (
+                fresh,
+                "",
+                ToolKind::Claude,
+                false,
+                "a preserved row with no pane",
+            ),
+            (
+                fresh,
+                "%1",
+                ToolKind::Gemini,
+                false,
+                "a tool with no trust block",
+            ),
+            (
+                fresh,
+                "%1",
+                ToolKind::Claude,
+                true,
+                "a seat with its own launch turn",
+            ),
+        ] {
+            assert!(!watches(launch, pane, tool, turn), "{why}");
+        }
+    }
+
+    /// PINS (contract.md:337, "ONE launch-wide 15 s deadline that starts no
+    /// read past it"): the deadline 15 s ends the watch. Fixed instants, no
+    /// sleep: a read starts only strictly before the deadline.
+    #[test]
+    fn the_watch_deadline_is_the_budget_after_its_start_and_ends_reads_at_it() {
+        let now = Instant::now();
+        let deadline = trust_deadline(now);
+        assert_eq!(deadline.duration_since(now), Duration::from_secs(15));
+        assert!(before(now, deadline));
+        assert!(
+            !before(deadline, deadline),
+            "AT the deadline no read starts"
+        );
+        assert!(!before(deadline + Duration::from_millis(1), deadline));
+    }
+
+    /// PINS (contract.md:337, "a MEASURED folder-trust block ... matched whole"
+    /// is the one exception; "Any other frame ... the prompt is named as
+    /// today"): the trust guard refuses an unproven block. Only a frame read as
+    /// a whole measured block reaches the in-wait answerer, which then proves
+    /// the folder itself (`autotrust::prove`); any other prompt is left to be
+    /// named and is never answered; no prompt is nothing yet.
+    #[test]
+    fn only_a_trust_block_reaches_the_in_wait_answer() {
+        let prompt = |trust: bool| crate::watchdog::HumanPrompt {
+            question: "Trust this folder?".to_owned(),
+            keys: "enter continue · esc back".to_owned(),
+            trust: trust.then(|| crate::watchdog::TrustSighting {
+                folder: "/tmp/x".to_owned(),
+                toward_yes: None,
+            }),
+            dismiss: false,
+        };
+        let asked = std::cell::Cell::new(0);
+        let answer = || {
+            asked.set(asked.get() + 1);
+            InWait::Trusted
+        };
+        assert_eq!(
+            classify(Some(prompt(true)), answer),
+            WatchRead::Trust(InWait::Trusted)
+        );
+        assert_eq!(asked.get(), 1);
+        assert_eq!(
+            classify(Some(prompt(false)), answer),
+            WatchRead::Other("Trust this folder?".to_owned())
+        );
+        assert_eq!(classify(None, answer), WatchRead::Nothing);
+        assert_eq!(asked.get(), 1, "nothing but a trust block is answered");
+    }
 
     /// Run `reads` under a budget of `opens` reads; how it ended and how many
     /// reads it took.
@@ -4488,7 +4632,10 @@ mod watch_spec {
         (end, taken.get())
     }
 
-    /// Every ending, each at the read that decides it.
+    /// PINS (the brief: the watch ends at the first ready composer; contract.md
+    /// :337: an answer tried and stopped tries no more): the first ready
+    /// composer ends it, as do a landed or stopped answer and another prompt
+    /// held on two reads. Each ending at the read that decides it.
     #[test]
     fn a_watch_ends_at_ready_trusted_stop_or_a_held_other_prompt() {
         use WatchRead::{Nothing, Other, Ready, Trust};
@@ -4515,9 +4662,10 @@ mod watch_spec {
         }
     }
 
-    /// The budget is asked BEFORE each read: a watch that never settles stops
-    /// at it, a declined-for-now answer retries only inside it, and a spent
-    /// budget starts no read at all.
+    /// PINS (contract.md:337, "starts no read past it and never cuts a started
+    /// answer short"): the budget is asked BEFORE each read, never during one;
+    /// a watch that never settles stops at it, a not-yet answer retries only
+    /// inside it, and a spent budget starts no read at all.
     #[test]
     fn a_watch_never_starts_a_read_past_its_budget() {
         assert_eq!(run(&[], 5), (Watched::Deadline, 5));

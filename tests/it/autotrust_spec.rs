@@ -835,6 +835,144 @@ fn codex_folder_trust_is_one_enter_for_its_own_folder_once_per_start() {
     }
 }
 
+/// PINS (contract.md:337, "a FRESH session launch watches each seat that gets
+/// no launch turn and whose tool measured a trust block"): with NO watchdog at
+/// all, a fresh launch's turnless claude seat has its measured modal answered
+/// inside the launch itself — the reservation, Down, Enter and completion are
+/// journaled before `ae` returns. The fake draws nothing until the test paints
+/// the modal at the pane's real width, so the watch sees a blank pane first.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one launch fixture keeps its private server, native fake and journal proof together"
+)]
+fn a_fresh_launch_answers_its_turnless_claude_seat_with_no_watchdog() {
+    const MODAL: &str =
+        include_str!("../fixtures/claude-trust/claude-trust-modal-2.1.322-80x24.txt");
+    let mut scratch = super::cli::OwnedScratch::root("at", "launch-watch");
+    let root = fs::canonicalize(scratch.path()).unwrap_or_else(|why| panic!("scratch: {why}"));
+    let sock = root.join("sock");
+    scratch.add_tmux_server(sock.clone());
+    let project = root.join("project");
+    let home = root.join("home");
+    for dir in [&project, &home, &root.join("bin"), &root.join("tmp")] {
+        assert!(fs::create_dir_all(dir).is_ok(), "setup: directories");
+    }
+    assert!(
+        fs::copy("/usr/bin/perl", root.join("bin/claude")).is_ok(),
+        "setup: native fake vendor named claude"
+    );
+    write(root.join("vendor.pl"), VENDOR);
+    write(root.join("frame"), "");
+    write(root.join("idle"), CLAUDE_IDLE);
+    write(root.join("mode"), "normal");
+    write(root.join("tool"), "claude");
+    write(
+        root.join("session-dir"),
+        home.join("sessions/lw").display().to_string(),
+    );
+    write(root.join("wire"), "");
+    write(root.join("actions"), "");
+    write(
+        root.join("config"),
+        format!(
+            "[profiles]\nfake = \"{0}/bin/claude {0}/vendor.pl {0}\"\n\n[roster]\nlead = fake\n\n[workspace]\nmain = lead\nlayout = vertical\nwatchdog = false\nchat = off\nquota = off\nauto_upgrade = off\ntheme = off\nmotion = off\n",
+            root.display()
+        ),
+    );
+    let launch = Invocation::new(env!("CARGO_BIN_EXE_ae"))
+        .env_cleared()
+        .env(
+            "PATH",
+            std::env::var("PATH").unwrap_or_else(|why| panic!("setup: PATH: {why}")),
+        )
+        .env("HOME", &root)
+        .env("AE_HOME", &home)
+        .env("CONFIG_FILE", root.join("config"))
+        .env("TMUX_TMPDIR", root.join("tmp"))
+        .env("AE_NO_AUTOSTART", "1")
+        .env("AE_TMUX_SERVER_KIND", "socket")
+        .env("AE_TMUX_SERVER", &sock)
+        .env("TERM", "xterm-256color")
+        .env("LC_ALL", "en_US.UTF-8")
+        .arg("--local")
+        .arg("lw")
+        .arg("--no-attach");
+    let (cwd, out, err) = (
+        project.clone(),
+        root.join("launch.out"),
+        root.join("launch.err"),
+    );
+    let started = Instant::now();
+    let launched = std::thread::spawn(move || {
+        raw::run(&launch, &cwd, &out, &err)
+            .unwrap_or_else(|why| panic!("setup: launch: {why}"))
+            .outcome()
+    });
+    wait_for("fake vendor ready", || root.join("ready").is_file());
+    let tmux = |args: &[&str]| {
+        let mut call = Invocation::new("tmux").arg("-S").arg(&sock);
+        for arg in args {
+            call = call.arg(arg);
+        }
+        let (out, err) = (root.join("tmux.out"), root.join("tmux.err"));
+        let status = raw::run(&call, &root, &out, &err)
+            .unwrap_or_else(|why| panic!("setup: tmux {args:?}: {why}"));
+        assert!(
+            matches!(status.outcome(), ExitOutcome::Code(0)),
+            "setup: tmux {args:?}: {}",
+            text(&err)
+        );
+        text(&out)
+    };
+    let panes = tmux(&["list-panes", "-a", "-F", "#{@ae_slot} #{pane_width}"]);
+    let width: usize = panes
+        .lines()
+        .find_map(|row| row.strip_prefix("main "))
+        .and_then(|width| width.trim().parse().ok())
+        .unwrap_or_else(|| panic!("setup: the main seat's width: {panes}"));
+    assert!(
+        width >= 80,
+        "setup: the measured 80-column modal fits: {width}"
+    );
+    let modal = MODAL
+        .replace("/tmp/claude-trust-probe", &project.display().to_string())
+        .replacen(&"─".repeat(80), &"─".repeat(width), 1);
+    let _ = fs::remove_file(root.join("repainted"));
+    write(root.join("repaint"), &modal);
+    wait_for("modal painted", || root.join("repainted").is_file());
+    let outcome = launched
+        .join()
+        .unwrap_or_else(|_| panic!("setup: launch thread"));
+    assert!(
+        matches!(outcome, ExitOutcome::Code(0)),
+        "launch: {}",
+        text(root.join("launch.err"))
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(40),
+        "the watch is bounded: {:?}",
+        started.elapsed()
+    );
+    let events: Vec<Event> = text(home.join("sessions/lw/events.jsonl"))
+        .lines()
+        .filter_map(|line| Event::parse_line(line).ok())
+        .collect();
+    let count = |action: &str| events.iter().filter(|e| e.action == action).count();
+    assert_eq!(count("auto-trust-reserved"), 1, "{events:?}");
+    assert_eq!(
+        count("auto-trust"),
+        1,
+        "answered before the launch returned"
+    );
+    assert_eq!(count("watchdog-start"), 0, "no watchdog answered it");
+    assert_eq!(
+        text(root.join("actions")),
+        "Down\nEnter\n",
+        "only Down then Enter"
+    );
+}
+
 #[test]
 fn global_default_and_grammar_control_answering_project_cannot_vote() {
     for (tag, global, project, allowed) in [
