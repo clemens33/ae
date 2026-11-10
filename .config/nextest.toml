@@ -1,12 +1,21 @@
 # Test scheduling for the integration target.
 #
-# At most eight tests at once, whatever the core count: every one starts real
-# processes (tmux, fake tools, the product), and a fully parallel run on a big
-# machine measured load 26 and starved its own waits (#159). The isolated lane
-# lowers this to the core count on a smaller one; NEXTEST_TEST_THREADS or
-# --test-threads still overrides it for one run.
+# A BARE run (no `just`, no NEXTEST_TEST_THREADS exported) starts at most four
+# tests at once, whatever the core count: every one starts real processes (tmux,
+# fake tools, the product), a fully parallel run on a big machine measured load
+# 26 and starved its own waits (#159), and several agent sessions share one
+# machine. Four is the small count the repo already uses where it has to pick
+# one (the Linux container lanes, `NEXTEST_TEST_THREADS=4`), and half of the
+# number a bare run started before. The isolated lane (`just test`) does NOT
+# read this number: it sizes itself and exports NEXTEST_TEST_THREADS, the least
+# of the free cores, eight and an inherited value (docs/development.md), and
+# an environment value beats this file. So a shell that exports
+# NEXTEST_TEST_THREADS (a fixed 16, or `-2`) makes a bare `cargo nextest run`
+# follow the export, not this default; run the gate through `just test` or pass
+# --test-threads. Every test-group cap below stays: they bound the real-tmux
+# modules whatever the thread count is.
 [profile.default]
-test-threads = 8
+test-threads = 4
 # Finish the run after failures so one red gate reports every failing test.
 fail-fast = false
 

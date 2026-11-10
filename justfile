@@ -1282,15 +1282,47 @@ rust-fuzz-check:
 # under ONE base, AE_TEST_TMPDIR or /tmp: short, because a tmux socket beneath
 # it must fit AF_UNIX's 104 bytes. The lane also points TMPDIR into itself, so
 # what a test, a product child or cargo-mutants' tree copy leaves in the temp
-# dir leaves with the lane. NEXTEST_TEST_THREADS defaults to min(free cores, 8)
-# and CARGO_BUILD_JOBS to the free cores, from jobs-budget when it is installed
-# (without it the CPU count sizes the threads and the jobs stay cargo's own
-# default). The three heavy lanes run cargo at nice 10.
+# dir leaves with the lane. NEXTEST_TEST_THREADS is the least of the free cores
+# (jobs-budget, else the CPU count), eight and an inherited export, and
+# CARGO_BUILD_JOBS the least of the free cores and an inherited export (without
+# jobs-budget an inherited value stands, else cargo's own default); the
+# lane-specific AE_TEST_THREADS / AE_TEST_JOBS replace the rule. The three heavy
+# lanes run cargo at nice 10.
 _tmux-isolated lane *args:
     #!/usr/bin/env bash
     set -euo pipefail
     lane="$1"
     shift
+    # The stress lane (just rust-stress) refuses FIRST, before any scratch, server
+    # or reap exists: a named filterset, a plain repeat count and time bound, a
+    # timeout tool, and a quiet machine (load1 at or below 14, the same start
+    # ceiling a gate has). A load it cannot read refuses too.
+    if [[ "$lane" == stress ]]; then
+        if (($# != 3)); then
+            echo "usage: just rust-stress <nextest filterset> [count] [seconds]" >&2
+            exit 2
+        fi
+        stress_filter="$1"
+        stress_count="$2"
+        stress_secs="$3"
+        if [[ -z "${stress_filter//[[:space:]]/}" || "$stress_filter" == "all()" ]]; then
+            echo "Error: rust-stress repeats one named filterset (a module or a test), not the suite: '$stress_filter'" >&2
+            exit 2
+        fi
+        [[ "$stress_count" =~ ^[1-9][0-9]{0,2}$ ]] || { echo "Error: rust-stress count must be a positive integer of at most three digits, got: $stress_count" >&2; exit 2; }
+        [[ "$stress_secs" =~ ^[1-9][0-9]{0,4}$ ]] || { echo "Error: rust-stress seconds must be a positive integer of at most five digits, got: $stress_secs" >&2; exit 2; }
+        stress_timeout="$(command -v timeout || command -v gtimeout || true)"
+        [[ -n "$stress_timeout" ]] || { echo "Error: rust-stress needs timeout (GNU coreutils; gtimeout on a Mac with brew coreutils): the time bound is not optional" >&2; exit 2; }
+        load1="$(LC_ALL=C uptime 2>/dev/null | sed -n 's/.*load averages*: *\([0-9.]*\).*/\1/p' | head -n 1 || true)"
+        if [[ ! "$load1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "rust-stress: refused: load1 cannot be read from uptime; a start needs load1 at or below 14" >&2
+            exit 1
+        fi
+        if LC_ALL=C awk -v load="$load1" 'BEGIN { exit !(load + 0 > 14) }'; then
+            echo "rust-stress: refused: load1 $load1 is above 14; start when the machine is quiet" >&2
+            exit 1
+        fi
+    fi
     base="${AE_TEST_TMPDIR:-/tmp}"
     base_real="$(cd -P "$base" 2>/dev/null && pwd || printf '%s' "$base")"
     legacy="${TMPDIR:-/tmp}"
@@ -1463,41 +1495,87 @@ _tmux-isolated lane *args:
     export TMPDIR="$test_tmux_tmp/tmp"
     export TMUX_TMPDIR="$test_tmux_tmp"
     unset TMUX TMUX_PANE
-    # Sizing. An explicit NEXTEST_TEST_THREADS or CARGO_BUILD_JOBS wins untouched.
-    # Otherwise jobs-budget, when installed, says how many cores are free right
-    # now: one positive integer of at most three digits (a longer one wraps the
-    # arithmetic below), or its answer is ignored. Never blocks on it.
-    threads_from=env
-    jobs_from=env
-    if [[ -z "${NEXTEST_TEST_THREADS:-}" || -z "${CARGO_BUILD_JOBS:-}" ]]; then
-        budget=""
-        if command -v jobs-budget >/dev/null 2>&1; then
-            budget="$(jobs-budget 2>/dev/null || true)"
-            [[ "$budget" =~ ^[1-9][0-9]{0,2}$ ]] || budget=""
+    # Sizing. Each count is the LEAST of its ceilings, so a shell profile that
+    # exports a wide NEXTEST_TEST_THREADS or CARGO_BUILD_JOBS can lower a lane
+    # but never lift it past what jobs-budget says is free right now. Threads:
+    # jobs-budget (the online CPU count without it), the suite's cap of eight,
+    # an inherited NEXTEST_TEST_THREADS. Jobs: jobs-budget, an inherited
+    # CARGO_BUILD_JOBS. Only one positive integer of at most three digits is a
+    # ceiling (jobs-budget's answer too: a longer one wraps the arithmetic
+    # below, and it is ignored): a relative count such as -2, num-cpus, default
+    # or an oversize value is NO ceiling, is said to be ignored and never enters
+    # the arithmetic. Never blocks on jobs-budget. The one deliberate per-run
+    # override is the lane's own AE_TEST_THREADS / AE_TEST_JOBS (same shape),
+    # which replace the rule; a malformed one refuses with status 2 rather than
+    # guess. The lane exports the result, so it also beats a [build] jobs in a
+    # user's cargo config.
+    plain() { [[ "$1" =~ ^[1-9][0-9]{0,2}$ ]]; }
+    if [[ -n "${AE_TEST_THREADS:-}" ]] && ! plain "$AE_TEST_THREADS"; then
+        echo "Error: AE_TEST_THREADS must be one positive integer of at most three digits, got: $AE_TEST_THREADS" >&2
+        exit 2
+    fi
+    if [[ -n "${AE_TEST_JOBS:-}" ]] && ! plain "$AE_TEST_JOBS"; then
+        echo "Error: AE_TEST_JOBS must be one positive integer of at most three digits, got: $AE_TEST_JOBS" >&2
+        exit 2
+    fi
+    budget=""
+    if [[ -z "${AE_TEST_THREADS:-}" || -z "${AE_TEST_JOBS:-}" ]] && command -v jobs-budget >/dev/null 2>&1; then
+        budget="$(jobs-budget 2>/dev/null || true)"
+        plain "$budget" || budget=""
+    fi
+    if [[ -n "${AE_TEST_THREADS:-}" ]]; then
+        threads="$AE_TEST_THREADS"
+        threads_from=override
+    else
+        threads_from=budget
+        ceiling="$budget"
+        if [[ -z "$budget" ]]; then
+            threads_from=cpus
+            ceiling="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+            [[ "$ceiling" =~ ^[0-9]+$ ]] || ceiling=8
         fi
-        if [[ -z "${NEXTEST_TEST_THREADS:-}" ]]; then
-            threads_from=budget
-            cpus="$budget"
-            if [[ -z "$budget" ]]; then
-                threads_from=cpus
-                cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
-                [[ "$cpus" =~ ^[0-9]+$ ]] || cpus=8
-            fi
-            export NEXTEST_TEST_THREADS=$((cpus < 8 ? cpus : 8))
-        fi
-        if [[ -z "${CARGO_BUILD_JOBS:-}" ]]; then
-            jobs_from="cargo default"
-            if [[ -n "$budget" ]]; then
-                jobs_from=budget
-                export CARGO_BUILD_JOBS="$budget"
+        threads=$((ceiling < 8 ? ceiling : 8))
+        if [[ -n "${NEXTEST_TEST_THREADS:-}" ]]; then
+            if ! plain "$NEXTEST_TEST_THREADS"; then
+                threads_from="$threads_from; env $NEXTEST_TEST_THREADS ignored"
+            elif ((NEXTEST_TEST_THREADS < threads)); then
+                threads_from="env; $threads_from $ceiling"
+                threads="$NEXTEST_TEST_THREADS"
+            else
+                threads_from="$threads_from; env $NEXTEST_TEST_THREADS"
             fi
         fi
     fi
+    export NEXTEST_TEST_THREADS="$threads"
+    if [[ -n "${AE_TEST_JOBS:-}" ]]; then
+        jobs_from=override
+        jobs="$AE_TEST_JOBS"
+        export CARGO_BUILD_JOBS="$jobs"
+    elif [[ -n "$budget" ]]; then
+        jobs_from=budget
+        jobs="$budget"
+        if [[ -n "${CARGO_BUILD_JOBS:-}" ]]; then
+            if ! plain "$CARGO_BUILD_JOBS"; then
+                jobs_from="budget; env $CARGO_BUILD_JOBS ignored"
+            elif ((CARGO_BUILD_JOBS < budget)); then
+                jobs_from="env; budget $budget"
+                jobs="$CARGO_BUILD_JOBS"
+            else
+                jobs_from="budget; env $CARGO_BUILD_JOBS"
+            fi
+        fi
+        export CARGO_BUILD_JOBS="$jobs"
+    else
+        # No live ceiling to compare with: an inherited value stands untouched
+        # (cargo reads a relative one itself), else cargo's own default.
+        jobs_from="cargo default"
+        [[ -z "${CARGO_BUILD_JOBS:-}" ]] || jobs_from=env
+    fi
     # A mutation run is memory-bounded in config (the nextest `mutants` profile:
     # two tests, a 60 s kill), and an env value beats a profile. So the lane may
-    # TIGHTEN to one but never widen: anything but a plain 1 or 2 (a wider count,
-    # `num-cpus`, a negative) becomes 2, said on stderr, because refusing would
-    # make an inherited NEXTEST_TEST_THREADS=8 stop an unattended run.
+    # TIGHTEN to one but never widen: anything but a plain 1 or 2 becomes 2, said
+    # on stderr, because refusing would make an inherited wide count stop an
+    # unattended run.
     if [[ "$lane" == mutants && ! "$NEXTEST_TEST_THREADS" =~ ^[12]$ ]]; then
         threads_from="$threads_from, was $NEXTEST_TEST_THREADS, capped"
         export NEXTEST_TEST_THREADS=2
@@ -1581,6 +1659,16 @@ _tmux-isolated lane *args:
             detached nice -n 10 cargo mutants --cargo-arg=--locked --jobs 1 "$@" || status=$?
             kill "$watcher" 2>/dev/null || true
             exit "$status"
+            ;;
+        stress)
+            # ONE named filterset repeated count times (checked above, before any
+            # state): nextest's own --stress-count, never a synthetic CPU burner.
+            # Threads come from the sizing above (the least of the live budget, the
+            # cap of eight and an inherited export); nice 10; the time bound ends
+            # the whole group (status 124) and the trap reaps the scratch.
+            detached nice -n 10 "$stress_timeout" -k 5 "$stress_secs" \
+                cargo nextest run --locked --all-features \
+                --test-threads "$NEXTEST_TEST_THREADS" --stress-count "$stress_count" -E "$stress_filter"
             ;;
         *) echo "Error: unknown isolated test lane '$lane'" >&2; exit 2 ;;
     esac
@@ -1666,6 +1754,19 @@ rust-cov:
 # Mutation testing
 rust-mutants *args:
     just _tmux-isolated mutants {{ args }}
+
+# The BOUNDED repeat run for a flake hunt: nextest --stress-count over ONE named
+# filterset (a module or a test, never the suite) through the isolated lane.
+# Threads come from the lane's sizing (the least of jobs-budget, the cap of eight
+# and an inherited export), cargo runs at nice 10 under timeout -k 5 <secs>
+# (status 124 when the bound ends it), it refuses to start above load1 14, and the
+# lane reaps what it started. Synthetic CPU burners are not committed
+# (docs/development.md, Stress runs). Never reached by test, pre, rust-check,
+# mutants or CI. Example: just rust-stress 'test(=menu::a_test)' 20 600
+
+# Bounded flake hunt: repeat one named nextest filterset (load1 <= 14 to start)
+rust-stress filter count="10" secs="900":
+    just _tmux-isolated stress "$1" "$2" "$3"
 
 # Fuzz the parsers of hostile persisted state on an exact nightly, without
 # touching ae's product compiler. This lane REPORTS and is run by a human before

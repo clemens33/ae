@@ -282,7 +282,8 @@ The integration suite starts real processes — tmux servers, fake agents, the p
 on-access scanner (Microsoft Defender, macOS `syspolicyd` and Spotlight `mds`) inspects every
 exec and every scratch file. Where policy allows, point `AE_TEST_TMPDIR` at a dedicated short
 absolute directory that exists, and exclude only that one. Lower the process count for one run
-with `NEXTEST_TEST_THREADS=4 just test`.
+with `NEXTEST_TEST_THREADS=4 just test`: the lane takes the least of that value and the free
+cores, so a larger value changes nothing. `AE_TEST_THREADS=4 just test` sets the count exactly.
 
 A lane that fails with `error: kept …` left a scratch root or a tmux server that outlived it;
 the next `just test` retries the reap, which succeeds once the process holding it has exited.

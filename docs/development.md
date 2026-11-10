@@ -78,6 +78,7 @@ just install          # checkout-mode immutable versioned install
 just rust-setup       # install pinned Rust toolchain and dev tools
 just rust-check       # Rust fmt, clippy, compile every fuzz target, nextest, doctests
 just rust-prune       # report stale ae build output here; apply=yes cleans it
+just rust-stress 'test(=menu::x)' 20 600  # one named filter, repeated, bounded (see Stress runs)
 just version          # current AE_VERSION
 just bundles          # both platform bundles + release SHA256SUMS into ./dist
 just release          # check → test → rust-deny → CalVer → bundles → tag → gh release
@@ -141,6 +142,7 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 | `just rust-mutants` | does the suite discriminate? A product slice runs it `--in-diff` over its own diff before freeze and answers every survivor in the freeze report (test added, or named equivalent); budget bounded, LOCAL, no percentage ever cited or gated (docs/development.md §Mutation testing). CI runs it diff-bounded on path-matching pushes to main and PRs targeting main when a source diff and usable base exist; the full lane is opt-in manual dispatch (`mutants=true`). Bounded in config: 2 tests, 60 s kill (three named tests 180 s, below), RSS watcher (`AE_MUTANTS_RSS_MAX_MB`, default 2048). `rust-cov` reports, never gates |
 | `just rust-fuzz target=<name> secs=60` / `rust-fuzz-all secs=60` | human-run cargo-fuzz over the hostile parsers, on an exact nightly. Refuses on an unpinned tool or a stale `fuzz/Cargo.lock`, ends on the cutover evidence line, and REPORTS — CI carries no nightly and never runs it (`fuzz/README.md`) |
 | `just rust-build-release` / `bundles` | native release binary (native only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` (needs the musl cross toolchain) |
+| `just rust-stress <filterset> [count=10] [secs=900]` | the BOUNDED repeat run: nextest `--stress-count` over ONE named filterset (a module or a test, never the suite), through the isolated lane. Refuses to start above load1 14 or when load1 cannot be read (status 1), refuses an empty or `all()` filter, a count or bound that is not a plain integer, or a host without `timeout`/`gtimeout` (status 2); threads are the lane's sizing (below), cargo runs at nice 10 under `timeout -k 5 <secs>` (status 124 when the bound ends it) and the lane reaps what it started. Never in the gate, CI or mutants. See Stress runs |
 | `just rust-prune` / `rust-prune apply=yes` | THIS checkout's stale `ae` build output: the report is the default and removes nothing, `apply=yes` runs five fixed `cargo clean -p ae` cleans, each proved by a `--dry-run` path check first. Refuses a redirected target dir, a non-root cwd, a linked tree, a process using the checkout or a dry run it cannot prove (a stdout line that is not an absolute path inside its tree, no single valid `Summary`). Own tree only, never during a gate (`docs/development.md`) |
 | `just release` | the whole release, locally: check, test, rust-deny before the bump. Pre-flight refuses before any state is written |
 | `just rust-linux` / `rust-linux-26` / `rust-linux-smoke` | ON DEMAND, never reached by `just test`, `just pre` or `just release`: the gate on real Linux, native arm64, in a local container (read-only checkout, `ae-linux-arm64-*` cache volumes, non-root, the mounted source checked against the host's HEAD, tree and dirty count) / the same on Ubuntu 26.04, own `ae-linux26-arm64-*` volumes; `rust-linux-26` (bus `stall`, the default since that arm went green, #267) adds a stalling session bus proved before the build, `rust-linux-26 off` is the validated-host arm / the x86_64 musl release bundle from `./dist` executed in an amd64 container. arm64 only: the x86_64 proof of Ubuntu 26.04 is a human run on x86_64 hardware |
@@ -205,7 +207,9 @@ root 30 s later: then the lane fails and keeps itself, and the next lane retries
 A root the sweep cannot delete because a child is still writing into it is named (`note:
 kept …`) and left for the next lane: that transient race never turns an all-green lane red.
 `cli::no_test_file_rolls_its_own_scratch_root` refuses a root built by hand. Parallelism is
-config: nextest runs at most eight tests (`.config/nextest.toml`), `just rust-mutants` one
+config: a bare `cargo nextest run` with no `NEXTEST_TEST_THREADS` exported runs at most four
+tests (`.config/nextest.toml`; the isolated lane sizes itself below and reaches eight only on a
+quiet machine), `just rust-mutants` one
 mutant at a time on at most two tests, each killed after 60 s (the nextest `mutants` profile,
 which `.cargo/mutants.toml` selects, with SIGKILL at the bound and no grace period;
 `NEXTEST_TEST_THREADS=1` tightens it, and the lane caps anything wider than two. Arguments
@@ -226,10 +230,27 @@ printing the kill and appending it to `mutants.out/ae-rss-kills.log`: nextest se
 so cargo-mutants calls that mutant caught; a freeze reclassifies it from the receipt as memory
 growth. The lane sizes itself at start from the free
 cores: `jobs-budget` when that helper is on PATH and prints one positive integer of at most
-three digits, else the online CPU count. An unset `NEXTEST_TEST_THREADS` becomes min(free cores, 8), an unset
-`CARGO_BUILD_JOBS` the free cores (left to cargo when the helper is absent); an explicit
-value of either wins, so CI and a bare clone size as before. The choice and its source
-(`budget`, `cpus`, `env`; an unset jobs value reads `unset (cargo default)`) print on stderr, and the full test, coverage and mutants runs start
+three digits, else the online CPU count. Each count is the LEAST of its ceilings. Threads:
+`jobs-budget` (the CPU count without it), the suite's cap of eight and an inherited
+`NEXTEST_TEST_THREADS`. Cargo jobs: `jobs-budget` and an inherited `CARGO_BUILD_JOBS`
+(without `jobs-budget` there is no live ceiling and an inherited value stands, else cargo's own
+default). An inherited export can lower a lane and never lift it: a shell profile that exports a
+wide count (a fixed 16, say) cannot push a gate past what is free. Only
+one positive integer of at most three digits is a ceiling; a relative value (`-2`), `num-cpus`,
+`default` or an oversize one is no ceiling, is reported as ignored and never enters the
+arithmetic, and the lane falls back to the budget path. The lane exports the result, so it also
+overrides a `[build] jobs` in a cargo config. The deliberate per-run override is the lane's own
+`AE_TEST_THREADS` and `AE_TEST_JOBS` (one positive integer of at most three digits each; a
+malformed one refuses with status 2): it REPLACES the rule, so it can lift a count, and the mutants lane still caps
+threads at two. The choice and every ceiling that applied print on stderr, as `threads 6
+(budget; env 16)` (the budget set it, an inherited 16 was above), `threads 3 (env; budget 6)`
+(the inherited 3 was lower), `threads 6 (budget; env -2 ignored)` or `override`; an unset jobs
+value reads `unset (cargo default)`. A bare `cargo nextest run` outside the lane is NOT sized
+by any of this: nextest reads `NEXTEST_TEST_THREADS` from the environment before the config
+default, so a shell that exports the variable (a fixed 16, or `-2` meaning the CPU
+count minus two) runs that many tests whatever `.config/nextest.toml` says, and the four applies
+only where nothing is exported (CI, a bare clone). Run the gate through `just test`, or pass
+`--test-threads`. The full test, coverage and mutants runs start
 cargo at `nice -n 10` (a filtered `just _tmux-isolated test -E <filterset>` does not). The lane runs cargo in a session of
 its own, with no controlling terminal, so no test can take the terminal `just test` was typed
 in for a tmux pane it sits in (#149); a `cargo nextest` run straight from a terminal has no
@@ -239,6 +260,23 @@ is the canary for the link set: it clobbers a helper, refreshes, and pins the li
 against what the core links at launch, so the refresh entry and the launch entry cannot
 drift. It asserts the set is EXACTLY the core's list, never `>= N`, so an artifact quietly
 appearing or vanishing is a failure rather than a different number.
+
+### Stress runs
+
+A flake hunt repeats the REAL tests under bounds; it never loads the machine on purpose.
+`just rust-stress <filterset> [count] [secs]` is the one recipe for it: nextest
+`--stress-count` over one named filterset (a module or a test, not the suite) in the isolated
+lane. Every bound is in the recipe: it refuses to start while load1 is above 14 (the start
+ceiling of a gate) or unreadable, before any lane state exists; `--test-threads` is the lane's
+sizing above (the least of the live budget, the cap of eight and an inherited export); cargo
+runs at `nice -n 10` under `timeout -k 5 <secs>`, so the bound ends the whole process group
+(status 124) and the lane's cleanup reaps the scratch and its tmux servers; the count is at most
+three digits and the bound at most five. The test-group caps in `.config/nextest.toml` apply
+unchanged. `tests/it/gate.rs` pins the refusal at 14.01 against the start at 14.00, the exact
+argv, the niceness, the 124 and that no child of cargo survives. Synthetic CPU burners (a
+matrix of `yes > /dev/null`, busy loops) are not committed and not a flake signal: they measure
+the scheduler, not the tests. The same rule applies to any ad-hoc stress run: size it with
+`jobs-budget`, nice 10, a timeout, a start at load1 14 or lower and no child left behind.
 
 Each `just rust-mutants` invocation uses a fresh `target` below its lane scratch
 for both Cargo final and intermediate artifacts. The lane replaces inherited

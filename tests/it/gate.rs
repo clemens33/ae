@@ -163,8 +163,8 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "error: kept $test_tmux_tmp",
         "exit $((status ? status : 1))",
         "export TMPDIR=\"$test_tmux_tmp/tmp\"",
-        "export NEXTEST_TEST_THREADS=$((cpus < 8 ? cpus : 8))",
-        "export CARGO_BUILD_JOBS=\"$budget\"",
+        "export NEXTEST_TEST_THREADS=\"$threads\"",
+        "export CARGO_BUILD_JOBS=\"$jobs\"",
         "env -u TMUX -u TMUX_PANE tmux -S \"$test_tmux_tmp/tmux-$(id -u)/ae\" kill-server",
         "keep_or_remove \"$test_tmux_tmp\"",
         "trap cleanup EXIT",
@@ -591,8 +591,9 @@ fn kill_after_secs(lines: &[&str]) -> Option<u32> {
         .checked_add(grace)
 }
 
-/// Whether both lanes are bounded in CONFIG (#159): nextest at most eight tests
-/// at once; every mutation run (the `mutants` profile `.cargo/mutants.toml`
+/// Whether both lanes are bounded in CONFIG (#159): a bare nextest run (no lane,
+/// no override) at most four tests at once, the isolated lane's own sizing
+/// reaching eight only through `NEXTEST_TEST_THREADS`; every mutation run (the `mutants` profile `.cargo/mutants.toml`
 /// selects) at most two, each hard-killed within a minute. The thread count is
 /// never a `--test-threads` flag in `mutants.toml`, because a flag beats
 /// `NEXTEST_TEST_THREADS` and the operator could not tighten a run.
@@ -604,7 +605,7 @@ fn thread_caps_ok(nextest: &str, mutants: &str) -> bool {
         .map(str::trim)
         .filter(|line| !line.starts_with('#'))
         .collect();
-    table_number(&default, "test-threads = ").is_some_and(|threads| (1..=8).contains(&threads))
+    table_number(&default, "test-threads = ").is_some_and(|threads| (1..=4).contains(&threads))
         && table_number(&bounded, "test-threads = ")
             .is_some_and(|threads| (1..=2).contains(&threads))
         && kill_after_secs(&bounded).is_some_and(|secs| (1..=60).contains(&secs))
@@ -624,7 +625,7 @@ fn the_lanes_cap_their_test_threads_in_config() {
     let nextest = |default: &str, bounded: &str| {
         format!("[profile.default]\n{default}\n\n[profile.mutants]\n{bounded}\n")
     };
-    let default = "test-threads = 8";
+    let default = "test-threads = 4";
     let bounded = "test-threads = 2\nslow-timeout = { period = \"30s\", terminate-after = 2, grace-period = \"0s\" }";
     let mutants = "additional_cargo_test_args = [\"--profile\", \"mutants\"]\n";
     assert!(thread_caps_ok(&nextest(default, bounded), mutants));
@@ -634,10 +635,16 @@ fn the_lanes_cap_their_test_threads_in_config() {
         &nextest("test-threads = 18", bounded),
         mutants
     ));
+    // RED — the old bare-run default of eight: a run outside the lane would
+    // start twice the small fixed count on a machine other sessions share.
+    assert!(!thread_caps_ok(
+        &nextest("test-threads = 8", bounded),
+        mutants
+    ));
     // RED — a mutation run with no bound of its own: no profile at all, none
     // selected, or a profile that sizes itself wider than two.
     assert!(!thread_caps_ok(
-        "[profile.default]\ntest-threads = 8\n",
+        "[profile.default]\ntest-threads = 4\n",
         mutants
     ));
     assert!(!thread_caps_ok(
@@ -1751,20 +1758,103 @@ fn the_lane_sentry_server_sees_the_fixture_home_not_the_operators() {
     );
 }
 
-/// A lane sizes itself from `jobs-budget` (threads capped at the tmux suite's
-/// eight, build jobs not), names it on stderr, and an explicit value wins.
+/// A lane sizes each count as the LEAST of its ceilings and names every one it
+/// applied on stderr. Threads: `jobs-budget` (the CPU count without it), the tmux
+/// suite's cap of eight, and an inherited `NEXTEST_TEST_THREADS`. Build jobs:
+/// `jobs-budget` and an inherited `CARGO_BUILD_JOBS`. A shell profile that
+/// exports a wide count (a fixed 16, or `jobs-budget --max`) may LOWER a lane
+/// but never lift it past the live budget.
+/// The deliberate per-run override is the lane's own `AE_TEST_THREADS` /
+/// `AE_TEST_JOBS`, never the global names.
 #[test]
-fn a_lane_sizes_itself_from_jobs_budget_and_an_explicit_value_wins() {
+fn a_lane_sizes_itself_as_the_least_of_its_ceilings_and_only_a_lane_override_lifts_them() {
     let base = super::cli::OwnedScratch::root("gate", "sizing");
-    let explicit = [("NEXTEST_TEST_THREADS", "3"), ("CARGO_BUILD_JOBS", "5")];
+    let both = |threads: &'static str, jobs: &'static str| {
+        [
+            ("NEXTEST_TEST_THREADS", threads),
+            ("CARGO_BUILD_JOBS", jobs),
+        ]
+    };
     let none = &[][..];
+    let explicit = both("3", "5");
+    let profile = both("16", "16");
+    let tie = both("6", "6");
+    let junk = both("num-cpus", "default");
+    // The relative forms a user config or profile may hold (cargo and nextest
+    // read -2 as the CPU count minus two): no ceiling to compare, so the budget.
+    let relative = both("-2", "-2");
+    let empty = both("", "");
+    let wide = both("1000", "1000");
+    let lift = [
+        ("NEXTEST_TEST_THREADS", "16"),
+        ("CARGO_BUILD_JOBS", "16"),
+        ("AE_TEST_THREADS", "12"),
+        ("AE_TEST_JOBS", "20"),
+    ];
     // (budget, env, (threads, source), (jobs, source))
     for (budget, env, (threads, from), (jobs, jobs_from)) in [
         ("6", none, ("6", "budget"), ("6", "budget")),
         ("999", none, ("8", "budget"), ("999", "budget")),
-        ("6", &explicit[..], ("3", "env"), ("5", "env")),
-        ("6", &explicit[..1], ("3", "env"), ("6", "budget")),
-        ("6", &explicit[1..], ("6", "budget"), ("5", "env")),
+        // An inherited value below the budget lowers the lane.
+        (
+            "6",
+            &explicit[..],
+            ("3", "env; budget 6"),
+            ("5", "env; budget 6"),
+        ),
+        ("6", &explicit[..1], ("3", "env; budget 6"), ("6", "budget")),
+        ("6", &explicit[1..], ("6", "budget"), ("5", "env; budget 6")),
+        // The wide profile export never lifts a lane past the live budget.
+        (
+            "6",
+            &profile[..],
+            ("6", "budget; env 16"),
+            ("6", "budget; env 16"),
+        ),
+        // ... nor past the suite's cap of eight threads; jobs may follow it.
+        (
+            "999",
+            &profile[..],
+            ("8", "budget; env 16"),
+            ("16", "env; budget 999"),
+        ),
+        // A tie is the budget's, the equal value still named.
+        (
+            "6",
+            &tie[..],
+            ("6", "budget; env 6"),
+            ("6", "budget; env 6"),
+        ),
+        // Nothing but a plain positive integer of at most three digits is a ceiling.
+        (
+            "6",
+            &junk[..],
+            ("6", "budget; env num-cpus ignored"),
+            ("6", "budget; env default ignored"),
+        ),
+        (
+            "6",
+            &relative[..],
+            ("6", "budget; env -2 ignored"),
+            ("6", "budget; env -2 ignored"),
+        ),
+        (
+            "999",
+            &relative[..],
+            ("8", "budget; env -2 ignored"),
+            ("999", "budget; env -2 ignored"),
+        ),
+        // An empty export is no export.
+        ("6", &empty[..], ("6", "budget"), ("6", "budget")),
+        (
+            "6",
+            &wide[..],
+            ("6", "budget; env 1000 ignored"),
+            ("6", "budget; env 1000 ignored"),
+        ),
+        // The lane's own override replaces the rule, whatever the profile says.
+        ("6", &lift[..], ("12", "override"), ("20", "override")),
+        ("6", &lift[2..3], ("12", "override"), ("6", "budget")),
     ] {
         let (seen, stderr) = sized_lane(&base, Some(budget), env, &["test"]);
         assert_eq!(seen[1..3], [threads, jobs], "budget {budget} env {env:?}");
@@ -1776,30 +1866,113 @@ fn a_lane_sizes_itself_from_jobs_budget_and_an_explicit_value_wins() {
     }
 }
 
+/// Without a `jobs-budget` the CPU count and the cap of eight are the threads'
+/// ceiling, an inherited wide value cannot lift them, and the jobs have no live
+/// ceiling to compare with, so an inherited value stands untouched (cargo reads
+/// a relative one itself). A relative threads value is no ceiling and never
+/// enters the arithmetic.
+#[test]
+fn a_lane_without_jobs_budget_keeps_the_cpu_cap_and_leaves_an_inherited_jobs_value() {
+    let base = super::cli::OwnedScratch::root("gate", "nobudget");
+    let profile = [("NEXTEST_TEST_THREADS", "16"), ("CARGO_BUILD_JOBS", "16")];
+    let relative = [("NEXTEST_TEST_THREADS", "-2"), ("CARGO_BUILD_JOBS", "-2")];
+    let (seen, stderr) = sized_lane(&base, None, &profile[..], &["test"]);
+    let threads: usize = seen[1].parse().expect("the recorded threads");
+    assert!((1..=8).contains(&threads), "{seen:?}: {stderr}");
+    assert_eq!(seen[2], "16", "{stderr}");
+    let said = format!("threads {threads} (cpus; env 16), cargo jobs 16 (env)");
+    assert!(stderr.contains(&said), "{stderr}");
+    let (seen, stderr) = sized_lane(&base, None, &relative[..], &["test"]);
+    let threads: usize = seen[1].parse().expect("the recorded threads");
+    assert!((1..=8).contains(&threads), "{seen:?}: {stderr}");
+    assert_eq!(seen[2], "-2", "{stderr}");
+    let said = format!("threads {threads} (cpus; env -2 ignored), cargo jobs -2 (env)");
+    assert!(stderr.contains(&said), "{stderr}");
+}
+
+/// A per-run override that is not one positive integer of at most three digits
+/// is a typo, not a wish: the lane refuses (status 2) before it runs cargo
+/// rather than size itself by a guess.
+#[test]
+fn an_unusable_lane_override_refuses_before_cargo_runs() {
+    let base = super::cli::OwnedScratch::root("gate", "overridebad");
+    let cargo = "case \"$1\" in nextest) echo ran >\"$AE_TEST_TMPDIR/seen\" ;; esac\n";
+    for (var, value) in [
+        ("AE_TEST_THREADS", "0"),
+        ("AE_TEST_THREADS", "many"),
+        ("AE_TEST_THREADS", "3 4"),
+        ("AE_TEST_THREADS", "1000"),
+        ("AE_TEST_JOBS", "-1"),
+        ("AE_TEST_JOBS", "8x"),
+    ] {
+        let _ = std::fs::remove_file(base.join("seen"));
+        let lane = lane_over(&base, Some("6"), cargo)
+            .env(var, value)
+            .arg("_tmux-isolated")
+            .arg("test");
+        let ran = raw::run(&lane, &root(), &base.join("out"), &base.join("err"))
+            .unwrap_or_else(|why| panic!("the lane runs: {why}"));
+        let stderr = read(&base.join("err"));
+        assert!(
+            matches!(ran.outcome(), ExitOutcome::Code(2)),
+            "{var}={value:?} must refuse with status 2: {stderr}"
+        );
+        assert!(stderr.contains(var), "{var}={value:?}: {stderr}");
+        assert!(
+            !base.join("seen").exists(),
+            "{var}={value:?}: cargo ran anyway"
+        );
+    }
+}
+
 /// A mutation run is never wider than two tests. An env value beats a profile,
 /// so the lane itself must not hand nextest a wider one: it tightens to one on
-/// request and caps anything else at two, said on stderr. The `test` lane is
-/// untouched.
+/// request and caps anything else at two, said on stderr. The `test` lane keeps
+/// its own ceilings.
 #[test]
 fn a_mutants_lane_never_runs_wider_than_two_tests() {
     let base = super::cli::OwnedScratch::root("gate", "mutcap");
     let with = |threads: &'static str| [("NEXTEST_TEST_THREADS", threads)];
+    let over = |threads: &'static str| [("AE_TEST_THREADS", threads)];
     let none = &[][..];
     // (budget, env, threads, how the lane says it got there)
     for (budget, env, threads, said) in [
         ("6", none, "2", "threads 2 (budget, was 6, capped)"),
         ("1", none, "1", "threads 1 (budget)"),
-        ("6", &with("1")[..], "1", "threads 1 (env)"),
-        ("6", &with("2")[..], "2", "threads 2 (env)"),
-        ("6", &with("3")[..], "2", "threads 2 (env, was 3, capped)"),
-        ("6", &with("8")[..], "2", "threads 2 (env, was 8, capped)"),
+        ("6", &with("1")[..], "1", "threads 1 (env; budget 6)"),
+        ("6", &with("2")[..], "2", "threads 2 (env; budget 6)"),
+        (
+            "6",
+            &with("3")[..],
+            "2",
+            "threads 2 (env; budget 6, was 3, capped)",
+        ),
+        (
+            "6",
+            &with("8")[..],
+            "2",
+            "threads 2 (budget; env 8, was 6, capped)",
+        ),
         (
             "6",
             &with("num-cpus")[..],
             "2",
-            "(env, was num-cpus, capped)",
+            "(budget; env num-cpus ignored, was 6, capped)",
         ),
-        ("6", &with("-1")[..], "2", "(env, was -1, capped)"),
+        (
+            "6",
+            &with("-1")[..],
+            "2",
+            "(budget; env -1 ignored, was 6, capped)",
+        ),
+        ("6", &over("1")[..], "1", "threads 1 (override)"),
+        ("6", &over("2")[..], "2", "threads 2 (override)"),
+        (
+            "6",
+            &over("8")[..],
+            "2",
+            "threads 2 (override, was 8, capped)",
+        ),
     ] {
         let (seen, stderr) = sized_lane(&base, Some(budget), env, &["mutants"]);
         assert_eq!(seen[1], threads, "budget {budget} env {env:?}: {stderr}");
@@ -1808,9 +1981,264 @@ fn a_mutants_lane_never_runs_wider_than_two_tests() {
             "budget {budget} env {env:?}: {stderr}"
         );
     }
-    // The `test` lane keeps its eight-wide ceiling: the cap is the mutants lane's.
+    // The `test` lane keeps its eight-wide ceiling: the cap is the mutants lane's,
+    // and an inherited eight no longer lifts it past the budget.
     let (seen, _) = sized_lane(&base, Some("6"), &with("8")[..], &["test"]);
+    assert_eq!(seen[1], "6");
+    let (seen, _) = sized_lane(&base, Some("999"), &with("16")[..], &["test"]);
     assert_eq!(seen[1], "8");
+}
+
+/// One `just rust-stress` run on the same private `PATH` as the other lane
+/// pins, with a fake `uptime` saying `load` and the host's real `timeout` (or
+/// GNU `gtimeout`) linked as `timeout`. The fake `cargo` records, for a nextest
+/// run, one argument per line, then the threads it was handed, its own niceness
+/// and the lane's. `None`, after proving the recipe refuses with status 2 and
+/// names `timeout`, where the host has neither tool.
+fn stress_lane(
+    base: &Path,
+    load: &str,
+    cargo: &str,
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> Option<(ExitOutcome, String)> {
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    let mut lane = lane_over(base, Some("6"), cargo);
+    let bin = base.join("bin");
+    let uptime = bin.join("uptime");
+    std::fs::write(&uptime, format!("#!/bin/sh\necho '{load}'\n"))
+        .and_then(|()| std::fs::set_permissions(&uptime, std::fs::Permissions::from_mode(0o755)))
+        .unwrap_or_else(|why| panic!("the fake uptime: {why}"));
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let host = ["timeout", "gtimeout"].into_iter().find_map(|tool| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(tool))
+            .find(|file| file.is_file())
+    });
+    let linked = host.is_some();
+    if let Some(real) = host {
+        symlink(real, bin.join("timeout"))
+            .unwrap_or_else(|why| panic!("the linked timeout: {why}"));
+    }
+    lane = lane.arg("rust-stress");
+    for arg in args {
+        lane = lane.arg(arg);
+    }
+    for (key, value) in env {
+        lane = lane.env(key, value);
+    }
+    let _ = std::fs::remove_file(base.join("seen"));
+    let ran = raw::run(&lane, &root(), &base.join("out"), &base.join("err"))
+        .unwrap_or_else(|why| panic!("the stress lane runs: {why}"));
+    let stderr = read(&base.join("err"));
+    if !linked {
+        assert!(
+            matches!(ran.outcome(), ExitOutcome::Code(2)) && stderr.contains("timeout"),
+            "without timeout or gtimeout the recipe must refuse with status 2: {stderr}"
+        );
+        return None;
+    }
+    Some((ran.outcome(), stderr))
+}
+
+/// `just rust-stress` repeats ONE named filter and refuses to start while the
+/// machine is busy: load1 above 14 (the doctrine's start ceiling) refuses before
+/// any lane state exists, an unreadable load refuses too, and 14.00 itself or a
+/// quiet machine runs. The refusal never reaches cargo.
+#[test]
+fn a_stress_run_refuses_above_load_14_and_before_it_starts_anything() {
+    let base = super::cli::OwnedScratch::root("gate", "stressload");
+    let cargo = "case \"$1\" in nextest) echo ran >\"$AE_TEST_TMPDIR/seen\" ;; esac\n";
+    let args = ["test(=menu::x)", "3", "30"];
+    // (the uptime line, whether the run starts)
+    for (load, starts) in [
+        (
+            " 15:25  up 1 day, 6 users, load averages: 24.02 23.94 26.50",
+            false,
+        ),
+        (
+            " 15:25  up 1 day, 6 users, load averages: 14.01 3.00 3.00",
+            false,
+        ),
+        (
+            " 15:25:01 up 1 day, 6 users,  load average: 15.00, 14.00, 13.00",
+            false,
+        ),
+        (
+            " 15:25  up 1 day, 6 users, load averages: 120.50 90.00 60.00",
+            false,
+        ),
+        // Fail closed: a line with no load figure is no proof of a quiet machine.
+        (" 15:25  up 1 day, 6 users, no figures here", false),
+        (
+            " 15:25  up 1 day, 6 users, load averages: 14.00 20.00 20.00",
+            true,
+        ),
+        (
+            " 15:25:01 up 1 day, 6 users,  load average: 0.52, 9.00, 9.00",
+            true,
+        ),
+    ] {
+        let Some((outcome, stderr)) = stress_lane(&base, load, cargo, &[], &args) else {
+            return;
+        };
+        let ran = base.join("seen").exists();
+        assert_eq!(ran, starts, "{load:?}: {stderr}");
+        if starts {
+            assert!(
+                matches!(outcome, ExitOutcome::Code(0)),
+                "{load:?}: {stderr}"
+            );
+        } else {
+            assert!(
+                matches!(outcome, ExitOutcome::Code(1)),
+                "{load:?}: {stderr}"
+            );
+            assert!(
+                stderr.contains("load") && stderr.contains("14"),
+                "{load:?}: {stderr}"
+            );
+        }
+    }
+    // A refusal leaves no lane directory behind: it came before any state.
+    let lanes: Vec<String> = std::fs::read_dir(&*base)
+        .expect("the lane base")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|entry| entry.starts_with("ae-rust-test."))
+        .collect();
+    assert!(lanes.is_empty(), "lane directories left: {lanes:?}");
+}
+
+/// The recipe takes a filter, a repeat count and a time bound, nothing else:
+/// an empty or whole-suite filter, a count or bound that is not one positive
+/// integer (three digits, five digits) refuses with status 2 before any load
+/// reading or lane state.
+#[test]
+fn a_stress_run_needs_a_named_filter_and_plain_bounds() {
+    let base = super::cli::OwnedScratch::root("gate", "stressargs");
+    let cargo = "case \"$1\" in nextest) echo ran >\"$AE_TEST_TMPDIR/seen\" ;; esac\n";
+    let quiet = " 15:25  up 1 day, 6 users, load averages: 0.50 0.50 0.50";
+    for args in [
+        ["", "3", "30"],
+        ["all()", "3", "30"],
+        ["test(=menu::x)", "0", "30"],
+        ["test(=menu::x)", "many", "30"],
+        ["test(=menu::x)", "1000", "30"],
+        ["test(=menu::x)", "3", "0"],
+        ["test(=menu::x)", "3", "soon"],
+        ["test(=menu::x)", "3", "100000"],
+    ] {
+        let Some((outcome, stderr)) = stress_lane(&base, quiet, cargo, &[], &args) else {
+            return;
+        };
+        assert!(
+            matches!(outcome, ExitOutcome::Code(2)),
+            "{args:?}: {stderr}"
+        );
+        assert!(!base.join("seen").exists(), "{args:?}: cargo ran anyway");
+    }
+}
+
+/// A stress run hands nextest exactly the named filter, the repeat count and
+/// `--test-threads` from the lane's sizing (the least of the budget, the cap of
+/// eight and a wide inherited export), at `nice -n 10`; and when its time bound
+/// ends it, the whole group goes: status 124 and no child of cargo survives, the
+/// lane directory included.
+#[test]
+fn a_stress_run_is_sized_niced_bounded_and_leaves_no_child_behind() {
+    let base = super::cli::OwnedScratch::root("gate", "stressrun");
+    let quiet = " 15:25  up 1 day, 6 users, load averages: 0.50 0.50 0.50";
+    let record = "case \"$1\" in nextest) ;; *) exit 0 ;; esac\n\
+         { printf '%s\\n' \"$@\"; echo \"$NEXTEST_TEST_THREADS\"; ps -o ni= -p $$; } \
+         >\"$AE_TEST_TMPDIR/seen\"\n";
+    let profile = [("NEXTEST_TEST_THREADS", "16"), ("CARGO_BUILD_JOBS", "16")];
+    let filter = "test(=menu::a) | test(=menu::b)";
+    let Some((outcome, stderr)) = stress_lane(&base, quiet, record, &profile, &[filter, "7", "30"])
+    else {
+        return;
+    };
+    assert!(matches!(outcome, ExitOutcome::Code(0)), "{stderr}");
+    let seen = read(&base.join("seen"));
+    let lines: Vec<&str> = seen.lines().collect();
+    let want = [
+        "nextest",
+        "run",
+        "--locked",
+        "--all-features",
+        "--test-threads",
+        "6",
+        "--stress-count",
+        "7",
+        "-E",
+        filter,
+        "6",
+    ];
+    assert_eq!(lines[..want.len()], want, "{stderr}");
+    let own: i32 = lines[want.len()].trim().parse().expect("cargo's niceness");
+    // `nice` with no argument prints the niceness it inherited: this test's own,
+    // which is the lane's (the fake `cargo` is two exec hops below it).
+    raw::run(
+        &Invocation::new("nice"),
+        &base,
+        &base.join("nice-out"),
+        &base.join("nice-err"),
+    )
+    .unwrap_or_else(|why| panic!("nice runs: {why}"));
+    let lane_nice: i32 = read(&base.join("nice-out")).trim().parse().unwrap_or(0);
+    assert!(
+        own > lane_nice || own >= 19,
+        "cargo {own}, lane {lane_nice}"
+    );
+
+    // The bound: a cargo that leaves a background child and then waits.
+    let hang = "case \"$1\" in nextest) ;; *) exit 0 ;; esac\n\
+         sleep 300 &\n\
+         echo $! >\"$AE_TEST_TMPDIR/child.tmp\" && mv \"$AE_TEST_TMPDIR/child.tmp\" \"$AE_TEST_TMPDIR/child\"\n\
+         wait\n";
+    let _ = std::fs::remove_file(base.join("child"));
+    let Some((outcome, stderr)) = stress_lane(&base, quiet, hang, &[], &[filter, "2", "1"]) else {
+        return;
+    };
+    assert!(
+        matches!(outcome, ExitOutcome::Code(124)),
+        "the bound ends it: {stderr}"
+    );
+    let child = wait_written(&base.join("child"));
+    let pid = child.trim();
+    let alive = |pid: &str| {
+        matches!(
+            raw::run(
+                &Invocation::new("kill").arg("-0").arg(pid),
+                &base,
+                &base.join("kill-out"),
+                &base.join("kill-err"),
+            )
+            .map(|ran| ran.outcome()),
+            Ok(ExitOutcome::Code(0))
+        )
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while alive(pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let survived = alive(pid);
+    if survived {
+        let _ = raw::run(
+            &Invocation::new("kill").arg("-KILL").arg(pid),
+            &base,
+            &base.join("kill-out"),
+            &base.join("kill-err"),
+        );
+    }
+    assert!(!survived, "the bounded stress run left child {pid} running");
+    let left: Vec<String> = std::fs::read_dir(&*base)
+        .expect("the lane base")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|entry| entry.starts_with("ae-rust-test."))
+        .collect();
+    assert!(left.is_empty(), "the stress lane was not reaped: {left:?}");
 }
 
 /// Whether the mutants arm of the isolated lane starts the memory watcher
