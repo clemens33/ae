@@ -483,7 +483,7 @@ fn hold_memory_drops_removed_slots_and_old_keys_even_for_a_journaled_hold() {
         "re-added slot names again"
     );
     one.limited = false;
-    one.room = Room::Near;
+    one.room = Room::Crossed(window(96.0));
     let events = [
         headroom(200, "one"),
         row(
@@ -513,7 +513,7 @@ fn mixed_limit_and_headroom_arbitration_is_independent_of_seat_order() {
     let one = seat("spawned.1", "one");
     let mut two = seat("spawned.2", "two");
     two.limited = false;
-    two.room = Room::Near;
+    two.room = Room::Crossed(window(96.0));
     for reversed in [false, true] {
         let seats = if reversed {
             vec![two.clone(), one.clone()]

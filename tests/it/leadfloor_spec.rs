@@ -299,16 +299,39 @@ fn leadfloor_real_limit_colead_and_off_account_sibling_are_also_protected() {
 }
 
 #[test]
-fn leadfloor_real_nonlead_and_vertical_main_keep_the_same_sibling_move() {
+fn leadfloor_real_nonlead_and_vertical_main_never_take_a_derived_sibling() {
     for (tag, layout, slot) in [
         ("lfworker", "lead-pair", "spawned.0"),
         ("lfvertical", "vertical", "main"),
     ] {
-        moves(
-            &fixture(tag, layout, slot, false, false, false, false),
-            "sibling",
-            "derived sibling",
+        let seat = fixture(tag, layout, slot, false, false, false, false);
+        let before = seat
+            .rig
+            .tool_pid(&seat.pane, "claude")
+            .expect("source tool is running");
+        let output = run_leg(&seat);
+        let refused = records(&seat, REFUSED_ACTION);
+        assert_eq!(
+            refused.len(),
+            1,
+            "{layout} {slot}: must refuse, not move: {output:?}\n{}",
+            seat.rig.events()
         );
+        let summary = refused[0].summary.as_deref().expect("refusal cause");
+        assert!(
+            summary.starts_with("no-candidate: refused: no usable candidate:"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("sibling, derived sibling (a seat never changes model unasked)"),
+            "{summary}"
+        );
+        assert!(records(&seat, DONE_ACTION).is_empty());
+        assert_eq!(
+            seat.rig.meta_row(&format!("profile.{}", seat.slot)),
+            "source"
+        );
+        assert_eq!(seat.rig.tool_pid(&seat.pane, "claude"), Some(before));
     }
 }
 

@@ -1113,6 +1113,11 @@ pub enum Provenance {
     /// model on its own (#309). It stays listed so the chooser names it
     /// ([`Skip::LeadSibling`]); only `leg::listed` makes one.
     LeadSibling(Step),
+    /// A derived sibling of a seat that is not a lead: no automatic move of
+    /// it ever changes model (#309 part B). It stays listed so the chooser
+    /// names it ([`Skip::BarredSibling`]); only `leg::listed` makes one, and
+    /// nothing turns it back into a candidate.
+    BarredSibling(Step),
     /// A declared candidate of a lead-pair seat whose profile pins the very
     /// model the seat's own profile pins, both read: no capability change, so
     /// the lead floor exempts it like a derived twin (#309). Only
@@ -1128,14 +1133,18 @@ impl Provenance {
         match self {
             Self::Declared | Self::DeclaredTwin => "",
             Self::Derived(Kin::Twin, _) => ", derived twin",
-            Self::Derived(Kin::Sibling, _) | Self::LeadSibling(_) => ", derived sibling",
+            Self::Derived(Kin::Sibling, _) | Self::LeadSibling(_) | Self::BarredSibling(_) => {
+                ", derived sibling"
+            }
         }
     }
 
     const fn step(self) -> Option<Step> {
         match self {
             Self::Declared | Self::DeclaredTwin => None,
-            Self::Derived(_, step) | Self::LeadSibling(step) => Some(step),
+            Self::Derived(_, step) | Self::LeadSibling(step) | Self::BarredSibling(step) => {
+                Some(step)
+            }
         }
     }
 }
@@ -1301,8 +1310,11 @@ pub enum Doubt {
 /// candidate answering to no `profiles` entry is none, and an account ae
 /// cannot prove is never taken for another one.
 ///
-/// Siblings are candidates and not exits unless they leave the account: a
-/// model on the same allowance does not outlast it.
+/// A derived sibling is never an exit (#309 part B): no automatic move of a
+/// seat that is not a lead takes one, and a lead takes one only under its
+/// opt-in floor, so the verdict errs toward "not covered" for a lead. A
+/// declared sibling is the human's choice and is an exit when it leaves the
+/// account; one on the same allowance does not outlast it.
 #[must_use]
 pub fn cover(
     declared: &[String],
@@ -1310,7 +1322,10 @@ pub fn cover(
     profiles: &[(String, Shape)],
 ) -> Cover {
     let mut unproven = false;
-    for (name, _) in listed(declared, (profile, seat), profiles) {
+    for (name, provenance) in listed(declared, (profile, seat), profiles) {
+        if matches!(provenance, Provenance::Derived(Kin::Sibling, _)) {
+            continue;
+        }
         let Some((_, shape)) = profiles.iter().find(|(key, _)| *key == name) else {
             continue;
         };
@@ -2563,6 +2578,9 @@ pub enum Skip {
     /// A derived sibling of a lead-pair seat: the lead never changes model on
     /// its own ([`Provenance::LeadSibling`], #309).
     LeadSibling,
+    /// A derived sibling of a seat that is not a lead: no automatic move
+    /// changes its model ([`Provenance::BarredSibling`], #309 part B).
+    BarredSibling,
     /// The lead floor passes it over: its model is under the floor or has no
     /// tier ([`choose_seat`], #309).
     Floor(Floor),
@@ -2888,8 +2906,9 @@ fn choose_guarded(
 
 /// Why `candidate` cannot be taken now, if it cannot.
 ///
-/// A lead seat's derived sibling is never taken, whatever its account, step or
-/// quota. A profile the seat left on its limit waits for a window read after the move
+/// A derived sibling the seat may not take (a lead's without its floor, any
+/// other seat's always) is never taken, whatever its account, step or quota.
+/// A profile the seat left on its limit waits for a window read after the move
 /// that proves relief — a usable reading below critical, or a reset that has
 /// passed — and for no usable reading after the move to still sit at critical:
 /// a move back onto a nearly spent account would only move the seat again. A
@@ -2900,8 +2919,10 @@ fn choose_guarded(
 /// long window, or a short one the classifier put at critical, so a seat never
 /// moves onto an account whose short window is spent.
 fn passed_over(candidate: &Candidate, now: i64, room: Option<u8>) -> Option<Skip> {
-    if matches!(candidate.provenance, Provenance::LeadSibling(_)) {
-        return Some(Skip::LeadSibling);
+    match candidate.provenance {
+        Provenance::LeadSibling(_) => return Some(Skip::LeadSibling),
+        Provenance::BarredSibling(_) => return Some(Skip::BarredSibling),
+        _ => {}
     }
     if !candidate.configured {
         return Some(Skip::Unconfigured);
@@ -3039,18 +3060,28 @@ fn percent(value: f64) -> String {
 pub fn current<K: PartialEq>(windows: Vec<(K, Window)>) -> Vec<(K, Window)> {
     let superseded: Vec<bool> = windows
         .iter()
-        .map(|(key, window)| {
-            usable(window)
-                && windows.iter().any(|(other, newer)| {
-                    other == key && usable(newer) && newer.observed_at > window.observed_at
-                })
-        })
+        .map(|(key, window)| superseded(key, window, windows.iter().map(|(k, w)| (k, w))))
         .collect();
     windows
         .into_iter()
         .zip(superseded)
         .filter_map(|(entry, gone)| (!gone).then_some(entry))
         .collect()
+}
+
+/// Whether the usable reading `window` of `key` is ruled out by a usable
+/// reading of the same key among `readings` observed strictly later: the one
+/// rule of [`current`], also for a spend cap a reading carries (#311).
+#[must_use]
+pub fn superseded<'a, K: PartialEq + 'a>(
+    key: &K,
+    window: &Window,
+    mut readings: impl Iterator<Item = (&'a K, &'a Window)>,
+) -> bool {
+    usable(window)
+        && readings.any(|(other, newer)| {
+            other == key && usable(newer) && newer.observed_at > window.observed_at
+        })
 }
 
 /// One reading of an origin account as a return judges it: a judged window,
@@ -6348,6 +6379,25 @@ mod tests {
             cover(&named(&["sonnet", "sol"]), ("src", &seat), &all),
             Cover::Exit("sol".to_owned()),
             "declared order; a same-account candidate is passed over, not an exit"
+        );
+    }
+
+    /// #309 B: no automatic move of a non-lead seat takes a derived sibling,
+    /// and a lead takes one only under its opt-in floor, so a derived sibling
+    /// on another account is no exit; the same profile declared is one.
+    #[test]
+    fn a_derived_sibling_on_another_account_is_no_exit() {
+        let seat = on(ToolKind::Claude, Some("opus"), proven("/a"));
+        let all = rows(&[("haiku-b", on(ToolKind::Claude, Some("haiku"), proven("/b")))]);
+        assert_eq!(
+            listed(&[], ("src", &seat), &all),
+            rows(&[("haiku-b", Provenance::Derived(Kin::Sibling, Step::Account))])
+        );
+        assert_eq!(cover(&[], ("src", &seat), &all), Cover::Bare);
+        assert_eq!(
+            cover(&named(&["haiku-b"]), ("src", &seat), &all),
+            Cover::Exit("haiku-b".to_owned()),
+            "a declared row is the human's choice and stays an exit"
         );
     }
 

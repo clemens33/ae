@@ -571,7 +571,8 @@ HEADROOM path ([Moving a seat](reseat.md#headroom-episodes)): it books the
 opener `auto-reseat-headroom` (its `ts` the key, its summary `headroom <pct>%
 <window>`) at a crossing and the re-arm `auto-reseat-headroom-cleared` (`ref`
 the key) on strict relief, each under the seat's lock, decides a due episode as
-above, and lets its due seats share the one trigger with the limit ones. An
+above only while its account reads at or past the current threshold (within 5
+points below it the episode stays open and moves nothing, #311), and lets its due seats share the one trigger with the limit ones. An
 attempt in flight of either kind decides its seat until it ends, so no second
 attempt opens beside it, and a refusal or failure under either live key closes
 both kinds. An unusable `auto_reseat_at`, `auto_reseat_lead_at` or `auto_reseat_lead_floor` is

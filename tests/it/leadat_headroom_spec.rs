@@ -304,14 +304,14 @@ fn leadat_new_red_leg_rechecks_lead_band_not_global_band() {
 }
 
 #[test]
-fn leadat_control_leg_exact_rearm_boundary_is_still_pressed() {
+fn leadat_control_leg_at_threshold_boundary_is_still_pressed() {
     let seat = fixture(
         "latlegat",
         "lead-pair",
         "worker.0",
         "auto_reseat_at = 95\nauto_reseat_lead_at = 96",
     );
-    quota(&seat.rig, "home-a", &[("weekly_all", 91.0)], 0);
+    quota(&seat.rig, "home-a", &[("weekly_all", 96.0)], 0);
     let key = reserve(&seat, "auto-reseat-headroom");
     stopped_or_moved(&seat, key, true, "");
 }

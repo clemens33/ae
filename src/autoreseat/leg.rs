@@ -191,11 +191,12 @@ pub(crate) const fn ineligible_summary(why: Ineligible) -> &'static str {
 /// [`super::listed`], read as a move of it reads them: the session's identity
 /// config, the seat's recorded profile through its recorded client, and the
 /// store the seat RECORDS — never a model it was followed to. A config or a
-/// seat command ae cannot read derives nothing. A lead-pair seat
-/// ([`super::lead_seat`]) keeps its derived siblings on the list as
-/// [`Provenance::LeadSibling`], which the chooser passes over (#309), and
-/// marks a declared candidate on the seat's own model [`Provenance::DeclaredTwin`]
-/// (the lead floor exempts it).
+/// seat command ae cannot read derives nothing. Every seat keeps its derived
+/// siblings on the list, so the chooser names them (#309): a seat that is not
+/// a lead as [`Provenance::BarredSibling`], which nothing takes; a lead-pair
+/// seat ([`super::lead_seat`]) as [`Provenance::LeadSibling`], which only its
+/// floor may judge, and it marks a declared candidate on the seat's own model
+/// [`Provenance::DeclaredTwin`] (the lead floor exempts it).
 pub(crate) fn listed(
     dir: &Path,
     bytes: &[u8],
@@ -257,11 +258,20 @@ pub(crate) fn listed(
             .collect();
         (plain, Vec::new())
     });
-    // A lead-pair seat never changes model on its own (#309): its derived
-    // siblings stay listed, so the chooser names them, but are never taken.
+    // No seat changes model on its own (#309): its derived siblings stay
+    // listed, so the chooser names them, but are never taken. A seat that is
+    // not a lead never takes one; a lead takes one only under its floor.
     let lead_pair = crate::lifecycle::meta_value(bytes, "layout") == "lead-pair";
     if !super::lead_seat(lead_pair, &seat.slot) {
-        return list;
+        return list
+            .into_iter()
+            .map(|(name, provenance)| match provenance {
+                Provenance::Derived(super::Kin::Sibling, step) => {
+                    (name, Provenance::BarredSibling(step))
+                }
+                other => (name, other),
+            })
+            .collect();
     }
     list.into_iter()
         .map(|(name, provenance)| {
@@ -722,6 +732,10 @@ pub(crate) fn own_scope(
         spend_capped: false,
         fresh_cap: None,
     };
+    // Every reading of the scope, of any model family, with whether its
+    // group reports the cap: a cap is the account's, and a newer usable
+    // reading of the same window retires it like any other (#311).
+    let mut readings = Vec::new();
     for group in seen.groups.iter().filter(|group| {
         group.tool == identity.tool && group.source.as_ref() == Some(&identity.source)
     }) {
@@ -729,16 +743,21 @@ pub(crate) fn own_scope(
             let Some(window) = window(group, row, now) else {
                 continue;
             };
-            let capped = group.policy.spend_capped();
-            scope.spend_capped |= capped && super::usable(&window);
-            if capped && window.status == crate::quota::Status::Fresh {
-                scope.fresh_cap.get_or_insert_with(|| window.clone());
-            }
+            let key = crate::quota::WindowKey::of(row);
             if !crate::quota::scoped_elsewhere(group.tool, row.qualifier.as_deref(), pin) {
-                scope
-                    .windows
-                    .push((crate::quota::WindowKey::of(row), window));
+                scope.windows.push((key.clone(), window.clone()));
             }
+            readings.push((key, window, group.policy.spend_capped()));
+        }
+    }
+    let all = || readings.iter().map(|(key, window, _)| (key, window));
+    for (key, window, capped) in &readings {
+        if !capped || super::superseded(key, window, all()) {
+            continue;
+        }
+        scope.spend_capped |= super::usable(window);
+        if window.status == crate::quota::Status::Fresh {
+            scope.fresh_cap.get_or_insert_with(|| window.clone());
         }
     }
     // The scope's rollouts each hold their own last reading of a window; the
@@ -781,9 +800,11 @@ pub(crate) fn own_room(
 }
 
 /// Whether the seat's OWN account still presses the headroom threshold `at`:
-/// [`own_room`] reads it crossed, or within [`super::REARM_GAP`] below it, under
-/// the pin the seat's `profile` resolves to. The trigger judges this before it
-/// reserves an attempt, and the leg again, on its own read, before it moves.
+/// [`own_room`] reads it crossed: at or past the CURRENT threshold, under the
+/// pin the seat's `profile` resolves to. Within [`super::REARM_GAP`] below it
+/// the episode stays open and nothing moves (#311): the gap governs re-arm
+/// only. The trigger judges this before it reserves an attempt, and the leg
+/// again, on its own read, before it moves.
 fn source_pressed(
     quota: Option<&crate::quota::Observation>,
     dir: &Path,
@@ -795,7 +816,7 @@ fn source_pressed(
     let pin = crate::reseat::resolved(dir, profile).and_then(|found| found.pin);
     matches!(
         own_room(quota, entry, pin.as_deref(), at, now.epoch()),
-        Room::Crossed(_) | Room::Near
+        Room::Crossed(_)
     )
 }
 
@@ -997,19 +1018,27 @@ fn origin_blocked(
     now: i64,
 ) -> bool {
     let named = |tool, source: &PathBuf| accounts.iter().any(|(t, s)| *t == tool && s == source);
-    let capped = quota.is_some_and(|seen| {
-        seen.groups.iter().any(|group| {
-            group.policy.spend_capped()
-                && group
-                    .source
-                    .as_ref()
-                    .is_some_and(|source| named(group.tool, source))
-                && group
-                    .rows
-                    .iter()
-                    .filter_map(|row| window(group, row, now))
-                    .any(|window| super::usable(&window))
+    // Every reading of the named accounts, keyed by tool, source and window,
+    // with whether its group reports the cap: a newer usable reading of the
+    // same key retires a cap like any other reading (#311).
+    let readings: Vec<_> = quota
+        .map(|seen| seen.groups.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|group| {
+            let source = group.source.as_ref()?;
+            named(group.tool, source).then_some((group, source))
         })
+        .flat_map(|(group, source)| {
+            group.rows.iter().filter_map(move |row| {
+                let key = (group.tool, source, crate::quota::WindowKey::of(row));
+                window(group, row, now).map(|window| (key, window, group.policy.spend_capped()))
+            })
+        })
+        .collect();
+    let all = || readings.iter().map(|(key, window, _)| (key, window));
+    let capped = readings.iter().any(|(key, window, capped)| {
+        *capped && super::usable(window) && !super::superseded(key, window, all())
     });
     capped || latched.iter().any(|seat| named(seat.tool, &seat.source))
 }
@@ -1194,6 +1223,7 @@ fn skip_word(skip: Skip) -> std::borrow::Cow<'static, str> {
         Skip::PairProvider => Borrowed("partner's provider"),
         Skip::PairUnproven => Borrowed("provider unproven"),
         Skip::LeadSibling => Borrowed("a lead seat never changes model unasked"),
+        Skip::BarredSibling => Borrowed("a seat never changes model unasked"),
         Skip::Floor(super::Floor::Below { tier, floor }) => {
             Owned(format!("tier {tier} is below the lead floor {floor}"))
         }
@@ -2835,6 +2865,106 @@ mod effort_scope_spec {
         let observed = observation(vec![short]);
         let actual = super::own_pressure(Some(&observed), &seat(), None, NOW);
         assert_eq!(actual.map(f64::to_bits), Some(100.0_f64.to_bits()));
+    }
+
+    /// #311.1: an older spend-capped reading of a window, `age` seconds old,
+    /// and a newer usable reading of the window `newer_qualifier` names from
+    /// another rollout of the account.
+    fn superseded_cap(age: i64, newer_qualifier: Option<&str>) -> Observation {
+        let capped = Policy::for_tests(
+            None,
+            Account {
+                spend_control_reached: Some(true),
+                spend_observed_at: Some(NOW - age),
+                ..Account::default()
+            },
+        );
+        let mut old = group("/effort-spec-account/.claude.json", None, "3", capped);
+        old.rows[0].observed_at = Some(NOW - age);
+        old.rollout = Some("old".into());
+        let mut new = weekly(newer_qualifier, "40");
+        new.rollout = Some("new".into());
+        observation(vec![old, new])
+    }
+
+    fn own_account() -> super::AccountKey {
+        (
+            ToolKind::Claude,
+            std::path::PathBuf::from("/effort-spec-account/.claude.json"),
+        )
+    }
+
+    #[test]
+    fn a_newer_usable_reading_of_the_same_window_supersedes_a_spend_cap() {
+        for age in [10, 1000] {
+            let observed = superseded_cap(age, None);
+            let scope = super::own_scope(Some(&observed), &seat(), None, NOW).expect("own scope");
+            assert!(
+                !scope.spend_capped,
+                "{age}: the cap's window was read again since"
+            );
+            assert!(
+                scope.fresh_cap.is_none(),
+                "{age}: a superseded cap proves nothing"
+            );
+            let actual = super::own_pressure(Some(&observed), &seat(), None, NOW);
+            assert_eq!(actual.map(f64::to_bits), Some(40.0_f64.to_bits()), "{age}");
+            assert!(
+                super::own_exhausted(Some(&observed), &seat(), None, NOW).is_none(),
+                "{age}: a superseded cap never waives a wait"
+            );
+            assert!(
+                !super::origin_blocked(Some(&observed), &[own_account()], &[], NOW),
+                "{age}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_newer_reading_of_another_window_leaves_the_spend_cap_standing() {
+        for age in [10, 1000] {
+            let observed = superseded_cap(age, Some("sonnet"));
+            let scope = super::own_scope(Some(&observed), &seat(), None, NOW).expect("own scope");
+            assert!(
+                scope.spend_capped,
+                "{age}: only the same window retires the cap"
+            );
+            let actual = super::own_pressure(Some(&observed), &seat(), None, NOW);
+            assert_eq!(actual.map(f64::to_bits), Some(100.0_f64.to_bits()), "{age}");
+            assert!(
+                super::origin_blocked(Some(&observed), &[own_account()], &[], NOW),
+                "{age}"
+            );
+        }
+        let fresh = superseded_cap(10, Some("sonnet"));
+        let scope = super::own_scope(Some(&fresh), &seat(), None, NOW).expect("own scope");
+        assert!(
+            scope.fresh_cap.is_some(),
+            "a standing fresh cap stays fresh"
+        );
+        assert!(super::own_exhausted(Some(&fresh), &seat(), None, NOW).is_some());
+    }
+
+    /// #311.2: the trigger leg and the detached recheck press a seat only at a
+    /// reading at or past the CURRENT threshold; within the re-arm gap below
+    /// it nothing moves.
+    #[test]
+    fn a_seat_is_pressed_only_at_or_past_the_current_threshold() {
+        let dir = std::path::Path::new("/effort-spec-no-session");
+        let now = crate::time::Timestamp::from_epoch(NOW);
+        for (percent, at, pressed) in [
+            ("90", 90, true),
+            ("90", 95, false),
+            ("91", 95, false),
+            ("95", 95, true),
+        ] {
+            let observed = observation(vec![weekly(None, percent)]);
+            assert_eq!(
+                super::source_pressed(Some(&observed), dir, &seat(), "opusx", at, now),
+                pressed,
+                "{percent}% at {at}"
+            );
+        }
     }
 
     #[test]

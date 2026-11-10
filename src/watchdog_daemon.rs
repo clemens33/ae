@@ -5733,7 +5733,8 @@ enum AutoAct {
 ///
 /// A seat whose latch does not stand is the HEADROOM path's: its episode opens
 /// on a crossing, re-arms on relief, and is decided like a limit episode while
-/// its account still reads within the gap of the threshold. A headroom hold the
+/// its account reads at or past the CURRENT threshold; within the gap below it
+/// the episode stays open and moves nothing (#311). A headroom hold the
 /// journal already ends on is not named again, a restart included.
 ///
 /// A seat no limit or headroom path holds goes home by [`return_route`] when
@@ -5849,10 +5850,11 @@ fn auto_acts_with(
             found.key,
             found.trigger,
         );
-        // A headroom episode moves only while its account reads within the gap
-        // of the threshold; an attempt already open is judged whatever it reads.
+        // A headroom episode moves only while its account reads at or past the
+        // CURRENT threshold; within the gap below it the episode stays open and
+        // waits (#311). An attempt already open is judged whatever it reads.
         let urgent = seat.start.urgent(key.epoch());
-        let near = urgent || matches!(seat.room, Room::Crossed(_) | Room::Near);
+        let near = urgent || matches!(seat.room, Room::Crossed(_));
         // A return takes the plain grace and the plain frame: a resume's
         // waivers are for an exhausted start, never for going home.
         let homeward = trigger == Trigger::Return;
@@ -15835,9 +15837,15 @@ mod tests {
         };
         let seat = ("spawned.3", "builder");
         // `fable`'s family is `opus` alone: the lead's two carry another effort.
+        // No seat takes a derived sibling (#309 part B), so the forecast names
+        // it as refused.
         assert_eq!(
             cycle.auto_deadline(&QuotaCarry::default(), &[], seat, 1_000),
-            Some("ae will move builder to opus, derived sibling in 10m".to_owned())
+            Some(
+                "ae cannot move builder: no usable candidate: opus, derived sibling (a seat never \
+                 changes model unasked)"
+                    .to_owned()
+            )
         );
         assert!(
             cycle.derives(&[], seat, true),
@@ -16802,10 +16810,9 @@ mod tests {
             agent: "one".to_owned(),
         }];
         assert_eq!(acts(&on, clear(crossed.clone()), &opened, 300), trigger);
-        assert_eq!(
-            acts(&on, clear(Room::Near), &opened, 300),
-            trigger,
-            "near keeps it due"
+        assert!(
+            acts(&on, clear(Room::Near), &opened, 300).is_empty(),
+            "near keeps the episode open and moves nothing"
         );
         assert!(acts(&on, clear(Room::Unread), &opened, 300).is_empty());
         assert_eq!(
@@ -16906,6 +16913,97 @@ mod tests {
                 key,
                 trigger: Trigger::Headroom,
             }]
+        );
+    }
+
+    /// #311.2: one 90% reading crosses `auto_reseat_at = 90` and opens an
+    /// episode; after a raise to 95 the same reading is below the CURRENT
+    /// threshold, so nothing moves, a restarted daemon (no carried memory)
+    /// included, and the episode stays open until it crosses 95 again.
+    #[test]
+    fn a_raised_threshold_moves_nothing_below_it_even_after_a_restart() {
+        use super::{AutoAct, AutoSeat, auto_acts};
+        use crate::autoreseat::{HEADROOM_ACTION, Pane, Settings, Switch, Window, room};
+        let window = |judged: f64| Window {
+            judged,
+            critical: false,
+            long: true,
+            observed_at: 90,
+            resets_at: None,
+            status: crate::quota::Status::Fresh,
+            label: "weekly_all 7d".to_owned(),
+        };
+        let settings = |at: u8| Settings {
+            switch: Switch::On,
+            sessions: None,
+            grace_secs: 0,
+            map: vec![("sol6x".to_owned(), vec!["opus55x".to_owned()])],
+            headroom_at: Some(at),
+            headroom_note: None,
+            lead: crate::autoreseat::Lead::default(),
+            floor: crate::autoreseat::FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
+            notes: Vec::new(),
+        };
+        let seat = |at: u8, judged: f64| AutoSeat {
+            slot: "spawned.1".to_owned(),
+            agent: "one".to_owned(),
+            profile: "sol6x".to_owned(),
+            pane: Pane {
+                frame: crate::autoreseat::Frame::Clear,
+                human_prompt: false,
+                client_input: None,
+            },
+            limited: false,
+            room: room(&[window(judged)], at),
+            derives: false,
+            start: crate::autoreseat::StartRead::default(),
+            reset: None,
+            wake_landed: None,
+            armed: None,
+        };
+        let mut named = Vec::new();
+        let acts = |at: u8, judged: f64, events: &[Event], named: &mut Vec<_>| {
+            auto_acts(
+                &settings(at),
+                &[seat(at, judged)],
+                events,
+                ("dev", false),
+                300,
+                named,
+            )
+        };
+        assert_eq!(
+            acts(90, 90.0, &[], &mut named),
+            [AutoAct::Open {
+                slot: "spawned.1".to_owned(),
+                agent: "one".to_owned(),
+                cause: "headroom 90% weekly_all 7d".to_owned(),
+            }]
+        );
+        let opened = [Event::parse_line(&format!(
+            r#"{{"ts":"{}","actor":"{ACTOR}","action":"{HEADROOM_ACTION}","target":"one","summary":"headroom 90% weekly_all 7d"}}"#,
+            crate::time::Timestamp::from_epoch(100)
+        ))
+        .expect("a journal line")];
+        let trigger = [AutoAct::Trigger {
+            agent: "one".to_owned(),
+        }];
+        assert_eq!(acts(90, 90.0, &opened, &mut named), trigger);
+        assert!(
+            acts(95, 90.0, &opened, &mut named).is_empty(),
+            "90 under 95 moves nothing"
+        );
+        assert!(
+            acts(95, 91.0, &opened, &mut Vec::new()).is_empty(),
+            "a restarted daemon reads the same"
+        );
+        assert_eq!(
+            acts(95, 95.0, &opened, &mut Vec::new()),
+            trigger,
+            "the episode stays open and moves again at the new threshold"
         );
     }
 

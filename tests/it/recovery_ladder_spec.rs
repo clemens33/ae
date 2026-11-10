@@ -474,8 +474,10 @@ fn real_selection(tag: &str, scope: &str, chosen: &str) {
 }
 
 #[test]
-fn r11_real_model_scoped_limit_selects_kept() {
-    real_selection("laddermodel", "Opus", "fake-kept");
+fn r11_real_model_scoped_limit_never_takes_the_kept_sibling() {
+    // #309 part B: a worker never takes a derived sibling, so the scoped
+    // limit that leaves the kept sibling usable still moves it to the twin.
+    real_selection("laddermodel", "Opus", "fake-twin");
 }
 
 #[test]

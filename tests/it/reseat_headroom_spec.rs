@@ -1035,6 +1035,16 @@ fn an_open_episode_keeps_its_first_crossing_key_until_strict_relief() {
     }
     quota(&rig, "home", &[("weekly_all", 94.9)], 0);
     std::fs::remove_file(rig.scratch.join("__BUSY__")).expect("idle fixture");
+    {
+        let _watch = watch(&rig);
+        sweeps(&rig);
+        sweeps(&rig);
+        assert!(
+            booked(&rig, ATTEMPT_ACTION).is_empty() && booked(&rig, DONE_ACTION).is_empty(),
+            "94.9 is below the threshold: no move"
+        );
+    }
+    quota(&rig, "home", &[("weekly_all", 95.1)], 0);
     let _watch = watch(&rig);
     until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
     assert_eq!(
@@ -1459,7 +1469,25 @@ fn phase2_siblings_keep_declaration_order_after_model_value_normalization() {
         quota(&rig, home, &[("weekly_all", used)], 0);
     }
     let pane = family_source(&rig);
-    family_move(&rig, &pane, false, "fake-z", "sibling");
+    // #309 part B: no seat takes a derived sibling; the refusal still names
+    // both, normalized into one family, in [profiles] order.
+    family_open(&rig, &pane, false);
+    let out = trigger(&rig);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "no seat takes a derived sibling: {said}\n{}",
+        rig.events()
+    );
+    let z = said.find("fake-z, derived sibling (a seat never changes model unasked)");
+    let a = said.find("fake-a, derived sibling");
+    assert!(
+        z.is_some() && a.is_some() && z < a,
+        "both siblings listed in [profiles] order: {said}\n{}",
+        rig.events()
+    );
+    assert!(booked(&rig, DONE_ACTION).is_empty(), "{}", rig.events());
 }
 
 #[test]
@@ -1746,7 +1774,7 @@ fn phase2_a_same_account_sibling_can_escape_a_different_models_window() {
             ("source", family_command(&rig, "home-a", "--model opus")),
             ("sibling", family_command(&rig, "home-a", "--model sonnet")),
         ],
-        None,
+        Some("fake-sibling"),
         "",
     );
     quota(
@@ -1769,7 +1797,7 @@ fn phase2_a_same_account_sibling_can_escape_a_different_models_window() {
     )
     .expect("model-scoped fixture");
     let pane = family_source(&rig);
-    family_move(&rig, &pane, false, "fake-sibling", "sibling");
+    family_move(&rig, &pane, false, "fake-sibling", "");
 }
 
 #[test]
@@ -1888,45 +1916,38 @@ fn phase2_unknown_accounts_do_not_collapse_as_if_none_were_an_identity() {
             rig.session
         );
         std::fs::write(rig.dir.join("events.jsonl"), done).expect("prior limit leave");
-        let key = family_open(&rig, &pane, false);
+        family_open(&rig, &pane, false);
         let out = trigger(&rig);
-        assert_eq!(
+        let said = String::from_utf8_lossy(&out.stderr);
+        // #309 part B: no seat takes a derived sibling, so the trigger
+        // refuses; both unknown homes stay listed and are named.
+        assert_ne!(
             out.status.code(),
             Some(0),
-            "the second unknown account must remain listed: {}\n{}",
-            String::from_utf8_lossy(&out.stderr),
+            "no seat takes a derived sibling: {said}\n{}",
             rig.events()
         );
-        let attempts = booked(&rig, ATTEMPT_ACTION);
-        let selected = attempts
-            .iter()
-            .find(|event| event.reference.as_deref() == Some(key.to_string().as_str()))
-            .expect("new attempt");
+        let first = if row.is_some() {
+            "fake-first (left on its limit)"
+        } else {
+            "fake-first, derived sibling (a seat never changes model unasked)"
+        };
         assert!(
-            selected
-                .summary
-                .as_deref()
-                .is_some_and(|s| s.starts_with("from fake-source to fake-second, derived sibling")),
-            "distinct unknown homes survive: {}",
+            said.contains(first),
+            "first account named: {said}\n{}",
             rig.events()
         );
         assert!(
-            selected
-                .summary
-                .as_deref()
-                .is_some_and(|s| s.contains("left on its limit")),
-            "first account remains left: {}",
+            said.contains("fake-second"),
+            "the second unknown account must remain listed: {said}\n{}",
             rig.events()
         );
-        // The selected tool cannot start on a dangling store. Await its
-        // existing terminal path so no detached fixture writer escapes the
-        // Rig; this pin judges candidate selection, not a successful launch.
-        until(&rig, || {
-            records(&rig).iter().any(|event| {
-                [REFUSED_ACTION, ae::autoreseat::FAILED_ACTION].contains(&event.action.as_str())
-                    && event.reference.as_deref() == Some(key.to_string().as_str())
-            })
-        });
+        assert_eq!(
+            booked(&rig, DONE_ACTION).len(),
+            1,
+            "only the seeded earlier leave: {}",
+            rig.events()
+        );
     }
 }
 

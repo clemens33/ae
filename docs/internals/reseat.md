@@ -761,13 +761,20 @@ whose window is model-scoped still reads as no exit; doctor judges the
 invocation's global config and cwd overlay, `spawn` and `reseat` the session's
 recorded config, and a session with no recorded `config=` row gets no nudge; a
 suggestion may name a profile the operator keeps for rare use. The verdict also
-reads a profile and not a seat (#309): a profile whose only exit is a derived
-sibling on another proven account reads as covered, and with no lead floor set a lead-pair seat
-cannot use that sibling (below), while with a floor set only a sibling at or over
-it is usable, so for the lead pair the row can over-promise: it judges accounts
-and profiles, never a per-seat floor. A seat-aware warning is not built.
+reads a profile and not a seat (#309): `cover` skips every DERIVED sibling,
+because no seat that is not a lead takes one and a lead takes one only under its
+opt-in floor; a declared sibling stays an exit when it leaves the account. For
+derived siblings the row can therefore under-promise for a lead with a floor. It
+never judges the floor per seat, so a declared off-account candidate whose model
+a lead floor refuses still reads as an exit. A seat-aware warning is not built.
 
-A LEAD-PAIR SEAT NEVER TAKES A DERIVED SIBLING (#309). `autoreseat::lead_seat`
+NO SEAT TAKES A DERIVED SIBLING UNASKED (#309). Part B extends part A to every
+seat: `leg::listed` turns each derived sibling of a seat that is NOT a lead into
+`Provenance::BarredSibling(Step)` (spelled `derived sibling`), and
+`passed_over` returns `Skip::BarredSibling` (`a seat never changes model
+unasked`) ahead of every quota rule. Nothing turns it back into a candidate: the
+floor judges lead seats only. A declared row, a derived twin and a manual
+`ae reseat --using` are unchanged for every seat. For a lead seat the rule reads: `autoreseat::lead_seat`
 (`main` and `worker.0` of a `layout = lead-pair` session, the classifier
 `auto_reseat_lead_at` and the pair guard use) marks the seat; no model ranking
 exists, so any derived move to another model could land a lead on a weaker one,
@@ -785,8 +792,7 @@ still read true, the leg and the trigger reach the chooser rather than the
 `ae cannot move <agent>: no usable candidate: ...` the same way. A declared
 candidate and a derived twin are unchanged for every seat, the return to the
 origin judges one declared candidate and is untouched, every other seat and a
-manual `ae reseat --using` are byte-identical, and pure `listed` and `cover` stay
-seat-free. THE LEAD FLOOR (#309 part B) replaces the blanket bar when
+manual `ae reseat --using` are unchanged, and pure `listed` stays seat-free. THE LEAD FLOOR (#309 part B) replaces the blanket bar when
 `[workspace] auto_reseat_lead_floor` is written, and settles the residual that a
 lead on a weak model could not move to a stronger sibling; with NO floor, part A
 is byte for byte what is above.
@@ -1013,9 +1019,9 @@ own note ending `; auto_reseat_at used`). Every threshold below, the crossing,
 the 5-point gap, the leg's recheck, a candidate's `no headroom` and the
 return band, is the one that applies to the seat judged; `off` for the lead pair
 stops headroom moves of a lead seat only, a drawn limit and an urgent start
-move it as before. Setting or raising a threshold does not close a headroom
-episode already open (it stays due while the account reads within 5 points of
-the new threshold, and the leg holds it only below that). The daemon judges every eligible seat whose limit latch does NOT stand against its
+move it as before. Every decision leg judges the CURRENT threshold (#311): a
+threshold set or raised applies at once to an episode already open, a watchdog
+restart included, and no threshold is remembered. The daemon judges every eligible seat whose limit latch does NOT stand against its
 OWN client scope — the one `quota::recorded_identity` join the throttle line and
 the checkpoint ask make — over its held quota observation: the worst usable
 (fresh or stale) window proven at least one day long, rows scoped to another
@@ -1025,7 +1031,8 @@ reading, so per window (bucket, qualifier and length) only the newest usable
 reading of the scope counts: one a newer usable reading of the same window
 supersedes — stale or fresh — decides nothing, a tie keeps the worse, and a
 lone stale reading still binds (`autoreseat::current`, applied in
-`leg::own_scope`; auto effort and the app's lead/colead weighing read the same
+`leg::own_scope`, which retires a spend cap by the same rule: a capped reading
+counts only while no newer usable reading of its window exists, #311; auto effort and the app's lead/colead weighing read the same
 scope, and auto effort records tied readings of one window ONCE: the worst tied
 reading opens its episode, the record keeps the latest tied reset, none when any
 tied reading states none, and the step back up needs every tied reading under
@@ -1033,8 +1040,10 @@ the band, or that recorded reset passed, while no newest usable long reading is
 at or past the threshold). At or past the threshold it books
 `auto-reseat-headroom`, whose `ts` is the episode KEY and whose summary,
 `headroom <pct>% <window>`, every later record of the episode quotes whole. The
-episode stays due under that key while the scope reads within 5 points of the
-threshold, and is re-armed by `auto-reseat-headroom-cleared` (`ref` the key)
+episode moves the seat only while the scope reads at or past the CURRENT
+threshold (the daemon, the trigger and the leg all ask `Room::Crossed`); within
+5 points below it the episode stays OPEN under that key and moves nothing, so a
+later crossing moves the seat again without a new opener (#311). It is re-armed by `auto-reseat-headroom-cleared` (`ref` the key)
 only once it reads strictly below threshold minus 5 with no attempt open; a
 terminal outcome therefore stays until then — one refusal per episode, not per
 cycle — while a move ends it, since the seat's account changed. No usable reading
@@ -1047,8 +1056,8 @@ one — the same two attempts, the same trigger, leg, records and endings, each
 summary naming the trigger. A hold the journal already ends on is not named
 again, a daemon restart included. The trigger re-reads the scope and declines
 once it has relief, and the detached leg reads it once more under the seat lock
-before it moves: a headroom episode that no longer reads at or within 5 points
-of the threshold, or reads nothing usable, is closed `held: the account no
+before it moves: a headroom episode whose account no longer reads at or past
+the threshold, or reads nothing usable, has its attempt closed `held: the account no
 longer reads at the headroom threshold` with the seat untouched; a limit or an
 urgent start's episode is not re-judged there. The chooser judges each candidate
 account by its own newest usable reading per window, never by another
@@ -1112,7 +1121,8 @@ At least one window proven a day long must be among them, and the worst such one
 is the cause: `return to <origin>: <pct>% <window>`. Stale, unknown, reset-passed,
 unjudged, unstamped, or tied-opposing readings deny it; a passed reset alone
 proves nothing, while a fresh healthy reading after `away_at` proves a manual
-reset. A usable spend cap on an origin account, or another seat of the session
+reset. A usable spend cap on an origin account that no newer usable reading of
+the same tool, source and window superseded, or another seat of the session
 latched on one (`leg::origin_blocked`), denies it too.
 
 **The episode.** With the proof and no return episode open, the daemon books

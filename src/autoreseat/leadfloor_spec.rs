@@ -150,7 +150,8 @@ fn leadfloor_a_declared_model_change_and_an_off_account_twin_remain_usable() {
 }
 
 #[test]
-fn leadfloor_other_layouts_and_nonlead_slots_keep_the_existing_sibling_choice() {
+fn leadfloor_other_layouts_and_nonlead_slots_never_take_a_derived_sibling() {
+    const BARRED: &str = "a seat never changes model unasked";
     for (layout, slot) in [
         ("vertical", "main"),
         ("vertical", "worker.0"),
@@ -161,14 +162,43 @@ fn leadfloor_other_layouts_and_nonlead_slots_keep_the_existing_sibling_choice() 
         let choice = fixture.choose(&[], None);
         assert_eq!(
             choice.pick.as_ref().map(|(name, _)| name.as_str()),
-            Some("same"),
+            Some("twin"),
             "{layout} {slot}: {choice:?}"
         );
         assert_eq!(
             choice.provenance,
-            Provenance::Derived(Kin::Sibling, Step::Kept)
+            Provenance::Derived(Kin::Twin, Step::Account)
         );
-        assert!(choice.skipped.is_empty(), "{choice:?}");
+        assert_eq!(choice.skipped.len(), 2, "{layout} {slot}: {choice:?}");
+        for (_, skip) in &choice.skipped {
+            assert_eq!(skip_word(*skip), BARRED, "{layout} {slot}: {choice:?}");
+        }
+        for name in ["same", "away"] {
+            assert!(
+                choice
+                    .skipped
+                    .iter()
+                    .any(|(named, _)| named == &format!("{name}, derived sibling")),
+                "{layout} {slot}: {choice:?}"
+            );
+        }
+        let alone = Fixture::new(layout, slot, false);
+        let refused = alone.choose(&[], None);
+        assert!(refused.pick.is_none(), "{layout} {slot}: {refused:?}");
+        let (class, why) = refusal(&refused, None);
+        assert_eq!(class, CauseClass::NoCandidate);
+        assert!(why.contains("no usable candidate"), "{why}");
+        assert!(
+            why.contains(&format!("same, derived sibling ({BARRED})")),
+            "{why}"
+        );
+        let declared = alone.choose(&["same".to_owned()], None);
+        assert_eq!(
+            declared.pick.as_ref().map(|(name, _)| name.as_str()),
+            Some("same"),
+            "{layout} {slot}: {declared:?}"
+        );
+        assert_eq!(declared.provenance, Provenance::Declared);
     }
 }
 

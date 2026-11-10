@@ -313,7 +313,7 @@ fn leadfloor2_floor_is_limited_to_the_two_lead_pair_slots() {
     ] {
         let fixture = Fixture::new(layout, slot, FLOOR, TIERS, false);
         for room in [None, Some(95)] {
-            assert_eq!(picked(&fixture.choose(&[], room)), Some("low"));
+            assert_eq!(picked(&fixture.choose(&[], room)), None);
             assert_eq!(picked(&fixture.choose(&["low"], room)), Some("low"));
         }
     }
