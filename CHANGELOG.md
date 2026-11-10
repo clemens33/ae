@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.35] - 2026-11-10
+- Seams for the quiet idle work, behaviour unchanged
+- Install the frozen quiet idle acceptance specs
+- Publish each verdict cycle as one tmux batch
+- Read every peer's ownership proof in one tmux invocation
+- Wait on one tmux waiter instead of polling a detached session
+- Read the motion listings and the cycle's look options in one tmux invocation each
+- Draw 5 fps frames inside the tick's one read
+- Pin the stale-wake attach edge and state the attach latency bounds
+- Index the focus hook in trace fixtures, count batched cycle publications, pin the waiter leg
+
 ## [v2026.11.34] - 2026-11-09
 - Back off the staged-chip settle captures of a pane that never settles
 
