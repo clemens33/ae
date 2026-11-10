@@ -1261,14 +1261,119 @@ rust-fmt:
 # also why unwrap_used/expect_used are declared "warn" in Cargo.toml and still
 # fail here. --all-targets so tests are linted too.
 
+# THE ONE SIZING HELPER of every heavy recipe: the test lane (_tmux-isolated),
+# rust-lint and rust-fuzz-check include it with `{{ SIZING }}` and call
+# `size_counts`, so the arithmetic below exists once and tests/it/gate.rs pins
+# that no recipe carries a copy. It is shell text interpolated into those
+# recipes (not a script file), so every caller shares one shell with it.
+#
+# Each count is the LEAST of its ceilings, so a shell profile that exports a wide
+# NEXTEST_TEST_THREADS or CARGO_BUILD_JOBS can lower a run but never lift it past
+# what jobs-budget says is free right now. Threads: jobs-budget (the online CPU
+# count without it), the suite's cap of eight, an inherited NEXTEST_TEST_THREADS.
+# Jobs: jobs-budget, an inherited CARGO_BUILD_JOBS. Only one positive integer of at
+# most three digits is a ceiling (jobs-budget's answer too: a longer one wraps the
+# arithmetic, and it is ignored): a relative count such as -2, num-cpus, default or
+# an oversize value is NO ceiling, is said to be ignored and never enters the
+# arithmetic. Never blocks on jobs-budget. The one deliberate per-run override is
+# the lane's own AE_TEST_THREADS / AE_TEST_JOBS (same shape), which replace the
+# rule; a malformed one exits 2 rather than guess. The result is exported, so it
+# also beats a [build] jobs in a user's cargo config. Without jobs-budget there is
+# no live ceiling for the jobs: an inherited value stands untouched (cargo reads a
+# relative one itself), else cargo's own default.
+#
+# size_counts sets threads, jobs, threads_from, jobs_from and exports
+# NEXTEST_TEST_THREADS (always) and CARGO_BUILD_JOBS (unless it stands untouched);
+# size_say <label> prints the ceilings that applied on stderr.
+SIZING := '''
+    plain() { [[ "$1" =~ ^[1-9][0-9]{0,2}$ ]]; }
+    size_counts() {
+        local ceiling budget=""
+        if [[ -n "${AE_TEST_THREADS:-}" ]] && ! plain "$AE_TEST_THREADS"; then
+            echo "Error: AE_TEST_THREADS must be one positive integer of at most three digits, got: $AE_TEST_THREADS" >&2
+            exit 2
+        fi
+        if [[ -n "${AE_TEST_JOBS:-}" ]] && ! plain "$AE_TEST_JOBS"; then
+            echo "Error: AE_TEST_JOBS must be one positive integer of at most three digits, got: $AE_TEST_JOBS" >&2
+            exit 2
+        fi
+        if [[ -z "${AE_TEST_THREADS:-}" || -z "${AE_TEST_JOBS:-}" ]] && command -v jobs-budget >/dev/null 2>&1; then
+            budget="$(jobs-budget 2>/dev/null || true)"
+            plain "$budget" || budget=""
+        fi
+        if [[ -n "${AE_TEST_THREADS:-}" ]]; then
+            threads="$AE_TEST_THREADS"
+            threads_from=override
+        else
+            threads_from=budget
+            ceiling="$budget"
+            if [[ -z "$budget" ]]; then
+                threads_from=cpus
+                ceiling="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+                [[ "$ceiling" =~ ^[0-9]+$ ]] || ceiling=8
+            fi
+            threads=$((ceiling < 8 ? ceiling : 8))
+            if [[ -n "${NEXTEST_TEST_THREADS:-}" ]]; then
+                if ! plain "$NEXTEST_TEST_THREADS"; then
+                    threads_from="$threads_from; env $NEXTEST_TEST_THREADS ignored"
+                elif ((NEXTEST_TEST_THREADS < threads)); then
+                    threads_from="env; $threads_from $ceiling"
+                    threads="$NEXTEST_TEST_THREADS"
+                else
+                    threads_from="$threads_from; env $NEXTEST_TEST_THREADS"
+                fi
+            fi
+        fi
+        export NEXTEST_TEST_THREADS="$threads"
+        if [[ -n "${AE_TEST_JOBS:-}" ]]; then
+            jobs_from=override
+            jobs="$AE_TEST_JOBS"
+            export CARGO_BUILD_JOBS="$jobs"
+        elif [[ -n "$budget" ]]; then
+            jobs_from=budget
+            jobs="$budget"
+            if [[ -n "${CARGO_BUILD_JOBS:-}" ]]; then
+                if ! plain "$CARGO_BUILD_JOBS"; then
+                    jobs_from="budget; env $CARGO_BUILD_JOBS ignored"
+                elif ((CARGO_BUILD_JOBS < budget)); then
+                    jobs_from="env; budget $budget"
+                    jobs="$CARGO_BUILD_JOBS"
+                else
+                    jobs_from="budget; env $CARGO_BUILD_JOBS"
+                fi
+            fi
+            export CARGO_BUILD_JOBS="$jobs"
+        else
+            jobs_from="cargo default"
+            [[ -z "${CARGO_BUILD_JOBS:-}" ]] || jobs_from=env
+        fi
+    }
+    size_say() {
+        echo "$1: nextest threads $NEXTEST_TEST_THREADS ($threads_from), cargo jobs ${CARGO_BUILD_JOBS:-unset} ($jobs_from)" >&2
+    }
+'''
+
 # Clippy (-D warnings) + taplo lint
 rust-lint:
-    cargo clippy --locked --all-targets --all-features -- -D warnings
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{ SIZING }}
+    size_counts
+    size_say rust-lint
+    nice -n 10 cargo clippy --locked --all-targets --all-features -- -D warnings
     taplo lint
 
+# Sized by the one helper, then capped at four jobs (a small crate set).
 # Type-check every fuzz bin with the product compiler, sharing the gate cache.
 rust-fuzz-check:
-    bash -euo pipefail -c 'jobs="${CARGO_BUILD_JOBS:-$(command -v jobs-budget >/dev/null 2>&1 && jobs-budget || echo 4)}"; [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || { echo "Error: invalid build jobs: $jobs" >&2; exit 1; }; [ "$jobs" -le 4 ] || jobs=4; nice -n 10 cargo check --locked --manifest-path fuzz/Cargo.toml --bins --target-dir "${CARGO_TARGET_DIR:-$PWD/target}" --jobs "$jobs"'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{ SIZING }}
+    size_counts
+    size_say rust-fuzz-check
+    jobs="${CARGO_BUILD_JOBS:-4}"
+    plain "$jobs" && [ "$jobs" -le 4 ] || jobs=4
+    nice -n 10 cargo check --locked --manifest-path fuzz/Cargo.toml --bins --target-dir "${CARGO_TARGET_DIR:-$PWD/target}" --jobs "$jobs"
 
 # nextest does NOT run doctests. Doctests are KEPT — they are the executable half
 # of the public docs — so they get their own invocation. Dropping that second
@@ -1495,82 +1600,8 @@ _tmux-isolated lane *args:
     export TMPDIR="$test_tmux_tmp/tmp"
     export TMUX_TMPDIR="$test_tmux_tmp"
     unset TMUX TMUX_PANE
-    # Sizing. Each count is the LEAST of its ceilings, so a shell profile that
-    # exports a wide NEXTEST_TEST_THREADS or CARGO_BUILD_JOBS can lower a lane
-    # but never lift it past what jobs-budget says is free right now. Threads:
-    # jobs-budget (the online CPU count without it), the suite's cap of eight,
-    # an inherited NEXTEST_TEST_THREADS. Jobs: jobs-budget, an inherited
-    # CARGO_BUILD_JOBS. Only one positive integer of at most three digits is a
-    # ceiling (jobs-budget's answer too: a longer one wraps the arithmetic
-    # below, and it is ignored): a relative count such as -2, num-cpus, default
-    # or an oversize value is NO ceiling, is said to be ignored and never enters
-    # the arithmetic. Never blocks on jobs-budget. The one deliberate per-run
-    # override is the lane's own AE_TEST_THREADS / AE_TEST_JOBS (same shape),
-    # which replace the rule; a malformed one refuses with status 2 rather than
-    # guess. The lane exports the result, so it also beats a [build] jobs in a
-    # user's cargo config.
-    plain() { [[ "$1" =~ ^[1-9][0-9]{0,2}$ ]]; }
-    if [[ -n "${AE_TEST_THREADS:-}" ]] && ! plain "$AE_TEST_THREADS"; then
-        echo "Error: AE_TEST_THREADS must be one positive integer of at most three digits, got: $AE_TEST_THREADS" >&2
-        exit 2
-    fi
-    if [[ -n "${AE_TEST_JOBS:-}" ]] && ! plain "$AE_TEST_JOBS"; then
-        echo "Error: AE_TEST_JOBS must be one positive integer of at most three digits, got: $AE_TEST_JOBS" >&2
-        exit 2
-    fi
-    budget=""
-    if [[ -z "${AE_TEST_THREADS:-}" || -z "${AE_TEST_JOBS:-}" ]] && command -v jobs-budget >/dev/null 2>&1; then
-        budget="$(jobs-budget 2>/dev/null || true)"
-        plain "$budget" || budget=""
-    fi
-    if [[ -n "${AE_TEST_THREADS:-}" ]]; then
-        threads="$AE_TEST_THREADS"
-        threads_from=override
-    else
-        threads_from=budget
-        ceiling="$budget"
-        if [[ -z "$budget" ]]; then
-            threads_from=cpus
-            ceiling="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
-            [[ "$ceiling" =~ ^[0-9]+$ ]] || ceiling=8
-        fi
-        threads=$((ceiling < 8 ? ceiling : 8))
-        if [[ -n "${NEXTEST_TEST_THREADS:-}" ]]; then
-            if ! plain "$NEXTEST_TEST_THREADS"; then
-                threads_from="$threads_from; env $NEXTEST_TEST_THREADS ignored"
-            elif ((NEXTEST_TEST_THREADS < threads)); then
-                threads_from="env; $threads_from $ceiling"
-                threads="$NEXTEST_TEST_THREADS"
-            else
-                threads_from="$threads_from; env $NEXTEST_TEST_THREADS"
-            fi
-        fi
-    fi
-    export NEXTEST_TEST_THREADS="$threads"
-    if [[ -n "${AE_TEST_JOBS:-}" ]]; then
-        jobs_from=override
-        jobs="$AE_TEST_JOBS"
-        export CARGO_BUILD_JOBS="$jobs"
-    elif [[ -n "$budget" ]]; then
-        jobs_from=budget
-        jobs="$budget"
-        if [[ -n "${CARGO_BUILD_JOBS:-}" ]]; then
-            if ! plain "$CARGO_BUILD_JOBS"; then
-                jobs_from="budget; env $CARGO_BUILD_JOBS ignored"
-            elif ((CARGO_BUILD_JOBS < budget)); then
-                jobs_from="env; budget $budget"
-                jobs="$CARGO_BUILD_JOBS"
-            else
-                jobs_from="budget; env $CARGO_BUILD_JOBS"
-            fi
-        fi
-        export CARGO_BUILD_JOBS="$jobs"
-    else
-        # No live ceiling to compare with: an inherited value stands untouched
-        # (cargo reads a relative one itself), else cargo's own default.
-        jobs_from="cargo default"
-        [[ -z "${CARGO_BUILD_JOBS:-}" ]] || jobs_from=env
-    fi
+    {{ SIZING }}
+    size_counts
     # A mutation run is memory-bounded in config (the nextest `mutants` profile:
     # two tests, a 60 s kill), and an env value beats a profile. So the lane may
     # TIGHTEN to one but never widen: anything but a plain 1 or 2 becomes 2, said
@@ -1580,7 +1611,7 @@ _tmux-isolated lane *args:
         threads_from="$threads_from, was $NEXTEST_TEST_THREADS, capped"
         export NEXTEST_TEST_THREADS=2
     fi
-    echo "lane $lane: nextest threads $NEXTEST_TEST_THREADS ($threads_from), cargo jobs ${CARGO_BUILD_JOBS:-unset} ($jobs_from)" >&2
+    size_say "lane $lane"
     # An owned sentry proves every in-process fleet read stays on this run's
     # server. It is deliberately visible: Name(ae) is a real entitlement, and
     # tests asserting whole-fleet cardinality account for this one row.
@@ -1640,7 +1671,7 @@ _tmux-isolated lane *args:
                 echo "note: filtered run, skipping doctests" >&2
             else
                 detached nice -n 10 cargo nextest run --locked --all-features
-                detached nice -n 10 cargo test --doc --locked --all-features
+                detached nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
             fi
             ;;
         cov) detached nice -n 10 cargo llvm-cov nextest --locked --all-features ;;

@@ -34,6 +34,20 @@ fn read(path: &Path) -> String {
         .unwrap_or_else(|why| panic!("{} must be readable: {why}", path.display()))
 }
 
+/// The text of one string variable (`NAME := '''` ... `'''`) of the justfile, or
+/// an empty string where there is none.
+fn justfile_variable(justfile: &str, name: &str) -> String {
+    let opener = format!("{name} := '''");
+    let mut lines = justfile
+        .lines()
+        .skip_while(|line| !line.starts_with(&opener));
+    if lines.next().is_none() {
+        return String::new();
+    }
+    let body: Vec<&str> = lines.take_while(|line| line.trim() != "'''").collect();
+    body.join("\n")
+}
+
 /// The EXECUTABLE text of one justfile recipe: body lines only, full-line
 /// comments and blanks dropped, backslash continuations folded so one command
 /// is one line.
@@ -163,8 +177,8 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "error: kept $test_tmux_tmp",
         "exit $((status ? status : 1))",
         "export TMPDIR=\"$test_tmux_tmp/tmp\"",
-        "export NEXTEST_TEST_THREADS=\"$threads\"",
-        "export CARGO_BUILD_JOBS=\"$jobs\"",
+        "{{ SIZING }}",
+        "size_counts",
         "env -u TMUX -u TMUX_PANE tmux -S \"$test_tmux_tmp/tmux-$(id -u)/ae\" kill-server",
         "keep_or_remove \"$test_tmux_tmp\"",
         "trap cleanup EXIT",
@@ -2239,6 +2253,261 @@ fn a_stress_run_is_sized_niced_bounded_and_leaves_no_child_behind() {
         .filter(|entry| entry.starts_with("ae-rust-test."))
         .collect();
     assert!(left.is_empty(), "the stress lane was not reaped: {left:?}");
+}
+
+/// The niceness this test process runs at: `nice` with no argument prints the
+/// niceness it inherited, which is also the lane's.
+fn own_niceness(base: &Path) -> i32 {
+    raw::run(
+        &Invocation::new("nice"),
+        base,
+        &base.join("nice-out"),
+        &base.join("nice-err"),
+    )
+    .unwrap_or_else(|why| panic!("nice runs: {why}"));
+    read(&base.join("nice-out")).trim().parse().unwrap_or(0)
+}
+
+/// One run of a heavy recipe (`rust-lint`, `rust-fuzz-check`) on the lane fakes'
+/// `PATH` plus a fake `taplo`. The fake `cargo` records one argument per line,
+/// then `JOBS=<CARGO_BUILD_JOBS or unset>` and `NICE=<its niceness>`. Returns
+/// those lines and the recipe's stderr.
+fn sized_recipe(
+    base: &Path,
+    budget: Option<&str>,
+    env: &[(&str, &str)],
+    recipe: &str,
+) -> (Vec<String>, String) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let cargo = "{ printf '%s\\n' \"$@\"; echo \"JOBS=${CARGO_BUILD_JOBS-unset}\"; \
+                 echo \"NICE=$(ps -o ni= -p $$ | tr -d ' ')\"; } >\"$AE_TEST_TMPDIR/seen\"\n";
+    let mut lane = lane_over(base, budget, cargo).arg(recipe);
+    let taplo = base.join("bin/taplo");
+    std::fs::write(&taplo, "#!/bin/sh\nexit 0\n")
+        .and_then(|()| std::fs::set_permissions(&taplo, std::fs::Permissions::from_mode(0o755)))
+        .unwrap_or_else(|why| panic!("the fake taplo: {why}"));
+    for (key, value) in env {
+        lane = lane.env(key, value);
+    }
+    let _ = std::fs::remove_file(base.join("seen"));
+    let ran = raw::run(&lane, &root(), &base.join("out"), &base.join("err"))
+        .unwrap_or_else(|why| panic!("{recipe} runs: {why}"));
+    let stderr = read(&base.join("err"));
+    assert!(
+        matches!(ran.outcome(), ExitOutcome::Code(0)),
+        "{recipe} must end green: {stderr}"
+    );
+    let seen = read(&base.join("seen"));
+    (seen.lines().map(str::to_owned).collect(), stderr)
+}
+
+/// `rust-lint` and `rust-fuzz-check` are heavy cargo runs of the gate, and they
+/// size their jobs by the SAME rule as the test lane (the least of the live
+/// `jobs-budget` and an inherited `CARGO_BUILD_JOBS`; a relative `-2` is no
+/// ceiling; `AE_TEST_JOBS` the override) and run at nice 10. The fuzz check
+/// keeps its own cap of four on top.
+#[test]
+fn lint_and_the_fuzz_check_are_sized_by_the_lane_rule_and_niced() {
+    let base = super::cli::OwnedScratch::root("gate", "heavyrecipes");
+    let both = |value: &'static str| [("NEXTEST_TEST_THREADS", value), ("CARGO_BUILD_JOBS", value)];
+    let wider = [("CARGO_BUILD_JOBS", "16"), ("AE_TEST_JOBS", "9")];
+    let none = &[][..];
+    let (profile, relative, low) = (both("16"), both("-2"), both("3"));
+    let lint = [
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+    ];
+    // (budget, env, CARGO_BUILD_JOBS the cargo saw, how the recipe says it got there)
+    for (budget, env, jobs, said) in [
+        (Some("6"), none, "6", "cargo jobs 6 (budget)"),
+        (
+            Some("6"),
+            &profile[..],
+            "6",
+            "cargo jobs 6 (budget; env 16)",
+        ),
+        (
+            Some("6"),
+            &relative[..],
+            "6",
+            "cargo jobs 6 (budget; env -2 ignored)",
+        ),
+        (Some("6"), &low[..], "3", "cargo jobs 3 (env; budget 6)"),
+        (Some("6"), &wider[..], "9", "cargo jobs 9 (override)"),
+        (None, &profile[..], "16", "cargo jobs 16 (env)"),
+        (None, &relative[..], "-2", "cargo jobs -2 (env)"),
+    ] {
+        let (seen, stderr) = sized_recipe(&base, budget, env, "rust-lint");
+        assert_eq!(seen[..lint.len()], lint, "{budget:?} {env:?}: {stderr}");
+        assert_eq!(
+            seen[lint.len()],
+            format!("JOBS={jobs}"),
+            "{budget:?} {env:?}: {stderr}"
+        );
+        assert!(stderr.contains(said), "{budget:?} {env:?}: {stderr}");
+        let nice: i32 = seen[lint.len() + 1]
+            .trim_start_matches("NICE=")
+            .parse()
+            .expect("cargo's niceness");
+        let own = own_niceness(&base);
+        assert!(nice > own || nice >= 19, "cargo {nice}, recipe {own}");
+    }
+    let target = format!("{}/target", root().display());
+    let fuzz = |jobs: &str| {
+        [
+            "check",
+            "--locked",
+            "--manifest-path",
+            "fuzz/Cargo.toml",
+            "--bins",
+            "--target-dir",
+            target.as_str(),
+            "--jobs",
+            jobs,
+        ]
+        .map(str::to_owned)
+    };
+    // (budget, env, the --jobs argument, CARGO_BUILD_JOBS the cargo saw)
+    for (budget, env, arg, jobs) in [
+        (Some("6"), &profile[..], "4", "6"),
+        (Some("2"), none, "2", "2"),
+        (Some("6"), &relative[..], "4", "6"),
+        (None, &relative[..], "4", "-2"),
+        (None, none, "4", "unset"),
+    ] {
+        let (seen, stderr) = sized_recipe(&base, budget, env, "rust-fuzz-check");
+        assert_eq!(seen[..9], fuzz(arg), "{budget:?} {env:?}: {stderr}");
+        assert_eq!(
+            seen[9],
+            format!("JOBS={jobs}"),
+            "{budget:?} {env:?}: {stderr}"
+        );
+    }
+}
+
+/// The doctest step of the test lane gets its thread count from the same rule as
+/// nextest (rustdoc's libtest otherwise starts one test per core): the least of
+/// the budget, eight and an inherited export, `AE_TEST_THREADS` the override.
+#[test]
+fn the_doctest_step_takes_the_lanes_thread_count() {
+    let base = super::cli::OwnedScratch::root("gate", "doctests");
+    let cargo = "case \"$1\" in test) printf '%s\\n' \"$@\" >\"$AE_TEST_TMPDIR/seen\" ;; esac\n";
+    let want = |threads: &str| {
+        [
+            "test",
+            "--doc",
+            "--locked",
+            "--all-features",
+            "--",
+            "--test-threads",
+            threads,
+        ]
+        .map(str::to_owned)
+    };
+    let profile = [("NEXTEST_TEST_THREADS", "16"), ("CARGO_BUILD_JOBS", "16")];
+    let lift = [("NEXTEST_TEST_THREADS", "16"), ("AE_TEST_THREADS", "12")];
+    for (budget, env, threads) in [
+        ("6", &[][..], "6"),
+        ("999", &[][..], "8"),
+        ("6", &profile[..], "6"),
+        ("999", &profile[..], "8"),
+        ("6", &lift[..], "12"),
+    ] {
+        let _ = std::fs::remove_file(base.join("seen"));
+        let mut lane = lane_over(&base, Some(budget), cargo)
+            .arg("_tmux-isolated")
+            .arg("test");
+        for (key, value) in env {
+            lane = lane.env(key, value);
+        }
+        let ran = raw::run(&lane, &root(), &base.join("out"), &base.join("err"))
+            .unwrap_or_else(|why| panic!("the lane runs: {why}"));
+        let stderr = read(&base.join("err"));
+        assert!(matches!(ran.outcome(), ExitOutcome::Code(0)), "{stderr}");
+        let seen: Vec<String> = read(&base.join("seen"))
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(seen, want(threads), "budget {budget} env {env:?}: {stderr}");
+    }
+}
+
+/// Whether the test lane, `rust-lint` and `rust-fuzz-check` size themselves from
+/// the ONE helper (`SIZING`): each includes it and calls `size_counts`, none
+/// carries a `jobs-budget` call of its own, the helper alone owns the call and
+/// the two exports, and the two cargo recipes run cargo at nice 10.
+fn sizing_shared_ok(justfile: &str) -> bool {
+    let helper = justfile_variable(justfile, "SIZING");
+    let owns = [
+        "jobs-budget",
+        "export NEXTEST_TEST_THREADS=\"$threads\"",
+        "export CARGO_BUILD_JOBS=\"$jobs\"",
+        "size_counts()",
+        "size_say()",
+    ];
+    if owns.iter().any(|needle| !helper.contains(needle)) {
+        return false;
+    }
+    [
+        ("_tmux-isolated lane *args:", ""),
+        ("rust-lint:", "nice -n 10 cargo clippy "),
+        ("rust-fuzz-check:", "nice -n 10 cargo check "),
+    ]
+    .iter()
+    .all(|(header, cargo)| {
+        let lines = recipe_text(justfile, header);
+        lines.iter().any(|line| line == "{{ SIZING }}")
+            && lines.iter().any(|line| line.starts_with("size_counts"))
+            && !lines.join("\n").contains("jobs-budget")
+            && lines.join("\n").contains(cargo)
+    })
+}
+
+#[test]
+fn one_sizing_helper_serves_the_lane_lint_and_the_fuzz_check() {
+    assert!(
+        sizing_shared_ok(&read(&root().join("justfile"))),
+        "the test lane, rust-lint and rust-fuzz-check must size themselves from the ONE \
+         SIZING helper, with no jobs-budget call of their own"
+    );
+    let good = "SIZING := '''\n    size_counts() { jobs-budget; export NEXTEST_TEST_THREADS=\"$threads\"; export CARGO_BUILD_JOBS=\"$jobs\"; }\n    size_say() { :; }\n'''\n\n\
+        rust-lint:\n    #!/usr/bin/env bash\n    {{ SIZING }}\n    size_counts\n    nice -n 10 cargo clippy --locked\n\n\
+        rust-fuzz-check:\n    #!/usr/bin/env bash\n    {{ SIZING }}\n    size_counts\n    nice -n 10 cargo check --locked\n\n\
+        _tmux-isolated lane *args:\n    #!/usr/bin/env bash\n    {{ SIZING }}\n    size_counts\n    detached nice -n 10 cargo nextest run\n";
+    assert!(sizing_shared_ok(good));
+    // RED — a recipe that sizes itself by hand instead of including the helper.
+    let lint = "rust-lint:\n    #!/usr/bin/env bash\n    {{ SIZING }}\n    size_counts\n";
+    assert!(!sizing_shared_ok(&good.replacen(
+        lint,
+        "rust-lint:\n    #!/usr/bin/env bash\n    nice -n 10 cargo clippy --locked\n",
+        1
+    )));
+    // RED — a copy of the arithmetic: a second jobs-budget call in the fuzz check.
+    assert!(!sizing_shared_ok(&good.replacen(
+        "nice -n 10 cargo check",
+        "jobs=\"$(jobs-budget)\"\n    nice -n 10 cargo check",
+        1
+    )));
+    // RED — included but never called.
+    assert!(!sizing_shared_ok(&good.replacen(
+        "    size_counts\n    detached",
+        "    detached",
+        1
+    )));
+    // RED — a heavy cargo run left at the caller's priority.
+    assert!(!sizing_shared_ok(
+        &good.replace("nice -n 10 cargo clippy", "cargo clippy")
+    ));
+    // RED — the helper without its export, or without a variable at all.
+    assert!(!sizing_shared_ok(
+        &good.replace("export CARGO_BUILD_JOBS=\"$jobs\"", "")
+    ));
+    assert!(!sizing_shared_ok("rust-lint:\n    cargo clippy\n"));
 }
 
 /// Whether the mutants arm of the isolated lane starts the memory watcher

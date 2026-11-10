@@ -135,9 +135,9 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 | `just lane-lock claim <name> [secs]` / `release <name>` / `status` | the gate lane lock, one gate per machine: the MAIN checkout's `.local/locks/gate` directory (resolved from a linked worktree), whose `owner` line the recipe creates EXCLUSIVELY: that create is the claim, because `mkdir` is not atomic on every host (Ubuntu 26.04's uutils reports success for a directory that exists) and there the hand protocol has no owner proof; the `next` queue file. Same on-disk protocol as the hand one. `release` refuses any other owner; it never steals or clears a stale lock, it reports one (`status` exit 1 while held) |
 | `just check` | the bash lane: shellcheck + shfmt over `install` |
 | `just rust-fmt` / `rust-fmt-check` | `cargo fmt` + `taplo fmt` |
-| `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint` |
-| `just rust-test` | `cargo nextest run --locked` **and** `cargo test --doc --locked`. Both. nextest does not run doctests |
-| `just rust-fuzz-check` | product compiler, locked `cargo check --bins` over every fuzz target; no execution. Uses inherited `CARGO_TARGET_DIR` or root `target` |
+| `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint`, cargo at nice 10 with `CARGO_BUILD_JOBS` from the one sizing helper below |
+| `just rust-test` | `cargo nextest run --locked` **and** `cargo test --doc --locked -- --test-threads <the lane's thread count>`. Both. nextest does not run doctests, and rustdoc starts one doctest per core unless told |
+| `just rust-fuzz-check` | product compiler, locked `cargo check --bins` over every fuzz target; no execution. Uses inherited `CARGO_TARGET_DIR` or root `target`. Nice 10, jobs from the one sizing helper below, then capped at four |
 | `just rust-deny` / `rust-vet` | supply chain. The TLS graph is EXEMPTED, not audited (docs/history.md §11) |
 | `just rust-mutants` | does the suite discriminate? A product slice runs it `--in-diff` over its own diff before freeze and answers every survivor in the freeze report (test added, or named equivalent); budget bounded, LOCAL, no percentage ever cited or gated (docs/development.md §Mutation testing). CI runs it diff-bounded on path-matching pushes to main and PRs targeting main when a source diff and usable base exist; the full lane is opt-in manual dispatch (`mutants=true`). Bounded in config: 2 tests, 60 s kill (three named tests 180 s, below), RSS watcher (`AE_MUTANTS_RSS_MAX_MB`, default 2048). `rust-cov` reports, never gates |
 | `just rust-fuzz target=<name> secs=60` / `rust-fuzz-all secs=60` | human-run cargo-fuzz over the hostile parsers, on an exact nightly. Refuses on an unpinned tool or a stale `fuzz/Cargo.lock`, ends on the cutover evidence line, and REPORTS — CI carries no nightly and never runs it (`fuzz/README.md`) |
@@ -228,7 +228,9 @@ widening needs an explicit ruling and a policy amendment. A mutant that grows a 
 subtree twice a second and SIGKILLs a test binary above `AE_MUTANTS_RSS_MAX_MB` (default 2048),
 printing the kill and appending it to `mutants.out/ae-rss-kills.log`: nextest sees a failed test,
 so cargo-mutants calls that mutant caught; a freeze reclassifies it from the receipt as memory
-growth. The lane sizes itself at start from the free
+growth.
+
+ONE helper sizes every heavy recipe. The `SIZING` shell text in the `justfile` is included by the test lane, `rust-lint` and `rust-fuzz-check`, so the arithmetic exists once and `tests/it/gate.rs` pins that no recipe carries a copy. `rust-lint` and `rust-fuzz-check` run cargo at nice 10 with `CARGO_BUILD_JOBS` from it (the fuzz check then caps itself at four jobs), and the doctest step of the lane takes `--test-threads` from the lane's thread count: without it rustdoc starts one doctest per core (12 of 12 at once measured in a scratch crate, 2 with the flag). The sizing starts at the free
 cores: `jobs-budget` when that helper is on PATH and prints one positive integer of at most
 three digits, else the online CPU count. Each count is the LEAST of its ceilings. Threads:
 `jobs-budget` (the CPU count without it), the suite's cap of eight and an inherited
