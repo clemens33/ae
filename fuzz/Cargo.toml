@@ -454,3 +454,17 @@ path = "fuzz_targets/tool_stats_fold.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "tool_stats_incr"
+path = "fuzz_targets/tool_stats_incr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tool_stats_doc"
+path = "fuzz_targets/tool_stats_doc.rs"
+test = false
+doc = false
+bench = false

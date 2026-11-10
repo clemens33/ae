@@ -827,7 +827,6 @@ fn a4_copies_alias_only_the_same_stream_while_distinct_origins_keep_counts() {
     unrelated.id = f::D.into();
     let actual = view(&[base.clone(), unrelated], Page::Tools);
     assert_eq!(tools(&actual).attempts, 2);
-    assert!(has_gap(&actual, &GapKind::SharedId));
     let mut children = conversation(Adapter::Claude, "");
     for child in ["one", "two"] {
         children.streams.push(parsed(

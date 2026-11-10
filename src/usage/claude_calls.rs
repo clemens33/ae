@@ -262,11 +262,17 @@ fn read(id: Key, path: &str, roots: &Roots<'_>) -> Option<Event> {
             direct: None,
             ancestors: Vec::new(),
             over: true,
+            skills: false,
         });
     }
     let canonical = tool_stats::canonical_dir(path)?;
     let direct = direct(&canonical, roots);
-    let ancestors = tool_stats::ancestors(&canonical)
+    let parents = tool_stats::ancestors(&canonical);
+    // The nearest ancestor holds every ancestor's components.
+    let skills = parents
+        .first()
+        .is_some_and(|nearest| nearest.split('/').any(|part| part == "skills"));
+    let ancestors = parents
         .into_iter()
         .map(|dir| Dir::of(Adapter::Claude, dir))
         .collect();
@@ -275,6 +281,7 @@ fn read(id: Key, path: &str, roots: &Roots<'_>) -> Option<Event> {
         direct,
         ancestors,
         over: false,
+        skills,
     })
 }
 

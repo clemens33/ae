@@ -124,6 +124,7 @@ fuzz_target!(|data: &[u8]| {
         per_conversation: if shape & 0x40 == 0 { 64 } else { 4 },
         idents: small,
         turns: small,
+        ..Caps::SLICE
     };
     let input = conversations(rest);
     let mut reversed = input.clone();

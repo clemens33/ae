@@ -309,7 +309,6 @@ fn b2_partial_includes_conflict_shared_id_and_every_positive_gap() {
         GapKind::Malformed,
         GapKind::OverCap,
         GapKind::Conflict,
-        GapKind::SharedId,
         GapKind::Unsupported("other".into()),
         GapKind::Ledger,
         GapKind::ReadPathOverLimit,

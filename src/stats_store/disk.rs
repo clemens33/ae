@@ -150,7 +150,7 @@ pub struct Plan {
 }
 
 impl Plan {
-    const fn of(ops: Vec<Op>) -> Self {
+    pub(crate) const fn of(ops: Vec<Op>) -> Self {
         Self {
             ops,
             generation: None,

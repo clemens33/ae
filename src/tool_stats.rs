@@ -15,7 +15,10 @@ use crate::meta::RecordedClient;
 use crate::stats::Cell;
 use std::fmt::Write as _;
 
+pub mod doc;
 mod fold;
+pub mod incr;
+pub mod store;
 pub use fold::fold;
 pub(crate) use fold::{Weight, event_floor, prefix, weigh};
 
@@ -300,12 +303,15 @@ pub enum Event {
     /// Q2 b: a native `Read` of an absolute `..`-free path. `direct` when the
     /// path is exactly `<root>/skills/<d>/SKILL.md` for a seat root; every
     /// ancestor directory digested, nearest first; `over` for a path over
-    /// [`READ_PATH_MAX`] (no ancestors, a diagnostic).
+    /// [`READ_PATH_MAX`] (no ancestors, a diagnostic). `skills` when a
+    /// component of the canonical ancestor directories is exactly `skills`:
+    /// the fold ignores it, only the persisted O2 fallback reads it.
     Read {
         id: Key,
         direct: Option<(Ident, ScopeClass, Resource)>,
         ancestors: Vec<Dir>,
         over: bool,
+        skills: bool,
     },
     /// A Codex `item_completed` `McpToolCall`.
     Mcp {
@@ -386,7 +392,6 @@ pub enum GapKind {
     Malformed,
     OverCap,
     Conflict,
-    SharedId,
     /// A seat of another harness: `{tool}: {c} conversations not read`.
     Unsupported(String),
     ReadPathOverLimit,
@@ -397,6 +402,12 @@ pub enum GapKind {
     /// Session metas named memberships whose session id, slot or client
     /// label passed the reader's field limit; they were not kept.
     FieldOverLimit,
+    /// O2: unproven non-skills Reads dropped to fit the conversation cap.
+    UnprovenReadsDropped,
+    /// P6: counted sources no longer on disk; their counts are kept.
+    SourceGone,
+    /// Conversations left out of the published view by its cap.
+    ViewOverCap,
 }
 
 /// One coverage line: `conversation` is a short conversation id, never a path.
@@ -421,7 +432,6 @@ impl GapLine {
             GapKind::Malformed => format!("malformed {count}"),
             GapKind::OverCap => format!("line over cap {count}"),
             GapKind::Conflict => format!("conflict {count}"),
-            GapKind::SharedId => format!("shared id {count}"),
             GapKind::Unsupported(tool) => {
                 let tool = match ident(Kind::Tool, tool) {
                     Ident::Name(tool) => tool,
@@ -433,6 +443,9 @@ impl GapLine {
             GapKind::Ledger => format!("over cap, not counted {count}"),
             GapKind::IdentCap => format!("unresolved (cap) {count}"),
             GapKind::FieldOverLimit => format!("membership over field limit {count}"),
+            GapKind::UnprovenReadsDropped => format!("unproven reads dropped {count}"),
+            GapKind::SourceGone => format!("source gone {count}"),
+            GapKind::ViewOverCap => format!("view over cap {count}"),
         };
         if let Some(id) = self.conversation.as_deref().and_then(short_id) {
             let _ = write!(out, " · conversation {id}");
@@ -539,6 +552,10 @@ pub struct Caps {
     pub idents: usize,
     /// Codex turn contexts per conversation.
     pub turns: usize,
+    /// Bytes of one rendered conversation document.
+    pub conv_cap: u64,
+    /// Bytes of the rendered view document.
+    pub view_cap: u64,
 }
 
 impl Caps {
@@ -550,6 +567,8 @@ impl Caps {
         per_conversation: 131_072,
         idents: 8192,
         turns: 4096,
+        conv_cap: doc::CONV_CAP,
+        view_cap: doc::VIEW_CAP,
     };
 }
 
@@ -697,3 +716,7 @@ mod spec;
 #[cfg(test)]
 #[path = "tool_stats_budget_spec.rs"]
 mod budget_spec;
+
+#[cfg(test)]
+#[path = "tool_stats/persist_spec.rs"]
+mod persist_spec;

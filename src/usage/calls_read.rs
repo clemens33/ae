@@ -68,6 +68,12 @@ pub(crate) enum UnitKind {
     Verify,
     /// One chunk of new transcript bytes.
     Read,
+    /// A persisted document loaded from `stats/tools/`.
+    Load,
+    /// One conversation's publication to `stats/tools/`.
+    Publish,
+    /// A recovery step of an interrupted publication.
+    Recover,
 }
 
 /// What the doors did during one unit, counted AT the door operations:
@@ -75,7 +81,10 @@ pub(crate) enum UnitKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Unit {
     pub(crate) kind: UnitKind,
+    /// Transcript and journal bytes read.
     pub(crate) bytes: u64,
+    /// Bytes of `stats/tools/` read or written.
+    pub(crate) store_bytes: u64,
     pub(crate) lstats: u32,
     pub(crate) listings: u32,
     pub(crate) opens: u32,
@@ -87,6 +96,7 @@ impl Unit {
         Self {
             kind,
             bytes: counts.bytes,
+            store_bytes: 0,
             lstats: narrow(counts.stats),
             listings: narrow(counts.listings),
             opens: narrow(counts.opens),
@@ -2613,6 +2623,10 @@ mod observe {
 #[cfg(test)]
 #[path = "calls_read_spec.rs"]
 mod spec;
+
+#[cfg(test)]
+#[path = "calls_persist_spec.rs"]
+mod persist_spec;
 
 #[cfg(test)]
 #[path = "calls_read_tests.rs"]

@@ -97,6 +97,47 @@ impl Probe {
             self.gate.pass();
         }
     }
+
+    /// The turns recorded since the last call. P0 seam stub: none yet.
+    #[cfg(test)]
+    #[allow(clippy::unused_self, reason = "P0 seam stub")]
+    fn take_turns(&self) -> Vec<Turn> {
+        Vec::new()
+    }
+}
+
+/// One upkeep turn: the S5 step, then at most one Tools unit, on `thread`.
+#[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code, reason = "P0 seam stub, wired in P3"))]
+pub(super) struct Turn {
+    pub s5: maint::Step,
+    pub tools: Option<crate::usage::calls_read::Unit>,
+    pub thread: std::thread::ThreadId,
+}
+
+/// The production loop body: the S5 step first, then the Tools work.
+/// P0 seam stub: no Tools unit yet.
+#[cfg_attr(not(test), allow(dead_code, reason = "P0 seam stub, wired in P3"))]
+pub(super) struct UpkeepStep {
+    maintainer: Maintainer,
+}
+
+#[cfg_attr(not(test), allow(dead_code, reason = "P0 seam stub, wired in P3"))]
+impl UpkeepStep {
+    pub(super) fn new(root: &Path) -> Self {
+        Self {
+            maintainer: Maintainer::new(root, LIMITS, LOCK_WAIT),
+        }
+    }
+
+    pub(super) fn turn(&mut self, now: std::time::Instant) -> Turn {
+        let _ = now;
+        Turn {
+            s5: self.maintainer.step(),
+            tools: None,
+            thread: std::thread::current().id(),
+        }
+    }
 }
 
 /// Start the upkeep of the store under `root`, its notices sent on `notices`.
@@ -519,3 +560,6 @@ mod s5_upkeep;
 #[cfg(test)]
 #[path = "maintainer_s2_spec.rs"]
 mod spec;
+#[cfg(test)]
+#[path = "maintainer_tools_spec.rs"]
+mod tools_spec;

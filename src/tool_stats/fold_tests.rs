@@ -294,6 +294,7 @@ fn f2_charge_covers_retained_and_gathered_owned_bytes() {
         direct: Some((word('k'), ScopeClass::User, Resource([7; 6]))),
         ancestors: vec![Dir([1; 16]), Dir([2; 16]), Dir([3; 16])],
         over: false,
+        skills: false,
     };
     let mcp = Event::Mcp {
         id: Key([3; 16]),

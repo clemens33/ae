@@ -1,0 +1,5 @@
+{"tools_assoc":1}
+{"source":"s1","dev":1,"ino":2,"len":10,"mtime":[3,0],"ctime":[4,0],"cursor":10,"skipping":false,"blocks":["5555555555555555555555555555555555555555555555555555555555555555"]}
+{"conv":"claude","id":"c1","complete":true,"reseated":false}
+{"member":"s1","slot":"main","role":"live","client":"work"}
+{"end":4}

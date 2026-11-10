@@ -140,6 +140,7 @@ impl Group {
                 direct,
                 ancestors,
                 over,
+                skills: _,
             } => put(
                 &mut self.reads,
                 *id,
@@ -367,15 +368,12 @@ impl Gathered<'_> {
         }
     }
 
-    /// Directories a counted, loaded, unconflicted Skill call proves, with
-    /// the row they name; conversation-wide (Q2 b).
-    fn proven(&self, names: &Names) -> BTreeMap<Dir, Item> {
-        let mut out: BTreeMap<Dir, Item> = BTreeMap::new();
-        for group in self.groups.values() {
-            for (id, skills) in &group.skills {
-                let Some(base) = group.bases.get(id).map(Vec::as_slice).and_then(only) else {
-                    continue;
-                };
+    /// Each counted, loaded, unconflicted Skill call's proven directory
+    /// with the row it names, as `names` maps it (Q2 b).
+    fn proofs<'s>(&'s self, names: &'s Names) -> impl Iterator<Item = (Dir, Item)> + 's {
+        self.groups.values().flat_map(move |group| {
+            group.skills.iter().filter_map(move |(id, skills)| {
+                let base = group.bases.get(id).map(Vec::as_slice).and_then(only)?;
                 let loaded = matches!(
                     group.outcome(id),
                     Outcome::One(Reply {
@@ -383,26 +381,44 @@ impl Gathered<'_> {
                         load: Some(Load::Loaded),
                     })
                 );
-                if !loaded {
-                    continue;
-                }
-                let item = Item::Skill {
-                    name: skill_name(skills, names),
-                    scope: Some((base.class, base.resource)),
-                };
-                out.entry(base.dir)
-                    .and_modify(|seen| {
-                        if item < *seen {
-                            *seen = item.clone();
-                        }
-                    })
-                    .or_insert(item);
-            }
+                loaded.then(|| {
+                    (
+                        base.dir,
+                        Item::Skill {
+                            name: skill_name(skills, names),
+                            scope: Some((base.class, base.resource)),
+                        },
+                    )
+                })
+            })
+        })
+    }
+
+    /// Directories a proof covers, with the least row the directory's
+    /// proofs name; conversation-wide (Q2 b).
+    fn proven(&self, names: &Names) -> BTreeMap<Dir, Item> {
+        let mut out: BTreeMap<Dir, Item> = BTreeMap::new();
+        for (dir, item) in self.proofs(names) {
+            out.entry(dir)
+                .and_modify(|seen| {
+                    if item < *seen {
+                        *seen = item.clone();
+                    }
+                })
+                .or_insert(item);
         }
         out
     }
 
-    fn observe(&self, page: Page, names: &Names, out: &mut Vec<Obs>) {
+    /// The page's observations; with `inferred`, a Read only a proven
+    /// directory attributes is counted there by directory instead.
+    fn observe(
+        &self,
+        page: Page,
+        names: &Names,
+        out: &mut Vec<Obs>,
+        mut inferred: Option<&mut Inferred>,
+    ) {
         let proven = if page == Page::Skills {
             self.proven(names)
         } else {
@@ -412,7 +428,9 @@ impl Gathered<'_> {
             match page {
                 Page::Tools => self.tools(group, names, out),
                 Page::Mcp => self.mcp(group, names, out),
-                Page::Skills => self.skills(group, names, &proven, out),
+                Page::Skills => {
+                    self.skills(group, names, &proven, out, inferred.as_deref_mut());
+                }
             }
         }
     }
@@ -498,6 +516,7 @@ impl Gathered<'_> {
         names: &Names,
         proven: &BTreeMap<Dir, Item>,
         out: &mut Vec<Obs>,
+        mut inferred: Option<&mut Inferred>,
     ) {
         for (id, skills) in &group.skills {
             let mut cols = SkillCols {
@@ -536,16 +555,15 @@ impl Gathered<'_> {
             if !matches!(group.outcome(id), Outcome::One(Reply { error: false, .. })) {
                 continue;
             }
-            let item = match &read.direct {
-                Some((name, class, resource)) => Some(Item::Skill {
+            let (item, via) = if let Some((name, class, resource)) = &read.direct {
+                let item = Item::Skill {
                     name: names.map(Kind::Skill, name),
                     scope: Some((*class, *resource)),
-                }),
-                None => read
-                    .ancestors
-                    .iter()
-                    .find_map(|dir| proven.get(dir))
-                    .cloned(),
+                };
+                (Some(item), None)
+            } else {
+                let dir = read.ancestors.iter().find(|dir| proven.contains_key(dir));
+                (dir.and_then(|dir| proven.get(dir)).cloned(), dir.copied())
             };
             let Some(item) = item else { continue };
             let call = group.call(id);
@@ -554,6 +572,10 @@ impl Gathered<'_> {
                 call.as_ref().and_then(|call| call.turn),
                 names,
             );
+            if let (Some(dir), Some(sink)) = (via, inferred.as_deref_mut()) {
+                *sink.entry((dir, dims.0, dims.1)).or_default() += 1;
+                continue;
+            }
             let cols = SkillCols {
                 reads: 1,
                 ..SkillCols::default()
@@ -570,13 +592,13 @@ fn skill_name(skills: &[Ident], names: &Names) -> Ident {
 }
 
 /// One counted observation with its joint dimensions.
-struct Obs {
-    item: Item,
-    harness: Adapter,
-    client: Cell,
-    model: Cell,
-    effort: Cell,
-    cols: Cols,
+pub(super) struct Obs {
+    pub(super) item: Item,
+    pub(super) harness: Adapter,
+    pub(super) client: Cell,
+    pub(super) model: Cell,
+    pub(super) effort: Cell,
+    pub(super) cols: Cols,
 }
 
 impl Obs {
@@ -593,9 +615,9 @@ impl Obs {
 
 /// The identity tables (plan §7): at most `cap` names per kind, the
 /// smallest by byte order; any other name is `unresolved (cap)`.
-struct Names {
+pub(super) struct Names {
     keep: BTreeMap<Kind, BTreeSet<String>>,
-    dropped: u64,
+    pub(super) dropped: u64,
 }
 
 impl Names {
@@ -638,6 +660,11 @@ impl Names {
                 }
             }
         }
+        Self::of(keep, cap)
+    }
+
+    /// The tables over every name seen, `keep`, cut to `cap` per kind.
+    pub(super) fn of(mut keep: BTreeMap<Kind, BTreeSet<String>>, cap: usize) -> Self {
         let mut dropped = 0_u64;
         for set in keep.values_mut() {
             while set.len() > cap {
@@ -648,7 +675,7 @@ impl Names {
         Self { keep, dropped }
     }
 
-    fn map(&self, kind: Kind, ident: &Ident) -> Ident {
+    pub(super) fn map(&self, kind: Kind, ident: &Ident) -> Ident {
         match ident {
             Ident::Name(name) if !self.keep.get(&kind).is_some_and(|set| set.contains(name)) => {
                 Ident::Unresolved(kind)
@@ -657,7 +684,7 @@ impl Names {
         }
     }
 
-    fn cell(&self, kind: Kind, ident: &Ident) -> Cell {
+    pub(super) fn cell(&self, kind: Kind, ident: &Ident) -> Cell {
         match self.map(kind, ident) {
             Ident::Name(name) => Cell::Value(name),
             Ident::Unresolved(_) => Cell::Unknown,
@@ -872,7 +899,7 @@ const fn temporary() -> usize {
         // The row and Detail maps, and the proven-directory map.
         + 2 * TREE * size_of::<(DetailKey, Cols)>()
         + TREE * size_of::<(Dir, Item)>()
-        // The shared-id count.
+        // Spare: one keyed entry, the retired shared-id count (O1 = c).
         + TREE * size_of::<(Key, u32)>()
 }
 
@@ -891,7 +918,7 @@ fn conversation_floor() -> usize {
 }
 
 /// Fold-wide tables that exist once whatever is admitted: the name sets per
-/// kind, the row, Detail, shared-id and filter tables, each at least a leaf.
+/// kind, the row, Detail and filter tables, each at least a leaf.
 /// They are held inside [`VIEW_RESERVE`], never charged against admission;
 /// the assertion below keeps them within half of it at compile time.
 const fn fold_floor() -> usize {
@@ -1048,7 +1075,7 @@ fn in_scope(conversation: &Conversation, scope: &Scope) -> bool {
     }
 }
 
-fn empty_cols(page: Page) -> Cols {
+pub(super) fn empty_cols(page: Page) -> Cols {
     match page {
         Page::Skills => Cols::Skill(SkillCols::default()),
         Page::Mcp => Cols::Mcp(McpCols::default()),
@@ -1085,10 +1112,10 @@ fn add(into: &mut Cols, from: &Cols) {
 
 /// Coverage lines, summed per `(kind, conversation)`.
 #[derive(Default)]
-struct Lines(BTreeMap<(GapKind, Option<String>), u64>);
+pub(super) struct Lines(BTreeMap<(GapKind, Option<String>), u64>);
 
 impl Lines {
-    fn add(&mut self, kind: GapKind, conversation: Option<&str>, count: u64) {
+    pub(super) fn add(&mut self, kind: GapKind, conversation: Option<&str>, count: u64) {
         if count > 0 {
             *self
                 .0
@@ -1097,7 +1124,7 @@ impl Lines {
         }
     }
 
-    fn finish(self) -> Vec<GapLine> {
+    pub(super) fn finish(self) -> Vec<GapLine> {
         self.0
             .into_iter()
             .map(|((kind, conversation), count)| GapLine {
@@ -1113,23 +1140,7 @@ impl Lines {
 /// set alone (any order, duplicates or split point give one view).
 #[must_use]
 pub fn fold(conversations: &[Conversation], ask: &Ask, caps: &Caps) -> View {
-    let mut view = View {
-        ask: ask.clone(),
-        state: State::Numbers,
-        rows: Vec::new(),
-        more: None,
-        items: 0,
-        totals: empty_cols(ask.page),
-        orphans: 0,
-        detail: Vec::new(),
-        detail_more: None,
-        range: None,
-        read: 0,
-        listed: 0,
-        recounting: 0,
-        gaps: Vec::new(),
-        filters: vec![Filter::All],
-    };
+    let mut view = blank(ask);
     if ask.scope == Scope::This(None) {
         view.state = State::NoSessionId;
         return view;
@@ -1144,7 +1155,6 @@ pub fn fold(conversations: &[Conversation], ask: &Ask, caps: &Caps) -> View {
     let names = Names::over(gathered.iter().flatten(), caps.idents);
     let mut lines = Lines::default();
     let mut obs = Vec::new();
-    let mut shared: BTreeMap<Key, u32> = BTreeMap::new();
     for (conversation, one) in merged.iter().zip(&gathered) {
         if !in_scope(conversation, &ask.scope) {
             continue;
@@ -1161,18 +1171,9 @@ pub fn fold(conversations: &[Conversation], ask: &Ask, caps: &Caps) -> View {
         }
         for group in one.groups.values() {
             view.orphans += group.orphans();
-            for id in group.calls.keys().chain(group.mcps.keys()) {
-                *shared.entry(*id).or_default() += 1;
-            }
         }
-        one.observe(ask.page, &names, &mut obs);
+        one.observe(ask.page, &names, &mut obs, None);
     }
-    let shared = shared.values().filter(|count| **count > 1).count();
-    lines.add(
-        GapKind::SharedId,
-        None,
-        u64::try_from(shared).unwrap_or(u64::MAX),
-    );
     lines.add(GapKind::IdentCap, None, names.dropped);
     view.gaps = lines.finish();
     if view.listed == 0 {
@@ -1180,6 +1181,117 @@ pub fn fold(conversations: &[Conversation], ask: &Ask, caps: &Caps) -> View {
     }
     tables(&mut view, &obs, caps);
     view
+}
+
+/// The view of `ask` before anything is counted.
+pub(super) fn blank(ask: &Ask) -> View {
+    View {
+        ask: ask.clone(),
+        state: State::Numbers,
+        rows: Vec::new(),
+        more: None,
+        items: 0,
+        totals: empty_cols(ask.page),
+        orphans: 0,
+        detail: Vec::new(),
+        detail_more: None,
+        range: None,
+        read: 0,
+        listed: 0,
+        recounting: 0,
+        gaps: Vec::new(),
+        filters: vec![Filter::All],
+    }
+}
+
+/// One conversation's counts as the persisted model keeps them (#288
+/// persistence P1): rows by raw name and no client, which the current
+/// memberships give at combine time. `admitted` false is a refused
+/// conversation: its coverage lines only, as the fold draws one it refuses.
+pub(super) struct Counted {
+    pub(super) rows: BTreeMap<(Page, Item, Cell, Cell), Cols>,
+    pub(super) orphans: u64,
+    pub(super) range: Option<(i64, i64)>,
+    pub(super) gaps: BTreeMap<GapKind, u64>,
+    /// Every name the evidence holds, per kind: the combine's identity cap
+    /// is taken over them, as [`Names::over`] takes it over gathered evidence.
+    pub(super) names: BTreeMap<Kind, BTreeSet<String>>,
+    /// The Skills page's Reads only a proven directory attributes, by that
+    /// directory and their raw (model, effort): not in `rows`, since the
+    /// directory's row is chosen after the identity cap maps its names.
+    pub(super) inferred: Inferred,
+    /// Every row a proof names for each directory of `inferred`, by raw
+    /// name: the combine takes the least as the cap maps them.
+    pub(super) proofs: BTreeMap<Dir, BTreeSet<Item>>,
+}
+
+/// Inferred Reads by proven directory, model and effort.
+pub(super) type Inferred = BTreeMap<(Dir, Cell, Cell), u64>;
+
+/// The directories a counted, loaded, unconflicted Skill call of
+/// `conversation` proves (Q2 b).
+pub(super) fn proven_dirs(conversation: &Conversation) -> BTreeSet<Dir> {
+    let one = gather(conversation);
+    let names = Names::over(std::iter::once(&one), usize::MAX);
+    one.proven(&names).into_keys().collect()
+}
+
+/// A conversation's observation and turn counts, which its caps refuse by.
+pub(super) fn size(conversation: &Conversation) -> (usize, usize) {
+    let canonical = canonical(conversation);
+    (observations(&canonical), turns(&canonical))
+}
+
+/// Count one conversation alone (see [`Counted`]).
+pub(super) fn count(conversation: &Conversation, admitted: bool) -> Counted {
+    let mut lines = Lines::default();
+    let mut out = Counted {
+        rows: BTreeMap::new(),
+        orphans: 0,
+        range: None,
+        gaps: BTreeMap::new(),
+        names: BTreeMap::new(),
+        inferred: BTreeMap::new(),
+        proofs: BTreeMap::new(),
+    };
+    if admitted {
+        let one = gather(conversation);
+        cover(conversation, Some(&one), &mut lines);
+        let names = Names::over(std::iter::once(&one), usize::MAX);
+        let mut obs = Vec::new();
+        for page in [Page::Skills, Page::Mcp, Page::Tools] {
+            obs.clear();
+            let inferred = (page == Page::Skills).then_some(&mut out.inferred);
+            one.observe(page, &names, &mut obs, inferred);
+            for seen in &obs {
+                let key = (
+                    page,
+                    seen.item.clone(),
+                    seen.model.clone(),
+                    seen.effort.clone(),
+                );
+                add(
+                    out.rows.entry(key).or_insert_with(|| empty_cols(page)),
+                    &seen.cols,
+                );
+            }
+        }
+        let used: BTreeSet<Dir> = out.inferred.keys().map(|(dir, ..)| *dir).collect();
+        for (dir, item) in one.proofs(&names) {
+            if used.contains(&dir) {
+                out.proofs.entry(dir).or_default().insert(item);
+            }
+        }
+        out.orphans = one.groups.values().map(Group::orphans).sum();
+        out.range = one.range;
+        out.names = names.keep;
+    } else {
+        cover(conversation, None, &mut lines);
+    }
+    for ((kind, _), count) in lines.0 {
+        *out.gaps.entry(kind).or_default() += count;
+    }
+    out
 }
 
 /// One conversation's coverage lines.
@@ -1220,7 +1332,7 @@ fn cover(conversation: &Conversation, one: Option<&Gathered<'_>>, lines: &mut Li
 type DetailKey = (Item, Adapter, Cell, Cell, Cell);
 
 /// Filters, ranked rows and Detail from the page's observations.
-fn tables(view: &mut View, obs: &[Obs], caps: &Caps) {
+pub(super) fn tables(view: &mut View, obs: &[Obs], caps: &Caps) {
     let mut filters = BTreeSet::from([Filter::All]);
     for one in obs {
         filters.insert(Filter::Harness(one.harness));

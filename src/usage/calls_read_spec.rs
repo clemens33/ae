@@ -122,8 +122,39 @@ fn a4_append_partial_line_rewrite_delete_replace_and_truncate_regrow_match_hand_
 
     fs::remove_file(&path).expect("delete fixture native log");
     round(&mut reader);
-    equal_fresh(&root, &reader, 0);
+    assert_eq!(attempts(&reader.view(&ask(Page::Tools))), 2);
+    assert!(gap(&reader.view(&ask(Page::Tools)), &GapKind::SourceGone));
     assert!(reader.view(&ask(Page::Tools)).partial());
+    drop(reader);
+    // S5 owns the payload. Establish its epoch through a real publication.
+    Fixture::rewrite(
+        &root.0.join("sessions/alpha/events.jsonl"),
+        f::event("ordinary", "epoch fixture").as_bytes(),
+    );
+    let mut maintainer = crate::stats_store::maint::Maintainer::new(
+        &root.0,
+        crate::stats_store::disk::LIMITS,
+        std::time::Duration::from_millis(100),
+    );
+    for _ in 0..100 {
+        let _ = maintainer.step();
+        if root.0.join("stats/epoch").is_file() {
+            break;
+        }
+    }
+    assert!(
+        root.0.join("stats/epoch").is_file(),
+        "real S5 epoch before reset"
+    );
+    drop(maintainer);
+    assert!(!matches!(
+        crate::stats_store::disk::reset(&root.0, std::time::Duration::ZERO)
+            .expect("P6 reset rebuilds existing sources"),
+        crate::stats_store::disk::Reset::Busy
+    ));
+    let mut reader = new(&root);
+    round(&mut reader);
+    equal_fresh(&root, &reader, 0);
     Fixture::rewrite(&path, changed.as_bytes());
     round(&mut reader);
     equal_fresh(&root, &reader, 2);
