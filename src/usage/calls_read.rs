@@ -351,6 +351,8 @@ impl Scan {
 enum Task {
     Load,
     Recover,
+    /// The store documents again, after a recovery moved them.
+    Reload,
     Sessions,
     Meta {
         dir: PathBuf,
@@ -416,7 +418,7 @@ impl Task {
             Self::CodexFind { .. } | Self::Lstats(_) => UnitKind::Lstats,
             Self::Verify { .. } => UnitKind::Verify,
             Self::Read { .. } => UnitKind::Read,
-            Self::Load | Self::LoadConv(_) => UnitKind::Load,
+            Self::Load | Self::Reload | Self::LoadConv(_) => UnitKind::Load,
             Self::Publish(_) | Self::PublishView | Self::PublishSources => UnitKind::Publish,
             Self::Recover => UnitKind::Recover,
         }
@@ -575,6 +577,9 @@ struct Held {
     conv: Conv,
     /// Changed since its last durable publication.
     dirty: bool,
+    /// Held from its view entry (summary and head, no evidence): the
+    /// document is loaded before anything changes it (plan r4 section 1).
+    partial: bool,
 }
 
 /// The reader's whole state.
@@ -829,6 +834,7 @@ impl Reader {
         match task {
             Task::Load => return self.load(round),
             Task::Recover => return self.recover(round),
+            Task::Reload => return self.reload(),
             Task::Sessions => self.sessions(round),
             Task::Meta { dir, group } => self.meta(round, &dir, group),
             Task::Journal {
@@ -940,7 +946,16 @@ impl Reader {
         if epoch.is_none() {
             return dir.bytes;
         }
-        if let Loaded::Ok(view) = store::load_view(&mut dir) {
+        self.documents(&mut dir);
+        round.tasks.push_back(Task::Recover);
+        dir.bytes
+    }
+
+    /// Read the view, its coverage, the sources and the memberships: what a
+    /// load holds, and what a recovery that moved the store holds again.
+    fn documents(&mut self, dir: &mut dyn disk::Dir) {
+        self.covered = None;
+        if let Loaded::Ok(view) = store::load_view(dir) {
             self.generation = view.generation;
             // The published entries are the held view: a conversation that
             // settles to its own entry again publishes nothing, so a reopened
@@ -952,7 +967,7 @@ impl Reader {
                 over_cap: 0,
             };
             // The coverage published beside that view needs no new publication.
-            if let Loaded::Ok(coverage) = store::load_coverage(&mut dir)
+            if let Loaded::Ok(coverage) = store::load_coverage(dir)
                 && coverage.generation == view.generation
             {
                 self.covered = Some(Coverage {
@@ -961,7 +976,7 @@ impl Reader {
                 });
             }
         }
-        match store::load_sources(&mut dir) {
+        match store::load_sources(dir) {
             Loaded::Ok(sources) => self.sources = sources,
             Loaded::Absent | Loaded::Rebuild(_) => self.sources = Sources::new(),
             Loaded::Unreadable(_) => {
@@ -971,8 +986,12 @@ impl Reader {
                 self.sources_blocked = true;
             }
         }
-        round.tasks.push_back(Task::Recover);
-        dir.bytes
+        // The memberships published beside the sources: a round that finds
+        // the same ones publishes no association (P5: no publication
+        // without a change).
+        if let Loaded::Ok(assoc) = store::load_assoc(dir) {
+            self.association = assoc.memberships;
+        }
     }
 
     /// The epoch could not be proven: nothing is published until it is.
@@ -994,24 +1013,44 @@ impl Reader {
     }
 
     /// Finish or undo an interrupted publication before any other.
-    fn recover(&mut self, _round: &mut Round) -> u64 {
+    fn recover(&mut self, round: &mut Round) -> u64 {
         let held = self.epoch;
         let outcome = disk::tools(&self.state_root, LOCK_WAIT, |dir, epoch| {
             if held != Some(epoch) {
-                return (None, 0);
+                return (None, None);
             }
             match store::recovery(dir) {
                 Ok(plan) if !plan.ops.is_empty() => {
                     let bytes = written(&plan);
-                    (Some(plan), bytes)
+                    (Some(plan), Some(bytes))
                 }
-                Ok(_) | Err(_) => (None, 0),
+                Ok(_) | Err(_) => (None, None),
             }
         });
         match outcome {
-            disk::Tools::Done { value, .. } => value,
+            disk::Tools::Done {
+                value: Some(bytes), ..
+            } => {
+                // The store moved under the loaded documents (a committed
+                // view renamed in, or a staged one undone): they are read
+                // again next, so no publication starts from an older
+                // generation.
+                round.tasks.push_front(Task::Reload);
+                bytes
+            }
             _ => 0,
         }
+    }
+
+    /// Read the store documents again (see [`Self::recover`]).
+    fn reload(&mut self) -> u64 {
+        let mut files = disk::Files::at(&self.state_root);
+        let mut dir = Counted {
+            dir: &mut files,
+            bytes: 0,
+        };
+        self.documents(&mut dir);
+        dir.bytes
     }
 
     /// One conversation's durable document, or a fresh one to build.
@@ -1046,11 +1085,22 @@ impl Reader {
                     });
                 }
                 round.open.remove(key);
+                // Not held from its view entry either: not read this round.
+                if self.convs.get(key).is_some_and(|held| held.partial) {
+                    self.convs.remove(key);
+                }
                 return dir.bytes;
             }
         };
         let bytes = dir.bytes;
-        self.convs.insert(key.clone(), Held { conv, dirty });
+        self.convs.insert(
+            key.clone(),
+            Held {
+                conv,
+                dirty,
+                partial: false,
+            },
+        );
         if round.open.get(key).is_some_and(BTreeSet::is_empty) {
             self.settle(round, key);
         }
@@ -1197,6 +1247,8 @@ impl Reader {
                     self.covered = Some(self.unfitted());
                     if let Some(held) = key.and_then(|key| self.convs.get_mut(key)) {
                         held.dirty = false;
+                        // Processed and durable: only its view entry is kept.
+                        release(held);
                     }
                     bytes
                 }
@@ -2368,13 +2420,14 @@ impl Reader {
                 continue;
             }
             if self.durable && self.proof != Proof::Cold && self.epoch.is_some() {
-                round.tasks.push_back(Task::LoadConv(key.clone()));
+                self.hold(round, key);
             } else {
                 self.convs.insert(
                     key.clone(),
                     Held {
                         conv: Conv::new(key.0, &key.1),
                         dirty: true,
+                        partial: false,
                     },
                 );
             }
@@ -2392,6 +2445,35 @@ impl Reader {
                 self.settle(round, key);
             }
         }
+    }
+
+    /// Hold `key` from its view entry when the view has its head; its
+    /// document is loaded only before a change (plan r4 section 1). Without
+    /// a head, the document is loaded now. A head without file states (an
+    /// unlocated conversation) is still a head.
+    fn hold(&mut self, round: &mut Round, key: &Key) {
+        let entry = self
+            .all
+            .convs
+            .binary_search_by(|one| {
+                (one.summary.adapter, one.summary.id.as_str()).cmp(&(key.0, key.1.as_str()))
+            })
+            .ok()
+            .and_then(|index| self.all.convs.get(index))
+            .and_then(|entry| Some((&entry.summary, entry.head.as_ref()?)));
+        let Some((summary, head)) = entry else {
+            round.tasks.push_back(Task::LoadConv(key.clone()));
+            return;
+        };
+        let conv = Conv::partial(summary.clone(), head);
+        self.convs.insert(
+            key.clone(),
+            Held {
+                conv,
+                dirty: false,
+                partial: true,
+            },
+        );
     }
 }
 
@@ -2424,6 +2506,14 @@ impl Reader {
                 self.done(round, &place);
                 continue;
             }
+            // A conversation held from its view entry is loaded before its
+            // roots change it; this file is checked again after the load.
+            if held.partial && held.conv.resume.roots() != classified_by(round, &key).as_ref() {
+                let rest: Vec<(Place, PathBuf)> =
+                    std::iter::once((place, path)).chain(batch).collect();
+                load_first(round, key, rest);
+                break;
+            }
             // Its events were classified by other roots: it is rebuilt, and
             // this file is still checked by its own lstat below.
             self.reclassify(round, &key);
@@ -2448,6 +2538,14 @@ impl Reader {
             };
             let identity = Identity::of(&file.metadata);
             let state = held.conv.resume.file(&place.stream).cloned();
+            if held.partial && !state.as_ref().is_some_and(|state| identity.same(state)) {
+                // Its status moved: the document is loaded, then this file
+                // is checked again against the full resume state.
+                let rest: Vec<(Place, PathBuf)> =
+                    std::iter::once((place, path)).chain(batch).collect();
+                load_first(round, key, rest);
+                break;
+            }
             match state {
                 None => self.start(round, place, path, identity),
                 Some(state) if identity.same(&state) => self.done(round, &place),
@@ -2753,9 +2851,22 @@ impl Reader {
             .filter(|place| place.conversation == *key)
             .cloned()
             .collect();
+        let (marks, read) = settled_marks(round, key);
         let Some(held) = self.convs.get_mut(key) else {
             return;
         };
+        if held.partial
+            && (!places.is_empty()
+                || round.rebuilt.contains(key)
+                || goes(round, key, &held.conv)
+                || held.conv.resume.marks() != marks.as_slice()
+                || held.conv.summary.read != read)
+        {
+            // Held from its view entry and about to change: its document is
+            // loaded first, and the load settles it again.
+            round.tasks.push_front(Task::LoadConv(key.clone()));
+            return;
+        }
         let before = held.conv.summary.clone();
         let (moved, overflow) = take_readings(round, places, &mut held.conv, &self.caps);
         if overflow {
@@ -2764,19 +2875,9 @@ impl Reader {
             held.dirty = true;
         }
         mark_gone(round, key, &mut held.conv);
-        let mut marks = round.marks.get(key).cloned().unwrap_or_default();
-        let changed = round.changed.iter().any(|place| place.conversation == *key);
-        if changed && !marks.contains(&GapKind::Changed) {
-            marks.push(GapKind::Changed);
-            marks.sort();
-        }
         if held.conv.set_gaps(marks.clone()).is_err() {
             held.dirty = true;
         }
-        let read = round.with_parent.contains(key)
-            && !changed
-            && !marks.contains(&GapKind::Unlocated)
-            && !marks.contains(&GapKind::Changed);
         held.conv.summary.read = read;
         if moved || held.conv.summary != before || round.rebuilt.contains(key) {
             let caps = self.caps;
@@ -2793,7 +2894,8 @@ impl Reader {
             self.conversations[index].read = read;
             self.conversations[index].gaps = marks;
         }
-        let published = incr::publish(&held.conv.summary, self.association.get(key));
+        let mut published = incr::publish(&held.conv.summary, self.association.get(key));
+        published.head = Some(held.conv.head());
         let mut dirty = held.dirty;
         if self.enter(key, Some(published)).is_err()
             && let Some(held) = self.convs.get_mut(key)
@@ -2805,6 +2907,11 @@ impl Reader {
         }
         if dirty && self.publishing() {
             round.tasks.push_back(Task::Publish(key.clone()));
+        } else if self.publishing()
+            && let Some(held) = self.convs.get_mut(key)
+        {
+            // Settled with nothing to publish: only its view entry is kept.
+            release(held);
         }
     }
 }
@@ -2876,6 +2983,35 @@ fn take_readings(
 
 /// A counted file no longer listed, or gone at its lstat, keeps its counts,
 /// visibly (P6); a store whose listing failed proves nothing.
+/// This round's discovery marks of `key` and whether it is read: what a
+/// settle sets.
+fn settled_marks(round: &Round, key: &Key) -> (Vec<GapKind>, bool) {
+    let mut marks = round.marks.get(key).cloned().unwrap_or_default();
+    let changed = round.changed.iter().any(|place| place.conversation == *key);
+    if changed && !marks.contains(&GapKind::Changed) {
+        marks.push(GapKind::Changed);
+        marks.sort();
+    }
+    let read = round.with_parent.contains(key)
+        && !changed
+        && !marks.contains(&GapKind::Unlocated)
+        && !marks.contains(&GapKind::Changed);
+    (marks, read)
+}
+
+/// Whether [`mark_gone`] would mark a source of `conv` gone.
+fn goes(round: &Round, key: &Key, conv: &Conv) -> bool {
+    let broken: BTreeSet<[u8; 16]> = round.broken.iter().map(|store| copy_of(store)).collect();
+    conv.summary.files.iter().any(|(stream, source)| {
+        let place = Place {
+            conversation: key.clone(),
+            stream: stream.clone(),
+        };
+        let listed = round.located.contains_key(&place) && !round.missing.contains(&place);
+        *source == Source::Present && !listed && !broken.contains(&stream.copy)
+    })
+}
+
 fn mark_gone(round: &Round, key: &Key, conv: &mut Conv) {
     let broken: BTreeSet<[u8; 16]> = round.broken.iter().map(|store| copy_of(store)).collect();
     let streams: Vec<StreamKey> = conv
@@ -2895,6 +3031,24 @@ fn mark_gone(round: &Round, key: &Key, conv: &mut Conv) {
             conv.source_gone(&stream);
         }
     }
+}
+
+/// Keep only what the view holds of a settled, durable conversation: its
+/// summary and head (plan r4 section 1: a Resume is held only while its
+/// conversation is processed).
+fn release(held: &mut Held) {
+    if !held.partial {
+        let kept = held.conv.head();
+        held.conv = Conv::partial(held.conv.summary.clone(), &kept);
+        held.partial = true;
+    }
+}
+
+/// Load `key`'s document before `rest` is checked again: what a
+/// conversation held from its view entry needs before anything changes it.
+fn load_first(round: &mut Round, key: Key, rest: Vec<(Place, PathBuf)>) {
+    round.tasks.push_front(Task::Lstats(rest));
+    round.tasks.push_front(Task::LoadConv(key));
 }
 
 /// A cold reader run through one whole round: it never reads or changes
@@ -2941,6 +3095,10 @@ mod spec;
 #[cfg(test)]
 #[path = "calls_persist_spec.rs"]
 mod persist_spec;
+
+#[cfg(test)]
+#[path = "calls_lazy_spec.rs"]
+mod lazy_spec;
 
 #[cfg(test)]
 #[path = "calls_read_tests.rs"]

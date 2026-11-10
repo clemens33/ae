@@ -1298,6 +1298,9 @@ fn r3_2_a_damaged_document_rebuilds_the_present_sources_only() {
     let path = family.root.0.join(name);
     assert!(path.exists(), "positive control: {}", path.display());
     Fixture::rewrite(&path, b"not a conversation\n");
+    // The document is read only when its conversation is processed: a
+    // status change of its parent (same bytes) processes it.
+    touch(&family.parent);
     let mut reopened = family.reader();
     drain(&mut reopened);
     let parent = BTreeMap::from([("Read".to_owned(), 3)]);
@@ -1342,6 +1345,7 @@ fn b2_a_damaged_document_marks_its_conversation_until_reset() {
             .to_owned(),
     ];
     Fixture::rewrite(&path, b"not a conversation\n");
+    touch(&family.parent);
     let mut reopened = family.reader();
     drain(&mut reopened);
     assert_eq!(damage_lines(&reopened.view(&tools_page)), one, "marked");
@@ -1357,6 +1361,7 @@ fn b2_a_damaged_document_marks_its_conversation_until_reset() {
     // Damage of the marked document loses the mark with it; the new damage
     // sets it again on the rebuilt conversation, so the line stays true.
     Fixture::rewrite(&path, b"damaged again\n");
+    touch(&family.parent);
     let mut twice = family.reader();
     drain(&mut twice);
     assert_eq!(
@@ -1389,13 +1394,14 @@ fn r3_2_a_conversation_rebuild_keeps_evidence_and_forgets_file_states() {
     drain(&mut warm);
     fs::remove_file(&family.child).expect("the child goes");
     drain(&mut warm);
-    let key = (Adapter::Claude, f::C.to_owned());
-    let held = warm
-        .convs
-        .get(&key)
-        .expect("the conversation is held")
-        .conv
-        .clone();
+    drop(warm);
+    // A settled conversation keeps only its view entry (plan r4 section 1):
+    // its whole state is the document it published.
+    let Loaded::Ok(held) =
+        store::load_conv(&mut disk::Files::at(&family.root.0), Adapter::Claude, f::C)
+    else {
+        panic!("the published conversation document");
+    };
     let streams: Vec<_> = held.summary.files.keys().cloned().collect();
     assert_eq!(streams.len(), 2, "positive control: two files");
     assert!(

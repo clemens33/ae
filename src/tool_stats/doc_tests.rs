@@ -10,6 +10,7 @@ fn seed(bytes: &[u8]) -> &[u8] {
 
 const CONV: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/conv");
 const VIEW: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/view");
+const VIEW_HEAD: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/view-head");
 const ASSOC: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/assoc");
 const INTENT: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/intent");
 const SOURCES: &[u8] = include_bytes!("../../fuzz/seeds/tool_stats_doc/sources");
@@ -325,4 +326,55 @@ fn a_cap_below_the_bare_coverage_keeps_no_record() {
     let fitted = fit_coverage(&coverage, 1);
     assert!(fitted.unsupported.is_empty());
     assert_eq!(fitted.omitted, coverage.omitted + total);
+}
+
+/// The view seed with a head (#288 P5): its `head_seen`, `head`,
+/// `head_mark` and `head_roots` records parse and render their own bytes,
+/// a head with no other record is still present (an unlocated
+/// conversation), and a head record outside an opened head is damage.
+#[test]
+fn the_view_head_seed_parses_and_renders_its_own_bytes() {
+    let view = parse_view(seed(VIEW_HEAD)).expect("view head seed");
+    assert_eq!(render_view(&view), seed(VIEW_HEAD));
+    let head = view.convs[0].head.as_ref().expect("head present");
+    assert_eq!(head.files.len(), 2, "a parent and a child stream");
+    assert!(head.files.values().all(|state| state.blocks.is_empty()));
+    assert_eq!(head.marks, vec![GapKind::Changed]);
+    assert_eq!(head.roots, Some(Key([0x33; 16])));
+    let plain = parse_view(seed(VIEW)).expect("view seed");
+    assert_eq!(plain.convs[0].head, None, "no head_seen: no head");
+    let text = std::str::from_utf8(seed(VIEW_HEAD)).expect("UTF-8 seed");
+    let records: Vec<&str> = text.lines().collect();
+    let without = |drop: &dyn Fn(&str) -> bool, end: usize| {
+        let mut kept: Vec<&str> = records
+            .iter()
+            .copied()
+            .filter(|line| !drop(line) && !line.starts_with("{\"end\""))
+            .collect();
+        let end = format!("{{\"end\":{end}}}");
+        kept.push(&end);
+        format!("{}\n", kept.join("\n"))
+    };
+    let only_seen = without(
+        &|line: &str| line.starts_with("{\"head\"") || line.starts_with("{\"head_"),
+        7,
+    )
+    .replace("\n{\"end\"", "\n{\"head_seen\":true}\n{\"end\"");
+    let empty = parse_view(only_seen.as_bytes()).expect("a head with no other record");
+    assert_eq!(empty.convs[0].head, Some(incr::Head::default()));
+    let unopened = without(&|line: &str| line.starts_with("{\"head_seen\""), 10);
+    let twice = text
+        .replace(
+            "{\"head_seen\":true}\n",
+            "{\"head_seen\":true}\n{\"head_seen\":true}\n",
+        )
+        .replace("{\"end\":11}", "{\"end\":12}");
+    let off = text.replace("{\"head_seen\":true}", "{\"head_seen\":false}");
+    for bad in [unopened, twice, off] {
+        assert_eq!(
+            parse_view(bad.as_bytes()),
+            Err(DocError::Damaged("head")),
+            "{bad}"
+        );
+    }
 }

@@ -163,6 +163,12 @@ impl Resume {
         self.files.get(stream)
     }
 
+    /// The discovery marks of the conversation's last round.
+    #[must_use]
+    pub fn marks(&self) -> &[GapKind] {
+        &self.marks
+    }
+
     /// The digest of the roots the held events were classified by.
     #[must_use]
     pub const fn roots(&self) -> Option<&Key> {
@@ -533,6 +539,62 @@ pub struct PublishedConv {
     pub summary: Summary,
     pub sessions: BTreeSet<String>,
     pub client: Cell,
+    /// What a round checks before it needs the conversation document (P5):
+    /// set by the reader, absent from [`publish`] and from a view written
+    /// without one. A present head may hold no file state (an unlocated
+    /// conversation): presence, not the file count, says it was recorded.
+    pub head: Option<Head>,
+}
+
+/// A conversation's per-round check state, kept in the view so that a warm
+/// reader loads the document only to change it (plan r4 section 1): each
+/// stream's status and cursor, the discovery marks and the roots digest.
+/// No block witness: a changed status loads the document.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Head {
+    pub files: BTreeMap<StreamKey, FileState>,
+    pub marks: Vec<GapKind>,
+    pub roots: Option<Key>,
+}
+
+impl Conv {
+    /// The head of this conversation's resume state.
+    #[must_use]
+    pub fn head(&self) -> Head {
+        Head {
+            files: self
+                .resume
+                .files
+                .iter()
+                .map(|(key, state)| {
+                    (
+                        key.clone(),
+                        FileState {
+                            blocks: Vec::new(),
+                            ..state.clone()
+                        },
+                    )
+                })
+                .collect(),
+            marks: self.resume.marks.clone(),
+            roots: self.resume.roots,
+        }
+    }
+
+    /// A conversation held from its view entry: the summary and the head,
+    /// no evidence. Only a check reads it; any change loads the document.
+    #[must_use]
+    pub fn partial(summary: Summary, head: &Head) -> Self {
+        Self {
+            summary,
+            resume: Resume {
+                files: head.files.clone(),
+                marks: head.marks.clone(),
+                roots: head.roots,
+                ..Resume::default()
+            },
+        }
+    }
 }
 
 /// The derived view document.
@@ -597,6 +659,7 @@ pub fn publish(summary: &Summary, association: Option<&Association>) -> Publishe
             summary: summary.clone(),
             sessions: BTreeSet::new(),
             client: Cell::Unknown,
+            head: None,
         };
     };
     let sessions = association
@@ -618,6 +681,7 @@ pub fn publish(summary: &Summary, association: Option<&Association>) -> Publishe
         summary: summary.clone(),
         sessions,
         client,
+        head: None,
     }
 }
 

@@ -1,0 +1,12 @@
+{"tools_view":1,"generation":1,"over_cap":0}
+{"conv":"claude","id":"c1","read":true,"refused":null,"orphans":0,"range":null,"observations":1,"turns":0,"client":"work"}
+{"session":"s1"}
+{"gap":"rebuilt_from_source","count":1}
+{"name":"tool","value":"Read"}
+{"row":"tools","item":["tool","Read"],"harness":"claude","model":"model-a","effort":null,"cols":[1,0,0,1]}
+{"head_seen":true}
+{"head":[null,"11111111111111111111111111111111"],"dev":16777234,"ino":4242,"len":1024,"mtime":[1762790400,5],"ctime":[1762790401,0],"cursor":1024,"skipping":false}
+{"head":["agent-1","22222222222222222222222222222222"],"dev":16777234,"ino":4242,"len":64,"mtime":[1762790400,5],"ctime":[1762790401,0],"cursor":32,"skipping":true}
+{"head_mark":"changed"}
+{"head_roots":"33333333333333333333333333333333"}
+{"end":11}

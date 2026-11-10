@@ -572,6 +572,23 @@ fn view_conv(out: &mut Out, conv: &PublishedConv) {
             ]);
         }
     }
+    // The head (P5): what a warm round checks without the document. Its
+    // first record says it is there, as it may have no other record.
+    let Some(head) = &conv.head else {
+        return;
+    };
+    out.record(vec![("head_seen", Value::Bool(true))]);
+    for (key, state) in &head.files {
+        let mut fields = status_fields("head", stream(key), state);
+        fields.retain(|(name, _)| *name != "blocks");
+        out.record(fields);
+    }
+    for kind in &head.marks {
+        out.record(vec![("head_mark", gap(kind))]);
+    }
+    if let Some(roots) = &head.roots {
+        out.record(vec![("head_roots", hex(&roots.0))]);
+    }
 }
 
 /// The association: session sources and every conversation's memberships.
@@ -1036,6 +1053,28 @@ fn parse_status(fields: &Fields) -> Parsed<FileState> {
     })
 }
 
+/// The conversation's head, which its `head_seen` record must have opened.
+fn head_of(conv: &mut PublishedConv) -> Parsed<&mut incr::Head> {
+    match conv.head.as_mut() {
+        Some(head) => Ok(head),
+        None => damaged("head"),
+    }
+}
+
+/// A head status: a file's status and cursor, no block witness.
+fn parse_status_head(fields: &Fields) -> Parsed<FileState> {
+    Ok(FileState {
+        dev: count(field(fields, "dev")?)?,
+        ino: count(field(fields, "ino")?)?,
+        len: count(field(fields, "len")?)?,
+        mtime: parse_stamp(field(fields, "mtime")?)?,
+        ctime: parse_stamp(field(fields, "ctime")?)?,
+        cursor: count(field(fields, "cursor")?)?,
+        skipping: flag(field(fields, "skipping")?)?,
+        blocks: Vec::new(),
+    })
+}
+
 fn parse_load(value: &Value) -> Parsed<Option<Load>> {
     maybe(value, |value| match value {
         Value::Str(word) if word == "loaded" => Ok(Load::Loaded),
@@ -1252,6 +1291,7 @@ pub fn parse_view(bytes: &[u8]) -> Result<Published, DocError> {
                 },
                 sessions: BTreeSet::new(),
                 client: parse_client_cell(field(fields, "client")?)?,
+                head: None,
             });
             continue;
         }
@@ -1361,6 +1401,19 @@ fn view_record(conv: &mut PublishedConv, fields: &Fields) -> Parsed<()> {
                 reads,
             );
         }
+        ("head_seen", Some(value)) => {
+            if !flag(value)? || conv.head.is_some() {
+                return damaged("head");
+            }
+            conv.head = Some(incr::Head::default());
+        }
+        ("head", Some(value)) => {
+            head_of(conv)?
+                .files
+                .insert(parse_stream(value)?, parse_status_head(fields)?);
+        }
+        ("head_mark", Some(value)) => head_of(conv)?.marks.push(parse_gap(value)?),
+        ("head_roots", Some(value)) => head_of(conv)?.roots = Some(key(value)?),
         _ => return damaged("view record"),
     }
     Ok(())
