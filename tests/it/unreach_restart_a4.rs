@@ -52,7 +52,7 @@ mod unreach_restart_a4 {
             "fresh daemon clears durable panel naming under Stale",
             || rig.count("human-prompt-cleared") > 0,
         );
-        std::thread::sleep(Duration::from_secs(3));
+        rig.wait_five_cycles();
         rig.stop();
         assert_eq!(rig.count("human-prompt-cleared"), 1, "one panel-run end");
         assert_eq!(rig.count("auto-dismiss"), 0);

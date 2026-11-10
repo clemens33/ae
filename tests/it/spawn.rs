@@ -22,6 +22,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::cli::ae;
+use super::parity::Invocation;
+use super::parity::capture::ExitOutcome;
+use super::parity::capture::raw;
 use super::phase2::run_tmux;
 use super::support::{SETUP_WAIT, first_pane};
 
@@ -75,7 +78,9 @@ while (1) {
         draw("");
         next;
     }
-    draw($buf);
+    # A bracketed paste is drawn once, at its end: a frame per pasted byte
+    # makes the fake fall behind the Enter that follows (#306).
+    draw($buf) unless $pasting;
 }
 "#;
 
@@ -587,6 +592,74 @@ impl Drop for Rig {
         let _ = self.tmux(&["kill-server"]);
         let _ = std::fs::remove_dir_all(&self.scratch);
     }
+}
+
+/// How much terminal output a fake agent writes while `len` bytes arrive as ONE
+/// bracketed paste followed by Enter, run as a plain process on a key file with
+/// no tmux in the way. Output volume is the load-independent measure of the
+/// fake's cost: a fake that redraws the whole screen for every pasted byte
+/// writes a frame per byte, so its cost grows with the square of the paste,
+/// and under load it falls behind the Enter that `submit_staged` presses
+/// and then reads back only about a second later (#306).
+pub(super) fn bytes_drawn_for_a_paste(tag: &str, source: &str, len: usize) -> u64 {
+    let scratch = super::cli::OwnedScratch::root("sp", tag);
+    let file = |name: &str| scratch.path().join(name);
+    let script = source
+        .replace("__RECEIVED__", &file("received").display().to_string())
+        .replace("__LAUNCHED__", &file("launched").display().to_string())
+        .replace("__RECEIPT__", &file("receipt").display().to_string());
+    let mut keys = b"\x1b[200~".to_vec();
+    keys.extend(std::iter::repeat_n(b'x', len));
+    keys.extend_from_slice(b"\x1b[201~\r");
+    assert!(
+        std::fs::write(file("fake.pl"), script).is_ok(),
+        "the script"
+    );
+    assert!(std::fs::write(file("keys"), keys).is_ok(), "the key file");
+    // The suite's process door has no stdin, so perl rebinds its own to the
+    // key file and runs the fake in place.
+    let run = Invocation::new("perl")
+        .arg("-e")
+        .arg("open(STDIN, '<', $ARGV[0]) or die $!; do $ARGV[1]; die $@ if $@")
+        .arg(file("keys"))
+        .arg(file("fake.pl"));
+    let (out, err) = (file("drawn.out"), file("drawn.err"));
+    let status = raw::run(&run, scratch.path(), &out, &err);
+    assert!(
+        status
+            .as_ref()
+            .is_ok_and(|status| matches!(status.outcome(), ExitOutcome::Code(0))),
+        "the fake ran to the end of its keys: {}",
+        std::fs::read_to_string(&err).unwrap_or_default()
+    );
+    std::fs::metadata(&out).map_or(0, |drawn| drawn.len())
+}
+
+/// A seed-sized paste, and the most terminal output a fake may write for it:
+/// a handful of frames. The per-byte redraw writes 2 000 frames, megabytes.
+const SEED_SIZED_PASTE: usize = 2000;
+const FRAMES_FOR_A_PASTE: u64 = 128 * 1024;
+
+#[test]
+fn the_spawn_fake_draws_a_bracketed_paste_once_not_once_per_byte() {
+    let drawn = bytes_drawn_for_a_paste("pastecost-spawn", FAKE_CLAUDE, SEED_SIZED_PASTE);
+    assert!(
+        drawn < FRAMES_FOR_A_PASTE,
+        "the fake wrote {drawn} bytes for a {SEED_SIZED_PASTE}-byte paste"
+    );
+}
+
+#[test]
+fn the_clientfollow_fake_draws_a_bracketed_paste_once_not_once_per_byte() {
+    let drawn = bytes_drawn_for_a_paste(
+        "pastecost-follow",
+        super::clientfollow_resume_spec::HARNESS,
+        SEED_SIZED_PASTE,
+    );
+    assert!(
+        drawn < FRAMES_FOR_A_PASTE,
+        "the fake wrote {drawn} bytes for a {SEED_SIZED_PASTE}-byte paste"
+    );
 }
 
 /// Whether tmux is here at all; without it these prove nothing.

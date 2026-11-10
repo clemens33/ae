@@ -16,7 +16,7 @@ use super::phase2::{run_tmux, tmux_present};
 
 // Only the external harness is substituted. Its process name, terminal input
 // and exec/account receipts are real; no ae resolver or lifecycle is mocked.
-const HARNESS: &str = r#"use strict;
+pub(super) const HARNESS: &str = r#"use strict;
 use warnings;
 use Cwd qw(abs_path);
 system("stty raw -echo 2>/dev/null");
@@ -42,7 +42,9 @@ while (1) {
     if ($buf =~ s/\e\[201~\z//) { $pasting = 0; draw($buf); next; }
     if ($pasting && $ch eq "\r") { chop($buf); $buf .= "\n"; next; }
     if (!$pasting && ($ch eq "\r" || $ch eq "\n")) { $buf = ""; }
-    draw($buf);
+    # A bracketed paste is drawn once, at its end: a frame per pasted byte
+    # makes the fake fall behind the Enter that follows (#306).
+    draw($buf) unless $pasting;
 }
 "#;
 

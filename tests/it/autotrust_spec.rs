@@ -1006,7 +1006,7 @@ fn spent_corrupt_and_unreadable_journals_fail_closed() {
             wait_for("journal refusal diagnostic", || {
                 !text(rig.root.join("watch.err")).is_empty()
             });
-            std::thread::sleep(Duration::from_secs(3));
+            rig.wait_five_cycles();
         } else {
             rig.named();
         }
@@ -1478,7 +1478,9 @@ fn v14_fresh_client_activity_holds_every_key_then_detach_allows_answer() {
     };
     let mut client = attach(&rig);
     rig.start();
-    let until = Instant::now() + Duration::from_secs(8);
+    // The loop ends when the held attempts reach the bound, which is the
+    // record `human-prompt`, not after a fixed span a loaded host can outrun.
+    let until = Instant::now() + WITNESS_WAIT;
     while Instant::now() < until {
         let clients = rig.tmux(&[
             "list-clients",
@@ -1503,6 +1505,9 @@ fn v14_fresh_client_activity_holds_every_key_then_detach_allows_answer() {
                 .all(|e| !e.action.starts_with("auto-trust")),
             "fresh input spends nothing"
         );
+        if rig.count("human-prompt") == 1 {
+            break;
+        }
         let next = attach(&rig);
         drop(client);
         client = next;
@@ -2117,7 +2122,7 @@ mod unreach {
                 .contains(&format!("{}|{}", client.id(), rig.pane))
         });
         rig.start();
-        std::thread::sleep(Duration::from_secs(3));
+        rig.wait_five_cycles();
         drop(client);
         rig.wait_five_cycles();
         assert!(
