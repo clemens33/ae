@@ -763,6 +763,78 @@ fn measured_yes_and_no_use_only_the_arrow_then_enter_once_across_watchdog_restar
     }
 }
 
+/// codex 0.167.0's measured folder-trust block under the same rules: its own
+/// canonical folder only, trust-yes preselected so ONE Enter is the whole
+/// answer, once per tool start across a watchdog restart; `off`, a foreign
+/// folder and a spent start are named with zero keys.
+#[test]
+fn codex_folder_trust_is_one_enter_for_its_own_folder_once_per_start() {
+    const CODEX_TRUST: &str = include_str!("../fixtures/codex-trust/codex-trust-modal-200x50.txt");
+    for case in ["on", "off", "foreign", "spent"] {
+        let mut rig = Rig::new(&format!("cx-{case}"), "codex", "normal");
+        let canonical = |path: &Path| {
+            fs::canonicalize(path)
+                .unwrap_or_else(|why| panic!("fixture folder: {why}"))
+                .display()
+                .to_string()
+        };
+        let drawn = if case == "foreign" {
+            canonical(&rig.root.join("other"))
+        } else {
+            canonical(&rig.root)
+        };
+        let frame = CODEX_TRUST.replace("/tmp/codex-trust-probe", &drawn);
+        write(rig.root.join("frame"), &frame);
+        rig.repaint(&frame);
+        if case == "off" {
+            write(
+                rig.root.join("config"),
+                "[workspace]\nauto_trust = off\nquota = off\nauto_upgrade = off\ntheme = off\nmotion = off\n",
+            );
+        } else if case == "spent" {
+            let pid = text(rig.root.join("ready"));
+            write(
+                rig.dir.join("events.jsonl"),
+                format!(
+                    "{{\"ts\":\"2026-10-11T00:00:00Z\",\"actor\":\"watchdog\",\"action\":\"auto-trust-reserved\",\"target\":\"lead\",\"target_slot\":\"main\",\"ref\":\"main:start-one:{pid}\"}}\n"
+                ),
+            );
+        }
+        rig.start();
+        if case == "on" {
+            rig.trusted(b"\r");
+            rig.stop();
+            rig.repaint(&frame);
+            rig.start();
+            rig.named();
+            assert_eq!(rig.wire(), b"\r", "spent start survives watchdog restart");
+            assert_eq!(rig.count("auto-trust-reserved"), 1, "once per start");
+            assert_eq!(rig.count("auto-trust"), 1);
+        } else {
+            rig.named();
+            assert!(rig.wire().is_empty(), "{case}: zero keys");
+            assert_eq!(rig.count("auto-trust"), 0, "{case}: no completion");
+            assert_eq!(
+                rig.count("auto-trust-reserved"),
+                usize::from(case == "spent"),
+                "{case}: no new reservation"
+            );
+            let named = rig
+                .events()
+                .into_iter()
+                .find(|event| event.action == "human-prompt")
+                .expect("named question");
+            assert!(
+                named
+                    .summary
+                    .unwrap_or_default()
+                    .contains("Trust this folder? — press: enter continue · esc back"),
+                "{case}"
+            );
+        }
+    }
+}
+
 #[test]
 fn global_default_and_grammar_control_answering_project_cannot_vote() {
     for (tag, global, project, allowed) in [

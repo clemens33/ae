@@ -669,6 +669,11 @@ pub(crate) struct PromptSpec {
     /// How far up from the last non-blank row the whole shape must sit, in
     /// ROWS: from the title's rule when there is a title, else the question.
     pub(crate) window: usize,
+    /// Whether the key-hint row must be the window's LAST non-blank row: the
+    /// anchor of a modal with no ruled title whose tool's composer guard cannot
+    /// read a plain capture (codex), so a block quoted above a live composer and
+    /// footer is never a prompt.
+    pub(crate) hint_last: bool,
     /// The folder-trust block this prompt can be, MEASURED whole; the only
     /// prompt `auto_trust` may answer. `None` answers nothing.
     pub(crate) trust: Option<TrustSpec>,
@@ -865,6 +870,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
         selected: '❯',
         keys: &["to confirm · "],
         window: 25,
+        hint_last: false,
         trust: Some(TrustSpec {
             heading: "Accessing workspace:",
             paragraphs: &[
@@ -954,7 +960,39 @@ const CODEX: ToolAdapter = ToolAdapter {
         wait_for_process: true,
         paste_initial_on_resume: true,
     },
-    prompt: None,
+    // MEASURED on codex 0.167.0 (2026-11-10, private probe panes, 80x24 and
+    // 200x50 `codex --yolo`, and a 39x23 ae seat pane): the folder-trust modal
+    // in a never-trusted git folder (`tests/fixtures/codex-trust/`). "Folder
+    // access", the path, one paragraph whose question ends mid-row, and the
+    // selection `›` ALREADY on "1. Trust and continue", so the answer is the
+    // Enter alone. No rule frames it, and the composer guard reads codex's live
+    // `›` by its BOLD style, which a plain capture does not carry: the anchor
+    // is the hint row as the LAST non-blank row, because a live codex always
+    // draws its composer and footer below anything a transcript quotes.
+    // Heading to hint is 12 rows at 80 columns, 15 at 50 and 17 at 39; 20 holds
+    // the block down to the widths where the folder or the second option wraps,
+    // and a wrapped block is named, never answered (30 columns wraps both).
+    prompt: Some(PromptSpec {
+        question: Question::StartsWith("Trust this folder?"),
+        title: None,
+        selected: '›',
+        keys: &["enter continue"],
+        window: 20,
+        hint_last: true,
+        trust: Some(TrustSpec {
+            heading: "Folder access",
+            paragraphs: &[
+                "Trust this folder? Codex can read, edit, and run files here, subject to your \
+                 permission settings. Folder settings can run code automatically, even without \
+                 a model request. Continue only if you trust these files. Your trust decision \
+                 will be saved.",
+            ],
+            options: &["1. Trust and continue", "2. Back to Agent Command Center"],
+            yes: "1. Trust and continue",
+            hint: "enter continue · esc back",
+            trailer: 0,
+        }),
+    }),
     // MEASURED on codex 0.163.0 (F2, or a click on its footer warning):
     // `tests/fixtures/codex-warning/`.
     panel: Some(PanelSpec {
@@ -1115,6 +1153,7 @@ const AGY: ToolAdapter = ToolAdapter {
         selected: '>',
         keys: &["enter Confirm", "↑/↓ Navigate"],
         window: 15,
+        hint_last: false,
         trust: Some(TrustSpec {
             heading: "Accessing workspace:",
             paragraphs: &[
@@ -2051,6 +2090,7 @@ mod tests {
                         selected: '❯',
                         keys: &["to confirm · "],
                         window: 25,
+                        hint_last: false,
                         trust: Some(TrustSpec {
                             heading: "Accessing workspace:",
                             paragraphs: &[
@@ -2140,7 +2180,28 @@ mod tests {
                         wait_for_process: true,
                         paste_initial_on_resume: true,
                     },
-                    prompt: None,
+                    prompt: Some(PromptSpec {
+                        question: Question::StartsWith("Trust this folder?"),
+                        title: None,
+                        selected: '›',
+                        keys: &["enter continue"],
+                        window: 20,
+                        hint_last: true,
+                        trust: Some(TrustSpec {
+                            heading: "Folder access",
+                            paragraphs: &[
+                                "Trust this folder? Codex can read, edit, and run files here, \
+                                 subject to your permission settings. Folder settings can run \
+                                 code automatically, even without a model request. Continue \
+                                 only if you trust these files. Your trust decision will be \
+                                 saved.",
+                            ],
+                            options: &["1. Trust and continue", "2. Back to Agent Command Center"],
+                            yes: "1. Trust and continue",
+                            hint: "enter continue · esc back",
+                            trailer: 0,
+                        }),
+                    }),
                     panel: Some(PanelSpec {
                         title: "Warnings",
                         counted: ("Warnings · ", " · Startup"),
@@ -2281,6 +2342,7 @@ mod tests {
                         selected: '>',
                         keys: &["enter Confirm", "↑/↓ Navigate"],
                         window: 15,
+                        hint_last: false,
                         trust: Some(TrustSpec {
                             heading: "Accessing workspace:",
                             paragraphs: &[

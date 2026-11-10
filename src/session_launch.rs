@@ -3923,6 +3923,7 @@ fn build(
 
     // Rollback is unreachable past this point.
     let chat = open_views(at, env, shape, &main_pane, err)?;
+    watch_trust(at, shape, &launching, &pending, err);
     deliver_and_settle(at, shape, pending, err)?;
 
     // ---- post-launch capture ----
@@ -4348,6 +4349,182 @@ fn open_views(
     // restamps whatever appears after this.
     stamp_windows(at.server, &shape.name, &shape.look);
     Ok(chat)
+}
+
+/// The launch-wide budget a FRESH launch spends watching its turnless seats
+/// for a measured folder-trust block. Seats are watched in turn under ONE
+/// deadline: no attempt STARTS past it, and an attempt already started is never
+/// cut short, so the attach waits at most this plus one answer sequence.
+const TRUST_WATCH: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// `auto_trust`'s answer for a FRESH launch's seats that get no launch turn:
+/// a turnless seat has no wait of its own, and the watchdog would reach it a
+/// cycle later at best. Each seat whose tool measured a trust block is read
+/// until it shows its composer, its block is answered or declined through
+/// [`crate::autotrust::in_wait`], another human-only prompt holds, or
+/// [`TRUST_WATCH`] ends. A resumed launch is not watched: its seats already
+/// ran in their folders, and a restore must not pay every seat's boot; a
+/// resumed seat's block is the watchdog's, from its first sight.
+fn watch_trust(
+    at: Building<'_>,
+    shape: &Session,
+    launching: &[Launching],
+    pending: &[(&Launching, String)],
+    err: &mut impl Write,
+) {
+    if shape.resuming || !crate::autotrust::on(at.dir) {
+        return;
+    }
+    let deadline = std::time::Instant::now() + TRUST_WATCH;
+    for agent in launching.iter().filter(|agent| {
+        !agent.pane.is_empty()
+            && agent
+                .tool
+                .adapter()
+                .prompt
+                .is_some_and(|spec| spec.trust.is_some())
+            && !pending.iter().any(|(turn, _)| turn.slot == agent.slot)
+    }) {
+        let input = agent.tool.adapter().input;
+        watched(
+            || {
+                if deliver::wait_input_ready(
+                    at.server,
+                    &agent.pane,
+                    input.model,
+                    input.composed,
+                    chunk_polls(input.model),
+                ) {
+                    return WatchRead::Ready;
+                }
+                let prompt =
+                    transport::capture_screen(at.server, &agent.pane, tmux::Styling::Plain)
+                        .and_then(|frame| {
+                            crate::watchdog::human_prompt_class(&frame, agent.tool.adapter().name)
+                        });
+                match prompt {
+                    Some(asked) if asked.trust.is_some() => WatchRead::Trust(
+                        crate::autotrust::in_wait(at.dir, at.server, &agent.slot, &agent.pane, err),
+                    ),
+                    Some(asked) => WatchRead::Other(asked.question),
+                    None => WatchRead::Nothing,
+                }
+            },
+            || std::time::Instant::now() < deadline,
+        );
+    }
+}
+
+/// One read of a watched seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WatchRead {
+    /// The composer is drawn: nothing to answer.
+    Ready,
+    /// A measured trust block was drawn and handed to the in-wait answer.
+    Trust(crate::autotrust::InWait),
+    /// Another human-only prompt, by its question: the watchdog names it.
+    Other(String),
+    /// Neither yet: the tool is still drawing.
+    Nothing,
+}
+
+/// Where a watch ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Watched {
+    Ready,
+    Trusted,
+    Stopped,
+    Other,
+    Deadline,
+}
+
+/// Fold a seat's reads, in order, while `open` allows another read — pure, so
+/// the budget and every ending are pinnable without a pane. `open` is asked
+/// BEFORE each read and never during one: a started answer runs to its end.
+/// The same other prompt on two consecutive reads ends the watch.
+fn watched(mut read: impl FnMut() -> WatchRead, mut open: impl FnMut() -> bool) -> Watched {
+    let mut previous: Option<String> = None;
+    while open() {
+        match read() {
+            WatchRead::Ready => return Watched::Ready,
+            WatchRead::Trust(crate::autotrust::InWait::Trusted) => return Watched::Trusted,
+            WatchRead::Trust(crate::autotrust::InWait::Stop) => return Watched::Stopped,
+            WatchRead::Trust(crate::autotrust::InWait::Again) | WatchRead::Nothing => {
+                previous = None;
+            }
+            WatchRead::Other(question) => {
+                if previous.as_ref() == Some(&question) {
+                    return Watched::Other;
+                }
+                previous = Some(question);
+            }
+        }
+    }
+    Watched::Deadline
+}
+
+#[cfg(test)]
+mod watch_spec {
+    use super::{WatchRead, Watched, watched};
+    use crate::autotrust::InWait;
+
+    /// Run `reads` under a budget of `opens` reads; how it ended and how many
+    /// reads it took.
+    fn run(reads: &[WatchRead], opens: usize) -> (Watched, usize) {
+        let mut queue = reads.iter().cloned();
+        let taken = std::cell::Cell::new(0);
+        let mut left = opens;
+        let end = watched(
+            || {
+                taken.set(taken.get() + 1);
+                queue.next().unwrap_or(WatchRead::Nothing)
+            },
+            || {
+                let open = left > 0;
+                left = left.saturating_sub(1);
+                open
+            },
+        );
+        (end, taken.get())
+    }
+
+    /// Every ending, each at the read that decides it.
+    #[test]
+    fn a_watch_ends_at_ready_trusted_stop_or_a_held_other_prompt() {
+        use WatchRead::{Nothing, Other, Ready, Trust};
+        let other = || Other("Pick one?".to_owned());
+        for (reads, want) in [
+            (vec![Nothing, Ready], (Watched::Ready, 2)),
+            (
+                vec![Nothing, Trust(InWait::Again), Trust(InWait::Trusted)],
+                (Watched::Trusted, 3),
+            ),
+            (vec![Trust(InWait::Stop), Ready], (Watched::Stopped, 1)),
+            (vec![other(), other()], (Watched::Other, 2)),
+            (vec![other(), Nothing, other(), Ready], (Watched::Ready, 4)),
+            (
+                vec![
+                    other(),
+                    Other("Another?".to_owned()),
+                    Other("Another?".to_owned()),
+                ],
+                (Watched::Other, 3),
+            ),
+        ] {
+            assert_eq!(run(&reads, 10), want, "{reads:?}");
+        }
+    }
+
+    /// The budget is asked BEFORE each read: a watch that never settles stops
+    /// at it, a declined-for-now answer retries only inside it, and a spent
+    /// budget starts no read at all.
+    #[test]
+    fn a_watch_never_starts_a_read_past_its_budget() {
+        assert_eq!(run(&[], 5), (Watched::Deadline, 5));
+        let again = vec![WatchRead::Trust(InWait::Again); 20];
+        assert_eq!(run(&again, 3), (Watched::Deadline, 3));
+        assert_eq!(run(&[WatchRead::Ready], 0), (Watched::Deadline, 0));
+    }
 }
 
 /// Phase 2: the gated launch-prompt deliveries, then a resume's settled mark.

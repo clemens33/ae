@@ -326,6 +326,11 @@ pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
             let keys = after
                 .iter()
                 .position(|row| spec.keys.iter().any(|key| row.contains(key)))?;
+            // The window ends on its last non-blank row, so that row is the
+            // hint exactly when nothing follows it in `after`.
+            if spec.hint_last && keys + 1 != after.len() {
+                return None;
+            }
             // TWO option rows at least, and one of them SELECTED: a lone
             // paragraph between a question and a hint is prose, not a choice.
             // The sibling may sit on EITHER side of the selected row — the
@@ -7505,6 +7510,139 @@ tail line
                 .unwrap_or_else(|| panic!("{bin}: {to:?} is still named"));
             assert_eq!(found.trust, None, "{bin}: {from:?} -> {to:?}");
         }
+    }
+
+    /// claude 2.1.322 draws the block the 2.1.281 spec measured, at both
+    /// sizes: the version drift did not move the detector.
+    #[test]
+    fn the_claude_2_1_322_trust_modal_still_reads_whole() {
+        for size in ["80x24", "200x50"] {
+            let frame = claude_frame(&format!(
+                "claude-trust/claude-trust-modal-2.1.322-{size}.txt"
+            ));
+            let found = claude(&frame).unwrap_or_else(|| panic!("{size} should classify"));
+            assert_eq!(found.keys, "Enter to confirm · Esc to cancel", "{size}");
+            assert_eq!(
+                found.trust,
+                Some(super::TrustSighting {
+                    folder: "/tmp/claude-trust-probe".to_owned(),
+                    toward_yes: Some(crate::tmux::Key::Down),
+                }),
+                "{size}"
+            );
+        }
+    }
+
+    /// The detector as the watchdog calls it for a codex seat.
+    fn codex(buf: &str) -> Option<super::HumanPrompt> {
+        super::human_prompt_class(buf, "codex")
+    }
+
+    /// The codex 0.167.0 folder-trust frames, measured whole.
+    const CODEX_TRUST: [&str; 3] = ["80x24", "200x50", "39x23"];
+
+    fn codex_trust(size: &str) -> String {
+        claude_frame(&format!("codex-trust/codex-trust-modal-{size}.txt"))
+    }
+
+    /// The REAL codex frames at every measured size: named by their question
+    /// and hint, and read whole with trust-yes already selected, so the answer
+    /// is the Enter alone.
+    #[test]
+    fn the_real_codex_trust_modal_is_named_and_read_whole_at_every_measured_size() {
+        for size in CODEX_TRUST {
+            let found =
+                codex(&codex_trust(size)).unwrap_or_else(|| panic!("{size} should classify"));
+            assert_eq!(found.question, "Trust this folder?", "{size}");
+            assert_eq!(found.keys, "enter continue · esc back", "{size}");
+            assert!(!found.dismiss, "{size}");
+            assert_eq!(
+                found.trust,
+                Some(super::TrustSighting {
+                    folder: "/tmp/codex-trust-probe".to_owned(),
+                    toward_yes: None,
+                }),
+                "{size}"
+            );
+        }
+        // The selection moved onto "Back" by the human: the arrow back is Up.
+        let back = codex_trust("80x24")
+            .replace("› 1. Trust and continue", "  1. Trust and continue")
+            .replace("  2. Back to", "› 2. Back to");
+        assert_eq!(
+            codex(&back).and_then(|found| found.trust),
+            Some(super::TrustSighting {
+                folder: "/tmp/codex-trust-probe".to_owned(),
+                toward_yes: Some(crate::tmux::Key::Up),
+            })
+        );
+    }
+
+    /// The TOOL GATE both ways for the codex block.
+    #[test]
+    fn the_codex_trust_modal_is_named_only_for_the_codex_binary() {
+        let modal = codex_trust("80x24");
+        for other in [
+            "claude", "agy", "gemini", "opencode", "grok", "muse", "codex-2", "",
+        ] {
+            assert_eq!(super::human_prompt_class(&modal, other), None, "{other}");
+        }
+        let claude = claude_frame("claude-trust/claude-trust-modal-80x24.txt");
+        assert_eq!(codex(&claude), None);
+    }
+
+    /// Anything but the measured codex block WHOLE is still named, never trust.
+    #[test]
+    fn a_codex_prompt_that_is_not_the_whole_measured_trust_block_is_named_but_not_trust() {
+        let frame = codex_trust("80x24");
+        for (from, to) in [
+            (
+                "  2. Back to Agent Command Center",
+                "  2. Back to Agent Command\n     Center",
+            ),
+            (
+                "  2. Back to Agent Command Center",
+                "  2. Back to Agent Command Center\n  3. Always trust",
+            ),
+            (
+                "› 1. Trust and continue\n  2. Back to Agent Command Center",
+                "  2. Back to Agent Command Center\n› 1. Trust and continue",
+            ),
+            ("  /tmp/codex-trust-probe", "  ~/elsewhere"),
+            ("  /tmp/codex-trust-probe", "  /tmp/codex-\n  trust-probe"),
+            ("  Folder access", "  Tool output"),
+            ("will be saved.", "will be kept."),
+            (
+                "enter continue · esc back",
+                "enter continue · esc back · a always",
+            ),
+        ] {
+            let drifted = frame.replacen(from, to, 1);
+            assert_ne!(drifted, frame, "{from:?} must occur");
+            let found = codex(&drifted).unwrap_or_else(|| panic!("{to:?} is still named"));
+            assert_eq!(found.trust, None, "{from:?} -> {to:?}");
+        }
+    }
+
+    /// The codex composer guard reads BOLD `›` only, so on the plain captures
+    /// the detector takes it cannot see a live composer: the anchor is the
+    /// hint row as the LAST non-blank row. The whole modal quoted above a live
+    /// codex composer and footer is therefore not a prompt at all.
+    #[test]
+    fn the_codex_modal_quoted_above_a_live_codex_composer_is_not_a_prompt() {
+        let modal = codex_trust("80x24");
+        let live = [
+            "",
+            "› Ask Codex to do anything",
+            "",
+            "  GPT-6.1-Sol high · /tmp/codex-trust-probe · Context 0% used",
+            "  ← for agents · ? for shortcuts",
+        ];
+        let quoted = format!("{}\n{}", modal.trim_end(), live.join("\n"));
+        assert_eq!(codex(&quoted), None);
+        // Tail rows of a modal that does not end on its hint: not one either.
+        let trailing = format!("{}\n  status", modal.trim_end());
+        assert_eq!(codex(&trailing), None);
     }
 
     /// Composed claude frames, idle and busy: a composer is not a prompt.

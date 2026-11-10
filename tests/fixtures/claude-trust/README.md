@@ -15,6 +15,9 @@ provenance, in its table row.
 | `claude-trust-modal-39x23.txt` | the modal at 39×23 on claude 2.1.306 (a lead-pair pane, 2026-10-22), `capture-pane -p`; only the folder is scrubbed to `/tmp/claude-trust-probe` |
 | `claude-trust-modal-80x24.esc` | the 80×24 frame with SGR/OSC escapes (`capture-pane -p -e`) |
 | `claude-trust-modal-200x50.esc` | the 200×50 frame with escapes |
+| `claude-trust-modal-2.1.322-80x24.txt` | claude 2.1.322 (2026-11-10), started directly as the pane command (no shell rows above), 80×24, `capture-pane -p` at ~+6 s; below its first blank row it is byte-identical to the 2.1.281 frame |
+| `claude-trust-modal-2.1.322-200x50.txt` | claude 2.1.322 at 200×50, the same way |
+| `claude-trust-modal-2.1.322-200x50.esc` | the 2.1.322 200×50 frame with escapes |
 
 The same four captures were taken with `claude --permission-mode
 bypassPermissions`: every row below the launch line is byte-identical, so the

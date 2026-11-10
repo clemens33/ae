@@ -2152,6 +2152,12 @@ fn book_human_prompt(
     next.human_prompt_streak = streak.saturating_add(1);
     next.prompt_start.clone_from(&seen.start);
     if next.human_prompt_streak < knobs.human_prompt_cycles {
+        // A trust block proven this seat's is answered from its FIRST sight:
+        // the answerer proves the frame steady itself (two equal reads), so
+        // the bound only times the NAMING, which stays at the bound.
+        if !prompt.dismiss && trust == Some(&crate::autotrust::Due::Yes) {
+            effects.push(Effect::AnswerTrust { name: false });
+        }
         return None;
     }
     // EXACTLY at the bound, so the episode is named once however long it
@@ -9725,11 +9731,28 @@ mod tests {
         assert!(actions(&third.effects).is_empty(), "not named again");
     }
 
-    /// A trust block that is the seat's to answer is answered from the bound
-    /// on, naming deferred to the answer; any other verdict names it as today,
-    /// a doubtful journal with one stderr note first.
+    /// The first-sight answer is the TRUST block's alone: a dismissable panel
+    /// keeps its bound and its naming-first order.
     #[test]
-    fn a_due_trust_block_is_answered_from_the_bound_and_every_other_verdict_names_it() {
+    fn a_due_panel_is_not_answered_at_first_sight() {
+        let knobs = Knobs::default();
+        let panel = Observation {
+            human_prompt: Some(crate::watchdog::HumanPrompt {
+                dismiss: true,
+                ..prompt()
+            }),
+            ..seen()
+        };
+        let due = crate::autotrust::Due::Yes;
+        let first = super::account_with_trust(&PaneState::default(), &panel, &knobs, Some(&due));
+        assert!(first.effects.is_empty(), "{:?}", first.effects);
+    }
+
+    /// A trust block that is the seat's to answer is answered from its FIRST
+    /// sight, naming deferred to the bound and to the answer; any other verdict
+    /// names it as today, a doubtful journal with one stderr note first.
+    #[test]
+    fn a_due_trust_block_is_answered_from_first_sight_and_every_other_verdict_names_it() {
         use crate::autotrust::Due;
         let knobs = Knobs::default();
         let run = |trust: Option<&Due>| {
@@ -9740,7 +9763,16 @@ mod tests {
             (first, second, third)
         };
         let (first, second, third) = run(Some(&Due::Yes));
-        assert!(first.effects.is_empty(), "one cycle is a redraw");
+        assert_eq!(
+            first.effects,
+            [Effect::AnswerTrust { name: false }],
+            "answered at first sight, never named there"
+        );
+        assert_ne!(
+            first.verdict,
+            Verdict::HumanPrompt,
+            "the verdict keeps its bound"
+        );
         assert_eq!(second.effects, [Effect::AnswerTrust { name: true }]);
         assert_eq!(third.effects, [Effect::AnswerTrust { name: false }]);
         assert_eq!(
