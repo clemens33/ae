@@ -239,7 +239,8 @@ if ($owned && $mode eq 'decline' && locked()) {
 if ($owned && (grep { $_ eq 'display-message' } @ARGV) && $ARGV[-1] =~ /^\[ae watchdog\] /) {
     open(my $log, '>>', "$root/notifications") or die; print $log "$ARGV[-1]\n"; close $log;
 }
-if ($owned && (grep { $_ eq 'set-option' } @ARGV) && $ARGV[-2] eq '@ae_agents') {
+# A cycle publishes in ONE batched tmux process, or op by op after a refused batch: count a successful process once when it carries the @ae_agents write.
+if ($owned && (grep { $_ eq 'set-option' } @ARGV) && (grep { $_ eq '@ae_agents' } @ARGV)) {
     system {$real} $real, @ARGV;
     exit 1 if $? != 0;
     open(my $log, '>>', "$root/published-cycles") or die;

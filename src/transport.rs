@@ -3764,6 +3764,130 @@ mod tests {
         );
     }
 
+    /// A channel no hook can name is a wait nothing could ever end early: the
+    /// wait fails at once and starts no process, even on a live server.
+    #[test]
+    fn a_wait_on_a_channel_no_hook_can_name_starts_nothing_and_fails() {
+        use super::{Waited, run_tmux_wait, spawns_during};
+        use std::time::Instant;
+        let rig = super::quietwd_spec::Rig::new("badchan");
+        for channel in ["", "qw bad", "qw;bad"] {
+            assert!(!crate::tmux::is_wake_channel(channel), "{channel:?}");
+            let began = Instant::now();
+            let (result, calls) = spawns_during(|| {
+                run_tmux_wait(
+                    &rig.server,
+                    "current",
+                    channel,
+                    Instant::now() + Duration::from_millis(400),
+                )
+            });
+            assert_eq!(result, Waited::Failed, "{channel:?}");
+            assert!(calls.is_empty(), "{channel:?} started a child: {calls:?}");
+            assert!(
+                began.elapsed() < Duration::from_millis(400),
+                "{channel:?} waited instead of failing at once"
+            );
+        }
+    }
+
+    /// A client that attached before the waiter registered has already
+    /// signalled the channel through its hook, so the waiter's read counts it
+    /// and its wait returns at once. The read decides: Attached, not a wake.
+    #[test]
+    fn a_client_counted_beside_a_stored_signal_is_attached_not_a_wake() {
+        use super::{Waited, run_tmux_wait, waiter_exits_during};
+        use std::time::Instant;
+        let rig = super::quietwd_spec::Rig::new("stored");
+        rig.attach("current", 0);
+        // One signal with no waiter is stored for the next waiter; two toggle
+        // it away, which the spec pins separately.
+        rig.must(&["wait-for", "-S", "qw-stored"]);
+        let (result, exits) = waiter_exits_during(|| {
+            run_tmux_wait(
+                &rig.server,
+                "current",
+                "qw-stored",
+                Instant::now() + Duration::from_secs(5),
+            )
+        });
+        assert_eq!(result, Waited::Attached);
+        assert_eq!(exits.len(), 1, "the waiter was reaped once: {exits:?}");
+        assert_eq!(exits[0].1.code(), Some(0), "never killed: {:?}", exits[0].1);
+    }
+
+    /// A server that dies under a waiter after its read is not a signal: the
+    /// waiter exits unsuccessfully ("server exited unexpectedly"), and the wait
+    /// fails, so the interval polls instead of trusting a wake.
+    #[test]
+    fn a_waiter_whose_server_dies_after_its_read_fails_instead_of_waking() {
+        use super::{Waited, run_tmux_wait, waiter_exits_during};
+        use std::time::Instant;
+        let rig = super::quietwd_spec::Rig::new("lost");
+        let pid = rig
+            .must(&["display-message", "-p", "#{pid}"])
+            .trim()
+            .to_owned();
+        assert!(
+            !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()),
+            "server pid: {pid:?}"
+        );
+        let (result, exits) = std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| {
+                waiter_exits_during(|| {
+                    run_tmux_wait(
+                        &rig.server,
+                        "current",
+                        "qw-lost",
+                        Instant::now() + Duration::from_secs(10),
+                    )
+                })
+            });
+            // Long past the waiter's read and registration.
+            std::thread::sleep(Duration::from_millis(400));
+            // The server's own child kills it outright, so no orderly exit
+            // reaches the waiter; the fixture command may fail with it.
+            let _ = rig.raw(&["run-shell", "-b", &format!("kill -9 {pid}")]);
+            waiting.join().expect("waiter thread")
+        });
+        assert_eq!(result, Waited::Failed, "a lost server is no wake");
+        assert_eq!(exits.len(), 1, "the waiter was reaped once: {exits:?}");
+        assert!(
+            !exits[0].1.success(),
+            "the waiter must have seen its server die: {:?}",
+            exits[0].1
+        );
+    }
+
+    /// A read error that does not go away (here EBADF from a handle opened
+    /// write-only; a physical EIO is the same shape) ends the read at once with
+    /// nothing. Retrying it would spin before the wait ever checks its deadline.
+    #[test]
+    fn a_waiter_read_that_keeps_failing_ends_at_once_with_nothing() {
+        use super::{CaptureScratch, waiter_output};
+        let readable = CaptureScratch::tagged("unreadable").expect("scratch");
+        std::fs::write(&readable.path, b"ae-wd:a|1\n").expect("bytes a read would return");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&readable.path)
+            .expect("write-only handle");
+        let unreadable = CaptureScratch {
+            file,
+            path: readable.path.clone(),
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(waiter_output(&unreadable));
+        });
+        let read = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("a permanent read error must end the read, not retry it");
+        assert_eq!(
+            read, "",
+            "a failed read yields nothing, never partial bytes"
+        );
+    }
+
     /// The joined motion read answers exactly what the two separate reads
     /// answer, for values with a CR and for a value with a newline that prints
     /// a fleet-like row: every section reaches today's interpreter unchanged.

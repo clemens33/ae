@@ -20,7 +20,7 @@
 -u	-S	<scratch>/sock	list-sessions	-F	#{session_id} | #{session_name}
 -u	-S	<scratch>/sock	show-options	-t	=bxTrace:	-qv	@ae_session_uuid
 -u	-S	<scratch>/sock	list-panes	-s	-t	=bxTrace	-F	#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_reader_src} | #{@ae_console} | #{pane_dead} | #{window_index} | #{pane_index} | #{@ae_agent}
--u	-S	<scratch>/sock	set-hook	-t	%<1>	client-session-changed	if-shell -F -t %<1> "#{==:#{session_id},$<1>}" "select-window -t %<1> ; select-pane -t %<1>"
+-u	-S	<scratch>/sock	set-hook	-t	%<1>	client-session-changed[0]	if-shell -F -t %<1> "#{==:#{session_id},$<1>}" "select-window -t %<1> ; select-pane -t %<1>"
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	status	2
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	status-interval	5
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	status-style	bg=#313335,fg=#A9B7C6

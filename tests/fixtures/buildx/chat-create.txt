@@ -17,7 +17,7 @@
 -u	-S	<scratch>/sock	list-sessions	-F	#{session_id} | #{session_name}
 -u	-S	<scratch>/sock	show-options	-t	=bxChat:	-qv	@ae_session_uuid
 -u	-S	<scratch>/sock	list-panes	-s	-t	=bxChat	-F	#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_reader_src} | #{@ae_console} | #{pane_dead} | #{window_index} | #{pane_index} | #{@ae_agent}
--u	-S	<scratch>/sock	set-hook	-t	%<1>	client-session-changed	if-shell -F -t %<1> "#{==:#{session_id},$<1>}" "select-window -t %<1> ; select-pane -t %<1>"
+-u	-S	<scratch>/sock	set-hook	-t	%<1>	client-session-changed[0]	if-shell -F -t %<1> "#{==:#{session_id},$<1>}" "select-window -t %<1> ; select-pane -t %<1>"
 -u	-S	<scratch>/sock	set-option	-t	=bxChat:	status	2
 -u	-S	<scratch>/sock	set-option	-t	=bxChat:	status-interval	5
 -u	-S	<scratch>/sock	set-option	-t	=bxChat:	status-style	bg=#313335,fg=#A9B7C6
@@ -102,7 +102,7 @@
 -u	-S	<scratch>/sock	list-sessions	-F	#{session_id} | #{session_name}
 -u	-S	<scratch>/sock	show-options	-t	=bxChat:	-qv	@ae_session_uuid
 -u	-S	<scratch>/sock	list-panes	-s	-t	=bxChat	-F	#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_reader_src} | #{@ae_console} | #{pane_dead} | #{window_index} | #{pane_index} | #{@ae_agent}
--u	-S	<scratch>/sock	set-hook	-t	%<1>	client-session-changed	if-shell -F -t %<1> "#{==:#{session_id},$<1>}" { if-shell -F -t '$<1>:^' "#{P:#{?#{&&:#{==:#{pane_id},%<3>},#{&&:#{==:#{@ae_console},<uuid>},#{!=:#{pane_dead},1}}},1,}}" { select-window -t %<3> ; select-pane -t %<3> } { select-window -t %<1> ; select-pane -t %<1> } }
+-u	-S	<scratch>/sock	set-hook	-t	%<1>	client-session-changed[0]	if-shell -F -t %<1> "#{==:#{session_id},$<1>}" { if-shell -F -t '$<1>:^' "#{P:#{?#{&&:#{==:#{pane_id},%<3>},#{&&:#{==:#{@ae_console},<uuid>},#{!=:#{pane_dead},1}}},1,}}" { select-window -t %<3> ; select-pane -t %<3> } { select-window -t %<1> ; select-pane -t %<1> } }
 -u	-S	<scratch>/sock	list-panes	-s	-t	=bxChat	-F	#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_reader_src} | #{@ae_console} | #{pane_dead} | #{window_index} | #{pane_index} | #{@ae_agent}
 -u	-S	<scratch>/sock	set-window-option	-t	@<1>	pane-border-status	top
 -u	-S	<scratch>/sock	set-window-option	-t	@<1>	pane-border-format	 #{@ae_agent_label}#{?#{@ae_pane_state}, · #{@ae_pane_state},} 
