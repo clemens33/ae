@@ -179,15 +179,6 @@ impl Resume {
         self.files.insert(stream, state);
     }
 
-    /// The Reads no Skill call proves yet that name no seat skill directly
-    /// and are within the path limit.
-    #[must_use]
-    pub fn pending_reads(&self) -> usize {
-        // Proof is the same through either adapter; only Claude reads.
-        let held = self.conversation(Adapter::Claude, "", false);
-        self.unproven(&fold::proven_dirs(&held)).len()
-    }
-
     /// The held evidence as the fold reads a conversation.
     fn conversation(&self, adapter: Adapter, id: &str, read: bool) -> Conversation {
         let keys: BTreeSet<&StreamKey> = self.streams.keys().chain(self.lines.keys()).collect();

@@ -9,7 +9,7 @@
     reason = "owned fixture IO and bounded test loops"
 )]
 
-use super::{TOOLS_FAIR, UpkeepStep};
+use super::{TOOLS_BREATH, TOOLS_FAIR, TOOLS_ROUND, UpkeepStep, notice};
 use crate::stats_store::disk::{self, Refused};
 use crate::stats_store::maint::{self, Maintainer, Outcome, Step};
 use crate::tool_stats_fixture::{self as f, Fixture};
@@ -187,4 +187,119 @@ fn p4_3_tools_units_never_rerun_s5_before_its_pause() {
             );
         }
     }
+}
+
+// --- #288 mutants slot 1 survivors (maintainer.rs:246, 300, 422) ----------
+
+/// The Tools unit times of `window` of beats every 1 ms of simulated time,
+/// far more often than [`UpkeepStep::wait`] asks (a command wakes the thread
+/// at any time), S5 answering `outcome` each time it is due.
+fn over_waking(outcome: &Outcome, window: Duration) -> Vec<Instant> {
+    let root = proven();
+    let mut step = UpkeepStep::new(&root.0);
+    let start = Instant::now();
+    let mut now = start;
+    let mut tools = Vec::new();
+    while now < start + window {
+        let turn = step.beat_with(now, |_| synthetic(outcome, Duration::ZERO));
+        if turn.tools.is_some() {
+            tools.push(now);
+        }
+        now += Duration::from_millis(1);
+    }
+    tools
+}
+
+/// maintainer.rs:246: a wake between S5 steps runs a Tools unit only when
+/// the unit is owed: never before the last unit's own wait
+/// ([`TOOLS_BREATH`] at least), and while S5 has work never sooner than
+/// [`TOOLS_FAIR`] after the last.
+#[test]
+fn an_early_wake_never_runs_a_tools_unit_before_it_is_owed() {
+    for (name, outcome, least) in [
+        ("idle", Outcome::Idle, TOOLS_BREATH),
+        ("busy", Outcome::Deferred, TOOLS_FAIR),
+    ] {
+        let tools = over_waking(&outcome, TOOLS_FAIR * 4);
+        assert!(tools.len() >= 2, "{name}: control, Tools ran: {tools:?}");
+        for pair in tools.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= least,
+                "{name}: Tools units {:?} apart, under {least:?}",
+                pair[1] - pair[0]
+            );
+        }
+    }
+}
+
+/// maintainer.rs:300: once a round has ended, the next starts at the first
+/// S5 turn [`TOOLS_ROUND`] after it, and not one turn sooner.
+#[test]
+fn a_tools_round_starts_again_exactly_one_round_pause_after_the_last() {
+    let idle = |_: &mut Maintainer| synthetic(&Outcome::Idle, Duration::ZERO);
+    let root = proven();
+    let mut step = UpkeepStep::new(&root.0);
+    let mut now = Instant::now();
+    for _ in 0..10_000 {
+        let _ = step.beat_with(now, idle);
+        if step.rested.is_some() {
+            break;
+        }
+        now += step.wait(now).max(Duration::from_millis(1));
+    }
+    let rested = step.rested.expect("control: the first round ended");
+    assert!(!step.tools.busy(), "control: no round in progress");
+    let early = step.turn_with(
+        (rested + TOOLS_ROUND)
+            .checked_sub(Duration::from_millis(1))
+            .expect("after the start"),
+        idle,
+    );
+    assert!(
+        early.tools.is_none() && !step.tools.busy(),
+        "no round starts before {TOOLS_ROUND:?}: {:?}",
+        early.tools
+    );
+    let due = step.turn_with(rested + TOOLS_ROUND, idle);
+    assert!(
+        due.tools.is_some_and(|unit| unit.kind == UnitKind::Load),
+        "the round starts at {TOOLS_ROUND:?}: {:?}",
+        due.tools
+    );
+}
+
+/// maintainer.rs:422: a repair is told each time; a refusal is told only
+/// when it stopped the upkeep, and that stop only once.
+#[test]
+fn the_stop_notice_is_told_once_and_only_for_a_stop() {
+    let refused = Outcome::Refused(Refused::Io("fixture".into()));
+    let mut told = false;
+    assert_eq!(
+        notice(Some(&refused), false, &mut told),
+        None,
+        "a refusal that stops nothing is not told"
+    );
+    assert!(
+        notice(Some(&refused), true, &mut told).is_some_and(|line| line.contains("upkeep stopped")),
+        "the stop is told"
+    );
+    assert_eq!(
+        notice(Some(&refused), true, &mut told),
+        None,
+        "the stop is told once"
+    );
+    let repaired = Outcome::Repaired {
+        file: "stats/view".to_owned(),
+        reason: "fixture".to_owned(),
+    };
+    assert!(
+        notice(Some(&repaired), true, &mut told)
+            .is_some_and(|line| line.contains("rebuilding the store")),
+        "a repair is told"
+    );
+    assert_eq!(
+        notice(None, true, &mut false),
+        None,
+        "no S5 step, no notice"
+    );
 }

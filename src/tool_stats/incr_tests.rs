@@ -447,3 +447,128 @@ fn a_damage_reset_marks_the_conversation_and_every_rebuild_keeps_it() {
         Some(&1)
     );
 }
+
+// --- #288 mutants slot 1 survivors (incr.rs:300, 402, 703, 710, 719) -------
+
+fn context(n: u8) -> Event {
+    Event::Context {
+        turn: id(n),
+        model: Ident::Name("model".to_owned()),
+        effort: Ident::Name("high".to_owned()),
+    }
+}
+
+/// incr.rs:300: a conversation of exactly `turns` turn contexts is counted;
+/// one more refuses it.
+#[test]
+fn the_turn_cap_admits_its_own_count_and_refuses_one_more() {
+    let caps = Caps {
+        turns: 2,
+        ..Caps::SLICE
+    };
+    let mut conv = Conv::new(Adapter::Codex, "c1");
+    conv.apply(&parent(), &[context(1), context(2)], &caps);
+    assert_eq!(conv.summary.turns, 2, "control: two turns held");
+    assert_eq!(conv.summary.refused, None, "exactly the cap is counted");
+    conv.apply(&parent(), &[context(3)], &caps);
+    assert_eq!(
+        conv.summary.refused,
+        Some(Refused::Turns),
+        "one more is refused"
+    );
+}
+
+/// The gap lines `coverage` adds to an empty view under `scope`.
+fn coverage_lines(coverage: &Coverage, scope: Scope) -> Vec<(GapKind, u64)> {
+    let ask = Ask {
+        page: Page::Tools,
+        scope,
+        filter: Filter::All,
+    };
+    let mut view = combine(
+        &Published {
+            generation: coverage.generation,
+            convs: Vec::new(),
+            over_cap: 0,
+        },
+        &ask,
+        &Caps::SLICE,
+    );
+    let before = view.gaps.len();
+    coverage.apply(&mut view, &ask);
+    // The order of the lines is not the requirement: compare them as a set.
+    let mut lines: Vec<(GapKind, u64)> = view.gaps[before..]
+        .iter()
+        .map(|line| (line.kind.clone(), line.count))
+        .collect();
+    lines.sort_by_key(|(kind, count)| (format!("{kind:?}"), *count));
+    lines
+}
+
+/// incr.rs:703, 710, 719: each coverage count draws its line only when it is
+/// not zero, and the omitted line only in a scope that shows a session.
+#[test]
+fn coverage_draws_each_nonzero_count_once_and_omitted_only_where_a_session_shows() {
+    let session = || Scope::This(Some("s1".to_owned()));
+    let none = Coverage {
+        generation: 1,
+        ..Coverage::default()
+    };
+    for scope in [Scope::All, Scope::This(None), session()] {
+        assert_eq!(
+            coverage_lines(&none, scope.clone()),
+            Vec::new(),
+            "zero counts draw no line under {scope:?}"
+        );
+    }
+    let counted = Coverage {
+        generation: 1,
+        hidden: 2,
+        oversize: 3,
+        omitted: 4,
+        ..Coverage::default()
+    };
+    // Sorted by kind name, as coverage_lines returns them.
+    let all = vec![
+        (GapKind::FieldOverLimit, 3),
+        (GapKind::Ledger, 4),
+        (GapKind::Unreadable, 2),
+    ];
+    assert_eq!(coverage_lines(&counted, Scope::All), all);
+    assert_eq!(coverage_lines(&counted, session()), all);
+    assert_eq!(
+        coverage_lines(&counted, Scope::This(None)),
+        vec![(GapKind::FieldOverLimit, 3), (GapKind::Unreadable, 2)],
+        "no session shown: the omitted line is left out"
+    );
+}
+
+/// incr.rs:402: a read from 0 taken into a REFUSED conversation that found
+/// no bad lines leaves no stale malformed or over-cap gap behind; neither
+/// the refused `apply` nor an all-zero `note` would refresh the summary.
+#[test]
+fn a_restart_of_a_refused_conversation_drops_its_stale_line_gaps() {
+    let mut conv = Conv::new(Adapter::Claude, "c1");
+    conv.note(&child(), 2, 1).expect("representable");
+    conv.refuse(Refused::Observations);
+    assert_eq!(
+        (
+            conv.summary.gaps.get(&GapKind::Malformed),
+            conv.summary.gaps.get(&GapKind::OverCap)
+        ),
+        (Some(&2), Some(&1)),
+        "control: the refused conversation shows its line gaps"
+    );
+    conv.restart(&child());
+    conv.apply(&child(), &[], &Caps::SLICE);
+    conv.note(&child(), 0, 0).expect("representable");
+    assert_eq!(
+        (
+            conv.summary.gaps.get(&GapKind::Malformed),
+            conv.summary.gaps.get(&GapKind::OverCap)
+        ),
+        (None, None),
+        "the read from 0 replaced the line counts: {:?}",
+        conv.summary.gaps
+    );
+}

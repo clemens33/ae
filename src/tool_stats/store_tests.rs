@@ -241,3 +241,129 @@ fn an_unreadable_view_is_never_written_over_and_a_damaged_one_is_rebuilt() {
     plan.apply(&mut damaged, usize::MAX).expect("rebuilt view");
     assert_eq!(pair(&mut damaged), (new.clone(), view(&new, 2)));
 }
+
+// --- #288 mutants slot 1 survivors (store.rs:100, 138, 257, 335) ----------
+
+/// store.rs:100: a conversation document that names another conversation is
+/// damage, whether the adapter or the id differs.
+#[test]
+fn a_conversation_document_of_another_identity_is_rebuilt() {
+    for (adapter, id) in [(Adapter::Codex, ID), (Adapter::Claude, "c2")] {
+        let mut dir = Memory::new();
+        dir.plant(
+            &conv_name(Adapter::Claude, ID),
+            &doc::render_conv(&Conv::new(adapter, id)),
+        );
+        assert!(
+            matches!(
+                load_conv(&mut dir, Adapter::Claude, ID),
+                Loaded::Rebuild(DocError::Damaged("identity"))
+            ),
+            "{adapter:?} {id} under the name of (Claude, {ID})"
+        );
+    }
+    let mut own = Memory::new();
+    own.plant(
+        &conv_name(Adapter::Claude, ID),
+        &doc::render_conv(&conv(100)),
+    );
+    assert!(
+        matches!(load_conv(&mut own, Adapter::Claude, ID), Loaded::Ok(_)),
+        "control: its own document loads"
+    );
+}
+
+/// store.rs:138: a tools directory without `conv/` gets it made in the plan
+/// that renames into it; one that has it never makes it again.
+#[test]
+fn a_missing_conversation_directory_is_made_and_a_present_one_is_not() {
+    let make = |plan: &disk::Plan| {
+        plan.ops
+            .iter()
+            .filter(|op| matches!(op, Op::MakeDir(name) if name == CONVS))
+            .count()
+    };
+    let one = conv(100);
+    let mut missing = Memory::new();
+    missing.plant("stats/epoch", b"1\n");
+    missing.plant(SOURCES, b"other tools file\n");
+    let plan = publish(&mut missing, &one, &view(&one, 1)).expect("plan");
+    assert_eq!(make(&plan), 1, "conv/ is made: {:?}", plan.ops);
+    plan.apply(&mut missing, usize::MAX)
+        .expect("the rename lands in the made directory");
+    assert_eq!(pair(&mut missing), (one.clone(), view(&one, 1)));
+    let next = conv(200);
+    let plan = publish(&mut missing, &next, &view(&next, 2)).expect("next plan");
+    assert_eq!(make(&plan), 0, "conv/ exists: {:?}", plan.ops);
+}
+
+/// store.rs:257: a coverage document of exactly its cap is written; one
+/// byte more is refused.
+#[test]
+fn a_coverage_document_of_exactly_its_cap_is_published() {
+    use std::collections::BTreeSet;
+    let session = |len: usize| BTreeSet::from([Some("a".repeat(len))]);
+    let mut coverage = Coverage {
+        generation: 1,
+        unsupported: (0..4_000)
+            .map(|n| (format!("t{n:05}"), session(1_000)))
+            .collect(),
+        ..Coverage::default()
+    };
+    let size = |coverage: &Coverage| doc::render_coverage(coverage).len();
+    let short = usize::try_from(COVERAGE_CAP).expect("small cap") - size(&coverage);
+    let last = coverage.unsupported.len() - 1;
+    coverage.unsupported[last].1 = session(1_000 + short);
+    assert_eq!(
+        u64::try_from(size(&coverage)).expect("small"),
+        COVERAGE_CAP,
+        "control: the document is exactly the cap"
+    );
+    let one = conv(100);
+    let mut base = Memory::new();
+    base.plant("stats/epoch", b"1\n");
+    let mut exact = base.clone();
+    publish_with(&mut exact, &one, &view(&one, 1), &coverage)
+        .expect("exactly the cap is published")
+        .apply(&mut exact, usize::MAX)
+        .expect("applied");
+    assert_eq!(
+        exact.file(COVERAGE).map(<[u8]>::len),
+        Some(usize::try_from(COVERAGE_CAP).expect("small cap"))
+    );
+    coverage.unsupported[last].1 = session(1_001 + short);
+    assert!(
+        matches!(
+            publish_with(&mut base, &one, &view(&one, 1), &coverage),
+            Err(StoreError::Io(why)) if why.kind() == std::io::ErrorKind::InvalidData
+        ),
+        "one byte over the cap is refused"
+    );
+}
+
+/// store.rs:335: a view-only publication never replaces a view of the same
+/// or a later generation.
+#[test]
+fn a_view_publication_not_newer_than_the_held_view_is_stale() {
+    let one = conv(100);
+    let mut dir = Memory::new();
+    dir.plant("stats/epoch", b"1\n");
+    publish(&mut dir, &one, &view(&one, 2))
+        .expect("first plan")
+        .apply(&mut dir, usize::MAX)
+        .expect("held view");
+    for generation in [1, 2] {
+        assert!(
+            matches!(
+                publish_view(&mut dir, &view(&one, generation)),
+                Err(StoreError::Stale)
+            ),
+            "generation {generation} is not newer than 2"
+        );
+    }
+    publish_view(&mut dir, &view(&one, 3))
+        .expect("control: a newer view publishes")
+        .apply(&mut dir, usize::MAX)
+        .expect("applied");
+    assert_eq!(pair(&mut dir).1.generation, 3);
+}

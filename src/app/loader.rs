@@ -3316,4 +3316,91 @@ mod tests {
             "the rebuilt store's view is drawn"
         );
     }
+
+    /// loader.rs:742 and :766 (#288 mutants slot 1): in one epoch, a later
+    /// publication replaces the held view at the next shown step; before any
+    /// publication the page is the first build under way, never the
+    /// unsupported-harness state.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        clippy::expect_used,
+        reason = "owned fixture IO: the epoch this test made"
+    )]
+    fn tools_answer_follows_each_publication_of_one_epoch() {
+        use super::{Answer, Reader, Request};
+        use crate::tool_stats::{Ask, Filter, Page, Scope, State};
+        use crate::tool_stats_fixture::{self as f, Fixture};
+        use reset_store::{build, epoch, generation, publish};
+        fn answer(loader: &mut Reader, ask: &Ask) -> crate::tool_stats::View {
+            loader.take(Request::Tools {
+                generation: 7,
+                shown: true,
+                ask: ask.clone(),
+            });
+            let Some(Answer::Tools { view, .. }) = loader.tools_step(std::time::Instant::now())
+            else {
+                panic!("the shown page is answered");
+            };
+            loader.take(Request::Tools {
+                generation: 7,
+                shown: false,
+                ask: ask.clone(),
+            });
+            *view
+        }
+        let root = Fixture::new();
+        root.live(
+            "alpha",
+            &root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a"),
+            &f::event("ordinary", "epoch fixture"),
+        );
+        build(&root);
+        let proven = epoch(&root);
+        assert!(proven.is_some(), "an epoch is proven");
+        let ask = Ask {
+            page: Page::Tools,
+            scope: Scope::All,
+            filter: Filter::All,
+        };
+        let mut loader = Reader::new(root.0.clone(), None, None);
+        loader.settings = Some((7, Some(std::time::Instant::now())));
+        let early = answer(&mut loader, &ask);
+        assert_eq!(
+            early.state,
+            State::Numbers,
+            "nothing published: the first build is under way"
+        );
+        let transcript = root.claude(
+            "store-a",
+            f::C,
+            f::call("one", "one", "Read", "model-a", "{}").as_bytes(),
+        );
+        let first = publish(&root);
+        let held = generation(&root);
+        assert_eq!(
+            answer(&mut loader, &ask),
+            first.view(&ask),
+            "control: the first view"
+        );
+        Fixture::rewrite(
+            &transcript,
+            (f::call("one", "one", "Read", "model-a", "{}")
+                + &f::call("two", "two", "Grep", "model-b", "{}"))
+                .as_bytes(),
+        );
+        let second = publish(&root);
+        assert_eq!(epoch(&root), proven, "control: one epoch");
+        assert!(generation(&root) > held, "control: a later generation");
+        assert_ne!(
+            second.view(&ask),
+            first.view(&ask),
+            "control: the later publication counts otherwise"
+        );
+        assert_eq!(
+            answer(&mut loader, &ask),
+            second.view(&ask),
+            "the later publication is drawn"
+        );
+    }
 }

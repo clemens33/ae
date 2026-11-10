@@ -325,3 +325,7 @@ fn joint(row: &DetailRow) -> (String, Vec<String>) {
         ],
     )
 }
+
+#[cfg(test)]
+#[path = "tool_body_tests.rs"]
+mod tests;

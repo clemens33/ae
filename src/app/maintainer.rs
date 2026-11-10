@@ -397,6 +397,24 @@ fn spawn(
     })
 }
 
+/// The notice an S5 step's outcome tells the human: every repair, and the
+/// refusal that stopped the upkeep, once (`told` remembers it).
+fn notice(outcome: Option<&Outcome>, stopped: bool, told: &mut bool) -> Option<String> {
+    match outcome {
+        Some(Outcome::Repaired { file, reason }) => Some(format!(
+            "Statistics: {file} was damaged ({reason}); rebuilding the store"
+        )),
+        Some(Outcome::Refused(why)) if stopped && !*told => {
+            *told = true;
+            Some(format!(
+                "Statistics: the store was damaged again ({}); upkeep stopped",
+                why.describe()
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Step until stopped.
 fn upkeep(
     root: &Path,
@@ -412,22 +430,12 @@ fn upkeep(
         probe.pass();
         let turn = step.beat(Instant::now());
         probe.record(&turn);
-        let maintainer = &step.maintainer;
-        match turn.s5.as_ref().map(|s5| &s5.outcome) {
-            Some(Outcome::Repaired { file, reason }) => {
-                let line =
-                    format!("Statistics: {file} was damaged ({reason}); rebuilding the store");
-                let _ = notices.send(Wake::Notice(line));
-            }
-            Some(Outcome::Refused(why)) if maintainer.stopped() && !told => {
-                told = true;
-                let line = format!(
-                    "Statistics: the store was damaged again ({}); upkeep stopped",
-                    why.describe()
-                );
-                let _ = notices.send(Wake::Notice(line));
-            }
-            _ => {}
+        if let Some(line) = notice(
+            turn.s5.as_ref().map(|s5| &s5.outcome),
+            step.maintainer.stopped(),
+            &mut told,
+        ) {
+            let _ = notices.send(Wake::Notice(line));
         }
         let wait = step.wait(Instant::now());
         probe.park(true);

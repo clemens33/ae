@@ -178,3 +178,151 @@ fn a_persisted_identity_obeys_the_grammar_of_its_position() {
         );
     }
 }
+
+// --- #288 mutants slot 2 survivors (doc.rs) ---------------------------------
+
+/// doc.rs:707: a document of exactly its cap is read; one byte under the
+/// document's length as the cap is refused Oversized.
+#[test]
+fn a_document_of_exactly_its_cap_is_read() {
+    let view = seed(VIEW);
+    let len = u64::try_from(view.len()).expect("small seed");
+    assert!(records(view, len, "tools_view").is_ok(), "exactly the cap");
+    assert_eq!(
+        records(view, len - 1, "tools_view"),
+        Err(DocError::Oversized),
+        "one byte over"
+    );
+}
+
+/// doc.rs:824, 827: a name of every kind round-trips through a view.
+#[test]
+fn a_name_of_every_kind_round_trips() {
+    let mut view = parse_view(seed(VIEW)).expect("view seed");
+    let names = &mut view.convs[0].summary.names;
+    for (kind, name) in [
+        (Kind::Skill, "fixture-skill"),
+        (Kind::Server, "fixture-server"),
+        (Kind::Model, "model-b"),
+        (Kind::Effort, "high"),
+    ] {
+        names.entry(kind).or_default().insert(name.to_owned());
+    }
+    let bytes = render_view(&view);
+    assert_eq!(parse_view(&bytes), Ok(view));
+}
+
+/// The view seed as a Codex conversation's whose tool is `tool`.
+fn codex_view(tool: &str) -> String {
+    std::str::from_utf8(seed(VIEW))
+        .expect("UTF-8 seed")
+        .replace("\"conv\":\"claude\"", "\"conv\":\"codex\"")
+        .replace("\"harness\":\"claude\"", "\"harness\":\"codex\"")
+        .replace("\"model\":\"model-a\"", "\"model\":null")
+        .replace("\"value\":\"Read\"", &format!("\"value\":\"{tool}\""))
+        .replace("[\"tool\",\"Read\"]", &format!("[\"tool\",\"{tool}\"]"))
+}
+
+/// doc.rs:1318: a view's name entry takes a two-part `ns/tool` only as a
+/// Codex tool name: never for a Claude tool, never for a Codex model.
+#[test]
+fn a_composite_name_is_a_codex_tool_name_only() {
+    assert!(
+        parse_view(codex_view("Read").as_bytes()).is_ok(),
+        "control: the Codex view"
+    );
+    assert!(
+        parse_view(codex_view("ns/Read").as_bytes()).is_ok(),
+        "a Codex tool name ns/Read"
+    );
+    let claude = std::str::from_utf8(seed(VIEW))
+        .expect("UTF-8 seed")
+        .replace(
+            "\"name\":\"tool\",\"value\":\"Read\"",
+            "\"name\":\"tool\",\"value\":\"ns/Read\"",
+        );
+    assert_eq!(
+        parse_view(claude.as_bytes()),
+        Err(DocError::Damaged("name")),
+        "a Claude tool name ns/Read"
+    );
+    let model = codex_view("Read").replace(
+        "{\"name\":\"tool\",\"value\":\"Read\"}",
+        "{\"name\":\"model\",\"value\":\"a/b\"}",
+    );
+    assert_eq!(
+        parse_view(model.as_bytes()),
+        Err(DocError::Damaged("name")),
+        "a Codex model name a/b"
+    );
+}
+
+fn word(text: &str) -> Value {
+    Value::Str(text.to_owned())
+}
+
+/// doc.rs:1453: a session source key is `meta:` or `journal:` and exactly
+/// 32 lower hex digits.
+#[test]
+fn a_session_source_key_is_exactly_32_lower_hex_digits() {
+    let hex = "0123456789abcdef".repeat(2);
+    for prefix in ["meta:", "journal:"] {
+        assert!(source_key(&word(&format!("{prefix}{hex}"))).is_ok());
+        for bad in [&hex[..31], &format!("{}g", &hex[..31]), &format!("{hex}0")] {
+            assert_eq!(
+                source_key(&word(&format!("{prefix}{bad}"))),
+                Err(DocError::Damaged("source")),
+                "{prefix}{bad}"
+            );
+        }
+    }
+}
+
+/// doc.rs:1477: a session id or slot is 1 to `FIELD_MAX` bytes.
+#[test]
+fn a_short_field_is_one_to_field_max_bytes() {
+    for len in [1, FIELD_MAX] {
+        assert!(short(&word(&"a".repeat(len))).is_ok(), "{len} bytes");
+    }
+    for len in [0, FIELD_MAX + 1] {
+        assert_eq!(
+            short(&word(&"a".repeat(len))),
+            Err(DocError::Damaged("field")),
+            "{len} bytes"
+        );
+    }
+}
+
+/// doc.rs:1487-1493: a kept root is absolute, of plain components, without
+/// NUL and within `ROOT_MAX` bytes.
+#[test]
+fn a_root_is_absolute_plain_and_within_its_limit() {
+    let longest = format!("/{}", "a".repeat(ROOT_MAX - 1));
+    for good in ["/", "/a", "/a/b", longest.as_str()] {
+        assert!(valid_root(good), "{good:?} kept");
+    }
+    let over = format!("/{}", "a".repeat(ROOT_MAX));
+    for bad in [
+        "",
+        "a/b",
+        "/a//b",
+        "/a/",
+        "/a/./b",
+        "/a/../b",
+        "/a\0b",
+        over.as_str(),
+    ] {
+        assert!(!valid_root(bad), "{bad:?} refused");
+    }
+}
+
+/// doc.rs:1638: a coverage cap below the bare document keeps no record and
+/// counts every one omitted.
+#[test]
+fn a_cap_below_the_bare_coverage_keeps_no_record() {
+    let coverage = parse_coverage(seed(COVERAGE)).expect("coverage seed");
+    let total = u64::try_from(coverage.unsupported.len()).expect("small");
+    let fitted = fit_coverage(&coverage, 1);
+    assert!(fitted.unsupported.is_empty());
+    assert_eq!(fitted.omitted, coverage.omitted + total);
+}

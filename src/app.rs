@@ -116,6 +116,8 @@ mod stablesplit_spec;
 #[cfg(test)]
 mod stats_spec;
 #[cfg(test)]
+mod tools_keys_tests;
+#[cfg(test)]
 mod tools_spec;
 mod tty;
 pub mod upgrade;

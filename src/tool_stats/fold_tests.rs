@@ -429,3 +429,28 @@ fn f3_conflicting_codex_contexts_are_one_conflict_and_keep_the_call() {
     assert_eq!(conflicts(&view), 1, "one conflicting turn, one line count");
     assert!(view.partial());
 }
+
+/// fold.rs:901 (#288 mutants slot 1): the fixed temporary of one counted
+/// observation charges every structure the declared allocator model (plan
+/// §7) names, each map at `TREE` times its entry and each pushed list at
+/// `GROWN` times its element. A contract pin: the charge tests above use
+/// `temporary()` on both sides, so they cannot see a term that shrinks.
+#[test]
+fn the_observation_temporary_charges_every_modelled_structure() {
+    let maps = [
+        size_of::<(Key, Vec<Event>)>(),
+        size_of::<String>(),
+        // The row map and the Detail map: two maps of the same entry.
+        size_of::<(DetailKey, Cols)>(),
+        size_of::<(DetailKey, Cols)>(),
+        size_of::<(Dir, Item)>(),
+        size_of::<(Key, u32)>(),
+    ];
+    let lists = [size_of::<Event>(), size_of::<Obs>()];
+    let model = TREE * maps.iter().sum::<usize>() + GROWN * lists.iter().sum::<usize>();
+    assert!(
+        temporary() >= model,
+        "temporary {} under the model {model}",
+        temporary()
+    );
+}

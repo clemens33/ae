@@ -1765,3 +1765,1385 @@ fn r4_1_replacing_every_file_at_the_cap_admits_the_final_conversation() {
         "the reopened store agrees"
     );
 }
+
+// --- #288 mutants slot 1 survivor (disk.rs:2843) ---------------------------
+
+/// disk.rs:2843: the tools writer names a `stats.lock` held by another
+/// writer Busy (the reader retries the unit), and one it cannot open at all
+/// Failed, naming the lock; never the one for the other.
+#[test]
+fn the_tools_writer_is_busy_on_a_held_lock_and_fails_on_an_unopenable_one() {
+    use crate::stats_store::disk::{self, Tools};
+    use std::time::Duration;
+    let held = Fixture::new();
+    std::fs::create_dir_all(held.0.join("stats")).expect("stats dir");
+    let lock = disk::Payload::at(&held.0)
+        .lock(Duration::ZERO)
+        .expect("the test holds stats.lock");
+    let answer = disk::tools(&held.0, Duration::from_millis(20), |_, _| (None, ()));
+    assert!(matches!(answer, Tools::Busy), "held: {answer:?}");
+    drop(lock);
+    let unopenable = Fixture::new();
+    std::fs::create_dir_all(unopenable.0.join("stats.lock")).expect("a directory as the lock");
+    let answer = disk::tools(&unopenable.0, Duration::from_millis(20), |_, _| (None, ()));
+    assert!(
+        matches!(&answer, Tools::Failed(why) if why.contains("stats.lock")),
+        "unopenable: {answer:?}"
+    );
+}
+
+// --- #288 mutants slot 2 survivors: calls_read.rs reader rounds -------------
+
+/// The tools/ files of `root`, by name, with their lengths.
+fn tools_files(root: &Fixture) -> BTreeMap<String, u64> {
+    let mut found = Vec::new();
+    stats_files(&root.0.join("stats/tools"), &mut found);
+    found
+        .into_iter()
+        .map(|path| {
+            let length = fs::metadata(&path).expect("a listed file").len();
+            (path.display().to_string(), length)
+        })
+        .collect()
+}
+
+fn generation_of(root: &Fixture) -> u64 {
+    let mut files = disk::Files::at(&root.0);
+    let Loaded::Ok(view) = store::load_view(&mut files) else {
+        panic!("a published view");
+    };
+    view.generation
+}
+
+/// `calls_read.rs:1103` (5): a client relabel moves the association only: the
+/// view is published alone (generation + 1, the new client), and no
+/// conversation document is rewritten.
+#[test]
+fn a_relabel_publishes_the_view_alone() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    let session = root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    root.claude("store-a", f::C, calls(1).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let before = generation_of(&root);
+    // Each conversation document's bytes and inode: a rewrite, even of the
+    // same bytes, is a rename of a new file.
+    let convs = |root: &Fixture| {
+        use std::os::unix::fs::MetadataExt as _;
+        tools_files(root)
+            .into_keys()
+            .filter(|name| name.contains("/conv/"))
+            .map(|name| {
+                let bytes = fs::read(&name).expect("a conversation document");
+                let ino = fs::metadata(&name).expect("its status").ino();
+                (name, (bytes, ino))
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let held = convs(&root);
+    assert!(!held.is_empty(), "control: a conversation document");
+    let relabeled = meta.replace("client.main=work", "client.main=home");
+    assert_ne!(relabeled, meta, "control: the label moved");
+    Fixture::rewrite(&session.join("meta"), relabeled.as_bytes());
+    drain(&mut reader);
+    assert_eq!(generation_of(&root), before + 1, "the view is published");
+    let mut files = disk::Files::at(&root.0);
+    let Loaded::Ok(view) = store::load_view(&mut files) else {
+        panic!("a published view");
+    };
+    let shown = incr::combine(&view, &ask(Scope::All), &Caps::SLICE);
+    assert!(
+        shown
+            .detail
+            .iter()
+            .all(|row| row.client == Cell::Value("home".into())),
+        "the published view has the new client: {:?}",
+        shown.detail
+    );
+    assert_eq!(convs(&root), held, "no conversation document rewritten");
+}
+
+/// calls_read.rs:661-668 (3): a round's Publish units count at least the
+/// bytes of every document they left in tools/.
+#[test]
+fn publish_units_count_the_documents_they_write() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    root.claude("store-a", f::C, calls(2).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    let units = drain(&mut reader);
+    let published: u64 = units
+        .iter()
+        .filter(|unit| unit.kind == UnitKind::Publish)
+        .map(|unit| unit.store_bytes)
+        .sum();
+    let left: u64 = tools_files(&root).values().sum();
+    assert!(left > 0, "control: documents were written");
+    assert!(
+        published >= left,
+        "Publish units counted {published} bytes, the documents hold {left}"
+    );
+}
+
+/// calls_read.rs:998-1004: an interrupted publication found by a new reader
+/// is finished by its Recover unit, which writes no document bytes.
+#[test]
+fn the_recover_unit_finishes_an_interrupted_publication() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    let path = root.claude("store-a", f::C, calls(1).as_bytes());
+    let mut first = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut first);
+    // A second publication cut after its intent, before its commit point.
+    Fixture::rewrite(&path, calls(2).as_bytes());
+    let mut writer = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    writer.round();
+    for _ in 0..20_000 {
+        let front = writer.round.as_ref().and_then(|round| round.tasks.front());
+        if matches!(front, Some(super::Task::Publish(_))) {
+            break;
+        }
+        assert!(
+            writer.step().is_some(),
+            "the writer reaches its publication"
+        );
+    }
+    let Some(super::Task::Publish(key)) =
+        writer.round.as_ref().and_then(|round| round.tasks.front())
+    else {
+        panic!("a Publish task");
+    };
+    let key = key.clone();
+    let held = writer.convs.get(&key).expect("held conversation");
+    let generation = writer.generation + 1;
+    let view = writer.capped(generation);
+    let coverage = writer.coverage(generation);
+    let mut files = disk::Files::at(&root.0);
+    let plan = store::publish_with(&mut files, &held.conv, &view, &coverage).expect("a plan");
+    let intent = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, disk::Op::Write { name, .. } if name.ends_with("/intent")))
+        .expect("an intent write");
+    plan.apply(&mut files, intent + 1).expect("the cut prefix");
+    assert!(
+        root.0.join("stats/tools/intent").exists(),
+        "control: an interrupted publication"
+    );
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    reader.round();
+    let recover = loop {
+        let unit = reader.step().expect("the round reaches its Recover unit");
+        if unit.kind == UnitKind::Recover {
+            break unit;
+        }
+    };
+    assert!(
+        !root.0.join("stats/tools/intent").exists(),
+        "the Recover unit finished the publication"
+    );
+    assert_eq!(
+        recover.store_bytes, 0,
+        "a recovery renames and removes, writes nothing"
+    );
+}
+
+// --- #288 mutants slot 2 survivors: calls_read.rs units --------------------
+
+mod units {
+    use super::super::{BLOCK, Check, FIELD_MAX, Identity, Reader, Witness, group_of, over_limit};
+    use crate::meta::RecordedClient;
+    use crate::tool_stats::incr::{self, Conv, FileState, Published, StreamKey};
+    use crate::tool_stats::{Adapter, Caps, Event, Ident, Key, Membership, Role, StreamRole, doc};
+    use std::path::PathBuf;
+
+    fn status(identity: Identity, cursor: u64) -> FileState {
+        identity.state(cursor, false, Vec::new())
+    }
+
+    fn file() -> Identity {
+        Identity {
+            dev: 1,
+            ino: 2,
+            len: 100,
+            mtime: (3, 4),
+            ctime: (5, 6),
+        }
+    }
+
+    /// `calls_read.rs:190`, 195: a status is the same only when every field is;
+    /// a file is replaced when it is another one or shorter than consumed.
+    #[test]
+    fn identity_is_same_only_whole_and_replaced_only_when_another_or_cut() {
+        let held = status(file(), 100);
+        assert!(file().same(&held), "control: unchanged");
+        let grown = Identity { len: 150, ..file() };
+        assert!(!grown.same(&held), "only the ctime matches: not the same");
+        assert!(!grown.replaced(&held), "a grown file is not replaced");
+        for (name, other) in [
+            ("dev", Identity { dev: 9, ..file() }),
+            ("ino", Identity { ino: 9, ..file() }),
+            ("cut", Identity { len: 99, ..file() }),
+        ] {
+            assert!(other.replaced(&held), "{name}: replaced");
+        }
+    }
+
+    fn whole(bytes: &[u8]) -> Vec<[u8; 32]> {
+        let mut witness = Witness::new();
+        witness.feed(bytes);
+        witness.blocks()
+    }
+
+    /// `calls_read.rs:230`, 246: the witness is one digest per BLOCK of the
+    /// prefix and one for a partial tail, however the bytes were fed.
+    #[test]
+    fn a_witness_has_one_digest_per_block_however_it_was_fed() {
+        let block = usize::try_from(BLOCK).expect("small block");
+        let bytes: Vec<u8> = (0..block * 2 + 7)
+            .map(|n| u8::try_from(n % 251).expect("below 256"))
+            .collect();
+        assert_eq!(whole(&bytes[..block]).len(), 1, "exactly one block");
+        assert_eq!(whole(&bytes[..=block]).len(), 2, "a block and a tail");
+        let mut pieces = Witness::new();
+        for piece in [&bytes[..7], &bytes[7..block + 3], &bytes[block + 3..]] {
+            pieces.feed(piece);
+        }
+        assert_eq!(pieces.blocks(), whole(&bytes), "fed in pieces == fed whole");
+        assert_eq!(pieces.blocks().len(), 3);
+    }
+
+    /// `calls_read.rs:292`: a check of every block accepts the same prefix fed
+    /// in chunks and refuses one with a byte changed in a later block.
+    #[test]
+    fn a_full_check_accepts_its_prefix_and_refuses_a_later_change() {
+        let block = usize::try_from(BLOCK).expect("small block");
+        let bytes: Vec<u8> = (0..block * 3)
+            .map(|n| u8::try_from(n % 241).expect("below 256"))
+            .collect();
+        let state = file().state(BLOCK * 3, false, whole(&bytes));
+        let mut same = Check::of(&state, true).expect("a three-block prefix");
+        for chunk in bytes.chunks(block / 2) {
+            assert!(same.feed(chunk), "the same bytes match");
+        }
+        assert!(same.closes(), "and close");
+        let mut changed = bytes.clone();
+        changed[block + 5] ^= 1;
+        let mut other = Check::of(&state, true).expect("a three-block prefix");
+        let fed: Vec<bool> = changed
+            .chunks(block)
+            .map(|chunk| other.feed(chunk))
+            .collect();
+        assert_eq!(fed, [true, false, true], "the second block refuses");
+    }
+
+    /// `calls_read.rs:626`: a reader's Debug names counts, never a path.
+    #[test]
+    fn a_reader_debug_names_counts_and_no_path() {
+        let reader = Reader::new(
+            PathBuf::from("/private/state-root"),
+            Some(PathBuf::from("/private/home")),
+            Caps::SLICE,
+        );
+        let shown = format!("{reader:?}");
+        assert!(shown.contains("conversations: 0"), "{shown}");
+        assert!(!shown.contains("/private"), "{shown}");
+    }
+
+    fn membership(session: usize, slot: usize, label: usize) -> Membership {
+        Membership {
+            session: Some("s".repeat(session)),
+            slot: "w".repeat(slot),
+            role: Role::Live,
+            client: RecordedClient::Label("l".repeat(label)),
+        }
+    }
+
+    /// `calls_read.rs:1389`-1391: each field is kept at `FIELD_MAX` bytes and
+    /// refused one byte over.
+    #[test]
+    fn a_membership_field_is_kept_at_its_limit_and_refused_over_it() {
+        let max = FIELD_MAX;
+        assert!(
+            !over_limit(&membership(max, max, max)),
+            "every field at the limit"
+        );
+        for (name, over) in [
+            ("session", membership(max + 1, 1, 1)),
+            ("slot", membership(1, max + 1, 1)),
+            ("label", membership(1, 1, max + 1)),
+        ] {
+            assert!(over_limit(&over), "{name} over the limit");
+        }
+    }
+
+    /// `calls_read.rs:1343`: a session's meta and journal share one group; an
+    /// archive key is its own.
+    #[test]
+    fn a_session_meta_and_journal_share_one_group() {
+        assert_eq!(group_of("meta:abc"), "abc");
+        assert_eq!(group_of("journal:abc"), "abc");
+        assert_eq!(group_of("archive:def"), "archive:def");
+    }
+
+    fn attempts(n: u8) -> incr::PublishedConv {
+        let mut conv = Conv::new(Adapter::Claude, &format!("conversation-{n:02}"));
+        conv.apply(
+            &StreamKey {
+                role: StreamRole::Parent,
+                copy: [0; 16],
+            },
+            &[Event::Attempt {
+                id: Key([n; 16]),
+                tool: Ident::Name("Read".into()),
+                mcp: None,
+                model: None,
+                turn: None,
+                message: None,
+            }],
+            &Caps::SLICE,
+        );
+        incr::publish(&conv.summary, None)
+    }
+
+    /// `calls_read.rs:1280`: the kept prefix is the longest whose rendered view,
+    /// with the rest counted over cap, fits the cap, at every cap; twelve
+    /// conversations make the over count cross a digit.
+    #[test]
+    fn the_fitted_prefix_is_the_longest_rendered_view_within_the_cap() {
+        let convs: Vec<incr::PublishedConv> = (0..12).map(attempts).collect();
+        let generation = 7;
+        let size = |kept: usize| {
+            let view = Published {
+                generation,
+                convs: convs[..kept].to_vec(),
+                over_cap: u64::try_from(convs.len() - kept).expect("small"),
+            };
+            u64::try_from(doc::render_view(&view).len()).expect("small view")
+        };
+        let mut reader = Reader::new(PathBuf::from("/unused"), None, Caps::SLICE);
+        reader.parts = convs.iter().map(doc::view_part).collect();
+        for cap in size(0)..=size(convs.len()) {
+            reader.caps.view_cap = cap;
+            let expected = (0..=convs.len())
+                .rev()
+                .find(|kept| size(*kept) <= cap)
+                .expect("the empty view fits");
+            assert_eq!(reader.fitted(generation), expected, "cap {cap}");
+        }
+    }
+}
+
+// --- #288 mutants slot 2 survivors: byte ledgers, settle, gone, locate -----
+//
+// The byte oracles come from the read-cost requirement ("must not slow down
+// ae"): an unchanged prefix is re-hashed, never re-read; a grown file
+// re-hashes its last block and reads the new bytes; a changed prefix is read
+// again from 0 once the first mismatching STEP has shown it. Every expected
+// value is a fixture length, BLOCK or STEP.
+
+/// The bytes the units of `kind` reported.
+fn spent(units: &[Unit], kind: UnitKind) -> u64 {
+    units
+        .iter()
+        .filter(|unit| unit.kind == kind)
+        .map(|unit| unit.bytes)
+        .sum()
+}
+
+fn count(units: &[Unit], kind: UnitKind) -> usize {
+    units.iter().filter(|unit| unit.kind == kind).count()
+}
+
+fn length(path: &std::path::Path) -> u64 {
+    fs::metadata(path).expect("a fixture file").len()
+}
+
+/// A new modification time, the bytes unchanged.
+fn touch(path: &std::path::Path) {
+    let file = fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("a fixture file");
+    let later = fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .expect("a modification time")
+        + std::time::Duration::from_secs(5);
+    file.set_modified(later).expect("touched");
+}
+
+/// The same path, another file (another inode) holding `bytes`.
+fn replace_file(path: &std::path::Path, bytes: &[u8]) {
+    let next = path.with_extension("next");
+    fs::write(&next, bytes).expect("the replacement");
+    fs::rename(&next, path).expect("replaced");
+}
+
+/// Change the byte at `at` (a filler `p`) to `q`: same length, new content.
+fn flipped(bytes: &[u8], at: usize) -> Vec<u8> {
+    let mut changed = bytes.to_vec();
+    let found = changed[at..]
+        .iter()
+        .position(|byte| *byte == b'p')
+        .expect("a filler byte after the offset");
+    changed[at + found] = b'q';
+    changed
+}
+
+/// One line of exactly 1024 bytes: a STEP holds whole lines only, so no chunk
+/// reads a line twice.
+const LINE: usize = 1024;
+
+/// A Claude transcript of well-formed filler records no adapter counts, then
+/// `count` calls, of about `size` bytes.
+fn transcript(size: usize, count: usize) -> Vec<u8> {
+    let head = "{\"type\":\"summary\",\"summary\":\"";
+    let tail = "\"}\n";
+    let filler = format!("{head}{}{tail}", "p".repeat(LINE - head.len() - tail.len()));
+    assert_eq!(filler.len(), LINE);
+    let mut text = filler.repeat(size / LINE);
+    text.push_str(&calls(count));
+    text.into_bytes()
+}
+
+/// A journal of well-formed ordinary events up to `size` bytes.
+fn journal(size: usize) -> String {
+    let pad = LINE - f::event("ordinary", "").len();
+    let line = f::event("ordinary", &"p".repeat(pad));
+    assert_eq!(line.len(), LINE);
+    line.repeat(size / LINE)
+}
+
+const MIB: usize = 1 << 20;
+
+/// A labeled live session over `journal` and one Claude transcript of
+/// `bytes`, read once.
+fn warm(journal: &str, bytes: &[u8]) -> (Fixture, Reader, std::path::PathBuf) {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, journal);
+    let path = root.claude("store-a", f::C, bytes);
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    (root, reader, path)
+}
+
+fn journal_path(root: &Fixture) -> std::path::PathBuf {
+    root.0.join("sessions/alpha/events.jsonl")
+}
+
+/// `calls_read.rs:2624`, 2629: a touched transcript whose bytes are the same
+/// is re-hashed whole, in STEP chunks, and not read again.
+#[test]
+fn a_touched_unchanged_transcript_is_verified_whole_and_not_read() {
+    let bytes = transcript(9 * MIB, 1);
+    let (_root, mut reader, path) = warm("", &bytes);
+    touch(&path);
+    let units = drain(&mut reader);
+    assert_eq!(
+        spent(&units, UnitKind::Verify),
+        length(&path),
+        "verified whole"
+    );
+    assert_eq!(spent(&units, UnitKind::Read), 0, "nothing read again");
+    assert_eq!(tools(&reader).recounting, 0, "nothing recounted");
+}
+
+/// `calls_read.rs:2624:17`: a same-length rewrite changed in its first block
+/// stops verifying at the first STEP and is read again from 0.
+#[test]
+fn a_transcript_changed_in_its_first_block_is_read_again_after_one_step() {
+    let bytes = transcript(9 * MIB, 1);
+    let (_root, mut reader, path) = warm("", &bytes);
+    Fixture::rewrite(&path, &flipped(&bytes, 1000));
+    let units = drain(&mut reader);
+    assert_eq!(spent(&units, UnitKind::Verify), STEP, "one STEP shows it");
+    assert_eq!(spent(&units, UnitKind::Read), length(&path), "read from 0");
+}
+
+/// `calls_read.rs:2454`: a transcript replaced by another file is read from 0
+/// without re-hashing the old prefix.
+#[test]
+fn a_replaced_transcript_is_read_from_zero_without_a_verify() {
+    let bytes = transcript(2 * MIB, 1);
+    let (_root, mut reader, path) = warm("", &bytes);
+    replace_file(&path, &flipped(&bytes, 1000));
+    let units = drain(&mut reader);
+    assert_eq!(
+        spent(&units, UnitKind::Verify),
+        0,
+        "no verify of another file"
+    );
+    assert_eq!(spent(&units, UnitKind::Read), length(&path));
+}
+
+/// `calls_read.rs:2457`: a transcript that was empty and then grew is a first
+/// read of that file alone: its conversation's other file is not read again.
+#[test]
+fn a_child_grown_from_empty_is_read_alone() {
+    let parent = transcript(64 * 1024, 1);
+    let (root, mut reader, _) = warm("", &parent);
+    let child = root.child("store-a", f::C, "agent-1", b"");
+    drain(&mut reader);
+    Fixture::rewrite(&child, calls(2).as_bytes());
+    let units = drain(&mut reader);
+    assert_eq!(spent(&units, UnitKind::Verify), 0);
+    assert_eq!(
+        spent(&units, UnitKind::Read),
+        length(&child),
+        "the child only"
+    );
+}
+
+/// `calls_read.rs:2552`: a rebuild recounts the files of its own conversation
+/// only; another conversation's unchanged file is not read again, whether
+/// it sorts before the rebuilt one (its lstat already ran) or after it.
+#[test]
+fn a_rebuild_recounts_only_its_own_conversation() {
+    for rebuilt in [f::C, f::D] {
+        let root = Fixture::new();
+        let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a")
+            + &seat("second", "claude", &root.store("store-a"), f::D);
+        root.live("alpha", &meta, "");
+        let c = transcript(64 * 1024, 1);
+        let d = transcript(64 * 1024, 2);
+        let c_path = root.claude("store-a", f::C, &c);
+        let d_path = root.claude("store-a", f::D, &d);
+        let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+        drain(&mut reader);
+        assert_eq!(attempts(&tools(&reader)), 3, "control: both conversations");
+        let (path, own) = if rebuilt == f::C {
+            (c_path, c)
+        } else {
+            (d_path, d)
+        };
+        replace_file(&path, &flipped(&own, 1000));
+        let units = drain(&mut reader);
+        assert_eq!(
+            spent(&units, UnitKind::Read),
+            length(&path),
+            "only {rebuilt} again"
+        );
+    }
+}
+
+/// `calls_read.rs:2711`: a transcript line that does not parse counts one
+/// malformed line; the well-formed lines count none.
+#[test]
+fn each_malformed_transcript_line_counts_once() {
+    let text = calls(2) + "not a record\n";
+    let (_root, reader, _) = warm("", text.as_bytes());
+    let view = tools(&reader);
+    assert_eq!(gap(&view, &GapKind::Malformed), 1);
+    assert_eq!(attempts(&view), 2, "control: the calls count");
+}
+
+/// `calls_read.rs:2727`: a transcript under one STEP is read in one Read unit.
+#[test]
+fn a_small_transcript_is_read_in_one_read_unit() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    root.claude("store-a", f::C, calls(2).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    let units = drain(&mut reader);
+    assert_eq!(count(&units, UnitKind::Read), 1);
+}
+
+/// `calls_read.rs:1992`, 1993:41: a touched journal whose bytes are the same
+/// is re-hashed whole and not read again.
+#[test]
+fn a_touched_unchanged_journal_is_verified_whole_and_not_read() {
+    let text = journal(9 * MIB);
+    let (root, mut reader, _) = warm(&text, calls(1).as_bytes());
+    touch(&journal_path(&root));
+    let units = drain(&mut reader);
+    assert_eq!(
+        spent(&units, UnitKind::Journal),
+        length(&journal_path(&root)),
+        "the prefix re-hashed once, nothing read again"
+    );
+}
+
+/// `calls_read.rs:1992:42`, 2002: a journal changed after its first STEP is
+/// read again from 0 once the second STEP shows it.
+#[test]
+fn a_journal_changed_after_its_first_step_is_read_again_from_zero() {
+    let text = journal(9 * MIB);
+    let (root, mut reader, _) = warm(&text, calls(1).as_bytes());
+    let path = journal_path(&root);
+    Fixture::rewrite(&path, &flipped(text.as_bytes(), 6 * MIB));
+    let units = drain(&mut reader);
+    assert_eq!(
+        spent(&units, UnitKind::Journal),
+        2 * STEP + length(&path),
+        "two STEPs of check, then the whole journal"
+    );
+}
+
+/// `calls_read.rs:1992:55`: a journal changed only in its partial last block
+/// is read again from 0.
+#[test]
+fn a_journal_changed_in_its_partial_tail_is_read_again() {
+    let text = journal(2 * MIB + 5_000);
+    let (root, mut reader, _) = warm(&text, calls(1).as_bytes());
+    let path = journal_path(&root);
+    let tail = usize::try_from(length(&path)).expect("small") - 1_500;
+    assert!(
+        tail > 2 * MIB,
+        "control: the change is in the partial block"
+    );
+    Fixture::rewrite(&path, &flipped(text.as_bytes(), tail));
+    let units = drain(&mut reader);
+    assert_eq!(
+        spent(&units, UnitKind::Journal),
+        2 * length(&path),
+        "the check, then the whole journal"
+    );
+}
+
+/// `calls_read.rs:1674`: a journal replaced by another file is read from 0
+/// without re-hashing the old prefix.
+#[test]
+fn a_replaced_journal_is_read_from_zero_without_a_check() {
+    let text = journal(2 * MIB);
+    let (root, mut reader, _) = warm(&text, calls(1).as_bytes());
+    let path = journal_path(&root);
+    replace_file(&path, &flipped(text.as_bytes(), 1000));
+    let units = drain(&mut reader);
+    assert_eq!(spent(&units, UnitKind::Journal), length(&path));
+}
+
+/// `calls_read.rs:1760`: a journal line that does not parse leaves the
+/// session's evidence incomplete: no client is proven from it.
+#[test]
+fn a_journal_line_that_does_not_parse_proves_no_client() {
+    let text = f::event("ordinary", "first") + "not a record\n";
+    let (_root, reader, _) = warm(&text, calls(1).as_bytes());
+    let view = tools(&reader);
+    assert!(
+        !view.detail.is_empty(),
+        "control: the conversation is listed"
+    );
+    assert!(
+        view.detail.iter().all(|row| row.client == Cell::Unknown),
+        "{:?}",
+        view.detail
+    );
+}
+
+/// `calls_read.rs:1762`: a journal under one STEP is read in one chunk unit
+/// after its status unit.
+#[test]
+fn a_small_journal_is_read_in_one_chunk() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, &journal(64 * 1024));
+    root.claude("store-a", f::C, calls(1).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    let units = drain(&mut reader);
+    let journal_units: Vec<u64> = units
+        .iter()
+        .filter(|unit| unit.kind == UnitKind::Journal)
+        .map(|unit| unit.bytes)
+        .collect();
+    assert_eq!(
+        journal_units,
+        [0, length(&journal_path(&root))],
+        "one status, one chunk"
+    );
+}
+
+/// `calls_read.rs:1726`: a journal that grew between two chunks of its scan
+/// is complete again at a later round: the client is proven.
+#[test]
+fn a_journal_grown_between_chunks_proves_its_client_again_later() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    let text = journal(6 * MIB);
+    root.live("alpha", &meta, &text);
+    root.claude("store-a", f::C, calls(1).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    reader.round();
+    loop {
+        let unit = reader.step().expect("the round reaches its first chunk");
+        if unit.kind == UnitKind::Journal && unit.bytes == STEP {
+            break;
+        }
+    }
+    let mut grown = fs::File::options()
+        .append(true)
+        .open(journal_path(&root))
+        .expect("the journal");
+    std::io::Write::write_all(&mut grown, f::event("ordinary", "later").as_bytes())
+        .expect("appended");
+    drop(grown);
+    while reader.step().is_some() {}
+    drain(&mut reader);
+    drain(&mut reader);
+    let view = tools(&reader);
+    assert!(
+        view.detail
+            .iter()
+            .all(|row| row.client == Cell::Value("work".into())),
+        "{:?}",
+        view.detail
+    );
+}
+
+/// `calls_read.rs:2769`, 2777-2779: a clean round shows no changed gap and
+/// counts the conversation read.
+#[test]
+fn a_clean_conversation_is_read_with_no_changed_gap() {
+    let (_root, mut reader) = labeled();
+    for round in 0..2 {
+        let view = tools(&reader);
+        assert_eq!(gap(&view, &GapKind::Changed), 0, "round {round}");
+        assert_eq!((view.read, view.listed), (1, 1), "round {round}");
+        drain(&mut reader);
+    }
+}
+
+/// `calls_read.rs:2779`: an unlocated conversation is listed and not read.
+#[test]
+fn an_unlocated_conversation_is_not_read() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let view = tools(&reader);
+    assert!(gap(&view, &GapKind::Unlocated) > 0, "control: unlocated");
+    assert_eq!((view.read, view.listed), (0, 1));
+}
+
+/// `calls_read.rs:2778`: a conversation located by a child file alone, with
+/// no parent transcript, is not counted read.
+#[test]
+fn a_conversation_without_its_parent_file_is_not_read() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    root.child("store-a", f::C, "agent-1", calls(1).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let view = tools(&reader);
+    assert_eq!(view.listed, 1, "control: listed");
+    assert_eq!(view.read, 0, "no parent: not read whole");
+}
+
+/// `calls_read.rs:2777`: a conversation changed under its read this round is
+/// not counted read.
+#[test]
+fn a_conversation_changed_under_its_read_is_not_read() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    let first = calls(1);
+    let path = root.claude("store-a", f::C, first.as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let appended = first + &f::call("later", "later", "Glob", "model-a", "{}");
+    Fixture::rewrite(&path, appended.as_bytes());
+    until(&mut reader, UnitKind::Verify);
+    Fixture::rewrite(&path, appended.replacen("Read", "Bash", 1).as_bytes());
+    while reader.step().is_some() {}
+    let view = tools(&reader);
+    assert!(gap(&view, &GapKind::Changed) > 0, "control: changed");
+    assert_eq!(view.read, 0, "changed: not read");
+}
+
+/// `calls_read.rs:2781:18`: an append with no counted record still persists
+/// the cursor: a new reader of the store reads none of it again.
+#[test]
+fn an_append_without_a_counted_record_persists_its_cursor() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    let first = calls(1);
+    let path = root.claude("store-a", f::C, first.as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let filler = "{\"type\":\"summary\",\"summary\":\"no call\"}\n";
+    Fixture::rewrite(&path, (first + filler).as_bytes());
+    drain(&mut reader);
+    let mut next = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    let units = drain(&mut next);
+    assert_eq!(
+        spent(&units, UnitKind::Verify) + spent(&units, UnitKind::Read),
+        0,
+        "the persisted cursor covers the append"
+    );
+}
+
+/// `calls_read.rs:2781:49`, 2893-2894: a steady round marks no source gone; a
+/// deleted child is marked gone and the mark is published.
+#[test]
+fn a_deleted_child_is_marked_gone_and_published_and_a_steady_one_is_not() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    root.claude("store-a", f::C, calls(1).as_bytes());
+    let child = root.child("store-a", f::C, "agent-1", calls(2).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    drain(&mut reader);
+    assert_eq!(gap(&tools(&reader), &GapKind::SourceGone), 0, "steady");
+    fs::remove_file(&child).expect("the child goes");
+    drain(&mut reader);
+    assert_eq!(gap(&tools(&reader), &GapKind::SourceGone), 1, "gone");
+    let mut files = disk::Files::at(&root.0);
+    let Loaded::Ok(view) = store::load_view(&mut files) else {
+        panic!("a published view");
+    };
+    let stored = incr::combine(&view, &ask(Scope::All), &Caps::SLICE);
+    assert_eq!(
+        gap(&stored, &GapKind::SourceGone),
+        1,
+        "the mark is published"
+    );
+    // The conversation document itself holds the mark: a new process starts
+    // from it.
+    let Loaded::Ok(conv) = store::load_conv(&mut files, crate::tool_stats::Adapter::Claude, f::C)
+    else {
+        panic!("a published conversation");
+    };
+    assert_eq!(
+        conv.summary
+            .files
+            .values()
+            .filter(|source| **source == incr::Source::Gone)
+            .count(),
+        1,
+        "the conversation document marks the child gone"
+    );
+}
+
+/// `calls_read.rs:2246`: two Codex rollouts of one id are a not-unique gap,
+/// never an unreadable one.
+#[test]
+fn two_codex_rollouts_of_one_id_are_not_unique() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "codex", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    let rollout = root.codex("store-a", f::C, codex_one_call().as_bytes());
+    let twin = rollout.with_file_name(format!("rollout-twin-{}.jsonl", f::C));
+    fs::write(&twin, codex_one_call()).expect("a second rollout");
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let view = tools(&reader);
+    assert!(gap(&view, &GapKind::NotUnique) > 0, "{:?}", view.gaps);
+    assert_eq!(gap(&view, &GapKind::Unreadable), 0, "{:?}", view.gaps);
+    // `calls_read.rs:2778`: no parent located, yet no unlocated mark: still
+    // not counted read.
+    assert!(
+        gap(&view, &GapKind::Unlocated) == 0,
+        "control: {:?}",
+        view.gaps
+    );
+    assert_eq!((view.read, view.listed), (0, 1));
+}
+
+/// `calls_read.rs:2246`: a rollout path that is no regular file is an
+/// unreadable gap, never a not-unique one.
+#[test]
+fn a_rollout_that_is_no_file_is_unreadable_not_not_unique() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "codex", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    let rollout = root.codex("store-a", f::C, codex_one_call().as_bytes());
+    fs::remove_file(&rollout).expect("the file goes");
+    fs::create_dir(&rollout).expect("a directory under the rollout name");
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let view = tools(&reader);
+    assert!(gap(&view, &GapKind::Unreadable) > 0, "{:?}", view.gaps);
+    assert_eq!(gap(&view, &GapKind::NotUnique), 0, "{:?}", view.gaps);
+}
+
+/// `calls_read.rs:1929`: a sessions root that cannot be listed is one hidden
+/// source: one path-free unreadable coverage line of count 1.
+#[test]
+fn an_unlistable_sessions_root_is_one_hidden_source() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (root, mut reader) = labeled();
+    let sessions = root.0.join("sessions");
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o000)).expect("unlistable");
+    drain(&mut reader);
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o755)).expect("restored");
+    let view = tools(&reader);
+    let hidden: Vec<u64> = view
+        .gaps
+        .iter()
+        .filter(|line| line.kind == GapKind::Unreadable && line.conversation.is_none())
+        .map(|line| line.count)
+        .collect();
+    assert_eq!(hidden, [1], "{:?}", view.gaps);
+}
+
+/// `calls_read.rs:2154`: a store is searched for its own conversations only:
+/// a child directory of a conversation of another store is never listed.
+#[test]
+fn another_stores_conversation_directory_is_not_listed() {
+    let listings = |stray: bool| {
+        let root = Fixture::new();
+        let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a")
+            + &seat("second", "claude", &root.store("store-b"), f::D);
+        root.live("alpha", &meta, "");
+        root.claude("store-a", f::C, calls(1).as_bytes());
+        root.claude("store-b", f::D, calls(1).as_bytes());
+        if stray {
+            root.child("store-a", f::D, "agent-1", calls(2).as_bytes());
+        }
+        let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+        let units = drain(&mut reader);
+        (calls_made(&units).1, attempts(&tools(&reader)))
+    };
+    assert_eq!(listings(true), listings(false));
+}
+
+/// `calls_read.rs:2246`: an unreadable Codex day is an unreadable gap, never
+/// a not-unique one.
+#[test]
+fn an_unreadable_codex_day_is_unreadable_not_not_unique() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "codex", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    let rollout = root.codex("store-a", f::C, codex_one_call().as_bytes());
+    let day = rollout.parent().expect("day directory").to_owned();
+    fs::set_permissions(&day, fs::Permissions::from_mode(0o000)).expect("unreadable day");
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    fs::set_permissions(&day, fs::Permissions::from_mode(0o700)).expect("restored");
+    let view = tools(&reader);
+    assert!(gap(&view, &GapKind::Unreadable) > 0, "{:?}", view.gaps);
+    assert_eq!(gap(&view, &GapKind::NotUnique), 0, "{:?}", view.gaps);
+}
+
+/// `calls_read.rs:2154`: a Claude store is searched for the conversations
+/// associated with it only: a copy of another store's conversation is not
+/// counted.
+#[test]
+fn a_store_is_searched_only_for_its_own_conversations() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a")
+        + &seat("second", "claude", &root.store("store-b"), f::D);
+    root.live("alpha", &meta, "");
+    root.claude("store-a", f::C, calls(1).as_bytes());
+    root.claude("store-b", f::D, calls(1).as_bytes());
+    let stray = (0..2)
+        .map(|n| f::call(&format!("s{n}"), &format!("s{n}"), "Grep", "model-a", "{}"))
+        .collect::<String>();
+    root.claude("store-a", f::D, stray.as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    assert_eq!(
+        attempts(&tools(&reader)),
+        2,
+        "C in store-a and D in store-b, not D's stray copy"
+    );
+}
+
+/// `calls_read.rs:2169`: a directory of a conversation not associated with
+/// the store is never listed for children.
+#[test]
+fn an_unassociated_conversation_directory_is_not_listed() {
+    let listings = |stray: bool| {
+        let root = Fixture::new();
+        let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+        root.live("alpha", &meta, "");
+        root.claude("store-a", f::C, calls(1).as_bytes());
+        if stray {
+            root.child("store-a", f::D, "agent-1", calls(2).as_bytes());
+        }
+        let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+        let units = drain(&mut reader);
+        (calls_made(&units).1, attempts(&tools(&reader)))
+    };
+    assert_eq!(listings(true), listings(false));
+}
+
+/// `calls_read.rs:1794`: only canonical-uuid directories of `archive/` are
+/// read as archives.
+#[test]
+fn only_canonical_archive_directories_are_read() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    root.claude("store-a", f::C, calls(1).as_bytes());
+    fs::create_dir(root.0.join("archive/notes")).expect("a stray directory");
+    fs::write(root.0.join("archive").join(f::T), b"").expect("a canonical-named file");
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    let units = drain(&mut reader);
+    assert_eq!(count(&units, UnitKind::Archive), 0);
+    assert_eq!(
+        tools(&reader).detail[0].client,
+        Cell::Value("work".into()),
+        "nothing hidden"
+    );
+}
+
+/// `calls_read.rs:1929`: an archive root that cannot be listed hides every
+/// client.
+#[test]
+fn an_unlistable_archive_root_hides_every_client() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (root, mut reader) = labeled();
+    let archive = root.0.join("archive");
+    fs::set_permissions(&archive, fs::Permissions::from_mode(0o000)).expect("unlistable");
+    drain(&mut reader);
+    fs::set_permissions(&archive, fs::Permissions::from_mode(0o700)).expect("restored");
+    unknown(&reader);
+}
+
+/// `calls_read.rs:1404`, 1932: a membership with a field over `FIELD_MAX` is
+/// dropped and counted, and it hides every client: it may be one of any
+/// conversation.
+#[test]
+fn an_oversize_membership_hides_every_client() {
+    let (root, mut reader) = labeled();
+    let long = "w".repeat(super::FIELD_MAX + 1);
+    let other = root.meta("beta", f::T, "claude", f::D, Some("home"), "store-a")
+        + &seat(&long, "claude", &root.store("store-a"), f::C);
+    root.live("beta", &other, "");
+    drain(&mut reader);
+    let view = tools(&reader);
+    assert!(
+        view.detail.iter().all(|row| row.client == Cell::Unknown),
+        "{:?}",
+        view.detail
+    );
+    assert!(global(&view, &GapKind::FieldOverLimit), "{:?}", view.gaps);
+}
+
+/// `calls_read.rs:931`: a warm round's Load unit reads the epoch, not the
+/// association cache again.
+#[test]
+fn a_warm_load_reads_the_epoch_and_not_the_sources_again() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    root.claude("store-a", f::C, calls(1).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let units = drain(&mut reader);
+    let load: u64 = units
+        .iter()
+        .filter(|unit| unit.kind == UnitKind::Load)
+        .map(|unit| unit.store_bytes)
+        .sum();
+    let sources = tools_files(&root)
+        .into_iter()
+        .find(|(name, _)| name.ends_with("/sources"))
+        .map(|(_, length)| length)
+        .expect("a published sources cache");
+    assert!(
+        load < sources,
+        "a warm Load read {load} bytes; the sources cache is {sources}"
+    );
+}
+
+/// `calls_read.rs:980`: with the epoch proof lost, no publication is tried:
+/// no Publish unit runs.
+#[test]
+fn a_lost_epoch_proof_tries_no_publication() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    let path = root.claude("store-a", f::C, calls(1).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    fs::write(root.0.join("stats/epoch"), b"damaged\n").expect("damage the proof");
+    Fixture::rewrite(&path, calls(2).as_bytes());
+    let units = drain(&mut reader);
+    assert_eq!(count(&units, UnitKind::Publish), 0, "{units:?}");
+    assert_eq!(attempts(&tools(&reader)), 2, "control: the change is read");
+}
+
+/// `calls_read.rs:1129`, 1160: a round with nothing changed publishes
+/// nothing, the association cache included.
+#[test]
+fn a_steady_round_publishes_nothing() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    root.claude("store-a", f::C, calls(1).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let held = tools_files(&root);
+    let units = drain(&mut reader);
+    let published: u64 = units
+        .iter()
+        .filter(|unit| unit.kind == UnitKind::Publish)
+        .map(|unit| unit.store_bytes)
+        .sum();
+    assert_eq!(published, 0, "nothing written");
+    assert_eq!(tools_files(&root), held, "control: the store unchanged");
+}
+
+/// `calls_read.rs:1167`: an epoch moved under the association cache's
+/// publication drops the held state.
+#[test]
+fn an_epoch_moved_before_the_sources_publication_drops_the_held_state() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    root.claude("store-a", f::C, calls(1).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    reader.round();
+    // The Check phase with nothing queued: the next unit is the sources
+    // publication the Publish phase queues first.
+    for _ in 0..20_000 {
+        let checked = reader.round.as_ref().is_some_and(|round| {
+            matches!(round.phase, super::Phase::Check) && round.tasks.is_empty()
+        });
+        if checked {
+            break;
+        }
+        assert!(reader.step().is_some(), "the round reaches its Check phase");
+    }
+    assert!(!reader.convs.is_empty(), "control: held state");
+    fs::write(root.0.join("stats/epoch"), b"damaged\n").expect("damage the proof");
+    repair_epoch(&root);
+    let unit = reader.step().expect("the PublishSources unit");
+    assert_eq!(unit.kind, UnitKind::Publish);
+    assert!(
+        reader.convs.is_empty(),
+        "the held state of the old epoch is gone"
+    );
+}
+
+/// `calls_read.rs:1082`: an interrupted publication found under the lock by a
+/// conversation's publication is finished first; the store ends with no
+/// unfinished publication and a loadable view.
+#[test]
+fn a_publication_finishes_an_interruption_it_finds_first() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    let path = root.claude("store-a", f::C, calls(1).as_bytes());
+    let mut first = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut first);
+    Fixture::rewrite(&path, calls(2).as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    reader.round();
+    for _ in 0..20_000 {
+        let front = reader.round.as_ref().and_then(|round| round.tasks.front());
+        if matches!(front, Some(super::Task::Publish(_))) {
+            break;
+        }
+        assert!(
+            reader.step().is_some(),
+            "the reader reaches its publication"
+        );
+    }
+    // Another writer's publication, cut after its intent.
+    let Some(super::Task::Publish(key)) =
+        reader.round.as_ref().and_then(|round| round.tasks.front())
+    else {
+        panic!("a Publish task");
+    };
+    let key = key.clone();
+    let held = reader.convs.get(&key).expect("held conversation");
+    let generation = reader.generation + 1;
+    let view = reader.capped(generation);
+    let coverage = reader.coverage(generation);
+    let mut files = disk::Files::at(&root.0);
+    let plan = store::publish_with(&mut files, &held.conv, &view, &coverage).expect("a plan");
+    let intent = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, disk::Op::Write { name, .. } if name.ends_with("/intent")))
+        .expect("an intent write");
+    plan.apply(&mut files, intent + 1).expect("the cut prefix");
+    while reader.step().is_some() {}
+    assert!(
+        !root.0.join("stats/tools/intent").exists(),
+        "no unfinished publication is left"
+    );
+    let mut files = disk::Files::at(&root.0);
+    assert!(
+        matches!(store::load_view(&mut files), Loaded::Ok(_)),
+        "the view loads"
+    );
+}
+
+/// `calls_read.rs:1906`: a seat's recorded config home is a root of its
+/// conversation: a skill loaded from under it is a user skill.
+#[test]
+fn a_skill_under_the_seat_config_home_is_a_user_skill() {
+    use crate::tool_stats::{Item, ScopeClass};
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    let home = root.store("store-a").display().to_string();
+    let user: String = f::RESOURCES
+        .lines()
+        .take(3)
+        .map(|line| line.replace("/fixture/config", &home) + "\n")
+        .collect();
+    assert!(
+        user.contains(&home),
+        "control: the base directory is the home"
+    );
+    root.claude("store-a", f::C, user.as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let skills = reader.view(&Ask {
+        page: Page::Skills,
+        ..ask(Scope::All)
+    });
+    assert!(
+        skills.rows.iter().any(|row| matches!(
+            &row.item,
+            Item::Skill {
+                scope: Some((ScopeClass::User, _)),
+                ..
+            }
+        )),
+        "{:?}",
+        skills.rows
+    );
+}
+
+// --- #288 survivor review r1 (t288-spec S1-S3) ------------------------------
+
+/// `calls_read.rs:1993:53` (S1): a journal cut below its last-block check
+/// between the status unit and the first check window is read again from 0,
+/// and the round ends. Both mutants requeue the same empty check forever
+/// (`drain`'s bound fails; a mutants run times out).
+#[test]
+fn a_journal_cut_before_its_check_is_read_again_and_the_round_ends() {
+    let text = journal(2 * MIB + 5 * LINE);
+    let (root, mut reader, _) = warm(&text, calls(1).as_bytes());
+    let path = journal_path(&root);
+    let mut grown = fs::File::options()
+        .append(true)
+        .open(&path)
+        .expect("the journal");
+    std::io::Write::write_all(&mut grown, journal(LINE).as_bytes()).expect("appended");
+    drop(grown);
+    reader.round();
+    loop {
+        let unit = reader.step().expect("the round reaches the journal status");
+        if unit.kind == UnitKind::Journal {
+            assert_eq!(unit.bytes, 0, "control: the status unit reads nothing");
+            break;
+        }
+    }
+    // The check starts at the last block, 2 MiB: cut the journal to 1 MiB.
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .expect("the journal")
+        .set_len(u64::try_from(MIB).expect("small"))
+        .expect("cut");
+    let mut units = Vec::new();
+    for _ in 0..20_000 {
+        let Some(unit) = reader.step() else { break };
+        units.push(unit);
+    }
+    assert!(reader.step().is_none(), "the round ends");
+    assert_eq!(
+        spent(&units, UnitKind::Journal),
+        length(&path),
+        "the cut journal is read once from 0"
+    );
+    drain(&mut reader);
+}
+
+/// `calls_read.rs:2391:45` (S2): a held conversation whose last round was
+/// changed is not settled before this round's verification: no Publish unit
+/// comes before its Verify unit.
+#[test]
+fn a_held_changed_conversation_publishes_nothing_before_its_verify() {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    prove_epoch(&root);
+    let first = calls(1);
+    let path = root.claude("store-a", f::C, first.as_bytes());
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    let appended = first + &f::call("later", "later", "Glob", "model-a", "{}");
+    Fixture::rewrite(&path, appended.as_bytes());
+    until(&mut reader, UnitKind::Verify);
+    Fixture::rewrite(&path, appended.replacen("Read", "Bash", 1).as_bytes());
+    while reader.step().is_some() {}
+    let view = tools(&reader);
+    assert!(
+        gap(&view, &GapKind::Changed) > 0,
+        "control: held as changed"
+    );
+    assert_eq!(view.read, 0, "control: held as not read");
+    let units = drain(&mut reader);
+    let verify = units
+        .iter()
+        .position(|unit| unit.kind == UnitKind::Verify)
+        .expect("control: the file is verified this round");
+    let publish = units.iter().position(|unit| unit.kind == UnitKind::Publish);
+    assert!(
+        publish.is_none_or(|publish| publish > verify),
+        "a Publish unit before the Verify: {units:?}"
+    );
+}
+
+/// `calls_read.rs:2494:19` (S3): a Read task queued before a rebuild cannot
+/// drive the replacement reading of its file. Queue: Verify(parent),
+/// Read(new child); the parent mismatches, the rebuild starts both files
+/// again; the stale Read(child) unit that follows reads nothing.
+#[test]
+fn a_read_queued_before_a_rebuild_cannot_drive_the_replacement_reading() {
+    let parent = transcript(64 * 1024, 1);
+    let (root, mut reader, path) = warm("", &parent);
+    let child = root.child("store-a", f::C, "agent-1", calls(2).as_bytes());
+    Fixture::rewrite(&path, &flipped(&parent, 1000));
+    reader.round();
+    loop {
+        let unit = reader
+            .step()
+            .expect("the round reaches the parent's Verify");
+        if unit.kind == UnitKind::Verify {
+            break;
+        }
+    }
+    let stale = reader.step().expect("the queued child Read");
+    assert_eq!(
+        stale.kind,
+        UnitKind::Read,
+        "control: the child Read was queued"
+    );
+    assert_eq!(stale.bytes, 0, "the stale Read reads nothing");
+    let rest = drain_rest(&mut reader);
+    assert_eq!(
+        spent(&rest, UnitKind::Read),
+        length(&path) + length(&child),
+        "control: each file is read once from 0"
+    );
+}
+
+/// The units left of a round already under way.
+fn drain_rest(reader: &mut Reader) -> Vec<Unit> {
+    let mut units = Vec::new();
+    for _ in 0..20_000 {
+        let Some(unit) = reader.step() else {
+            return units;
+        };
+        units.push(unit);
+    }
+    panic!("finite fixture reader did not settle");
+}
