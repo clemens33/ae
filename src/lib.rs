@@ -113,6 +113,9 @@ pub mod tmux;
 pub mod tmux_floor;
 pub mod token;
 pub mod tool;
+pub mod tool_stats;
+#[cfg(test)]
+mod tool_stats_fixture;
 pub mod tracked;
 pub mod transport;
 pub mod upgrade;

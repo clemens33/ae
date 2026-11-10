@@ -1,0 +1,1 @@
+{"type":"assistant","message":{"id":"m","model":"m","content":[{"type":"tool_use","id":"a","name":"mcp__a__search","input":{}},{"type":"tool_use","id":"b","name":"mcp__a__b__c","input":{}},{"type":"tool_use","id":"c","name":"mcp__x","input":{}}]}}

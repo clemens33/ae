@@ -99,6 +99,10 @@ pub enum Act {
     StatsScope,
     /// `r` on the Statistics tab: the store rebuilt from the journals.
     StatsReset,
+    /// `n` (`true`) or `p` on the Statistics tab: the next or previous page.
+    StatsPage(bool),
+    /// `]` (`true`) or `[` on the Statistics tab: the next or previous filter.
+    StatsFilter(bool),
     Select(String),
     Compose,
     /// Open the focused seat's pane.

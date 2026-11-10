@@ -262,6 +262,13 @@ rather than reading as absent (Required reports dangling as Absent, still refuse
 so the process inventory is unchanged; `src/doors.rs` was already vectored, so the
 `tests/it/phase3_probe_spec.rs` world-read inventory is unchanged too.
 
+`usage::receipt` is the per-thread IO receipt counter: one line just before each counted door
+call — `usage`'s lstats, opens, fstats, reads and `names_only` listing, `quota`'s
+`session_paths`, `list_day` and Codex-find lstats and listings, one receipt per syscall (the
+tool-statistics reader resolves stores lexically and never canonicalizes) — only counts, never
+changes what a door does, and is read per tool-statistics unit through one scoped guard on the
+loader thread; no new door.
+
 In the core `AE_VERSION` is scoped to `upgrade` alone; `install` reads it too, as the CalVer
 target. `AE_CORE_BIN` and `AE_NEXT_HOME` are dead in both shapes.
 

@@ -1,0 +1,2 @@
+{"type":"response_item","payload":{"type":"function_call","call_id":"c","namespace":"functions","name":"read","internal_chat_message_metadata_passthrough":{"turn_id":"t"}}}
+{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"McpToolCall","id":"x","server":"a","tool":"t","status":"failed","result":{"isError":null}}}}

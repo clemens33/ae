@@ -45,6 +45,9 @@ mod records_spec;
 mod s5_loader;
 #[cfg(test)]
 mod s5_red;
+#[cfg(test)]
+#[path = "loader_tools_spec.rs"]
+mod tools_spec;
 
 /// The most sessions whose consoles are kept read, home and the selection
 /// among them.
@@ -71,6 +74,14 @@ pub(super) enum Request {
     /// The Statistics tab is shown (`shown`) or no longer shown under this
     /// overlay generation.
     Stats { generation: u64, shown: bool },
+    /// A Skills, MCP servers or Tools page of the Statistics tab is shown
+    /// (`shown`) for `ask`, or no longer shown, under this overlay generation.
+    #[allow(dead_code, reason = "#288 B0 seam: B4 sends it")]
+    Tools {
+        generation: u64,
+        shown: bool,
+        ask: crate::tool_stats::Ask,
+    },
 }
 
 /// What an open peek panel asks the reader to capture, every refresh: the
@@ -225,6 +236,12 @@ pub(super) enum Answer {
         generation: u64,
         glance: Box<disk::Glance>,
     },
+    /// The shown tool-statistics page, folded for `generation`.
+    #[allow(dead_code, reason = "#288 B0 seam: B4 answers it")]
+    Tools {
+        generation: u64,
+        view: Box<crate::tool_stats::View>,
+    },
     /// How pressed each lead-pair seat of session `name` (bound to `id`) is,
     /// by seat name: its own account's judged quota, `None` when unknown.
     Pressure {
@@ -325,6 +342,9 @@ enum Job {
     Peek(Box<PeekAsk>),
     /// One read of the shown Statistics tab's store.
     Stats,
+    /// One unit of the tool-statistics reader, and the shown page's answer.
+    #[allow(dead_code, reason = "#288 B0 seam: B4 schedules it")]
+    Tools,
     Wait(Instant),
 }
 
@@ -538,6 +558,7 @@ impl Reader {
                 Job::Records(ask) => vec![self.records(&ask)],
                 Job::Peek(ask) => vec![self.peek(&ask)],
                 Job::Stats => self.stats_read(now).into_iter().collect(),
+                Job::Tools => self.tools_step(now).into_iter().collect(),
                 Job::Wait(until) => {
                     match asks.recv_timeout(until.saturating_duration_since(Instant::now())) {
                         Ok(request) => self.take(request),
@@ -628,6 +649,8 @@ impl Reader {
                     });
                 }
             }
+            // B4 wires the tool-statistics watch.
+            Request::Tools { .. } => {}
         }
     }
 
@@ -648,6 +671,14 @@ impl Reader {
             generation: watch.generation,
             glance: Box::new(glance),
         })
+    }
+
+    /// One unit of the tool-statistics reader at `now`, then the shown
+    /// page's answer when it changed. B4 wires it.
+    #[allow(clippy::unused_self, reason = "#288 B0 seam: B4 reads the reader")]
+    pub(super) fn tools_step(&mut self, now: Instant) -> Option<Answer> {
+        let _ = now;
+        None
     }
 
     /// When the watched Statistics tab reads next, `None` with no watch.

@@ -1994,6 +1994,19 @@ fn settings_cell(text: &str, max: usize) -> String {
 /// Resolve only a complete, recorded seat identity. Legacy/default homes and
 /// inconsistent mode/base pairs are intentionally not guessed.
 pub(crate) fn recorded_identity(entry: &crate::meta::RosterEntry) -> Option<RecordedIdentity> {
+    let (tool, source) = recorded_source(entry)?;
+    Some(RecordedIdentity {
+        tool,
+        source: canonical_source(source).ok()?,
+    })
+}
+
+/// [`recorded_identity`]'s classification alone: the tool and its source
+/// path as the meta recorded it, before canonicalization. The tool
+/// statistics reader resolves stores lexically from it (#288 lead ruling
+/// ae-20261108T144928Z-d9d1c43b); every other caller keeps the canonical
+/// identity.
+pub(crate) fn recorded_source(entry: &crate::meta::RosterEntry) -> Option<(ToolKind, PathBuf)> {
     use crate::meta::{RecordedConfigHome, RecordedConfigHomeBase};
 
     let tool = ToolKind::from_binary_name(entry.binary.as_deref()?);
@@ -2023,10 +2036,7 @@ pub(crate) fn recorded_identity(entry: &crate::meta::RosterEntry) -> Option<Reco
     {
         return None;
     }
-    Some(RecordedIdentity {
-        tool,
-        source: canonical_source(source).ok()?,
-    })
+    Some((tool, source))
 }
 
 struct CodexGroups {
@@ -4407,6 +4417,7 @@ pub(crate) fn session_paths(root: &Path, budget: &mut Budget) -> io::Result<Boun
     if !budget.claim_file() {
         return Ok(Bounded::Truncated);
     }
+    crate::usage::receipt::stat(1);
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: bounded canonical-session enumeration for quota rollout provenance"
@@ -4424,6 +4435,7 @@ pub(crate) fn session_paths(root: &Path, budget: &mut Budget) -> io::Result<Boun
             "sessions root is not a directory",
         ));
     }
+    crate::usage::receipt::listing();
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: enumerates only bounded direct children of the canonical ae sessions root"
@@ -5481,10 +5493,10 @@ fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
 /// share a day read it once. Only a complete listing is kept: a directory that
 /// is absent is remembered as such, and neither a refusal nor a cut listing is.
 #[derive(Default)]
-struct DayListings(std::collections::HashMap<PathBuf, Option<Vec<std::ffi::OsString>>>);
+pub(crate) struct DayListings(std::collections::HashMap<PathBuf, Option<Vec<std::ffi::OsString>>>);
 
 impl DayListings {
-    fn names(
+    pub(crate) fn names(
         &mut self,
         dir: &Path,
         budget: &mut Budget,
@@ -5501,6 +5513,30 @@ impl DayListings {
             self.0.get(dir).and_then(|names| names.as_deref()),
         ))
     }
+
+    /// Drop `dir`'s cached listing: a caller whose ledger refused to keep
+    /// it releases it (#288 B3 r2 B3-1a).
+    pub(crate) fn forget(&mut self, dir: &Path) {
+        self.0.remove(dir);
+    }
+
+    /// The bytes the cache holds: each day's path and its names (#288
+    /// B3 r1 B3-1a, the reader's live retention check).
+    #[cfg(test)]
+    pub(crate) fn retained(&self) -> usize {
+        self.0
+            .iter()
+            .map(|(dir, names)| {
+                dir.as_os_str().len()
+                    + names.as_ref().map_or(0, |names| {
+                        names
+                            .iter()
+                            .map(|name| size_of::<std::ffi::OsString>() + name.len())
+                            .sum()
+                    })
+            })
+            .sum()
+    }
 }
 
 /// One day directory's entry names, each entry claimed against the budget.
@@ -5512,6 +5548,7 @@ fn list_day(
     if !budget.claim_file() {
         return Ok(Bounded::Truncated);
     }
+    crate::usage::receipt::stat(1);
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: quota lstat classifies only the three UTC neighbours of the Codex id day"
@@ -5529,6 +5566,7 @@ fn list_day(
             "rollout root is not a directory",
         ));
     }
+    crate::usage::receipt::listing();
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: bounded enumeration of three possible local-clock days for one exact Codex id"
@@ -5555,7 +5593,7 @@ pub(crate) fn find_codex_rollout(
 /// [`find_codex_rollout`] over day listings the caller keeps across rollouts:
 /// a fleet of N recorded rollouts that share their days costs the entries of
 /// those days once, not N times.
-fn find_codex_rollout_listed(
+pub(crate) fn find_codex_rollout_listed(
     root: &Path,
     id: &str,
     budget: &mut Budget,
@@ -5578,6 +5616,7 @@ fn find_codex_rollout_listed(
         for name in names {
             if name.to_string_lossy().ends_with(&suffix) {
                 let path = dir.join(name);
+                crate::usage::receipt::stat(1);
                 #[allow(
                     clippy::disallowed_methods,
                     reason = "a door: one budgeted lstat validates and ranks an exact ae-owned Codex rollout"
@@ -5610,7 +5649,7 @@ fn find_codex_rollout_listed(
     Ok(Bounded::Ready(found))
 }
 
-fn codex_rollout_dirs(root: &Path, id: &str) -> Option<Vec<PathBuf>> {
+pub(crate) fn codex_rollout_dirs(root: &Path, id: &str) -> Option<Vec<PathBuf>> {
     if !crate::archive::is_canonical_uuid(id) || id.as_bytes().get(14) != Some(&b'7') {
         return None;
     }

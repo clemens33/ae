@@ -426,3 +426,31 @@ path = "fuzz_targets/stats_disk.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "tool_calls_claude"
+path = "fuzz_targets/tool_calls_claude.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tool_calls_codex"
+path = "fuzz_targets/tool_calls_codex.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "usage_lines"
+path = "fuzz_targets/usage_lines.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tool_stats_fold"
+path = "fuzz_targets/tool_stats_fold.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,23 @@
+{"type":"user","timestamp":"2026-11-01T00:00:00Z","message":{"content":[{"type":"text","text":"catalog: Skill alpha, SKILL.md, mcp__a__search"}]}}
+{"type":"assistant","timestamp":"2026-11-01T00:00:01Z","attributionSkill":"ghost","attributionMcpServer":"ghost","attributionMcpTool":"ghost","message":{"id":"prose","model":"model-a","content":[{"type":"text","text":"I used Skill alpha and mcp__a__search"}]}}
+{"type":"user","timestamp":"2026-11-01T00:00:02Z","isMeta":true,"sourceToolUseID":"absent","message":{"content":[{"type":"text","text":"Base directory for this skill: /fixture/config/skills/ghost\nNEVER_RETAIN_INJECTED_BODY"}]}}
+{"type":"assistant","timestamp":"2026-11-01T00:00:03Z","effort":"high","perTurnEffort":"high","message":{"id":"m1","model":"model-a","content":[{"type":"tool_use","id":"s-ok","name":"Skill","input":{"skill":"alpha","args":"NEVER_RETAIN_ARGS"}}]}}
+{"type":"user","timestamp":"2026-11-01T00:00:04Z","toolUseResult":{"success":true},"message":{"content":[{"type":"tool_result","tool_use_id":"s-ok","content":"NEVER_RETAIN_RESULT"}]}}
+{"type":"assistant","timestamp":"2026-11-01T00:00:05Z","message":{"id":"m2","model":"model-a","content":[{"type":"tool_use","id":"s-false","name":"Skill","input":{"skill":"alpha"}}]}}
+{"type":"user","timestamp":"2026-11-01T00:00:06Z","toolUseResult":{"success":false},"message":{"content":[{"type":"tool_result","tool_use_id":"s-false","content":"not loaded"}]}}
+{"type":"assistant","timestamp":"2026-11-01T00:00:07Z","message":{"id":"m3","model":"model-a","content":[{"type":"tool_use","id":"s-missing","name":"Skill","input":{"skill":"alpha"}}]}}
+{"type":"user","timestamp":"2026-11-01T00:00:08Z","message":{"content":[{"type":"tool_result","tool_use_id":"s-missing","content":"load succeeded is only prose"}]}}
+{"type":"assistant","timestamp":"2026-11-01T00:00:09Z","message":{"id":"m4","model":"model-a","content":[{"type":"tool_use","id":"s-nonbool","name":"Skill","input":{"skill":"alpha"}}]}}
+{"type":"user","timestamp":"2026-11-01T00:00:10Z","toolUseResult":{"success":"true"},"message":{"content":[{"type":"tool_result","tool_use_id":"s-nonbool","content":"loaded"}]}}
+{"type":"assistant","timestamp":"2026-11-01T00:00:11Z","message":{"id":"m5","model":"model-a","content":[{"type":"tool_use","id":"s-error","name":"Skill","input":{"skill":"alpha"}}]}}
+{"type":"user","timestamp":"2026-11-01T00:00:12Z","toolUseResult":{"success":true},"message":{"content":[{"type":"tool_result","tool_use_id":"s-error","is_error":true,"content":"error wins over success"}]}}
+{"type":"assistant","timestamp":"2026-11-01T00:00:13Z","message":{"id":"m6","model":"model-a","content":[{"type":"tool_use","id":"s-multi","name":"Skill","input":{"skill":"alpha"}},{"type":"tool_use","id":"t-multi","name":"Read","input":{"file_path":"/fixture/plain.txt"}}]}}
+{"type":"user","timestamp":"2026-11-01T00:00:14Z","toolUseResult":{"success":true},"message":{"content":[{"type":"tool_result","tool_use_id":"s-multi","content":"first"},{"type":"tool_result","tool_use_id":"t-multi","content":"second"}]}}
+{"type":"assistant","timestamp":"2026-11-01T00:00:15Z","message":{"id":"m7","model":"model-a","content":[{"type":"tool_use","id":"s-pending","name":"Skill","input":{"skill":"alpha"}}]}}
+{"type":"assistant","timestamp":"2026-11-01T00:00:16Z","message":{"id":"m8","model":"model-a","content":[{"type":"tool_use","id":"t-returned","name":"Read","input":{"file_path":"/fixture/plain.txt"}}]}}
+{"type":"user","timestamp":"2026-11-01T00:00:17Z","message":{"content":[{"type":"tool_result","tool_use_id":"t-returned","is_error":false,"content":"success prose does not prove tool success"}]}}
+{"type":"assistant","timestamp":"2026-11-01T00:00:18Z","message":{"id":"m9","model":"model-a","content":[{"type":"tool_use","id":"t-error","name":"Read","input":{"file_path":"/fixture/plain.txt"}}]}}
+{"type":"user","timestamp":"2026-11-01T00:00:19Z","message":{"content":[{"type":"tool_result","tool_use_id":"t-error","is_error":true,"content":"failed"}]}}
+{"type":"assistant","timestamp":"2026-11-01T00:00:20Z","message":{"id":"m10","model":"model-a","content":[{"type":"tool_use","id":"wrapper","name":"Bash","input":{"command":"cat /fixture/config/skills/alpha/SKILL.md; mcp__hidden__search"}}]}}
+{"type":"summary","timestamp":"2026-11-01T00:00:21Z","message":{"model":"model-b","content":[{"type":"tool_use","id":"summary-fake","name":"Skill","input":{"skill":"ghost"}}]}}
+{"type":"assistant","isMeta":true,"timestamp":"2026-11-01T00:00:22Z","message":{"model":"model-b","content":[{"type":"tool_use","id":"meta-fake","name":"Skill","input":{"skill":"ghost"}}]}}

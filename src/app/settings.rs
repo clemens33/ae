@@ -144,6 +144,18 @@ impl StatsScope {
     }
 }
 
+/// Which page the Statistics tab shows: the recorded spawns, or one of the
+/// observed skill / MCP / tool tables (#288).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code, reason = "#288 B0 seam: B4 selects the tool pages")]
+pub(crate) enum StatsPage {
+    #[default]
+    Spawns,
+    Skills,
+    Mcp,
+    Tools,
+}
+
 /// What the Statistics store says of one scope, beside its numbers.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) enum ScopeLine {
@@ -260,6 +272,12 @@ pub(crate) struct StatsBody {
     pub(crate) scope: StatsScope,
     pub(crate) view: Option<Box<crate::stats::View>>,
     pub(crate) store: StoreLine,
+    /// The page `n`/`p` cycle.
+    pub(crate) page: StatsPage,
+    /// The active tool-statistics filter `]`/`[` step through.
+    pub(crate) filter: crate::tool_stats::Filter,
+    /// The shown tool-statistics page as last answered; `None` draws `loading`.
+    pub(crate) tools: Option<Box<crate::tool_stats::View>>,
 }
 
 /// Everything the overlay draws. Cold until the first answer lands.

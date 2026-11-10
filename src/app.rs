@@ -115,6 +115,8 @@ mod settings;
 mod stablesplit_spec;
 #[cfg(test)]
 mod stats_spec;
+#[cfg(test)]
+mod tools_spec;
 mod tty;
 pub mod upgrade;
 #[cfg(test)]
@@ -805,6 +807,7 @@ impl App {
                 }
             }
             Answer::Stats { generation, glance } => self.stats_landed(generation, &glance),
+            Answer::Tools { generation, view } => self.tools_landed(generation, view),
             Answer::Core(seen) => self.upgrade = seen,
             Answer::Handover { view, at } => {
                 self.keep = (!self.touched).then_some(Keep { view, at });
@@ -1361,6 +1364,24 @@ impl App {
     fn flip_stats_scope(&mut self) {
         let stats = &mut self.settings_bodies.stats;
         stats.scope = stats.scope.flip();
+    }
+
+    /// `n` or `p` on the Statistics tab: the next or previous page. B4 wires it.
+    fn stats_page(&mut self, next: bool) -> bool {
+        let _ = (next, &self.settings_bodies.stats.page);
+        false
+    }
+
+    /// `]` or `[` on the Statistics tab: the next or previous filter. B4 wires it.
+    fn stats_filter(&mut self, next: bool) -> bool {
+        let _ = (next, &self.settings_bodies.stats.filter);
+        false
+    }
+
+    /// A tool-statistics answer: kept only for the current overlay generation
+    /// (a stale one is dropped). B4 wires it.
+    fn tools_landed(&mut self, generation: u64, view: Box<crate::tool_stats::View>) {
+        let _ = (generation, view, &self.settings_bodies.stats.tools);
     }
 
     /// Close the overlay and tell the reader to stop reading for it. It
@@ -5323,6 +5344,8 @@ fn settings_act(app: &mut App, key: model::Key) -> bool {
             app.ask_reset();
             true
         }
+        model::Act::StatsPage(next) => app.stats_page(next),
+        model::Act::StatsFilter(next) => app.stats_filter(next),
         _ => false,
     }
 }
@@ -5350,6 +5373,8 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
             app.ask_reset();
             Some(true)
         }
+        model::Act::StatsPage(next) => Some(app.stats_page(*next)),
+        model::Act::StatsFilter(next) => Some(app.stats_filter(*next)),
         model::Act::Compose => {
             app.write(true);
             Some(true)
@@ -7943,6 +7968,7 @@ mod tests {
                 | loader::Request::Records(_)
                 | loader::Request::Ending(_)
                 | loader::Request::Stats { .. }
+                | loader::Request::Tools { .. }
                 | loader::Request::Settings { .. } => None,
             })
             .collect();
@@ -8183,6 +8209,7 @@ mod tests {
                     | loader::Request::Records(_)
                     | loader::Request::Ending(_)
                     | loader::Request::Stats { .. }
+                    | loader::Request::Tools { .. }
                     | loader::Request::Settings { .. } => None,
                 })
                 .collect()
@@ -8215,6 +8242,7 @@ mod tests {
                 | loader::Request::Records(_)
                 | loader::Request::Ending(_)
                 | loader::Request::Stats { .. }
+                | loader::Request::Tools { .. }
                 | loader::Request::Writing(_) => None,
             })
             .collect()
@@ -8251,6 +8279,7 @@ mod tests {
                     | loader::Request::Records(_)
                     | loader::Request::Ending(_)
                     | loader::Request::Stats { .. }
+                    | loader::Request::Tools { .. }
                     | loader::Request::Writing(_) => String::new(),
                 })
                 .collect()

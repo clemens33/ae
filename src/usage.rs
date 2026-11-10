@@ -1,9 +1,14 @@
 //! Offline API-equivalent spend from agent-owned transcripts.
 
+pub(crate) mod calls_read;
 pub mod claude;
+pub mod claude_calls;
 pub mod codex;
+pub mod codex_calls;
 pub mod hourly;
+pub mod lines;
 pub mod prices;
+pub(crate) mod receipt;
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read as _};
@@ -574,13 +579,47 @@ pub(crate) fn source_for(
     source: UsageSource,
     home: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    if let Some(identity) = crate::quota::recorded_identity(entry) {
+    store_for(
+        entry,
+        source,
+        home,
+        crate::quota::recorded_identity(entry).map(|identity| identity.source),
+    )
+}
+
+/// [`source_for`] without canonicalization: the same classification over the
+/// source as the meta recorded it (canonical when ae recorded it). The tool
+/// statistics reader's store, so each of its IOs is one counted syscall
+/// (#288 lead ruling ae-20261108T144928Z-d9d1c43b); Usage and Quota keep
+/// [`source_for`].
+pub(crate) fn source_lexical(
+    entry: &RosterEntry,
+    source: UsageSource,
+    home: Option<&Path>,
+) -> Result<PathBuf, String> {
+    store_for(
+        entry,
+        source,
+        home,
+        crate::quota::recorded_source(entry).map(|(_, source)| source),
+    )
+}
+
+/// The store `entry` names for `source`, given its recorded identity's
+/// source (`None` when the seat has no complete recorded identity).
+fn store_for(
+    entry: &RosterEntry,
+    source: UsageSource,
+    home: Option<&Path>,
+    identity: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    if let Some(identity) = identity {
         return match (source, &entry.config_home) {
             (
                 UsageSource::ClaudeTranscripts,
                 RecordedConfigHome::Path(store) | RecordedConfigHome::Implicit(store),
             ) => Ok(store.clone()),
-            (UsageSource::CodexRollout, _) => Ok(identity.source),
+            (UsageSource::CodexRollout, _) => Ok(identity),
             (UsageSource::ClaudeTranscripts | UsageSource::Unsupported, _) => {
                 Err("unsupported or inconsistent usage source".to_owned())
             }
@@ -905,6 +944,7 @@ fn derived_directory(
     if path.parent() != Some(parent) || !budget.claim_file() {
         return Err(Coverage::Truncated);
     }
+    receipt::stat(1);
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: every derived usage directory is lstat-checked before enumeration"
@@ -926,6 +966,7 @@ fn locate_transcript(path: &Path, budget: &mut Budget) -> Result<Option<Transcri
     if !budget.claim_file() {
         return Err(Coverage::Truncated);
     }
+    receipt::stat(1);
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: usage lstat validates an agent-owned transcript before opening"
@@ -1091,6 +1132,57 @@ fn child_paths(
     Ok(paths)
 }
 
+/// What a names-only listing says about one entry, from the listing's own
+/// entry type: never followed, never a separate lstat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Entry {
+    File,
+    Dir,
+    /// A link, a special file, or a type the listing does not name.
+    Other,
+}
+
+/// The entry names directly under `dir` (validated by the caller), each
+/// claimed against `budget`, sorted: the tool-statistics reader's one
+/// listing per unit. A name that is not UTF-8 is `Other`'s business: it is
+/// skipped, since no recorded id or file name ae looks for can be one.
+pub(crate) fn names_only(
+    dir: &Path,
+    budget: &mut Budget,
+) -> Result<Bounded<Vec<(String, Entry)>>, Coverage> {
+    receipt::listing();
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: names-only listing of a validated archive/, projects/, project or subagents/ directory; no per-entry lstat"
+    )]
+    let listing = std::fs::read_dir(dir)
+        .map_err(|_| Coverage::Unreadable("directory unreadable".to_owned()))?;
+    let mut names = Vec::new();
+    for entry in listing {
+        if !budget.claim_file() {
+            return Ok(Bounded::Truncated);
+        }
+        let entry =
+            entry.map_err(|_| Coverage::Unreadable("directory entry unreadable".to_owned()))?;
+        let kind = entry
+            .file_type()
+            .map_err(|_| Coverage::Unreadable("directory entry unreadable".to_owned()))?;
+        // A listed link's type is the link's own: neither dir nor file.
+        let kind = if kind.is_dir() {
+            Entry::Dir
+        } else if kind.is_file() {
+            Entry::File
+        } else {
+            Entry::Other
+        };
+        if let Ok(name) = entry.file_name().into_string() {
+            names.push((name, kind));
+        }
+    }
+    names.sort();
+    Ok(Bounded::Ready(names))
+}
+
 type RegularRead = Option<(Vec<u8>, Option<SystemTime>)>;
 
 /// A regular file that passed every check [`read_regular`] makes and holds its
@@ -1108,6 +1200,7 @@ fn open_regular(path: &Path, cap: u64, budget: &mut Budget) -> Result<Option<Ope
     if !budget.claim_file() {
         return Err(Coverage::Truncated);
     }
+    receipt::stat(1);
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: usage lstat validates a bounded transcript before opening"
@@ -1128,12 +1221,14 @@ fn open_regular(path: &Path, cap: u64, budget: &mut Budget) -> Result<Option<Ope
     if !budget.reserve_bytes(metadata.len()) {
         return Err(Coverage::Truncated);
     }
+    receipt::open();
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: opens only a bounded lstat-validated usage transcript"
     )]
     let file =
         File::open(path).map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
+    receipt::stat(1);
     let opened = file
         .metadata()
         .map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
@@ -1162,9 +1257,9 @@ fn read_regular(path: &Path, cap: u64, budget: &mut Budget) -> Result<RegularRea
         return Ok(None);
     };
     let mut bytes = Vec::new();
-    file.take(len)
-        .read_to_end(&mut bytes)
-        .map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
+    let read = file.take(len).read_to_end(&mut bytes);
+    receipt::read(bytes.len());
+    read.map_err(|_| Coverage::Unreadable("transcript unreadable".to_owned()))?;
     let actual = u64::try_from(bytes.len()).unwrap_or(len);
     if actual != len {
         return Err(Coverage::Unreadable(
@@ -1209,6 +1304,7 @@ pub(crate) fn bounded_bytes(
 /// any other truncation is a spent budget.
 fn truncation_gap(path: &Path, cap: u64) -> crate::stats::SourceGap {
     use crate::stats::SourceGap;
+    receipt::stat(1);
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: usage lstat names why a bounded read stopped"
@@ -1252,15 +1348,16 @@ pub(crate) fn journal_window(
         Err(Coverage::Truncated) => return Err(SourceGap::Budget),
         Err(_) => return Err(SourceGap::Unreadable),
     };
+    receipt::stat(1);
     let identity = file.metadata().map_err(|_| SourceGap::Unreadable)?;
     let start = from.min(len);
     let take = max.min(len - start);
     file.seek(SeekFrom::Start(start))
         .map_err(|_| SourceGap::Unreadable)?;
     let mut bytes = Vec::new();
-    file.take(take)
-        .read_to_end(&mut bytes)
-        .map_err(|_| SourceGap::Unreadable)?;
+    let read = file.take(take).read_to_end(&mut bytes);
+    receipt::read(bytes.len());
+    read.map_err(|_| SourceGap::Unreadable)?;
     if u64::try_from(bytes.len()) != Ok(take) {
         return Err(SourceGap::Unreadable);
     }
