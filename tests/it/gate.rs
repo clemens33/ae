@@ -607,7 +607,7 @@ fn kill_after_secs(lines: &[&str]) -> Option<u32> {
 
 /// Whether both lanes are bounded in CONFIG (#159): a bare nextest run (no lane,
 /// no override) at most four tests at once, the isolated lane's own sizing
-/// reaching eight only through `NEXTEST_TEST_THREADS`; every mutation run (the `mutants` profile `.cargo/mutants.toml`
+/// reaching its lane ceiling only through `NEXTEST_TEST_THREADS`; every mutation run (the `mutants` profile `.cargo/mutants.toml`
 /// selects) at most two, each hard-killed within a minute. The thread count is
 /// never a `--test-threads` flag in `mutants.toml`, because a flag beats
 /// `NEXTEST_TEST_THREADS` and the operator could not tighten a run.
@@ -2377,8 +2377,8 @@ fn a_stress_run_needs_a_named_filter_and_plain_bounds() {
 }
 
 /// A stress run hands nextest exactly the named filter, the repeat count and
-/// `--test-threads` from the lane's sizing (the least of the budget, the cap of
-/// eight and a wide inherited export), at `nice -n 10`; and when its time bound
+/// `--test-threads` from the lane's sizing (the least of the budget, the lane
+/// ceiling and a wide inherited export), at `nice -n 10`; and when its time bound
 /// ends it, the whole group goes: status 124 and no child of cargo survives, the
 /// lane directory included.
 #[test]
@@ -6457,20 +6457,22 @@ fn buildtune_panic_backtraces_resolve_ae_and_dependency_source_lines() {
     }
 }
 
-/// The five trees `just rust-prune` cleans, relative to a checkout. The fixture puts an
+/// The six trees `just rust-prune` cleans, relative to a checkout. The fixture puts an
 /// `ae-unit` (what a clean removes) and an `other/keep` (what it must not) in each.
-const PRUNE_TREES: [&str; 5] = [
+const PRUNE_TREES: [&str; 6] = [
     "target/debug",
     "target/release",
+    "target/aarch64-apple-darwin/release",
     "target/x86_64-unknown-linux-musl/release",
     "target/force-warn-guard/debug",
     "target/world-read-guard/debug",
 ];
 
 /// The labels the report and the apply run print for them, in order.
-const PRUNE_LABELS: [&str; 5] = [
+const PRUNE_LABELS: [&str; 6] = [
     "debug",
     "release",
+    "native-release",
     "musl-release",
     "force-warn-guard",
     "world-read-guard",
@@ -6576,7 +6578,7 @@ struct Ran {
     err: String,
 }
 
-/// A throwaway checkout for the `rust-prune` pins: a git repository `tree` whose five target
+/// A throwaway checkout for the `rust-prune` pins: a git repository `tree` whose six target
 /// trees each hold an `ae-unit` and an `other/keep`, beside a `bin` that is the recipe's WHOLE
 /// `PATH`. `bin` links the real `just`, `git`, `bash` and the few tools the recipe and the fake
 /// cargo use, and holds the fake `cargo` and a `ps` that is the real one unless `ps.fail` or
@@ -6791,14 +6793,15 @@ impl Prune {
     }
 }
 
-/// The cargo calls a clean run makes in `tree`: metadata, the five dry runs and, when `apply`,
-/// the five real cleans, in that order.
+/// The cargo calls a clean run makes in `tree`: metadata, the six dry runs and, when `apply`,
+/// the six real cleans, in that order.
 fn expected_cargo(tree: &Path, apply: bool) -> Vec<String> {
     let t = tree.display();
     let head = format!("{t}|clean --locked --manifest-path {t}/Cargo.toml -p ae");
     let flags = [
         "--profile dev".to_owned(),
         "--profile release".to_owned(),
+        "--profile release --target aarch64-apple-darwin".to_owned(),
         "--profile release --target x86_64-unknown-linux-musl".to_owned(),
         format!("--profile dev --target-dir {t}/target/force-warn-guard"),
         format!("--profile dev --target-dir {t}/target/world-read-guard"),
@@ -6960,7 +6963,7 @@ fn a_dropped_sleeper_leaves_no_process_behind() {
 }
 
 /// `just rust-prune` reports by default: one `would clean` line per tree, cargo asked only for
-/// the build directories and five dry runs, nothing removed.
+/// the build directories and six dry runs, nothing removed.
 #[test]
 fn rust_prune_reports_by_default_and_removes_nothing() {
     let fixture = Prune::new("prune-report");
@@ -6985,10 +6988,10 @@ fn rust_prune_reports_by_default_and_removes_nothing() {
     );
 }
 
-/// `apply=yes` runs the five cleans, in order, each from the checkout, after all five dry
+/// `apply=yes` runs the six cleans, in order, each from the checkout, after all six dry
 /// runs; the ae units go and every other file stays.
 #[test]
-fn rust_prune_apply_yes_runs_the_five_cleans_and_touches_nothing_else() {
+fn rust_prune_apply_yes_runs_the_six_cleans_and_touches_nothing_else() {
     let fixture = Prune::new("prune-apply");
     put(&fixture.tree.join("src/main.rs"), "fn main() {}\n");
     let ran = fixture.prune(&["apply=yes"], &[]);
@@ -7128,7 +7131,7 @@ fn rust_prune_with_no_target_directory_does_nothing() {
 }
 
 /// A cargo that lists a path outside the build directory (or its guard's own), through a dot
-/// segment, or through a link is not trusted with the real clean: all five dry runs happen
+/// segment, or through a link is not trusted with the real clean: all six dry runs happen
 /// first, so nothing is cleaned and the file outside survives.
 #[test]
 fn rust_prune_refuses_a_dry_run_path_that_escapes_and_cleans_nothing() {
@@ -7779,6 +7782,7 @@ fn cargo_clean_dry_run_lists_absolute_paths_and_removes_nothing() {
         "debug/incremental/ae-xyz/s-1/dep-graph.bin",
         "debug/deps/libdep-keep.rlib",
         "release/.fingerprint/ae-abc123/lib-ae",
+        "aarch64-apple-darwin/release/.fingerprint/ae-abc123/lib-ae",
         "x86_64-unknown-linux-musl/release/.fingerprint/ae-abc123/lib-ae",
         "force-warn-guard/debug/.fingerprint/ae-abc123/lib-ae",
     ];
@@ -7845,6 +7849,17 @@ fn cargo_clean_dry_run_lists_absolute_paths_and_removes_nothing() {
     assert!(
         musl.contains(&format!("{t}/release/")) && musl.contains("x86_64-unknown-linux-musl/"),
         "a --target clean lists the host units too: {musl}"
+    );
+    let native = listed(
+        &clean(&["--profile", "release", "--target", "aarch64-apple-darwin"]),
+        &[
+            format!("{t}/release/"),
+            format!("{t}/aarch64-apple-darwin/"),
+        ],
+    );
+    assert!(
+        native.contains(&format!("{t}/release/")) && native.contains("aarch64-apple-darwin/"),
+        "a --target clean of the host triple lists the host units too: {native}"
     );
     let guard_dir = format!("{t}/force-warn-guard");
     let guard = clean(&["--profile", "dev", "--target-dir", guard_dir.as_str()]);

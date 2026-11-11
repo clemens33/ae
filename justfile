@@ -2062,12 +2062,12 @@ rust-vet:
 # Reclaim THIS checkout's stale ae build output and keep the compiled dependencies.
 # Every CalVer bump and source edit leaves another version's units behind
 # (docs/development.md, Build disk); `cargo clean -p ae` drops the ae package's
-# artifacts of every version from the five trees below, and the next gate
+# artifacts of every version from the six trees below, and the next gate
 # rebuilds them in a minute or two. `just rust-prune` only REPORTS;
 # `just rust-prune apply=yes` cleans. It judges the one tree it runs in, so run
 # it from a checkout's root, once per checkout.
 #
-# THE GUARDS ARE THE POINT, not the five cleans. It refuses (exit 1, one line
+# THE GUARDS ARE THE POINT, not the six cleans. It refuses (exit 1, one line
 # naming the guard) when a redirect variable is set, when `cargo metadata`
 # (asked from this tree, because cargo finds `.cargo/config.toml` from the
 # working directory and its parents, not from `--manifest-path`) puts the target
@@ -2170,12 +2170,13 @@ rust-prune apply="":
         case "$dir" in *\\*) refuse "cargo's $key is not a plain path: $dir" ;; esac
         [ "$(cd -P "$dir" 2>/dev/null && pwd -P)" = "$target" ] || refuse "cargo's $key is $dir, not $target: a redirect in a cargo config"
     done
-    # The five cleans, fixed and named; $1 is a callback taking label, tree (skipped
+    # The six cleans, fixed and named; $1 is a callback taking label, tree (skipped
     # when absent), root (everything cargo may remove for it lies inside; a --target
     # clean also lists the host units under target/<profile>) and cargo flags.
     each() {
         "$1" debug "$target/debug" "$target" --profile dev
         "$1" release "$target/release" "$target" --profile release
+        "$1" native-release "$target/{{ RUST_NATIVE_TARGET }}" "$target" --profile release --target {{ RUST_NATIVE_TARGET }}
         "$1" musl-release "$target/x86_64-unknown-linux-musl" "$target" --profile release --target x86_64-unknown-linux-musl
         "$1" force-warn-guard "$target/force-warn-guard" "$target/force-warn-guard" --profile dev --target-dir "$target/force-warn-guard"
         "$1" world-read-guard "$target/world-read-guard" "$target/world-read-guard" --profile dev --target-dir "$target/world-read-guard"
