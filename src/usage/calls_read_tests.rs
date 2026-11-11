@@ -3153,3 +3153,121 @@ fn drain_rest(reader: &mut Reader) -> Vec<Unit> {
     }
     panic!("finite fixture reader did not settle");
 }
+
+/// A located conversation drained once against a proven epoch: every
+/// conversation it holds is durable.
+fn durable_held() -> (Fixture, Reader) {
+    let root = Fixture::new();
+    let meta = root.meta("alpha", f::S, "claude", f::C, Some("work"), "store-a");
+    root.live("alpha", &meta, "");
+    root.claude("store-a", f::C, calls(2).as_bytes());
+    prove_epoch(&root);
+    let mut reader = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut reader);
+    assert!(
+        root.0
+            .join(crate::tool_stats::store::conv_name(Adapter::Claude, f::C))
+            .is_file(),
+        "control: the conversation document is durable"
+    );
+    (root, reader)
+}
+
+/// #288 P5 survivors `calls_read.rs:3040` (release replaced with (), its
+/// `!` deleted): once a conversation is durably published, the reader keeps
+/// only its summary and head (plan r4 section 1: a Resume is held only while
+/// its conversation is processed), so a settled reader holds no evidence.
+#[test]
+fn a_durably_published_conversation_is_held_by_its_head_alone() {
+    let (_root, reader) = durable_held();
+    assert_eq!(reader.convs.len(), 1, "control: one conversation held");
+    for held in reader.convs.values() {
+        assert!(held.partial, "held from its head after publication");
+        assert!(!held.dirty, "control: nothing waits for publication");
+        assert_eq!(held.conv.summary.observations, 2, "control: counts kept");
+        assert_eq!(
+            held.conv,
+            crate::tool_stats::incr::Conv::partial(held.conv.summary.clone(), &held.conv.head()),
+            "no evidence beyond the summary and the head"
+        );
+    }
+}
+
+/// #288 P5 survivor `calls_read.rs:2863` (`||` to `&&` in the settle guard):
+/// a conversation held from its head whose read flag changes while its marks
+/// stay the same is loaded before it settles, so its document keeps its
+/// evidence. Reachable state: store-b holds two parents (not unique), store-c
+/// cannot be listed (unreadable), and the one parent in store-a is read; then
+/// store-a cannot be listed either. The marks stay not-unique + unreadable, no
+/// file is located and none goes (its store is unreadable), and only the read
+/// flag changes.
+#[test]
+fn a_read_flag_change_under_unchanged_marks_loads_the_conversation_first() {
+    let root = Fixture::new();
+    let third = "33333333-3333-4333-8333-333333333333";
+    for (name, session, store) in [
+        ("alpha", f::S, "store-a"),
+        ("beta", f::T, "store-b"),
+        ("gamma", third, "store-c"),
+    ] {
+        root.live(
+            name,
+            &root.meta(name, session, "claude", f::C, Some("work"), store),
+            "",
+        );
+    }
+    root.claude("store-a", f::C, calls(2).as_bytes());
+    root.claude("store-b", f::C, calls(1).as_bytes());
+    let twin = root.store("store-b").join("projects").join("other-project");
+    fs::create_dir_all(&twin).expect("a second Claude project");
+    fs::write(twin.join(format!("{}.jsonl", f::C)), calls(1)).expect("a twin parent");
+    fs::create_dir_all(root.store("store-c")).expect("store-c");
+    fs::write(root.store("store-c").join("projects"), b"").expect("an unlistable store");
+    prove_epoch(&root);
+    let key = (Adapter::Claude, f::C.to_owned());
+    let mut first = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut first);
+    let mut marks = vec![GapKind::NotUnique, GapKind::Unreadable];
+    marks.sort();
+    let held = &first.convs[&key];
+    assert!(held.conv.summary.read, "control: read through store-a");
+    assert_eq!(held.conv.resume.marks(), marks.as_slice(), "control: marks");
+    assert_eq!(held.conv.summary.observations, 2, "control: counts");
+    drop(first);
+    let stored = |root: &Fixture| {
+        let Loaded::Ok(conv) =
+            store::load_conv(&mut disk::Files::at(&root.0), Adapter::Claude, f::C)
+        else {
+            panic!("the published conversation document");
+        };
+        conv
+    };
+    let before = stored(&root);
+    let witness = |conv: &incr::Conv| -> Vec<Vec<[u8; 32]>> {
+        conv.summary
+            .files
+            .keys()
+            .filter_map(|stream| conv.resume.file(stream).map(|state| state.blocks.clone()))
+            .collect()
+    };
+    assert!(
+        witness(&before).iter().any(|blocks| !blocks.is_empty()),
+        "control: the document holds the block witness"
+    );
+    let projects = root.store("store-a").join("projects");
+    fs::rename(&projects, root.store("store-a").join("projects-away")).expect("move away");
+    fs::write(&projects, b"").expect("store-a can no longer be listed");
+    let mut second = Reader::new(root.0.clone(), Some(root.home()), Caps::SLICE);
+    drain(&mut second);
+    let held = &second.convs[&key];
+    assert!(!held.conv.summary.read, "the read flag changed");
+    assert_eq!(
+        held.conv.resume.marks(),
+        marks.as_slice(),
+        "marks unchanged"
+    );
+    assert_eq!(held.conv.summary.observations, 2, "counts kept");
+    let after = stored(&root);
+    assert!(!after.summary.read, "control: the change is durable");
+    assert_eq!(witness(&after), witness(&before), "the evidence survives");
+}

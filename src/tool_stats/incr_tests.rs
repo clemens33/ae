@@ -572,3 +572,37 @@ fn a_restart_of_a_refused_conversation_drops_its_stale_line_gaps() {
         conv.summary.gaps
     );
 }
+
+/// #288 P5 survivor `incr.rs:573` (delete field blocks): a head keeps each
+/// stream's status and cursor and no block witness, because the view holds
+/// heads for every conversation and a partial conversation is held from one
+/// (plan r4 section 1); a changed status loads the document instead.
+#[test]
+fn a_head_keeps_status_and_cursor_and_drops_the_block_witness() {
+    let mut conv = loaded_near(Adapter::Claude, 0);
+    let state = FileState {
+        dev: 7,
+        ino: 11,
+        len: 4_096,
+        mtime: (1_762_790_400, 5),
+        ctime: (1_762_790_401, 0),
+        cursor: 2_048,
+        skipping: true,
+        blocks: vec![[0xab; 32], [0xcd; 32]],
+    };
+    conv.resume.files.insert(child(), state.clone());
+    let head = conv.head();
+    let kept = head.files.get(&child()).expect("the child stream's head");
+    assert_eq!(
+        kept,
+        &FileState {
+            blocks: Vec::new(),
+            ..state
+        },
+        "status and cursor kept, no witness"
+    );
+    assert!(
+        head.files.values().all(|one| one.blocks.is_empty()),
+        "no stream keeps a witness"
+    );
+}
