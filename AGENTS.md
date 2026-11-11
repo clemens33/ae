@@ -42,8 +42,8 @@ The loop, in order:
    out to another CLI, never a harness-internal subagent.
 4. Commit on green, after the review findings are answered. Plain message, no trailers,
    no AI attribution of any kind.
-5. `just release` runs locally on one machine: check, test, rust-deny, CalVer bump, both bundles,
-   tag, push, assets. Nothing waits on a runner.
+5. `just release` runs locally on one machine: check, test (or a matching gate-receipt, which skips
+   only nextest), rust-deny, CalVer bump, both bundles, smoke, tag, push, assets. Nothing waits on a runner.
 
 Ship small vertical slices: commit, release and roll out standalone intermediate state or
 sub-features instead of waiting for the whole feature. A slice ships when it is green, reviewed
@@ -145,6 +145,7 @@ Every recipe: [docs/development.md](docs/development.md#lane-reference). These c
 | Recipe | What it is |
 |---|---|
 | `just test` / `just rust-check` | the gate: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test` (nextest and doctests: nextest does not run doctests) |
+| the gate-receipt | a whole green `just test` on a clean committed tree writes `<main checkout>/.local/gate-receipts/<tree hash>`. `just release` matches it against the PRE-BUMP tree (strict parse, every deciding fact equal, same host, at most 24 h old) and then skips ONLY nextest: fmt-check, lint, fuzz-check, doctests, deny, a proof that the bump changed only the six version paths, and a 10 s smoke of the built binary still run. No match, or any doubtful file, is the full gate. Delete the receipt to force it ([docs/development.md](docs/development.md#the-gate-receipt)) |
 | `just pre` | ADVISORY, NOT the gate, never cited as it: `rust-fmt-check` + `rust-lint` + the unit tests + the `doors`, `floor` and `gate` guard modules of `tests/it`, through the lane's filtered arm. No doctests, no fuzz compile, no retries; `just test` stays exact |
 | `just lane-lock claim <name> [secs]` / `release <name>` / `status` | one gate per machine, locked in the main checkout's `.local/locks/gate` (also from a linked worktree). `release` refuses any other owner and never steals or clears a stale lock; `status` reports one and exits 1 while held |
 | `just rust-mutants` | A product slice runs it `--in-diff` over its own diff before freeze and answers every survivor in the freeze report (test added, or named equivalent). Budget bounded, local; no percentage is ever cited or gated (docs/development.md §Mutation testing). `rust-cov` reports and never gates |

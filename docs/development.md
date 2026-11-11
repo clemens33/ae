@@ -81,7 +81,7 @@ just rust-prune       # report stale ae build output here; apply=yes cleans it
 just rust-stress 'test(=menu::x)' 20 600  # one named filter, repeated, bounded (see Stress runs)
 just version          # current AE_VERSION
 just bundles          # both platform bundles + release SHA256SUMS into ./dist
-just release          # check → test → rust-deny → CalVer → bundles → tag → gh release
+just release          # check → test (or a fresh gate-receipt) → rust-deny → CalVer → bundles → smoke → tag → gh release
 just docs             # serve the docs site locally on http://localhost:8000
 just docs-build       # build the static site into ./site
 ```
@@ -144,7 +144,7 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 | `just rust-build-release` / `bundles` | native release binary at `target/release/ae` (host only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` from one two-target cargo build (native binary under `target/aarch64-apple-darwin/release/`; needs the musl cross toolchain) |
 | `just rust-stress <filterset> [count=10] [secs=900]` | the BOUNDED repeat run: nextest `--stress-count` over ONE named filterset (a module or a test, never the suite), through the isolated lane. Refuses to start above load1 14 or when load1 cannot be read (status 1), refuses an empty or `all()` filter, a count or bound that is not a plain integer, or a host without `timeout`/`gtimeout` (status 2); threads are the lane's sizing (below), cargo runs at nice 10 under `timeout -k 5 <secs>` (status 124 when the bound ends it) and the lane reaps what it started. Never in the gate, CI or mutants. See Stress runs |
 | `just rust-prune` / `rust-prune apply=yes` | THIS checkout's stale `ae` build output: the report is the default and removes nothing, `apply=yes` runs six fixed `cargo clean -p ae` cleans, each proved by a `--dry-run` path check first. Refuses a redirected target dir, a non-root cwd, a linked tree, a process using the checkout or a dry run it cannot prove (a stdout line that is not an absolute path inside its tree, no single valid `Summary`). Own tree only, never during a gate (`docs/development.md`) |
-| `just release` | the whole release, locally: check, test, rust-deny before the bump. Pre-flight refuses before any state is written |
+| `just release` | the whole release, locally: check, test (or a matching gate-receipt, which skips only nextest), rust-deny before the bump. Pre-flight refuses before any state is written |
 | `just rust-linux` / `rust-linux-26` / `rust-linux-smoke` | ON DEMAND, never reached by `just test`, `just pre` or `just release`: the gate on real Linux, native arm64, in a local container (read-only checkout, `ae-linux-arm64-*` cache volumes, non-root, the mounted source checked against the host's HEAD, tree and dirty count) / the same on Ubuntu 26.04, own `ae-linux26-arm64-*` volumes; `rust-linux-26` (bus `stall`, the default since that arm went green, #267) adds a stalling session bus proved before the build, `rust-linux-26 off` is the validated-host arm / the x86_64 musl release bundle from `./dist` executed in an amd64 container. arm64 only: the x86_64 proof of Ubuntu 26.04 is a human run on x86_64 hardware |
 | `just harness-smoke [control]` | ON-DEMAND live smoke of the adapter rows against the REAL harness binaries and logins (a few short turns per tool); never in the gate, CI or mutants; control = hang shim, no spend |
 
@@ -283,6 +283,48 @@ is a report and never a failure: a missing or unreadable report, no git checkout
 `.local` is one `note:` line and the lane keeps the gate's exit status. A filtered run writes nothing, and
 a red run never reaches the report, so the ledger holds green whole gates only. `tests/it/gate.rs` pins the report, the append from a
 linked worktree, the silence of a filtered or red run and the order of the lane's commands.
+
+### The gate receipt
+
+A whole `just test` (no filter, exit 0) on a clean committed tree ends by writing a gate-receipt:
+one file, `.local/gate-receipts/<tree hash>` in the MAIN checkout (found like the lane lock, so a gate
+run in a slice worktree is the one a release in the main checkout finds, and the tree hash survives a
+fast-forward merge). `just release` reads it so that it does not run the same nextest twice.
+
+The writer is the last act of `rust-check`, after its four dependencies, and nowhere else. A filtered
+run, `just rust-test`, `just pre`, the bare lane and a red run never reach it, so none of them leaves a
+receipt and a red run neither writes one nor touches the last one. A dirty tree (staged, unstaged or
+untracked) writes none, because a receipt names a committed tree. The file is published with a
+same-directory temp and `mv`, and read back by the strict reader first. The receipt is a report and
+never a failure: an unwritable `.local` or an unreadable fact is one `gate-receipt:` line on stderr and
+the gate keeps its green exit status.
+
+The file holds fourteen `key=value` lines in a fixed order, printable ASCII, one LF each:
+`version tree head lock_hash toolchain_pin rustc nextest tmux harness inventory inventory_count scratch
+host time`. `lock_hash` and `toolchain_pin` are the sha256 of `Cargo.lock` and `rust-toolchain.toml`.
+`inventory` is the sha256 of the sorted `cargo nextest list` lines and `inventory_count` their number.
+`scratch` is the filesystem kind under the lane's scratch base. `harness` records seven
+`name=first line of --version` entries (or `name=absent`) and never decides.
+
+`just release` matches the receipt of the PRE-BUMP tree, before `just bump`, and prints its decision as
+a `gate-receipt:` line. It reuses the receipt only when ALL of these hold: the file exists and is
+readable, it parses under the strict grammar, `tree`, `head`, `lock_hash`, `toolchain_pin`, `rustc`,
+`nextest`, `tmux`, `scratch`, `host`, `inventory` and `inventory_count` equal their live values, and
+the receipt is not dated in the future and is at most 24 h old. Anything else (a missing, unreadable,
+stale or malformed file, another host, one changed fact) is the full gate: `just test`, as before.
+A malformed receipt is hostile persisted state and never causes a skip.
+
+A match skips ONLY nextest. `rust-fmt-check`, `rust-lint`, `rust-fuzz-check` and the doctests run
+again on the bumped tree, `just rust-deny` runs before the bump, and `cargo check --locked`, the
+bundles and a bounded smoke of the built binary (`--version` and `doctor`, 10 s each) follow. After
+the fuzz-lock refresh and before the version commit the release proves that every tracked path that
+differs from HEAD is one of the six version paths (`Cargo.toml`, `Cargo.lock`, `fuzz/Cargo.lock`,
+`README.md`, `docs/index.md`, `CHANGELOG.md`); any other path stops the release by name, before the
+commit and the tag.
+
+To force the full gate in a release, delete the receipt: `rm .local/gate-receipts/<tree hash>` (or the
+whole directory). Nothing else needs to change. Receipts are a few hundred bytes, one per gated tree,
+and safe to delete at any time. `tests/it/gate/receipt_spec.rs` is the frozen acceptance for all of this.
 
 ### Stress runs
 
@@ -597,11 +639,12 @@ recovered with `just bump-recover`.
 
 1. Pre-flight: clean working tree; on `main`; `gh` authenticated **and** `repos/<owner>/<repo>` reporting `permissions.push=true`; the musl cross compiler present; fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
-3. `just test` (the Rust suite; minutes).
+3. `just test` (the Rust suite; minutes), unless the gate-receipt of exactly this tree matches (see [The gate receipt](#the-gate-receipt)): then nextest alone is skipped, and fmt-check, lint, fuzz-check and the doctests run again after the bump.
 4. `just rust-deny` audits advisories, licenses, bans and sources (`cargo deny --locked check`). The advisory DB needs network; an offline release refuses here, before the bump.
 5. `just bump` updates the version — `Cargo.toml` and `Cargo.lock`, which since slice Z3 are the only files that hold one — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
-6. `just bundles` builds both halves into `dist/` and proves them.
+6. `just bundles` builds both halves into `dist/` and proves them; a bounded smoke (`--version` and `doctor`, 10 s each) of the native binary follows.
 7. `git-cliff` → `CHANGELOG.md` + release-body.
+   Before the commit the release proves that only the six version paths changed.
 8. Commit, tag locally, write the notes file and check every asset, push the branch, then `gh release create --target <sha>` with the three assets and the changelog section as `--notes-file`.
 
 **Why the order is what it is.** Everything that can refuse refuses in step 1, before a

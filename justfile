@@ -667,7 +667,7 @@ changelog:
 # published a version with no assets behind it, which is the half-done state
 # this ordering exists to prevent.
 
-# Full release pipeline: check → test → rust-deny → bump → bundles → changelog → tag → gh release
+# Full release pipeline: check → test (or a fresh gate receipt) → rust-deny → bump → bundles → smoke → changelog → tag → gh release
 # Usage: just release
 release:
     #!/usr/bin/env bash
@@ -718,14 +718,39 @@ release:
         exit 1
     }
 
+    # The smoke of the built release binary below is bounded, so the bound must
+    # exist before anything is built: a hung `ae` must not hang the release.
+    smoke_timeout="$(command -v timeout || command -v gtimeout || true)"
+    [ -n "$smoke_timeout" ] || {
+        echo "Error: the release smoke needs timeout (GNU coreutils; gtimeout on a Mac with brew coreutils)" >&2
+        exit 1
+    }
+
     git fetch {{GIT_REMOTE}} --tags
     git pull {{GIT_REMOTE}} {{default_branch}} --rebase
 
     # Gate 1: Quality
     just check
 
-    # Gate 2: Tests
-    just test
+    # Gate 2: Tests, unless a WHOLE green `just test` already vouched for exactly this
+    # tree. The receipt (`RECEIPT`, written by `rust-check`) is matched against the
+    # PRE-BUMP tree, here, before `just bump` writes a version file. A match skips
+    # ONLY nextest: fmt-check, lint, fuzz-check and the doctests run again below on
+    # the bumped tree, deny runs next, and the build, the proof and the smoke follow.
+    # No match, for whatever reason, is the gate as it always was. Deleting
+    # `.local/gate-receipts/<tree>` forces it.
+    {{ RECEIPT }}
+    reused=0
+    receipt_why="not inside a git checkout"
+    receipt_root_dir="$(receipt_root "$(git rev-parse --git-common-dir 2>/dev/null || true)")" || receipt_root_dir=""
+    receipt_file="$receipt_root_dir/.local/gate-receipts/$(git rev-parse 'HEAD^{tree}')"
+    if [ -n "$receipt_root_dir" ] && receipt_match "$receipt_file"; then
+        echo "gate-receipt: matched $receipt_file (age $((receipt_age / 60)) min, at most 24 h): nextest is skipped, the other gate steps run on the bumped tree"
+        reused=1
+    else
+        echo "gate-receipt: full gate, running just test: $receipt_why"
+        just test
+    fi
 
     # Gate 3: Supply chain on every release; advisory DB needs network, so offline refuses before bump.
     just rust-deny
@@ -736,12 +761,63 @@ release:
     # Re-parse and compile after bump before any changelog or tag publication.
     cargo check --locked
 
+    # A reused receipt vouched for nextest and nothing else. Every other step of the
+    # gate runs here, on the tree the release will publish: the bump changed the
+    # version every crate and doc test sees, so a break only the bump causes shows
+    # now, before the bundles, not after the tag.
+    if [ "$reused" = 1 ]; then
+        just rust-fmt-check
+        just rust-lint
+        just rust-fuzz-check
+        # The doctests, sized as the lane sizes them. A private TMPDIR and TMUX_TMPDIR
+        # and no inherited TMUX keep them off the live tmux server, as the lane does.
+        doc_dir="$(mktemp -d)"
+        (
+            {{ SIZING }}
+            size_counts
+            size_say "release doctests"
+            env -u TMUX -u TMUX_PANE TMPDIR="$doc_dir" TMUX_TMPDIR="$doc_dir" nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
+        ) || {
+            rm -rf "$doc_dir"
+            echo "Error: the doctests failed on the bumped tree" >&2
+            exit 1
+        }
+        rm -rf "$doc_dir"
+    fi
+
     # Gate 4: the artifacts themselves. Both platform halves and the
     # release-level SHA256SUMS, built and proven HERE — this is what the release
     # gate guards. It runs BEFORE the tag deliberately: a failed
     # cross build or a musl binary that is not static costs a `git checkout` of
     # two version files, not an orphan tag with nothing behind it.
     just bundles
+
+    # THE SMOKE of the binary the bundle carries (the native one, the half this
+    # machine can run): it answers --version with the version just bumped to, and
+    # `doctor` runs to its end, each inside a 10 s bound. `doctor` runs in a scratch
+    # home with no config, so it exits 1 with a finding of its own; the smoke asks
+    # only that it RAN: status 0 or 1. A timeout (124), a signal or a missing
+    # binary refuses the release before the tag.
+    binary="target/{{ RUST_NATIVE_TARGET }}/release/ae"
+    smoke_dir="$(mktemp -d)"
+    smoke_out="$("$smoke_timeout" 10 "$binary" --version 2>&1)" || smoke_out="(no answer within 10 s or a failure)"
+    smoke_line="${smoke_out%%$'\n'*}"
+    if [ "$smoke_line" != "ae $VERSION" ]; then
+        rm -rf "$smoke_dir"
+        echo "Error: smoke: the version probe of $binary printed '$smoke_line', want 'ae $VERSION'" >&2
+        exit 1
+    fi
+    smoke_status=0
+    env -u TMUX -u TMUX_PANE HOME="$smoke_dir" AE_HOME="$smoke_dir/state" CONFIG_FILE="$smoke_dir/config" TMUX_TMPDIR="$smoke_dir" \
+        "$smoke_timeout" 10 "$binary" doctor >"$smoke_dir/health.out" 2>&1 || smoke_status=$?
+    if [ "$smoke_status" -gt 1 ]; then
+        cat "$smoke_dir/health.out" >&2
+        rm -rf "$smoke_dir"
+        echo "Error: smoke: the health probe of $binary ended with status $smoke_status (124 is the 10 s bound), want 0 or 1" >&2
+        exit 1
+    fi
+    rm -rf "$smoke_dir"
+    echo "==> smoke: $binary answered both probes within 10 s"
 
     # Update the release badges.
     sed_i() {
@@ -791,6 +867,26 @@ release:
     # The separate fuzz lock must carry the bump too. Any refresh failure stops
     # here under errexit, even if cargo wrote a valid-looking partial update.
     cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
+
+    # THE BUMP PROOF. A reused receipt is evidence about the PRE-BUMP tree, so the
+    # release must show the bump left it alone: every tracked path that differs from
+    # HEAD, and so every path the commit below would carry, is one of the six
+    # version paths. A build script, a formatter or a changelog tool that touched
+    # anything else stops the release here, by name, before the commit and the tag.
+    version_paths=(Cargo.toml Cargo.lock fuzz/Cargo.lock README.md docs/index.md CHANGELOG.md)
+    stray=""
+    while IFS= read -r -d '' changed; do
+        allowed=0
+        for path in "${version_paths[@]}"; do
+            [ "$changed" != "$path" ] || allowed=1
+        done
+        [ "$allowed" = 1 ] || stray="$stray $changed"
+    done < <(git diff --name-only -z HEAD)
+    if [ -n "$stray" ]; then
+        echo "Error: the release changed paths outside the version files:$stray" >&2
+        exit 1
+    fi
+
     fuzz_delta="$(git diff --no-ext-diff --no-color --numstat -- fuzz/Cargo.lock)"
     # Compare all bytes, allowing only this ae version. A failed git show also
     # yields a mismatch and refuses; process-substitution errors cannot pass.
@@ -1261,8 +1357,48 @@ rust-setup:
 
     echo "==> ready — run: just rust-check"
 
+# Its last act is the GATE RECEIPT (`RECEIPT` below): a whole green run on a clean
+# committed tree writes one file naming that tree, so `just release` need not run
+# nextest again. The writer is HERE, after the four dependencies, and nowhere else:
+# `rust-test`, the lane, `pre` and every filtered run never reach it, so a partial
+# or advisory run cannot leave a receipt. A failed dependency stops `just` before
+# this body, so a red run neither writes one nor touches the last one. The receipt
+# is a report and never a failure: whatever goes wrong here is one `gate-receipt:`
+# line on stderr and the gate keeps its green exit status.
+
 # The gate: everything a change must pass before it is offered for review
 rust-check: rust-fmt-check rust-lint rust-fuzz-check rust-test
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{ RECEIPT }}
+    receipt_write() {
+        local common root dir tree tmp
+        common="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+        root="$(receipt_root "$common")" || { receipt_note "not written: not inside a git checkout"; return 0; }
+        # A receipt names a COMMITTED tree. Staged, unstaged and untracked changes all
+        # mean the tests ran on something no tree hash names.
+        if [[ -n "$(git status --porcelain 2>/dev/null || echo unreadable)" ]]; then
+            receipt_note "not written: the working tree is not clean, and a receipt names a committed tree"
+            return 0
+        fi
+        dir="$root/.local/gate-receipts"
+        if [[ -L "$dir" ]] || ! mkdir -p "$dir" 2>/dev/null; then
+            receipt_note "not written: $dir is not a usable directory"
+            return 0
+        fi
+        tree="$(git rev-parse 'HEAD^{tree}' 2>/dev/null)" || { receipt_note "not written: git cannot name the tree"; return 0; }
+        tmp="$(mktemp "$dir/.tmp.XXXXXX" 2>/dev/null)" || { receipt_note "not written: $dir is not writable"; return 0; }
+        # Built from the same readers the release uses, and read back by the strict
+        # reader before it is published, so a receipt that is written is one that parses.
+        if receipt_body >"$tmp" && receipt_parse "$tmp" && mv "$tmp" "$dir/$tree"; then
+            receipt_note "wrote $dir/$tree"
+        else
+            rm -f "$tmp"
+            receipt_note "not written: ${receipt_why:-the receipt could not be published}"
+        fi
+    }
+    receipt_write || true
+    exit 0
 
 # Check formatting in both languages of the build: Rust and TOML
 rust-fmt-check:
@@ -1485,6 +1621,222 @@ LEDGER := '''
             echo "note: gate ledger entry not written: $ledger is not writable" >&2
         fi
         return 0
+    }
+'''
+
+# THE GATE RECEIPT (P2): the proof that a WHOLE green gate ran on THIS tree, so a
+# release does not run the same nextest a second time. The writer is the tail of
+# `rust-check` and the reader is `release`; both interpolate this one helper, so
+# the writer and the reader cannot disagree about what a fact is.
+#
+# A receipt is one file, `<main checkout>/.local/gate-receipts/<tree hash>`: the
+# tree hash of the clean committed tree, so it survives a fast-forward merge, and
+# the main checkout's `.local` (found like the lane lock), so a gate run in a
+# slice worktree is the one a release in the main checkout finds. It holds
+# fourteen `key=value` lines in a fixed order, printable ASCII only, one LF each:
+#
+#   version tree head lock_hash toolchain_pin rustc nextest tmux harness
+#   inventory inventory_count scratch host time
+#
+# `harness` is seven `name=first line of --version` entries (or `name=absent`),
+# recorded only: no gate step runs a real harness. `inventory` is the sha256 of the
+# sorted `cargo nextest list` lines and `inventory_count` their number.
+#
+# THE RELEASE REUSES A RECEIPT ONLY WHEN IT PARSES STRICTLY, every deciding fact
+# equals its live value (all but `harness` and `time`), and the receipt is not
+# newer than now and at most 24 h old. Anything else, a file that is missing,
+# unreadable, malformed or stale, is a full gate: a receipt is hostile persisted
+# state and a doubtful one never causes a skip. It skips ONLY nextest.
+#
+# bash 3.2 safe (a Mac's /bin/bash): no associative arrays, no mapfile.
+RECEIPT := '''
+    receipt_keys=(version tree head lock_hash toolchain_pin rustc nextest tmux harness inventory inventory_count scratch host time)
+    receipt_harnesses=(claude codex gemini agy grok muse opencode)
+    receipt_note() { echo "gate-receipt: $*" >&2; }
+    # printable ASCII with no edge blanks: what the strict reader accepts
+    receipt_clean() { LC_ALL=C tr -cd '[:print:]' | sed -e 's/^ *//' -e 's/ *$//'; }
+    receipt_sha() {
+        if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi
+    }
+    # the first line a command prints, cut in the shell: a reader that stops
+    # early hands the writer a broken pipe under pipefail
+    receipt_first() {
+        local out
+        out="$("$@" 2>/dev/null </dev/null)" || return 1
+        printf '%s' "${out%%$'\n'*}" | receipt_clean
+    }
+    # the main checkout's root, from `git rev-parse --git-common-dir`
+    receipt_root() {
+        local common
+        common="$(cd -P "$1" 2>/dev/null && pwd -P)" || return 1
+        [[ "${common##*/}" == .git ]] || return 1
+        printf '%s' "${common%/.git}"
+    }
+    # the filesystem kind under the lane's scratch base, one token
+    receipt_scratch() {
+        local dir="${AE_TEST_TMPDIR:-/tmp}" kind="" point
+        if [[ "$(uname -s)" == Darwin ]]; then
+            point="$(df -P "$dir" 2>/dev/null | awk 'NR == 2 { print $NF }')" || point=""
+            kind="$(mount 2>/dev/null | awk -v mp="$point" '
+                { p = index($0, " on "); q = index($0, " (")
+                  if (p > 0 && q > p && substr($0, p + 4, q - p - 4) == mp) { s = substr($0, q + 2); sub(/[,)].*/, "", s); print s; exit } }')" || kind=""
+        else
+            kind="$(df -T -P "$dir" 2>/dev/null | awk 'NR == 2 { print $2 }')" || kind=""
+        fi
+        kind="$(printf '%s' "$kind" | tr -cd '[:alnum:]._-')"
+        printf '%s' "${kind:-unknown}"
+    }
+    # one harness' version for the record, bounded: a binary that hangs must not hang the gate
+    receipt_harness_version() {
+        local bound out
+        command -v "$1" >/dev/null 2>&1 || { printf 'absent'; return 0; }
+        bound="$(command -v timeout || command -v gtimeout || true)"
+        [[ -n "$bound" ]] || { printf 'unbounded'; return 0; }
+        out="$("$bound" 5 "$1" --version 2>/dev/null </dev/null)" || out=""
+        out="$(printf '%s' "${out%%$'\n'*}" | receipt_clean | tr ';' ',')"
+        printf '%s' "${out:-unknown}"
+    }
+    # the test inventory, listed once per shell: receipt_inv (sha256) and receipt_inv_count
+    receipt_inventory() {
+        local list
+        [[ -z "${receipt_inv:-}" ]] || return 0
+        list="$(cargo nextest list --locked --all-features --message-format oneline 2>/dev/null | LC_ALL=C sort)" || list=""
+        if [[ -z "$list" ]]; then
+            receipt_why="cargo nextest list printed no tests"
+            return 1
+        fi
+        receipt_inv="$(printf '%s\n' "$list" | receipt_sha | cut -d' ' -f1)"
+        receipt_inv_count="$(printf '%s\n' "$list" | wc -l | tr -d ' ')"
+    }
+    # receipt_fact <key>: the LIVE value of one fact in $fact, or return 1 with $receipt_why
+    receipt_fact() {
+        local name
+        receipt_why=""
+        fact=""
+        case "$1" in
+            version) fact=1 ;;
+            tree) fact="$(git rev-parse 'HEAD^{tree}' 2>/dev/null)" || fact="" ;;
+            head) fact="$(git rev-parse HEAD 2>/dev/null)" || fact="" ;;
+            lock_hash) fact="$(receipt_sha Cargo.lock 2>/dev/null | cut -d' ' -f1)" || fact="" ;;
+            toolchain_pin) fact="$(receipt_sha rust-toolchain.toml 2>/dev/null | cut -d' ' -f1)" || fact="" ;;
+            rustc) fact="$(receipt_first rustc --version)" || fact="" ;;
+            nextest) fact="$(receipt_first cargo nextest --version)" || fact="" ;;
+            tmux) fact="$(receipt_first tmux -V)" || fact="" ;;
+            harness)
+                for name in "${receipt_harnesses[@]}"; do
+                    fact="${fact:+$fact;}$name=$(receipt_harness_version "$name")"
+                done
+                ;;
+            inventory) if receipt_inventory; then fact="$receipt_inv"; fi ;;
+            inventory_count) if receipt_inventory; then fact="$receipt_inv_count"; fi ;;
+            scratch) fact="$(receipt_scratch)" || fact="" ;;
+            host) fact="$(receipt_first hostname -s)" || fact="" ;;
+            time) fact="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || fact="" ;;
+        esac
+        if [[ -z "$fact" ]]; then
+            [[ -n "$receipt_why" ]] || receipt_why="the live $1 fact cannot be read"
+            return 1
+        fi
+    }
+    # the whole receipt for the live tree, or return 1 naming the fact that cannot be read
+    receipt_body() {
+        local key out=""
+        for key in "${receipt_keys[@]}"; do
+            receipt_fact "$key" || return 1
+            out="$out$key=$fact"$'\n'
+        done
+        printf '%s' "$out"
+    }
+    # UTC YYYY-MM-DDTHH:MM:SSZ to epoch seconds; nothing when it is not a real instant
+    receipt_epoch() {
+        LC_ALL=C awk -v t="$1" 'BEGIN {
+            if (t !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/) exit
+            y = substr(t, 1, 4) + 0; m = substr(t, 6, 2) + 0; d = substr(t, 9, 2) + 0
+            h = substr(t, 12, 2) + 0; mi = substr(t, 15, 2) + 0; s = substr(t, 18, 2) + 0
+            if (y < 1970 || m < 1 || m > 12 || h > 23 || mi > 59 || s > 60) exit
+            leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+            dim = (m == 2) ? (leap ? 29 : 28) : ((m == 4 || m == 6 || m == 9 || m == 11) ? 30 : 31)
+            if (d < 1 || d > dim) exit
+            if (m <= 2) y--
+            era = int(y / 400); yoe = y - era * 400
+            doy = int((153 * ((m + 9) % 12) + 2) / 5) + d - 1
+            doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+            printf "%d", (era * 146097 + doe - 719468) * 86400 + h * 3600 + mi * 60 + s
+        }'
+    }
+    # does <value> satisfy the grammar of <key>?
+    receipt_value_ok() {
+        local key="$1" value="$2" re i name part rest
+        case "$key" in
+            version) [[ "$value" == 1 ]] ;;
+            tree | head) re='^[0-9a-f]{40}$'; [[ "$value" =~ $re ]] ;;
+            lock_hash | toolchain_pin | inventory) re='^[0-9a-f]{64}$'; [[ "$value" =~ $re ]] ;;
+            inventory_count) re='^(0|[1-9][0-9]{0,17})$'; [[ "$value" =~ $re ]] ;;
+            time) [[ -n "$(receipt_epoch "$value")" ]] ;;
+            rustc | nextest | tmux | scratch | host) [[ -n "$value" && "$value" != " "* && "$value" != *" " ]] ;;
+            harness)
+                i=0
+                rest="$value"
+                for name in "${receipt_harnesses[@]}"; do
+                    i=$((i + 1))
+                    if ((i < ${#receipt_harnesses[@]})); then
+                        [[ "$rest" == *";"* ]] || return 1
+                        part="${rest%%;*}"
+                        rest="${rest#*;}"
+                    else
+                        part="$rest"
+                        [[ "$part" != *";"* ]] || return 1
+                    fi
+                    [[ "$part" == "$name="?* ]] || return 1
+                done
+                ;;
+            *) return 1 ;;
+        esac
+    }
+    # THE STRICT READER: receipt_parse <file> leaves every value in r_<key> and returns 0,
+    # or returns 1 with $receipt_why (missing, unreadable, malformed ...). Exactly the
+    # fourteen keys, once each, in order, one non-blank line apiece.
+    receipt_parse() {
+        local file="$1" line key value n=0 stray
+        receipt_why=""
+        if [[ ! -e "$file" && ! -L "$file" ]]; then receipt_why="missing"; return 1; fi
+        if [[ -L "$file" || ! -f "$file" || ! -r "$file" ]]; then receipt_why="unreadable"; return 1; fi
+        if [[ ! -s "$file" ]]; then receipt_why="malformed: the receipt is empty"; return 1; fi
+        stray="$(LC_ALL=C tr -d '[:print:]\n' <"$file" | wc -c | tr -d ' ')" || stray=1
+        if [[ "$stray" != 0 ]]; then receipt_why="malformed: bytes outside printable ASCII and LF"; return 1; fi
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if ((n >= ${#receipt_keys[@]})); then receipt_why="malformed: more than ${#receipt_keys[@]} lines"; return 1; fi
+            key="${receipt_keys[$n]}"
+            if [[ "$line" != "$key="* ]]; then receipt_why="malformed: line $((n + 1)) is not $key=..."; return 1; fi
+            value="${line#"$key="}"
+            if ! receipt_value_ok "$key" "$value"; then receipt_why="malformed: the value of $key breaks its grammar"; return 1; fi
+            printf -v "r_$key" '%s' "$value"
+            n=$((n + 1))
+        done <"$file"
+        if ((n != ${#receipt_keys[@]})); then receipt_why="malformed: $n lines, not ${#receipt_keys[@]}"; return 1; fi
+    }
+    # THE MATCH: receipt_match <file> returns 0 when the receipt may stand in for nextest,
+    # else 1 with $receipt_why. On a match $receipt_age is its age in seconds. The cheap
+    # facts first and the inventory last, so a receipt that already fails never pays for
+    # `cargo nextest list`.
+    receipt_match() {
+        local key name stamp now
+        receipt_parse "$1" || return 1
+        for key in tree head lock_hash toolchain_pin rustc nextest tmux scratch host; do
+            receipt_fact "$key" || return 1
+            name="r_$key"
+            if [[ "$fact" != "${!name}" ]]; then receipt_why="$key differs (receipt: ${!name}; now: $fact)"; return 1; fi
+        done
+        stamp="$(receipt_epoch "$r_time")"
+        now="$(date -u +%s)"
+        receipt_age=$((now - stamp))
+        if ((receipt_age < 0)); then receipt_why="the receipt is dated in the future"; return 1; fi
+        if ((receipt_age > 86400)); then receipt_why="stale: $((receipt_age / 3600)) h old, the limit is 24 h"; return 1; fi
+        for key in inventory inventory_count; do
+            receipt_fact "$key" || return 1
+            name="r_$key"
+            if [[ "$fact" != "${!name}" ]]; then receipt_why="$key differs (receipt: ${!name}; now: $fact)"; return 1; fi
+        done
     }
 '''
 

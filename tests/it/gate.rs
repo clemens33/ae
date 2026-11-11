@@ -23,6 +23,20 @@ use super::parity::{Invocation, capture::ExitOutcome, capture::raw};
     reason = "the frozen #234 acceptance is one long matrix fixture and its bytes stay as the independent author froze them"
 )]
 mod mutantstime_spec;
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_wrap,
+    clippy::cloned_ref_to_slice_refs,
+    clippy::default_trait_access,
+    clippy::expect_used,
+    clippy::manual_range_contains,
+    clippy::map_unwrap_or,
+    clippy::nonminimal_bool,
+    clippy::too_many_lines,
+    clippy::unnecessary_cast,
+    reason = "the frozen P2 acceptance is a fixture-heavy independent spec whose bytes stay as its author froze them; a lint finding is not a reason to edit them"
+)]
+mod receipt_spec;
 
 /// The repository root — this file's crate manifest directory.
 fn root() -> PathBuf {
