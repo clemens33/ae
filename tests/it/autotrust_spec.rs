@@ -575,14 +575,6 @@ impl Rig {
     fn count(&self, action: &str) -> usize {
         self.events().iter().filter(|e| e.action == action).count()
     }
-    /// Run one more cycle of the stepped watchdog.
-    fn step(&self) {
-        self.stepper
-            .borrow_mut()
-            .as_mut()
-            .unwrap_or_else(|| panic!("setup: a stepped watchdog"))
-            .step();
-    }
     /// [`wait_for`] on what the watchdog does.
     fn until(&self, what: &str, ready: impl Fn() -> bool) {
         self.until_within(what, WAIT, ready);
@@ -1750,7 +1742,7 @@ fn v14_fresh_client_activity_holds_every_key_then_detach_allows_answer() {
         client
     };
     let mut client = attach(&rig);
-    rig.start_stepped();
+    rig.start();
     // The loop ends when the held attempts reach the bound, which is the
     // record `human-prompt`, not after a fixed span a loaded host can outrun.
     let until = Instant::now() + WITNESS_WAIT;
@@ -1784,8 +1776,7 @@ fn v14_fresh_client_activity_holds_every_key_then_detach_allows_answer() {
         let next = attach(&rig);
         drop(client);
         client = next;
-        // One cycle with the fresh client on the pane.
-        rig.step();
+        std::thread::sleep(Duration::from_millis(300));
     }
     assert_eq!(
         rig.count("human-prompt"),
@@ -1793,7 +1784,7 @@ fn v14_fresh_client_activity_holds_every_key_then_detach_allows_answer() {
         "held attempts reached the bound"
     );
     drop(client);
-    rig.until("answer after client detaches", || {
+    wait_for("answer after client detaches", || {
         rig.count("auto-trust") == 1
     });
     assert_eq!(rig.wire(), b"\r", "one Enter after input stops");
@@ -2322,6 +2313,13 @@ mod unreach {
                 );
             }
             if case == "lock" {
+                // The wrapper logs a capture or a proof while ANY holder has
+                // the send lock, so the receipts so far are the foreign
+                // sender's cycles. `completed` judges the dismissal's own
+                // reads; the stepped watchdog rests until the next step.
+                for receipt in ["locked-captures", "locked-proofs"] {
+                    let _ = fs::remove_file(rig.root.join(receipt));
+                }
                 // The foreign sender was all that held the Escape back.
                 drop(held.take());
                 completed(&rig);
