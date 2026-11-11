@@ -996,17 +996,27 @@ bundles:
 
     version="$(just version)"
     out="dist"
-    native_bin="target/release/ae"
+    native_bin="target/{{ RUST_NATIVE_TARGET }}/release/ae"
     musl_bin="target/{{ RUST_CROSS_TARGET }}/release/ae"
 
-    cargo build --release --locked
+    # BOTH HALVES IN ONE CARGO INVOCATION: two `--target` flags give one
+    # jobserver and one build-directory lock, so the two single-codegen-unit
+    # `ae` compiles (lto = thin, codegen-units = 1, both unchanged) run side by
+    # side instead of one after the other (two sequential builds took 343 s in a
+    # release). Two cargo PROCESSES on one target dir would queue on the lock
+    # instead, so this stays one process. An explicit `--target` puts the native
+    # binary under target/<triple>/release/, which is why `native_bin` names the
+    # triple; `just install` and `just rust-build-release` build the host alone
+    # and keep target/release/ae.
+    #
     # ring's build script compiles C for the target, so the cross build needs a
     # musl C COMPILER as well as a musl linker. The linker is pinned in
-    # .cargo/config.toml; CC_<target> is what the `cc` crate reads, and it is
-    # set HERE rather than there because that name does not exist on the Linux
-    # CI leg, which builds this same target against musl-tools.
+    # .cargo/config.toml; CC_<target> is what the `cc` crate reads, it is scoped
+    # to the musl target so it leaves the native half alone, and it is set HERE
+    # rather than there because that name does not exist on the Linux CI leg,
+    # which builds this same target against musl-tools.
     CC_x86_64_unknown_linux_musl={{ RUST_MUSL_CC }} \
-        cargo build --release --locked --target {{ RUST_CROSS_TARGET }}
+        cargo build --release --locked --target {{ RUST_NATIVE_TARGET }} --target {{ RUST_CROSS_TARGET }}
 
     # The native half is RUN, which is the whole reason it is the native half.
     echo "==> native: $("$native_bin" --version)"
@@ -1173,6 +1183,13 @@ LINUX_RUSTUP_SHA_ARM64 := "15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfd
 # record for a musl binary that executes and resolves a real name.
 
 RUST_CROSS_TARGET := "x86_64-unknown-linux-musl"
+
+# The native release half's triple. `just bundles` names it with `--target`, in
+# the one cargo invocation that also builds the foreign half, so the native
+# binary lands in target/<this>/release/ae. It is the host half of
+# rust-toolchain.toml's two targets; `tests/it/gate.rs` refuses drift between them.
+
+RUST_NATIVE_TARGET := "aarch64-apple-darwin"
 
 # The musl C compiler and linker driver, in the spelling the prebuilt Homebrew
 # tap publishes (messense/macos-cross-toolchains). ONE name, three readers: the

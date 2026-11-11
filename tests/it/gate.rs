@@ -4943,6 +4943,214 @@ fn a_release_builds_both_bundles_locally_and_proves_its_rights_before_the_bump()
     }
 }
 
+/// The string value of a `NAME := "value"` line of the justfile, or empty.
+fn justfile_string(justfile: &str, name: &str) -> String {
+    justfile
+        .lines()
+        .find_map(|line| line.trim_end().strip_prefix(&format!("{name} := ")))
+        .map(|value| value.trim().trim_matches('"').to_owned())
+        .unwrap_or_default()
+}
+
+/// Whether the release builds both halves in ONE cargo invocation (#P1b): the
+/// `bundles` recipe runs exactly one `cargo build`, release and locked, naming
+/// the native and the foreign target once each and no other, with the musl C
+/// compiler scoped to the foreign target, and takes its two binaries from the
+/// `target/<triple>/release/` directories that invocation fills. Two cargo
+/// processes on one target directory would queue on its lock; one process
+/// shares one jobserver and builds the two single-codegen-unit crates side by
+/// side. `just install` and `just rust-build-release` build the host alone and
+/// keep `target/release/ae`, which the Linux CI legs read.
+fn bundles_build_both_targets_once_ok(justfile: &str, toolchain: &str) -> bool {
+    let (native, cross) = (
+        justfile_string(justfile, "RUST_NATIVE_TARGET"),
+        justfile_string(justfile, "RUST_CROSS_TARGET"),
+    );
+    let targets = toolchain
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("targets = "))
+        .unwrap_or_default();
+    let listed = |triple: &str| !triple.is_empty() && targets.contains(&format!("\"{triple}\""));
+    let lines = recipe_text(justfile, "bundles:");
+    let builds: Vec<&String> = lines
+        .iter()
+        .filter(|line| line.contains("cargo build"))
+        .collect();
+    let [build] = builds.as_slice() else {
+        return false;
+    };
+    let word = |name: &str| format!("--target {{{{ {name} }}}}");
+    let host_alone = ["install:", "rust-build-release:"].iter().all(|header| {
+        let own = recipe_text(justfile, header);
+        own.iter()
+            .filter(|line| line.contains("cargo build"))
+            .all(|line| line.ends_with("cargo build --release --locked"))
+            && own.iter().any(|line| line.contains("target/release/ae"))
+    });
+    listed(&native)
+        && listed(&cross)
+        && native != cross
+        && build.starts_with("CC_x86_64_unknown_linux_musl={{ RUST_MUSL_CC }} ")
+        && build.contains("cargo build --release --locked ")
+        && build.matches("--target").count() == 2
+        && build.matches(&word("RUST_NATIVE_TARGET")).count() == 1
+        && build.matches(&word("RUST_CROSS_TARGET")).count() == 1
+        && lines
+            .iter()
+            .any(|line| line == "native_bin=\"target/{{ RUST_NATIVE_TARGET }}/release/ae\"")
+        && lines
+            .iter()
+            .any(|line| line == "musl_bin=\"target/{{ RUST_CROSS_TARGET }}/release/ae\"")
+        && !lines.join("\n").contains("target/release/")
+        && host_alone
+}
+
+#[test]
+fn the_release_builds_both_halves_in_one_cargo_invocation_with_two_targets() {
+    let justfile = read(&root().join("justfile"));
+    let toolchain = read(&root().join("rust-toolchain.toml"));
+    assert!(
+        bundles_build_both_targets_once_ok(&justfile, &toolchain),
+        "`just bundles` must run ONE `cargo build --release --locked` with a --target for each \
+         of the native and the musl triple, and read both binaries from target/<triple>/release"
+    );
+    assert_eq!(
+        justfile_string(&justfile, "RUST_NATIVE_TARGET"),
+        "aarch64-apple-darwin"
+    );
+    // RED — the old shape: a native build, then a second process for musl.
+    let one = "cargo build --release --locked --target {{ RUST_NATIVE_TARGET }} --target {{ RUST_CROSS_TARGET }}";
+    assert!(justfile.contains(one));
+    let two = justfile.replace(
+        one,
+        "cargo build --release --locked --target {{ RUST_CROSS_TARGET }}\n    cargo build --release --locked --target {{ RUST_NATIVE_TARGET }}",
+    );
+    assert!(!bundles_build_both_targets_once_ok(&two, &toolchain));
+    // RED — one target only, a third target, a build without the lockfile or the
+    // release profile, a musl compiler no longer scoped in front of the build.
+    for broken in [
+        one.replace(" --target {{ RUST_NATIVE_TARGET }}", ""),
+        format!("{one} --target wasm32-unknown-unknown"),
+        one.replace(" --locked", ""),
+        one.replace(" --release", ""),
+    ] {
+        assert!(!bundles_build_both_targets_once_ok(
+            &justfile.replace(one, &broken),
+            &toolchain
+        ));
+    }
+    assert!(!bundles_build_both_targets_once_ok(
+        &justfile.replace("CC_x86_64_unknown_linux_musl={{ RUST_MUSL_CC }}", "CC=cc"),
+        &toolchain
+    ));
+    // RED — the native binary still read from the host directory, a triple the
+    // toolchain does not list, and a host-alone recipe that grew a target.
+    assert!(!bundles_build_both_targets_once_ok(
+        &justfile.replace(
+            "native_bin=\"target/{{ RUST_NATIVE_TARGET }}/release/ae\"",
+            "native_bin=\"target/release/ae\""
+        ),
+        &toolchain
+    ));
+    assert!(!bundles_build_both_targets_once_ok(
+        &justfile.replace(
+            "RUST_NATIVE_TARGET := \"aarch64-apple-darwin\"",
+            "RUST_NATIVE_TARGET := \"aarch64-unknown-linux-gnu\""
+        ),
+        &toolchain
+    ));
+    assert!(!bundles_build_both_targets_once_ok(
+        &justfile.replace(
+            "rust-build-release:\n    cargo build --release --locked\n",
+            "rust-build-release:\n    cargo build --release --locked --target {{ RUST_NATIVE_TARGET }}\n"
+        ),
+        &toolchain
+    ));
+}
+
+/// `just bundles` really hands cargo ONE invocation with both targets, and the
+/// foreign C compiler in its environment. On the Apple Silicon host the recipe
+/// accepts, with a fake `cargo` recording its argv, a fake musl compiler and a
+/// fake pinned `llvm-readobj`: the run ends at the static proof (no binary was
+/// built), which is after the only cargo call. Elsewhere the recipe refuses
+/// before it builds, and there is nothing to record.
+#[test]
+fn bundles_hands_cargo_one_build_with_both_targets_and_the_musl_compiler() {
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
+        return;
+    }
+    let base = super::cli::OwnedScratch::root("gate", "bundles2t");
+    let work = base.join("work");
+    let bin = base.join("bin");
+    let sysroot = base.join("sysroot");
+    let readobj_dir = sysroot.join("lib/rustlib/aarch64-apple-darwin/bin");
+    for dir in [&work, &bin, &readobj_dir] {
+        std::fs::create_dir_all(dir).unwrap_or_else(|why| panic!("{}: {why}", dir.display()));
+    }
+    std::fs::write(work.join("justfile"), read(&root().join("justfile")))
+        .and_then(|()| {
+            std::fs::write(
+                work.join("Cargo.toml"),
+                "[package]\nname = \"ae\"\nversion = \"0.0.0\"\n",
+            )
+        })
+        .unwrap_or_else(|why| panic!("the fixture checkout: {why}"));
+    let script = |path: PathBuf, body: String| {
+        std::fs::write(&path, format!("#!/bin/sh\n{body}"))
+            .and_then(|()| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)))
+            .unwrap_or_else(|why| panic!("{}: {why}", path.display()));
+    };
+    script(
+        bin.join("cargo"),
+        format!(
+            "echo \"$@\" >>{0}/cargo.argv\necho \"CC=$CC_x86_64_unknown_linux_musl\" >>{0}/cargo.env\n",
+            base.display()
+        ),
+    );
+    script(bin.join("x86_64-unknown-linux-musl-gcc"), String::new());
+    script(
+        bin.join("rustc"),
+        format!(
+            "case \"$1\" in --print) echo {} ;; -vV) echo 'host: aarch64-apple-darwin' ;; esac\n",
+            sysroot.display()
+        ),
+    );
+    script(readobj_dir.join("llvm-readobj"), String::new());
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let Some(just) = std::env::split_paths(&path)
+        .map(|dir| dir.join("just"))
+        .find(|file| file.is_file())
+    else {
+        panic!("just must be on PATH");
+    };
+    symlink(just, bin.join("just")).unwrap_or_else(|why| panic!("the linked just: {why}"));
+    let run = Invocation::new("just")
+        .env_cleared()
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("HOME", &*base)
+        .arg("bundles");
+    let ran = raw::run(&run, &work, &base.join("out"), &base.join("err"))
+        .unwrap_or_else(|why| panic!("the recipe runs: {why}"));
+    let stderr = read(&base.join("err"));
+    assert!(
+        !matches!(ran.outcome(), ExitOutcome::Code(0)),
+        "no binary was built, so the recipe cannot succeed: {stderr}"
+    );
+    assert!(
+        stderr.contains("does not report a static binary"),
+        "the recipe must reach the static proof, after its cargo call: {stderr}"
+    );
+    assert_eq!(
+        read(&base.join("cargo.argv")).trim_end(),
+        "build --release --locked --target aarch64-apple-darwin --target x86_64-unknown-linux-musl"
+    );
+    assert_eq!(
+        read(&base.join("cargo.env")).trim_end(),
+        "CC=x86_64-unknown-linux-musl-gcc"
+    );
+}
+
 #[test]
 fn the_release_workflow_is_a_manual_proof_lane_with_artifacts_only() {
     let workflow = read(&root().join(".github/workflows/release.yml"));
