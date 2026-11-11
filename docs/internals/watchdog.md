@@ -169,6 +169,16 @@ The watchdog reads one environment variable, `AE_WATCHDOG_SWEEP_SEC`. The other 
 | sweep retry max (`--sweep-retry-max`) | 6 | Fast retries allowed before falling back to normal cadence and raising one `meta-agent unreachable` alert |
 | `AE_WATCHDOG_SWEEP_SEC` | 120 | Orchestrator changed-overview minimum-spacing fallback when persisted `sweep_sec` is absent or invalid (`0` falls back to the normal watchdog; positive values below `60` become `60`) |
 
+The hidden `_watchdog-run` takes one more flag, for tests only: `--step-channel <name>`
+(a bare tmux channel word). With it the startup cycle runs at once, and then the daemon
+signals `<name>-done` after every completed iteration and waits for a `wait-for -S <name>`
+before the next one. Real time, an attach or another channel never starts a cycle. Each
+wait holds one plain `wait-for` client that is released by a signal, never killed. A
+600-second backstop ends a wait that nobody steps. `--interval` keeps every arithmetic role,
+and a rebind of the recorded server stops a stepped daemon with exit 1. `ae watchdog start
+<name> -- <flags>` refuses the flag with its usage. The integration rigs drive it through
+`tests/it/watchdog_step.rs`.
+
 For the orchestrator only, launch persists `[workspace] sweep` as `sweep_sec`;
 that session fact outranks `AE_WATCHDOG_SWEEP_SEC`, which outranks 120.
 

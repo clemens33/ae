@@ -1482,6 +1482,15 @@ pub(crate) fn waiter_args(server: &ServerId, session: &str, channel: &str) -> Ve
     args
 }
 
+/// A plain wait on `channel`, with no attachment read: the stepped
+/// watchdog's wait for its next step.
+#[must_use]
+pub(crate) fn channel_waiter_args(server: &ServerId, channel: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["wait-for".to_owned(), channel.to_owned()]);
+    args
+}
+
 /// The signal that releases a waiter on `channel`. A killed `wait-for` client
 /// leaves its queued item, and with it a server descriptor, until the channel's
 /// next signal, so a waiter ae is done with is released, never killed.

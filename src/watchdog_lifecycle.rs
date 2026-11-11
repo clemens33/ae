@@ -17,6 +17,9 @@ use crate::{lifecycle, meta, session_launch, tmux, transport, watchdog_daemon, w
 /// The usage, both lines, plus the knob passthrough.
 pub const USAGE: &str = "Usage: ae watchdog <start|stop|status> [session-name] [--pane <id>] [-- <knob flags>]\n  (If run inside an ae session, session-name is optional.)";
 
+/// The hidden daemon's test-only flag, which the forwarded knob tail refuses.
+const STEP_CHANNEL_FLAG: &str = "--step-channel";
+
 /// The `@ae_agent` stamp the watchdog's pane carries.
 const AGENT_STAMP: &str = "_watchdog";
 
@@ -148,7 +151,11 @@ fn run_inner(
         )?;
         return Ok(EXIT_USAGE);
     }
-    let Some(action) = action else {
+    // No action is a usage error, and so is the stepped pace's flag in the
+    // forwarded tail: it is a test knob of the hidden `_watchdog-run` only, and
+    // a public start must never hand the daemon a cadence nobody steps.
+    let Some(action) = action.filter(|_| !knobs.iter().any(|word| word == STEP_CHANNEL_FLAG))
+    else {
         writeln!(err, "{USAGE}")?;
         return Ok(EXIT_USAGE);
     };
@@ -926,6 +933,21 @@ mod tests {
         assert!(USAGE.contains("start|stop|status"));
         assert!(USAGE.contains("[session-name]"));
         assert!(USAGE.contains("session-name is optional"));
+    }
+
+    #[test]
+    fn the_forwarded_knob_tail_refuses_the_step_channel_before_it_reads_anything() {
+        // A root that does not exist: the refusal must come before any read.
+        let root = std::path::Path::new("/nonexistent/ae-wdlife-step");
+        let tail: Vec<String> = ["start", "s", "--", "--interval", "1", "--step-channel", "x"]
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let got = run_with_actor(root, &tail, "human", &mut out, &mut err).expect("buffers write");
+        assert_eq!(got, super::EXIT_USAGE);
+        assert_eq!(String::from_utf8_lossy(&err), format!("{USAGE}\n"));
+        assert!(out.is_empty());
     }
 
     #[test]

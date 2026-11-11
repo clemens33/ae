@@ -4363,7 +4363,39 @@ fn launch_id_for<'a>(ids: &'a [(String, String)], slot: &str) -> Option<&'a str>
 /// the cycle instead.
 pub fn run(
     meta_dir: &Path,
+    knobs: Knobs,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    run_paced(meta_dir, knobs, None, out, err)
+}
+
+/// [`run`] driven by a test, one cycle per signal on `channel`
+/// (`_watchdog-run --step-channel <channel>`).
+///
+/// The startup cycle runs at once. After every completed iteration the daemon
+/// signals `<channel>-done` and waits for the next signal on `channel`; real
+/// time, an attach or another channel never starts a cycle. No return path
+/// signals done. A rebind of the recorded server stops it with 1.
+///
+/// # Errors
+///
+/// As [`run`].
+pub fn run_stepped(
+    meta_dir: &Path,
+    knobs: Knobs,
+    channel: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    run_paced(meta_dir, knobs, Some(channel), out, err)
+}
+
+/// The body of [`run`] and [`run_stepped`].
+fn run_paced(
+    meta_dir: &Path,
     mut knobs: Knobs,
+    step: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
@@ -4465,6 +4497,7 @@ pub fn run(
         knobs.tg_supervise_secs,
     );
 
+    let mut stepped = step.map(|channel| StepPace::new(server.clone(), channel));
     let code = watch(
         meta_dir,
         knobs,
@@ -4473,8 +4506,10 @@ pub fn run(
         &helper,
         &journal,
         &mut deferred,
+        &mut stepped,
         err,
     );
+    drop(stepped);
     // The pidfile is released by `PidFile`'s Drop — ownership-checked, so a
     // stop/start in quick succession never lets the dying process vandalise its
     // successor's registration — and Drop, not an explicit call, so EVERY
@@ -4598,6 +4633,7 @@ fn watch(
     helper: &SendHelper,
     journal: &Journal<'_>,
     deferred: &mut crate::watchdog_glue::Deferred,
+    step: &mut Option<StepPace>,
     err: &mut impl Write,
 ) -> crate::Result<u8> {
     let mut carry = Carry::new();
@@ -4616,6 +4652,7 @@ fn watch(
             .map(|bytes| Meta::parse(&String::from_utf8_lossy(bytes)));
         match rebind(&server, parsed.as_ref()) {
             Rebind::Keep => {}
+            Rebind::Use(_) if step.is_some() => return stop_stepped_rebind(&server, session, err),
             Rebind::Use(named) => {
                 server = adopt_server(
                     server,
@@ -4717,12 +4754,50 @@ fn watch(
                 true
             }
         };
-        if ran_cycle {
-            wait_between_cycles(&server, session, &mut carry, knobs.interval_secs);
-        } else {
-            std::thread::sleep(Duration::from_secs(knobs.interval_secs));
-        }
+        rest(&server, session, &mut carry, knobs, ran_cycle, step);
     }
+}
+
+/// Rest between two iterations of [`watch`]: the interval loop after a verdict
+/// cycle, one plain sleep after a retry. A stepped daemon first says the
+/// iteration completed, then rests until its next step.
+fn rest(
+    server: &crate::inventory::ServerId,
+    session: &str,
+    carry: &mut Carry,
+    knobs: Knobs,
+    ran_cycle: bool,
+    step: &mut Option<StepPace>,
+) {
+    let interval_secs = knobs.interval_secs;
+    match step {
+        Some(pace) => {
+            pace.acknowledge();
+            if ran_cycle {
+                wait_between_cycles_with(server, session, carry, STEP_BACKSTOP, pace);
+            } else {
+                pace.sleep(STEP_BACKSTOP);
+            }
+        }
+        None if ran_cycle => wait_between_cycles(server, session, carry, interval_secs),
+        None => std::thread::sleep(Duration::from_secs(interval_secs)),
+    }
+}
+
+/// A stepped daemon whose record names another server stops instead of moving:
+/// its step channel lives on the server it started on, and the move would make
+/// that server unaddressable.
+fn stop_stepped_rebind(
+    server: &crate::inventory::ServerId,
+    session: &str,
+    err: &mut impl Write,
+) -> crate::Result<u8> {
+    let _ = clear_published(server, session);
+    writeln!(
+        err,
+        "ae: watchdog: step mode does not follow a server rebind — stopping"
+    )?;
+    Ok(1)
 }
 
 /// Refresh the restore beat; a failure never stops the watcher and is said once.
@@ -4797,6 +4872,98 @@ impl Pace for RealPace {
         deadline: Instant,
     ) -> transport::Waited {
         transport::run_tmux_wait(server, session, channel, deadline)
+    }
+}
+
+/// The longest a stepped daemon waits for its next step before it runs a
+/// cycle anyway: a safety bound far outside any test's wait, never a clock.
+const STEP_BACKSTOP: Duration = Duration::from_mins(10);
+
+/// The test-only pace of `_watchdog-run --step-channel <channel>`: real time,
+/// except that a signal on `channel` ends the current interval.
+///
+/// The interval loop is given [`STEP_BACKSTOP`] as its interval and runs
+/// unchanged, motion ticker included. Every rest it takes waits on ONE plain
+/// `wait-for <channel>` client, kept across rests until it exits, so a release
+/// can never race a step already on its way. A step moves this clock past the
+/// interval's deadline, and the loop leaves through its own deadline check.
+/// `interval_secs` keeps every arithmetic role it has.
+struct StepPace {
+    server: crate::inventory::ServerId,
+    channel: String,
+    /// `<channel>-done`, signalled after every completed iteration.
+    done: String,
+    /// How far this clock runs ahead of the wall clock: one backstop per step.
+    skew: Duration,
+    waiter: Option<transport::ChannelWaiter>,
+}
+
+impl StepPace {
+    fn new(server: crate::inventory::ServerId, channel: &str) -> Self {
+        Self {
+            server,
+            channel: channel.to_owned(),
+            done: format!("{channel}-done"),
+            skew: Duration::ZERO,
+            waiter: None,
+        }
+    }
+
+    /// Say that one loop iteration completed.
+    fn acknowledge(&self) {
+        let _ = transport::signal_channel(&self.server, &self.done);
+    }
+
+    /// Wait for a step until the real instant `until`. A step, or a waiter
+    /// that cannot wait (its server is gone), ends the interval: the next
+    /// liveness probe decides from there.
+    fn await_step(&mut self, until: Instant) -> transport::Waited {
+        if self.waiter.is_none() {
+            self.waiter = transport::ChannelWaiter::start(&self.server, &self.channel);
+        }
+        let waited = self
+            .waiter
+            .as_mut()
+            .map_or(transport::Waited::Failed, |waiter| waiter.wait_until(until));
+        if waited != transport::Waited::TimedOut {
+            self.waiter = None;
+            self.skew = self.skew.saturating_add(STEP_BACKSTOP);
+        }
+        waited
+    }
+}
+
+impl Pace for StepPace {
+    fn now(&self) -> Instant {
+        let now = Instant::now();
+        now.checked_add(self.skew).unwrap_or(now)
+    }
+
+    fn sleep(&mut self, duration: Duration) {
+        let until = Instant::now()
+            .checked_add(duration)
+            .unwrap_or_else(Instant::now);
+        let _ = self.await_step(until);
+    }
+
+    fn wait(
+        &mut self,
+        _server: &crate::inventory::ServerId,
+        _session: &str,
+        _channel: &str,
+        deadline: Instant,
+    ) -> transport::Waited {
+        let until = deadline.checked_sub(self.skew).unwrap_or_else(Instant::now);
+        self.await_step(until)
+    }
+}
+
+impl Drop for StepPace {
+    /// A waiter still waiting when the daemon stops is released, never killed.
+    fn drop(&mut self) {
+        if let Some(waiter) = self.waiter.take() {
+            waiter.release(&self.server);
+        }
     }
 }
 

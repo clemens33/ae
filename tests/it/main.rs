@@ -209,6 +209,8 @@ mod waiton_moved_spec;
 mod waiton_spec;
 mod watchdog_glue;
 mod watchdog_spacing_spec;
+mod watchdog_step;
+mod watchdog_step_spec;
 mod weeklyroom_spec;
 mod worker_birth_decode_spec;
 mod worker_birth_folds_spec;

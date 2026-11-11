@@ -517,6 +517,9 @@ pub enum Request {
         dir: PathBuf,
         /// Every tunable, defaulted to the values a flagless call keeps.
         knobs: crate::watchdog_daemon::Knobs,
+        /// `--step-channel <name>`: the test-only stepped pace
+        /// ([`crate::watchdog_daemon::run_stepped`]); `None` keeps real time.
+        step: Option<String>,
     },
     /// `_telegram-run <ae-home> [--config <p>] [--home <p>] [knob flags]` — run
     /// the Telegram bridge: inbound long poll plus outbound `say` forwarding.
@@ -1194,9 +1197,10 @@ impl Request {
         match tail {
             [] => Self::MissingOperand(WATCHDOG_RUN),
             [dir, flags @ ..] => match watchdog_knobs(flags) {
-                Ok(knobs) => Self::WatchdogRun {
+                Ok((knobs, step)) => Self::WatchdogRun {
                     dir: dir.into(),
                     knobs,
+                    step,
                 },
                 Err(word) => Self::UsageError(word),
             },
@@ -1710,8 +1714,13 @@ fn monitor_args(flags: &[String]) -> std::result::Result<crate::monitor::Args, S
     Ok(args)
 }
 
-fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemon::Knobs, String> {
+/// Read `_watchdog-run`'s knob flags, and its test-only `--step-channel`,
+/// whose name must be one bare tmux channel word.
+fn watchdog_knobs(
+    flags: &[String],
+) -> std::result::Result<(crate::watchdog_daemon::Knobs, Option<String>), String> {
     let mut knobs = crate::watchdog_daemon::Knobs::default();
+    let mut step = None;
     let mut rest = flags;
     while let [flag, tail @ ..] = rest {
         let Some((value, after)) = tail.split_first() else {
@@ -1735,11 +1744,13 @@ fn watchdog_knobs(flags: &[String]) -> std::result::Result<crate::watchdog_daemo
             "--sweep-retry-max" => knobs.sweep.retry_max = count(value)?,
             // The deferred Telegram revive's cadence.
             "--tg-supervise-secs" => knobs.tg_supervise_secs = number(value)?,
+            "--step-channel" if crate::tmux::is_wake_channel(value) => step = Some(value.clone()),
+            "--step-channel" => return Err(value.clone()),
             _ => return Err(flag.clone()),
         }
         rest = after;
     }
-    Ok(knobs)
+    Ok((knobs, step))
 }
 
 /// Read `_telegram-run`'s paths and knobs.
@@ -2758,13 +2769,14 @@ mod tests {
             Request::WatchdogRun {
                 dir: "/s/demo".into(),
                 knobs: crate::watchdog_daemon::Knobs::default(),
+                step: None,
             }
         );
     }
 
     #[test]
     fn watchdog_run_reads_every_knob_in_any_order() {
-        let Request::WatchdogRun { dir, knobs } = Request::parse(&argv(&[
+        let Request::WatchdogRun { dir, knobs, .. } = Request::parse(&argv(&[
             WATCHDOG_RUN,
             "/s/demo",
             "--quiet-tries",
@@ -2810,6 +2822,34 @@ mod tests {
         assert_eq!(knobs.sweep.sweep_secs, 600);
         assert_eq!(knobs.sweep.retry_secs, 45);
         assert_eq!(knobs.sweep.retry_max, 2);
+    }
+
+    #[test]
+    fn watchdog_run_takes_a_step_channel_beside_the_knobs_and_names_a_bad_one() {
+        let parsed = Request::parse(&argv(&[
+            WATCHDOG_RUN,
+            "/s/demo",
+            "--interval",
+            "1",
+            "--step-channel",
+            "rig_7-a",
+        ]));
+        let knobs = crate::watchdog_daemon::Knobs {
+            interval_secs: 1,
+            ..crate::watchdog_daemon::Knobs::default()
+        };
+        assert_eq!(
+            parsed,
+            Request::WatchdogRun {
+                dir: "/s/demo".into(),
+                knobs,
+                step: Some("rig_7-a".to_owned()),
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[WATCHDOG_RUN, "/s/demo", "--step-channel", "a b"])),
+            Request::UsageError("a b".to_owned())
+        );
     }
 
     #[test]

@@ -3969,7 +3969,16 @@ pub fn run_with(
         cli::Request::Telegram { tail } => with_state_root(err, |root, err| {
             telegram_lifecycle::run(root, tail, out, err)
         })?,
-        cli::Request::WatchdogRun { dir, knobs } => watchdog_daemon::run(dir, *knobs, out, err)?,
+        cli::Request::WatchdogRun {
+            dir,
+            knobs,
+            step: None,
+        } => watchdog_daemon::run(dir, *knobs, out, err)?,
+        cli::Request::WatchdogRun {
+            dir,
+            knobs,
+            step: Some(channel),
+        } => watchdog_daemon::run_stepped(dir, *knobs, channel, out, err)?,
         cli::Request::TelegramRun { paths, knobs } => telegram::bridge::run(paths, *knobs, err)?,
         cli::Request::NetProbe { host, port } => netprobe::run(host, *port, out, err)?,
         cli::Request::CompactMemoBaseline { dir } => compact::memo_baseline_step(dir, out)?,

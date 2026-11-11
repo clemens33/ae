@@ -1618,6 +1618,74 @@ fn release_waiter(
     Waited::Failed
 }
 
+/// One plain `wait-for <channel>` client, held across several waits: a wait
+/// that times out leaves it waiting for the next one, so no release can race
+/// a signal that is already on its way.
+#[derive(Debug)]
+pub(crate) struct ChannelWaiter {
+    channel: String,
+    child: std::process::Child,
+}
+
+impl ChannelWaiter {
+    /// Start waiting for `channel` on `server`; `None` when the waiter could
+    /// not start.
+    pub(crate) fn start(server: &ServerId, channel: &str) -> Option<Self> {
+        if !addressable(server) || !tmux::is_wake_channel(channel) {
+            return None;
+        }
+        let child = start_wait_client(
+            &tmux::channel_waiter_args(server, channel),
+            std::process::Stdio::null(),
+        )?;
+        Some(Self {
+            channel: channel.to_owned(),
+            child,
+        })
+    }
+
+    /// Wait until the channel is signalled (`Woke`), `deadline` passes
+    /// (`TimedOut`, still waiting), or the client ended without a signal
+    /// (`Failed`). After `Woke` or `Failed` the client is reaped.
+    pub(crate) fn wait_until(&mut self, deadline: std::time::Instant) -> Waited {
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => {
+                    note_waiter_exit(self.child.id(), status);
+                    return if status.success() {
+                        Waited::Woke
+                    } else {
+                        Waited::Failed
+                    };
+                }
+                Ok(None) => {}
+                Err(_) => return Waited::Failed,
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Waited::TimedOut;
+            }
+            std::thread::sleep(WAIT_POLL.min(deadline.saturating_duration_since(now)));
+        }
+    }
+
+    /// End a waiter that is still waiting: a signal on its own channel, then
+    /// the reap ([`release_waiter`], whose backstop kill is only for a server
+    /// that stopped answering).
+    pub(crate) fn release(mut self, server: &ServerId) {
+        let _ = release_waiter(server, &self.channel, &mut self.child, Waited::TimedOut);
+    }
+}
+
+/// Signal `channel` on `server` once: `wait-for -S`, which wakes every waiter
+/// on it, or is kept for the next waiter when none waits.
+#[must_use]
+pub(crate) fn signal_channel(server: &ServerId, channel: &str) -> bool {
+    addressable(server)
+        && tmux::is_wake_channel(channel)
+        && run(PROGRAM, &tmux::wake_release_args(server, channel)).0
+}
+
 /// The ownership proofs one verdict cycle reads, in the order asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PeerOwnershipRead {

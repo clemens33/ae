@@ -1283,7 +1283,8 @@ fn watchdog_run_reads_every_knob_and_the_last_repeat_wins() {
         Request::parse(&argv(&["_watchdog-run", "/d"])),
         Request::WatchdogRun {
             dir: "/d".into(),
-            knobs: base
+            knobs: base,
+            step: None
         }
     );
     let words = [
@@ -1344,7 +1345,8 @@ fn watchdog_run_reads_every_knob_and_the_last_repeat_wins() {
         request,
         Request::WatchdogRun {
             dir: "/d".into(),
-            knobs
+            knobs,
+            step: None
         }
     );
     assert_eq!(

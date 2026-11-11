@@ -975,6 +975,64 @@ pub(crate) fn tmux_signalled(
         .is_some_and(|out| out.status.success())
 }
 
+/// A pending `wait-for channel` client on the server at `sock`, started and
+/// handed over. The caller ends it: a signal on `channel` releases it, then the
+/// caller reaps it. Dropping it alive kills it, and a killed waiter keeps a
+/// server descriptor until the channel's next signal.
+pub(crate) fn tmux_waiter(sock: &std::path::Path, channel: &str) -> std::io::Result<OwnedChild> {
+    tmux_client(sock, &["wait-for", channel])
+}
+
+/// How many descriptors process `pid` holds open: `/proc/<pid>/fd` on Linux,
+/// the numeric `f` fields of `lsof` on macOS (cwd, txt and the other
+/// pseudo-descriptors are not numeric). `lsof` runs through the harness's one
+/// child door.
+pub(crate) fn descriptor_count(pid: u32) -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .unwrap_or_else(|why| panic!("descriptors of {pid}: {why}"))
+            .count()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = ROOT.get_or_init(|| OwnedScratch::root("fds", "lsof").keep());
+        let call = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let out = root.join(format!("{call}.out"));
+        let err = root.join(format!("{call}.err"));
+        let status = raw::run(
+            &Invocation::new("/usr/sbin/lsof")
+                .arg("-a")
+                .arg("-p")
+                .arg(pid.to_string())
+                .arg("-F")
+                .arg("f"),
+            root,
+            &out,
+            &err,
+        )
+        .unwrap_or_else(|why| panic!("lsof for {pid}: {why}"));
+        let listing = std::fs::read_to_string(&out).unwrap_or_default();
+        assert!(
+            matches!(status.outcome(), ExitOutcome::Code(0)),
+            "lsof for {pid}: {}",
+            std::fs::read_to_string(&err).unwrap_or_default()
+        );
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&err);
+        listing
+            .lines()
+            .filter(|line| {
+                line.strip_prefix('f').is_some_and(|fd| {
+                    !fd.is_empty() && fd.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            })
+            .count()
+    }
+}
+
 /// A real tmux client on `sock` running `tail`: the sixth door, shared by the
 /// attach above and the bounded signal wait.
 #[allow(
