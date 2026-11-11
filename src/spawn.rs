@@ -30,7 +30,7 @@ use crate::inventory::ServerId;
 use crate::launch;
 use crate::meta::{self, Meta, ServerSelector};
 use crate::session_launch::capture;
-use crate::state::{EXIT_FAILED, EXIT_USAGE};
+use crate::state::{self, EXIT_FAILED, EXIT_USAGE};
 use crate::store;
 use crate::time::Timestamp;
 use crate::tool::ToolKind;
@@ -43,7 +43,7 @@ pub const SPAWN_USAGE: &str =
     "Usage: spawn <name> --using <profile[@client]> [--dir <absolute path>] [--] [prompt]";
 
 /// The `retire` usage.
-pub const RETIRE_USAGE: &str = "Usage: retire <agent-name|pane-id>";
+pub const RETIRE_USAGE: &str = "Usage: retire <agent-name|pane-id> [reason]";
 
 /// How long to wait for a new pane's shell before pasting.
 const SHELL_SETTLE: Duration = Duration::from_millis(300);
@@ -1920,6 +1920,24 @@ fn retire_proven_seat(
     }
 }
 
+/// The member a retire reason rides in. Never the summary: that is the
+/// structured `tool= profile= config_home= config_home_base=` line `ae usage`
+/// reads, whose last field takes everything after it.
+const RETIRE_REASON_KEY: &str = "retire_reason";
+
+/// The optional reason after `retire <target>`, as the record carries it: the
+/// words joined like a spawn prompt, then flattened and capped like every other
+/// reason. Blank is none.
+fn retire_reason(words: &[String]) -> String {
+    state::summary_of(words.join(" ").trim()).trim().to_owned()
+}
+
+/// The retire record's line. Without a reason it is exactly the line written
+/// before reasons existed: an empty member is never written.
+fn retire_line(fields: &EventFields<'_>, reason: &str) -> String {
+    tracked::event_line_with(fields, "", &[(RETIRE_REASON_KEY, reason)])
+}
+
 /// `_retire <meta-dir> <name|%pane>`.
 ///
 /// # Errors
@@ -1933,12 +1951,14 @@ pub fn run_retire(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let [target] = tail else {
+    let Some((target, reason_words)) = tail.split_first() else {
         writeln!(err, "{RETIRE_USAGE}")?;
         writeln!(err, "  Examples: retire researcher")?;
         writeln!(err, "           retire %5")?;
+        writeln!(err, "           retire researcher 'review done'")?;
         return Ok(EXIT_USAGE);
     };
+    let reason = retire_reason(reason_words);
     let facts = match facts(dir) {
         Ok(facts) => facts,
         Err(why) => {
@@ -2004,7 +2024,7 @@ pub fn run_retire(
             config_home_base,
         )
     });
-    let _ = store::open(dir).append_event(&tracked::event_line(&EventFields::new(
+    let fields = EventFields::new(
         now,
         actor_of(caller),
         RETIRE_ACTION,
@@ -2016,7 +2036,8 @@ pub fn run_retire(
         "",
         &summary,
         "",
-    )));
+    );
+    let _ = store::open(dir).append_event(&retire_line(&fields, &reason));
     Ok(0)
 }
 
@@ -2704,6 +2725,75 @@ mod tests {
                 .len(),
             before,
             "no pane was opened"
+        );
+    }
+
+    #[test]
+    fn a_retire_reason_is_the_words_after_the_target_flattened_and_capped() {
+        let words = |items: &[&str]| -> Vec<String> {
+            items.iter().map(|item| (*item).to_owned()).collect()
+        };
+        assert_eq!(super::retire_reason(&[]), "", "no reason is none");
+        assert_eq!(
+            super::retire_reason(&words(&["  ", "\t"])),
+            "",
+            "blank is none"
+        );
+        assert_eq!(
+            super::retire_reason(&words(&["review", "done,", "merged"])),
+            "review done, merged",
+            "unquoted words join like a spawn prompt"
+        );
+        assert_eq!(
+            super::retire_reason(&words(&["one\ntwo\tthree "])),
+            "one two three",
+            "newlines and tabs are spaces, the ends are trimmed"
+        );
+        let long = "x".repeat(crate::state::REASON_MAX + 50);
+        assert_eq!(
+            super::retire_reason(&words(&[&long])).chars().count(),
+            crate::state::REASON_MAX,
+            "a reason is capped like every other one"
+        );
+    }
+
+    // The reason rides as its OWN member: `usage` reads the retire summary and
+    // takes everything after `config_home_base=` as the base, so a reason
+    // appended there would corrupt a seat's attribution.
+    #[test]
+    fn a_retire_record_carries_its_reason_beside_an_untouched_summary() {
+        let fields = crate::tracked::EventFields::new(
+            Timestamp::parse("2026-11-11T10:00:00Z").unwrap(),
+            "lead",
+            "retire",
+            "scout",
+            "",
+            "",
+            "",
+            "spawned.0",
+            "",
+            "tool=claude profile=p config_home=/h config_home_base=",
+            "",
+        );
+        let bare = super::retire_line(&fields, "");
+        assert_eq!(
+            bare,
+            crate::tracked::event_line(&fields),
+            "no reason writes the record exactly as before"
+        );
+        assert!(!bare.contains("retire_reason"), "{bare}");
+        let reasoned = super::retire_line(&fields, "review done; \"merged\"");
+        let event = crate::events::Event::parse_line(&reasoned).expect("still an event");
+        assert_eq!(event.action, "retire");
+        assert_eq!(event.target.as_deref(), Some("scout"));
+        assert_eq!(
+            event.summary.as_deref(),
+            Some("tool=claude profile=p config_home=/h config_home_base="),
+            "the structured summary is untouched"
+        );
+        assert!(
+            reasoned.contains(r#""retire_reason":"review done; \"merged\"""#),
+            "{reasoned}"
         );
     }
 

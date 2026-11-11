@@ -1619,6 +1619,57 @@ fn a_retire_purges_the_seat_and_refuses_what_is_not_its_to_take() {
     );
 }
 
+/// `retire <agent> [reason…]`: the reason words are journaled on the retire
+/// record in their own member, a retire without one writes none, and a
+/// retire with no target at all is still the usage error.
+#[test]
+fn a_retire_takes_an_optional_reason_and_journals_it() {
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-why"));
+    if !present {
+        return;
+    }
+    let rig = Rig::new("retirewhy");
+    for name in ["plain", "reasoned"] {
+        let (code, _, stderr) = rig.run(ae::cli::SPAWN, &[name, "--using", "fake", "--", "hi"]);
+        assert_eq!(code, Some(0), "{stderr}");
+    }
+
+    let (code, stdout, stderr) = rig.run(ae::cli::RETIRE, &["plain"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !rig.events().contains("retire_reason"),
+        "a retire without a reason journals none: {}",
+        rig.events()
+    );
+
+    let (code, stdout, stderr) = rig.run(
+        ae::cli::RETIRE,
+        &["reasoned", "review", "done,", "findings", "answered"],
+    );
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.starts_with("Retired reasoned (pane %"), "{stdout}");
+    let events = rig.events();
+    let record = events
+        .lines()
+        .find(|line| line.contains(r#""action":"retire""#) && line.contains("reasoned"))
+        .unwrap_or_else(|| panic!("a retire record for the seat: {events}"));
+    assert!(
+        record.contains(r#""retire_reason":"review done, findings answered""#),
+        "{record}"
+    );
+    assert!(
+        record.contains("\"summary\":\"tool=claude profile=fake config_home="),
+        "the structured summary `usage` reads is still the summary: {record}"
+    );
+
+    let (code, _, stderr) = rig.run(ae::cli::RETIRE, &[]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("Usage: retire <agent-name|pane-id> [reason]"),
+        "{stderr}"
+    );
+}
+
 /// The RETIRE half of the retire rule, against the writer that really records
 /// one: the seat is spawned and retired for real, and the record it leaves is
 /// what closes the request.

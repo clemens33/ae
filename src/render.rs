@@ -292,10 +292,10 @@ Conventions:
 
 Remove a spawned agent from the workspace:
 ```bash
-${sessions_dir}/retire <agent_name|pane_id>
+${sessions_dir}/retire <agent_name|pane_id> [reason]
 ```
 
-Kills the pane, removes meta entry, and updates the manifest. Only works on spawned agents.
+Kills the pane, removes meta entry, and updates the manifest. Only works on spawned agents. The optional reason is journaled on the retire record.
 
 ## Cross-session
 

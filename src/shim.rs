@@ -175,7 +175,7 @@ pub const HELPERS: [Helper; 27] = [
     },
     Helper {
         name: "retire",
-        usage: "Usage: retire <agent-name|pane-id>\nRemove a spawned agent.\n",
+        usage: "Usage: retire <agent-name|pane-id> [reason]\nRemove a spawned agent. The optional reason is journaled on the retire record.\n",
         entry: crate::cli::RETIRE,
         prefix: &[],
     },
