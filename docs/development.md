@@ -467,6 +467,8 @@ wc -l < "$PWD/.local/<slice>/mutants.list"   # the count, before the cost
 just rust-mutants --in-diff "$PWD/.local/<slice>/slice.diff"
 ```
 
+`just rust-mutants` hands every argument to `cargo mutants` as the one word you typed, so a regex with a space or a `|` needs only the shell quoting you would give `cargo mutants` itself (`-F 'fn a b|fn c'`).
+
 Run the lines one at a time and stop at a nonzero exit: a failed listing is not a count of
 zero. The base is the recorded pre-slice commit, never a guess: `git merge-base main HEAD`
 is a fork point, which is `HEAD` on `main` or after the slice has landed (the slice's own

@@ -240,9 +240,11 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
     let callers = [
         ("rust-test:", "just _tmux-isolated test"),
         ("rust-cov:", "just _tmux-isolated cov"),
+        // Positional words, never `{{ args }}`: that splices the arguments back into
+        // a command line, where a space splits one and a `|` starts a pipeline (#221).
         (
             "rust-mutants *args:",
-            "just _tmux-isolated mutants {{ args }}",
+            "just _tmux-isolated mutants \"$@\"",
         ),
     ];
     reap < mktemp
@@ -431,6 +433,14 @@ fn the_rust_test_recipe_isolates_every_real_tmux_probe() {
         rust_test_tmux_isolation_ok(&read(&root().join("justfile"))),
         "every Rust test tool must run through one fresh private -L ae server and clean it up"
     );
+
+    // RED — the public mutants recipe splicing its arguments back into a command
+    // line (#221): a filter with a space or a `|` no longer reaches cargo-mutants
+    // as one word. The real justfile with only that line put back.
+    assert!(!rust_test_tmux_isolation_ok(&read(&root().join("justfile")).replace(
+        "just _tmux-isolated mutants \"$@\"",
+        "just _tmux-isolated mutants {{ args }}"
+    )));
 
     // RED — merely unsetting the inherited client still reaches the ordinary
     // socket directory and therefore the developer's named ae server.
@@ -3094,6 +3104,20 @@ fn rooted_lane(
     env: &[(&str, String)],
     args: &[&str],
 ) -> (ExitOutcome, Vec<Call>, String) {
+    let mut words = vec!["_tmux-isolated"];
+    words.extend_from_slice(args);
+    rooted_just(base, lane_base, cargo, env, &words)
+}
+
+/// `rooted_lane` for any recipe: `recipe_args` is the recipe name and then the
+/// words `just` is given, so the PUBLIC `rust-mutants` runs end to end.
+fn rooted_just(
+    base: &Path,
+    lane_base: &Path,
+    cargo: &str,
+    env: &[(&str, String)],
+    recipe_args: &[&str],
+) -> (ExitOutcome, Vec<Call>, String) {
     let work = base.join("work");
     for dir in [work.as_path(), lane_base] {
         std::fs::create_dir_all(dir).unwrap_or_else(|why| panic!("{}: {why}", dir.display()));
@@ -3107,9 +3131,8 @@ fn rooted_lane(
         .arg("--working-directory")
         .arg(&work)
         .arg("--justfile")
-        .arg(root().join("justfile"))
-        .arg("_tmux-isolated");
-    for arg in args {
+        .arg(root().join("justfile"));
+    for arg in recipe_args {
         lane = lane.arg(arg);
     }
     for (key, value) in env {
@@ -3348,8 +3371,8 @@ fn two_mutants_lanes_never_share_or_reuse_a_cargo_root() {
 /// cargo-mutants its own pinned flags and then every argument it received —
 /// spaces kept, nothing added or dropped — runs it from the caller's directory,
 /// ends with its status and still removes the lane. This pins that inner argv
-/// only, never the public `rust-mutants` recipe's `{{ args }}` forwarding
-/// (#221).
+/// only; the public `rust-mutants` recipe that feeds it is pinned by
+/// `rust_mutants_forwards_each_argument_as_one_word` (#221).
 #[test]
 fn a_mutants_lane_passes_its_arguments_through_and_ends_as_cargo_mutants_did() {
     let scratch = super::cli::OwnedScratch::root("gate", "margs");
@@ -3387,6 +3410,55 @@ fn a_mutants_lane_passes_its_arguments_through_and_ends_as_cargo_mutants_did() {
         std::fs::canonicalize(base.join("work")).ok(),
         "cargo mutants ran from {pwd:?}"
     );
+    assert!(lanes_left(&lane_base).is_empty(), "{stderr}");
+}
+
+/// #221: the PUBLIC `rust-mutants` recipe hands the lane every argument it
+/// received as ONE word. It used to splice them back into a command line with
+/// `{{ args }}`, so a regex such as `fn a b|fn c` was cut at its space and its
+/// `|` started a pipeline. The words below carry a space, a `|`, a `$`, both
+/// kinds of quote, a glob and a leading dash: cargo-mutants must be handed each
+/// exactly as `just` was, after the lane's own pinned flags.
+#[test]
+fn rust_mutants_forwards_each_argument_as_one_word() {
+    let scratch = super::cli::OwnedScratch::root("gate", "pubargs");
+    let base = scratch.path();
+    let lane_base = base.join("l b");
+    let env = caller_roots(base).to_vec();
+    // The recipe calls `just` again, which finds its justfile from the working
+    // directory as it does for a developer in the checkout: give `work` the
+    // real one, by link, so nothing runs in the repository itself.
+    let work = base.join("work");
+    std::fs::create_dir_all(&work).unwrap_or_else(|why| panic!("{}: {why}", work.display()));
+    std::os::unix::fs::symlink(root().join("justfile"), work.join("justfile"))
+        .unwrap_or_else(|why| panic!("the linked justfile: {why}"));
+    let words = [
+        "--in-diff",
+        "a b.diff",
+        "--regex",
+        "fn a b|fn c",
+        "-E",
+        "test(x) | test(y)",
+        "$HOME 'q' \"d\" *",
+        "-- dash",
+    ];
+    let mut recipe = vec!["rust-mutants"];
+    recipe.extend_from_slice(&words);
+    let (outcome, calls, stderr) = rooted_just(base, &lane_base, ROOTS_CARGO, &env, &recipe);
+    let [call] = &calls[..] else {
+        panic!(
+            "one cargo call expected, {} recorded: {stderr}",
+            calls.len()
+        );
+    };
+    let mut want = vec!["mutants", "--cargo-arg=--locked", "--jobs", "1"];
+    want.extend_from_slice(&words);
+    assert_eq!(
+        call.args(),
+        want,
+        "rust-mutants must pass each argument through as one word: {stderr}"
+    );
+    assert!(matches!(outcome, ExitOutcome::Code(0)), "{stderr}");
     assert!(lanes_left(&lane_base).is_empty(), "{stderr}");
 }
 

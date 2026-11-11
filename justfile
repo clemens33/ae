@@ -2279,7 +2279,7 @@ rust-cov:
 
 # Mutation testing
 rust-mutants *args:
-    just _tmux-isolated mutants {{ args }}
+    just _tmux-isolated mutants "$@"
 
 # The BOUNDED repeat run for a flake hunt: nextest --stress-count over ONE named
 # filterset (a module or a test, never the suite) through the isolated lane.
