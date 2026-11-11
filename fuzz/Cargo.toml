@@ -468,3 +468,10 @@ path = "fuzz_targets/tool_stats_doc.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "memo_view"
+path = "fuzz_targets/memo_view.rs"
+test = false
+doc = false
+bench = false
