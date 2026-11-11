@@ -154,7 +154,7 @@ ratatui-core = { version = "=0.1.2", default-features = false }
 # where crossterm is a dozen plus a second input parser. Only `termios` (+ `std`
 # for the `AsFd` impls) is enabled. Every call is confined to the terminal door
 # `src/app/tty.rs` by clippy.toml's `disallowed-methods`.
-rustix = { version = "=1.1.5", default-features = false, features = [
+rustix = { version = "=1.1.6", default-features = false, features = [
   "std",
   "termios",
 ] }

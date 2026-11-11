@@ -850,7 +850,7 @@ not appending them to the table.
 `ae app` draws a sidebar, tabs and a chat column in cells; the human ruled it is
 built "with ratatui etc.", and lead ruled the dependency shape on the sideapp
 plan. Two direct rows: **`ratatui-core =0.1.2`** (`default-features` off, no
-features) and **`rustix =1.1.5`** (`std` + `termios` only). The candidates were
+features) and **`rustix =1.1.6`** (`std` + `termios` only). The candidates were
 measured in scratch crates on the pinned compiler, both targets, before choosing:
 
 | Candidate | Lock entries | thiserror | Why not / why |
