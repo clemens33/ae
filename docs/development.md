@@ -294,10 +294,22 @@ fast-forward merge). `just release` reads it so that it does not run the same ne
 The writer is the last act of `rust-check`, after its four dependencies, and nowhere else. A filtered
 run, `just rust-test`, `just pre`, the bare lane and a red run never reach it, so none of them leaves a
 receipt and a red run neither writes one nor touches the last one. A dirty tree (staged, unstaged or
-untracked) writes none, because a receipt names a committed tree. The file is published with a
-same-directory temp and `mv`, and read back by the strict reader first. The receipt is a report and
-never a failure: an unwritable `.local` or an unreadable fact is one `gate-receipt:` line on stderr and
-the gate keeps its green exit status.
+untracked) writes none, because a receipt names a committed tree.
+
+A receipt also vouches only for the tree the whole run tested. `just` records `HEAD`, the tree hash and
+whether the tree was clean when it STARTS (the top-level `RUN_START` variable: `just` evaluates every
+top-level assignment before it runs any recipe, so the snapshot precedes the first dependency of
+`rust-check` without a new dependency in the gate). The writer writes only when the run started on a
+clean tree and, when the run ENDS, the tree is still clean with the same `HEAD` and tree hash. It checks
+a second time right before it publishes, after its slow probes. A commit, a reset or a cleanup while the
+tests ran writes none, and one `gate-receipt: not written:` line says why. A change that is undone
+before the run ends is invisible to this check. The snapshot costs one `git status` (without the git
+lock) per `just` invocation and needs `sh` and `git` on `PATH`; outside a git checkout it is empty and
+the writer writes none.
+
+The file is published with a same-directory temp and `mv`, and read back by the strict reader first.
+The receipt is a report and never a failure: an unwritable `.local` or an unreadable fact is one
+`gate-receipt:` line on stderr and the gate keeps its green exit status.
 
 The file holds fourteen `key=value` lines in a fixed order, printable ASCII, one LF each:
 `version tree head lock_hash toolchain_pin rustc nextest tmux harness inventory inventory_count scratch

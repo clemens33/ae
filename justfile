@@ -1357,40 +1357,77 @@ rust-setup:
 
     echo "==> ready — run: just rust-check"
 
+# THE RUN'S START SNAPSHOT: `HEAD`, the tree hash and `clean` or `dirty`, as one line,
+# or empty when git cannot say. `just` evaluates every top-level assignment before it
+# runs any recipe, so this is read before the first dependency of `rust-check` starts,
+# which is the only point that is "the start of the whole run" without adding a
+# dependency to the gate. The receipt writer compares it with the end of the run.
+# It never fails `just` (a non-git directory gives an empty snapshot) and takes no git
+# lock. It needs only `sh` and `git` on `PATH`, and it costs one `git status` per `just`
+# invocation.
+RUN_START := `h="$(git rev-parse --verify -q HEAD 2>/dev/null)"; t="$(git rev-parse --verify -q 'HEAD^{tree}' 2>/dev/null)"; [ -n "$h" ] && [ -n "$t" ] || exit 0; if [ -z "$(git --no-optional-locks status --porcelain 2>/dev/null)" ]; then echo "$h $t clean"; else echo "$h $t dirty"; fi`
+
 # Its last act is the GATE RECEIPT (`RECEIPT` below): a whole green run on a clean
 # committed tree writes one file naming that tree, so `just release` need not run
 # nextest again. The writer is HERE, after the four dependencies, and nowhere else:
 # `rust-test`, the lane, `pre` and every filtered run never reach it, so a partial
 # or advisory run cannot leave a receipt. A failed dependency stops `just` before
-# this body, so a red run neither writes one nor touches the last one. The receipt
-# is a report and never a failure: whatever goes wrong here is one `gate-receipt:`
-# line on stderr and the gate keeps its green exit status.
+# this body, so a red run neither writes one nor touches the last one. A receipt
+# vouches only for the tree the whole run tested: it is written only when the run
+# STARTED on a clean tree and the tree is still clean with the same HEAD and tree
+# hash at the END (`RUN_START` above); a commit, a reset or a cleanup while the tests
+# ran writes none. The receipt is a report and never a failure: whatever goes wrong
+# here is one `gate-receipt:` line on stderr and the gate keeps its green exit status.
 
 # The gate: everything a change must pass before it is offered for review
 rust-check: rust-fmt-check rust-lint rust-fuzz-check rust-test
     #!/usr/bin/env bash
     set -euo pipefail
     {{ RECEIPT }}
+    # A receipt vouches only for the tree the whole run tested. `just` recorded
+    # HEAD, the tree hash and the cleanliness when it STARTED (RUN_START); the tree
+    # must still be clean, on that HEAD and that tree hash, when the run ENDS.
+    receipt_start="{{ RUN_START }}"
+    receipt_steady() {
+        local head_now tree_now
+        if [[ -n "$(git status --porcelain 2>/dev/null || echo unreadable)" ]]; then
+            receipt_why="the working tree is not clean, and a receipt names a committed tree"
+            return 1
+        fi
+        head_now="$(git rev-parse --verify -q HEAD 2>/dev/null || true)"
+        tree_now="$(git rev-parse --verify -q 'HEAD^{tree}' 2>/dev/null || true)"
+        if [[ "$head_now" != "$receipt_head" || "$tree_now" != "$receipt_tree" ]]; then
+            receipt_why="HEAD or the tree moved during the run (started on ${receipt_head:0:12}, ended on ${head_now:0:12}), so the tests did not run on the tree the receipt would name"
+            return 1
+        fi
+    }
     receipt_write() {
-        local common root dir tree tmp
+        local common root dir tree tmp receipt_head receipt_tree receipt_state
+        read -r receipt_head receipt_tree receipt_state <<<"$receipt_start" || true
+        if [[ -z "$receipt_head" || -z "$receipt_tree" || -z "$receipt_state" ]]; then
+            receipt_note "not written: git did not name the tree when the run started"
+            return 0
+        fi
+        if [[ "$receipt_state" != clean ]]; then
+            receipt_note "not written: the working tree was not clean when the run started, and a receipt names a committed tree"
+            return 0
+        fi
         common="$(git rev-parse --git-common-dir 2>/dev/null || true)"
         root="$(receipt_root "$common")" || { receipt_note "not written: not inside a git checkout"; return 0; }
         # A receipt names a COMMITTED tree. Staged, unstaged and untracked changes all
         # mean the tests ran on something no tree hash names.
-        if [[ -n "$(git status --porcelain 2>/dev/null || echo unreadable)" ]]; then
-            receipt_note "not written: the working tree is not clean, and a receipt names a committed tree"
-            return 0
-        fi
+        receipt_steady || { receipt_note "not written: $receipt_why"; return 0; }
         dir="$root/.local/gate-receipts"
         if [[ -L "$dir" ]] || ! mkdir -p "$dir" 2>/dev/null; then
             receipt_note "not written: $dir is not a usable directory"
             return 0
         fi
-        tree="$(git rev-parse 'HEAD^{tree}' 2>/dev/null)" || { receipt_note "not written: git cannot name the tree"; return 0; }
+        tree="$receipt_tree"
         tmp="$(mktemp "$dir/.tmp.XXXXXX" 2>/dev/null)" || { receipt_note "not written: $dir is not writable"; return 0; }
         # Built from the same readers the release uses, and read back by the strict
         # reader before it is published, so a receipt that is written is one that parses.
-        if receipt_body >"$tmp" && receipt_parse "$tmp" && mv "$tmp" "$dir/$tree"; then
+        # The steady check runs again right before the publish, after the slow probes.
+        if receipt_body >"$tmp" && receipt_parse "$tmp" && receipt_steady && mv "$tmp" "$dir/$tree"; then
             receipt_note "wrote $dir/$tree"
         else
             rm -f "$tmp"

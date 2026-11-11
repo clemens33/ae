@@ -36,7 +36,10 @@ mod mutantstime_spec;
     clippy::unnecessary_cast,
     reason = "the frozen P2 acceptance is a fixture-heavy independent spec whose bytes stay as its author froze them; a lint finding is not a reason to edit them"
 )]
+// Its bytes are frozen as the independent author wrote them, so rustfmt leaves the file alone.
+#[rustfmt::skip]
 mod receipt_spec;
+mod receipt_window;
 
 /// The repository root — this file's crate manifest directory.
 fn root() -> PathBuf {
@@ -242,10 +245,7 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         ("rust-cov:", "just _tmux-isolated cov"),
         // Positional words, never `{{ args }}`: that splices the arguments back into
         // a command line, where a space splits one and a `|` starts a pipeline (#221).
-        (
-            "rust-mutants *args:",
-            "just _tmux-isolated mutants \"$@\"",
-        ),
+        ("rust-mutants *args:", "just _tmux-isolated mutants \"$@\""),
     ];
     reap < mktemp
         && registry < remove
@@ -437,10 +437,12 @@ fn the_rust_test_recipe_isolates_every_real_tmux_probe() {
     // RED — the public mutants recipe splicing its arguments back into a command
     // line (#221): a filter with a space or a `|` no longer reaches cargo-mutants
     // as one word. The real justfile with only that line put back.
-    assert!(!rust_test_tmux_isolation_ok(&read(&root().join("justfile")).replace(
-        "just _tmux-isolated mutants \"$@\"",
-        "just _tmux-isolated mutants {{ args }}"
-    )));
+    assert!(!rust_test_tmux_isolation_ok(
+        &read(&root().join("justfile")).replace(
+            "just _tmux-isolated mutants \"$@\"",
+            "just _tmux-isolated mutants {{ args }}"
+        )
+    ));
 
     // RED — merely unsetting the inherited client still reaches the ordinary
     // socket directory and therefore the developer's named ae server.
@@ -6711,6 +6713,9 @@ impl Prune {
         for (tool, system) in [
             ("just", false),
             ("git", false),
+            // `just` runs the justfile's start-snapshot backtick (`RUN_START`) through `sh`
+            // before any recipe, so even this sparse world needs one.
+            ("sh", true),
             ("bash", true),
             ("sed", true),
             ("head", true),
