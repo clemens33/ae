@@ -2003,6 +2003,212 @@ fn a_mutants_lane_never_runs_wider_than_two_tests() {
     assert_eq!(seen[1], "8");
 }
 
+/// One `test` lane run of the REAL justfile with its named lane ceiling
+/// (`lane_threads`) replaced by `ceiling`, so a raised ceiling is proven without
+/// raising the shipped one, and a fake `uptime` on the lane's private `PATH`:
+/// one that prints `uptime`, or, for `None`, one that fails. The fake `cargo` is
+/// the recording one of [`sized_lane`]; the run must end green whatever the load.
+/// Returns the recorded words and the lane's stderr.
+fn loaded_lane(
+    base: &Path,
+    ceiling: u32,
+    uptime: Option<&str>,
+    budget: &str,
+    env: &[(&str, &str)],
+) -> (Vec<String>, String) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let named = "\n    lane_threads=8\n";
+    let justfile = read(&root().join("justfile"));
+    assert_eq!(
+        justfile.matches(named).count(),
+        1,
+        "the lane ceiling is ONE named line of the SIZING helper"
+    );
+    let fixture = base.join("justfile.fixture");
+    std::fs::write(
+        &fixture,
+        justfile.replace(named, &format!("\n    lane_threads={ceiling}\n")),
+    )
+    .unwrap_or_else(|why| panic!("the fixture justfile: {why}"));
+    let cargo = "case \"$1\" in nextest) ;; *) exit 0 ;; esac\n\
+         echo $1 $NEXTEST_TEST_THREADS ${CARGO_BUILD_JOBS-unset} >\"$AE_TEST_TMPDIR/seen\"\n";
+    let mut lane = lane_over(base, Some(budget), cargo);
+    let fake = base.join("bin").join("uptime");
+    let body = uptime.map_or_else(
+        || "#!/bin/sh\nexit 1\n".to_owned(),
+        |line| format!("#!/bin/sh\necho '{line}'\n"),
+    );
+    std::fs::write(&fake, body)
+        .and_then(|()| std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)))
+        .unwrap_or_else(|why| panic!("the fake uptime: {why}"));
+    lane = lane
+        .arg("--justfile")
+        .arg(&fixture)
+        .arg("--working-directory")
+        .arg(root())
+        .arg("_tmux-isolated")
+        .arg("test");
+    for (key, value) in env {
+        lane = lane.env(key, value);
+    }
+    let _ = std::fs::remove_file(base.join("seen"));
+    let ran = raw::run(&lane, &root(), &base.join("out"), &base.join("err"))
+        .unwrap_or_else(|why| panic!("the lane runs: {why}"));
+    let stderr = read(&base.join("err"));
+    assert!(
+        matches!(ran.outcome(), ExitOutcome::Code(0)),
+        "load never aborts the lane: {stderr}"
+    );
+    let seen = std::fs::read_to_string(base.join("seen")).unwrap_or_default();
+    let words: Vec<String> = seen.split_whitespace().map(str::to_owned).collect();
+    assert_eq!(words.len(), 3, "{uptime:?} ran no cargo: {stderr}");
+    (words, stderr)
+}
+
+/// The lane starts at its named ceiling on a quiet machine and falls to the
+/// loaded cap when load1 is ABOVE 14 at the start, or cannot be read (that counts
+/// as high), and says so on stderr. The guard only lowers and never refuses:
+/// every case below ends green. An explicit `AE_TEST_THREADS` replaces the whole
+/// rule and an inherited export still only lowers. The ceiling is raised to 12
+/// in a copy of the justfile, which is also what P0's one-line decision does.
+#[test]
+fn a_busy_machine_lowers_the_lanes_threads_and_never_refuses_the_run() {
+    let base = super::cli::OwnedScratch::root("gate", "loadguard");
+    let mac = |load: &str| format!(" 15:25  up 1 day, 6 users, load averages: {load} 3.00 3.00");
+    let linux =
+        |load: &str| format!(" 15:25:01 up 1 day, 6 users,  load average: {load}, 9.00, 9.00");
+    let none = &[][..];
+    let seen = |ceiling, uptime: Option<String>, budget, env: &[(&str, &str)]| {
+        loaded_lane(&base, ceiling, uptime.as_deref(), budget, env)
+    };
+    // A quiet machine, and load1 AT the ceiling, keep the lane's own ceiling.
+    for load in [mac("0.50"), mac("14.00"), linux("14.00"), mac("9.99")] {
+        let (words, stderr) = seen(12, Some(load.clone()), "999", none);
+        assert_eq!(words[1], "12", "{load}: {stderr}");
+        assert!(stderr.contains("nextest threads 12 (budget)"), "{stderr}");
+        assert!(!stderr.contains("load1"), "{load}: said nothing: {stderr}");
+    }
+    // ABOVE the ceiling: the loaded cap, the cause on stderr, no refusal.
+    for load in [mac("14.01"), mac("24.02"), linux("15.00"), mac("120.50")] {
+        let (words, stderr) = seen(12, Some(load.clone()), "999", none);
+        assert_eq!(words[1], "8", "{load}: {stderr}");
+        assert!(
+            stderr.contains("is above 14: nextest threads at most 8"),
+            "{load}: {stderr}"
+        );
+        assert!(stderr.contains("was 12, capped"), "{load}: {stderr}");
+    }
+    // Unreadable counts as high: a line with no figure, a failing uptime.
+    for uptime in [
+        Some(" 15:25  up 1 day, 6 users, no figures here".to_owned()),
+        None,
+    ] {
+        let (words, stderr) = seen(12, uptime.clone(), "999", none);
+        assert_eq!(words[1], "8", "{uptime:?}: {stderr}");
+        assert!(
+            stderr.contains("load1 cannot be read: nextest threads at most 8"),
+            "{uptime:?}: {stderr}"
+        );
+    }
+    // The cap only lowers: a small budget stays small, and a load at 8 or below
+    // the lane count is still said.
+    let (words, stderr) = seen(12, Some(mac("30.00")), "6", none);
+    assert_eq!(words[1], "6", "{stderr}");
+    assert!(
+        stderr.contains("is above 14: nextest threads at most 8"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("capped"), "{stderr}");
+    // An inherited export still only lowers; the lane override replaces the rule
+    // and is not guarded, whatever the load says.
+    let (words, _) = seen(
+        12,
+        Some(mac("30.00")),
+        "999",
+        &[("NEXTEST_TEST_THREADS", "3")],
+    );
+    assert_eq!(words[1], "3");
+    let (words, stderr) = seen(8, Some(mac("30.00")), "6", &[("AE_TEST_THREADS", "12")]);
+    assert_eq!(words[1], "12", "{stderr}");
+    assert!(
+        !stderr.contains("load1"),
+        "an override is not guarded: {stderr}"
+    );
+}
+
+/// Whether the SIZING helper names the three values of the thread guard once each
+/// (`lane_threads`, `loaded_threads`, `load_ceiling`), spends none of them as a
+/// literal, and owns the one reading of the load: the lane recipe reads no
+/// `uptime` and carries no literal fourteen of its own.
+fn load_guard_named_ok(justfile: &str) -> bool {
+    let helper = justfile_variable(justfile, "SIZING");
+    let lane = recipe_text(justfile, "_tmux-isolated lane *args:").join("\n");
+    let once = |name: &str| {
+        helper
+            .lines()
+            .filter(|line| {
+                line.trim().strip_prefix(name).is_some_and(|rest| {
+                    rest.starts_with('=') && rest[1..].bytes().all(|b| b.is_ascii_digit())
+                })
+            })
+            .count()
+            == 1
+    };
+    once("lane_threads")
+        && once("loaded_threads")
+        && once("load_ceiling")
+        && helper.contains("< lane_threads ? ceiling : lane_threads")
+        && helper.contains("size_load()")
+        && helper.matches("uptime").count() == 1
+        && !lane.contains("load averages")
+        && !lane.contains(" 14")
+        && lane.contains("size_load \"lane $lane\"")
+        && lane
+            .find("size_counts")
+            .zip(lane.find("size_load"))
+            .is_some_and(|(counts, load)| counts < load)
+}
+
+#[test]
+fn the_thread_ceiling_and_the_load_guard_are_named_values_with_one_load_reading() {
+    let justfile = read(&root().join("justfile"));
+    assert!(
+        load_guard_named_ok(&justfile),
+        "SIZING must name lane_threads, loaded_threads and load_ceiling once each, read the \
+         load in one place and be guarded by size_load right after size_counts"
+    );
+    // The shipped values: the old default of eight stays until P0 decides, and
+    // the start ceiling is the doctrine's fourteen.
+    for pin in [
+        "\n    lane_threads=8\n",
+        "\n    loaded_threads=8\n",
+        "\n    load_ceiling=14\n",
+    ] {
+        assert_eq!(justfile.matches(pin).count(), 1, "{pin:?}");
+    }
+    // RED — a literal eight back in the arithmetic, a second reading of the load
+    // in the lane, a second definition, and a guard that runs before the sizing.
+    assert!(!load_guard_named_ok(&justfile.replace(
+        "< lane_threads ? ceiling : lane_threads",
+        "< 8 ? ceiling : 8"
+    )));
+    assert!(!load_guard_named_ok(&justfile.replace(
+        "    unset TMUX TMUX_PANE\n",
+        "    unset TMUX TMUX_PANE\n    sed -n 's/.*load averages//p'\n"
+    )));
+    assert!(!load_guard_named_ok(&justfile.replace(
+        "\n    load_ceiling=14\n",
+        "\n    load_ceiling=14\n    load_ceiling=15\n"
+    )));
+    assert!(!load_guard_named_ok(
+        &justfile.replace("\n    loaded_threads=8\n", "\n")
+    ));
+    assert!(!load_guard_named_ok(&justfile.replace(
+        "    size_counts\n    size_load \"lane $lane\"\n",
+        "    size_load \"lane $lane\"\n    size_counts\n"
+    )));
+}
+
 /// One `just rust-stress` run on the same private `PATH` as the other lane
 /// pins, with a fake `uptime` saying `load` and the host's real `timeout` (or
 /// GNU `gtimeout`) linked as `timeout`. The fake `cargo` records, for a nextest

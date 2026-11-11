@@ -1270,7 +1270,13 @@ rust-fmt:
 # Each count is the LEAST of its ceilings, so a shell profile that exports a wide
 # NEXTEST_TEST_THREADS or CARGO_BUILD_JOBS can lower a run but never lift it past
 # what jobs-budget says is free right now. Threads: jobs-budget (the online CPU
-# count without it), the suite's cap of eight, an inherited NEXTEST_TEST_THREADS.
+# count without it), the lane ceiling `lane_threads` (the first of the three named
+# values at the top of the helper), an inherited NEXTEST_TEST_THREADS. The test
+# lane then reads load1 ONCE, at its start (size_load): above `load_ceiling`, or
+# unreadable, the threads fall to `loaded_threads` and the lane says so on stderr.
+# That guard only lowers and never refuses, waits or aborts: an unattended gate
+# has to start. A lane override (AE_TEST_THREADS) is not guarded; it replaces the
+# rule.
 # Jobs: jobs-budget, an inherited CARGO_BUILD_JOBS. Only one positive integer of at
 # most three digits is a ceiling (jobs-budget's answer too: a longer one wraps the
 # arithmetic, and it is ignored): a relative count such as -2, num-cpus, default or
@@ -1284,9 +1290,21 @@ rust-fmt:
 #
 # size_counts sets threads, jobs, threads_from, jobs_from and exports
 # NEXTEST_TEST_THREADS (always) and CARGO_BUILD_JOBS (unless it stands untouched);
-# size_say <label> prints the ceilings that applied on stderr.
+# size_say <label> prints the ceilings that applied on stderr; size_load <label>
+# applies the load guard to the threads size_counts chose (the test lane calls it);
+# load1_now and load_above are the one reading of the machine's load, shared with
+# the stress lane's start refusal.
 SIZING := '''
+    lane_threads=8
+    loaded_threads=8
+    load_ceiling=14
     plain() { [[ "$1" =~ ^[1-9][0-9]{0,2}$ ]]; }
+    load1_now() {
+        local load
+        load="$(LC_ALL=C uptime 2>/dev/null | sed -n 's/.*load averages*: *\([0-9.]*\).*/\1/p' | head -n 1 || true)"
+        if [[ "$load" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then printf '%s' "$load"; fi
+    }
+    load_above() { LC_ALL=C awk -v load="$1" -v ceiling="$load_ceiling" 'BEGIN { exit !(load + 0 > ceiling + 0) }'; }
     size_counts() {
         local ceiling budget=""
         if [[ -n "${AE_TEST_THREADS:-}" ]] && ! plain "$AE_TEST_THREADS"; then
@@ -1312,7 +1330,7 @@ SIZING := '''
                 ceiling="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
                 [[ "$ceiling" =~ ^[0-9]+$ ]] || ceiling=8
             fi
-            threads=$((ceiling < 8 ? ceiling : 8))
+            threads=$((ceiling < lane_threads ? ceiling : lane_threads))
             if [[ -n "${NEXTEST_TEST_THREADS:-}" ]]; then
                 if ! plain "$NEXTEST_TEST_THREADS"; then
                     threads_from="$threads_from; env $NEXTEST_TEST_THREADS ignored"
@@ -1351,6 +1369,24 @@ SIZING := '''
     size_say() {
         echo "$1: nextest threads $NEXTEST_TEST_THREADS ($threads_from), cargo jobs ${CARGO_BUILD_JOBS:-unset} ($jobs_from)" >&2
     }
+    size_load() {
+        local load1 why
+        [[ "$threads_from" != override ]] || return 0
+        load1="$(load1_now)"
+        if [[ -z "$load1" ]]; then
+            why="load1 cannot be read"
+        elif load_above "$load1"; then
+            why="load1 $load1 is above $load_ceiling"
+        else
+            return 0
+        fi
+        if ((threads > loaded_threads)); then
+            threads_from="$threads_from; $why, was $threads, capped"
+            threads="$loaded_threads"
+            export NEXTEST_TEST_THREADS="$threads"
+        fi
+        echo "$1: $why: nextest threads at most $loaded_threads" >&2
+    }
 '''
 
 # Clippy (-D warnings) + taplo lint
@@ -1388,7 +1424,9 @@ rust-fuzz-check:
 # it must fit AF_UNIX's 104 bytes. The lane also points TMPDIR into itself, so
 # what a test, a product child or cargo-mutants' tree copy leaves in the temp
 # dir leaves with the lane. NEXTEST_TEST_THREADS is the least of the free cores
-# (jobs-budget, else the CPU count), eight and an inherited export, and
+# (jobs-budget, else the CPU count), the lane ceiling `lane_threads` and an
+# inherited export, lowered to `loaded_threads` when load1 is above `load_ceiling`
+# at the lane start or cannot be read (never a refusal), and
 # CARGO_BUILD_JOBS the least of the free cores and an inherited export (without
 # jobs-budget an inherited value stands, else cargo's own default); the
 # lane-specific AE_TEST_THREADS / AE_TEST_JOBS replace the rule. The three heavy
@@ -1396,12 +1434,13 @@ rust-fuzz-check:
 _tmux-isolated lane *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{ SIZING }}
     lane="$1"
     shift
     # The stress lane (just rust-stress) refuses FIRST, before any scratch, server
     # or reap exists: a named filterset, a plain repeat count and time bound, a
-    # timeout tool, and a quiet machine (load1 at or below 14, the same start
-    # ceiling a gate has). A load it cannot read refuses too.
+    # timeout tool, and a quiet machine (load1 at or below `load_ceiling`, the same
+    # start ceiling a gate caps its threads at). A load it cannot read refuses too.
     if [[ "$lane" == stress ]]; then
         if (($# != 3)); then
             echo "usage: just rust-stress <nextest filterset> [count] [seconds]" >&2
@@ -1418,13 +1457,13 @@ _tmux-isolated lane *args:
         [[ "$stress_secs" =~ ^[1-9][0-9]{0,4}$ ]] || { echo "Error: rust-stress seconds must be a positive integer of at most five digits, got: $stress_secs" >&2; exit 2; }
         stress_timeout="$(command -v timeout || command -v gtimeout || true)"
         [[ -n "$stress_timeout" ]] || { echo "Error: rust-stress needs timeout (GNU coreutils; gtimeout on a Mac with brew coreutils): the time bound is not optional" >&2; exit 2; }
-        load1="$(LC_ALL=C uptime 2>/dev/null | sed -n 's/.*load averages*: *\([0-9.]*\).*/\1/p' | head -n 1 || true)"
-        if [[ ! "$load1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "rust-stress: refused: load1 cannot be read from uptime; a start needs load1 at or below 14" >&2
+        load1="$(load1_now)"
+        if [[ -z "$load1" ]]; then
+            echo "rust-stress: refused: load1 cannot be read from uptime; a start needs load1 at or below $load_ceiling" >&2
             exit 1
         fi
-        if LC_ALL=C awk -v load="$load1" 'BEGIN { exit !(load + 0 > 14) }'; then
-            echo "rust-stress: refused: load1 $load1 is above 14; start when the machine is quiet" >&2
+        if load_above "$load1"; then
+            echo "rust-stress: refused: load1 $load1 is above $load_ceiling; start when the machine is quiet" >&2
             exit 1
         fi
     fi
@@ -1600,8 +1639,8 @@ _tmux-isolated lane *args:
     export TMPDIR="$test_tmux_tmp/tmp"
     export TMUX_TMPDIR="$test_tmux_tmp"
     unset TMUX TMUX_PANE
-    {{ SIZING }}
     size_counts
+    size_load "lane $lane"
     # A mutation run is memory-bounded in config (the nextest `mutants` profile:
     # two tests, a 60 s kill), and an env value beats a profile. So the lane may
     # TIGHTEN to one but never widen: anything but a plain 1 or 2 becomes 2, said
@@ -1788,7 +1827,7 @@ rust-mutants *args:
 
 # The BOUNDED repeat run for a flake hunt: nextest --stress-count over ONE named
 # filterset (a module or a test, never the suite) through the isolated lane.
-# Threads come from the lane's sizing (the least of jobs-budget, the cap of eight
+# Threads come from the lane's sizing (the least of jobs-budget, the lane ceiling
 # and an inherited export), cargo runs at nice 10 under timeout -k 5 <secs>
 # (status 124 when the bound ends it), it refuses to start above load1 14, and the
 # lane reaps what it started. Synthetic CPU burners are not committed

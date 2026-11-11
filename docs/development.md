@@ -208,7 +208,7 @@ A root the sweep cannot delete because a child is still writing into it is named
 kept …`) and left for the next lane: that transient race never turns an all-green lane red.
 `cli::no_test_file_rolls_its_own_scratch_root` refuses a root built by hand. Parallelism is
 config: a bare `cargo nextest run` with no `NEXTEST_TEST_THREADS` exported runs at most four
-tests (`.config/nextest.toml`; the isolated lane sizes itself below and reaches eight only on a
+tests (`.config/nextest.toml`; the isolated lane sizes itself below and reaches its lane ceiling only on a
 quiet machine), `just rust-mutants` one
 mutant at a time on at most two tests, each killed after 60 s (the nextest `mutants` profile,
 which `.cargo/mutants.toml` selects, with SIGKILL at the bound and no grace period;
@@ -233,8 +233,14 @@ growth.
 ONE helper sizes every heavy recipe. The `SIZING` shell text in the `justfile` is included by the test lane, `rust-lint` and `rust-fuzz-check`, so the arithmetic exists once and `tests/it/gate.rs` pins that no recipe carries a copy. `rust-lint` and `rust-fuzz-check` run cargo at nice 10 with `CARGO_BUILD_JOBS` from it (the fuzz check then caps itself at four jobs), and the doctest step of the lane takes `--test-threads` from the lane's thread count: without it rustdoc starts one doctest per core (12 of 12 at once measured in a scratch crate, 2 with the flag). The sizing starts at the free
 cores: `jobs-budget` when that helper is on PATH and prints one positive integer of at most
 three digits, else the online CPU count. Each count is the LEAST of its ceilings. Threads:
-`jobs-budget` (the CPU count without it), the suite's cap of eight and an inherited
-`NEXTEST_TEST_THREADS`. Cargo jobs: `jobs-budget` and an inherited `CARGO_BUILD_JOBS`
+`jobs-budget` (the CPU count without it), the lane ceiling (`lane_threads` in `SIZING`, eight until the
+thread matrix of the speed plan decides) and an inherited
+`NEXTEST_TEST_THREADS`. The lane then reads load1 once at its start: above `load_ceiling` (14, the start ceiling of
+a gate) or unreadable it lowers the threads to `loaded_threads` (eight, the old default) and says so on stderr
+(`lane test: load1 21.30 is above 14: nextest threads at most 8`, and `was 12, capped` in the sizing line when it
+lowered anything). That guard only lowers: it never refuses, waits or aborts, because an unattended gate has to
+start, and an explicit `AE_TEST_THREADS` replaces it with the rest of the rule. The three values are named once
+each at the top of the helper, so a new ceiling is a one-line change. Cargo jobs: `jobs-budget` and an inherited `CARGO_BUILD_JOBS`
 (without `jobs-budget` there is no live ceiling and an inherited value stands, else cargo's own
 default). An inherited export can lower a lane and never lift it: a shell profile that exports a
 wide count (a fixed 16, say) cannot push a gate past what is free. Only
@@ -270,7 +276,7 @@ A flake hunt repeats the REAL tests under bounds; it never loads the machine on 
 `--stress-count` over one named filterset (a module or a test, not the suite) in the isolated
 lane. Every bound is in the recipe: it refuses to start while load1 is above 14 (the start
 ceiling of a gate) or unreadable, before any lane state exists; `--test-threads` is the lane's
-sizing above (the least of the live budget, the cap of eight and an inherited export); cargo
+sizing above (the least of the live budget, the lane ceiling and an inherited export); cargo
 runs at `nice -n 10` under `timeout -k 5 <secs>`, so the bound ends the whole process group
 (status 124) and the lane's cleanup reaps the scratch and its tmux servers; the count is at most
 three digits and the bound at most five. The test-group caps in `.config/nextest.toml` apply
