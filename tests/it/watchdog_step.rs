@@ -62,11 +62,13 @@ impl Stepper {
     /// Consume the startup cycle's done. It is the origin: [`Stepper::cycles`]
     /// stays zero.
     pub(super) fn ready(&mut self) {
+        self.still_counting();
         self.await_done(None);
     }
 
     /// Run exactly one more verdict cycle and return once it has completed.
     pub(super) fn step(&mut self) {
+        self.still_counting();
         self.signal(&self.channel);
         self.await_done(None);
         self.cycles += 1;
@@ -94,6 +96,7 @@ impl Stepper {
         bound: Duration,
         ready: impl Fn() -> bool,
     ) -> Option<u64> {
+        self.still_counting();
         let deadline = Instant::now() + bound;
         let mut used = 0;
         loop {
@@ -118,17 +121,22 @@ impl Stepper {
         self.cycles
     }
 
-    /// Wait for one done, until this stepper's own bound or `until`, whichever
-    /// comes first. Either way the wait client is released and reaped first.
-    /// Past `until` the answer is `false`; past the own bound the wait fails,
-    /// naming the channel and the cycles completed.
-    fn await_done(&self, until: Option<Instant>) -> bool {
+    /// Refuse to go on after [`Stepper::step_until_within`] gave up with a
+    /// step in flight, before any signal or predicate.
+    fn still_counting(&self) {
         assert!(
             !self.lost,
             "watchdog step: {} gave up with a step in flight after {} completed cycles; \
              it cannot count further",
             self.channel, self.cycles
         );
+    }
+
+    /// Wait for one done, until this stepper's own bound or `until`, whichever
+    /// comes first. Either way the wait client is released and reaped first.
+    /// Past `until` the answer is `false`; past the own bound the wait fails,
+    /// naming the channel and the cycles completed.
+    fn await_done(&self, until: Option<Instant>) -> bool {
         let mut waiter = super::cli::tmux_waiter(&self.socket, &self.done)
             .unwrap_or_else(|why| panic!("watchdog step: no wait client on {}: {why}", self.done));
         let own = Instant::now() + self.bound;
