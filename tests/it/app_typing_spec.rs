@@ -11,8 +11,29 @@ use super::{FRAME, Rig, WAIT};
 
 const FINISH: Duration = Duration::from_secs(40);
 
+/// The send defer, in seconds, of the two rigs whose target never clears: they wait the whole
+/// defer out before the outcome they assert appears, and the 30 s default
+/// (`deliver::DEFAULT_DEFER`) is only a wait, never an assertion. Eight seconds still holds the
+/// in-flight line on screen well past `FRAME`. It is the existing `AE_SEND_DEFER_SEC` door, set
+/// in the private session environment of the rig.
+const SHORT_DEFER: &str = "8";
+
 fn open(tag: &str) -> (Rig, String) {
     let rig = Rig::new(tag);
+    let (pane, _) = rig.direct(300, 60, &rig.root.join("config"));
+    rig.ready(&pane);
+    (rig, pane)
+}
+
+fn open_short_defer(tag: &str) -> (Rig, String) {
+    let rig = Rig::new(tag);
+    rig.tmux(&[
+        "set-environment",
+        "-t",
+        &rig.name,
+        "AE_SEND_DEFER_SEC",
+        SHORT_DEFER,
+    ]);
     let (pane, _) = rig.direct(300, 60, &rig.root.join("config"));
     rig.ready(&pane);
     (rig, pane)
@@ -524,7 +545,7 @@ fn narrow_help_is_reachable_scrollable_and_closes_without_a_draft() {
 
 #[test]
 fn ask_in_flight_names_target_then_outcome_is_visible_exactly_once() {
-    let (rig, pane) = open("typeflight");
+    let (rig, pane) = open_short_defer("typeflight");
     rig.keys(&pane, "Enter");
     rig.wait(&pane, FRAME, "GUARD acquired writer before ask", |s| {
         writing(s)
@@ -560,7 +581,7 @@ fn ask_in_flight_names_target_then_outcome_is_visible_exactly_once() {
 
 #[test]
 fn refused_delivery_outcome_is_not_duplicated_by_a_notice_or_refresh() {
-    let (rig, pane) = open("typeoutcome");
+    let (rig, pane) = open_short_defer("typeoutcome");
     rig.keys(&pane, "Enter");
     rig.wait(&pane, FRAME, "GUARD writer before refused delivery", |s| {
         writing(s)
