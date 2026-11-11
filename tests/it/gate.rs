@@ -4052,6 +4052,104 @@ fn the_release_recipe_refreshes_the_fuzz_lock_with_the_product_compiler_or_stops
     )));
 }
 
+/// Whether the `release` recipe has the fuzz lock refreshed AND proved before it
+/// first type-checks the fuzz crate on the bumped tree.
+///
+/// The bump moves the ae version the fuzz lock records, and the gate's
+/// `rust-fuzz-check` runs `--locked`, so a lock still carrying the old version
+/// makes that check refuse (`cannot update the lock file ... because --locked was
+/// passed`). On a reused receipt the release runs the check right after the bump,
+/// so the refresh and its "only the ae version moved" proof must stand between
+/// the bump and the first check: a later refresh is too late, and a check that
+/// runs before the proof would vouch for a lock the proof has not yet cleared.
+/// At least one check must remain on the bumped tree, because dropping it is how
+/// a reused receipt would skip more than nextest.
+fn fuzz_lock_ready_before_bumped_fuzz_check_ok(justfile: &str) -> bool {
+    let lines = recipe_text(justfile, "release:");
+    let position = |needle: &str| lines.iter().position(|line| line.contains(needle));
+    let (Some(bump), Some(refresh)) = (
+        position("just bump"),
+        position("--manifest-path fuzz/Cargo.toml"),
+    ) else {
+        return false;
+    };
+    if refresh < bump {
+        return false;
+    }
+    // The proof is the first diff of the fuzz lock after the refresh, and it is
+    // finished at the first refusal that follows it.
+    let Some(proof) = (refresh + 1..lines.len())
+        .find(|&at| lines[at].contains("git diff") && lines[at].contains("fuzz/Cargo.lock"))
+    else {
+        return false;
+    };
+    let Some(refusal) =
+        (proof + 1..lines.len()).find(|&at| bare_word_count(&lines[at], "exit") > 0)
+    else {
+        return false;
+    };
+    // Every type-check of the fuzz crate after the bump: the recipe, or a locked
+    // cargo call on the fuzz manifest (the refresh itself is not one).
+    let checks: Vec<usize> = (bump + 1..lines.len())
+        .filter(|&at| {
+            lines[at].contains("rust-fuzz-check")
+                || (at != refresh && lines[at].contains("--manifest-path fuzz/Cargo.toml"))
+        })
+        .collect();
+    !checks.is_empty() && checks.iter().all(|&at| at > refusal)
+}
+
+#[test]
+fn the_release_refreshes_and_proves_the_fuzz_lock_before_the_bumped_fuzz_check() {
+    assert!(
+        fuzz_lock_ready_before_bumped_fuzz_check_ok(&read(&root().join("justfile"))),
+        "the release must refresh fuzz/Cargo.lock and prove that only the ae version moved \
+         BEFORE its first `just rust-fuzz-check` on the bumped tree: that check runs --locked \
+         and refuses a lock that still records the replaced version"
+    );
+
+    let refresh =
+        "    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null\n";
+    let proof = "    fuzz_delta=\"$(git diff --no-ext-diff --numstat -- fuzz/Cargo.lock)\"\n    if [ \"$fuzz_delta\" != \"1\t1\tfuzz/Cargo.lock\" ]; then\n        echo \"Error: fuzz/Cargo.lock must change only the ae version to $VERSION\" >&2\n        exit 1\n    fi\n";
+    let check = "    if [ \"$reused\" = 1 ]; then\n        just rust-fmt-check\n        just rust-fuzz-check\n    fi\n";
+    let head = "release:\n    set -euo pipefail\n    VERSION=$(just bump)\n";
+    let tail = "    git commit -m \"chore(release): $TAG\"\n";
+    // GREEN — refreshed, proved, then checked: the shape this pin demands.
+    assert!(fuzz_lock_ready_before_bumped_fuzz_check_ok(&format!(
+        "{head}{refresh}{proof}{check}{tail}"
+    )));
+    // RED — the order before this fix: checked, then refreshed and proved. The
+    // check refuses the stale lock under --locked and the release stops.
+    assert!(!fuzz_lock_ready_before_bumped_fuzz_check_ok(&format!(
+        "{head}{check}{refresh}{proof}{tail}"
+    )));
+    // RED — refreshed but checked before the proof has cleared the lock.
+    assert!(!fuzz_lock_ready_before_bumped_fuzz_check_ok(&format!(
+        "{head}{refresh}{check}{proof}{tail}"
+    )));
+    // RED — a good check later does not excuse one that still precedes the refresh.
+    assert!(!fuzz_lock_ready_before_bumped_fuzz_check_ok(&format!(
+        "{head}{check}{refresh}{proof}{check}{tail}"
+    )));
+    // RED — an inline locked cargo check of the fuzz crate ahead of the refresh.
+    assert!(!fuzz_lock_ready_before_bumped_fuzz_check_ok(&format!(
+        "{head}    cargo check --locked --manifest-path fuzz/Cargo.toml --bins\n{refresh}{proof}{tail}"
+    )));
+    // RED — the bumped-tree check is dropped, so a reused receipt would skip more
+    // than nextest.
+    assert!(!fuzz_lock_ready_before_bumped_fuzz_check_ok(&format!(
+        "{head}{refresh}{proof}{tail}"
+    )));
+    // RED — no proof after the refresh: any drift of the lock passes.
+    assert!(!fuzz_lock_ready_before_bumped_fuzz_check_ok(&format!(
+        "{head}{refresh}{check}{tail}"
+    )));
+    // RED — the refresh stands before the bump, so it records the replaced version.
+    assert!(!fuzz_lock_ready_before_bumped_fuzz_check_ok(&format!(
+        "release:\n    set -euo pipefail\n{refresh}    VERSION=$(just bump)\n{proof}{check}{tail}"
+    )));
+}
+
 /// Whether the fuzz lane BOUNDS the duration it hands libFuzzer, on every route.
 ///
 /// libFuzzer reads `-max_total_time` into an int and treats zero as NO LIMIT, so

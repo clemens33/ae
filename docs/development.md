@@ -328,11 +328,13 @@ A malformed receipt is hostile persisted state and never causes a skip.
 
 A match skips ONLY nextest. `rust-fmt-check`, `rust-lint`, `rust-fuzz-check` and the doctests run
 again on the bumped tree, `just rust-deny` runs before the bump, and `cargo check --locked`, the
-bundles and a bounded smoke of the built binary (`--version` and `doctor`, 10 s each) follow. After
-the fuzz-lock refresh and before the version commit the release proves that every tracked path that
-differs from HEAD is one of the six version paths (`Cargo.toml`, `Cargo.lock`, `fuzz/Cargo.lock`,
-`README.md`, `docs/index.md`, `CHANGELOG.md`); any other path stops the release by name, before the
-commit and the tag.
+bundles and a bounded smoke of the built binary (`--version` and `doctor`, 10 s each) follow. The
+bump moves the ae version that `fuzz/Cargo.lock` records, and `rust-fuzz-check` runs `--locked`, so
+the release refreshes that lock and proves that only the ae version changed right after the bump,
+before the first of those checks. After the fuzz-lock refresh and before the version commit the
+release proves that every tracked path that differs from HEAD is one of the six version paths
+(`Cargo.toml`, `Cargo.lock`, `fuzz/Cargo.lock`, `README.md`, `docs/index.md`, `CHANGELOG.md`); any
+other path stops the release by name, before the commit and the tag.
 
 To force the full gate in a release, delete the receipt: `rm .local/gate-receipts/<tree hash>` (or the
 whole directory). Nothing else needs to change. Receipts are a few hundred bytes, one per gated tree,

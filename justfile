@@ -761,6 +761,26 @@ release:
     # Re-parse and compile after bump before any changelog or tag publication.
     cargo check --locked
 
+    # The separate fuzz lock must carry the bump too, and it must before any gate step
+    # below reads it: the bump changed the ae version that lock records, and
+    # `rust-fuzz-check` runs `--locked`, so it refuses a lock that still records the
+    # replaced version. Any refresh failure stops here under errexit, even if cargo
+    # wrote a valid-looking partial update.
+    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
+
+    fuzz_delta="$(git diff --no-ext-diff --no-color --numstat -- fuzz/Cargo.lock)"
+    # Compare all bytes, allowing only this ae version. A failed git show also
+    # yields a mismatch and refuses; process-substitution errors cannot pass.
+    if [ "$fuzz_delta" != $'1\t1\tfuzz/Cargo.lock' ] || ! cmp -s fuzz/Cargo.lock <(git show HEAD:fuzz/Cargo.lock | awk -v version="$VERSION" '
+        /^\[\[package\]\]$/ { ae = 0 }
+        /^name = "ae"$/ { ae = 1 }
+        ae && /^version = / { $0 = "version = \"" version "\""; ae = 0 }
+        { print }
+    '); then
+        echo "Error: fuzz/Cargo.lock must change only the ae version to $VERSION" >&2
+        exit 1
+    fi
+
     # A reused receipt vouched for nextest and nothing else. Every other step of the
     # gate runs here, on the tree the release will publish: the bump changed the
     # version every crate and doc test sees, so a break only the bump causes shows
@@ -864,10 +884,6 @@ release:
     RELEASE_BODY=$(just _cliff-run --tag "$TAG" --unreleased --strip header)
     RELEASE_BODY="${RELEASE_BODY:-Release $TAG}"
 
-    # The separate fuzz lock must carry the bump too. Any refresh failure stops
-    # here under errexit, even if cargo wrote a valid-looking partial update.
-    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
-
     # THE BUMP PROOF. A reused receipt is evidence about the PRE-BUMP tree, so the
     # release must show the bump left it alone: every tracked path that differs from
     # HEAD, and so every path the commit below would carry, is one of the six
@@ -884,19 +900,6 @@ release:
     done < <(git diff --name-only -z HEAD)
     if [ -n "$stray" ]; then
         echo "Error: the release changed paths outside the version files:$stray" >&2
-        exit 1
-    fi
-
-    fuzz_delta="$(git diff --no-ext-diff --no-color --numstat -- fuzz/Cargo.lock)"
-    # Compare all bytes, allowing only this ae version. A failed git show also
-    # yields a mismatch and refuses; process-substitution errors cannot pass.
-    if [ "$fuzz_delta" != $'1\t1\tfuzz/Cargo.lock' ] || ! cmp -s fuzz/Cargo.lock <(git show HEAD:fuzz/Cargo.lock | awk -v version="$VERSION" '
-        /^\[\[package\]\]$/ { ae = 0 }
-        /^name = "ae"$/ { ae = 1 }
-        ae && /^version = / { $0 = "version = \"" version "\""; ae = 0 }
-        { print }
-    '); then
-        echo "Error: fuzz/Cargo.lock must change only the ae version to $VERSION" >&2
         exit 1
     fi
 
