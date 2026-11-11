@@ -418,9 +418,10 @@ fn progress_g7_now_before_the_anchor_clamps_age_to_zero() {
     );
 }
 
-/// G8 (oracle: doc #225 spacing): a credited wait proof KEEPS the failed
-/// attempt count and earns two-cadence spacing; the re-arming Nth proof
-/// resets attempts to zero.
+/// G8 (oracle: doc #225 spacing, I14 backoff): a credited wait proof KEEPS
+/// the failed attempt count and earns two-cadence spacing (rung 1); the
+/// re-arming Nth proof resets attempts to zero and, as the second credited
+/// proof in a row, waits four cadences (rung 2).
 #[test]
 fn progress_g8_credit_keeps_attempts_rearm_resets_them() {
     let unconfirmed = wd(
