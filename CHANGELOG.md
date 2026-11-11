@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.37] - 2026-11-11
+- Calls reader discovery, fold, ledger and view with fold fuzz target (#288 B0-B3)
+- Persistence pure layer (incr, combine, doc codecs, store plans) with fuzz targets (#288 P1-P2)
+- Persisted reader cutover (P3) with P6 across every rebuild
+- Wire the persisted tool-statistics reader into the upkeep and the Statistics tab (#288 P4)
+- The Statistics tool pages and the persisted tool-statistics invariants (#288 P5)
+- Tool stats: answer every in-diff mutant survivor with a test, extract the maintainer notice, drop Resume::pending_reads
+- Hold a conversation from its view head and load its document only to change it (#288 P5)
+- Pin the head witness, the durable release and the read-flag load of a head-held conversation (#288 P5)
+- Gate lane: cap the nextest threads at eight when load1 is above 14 at start or unreadable, never refuse the run
+- App typing spec: give the two rigs that wait out the send defer an 8 s AE_SEND_DEFER_SEC instead of the 30 s default
+- Build both bundle halves in one cargo invocation with two --target flags
+- Gate lane: report test-seconds, thread-seconds and the 30 slowest tests of a whole green gate and append them to a ledger
+- A bare read prints the newest record per topic, capped, with a hint; --all reads every record
+- --dir <absolute path> starts the seat in an existing directory, such as its own worktree
+- Accept an optional reason and journal it on the retire record
+- Warn on stderr when --on names a seat the session does not hold, and still record
+- The worker card scopes the 20-line cap to report evidence
+- Ae --help lists reseat and upgrade
+- Inline the overview test's format argument
+- Memo_view checks the bare memo read over arbitrary memo.tsv bytes
+- Register memo_view in FUZZ_TARGETS so rust-fuzz accepts it
+- Memo_view seeds an invalid UTF-8 text under the cap, the byte-transparent path
+- Gate lane: raise the named thread ceiling from 8 to 16, a busy start still falls to 8
+- Clean the native release tree target/aarch64-apple-darwin as a sixth tree; fix two stale cap-of-eight comments
+- Reuse a fresh gate receipt on the identical pre-bump tree and skip only nextest
+- Gate receipt: record an unbounded harness probe as unknown, document the scratch base the receipt probes
+- Pass each argument to the lane as one word
+- Gate receipt: write it only when the run's start and end agree
+- Run every gate cargo call without a compiler wrapper from the environment
+- A rust-mutants regex is quoted once
+- Say that only a rustc-probing cargo call runs the wrapper, and name the receipt step
+- Back off unchanged wait challenges and stop counting host sleep
+- Name the confirmation in the wait check and supersede the progress pin
+- Name the rung-2 spacing in the g8 oracle comment
+- Pin the host-suspended parse edges: inclusive cap, twenty digits, no sign
+- Rustix 1.1.6 for RUSTSEC-2026-0486
+- Refresh and prove the fuzz lock right after the bump, before the bumped-tree fuzz check
+
 ## [v2026.11.36] - 2026-11-11
 - No non-lead seat takes a derived sibling, spend caps are superseded per window, headroom moves only at the current threshold (#309, #311)
 - Draw a bracketed paste once in the reseat fakes, observe evidence in the autotrust waits
