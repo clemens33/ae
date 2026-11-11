@@ -1312,7 +1312,7 @@ rust-fmt:
 # load1_now and load_above are the one reading of the machine's load, shared with
 # the stress lane's start refusal.
 SIZING := '''
-    lane_threads=8
+    lane_threads=16
     loaded_threads=8
     load_ceiling=14
     plain() { [[ "$1" =~ ^[1-9][0-9]{0,2}$ ]]; }
@@ -1838,7 +1838,7 @@ _tmux-isolated lane *args:
             # ONE named filterset repeated count times (checked above, before any
             # state): nextest's own --stress-count, never a synthetic CPU burner.
             # Threads come from the sizing above (the least of the live budget, the
-            # cap of eight and an inherited export); nice 10; the time bound ends
+            # lane ceiling and an inherited export); nice 10; the time bound ends
             # the whole group (status 124) and the trap reaps the scratch.
             detached nice -n 10 "$stress_timeout" -k 5 "$stress_secs" \
                 cargo nextest run --locked --all-features \

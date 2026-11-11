@@ -8,7 +8,7 @@
 # one (the Linux container lanes, `NEXTEST_TEST_THREADS=4`), and half of the
 # number a bare run started before. The isolated lane (`just test`) does NOT
 # read this number: it sizes itself and exports NEXTEST_TEST_THREADS, the least
-# of the free cores, eight and an inherited value (docs/development.md), and
+# of the free cores, the lane ceiling and an inherited value (docs/development.md), and
 # an environment value beats this file. So a shell that exports
 # NEXTEST_TEST_THREADS (a fixed 16, or `-2`) makes a bare `cargo nextest run`
 # follow the export, not this default; run the gate through `just test` or pass

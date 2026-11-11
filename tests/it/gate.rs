@@ -1688,7 +1688,15 @@ fn lane_over(base: &Path, budget: Option<&str>, cargo: &str) -> Invocation {
         };
         symlink(real, bin.join(tool)).unwrap_or_else(|why| panic!("the linked {tool}: {why}"));
     }
-    let mut fakes = vec![("cargo", cargo.to_owned())];
+    // A quiet machine by default, so no lane test depends on the load the host has right now;
+    // a test that needs another reading writes its own `uptime` over this one.
+    let mut fakes = vec![
+        ("cargo", cargo.to_owned()),
+        (
+            "uptime",
+            "echo ' 15:25  up 1 day, 6 users, load averages: 0.50 0.50 0.50'\n".to_owned(),
+        ),
+    ];
     if let Some(answer) = budget {
         fakes.push(("jobs-budget", format!("echo '{answer}'\n")));
     }
@@ -1774,7 +1782,7 @@ fn the_lane_sentry_server_sees_the_fixture_home_not_the_operators() {
 
 /// A lane sizes each count as the LEAST of its ceilings and names every one it
 /// applied on stderr. Threads: `jobs-budget` (the CPU count without it), the tmux
-/// suite's cap of eight, and an inherited `NEXTEST_TEST_THREADS`. Build jobs:
+/// lane ceiling of sixteen, and an inherited `NEXTEST_TEST_THREADS`. Build jobs:
 /// `jobs-budget` and an inherited `CARGO_BUILD_JOBS`. A shell profile that
 /// exports a wide count (a fixed 16, or `jobs-budget --max`) may LOWER a lane
 /// but never lift it past the live budget.
@@ -1791,7 +1799,7 @@ fn a_lane_sizes_itself_as_the_least_of_its_ceilings_and_only_a_lane_override_lif
     };
     let none = &[][..];
     let explicit = both("3", "5");
-    let profile = both("16", "16");
+    let profile = both("32", "32");
     let tie = both("6", "6");
     let junk = both("num-cpus", "default");
     // The relative forms a user config or profile may hold (cargo and nextest
@@ -1808,7 +1816,7 @@ fn a_lane_sizes_itself_as_the_least_of_its_ceilings_and_only_a_lane_override_lif
     // (budget, env, (threads, source), (jobs, source))
     for (budget, env, (threads, from), (jobs, jobs_from)) in [
         ("6", none, ("6", "budget"), ("6", "budget")),
-        ("999", none, ("8", "budget"), ("999", "budget")),
+        ("999", none, ("16", "budget"), ("999", "budget")),
         // An inherited value below the budget lowers the lane.
         (
             "6",
@@ -1822,15 +1830,15 @@ fn a_lane_sizes_itself_as_the_least_of_its_ceilings_and_only_a_lane_override_lif
         (
             "6",
             &profile[..],
-            ("6", "budget; env 16"),
-            ("6", "budget; env 16"),
+            ("6", "budget; env 32"),
+            ("6", "budget; env 32"),
         ),
-        // ... nor past the suite's cap of eight threads; jobs may follow it.
+        // ... nor past the lane ceiling of sixteen threads; jobs may follow it.
         (
             "999",
             &profile[..],
-            ("8", "budget; env 16"),
-            ("16", "env; budget 999"),
+            ("16", "budget; env 32"),
+            ("32", "env; budget 999"),
         ),
         // A tie is the budget's, the equal value still named.
         (
@@ -1855,7 +1863,7 @@ fn a_lane_sizes_itself_as_the_least_of_its_ceilings_and_only_a_lane_override_lif
         (
             "999",
             &relative[..],
-            ("8", "budget; env -2 ignored"),
+            ("16", "budget; env -2 ignored"),
             ("999", "budget; env -2 ignored"),
         ),
         // An empty export is no export.
@@ -1880,7 +1888,7 @@ fn a_lane_sizes_itself_as_the_least_of_its_ceilings_and_only_a_lane_override_lif
     }
 }
 
-/// Without a `jobs-budget` the CPU count and the cap of eight are the threads'
+/// Without a `jobs-budget` the CPU count and the cap of sixteen are the threads'
 /// ceiling, an inherited wide value cannot lift them, and the jobs have no live
 /// ceiling to compare with, so an inherited value stands untouched (cargo reads
 /// a relative one itself). A relative threads value is no ceiling and never
@@ -1888,17 +1896,17 @@ fn a_lane_sizes_itself_as_the_least_of_its_ceilings_and_only_a_lane_override_lif
 #[test]
 fn a_lane_without_jobs_budget_keeps_the_cpu_cap_and_leaves_an_inherited_jobs_value() {
     let base = super::cli::OwnedScratch::root("gate", "nobudget");
-    let profile = [("NEXTEST_TEST_THREADS", "16"), ("CARGO_BUILD_JOBS", "16")];
+    let profile = [("NEXTEST_TEST_THREADS", "32"), ("CARGO_BUILD_JOBS", "16")];
     let relative = [("NEXTEST_TEST_THREADS", "-2"), ("CARGO_BUILD_JOBS", "-2")];
     let (seen, stderr) = sized_lane(&base, None, &profile[..], &["test"]);
     let threads: usize = seen[1].parse().expect("the recorded threads");
-    assert!((1..=8).contains(&threads), "{seen:?}: {stderr}");
+    assert!((1..=16).contains(&threads), "{seen:?}: {stderr}");
     assert_eq!(seen[2], "16", "{stderr}");
-    let said = format!("threads {threads} (cpus; env 16), cargo jobs 16 (env)");
+    let said = format!("threads {threads} (cpus; env 32), cargo jobs 16 (env)");
     assert!(stderr.contains(&said), "{stderr}");
     let (seen, stderr) = sized_lane(&base, None, &relative[..], &["test"]);
     let threads: usize = seen[1].parse().expect("the recorded threads");
-    assert!((1..=8).contains(&threads), "{seen:?}: {stderr}");
+    assert!((1..=16).contains(&threads), "{seen:?}: {stderr}");
     assert_eq!(seen[2], "-2", "{stderr}");
     let said = format!("threads {threads} (cpus; env -2 ignored), cargo jobs -2 (env)");
     assert!(stderr.contains(&said), "{stderr}");
@@ -1995,12 +2003,12 @@ fn a_mutants_lane_never_runs_wider_than_two_tests() {
             "budget {budget} env {env:?}: {stderr}"
         );
     }
-    // The `test` lane keeps its eight-wide ceiling: the cap is the mutants lane's,
-    // and an inherited eight no longer lifts it past the budget.
+    // The `test` lane keeps its sixteen-wide ceiling: the cap is the mutants lane's,
+    // and an inherited wider count no longer lifts it past the budget.
     let (seen, _) = sized_lane(&base, Some("6"), &with("8")[..], &["test"]);
     assert_eq!(seen[1], "6");
-    let (seen, _) = sized_lane(&base, Some("999"), &with("16")[..], &["test"]);
-    assert_eq!(seen[1], "8");
+    let (seen, _) = sized_lane(&base, Some("999"), &with("32")[..], &["test"]);
+    assert_eq!(seen[1], "16");
 }
 
 /// One `test` lane run of the REAL justfile with its named lane ceiling
@@ -2017,7 +2025,7 @@ fn loaded_lane(
     env: &[(&str, &str)],
 ) -> (Vec<String>, String) {
     use std::os::unix::fs::PermissionsExt as _;
-    let named = "\n    lane_threads=8\n";
+    let named = "\n    lane_threads=16\n";
     let justfile = read(&root().join("justfile"));
     assert_eq!(
         justfile.matches(named).count(),
@@ -2069,8 +2077,9 @@ fn loaded_lane(
 /// loaded cap when load1 is ABOVE 14 at the start, or cannot be read (that counts
 /// as high), and says so on stderr. The guard only lowers and never refuses:
 /// every case below ends green. An explicit `AE_TEST_THREADS` replaces the whole
-/// rule and an inherited export still only lowers. The ceiling is raised to 12
-/// in a copy of the justfile, which is also what P0's one-line decision does.
+/// rule and an inherited export still only lowers. The ceiling is set to 12
+/// in a copy of the justfile, and the SHIPPED sixteen is shown once below: quiet reaches it,
+/// a busy start falls to eight.
 #[test]
 fn a_busy_machine_lowers_the_lanes_threads_and_never_refuses_the_run() {
     let base = super::cli::OwnedScratch::root("gate", "loadguard");
@@ -2088,6 +2097,12 @@ fn a_busy_machine_lowers_the_lanes_threads_and_never_refuses_the_run() {
         assert!(stderr.contains("nextest threads 12 (budget)"), "{stderr}");
         assert!(!stderr.contains("load1"), "{load}: said nothing: {stderr}");
     }
+    // The shipped ceiling of sixteen: a quiet start reaches it, a busy one falls to eight.
+    let (words, stderr) = seen(16, Some(mac("0.50")), "999", none);
+    assert_eq!(words[1], "16", "{stderr}");
+    let (words, stderr) = seen(16, Some(mac("14.01")), "999", none);
+    assert_eq!(words[1], "8", "{stderr}");
+    assert!(stderr.contains("was 16, capped"), "{stderr}");
     // ABOVE the ceiling: the loaded cap, the cause on stderr, no refusal.
     for load in [mac("14.01"), mac("24.02"), linux("15.00"), mac("120.50")] {
         let (words, stderr) = seen(12, Some(load.clone()), "999", none);
@@ -2177,10 +2192,11 @@ fn the_thread_ceiling_and_the_load_guard_are_named_values_with_one_load_reading(
         "SIZING must name lane_threads, loaded_threads and load_ceiling once each, read the \
          load in one place and be guarded by size_load right after size_counts"
     );
-    // The shipped values: the old default of eight stays until P0 decides, and
-    // the start ceiling is the doctrine's fourteen.
+    // The shipped values: the lane ceiling is the P0 thread matrix's sixteen, a busy
+    // start falls back to the old default of eight, and the start ceiling is the
+    // doctrine's fourteen.
     for pin in [
-        "\n    lane_threads=8\n",
+        "\n    lane_threads=16\n",
         "\n    loaded_threads=8\n",
         "\n    load_ceiling=14\n",
     ] {
@@ -2598,7 +2614,7 @@ fn lint_and_the_fuzz_check_are_sized_by_the_lane_rule_and_niced() {
 
 /// The doctest step of the test lane gets its thread count from the same rule as
 /// nextest (rustdoc's libtest otherwise starts one test per core): the least of
-/// the budget, eight and an inherited export, `AE_TEST_THREADS` the override.
+/// the budget, sixteen and an inherited export, `AE_TEST_THREADS` the override.
 #[test]
 fn the_doctest_step_takes_the_lanes_thread_count() {
     let base = super::cli::OwnedScratch::root("gate", "doctests");
@@ -2615,13 +2631,13 @@ fn the_doctest_step_takes_the_lanes_thread_count() {
         ]
         .map(str::to_owned)
     };
-    let profile = [("NEXTEST_TEST_THREADS", "16"), ("CARGO_BUILD_JOBS", "16")];
+    let profile = [("NEXTEST_TEST_THREADS", "32"), ("CARGO_BUILD_JOBS", "32")];
     let lift = [("NEXTEST_TEST_THREADS", "16"), ("AE_TEST_THREADS", "12")];
     for (budget, env, threads) in [
         ("6", &[][..], "6"),
-        ("999", &[][..], "8"),
+        ("999", &[][..], "16"),
         ("6", &profile[..], "6"),
-        ("999", &profile[..], "8"),
+        ("999", &profile[..], "16"),
         ("6", &lift[..], "12"),
     ] {
         let _ = std::fs::remove_file(base.join("seen"));
@@ -2924,7 +2940,7 @@ fn an_unusable_jobs_budget_answer_leaves_the_lane_sized_as_before() {
     for answer in answers.map(Some).into_iter().chain([None]) {
         let (seen, stderr) = sized_lane(&base, answer, &[], &["test"]);
         let threads: usize = seen[1].parse().expect("the recorded threads");
-        assert!((1..=8).contains(&threads), "{answer:?}: {seen:?}");
+        assert!((1..=16).contains(&threads), "{answer:?}: {seen:?}");
         assert_eq!(seen[2], "unset", "{answer:?}: {seen:?}");
         let said = format!("threads {threads} (cpus), cargo jobs unset (cargo default)");
         assert!(stderr.contains(&said), "{answer:?}: {stderr}");

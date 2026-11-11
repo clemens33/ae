@@ -233,8 +233,8 @@ growth.
 ONE helper sizes every heavy recipe. The `SIZING` shell text in the `justfile` is included by the test lane, `rust-lint` and `rust-fuzz-check`, so the arithmetic exists once and `tests/it/gate.rs` pins that no recipe carries a copy. `rust-lint` and `rust-fuzz-check` run cargo at nice 10 with `CARGO_BUILD_JOBS` from it (the fuzz check then caps itself at four jobs), and the doctest step of the lane takes `--test-threads` from the lane's thread count: without it rustdoc starts one doctest per core (12 of 12 at once measured in a scratch crate, 2 with the flag). The sizing starts at the free
 cores: `jobs-budget` when that helper is on PATH and prints one positive integer of at most
 three digits, else the online CPU count. Each count is the LEAST of its ceilings. Threads:
-`jobs-budget` (the CPU count without it), the lane ceiling (`lane_threads` in `SIZING`, eight until the
-thread matrix of the speed plan decides) and an inherited
+`jobs-budget` (the CPU count without it), the lane ceiling (`lane_threads` in `SIZING`, sixteen: the thread matrix of the speed plan measured 111 s
+at 16 threads against 132 s at 12 on its sample, with no failure) and an inherited
 `NEXTEST_TEST_THREADS`. The lane then reads load1 once at its start: above `load_ceiling` (14, the start ceiling of
 a gate) or unreadable it lowers the threads to `loaded_threads` (eight, the old default) and says so on stderr
 (`lane test: load1 21.30 is above 14: nextest threads at most 8`, and `was 12, capped` in the sizing line when it
