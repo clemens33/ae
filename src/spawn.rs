@@ -39,7 +39,8 @@ use crate::transport;
 use crate::watchdog_glue;
 
 /// The usage line.
-pub const SPAWN_USAGE: &str = "Usage: spawn <name> --using <profile[@client]> [--] [prompt]";
+pub const SPAWN_USAGE: &str =
+    "Usage: spawn <name> --using <profile[@client]> [--dir <absolute path>] [--] [prompt]";
 
 /// The `retire` usage.
 pub const RETIRE_USAGE: &str = "Usage: retire <agent-name|pane-id>";
@@ -78,6 +79,8 @@ pub struct Parsed {
     /// The `[clients]` label of a `--using profile@client` selection: the
     /// account the profile runs on instead of its own. `None` is a bare spawn.
     pub client: Option<String>,
+    /// The absolute directory the seat starts in (`--dir`), when one was named.
+    pub dir: Option<String>,
     /// The task, as typed.
     pub prompt: String,
 }
@@ -96,6 +99,7 @@ pub fn parse(tail: &[String]) -> Result<Parsed, String> {
         return Err(SPAWN_USAGE.to_owned());
     }
     let mut profile = String::new();
+    let mut dir: Option<String> = None;
     let mut rest = rest;
     loop {
         match rest {
@@ -108,6 +112,17 @@ pub fn parse(tail: &[String]) -> Result<Parsed, String> {
             }
             [flag, tail @ ..] if flag.starts_with("--using=") => {
                 flag["--using=".len()..].clone_into(&mut profile);
+                rest = tail;
+            }
+            [flag, value, tail @ ..] if flag == "--dir" => {
+                dir = Some(value.clone());
+                rest = tail;
+            }
+            [flag] if flag == "--dir" => {
+                return Err("Error: --dir requires an absolute directory path.".to_owned());
+            }
+            [flag, tail @ ..] if flag.starts_with("--dir=") => {
+                dir = Some(flag["--dir=".len()..].to_owned());
                 rest = tail;
             }
             [flag, tail @ ..] if flag == "--" => {
@@ -130,10 +145,16 @@ pub fn parse(tail: &[String]) -> Result<Parsed, String> {
             "Error: --using '{profile}' is not <profile> or <profile>@<client> (e.g. --using opus55x@cc-mic)."
         ));
     };
+    if let Some(dir) = dir.as_deref().filter(|dir| !Path::new(dir).is_absolute()) {
+        return Err(format!(
+            "Error: --dir '{dir}' is not an absolute path (an empty or relative one names no directory the seat could start in)."
+        ));
+    }
     Ok(Parsed {
         name: name.clone(),
         profile,
         client,
+        dir,
         prompt: rest.join(" "),
     })
 }
@@ -702,6 +723,10 @@ fn record_spawned_seat(
     invoker_cwd: &Path,
 ) -> Result<StagedSeat, String> {
     let parsed = parse(tail)?;
+    // `--dir` rides the same typed target as the seam: one explicit-target
+    // path, one set of refusals (absence, containment, mode), whichever way the
+    // target arrived. The seam, when given, is the caller's and wins.
+    let target = target.or_else(|| parsed.dir.as_deref().map(Path::new));
     // THE PEER BOUNDARY.
     if !crate::config::is_agent_name(&parsed.name) {
         return Err(format!(
@@ -795,13 +820,14 @@ fn record_spawned_seat(
             parsed.name
         ));
     }
+    let explicit = target.is_some();
     Ok(StagedSeat {
         slot,
         session: facts,
         argv: parsed,
         tool,
         command,
-        explicit: target.is_some(),
+        explicit,
         launch_id,
     })
 }
@@ -2544,6 +2570,141 @@ mod tests {
         // the shell-witness bound hard-fails.
         let cwd = rig.pane_cwd(&pane);
         assert_eq!(cwd, canon.to_str().unwrap());
+    }
+
+    /// `--dir <absolute path>` is one more option of the same grammar as
+    /// `--using`: either spelling, any order before `--`, and never read out of
+    /// the prompt.
+    #[test]
+    fn the_dir_flag_parses_in_either_spelling_and_wants_an_absolute_path() {
+        let words = |items: &[&str]| -> Vec<String> {
+            items.iter().map(|item| (*item).to_owned()).collect()
+        };
+        let parsed = super::parse(&words(&[
+            "scout", "--using", "fake", "--dir", "/w/repo", "go", "now",
+        ]))
+        .expect("a spaced --dir");
+        assert_eq!(parsed.dir.as_deref(), Some("/w/repo"));
+        assert_eq!(
+            parsed.prompt, "go now",
+            "the flag is not part of the prompt"
+        );
+        let parsed = super::parse(&words(&["scout", "--dir=/w/repo", "--using=fake", "go"]))
+            .expect("the joined spelling, in the other order");
+        assert_eq!(parsed.dir.as_deref(), Some("/w/repo"));
+        assert_eq!(parsed.profile, "fake");
+        assert_eq!(parsed.prompt, "go");
+        let parsed = super::parse(&words(&["scout", "--using", "fake", "go"])).expect("no --dir");
+        assert_eq!(
+            parsed.dir, None,
+            "a spawn without --dir inherits, as before"
+        );
+        let parsed = super::parse(&words(&[
+            "scout", "--using", "fake", "--", "--dir", "/x", "now",
+        ]))
+        .expect("after --");
+        assert_eq!(parsed.dir, None, "after `--` the words are the prompt");
+        assert_eq!(parsed.prompt, "--dir /x now");
+
+        for (tail, why) in [
+            (
+                &["scout", "--using", "fake", "--dir", "repo"][..],
+                "not an absolute path",
+            ),
+            (
+                &["scout", "--using", "fake", "--dir=./repo"][..],
+                "absolute",
+            ),
+            (&["scout", "--using", "fake", "--dir="][..], "absolute"),
+            (&["scout", "--using", "fake", "--dir"][..], "--dir requires"),
+        ] {
+            let refused = super::parse(&words(tail)).expect_err("a bad --dir refuses");
+            assert!(refused.contains(why), "{tail:?}: {refused}");
+        }
+    }
+
+    // The flag drives the same explicit-target path the seam does: the seat
+    // records `work_dir.<slot>`, the pane starts there, and a directory that
+    // is not there refuses before any seat or pane exists.
+    #[test]
+    fn tmux_the_dir_flag_starts_the_pane_in_that_directory() {
+        let rig = TmuxRig::new("dirflag", "ae-tmux-dirflag", "grok");
+        let target = rig.scratch.join("worktree");
+        std::fs::create_dir(&target).unwrap();
+        let canon = std::fs::canonicalize(&target).unwrap();
+        let state = rig.scratch.join("state");
+        std::fs::create_dir(&state).unwrap();
+        let words = |items: &[&str]| -> Vec<String> {
+            items.iter().map(|item| (*item).to_owned()).collect()
+        };
+        let spawn = |tail: &[String]| {
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let rc = super::run_spawn_inner(
+                &rig.dir,
+                tail,
+                "",
+                Timestamp::now(),
+                &mut out,
+                &mut err,
+                None,
+                Some(state.as_path()),
+                &rig.scratch,
+            )
+            .expect("spawn runs");
+            (rc, String::from_utf8_lossy(&err).into_owned())
+        };
+
+        let tail = words(&[
+            "scout",
+            "--using",
+            "fake",
+            "--dir",
+            canon.to_str().unwrap(),
+            "go",
+        ]);
+        let (rc, err) = spawn(&tail);
+        assert_eq!(rc, 0, "stderr: {err}");
+        let meta = rig.meta();
+        assert!(
+            meta.contains(&format!("work_dir.spawned.0={}\n", canon.display())),
+            "the directory is the seat's recorded target: {meta}"
+        );
+        let slots = crate::transport::observe_slots(&rig.server(), &rig.session).expect("slots");
+        let pane = slots
+            .iter()
+            .find(|seen| seen.slot == "spawned.0")
+            .expect("pane")
+            .pane
+            .clone();
+        assert_eq!(rig.pane_cwd(&pane), canon.to_str().unwrap());
+
+        // A directory that is not there: refused, nothing seated, no new pane.
+        let before = crate::transport::observe_slots(&rig.server(), &rig.session)
+            .expect("slots")
+            .len();
+        let ghost = rig.scratch.join("no-such-worktree");
+        let tail = words(&[
+            "ghost",
+            "--using",
+            "fake",
+            "--dir",
+            ghost.to_str().unwrap(),
+            "go",
+        ]);
+        let (rc, err) = spawn(&tail);
+        assert_eq!(rc, 1, "a missing directory refuses: {err}");
+        assert!(err.contains("is not there"), "{err}");
+        let meta = rig.meta();
+        assert!(!meta.contains("=ghost"), "no seat was recorded: {meta}");
+        assert!(!meta.contains("spawned.1"), "no slot was taken: {meta}");
+        assert_eq!(
+            crate::transport::observe_slots(&rig.server(), &rig.session)
+                .expect("slots")
+                .len(),
+            before,
+            "no pane was opened"
+        );
     }
 
     // B2-spawn I3: removing the recorded node (meta untouched) makes step B

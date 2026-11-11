@@ -169,7 +169,7 @@ pub const HELPERS: [Helper; 27] = [
     },
     Helper {
         name: "spawn",
-        usage: "Usage: spawn <name> --using <profile[@client]> [--] [prompt]\nAdd an agent to this session.\n",
+        usage: "Usage: spawn <name> --using <profile[@client]> [--dir <absolute path>] [--] [prompt]\nAdd an agent to this session. --dir starts it in that existing directory, e.g. its own git worktree, instead of the session's.\n",
         entry: crate::cli::SPAWN,
         prefix: &[],
     },

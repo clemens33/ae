@@ -207,7 +207,10 @@ Add another agent to this workspace (it gets its own tmux window, named
 after its role — the main window's layout is untouched):
 ```bash
 ${sessions_dir}/spawn <name> --using <profile> [prompt]
+${sessions_dir}/spawn <name> --using <profile> --dir <absolute path> [--] [prompt]
 ```
+
+`--dir` starts the agent in that existing directory, such as its own git worktree, instead of the session's.
 
 Always give spawned agents a descriptive role NAME — it is their identity, addressed as `send <name>` (e.g. `spawn reviewer --using <review-profile>`, `spawn pair-programmer --using <build-profile>`).
 
