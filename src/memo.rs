@@ -9,12 +9,15 @@
 //! Two files, two locks, two transactions. A failure between them
 //! is reported as exactly that: recorded in `memo.tsv`, event not emitted.
 //!
-//! `read [--topic <topic>]` and `tail [n]` render ([`render`]) the whole file or
-//! its last `n` records ([`crate::event_text::last_records`] — what `tail -n`
-//! counts). A regular-file gate decides first: no `memo.tsv`, or anything but a
+//! A bare `read` is the bounded [`overview`]: the newest record of each of the
+//! newest topics, with a hint to the full read. `read --all` and
+//! `read --topic <topic>` render ([`render`]) the whole file or one topic of it,
+//! and `tail [n]` its last `n` records ([`crate::event_text::last_records`] —
+//! what `tail -n` counts). A regular-file gate decides first: no `memo.tsv`, or anything but a
 //! regular file in its place — a directory, a FIFO — is empty output at 0. The
 //! gate comes BEFORE the open, because a FIFO opened without it blocks the
 //! reader for good. A regular file that then cannot be read is reported at 1.
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
@@ -25,8 +28,7 @@ use crate::time::Timestamp;
 use crate::tracked::{self, EventFields};
 
 /// The usage text.
-pub const USAGE: &str =
-    "Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]\n";
+pub const USAGE: &str = "Usage: memo add [--topic <topic>] <text> | memo read [--all | --topic <topic>] | memo tail [n]\n";
 
 /// The topic when none is given or the given one is empty.
 pub const DEFAULT_TOPIC: &str = "general";
@@ -34,18 +36,26 @@ pub const DEFAULT_TOPIC: &str = "general";
 /// `tail` with no count — `${1:-10}`.
 pub const DEFAULT_TAIL: usize = 10;
 
+/// How many topics a bare `memo read` shows: the newest ones.
+pub const OVERVIEW_TOPICS: usize = 20;
+
+/// How many characters of one record's text a bare `memo read` shows.
+pub const OVERVIEW_TEXT_CHARS: usize = 1_000;
+
 /// What the caller asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// `memo add [--topic <topic>] <text…>`.
     Add(Add),
-    /// `memo`, `memo read [--topic <topic>]`, `memo tail [n]`.
+    /// `memo`, `memo read [--all | --topic <topic>]`, `memo tail [n]`.
     View(View),
 }
 
 /// A read of the memo file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
+    /// The newest record of each of the newest [`OVERVIEW_TOPICS`] topics.
+    Overview,
     /// Every record, or only those whose topic is the given one.
     All(Option<String>),
     /// The last `n` records, unfiltered.
@@ -77,12 +87,13 @@ pub struct Usage;
 /// `--topic` missing either half.
 pub fn parse(tail: &[String]) -> Result<Command, Usage> {
     let Some((command, rest)) = tail.split_first() else {
-        return Ok(Command::View(View::All(None)));
+        return Ok(Command::View(View::Overview));
     };
     match command.as_str() {
         "add" => parse_add(rest).map(Command::Add),
         "read" => match rest {
-            [] => Ok(Command::View(View::All(None))),
+            [] => Ok(Command::View(View::Overview)),
+            [flag] if flag == "--all" => Ok(Command::View(View::All(None))),
             [flag, topic] if flag == "--topic" => Ok(Command::View(View::All(
                 Some(topic.clone()).filter(|topic| !topic.is_empty()),
             ))),
@@ -306,19 +317,90 @@ pub fn render(container: &[u8], topic: Option<&str>) -> Vec<u8> {
         if topic.is_some_and(|wanted| record.topic != wanted.as_bytes()) {
             continue;
         }
-        out.extend_from_slice(record.ts);
-        out.extend_from_slice(" — ".as_bytes());
-        out.extend_from_slice(record.author);
-        if record.topic != DEFAULT_TOPIC.as_bytes() {
-            out.extend_from_slice(b" [");
-            out.extend_from_slice(record.topic);
-            out.push(b']');
-        }
-        out.push(b'\n');
-        out.extend_from_slice(record.text);
-        out.extend_from_slice(b"\n\n");
+        push_record(&mut out, &record, record.text);
     }
     out
+}
+
+/// One record as `memo read` prints it, with `text` in place of its own.
+fn push_record(out: &mut Vec<u8>, record: &Record<'_>, text: &[u8]) {
+    out.extend_from_slice(record.ts);
+    out.extend_from_slice(" — ".as_bytes());
+    out.extend_from_slice(record.author);
+    if record.topic != DEFAULT_TOPIC.as_bytes() {
+        out.extend_from_slice(b" [");
+        out.extend_from_slice(record.topic);
+        out.push(b']');
+    }
+    out.push(b'\n');
+    out.extend_from_slice(text);
+    out.extend_from_slice(b"\n\n");
+}
+
+/// The bounded read a bare `memo read` gives: the newest record of each of the
+/// newest [`OVERVIEW_TOPICS`] topics, in file order, each text cut at
+/// [`OVERVIEW_TEXT_CHARS`] characters (the last one the ellipsis).
+///
+/// A hint line follows when the output is less than the file — a record
+/// superseded on its topic, a topic past the cap or a cut text — and names the
+/// counts and both ways to read more. An overview that hides nothing is the full
+/// render, byte for byte, and carries no hint.
+///
+/// Total over hostile bytes: it only walks [`records`], so a line that is not a
+/// record is skipped as everywhere else.
+#[must_use]
+pub fn overview(container: &[u8]) -> Vec<u8> {
+    let records: Vec<Record<'_>> = records(container).collect();
+    let mut newest: HashMap<&[u8], usize> = HashMap::new();
+    for (at, record) in records.iter().enumerate() {
+        newest.insert(record.topic, at);
+    }
+    let topics = newest.len();
+    let mut kept: Vec<usize> = newest.into_values().collect();
+    kept.sort_unstable();
+    let shown = &kept[topics.saturating_sub(OVERVIEW_TOPICS)..];
+    let mut out = Vec::new();
+    let mut cut = false;
+    for &at in shown {
+        let record = &records[at];
+        let text = clipped(record.text);
+        cut |= text != record.text;
+        push_record(&mut out, record, &text);
+    }
+    if shown.len() < records.len() || cut {
+        let cut_note = if cut {
+            format!("; long texts are cut at {OVERVIEW_TEXT_CHARS} characters")
+        } else {
+            String::new()
+        };
+        out.extend_from_slice(
+            format!(
+                "(memo read shows the newest record of {} of {topics} topics, {} records in all{cut_note}. \
+                 Every record: memo read --all. One topic's history: memo read --topic <topic>.)\n",
+                shown.len(),
+                records.len()
+            )
+            .as_bytes(),
+        );
+    }
+    out
+}
+
+/// `text` as an overview shows it: whole when it fits [`OVERVIEW_TEXT_CHARS`]
+/// characters, else its first characters and an ellipsis in exactly that many.
+/// Bytes are kept as they are unless a cut is made, which is the only time the
+/// text is read as characters.
+fn clipped(text: &[u8]) -> Vec<u8> {
+    if text.len() <= OVERVIEW_TEXT_CHARS {
+        return text.to_vec();
+    }
+    let chars = String::from_utf8_lossy(text);
+    if chars.chars().count() <= OVERVIEW_TEXT_CHARS {
+        return text.to_vec();
+    }
+    let mut kept: String = chars.chars().take(OVERVIEW_TEXT_CHARS - 1).collect();
+    kept.push('…');
+    kept.into_bytes()
 }
 
 /// The stdout of a [`View`] over `container`.
@@ -329,6 +411,7 @@ pub fn render(container: &[u8], topic: Option<&str>) -> Vec<u8> {
 #[must_use]
 pub fn view(container: &[u8], view: &View) -> Vec<u8> {
     match view {
+        View::Overview => overview(container),
         View::All(topic) => render(container, topic.as_deref()),
         View::Tail(count) => render(&crate::event_text::last_records(container, *count), None),
     }
@@ -341,8 +424,8 @@ pub fn view(container: &[u8], view: &View) -> Vec<u8> {
 )]
 mod tests {
     use super::{
-        Add, Command, DEFAULT_TAIL, Record, Usage, View, one_line, parse, record, records, render,
-        view,
+        Add, Command, DEFAULT_TAIL, DEFAULT_TOPIC, OVERVIEW_TEXT_CHARS, OVERVIEW_TOPICS, Record,
+        Usage, View, one_line, parse, record, records, render, view,
     };
     use crate::time::Timestamp;
 
@@ -418,6 +501,7 @@ mod tests {
             // consumer and shares the parser's totality by construction.
             let _ = render(&container, None);
             let _ = render(&container, Some("general"));
+            let _ = view(&container, &View::Overview);
         }
     }
 
@@ -459,8 +543,24 @@ mod tests {
         );
 
         let all = |topic: Option<&str>| Ok(Command::View(View::All(topic.map(ToOwned::to_owned))));
-        assert_eq!(parse(&[]), all(None), "no word is read");
-        assert_eq!(parse(&words(&["read"])), all(None));
+        let overview = Ok(Command::View(View::Overview));
+        assert_eq!(parse(&[]), overview, "no word is a bare read");
+        assert_eq!(parse(&words(&["read"])), overview, "a bare read is bounded");
+        assert_eq!(
+            parse(&words(&["read", "--all"])),
+            all(None),
+            "the full file is an explicit word"
+        );
+        assert_eq!(
+            parse(&words(&["read", "--all", "x"])),
+            Err(Usage),
+            "--all takes nothing after it"
+        );
+        assert_eq!(
+            parse(&words(&["read", "--all", "--topic", "p2"])),
+            Err(Usage),
+            "--all and --topic do not combine"
+        );
         assert_eq!(parse(&words(&["read", "--topic", "p2"])), all(Some("p2")));
         assert_eq!(
             parse(&words(&["read", "--topic", ""])),
@@ -549,6 +649,127 @@ short\tline\tonly\n\
         assert_eq!(
             view(FIXTURE, &View::Tail(usize::MAX)),
             RENDERED_ALL.as_bytes()
+        );
+    }
+
+    fn filed(stamp: &str, topic: &str, text: &str) -> String {
+        format!("{stamp}\tcl:lead\t{topic}\t{text}\n")
+    }
+
+    fn overview(container: &str) -> String {
+        String::from_utf8(view(container.as_bytes(), &View::Overview)).expect("utf8 out")
+    }
+
+    #[test]
+    fn an_overview_keeps_the_newest_record_of_each_topic_in_file_order_and_hints() {
+        let container = [
+            filed("t0", "a", "a-old"),
+            filed("t1", "b", "b-only"),
+            filed("t2", "a", "a-new"),
+        ]
+        .concat();
+        assert_eq!(
+            overview(&container),
+            "t1 — cl:lead [b]\nb-only\n\nt2 — cl:lead [a]\na-new\n\n\
+             (memo read shows the newest record of 2 of 2 topics, 3 records in all. \
+             Every record: memo read --all. One topic's history: memo read --topic <topic>.)\n",
+            "a superseded record is hidden, so the hint names the full read"
+        );
+    }
+
+    #[test]
+    fn an_overview_that_hides_nothing_is_the_full_read_without_a_hint() {
+        // One record per topic, short texts, under the topic cap: the overview
+        // IS the file, so the bytes are the full render's and nothing is hinted.
+        let container = [
+            filed("t0", "a", "one"),
+            filed("t1", DEFAULT_TOPIC, "two"),
+            filed("t2", "c", ""),
+        ]
+        .concat();
+        assert_eq!(
+            view(container.as_bytes(), &View::Overview),
+            view(container.as_bytes(), &View::All(None))
+        );
+        assert!(!overview(&container).contains("memo read"));
+    }
+
+    #[test]
+    fn an_overview_shows_only_the_newest_topics_and_says_how_many_it_left() {
+        let topics = |count: usize| -> String {
+            (0..count)
+                .map(|n| filed(&format!("t{n:03}"), &format!("topic{n:03}"), "x"))
+                .collect()
+        };
+        // Exactly the cap: every topic shows and the output is the file.
+        let at_cap = topics(OVERVIEW_TOPICS);
+        assert!(overview(&at_cap).contains("topic000"));
+        assert!(
+            !overview(&at_cap).contains("memo read"),
+            "nothing is hidden"
+        );
+        // One over: the OLDEST topic goes, the newest stay, and the hint counts.
+        let over = topics(OVERVIEW_TOPICS + 1);
+        let shown = overview(&over);
+        assert!(!shown.contains("topic000"), "the oldest topic is cut");
+        assert!(shown.contains("topic001"));
+        assert!(shown.contains(&format!("topic{:03}", OVERVIEW_TOPICS)));
+        assert!(
+            shown.contains(&format!(
+                "the newest record of {OVERVIEW_TOPICS} of {} topics, {} records in all",
+                OVERVIEW_TOPICS + 1,
+                OVERVIEW_TOPICS + 1
+            )),
+            "{shown}"
+        );
+        assert_eq!(
+            shown.matches(" — cl:lead").count(),
+            OVERVIEW_TOPICS,
+            "exactly the cap is rendered"
+        );
+    }
+
+    #[test]
+    fn an_overview_cuts_a_long_text_at_the_cap_and_says_so() {
+        let exact = "x".repeat(OVERVIEW_TEXT_CHARS);
+        let whole = overview(&filed("t0", "a", &exact));
+        assert!(whole.contains(&exact), "a text at the cap is whole");
+        assert!(!whole.contains("memo read"), "and nothing is hinted");
+
+        let long = "y".repeat(OVERVIEW_TEXT_CHARS + 1);
+        let cut = overview(&filed("t0", "a", &long));
+        let expected = format!("{}…", "y".repeat(OVERVIEW_TEXT_CHARS - 1));
+        assert!(
+            cut.contains(&format!("\n{expected}\n\n")),
+            "the cut text is the cap including its ellipsis: {cut}"
+        );
+        assert!(!cut.contains(&long));
+        assert!(
+            cut.contains(&format!(
+                "long texts are cut at {OVERVIEW_TEXT_CHARS} characters"
+            )),
+            "{cut}"
+        );
+
+        // Two-byte characters: the cut counts characters, never bytes, and
+        // never splits one.
+        let wide = "é".repeat(OVERVIEW_TEXT_CHARS + 1);
+        let cut = overview(&filed("t0", "a", &wide));
+        assert!(cut.contains(&format!("{}…", "é".repeat(OVERVIEW_TEXT_CHARS - 1))));
+        let narrow = "é".repeat(OVERVIEW_TEXT_CHARS);
+        assert!(
+            overview(&filed("t0", "a", &narrow)).contains(&narrow),
+            "a text of cap characters that is over the cap in bytes is whole"
+        );
+    }
+
+    #[test]
+    fn an_overview_of_nothing_is_nothing() {
+        assert_eq!(view(b"", &View::Overview), b"");
+        assert_eq!(
+            view(b"not\ta record\nshort\tline\n", &View::Overview),
+            b"",
+            "lines that are not records leave nothing to show or to hint"
         );
     }
 

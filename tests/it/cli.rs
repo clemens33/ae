@@ -1939,6 +1939,7 @@ fn memo_read_and_tail_render_the_frozen_shape_and_report_an_unreadable_file() {
     for (tail, expected) in [
         (vec![], both.as_str()),
         (vec!["read"], both.as_str()),
+        (vec!["read", "--all"], both.as_str()),
         (vec!["read", "--topic", "p2"], first.as_str()),
         (vec!["read", "--topic", "other"], ""),
         (vec!["tail"], both.as_str()),
@@ -1951,6 +1952,35 @@ fn memo_read_and_tail_render_the_frozen_shape_and_report_an_unreadable_file() {
             "{tail:?}"
         );
     }
+
+    // A third record on a topic supersedes the first: the bare read shows the
+    // newest record per topic and hints at the full read, which stays one
+    // explicit word away and still prints every record.
+    let third = "2026-01-01T00:00:09Z — lead [p2]\nnewer p2\n\n";
+    std::fs::write(
+        dir.join("memo.tsv"),
+        format!(
+            "{}2026-01-01T00:00:09Z\tlead\tp2\tnewer p2\n",
+            std::fs::read_to_string(dir.join("memo.tsv")).unwrap()
+        ),
+    )
+    .expect("a third record");
+    let bare = run(&dir, &["read"]);
+    assert_eq!(bare.0, Some(0), "{bare:?}");
+    assert_eq!(
+        bare.1,
+        format!(
+            "{second}{third}(memo read shows the newest record of 2 of 2 topics, 3 records in all. \
+             Every record: memo read --all. One topic's history: memo read --topic <topic>.)\n"
+        ),
+        "the superseded record is hidden and the hint names the full read"
+    );
+    assert_eq!(bare.2, "", "the hint is on stdout, stderr stays empty");
+    assert_eq!(
+        run(&dir, &["read", "--all"]),
+        (Some(0), format!("{first}{second}{third}"), String::new()),
+        "--all prints every record, no hint"
+    );
 
     // A directory in the file's place is REJECTED: empty at 0, and never opened.
     let blocked = root.join("sessions").join("r2");

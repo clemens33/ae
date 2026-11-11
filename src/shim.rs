@@ -115,7 +115,7 @@ pub const HELPERS: [Helper; 27] = [
     },
     Helper {
         name: "memo",
-        usage: "Usage: memo add [--topic <topic>] <text> | read [--topic <topic>] | tail [n]\nWrite or read durable session memory.\n",
+        usage: "Usage: memo add [--topic <topic>] <text> | read [--all | --topic <topic>] | tail [n]\nWrite or read durable session memory. A bare read shows the newest record per topic.\n",
         entry: crate::cli::MEMO,
         prefix: &[],
     },
