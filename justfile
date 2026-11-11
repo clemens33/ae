@@ -1493,11 +1493,11 @@ rust-fmt:
 # compiler wrapper from the caller's shell or `~/.cargo/config.toml`: the repo does not
 # use sccache (`.cargo/config.toml`). An empty value, not an unset one, because cargo
 # (measured, 1.97.1) reads an empty RUSTC_WRAPPER as "no wrapper" even over a
-# `build.rustc-wrapper` config value, which `unset` leaves in force. Cargo runs
-# `$RUSTC_WRAPPER rustc -vV` on every call, so even a
-# nothing-to-compile call starts the one per-user sccache server, and that server keeps
-# the TMPDIR of the call that started it: a lane scratch the lane then deletes
-# (docs/troubleshooting.md). tests/it/gate.rs pins it with a fake wrapper.
+# `build.rustc-wrapper` config value, which `unset` leaves in force. A cargo call that
+# probes or compiles with rustc (not `cargo fmt`) runs `$RUSTC_WRAPPER rustc -vV`, so
+# even a call with nothing to compile starts the one per-user sccache server, and that
+# server keeps the TMPDIR of the call that started it: a lane scratch the lane then
+# deletes (docs/troubleshooting.md). tests/it/gate.rs pins it with a fake wrapper.
 SIZING := '''
     export RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
     lane_threads=16

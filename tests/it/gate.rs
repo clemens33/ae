@@ -2687,7 +2687,8 @@ fn the_doctest_step_takes_the_lanes_thread_count() {
 
 /// A shell profile may export `RUSTC_WRAPPER=sccache` for every cargo call, though
 /// the repo does not use sccache (`.cargo/config.toml`). Real cargo runs
-/// `$RUSTC_WRAPPER rustc -vV` on every invocation, compiling or not (measured), and
+/// `$RUSTC_WRAPPER rustc -vV` on every invocation that probes or compiles with rustc,
+/// with nothing to compile too (measured; `cargo fmt` never does), and
 /// the first sccache client starts the one per-user server, which keeps the TMPDIR
 /// of that client. A lane run starts it with the lane's own TMPDIR, deleted when the
 /// lane ends, and every later cache miss in every session fails with "Failed to
