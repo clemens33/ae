@@ -16,6 +16,7 @@ use ae::events::Event;
 use ae::time::Timestamp;
 
 use super::super::cli::{OwnedChild, ae};
+use super::super::watchdog_step::Stepper;
 use super::Rig;
 
 // Well below the configured 600-second grace; includes quota checkpoint delivery.
@@ -272,11 +273,23 @@ fn stop(rig: &Rig, session: &str) {
     );
 }
 
-fn watch(rig: &Rig, session: &str) -> OwnedChild {
+/// A stepped watchdog and its stepper. The daemon goes first on drop, then the
+/// stepper's signal releases the step wait the killed daemon left behind.
+struct Watch {
+    _daemon: OwnedChild,
+    stepper: Stepper,
+}
+
+fn watch(rig: &Rig, session: &str) -> Watch {
     watch_every(rig, session, "1")
 }
 
-fn watch_every(rig: &Rig, session: &str, quota_every: &str) -> OwnedChild {
+/// Start a watchdog that runs its startup cycle, then one cycle per step; a
+/// fresh step channel per start, so a restart never reads an old done.
+fn watch_every(rig: &Rig, session: &str, quota_every: &str) -> Watch {
+    static STARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let start = STARTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let channel = format!("sr-{session}-{start}");
     let trace = rig.scratch.join("restart-trace");
     std::fs::write(&trace, "").expect("fresh daemon barrier");
     let log = std::fs::OpenOptions::new()
@@ -284,7 +297,8 @@ fn watch_every(rig: &Rig, session: &str, quota_every: &str) -> OwnedChild {
         .append(true)
         .open(rig.scratch.join("restart-daemon-err"))
         .expect("daemon log");
-    ae().arg("_watchdog-run")
+    let daemon = ae()
+        .arg("_watchdog-run")
         .arg(rig.dir(session))
         .args([
             "--interval",
@@ -295,6 +309,8 @@ fn watch_every(rig: &Rig, session: &str, quota_every: &str) -> OwnedChild {
             "0",
             "--quota-every-secs",
             quota_every,
+            "--step-channel",
+            &channel,
         ])
         .env("HOME", &rig.scratch)
         .env("AE_HOME", &rig.home)
@@ -309,9 +325,16 @@ fn watch_every(rig: &Rig, session: &str, quota_every: &str) -> OwnedChild {
         .stdout(std::process::Stdio::null())
         .stderr(log)
         .spawn()
-        .expect("owned watchdog")
+        .expect("owned watchdog");
+    let mut stepper = Stepper::new(&rig.sock, &channel);
+    stepper.ready();
+    Watch {
+        _daemon: daemon,
+        stepper,
+    }
 }
 
+/// Real-time wait, for the waits no watchdog drives.
 fn until(rig: &Rig, session: &str, condition: impl Fn() -> bool) {
     let until = Instant::now() + PROMPT_BOUND;
     while Instant::now() < until {
@@ -320,6 +343,18 @@ fn until(rig: &Rig, session: &str, condition: impl Fn() -> bool) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    timed_out(rig, session);
+}
+
+/// Step `watch` until `condition` holds, inside the same real-time bound.
+/// Detached legs keep their real time while the cycles continue.
+fn until_stepped(rig: &Rig, session: &str, watch: &mut Watch, condition: impl Fn() -> bool) {
+    if watch.stepper.step_until(condition).is_none() {
+        timed_out(rig, session);
+    }
+}
+
+fn timed_out(rig: &Rig, session: &str) -> ! {
     panic!(
         "restart contract timed out; meta={}\nevents={:?}\ndaemon={}",
         rig.meta(session),
@@ -328,7 +363,7 @@ fn until(rig: &Rig, session: &str, condition: impl Fn() -> bool) {
     );
 }
 
-fn sweeps(rig: &Rig, session: &str) {
+fn sweeps(rig: &Rig, session: &str, watch: &mut Watch) {
     let completed = || {
         std::fs::read_to_string(rig.scratch.join("restart-trace"))
             .unwrap_or_default()
@@ -337,7 +372,7 @@ fn sweeps(rig: &Rig, session: &str) {
             .count()
     };
     let before = completed();
-    until(rig, session, || completed() >= before + 12);
+    until_stepped(rig, session, watch, || completed() >= before + 12);
 }
 
 #[test]
@@ -350,8 +385,8 @@ fn stopped_restart_moves_fresh_short_exhaustion_before_grace_and_carries_exact_r
     stop(&rig, session);
     let start = Instant::now();
     launch(&rig, session);
-    let daemon = watch(&rig, session);
-    until(&rig, session, || {
+    let mut daemon = watch(&rig, session);
+    until_stepped(&rig, session, &mut daemon, || {
         booked(&rig, session, DONE_ACTION).len() == 1
     });
     assert!(
@@ -380,10 +415,10 @@ fn stopped_restart_moves_fresh_short_exhaustion_before_grace_and_carries_exact_r
             .any(|event| event.action == "limit"),
         "no failed turn is needed"
     );
-    sweeps(&rig, session);
+    sweeps(&rig, session, &mut daemon);
     drop(daemon);
-    let _again = watch(&rig, session);
-    sweeps(&rig, session);
+    let mut again = watch(&rig, session);
+    sweeps(&rig, session, &mut again);
     assert_eq!(
         booked(&rig, session, DONE_ACTION).len(),
         1,
@@ -414,8 +449,8 @@ fn real_resumed_quiet_box_moves_without_a_done_row_and_passes_the_final_stop() {
     );
     assert!(!capture.contains(" · done "), "no invented idle proof");
     assert!(!row(&rig.meta(session), "launch_settled").is_empty());
-    let _daemon = watch(&rig, session);
-    until(&rig, session, || {
+    let mut daemon = watch(&rig, session);
+    until_stepped(&rig, session, &mut daemon, || {
         booked(&rig, session, DONE_ACTION).len() == 1
     });
     assert_eq!(profile(&rig, session), "destination");
@@ -434,7 +469,7 @@ fn real_resumed_quiet_box_moves_without_a_done_row_and_passes_the_final_stop() {
             .any(|event| event.action == "limit"),
         "quiet proof needs no failed turn"
     );
-    sweeps(&rig, session);
+    sweeps(&rig, session, &mut daemon);
     assert_eq!(booked(&rig, session, DONE_ACTION).len(), 1);
 }
 
@@ -446,8 +481,8 @@ fn a_fresh_logo_and_empty_box_without_resume_settlement_do_not_gain_a_quiet_waiv
     quota(&rig, "source", "session", 100, 0, None);
     launch_with_frame(&rig, session, ae::harness_state::HarnessState::Unknown);
     assert!(row(&rig.meta(session), "launch_settled").is_empty());
-    let _daemon = watch(&rig, session);
-    sweeps(&rig, session);
+    let mut daemon = watch(&rig, session);
+    sweeps(&rig, session, &mut daemon);
     assert_eq!(profile(&rig, session), "source");
     assert!(booked(&rig, session, ATTEMPT_ACTION).is_empty());
     assert!(booked(&rig, session, ae::autoreseat::HEADROOM_ACTION).is_empty());
@@ -472,11 +507,11 @@ fn real_resumed_quiet_box_without_exhaustion_keeps_the_ordinary_unproven_hold() 
     stop(&rig, session);
     launch_with_frame(&rig, session, ae::harness_state::HarnessState::Unknown);
     assert!(!row(&rig.meta(session), "launch_settled").is_empty());
-    let _daemon = watch(&rig, session);
-    until(&rig, session, || {
+    let mut daemon = watch(&rig, session);
+    until_stepped(&rig, session, &mut daemon, || {
         !booked(&rig, session, ae::autoreseat::HEADROOM_ACTION).is_empty()
     });
-    sweeps(&rig, session);
+    sweeps(&rig, session, &mut daemon);
     assert_eq!(profile(&rig, session), "source");
     assert!(booked(&rig, session, ATTEMPT_ACTION).is_empty());
     assert!(booked(&rig, session, DONE_ACTION).is_empty());
@@ -513,8 +548,8 @@ fn a_restarted_lead_pair_on_one_exhausted_login_moves_both_seats_once_inside_the
     stop(&rig, session);
     launch(&rig, session);
     let start = Instant::now();
-    let _daemon = watch(&rig, session);
-    until(&rig, session, || {
+    let mut daemon = watch(&rig, session);
+    until_stepped(&rig, session, &mut daemon, || {
         [("main", "lead"), ("worker.0", "colead")]
             .iter()
             .all(|(slot, actor)| booked_slot(&rig, session, DONE_ACTION, slot, actor).len() == 1)
@@ -542,7 +577,7 @@ fn a_restarted_lead_pair_on_one_exhausted_login_moves_both_seats_once_inside_the
         );
         assert!(booked_slot(&rig, session, REFUSED_ACTION, slot, actor).is_empty());
     }
-    sweeps(&rig, session);
+    sweeps(&rig, session, &mut daemon);
     for (slot, actor) in [("main", "lead"), ("worker.0", "colead")] {
         assert_eq!(
             booked_slot(&rig, session, DONE_ACTION, slot, actor).len(),
@@ -597,8 +632,8 @@ fn raw_exhaustion_relieved_by_declared_manual_resets_does_not_move_at_restart() 
                 && window.get("effective_percent") == Some(&ae::json::Value::Num(50))
         }))
     }), "fixture must prove effective relief on the seat's own profile: {text}");
-    let _daemon = watch(&rig, session);
-    sweeps(&rig, session);
+    let mut daemon = watch(&rig, session);
+    sweeps(&rig, session, &mut daemon);
     assert_eq!(profile(&rig, session), "source");
     assert!(
         booked(&rig, session, ATTEMPT_ACTION).is_empty(),
@@ -670,8 +705,8 @@ fn effort_control_restarts_the_same_exhausted_fixture_when_reseating_is_off() {
     let session = "restarteffcontrol";
     let rig = effort_fixture(session, false);
     let id = restart_effort_fixture(&rig, session);
-    let _daemon = watch(&rig, session);
-    until(&rig, session, || {
+    let mut daemon = watch(&rig, session);
+    until_stepped(&rig, session, &mut daemon, || {
         booked(&rig, session, "effort-applied").len() == 1
     });
     assert_eq!(profile(&rig, session), "source");
@@ -698,11 +733,11 @@ fn exhausted_restart_reseat_wins_over_enabled_effort_without_restarting_the_dead
         source_before, 2,
         "create and restart both ran on the source"
     );
-    let _daemon = watch(&rig, session);
-    until(&rig, session, || {
+    let mut daemon = watch(&rig, session);
+    until_stepped(&rig, session, &mut daemon, || {
         booked(&rig, session, DONE_ACTION).len() == 1
     });
-    sweeps(&rig, session);
+    sweeps(&rig, session, &mut daemon);
     assert_eq!(profile(&rig, session), "destination");
     assert_eq!(row(&rig.meta(session), "harness_session.main"), id);
     assert_eq!(booked(&rig, session, ATTEMPT_ACTION).len(), 1);
@@ -759,8 +794,8 @@ fn assert_unproven_reading_holds(case: &str) {
     }
     stop(&rig, &session);
     launch(&rig, &session);
-    let _daemon = watch(&rig, &session);
-    sweeps(&rig, &session);
+    let mut daemon = watch(&rig, &session);
+    sweeps(&rig, &session, &mut daemon);
     assert_eq!(profile(&rig, &session), "source", "{case}");
     assert!(
         booked(&rig, &session, ATTEMPT_ACTION).is_empty(),
@@ -833,8 +868,8 @@ fn restart_respects_auto_reseat_off_scope_and_main_exclusion() {
         quota(&rig, "source", "session", 100, 0, None);
         stop(&rig, &session);
         launch(&rig, &session);
-        let _daemon = watch(&rig, &session);
-        sweeps(&rig, &session);
+        let mut daemon = watch(&rig, &session);
+        sweeps(&rig, &session, &mut daemon);
         assert_eq!(profile(&rig, &session), "source", "{case}");
         assert!(booked(&rig, &session, ATTEMPT_ACTION).is_empty(), "{case}");
     }
@@ -860,14 +895,14 @@ fn exhausted_restart_without_a_usable_destination_stays_and_does_not_loop() {
     quota(&rig, "source", "session", 100, 0, None);
     stop(&rig, session);
     launch(&rig, session);
-    let daemon = watch(&rig, session);
-    until(&rig, session, || {
+    let mut daemon = watch(&rig, session);
+    until_stepped(&rig, session, &mut daemon, || {
         !booked(&rig, session, REFUSED_ACTION).is_empty()
     });
-    sweeps(&rig, session);
+    sweeps(&rig, session, &mut daemon);
     drop(daemon);
-    let _again = watch(&rig, session);
-    sweeps(&rig, session);
+    let mut again = watch(&rig, session);
+    sweeps(&rig, session, &mut again);
     assert_eq!(profile(&rig, session), "source");
     assert_eq!(
         booked(&rig, session, REFUSED_ACTION).len(),
@@ -896,8 +931,8 @@ fn stopped_restart_moves_long_exhaustion_and_matching_model_scope_without_grace(
         quota(&rig, "source", kind, 100, 0, model);
         stop(&rig, &session);
         launch(&rig, &session);
-        let _daemon = watch(&rig, &session);
-        until(&rig, &session, || {
+        let mut daemon = watch(&rig, &session);
+        until_stepped(&rig, &session, &mut daemon, || {
             booked(&rig, &session, DONE_ACTION).len() == 1
         });
         assert_eq!(profile(&rig, &session), "destination");
@@ -924,11 +959,11 @@ fn near_headroom_after_restart_keeps_existing_grace() {
     quota(&rig, "source", "weekly_all", 96, 0, None);
     stop(&rig, session);
     launch(&rig, session);
-    let _daemon = watch(&rig, session);
-    until(&rig, session, || {
+    let mut daemon = watch(&rig, session);
+    until_stepped(&rig, session, &mut daemon, || {
         !booked(&rig, session, ae::autoreseat::HEADROOM_ACTION).is_empty()
     });
-    sweeps(&rig, session);
+    sweeps(&rig, session, &mut daemon);
     assert_eq!(profile(&rig, session), "source");
     assert!(
         booked(&rig, session, ATTEMPT_ACTION).is_empty(),
@@ -951,8 +986,8 @@ fn quota_arriving_after_the_first_watchdog_read_is_reobserved_before_normal_cade
     retained(&rig, session);
     stop(&rig, session);
     launch(&rig, session);
-    let _daemon = watch_every(&rig, session, "3600");
-    until(&rig, session, || {
+    let mut daemon = watch_every(&rig, session, "3600");
+    until_stepped(&rig, session, &mut daemon, || {
         std::fs::read_to_string(rig.scratch.join("restart-trace"))
             .unwrap_or_default()
             .lines()
@@ -965,7 +1000,7 @@ fn quota_arriving_after_the_first_watchdog_read_is_reobserved_before_normal_cade
     );
     let before = events(&rig, session).len();
     quota(&rig, "source", "session", 100, 0, None);
-    until(&rig, session, || {
+    until_stepped(&rig, session, &mut daemon, || {
         booked(&rig, session, DONE_ACTION).len() == 1
     });
     assert_eq!(
@@ -1009,7 +1044,7 @@ fn startup_follow_up_does_not_change_disabled_or_excluded_seats_quota_cadence() 
         retained(&rig, &session);
         stop(&rig, &session);
         launch(&rig, &session);
-        let _daemon = watch_every(&rig, &session, "3600");
+        let mut daemon = watch_every(&rig, &session, "3600");
         let observations = || {
             std::fs::read_to_string(rig.scratch.join("restart-trace"))
                 .unwrap_or_default()
@@ -1017,15 +1052,17 @@ fn startup_follow_up_does_not_change_disabled_or_excluded_seats_quota_cadence() 
                 .filter(|line| line.starts_with("observed "))
                 .count()
         };
-        until(&rig, &session, || observations() == 1);
+        until_stepped(&rig, &session, &mut daemon, || observations() == 1);
         quota(&rig, "source", "session", 100, 0, None);
-        // Enabled startup's second read is due after five seconds. Across ten
-        // one-second cycles these modes must retain their 3600-second cadence.
+        // Enabled startup's second read is due after five real seconds. Across
+        // ten real seconds of back-to-back cycles these modes must retain their
+        // 3600-second cadence.
         let through = Instant::now() + Duration::from_secs(10);
         while Instant::now() < through {
             assert_eq!(observations(), 1, "{case}: no added quota pass");
-            std::thread::sleep(Duration::from_millis(100));
+            daemon.stepper.step();
         }
+        assert_eq!(observations(), 1, "{case}: no added quota pass");
         assert_eq!(profile(&rig, &session), "source");
         assert!(booked(&rig, &session, ATTEMPT_ACTION).is_empty());
         assert!(booked(&rig, &session, "quota-checkpoint").is_empty());
@@ -1068,20 +1105,20 @@ fn unfinished_launch_has_no_urgent_move_and_completion_enables_it_without_losing
     assert!(!settled.is_empty(), "resume publishes phase-2 completion");
     replace_row(&rig, session, "launch_settled", None);
     quota(&rig, "source", "session", 100, 0, None);
-    let daemon = watch(&rig, session);
-    sweeps(&rig, session);
+    let mut daemon = watch(&rig, session);
+    sweeps(&rig, session, &mut daemon);
     assert_eq!(profile(&rig, session), "source");
     assert!(
         booked(&rig, session, ATTEMPT_ACTION).is_empty(),
         "missing completion cannot race a pending first turn"
     );
     replace_row(&rig, session, "launch_settled", Some(&settled));
-    until(&rig, session, || {
+    until_stepped(&rig, session, &mut daemon, || {
         booked(&rig, session, DONE_ACTION).len() == 1
     });
     drop(daemon);
-    let _again = watch(&rig, session);
-    sweeps(&rig, session);
+    let mut again = watch(&rig, session);
+    sweeps(&rig, session, &mut again);
     assert_eq!(
         row(&rig.meta(session), "started"),
         started,
@@ -1153,11 +1190,11 @@ fn current_incarnation_armed_brief_blocks_urgent_trigger_then_delivers_once_befo
     let delivered = action(&rig, session, "brief-retry");
     assert!(delivered.status.success(), "{delivered:?}");
     assert!(!record_path.exists(), "submitted brief retires its record");
-    let _daemon = watch(&rig, session);
-    until(&rig, session, || {
+    let mut daemon = watch(&rig, session);
+    until_stepped(&rig, session, &mut daemon, || {
         booked(&rig, session, DONE_ACTION).len() == 1
     });
-    sweeps(&rig, session);
+    sweeps(&rig, session, &mut daemon);
     let received =
         std::fs::read_to_string(rig.scratch.join("received")).expect("tool received bytes");
     assert_eq!(
