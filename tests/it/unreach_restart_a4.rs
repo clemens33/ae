@@ -34,7 +34,7 @@ mod unreach_restart_a4 {
     fn unreach_restart_clears_a_removed_panel_even_when_failure_outranks_its_naming() {
         let mut rig = Rig::new("ur-clear-restart", "codex", "normal");
         no_auto(&rig);
-        rig.start();
+        rig.start_stepped();
         rig.named();
         rig.stop();
         let start = format!("main:start-one:{}", text(rig.root.join("ready")).trim());
@@ -47,8 +47,8 @@ mod unreach_restart_a4 {
         rig.repaint(include_str!(
             "../fixtures/codex-composer/codex-idle-0.156.1-200x40.esc"
         ));
-        rig.start();
-        wait_for(
+        rig.start_stepped();
+        rig.until(
             "fresh daemon clears durable panel naming under Stale",
             || rig.count("human-prompt-cleared") > 0,
         );
@@ -83,7 +83,7 @@ mod unreach_restart_a4 {
                 "nudge unreachable/occupied — 3 undelivered attempts (idle 5m)",
                 reference,
             );
-            rig.start();
+            rig.start_stepped();
             rig.named();
             rig.stop();
             let clears = rig

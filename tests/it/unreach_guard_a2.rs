@@ -54,8 +54,8 @@ mod unreach_guard_a2 {
         write(rig.root.join("frame"), model);
         write(rig.root.join("alternate-frame"), alternate);
         write(rig.root.join("wrapper"), "panel-moves");
-        rig.start();
-        wait_within(
+        rig.start_stepped();
+        rig.until_within(
             "moving bodies observed under the send lock",
             WITNESS_WAIT,
             || text(rig.root.join("locked-captures")).lines().count() >= 2,

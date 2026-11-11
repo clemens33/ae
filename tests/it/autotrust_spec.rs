@@ -5,10 +5,12 @@
     reason = "acceptance fixtures own private filesystem, environment and tmux state"
 )]
 
+use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -16,6 +18,7 @@ use super::parity::{
     Invocation,
     capture::{ExitOutcome, raw},
 };
+use super::watchdog_step::Stepper;
 use ae::events::Event;
 
 const UUID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
@@ -43,7 +46,7 @@ fn trustmiss_watchdog_answers_only_the_recorded_folder_and_names_off_or_foreign(
         let frame = narrow.replace("/tmp/claude-trust-probe", "/tmp");
         write(rig.root.join("frame"), &frame);
         rig.repaint(&frame);
-        rig.start();
+        rig.start_stepped();
         rig.result();
         if case == "on" {
             assert_eq!(
@@ -260,8 +263,11 @@ fn write(path: impl AsRef<Path>, body: impl AsRef<[u8]>) {
 /// spends none of it, and a slow machine must not be a new way to fail.
 const WITNESS_WAIT: Duration = Duration::from_mins(1);
 
+/// The bound of an ordinary wait.
+const WAIT: Duration = Duration::from_secs(15);
+
 fn wait_for(what: &str, ready: impl Fn() -> bool) {
-    wait_within(what, Duration::from_secs(15), ready);
+    wait_within(what, WAIT, ready);
 }
 
 fn wait_within(what: &str, within: Duration, ready: impl Fn() -> bool) {
@@ -292,6 +298,8 @@ struct Rig {
     pane: String,
     tool: String,
     daemon: Option<JoinHandle<()>>,
+    /// The step driver of a watchdog started by [`Rig::start_stepped`].
+    stepper: RefCell<Option<Stepper>>,
 }
 
 impl Rig {
@@ -349,6 +357,7 @@ impl Rig {
             pane: String::new(),
             tool: tool.to_owned(),
             daemon: None,
+            stepper: RefCell::new(None),
         };
         let real_tmux = rig
             .invoke(Invocation::new("which").arg("tmux"), "which")
@@ -494,20 +503,33 @@ impl Rig {
             .arg(verb)
             .arg(&self.dir)
     }
+    /// Start the watchdog on its real one-second interval.
     fn start(&mut self) {
-        assert!(self.daemon.is_none(), "setup: one watchdog");
-        let command = self
-            .command(ae::cli::WATCHDOG_RUN)
+        let command = self.watchdog("0");
+        self.spawn(command);
+    }
+    /// [`Rig::start`], driven one cycle at a time: see [`Rig::spawn_stepped`].
+    fn start_stepped(&mut self) {
+        let command = self.watchdog("0");
+        self.spawn_stepped(command);
+    }
+    /// The watchdog under test: one-second interval, the idle nudge after
+    /// `idle_nudge_secs`, and every other cadence off.
+    fn watchdog(&self, idle_nudge_secs: &str) -> Invocation {
+        self.command(ae::cli::WATCHDOG_RUN)
             .arg("--interval")
             .arg("1")
             .arg("--quota-every-secs")
             .arg("0")
             .arg("--idle-nudge-secs")
-            .arg("0")
+            .arg(idle_nudge_secs)
             .arg("--sweep-secs")
             .arg("0")
             .arg("--tg-supervise-secs")
-            .arg("0");
+            .arg("0")
+    }
+    fn spawn(&mut self, command: Invocation) {
+        assert!(self.daemon.is_none(), "setup: one watchdog");
         let root = self.root.clone();
         self.daemon = Some(std::thread::spawn(move || {
             let _ = raw::run(
@@ -518,11 +540,25 @@ impl Rig {
             );
         }));
     }
+    /// Spawn `command` with a fresh `--step-channel`. It returns once the
+    /// startup cycle has completed; from then on the watchdog runs a cycle
+    /// only when [`Rig::until_within`] steps it.
+    fn spawn_stepped(&mut self, command: Invocation) {
+        static STARTS: AtomicU64 = AtomicU64::new(0);
+        let channel = format!("at-step-{}", STARTS.fetch_add(1, Ordering::Relaxed));
+        self.spawn(command.arg("--step-channel").arg(&channel));
+        let mut stepper = Stepper::new(&self.root.join("sock"), &channel);
+        stepper.ready();
+        *self.stepper.get_mut() = Some(stepper);
+    }
     fn stop(&mut self) {
         if let Some(handle) = self.daemon.take() {
             let meta = self.dir.join("meta");
             let saved = fs::read(&meta).unwrap_or_else(|why| panic!("setup: saved meta: {why}"));
             fs::remove_file(&meta).unwrap_or_else(|why| panic!("setup: end watchdog: {why}"));
+            // A stepped watchdog rests until its next step. Dropping the
+            // stepper signals that step, and the cycle it starts finds no meta.
+            drop(self.stepper.get_mut().take());
             wait_for("watchdog exit", || handle.is_finished());
             handle
                 .join()
@@ -539,6 +575,30 @@ impl Rig {
     fn count(&self, action: &str) -> usize {
         self.events().iter().filter(|e| e.action == action).count()
     }
+    /// Run one more cycle of the stepped watchdog.
+    fn step(&self) {
+        self.stepper
+            .borrow_mut()
+            .as_mut()
+            .unwrap_or_else(|| panic!("setup: a stepped watchdog"))
+            .step();
+    }
+    /// [`wait_for`] on what the watchdog does.
+    fn until(&self, what: &str, ready: impl Fn() -> bool) {
+        self.until_within(what, WAIT, ready);
+    }
+    /// [`wait_within`] on what the watchdog does. A stepped watchdog runs no
+    /// cycle on its own, so it is stepped while `ready` is false; a real one
+    /// runs on its interval meanwhile.
+    fn until_within(&self, what: &str, within: Duration, ready: impl Fn() -> bool) {
+        match self.stepper.borrow_mut().as_mut() {
+            Some(stepper) => assert!(
+                stepper.step_until_within(within, ready).is_some(),
+                "timed out waiting for {what}"
+            ),
+            None => wait_within(what, within, ready),
+        }
+    }
     /// The daemon publishes its roster once per cycle, after applying effects.
     /// Receipts follow successful real tmux writes; a stale roster cannot prove
     /// another cycle ran, especially after restarting the daemon.
@@ -550,7 +610,7 @@ impl Rig {
                 .count()
         };
         let before = published();
-        wait_within("five fresh published cycles", WITNESS_WAIT, || {
+        self.until_within("five fresh published cycles", WITNESS_WAIT, || {
             published() >= before + 5
         });
     }
@@ -558,16 +618,16 @@ impl Rig {
     /// `prompt` only from that cycle on, and the daemon publishes it after the
     /// cycle's effects, so every key the cycle owed has been sent.
     fn prompt_cycle_closed(&self) {
-        wait_within("a published prompt verdict", WITNESS_WAIT, || {
+        self.until_within("a published prompt verdict", WITNESS_WAIT, || {
             self.tmux(&["show-options", "-qv", "-t", "s", ae::theme::AGENTS_OPTION])
                 .contains(":prompt:")
         });
     }
     fn named(&self) {
-        wait_for("named human prompt", || self.count("human-prompt") > 0);
+        self.until("named human prompt", || self.count("human-prompt") > 0);
     }
     fn result(&self) {
-        wait_for("trust decision", || {
+        self.until("trust decision", || {
             self.count("auto-trust") > 0 || self.count("human-prompt") > 0
         });
     }
@@ -605,7 +665,7 @@ impl Rig {
             expected,
             "only the measured navigation/Enter bytes"
         );
-        wait_for("completed trust chat receipt", || {
+        self.until("completed trust chat receipt", || {
             self.events().iter().any(|e| {
                 e.action == "chat" && e.summary.as_deref().is_some_and(|s| s.contains("trusted"))
             })
@@ -700,6 +760,9 @@ impl Drop for Rig {
         if let Some(handle) = self.daemon.take() {
             let _ = handle.join();
         }
+        // Its release signal finds no server any more, but its scratch must
+        // still be there to fail in.
+        drop(self.stepper.get_mut().take());
         let _ = fs::remove_dir_all(&self.root);
     }
 }
@@ -800,12 +863,12 @@ fn codex_folder_trust_is_one_enter_for_its_own_folder_once_per_start() {
                 ),
             );
         }
-        rig.start();
+        rig.start_stepped();
         if case == "on" {
             rig.trusted(b"\r");
             rig.stop();
             rig.repaint(&frame);
-            rig.start();
+            rig.start_stepped();
             rig.named();
             assert_eq!(rig.wire(), b"\r", "spent start survives watchdog restart");
             assert_eq!(rig.count("auto-trust-reserved"), 1, "once per start");
@@ -996,7 +1059,7 @@ fn global_default_and_grammar_control_answering_project_cannot_vote() {
         let local = rig.root.join("project.conf");
         write(&local, format!("[workspace]\nauto_trust = {project}\n"));
         rig.replace_meta("local_config", &local.display().to_string());
-        rig.start();
+        rig.start_stepped();
         rig.result();
         if allowed {
             rig.trusted(b"\r");
@@ -1045,7 +1108,7 @@ fn other_questions_extra_options_order_and_quoted_blocks_never_receive_keys() {
             ),
         };
         rig.repaint(&frame);
-        rig.start();
+        rig.start_stepped();
         rig.named();
         assert!(
             rig.wire().is_empty(),
@@ -1067,7 +1130,7 @@ fn folder_equality_is_canonical_equality_not_containment_or_pane_cwd() {
             rig.root.join("other")
         };
         rig.replace_meta("work_dir.main", &folder.display().to_string());
-        rig.start();
+        rig.start_stepped();
         rig.result();
         if alias {
             rig.trusted(b"\x1b[B\r");
@@ -1098,11 +1161,11 @@ fn navigation_requires_two_fresh_yes_reads_and_unchanged_start_and_folder() {
         if mode == "second-no" {
             write(rig.root.join("wrapper"), mode);
         }
-        rig.start();
-        wait_for("navigation or old naming", || {
+        rig.start_stepped();
+        rig.until("navigation or old naming", || {
             !text(rig.root.join("actions")).is_empty() || rig.count("human-prompt") > 0
         });
-        wait_for("stopped navigation", || {
+        rig.until("stopped navigation", || {
             rig.count("auto-trust-failed") > 0 || rig.count("human-prompt") > 0
         });
         assert_eq!(
@@ -1136,8 +1199,8 @@ fn failed_keys_and_a_modal_remaining_after_enter_never_report_success() {
             if mode == "remain" { mode } else { "normal" },
         );
         write(rig.root.join("wrapper"), mode);
-        rig.start();
-        wait_for("failure or old naming", || {
+        rig.start_stepped();
+        rig.until("failure or old naming", || {
             rig.count("auto-trust-failed") > 0 || rig.count("human-prompt") > 0
         });
         assert_eq!(
@@ -1211,9 +1274,9 @@ fn spent_corrupt_and_unreadable_journals_fail_closed() {
                 symlink(rig.root.join("elsewhere"), &journal).expect("symlink journal");
             }
         }
-        rig.start();
+        rig.start_stepped();
         if matches!(case, "directory" | "symlink" | "unreadable") {
-            wait_for("journal refusal diagnostic", || {
+            rig.until("journal refusal diagnostic", || {
                 !text(rig.root.join("watch.err")).is_empty()
             });
             rig.wait_five_cycles();
@@ -1235,7 +1298,7 @@ fn a_foreign_send_lock_names_once_then_retries_after_release() {
     fs::create_dir_all(&locks).expect("locks");
     let lock = locks.join(format!("send-lock-{}", rig.pane.replace('%', "_")));
     let held = ae::store::lock(&lock, Duration::ZERO).expect("foreign sender holds target lock");
-    rig.start();
+    rig.start_stepped();
     rig.named();
     assert!(
         rig.wire().is_empty(),
@@ -1243,9 +1306,9 @@ fn a_foreign_send_lock_names_once_then_retries_after_release() {
     );
     assert_eq!(rig.count("auto-trust-reserved"), 0, "NotYet spends nothing");
     drop(held);
-    wait_for("late answer", || rig.count("auto-trust") > 0);
+    rig.until("late answer", || rig.count("auto-trust") > 0);
     rig.trusted(b"\r");
-    wait_for("prompt cleared", || rig.count("human-prompt-cleared") == 1);
+    rig.until("prompt cleared", || rig.count("human-prompt-cleared") == 1);
     assert_eq!(rig.count("human-prompt"), 1, "retry never repeats naming");
 }
 
@@ -1286,7 +1349,7 @@ fn a_frozen_modal_without_a_live_harness_or_unique_slot_never_receives_a_key() {
                 rig.tmux(&["set-option", "-p", "-t", p.trim(), "@ae_slot", "main"]);
             }
         }
-        rig.start();
+        rig.start_stepped();
         rig.prompt_cycle_closed();
         if case == "shell" {
             assert!(
@@ -1308,15 +1371,15 @@ fn a_frozen_modal_without_a_live_harness_or_unique_slot_never_receives_a_key() {
 fn a_refused_reservation_sends_zero_keys() {
     let mut rig = Rig::new("reserve-write", "claude", "normal");
     write(rig.root.join("wrapper"), "reserve-fail");
-    rig.start();
-    wait_for("reservation refusal or old naming", || {
+    rig.start_stepped();
+    rig.until("reservation refusal or old naming", || {
         rig.root.join("armed").is_file() || rig.count("human-prompt") > 0
     });
     assert!(
         rig.root.join("armed").is_file(),
         "first watchdog capture arms the append refusal"
     );
-    wait_for("write refusal named", || {
+    rig.until("write refusal named", || {
         !text(rig.root.join("watch.err")).is_empty()
     });
     assert!(
@@ -1590,9 +1653,9 @@ fn v14_spawn_declines_a_foreign_folder_once_and_keeps_the_brief() {
 #[test]
 fn v14_a_landed_watchdog_answer_notifies_once_and_is_never_named() {
     let mut rig = Rig::new("v14-notify", "claude", "normal");
-    rig.start();
+    rig.start_stepped();
     rig.result();
-    wait_for("real watchdog verdict Notify", || {
+    rig.until("real watchdog verdict Notify", || {
         !text(rig.root.join("notifications")).is_empty()
     });
     assert_eq!(rig.count("auto-trust"), 1, "answer landed before verdict");
@@ -1639,8 +1702,8 @@ fn v14_repeated_declines_name_once_without_keys_or_reservation() {
             .to_string(),
     );
     write(rig.root.join("wrapper"), "decline");
-    rig.start();
-    wait_for("two real locked refusal proofs", || {
+    rig.start_stepped();
+    rig.until("two real locked refusal proofs", || {
         text(rig.root.join("decline-proofs")).lines().count() >= 2
     });
     rig.stop();
@@ -1687,7 +1750,7 @@ fn v14_fresh_client_activity_holds_every_key_then_detach_allows_answer() {
         client
     };
     let mut client = attach(&rig);
-    rig.start();
+    rig.start_stepped();
     // The loop ends when the held attempts reach the bound, which is the
     // record `human-prompt`, not after a fixed span a loaded host can outrun.
     let until = Instant::now() + WITNESS_WAIT;
@@ -1721,7 +1784,8 @@ fn v14_fresh_client_activity_holds_every_key_then_detach_allows_answer() {
         let next = attach(&rig);
         drop(client);
         client = next;
-        std::thread::sleep(Duration::from_millis(300));
+        // One cycle with the fresh client on the pane.
+        rig.step();
     }
     assert_eq!(
         rig.count("human-prompt"),
@@ -1729,7 +1793,7 @@ fn v14_fresh_client_activity_holds_every_key_then_detach_allows_answer() {
         "held attempts reached the bound"
     );
     drop(client);
-    wait_for("answer after client detaches", || {
+    rig.until("answer after client detaches", || {
         rig.count("auto-trust") == 1
     });
     assert_eq!(rig.wire(), b"\r", "one Enter after input stops");
@@ -1947,7 +2011,7 @@ mod unreach {
     }
 
     fn completed(rig: &Rig) {
-        wait_for("panel dismissal", || rig.count("auto-dismiss") == 1);
+        rig.until("panel dismissal", || rig.count("auto-dismiss") == 1);
         assert_eq!(
             rig.wire(),
             b"\x1b",
@@ -2093,7 +2157,7 @@ mod unreach {
                     &start_ref(&rig),
                 ),
             );
-            rig.start();
+            rig.start_stepped();
             completed(&rig);
         }
     }
@@ -2101,7 +2165,7 @@ mod unreach {
     #[test]
     fn unreach_newly_named_panel_is_not_answered_early_and_delivery_names_it() {
         let mut rig = Rig::new("ur-young", "codex", "normal");
-        rig.start();
+        rig.start_stepped();
         rig.named();
         rig.wait_five_cycles();
         assert!(
@@ -2162,7 +2226,7 @@ mod unreach {
                 }
                 _ => append(&rig, "damaged journal line\n"),
             }
-            rig.start();
+            rig.start_stepped();
             rig.prompt_cycle_closed();
             assert_eq!(
                 rig.count("human-prompt"),
@@ -2213,23 +2277,23 @@ mod unreach {
                 write(rig.root.join("wrapper"), case);
                 None
             };
-            rig.start();
+            rig.start_stepped();
             match case {
                 "panel-input" => {
-                    wait_for("fresh client snapshot after reservation", || {
+                    rig.until("fresh client snapshot after reservation", || {
                         rig.root.join("input-checked").is_file()
                     });
-                    wait_for("post-reservation client input hold", || {
+                    rig.until("post-reservation client input hold", || {
                         rig.count("auto-dismiss-failed") == 1
                     });
                 }
                 "panel-proof" => {
-                    wait_within("the changed start stopping the key", WITNESS_WAIT, || {
+                    rig.until_within("the changed start stopping the key", WITNESS_WAIT, || {
                         rig.count("auto-dismiss-failed") == 1
                     });
                 }
                 "panel-moves" => {
-                    wait_within(
+                    rig.until_within(
                         "two captures of the moving panel under the lock",
                         WITNESS_WAIT,
                         || {
@@ -2279,12 +2343,12 @@ mod unreach {
             if case == "panel-refuse" {
                 write(rig.root.join("wrapper"), case);
             }
-            rig.start();
-            wait_for("reserved dismissal fails", || {
+            rig.start_stepped();
+            rig.until("reserved dismissal fails", || {
                 rig.count("auto-dismiss-failed") == 1
             });
             rig.stop();
-            rig.start();
+            rig.start_stepped();
             rig.wait_five_cycles();
             rig.stop();
             assert_eq!(
@@ -2331,7 +2395,7 @@ mod unreach {
             rig.tmux(&["list-clients", "-F", "#{client_pid}|#{pane_id}"])
                 .contains(&format!("{}|{}", client.id(), rig.pane))
         });
-        rig.start();
+        rig.start_stepped();
         rig.wait_five_cycles();
         drop(client);
         rig.wait_five_cycles();
@@ -2343,27 +2407,8 @@ mod unreach {
     }
 
     fn start_challenges(rig: &mut Rig) {
-        let command = rig
-            .command(ae::cli::WATCHDOG_RUN)
-            .arg("--interval")
-            .arg("1")
-            .arg("--quota-every-secs")
-            .arg("0")
-            .arg("--idle-nudge-secs")
-            .arg("1")
-            .arg("--sweep-secs")
-            .arg("0")
-            .arg("--tg-supervise-secs")
-            .arg("0");
-        let root = rig.root.clone();
-        rig.daemon = Some(std::thread::spawn(move || {
-            let _ = raw::run(
-                &command,
-                &root,
-                &root.join("watch.out"),
-                &root.join("watch.err"),
-            );
-        }));
+        let command = rig.watchdog("1");
+        rig.spawn_stepped(command);
     }
 
     fn unreachable_alerts(rig: &Rig) -> usize {
@@ -2407,7 +2452,7 @@ mod unreach {
                 );
             }
             start_challenges(&mut rig);
-            wait_for("first unreachable alert", || unreachable_alerts(&rig) > 0);
+            rig.until("first unreachable alert", || unreachable_alerts(&rig) > 0);
             rig.wait_five_cycles();
             rig.stop();
             start_challenges(&mut rig);

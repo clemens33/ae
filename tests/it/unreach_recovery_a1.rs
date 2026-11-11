@@ -38,27 +38,8 @@ mod unreach_recovery_a1 {
     }
 
     fn start(rig: &mut Rig) {
-        let command = rig
-            .command(ae::cli::WATCHDOG_RUN)
-            .arg("--interval")
-            .arg("1")
-            .arg("--quota-every-secs")
-            .arg("0")
-            .arg("--idle-nudge-secs")
-            .arg("1")
-            .arg("--sweep-secs")
-            .arg("0")
-            .arg("--tg-supervise-secs")
-            .arg("0");
-        let root = rig.root.clone();
-        rig.daemon = Some(std::thread::spawn(move || {
-            let _ = raw::run(
-                &command,
-                &root,
-                &root.join("watch.out"),
-                &root.join("watch.err"),
-            );
-        }));
+        let command = rig.watchdog("1");
+        rig.spawn_stepped(command);
     }
 
     fn roster(rig: &Rig) -> Vec<ae::tmux::PickerAgent> {
@@ -112,7 +93,7 @@ mod unreach_recovery_a1 {
                 append(&rig, now - age, "watchdog", action, summary, "start-one");
             }
             start(&mut rig);
-            wait_for("durable unreachable published", || {
+            rig.until("durable unreachable published", || {
                 roster(&rig)
                     .iter()
                     .any(|a| a.name == "lead" && a.state == "unreachable")
@@ -126,7 +107,7 @@ mod unreach_recovery_a1 {
                     rig.root.join("config"),
                     text(rig.root.join("config")).replace("auto_trust = off", "auto_trust = on"),
                 );
-                wait_for("ae dismisses aged panel", || rig.count("auto-dismiss") == 1);
+                rig.until("ae dismisses aged panel", || rig.count("auto-dismiss") == 1);
             } else {
                 // Human Escape is supplied through the typed product transport
                 // to this fixture's private socket, never a live session.
@@ -139,7 +120,7 @@ mod unreach_recovery_a1 {
                     ae::tmux::Key::Escape
                 ));
             }
-            wait_for("recovery delivery and clear", || {
+            rig.until("recovery delivery and clear", || {
                 let events = rig.events();
                 events.iter().any(|e| {
                     e.action == action
@@ -155,7 +136,7 @@ mod unreach_recovery_a1 {
                             .is_some_and(|s| s.contains("reachable again"))
                 })
             });
-            wait_for("roster leaves unreachable", || {
+            rig.until("roster leaves unreachable", || {
                 roster(&rig)
                     .iter()
                     .any(|a| a.name == "lead" && a.state != "unreachable")
