@@ -303,7 +303,7 @@ The file holds fourteen `key=value` lines in a fixed order, printable ASCII, one
 `version tree head lock_hash toolchain_pin rustc nextest tmux harness inventory inventory_count scratch
 host time`. `lock_hash` and `toolchain_pin` are the sha256 of `Cargo.lock` and `rust-toolchain.toml`.
 `inventory` is the sha256 of the sorted `cargo nextest list` lines and `inventory_count` their number.
-`scratch` is the filesystem kind under the lane's scratch base. `harness` records seven
+`scratch` is the filesystem kind under the lane's scratch base (`AE_TEST_TMPDIR`, else `/tmp`: the base the lane itself uses, so a release run with another `AE_TEST_TMPDIR` than the gate costs one full gate). `harness` records seven
 `name=first line of --version` entries (or `name=absent`) and never decides.
 
 `just release` matches the receipt of the PRE-BUMP tree, before `just bump`, and prints its decision as

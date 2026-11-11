@@ -1691,7 +1691,7 @@ RECEIPT := '''
         local bound out
         command -v "$1" >/dev/null 2>&1 || { printf 'absent'; return 0; }
         bound="$(command -v timeout || command -v gtimeout || true)"
-        [[ -n "$bound" ]] || { printf 'unbounded'; return 0; }
+        [[ -n "$bound" ]] || { printf 'unknown'; return 0; }
         out="$("$bound" 5 "$1" --version 2>/dev/null </dev/null)" || out=""
         out="$(printf '%s' "${out%%$'\n'*}" | receipt_clean | tr ';' ',')"
         printf '%s' "${out:-unknown}"
