@@ -713,7 +713,7 @@ short\tline\tonly\n\
         let shown = overview(&over);
         assert!(!shown.contains("topic000"), "the oldest topic is cut");
         assert!(shown.contains("topic001"));
-        assert!(shown.contains(&format!("topic{:03}", OVERVIEW_TOPICS)));
+        assert!(shown.contains(&format!("topic{OVERVIEW_TOPICS:03}")));
         assert!(
             shown.contains(&format!(
                 "the newest record of {OVERVIEW_TOPICS} of {} topics, {} records in all",
