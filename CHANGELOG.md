@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.36] - 2026-11-11
+- No non-lead seat takes a derived sibling, spend caps are superseded per window, headroom moves only at the current threshold (#309, #311)
+- Draw a bracketed paste once in the reseat fakes, observe evidence in the autotrust waits
+- Size the test lane as the least of its ceilings, default a bare nextest run to four, add a bounded rust-stress recipe
+- Size rust-lint, rust-fuzz-check and the doctest step like the test lane through one shared helper, pinned in gate.rs
+- Answer claude trust within seconds of a fresh launch and measure codex 0.167.0 folder trust
+- Extract the trust watch's seat selection, deadline and read classification into tested pure functions
+
 ## [v2026.11.35] - 2026-11-10
 - Seams for the quiet idle work, behaviour unchanged
 - Install the frozen quiet idle acceptance specs
