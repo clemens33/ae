@@ -3465,6 +3465,34 @@ mod tests {
         Event::parse_line(line).expect("the specimen is a well-formed event")
     }
 
+    /// The `host-suspended` parse edges: the thirty-day cap is inclusive, a
+    /// zero-padded value of twenty digits still reads and one of twenty-one
+    /// does not, and a sign is not an ASCII digit even though `u64::from_str`
+    /// would take it.
+    #[test]
+    fn suspended_secs_honours_the_cap_the_width_and_digits_only() {
+        use super::{SUSPENDED_CAP_SECS, suspended_secs};
+        assert_eq!(SUSPENDED_CAP_SECS, 2_592_000, "thirty days");
+        assert_eq!(
+            suspended_secs("suspended 2592000s: x"),
+            Some(2_592_000),
+            "the cap itself is accepted"
+        );
+        assert_eq!(suspended_secs("suspended 2592001s: x"), None);
+        assert_eq!(
+            suspended_secs("suspended 00000000000000000060s: x"),
+            Some(60),
+            "twenty digits"
+        );
+        assert_eq!(
+            suspended_secs("suspended 000000000000000000060s: x"),
+            None,
+            "twenty-one digits"
+        );
+        assert_eq!(suspended_secs("suspended +5s: x"), None, "a sign");
+        assert_eq!(suspended_secs("suspended 5s: x"), Some(5));
+    }
+
     #[test]
     fn the_shell_set_is_exactly_the_bash_command_is_shell_case() {
         for shell in ["bash", "zsh", "fish", "sh", "dash", ""] {
