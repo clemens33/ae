@@ -506,8 +506,8 @@ recorded base, no lane) reports an explicit verification gap instead, never a cl
   and the freeze names what was not run; the lead may raise the budget. A later shard of
   the same tree may pass `--baseline=skip` once an earlier shard's baseline passed. `-F`
   does not filter struct-field mutants (cargo-mutants 27.1): they ride along from every
-  selected file, so trust the `--list` count, not the regex. `just rust-mutants` writes its
-  arguments back into a shell line, so a regex is quoted twice: `-F "'(a|b)'"`.
+  selected file, so trust the `--list` count, not the regex. `just rust-mutants` hands each
+  argument to `cargo mutants` as the one word you typed, so a regex is quoted once: `-F '(a|b)'`.
 * **Survivors.** Each survivor in the diff is answered in the freeze report, one line:
   killed by a test the slice added (name it), or named equivalent (say why no behaviour
   differs), or dead code (and removed), or timeout or unviable. A timeout is not a kill.
