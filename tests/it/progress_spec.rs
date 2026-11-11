@@ -445,8 +445,11 @@ fn progress_g8_credit_keeps_attempts_rearm_resets_them() {
         wchal(160, "L1", "blocked"),
         decl(170, "blocked", "still"),
     ];
-    assert_eq!(wait(&rearmed, 289, WaitState::Blocked), w_prov(0));
-    assert_eq!(wait(&rearmed, 290, WaitState::Blocked), w_due(0, 120, 0));
+    // The second credited proof in a row is backoff rung 2 (I14): four
+    // cadences, where #225 alone gave two.
+    assert_eq!(wait(&rearmed, 290, WaitState::Blocked), w_prov(0));
+    assert_eq!(wait(&rearmed, 409, WaitState::Blocked), w_prov(0));
+    assert_eq!(wait(&rearmed, 410, WaitState::Blocked), w_due(0, 240, 0));
 }
 
 /// G8/I4 (behaviour pin): the OTHER wait state's challenge is skipped before

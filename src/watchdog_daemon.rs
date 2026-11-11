@@ -1926,7 +1926,7 @@ pub fn wait_challenge_text(goal: Option<&str>, meta_dir: &Path, check: &WaitChec
         ""
     };
     format!(
-        "{prefix}{NUDGE_WAIT_OPEN}{declared}, {minutes}m, {}/{}.{ceiling} Still true? Re-declare \
+        "{prefix}{NUDGE_WAIT_OPEN}{declared}, {minutes}m, confirmation {}/{}.{ceiling} Still true? Re-declare \
          {proof}; else declare working. Declare state: {}{NUDGE_TAIL}",
         check.confirmations.saturating_add(1),
         check.required,
@@ -18593,7 +18593,7 @@ mod tests {
                 meta,
                 &wait_check(300, 0, WaitState::Blocked, false, None)
             ),
-            "Wait check: blocked, 5m, 1/2. Still true? Re-declare naming blocker, owner and last check; else declare working. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+            "Wait check: blocked, 5m, confirmation 1/2. Still true? Re-declare naming blocker, owner and last check; else declare working. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
         assert_eq!(
             wait_challenge_text(
@@ -18601,7 +18601,7 @@ mod tests {
                 meta,
                 &wait_check(600, 1, WaitState::WaitingAgent, true, Some("lead")),
             ),
-            "Session goal: ship P4.1. Wait check: waiting-agent on lead, 10m, 2/2. Reads blocked: past the ceiling. Still true? Re-declare with result and last chase; else declare working. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+            "Session goal: ship P4.1. Wait check: waiting-agent on lead, 10m, confirmation 2/2. Reads blocked: past the ceiling. Still true? Re-declare with result and last chase; else declare working. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
     }
 
