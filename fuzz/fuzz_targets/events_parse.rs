@@ -94,4 +94,17 @@ fuzz_target!(|data: &[u8]| {
     if let ae::conversation::Verdict::Current(record) = verdict {
         assert!(bits % 2 == 0 && Some(record.start_key.as_str()) == live);
     }
+    // `host-suspended` records (I15): whatever the bytes, an awake age is
+    // never more than the wall age, and a clock behind reads zero.
+    let slept = ae::watchdog::Suspensions::read(&events);
+    let now = events.last().map_or(0, |event| event.ts.epoch());
+    for event in &events {
+        let from = event.ts.epoch();
+        let awake = slept.awake_secs(from, now);
+        if now > from {
+            assert!(awake <= now.abs_diff(from));
+        } else {
+            assert_eq!(awake, 0);
+        }
+    }
 });

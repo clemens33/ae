@@ -24,6 +24,9 @@ mod muse_task_tests;
 #[path = "watchdog/proof225_spec.rs"]
 mod proof225_spec;
 #[cfg(test)]
+#[path = "watchdog/protowd_spec.rs"]
+mod protowd_spec;
+#[cfg(test)]
 #[path = "watchdog/quiet225_spec.rs"]
 mod quiet225_spec;
 
@@ -1290,6 +1293,9 @@ pub(crate) const NUDGE_SENTENCE_LEGACY_2: &str =
     "Continue the assigned work now. Do not re-plan or ask unless blocked.";
 pub(crate) const NUDGE_SENTENCE_LEGACY: &str = "Status check: if you have more work, continue. \
      Otherwise declare your state so I stop nudging: ";
+/// The wait challenge's own opening: it stands where the nudge sentence
+/// stands, so the footprint filter strips a wait challenge like a nudge.
+pub(crate) const NUDGE_WAIT_OPEN: &str = "Wait check: ";
 
 /// The invitation the nudge ends with, in the current vocabulary.
 pub(crate) const NUDGE_TAIL: &str = "/state <waiting-user|waiting-agent|blocked|done> \"<reason>\"";
@@ -1393,13 +1399,14 @@ fn raw_nudge_plain(body: &str) -> bool {
 }
 
 /// The nudge sentence, directly or behind the idle reminder's opening, in all
-/// three accepted spellings.
+/// three accepted spellings, or the wait challenge's opening.
 fn nudge_sentence(rest: &str) -> bool {
     let rest = rest.strip_prefix(NUDGE_IDLE_PREFIX).unwrap_or(rest);
     [
         NUDGE_SENTENCE,
         NUDGE_SENTENCE_LEGACY_2,
         NUDGE_SENTENCE_LEGACY,
+        NUDGE_WAIT_OPEN,
     ]
     .iter()
     .any(|sentence| rest.starts_with(sentence))
@@ -2209,16 +2216,24 @@ impl Episode {
 
     /// The phase at `now`: an outstanding challenge lapses after `cadence`;
     /// otherwise the next challenge is due `due_after` seconds past the anchor.
-    /// A clock behind either instant reads as age zero.
-    fn phase(&self, now: crate::time::Timestamp, cadence: u64, due_after: u64) -> Phase {
+    /// Both ages are AWAKE seconds: `slept` names the host suspensions that do
+    /// not count. A clock behind either instant reads as age zero.
+    fn phase(
+        &self,
+        now: crate::time::Timestamp,
+        cadence: u64,
+        due_after: u64,
+        slept: &Suspensions,
+    ) -> Phase {
+        let now = now.epoch();
         if let Some(challenged_at) = self.outstanding {
-            return if challenged_at.seconds_until(now).max(0).cast_unsigned() >= cadence {
+            return if slept.awake_secs(challenged_at.epoch(), now) >= cadence {
                 Phase::Lapsed
             } else {
                 Phase::Challenged
             };
         }
-        let age = self.anchor.seconds_until(now).max(0).cast_unsigned();
+        let age = slept.awake_secs(self.anchor.epoch(), now);
         if age >= due_after {
             Phase::ChallengeDue { age }
         } else {
@@ -2227,46 +2242,60 @@ impl Episode {
     }
 }
 
-/// A wait [`Episode`] and whether its anchor is a CREDITED proof with no news
-/// since (#225): set together on open and re-arm, so no stale credit leaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct WaitEpisode {
+/// A wait [`Episode`], its backoff rung and the `--on` target of its newest
+/// proof. The rung counts the CREDITED proofs in a row with no news and no
+/// target change between them (#225 spacing, I14 backoff); the Nth-proof
+/// re-arm carries it, so a restart re-reads it from the journal alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WaitEpisode<'e> {
     episode: Episode,
-    earned: bool,
+    rung: u8,
+    on: Option<&'e str>,
 }
 
-impl WaitEpisode {
-    /// A fresh wait episode anchored at `at`; `earned` when the Nth proof
-    /// re-arms it.
-    const fn open(at: crate::time::Timestamp, earned: bool) -> Self {
+impl<'e> WaitEpisode<'e> {
+    /// A fresh wait episode anchored at `at` on `rung`.
+    const fn open(at: crate::time::Timestamp, rung: u8, on: Option<&'e str>) -> Self {
         Self {
             episode: Episode::open(at),
-            earned,
+            rung,
+            on,
         }
     }
 
-    /// A same-state declaration at `at`, every appended line counted (no
-    /// dedup). Answering a delivered challenge it is credited and earns
-    /// spacing, and the Nth such proof re-arms a fresh episode: waits are
-    /// never terminally proven. A proactive one refreshes the anchor only and
-    /// earns nothing; with no episode it opens one.
-    fn prove(wait: &mut Option<Self>, at: crate::time::Timestamp, required: u8) {
+    /// A same-state declaration at `at` naming `on`, every appended line
+    /// counted (no dedup). Answering a delivered challenge it is credited and
+    /// climbs one rung — back to rung 0 when it names another target — and
+    /// the Nth such proof re-arms a fresh episode on that rung: waits are never
+    /// terminally proven. A proactive one refreshes the anchor and drops to
+    /// rung 0; with no episode it opens one.
+    fn prove(
+        wait: &mut Option<Self>,
+        at: crate::time::Timestamp,
+        required: u8,
+        on: Option<&'e str>,
+    ) {
         match wait.as_mut() {
-            Some(current)
-                if current.episode.outstanding.is_some()
-                    && current.episode.confirmations.saturating_add(1) >= required =>
-            {
-                *current = Self::open(at, true);
-            }
             Some(current) if current.episode.outstanding.is_some() => {
-                current.episode.credit(at);
-                current.earned = true;
+                let rung = if current.on == on {
+                    current.rung.saturating_add(1).min(WAIT_RUNG_CAP)
+                } else {
+                    0
+                };
+                if current.episode.confirmations.saturating_add(1) >= required {
+                    *current = Self::open(at, rung, on);
+                } else {
+                    current.episode.credit(at);
+                    current.rung = rung;
+                    current.on = on;
+                }
             }
             Some(current) => {
                 current.episode.anchor = at;
-                current.earned = false;
+                current.rung = 0;
+                current.on = on;
             }
-            None => *wait = Some(Self::open(at, false)),
+            None => *wait = Some(Self::open(at, 0, on)),
         }
     }
 }
@@ -2434,7 +2463,7 @@ pub fn done_progress_proof(
     if required == 0 || cadence == 0 || confirmations >= required {
         return (DoneProgress::Confirmed, quiet);
     }
-    let progress = match episode.phase(now, cadence, cadence) {
+    let progress = match episode.phase(now, cadence, cadence, &Suspensions::default()) {
         Phase::Provisional => DoneProgress::Provisional {
             confirmations,
             required,
@@ -2573,10 +2602,54 @@ pub fn wait_progress_proof(
     required: u8,
     state: WaitState,
 ) -> (WaitProgress, ProofQuiet) {
+    let reading = wait_reading(
+        events, session, slot, agent, launch, now, cadence, required, state,
+    );
+    (reading.progress, reading.quiet)
+}
+
+/// What [`wait_reading`] reads: the progress, the proof and the backoff rung.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WaitReading {
+    /// [`wait_progress`]'s answer.
+    pub progress: WaitProgress,
+    /// [`wait_progress_proof`]'s proof half.
+    pub quiet: ProofQuiet,
+    /// The backoff rung: credited proofs in a row with no news and no target
+    /// change, capped at [`WAIT_RUNG_CAP`]. It sets the challenge spacing
+    /// ([`wait_rung_spacing`]) and the `waiting-agent` ceiling
+    /// ([`waiting_agent_ceiling_secs`]).
+    pub rung: u8,
+}
+
+/// The ONE wait fold: [`wait_progress`] and [`wait_progress_proof`] are its
+/// projections. Ages are awake seconds: the journal's `host-suspended`
+/// records ([`Suspensions`]) do not count toward the challenge cadence.
+#[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the public fold signature every reader calls: journal, seat routing key, launch witness, clock, both knobs and the wait state"
+)]
+pub fn wait_reading(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+    launch: Option<&str>,
+    now: crate::time::Timestamp,
+    cadence: u64,
+    required: u8,
+    state: WaitState,
+) -> WaitReading {
+    let none = WaitReading {
+        progress: WaitProgress::None,
+        quiet: ProofQuiet::default(),
+        rung: 0,
+    };
     if required == 0 || cadence == 0 {
-        return (WaitProgress::None, ProofQuiet::default());
+        return none;
     }
-    let mut episode: Option<WaitEpisode> = None;
+    let mut episode: Option<WaitEpisode<'_>> = None;
     let mut quiet = ProofQuiet::default();
     let mut own_requests: Vec<&str> = Vec::new();
     for event in events {
@@ -2608,33 +2681,30 @@ pub fn wait_progress_proof(
                 }
             }
             Step::Proof => {
-                WaitEpisode::prove(&mut episode, event.ts, required);
+                WaitEpisode::prove(&mut episode, event.ts, required, event.wait_on.as_deref());
                 quiet = ProofQuiet::proved(event.ts);
             }
-            // News the wait outlives: the next challenge keeps the base
+            // News the wait outlives: the next challenge drops to the base
             // cadence, and something changed since the proof.
             Step::News => {
                 if let Some(current) = episode.as_mut() {
-                    current.earned = false;
+                    current.rung = 0;
                 }
                 quiet.unchanged = false;
             }
         }
     }
-    let Some(WaitEpisode { episode, earned }) = episode else {
-        return (WaitProgress::None, ProofQuiet::default());
+    let Some(WaitEpisode { episode, rung, .. }) = episode else {
+        return none;
     };
     let Episode {
         confirmations,
         attempts,
         ..
     } = episode;
-    let spacing = if earned {
-        unchanged_wait_spacing(cadence)
-    } else {
-        cadence
-    };
-    let progress = match episode.phase(now, cadence, spacing) {
+    let spacing = wait_rung_spacing(cadence, rung);
+    let slept = Suspensions::read(events);
+    let progress = match episode.phase(now, cadence, spacing, &slept) {
         Phase::Provisional => WaitProgress::Provisional {
             confirmations,
             required,
@@ -2654,19 +2724,30 @@ pub fn wait_progress_proof(
             required,
         },
     };
-    (progress, quiet)
+    WaitReading {
+        progress,
+        quiet,
+        rung,
+    }
 }
 
-/// How many cadences an unchanged wait waits after a credited proof (#225).
-const UNCHANGED_WAIT_CADENCES: u64 = 2;
+/// The highest backoff rung: `2^3 = 8` cadences, 40 min at the default 300 s.
+pub const WAIT_RUNG_CAP: u8 = 3;
 
-/// The challenge spacing after a credited proof with no news since: two
-/// cadences while the `waiting-agent` ceiling (`cadence × OWN_WORK_AGE_CAP`)
-/// is exact, else the base cadence — never shorter, never saturated.
-fn unchanged_wait_spacing(cadence: u64) -> u64 {
+/// A rung's cadence multiple: `min(2^rung, 8)`.
+fn rung_multiple(rung: u8) -> u64 {
+    1_u64 << rung.min(WAIT_RUNG_CAP)
+}
+
+/// The challenge spacing on `rung` (I14): `cadence × min(2^rung, 8)` — 300,
+/// 600, 1200, 2400 s at the default cadence. Rung 1 is #225's two-cadence
+/// spacing after a credited proof. Overflow falls back to the base cadence —
+/// never shorter, never saturated.
+#[must_use]
+pub fn wait_rung_spacing(cadence: u64, rung: u8) -> u64 {
     cadence
-        .checked_mul(OWN_WORK_AGE_CAP)
-        .and_then(|_| cadence.checked_mul(UNCHANGED_WAIT_CADENCES))
+        .checked_mul(OWN_WORK_AGE_CAP.max(rung_multiple(rung).saturating_add(1)))
+        .and_then(|_| cadence.checked_mul(rung_multiple(rung)))
         .unwrap_or(cadence)
 }
 
@@ -2727,14 +2808,189 @@ pub fn waiting_agent_cap_secs(idle_nudge_secs: u64) -> u64 {
     cadence.saturating_mul(OWN_WORK_AGE_CAP)
 }
 
-/// Whether a `waiting-agent` declaration of `age_secs` reads as `blocked`.
+/// The `waiting-agent` ceiling on backoff `rung` (I14): `cadence × max(4,
+/// 2^rung + 1)` — 1200, 1200, 1500, 2700 s at the default cadence — so a
+/// healthy backed-off wait always meets its challenge one cadence before it
+/// would read `blocked`. Rung 0 is exactly [`waiting_agent_cap_secs`], the
+/// zero cadence included.
+#[must_use]
+pub fn waiting_agent_ceiling_secs(idle_nudge_secs: u64, rung: u8) -> u64 {
+    let cadence = if idle_nudge_secs == 0 {
+        DEFAULT_IDLE_NUDGE_SECS
+    } else {
+        idle_nudge_secs
+    };
+    cadence.saturating_mul(OWN_WORK_AGE_CAP.max(rung_multiple(rung).saturating_add(1)))
+}
+
+/// Whether a `waiting-agent` declaration of `age_secs` on rung 0 reads as
+/// `blocked`: [`waiting_agent_escalated_at`] with no backoff.
+#[must_use]
+pub fn waiting_agent_escalated(age_secs: u64, idle_nudge_secs: u64) -> bool {
+    waiting_agent_escalated_at(age_secs, idle_nudge_secs, 0)
+}
+
+/// Whether a `waiting-agent` declaration whose AWAKE age is `age_secs`, on
+/// backoff `rung`, reads as `blocked`.
 ///
 /// PURE, and the ONE ceiling every consumer shares: the read side
 /// (`session::declared_reason`) and the watchdog's own nudge decision both ask
 /// this, so a surface can never disagree with the pane about escalation.
 #[must_use]
-pub fn waiting_agent_escalated(age_secs: u64, idle_nudge_secs: u64) -> bool {
-    age_secs >= waiting_agent_cap_secs(idle_nudge_secs)
+pub fn waiting_agent_escalated_at(age_secs: u64, idle_nudge_secs: u64, rung: u8) -> bool {
+    age_secs >= waiting_agent_ceiling_secs(idle_nudge_secs, rung)
+}
+
+/// The watchdog's journal record of a host suspension (I15): the wall clock
+/// ran on while the monotonic clock stood still. Actor `watchdog`, no target,
+/// `ts` the wake cycle, summary [`suspended_summary`].
+pub const HOST_SUSPENDED_ACTION: &str = "host-suspended";
+
+/// The longest suspension one record may claim: thirty days. A larger value is
+/// hostile or corrupt and subtracts nothing.
+const SUSPENDED_CAP_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// One cycle's two clock readings: the wall epoch and the monotonic instant,
+/// which stands still while the host sleeps (`CLOCK_UPTIME_RAW` on Apple,
+/// `CLOCK_MONOTONIC` on Linux).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CycleClock {
+    /// Wall-clock epoch seconds.
+    pub wall: i64,
+    /// The monotonic instant.
+    pub mono: std::time::Instant,
+}
+
+/// A detected suspension: the slept seconds and the two clock advances they
+/// were derived from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Suspended {
+    /// `wall_secs − mono_secs`.
+    pub secs: u64,
+    /// The wall clock's advance between the two cycles.
+    pub wall_secs: u64,
+    /// The monotonic clock's advance between the two cycles.
+    pub mono_secs: u64,
+}
+
+/// The suspension between two cycle readings, or `None`: the wall clock ran
+/// at least `3 × interval_secs` (inclusive) further than the monotonic one. A
+/// stalled watchdog advances both clocks and records nothing; a wall clock
+/// stepped back records nothing.
+#[must_use]
+pub fn host_suspended(prev: CycleClock, now: CycleClock, interval_secs: u64) -> Option<Suspended> {
+    let wall_secs = u64::try_from(now.wall.saturating_sub(prev.wall)).ok()?;
+    let mono_secs = now.mono.saturating_duration_since(prev.mono).as_secs();
+    let secs = wall_secs.checked_sub(mono_secs)?;
+    (secs >= interval_secs.saturating_mul(3).max(1)).then_some(Suspended {
+        secs,
+        wall_secs,
+        mono_secs,
+    })
+}
+
+/// A suspension's journal summary: the slept seconds first, then the two clock
+/// readings it rests on. It states what was measured, never a cause.
+#[must_use]
+pub fn suspended_summary(found: Suspended) -> String {
+    format!(
+        "suspended {}s: wall clock +{}s, monotonic clock +{}s",
+        found.secs, found.wall_secs, found.mono_secs
+    )
+}
+
+/// The slept seconds a `host-suspended` summary claims: ASCII digits between
+/// `suspended ` and `s:`, at most [`SUSPENDED_CAP_SECS`]; anything else is
+/// `None`.
+fn suspended_secs(summary: &str) -> Option<u64> {
+    let digits = summary.strip_prefix("suspended ")?.split_once("s:")?.0;
+    if digits.is_empty() || digits.len() > 20 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits
+        .parse::<u64>()
+        .ok()
+        .filter(|secs| *secs <= SUSPENDED_CAP_SECS)
+}
+
+/// The host suspensions the journal records, as merged wall-clock spans
+/// `[wake − secs, wake]`. Hostile records subtract nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Suspensions {
+    spans: Vec<(i64, i64)>,
+}
+
+impl Suspensions {
+    /// Every watchdog `host-suspended` record of `events`, merged.
+    #[must_use]
+    pub fn read(events: &[Event]) -> Self {
+        let mut spans: Vec<(i64, i64)> = events
+            .iter()
+            .filter(|event| event.actor == WATCHDOG_ACTOR && event.action == HOST_SUSPENDED_ACTION)
+            .filter_map(|event| {
+                let secs = suspended_secs(event.summary.as_deref()?)?;
+                let end = event.ts.epoch();
+                Some((end.saturating_sub_unsigned(secs), end))
+            })
+            .collect();
+        spans.sort_unstable();
+        let mut merged: Vec<(i64, i64)> = Vec::with_capacity(spans.len());
+        for (start, end) in spans {
+            match merged.last_mut() {
+                Some(last) if start <= last.1 => last.1 = last.1.max(end),
+                _ => merged.push((start, end)),
+            }
+        }
+        Self { spans: merged }
+    }
+
+    /// The seconds from `from` to `now` the host was awake: the wall age minus
+    /// every recorded suspension inside it. A clock behind reads zero.
+    #[must_use]
+    pub fn awake_secs(&self, from: i64, now: i64) -> u64 {
+        if now <= from {
+            return 0;
+        }
+        let wall = now.abs_diff(from);
+        let slept = self
+            .spans
+            .iter()
+            .map(|&(start, end)| {
+                let (start, end) = (start.max(from), end.min(now));
+                if end > start { end.abs_diff(start) } else { 0 }
+            })
+            .fold(0_u64, u64::saturating_add);
+        wall.saturating_sub(slept)
+    }
+}
+
+/// Whether the next wait challenge to this seat should quote the session goal
+/// (I14): the seat has not seen the goal since it last changed. Folded in
+/// APPEND order: a `goal` record makes it owed, a delivered `wait-challenge`
+/// of this launch to this seat marks it seen; an unconfirmed paste is not
+/// seen. The first challenge of a launch quotes it.
+#[must_use]
+pub fn wait_goal_owed(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+    launch: Option<&str>,
+) -> bool {
+    events.iter().fold(true, |owed, event| {
+        if event.action == crate::goal::KEY {
+            true
+        } else if event.actor == WATCHDOG_ACTOR
+            && event.action == WAIT_CHALLENGE_ACTION
+            && event_is_addressed_to(event, session, slot, agent)
+            && launch_matches(event, launch)
+            && !crate::tracked::summary_is_unconfirmed(event.summary.as_deref())
+        {
+            false
+        } else {
+            owed
+        }
+    })
 }
 
 /// The declaration's identity — `action|ts|ref|actor|summary`, so a
@@ -3495,27 +3751,33 @@ mod tests {
     #[test]
     fn an_episode_phase_is_due_at_its_spacing_and_lapses_a_cadence_after_its_challenge() {
         let open = Episode::open(at_secs(0));
-        assert_eq!(open.phase(at_secs(119), 60, 120), Phase::Provisional);
         assert_eq!(
-            open.phase(at_secs(120), 60, 120),
+            open.phase(at_secs(119), 60, 120, &super::Suspensions::default()),
+            Phase::Provisional
+        );
+        assert_eq!(
+            open.phase(at_secs(120), 60, 120, &super::Suspensions::default()),
             Phase::ChallengeDue { age: 120 }
         );
         let mut challenged = open;
         challenged.deliver(at_secs(200));
         assert_eq!(
-            challenged.phase(at_secs(259), 60, 60),
+            challenged.phase(at_secs(259), 60, 60, &super::Suspensions::default()),
             Phase::Challenged,
             "an outstanding challenge outranks an anchor past its due age"
         );
-        assert_eq!(challenged.phase(at_secs(260), 60, 60), Phase::Lapsed);
         assert_eq!(
-            challenged.phase(at_secs(100), 60, 60),
+            challenged.phase(at_secs(260), 60, 60, &super::Suspensions::default()),
+            Phase::Lapsed
+        );
+        assert_eq!(
+            challenged.phase(at_secs(100), 60, 60, &super::Suspensions::default()),
             Phase::Challenged,
             "a clock behind the challenge reads as age zero, never as lapsed"
         );
         let later = Episode::open(at_secs(300));
         assert_eq!(
-            later.phase(at_secs(0), 60, 60),
+            later.phase(at_secs(0), 60, 60, &super::Suspensions::default()),
             Phase::Provisional,
             "a clock behind the anchor reads as age zero, never as due"
         );
@@ -3751,12 +4013,12 @@ mod tests {
         );
 
         let mut wait = None;
-        WaitEpisode::prove(&mut wait, at_secs(0), 2);
-        assert_eq!(wait, Some(WaitEpisode::open(at_secs(0), false)));
-        WaitEpisode::prove(&mut wait, at_secs(30), 2);
+        WaitEpisode::prove(&mut wait, at_secs(0), 2, None);
+        assert_eq!(wait, Some(WaitEpisode::open(at_secs(0), 0, None)));
+        WaitEpisode::prove(&mut wait, at_secs(30), 2, None);
         assert_eq!(
             wait,
-            Some(WaitEpisode::open(at_secs(30), false)),
+            Some(WaitEpisode::open(at_secs(30), 0, None)),
             "proactive: re-anchor"
         );
         let challenge = |wait: &mut Option<WaitEpisode>, secs| {
@@ -3766,23 +4028,23 @@ mod tests {
             }
         };
         challenge(&mut wait, 60);
-        WaitEpisode::prove(&mut wait, at_secs(90), 2);
+        WaitEpisode::prove(&mut wait, at_secs(90), 2, None);
         assert_eq!(
-            wait.map(|w| (
+            wait.as_ref().map(|w| (
                 w.episode.confirmations,
                 w.episode.anchor,
                 w.episode.attempts,
-                w.earned
+                w.rung
             )),
-            Some((1, at_secs(90), 1, true)),
-            "an answer is credited, keeps its attempts and earns spacing"
+            Some((1, at_secs(90), 1, 1)),
+            "an answer is credited, keeps its attempts and climbs one rung"
         );
         challenge(&mut wait, 120);
-        WaitEpisode::prove(&mut wait, at_secs(150), 2);
+        WaitEpisode::prove(&mut wait, at_secs(150), 2, None);
         assert_eq!(
             wait,
-            Some(WaitEpisode::open(at_secs(150), true)),
-            "the Nth proof re-arms a fresh, earned episode"
+            Some(WaitEpisode::open(at_secs(150), 2, None)),
+            "the Nth proof re-arms a fresh episode on the next rung"
         );
     }
 
@@ -3942,11 +4204,12 @@ mod tests {
         let one = &[BLOCKED_0, WCHALLENGE_1, BLOCKED_1];
         assert_eq!(wprog(one, T03_30, b), due(1, 120, 0));
         // The Nth proof re-arms a fresh episode — waits are never terminally
-        // proven — and the re-ask recurs two cadences after that unchanged
-        // credited proof (#225).
+        // proven — and the re-ask recurs four cadences after that second
+        // credited proof in a row: rung 2 (#225, I14).
         let full = &[BLOCKED_0, WCHALLENGE_1, BLOCKED_1, WCHALLENGE_2, BLOCKED_2];
         assert_eq!(wprog(full, T03_30, b), prov(0));
-        assert_eq!(wprog(full, T05_00, b), due(0, 120, 0));
+        assert_eq!(wprog(full, T05_00, b), prov(0));
+        assert_eq!(wprog(full, "2026-08-29T04:07:00Z", b), due(0, 240, 0));
     }
 
     #[test]
@@ -6179,6 +6442,27 @@ tail line
         assert!(!raw_nudge(&lookalike), "{lookalike:?} is not a raw nudge");
     }
 
+    /// A blocked wait challenge's facts, for the footprint table below.
+    const BLOCKED_CHECK: crate::watchdog_daemon::WaitCheck<'static> =
+        crate::watchdog_daemon::WaitCheck {
+            age: 300,
+            confirmations: 0,
+            required: 2,
+            state: WaitState::Blocked,
+            escalated: false,
+            target: None,
+        };
+    /// An escalated `waiting-agent --on lead` challenge's facts.
+    const ESCALATED_CHECK: crate::watchdog_daemon::WaitCheck<'static> =
+        crate::watchdog_daemon::WaitCheck {
+            age: 600,
+            confirmations: 1,
+            required: 2,
+            state: WaitState::WaitingAgent,
+            escalated: true,
+            target: Some("lead"),
+        };
+
     /// #174: every nudge the watchdog delivers is a footprint in its raw
     /// one-line form — all five generators, goal and no goal, with and without
     /// the #172 note, and the outstanding-own-work clause with an arbitrary
@@ -6240,11 +6524,11 @@ tail line
                 ("done", done_challenge_text(goal, meta, 300, 0, 2)),
                 (
                     "wait blocked",
-                    wait_challenge_text(goal, meta, 300, 0, 2, WaitState::Blocked, false),
+                    wait_challenge_text(goal, meta, &BLOCKED_CHECK),
                 ),
                 (
                     "wait escalated",
-                    wait_challenge_text(goal, meta, 600, 1, 2, WaitState::WaitingAgent, true),
+                    wait_challenge_text(goal, meta, &ESCALATED_CHECK),
                 ),
             ] {
                 check(&format!("{goal_label}{label}"), &text);

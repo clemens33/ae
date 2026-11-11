@@ -160,6 +160,7 @@ older core steps over the additive key as unknown data.
 | `interrupt` | `interrupt` helper | Cancel signal sent. |
 | `nudge` | watchdog | Stale-agent status check. |
 | `target-moved` | watchdog | A `waiting-agent --on B` seat was told B declared `done`/`blocked` or was retired. `target` = the waiter, `ref` = the decimal ordinal of B's transition within that wait, summary fixed `target done\|blocked\|retired` (B's reason is never journaled). One per ordinal; an `[unconfirmed]` or pre-paste-refused attempt counts toward `undelivered_max`. Ends no declaration; `src/wait_on.rs::moved` folds it. |
+| `host-suspended` | watchdog | The wall clock ran at least `3 × interval_secs` further than the monotonic clock between two verdict cycles: the host was suspended. No target, no ref; `ts` = the wake cycle; summary `suspended <S>s: wall clock +<W>s, monotonic clock +<M>s`. `watchdog::Suspensions` reads `S` (ASCII digits, at most 30 days; anything else subtracts nothing) as the span `[ts − S, ts]` and subtracts it from the wait clocks and the idle-nudge clock. A stalled watchdog advances both clocks and writes none. |
 | `alert` | watchdog / ae internal | Attention required (dead, max-nudges, persistent throttle, missing pane). |
 | `throttled` | watchdog | First cycle of an upstream throttle streak. |
 | `limit` | watchdog | First cycle of a vendor usage-limit episode; one per episode. Reads as `attn:limit` (rank 3). |

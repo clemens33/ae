@@ -1,0 +1,4 @@
+{"ts":"2026-11-11T08:00:00Z","actor":"seat","action":"state","ref":"waiting-agent","summary":"waiting on lead"}
+{"ts":"2026-11-11T10:00:00Z","actor":"watchdog","action":"host-suspended","summary":"suspended 7140s: wall clock +7200s, monotonic clock +60s"}
+{"ts":"2026-11-11T10:00:00Z","actor":"watchdog","action":"host-suspended","summary":"suspended 99999999999999999999999s: x"}
+{"ts":"2026-11-11T09:00:00Z","actor":"watchdog","action":"host-suspended","summary":"suspended 2592001s: past the cap"}

@@ -226,6 +226,7 @@ impl Journal {
             ended_wait: None,
             done_progress,
             wait_progress: progress,
+            wait_rung: 0,
             wait_ends_elsewhere: false,
             target_moved: None,
             descendancy: ae::procs::Descendancy::Present,
@@ -249,6 +250,7 @@ impl Journal {
                 AGENT,
                 now.epoch(),
             ),
+            suspended: ae::watchdog::Suspensions::default(),
             sweep: None,
             own_work: entry.agents[0].own_work.unwrap_or_default(),
             auto_in_flight: None,
@@ -404,8 +406,11 @@ fn nth_proof_rearms_with_extended_spacing_including_required_one() {
         journal.challenge(930, state, 2);
         journal.declare(960, state.as_str());
         journal.check(1260, state, provisional(0, 2));
-        journal.check(1559, state, provisional(0, 2));
-        journal.check(1560, state, due(0, 2, 600, 0));
+        // The second credited proof in a row is backoff rung 2 (I14): four
+        // cadences, where #225 alone gave two.
+        journal.check(1560, state, provisional(0, 2));
+        journal.check(2159, state, provisional(0, 2));
+        journal.check(2160, state, due(0, 2, 1200, 0));
 
         let mut one = Journal::new();
         one.required = 1;

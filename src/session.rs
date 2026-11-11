@@ -20,7 +20,7 @@ use crate::events::{
 };
 use crate::meta::{Anomaly, Meta};
 use crate::time::Timestamp;
-use crate::watchdog::{DEFAULT_IDLE_NUDGE_SECS, waiting_agent_escalated};
+use crate::watchdog::{DEFAULT_IDLE_NUDGE_SECS, waiting_agent_escalated_at};
 
 /// The `unanswered` threshold when nothing tunes it.
 pub const DEFAULT_UNANSWERED_SECS: i64 = 1800;
@@ -1105,6 +1105,11 @@ fn agent_entries(
         crate::wait_on::Facts::read(&read.events, session, &live)
     });
     let links = crate::wait_on::Facts::links(&wait_facts);
+    // The journal's host suspensions: a declaration's ceiling age is AWAKE
+    // seconds, the same age the watchdog measures (I15).
+    let slept = read.map_or_else(crate::watchdog::Suspensions::default, |read| {
+        crate::watchdog::Suspensions::read(&read.events)
+    });
     let agents = meta
         .roster()
         .iter()
@@ -1129,7 +1134,26 @@ fn agent_entries(
             let declared = declaration.map(|(event, _)| event);
             let declared_state = declared.and_then(Event::declared_state);
             let declared_age_secs =
-                declared.map(|event| u64::try_from(event.ts.seconds_until(now)).unwrap_or(0));
+                declared.map(|event| slept.awake_secs(event.ts.epoch(), now.epoch()));
+            let wait_reading = read.and_then(|read| {
+                let state = match declared_state {
+                    Some("waiting-agent") => Some(crate::watchdog::WaitState::WaitingAgent),
+                    Some("blocked") => Some(crate::watchdog::WaitState::Blocked),
+                    _ => None,
+                }?;
+                Some(crate::watchdog::wait_reading(
+                    &read.events,
+                    session,
+                    &slot.slot,
+                    &reference,
+                    meta.launch_id(&slot.slot),
+                    now,
+                    idle_nudge_secs.unwrap_or(0),
+                    done_confirmations,
+                    state,
+                ))
+            });
+            let wait_rung = wait_reading.map_or(0, |reading| reading.rung);
             let declared_current = declaration.is_some_and(|(_, current)| current);
             let elsewhere = crate::wait_on::ends_elsewhere(&links, &slot.name);
             let runtime_agent = runtime.agent(&slot.slot);
@@ -1216,25 +1240,9 @@ fn agent_entries(
                     ))
                     .then_some(progress)
                 }),
-                wait_progress: read.and_then(|read| {
-                    let state = match declared_state {
-                        Some("waiting-agent") => Some(crate::watchdog::WaitState::WaitingAgent),
-                        Some("blocked") => Some(crate::watchdog::WaitState::Blocked),
-                        _ => None,
-                    }?;
-                    let progress = crate::watchdog::wait_progress(
-                        &read.events,
-                        session,
-                        &slot.slot,
-                        &reference,
-                        meta.launch_id(&slot.slot),
-                        now,
-                        idle_nudge_secs.unwrap_or(0),
-                        done_confirmations,
-                        state,
-                    );
-                    (!matches!(progress, crate::watchdog::WaitProgress::None)).then_some(progress)
-                }),
+                wait_progress: wait_reading
+                    .map(|reading| reading.progress)
+                    .filter(|progress| !matches!(progress, crate::watchdog::WaitProgress::None)),
                 // This agent's OWN contribution, from the two evidence classes:
                 // ALERT-DERIVED dead/stale/throttled, and SELF-DECLARED
                 // waiting-user/waiting-agent/blocked. A standing usage limit
@@ -1263,6 +1271,7 @@ fn agent_entries(
                                 state,
                                 age_secs,
                                 idle_nudge_secs,
+                                wait_rung,
                                 declared_current && !elsewhere,
                             )
                         });
@@ -1311,7 +1320,9 @@ fn agent_entries(
                             .cloned(),
                         overdue: elsewhere
                             && declared_age_secs.zip(idle_nudge_secs).is_some_and(
-                                |(age_secs, cadence)| waiting_agent_escalated(age_secs, cadence),
+                                |(age_secs, cadence)| {
+                                    waiting_agent_escalated_at(age_secs, cadence, wait_rung)
+                                },
                             ),
                         missing: false,
                         moved,
@@ -1473,7 +1484,7 @@ pub(crate) fn anomalies_degrade(anomalies: &[Anomaly]) -> bool {
 /// The attention reason a DECLARED work state contributes, if any.
 ///
 /// `waiting-agent` is the quiet fifth state: fresh it claims nobody, and past
-/// [`waiting_agent_escalated`]'s ceiling it becomes exactly `blocked` (R4) —
+/// [`waiting_agent_escalated_at`]'s ceiling it becomes exactly `blocked` (R4) —
 /// the SAME reason a declared `blocked` yields, and the same ceiling the
 /// watchdog uses to resume its nudge.
 ///
@@ -1490,13 +1501,14 @@ fn declared_reason(
     state: &str,
     age_secs: u64,
     cadence: Option<u64>,
+    rung: u8,
     is_current: bool,
 ) -> Option<Reason> {
     match state {
         "waiting-user" => Some(Reason::WaitingUser),
         "blocked" => Some(Reason::Blocked),
         "waiting-agent" => (is_current
-            && cadence.is_some_and(|cadence| waiting_agent_escalated(age_secs, cadence)))
+            && cadence.is_some_and(|cadence| waiting_agent_escalated_at(age_secs, cadence, rung)))
         .then_some(Reason::Blocked),
         _ => None,
     }

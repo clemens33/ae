@@ -21,10 +21,10 @@ use crate::tracked::{self, EventFields};
 use crate::transport;
 use crate::watchdog::{
     DoneProgress, NUDGE_GOAL_PREFIX, NUDGE_IDLE_PREFIX, NUDGE_SENTENCE, NUDGE_TAIL,
-    NUDGE_WAITING_CLOSE, NUDGE_WAITING_OPEN, QuietKind, SweepAlert, SweepEffect, SweepKnobs,
-    SweepObservation, SweepState, SweepVerdict, Throttle, WaitProgress, WaitState, classify_dead,
-    declaration_key, is_sweep_target, latest_relevant_event, quiet_hash, quiet_reason,
-    record_sweep, stale_composite, sweep_step, throttle_class,
+    NUDGE_WAIT_OPEN, NUDGE_WAITING_CLOSE, NUDGE_WAITING_OPEN, QuietKind, SweepAlert, SweepEffect,
+    SweepKnobs, SweepObservation, SweepState, SweepVerdict, Throttle, WaitProgress, WaitState,
+    classify_dead, declaration_key, is_sweep_target, latest_relevant_event, quiet_hash,
+    quiet_reason, record_sweep, stale_composite, sweep_step, throttle_class,
 };
 
 /// The event actor every watchdog emission carries.
@@ -539,6 +539,9 @@ pub struct Observation {
     /// Wait episode verdict for the seat's CURRENT wait declaration; `None`
     /// for every other state, including a pane-yielded wait.
     pub wait_progress: WaitProgress,
+    /// The wait episode's backoff rung ([`crate::watchdog::WaitReading`]):
+    /// it sets the `waiting-agent` ceiling; 0 for every other state.
+    pub wait_rung: u8,
     /// The seat's typed wait chain ends in another session
     /// ([`crate::wait_on::ends_elsewhere`]): its ceiling does not escalate.
     pub wait_ends_elsewhere: bool,
@@ -565,9 +568,13 @@ pub struct Observation {
     pub start: Option<String>,
     /// Age of the newest event this agent is the ACTOR of.
     pub last_actor_event_age_secs: u64,
-    /// Age of this seat's newest declaration: what a `waiting-agent` ceiling
-    /// measures, the same age `ae list` reads.
+    /// AWAKE age of this seat's newest declaration
+    /// ([`declaration_age`]): what a `waiting-agent` ceiling measures,
+    /// the same age `ae list` reads.
     pub declared_age_secs: u64,
+    /// The journal's host suspensions (I15): slept seconds the idle clock and
+    /// the limit-versus-declaration tie do not count.
+    pub suspended: crate::watchdog::Suspensions,
     /// The orchestrator sweep reading, `Some` ONLY for the orchestrator main
     /// agent with the cadence enabled.
     pub sweep: Option<SweepObservation>,
@@ -1877,45 +1884,52 @@ pub fn done_challenge_text(
     )
 }
 
-/// Proof challenge for a `waiting-agent`/`blocked` declaration, in the nudge's
-/// envelope shape so the footprint filter strips it. `escalated` names the read;
-/// the proof owed stays the RAW state, re-declared.
+/// One wait challenge's facts: what [`wait_challenge_text`] says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WaitCheck<'a> {
+    /// The wait's age in awake seconds.
+    pub age: u64,
+    /// Confirmations already credited in this episode.
+    pub confirmations: u8,
+    /// Confirmations an episode asks for.
+    pub required: u8,
+    /// The RAW declared state the proof re-declares.
+    pub state: WaitState,
+    /// Whether the wait reads past its ceiling this cycle.
+    pub escalated: bool,
+    /// The `--on` target the declaration names, if any.
+    pub target: Option<&'a str>,
+}
+
+/// Proof challenge for a `waiting-agent`/`blocked` declaration (I14): one
+/// line naming the raw state, its target, its age and the confirmation, then
+/// the proof owed and the invitation. It opens with
+/// [`crate::watchdog::NUDGE_WAIT_OPEN`] where a nudge has its sentence, so the
+/// footprint filter strips it. `goal` is passed only when the seat has not
+/// seen it ([`crate::watchdog::wait_goal_owed`]).
 #[must_use]
-pub fn wait_challenge_text(
-    goal: Option<&str>,
-    meta_dir: &Path,
-    age: u64,
-    confirmations: u8,
-    required: u8,
-    state: WaitState,
-    escalated: bool,
-) -> String {
+pub fn wait_challenge_text(goal: Option<&str>, meta_dir: &Path, check: &WaitCheck<'_>) -> String {
     let prefix = goal_prefix(goal);
-    let minutes = age / 60;
-    let (declared, proof, resolved) = match state {
-        WaitState::WaitingAgent => (
-            "Waiting-agent",
-            "name the agent, the result, your last chase",
-            "Unblocked",
-        ),
-        WaitState::Blocked => (
-            "Blocked",
-            "name the blocker, its owner, your last check and when",
-            "Blocker gone",
-        ),
+    let minutes = check.age / 60;
+    let state = check.state.as_str();
+    let declared = match (check.state, check.target) {
+        (WaitState::WaitingAgent, Some(target)) => format!("{state} on {target}"),
+        _ => state.to_owned(),
     };
-    let ceiling = if escalated {
-        " Now reads blocked: past the waiting ceiling."
+    let proof = match check.state {
+        WaitState::WaitingAgent => "with result and last chase",
+        WaitState::Blocked => "naming blocker, owner and last check",
+    };
+    let ceiling = if check.escalated {
+        " Reads blocked: past the ceiling."
     } else {
         ""
     };
     format!(
-        "{prefix}{NUDGE_SENTENCE} {declared} \
-         was declared {minutes}m ago; confirmation {} of {required}.{ceiling} Prove the wait still \
-         holds: {proof}. {resolved}: declare working and finish assigned work NOW. Else \
-         re-declare {} with current reason and proof. Declare state: {}{NUDGE_TAIL}",
-        confirmations.saturating_add(1),
-        state.as_str(),
+        "{prefix}{NUDGE_WAIT_OPEN}{declared}, {minutes}m, {}/{}.{ceiling} Still true? Re-declare \
+         {proof}; else declare working. Declare state: {}{NUDGE_TAIL}",
+        check.confirmations.saturating_add(1),
+        check.required,
         meta_dir.display()
     )
 }
@@ -2384,7 +2398,11 @@ fn book_target_moved(
 fn waiting_agent_escalates(seen: &Observation, knobs: &Knobs) -> bool {
     seen.quiet == Some(QuietKind::WaitingAgent)
         && !seen.wait_ends_elsewhere
-        && crate::watchdog::waiting_agent_escalated(seen.declared_age_secs, knobs.idle_nudge_secs)
+        && crate::watchdog::waiting_agent_escalated_at(
+            seen.declared_age_secs,
+            knobs.idle_nudge_secs,
+            seen.wait_rung,
+        )
 }
 
 /// The orchestrator main's sweep branch, or `None` when this pane is not it.
@@ -2754,7 +2772,9 @@ fn account_ordinary(
         // was already showing when the seat declared stays under it. A tie
         // goes to the human.
         if limited(prior, seen)
-            && age_secs(seen.now_epoch, prior.limit_since.unwrap_or(seen.now_epoch))
+            && seen
+                .suspended
+                .awake_secs(prior.limit_since.unwrap_or(seen.now_epoch), seen.now_epoch)
                 <= seen.declared_age_secs
         {
             book_limit(&mut next, &mut effects, seen);
@@ -2902,7 +2922,8 @@ fn account_harness(
         HarnessState::Idle => {
             next.prev_hash = Some(seen.hash);
             let idle_since = next.idle_since_epoch.get_or_insert(seen.now_epoch);
-            let idle_age = age_secs(seen.now_epoch, *idle_since);
+            // Awake seconds: a host suspension is not idle time (I15).
+            let idle_age = seen.suspended.awake_secs(*idle_since, seen.now_epoch);
             if seen.harness.durable_stale || next.nudge_count > knobs.max_nudges {
                 return Some(Verdict::Stale);
             }
@@ -3242,9 +3263,11 @@ pub fn last_actor_event_age(
         .map_or(NO_EVENT_AGE, |event| age_secs(now_epoch, event.ts.epoch()))
 }
 
-/// The age of this seat's newest declaration, or [`NO_EVENT_AGE`] when it has
-/// none — the declaration [`crate::session::latest_declaration_in`] finds for
-/// `ae list` too, so both surfaces escalate a wait on the same second.
+/// The AWAKE age of this seat's newest declaration — its wall age minus the
+/// journal's host suspensions ([`crate::watchdog::Suspensions`]) — or
+/// [`NO_EVENT_AGE`] when it has none: the declaration
+/// [`crate::session::latest_declaration_in`] finds for `ae list` too, so both
+/// surfaces escalate a wait on the same second.
 #[must_use]
 pub fn declaration_age(
     events: &[Event],
@@ -3254,7 +3277,9 @@ pub fn declaration_age(
     now_epoch: i64,
 ) -> u64 {
     crate::session::latest_declaration_in(events, session, slot, agent)
-        .map_or(NO_EVENT_AGE, |event| age_secs(now_epoch, event.ts.epoch()))
+        .map_or(NO_EVENT_AGE, |event| {
+            crate::watchdog::Suspensions::read(events).awake_secs(event.ts.epoch(), now_epoch)
+        })
 }
 
 /// The newest `state done` acknowledgement by `agent`, as a wall-clock value
@@ -5311,6 +5336,11 @@ struct Carry {
     wake: Option<String>,
     /// The publication the running cycle has decided and not yet sent.
     pending: PendingCycle,
+    /// The previous verdict cycle's two clock readings, for the suspension
+    /// detector ([`crate::watchdog::host_suspended`]). In memory on purpose:
+    /// the RECORD it writes is the durable fact; a restart only misses a
+    /// suspension it did not watch.
+    clock: Option<crate::watchdog::CycleClock>,
 }
 
 /// One verdict cycle's publication while the cycle is still deciding it: every
@@ -5371,6 +5401,7 @@ impl Carry {
             look: None,
             wake: None,
             pending: PendingCycle::default(),
+            clock: None,
         }
     }
 
@@ -7085,6 +7116,27 @@ impl Cycle<'_> {
                   cycle-wide quota request is the one addition past the line limit"
     )]
     fn run(&self, carry: &mut Carry, err: &mut impl Write) -> crate::Result<()> {
+        // FIRST, so this cycle's journal read already folds the record (I15).
+        let clock = crate::watchdog::CycleClock {
+            wall: Timestamp::now().epoch(),
+            mono: Instant::now(),
+        };
+        if let Some(found) = carry
+            .clock
+            .replace(clock)
+            .and_then(|prev| crate::watchdog::host_suspended(prev, clock, self.knobs.interval_secs))
+        {
+            Journal {
+                meta_dir: self.meta_dir,
+                session: self.session,
+            }
+            .record(
+                crate::watchdog::HOST_SUSPENDED_ACTION,
+                "",
+                &crate::watchdog::suspended_summary(found),
+                err,
+            )?;
+        }
         if !self.knobs.quota_aware {
             // Property: while unaware, nothing holds a quota observation. A
             // flip OFF drops whatever the aware phase held, every cycle, so
@@ -7105,6 +7157,7 @@ impl Cycle<'_> {
         let stat_table = procs::stat_snapshot();
         let table = procs::plain_table(stat_table.as_deref());
         let events = read_events(self.meta_dir);
+        let suspended = crate::watchdog::Suspensions::read(&events);
         let now = Timestamp::now().epoch();
         let overview = if self.meta_agent && self.knobs.sweep.enabled() {
             self.overview(now, err)
@@ -7238,10 +7291,18 @@ impl Cycle<'_> {
                 Some(QuietKind::Blocked) => Some(WaitState::Blocked),
                 _ => None,
             };
-            let (wait_progress, wait_proof) = wait_state.map_or(
-                (WaitProgress::None, crate::watchdog::ProofQuiet::default()),
+            let crate::watchdog::WaitReading {
+                progress: wait_progress,
+                quiet: wait_proof,
+                rung: wait_rung,
+            } = wait_state.map_or(
+                crate::watchdog::WaitReading {
+                    progress: WaitProgress::None,
+                    quiet: crate::watchdog::ProofQuiet::default(),
+                    rung: 0,
+                },
                 |state| {
-                    crate::watchdog::wait_progress_proof(
+                    crate::watchdog::wait_reading(
                         &events,
                         self.session,
                         &slot,
@@ -7318,6 +7379,7 @@ impl Cycle<'_> {
                 ended_wait: resolved.ended,
                 done_progress,
                 wait_progress,
+                wait_rung,
                 wait_ends_elsewhere: crate::wait_on::ends_elsewhere(&wait_links, agent),
                 target_moved: wait_facts
                     .iter()
@@ -7342,6 +7404,7 @@ impl Cycle<'_> {
                     now,
                 ),
                 declared_age_secs: declaration_age(&events, self.session, &slot, agent, now),
+                suspended: suspended.clone(),
                 // Decided HERE, once, and the type carries the answer: a pane
                 // that is not the orchestrator main gets `None` and no sweep
                 // branch can reach it.
@@ -8297,14 +8360,28 @@ impl Cycle<'_> {
                 state,
                 escalated,
             } => {
+                let launch = launch_id_for(&self.launch_ids, on.slot);
+                let owed = crate::watchdog::wait_goal_owed(
+                    on.events,
+                    self.session,
+                    on.slot,
+                    agent,
+                    launch,
+                );
+                let target =
+                    crate::session::declaration_of(on.events, self.session, on.slot, agent)
+                        .and_then(|(declared, _)| declared.wait_on.as_deref());
                 let text = wait_challenge_text(
-                    self.goal.as_deref(),
+                    self.goal.as_deref().filter(|_| owed),
                     self.meta_dir,
-                    *wait_age_secs,
-                    *confirmations,
-                    *required,
-                    *state,
-                    *escalated,
+                    &WaitCheck {
+                        age: *wait_age_secs,
+                        confirmations: *confirmations,
+                        required: *required,
+                        state: *state,
+                        escalated: *escalated,
+                        target,
+                    },
                 );
                 let num = confirmations.saturating_add(1);
                 let summary = crate::watchdog::challenge_summary(
@@ -8312,7 +8389,6 @@ impl Cycle<'_> {
                     num,
                     *required,
                 );
-                let launch = launch_id_for(&self.launch_ids, on.slot);
                 let code = self
                     .deliver(agent, &text, "wait-challenge", &summary, launch)
                     .code;
@@ -9638,6 +9714,9 @@ mod activity225_spec;
 #[path = "watchdog_daemon/leadfloor2_notice_spec.rs"]
 mod leadfloor2_notice_spec;
 #[cfg(test)]
+#[path = "watchdog_daemon/protowd_spec.rs"]
+mod protowd_spec;
+#[cfg(test)]
 mod quietwd_spec;
 
 #[cfg(test)]
@@ -10096,6 +10175,7 @@ mod tests {
             ended_wait: None,
             done_progress: DoneProgress::None,
             wait_progress: WaitProgress::None,
+            wait_rung: 0,
             wait_ends_elsewhere: false,
             target_moved: None,
             descendancy: Descendancy::Present,
@@ -10107,6 +10187,7 @@ mod tests {
             start: None,
             last_actor_event_age_secs: 0,
             declared_age_secs: 0,
+            suspended: crate::watchdog::Suspensions::default(),
             sweep: None,
             own_work: crate::session::OwnWork::default(),
             auto_in_flight: None,
@@ -18485,24 +18566,42 @@ mod tests {
         );
     }
 
+    /// A [`super::WaitCheck`] with two required confirmations.
+    const fn wait_check(
+        age: u64,
+        confirmations: u8,
+        state: WaitState,
+        escalated: bool,
+        target: Option<&'static str>,
+    ) -> super::WaitCheck<'static> {
+        super::WaitCheck {
+            age,
+            confirmations,
+            required: 2,
+            state,
+            escalated,
+            target,
+        }
+    }
+
     #[test]
     fn the_wait_challenge_names_the_raw_state_as_an_order() {
         let meta = Path::new("/home/x/.ae/sessions/demo");
         assert_eq!(
-            wait_challenge_text(None, meta, 300, 0, 2, WaitState::Blocked, false),
-            "Continue working; do not re-plan or ask unless blocked. Blocked was declared 5m ago; confirmation 1 of 2. Prove the wait still holds: name the blocker, its owner, your last check and when. Blocker gone: declare working and finish assigned work NOW. Else re-declare blocked with current reason and proof. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+            wait_challenge_text(
+                None,
+                meta,
+                &wait_check(300, 0, WaitState::Blocked, false, None)
+            ),
+            "Wait check: blocked, 5m, 1/2. Still true? Re-declare naming blocker, owner and last check; else declare working. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
         assert_eq!(
             wait_challenge_text(
                 Some("ship P4.1"),
                 meta,
-                600,
-                1,
-                2,
-                WaitState::WaitingAgent,
-                true
+                &wait_check(600, 1, WaitState::WaitingAgent, true, Some("lead")),
             ),
-            "Session goal: ship P4.1. Continue working; do not re-plan or ask unless blocked. Waiting-agent was declared 10m ago; confirmation 2 of 2. Now reads blocked: past the waiting ceiling. Prove the wait still holds: name the agent, the result, your last chase. Unblocked: declare working and finish assigned work NOW. Else re-declare waiting-agent with current reason and proof. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
+            "Session goal: ship P4.1. Wait check: waiting-agent on lead, 10m, 2/2. Reads blocked: past the ceiling. Still true? Re-declare with result and last chase; else declare working. Declare state: /home/x/.ae/sessions/demo/state <waiting-user|waiting-agent|blocked|done> \"<reason>\""
         );
     }
 
@@ -18808,18 +18907,18 @@ mod tests {
             ),
             (
                 "wait-challenge",
-                wait_challenge_text(None, meta, 300, 0, 2, WaitState::Blocked, false),
+                wait_challenge_text(
+                    None,
+                    meta,
+                    &wait_check(300, 0, WaitState::Blocked, false, None),
+                ),
             ),
             (
                 "wait-challenge-escalated",
                 wait_challenge_text(
                     Some("ship P4.1"),
                     meta,
-                    600,
-                    1,
-                    2,
-                    WaitState::WaitingAgent,
-                    true,
+                    &wait_check(600, 1, WaitState::WaitingAgent, true, Some("lead")),
                 ),
             ),
         ] {
