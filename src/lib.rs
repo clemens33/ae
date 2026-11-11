@@ -2426,6 +2426,15 @@ fn run_state(
     ) {
         Ok(line) => {
             out.write_all(line.as_bytes())?;
+            // A wait on a seat this session does not hold is a likely typo,
+            // not an error: said once, after the record stands.
+            let warning = declaration.on.as_ref().and_then(|_| {
+                let meta = session::read_meta(dir).ok()?;
+                state::unknown_wait_target_warning(&declaration, &own_session(dir), &meta)
+            });
+            if let Some(warning) = warning {
+                writeln!(err, "{warning}")?;
+            }
             Ok(0)
         }
         Err(failure) => {

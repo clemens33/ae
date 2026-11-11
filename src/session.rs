@@ -1039,7 +1039,7 @@ fn meta_member_complete(meta: &Meta, key: &str, value_present: bool) -> bool {
 }
 
 /// Whether meta established the complete agent population.
-fn roster_complete(meta: &Meta) -> bool {
+pub(crate) fn roster_complete(meta: &Meta) -> bool {
     !meta.anomalies().iter().any(|anomaly| match anomaly {
         Anomaly::MalformedLine { .. }
         | Anomaly::MalformedRosterEntry { .. }

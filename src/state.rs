@@ -73,6 +73,41 @@ pub struct Declaration {
     pub on: Option<String>,
 }
 
+/// The stderr line for a `--on` that names a seat of THIS session which the
+/// session's complete roster does not hold, or `None` when the target is held,
+/// names another session, or the roster is not complete enough to prove it
+/// absent. A warning, never a refusal: the declaration is recorded either way.
+#[must_use]
+pub fn unknown_wait_target_warning(
+    declaration: &Declaration,
+    session: &str,
+    meta: &crate::meta::Meta,
+) -> Option<String> {
+    let raw = declaration.on.as_deref()?;
+    let target = crate::wait_on::Target::parse(raw, session)?;
+    let seats: Option<Vec<String>> = crate::session::roster_complete(meta)
+        .then(|| meta.roster().iter().map(|seat| seat.name.clone()).collect());
+    // Only THIS session's roster is read: another session's seats and a whole
+    // session are not this write's to judge, and no session inventory is held.
+    target
+        .missing(
+            |which| {
+                if which.is_none() {
+                    seats.as_deref()
+                } else {
+                    None
+                }
+            },
+            None,
+        )
+        .then(|| {
+            format!(
+                "ae: warning: --on {raw}: session {session} has no seat of that name. \
+                 The wait is recorded anyway; check the name with `agents`."
+            )
+        })
+}
+
 /// Why argv was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Usage {
@@ -531,6 +566,62 @@ mod tests {
             display: "cl:helper".to_owned(),
             session_id: String::new(),
         }
+    }
+
+    fn waiting_on(target: &str) -> Declaration {
+        Declaration {
+            value: "waiting-agent".to_owned(),
+            reason: "waiting on the named seat for its review verdict, then I merge".to_owned(),
+            on: Some(target.to_owned()),
+        }
+    }
+
+    const ROSTER: &str = "schema=2\nmode=local\nsession=mac\nseat.main=lead\nprofile.main=p\n\
+                          seat.worker.0=colead\nprofile.worker.0=p\n\
+                          seat.spawned.0=scout\nprofile.spawned.0=p\n";
+
+    #[test]
+    fn a_wait_on_a_seat_this_session_does_not_hold_is_warned_about() {
+        use super::unknown_wait_target_warning as warn;
+        let meta = crate::meta::Meta::parse(ROSTER);
+        // Held: a launch seat, a spawned seat, and the qualified spelling of one.
+        for held in ["lead", "colead", "scout", "mac:scout"] {
+            assert_eq!(warn(&waiting_on(held), "mac", &meta), None, "{held}");
+        }
+        // Not held, bare or qualified with THIS session's name.
+        for ghost in ["ghost", "mac:ghost"] {
+            let line = warn(&waiting_on(ghost), "mac", &meta)
+                .unwrap_or_else(|| panic!("{ghost} is not a seat of mac"));
+            assert!(line.starts_with("ae: warning: --on "), "{line}");
+            assert!(line.contains(ghost), "names the target as typed: {line}");
+            assert!(line.contains("session mac"), "names the session: {line}");
+            assert!(line.contains("recorded anyway"), "never a refusal: {line}");
+            assert!(!line.contains('\n'), "one line: {line:?}");
+        }
+        // What this session cannot judge: another session's seat, a whole
+        // session, and a declaration with no target at all.
+        for elsewhere in ["other:ghost", "@other", "@mac"] {
+            assert_eq!(
+                warn(&waiting_on(elsewhere), "mac", &meta),
+                None,
+                "{elsewhere}"
+            );
+        }
+        let untyped = Declaration {
+            on: None,
+            ..waiting_on("x")
+        };
+        assert_eq!(warn(&untyped, "mac", &meta), None);
+    }
+
+    #[test]
+    fn a_roster_that_is_not_proven_complete_never_earns_a_warning() {
+        use super::unknown_wait_target_warning as warn;
+        // A line the meta reader could not attribute may have been a seat.
+        let damaged = crate::meta::Meta::parse(&format!("{ROSTER}a line with no equals sign\n"));
+        assert_eq!(warn(&waiting_on("ghost"), "mac", &damaged), None);
+        let legacy = crate::meta::Meta::parse("schema=1\nagent.0=old\n");
+        assert_eq!(warn(&waiting_on("ghost"), "mac", &legacy), None);
     }
 
     #[test]

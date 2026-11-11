@@ -1670,6 +1670,50 @@ fn a_retire_takes_an_optional_reason_and_journals_it() {
     );
 }
 
+/// `state waiting-agent --on <seat>` against a real session roster: a seat the
+/// session holds is recorded without a word, and one it does not hold is
+/// recorded all the same, with one warning on stderr naming it.
+#[test]
+fn a_wait_on_an_unknown_seat_warns_on_stderr_and_still_records() {
+    let present = tmux_present(&super::cli::OwnedScratch::root("sp", "probe-waitwarn"));
+    if !present {
+        return;
+    }
+    let rig = Rig::new("waitwarn");
+    let (code, _, stderr) = rig.run(ae::cli::SPAWN, &["scout", "--using", "fake", "--", "hi"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    let why = |name: &str| {
+        format!(
+            "waiting for {name} to answer the review request before I merge; \
+             evidence and next step: .local/review.md"
+        )
+    };
+
+    let (code, stdout, stderr) = rig.run(
+        ae::cli::STATE,
+        &["waiting-agent", "--on", "scout", &why("scout")],
+    );
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(stderr, "", "a seat the session holds is not warned about");
+
+    let (code, stdout, stderr) = rig.run(
+        ae::cli::STATE,
+        &["waiting-agent", "--on", "ghost", &why("ghost")],
+    );
+    assert_eq!(code, Some(0), "an unknown target never refuses: {stderr}");
+    assert!(stdout.starts_with("Marked "), "{stdout}");
+    assert!(
+        stderr.starts_with("ae: warning: --on ghost"),
+        "one warning naming the target: {stderr}"
+    );
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    let events = rig.events();
+    assert!(
+        events.contains("\"wait_on\":\"ghost\""),
+        "the declaration was recorded anyway: {events}"
+    );
+}
+
 /// The RETIRE half of the retire rule, against the writer that really records
 /// one: the seat is spawned and retired for real, and the record it leaves is
 /// what closes the request.

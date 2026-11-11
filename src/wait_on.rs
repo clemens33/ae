@@ -3,7 +3,9 @@
 //! one that reads what a followed seat did since the wait began ([`moved`]).
 //!
 //! PURE. The target is checked against the existing name grammars and
-//! nothing else: ae never asks whether it exists here, never infers one from
+//! nothing else: this module never asks whether it exists (the `state` write
+//! path warns about a same-session seat the roster lacks, through
+//! [`Target::missing`]), never infers one from
 //! reason prose. A same-session edge is followed to its end; an edge that
 //! leaves the session ends the chain there, which is the one answer both the
 //! ceiling exemption and the drawn words read.
