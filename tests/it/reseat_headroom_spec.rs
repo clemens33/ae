@@ -16,6 +16,7 @@ use ae::events::Event;
 use ae::time::Timestamp;
 
 use super::seat_relaunch::Rig;
+use super::watchdog_step::Stepper;
 
 // Quota checkpoint delivery can defer 30 seconds twice before the same
 // watchdog reaches its pane/action phase. Keep barriers bounded above that.
@@ -196,6 +197,32 @@ fn auto_records(rig: &Rig) -> Vec<Event> {
 }
 
 pub(super) fn watch(rig: &Rig) -> super::cli::OwnedChild {
+    spawn_watchdog(rig, &[])
+}
+
+/// A stepped watchdog and its stepper. The daemon goes first on drop, then the
+/// stepper's signal releases the step wait the killed daemon left behind.
+struct Watch {
+    _daemon: super::cli::OwnedChild,
+    stepper: Stepper,
+}
+
+/// [`watch`] that runs its startup cycle, then one cycle per step; a fresh
+/// step channel per start, so a restart never reads an old done.
+fn watch_stepped(rig: &Rig) -> Watch {
+    static STARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let start = STARTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let channel = format!("hr-step-{start}");
+    let daemon = spawn_watchdog(rig, &["--step-channel", &channel]);
+    let mut stepper = Stepper::new(&rig.sock, &channel);
+    stepper.ready();
+    Watch {
+        _daemon: daemon,
+        stepper,
+    }
+}
+
+fn spawn_watchdog(rig: &Rig, step: &[&str]) -> super::cli::OwnedChild {
     let trace = rig.scratch.join("headroom-quota-trace");
     std::fs::write(&trace, "").expect("fresh per-spawn observation barrier");
     let send = rig.dir.join("send");
@@ -212,6 +239,7 @@ pub(super) fn watch(rig: &Rig) -> super::cli::OwnedChild {
         .arg(&rig.dir)
         .args(["--interval", "1", "--stale-secs", "999999"])
         .args(["--tg-supervise-secs", "0", "--quota-every-secs", "1"])
+        .args(step)
         .env("HOME", rig.scratch.join("home"))
         .env("AE_HOME", &rig.scratch)
         .env("CONFIG_FILE", rig.scratch.join("config"))
@@ -235,6 +263,18 @@ fn until(rig: &Rig, condition: impl Fn() -> bool) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    timed_out(rig);
+}
+
+/// Step `watch` until `condition` holds, inside the same real-time bound.
+/// Detached legs keep their real time while the cycles continue.
+fn until_stepped(rig: &Rig, watch: &mut Watch, condition: impl Fn() -> bool) {
+    if watch.stepper.step_until(condition).is_none() {
+        timed_out(rig);
+    }
+}
+
+fn timed_out(rig: &Rig) -> ! {
     panic!(
         "headroom contract timed out: {}\n{}",
         rig.events(),
@@ -242,18 +282,26 @@ fn until(rig: &Rig, condition: impl Fn() -> bool) {
     );
 }
 
+/// The count of completed quota observations in this daemon start's trace.
+fn observed(rig: &Rig) -> usize {
+    std::fs::read_to_string(rig.scratch.join("headroom-quota-trace"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.starts_with("observed "))
+        .count()
+}
+
 /// Await two more completed observations from THIS daemon start, so absence
 /// assertions cannot outrun its following seat/action phase.
 pub(super) fn sweeps(rig: &Rig) {
-    let observed = || {
-        std::fs::read_to_string(rig.scratch.join("headroom-quota-trace"))
-            .unwrap_or_default()
-            .lines()
-            .filter(|line| line.starts_with("observed "))
-            .count()
-    };
-    let before = observed();
-    until(rig, || observed() >= before + 2);
+    let before = observed(rig);
+    until(rig, || observed(rig) >= before + 2);
+}
+
+/// [`sweeps`] on a stepped watchdog: the same two observations, stepped.
+fn sweeps_stepped(rig: &Rig, watch: &mut Watch) {
+    let before = observed(rig);
+    until_stepped(rig, watch, || observed(rig) >= before + 2);
 }
 
 fn unchanged(rig: &Rig, pane: &str, profile: &str, pid: Option<u32>) {
@@ -335,8 +383,8 @@ fn effective_manual_resets_govern_both_the_source_and_the_candidate() {
         manual_reset(&rig, "home-a");
         let pane = seat(&rig, "claude-a");
         let pid = rig.tool_pid(&pane, "claude");
-        let _watch = watch(&rig);
-        sweeps(&rig);
+        let mut daemon = watch_stepped(&rig);
+        sweeps_stepped(&rig, &mut daemon);
         unchanged(&rig, &pane, "fake-claude-a", pid);
         assert!(
             auto_records(&rig).is_empty(),
@@ -350,8 +398,8 @@ fn effective_manual_resets_govern_both_the_source_and_the_candidate() {
         quota(&rig, "home-b", &[("weekly_all", 96.0)], 0);
         manual_reset(&rig, "home-b");
         let _pane = seat(&rig, "claude-a");
-        let _watch = watch(&rig);
-        until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+        let mut daemon = watch_stepped(&rig);
+        until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
         assert_eq!(
             rig.meta_row("profile.spawned.0"),
             "fake-claude-b",
@@ -373,9 +421,9 @@ fn headroom_skip_does_not_change_a_limit_move_onto_the_same_96_percent_candidate
         if limited {
             rig.mark_limited(&pane);
         }
-        let _watch = watch(&rig);
+        let mut daemon = watch_stepped(&rig);
         if limited {
-            until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+            until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
             assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude-b");
             assert!(
                 !booked(&rig, ATTEMPT_ACTION)[0]
@@ -386,7 +434,9 @@ fn headroom_skip_does_not_change_a_limit_move_onto_the_same_96_percent_candidate
                 "limit spelling preserved"
             );
         } else {
-            until(&rig, || booked(&rig, REFUSED_ACTION).len() == 1);
+            until_stepped(&rig, &mut daemon, || {
+                booked(&rig, REFUSED_ACTION).len() == 1
+            });
             assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude-a");
             assert!(booked(&rig, DONE_ACTION).is_empty());
         }
@@ -400,9 +450,9 @@ fn threshold_off_disables_headroom_but_preserves_the_vendor_limit_path() {
     quota(&rig, "home", &[("weekly_all", 99.0)], 0);
     let pane = seat(&rig, "claude");
     rig.mark_limited(&pane);
-    let _watch = watch(&rig);
-    until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
-    sweeps(&rig);
+    let mut daemon = watch_stepped(&rig);
+    until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
+    sweeps_stepped(&rig, &mut daemon);
     assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
     let attempts = booked(&rig, ATTEMPT_ACTION);
     assert_eq!(attempts.len(), 1);
@@ -464,15 +514,15 @@ fn a_vendor_limit_during_a_headroom_hold_moves_once_across_both_episode_kinds() 
     quota(&rig, "home", &[("weekly_all", 95.0)], 0);
     let pane = seat(&rig, "claude");
     rig.mark_busy(&pane);
-    let _watch = watch(&rig);
-    until(&rig, || booked(&rig, HELD_ACTION).len() == 1);
+    let mut daemon = watch_stepped(&rig);
+    until_stepped(&rig, &mut daemon, || booked(&rig, HELD_ACTION).len() == 1);
     assert!(booked(&rig, ATTEMPT_ACTION).is_empty());
     // Install the vendor refusal before removing BUSY. There is no idle gap
     // where the headroom episode could start its own attempt.
     std::fs::write(rig.scratch.join("__LIMIT__"), "").expect("vendor refusal");
     std::fs::remove_file(rig.scratch.join("__BUSY__")).expect("vendor stopped the fixture turn");
-    until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
-    sweeps(&rig);
+    until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
+    sweeps_stepped(&rig, &mut daemon);
     assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
     assert_eq!(
         booked(&rig, ATTEMPT_ACTION).len(),
@@ -606,9 +656,9 @@ fn reseat_shared_refused_limit_also_closes_the_open_headroom_episode() {
     assert_eq!(booked(&rig, REFUSED_ACTION).len(), 1);
     assert!(booked(&rig, ATTEMPT_ACTION).is_empty());
     rig.unmark_limited(&pane);
-    let _watch = watch(&rig);
-    sweeps(&rig);
-    sweeps(&rig);
+    let mut daemon = watch_stepped(&rig);
+    sweeps_stepped(&rig, &mut daemon);
+    sweeps_stepped(&rig, &mut daemon);
     assert_eq!(booked(&rig, REFUSED_ACTION).len(), 1, "one shared terminal");
     assert_eq!(booked(&rig, "auto-reseat-headroom").len(), 1);
     assert!(booked(&rig, ATTEMPT_ACTION).is_empty());
@@ -623,8 +673,8 @@ fn same_tool_headroom_move_carries_the_original_conversation() {
     quota(&rig, "home-b", &[("weekly_all", 20.0)], 0);
     let pane = seat(&rig, "claude-a");
     let (id, relative) = plant_conversation(&rig);
-    let _watch = watch(&rig);
-    until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+    let mut daemon = watch_stepped(&rig);
+    until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
     assert!(rig.tool_pid(&pane, "claude").is_some());
     assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude-b");
     assert!(
@@ -662,12 +712,16 @@ fn headroom_grace_starts_at_the_first_crossing_record() {
     quota(&rig, "home", &[("weekly_all", 95.0)], 0);
     let pane = seat(&rig, "claude");
     let pid = rig.tool_pid(&pane, "claude");
-    let _watch = watch(&rig);
-    until(&rig, || !auto_records(&rig).is_empty());
+    let mut daemon = watch_stepped(&rig);
+    until_stepped(&rig, &mut daemon, || !auto_records(&rig).is_empty());
     let opened = auto_records(&rig)[0].ts;
-    std::thread::sleep(Duration::from_secs(2));
+    // Two real seconds inside the six-second grace, cycling back to back.
+    let through = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < through {
+        daemon.stepper.step();
+    }
     unchanged(&rig, &pane, "fake-claude", pid);
-    until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+    until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
     let attempt = &booked(&rig, ATTEMPT_ACTION)[0];
     assert!(attempt.ts.epoch() >= opened.epoch() + 6, "grace honoured");
     assert_eq!(
@@ -744,9 +798,9 @@ fn only_a_weekly_crossing_moves_an_idle_seat_before_a_limit() {
         quota(&rig, "home", &windows, 0);
         let pane = seat(&rig, "claude");
         let pid = rig.tool_pid(&pane, "claude");
-        let _watch = watch(&rig);
+        let mut daemon = watch_stepped(&rig);
         if !moves {
-            sweeps(&rig);
+            sweeps_stepped(&rig, &mut daemon);
             assert!(
                 auto_records(&rig).is_empty(),
                 "a short crossing opens no episode: {}",
@@ -755,7 +809,7 @@ fn only_a_weekly_crossing_moves_an_idle_seat_before_a_limit() {
             unchanged(&rig, &pane, "fake-claude", pid);
             continue;
         }
-        until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+        until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
         assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
         assert!(rig.tool_pid(&pane, "opencode").is_some(), "moved in place");
         assert!(
@@ -824,9 +878,9 @@ fn configurable_crossing_is_inclusive_and_absence_defaults_to_95() {
         quota(&rig, "home", &[("weekly_all", percent)], 0);
         let pane = seat(&rig, "claude");
         let pid = rig.tool_pid(&pane, "claude");
-        let _watch = watch(&rig);
+        let mut daemon = watch_stepped(&rig);
         if moves {
-            until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+            until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
             if tag == "hrbad" {
                 let notes: Vec<_> = auto_records(&rig)
                     .into_iter()
@@ -846,7 +900,7 @@ fn configurable_crossing_is_inclusive_and_absence_defaults_to_95() {
                 assert_eq!(notes[0].action, "auto-reseat-notice");
             }
         } else {
-            sweeps(&rig);
+            sweeps_stepped(&rig, &mut daemon);
             unchanged(&rig, &pane, "fake-claude", pid);
             assert!(
                 auto_records(&rig).is_empty(),
@@ -865,8 +919,8 @@ fn a_high_unrelated_account_does_not_move_a_seat_on_its_own_low_scope() {
     quota(&rig, "home-a", &[("weekly_all", 10.0)], 0);
     let pane = seat(&rig, "claude-a");
     let pid = rig.tool_pid(&pane, "claude");
-    let _watch = watch(&rig);
-    sweeps(&rig);
+    let mut daemon = watch_stepped(&rig);
+    sweeps_stepped(&rig, &mut daemon);
     unchanged(&rig, &pane, "fake-claude-a", pid);
     assert!(
         auto_records(&rig).is_empty(),
@@ -885,11 +939,11 @@ fn stale_numbers_still_bind_but_a_passed_reset_does_not() {
         quota_reset(&rig, "home", &[("weekly_all", 99.0)], age, reset_in);
         let pane = seat(&rig, "claude");
         let pid = rig.tool_pid(&pane, "claude");
-        let _watch = watch(&rig);
+        let mut daemon = watch_stepped(&rig);
         if moves {
-            until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+            until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
         } else {
-            sweeps(&rig);
+            sweeps_stepped(&rig, &mut daemon);
             unchanged(&rig, &pane, "fake-claude", pid);
         }
     }
@@ -908,8 +962,8 @@ fn a_candidate_at_headroom_is_skipped_for_an_unknown_candidate_and_named() {
     quota(&rig, "home-a", &[("weekly_all", 95.0)], 0);
     quota(&rig, "home-b", &[("weekly_all", 96.0)], 900);
     let pane = seat(&rig, "claude");
-    let _watch = watch(&rig);
-    until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+    let mut daemon = watch_stepped(&rig);
+    until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
     assert_eq!(rig.meta_row("profile.spawned.0"), "fake-opencode");
     assert!(rig.tool_pid(&pane, "opencode").is_some());
     let summaries = auto_records(&rig)
@@ -943,13 +997,13 @@ fn busy_and_draft_holds_do_not_spend_attempts_and_move_after_idle() {
             rig.mark_busy(&pane);
         }
         let pid = rig.tool_pid(&pane, "claude");
-        let _watch = watch(&rig);
-        until(&rig, || booked(&rig, HELD_ACTION).len() == 1);
-        sweeps(&rig);
+        let mut daemon = watch_stepped(&rig);
+        until_stepped(&rig, &mut daemon, || booked(&rig, HELD_ACTION).len() == 1);
+        sweeps_stepped(&rig, &mut daemon);
         unchanged(&rig, &pane, "fake-claude", pid);
         assert_eq!(booked(&rig, HELD_ACTION).len(), 1, "one hold per episode");
         std::fs::remove_file(rig.scratch.join(marker)).expect("release fixture hold");
-        until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+        until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
         assert_eq!(booked(&rig, ATTEMPT_ACTION).len(), 1);
     }
 }
@@ -969,9 +1023,9 @@ fn a_readable_unknown_frame_holds_headroom_instead_of_stopping_the_tool() {
     .expect("unknown frame fixture");
     let pane = seat(&rig, "claude");
     let pid = rig.tool_pid(&pane, "claude");
-    let _watch = watch(&rig);
-    until(&rig, || booked(&rig, HELD_ACTION).len() == 1);
-    sweeps(&rig);
+    let mut daemon = watch_stepped(&rig);
+    until_stepped(&rig, &mut daemon, || booked(&rig, HELD_ACTION).len() == 1);
+    sweeps_stepped(&rig, &mut daemon);
     unchanged(&rig, &pane, "fake-claude", pid);
     assert_eq!(booked(&rig, HELD_ACTION).len(), 1);
 }
@@ -985,15 +1039,17 @@ fn no_candidate_refuses_once_and_jitter_survives_a_daemon_restart() {
     quota(&rig, "home-a", &[("weekly_all", 96.0)], 0);
     let _pane = seat(&rig, "claude");
     {
-        let _watch = watch(&rig);
-        until(&rig, || booked(&rig, REFUSED_ACTION).len() == 1);
-        sweeps(&rig);
+        let mut daemon = watch_stepped(&rig);
+        until_stepped(&rig, &mut daemon, || {
+            booked(&rig, REFUSED_ACTION).len() == 1
+        });
+        sweeps_stepped(&rig, &mut daemon);
         assert_eq!(booked(&rig, REFUSED_ACTION).len(), 1);
     }
     for percent in [94.9, 95.1] {
         quota(&rig, "home", &[("weekly_all", percent)], 0);
-        let _watch = watch(&rig);
-        sweeps(&rig);
+        let mut daemon = watch_stepped(&rig);
+        sweeps_stepped(&rig, &mut daemon);
         assert_eq!(
             booked(&rig, REFUSED_ACTION).len(),
             1,
@@ -1003,12 +1059,14 @@ fn no_candidate_refuses_once_and_jitter_survives_a_daemon_restart() {
     // Relief has to be strictly below threshold - 5 before a new crossing.
     quota(&rig, "home", &[("weekly_all", 89.9)], 0);
     {
-        let _watch = watch(&rig);
-        sweeps(&rig);
+        let mut daemon = watch_stepped(&rig);
+        sweeps_stepped(&rig, &mut daemon);
     }
     quota(&rig, "home", &[("weekly_all", 95.1)], 0);
-    let _watch = watch(&rig);
-    until(&rig, || booked(&rig, REFUSED_ACTION).len() == 2);
+    let mut daemon = watch_stepped(&rig);
+    until_stepped(&rig, &mut daemon, || {
+        booked(&rig, REFUSED_ACTION).len() == 2
+    });
 }
 
 #[test]
@@ -1019,14 +1077,14 @@ fn an_open_episode_keeps_its_first_crossing_key_until_strict_relief() {
     let pane = seat(&rig, "claude");
     rig.mark_busy(&pane);
     {
-        let _watch = watch(&rig);
-        until(&rig, || booked(&rig, HELD_ACTION).len() == 1);
+        let mut daemon = watch_stepped(&rig);
+        until_stepped(&rig, &mut daemon, || booked(&rig, HELD_ACTION).len() == 1);
     }
     let key = booked(&rig, HELD_ACTION)[0].reference.clone();
     quota(&rig, "home", &[("weekly_all", 90.0)], 0);
     {
-        let _watch = watch(&rig);
-        sweeps(&rig);
+        let mut daemon = watch_stepped(&rig);
+        sweeps_stepped(&rig, &mut daemon);
         assert_eq!(
             booked(&rig, HELD_ACTION).len(),
             1,
@@ -1036,17 +1094,17 @@ fn an_open_episode_keeps_its_first_crossing_key_until_strict_relief() {
     quota(&rig, "home", &[("weekly_all", 94.9)], 0);
     std::fs::remove_file(rig.scratch.join("__BUSY__")).expect("idle fixture");
     {
-        let _watch = watch(&rig);
-        sweeps(&rig);
-        sweeps(&rig);
+        let mut daemon = watch_stepped(&rig);
+        sweeps_stepped(&rig, &mut daemon);
+        sweeps_stepped(&rig, &mut daemon);
         assert!(
             booked(&rig, ATTEMPT_ACTION).is_empty() && booked(&rig, DONE_ACTION).is_empty(),
             "94.9 is below the threshold: no move"
         );
     }
     quota(&rig, "home", &[("weekly_all", 95.1)], 0);
-    let _watch = watch(&rig);
-    until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+    let mut daemon = watch_stepped(&rig);
+    until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
     assert_eq!(
         booked(&rig, ATTEMPT_ACTION)[0].reference,
         key,
@@ -1063,15 +1121,17 @@ fn a_profile_left_on_headroom_cannot_ping_pong_on_an_old_low_reading() {
     quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
     let _pane = seat(&rig, "claude-a");
     {
-        let _watch = watch(&rig);
-        until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+        let mut daemon = watch_stepped(&rig);
+        until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
     }
     assert_eq!(rig.meta_row("profile.spawned.0"), "fake-claude-b");
     configure(&rig, "", "fake-claude-b", "fake-claude-a");
     quota(&rig, "home-a", &[("weekly_all", 20.0)], 100);
     quota(&rig, "home-b", &[("weekly_all", 95.0)], 0);
-    let _watch = watch(&rig);
-    until(&rig, || booked(&rig, REFUSED_ACTION).len() == 1);
+    let mut daemon = watch_stepped(&rig);
+    until_stepped(&rig, &mut daemon, || {
+        booked(&rig, REFUSED_ACTION).len() == 1
+    });
     assert_eq!(
         rig.meta_row("profile.spawned.0"),
         "fake-claude-b",
@@ -1102,8 +1162,8 @@ fn post_move_relief_uses_the_configured_threshold_even_when_the_number_is_critic
     quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
     let _pane = seat(&rig, "claude-a");
     {
-        let _watch = watch(&rig);
-        until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+        let mut daemon = watch_stepped(&rig);
+        until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
     }
     std::thread::sleep(Duration::from_millis(1_100));
     // The fake never writes its newly minted conversation. A real Claude
@@ -1128,8 +1188,8 @@ fn post_move_relief_uses_the_configured_threshold_even_when_the_number_is_critic
     );
     quota(&rig, "home-a", &[("weekly_all", 99.0)], 0);
     quota(&rig, "home-b", &[("weekly_all", 100.0)], 0);
-    let _watch = watch(&rig);
-    until(&rig, || booked(&rig, DONE_ACTION).len() == 2);
+    let mut daemon = watch_stepped(&rig);
+    until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 2);
     assert_eq!(
         rig.meta_row("profile.spawned.0"),
         "fake-claude-a",
@@ -1154,8 +1214,8 @@ fn global_off_session_filter_and_orchestrator_make_headroom_inert() {
         quota(&rig, "home", &[("weekly_all", 99.0)], 0);
         let pane = seat(&rig, "claude");
         let pid = rig.tool_pid(&pane, "claude");
-        let _watch = watch(&rig);
-        sweeps(&rig);
+        let mut daemon = watch_stepped(&rig);
+        sweeps_stepped(&rig, &mut daemon);
         unchanged(&rig, &pane, "fake-claude", pid);
         assert!(auto_records(&rig).is_empty(), "ineligible books no episode");
         assert!(
@@ -1189,11 +1249,13 @@ fn main_requires_all_and_project_overlay_cannot_change_global_threshold() {
         isolate(&rig, &rig.main_pane);
         rig.start(&rig.main_pane, "main", "claude");
         let pid = rig.tool_pid(&rig.main_pane, "claude");
-        let _watch = watch(&rig);
+        let mut daemon = watch_stepped(&rig);
         if moves {
-            until(&rig, || rig.meta_row("profile.main") == "fake-opencode");
+            until_stepped(&rig, &mut daemon, || {
+                rig.meta_row("profile.main") == "fake-opencode"
+            });
         } else {
-            sweeps(&rig);
+            sweeps_stepped(&rig, &mut daemon);
             assert_eq!(rig.tool_pid(&rig.main_pane, "claude"), pid);
             assert!(auto_records(&rig).is_empty(), "on excludes main");
         }
@@ -1370,8 +1432,8 @@ fn phase2_a_twin_without_a_declared_row_moves_and_carries_at_headroom() {
         .join(ae::carry::project_key(Path::new(&rig.meta_row("work_dir"))))
         .join(format!("{id}.jsonl"));
     let original = std::fs::read(&transcript).expect("synthetic source transcript");
-    let _watch = watch(&rig);
-    until(&rig, || booked(&rig, DONE_ACTION).len() == 1);
+    let mut daemon = watch_stepped(&rig);
+    until_stepped(&rig, &mut daemon, || booked(&rig, DONE_ACTION).len() == 1);
     assert_eq!(rig.meta_row("profile.spawned.0"), "fake-twin");
     assert!(rig.tool_pid(&pane, "claude").is_some());
     assert_eq!(rig.meta_row("harness_session.spawned.0"), id);
@@ -1392,7 +1454,7 @@ fn phase2_a_twin_without_a_declared_row_moves_and_carries_at_headroom() {
         booked(&rig, DONE_ACTION)[0].summary.as_deref(),
         Some("to fake-twin, derived twin, carried (headroom 95% weekly_all 7d)")
     );
-    until(&rig, || {
+    until_stepped(&rig, &mut daemon, || {
         records(&rig).iter().any(|event| {
             event.action == "chat"
                 && event.summary.as_deref().is_some_and(|s| {
@@ -1715,8 +1777,8 @@ fn phase2_default_off_and_explicit_off_do_not_open_derived_episodes() {
         quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
         let pane = family_source(&rig);
         let pid = rig.tool_pid(&pane, "claude");
-        let _watch = watch(&rig);
-        sweeps(&rig);
+        let mut daemon = watch_stepped(&rig);
+        sweeps_stepped(&rig, &mut daemon);
         unchanged(&rig, &pane, "fake-source", pid);
         assert!(auto_records(&rig).is_empty());
         assert!(!ae::autoreseat::lock_path(&rig.dir, "spawned.0").exists());
@@ -2127,8 +2189,8 @@ fn phase2_no_family_or_declared_row_remains_silent_and_never_crosses_tools() {
     quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
     let pane = family_source(&rig);
     let pid = rig.tool_pid(&pane, "claude");
-    let _watch = watch(&rig);
-    sweeps(&rig);
+    let mut daemon = watch_stepped(&rig);
+    sweeps_stepped(&rig, &mut daemon);
     unchanged(&rig, &pane, "fake-source", pid);
     assert!(
         auto_records(&rig).is_empty(),
@@ -2240,8 +2302,8 @@ fn phase2_an_ambiguous_missing_or_absent_model_does_not_invent_a_sibling() {
         quota(&rig, "home-b", &[("weekly_all", 10.0)], 0);
         let pane = family_source(&rig);
         let pid = rig.tool_pid(&pane, "claude");
-        let _watch = watch(&rig);
-        sweeps(&rig);
+        let mut daemon = watch_stepped(&rig);
+        sweeps_stepped(&rig, &mut daemon);
         unchanged(&rig, &pane, "fake-source", pid);
         assert!(
             auto_records(&rig).is_empty(),

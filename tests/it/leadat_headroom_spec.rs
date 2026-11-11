@@ -79,8 +79,8 @@ fn crossing(seat: &LeadSeat, used: f64, expected: bool) {
     .expect("grace");
     quota(&seat.rig, "home-a", &[("weekly_all", used)], 0);
     let pid = seat.rig.tool_pid(&seat.pane, "claude");
-    let _daemon = watch(&seat.rig);
-    sweeps(&seat.rig);
+    let mut daemon = watch_stepped(&seat.rig);
+    sweeps_stepped(&seat.rig, &mut daemon);
     let opened = rows(seat, "auto-reseat-headroom");
     assert_eq!(
         !opened.is_empty(),
