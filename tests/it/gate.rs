@@ -5151,6 +5151,360 @@ fn bundles_hands_cargo_one_build_with_both_targets_and_the_musl_compiler() {
     );
 }
 
+/// A canned nextest `JUnit` report in the shape nextest 0.9 writes: `tests` test
+/// cases, the `i`-th taking `step * i` seconds, and a run `wall` seconds long.
+fn junit_report(tests: u32, step: f64, wall: f64) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites name=\"nextest-run\" tests=\"{tests}\" skipped=\"0\" failures=\"0\" errors=\"0\" uuid=\"u\" timestamp=\"2026-11-11T10:46:51.457+01:00\" time=\"{wall:.3}\">\n    <testsuite name=\"ae::it\" tests=\"{tests}\" skipped=\"0\" errors=\"0\" failures=\"0\">\n"
+    );
+    for i in 1..=tests {
+        let _ = writeln!(
+            out,
+            "        <testcase name=\"mod::test_{i}\" classname=\"ae::it\" timestamp=\"2026-11-11T10:46:51.459+01:00\" time=\"{:.3}\"/>",
+            step * f64::from(i)
+        );
+    }
+    out + "    </testsuite>\n</testsuites>\n"
+}
+
+/// One `_tmux-isolated test` lane run of the real justfile with `cwd` as the
+/// checkout it runs in. The fake `cargo` plays nextest (it drops `report` as the
+/// `JUnit` file at `target/nextest/default/junit.xml`, and fails when `fail`) and
+/// the doctests (it succeeds). `extra` is the filter a filtered run carries.
+fn ledger_lane(
+    base: &Path,
+    cwd: &Path,
+    report: Option<&str>,
+    fail: bool,
+    extra: &[&str],
+) -> (ExitOutcome, String) {
+    let cargo = "case \"$1\" in nextest)\n\
+         mkdir -p target/nextest/default && rm -f target/nextest/default/junit.xml\n\
+         [ ! -f \"$AE_TEST_TMPDIR/report.xml\" ] || cp \"$AE_TEST_TMPDIR/report.xml\" target/nextest/default/junit.xml\n\
+         [ ! -f \"$AE_TEST_TMPDIR/fail\" ] || exit 1 ;; esac\n";
+    let _ = std::fs::remove_file(base.join("report.xml"));
+    let _ = std::fs::remove_file(base.join("fail"));
+    if let Some(body) = report {
+        std::fs::write(base.join("report.xml"), body)
+            .unwrap_or_else(|why| panic!("the canned report: {why}"));
+    }
+    if fail {
+        std::fs::write(base.join("fail"), "x").unwrap_or_else(|why| panic!("{why}"));
+    }
+    let mut lane = lane_over(base, Some("6"), cargo)
+        .arg("--justfile")
+        .arg(root().join("justfile"))
+        .arg("--working-directory")
+        .arg(cwd)
+        .arg("_tmux-isolated")
+        .arg("test");
+    for arg in extra {
+        lane = lane.arg(arg);
+    }
+    let ran = raw::run(&lane, cwd, &base.join("out"), &base.join("err"))
+        .unwrap_or_else(|why| panic!("the lane runs: {why}"));
+    (ran.outcome(), read(&base.join("err")))
+}
+
+/// A throwaway git checkout with one commit, so a linked worktree can hang off it.
+fn ledger_checkout(base: &Path) -> PathBuf {
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap_or_else(|why| panic!("{why}"));
+    for args in [
+        &["init", "-q", "."][..],
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ][..],
+    ] {
+        let ran = Invocation::new("git")
+            .env_cleared()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", base);
+        let mut ran = ran;
+        for arg in args {
+            ran = ran.arg(arg);
+        }
+        let done = raw::run(&ran, &repo, &base.join("git.out"), &base.join("git.err"))
+            .unwrap_or_else(|why| panic!("git runs: {why}"));
+        assert!(
+            matches!(done.outcome(), ExitOutcome::Code(0)),
+            "git {args:?}: {}",
+            read(&base.join("git.err"))
+        );
+    }
+    repo
+}
+
+/// The data lines of a ledger file (everything but the `#` header).
+fn ledger_entries(repo: &Path) -> Vec<String> {
+    std::fs::read_to_string(repo.join(".local/gate-ledger.tsv"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A whole green gate prints its test-seconds, its thread-seconds, the 30 slowest
+/// tests and the delta against the previous entry, and appends ONE line to the
+/// main checkout's `.local/gate-ledger.tsv`, from a linked worktree too.
+#[test]
+fn a_whole_green_gate_reports_its_test_seconds_and_appends_one_ledger_line() {
+    let base = super::cli::OwnedScratch::root("gate", "ledger");
+    let repo = ledger_checkout(&base);
+    let green = |outcome: &ExitOutcome| matches!(outcome, ExitOutcome::Code(0));
+
+    // First whole run: 40 tests of 0.5 s ... 20.0 s = 410.0 test-seconds, 120 s of
+    // wall on 6 threads (the fake jobs-budget says 6) = 720.0 thread-seconds.
+    let (outcome, stderr) = ledger_lane(
+        &base,
+        &repo,
+        Some(&junit_report(40, 0.5, 120.0)),
+        false,
+        &[],
+    );
+    assert!(green(&outcome), "{stderr}");
+    assert!(
+        stderr.contains("gate ledger: 40 tests, wall 120.0 s on 6 threads"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("test-seconds 410.0, thread-seconds 720.0"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("first entry"), "{stderr}");
+    let listed: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("ae::it  mod::test_"))
+        .collect();
+    assert_eq!(listed.len(), 30, "the 30 slowest, no more: {stderr}");
+    assert!(
+        listed[0].contains("20.000") && listed[0].ends_with("mod::test_40"),
+        "slowest first: {listed:?}"
+    );
+    assert!(
+        listed[29].ends_with("mod::test_11"),
+        "the 30th slowest: {listed:?}"
+    );
+    let first = ledger_entries(&repo);
+    assert_eq!(first.len(), 1, "{first:?}");
+    let fields: Vec<&str> = first[0].split('\t').collect();
+    assert_eq!(fields.len(), 8, "{first:?}");
+    assert_eq!(
+        fields[3..],
+        ["6", "40", "120.0", "410.0", "720.0"],
+        "{first:?}"
+    );
+
+    // Second whole run, from a LINKED worktree: the delta against the first and the
+    // entry in the MAIN checkout's ledger.
+    let linked = base.join("linked");
+    let add = Invocation::new("git")
+        .env_cleared()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &*base)
+        .arg("worktree")
+        .arg("add")
+        .arg("-q")
+        .arg(&linked)
+        .arg("-b")
+        .arg("wt");
+    let done = raw::run(&add, &repo, &base.join("git.out"), &base.join("git.err"))
+        .unwrap_or_else(|why| panic!("git runs: {why}"));
+    assert!(green(&done.outcome()), "{}", read(&base.join("git.err")));
+    let (outcome, stderr) = ledger_lane(
+        &base,
+        &linked,
+        Some(&junit_report(42, 0.5, 130.0)),
+        false,
+        &[],
+    );
+    assert!(green(&outcome), "{stderr}");
+    assert!(
+        stderr.contains("tests +2, wall +10.0 s (+8.3%), test-seconds +41.5 (+10.1%), thread-seconds +60.0 (+8.3%)"),
+        "{stderr}"
+    );
+    assert_eq!(ledger_entries(&repo).len(), 2, "the main checkout's ledger");
+    assert!(
+        !linked.join(".local/gate-ledger.tsv").exists(),
+        "never the worktree's own"
+    );
+}
+
+/// A filtered run, a red run, a missing or unreadable report, a report the lane cannot
+/// remove and an unusable `.local` write nothing to the ledger and never change the lane's
+/// status: the ledger is a report, never a failure.
+#[test]
+fn a_filtered_or_red_gate_and_a_broken_report_never_write_the_ledger_or_fail_the_lane() {
+    let base = super::cli::OwnedScratch::root("gate", "ledger-quiet");
+    let repo = ledger_checkout(&base);
+    let green = |outcome: &ExitOutcome| matches!(outcome, ExitOutcome::Code(0));
+    let (outcome, stderr) = ledger_lane(
+        &base,
+        &repo,
+        Some(&junit_report(40, 0.5, 120.0)),
+        false,
+        &[],
+    );
+    assert!(green(&outcome), "{stderr}");
+
+    // Nothing is written by a filtered run, a red run, a run with no report, a
+    // report that names no test, and the lane still ends as nextest did.
+    let before = ledger_entries(&repo);
+    let (outcome, stderr) = ledger_lane(
+        &base,
+        &repo,
+        Some(&junit_report(40, 0.5, 120.0)),
+        false,
+        &["-E", "test(=x)"],
+    );
+    assert!(
+        green(&outcome) && !stderr.contains("gate ledger"),
+        "a filtered run is silent: {stderr}"
+    );
+    let (outcome, stderr) =
+        ledger_lane(&base, &repo, Some(&junit_report(40, 0.5, 120.0)), true, &[]);
+    assert!(
+        matches!(outcome, ExitOutcome::Code(code) if code != 0) && !stderr.contains("gate ledger"),
+        "{stderr}"
+    );
+    let (outcome, stderr) = ledger_lane(&base, &repo, None, false, &[]);
+    assert!(
+        green(&outcome) && stderr.contains("note: gate ledger skipped: no JUnit report"),
+        "{stderr}"
+    );
+    for broken in [
+        "not xml at all\n",
+        &junit_report(0, 1.0, 5.0),
+        "<testsuites time=\"x\">\n<testcase name=\"a\" time=\"1\"/>\n",
+    ] {
+        let (outcome, stderr) = ledger_lane(&base, &repo, Some(broken), false, &[]);
+        assert!(
+            green(&outcome) && stderr.contains("note: gate ledger skipped"),
+            "{broken:?}: {stderr}"
+        );
+    }
+    assert_eq!(ledger_entries(&repo), before, "none of those wrote a line");
+
+    // An old report the lane cannot remove (a directory where the file goes) turns
+    // the ledger off with a note and leaves the gate green.
+    let blocked = repo.join("target/nextest/default/junit.xml");
+    let _ = std::fs::remove_file(&blocked);
+    std::fs::create_dir_all(&blocked).unwrap_or_else(|why| panic!("{why}"));
+    let (outcome, stderr) = ledger_lane(
+        &base,
+        &repo,
+        Some(&junit_report(40, 0.5, 120.0)),
+        false,
+        &[],
+    );
+    assert!(green(&outcome), "{stderr}");
+    assert!(
+        stderr.contains("note: gate ledger off: the old report"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("test-seconds"), "{stderr}");
+    assert_eq!(
+        ledger_entries(&repo),
+        before,
+        "a blocked report wrote no line"
+    );
+    std::fs::remove_dir_all(&blocked).unwrap_or_else(|why| panic!("{why}"));
+
+    // An unusable `.local` (a plain file where the directory goes) is a note, not
+    // a failure.
+    std::fs::remove_dir_all(repo.join(".local")).unwrap_or_else(|why| panic!("{why}"));
+    std::fs::write(repo.join(".local"), "in the way").unwrap_or_else(|why| panic!("{why}"));
+    let (outcome, stderr) = ledger_lane(
+        &base,
+        &repo,
+        Some(&junit_report(40, 0.5, 120.0)),
+        false,
+        &[],
+    );
+    assert!(green(&outcome), "{stderr}");
+    assert!(
+        stderr.contains("note: gate ledger entry not written"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("test-seconds 410.0"),
+        "the report is still printed: {stderr}"
+    );
+}
+
+/// The ledger's two ends agree: nextest is told to write a `JUnit` report for the
+/// default profile, and the lane reads `nextest/default/junit.xml`, removing the
+/// previous file before the run so a crashed nextest cannot be read as a new one.
+fn ledger_inputs_ok(justfile: &str, nextest: &str) -> bool {
+    let lines = recipe_text(justfile, "_tmux-isolated lane *args:");
+    let position = |needle: &str| lines.iter().position(|line| line.contains(needle));
+    let table: Vec<&str> = toml_table(nextest, "[profile.default.junit]")
+        .into_iter()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    let (Some(remove), Some(run), Some(report)) = (
+        position("rm -f \"$junit\""),
+        position("detached nice -n 10 cargo nextest run --locked --all-features"),
+        position("ledger_report \"$junit\" \"$NEXTEST_TEST_THREADS\" ||"),
+    ) else {
+        return false;
+    };
+    let Some(doctest) = position("cargo test --doc --locked --all-features") else {
+        return false;
+    };
+    table == ["path = \"junit.xml\""]
+        && position("junit=\"${CARGO_TARGET_DIR:-target}/nextest/default/junit.xml\"")
+            .is_some_and(|set| set < remove)
+        && remove < run
+        && doctest < report
+        && lines.iter().any(|line| line == "{{ LEDGER }}")
+}
+
+#[test]
+fn the_ledger_reads_the_junit_report_nextest_is_told_to_write() {
+    let justfile = read(&root().join("justfile"));
+    let nextest = read(&root().join(".config/nextest.toml"));
+    assert!(
+        ledger_inputs_ok(&justfile, &nextest),
+        "the lane must delete the old report, run nextest, then read target/nextest/default/junit.xml \
+         after the doctests, and .config/nextest.toml must write it"
+    );
+    // RED — no report is configured, the wrong file, the report read before the
+    // doctests, the old report never removed.
+    assert!(!ledger_inputs_ok(
+        &justfile,
+        &nextest.replace("[profile.default.junit]", "[profile.default.report]")
+    ));
+    assert!(!ledger_inputs_ok(
+        &justfile,
+        &nextest.replace("path = \"junit.xml\"", "path = \"other.xml\"")
+    ));
+    assert!(!ledger_inputs_ok(
+        &justfile.replace(
+            "                rm -f \"$junit\" 2>/dev/null || { echo \"note: gate ledger off: the old report $junit cannot be removed\" >&2; junit=\"\"; }\n",
+            ""
+        ),
+        &nextest
+    ));
+    let late = justfile
+        .replace("                ledger_report \"$junit\" \"$NEXTEST_TEST_THREADS\" || echo \"note: gate ledger skipped\" >&2\n", "")
+        .replace(
+            "                detached nice -n 10 cargo nextest run --locked --all-features\n",
+            "                ledger_report \"$junit\" \"$NEXTEST_TEST_THREADS\" || true\n                detached nice -n 10 cargo nextest run --locked --all-features\n",
+        );
+    assert!(!ledger_inputs_ok(&late, &nextest));
+}
+
 #[test]
 fn the_release_workflow_is_a_manual_proof_lane_with_artifacts_only() {
     let workflow = read(&root().join(".github/workflows/release.yml"));

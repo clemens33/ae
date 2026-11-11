@@ -1406,6 +1406,88 @@ SIZING := '''
     }
 '''
 
+# THE GATE LEDGER (P1d): what a whole green gate cost, in test-seconds, so a slice
+# that adds ten minutes of waiting shows in the next report instead of surfacing a
+# month later. After nextest AND the doctests passed, a WHOLE run (no filter) of
+# the test lane reads the JUnit report nextest wrote (`.config/nextest.toml`
+# `[profile.default.junit]`, no new dependency; the lane deletes the old file
+# first, so a crashed run cannot be read as a new one) and prints, on stderr:
+# the test count, the wall time, the TEST-SECONDS (the sum of the per-test times),
+# the THREAD-SECONDS (wall time x threads, so the gap is the time a thread sat
+# idle), the 30 slowest tests, and the delta against the previous entry. It then
+# appends one tab-separated line to `<main checkout>/.local/gate-ledger.tsv`, found
+# like the lane lock (`git rev-parse --git-common-dir`, so a linked worktree writes
+# the one ledger). A filtered run prints and writes nothing, and a red run never
+# reaches this. THE LEDGER IS A REPORT AND NEVER A FAILURE: every problem (no
+# report, no git, an unwritable `.local`) is one `note:` line and the lane's exit
+# status stays the gate's.
+#
+# ledger_report <junit file> <threads>
+LEDGER := '''
+    ledger_report() {
+        local junit="$1" threads="$2" common root ledger rows wall stats head dirty utc prev count sum span
+        if [[ ! -f "$junit" || -L "$junit" ]]; then
+            echo "note: gate ledger skipped: no JUnit report at $junit" >&2
+            return 0
+        fi
+        rows="$(awk '
+            /<testcase / {
+                name = ""; cls = ""; secs = 0
+                if (match($0, / name="[^"]*"/)) name = substr($0, RSTART + 7, RLENGTH - 8)
+                if (match($0, / classname="[^"]*"/)) cls = substr($0, RSTART + 12, RLENGTH - 13)
+                if (match($0, / time="[0-9.]+"/)) secs = substr($0, RSTART + 7, RLENGTH - 8)
+                printf "%s\t%s\t%s\n", secs, cls, name
+            }' "$junit")"
+        wall="$(awk '/<testsuites / { if (match($0, / time="[0-9.]+"/)) { print substr($0, RSTART + 7, RLENGTH - 8); exit } }' "$junit")"
+        if [[ -z "$rows" || ! "$wall" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "note: gate ledger skipped: the JUnit report at $junit names no tests or no wall time" >&2
+            return 0
+        fi
+        stats="$(printf '%s\n' "$rows" | awk -F'\t' -v wall="$wall" -v threads="$threads" 'NF == 3 { n++; sum += $1 } END { printf "%d\t%.1f\t%.1f\t%.1f", n, wall, sum, wall * threads }')"
+        IFS=$'\t' read -r count wall sum span <<<"$stats"
+        common="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+        common="$(cd -P "$common" 2>/dev/null && pwd -P || true)"
+        if [[ -z "$common" || "${common##*/}" != .git ]]; then
+            echo "note: gate ledger skipped: not inside a git checkout" >&2
+            return 0
+        fi
+        root="${common%/.git}"
+        ledger="$root/.local/gate-ledger.tsv"
+        head="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
+        dirty=clean
+        [[ -z "$(git status --porcelain 2>/dev/null || true)" ]] || dirty=dirty
+        utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        prev=""
+        if [[ -f "$ledger" && ! -L "$ledger" ]]; then
+            prev="$(grep -v '^#' "$ledger" 2>/dev/null | tail -n 1 || true)"
+        fi
+        echo "gate ledger: $count tests, wall ${wall} s on $threads threads" >&2
+        echo "gate ledger: test-seconds $sum, thread-seconds $span (the threads ran tests $(awk -v a="$sum" -v b="$span" 'BEGIN { printf "%.1f", (b > 0 ? 100 * a / b : 0) }')% of the time)" >&2
+        if [[ -n "$prev" ]]; then
+            echo "$prev" | awk -F'\t' -v n="$count" -v w="$wall" -v s="$sum" -v t="$span" '
+                function pct(now, was) { return was > 0 ? sprintf("%+.1f%%", 100 * (now - was) / was) : "n/a" }
+                { printf "gate ledger: delta vs %s (%s %s): tests %+d, wall %+.1f s (%s), test-seconds %+.1f (%s), thread-seconds %+.1f (%s)\n", $1, $2, $3, n - $5, w - $6, pct(w, $6), s - $7, pct(s, $7), t - $8, pct(t, $8) }' >&2
+        else
+            echo "gate ledger: first entry, no earlier run to compare" >&2
+        fi
+        echo "gate ledger: the 30 slowest tests (seconds, binary, test)" >&2
+        { printf '%s\n' "$rows" | sort -t "$(printf '\t')" -k1,1nr | head -n 30 | awk -F'\t' '{ printf "  %9.3f  %s  %s\n", $1, $2, $3 }' >&2; } || true
+        if ! mkdir -p "$root/.local" 2>/dev/null || [[ -L "$ledger" ]]; then
+            echo "note: gate ledger entry not written: $root/.local is not usable" >&2
+            return 0
+        fi
+        if [[ ! -e "$ledger" ]]; then
+            printf '# utc\thead\ttree\tthreads\ttests\twall_s\ttest_s\tthread_s\n' >"$ledger" 2>/dev/null || true
+        fi
+        if printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$utc" "$head" "$dirty" "$threads" "$count" "$wall" "$sum" "$span" >>"$ledger" 2>/dev/null; then
+            echo "gate ledger: appended to $ledger" >&2
+        else
+            echo "note: gate ledger entry not written: $ledger is not writable" >&2
+        fi
+        return 0
+    }
+'''
+
 # Clippy (-D warnings) + taplo lint
 rust-lint:
     #!/usr/bin/env bash
@@ -1452,6 +1534,7 @@ _tmux-isolated lane *args:
     #!/usr/bin/env bash
     set -euo pipefail
     {{ SIZING }}
+    {{ LEDGER }}
     lane="$1"
     shift
     # The stress lane (just rust-stress) refuses FIRST, before any scratch, server
@@ -1726,8 +1809,12 @@ _tmux-isolated lane *args:
                 detached cargo nextest run --locked --all-features "$@"
                 echo "note: filtered run, skipping doctests" >&2
             else
+                # The ledger reads the report THIS run writes: remove the last one first.
+                junit="${CARGO_TARGET_DIR:-target}/nextest/default/junit.xml"
+                rm -f "$junit" 2>/dev/null || { echo "note: gate ledger off: the old report $junit cannot be removed" >&2; junit=""; }
                 detached nice -n 10 cargo nextest run --locked --all-features
                 detached nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
+                ledger_report "$junit" "$NEXTEST_TEST_THREADS" || echo "note: gate ledger skipped" >&2
             fi
             ;;
         cov) detached nice -n 10 cargo llvm-cov nextest --locked --all-features ;;

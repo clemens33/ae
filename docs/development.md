@@ -269,6 +269,21 @@ against what the core links at launch, so the refresh entry and the launch entry
 drift. It asserts the set is EXACTLY the core's list, never `>= N`, so an artifact quietly
 appearing or vanishing is a failure rather than a different number.
 
+### The gate ledger
+
+A whole `just test` (no filter) that ends green prints what it cost, on stderr, after the doctests:
+the test count, the wall time, the TEST-SECONDS (the sum of the per-test times), the THREAD-SECONDS
+(wall time times the lane's threads, so the gap to the test-seconds is the time a thread sat idle),
+the 30 slowest tests and the change against the previous entry. It then appends one tab-separated
+line to `.local/gate-ledger.tsv` in the MAIN checkout (found like the lane lock, so a linked worktree
+writes the one ledger). The numbers come from nextest's own JUnit report, which
+`[profile.default.junit]` in `.config/nextest.toml` writes to `target/nextest/default/junit.xml`; the
+lane deletes the old file before the run, so a crashed nextest cannot be read as a new one. The ledger
+is a report and never a failure: a missing or unreadable report, no git checkout or an unwritable
+`.local` is one `note:` line and the lane keeps the gate's exit status. A filtered run writes nothing, and
+a red run never reaches the report, so the ledger holds green whole gates only. `tests/it/gate.rs` pins the report, the append from a
+linked worktree, the silence of a filtered or red run and the order of the lane's commands.
+
 ### Stress runs
 
 A flake hunt repeats the REAL tests under bounds; it never loads the machine on purpose.

@@ -19,6 +19,14 @@ test-threads = 4
 # Finish the run after failures so one red gate reports every failing test.
 fail-fast = false
 
+# The per-test seconds of every default-profile run, written to
+# target/nextest/default/junit.xml. A whole `just test` reads it for the gate ledger
+# (`LEDGER` in the justfile, docs/development.md): test-seconds, thread-seconds, the
+# 30 slowest tests and the change since the last entry. It is a report; nothing here
+# changes how a test is scheduled, run or judged.
+[profile.default.junit]
+path = "junit.xml"
+
 # Writer acceptance starts two or three real app panes per fixture and holds
 # their read/dispatch boundaries. Keep concurrent fixtures small enough that
 # the bounded chat refusal and rendered frames can make progress.
