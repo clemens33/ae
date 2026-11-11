@@ -1915,8 +1915,10 @@ fn help_is_the_command_set_and_names_no_retired_word() {
         "  ae stop [",
         "  ae compact [",
         "  ae reboot [",
+        "  ae reseat <session> <agent> --using ",
         "  ae archive preview ",
         "  ae end|rm [",
+        "  ae upgrade ",
         "  ae version",
         "  ae help",
         // The short helper spelling is taught ONCE, and here is where it is

@@ -303,6 +303,12 @@ Usage:
                          admits no seat says 'no seat admitted' and exits 0.
                          A seat running it is skipped as 'initiating seat': it cannot
                          answer its own checkpoint, so run it from a shell outside every seat.
+  ae reseat <session> <agent> --using <profile[@client]> [--stop-unknown]
+                         Move ONE seat to another profile in place: same slot, pane, name
+                         and records. Another account of the same tool keeps the whole
+                         conversation; across tools the successor is handed ae's account
+                         of the seat. Only a seat whose frame reads idle is stopped;
+                         --stop-unknown also stops one whose frame ae cannot read
   ae reboot [-f] [--keep-history] [--digest-only] [name]
                          Hand this session over to a fresh one: freeze the roster, archive
                          the memory, end it, and relaunch the same agents against that
@@ -317,6 +323,9 @@ Usage:
                          (token history); --purge-history deletes them AND writes no
                          archive (removing any existing one) ([workspace]
                          purge_agent_history sets the default). (or 'ae end all')
+  ae upgrade             Install the latest tagged immutable release; takes no arguments.
+                         AE_VERSION=<calver> pins one release; unpinned, it exits
+                         already-current when the latest is not newer
   ae version             Show version, tmux floor, auto-upgrade policy and last check
   ae help                Show this help
 
@@ -1299,6 +1308,20 @@ mod tests {
             "  ae init [--yes]        Discover installed harnesses and propose a global config\n"
         ));
         assert!(HELP.ends_with("regenerate existing session helpers.\n"));
+        assert!(
+            HELP.contains(&format!(
+                "  {}\n",
+                crate::reseat::RESEAT_USAGE.trim_start_matches("Usage: ")
+            )),
+            "the help lists reseat in the form the verb itself prints"
+        );
+        assert!(
+            HELP.contains("  ae upgrade             Install the latest tagged immutable release;")
+        );
+        assert!(
+            HELP.contains("AE_VERSION=<calver>"),
+            "the help says how to pin an upgrade"
+        );
         assert!(LIST_HELP.starts_with("Usage: ae list ["));
         assert!(LIST_HELP.contains("--needs-attn"));
         assert!(DEFAULT_CONFIG.starts_with("# ae config — auto-created on first run"));
