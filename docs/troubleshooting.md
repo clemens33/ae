@@ -295,6 +295,22 @@ still writing into it) and left it for the next lane — the lane's own verdict 
 Most roots from before the single scratch owner (`/tmp/ae*.<pid>.<tag>` and
 `tmux -S /tmp/ae…/sock` servers) are never swept: remove them once, with no test running.
 
+## A build fails with `sccache: error: Failed to create temp dir`
+
+The error names a path such as `/tmp/ae-rust-test.<pid>.<tag>/tmp/sccache<random>` that no longer
+exists, and only some crates fail, because a cache hit needs no temp directory. Your shell exports
+`RUSTC_WRAPPER=sccache` (or `~/.cargo/config.toml` sets `build.rustc-wrapper`), and one per-user
+sccache server then keeps the `TMPDIR` of the first cargo call that started it. If that call ran
+inside a lane scratch directory, every cache miss in every session fails after the lane deletes
+it. The repo does not use sccache, so the gate recipes (`rust-lint`, `rust-fuzz-check` and every
+`_tmux-isolated` lane) clear the wrapper for their own cargo calls and cannot start the server.
+Another tool, or a run from an older checkout, still can. Stop the server, and the next cargo
+call starts a fresh one with a valid `TMPDIR`:
+
+```
+sccache --stop-server
+```
+
 ## Where to look when things break
 
 In priority order:

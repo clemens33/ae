@@ -2685,6 +2685,206 @@ fn the_doctest_step_takes_the_lanes_thread_count() {
     }
 }
 
+/// A shell profile may export `RUSTC_WRAPPER=sccache` for every cargo call, though
+/// the repo does not use sccache (`.cargo/config.toml`). Real cargo runs
+/// `$RUSTC_WRAPPER rustc -vV` on every invocation, compiling or not (measured), and
+/// the first sccache client starts the one per-user server, which keeps the TMPDIR
+/// of that client. A lane run starts it with the lane's own TMPDIR, deleted when the
+/// lane ends, and every later cache miss in every session fails with "Failed to
+/// create temp dir". So no cargo call of a gate recipe may see an inherited wrapper.
+///
+/// The fake `cargo` does what real cargo does with each of the two variables that
+/// name a wrapper, and the fake wrappers record that they ran. A control run first
+/// proves the fakes can see a leak, so a lane that never reaches the wrapper is not
+/// read as clean. The wrappers differ by name, so a failure says which variable
+/// leaked.
+#[test]
+fn a_gate_recipe_never_runs_cargo_through_an_inherited_compiler_wrapper() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let base = super::cli::OwnedScratch::root("gate", "wrapper");
+    let cargo = "echo \"$1\" >>\"$AE_TEST_TMPDIR/cargo-ran\"\n\
+         [ -z \"${RUSTC_WRAPPER:-}\" ] || \"$RUSTC_WRAPPER\" rustc -vV\n\
+         [ -z \"${CARGO_BUILD_RUSTC_WRAPPER:-}\" ] || \"$CARGO_BUILD_RUSTC_WRAPPER\" rustc -vV\n";
+    let fakes = |lane_bin: &Path| {
+        for name in ["sccache-env", "sccache-build", "taplo"] {
+            let body = if name == "taplo" {
+                "exit 0\n".to_owned()
+            } else {
+                format!("echo {name} >>\"$AE_TEST_TMPDIR/wrapper-ran\"\n")
+            };
+            let file = lane_bin.join(name);
+            std::fs::write(&file, format!("#!/bin/sh\n{body}"))
+                .and_then(|()| {
+                    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
+                })
+                .unwrap_or_else(|why| panic!("the fake {name}: {why}"));
+        }
+    };
+    let with_wrappers = |lane: Invocation, lane_bin: &Path| {
+        lane.env(
+            "RUSTC_WRAPPER",
+            lane_bin.join("sccache-env").to_str().unwrap_or_default(),
+        )
+        .env(
+            "CARGO_BUILD_RUSTC_WRAPPER",
+            lane_bin.join("sccache-build").to_str().unwrap_or_default(),
+        )
+    };
+    let wrappers_ran = || {
+        let mut ran: Vec<String> = std::fs::read_to_string(base.join("wrapper-ran"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        ran.sort();
+        ran
+    };
+    let forget = || {
+        let _ = std::fs::remove_file(base.join("wrapper-ran"));
+        let _ = std::fs::remove_file(base.join("cargo-ran"));
+    };
+    // The control: the fake cargo, run bare under both variables, reaches both wrappers.
+    let bin = base.join("bin");
+    let _ = lane_over(&base, Some("6"), cargo);
+    fakes(&bin);
+    forget();
+    let direct = with_wrappers(
+        Invocation::new("sh")
+            .env_cleared()
+            .arg(bin.join("cargo").to_str().unwrap_or_default())
+            .arg("check")
+            .env("AE_TEST_TMPDIR", &base),
+        &bin,
+    );
+    let ran = raw::run(&direct, &root(), &base.join("out"), &base.join("err"))
+        .unwrap_or_else(|why| panic!("the control runs: {why}"));
+    assert!(matches!(ran.outcome(), ExitOutcome::Code(0)));
+    assert_eq!(
+        wrappers_ran(),
+        ["sccache-build", "sccache-env"],
+        "the control: the fake cargo must reach both wrappers"
+    );
+    let mut leaks = Vec::new();
+    for recipe in [
+        &["rust-lint"][..],
+        &["rust-fuzz-check"],
+        &["_tmux-isolated", "test"],
+        &["_tmux-isolated", "mutants"],
+        &["_tmux-isolated", "cov"],
+    ] {
+        let lane_base = lane_over(&base, Some("6"), cargo);
+        fakes(&bin);
+        forget();
+        let mut lane = with_wrappers(lane_base, &bin);
+        for arg in recipe {
+            lane = lane.arg(arg);
+        }
+        let ran = raw::run(&lane, &root(), &base.join("out"), &base.join("err"))
+            .unwrap_or_else(|why| panic!("{recipe:?} runs: {why}"));
+        let stderr = read(&base.join("err"));
+        assert!(
+            matches!(ran.outcome(), ExitOutcome::Code(0)),
+            "{recipe:?} must end green: {stderr}"
+        );
+        assert!(
+            !read(&base.join("cargo-ran")).is_empty(),
+            "{recipe:?} ran no cargo, so the pin saw nothing: {stderr}"
+        );
+        let ran = wrappers_ran();
+        if !ran.is_empty() {
+            leaks.push(format!("{recipe:?} reached {ran:?}"));
+        }
+    }
+    assert!(
+        leaks.is_empty(),
+        "a gate recipe ran cargo through a compiler wrapper from the environment: {leaks:?}"
+    );
+}
+
+/// The statement that keeps cargo off a compiler wrapper. EMPTY, not unset: cargo
+/// (measured, 1.97.1) reads an empty `RUSTC_WRAPPER` as "no wrapper" even over a
+/// `build.rustc-wrapper` value in `~/.cargo/config.toml`, which `unset` leaves in force.
+const EMPTY_WRAPPER: &str = "export RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=";
+
+/// Whether the statement exists and comes before the first line that is `before`.
+fn empties_the_wrapper_before(lines: &[String], before: &str) -> bool {
+    let clear = lines.iter().position(|line| line == EMPTY_WRAPPER);
+    let first = lines.iter().position(|line| line == before);
+    matches!((clear, first), (Some(clear), Some(first)) if clear < first)
+}
+
+/// Whether `rust-check` empties both wrapper variables before the receipt it writes
+/// after the four dependencies (the receipt runs `cargo nextest`), and the `SIZING`
+/// helper empties them as its first statement, so every recipe that includes it does
+/// so before its first cargo call. The behavioural pin runs the lane, `rust-lint` and
+/// `rust-fuzz-check` with the two variables set, and a fake cargo cannot tell empty
+/// from unset on a config value, so the form is read here. The `rust-check` body cannot
+/// run in a test (it writes into the checkout's `.local`), so its text is read too.
+fn the_wrapper_is_emptied_where_cargo_starts(justfile: &str) -> bool {
+    let helper: Vec<String> = justfile_variable(justfile, "SIZING")
+        .lines()
+        .map(|line| line.trim().to_owned())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    helper.first().is_some_and(|line| line == EMPTY_WRAPPER)
+        && empties_the_wrapper_before(&recipe_text(justfile, "rust-check:"), "{{ RECEIPT }}")
+}
+
+#[test]
+fn the_gate_empties_the_compiler_wrapper_variables_where_its_cargo_calls_start() {
+    assert!(
+        the_wrapper_is_emptied_where_cargo_starts(&read(&root().join("justfile"))),
+        "the SIZING helper (first statement) and rust-check (before {{{{ RECEIPT }}}}) must run \
+         `{EMPTY_WRAPPER}`"
+    );
+    let good = format!(
+        "SIZING := '''\n    {EMPTY_WRAPPER}\n    lane_threads=16\n'''\n\n\
+         rust-check: rust-fmt-check\n    #!/usr/bin/env bash\n    set -euo pipefail\n    \
+         {EMPTY_WRAPPER}\n    {{{{ RECEIPT }}}}\n"
+    );
+    assert!(the_wrapper_is_emptied_where_cargo_starts(&good));
+    let red = |from: &str, to: &str| {
+        !the_wrapper_is_emptied_where_cargo_starts(&good.replacen(from, to, 1))
+    };
+    // RED — the helper's statement is gone, or no longer first.
+    assert!(red(
+        &format!("    {EMPTY_WRAPPER}\n    lane_threads"),
+        "    lane_threads"
+    ));
+    assert!(red(
+        &format!("    {EMPTY_WRAPPER}\n    lane_threads=16\n"),
+        &format!("    lane_threads=16\n    {EMPTY_WRAPPER}\n")
+    ));
+    // RED — rust-check's statement is gone, or only after the receipt's cargo calls.
+    assert!(red(
+        &format!("    {EMPTY_WRAPPER}\n    {{{{ RECEIPT }}}}"),
+        "    {{ RECEIPT }}"
+    ));
+    assert!(red(
+        &format!("    {EMPTY_WRAPPER}\n    {{{{ RECEIPT }}}}\n"),
+        &format!("    {{{{ RECEIPT }}}}\n    {EMPTY_WRAPPER}\n")
+    ));
+    // RED — only one of the two variables, or unset in place of empty (a
+    // `build.rustc-wrapper` config value then stays in force).
+    for statement in [
+        "export RUSTC_WRAPPER=",
+        "export CARGO_BUILD_RUSTC_WRAPPER=",
+        "unset RUSTC_WRAPPER CARGO_BUILD_RUSTC_WRAPPER",
+    ] {
+        assert!(!the_wrapper_is_emptied_where_cargo_starts(
+            &good.replace(EMPTY_WRAPPER, statement)
+        ));
+        assert!(red(
+            &format!("    {EMPTY_WRAPPER}\n    lane_threads"),
+            &format!("    {statement}\n    lane_threads")
+        ));
+        assert!(red(
+            &format!("    {EMPTY_WRAPPER}\n    {{{{ RECEIPT }}}}"),
+            &format!("    {statement}\n    {{{{ RECEIPT }}}}")
+        ));
+    }
+}
+
 /// Whether the test lane, `rust-lint` and `rust-fuzz-check` size themselves from
 /// the ONE helper (`SIZING`): each includes it and calls `size_counts`, none
 /// carries a `jobs-budget` call of its own, the helper alone owns the call and

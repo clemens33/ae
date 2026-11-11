@@ -1383,6 +1383,9 @@ RUN_START := `h="$(git rev-parse --verify -q HEAD 2>/dev/null)"; t="$(git rev-pa
 rust-check: rust-fmt-check rust-lint rust-fuzz-check rust-test
     #!/usr/bin/env bash
     set -euo pipefail
+    # The receipt's `cargo nextest` calls go without a compiler wrapper, as every other
+    # cargo call of the gate does (the note on SIZING below).
+    export RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
     {{ RECEIPT }}
     # A receipt vouches only for the tree the whole run tested. `just` recorded
     # HEAD, the tree hash and the cleanliness when it STARTED (RUN_START); the tree
@@ -1484,7 +1487,19 @@ rust-fmt:
 # applies the load guard to the threads size_counts chose (the test lane calls it);
 # load1_now and load_above are the one reading of the machine's load, shared with
 # the stress lane's start refusal.
+#
+# Including the helper also empties RUSTC_WRAPPER and CARGO_BUILD_RUSTC_WRAPPER, so
+# no cargo call of those recipes (nor of the release doctest step) runs through a
+# compiler wrapper from the caller's shell or `~/.cargo/config.toml`: the repo does not
+# use sccache (`.cargo/config.toml`). An empty value, not an unset one, because cargo
+# (measured, 1.97.1) reads an empty RUSTC_WRAPPER as "no wrapper" even over a
+# `build.rustc-wrapper` config value, which `unset` leaves in force. Cargo runs
+# `$RUSTC_WRAPPER rustc -vV` on every call, so even a
+# nothing-to-compile call starts the one per-user sccache server, and that server keeps
+# the TMPDIR of the call that started it: a lane scratch the lane then deletes
+# (docs/troubleshooting.md). tests/it/gate.rs pins it with a fake wrapper.
 SIZING := '''
+    export RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
     lane_threads=16
     loaded_threads=8
     load_ceiling=14
