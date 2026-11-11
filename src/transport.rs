@@ -3630,6 +3630,7 @@ mod tests {
             calls[1].ends_with(&[
                 "wait-for".to_owned(),
                 "-S".to_owned(),
+                "--".to_owned(),
                 "qw-release".to_owned()
             ]),
             "the second child releases the waiter's own channel: {calls:?}"

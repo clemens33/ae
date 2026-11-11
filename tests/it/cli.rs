@@ -980,7 +980,7 @@ pub(crate) fn tmux_signalled(
 /// caller reaps it. Dropping it alive kills it, and a killed waiter keeps a
 /// server descriptor until the channel's next signal.
 pub(crate) fn tmux_waiter(sock: &std::path::Path, channel: &str) -> std::io::Result<OwnedChild> {
-    tmux_client(sock, &["wait-for", channel])
+    tmux_client(sock, &["wait-for", "--", channel])
 }
 
 /// How many descriptors process `pid` holds open: `/proc/<pid>/fd` on Linux,

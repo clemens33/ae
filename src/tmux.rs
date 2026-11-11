@@ -1487,7 +1487,7 @@ pub(crate) fn waiter_args(server: &ServerId, session: &str, channel: &str) -> Ve
 #[must_use]
 pub(crate) fn channel_waiter_args(server: &ServerId, channel: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["wait-for".to_owned(), channel.to_owned()]);
+    args.extend(["wait-for", "--", channel].map(str::to_owned));
     args
 }
 
@@ -1497,7 +1497,7 @@ pub(crate) fn channel_waiter_args(server: &ServerId, channel: &str) -> Vec<Strin
 #[must_use]
 pub(crate) fn wake_release_args(server: &ServerId, channel: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["wait-for".to_owned(), "-S".to_owned(), channel.to_owned()]);
+    args.extend(["wait-for", "-S", "--", channel].map(str::to_owned));
     args
 }
 
@@ -6316,7 +6316,12 @@ mod tests {
         );
         assert_eq!(
             super::wake_release_args(&server, "ae-wake-3-9"),
-            ["-L", "ae", "wait-for", "-S", "ae-wake-3-9"]
+            ["-L", "ae", "wait-for", "-S", "--", "ae-wake-3-9"]
+        );
+        // A channel may lead with `-`: it is an operand, never a flag.
+        assert_eq!(
+            super::channel_waiter_args(&server, "-step"),
+            ["-L", "ae", "wait-for", "--", "-step"]
         );
     }
 
