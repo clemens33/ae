@@ -35,16 +35,19 @@ impl Hand {
         } else {
             String::new()
         };
+        // A whole-record receipt is written to `<name>.part` and renamed into
+        // place only after the whole write succeeded, so a reader never sees
+        // part of it.
         let command = format!(
-            "exec 3<&0; printf '%s\\n' \"$$\" \"$PWD\" > {}; env -u AE_NO_AUTOSTART -u AE_SESSION -u CODEX_HOME -u CLAUDE_CONFIG_DIR {outside} HOME={} AE_HOME={} CONFIG_FILE={} TMUX_TMPDIR={} AE_RESTART_PROBE='literal $probe' {} app {operand} <&3 3<&- & pid=$!; printf '%s\\n' \"$pid\" > {}; wait \"$pid\"; rc=$?; stty -a > {}; printf 'BACK rc=%s\\n' \"$rc\"; sleep 30",
-            q(&rig.scratch.join("shell")),
+            "exec 3<&0; printf '%s\\n' \"$$\" \"$PWD\" > {shell}.part && mv {shell}.part {shell}; env -u AE_NO_AUTOSTART -u AE_SESSION -u CODEX_HOME -u CLAUDE_CONFIG_DIR {outside} HOME={} AE_HOME={} CONFIG_FILE={} TMUX_TMPDIR={} AE_RESTART_PROBE='literal $probe' {} app {operand} <&3 3<&- & pid=$!; printf '%s\\n' \"$pid\" > {}; wait \"$pid\"; rc=$?; stty -a > {after}.part && mv {after}.part {after}; printf 'BACK rc=%s\\n' \"$rc\"; sleep 30",
             q(&rig.home),
             q(&rig.ae_home),
             q(&rig.ae_home.join("config")),
             q(&rig.scratch),
             q(&rig.link),
             q(&rig.scratch.join("pid")),
-            q(&rig.scratch.join("after-mode")),
+            shell = q(&rig.scratch.join("shell")),
+            after = q(&rig.scratch.join("after-mode")),
         );
         let pane = rig
             .tmux(&[
@@ -141,7 +144,10 @@ impl Hand {
 
     fn recorder(&self, version: &str) {
         let q = |name| quote(&self.path(name).display().to_string());
-        self.next(version, &format!("stty -a > {}; printf '%s\\n' \"$$\" \"$PPID\" \"$PWD\" \"$AE_RESTART_PROBE\" \"$@\" > {}", q("entry-mode"), q("entry")), 0o755);
+        // The record is written in two parts with a pause between them, so a
+        // reader that took a half-written receipt would fail every run. Each
+        // receipt is renamed into place only after its whole write succeeded.
+        self.next(version, &format!("stty -a > {m}.part && mv {m}.part {m} && printf '%s\\n' \"$$\" > {e}.part && sleep 0.3 && printf '%s\\n' \"$PPID\" \"$PWD\" \"$AE_RESTART_PROBE\" \"$@\" >> {e}.part && mv {e}.part {e}", m = q("entry-mode"), e = q("entry")), 0o755);
     }
 
     fn cooked(&self, name: &str) {
