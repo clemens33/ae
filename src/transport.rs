@@ -362,11 +362,22 @@ fn command_for<A: AsRef<std::ffi::OsStr>>(
 fn note_spawn<'a>(_: &std::ffi::OsStr, _: impl Iterator<Item = &'a std::ffi::OsStr>) {}
 
 #[cfg(test)]
-pub(crate) use tests::{note_spawn, note_waiter_exit, spawns_during, waiter_exits_during};
+pub(crate) use tests::{
+    WaitChildEvent, note_child_reaped, note_child_spawned, note_spawn, note_waiter_exit,
+    spawns_during, wait_children_during, waiter_exits_during,
+};
 
 /// How each waiter [`run_tmux_wait`] started ended is observed by tests alone.
 #[cfg(not(test))]
 const fn note_waiter_exit(_: u32, _: std::process::ExitStatus) {}
+
+/// Whether a wait-leg child started, and its pid, is observed by tests alone.
+#[cfg(not(test))]
+const fn note_child_spawned(_: Option<u32>) {}
+
+/// Each completed reap of a wait-leg child is observed by tests alone.
+#[cfg(not(test))]
+const fn note_child_reaped(_: u32, _: std::process::ExitStatus) {}
 
 /// Run `program` with `args`; report whether it succeeded, and what it printed.
 fn spawn<A: AsRef<std::ffi::OsStr>>(
@@ -1474,6 +1485,7 @@ pub(crate) fn run_tmux_wait(
         let read = tmux::interpret_wait_read(&waiter_output(&scratch));
         if let Some(status) = exited {
             note_waiter_exit(child.id(), status);
+            note_child_reaped(child.id(), status);
             return match read {
                 tmux::WaitRead::Attached(count) if count > 0 => Waited::Attached,
                 tmux::WaitRead::Attached(_) if status.success() => Waited::Woke,
@@ -1508,7 +1520,9 @@ fn start_wait_client(args: &[String], stdout: std::process::Stdio) -> Option<std
     command.stdin(std::process::Stdio::null());
     command.stdout(stdout);
     command.stderr(std::process::Stdio::null());
-    command.spawn().ok()
+    let child = command.spawn().ok();
+    note_child_spawned(child.as_ref().map(std::process::Child::id));
+    child
 }
 
 /// What a waiter printed so far, at most a few lines' worth.
@@ -1570,6 +1584,7 @@ fn release_waiter(
             match waiter.try_wait() {
                 Ok(Some(status)) => {
                     note_waiter_exit(waiter.id(), status);
+                    note_child_reaped(waiter.id(), status);
                     reaped = true;
                 }
                 Ok(None) => {}
@@ -1578,7 +1593,10 @@ fn release_waiter(
         }
         if let Some(client) = release.as_mut() {
             match client.try_wait() {
-                Ok(Some(_)) => release = None,
+                Ok(Some(status)) => {
+                    note_child_reaped(client.id(), status);
+                    release = None;
+                }
                 Ok(None) => {}
                 Err(_) => break,
             }
@@ -1596,13 +1614,20 @@ fn release_waiter(
     if !reaped {
         cleaned &= waiter.kill().is_ok();
         match waiter.wait() {
-            Ok(status) => note_waiter_exit(waiter.id(), status),
+            Ok(status) => {
+                note_waiter_exit(waiter.id(), status);
+                note_child_reaped(waiter.id(), status);
+            }
             Err(_) => cleaned = false,
         }
     }
     if let Some(mut client) = release {
         cleaned &= client.kill().is_ok();
-        cleaned &= client.wait().is_ok();
+        let reap = client.wait();
+        if let Ok(status) = reap {
+            note_child_reaped(client.id(), status);
+        }
+        cleaned &= reap.is_ok();
     }
     let what = if reaped { "release" } else { "waiter" };
     let done = if cleaned {
@@ -1652,6 +1677,7 @@ impl ChannelWaiter {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
                     note_waiter_exit(self.child.id(), status);
+                    note_child_reaped(self.child.id(), status);
                     return if status.success() {
                         Waited::Woke
                     } else {
@@ -2858,8 +2884,8 @@ pub(crate) mod fixture_tmux {
     }
 }
 
-// The quiet idle acceptance. Its child-absence checks assume nextest's one test per
-// process, not a concurrent plain `cargo test`.
+// The quiet idle acceptance. Its reap checks read the starts and reaps of the
+// measured call's own thread ([`tests::wait_children_during`]).
 #[cfg(test)]
 pub(crate) mod quietwd_spec;
 
@@ -2870,6 +2896,58 @@ mod tests {
             const { std::cell::RefCell::new(None) };
         static WAITER_EXITS: std::cell::RefCell<Option<Vec<(u32, std::process::ExitStatus)>>> =
             const { std::cell::RefCell::new(None) };
+        static WAIT_CHILDREN: std::cell::RefCell<Option<Vec<WaitChildEvent>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// One step in the life of a child this thread starts inside
+    /// [`wait_children_during`], in the order it happened.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum WaitChildEvent {
+        /// [`note_spawn`] saw a start of any program, before the outcome.
+        Attempted,
+        /// The start succeeded: the actual child's pid.
+        Spawned(u32),
+        /// The start failed: no child exists.
+        SpawnFailed,
+        /// A `wait` or `try_wait` returned this status for the child.
+        Reaped(u32, std::process::ExitStatus),
+    }
+
+    fn note_wait_child(event: WaitChildEvent) {
+        WAIT_CHILDREN.with(|seen| {
+            if let Some(seen) = seen.borrow_mut().as_mut() {
+                seen.push(event);
+            }
+        });
+    }
+
+    /// Record whether a wait-leg start succeeded, with the child's pid.
+    pub(crate) fn note_child_spawned(pid: Option<u32>) {
+        note_wait_child(pid.map_or(WaitChildEvent::SpawnFailed, WaitChildEvent::Spawned));
+    }
+
+    /// Record one completed reap of a wait-leg child.
+    pub(crate) fn note_child_reaped(pid: u32, status: std::process::ExitStatus) {
+        note_wait_child(WaitChildEvent::Reaped(pid, status));
+    }
+
+    /// Run `body`, returning what it returned and every start and reap this
+    /// thread made meanwhile. The trace is complete when `body` returns: a
+    /// later start or reap is never added to it. Observes only.
+    pub(crate) fn wait_children_during<T>(body: impl FnOnce() -> T) -> (T, Vec<WaitChildEvent>) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                WAIT_CHILDREN.with(|seen| seen.borrow_mut().take());
+            }
+        }
+        WAIT_CHILDREN.with(|seen| *seen.borrow_mut() = Some(Vec::new()));
+        let reset = Reset;
+        let out = body();
+        let seen = WAIT_CHILDREN.with(|seen| seen.borrow_mut().take().unwrap_or_default());
+        drop(reset);
+        (out, seen)
     }
 
     /// Record how one waiter of [`super::run_tmux_wait`] ended: its pid and the
@@ -2909,6 +2987,7 @@ mod tests {
         program: &std::ffi::OsStr,
         args: impl Iterator<Item = &'a std::ffi::OsStr>,
     ) {
+        note_wait_child(WaitChildEvent::Attempted);
         SPAWNS.with(|seen| {
             if let Some(seen) = seen.borrow_mut().as_mut() {
                 let mut words = vec![program.to_string_lossy().into_owned()];

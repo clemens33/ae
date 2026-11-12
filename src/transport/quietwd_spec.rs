@@ -428,17 +428,66 @@ fn quietwd_a_renamed_session_cannot_publish_past_a_missing_read_section() {
     );
 }
 
-fn assert_no_unreaped_children() {
-    let own = std::process::id();
-    let children: Vec<_> = crate::procs::snapshot()
-        .expect("the existing process-table door must answer")
-        .into_iter()
-        .filter(|proc| proc.ppid == own && !crate::procs::name_matches(&proc.comm, "ps"))
-        .collect();
+/// Check only children owned by this measured call. Events come from successful
+/// Child spawn/reap operations and are sealed when the measured closure returns.
+fn assert_wait_children_reaped(events: &[super::WaitChildEvent]) {
+    let mut children = std::collections::BTreeMap::new();
+    let mut pending_attempt = false;
+    for event in events {
+        match event {
+            super::WaitChildEvent::Attempted => {
+                assert!(
+                    !pending_attempt,
+                    "a previous spawn attempt was not resolved"
+                );
+                pending_attempt = true;
+            }
+            super::WaitChildEvent::Spawned(pid) => {
+                assert!(pending_attempt, "a successful spawn must have an attempt");
+                pending_attempt = false;
+                assert!(
+                    children.insert(*pid, false).is_none(),
+                    "duplicate wait-child spawn for pid {pid}"
+                );
+            }
+            super::WaitChildEvent::SpawnFailed => {
+                assert!(pending_attempt, "a failed spawn must have an attempt");
+                pending_attempt = false;
+            }
+            super::WaitChildEvent::Reaped(pid, status) => {
+                let reaped = children
+                    .get_mut(pid)
+                    .expect("a reap must belong to a spawned child of this call");
+                assert!(
+                    !*reaped,
+                    "duplicate wait-child reap for pid {pid}: {status:?}"
+                );
+                *reaped = true;
+            }
+        }
+    }
+    assert!(!pending_attempt, "a spawn attempt has no observed outcome");
+    for (pid, reaped) in children {
+        assert!(reaped, "wait call returned before reaping child {pid}");
+    }
+}
+
+/// Each call gets its own completed trace: a later call or snapshot cannot
+/// repair a missing reap in this call.
+fn wait_and_check_reaps(
+    server: &ServerId,
+    session: &str,
+    channel: &str,
+    deadline: Instant,
+) -> Waited {
+    let (result, events) =
+        super::wait_children_during(|| super::run_tmux_wait(server, session, channel, deadline));
     assert!(
-        children.is_empty(),
-        "the wait call left a live or unreaped child: {children:?}"
+        !events.is_empty(),
+        "SETUP: these valid wait fixtures must observe their actual child"
     );
+    assert_wait_children_reaped(&events);
+    result
 }
 
 fn assert_normal_waiter_exit(exits: &[(u32, ExitStatus)]) {
@@ -458,7 +507,6 @@ fn assert_normal_waiter_exit(exits: &[(u32, ExitStatus)]) {
         None,
         "normal timeout cleanup must not kill waiter {pid}"
     );
-    assert_no_unreaped_children();
 }
 
 #[test]
@@ -466,7 +514,7 @@ fn quietwd_detached_wait_has_one_atomic_waiter_and_at_most_one_release_child() {
     let rig = Rig::new("timeout");
     let ((result, calls), exits) = super::waiter_exits_during(|| {
         spawns_during(|| {
-            super::run_tmux_wait(
+            wait_and_check_reaps(
                 &rig.server,
                 "current",
                 "qw-timeout",
@@ -509,7 +557,7 @@ fn quietwd_three_timed_out_waiters_each_release_exit_normally_and_leave_no_child
     for attempt in 0..3 {
         let ((result, calls), exits) = super::waiter_exits_during(|| {
             spawns_during(|| {
-                super::run_tmux_wait(
+                wait_and_check_reaps(
                     &rig.server,
                     "current",
                     "qw-reap-three",
@@ -537,7 +585,7 @@ fn quietwd_a_preexisting_client_wins_even_after_two_toggled_signals() {
     rig.must(&["wait-for", "-S", "qw-attached"]);
     rig.must(&["wait-for", "-S", "qw-attached"]);
     let (result, exits) = super::waiter_exits_during(|| {
-        super::run_tmux_wait(
+        wait_and_check_reaps(
             &rig.server,
             "current",
             "qw-attached",
@@ -557,7 +605,7 @@ fn quietwd_signal_is_only_a_wake_and_a_missing_session_is_a_failure() {
     let rig = Rig::new("wake");
     rig.must(&["wait-for", "-S", "qw-stale"]);
     assert_eq!(
-        super::run_tmux_wait(
+        wait_and_check_reaps(
             &rig.server,
             "current",
             "qw-stale",
@@ -566,7 +614,7 @@ fn quietwd_signal_is_only_a_wake_and_a_missing_session_is_a_failure() {
         Waited::Woke
     );
     assert_eq!(
-        super::run_tmux_wait(
+        wait_and_check_reaps(
             &rig.server,
             "absent",
             "qw-absent",
@@ -574,7 +622,6 @@ fn quietwd_signal_is_only_a_wake_and_a_missing_session_is_a_failure() {
         ),
         Waited::Failed
     );
-    assert_no_unreaped_children();
 }
 
 #[test]
@@ -593,7 +640,7 @@ fn quietwd_attach_after_two_pre_signals_cannot_be_lost() {
     rig.must(&["wait-for", "-S", "qw-race"]);
     let result = std::thread::scope(|scope| {
         let attaching = scope.spawn(|| rig.attach("current", 0));
-        let result = super::run_tmux_wait(
+        let result = wait_and_check_reaps(
             &rig.server,
             "current",
             "qw-race",
@@ -623,7 +670,7 @@ fn quietwd_foreign_attach_does_not_wake_but_switching_into_the_session_does() {
     assert!(outcome.hook_proven);
     rig.attach("peer", 0);
     assert_eq!(
-        super::run_tmux_wait(
+        wait_and_check_reaps(
             &rig.server,
             "current",
             "qw-switch",
@@ -637,7 +684,7 @@ fn quietwd_foreign_attach_does_not_wake_but_switching_into_the_session_does() {
         let switching = scope.spawn(|| {
             rig.must(&["switch-client", "-c", client.trim(), "-t", "=current"]);
         });
-        let result = super::run_tmux_wait(
+        let result = wait_and_check_reaps(
             &rig.server,
             "current",
             "qw-switch",
@@ -678,4 +725,127 @@ fn quietwd_focus_set_and_unset_preserve_watchdog_hook_index_nine() {
         );
         assert!(hooks.contains("qw-focus"));
     }
+}
+
+/// A real client used only to calibrate the ownership oracle. Its Drop always
+/// cleans up, including when the calibrated assertion panics.
+struct OracleChild(std::process::Child);
+
+impl Drop for OracleChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn oracle_client(rig: &Rig, words: &[&str]) -> OracleChild {
+    let mut args = tmux::server_args(&rig.server);
+    args.extend(words.iter().map(|word| (*word).to_owned()));
+    OracleChild(
+        super::start_wait_client(&args, std::process::Stdio::null())
+            .expect("SETUP: start the real calibration client"),
+    )
+}
+
+#[test]
+fn quietwd_an_unrelated_child_does_not_fail_the_wait_reap_contract() {
+    let rig = Rig::new("oracle-unrelated");
+    let mut unrelated = oracle_client(&rig, &["wait-for", "qw-oracle-unrelated"]);
+    assert!(
+        unrelated
+            .0
+            .try_wait()
+            .expect("SETUP: inspect held client")
+            .is_none(),
+        "SETUP: the unrelated client must remain live"
+    );
+    let (result, exits) = super::waiter_exits_during(|| {
+        wait_and_check_reaps(
+            &rig.server,
+            "current",
+            "qw-oracle-neutral",
+            Instant::now() + Duration::from_millis(180),
+        )
+    });
+    assert_eq!(result, Waited::TimedOut);
+    assert_normal_waiter_exit(&exits);
+    assert!(
+        unrelated
+            .0
+            .try_wait()
+            .expect("SETUP: inspect held client")
+            .is_none(),
+        "SETUP: the unrelated client must still be live after the oracle"
+    );
+}
+
+fn assert_unreaped_trace_is_rejected(events: &[super::WaitChildEvent], pid: u32) {
+    assert!(
+        matches!(events, [super::WaitChildEvent::Attempted, super::WaitChildEvent::Spawned(observed)] if *observed == pid),
+        "SETUP: observe the actual spawn, with no completed reap: {events:?}"
+    );
+    let rejected = std::panic::catch_unwind(|| assert_wait_children_reaped(events))
+        .expect_err("the oracle must reject an owned child without a completed reap");
+    let message = rejected
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| rejected.downcast_ref::<&str>().copied())
+        .expect("the calibrated assertion must report its reason");
+    assert!(
+        message.contains("wait call returned before reaping child"),
+        "the oracle rejected for the wrong reason: {message}"
+    );
+}
+
+#[test]
+fn quietwd_the_reap_oracle_rejects_a_live_owned_child() {
+    let rig = Rig::new("oracle-live");
+    let (mut child, events) =
+        super::wait_children_during(|| oracle_client(&rig, &["wait-for", "qw-oracle-live"]));
+    let pid = child.0.id();
+    assert!(
+        child
+            .0
+            .try_wait()
+            .expect("SETUP: inspect live child")
+            .is_none(),
+        "SETUP: the owned client must remain live"
+    );
+    assert_unreaped_trace_is_rejected(&events, pid);
+    child.0.kill().expect("SETUP: stop the calibration child");
+    child.0.wait().expect("SETUP: reap the calibration child");
+    // Cleanup after return cannot alter the completed call's evidence.
+    assert_unreaped_trace_is_rejected(&events, pid);
+}
+
+#[test]
+fn quietwd_the_reap_oracle_rejects_an_exited_but_unreaped_owned_child() {
+    let rig = Rig::new("oracle-zombie");
+    let (mut child, events) = super::wait_children_during(|| {
+        oracle_client(&rig, &["display-message", "-p", "oracle-exit"])
+    });
+    let pid = child.0.id();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rows = crate::procs::stat_snapshot().expect("SETUP: inspect the actual child state");
+        if rows
+            .iter()
+            .any(|(proc, stat)| proc.pid == pid && stat.starts_with('Z'))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "SETUP: the child did not become exited but unreaped"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_unreaped_trace_is_rejected(&events, pid);
+    let status = child
+        .0
+        .wait()
+        .expect("SETUP: reap the exited calibration child");
+    assert!(status.success(), "SETUP: the calibration command failed");
+    // A post-return reap and absence cannot repair the sealed evidence.
+    assert_unreaped_trace_is_rejected(&events, pid);
 }
