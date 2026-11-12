@@ -241,6 +241,7 @@ helper tests/it/seat_relaunch.rs::Rig::tmux = autoreseat::a_forged_trigger_moves
 helper tests/it/seat_relaunch.rs::Rig::tool_pid = autoreseat::a_forged_trigger_moves_nothing_the_watchdog_would_not
 helper tests/it/seat_relaunch.rs::Rig::unmark_limited = autoreseat::with_the_switch_absent_or_off_a_limit_is_booked_and_released_as_it_always_was
 helper tests/it/seatproof_spec.rs::World::command = seatproof_spec::paneless_refusals_are_audited_in_the_helper_session
+helper tests/it/seatproof_spec.rs::World::drawn = seatproof_spec::frontiers218_p1::r8_matching_expectation_qualifies_occupied_unviewed_draft
 helper tests/it/seatproof_spec.rs::World::new = seatproof_spec::paneless_refusals_are_audited_in_the_helper_session
 helper tests/it/seatproof_spec.rs::World::screen = seatproof_spec::paneless_refusals_are_audited_in_the_helper_session
 helper tests/it/seatproof_spec.rs::World::stamp = seatproof_spec::a_slot_stamp_removed_between_resolution_and_admission_is_refused_not_admitted_raw
