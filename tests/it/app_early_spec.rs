@@ -82,7 +82,7 @@ fn peek_settings_and_other_actions_are_dropped_once_and_never_replayed() {
     let _ = take_keys(
         &mut app,
         vec![
-            (Key::Text(b"vs?iynpo[]".to_vec()), at),
+            (Key::Text(b"vsiynpo[]".to_vec()), at),
             (Key::Enter, at),
             (Key::Pasted(b"draft".to_vec()), at),
         ],

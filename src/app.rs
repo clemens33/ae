@@ -61,6 +61,8 @@ mod cue;
 mod dechist_spec;
 pub mod draw;
 #[cfg(test)]
+mod early_settings_spec;
+#[cfg(test)]
 #[path = "../tests/it/app_early_spec.rs"]
 mod early_spec;
 mod filedoor;
@@ -5144,26 +5146,39 @@ fn guarded_at(cleared_at: Option<Instant>, origin: Instant) -> bool {
 }
 
 /// Take a key read before the first fleet read, a Text run byte by byte:
-/// `q` presses its armed key now, a navigation key waits for the fleet it
-/// navigates ([`EARLY_CAP`], the oldest go first) and nothing else is taken,
-/// told once on the hint row. Each of those ends an armed press. `Some(true)`,
-/// or `None` to quit.
+/// `q` presses its armed key now, and `,` and `?` open the settings now when
+/// nothing waits, the rest of the run going to the overlay; a navigation key
+/// waits for the fleet it navigates, and so does an opener behind one, and
+/// every key after a waiting opener, which the overlay will own
+/// ([`EARLY_CAP`], the oldest go first). Nothing else is taken, told once on
+/// the hint row. Each of those ends an armed press. `Some(true)`, or `None`
+/// to quit.
 fn early(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
     let pieces = match key {
         Key::Text(bytes) => bytes.iter().map(|byte| Key::Text(vec![*byte])).collect(),
         other => vec![other.clone()],
     };
     for piece in pieces {
-        if piece == Key::Text(b"q".to_vec()) {
+        // An earlier byte of this run opened the overlay: it owns the rest.
+        if app.model.settings_open() {
+            browse(app, &piece, origin)?;
+            continue;
+        }
+        let behind = app.early.iter().any(|(key, _)| opens_settings(key));
+        let now = (piece == Key::Text(b"q".to_vec()) && !behind)
+            || (opens_settings(&piece) && app.early.is_empty());
+        if now {
             browse(app, &piece, origin)?;
             continue;
         }
         app.armed = None;
-        let nav = match &piece {
-            Key::Up | Key::Down | Key::PageUp | Key::PageDown | Key::Tab | Key::Escape => true,
-            Key::Text(byte) => matches!(byte.as_slice(), [b'1'..=b'9' | b'!' | b'j' | b'k']),
-            _ => false,
-        };
+        let nav = behind
+            || opens_settings(&piece)
+            || match &piece {
+                Key::Up | Key::Down | Key::PageUp | Key::PageDown | Key::Tab | Key::Escape => true,
+                Key::Text(byte) => matches!(byte.as_slice(), [b'1'..=b'9' | b'!' | b'j' | b'k']),
+                _ => false,
+            };
         let evicted = nav && app.early.len() >= EARLY_CAP;
         if evicted {
             app.early.remove(0);
@@ -5176,6 +5191,12 @@ fn early(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
         }
     }
     Some(true)
+}
+
+/// Whether `key` is one byte that opens the settings while browsing: `,`, or
+/// `?` on its keys.
+fn opens_settings(key: &Key) -> bool {
+    matches!(key, Key::Text(byte) if matches!(byte.as_slice(), [b',' | b'?']))
 }
 
 /// Take one key: `Some(redraw)`, or `None` to quit. A batched Text key

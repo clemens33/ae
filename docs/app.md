@@ -177,10 +177,13 @@ the fleet again every 5 seconds, home, the sessions one and then two rows from
 the selection, and the rest in sidebar order, keeping at most 64 lanes; the
 selected session and home are read again every 5 seconds. Until the first
 fleet read the list says `loading`, and a key read until then is not lost: `q` and
-`^C` act at once, the digits, `!`, `j`, `k`, the arrows, the page keys and
-`Esc` wait (64 at most, the oldest go first) and replay on that read, and
-anything else is dropped under one hint, `input before sessions loaded was
-dropped`. A session whose lane was not read yet
+`^C` act at once, and so do `,` and `?`, which open Settings on the next frame
+and hand it the rest of what was typed; the digits, `!`, `j`, `k`, the arrows,
+the page keys and `Esc` wait (64 at most, the oldest go first) and replay on
+that read, a `,` or `?` typed behind them waits too, and so does every key
+after it, for the overlay it opens; anything else is dropped under one hint,
+`input before sessions loaded was dropped`. If Settings opens with no selected
+or home session, it reads Instructions for the fleet's first selection. A session whose lane was not read yet
 shows one dim `loading` row, and one read before shows its last lane at once.
 A lane fills in stages, each its own read: the session's journal first, then
 the lead pair's current conversations, then — for the selected session only —

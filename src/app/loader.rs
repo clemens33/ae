@@ -35,6 +35,8 @@ use crate::tool_stats::store::{self, Loaded};
 use crate::{theme, tmux, transport};
 
 #[cfg(test)]
+mod early_settings_spec;
+#[cfg(test)]
 mod end_reader_spec;
 mod ending;
 #[cfg(test)]
@@ -634,6 +636,16 @@ impl Reader {
                     .filter(|name| !self.home_drawn && home != Some(*name))
                 {
                     self.looks.insert(name.clone());
+                }
+                // If Settings opened with no selected or home session, it
+                // reads for the first selection, at once.
+                if let Some((generation, _)) = self.settings
+                    && self.settings_session.is_none()
+                    && let Some(name) = &selected
+                {
+                    self.settings_session = Some(name.clone());
+                    self.settings_full = false;
+                    self.settings = Some((generation, None));
                 }
                 self.selected = selected;
                 self.focus_at = Instant::now();
