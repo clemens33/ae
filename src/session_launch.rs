@@ -2396,7 +2396,6 @@ fn launch(
         settings_start,
         err
     ));
-    let carries_own_proof = expected_launch.is_some() || restore.is_some();
 
     // ---- THE tmux FLOOR, before the first thing this launch would write ----
     // AHEAD of the lifecycle lock, migration chain and config seed. A resume
@@ -2418,7 +2417,7 @@ fn launch(
     }
     step!(check_stopped_near_miss(
         &session,
-        plan.resume || carries_own_proof,
+        plan.resume || carries_own_proof(expected_launch, restore),
         preflight_meta_present,
         running_preflight,
         err
@@ -2805,7 +2804,7 @@ fn check_launch_kind(
     if let ControlFlow::Break(code) = check_resume_target(
         session,
         resume,
-        expected_launch.is_some() || restore.is_some(),
+        carries_own_proof(expected_launch, restore),
         preflight_meta_present,
         err,
     )? {
@@ -2831,6 +2830,16 @@ fn check_launch_kind(
         return Ok(ControlFlow::Break(EXIT_FAILED));
     }
     Ok(ControlFlow::Continue(preflight_meta_present))
+}
+
+/// Whether a launch brings its own proof of an existing record: the picker or
+/// menu's captured expectation, or a restore. Such a launch is not asked for a
+/// sign of intent (`--resume`) and a near-miss word does not refuse it.
+fn carries_own_proof(
+    expected_launch: Option<&ExpectedLaunch>,
+    restore: Option<&crate::restore::Attempt>,
+) -> bool {
+    expected_launch.is_some() || restore.is_some()
 }
 
 /// `--resume` names an existing session and never creates one: with no record
@@ -7360,9 +7369,10 @@ mod tests {
     }
     use super::{
         AttachAction, EVENTS_KEEP, EXIT_USAGE, ExpectedLaunch, ExpectedState, Mode, Plan, ToolKind,
-        attach_action, check_resume_target, check_stopped_near_miss, expected_launch_argv,
-        launch_token, launch_turn_is_pasted, layout_argvs, lead_pair_policy_argvs, parse_plan,
-        parse_plan_with_attach, replace_watchdog_registration, server_attach_hint, trim_events,
+        attach_action, carries_own_proof, check_launch_kind, check_resume_target,
+        check_stopped_near_miss, expected_launch_argv, launch_token, launch_turn_is_pasted,
+        layout_argvs, lead_pair_policy_argvs, parse_plan, parse_plan_with_attach,
+        replace_watchdog_registration, server_attach_hint, trim_events,
     };
     use crate::inventory::ServerId;
     use std::fmt::Write as _;
@@ -7981,6 +7991,42 @@ mod tests {
                 assert_eq!((code, text.as_str()), (None, ""), "{label}");
             }
         }
+    }
+
+    #[test]
+    fn a_launch_carrying_an_expectation_is_not_asked_for_a_sign_of_intent() {
+        let expected = ExpectedLaunch::new(
+            ExpectedState::AbsentCanonical,
+            ServerId::Ambient,
+            "1".to_owned(),
+            "2".to_owned(),
+            "/dev/ttys004".to_owned(),
+            "3".to_owned(),
+            4,
+        );
+        assert!(carries_own_proof(Some(&expected), None));
+        assert!(!carries_own_proof(None, None));
+
+        // `--resume` for a name with no record: refused for a bare launch, passed
+        // for one that carries an expectation (nothing is read from the record).
+        let dir = scratch("own-proof");
+        for (proof, refused) in [(None, true), (Some(&expected), false)] {
+            let mut err = Vec::new();
+            let flow = check_launch_kind("fresh", &dir, proof, None, true, false, false, &mut err)
+                .expect("the check writes to a buffer");
+            let text = String::from_utf8_lossy(&err).into_owned();
+            if refused {
+                assert_eq!(flow, std::ops::ControlFlow::Break(EXIT_USAGE), "{text}");
+                assert_eq!(
+                    text,
+                    "Error: --resume found no session named 'fresh' to resume. Nothing was created.\n"
+                );
+            } else {
+                assert_eq!(flow, std::ops::ControlFlow::Continue(false), "{text}");
+                assert_eq!(text, "");
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
