@@ -2783,7 +2783,7 @@ pub(crate) fn run_tmux_op(argv: &crate::session_tmux::TmuxArgv) -> (bool, String
 fn tmux_op_failure(stderr: &[u8]) -> String {
     String::from_utf8_lossy(stderr)
         .lines()
-        .next()
+        .find(|line| !line.trim().is_empty())
         .unwrap_or("tmux gave no reason")
         .chars()
         .take(256)
