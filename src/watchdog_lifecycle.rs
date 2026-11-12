@@ -951,6 +951,25 @@ mod tests {
     }
 
     #[test]
+    fn a_forwarded_knob_tail_without_the_step_channel_passes_on_to_the_session_lookup() {
+        // A root that does not exist: past the refusal, the lookup says the
+        // session is not found, before any tmux call.
+        let root = std::path::Path::new("/nonexistent/ae-wdlife-step");
+        let tail: Vec<String> = ["start", "s", "--", "--interval", "1"]
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let got = run_with_actor(root, &tail, "human", &mut out, &mut err).expect("buffers write");
+        assert_eq!(got, super::EXIT_FAILED);
+        assert_eq!(
+            String::from_utf8_lossy(&err),
+            "Error: session 's' not found\n"
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
     fn unknown_is_neither_running_nor_stopped() {
         // The type's whole reason for existing: an unanswerable probe must not
         // compare equal to a verified absence, because `start` acts on absence.

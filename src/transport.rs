@@ -3657,6 +3657,56 @@ mod tests {
     }
 
     #[test]
+    fn a_channel_waiter_waits_out_its_deadline_wakes_on_a_signal_and_is_released_never_killed() {
+        use super::{ChannelWaiter, Waited, signal_channel, spawns_during, waiter_exits_during};
+        use std::time::Instant;
+        let rig = super::quietwd_spec::Rig::new("channel");
+        let channel = "qw-channel";
+        // No signal: the wait ends at its deadline, not before, and the
+        // client keeps waiting for the next wait.
+        let mut waiter = ChannelWaiter::start(&rig.server, channel).expect("the waiter starts");
+        let began = Instant::now();
+        assert_eq!(
+            waiter.wait_until(began + Duration::from_millis(300)),
+            Waited::TimedOut
+        );
+        assert!(
+            began.elapsed() >= Duration::from_millis(300),
+            "a wait with no signal lasts until its deadline"
+        );
+        // A signal on its channel wakes that same client, which is reaped.
+        assert!(signal_channel(&rig.server, channel), "the signal is sent");
+        let (woke, exits) =
+            waiter_exits_during(|| waiter.wait_until(Instant::now() + Duration::from_secs(5)));
+        assert_eq!(woke, Waited::Woke);
+        assert_eq!(exits.len(), 1, "the woken client was reaped: {exits:?}");
+        // A client still waiting is released by a signal on its own channel,
+        // then reaped with a normal exit.
+        let waiter = ChannelWaiter::start(&rig.server, channel).expect("the waiter starts");
+        let pid = waiter.child.id();
+        let (((), calls), exits) =
+            waiter_exits_during(|| spawns_during(|| waiter.release(&rig.server)));
+        assert_eq!(calls.len(), 1, "one release child: {calls:?}");
+        assert!(
+            calls[0].ends_with(&[
+                "wait-for".to_owned(),
+                "-S".to_owned(),
+                "--".to_owned(),
+                channel.to_owned()
+            ]),
+            "the release signals the waiter's own channel: {calls:?}"
+        );
+        assert_eq!(exits.len(), 1, "the waiter was reaped before the return");
+        assert_eq!(exits[0].0, pid, "the reaped client is the waiter itself");
+        assert_eq!(
+            exits[0].1.code(),
+            Some(0),
+            "released, never killed: {:?}",
+            exits[0].1
+        );
+    }
+
+    #[test]
     fn polling_a_waiters_output_leaves_the_writers_cursor_where_it_was() {
         use std::io::{Seek as _, Write as _};
         // The child writes through a clone of this handle, and a clone shares

@@ -219,6 +219,12 @@ mod regressions {
     /// Start a quota-off stepped daemon for `rig` on `channel`, its quota trace in
     /// `step-trace`: one `skipped` line per iteration.
     fn stepped_daemon(rig: &super::super::seat_relaunch::Rig, channel: &str) -> OwnedChild {
+        daemon(rig, &["--step-channel", channel])
+    }
+
+    /// Start a quota-off daemon for `rig` at `--interval 1`, with `step` added
+    /// to its flags, its quota trace in `step-trace`.
+    fn daemon(rig: &super::super::seat_relaunch::Rig, step: &[&str]) -> OwnedChild {
         let config = rig.scratch.join("config");
         let text = std::fs::read_to_string(&config).expect("fixture config");
         std::fs::write(&config, format!("{text}quota = off\n")).expect("quota off, receipts kept");
@@ -226,7 +232,8 @@ mod regressions {
         super::super::cli::ae()
             .arg(ae::cli::WATCHDOG_RUN)
             .arg(&rig.dir)
-            .args(["--interval", "1", "--step-channel", channel])
+            .args(["--interval", "1"])
+            .args(step)
             .args([
                 "--quota-every-secs",
                 "1",
@@ -309,5 +316,88 @@ mod regressions {
             late.join().expect("late signaller"),
             "the late done was sent"
         );
+    }
+
+    #[test]
+    fn an_unstepped_daemon_follows_a_server_rebind_and_publishes_on_the_new_server() {
+        // The rebind refusal belongs to a stepped daemon alone: an unstepped one
+        // adopts the server its record names and keeps watching its session
+        // there.
+        let rig = super::super::seat_relaunch::Rig::new("unsteprebind");
+        let other = super::super::seat_relaunch::Rig::new("unstepother");
+        // The same session name on the other private server, not yet watched.
+        assert!(
+            other.tmux(&["new-session", "-d", "-s", &rig.session]).0,
+            "the session on the other server"
+        );
+        let target = format!("={}:", rig.session);
+        let published_there = || {
+            other
+                .tmux(&[
+                    "show-options",
+                    "-qv",
+                    "-t",
+                    &target,
+                    ae::tmux::WATCHDOG_STATUS_OPTION,
+                ])
+                .1
+                .trim()
+                .to_owned()
+        };
+        assert_eq!(published_there(), "", "nothing published there yet");
+        let log = || std::fs::read_to_string(rig.scratch.join("step-err")).unwrap_or_default();
+        let mut child = daemon(&rig, &[]);
+        let trace = rig.scratch.join("step-trace");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while std::fs::read_to_string(&trace)
+            .unwrap_or_default()
+            .lines()
+            .count()
+            == 0
+        {
+            assert!(
+                Instant::now() < deadline,
+                "no first cycle on the old server"
+            );
+            std::thread::sleep(POLL);
+        }
+        let meta = rig.dir.join("meta");
+        let old = std::fs::read_to_string(&meta).expect("fixture meta");
+        let rebound = old.replace(
+            &format!("tmux_server={}\n", rig.sock.display()),
+            &format!("tmux_server={}\n", other.sock.display()),
+        );
+        assert_ne!(rebound, old, "the server selector actually changed");
+        std::fs::write(&meta, rebound).expect("rebind the fixture server");
+        // A fresh publication on the new server, by a daemon still running.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while published_there().is_empty() {
+            let exited = child.try_wait().expect("read daemon exit");
+            assert!(
+                exited.is_none(),
+                "the daemon stopped instead of watching on the new server: {exited:?}\n{}",
+                log()
+            );
+            assert!(
+                Instant::now() < deadline,
+                "no publication on the new server: {}",
+                log()
+            );
+            std::thread::sleep(POLL);
+        }
+        let exited = child.try_wait().expect("read daemon exit");
+        assert!(exited.is_none(), "still watching: {exited:?}\n{}", log());
+        assert!(!log().contains("step mode"), "{}", log());
+        // The ordinary stop.
+        std::fs::remove_file(&meta).expect("request the ordinary stop");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("read daemon exit") {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "the daemon did not stop");
+            std::thread::sleep(POLL);
+        };
+        assert!(status.success(), "{status}\n{}", log());
     }
 }
