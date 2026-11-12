@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.41] - 2026-11-12
+- A seat that resumed its conversation after a rename is still owed the rename notice, and a resumed start names only the new session (#282)
+- Session notice: a resume, or a relaunch or reseat that keeps the conversation, no longer hides a rename that predates it (#282)
+- Shell_quote moves into the word grammar; launch re-exports it and tmux, session_tmux, config and requests name it there
+- Is_assignment moves into the word grammar; launch_cmd re-exports it
+- Command_is_shell moves next to the process table that uses it; watchdog re-exports it
+- Names archive::is_canonical_uuid, the owner, instead of the session_launch alias
+- Worktree gc and a retire guard for owned worktrees (issue 275)
+- Worktree gc: driver regressions for the mutation survivors (issue 275)
+
 ## [v2026.11.40] - 2026-11-12
 - A call whose attempts all go stale is contended only while the deadline holds (#320)
 - The Tools schedule counts simulated time, not the wake's real elapsed time (#329)
