@@ -655,12 +655,14 @@ fn start_outside_tmux_resumes_the_proven_incarnation_without_attaching() {
     assert!(noticed(&app, "Starting 'api'."), "{:?}", app.notices);
     // Spelled out, not asked of the minter for the session: exactly the
     // executable (the one `lifecycle`'s own test pins), the session as ONE
-    // element and `--no-attach`, so nothing attaches and nothing else rides.
+    // element, `--no-attach` so nothing attaches, and `--resume` so the launch
+    // resumes that session and never creates one; nothing else rides.
     let own = crate::lifecycle::resume_argv("any").expect("own executable");
     let want = vec![
         own.as_args()[0].clone(),
         "api".to_owned(),
         "--no-attach".to_owned(),
+        "--resume".to_owned(),
     ];
     assert_eq!(*started.borrow(), vec![want]);
 }

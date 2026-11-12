@@ -766,7 +766,8 @@ fn a_rename_into_a_near_miss_word_is_refused_and_moves_nothing() {
 
 /// ONLY A NEW NAME IS REFUSED: a legitimate near name still creates, and a
 /// session that already carries a near-miss name (the stray `sessions` of
-/// #254) still resumes, lists and renames to itself exactly as before.
+/// #254) still resumes on explicit intent (`--resume`), lists and renames to
+/// itself exactly as before.
 #[test]
 fn a_legitimate_near_name_creates_and_an_existing_near_miss_session_still_resumes() {
     if skip() {
@@ -804,7 +805,7 @@ fn a_legitimate_near_name_creates_and_an_existing_near_miss_session_still_resume
         "rewrite the recorded name"
     );
 
-    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["sessions", "--no-attach"]);
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["sessions", "--no-attach", "--resume"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
     assert!(
         rig.tmux(&["has-session", "-t", "=sessions"]).0,
@@ -812,6 +813,167 @@ fn a_legitimate_near_name_creates_and_an_existing_near_miss_session_still_resume
     );
     let (code, stdout, stderr) = rig.run_on(Some(&sock), &["rename", "sessions", "sessions"]);
     assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+}
+
+/// The refusal a STOPPED session named like a near-miss word is given: it
+/// names `ae <command>` and the deliberate spelling `ae <word> --resume`.
+fn near_miss_resume_line(word: &str, command: &str) -> String {
+    format!(
+        "Error: '{word}' looks like a mistyped ae command, and a stopped session of that name exists. Did you mean: ae {command}? Resume it with: ae {word} --resume\n"
+    )
+}
+
+/// Record a STOPPED session under a near-miss name by hand, as one made before
+/// #254 refused such names: launch `from`, stop it, move its record to `word`.
+fn stray_stopped_session(rig: &Rig, sock: &Path, from: &str, word: &str) {
+    let (code, stdout, stderr) = rig.run_on(Some(sock), &[from, "--no-attach"]);
+    assert_eq!(code, Some(0), "{from}: stdout: {stdout}\nstderr: {stderr}");
+    let (ok, why) = rig.tmux(&["kill-session", "-t", &format!("={from}")]);
+    assert!(ok, "stop the source: {why}");
+    let made = rig.sessions().join(from);
+    let stray = rig.sessions().join(word);
+    assert!(std::fs::rename(&made, &stray).is_ok(), "move the record");
+    let meta = std::fs::read_to_string(stray.join("meta")).unwrap_or_default();
+    assert!(
+        meta.contains(&format!("session={from}\n")),
+        "the record names its session: {meta}"
+    );
+    assert!(
+        std::fs::write(
+            stray.join("meta"),
+            meta.replace(&format!("session={from}\n"), &format!("session={word}\n"))
+        )
+        .is_ok(),
+        "rewrite the recorded name"
+    );
+}
+
+/// The names and record bytes under the sessions root: what a refusal must
+/// leave exactly as it found it.
+fn sessions_fingerprint(rig: &Rig) -> Vec<(String, Vec<u8>)> {
+    let mut rows: Vec<(String, Vec<u8>)> = std::fs::read_dir(rig.sessions())
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| {
+                    let meta = std::fs::read(entry.path().join("meta")).unwrap_or_default();
+                    (entry.file_name().to_string_lossy().into_owned(), meta)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    rows.sort();
+    rows
+}
+
+/// A STOPPED SESSION NAMED LIKE A MISTYPED COMMAND IS NOT RESUMED BY THE BARE
+/// WORD (#284): `ae sessions` meant `ae list`, and resuming starts every seat
+/// of the old session. It is refused as usage, writes nothing and starts
+/// nothing; `--resume` is the explicit intent that resumes it, and a RUNNING
+/// session of that name still only attaches.
+#[test]
+fn a_stopped_near_miss_session_is_resumed_only_with_explicit_intent() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("nearstopped");
+    let sock = rig.sock.clone();
+    for (word, command, from) in [
+        ("sessions", "list", "stray-a"),
+        ("lists", "list", "stray-b"),
+        ("boards", "board", "stray-c"),
+    ] {
+        stray_stopped_session(&rig, &sock, from, word);
+        let before = sessions_fingerprint(&rig);
+        let (code, stdout, stderr) = rig.run_on(Some(&sock), &[word, "--no-attach"]);
+        assert_eq!(code, Some(2), "{word}: stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(stderr, near_miss_resume_line(word, command), "{word}");
+        assert!(stdout.is_empty(), "{word}: a refusal reached stdout");
+        assert!(
+            !rig.tmux(&["has-session", "-t", &format!("={word}")]).0,
+            "{word}: a refused word started the stopped session"
+        );
+        assert_eq!(
+            sessions_fingerprint(&rig),
+            before,
+            "{word}: a refusal wrote state"
+        );
+    }
+
+    // Inside tmux the bare word takes the same refusal.
+    assert!(
+        rig.tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "caller"])
+            .0,
+        "a caller session"
+    );
+    let (code, stdout, stderr) =
+        rig.run_inside_on(&sock, Some(&sock), &["sessions", "--no-attach"]);
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(stderr, near_miss_resume_line("sessions", "list"));
+    assert!(
+        !rig.tmux(&["has-session", "-t", "=sessions"]).0,
+        "the refusal inside tmux started the session"
+    );
+
+    // The explicit intent resumes it ...
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["sessions", "--no-attach", "--resume"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.tmux(&["has-session", "-t", "=sessions"]).0,
+        "--resume resumed the stopped session: {stdout}{stderr}"
+    );
+    // ... and once it runs, the bare word only attaches, as it always did.
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["sessions", "--no-attach"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !stderr.contains("mistyped"),
+        "a running session is not refused: {stderr}"
+    );
+}
+
+/// `--resume` NEVER CREATES: with no record there is nothing to resume, so it
+/// refuses as usage and builds nothing, for a plain name and a near-miss word
+/// alike; an existing stopped plain name resumes with it as without it.
+#[test]
+fn resume_never_creates_a_session() {
+    if skip() {
+        return;
+    }
+    let rig = Rig::idle("resumenever");
+    let sock = rig.sock.clone();
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["fresh", "--no-attach", "--resume"]);
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        stderr,
+        "Error: --resume found no session named 'fresh' to resume. Nothing was created.\n"
+    );
+    assert!(stdout.is_empty(), "a refusal reached stdout: {stdout}");
+    assert!(!rig.sessions().exists(), "a refused --resume built state");
+    assert!(
+        !rig.tmux(&["has-session", "-t", "=fresh"]).0,
+        "a refused --resume made a tmux session"
+    );
+    // A near-miss word with no record names the missing session, not the
+    // creation hint that would tell the caller to pick another name.
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["sessions", "--no-attach", "--resume"]);
+    assert_eq!(code, Some(2), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        stderr,
+        "Error: --resume found no session named 'sessions' to resume. Nothing was created.\n"
+    );
+    assert!(stdout.is_empty(), "a refusal reached stdout: {stdout}");
+    assert!(!rig.sessions().exists(), "a near-miss --resume built state");
+
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["plain", "--no-attach"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let (ok, why) = rig.tmux(&["kill-session", "-t", "=plain"]);
+    assert!(ok, "stop it: {why}");
+    let (code, stdout, stderr) = rig.run_on(Some(&sock), &["plain", "--no-attach", "--resume"]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        rig.tmux(&["has-session", "-t", "=plain"]).0,
+        "--resume resumed the stopped plain session"
+    );
 }
 
 /// THE REFUSED SET IS THE ROUTE'S OWN ARMS, read from the router's source.

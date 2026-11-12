@@ -13,6 +13,8 @@ ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--tmux]
                        when stdin and stdout are a terminal; otherwise attach to it.
                        --dir selects a new session's origin; --no-attach prints the
                        exact attach command and exits; --tmux keeps the tmux view
+ae <name> --resume     Resume an existing session and never create one. A stopped session
+                       named like an ae command (sessions, lists) resumes only with it
 ae <name> --solo       lead only, no colead
 ae <name> use <alias>  Start session with a specific agent as main
 ae <name> --seat <agent>=<profile> [...]

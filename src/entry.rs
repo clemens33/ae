@@ -236,6 +236,8 @@ Usage:
   ae <name> --solo       lead only, no colead
   ae <name> --dir <path> Start or reattach using an explicit origin directory
   ae <name> --no-attach  Start or reattach without attaching; print attach command
+  ae <name> --resume     Resume an existing session, never create one (a stopped session
+                         named like an ae command, such as `sessions`, resumes only so)
   ae <name> use <name>   Start session with a specific agent as main
   ae <name> --seat <agent>=<profile>
                          Use a different profile for one launch seat (repeatable)
@@ -487,6 +489,17 @@ pub fn near_miss_refusal(name: &str) -> Option<String> {
     let command = near_miss_command(name)?;
     Some(format!(
         "Error: '{name}' looks like a mistyped ae command, not a new session name. Did you mean: ae {command}? No session was created; pick another name to create one."
+    ))
+}
+
+/// What a launch RESUMING a stopped session prints when `name` is a near-miss
+/// word and nothing says the resume is meant; `None` for every other name. The
+/// deliberate spelling is `ae <name> --resume`.
+#[must_use]
+pub fn near_miss_resume_refusal(name: &str) -> Option<String> {
+    let command = near_miss_command(name)?;
+    Some(format!(
+        "Error: '{name}' looks like a mistyped ae command, and a stopped session of that name exists. Did you mean: ae {command}? Resume it with: ae {name} --resume"
     ))
 }
 
@@ -908,6 +921,28 @@ mod tests {
     }
 
     #[test]
+    fn the_resume_refusal_is_asked_of_the_same_near_miss_set_and_names_the_intent() {
+        let expected = expected_near_misses();
+        for (word, command) in &expected {
+            assert_eq!(
+                near_miss_resume_refusal(word),
+                Some(format!(
+                    "Error: '{word}' looks like a mistyped ae command, and a stopped session of that name exists. Did you mean: ae {command}? Resume it with: ae {word} --resume"
+                )),
+                "{word}"
+            );
+        }
+        // Every other name, the orchestrator and the routed verbs included, is
+        // never refused: only a near-miss word is.
+        for word in ["sessionx", "my-sessions", "listing", "", "Sessions", "s"]
+            .into_iter()
+            .chain(ROUTED_VERBS.iter().copied())
+        {
+            assert!(near_miss_resume_refusal(word).is_none(), "'{word}'");
+        }
+    }
+
+    #[test]
     fn the_near_miss_set_leaves_the_orchestrator_and_the_routed_verbs_alone() {
         // `orchestrator` is the one routed word a session may be named, and the
         // routed verbs themselves are `name_is_routed_verb`'s, not this set's.
@@ -931,7 +966,8 @@ mod tests {
     }
     use super::{
         DEFAULT_CONFIG, HELP, LIST_HELP, Preamble, ROUTED_VERBS, Route, TMUX_NO_ATTACH,
-        is_direct_child_name, name_is_routed_verb, near_miss_refusal, route, routed_verb_refusal,
+        is_direct_child_name, name_is_routed_verb, near_miss_refusal, near_miss_resume_refusal,
+        route, routed_verb_refusal,
     };
 
     /// A first-use name is the sanitised basename and always a legal session

@@ -459,15 +459,11 @@ fn a_near_miss_word_on_a_terminal_refuses_before_the_app_opens() {
     }
 }
 
-/// A session that already carries a near-miss name lands in the app as before:
-/// only a NEW name is refused.
-#[test]
-fn an_existing_near_miss_session_still_lands_in_the_app() {
-    let rig = Rig::new("nearexists");
+/// A STOPPED session made before the refusal existed, recorded under the
+/// near-miss name `sessions` by hand since no launch can create one now.
+fn stray_stopped_sessions_record(rig: &Rig) {
     rig.launch("one");
     rig.stop("one");
-    // Made before the refusal existed: record it under the near-miss name by
-    // hand, since no launch can create one now.
     let made = rig.dir("one");
     let stray = rig.dir("sessions");
     std::fs::rename(&made, &stray).expect("move the record");
@@ -481,10 +477,49 @@ fn an_existing_near_miss_session_still_lands_in_the_app() {
         meta.replace("session=one\n", "session=sessions\n"),
     )
     .expect("rewrite the recorded name");
+}
 
+/// The bare word on a terminal for a STOPPED near-miss session (#284) takes the
+/// launch's own refusal before the app opens: exit 2, nothing resumed.
+#[test]
+fn a_stopped_near_miss_session_is_refused_before_the_app_opens() {
+    let rig = Rig::new("nearstopped");
+    stray_stopped_sessions_record(&rig);
     let gate = rig.scratch.join("go");
     let rc = rig.scratch.join("rc");
     let pane = rig.pane("host", &gated(&command(&["sessions"], &rc, true), &gate));
+    std::fs::write(&gate, "").expect("release the pane");
+    let screen = rig.wait(&pane, "the stopped near-miss word is refused", |screen| {
+        screen.contains("looks like a mistyped ae command")
+    });
+    assert!(
+        screen.contains("Error: 'sessions' looks like a mistyped ae command, and a stopped session of that name exists. Did you mean: ae list? Resume it with: ae sessions --resume"),
+        "the refusal, verbatim:\n{screen}"
+    );
+    assert!(
+        !app_frame(&screen),
+        "a refused word draws no app:\n{screen}"
+    );
+    assert_eq!(wait_for_rc(&rc), "2", "the refusal is a usage error");
+    assert!(
+        !rig.has_session("sessions"),
+        "the refusal started no tmux session"
+    );
+}
+
+/// A STOPPED session that carries a near-miss name lands in the app on explicit
+/// intent (`--resume`): only the bare word is refused.
+#[test]
+fn an_existing_near_miss_session_still_lands_in_the_app() {
+    let rig = Rig::new("nearexists");
+    stray_stopped_sessions_record(&rig);
+
+    let gate = rig.scratch.join("go");
+    let rc = rig.scratch.join("rc");
+    let pane = rig.pane(
+        "host",
+        &gated(&command(&["sessions", "--resume"], &rc, true), &gate),
+    );
     std::fs::write(&gate, "").expect("release the pane");
     let screen = rig.wait(&pane, "the existing session lands", |screen| {
         lands(screen, "sessions")

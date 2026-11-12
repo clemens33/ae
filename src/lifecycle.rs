@@ -1030,15 +1030,18 @@ pub(crate) const ALREADY_STOPPED_SUMMARY: &str = "already stopped";
 /// [`resume_argv`].
 pub(crate) struct DetachedArgv(Vec<String>);
 
-/// `nohup <this binary> <name> --no-attach` — a stopped session resumed with
-/// nothing attached, the session name its own argv element (no shell, so
-/// nothing to inject). What `ae app` outside tmux starts a session with.
+/// `nohup <this binary> <name> --no-attach --resume` — a stopped session
+/// resumed with nothing attached, the session name its own argv element (no
+/// shell, so nothing to inject). What `ae app` outside tmux starts a session
+/// with: `--resume` is its explicit intent, which a session named like an ae
+/// command needs and which never creates a session whose record is gone.
 pub(crate) fn resume_argv(name: &str) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
     Some(DetachedArgv(vec![
         own.to_string_lossy().into_owned(),
         name.to_owned(),
         "--no-attach".to_owned(),
+        "--resume".to_owned(),
     ]))
 }
 
@@ -2331,14 +2334,14 @@ mod tests {
     }
 
     #[test]
-    fn a_resume_argv_is_exactly_this_binary_the_session_and_no_attach() {
+    fn a_resume_argv_is_exactly_this_binary_the_session_no_attach_and_resume() {
         let own = crate::shape::resolved_exe().expect("own executable");
         let own = own.to_string_lossy().into_owned();
         for name in ["api", "a b; rm -rf ~", "--stop"] {
             let argv = resume_argv(name).expect("own executable");
             assert_eq!(
                 argv.as_args(),
-                [own.as_str(), name, "--no-attach"],
+                [own.as_str(), name, "--no-attach", "--resume"],
                 "one element per word: the name is never split or joined"
             );
         }

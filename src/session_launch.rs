@@ -45,13 +45,13 @@ mod start_wiring_spec;
 pub use capture::developer_record_carries;
 
 /// The usage line for the core entry.
-pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--tmux] [--solo] [--from <uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <name>] <session-name>";
+pub const USAGE: &str = "Usage: _launch --home <ae-home> --cwd <dir> [--global <cfg>] [--local <cfg>] [--server-kind <kind>] [--server <value>] [--caller-socket <path>] [--attach|--no-attach] [--no-autostart] [--] [--worktree|--copy|--local] [--dir <path>] [--no-attach] [--tmux] [--resume] [--solo] [--from <uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <name>] <session-name>";
 
 /// The public refusal for a launch argv that names no session.
 pub const MISSING_NAME: &str = "Error: a session needs a name: ae <name> [...]";
 
 /// The public launch usage line paired with [`MISSING_NAME`].
-pub const PUBLIC_USAGE: &str = "Usage: ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--tmux] [--solo] [--from <archive-uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <agent>]";
+pub const PUBLIC_USAGE: &str = "Usage: ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--tmux] [--resume] [--solo] [--from <archive-uuid>] [--seat <agent>=<profile>] [--lead <profile>] [--colead <profile>] [use <agent>]";
 
 /// How long a freshly created pane's shell is given to draw its prompt before
 /// anything is pasted.
@@ -268,6 +268,10 @@ pub struct Plan {
     /// `--tmux` — the tmux view, never the app. The entry reads it; `_launch`
     /// accepts it in the user argv and ignores it, so the launch is today's.
     pub tmux: bool,
+    /// `--resume` — the caller means an EXISTING session: it never creates
+    /// one, and it is the explicit intent that lets a session named like an
+    /// ae command resume (`ae sessions` alone never does, #284).
+    pub resume: bool,
 }
 
 /// Parse the user's launch argv.
@@ -322,6 +326,7 @@ impl PlanParser<'_> {
             "--attach" if self.allow_attach => self.plan.attach = Some(true),
             "--no-attach" => self.plan.attach = Some(false),
             "--tmux" if !self.allow_attach => self.plan.tmux = true,
+            "--resume" if !self.allow_attach => self.plan.resume = true,
             "--solo" if !self.allow_attach => self.plan.workers = Some(String::new()),
             _ if word == "--dir" || word.starts_with("--dir=") => {
                 self.directory(word.strip_prefix("--dir="))?;
@@ -348,7 +353,7 @@ impl PlanParser<'_> {
             }
             _ if word.starts_with("--") => {
                 return Err(format!(
-                    "Error: unknown flag '{word}'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --tmux, --solo, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>."
+                    "Error: unknown flag '{word}'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --tmux, --resume, --solo, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>."
                 ));
             }
             // A launch takes exactly one session name: a second positional is
@@ -817,6 +822,7 @@ pub fn relaunch(
         dir: None,
         attach: None,
         tmux: false,
+        resume: false,
     };
     launch(&env, &launch_plan, Some(plan.proof), None, None, out, err)
 }
@@ -2385,10 +2391,12 @@ fn launch(
         &dir,
         expected_launch,
         restore,
+        plan.resume,
         expected_resume,
         settings_start,
         err
     ));
+    let carries_own_proof = expected_launch.is_some() || restore.is_some();
 
     // ---- THE tmux FLOOR, before the first thing this launch would write ----
     // AHEAD of the lifecycle lock, migration chain and config seed. A resume
@@ -2408,6 +2416,13 @@ fn launch(
         write!(err, "{refusal}")?;
         return Ok(crate::tmux_floor::EXIT_REFUSED);
     }
+    step!(check_stopped_near_miss(
+        &session,
+        plan.resume || carries_own_proof,
+        preflight_meta_present,
+        running_preflight,
+        err
+    ));
     // A labeled spawned seat's recorded authority is judged first: a missing
     // global config is that seat's own refusal, not the roster's.
     let spawned_labels = step!(check_spawned_labels(
@@ -2755,14 +2770,20 @@ fn check_name(
 }
 
 /// The refusals the launch's kind owes before the floor: settings Start
-/// creates only the canonical orchestrator, a near-miss word never CREATES a
-/// session, and an expected Resume whose record is gone is stale. Continues
-/// with whether the record was there at preflight.
+/// creates only the canonical orchestrator, `--resume` never CREATES a
+/// session, a near-miss word never CREATES one either, and an expected Resume
+/// whose record is gone is stale. Continues with whether the record was there
+/// at preflight.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one launch's kind: the captured expectation, the restore, the plan's resume intent and the two derived flags"
+)]
 fn check_launch_kind(
     session: &str,
     dir: &Path,
     expected_launch: Option<&ExpectedLaunch>,
     restore: Option<&crate::restore::Attempt>,
+    resume: bool,
     expected_resume: bool,
     settings_start: bool,
     err: &mut impl Write,
@@ -2779,9 +2800,21 @@ fn check_launch_kind(
     // server for the tmux floor; absence makes the captured action stale and
     // is refused before a lock-file or any other effect.
     let preflight_meta_present = !settings_start && node_exists(&dir.join(crate::store::META));
+    // `--resume` is asked first: it names the missing session instead of the
+    // near-miss hint that would tell a caller to pick another name to create.
+    if let ControlFlow::Break(code) = check_resume_target(
+        session,
+        resume,
+        expected_launch.is_some() || restore.is_some(),
+        preflight_meta_present,
+        err,
+    )? {
+        return Ok(ControlFlow::Break(code));
+    }
     // A near-miss word may not CREATE a session: no record is the launch's own
-    // create-versus-resume discriminator, so a session already named so still
-    // resumes. Read-only above this line, so a refusal has written nothing.
+    // create-versus-resume discriminator; a session already named so is judged
+    // by `check_stopped_near_miss` once the floor has passed. Read-only above
+    // this line, so a refusal has written nothing.
     if expected_launch.is_none()
         && restore.is_none()
         && !preflight_meta_present
@@ -2798,6 +2831,50 @@ fn check_launch_kind(
         return Ok(ControlFlow::Break(EXIT_FAILED));
     }
     Ok(ControlFlow::Continue(preflight_meta_present))
+}
+
+/// `--resume` names an existing session and never creates one: with no record
+/// there is nothing to resume, and the launch refuses before it writes
+/// anything. Picker, menu and restore launches carry their own proof of an
+/// existing record and are not asked.
+fn check_resume_target(
+    session: &str,
+    resume: bool,
+    carries_own_proof: bool,
+    preflight_meta_present: bool,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, ()>> {
+    if resume && !carries_own_proof && !preflight_meta_present {
+        writeln!(
+            err,
+            "Error: --resume found no session named '{session}' to resume. Nothing was created."
+        )?;
+        return Ok(ControlFlow::Break(EXIT_USAGE));
+    }
+    Ok(ControlFlow::Continue(()))
+}
+
+/// A near-miss word names a STOPPED session: `ae sessions` meant `ae list`, and
+/// a resume starts every seat of the old session, so it needs a sign that it is
+/// meant — `--resume`, the picker or menu's expected launch, or a restore.
+/// A RUNNING session of that name only attaches and is not asked. Read-only, so
+/// a refusal has written nothing.
+fn check_stopped_near_miss(
+    session: &str,
+    deliberate: bool,
+    preflight_meta_present: bool,
+    running_preflight: bool,
+    err: &mut impl Write,
+) -> crate::Result<ControlFlow<u8, ()>> {
+    if !deliberate
+        && preflight_meta_present
+        && !running_preflight
+        && let Some(refusal) = crate::entry::near_miss_resume_refusal(session)
+    {
+        writeln!(err, "{refusal}")?;
+        return Ok(ControlFlow::Break(EXIT_USAGE));
+    }
+    Ok(ControlFlow::Continue(()))
 }
 
 /// The server a launch's tmux floor is asked of: the proposed one when no
@@ -7282,10 +7359,10 @@ mod tests {
         }
     }
     use super::{
-        AttachAction, EVENTS_KEEP, ExpectedLaunch, ExpectedState, Mode, Plan, ToolKind,
-        attach_action, expected_launch_argv, launch_token, launch_turn_is_pasted, layout_argvs,
-        lead_pair_policy_argvs, parse_plan, parse_plan_with_attach, replace_watchdog_registration,
-        server_attach_hint, trim_events,
+        AttachAction, EVENTS_KEEP, EXIT_USAGE, ExpectedLaunch, ExpectedState, Mode, Plan, ToolKind,
+        attach_action, check_resume_target, check_stopped_near_miss, expected_launch_argv,
+        launch_token, launch_turn_is_pasted, layout_argvs, lead_pair_policy_argvs, parse_plan,
+        parse_plan_with_attach, replace_watchdog_registration, server_attach_hint, trim_events,
     };
     use crate::inventory::ServerId;
     use std::fmt::Write as _;
@@ -7834,6 +7911,93 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    /// Whether `check` refused, and what it wrote to stderr.
+    fn refused_with(
+        check: impl FnOnce(&mut Vec<u8>) -> crate::Result<std::ops::ControlFlow<u8, ()>>,
+    ) -> (Option<u8>, String) {
+        let mut err = Vec::new();
+        let flow = check(&mut err).expect("the check writes to a buffer");
+        let code = match flow {
+            std::ops::ControlFlow::Break(code) => Some(code),
+            std::ops::ControlFlow::Continue(()) => None,
+        };
+        (code, String::from_utf8_lossy(&err).into_owned())
+    }
+
+    #[test]
+    fn only_a_stopped_near_miss_session_without_a_sign_of_intent_is_refused() {
+        // (name, deliberate, record present, running) -> refused?
+        for (name, deliberate, present, running, refused) in [
+            ("sessions", false, true, false, true),
+            ("lists", false, true, false, true),
+            ("sessions", true, true, false, false),
+            ("sessions", false, true, true, false),
+            ("sessions", false, false, false, false),
+            ("plain", false, true, false, false),
+        ] {
+            let (code, text) = refused_with(|err| {
+                check_stopped_near_miss(name, deliberate, present, running, err)
+            });
+            let label =
+                format!("{name} deliberate={deliberate} present={present} running={running}");
+            if refused {
+                assert_eq!(code, Some(EXIT_USAGE), "{label}");
+                assert_eq!(
+                    text,
+                    format!(
+                        "{}\n",
+                        crate::entry::near_miss_resume_refusal(name).expect("a near-miss word")
+                    ),
+                    "{label}"
+                );
+            } else {
+                assert_eq!((code, text.as_str()), (None, ""), "{label}");
+            }
+        }
+    }
+
+    #[test]
+    fn resume_refuses_only_where_there_is_no_record_and_no_proof_of_one() {
+        // (resume, carries own proof, record present) -> refused?
+        for (resume, own_proof, present, refused) in [
+            (true, false, false, true),
+            (true, false, true, false),
+            (true, true, false, false),
+            (false, false, false, false),
+        ] {
+            let (code, text) =
+                refused_with(|err| check_resume_target("fresh", resume, own_proof, present, err));
+            let label = format!("resume={resume} own_proof={own_proof} present={present}");
+            if refused {
+                assert_eq!(code, Some(EXIT_USAGE), "{label}");
+                assert_eq!(
+                    text,
+                    "Error: --resume found no session named 'fresh' to resume. Nothing was created.\n",
+                    "{label}"
+                );
+            } else {
+                assert_eq!((code, text.as_str()), (None, ""), "{label}");
+            }
+        }
+    }
+
+    #[test]
+    fn resume_is_a_public_launch_flag_the_seat_grammar_refuses() {
+        let words = |argv: &[&str]| {
+            argv.iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let plan = parse_plan(&words(&["demo", "--resume", "--no-attach"])).expect("parses");
+        assert!(plan.resume && plan.attach == Some(false));
+        assert!(!parse_plan(&words(&["demo"])).expect("plain").resume);
+        let path = parse_plan(&words(&["demo", "--dir", "--resume"])).expect("a path");
+        assert_eq!(path.dir.as_deref(), Some("--resume"));
+        assert!(!path.resume, "a --dir value is never the flag");
+        assert!(parse_plan_with_attach(&words(&["--resume"]), true).is_err());
+        assert!(super::PUBLIC_USAGE.contains("[--resume]") && super::USAGE.contains("[--resume]"));
     }
 
     #[test]

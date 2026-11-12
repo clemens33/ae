@@ -20,7 +20,7 @@ use super::{Plan, parse_plan, parse_plan_with_attach};
 type Case = (&'static [&'static str], &'static str, &'static str);
 
 const UNKNOWN_HEAD: &str = "Error: unknown flag '";
-const UNKNOWN_TAIL: &str = "'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --tmux, --solo, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>.";
+const UNKNOWN_TAIL: &str = "'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --tmux, --resume, --solo, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>.";
 
 fn render(result: Result<Plan, String>) -> String {
     let plan = match result {
@@ -45,6 +45,7 @@ fn render(result: Result<Plan, String>) -> String {
         dir,
         attach,
         tmux,
+        resume,
     } = plan;
     let mut out = vec!["ok".to_owned()];
     out.extend(mode.map(|value| format!("mode={value:?}")));
@@ -59,6 +60,9 @@ fn render(result: Result<Plan, String>) -> String {
     out.extend(attach.map(|value| format!("attach={value}")));
     if tmux {
         out.push("tmux".to_owned());
+    }
+    if resume {
+        out.push("resume".to_owned());
     }
     out.join(" ")
 }
@@ -118,6 +122,12 @@ const FLAGS: &[Case] = &[
         "unknown \"--tmux\"",
     ),
     (&["--tmux"], "ok tmux", "unknown \"--tmux\""),
+    (
+        &["demo", "--resume", "--resume"],
+        "ok name=\"demo\" resume",
+        "unknown \"--resume\"",
+    ),
+    (&["--resume"], "ok resume", "unknown \"--resume\""),
     (&["--solo"], "ok workers=\"\"", "unknown \"--solo\""),
     (
         &["--solo", "--solo", "demo"],
@@ -616,7 +626,7 @@ fn order() {
 
 #[test]
 fn the_unknown_flag_line_is_context_free() {
-    let line = "Error: unknown flag '--x=y'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --tmux, --solo, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>.";
+    let line = "Error: unknown flag '--x=y'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --tmux, --resume, --solo, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>.";
     for allow_attach in [false, true] {
         assert_eq!(
             parse_plan_with_attach(&words(&["--x=y"]), allow_attach),
