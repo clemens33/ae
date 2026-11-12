@@ -1239,7 +1239,7 @@ help:
 # bump re-keys the CI tool cache instead of silently reusing the old binary.
 JUST_VERSION := "1.57.0"
 
-NEXTEST_VERSION := "0.9.143"
+NEXTEST_VERSION := "0.9.151"
 TAPLO_VERSION := "0.10.0"
 DENY_VERSION := "0.20.2"
 MUTANTS_VERSION := "27.1.0"
