@@ -5,7 +5,7 @@
 //!
 //! | Tool | How the id is found |
 //! |---|---|
-//! | codex | the `codex.<slot>.sid` file its own `developer_instructions` write, verified against the current launch token; then a launch-token scan of the recorded config home's UTC day partitions from capture birth through today (last 30 days when the birth is unknown); legacy seats with no token may scan only today/yesterday by cwd and fall back to their TUI header |
+//! | codex | the `codex.<slot>.sid` file its own `developer_instructions` write, verified against the current launch token; then a launch-token scan of the recorded config home's local-date day partitions from the day before the capture birth's UTC day through the day after today (last 30 UTC days plus tomorrow when the birth is unknown); legacy seats with no token may scan only yesterday/today/tomorrow by cwd and fall back to their TUI header |
 //! | opencode | `opencode session list --format json`, matched on the session's `directory` |
 //! | gemini | `~/.gemini/tmp/<project>/chats/session-*.json`, matched on the launch token, then on the project root alone |
 //! | agy | the launch token, searched in the BYTES of `~/.gemini/antigravity-cli/conversations/<id>.db` — OR, for a seat that has no token at all, the CLI log that names both the workspace and the conversation it created. Alternatives, not a chain: a token miss stays pending, because falling through cross-wires two seats sharing one directory |
@@ -31,7 +31,8 @@ const POLLS: u32 = 6;
 /// The pause between looks.
 const POLL: Duration = Duration::from_secs(5);
 
-/// UTC partition width in the Codex session store.
+/// Day width of the date partitions in the Codex session store. The date a
+/// partition carries is the local date of the rollout's birth, not its UTC date.
 const SECONDS_PER_DAY: i64 = 86_400;
 
 /// A legacy retained seat has no recorded birth. Its positive launch token is
@@ -903,7 +904,7 @@ pub(crate) fn find_codex_by_launch_id(
     find_codex_by_launch_id_in_days(config_home, marker_prefix, launch_id, capture_floor, &days)
 }
 
-/// The token lookup within an already resolved set of UTC partitions.
+/// The token lookup within an already resolved set of day partitions.
 fn find_codex_by_launch_id_in_days(
     config_home: &Path,
     marker_prefix: &str,
@@ -1715,32 +1716,43 @@ fn json_records(listed: &str) -> Vec<&str> {
 // the shared scan primitives
 // ---------------------------------------------------------------------------
 
-/// Today and yesterday as `YYYY/MM/DD` in UTC — the day-partitioned layout
-/// codex uses.
+/// The `YYYY/MM/DD` partitions a rollout born within the last twelve hours can
+/// sit in: today in UTC first, then yesterday and tomorrow. Codex files a
+/// rollout under its LOCAL date, and no real zone is more than a day from UTC
+/// (UTC-12 to UTC+14), so the local date is always one of these three.
 fn day_dirs(now: Timestamp) -> Vec<String> {
     [
         now,
         Timestamp::from_epoch(now.epoch().saturating_sub(SECONDS_PER_DAY)),
+        Timestamp::from_epoch(now.epoch().saturating_add(SECONDS_PER_DAY)),
     ]
     .iter()
     .map(|at| day_dir(*at))
     .collect()
 }
 
-/// Every UTC Codex partition from a known capture birth through today. A
-/// legacy retained seat with no birth is bounded to thirty partitions; its
-/// launch token remains the positive identity proof within that range.
+/// Every Codex partition a rollout born since a known capture floor can sit
+/// in: the day before the floor's UTC day through the day after today, because
+/// the partition is the local date and a local date is within one day of the
+/// UTC date. A legacy retained seat with no birth is bounded to thirty UTC
+/// days plus tomorrow. The launch token and the floor, not the directory,
+/// stay the identity proof, so a neighbouring day costs reads only.
 fn codex_token_day_dirs(now: Timestamp, capture_floor: i64) -> Vec<String> {
     let today = now.epoch().div_euclid(SECONDS_PER_DAY);
-    let first = if capture_floor > 0 {
-        capture_floor.div_euclid(SECONDS_PER_DAY)
+    let (first, last) = if capture_floor > 0 {
+        let floor_day = capture_floor.div_euclid(SECONDS_PER_DAY);
+        // A floor in a future UTC day names no rollout, whatever the zone.
+        if floor_day > today {
+            return Vec::new();
+        }
+        (floor_day.saturating_sub(1), today.saturating_add(1))
     } else {
-        today.saturating_sub(CODEX_UNKNOWN_FLOOR_DAYS - 1)
+        (
+            today.saturating_sub(CODEX_UNKNOWN_FLOOR_DAYS - 1),
+            today.saturating_add(1),
+        )
     };
-    if first > today {
-        return Vec::new();
-    }
-    (first..=today)
+    (first..=last)
         .map(|day| day_dir(Timestamp::from_epoch(day.saturating_mul(SECONDS_PER_DAY))))
         .collect()
 }
@@ -2385,26 +2397,217 @@ mod tests {
     }
 
     #[test]
-    fn the_day_directories_are_today_and_yesterday_in_utc() {
-        // 2026-03-01T00:30:00Z — the previous day is in another month.
+    fn the_day_directories_span_the_utc_neighbours_a_local_partition_can_name() {
+        // 2026-03-01T00:30:00Z — the previous day is in another month. Codex
+        // files a rollout under its LOCAL date, which is the UTC date or one
+        // of its two neighbours; today stays first, the fixtures rely on it.
         let at = Timestamp::parse("2026-03-01T00:30:00Z").expect("the documented form");
-        assert_eq!(day_dirs(at), vec!["2026/03/01", "2026/02/28"]);
+        assert_eq!(day_dirs(at), vec!["2026/03/01", "2026/02/28", "2026/03/02"]);
         let floor = Timestamp::parse("2026-02-27T23:59:59Z")
             .expect("the capture floor")
             .epoch();
         assert_eq!(
             codex_token_day_dirs(at, floor),
-            vec!["2026/02/27", "2026/02/28", "2026/03/01"],
-            "a known origin includes its UTC day through today"
+            vec![
+                "2026/02/26",
+                "2026/02/27",
+                "2026/02/28",
+                "2026/03/01",
+                "2026/03/02"
+            ],
+            "a known origin spans the day before its UTC day through the day after today"
         );
         let unknown = codex_token_day_dirs(at, 0);
-        assert_eq!(unknown.len(), 30);
+        assert_eq!(unknown.len(), 31);
         assert_eq!(unknown.first().map(String::as_str), Some("2026/01/31"));
-        assert_eq!(unknown.last().map(String::as_str), Some("2026/03/01"));
+        assert_eq!(unknown.last().map(String::as_str), Some("2026/03/02"));
         assert!(
             codex_token_day_dirs(at, at.epoch().saturating_add(SECONDS_PER_DAY)).is_empty(),
             "a floor in a future UTC day cannot name a rollout partition"
         );
+    }
+
+    /// Every UTC offset a real zone has, in seconds: UTC-12 to UTC+14 in
+    /// quarter hours. An independent reference for the partition a local
+    /// clock names, not a re-statement of the scan's own arithmetic.
+    fn real_utc_offsets() -> impl Iterator<Item = i64> {
+        (-48..=56).map(|quarter| quarter * 900)
+    }
+
+    #[test]
+    fn a_rollout_born_in_any_real_zone_lands_in_a_scanned_partition() {
+        for now_text in [
+            "2026-03-01T00:30:00Z",
+            "2026-11-12T23:10:00Z", // the gap that broke three seats: 00:10 in Vienna
+            "2026-11-12T12:00:00Z",
+            "2026-02-28T23:59:59Z",
+        ] {
+            let now = Timestamp::parse(now_text)
+                .expect("the documented form")
+                .epoch();
+            // A token-proven scan: a rollout born anywhere in [floor, now].
+            for floor in [now - 120, now - 30 * 3600, now - 5 * SECONDS_PER_DAY] {
+                let days = codex_token_day_dirs(Timestamp::from_epoch(now), floor);
+                for born in (floor..=now).step_by(900) {
+                    for offset in real_utc_offsets() {
+                        let local = day_dir(Timestamp::from_epoch(born + offset));
+                        assert!(
+                            days.contains(&local),
+                            "now {now_text} floor {floor}: a rollout born at {born} in UTC{offset:+}s is filed under {local}, outside {days:?}"
+                        );
+                    }
+                }
+            }
+            // The tokenless cwd leg: a rollout born within the last twelve hours.
+            let days = day_dirs(Timestamp::from_epoch(now));
+            for born in (now - 12 * 3600..=now).step_by(900) {
+                for offset in real_utc_offsets() {
+                    let local = day_dir(Timestamp::from_epoch(born + offset));
+                    assert!(
+                        days.contains(&local),
+                        "now {now_text}: a rollout born at {born} in UTC{offset:+}s is filed under {local}, outside {days:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A token-proven codex seat that registers from a rollout filed under the
+    /// partition `pick(floor, now)` names, born inside the capture window.
+    /// Returns the exit code, the seat's meta and the rollout's id.
+    fn register_from_partition(tag: &str, pick: impl Fn(i64, i64) -> i64) -> (u8, String, String) {
+        let dir = scratch(tag);
+        let home = dir.join("account");
+        let now = Timestamp::now().epoch();
+        let floor = now - 60;
+        let id = "77777777-7777-4777-8777-777777777777";
+        let day = day_dir(Timestamp::from_epoch(pick(floor, now)));
+        rollout_on(
+            &home,
+            &day,
+            id,
+            &dir.display().to_string(),
+            &Timestamp::from_epoch(now - 30).to_string(),
+            r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"AE_CODEX_LAUNCH_ID=tok-local"}]}}"#,
+        );
+        write(
+            &dir.join("meta"),
+            &format!(
+                "schema=2\nwork_dir={d}\nseat.main=lead\nagent_bin.main=codex\n\
+                 harness_session.main=pending\nconfig_home.main={h}\n\
+                 launch_id.main=tok-local\ncapture_floor.main={floor}\nwork_dir.main={d}\n",
+                d = dir.display(),
+                h = home.display(),
+            ),
+        );
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = register_sid(&dir, "main", None, &mut out, &mut err).expect("register");
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        (code, meta, id.to_owned())
+    }
+
+    #[test]
+    fn register_sid_finds_a_rollout_filed_under_the_day_after_the_utc_day() {
+        // A zone east of UTC, between its midnight and UTC's: the case that
+        // left three seats pending at 00:10 in Vienna (23:10Z).
+        let (code, meta, id) =
+            register_from_partition("sid-local-ahead", |_, now| now + SECONDS_PER_DAY);
+        assert_eq!(code, 0, "{meta}");
+        assert!(
+            meta.contains(&format!("harness_session.main={id}\n")),
+            "{meta}"
+        );
+    }
+
+    #[test]
+    fn register_sid_finds_a_rollout_filed_under_the_day_before_the_floors_utc_day() {
+        // A zone west of UTC, between UTC's midnight and its own.
+        let (code, meta, id) =
+            register_from_partition("sid-local-behind", |floor, _| floor - SECONDS_PER_DAY);
+        assert_eq!(code, 0, "{meta}");
+        assert!(
+            meta.contains(&format!("harness_session.main={id}\n")),
+            "{meta}"
+        );
+    }
+
+    #[test]
+    fn a_partition_beyond_the_local_neighbours_is_still_not_scanned() {
+        // The widening is one day, not a free-for-all: identity stays with the
+        // token and the floor, and the directories read stay bounded.
+        let (code, meta, _) =
+            register_from_partition("sid-too-far-ahead", |_, now| now + 2 * SECONDS_PER_DAY);
+        assert_eq!(code, 1, "{meta}");
+        let (code, meta, _) =
+            register_from_partition("sid-too-far-behind", |floor, _| floor - 2 * SECONDS_PER_DAY);
+        assert_eq!(code, 1, "{meta}");
+    }
+
+    #[test]
+    fn the_tokenless_cwd_scan_reaches_the_day_after_the_utc_day() {
+        let root = scratch("codex-cwd-ahead");
+        let config_home = root.join("home").join(".codex");
+        let seat = root.join("seat").display().to_string();
+        let now = Timestamp::now().epoch();
+        let day = day_dir(Timestamp::from_epoch(now + SECONDS_PER_DAY));
+        let id = "66666666-6666-4666-8666-666666666666";
+        rollout_on(
+            &config_home,
+            &day,
+            id,
+            &seat,
+            &Timestamp::from_epoch(now - 30).to_string(),
+            "",
+        );
+        let facts = Facts {
+            agent: "lead".to_owned(),
+            tool: ToolKind::Codex,
+            work_dir: seat,
+            provenance: crate::meta::SeatProvenance::Inherited,
+            capture_floor: now - 60,
+            launch_id: String::new(),
+            launch_marker: Some("CODEX"),
+            config_home: crate::meta::RecordedConfigHome::Missing,
+        };
+        assert_eq!(scan_codex(&config_home, &facts).as_deref(), Some(id));
+    }
+
+    #[test]
+    fn a_muse_session_filed_under_a_local_neighbour_day_is_found_by_its_token() {
+        let now = Timestamp::now().epoch();
+        for (tag, filed_at, mine) in [
+            (
+                "muse-local-ahead",
+                now + SECONDS_PER_DAY,
+                "01a09b51-c88a-7fc0-8f71-200ea396c8a7",
+            ),
+            (
+                "muse-local-behind",
+                now - 60 - SECONDS_PER_DAY,
+                "01a09b51-c88a-7fc0-8f71-200ea396c8a8",
+            ),
+        ] {
+            let home = scratch(tag).join("home");
+            write_bytes(
+                &home
+                    .join(MUSE_SESSIONS)
+                    .join(day_dir(Timestamp::from_epoch(filed_at)))
+                    .join(mine)
+                    .join("session.jsonl"),
+                b"AE_MUSE_LAUNCH_ID=tok-local",
+            );
+            let facts = Facts {
+                agent: "lead".to_owned(),
+                tool: ToolKind::Muse,
+                work_dir: home.display().to_string(),
+                provenance: crate::meta::SeatProvenance::Explicit,
+                capture_floor: now - 60,
+                launch_id: "tok-local".to_owned(),
+                launch_marker: Some("MUSE"),
+                config_home: crate::meta::RecordedConfigHome::Missing,
+            };
+            assert_eq!(scan_muse(&home, &facts).as_deref(), Some(mine), "{tag}");
+        }
     }
 
     #[test]
@@ -2481,12 +2684,12 @@ mod tests {
         assert_eq!(
             scan_codex(&config_home, &legacy),
             None,
-            "tokenless cwd discovery stays restricted to today and yesterday"
+            "tokenless cwd discovery stays restricted to the days around today"
         );
         assert_eq!(
             scan_codex(&config_home, &facts_for("outside-token")),
             None,
-            "an unknown origin scans at most the last thirty UTC day partitions"
+            "an unknown origin scans at most the last thirty UTC day partitions plus tomorrow"
         );
     }
 
@@ -3615,6 +3818,11 @@ mod tests {
             .into_iter()
             .next()
             .expect("today");
+        rollout_on(config_home, &day, id, cwd, stamp, token);
+    }
+
+    /// One codex rollout under the named `YYYY/MM/DD` partition.
+    fn rollout_on(config_home: &Path, day: &str, id: &str, cwd: &str, stamp: &str, token: &str) {
         let path = config_home.join(format!("sessions/{day}/rollout-{id}.jsonl"));
         let body = format!(
             "{{\"timestamp\":\"{stamp}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\"}}}}\n\

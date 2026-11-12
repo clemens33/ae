@@ -390,7 +390,7 @@ The full helper catalog stays in `workspace.md`; CORE points at it as an optiona
 | Agent | Capture method |
 |---|---|
 | Claude Code | ae generates the UUID up-front and passes it via `--session-id UUID`. Immediate. |
-| Codex | No launch-time flag exists. The detached child accepts `codex.<slot>.sid` only when the rollout carrying the current launch token proves the same id, then scans UTC day partitions from the capture floor through today by that token; a missing legacy floor is bounded to 30 days. A token miss stays pending; cwd scans stay on today/yesterday and cwd/TUI are legacy no-token fallbacks only. |
+| Codex | No launch-time flag exists. The detached child accepts `codex.<slot>.sid` only when the rollout carrying the current launch token proves the same id, then scans the day partitions from the day before the capture floor's UTC day through the day after today by that token (Codex names a partition by the rollout's local date, so the UTC neighbours are read); a missing legacy floor is bounded to 30 days plus tomorrow. A token miss stays pending; cwd scans stay on yesterday/today/tomorrow and cwd/TUI are legacy no-token fallbacks only. |
 | Gemini | Post-launch scan of `~/.gemini/tmp/<project>/chats/session-*.json` by launch token. |
 | Grok Build | ae generates the UUID up-front and passes it via `--session-id UUID`. Immediate — same as Claude Code, no post-launch scan. |
 | Muse Code | Post-launch raw-byte launch-token scan of `~/.local/share/muse/sessions/YYYY/MM/DD/<id>/session.jsonl` from its capture floor. The directory basename is the id; ae does not decode the nested JSON records. A token miss stays pending. |

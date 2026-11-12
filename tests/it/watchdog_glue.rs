@@ -1924,7 +1924,8 @@ fn a_pending_codex_seat_is_recovered_by_the_running_watchdog() {
     assert!(fs::create_dir_all(&project).is_ok(), "the work dir");
     let meta_dir = plant_pending_codex(&root, "pending", &socket, &project);
 
-    // Codex partitions its logs by UTC day.
+    // Codex partitions its logs by local date; the UTC day is always among the
+    // days the scan reads, and this rollout is born now.
     let day = ae::time::Timestamp::now().to_string()[..10].replace('-', "/");
     let logs = home.join(".codex").join("sessions").join(&day);
     let started = ae::time::Timestamp::now();
