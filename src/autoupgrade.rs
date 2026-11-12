@@ -982,13 +982,14 @@ mod tests {
         let marker = root.join("finished");
         let pid_file = root.join("pid");
         let program = bin.join("ae");
+        // The child publishes the marker by rename, so is_file() implies the whole content.
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\ntest \"$1\" = \"{}\" || exit 9\nprintf %s \"$$\" > '{}'\nsleep 1\nprintf done > '{}'\n",
+                "#!/bin/sh\ntest \"$1\" = \"{}\" || exit 9\nprintf %s \"$$\" > '{}'\nsleep 1\nprintf done > '{marker}.tmp' && mv '{marker}.tmp' '{marker}'\n",
                 crate::cli::AUTOUPGRADE,
                 pid_file.display(),
-                marker.display()
+                marker = marker.display()
             ),
         )
         .expect("program");
