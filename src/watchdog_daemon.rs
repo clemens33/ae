@@ -325,6 +325,10 @@ pub enum FrameVerdict {
     Moved,
     /// No baseline to compare yet.
     Settling,
+    /// No baseline to compare yet, but this proof had a clean one and only
+    /// the settle point moved since (#315): information retakes the
+    /// baseline, so the quiet it already proved still holds.
+    Resettling,
     /// This cycle's read matches the baseline and nothing moved before it.
     Unmoved,
 }
@@ -345,8 +349,10 @@ pub struct FrameSample {
 /// happened since an old proof); a new proof → a fresh frame; a moved settle
 /// point → retake the baseline, keeping `moved` and `settled`. Then, on a
 /// successful read only: Busy past the settle window moves; the first non-Busy
-/// read past it takes the baseline; a hash off the baseline moves. A failed
-/// read changes nothing and never proves Unmoved.
+/// read past it takes the baseline; a hash off the baseline moves. While a
+/// once-settled, unmoved frame waits for its retaken baseline it reads
+/// Resettling (#315), never a first Settling. A failed read changes nothing
+/// and never proves Unmoved or Resettling.
 #[must_use]
 pub fn proof_frame_step(
     prior: Option<ProofFrame>,
@@ -410,10 +416,19 @@ pub fn proof_frame_step(
         FrameVerdict::Moved
     } else if frame.baseline.is_some() {
         FrameVerdict::Unmoved
+    } else if frame.settled {
+        FrameVerdict::Resettling
     } else {
         FrameVerdict::Settling
     };
     (Some(frame), verdict)
+}
+
+/// Whether the pane half proves the frame unchanged since the proof (#225):
+/// a read matching the baseline, or a clean frame whose baseline only
+/// information retook (#315). Settling and Moved never do.
+const fn frame_unchanged(frame: FrameVerdict) -> bool {
+    matches!(frame, FrameVerdict::Unmoved | FrameVerdict::Resettling)
 }
 
 /// Whether an UNCHANGED wait holds its due challenge this cycle (#225, D1):
@@ -431,7 +446,7 @@ pub fn wait_held(
         WaitProgress::ChallengeDue { wait_age_secs, .. }
             if wait_age_secs < crate::watchdog::quiet_ceiling(cadence)
     ) && proof.unchanged
-        && frame == FrameVerdict::Unmoved
+        && frame_unchanged(frame)
 }
 
 /// Whether the due done challenge is the LAST confirmation of an unchanged
@@ -448,7 +463,7 @@ pub fn done_held_due(
         DoneProgress::ChallengeDue { confirmations, required, .. }
             if confirmations >= 1 && confirmations.saturating_add(1) == required
     ) && proof.unchanged
-        && frame == FrameVerdict::Unmoved
+        && frame_unchanged(frame)
 }
 
 /// The task lease's start (#283): a running task keeps the first sighting, a
@@ -22185,7 +22200,7 @@ mod tests {
             assert_eq!(verdict, FrameVerdict::Unmoved);
             let (frame, verdict) =
                 proof_frame_step(frame, Some(1000), Some(1400), read(8), 1500, 300);
-            assert_eq!(verdict, FrameVerdict::Settling);
+            assert_eq!(verdict, FrameVerdict::Resettling);
             let held = frame.expect("frame");
             assert_eq!(
                 (held.settle, held.baseline, held.moved),

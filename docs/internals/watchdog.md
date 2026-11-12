@@ -411,8 +411,10 @@ challenged again once `(OWN_WORK_AGE_CAP − 1)` cadences have passed since its 
   point (moved also by the watchdog's own newest painting delivery) the first non-Busy capture is
   the baseline; a later hash off it, or a Busy frame past the settle window, is motion, and motion
   STICKS until a new proof, a new incarnation or a restart. Information retakes the baseline but
-  never forgets motion. A failed capture, a restart or a missing baseline never proves the frame
-  unchanged.
+  never forgets motion: while a frame that already had a clean baseline for this proof waits for
+  the retaken one, it reads `Resettling`, which still proves it unchanged (#315), so one
+  information record does not end a hold. A failed capture, a restart or a FIRST missing baseline
+  (none taken yet for this proof) never proves the frame unchanged.
 - **Waits** — a due wait challenge is HELD while both halves say unchanged and the proof is younger
   than `watchdog::quiet_ceiling` = `(OWN_WORK_AGE_CAP − 1) × idle_nudge_secs` (900 s at the
   default), measured from the proof and renewed only by a new proof. That lands the held challenge
