@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.45] - 2026-11-12
+- Keep helper paths valid across live session renames
+- Cover alias retarget replacement races
+- Share scratch ownership in alias fixtures
+
 ## [v2026.11.44] - 2026-11-12
 - Gate split: the hp runs the whole suite, the Mac its boundary subset
 - Macos subset: names seatproof_spec World::drawn, the shared tmux helper d067f40d added
