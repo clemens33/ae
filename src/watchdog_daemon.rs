@@ -10019,6 +10019,9 @@ mod limitwake_readers {
 #[path = "watchdog_daemon/activity225_spec.rs"]
 mod activity225_spec;
 #[cfg(test)]
+#[path = "watchdog_daemon/holdend315_spec.rs"]
+mod holdend315_spec;
+#[cfg(test)]
 #[path = "watchdog_daemon/leadfloor2_notice_spec.rs"]
 mod leadfloor2_notice_spec;
 #[cfg(test)]
