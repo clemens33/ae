@@ -405,6 +405,7 @@ pub fn run(
         ACTION,
         parsed.cross_session,
         &parsed.target,
+        &parsed.message,
         &resolved,
         &actor,
         &env.actor_slot,

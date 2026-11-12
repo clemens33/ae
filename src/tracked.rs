@@ -2257,9 +2257,19 @@ fn render_unconfirmed_event_line(fields: &EventFields<'_>, cross_session: bool) 
     render_event_line(&fields, cross_session, None, None, &[])
 }
 
+/// Whether `body` holds [`CROSS_SESSION_FLAG`] as a word of its own: the flag
+/// typed AFTER the recipient. There it is message text and grants nothing; a
+/// refusal that finds it says where the flag counts.
+fn flag_typed_after_the_recipient(body: &str) -> bool {
+    body.split_whitespace()
+        .any(|word| word == CROSS_SESSION_FLAG)
+}
+
 /// Refuse a resolved target outside `caller_session` unless the caller supplied
-/// [`CROSS_SESSION_FLAG`]. Resolution deliberately precedes this check, so an
-/// unknown target keeps its existing resolution error.
+/// [`CROSS_SESSION_FLAG`] before the recipient. `body` is the message words the
+/// caller typed after it, read only to word the refusal. Resolution
+/// deliberately precedes this check, so an unknown target keeps its existing
+/// resolution error.
 ///
 /// # Errors
 ///
@@ -2273,6 +2283,7 @@ pub fn refuse_cross_session(
     helper: &str,
     allowed: bool,
     typed_target: &str,
+    body: &str,
     resolved: &Resolved,
     actor: &str,
     actor_slot: &str,
@@ -2303,9 +2314,15 @@ pub fn refuse_cross_session(
         },
         ToOwned::to_owned,
     );
-    let refusal = format!(
-        "ae: {helper} to {canonical} (typed {typed_target}) REFUSED — another ae session; pass --cross-session only when the human explicitly instructed it"
-    );
+    let refusal = if flag_typed_after_the_recipient(body) {
+        format!(
+            "ae: {helper} to {canonical} (typed {typed_target}) REFUSED — another ae session; {CROSS_SESSION_FLAG} counts only before the recipient: {helper} {CROSS_SESSION_FLAG} {typed_target} …, and only when the human explicitly instructed it"
+        )
+    } else {
+        format!(
+            "ae: {helper} to {canonical} (typed {typed_target}) REFUSED — another ae session; pass --cross-session only when the human explicitly instructed it"
+        )
+    };
     let line = event_line(&EventFields {
         ts: now,
         actor,
@@ -2459,6 +2476,7 @@ fn admitted_route(
         kind.action(),
         parsed.cross_session,
         &parsed.target,
+        &parsed.body,
         &resolved,
         &sender.display,
         &sender.slot,

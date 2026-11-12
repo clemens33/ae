@@ -4085,6 +4085,80 @@ fn cross_session_helpers_refuse_without_authority() {
     assert_eq!(fx.events().len(), before, "resolution precedes refusal");
 }
 
+/// #281: `--cross-session` typed AFTER the recipient is message text, not the
+/// flag, so the delivery is still refused (no new access decision) — but the
+/// refusal must say where the flag counts instead of telling the caller to
+/// pass the flag they just passed.
+#[test]
+fn a_cross_session_flag_after_the_recipient_is_refused_naming_its_position() {
+    let (fx, remote_session, remote_dir, remote_pane, remote_received) =
+        boundary_fixture("boundary_late");
+    let target = format!("@{remote_session}:outside");
+    let canonical = format!("{remote_session}:outside");
+    let pane_target = remote_pane.clone();
+
+    for (helper, typed, argv_tail) in [
+        (
+            ae::cli::SEND,
+            target.as_str(),
+            vec!["--cross-session", "late send"],
+        ),
+        (
+            ae::cli::SEND,
+            target.as_str(),
+            vec!["late send", "--cross-session"],
+        ),
+        (
+            ae::cli::ASK,
+            canonical.as_str(),
+            vec!["--cross-session", "late ask"],
+        ),
+        (
+            ae::cli::REVIEW,
+            pane_target.as_str(),
+            vec!["--cross-session", "late review"],
+        ),
+        (
+            ae::cli::INTERRUPT,
+            target.as_str(),
+            vec!["--cross-session", "stop"],
+        ),
+        (ae::cli::INTERRUPT, target.as_str(), vec!["--cross-session"]),
+    ] {
+        let before = fx.events().len();
+        let mut argv = vec![typed];
+        argv.extend(argv_tail.iter().copied());
+        let refused = fx.run(helper, Some(&fx.main), &argv, &[]);
+        let name = helper.trim_start_matches('_');
+        assert_eq!(refused.0, Some(1), "{helper} {argv:?}: {refused:?}");
+        assert_eq!(
+            refused.2,
+            format!(
+                "ae: {name} to {canonical} (typed {typed}) REFUSED — another ae session; --cross-session counts only before the recipient: {name} --cross-session {typed} …, and only when the human explicitly instructed it\n"
+            ),
+            "{helper} {argv:?}"
+        );
+        let events = fx.events();
+        assert_eq!(events.len(), before + 1, "{helper} {argv:?}: {events:?}");
+        assert!(
+            events.last().is_some_and(|event| {
+                event.contains("\"action\":\"refused\"") && !event.contains("\"cross_session\"")
+            }),
+            "{helper} {argv:?}: {events:?}"
+        );
+        assert!(
+            std::fs::read_to_string(&remote_received)
+                .unwrap_or_default()
+                .is_empty(),
+            "{helper} {argv:?}: a refused body reached the target"
+        );
+        assert!(
+            !remote_dir.join("events.jsonl").exists(),
+            "{helper} {argv:?}: a refusal reached the target ledger"
+        );
+    }
+}
+
 #[test]
 fn authorized_cross_session_deliveries_are_mirrored_to_both_ledgers() {
     let (fx, remote_session, remote_dir, _remote_pane, remote_received) =
