@@ -43,6 +43,8 @@ mod bgmark_cycle_acceptance {
     #[test]
     fn bgmark_real_cycle_without_task_proof_keeps_done_and_an_empty_task_cell() {
         let rig = crate::transport::quietwd_spec::Rig::new("bgmark-no-task");
+        // Exec replaces shells that otherwise keep sleep as their foreground child.
+        rig.must(&["respawn-pane", "-k", "-t", &rig.pane, "exec sleep 600"]);
         rig.must(&["set-option", "-p", "-t", &rig.pane, "@ae_slot", "main"]);
         for (key, value) in [
             ("@ae_icons", "on"),
