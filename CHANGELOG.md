@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.39] - 2026-11-12
+- , and ? open Settings before the first fleet read (issue 314)
+
 ## [v2026.11.38] - 2026-11-12
 - Read the shortcut note from the reader column, wherever the hint wraps
 - Return early off Apple Silicon where the release reaches just bundles
