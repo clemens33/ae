@@ -54,6 +54,10 @@ fn successful_operation_keeps_its_multiline_stdout() {
 #[test]
 fn diagnostic_is_one_bounded_unicode_line_without_control_characters() {
     assert_eq!(
+        tmux_op_failure(b"\n \t\ncan't find pane: %7\nsecond line\n"),
+        "can't find pane: %7"
+    );
+    assert_eq!(
         tmux_op_failure(b"can't find pane: %7\nsecond line\n"),
         "can't find pane: %7"
     );
