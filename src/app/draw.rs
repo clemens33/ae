@@ -4370,13 +4370,15 @@ mod tests {
         let mut shot = Shot::new();
         shot.lane = turns(150);
         shot.model.wheel(true, 38, 1000);
-        // The same scroll at a roomy height does draw it, so the absence below
-        // is the pane's, not the fixture's.
-        let roomy = shot.draw(160, 45, READ_ONLY);
-        assert!(spot(&roomy, "↓ 1 newer turn · End").is_some(), "roomy");
-        let cramped = shot.draw(160, 7, READ_ONLY);
+        // The smallest pane is 8 rows high; a two-row draft takes the lane's
+        // last row there. One row taller leaves the lane one row, which
+        // draws the hint, so the absence below is the pane's, not the fixture's.
+        let draft = drafted(&["one", "two"]);
+        let one_row = shot.draw(160, 9, writing(&draft, "one\ntwo"));
+        assert!(spot(&one_row, "newer turn").is_some(), "one lane row");
+        let none = shot.draw(160, 8, writing(&draft, "one\ntwo"));
         for label in ["newer turn", "more below"] {
-            assert_eq!(spot(&cramped, label), None, "no room: {label}");
+            assert_eq!(spot(&none, label), None, "no lane row: {label}");
         }
     }
 
