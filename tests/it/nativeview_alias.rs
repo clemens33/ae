@@ -416,8 +416,10 @@ fn retire_during_an_attached_grouped_view_accepts_only_the_real_owner() {
 }
 
 fn attach_group(fixture: &Fixture, group: &str) -> super::cli::OwnedChild {
-    let client = super::cli::tmux_attached_client(&fixture.scratch.join("t.sock"), group)
-        .expect("a real client attaches to the group");
+    let Ok(client) = super::cli::tmux_attached_client(&fixture.scratch.join("t.sock"), group)
+    else {
+        panic!("a real client attaches to the group");
+    };
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let (_, attached) = tmux(
@@ -443,7 +445,7 @@ fn attach_group(fixture: &Fixture, group: &str) -> super::cli::OwnedChild {
 }
 
 fn assert_watchdog_caller_at_home(fixture: &Fixture, root: &Path, dir: &Path) {
-    let stopped = super::cli::ae()
+    let Ok(stopped) = super::cli::ae()
         .env("AE_HOME", root)
         .env(
             "TMUX",
@@ -452,17 +454,23 @@ fn assert_watchdog_caller_at_home(fixture: &Fixture, root: &Path, dir: &Path) {
         .env_remove("TMUX_PANE")
         .args(["watchdog", "stop", "real", "--pane", &fixture.pane])
         .output()
-        .expect("watchdog stop reads its explicit caller pane");
+    else {
+        panic!("watchdog stop reads its explicit caller pane");
+    };
     assert!(
         stopped.status.success(),
         "{}",
         String::from_utf8_lossy(&stopped.stderr)
     );
-    let events = fs::read_to_string(dir.join("events.jsonl")).expect("lifecycle audit");
-    let stop = events
+    let Ok(events) = fs::read_to_string(dir.join("events.jsonl")) else {
+        panic!("lifecycle audit");
+    };
+    let Some(stop) = events
         .lines()
         .find(|line| line.contains("\"action\":\"watchdog-stop\""))
-        .expect("watchdog stop reached its decision");
+    else {
+        panic!("watchdog stop reached its decision");
+    };
     assert!(stop.contains("\"actor\":\"lead\""), "{stop}");
 }
 
