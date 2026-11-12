@@ -99,6 +99,7 @@ fn drawn_md(lane: &Lane, width: usize) -> Vec<String> {
         sent: &[],
         icons: true,
         base: &crate::console::link::Base::default(),
+        today: None,
     };
     tail_in(lane, width, Paint::of(None), (&show, Some(&md)), 1000, None)
         .rows

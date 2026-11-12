@@ -92,6 +92,9 @@ pub(super) struct Show<'a> {
     pub(super) icons: bool,
     /// Where a path in a body resolves.
     pub(super) base: &'a link::Base,
+    /// The viewer's day today as `YYYY-MM-DD`: the lane's first turn wears a
+    /// day separator unless it is from this day. `None` gives it none.
+    pub(super) today: Option<&'a str>,
 }
 
 /// [`tail_with`] for a lane that folds nothing and sent nothing.
@@ -112,6 +115,7 @@ pub(super) fn tail(
         sent: &[],
         icons: true,
         base: &link::Base::default(),
+        today: None,
     };
     tail_with(lane, width, paint, &show, need, visited)
 }
@@ -142,9 +146,10 @@ pub(super) fn tail_in(
     need: usize,
     mut visited: Option<&mut Vec<usize>>,
 ) -> Tail {
-    // Newest first, each turn's item, rows and fold row in order; reversed
-    // into place below.
-    let mut turns: Vec<(usize, Vec<Drawn>, Option<usize>)> = Vec::new();
+    // Newest first, each turn's item, rows, the rows above its header (the
+    // blank and the day separator) and fold row in order; reversed into place
+    // below.
+    let mut turns: Vec<(usize, Vec<Drawn>, usize, Option<usize>)> = Vec::new();
     let mut count = 0;
     let mut items = lane.items.iter().enumerate().rev();
     while count < need {
@@ -155,6 +160,9 @@ pub(super) fn tail_in(
         if at > 0 || !lane.coverage.is_empty() {
             rows.push(plain(Line::default()));
         }
+        let day = day_row(&lane.items, at, (show.clock, show.today), paint);
+        rows.extend(day.map(plain));
+        let lead = rows.len();
         let sent = show.sent.get(at).copied().unwrap_or(false);
         let closed = closing(&lane.items, at);
         rows.push(plain(header(
@@ -191,7 +199,7 @@ pub(super) fn tail_in(
             rows.len() - 1
         });
         count += rows.len();
-        turns.push((at, rows, fold));
+        turns.push((at, rows, lead, fold));
     }
     let mut gaps = lane.coverage.iter().rev();
     let mut coverage = Vec::new();
@@ -206,16 +214,12 @@ pub(super) fn tail_in(
     let mut rows = Vec::with_capacity(count);
     rows.extend(coverage.into_iter().rev());
     let mut placed = Vec::with_capacity(turns.len());
-    for (at, turn, fold) in turns.into_iter().rev() {
-        let spacer = usize::from(
-            turn.first()
-                .is_some_and(|(line, _, _)| line.spans.is_empty()),
-        );
+    for (at, turn, lead, fold) in turns.into_iter().rev() {
         placed.push(Turn {
             at,
-            first: rows.len() + spacer,
-            rows: turn.len() - spacer,
-            fold: fold.map(|row| row - spacer),
+            first: rows.len() + lead,
+            rows: turn.len() - lead,
+            fold: fold.map(|row| row - lead),
         });
         rows.extend(turn);
     }
@@ -268,6 +272,39 @@ fn closing(items: &[Item], at: usize) -> Option<Closing> {
         ask: asked,
         cut,
     })
+}
+
+/// The weekday names a day separator wears, Sunday first.
+const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/// The dim day separator above `items[at]`, `── Tue 2026-11-03 ──`: drawn when
+/// the turn's day, in the zone `clock` shifts to, is not the day of the turn
+/// before it. The lane's first turn is compared with `today` instead, and with
+/// no `today` it has no separator.
+fn day_row(
+    items: &[Item],
+    at: usize,
+    (clock, today): (&view::Style, Option<&str>),
+    paint: Paint,
+) -> Option<Line<'static>> {
+    let micros = clock.shift(items.get(at)?.micros);
+    let (day, _) = clock_text(micros);
+    let before = match at.checked_sub(1) {
+        Some(before) => Some(clock_text(clock.shift(items.get(before)?.micros)).0),
+        None => today.map(str::to_owned),
+    };
+    if before.is_none_or(|before| before == day) {
+        return None;
+    }
+    // 1970-01-01 was a Thursday.
+    let days = micros.div_euclid(1_000_000).div_euclid(86_400);
+    let weekday = usize::try_from(days.saturating_add(4).rem_euclid(7))
+        .ok()
+        .and_then(|at| WEEKDAYS.get(at))?;
+    Some(Line::from(Span::styled(
+        format!("── {weekday} {day} ──"),
+        paint.fg(|p| p.dim),
+    )))
 }
 
 /// A turn's header row: its speaker, minute and qualifier.
@@ -645,6 +682,19 @@ pub(super) fn rows(
     clock: &view::Style,
     main: &str,
 ) -> Vec<Line<'static>> {
+    rows_on(lane, width, paint, clock, (main, None))
+}
+
+/// [`rows`] for a viewer whose day is `today`, as [`Show::today`] says it:
+/// the lane's first turn wears a day separator unless it is from that day.
+#[cfg(test)]
+pub(super) fn rows_on(
+    lane: &Lane,
+    width: usize,
+    paint: Paint,
+    clock: &view::Style,
+    (main, today): (&str, Option<&str>),
+) -> Vec<Line<'static>> {
     let mut rows: Vec<Line<'static>> = lane
         .coverage
         .iter()
@@ -657,6 +707,7 @@ pub(super) fn rows(
         if !rows.is_empty() {
             rows.push(Line::default());
         }
+        rows.extend(day_row(&lane.items, at, (clock, today), paint));
         let closed = closing(&lane.items, at);
         rows.push(header(item, closed.as_ref(), clock, main, paint, false));
         let base = link::Base::default();
@@ -1414,12 +1465,157 @@ mod tests {
             sent: &[sent],
             icons: true,
             base: &crate::console::link::Base::default(),
+            today: None,
         };
         super::tail_with(&lane, 40, Paint::of(None), &show, 100, None)
     }
 
     fn rows_of(shown: &super::Tail) -> Vec<String> {
         shown.rows.iter().map(text).collect()
+    }
+
+    // Epoch seconds and weekdays from GNU `date -u -d`, not from this module.
+    const TUE_10: i64 = 1_793_700_000; // 2026-11-03T10:00Z
+    const TUE_1830: i64 = 1_793_730_600; // 2026-11-03T18:30Z
+    const TUE_2230: i64 = 1_793_745_000; // 2026-11-03T22:30Z
+    const WED_08: i64 = 1_793_779_200; // 2026-11-04T08:00Z
+
+    fn at(secs: i64) -> Item {
+        Item {
+            micros: secs * 1_000_000,
+            ..said("body")
+        }
+    }
+
+    /// `items` as a lane with no coverage, drawn whole at 40 cells.
+    fn dated(
+        items: Vec<Item>,
+        today: Option<&str>,
+        clock: &view::Style,
+        need: usize,
+    ) -> super::Tail {
+        let lane = Lane {
+            items,
+            coverage: vec![],
+        };
+        let show = super::Show {
+            clock,
+            main: "x",
+            open: None,
+            sent: &[],
+            icons: true,
+            base: &crate::console::link::Base::default(),
+            today,
+        };
+        super::tail_with(&lane, 40, Paint::of(None), &show, need, None)
+    }
+
+    fn separators(rows: &[String]) -> Vec<(usize, &str)> {
+        let rows = rows.iter().enumerate();
+        rows.filter(|(_, row)| row.starts_with("──"))
+            .map(|(at, row)| (at, row.as_str()))
+            .collect()
+    }
+
+    /// Issue 302: a dim row `── Tue 2026-11-03 ──` stands above a turn whose
+    /// local day differs from the turn before it, and above the lane's first
+    /// turn when that is not from today. It is outside every turn's rows, so
+    /// no mark, fold or click ever lands on it.
+    #[test]
+    fn a_turn_from_another_day_than_the_one_before_it_has_a_day_separator_above_it() {
+        let items = vec![at(TUE_10), at(TUE_1830), at(WED_08)];
+        let shown = dated(items, Some("2026-11-04"), &view::Style::PLAIN, 100);
+        let rows = rows_of(&shown);
+        assert_eq!(
+            separators(&rows),
+            [(0, "── Tue 2026-11-03 ──"), (7, "── Wed 2026-11-04 ──")],
+            "{rows:?}"
+        );
+        let spans: Vec<(usize, usize)> = shown.turns.iter().map(|t| (t.first, t.rows)).collect();
+        assert_eq!(
+            spans,
+            [(1, 2), (4, 2), (8, 2)],
+            "the separators are no turn's"
+        );
+        for turn in &shown.turns {
+            assert!(rows[turn.first].starts_with("lead"), "a header: {rows:?}");
+        }
+        assert_eq!(rows[6], "", "the blank row stays above the separator");
+    }
+
+    #[test]
+    fn the_first_turn_wears_a_separator_only_when_it_is_older_than_today() {
+        let first = |secs: i64, today: Option<&str>| {
+            rows_of(&dated(vec![at(secs)], today, &view::Style::PLAIN, 100))
+        };
+        assert!(
+            separators(&first(WED_08, Some("2026-11-04"))).is_empty(),
+            "today"
+        );
+        assert!(separators(&first(TUE_10, None)).is_empty(), "today unknown");
+        assert_eq!(
+            separators(&first(TUE_10, Some("2026-11-12"))),
+            [(0, "── Tue 2026-11-03 ──")],
+            "an older lane's first row"
+        );
+    }
+
+    #[test]
+    fn the_day_is_the_viewers_local_day() {
+        let items = || vec![at(TUE_1830), at(TUE_2230)];
+        let utc = rows_of(&dated(
+            items(),
+            Some("2026-11-04"),
+            &view::Style::PLAIN,
+            100,
+        ));
+        assert_eq!(
+            separators(&utc),
+            [(0, "── Tue 2026-11-03 ──")],
+            "one day in UTC"
+        );
+        let east = view::Style::resolve(true, None, Some("+0200"), "x");
+        let local = rows_of(&dated(items(), Some("2026-11-04"), &east, 100));
+        assert_eq!(
+            separators(&local),
+            [(0, "── Tue 2026-11-03 ──"), (4, "── Wed 2026-11-04 ──")],
+            "22:30Z is 00:30 the next day at +0200"
+        );
+    }
+
+    /// A suffix render decides each separator from the lane's own turn before
+    /// it, so the newest turn alone still shows its day change.
+    #[test]
+    fn a_tail_that_stops_short_keeps_the_separators_of_the_turns_it_drew() {
+        let items = vec![at(TUE_10), at(TUE_1830), at(WED_08)];
+        let shown = dated(items, Some("2026-11-04"), &view::Style::PLAIN, 1);
+        let rows = rows_of(&shown);
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        assert_eq!(
+            (rows[0].as_str(), rows[1].as_str()),
+            ("", "── Wed 2026-11-04 ──")
+        );
+        assert_eq!(
+            shown
+                .turns
+                .iter()
+                .map(|t| (t.at, t.first, t.rows))
+                .collect::<Vec<_>>(),
+            [(2, 2, 2)]
+        );
+    }
+
+    #[test]
+    fn the_weekday_is_right_across_leap_days_and_before_the_epoch() {
+        for (secs, want) in [
+            (946_728_000, "Sat 2000-01-01"),
+            (1_709_208_000, "Thu 2024-02-29"),
+            (-43_200, "Wed 1969-12-31"),
+            (43_200, "Thu 1970-01-01"),
+        ] {
+            let shown = dated(vec![at(secs)], Some("2099-01-01"), &view::Style::PLAIN, 100);
+            assert_eq!(rows_of(&shown)[0], format!("── {want} ──"));
+        }
     }
 
     #[test]

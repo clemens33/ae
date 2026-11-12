@@ -688,6 +688,13 @@ stored whole text; one that could not be read shows its summary and the reason i
 the header ([Residuals](#residuals)). `/more` is the tmux chat's: typed here it is
 refused with a hint to use the fold row.
 
+## Day separators
+
+A turn's header shows its time as `HH:MM`, in the viewer's zone as tmux reports it, else UTC. A dim
+row `── Tue 2026-11-03 ──` (weekday and ISO date, same zone) stands above a turn whose day differs
+from the turn before it, and above the lane's first turn unless that turn is from today. The row
+belongs to no turn: a click on it marks nothing, and it never counts in a turn's rows.
+
 ## Copying a turn
 
 To copy text you drag over it ([Selecting text](#selecting-text)). To copy one

@@ -8228,7 +8228,8 @@ mod tests {
         // then bounded: the top, not three rows under it.
         let mut bytes = b"\x1b[5~".repeat(100);
         bytes.extend_from_slice(down);
-        let top = 80 * 3 - 1 - 30;
+        // The turns are from 2025, so the lane opens with a day separator row.
+        let top = 80 * 3 - 1 + 1 - 30;
         assert_eq!(replayed(&mut scrolled(80), &bytes), top);
     }
 

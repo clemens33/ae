@@ -694,7 +694,8 @@ fn wheel_over_grown_composer_moves_three_lane_rows_and_bounds_survive_shrink() {
             .text
             .lines()
             .skip(2)
-            .take(4) // coverage notice, gap, turn heading, then its body
+            // coverage notice, gap, day separator, turn heading, then its body
+            .take(5)
             .any(|row| row.contains("lane-00")),
         "oldest turn begins the enlarged lane"
     );

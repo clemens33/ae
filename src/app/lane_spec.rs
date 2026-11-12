@@ -20,7 +20,7 @@ use ratatui_core::text::Line;
 
 use super::draw::Paint;
 use super::fleet::{Counts, Fleet, Line2, Row};
-use super::lane::{rows, tail};
+use super::lane::{rows, rows_on, tail};
 use super::loader::{Answer, ViewRead, Wake};
 use super::model::Model;
 use super::{App, drain};
@@ -317,6 +317,14 @@ fn frame(app: &mut App) -> Buffer {
     buf
 }
 
+/// The full reference of an app frame's lane. The app's clock is the real one
+/// and the fixtures are from 1970, so the frame opens the lane with a day
+/// separator: the reference's viewer lives in a later year than any fixture.
+fn full_of(lane: &Lane) -> Vec<Line<'static>> {
+    let (clock, today) = (view::Style::PLAIN, Some("2099-01-01"));
+    rows_on(lane, 111, Paint::of(None), &clock, ("lead", today))
+}
+
 fn assert_window(buf: &Buffer, full: &[Line<'static>], scroll: usize) {
     let mut expected = Buffer::empty(AREA);
     let visible = window(full, scroll, PAGE);
@@ -371,7 +379,7 @@ fn burst(app: &mut App, bytes: Vec<u8>) -> Buffer {
 #[test]
 fn wheel_burst_before_a_frame_loses_no_scroll_steps() {
     let lane = turns(160);
-    let full = rows(&lane, 111, Paint::of(None), &view::Style::PLAIN, "lead");
+    let full = full_of(&lane);
     let mut app = app(lane);
     let buf = burst(&mut app, wheel(true, 40));
     assert_eq!(
@@ -385,7 +393,7 @@ fn wheel_burst_before_a_frame_loses_no_scroll_steps() {
 #[test]
 fn wheel_crossing_unknown_top_then_down_keeps_sequential_clamping() {
     let lane = turns(80);
-    let full = rows(&lane, 111, Paint::of(None), &view::Style::PLAIN, "lead");
+    let full = full_of(&lane);
     let top = full.len() - PAGE;
     let mut app = app(lane);
     let mut bytes = wheel(true, 200);
@@ -402,7 +410,7 @@ fn wheel_crossing_unknown_top_then_down_keeps_sequential_clamping() {
 #[test]
 fn the_true_top_shows_oldest_content_stops_and_accepts_down() {
     let lane = turns(80);
-    let full = rows(&lane, 111, Paint::of(None), &view::Style::PLAIN, "lead");
+    let full = full_of(&lane);
     let top = full.len() - PAGE;
     let mut app = app(lane);
     let buf = burst(&mut app, wheel(true, 200));

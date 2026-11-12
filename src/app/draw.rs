@@ -1907,6 +1907,9 @@ fn lane_tail(
     main: &str,
     size: (u16, usize),
 ) -> super::lane::Tail {
+    // The viewer's day now, in the zone the turn times wear.
+    let (today, _) =
+        crate::board::clock_text(clock.shift(ctx.screen.now.epoch().saturating_mul(1_000_000)));
     let show = super::lane::Show {
         clock,
         main,
@@ -1914,6 +1917,7 @@ fn lane_tail(
         sent: ctx.wait.sent,
         icons: ctx.icons,
         base: &ctx.screen.overview.base,
+        today: Some(&today),
     };
     let (room, need) = size;
     let lane = ctx.screen.lane;
@@ -4186,6 +4190,48 @@ mod tests {
                 .collect(),
             coverage: Vec::new(),
         }
+    }
+
+    /// Issue 302: the day separator is a dim row above a turn from another
+    /// day than the one before it, and above an older lane's first turn; a lane
+    /// that starts today has none.
+    #[test]
+    fn a_day_separator_is_drawn_dim_above_a_turn_from_another_day() {
+        let turn = |secs: i64, body: &str| Item {
+            micros: secs * 1_000_000,
+            kind: Kind::Said {
+                who: "lead".to_owned(),
+            },
+            body: body.to_owned(),
+            record: None,
+        };
+        let mut shot = Shot::new();
+        // 2025-10-02T10:13Z (Thu), then 2025-10-03T13:10Z (Fri); PIN_NOW is
+        // 2025-10-03T14:10Z. The dates are from GNU `date -u -d @…`.
+        shot.lane = Lane {
+            items: vec![turn(1_759_400_000, "older"), turn(PIN_NOW - 3_600, "today")],
+            coverage: Vec::new(),
+        };
+        let buf = shot.draw(160, 45, READ_ONLY);
+        let dim = super::colour(crate::theme::Palette::DARCULA.dim);
+        let mut at = Vec::new();
+        for want in ["── Thu 2025-10-02 ──", "── Fri 2025-10-03 ──"] {
+            let (y, x) = spot(&buf, want).expect(want);
+            assert_eq!(
+                buf[(u16::try_from(x).expect("a column"), y)].fg,
+                dim,
+                "{want}"
+            );
+            at.push(y);
+        }
+        assert!(at[0] < at[1], "the older day is above the newer one");
+        shot.lane = Lane {
+            items: vec![turn(PIN_NOW - 3_600, "today")],
+            coverage: Vec::new(),
+        };
+        let buf = shot.draw(160, 45, READ_ONLY);
+        assert_eq!(spot(&buf, "2025-10-03"), None, "the lane starts today");
+        assert!(spot(&buf, "today").is_some(), "the turn is drawn");
     }
 
     /// The `↓ newer turns below` hint means newer turns are hidden below:

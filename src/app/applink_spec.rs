@@ -193,6 +193,7 @@ fn overview_fills_the_link_base_from_the_entry_and_the_caller_home() {
         sent: &[],
         icons: true,
         base: &owned,
+        today: None,
     };
     let tail = tail_with(
         &lane_of("docs/x.md and /abs/a.md and ~/z.md"),
@@ -242,6 +243,7 @@ fn shown(
         sent: &[],
         icons: true,
         base: the_base,
+        today: None,
     };
     tail_with(&lane_of(body), width, Paint::of(look), &show, 100, None)
 }
@@ -322,6 +324,7 @@ fn an_app_card_evidence_row_carries_its_link() {
         sent: &[],
         icons: true,
         base: &owned,
+        today: None,
     };
     let tail = tail_with(&lane, 400, Paint::of(None), &show, 100, None);
     assert_eq!(
