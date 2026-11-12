@@ -73,6 +73,12 @@ pub enum Descendancy {
     Unknown,
 }
 
+/// The shells the dead-check treats as "no agent in the foreground".
+#[must_use]
+pub fn command_is_shell(cmd: &str) -> bool {
+    matches!(cmd, "bash" | "zsh" | "fish" | "sh" | "dash" | "")
+}
+
 /// Parse `ps -A -o pid=,ppid=,comm=` output into rows, or `None` if ANY
 /// non-blank line is not `<pid> <ppid> <comm>` with numeric pids and a
 /// non-empty command.
@@ -270,7 +276,7 @@ pub(crate) fn observed_harness(
     if pane_pid.is_none() || table.is_none() {
         return Observed::Unknown;
     }
-    if crate::watchdog::command_is_shell(foreground) {
+    if command_is_shell(foreground) {
         Observed::Shell
     } else {
         Observed::Unrecognised(foreground.to_owned())
@@ -427,7 +433,7 @@ pub(crate) fn background_task(table: Option<&[(Proc, String)]>, tool: u32) -> Op
     }
     Some(table.iter().any(|(proc, stat)| {
         let base = proc.comm.rsplit('/').next().unwrap_or(&proc.comm);
-        let shell = crate::watchdog::command_is_shell(base.trim_start_matches('-'));
+        let shell = command_is_shell(base.trim_start_matches('-'));
         shell
             && stat.contains('s')
             && proc.pid != tool
@@ -509,7 +515,7 @@ pub fn task_running(table: Option<&[(Proc, String)]>, pane_pid: u32, bin: &str) 
     let live = |stat: &str| !stat.starts_with('Z');
     let shell = |proc: &Proc| {
         let base = proc.comm.rsplit('/').next().unwrap_or(&proc.comm);
-        crate::watchdog::command_is_shell(base.trim_start_matches('-'))
+        command_is_shell(base.trim_start_matches('-'))
     };
     let proven = table.iter().any(|(task, stat)| {
         readable_stat(task, stat)
@@ -585,7 +591,27 @@ mod statrow_tool_spec;
 
 #[cfg(test)]
 mod tests {
-    use super::{Descendancy, Proc, PsArgv, descendancy, has_descendant_named, parse_table};
+    use super::{
+        Descendancy, Proc, PsArgv, command_is_shell, descendancy, has_descendant_named, parse_table,
+    };
+
+    #[test]
+    fn the_shell_set_is_exactly_the_bash_command_is_shell_case() {
+        for shell in ["bash", "zsh", "fish", "sh", "dash", ""] {
+            assert!(command_is_shell(shell), "{shell:?} is a shell");
+        }
+        for other in [
+            "claude",
+            "codex",
+            "opencode.exe",
+            "python",
+            "node",
+            "bashx",
+            "ssh",
+        ] {
+            assert!(!command_is_shell(other), "{other:?} is not a shell");
+        }
+    }
 
     /// Shapes measured in `.local/effort/idle-trees.md`: an idle claude keeps
     /// an MCP wrapper `/bin/sh` (`S+`) running docker; a command either tool

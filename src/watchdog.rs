@@ -30,11 +30,9 @@ mod protowd_spec;
 #[path = "watchdog/quiet225_spec.rs"]
 mod quiet225_spec;
 
-/// The shells the dead-check treats as "no agent in the foreground".
-#[must_use]
-pub fn command_is_shell(cmd: &str) -> bool {
-    matches!(cmd, "bash" | "zsh" | "fish" | "sh" | "dash" | "")
-}
+/// The shell-name predicate lives in [`crate::procs`]; this path keeps it for
+/// the callers that name it through the watchdog.
+pub use crate::procs::command_is_shell;
 
 /// Whether a pane's agent has DIED — dropped to a bare shell with no agent
 /// process beneath it.
@@ -3449,11 +3447,11 @@ mod tests {
         NUDGE_WAITING_CLOSE, NUDGE_WAITING_OPEN, OVERVIEW_HOLD_WHILE_WORKING_SECS,
         OWN_WORK_AGE_CAP, Phase, QuietKind, Step, SweepAlert, SweepEffect, SweepKnobs,
         SweepObservation, SweepState, SweepVerdict, Throttle, WaitEpisode, WaitProgress, WaitState,
-        WedgeDetail, classify_dead, command_is_shell, declaration_current, declaration_key,
-        done_progress, done_step, indented, is_echo, is_sweep_target, latest_relevant_event,
-        launch_matches, limit_notice, quiet_filter, quiet_hash, quiet_reason, raw_nudge,
-        record_sweep, shows_throttle, stale_composite, submit_hdr, sweep_step, throttle_class,
-        wait_progress, wait_step, waiting_agent_cap_secs, waiting_agent_escalated,
+        WedgeDetail, classify_dead, declaration_current, declaration_key, done_progress, done_step,
+        indented, is_echo, is_sweep_target, latest_relevant_event, launch_matches, limit_notice,
+        quiet_filter, quiet_hash, quiet_reason, raw_nudge, record_sweep, shows_throttle,
+        stale_composite, submit_hdr, sweep_step, throttle_class, wait_progress, wait_step,
+        waiting_agent_cap_secs, waiting_agent_escalated,
     };
     use crate::events::Event;
     use crate::procs::Descendancy;
@@ -3491,24 +3489,6 @@ mod tests {
         );
         assert_eq!(suspended_secs("suspended +5s: x"), None, "a sign");
         assert_eq!(suspended_secs("suspended 5s: x"), Some(5));
-    }
-
-    #[test]
-    fn the_shell_set_is_exactly_the_bash_command_is_shell_case() {
-        for shell in ["bash", "zsh", "fish", "sh", "dash", ""] {
-            assert!(command_is_shell(shell), "{shell:?} is a shell");
-        }
-        for other in [
-            "claude",
-            "codex",
-            "opencode.exe",
-            "python",
-            "node",
-            "bashx",
-            "ssh",
-        ] {
-            assert!(!command_is_shell(other), "{other:?} is not a shell");
-        }
     }
 
     #[test]
