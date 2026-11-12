@@ -81,7 +81,9 @@ just rust-prune       # report stale ae build output here; apply=yes cleans it
 just rust-stress 'test(=menu::x)' 20 600  # one named filter, repeated, bounded (see Stress runs)
 just version          # current AE_VERSION
 just bundles          # both platform bundles + release SHA256SUMS into ./dist
-just release          # check → test (or a fresh gate-receipt) → rust-deny → CalVer → bundles → smoke → tag → gh release
+just test-macos       # the Mac boundary subset (.config/macos-subset); print=yes prints it, runs nothing
+just release-proof    # the hp's whole green receipt for this commit over ssh, then just test-macos
+just release          # check → release-proof → rust-deny → CalVer → bundles → smoke → tag → gh release
 just docs             # serve the docs site locally on http://localhost:8000
 just docs-build       # build the static site into ./site
 ```
@@ -144,7 +146,9 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 | `just rust-build-release` / `bundles` | native release binary at `target/release/ae` (host only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` from one two-target cargo build (native binary under `target/aarch64-apple-darwin/release/`; needs the musl cross toolchain) |
 | `just rust-stress <filterset> [count=10] [secs=900]` | the BOUNDED repeat run: nextest `--stress-count` over ONE named filterset (a module or a test, never the suite), through the isolated lane. Refuses to start above load1 14 or when load1 cannot be read (status 1), refuses an empty or `all()` filter, a count or bound that is not a plain integer, or a host without `timeout`/`gtimeout` (status 2); threads are the lane's sizing (below), cargo runs at nice 10 under `timeout -k 5 <secs>` (status 124 when the bound ends it) and the lane reaps what it started. It judges the run's own JUnit report, not nextest's exit status alone: status 100 when any iteration failed, status 1 when one did not run or the report is missing (nextest 0.9.143 exits 0 when only the last iteration passed). Never in the gate, CI or mutants. See Stress runs |
 | `just rust-prune` / `rust-prune apply=yes` | THIS checkout's stale `ae` build output: the report is the default and removes nothing, `apply=yes` runs six fixed `cargo clean -p ae` cleans, each proved by a `--dry-run` path check first. Refuses a redirected target dir, a non-root cwd, a linked tree, a process using the checkout or a dry run it cannot prove (a stdout line that is not an absolute path inside its tree, no single valid `Summary`). Own tree only, never during a gate (`docs/development.md`) |
-| `just release` | the whole release, locally: check, test (or a matching gate-receipt, which skips only nextest), rust-deny before the bump. Pre-flight refuses before any state is written |
+| `just test-macos` / `test-macos print=yes` | the Mac boundary subset: every unit test plus the integration modules and exact tests `.config/macos-subset` names, through the lane's filtered arm (no doctests, no receipt). `print=yes` prints the filterset and the selected tests and runs nothing. A malformed manifest refuses. The `gate::macos_subset` guard keeps the manifest complete (see [Release proof](#release-proof)) |
+| `just release-proof [expect=<head>:<tree>]` | the release's tests: the hp's whole green gate-receipt for this clean HEAD, read over ssh and checked strictly, then `just test-macos`. Any doubt is one `release-proof: refused:` line. Needs `AE_RELEASE_HP` and `AE_RELEASE_HP_ROOT` (see [Release proof](#release-proof)) |
+| `just release` | the whole release, locally: check, `release-proof`, rust-deny and an identity recheck before the bump. Pre-flight refuses before any state is written, a missing hp destination included |
 | `just rust-linux` / `rust-linux-26` / `rust-linux-smoke` | ON DEMAND, never reached by `just test`, `just pre` or `just release`: the gate on real Linux, native arm64, in a local container (read-only checkout, `ae-linux-arm64-*` cache volumes, non-root, the mounted source checked against the host's HEAD, tree and dirty count) / the same on Ubuntu 26.04, own `ae-linux26-arm64-*` volumes; `rust-linux-26` (bus `stall`, the default since that arm went green, #267) adds a stalling session bus proved before the build, `rust-linux-26 off` is the validated-host arm / the x86_64 musl release bundle from `./dist` executed in an amd64 container. arm64 only: the x86_64 proof of Ubuntu 26.04 is a human run on x86_64 hardware |
 | `just harness-smoke [control]` | ON-DEMAND live smoke of the adapter rows against the REAL harness binaries and logins (a few short turns per tool); never in the gate, CI or mutants; control = hang shim, no spend |
 
@@ -289,7 +293,8 @@ linked worktree, the silence of a filtered or red run and the order of the lane'
 A whole `just test` (no filter, exit 0) on a clean committed tree ends by writing a gate-receipt:
 one file, `.local/gate-receipts/<tree hash>` in the MAIN checkout (found like the lane lock, so a gate
 run in a slice worktree is the one a release in the main checkout finds, and the tree hash survives a
-fast-forward merge). `just release` reads it so that it does not run the same nextest twice.
+fast-forward merge). A release reads the hp's receipt so that the whole suite runs on the hp and only
+the boundary subset on the Mac (see [Release proof](#release-proof)).
 
 The writer is the last act of `rust-check`, after its four dependencies, and nowhere else. A filtered
 run, `just rust-test`, `just pre`, the bare lane and a red run never reach it, so none of them leaves a
@@ -318,27 +323,70 @@ host time`. `lock_hash` and `toolchain_pin` are the sha256 of `Cargo.lock` and `
 `scratch` is the filesystem kind under the lane's scratch base (`AE_TEST_TMPDIR`, else `/tmp`: the base the lane itself uses, so a release run with another `AE_TEST_TMPDIR` than the gate costs one full gate). `harness` records seven
 `name=first line of --version` entries (or `name=absent`) and never decides.
 
-`just release` matches the receipt of the PRE-BUMP tree, before `just bump`, and prints its decision as
-a `gate-receipt:` line. It reuses the receipt only when ALL of these hold: the file exists and is
-readable, it parses under the strict grammar, `tree`, `head`, `lock_hash`, `toolchain_pin`, `rustc`,
-`nextest`, `tmux`, `scratch`, `host`, `inventory` and `inventory_count` equal their live values, and
-the receipt is not dated in the future and is at most 24 h old. Anything else (a missing, unreadable,
-stale or malformed file, another host, one changed fact) is the full gate: `just test`, as before.
-A malformed receipt is hostile persisted state and never causes a skip.
+A receipt is never overwritten by a red run, so a later red run does not invalidate a fresh green
+receipt for the same tree: the green run tested exactly that tree, and the red one only adds that some
+test is flaky or depends on the machine. Receipts are a few hundred bytes, one per gated tree, and safe
+to delete at any time. `tests/it/gate/receipt_spec.rs` is the frozen acceptance for the writer and the
+strict reader.
 
-A match skips ONLY nextest. `rust-fmt-check`, `rust-lint`, `rust-fuzz-check` and the doctests run
-again on the bumped tree, `just rust-deny` runs before the bump, and `cargo check --locked`, the
-bundles and a bounded smoke of the built binary (`--version` and `doctor`, 10 s each) follow. The
-bump moves the ae version that `fuzz/Cargo.lock` records, and `rust-fuzz-check` runs `--locked`, so
-the release refreshes that lock and proves that only the ae version changed right after the bump,
-before the first of those checks. After the fuzz-lock refresh and before the version commit the
-release proves that every tracked path that differs from HEAD is one of the six version paths
-(`Cargo.toml`, `Cargo.lock`, `fuzz/Cargo.lock`, `README.md`, `docs/index.md`, `CHANGELOG.md`); any
-other path stops the release by name, before the commit and the tag.
+### Release proof
 
-To force the full gate in a release, delete the receipt: `rm .local/gate-receipts/<tree hash>` (or the
-whole directory). Nothing else needs to change. Receipts are a few hundred bytes, one per gated tree,
-and safe to delete at any time. `tests/it/gate/receipt_spec.rs` is the frozen acceptance for all of this.
+The human ruled the split on 2026-11-12: during a merge only the relevant tests run, and during a
+release the full suite runs only on the hp and the relevant macOS boundary subset on the Mac
+(docs/history.md §10, "Release tests on two machines"). `just release` therefore never runs the whole suite on the Mac. It calls
+`just release-proof expect=<head>:<tree>` with the clean pre-bump identity, after `just check` and
+before `just rust-deny`.
+
+**The hp half.** Run a whole green `just test` on the hp at exactly the commit you will release. It
+writes `.local/gate-receipts/<tree hash>` in the hp's main checkout. `release-proof` reads that receipt
+with `timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=10 -- "$AE_RELEASE_HP" ...`; it never relaxes
+host-key checking. It refuses unless ALL of these hold:
+
+- the receipt is at most 8192 bytes and parses under the strict grammar of [The gate receipt](#the-gate-receipt);
+- `tree` and `head` equal the clean checkout here;
+- `lock_hash`, `toolchain_pin` and `rustc` equal this Mac's values;
+- the `nextest` version token equals the justfile's `NEXTEST_VERSION` pin;
+- `host` equals the name the hp answered with, and it is not this Mac's `hostname -s`;
+- the receipt is at most 24 h old and at most 300 s in the future (clock skew).
+
+`tmux`, `harness`, `scratch`, `inventory` and `inventory_count` are recorded only: the two machines
+differ there by design.
+
+**The Mac half.** `just test-macos` runs every unit test plus the integration modules and exact tests
+`.config/macos-subset` names: the tests that touch what differs on a Mac (OS conditionals, the process
+table, real tmux clients, justfile recipes, fsync, the clipboard, archive tools). The guard
+`tests/it/gate/macos_subset.rs` derives that boundary from the source, and the gate refuses a manifest
+that misses a marker site, a member of the nextest `tmux-clients` group or a shared boundary helper
+(each helper needs its own pinned test, one that provably calls it: a same-named method on another
+type does not count). `just test-macos print=yes` prints the filterset and the
+selected tests and runs nothing.
+
+**The identity.** The checkout must be clean (no staged, unstaged or untracked change) and keep the
+same HEAD and tree while the hp is asked, while the subset runs and through `just rust-deny`; the
+release rechecks it right before `just bump`. Any change, and any git read that fails, refuses.
+
+**Configuration.** `AE_RELEASE_HP` names the hp as `host` or `user@host`, and `AE_RELEASE_HP_ROOT` is
+the absolute path of the hp's main checkout (no `..` segment). Neither has a default and neither lives
+in a tracked file: an unset or malformed value refuses before any ssh, and the release refuses in its
+pre-flight. Every refusal is one `release-proof: refused: <why>` line and exit 1. Nothing falls back to
+the whole suite on the Mac.
+
+**The human-only override.** `AE_RELEASE_HP=local` releases without the hp. It prints
+`release-proof: DEVIATION: whole suite on this Mac, no hp proof`. A fresh local receipt of this tree
+(the old local match: same host, every deciding fact equal, at most 24 h old) then vouches without a
+test run; otherwise the whole `just test` runs on the Mac, and `just test-macos` does not run again.
+Agents never set `AE_RELEASE_HP=local`: it is the human's call when the hp is unavailable.
+
+After the proof, `rust-fmt-check`, `rust-lint`, `rust-fuzz-check` and the doctests run again on the
+bumped tree, and `cargo check --locked`, the bundles and a bounded smoke of the built binary
+(`--version` and `doctor`, 10 s each) follow. The bump moves the ae version that `fuzz/Cargo.lock`
+records, and `rust-fuzz-check` runs `--locked`, so the release refreshes that lock and proves that only
+the ae version changed right after the bump, before the first of those checks. After the fuzz-lock
+refresh and before the version commit the release proves that every tracked path that differs from
+HEAD is one of the six version paths (`Cargo.toml`, `Cargo.lock`, `fuzz/Cargo.lock`, `README.md`,
+`docs/index.md`, `CHANGELOG.md`); any other path stops the release by name, before the commit and the
+tag. `tests/it/gate/receipt_spec/releaseproof_spec.rs` and `tests/it/gate/macos_subset_spec.rs` are
+the frozen acceptance for this section.
 
 ### Stress runs
 
@@ -665,10 +713,10 @@ The bump is recover-or-refuse: durable backups restore version files on a handle
 an untrappable interruption leaves `.ae-bump-recovery`, and the next bump stops until it is
 recovered with `just bump-recover`.
 
-1. Pre-flight: clean working tree; on `main`; `gh` authenticated **and** `repos/<owner>/<repo>` reporting `permissions.push=true`; the musl cross compiler present; fetch tags, pull rebase.
+1. Pre-flight: clean working tree; on `main`; `gh` authenticated **and** `repos/<owner>/<repo>` reporting `permissions.push=true`; the musl cross compiler present; a usable `AE_RELEASE_HP` and `AE_RELEASE_HP_ROOT`; fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
-3. `just test` (the Rust suite; minutes), unless the gate-receipt of exactly this tree matches (see [The gate receipt](#the-gate-receipt)): then nextest alone is skipped, and fmt-check, lint, fuzz-check and the doctests run again after the bump.
-4. `just rust-deny` audits advisories, licenses, bans and sources (`cargo deny --locked check`). The advisory DB needs network; an offline release refuses here, before the bump.
+3. `just release-proof` (see [Release proof](#release-proof)): the hp's whole green receipt for exactly this commit, over ssh, then the Mac boundary subset `just test-macos`. fmt-check, lint, fuzz-check and the doctests run again after the bump.
+4. `just rust-deny` audits advisories, licenses, bans and sources (`cargo deny --locked check`). The advisory DB needs network; an offline release refuses here, before the bump. The identity recheck follows: the checkout must still be clean on the proved HEAD and tree.
 5. `just bump` updates the version — `Cargo.toml` and `Cargo.lock`, which since slice Z3 are the only files that hold one — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
 6. `just bundles` builds both halves into `dist/` and proves them; a bounded smoke (`--version` and `doctor`, 10 s each) of the native binary follows.
 7. `git-cliff` → `CHANGELOG.md` + release-body.

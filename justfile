@@ -101,6 +101,38 @@ pre: rust-fmt-check rust-lint _pre-test
 _pre-test:
     just _tmux-isolated test -E 'kind(lib) | kind(bin) | (binary(it) & test(/^(doors|floor|gate)::/))'
 
+# THE MAC BOUNDARY SUBSET, what a release runs on the Mac while the hp runs the whole suite
+# (`just release-proof`, docs/development.md "Release proof"): every unit test, plus the
+# integration modules and the exact tests `.config/macos-subset` names. Those are the tests
+# that touch what differs on a Mac: OS conditionals, the process table, real tmux clients,
+# justfile recipes, fsync, the clipboard and archive tools. The guard
+# `tests/it/gate/macos_subset.rs` derives that boundary from the source and refuses a
+# manifest that misses part of it. This recipe only reads the manifest, refuses a malformed
+# line, and renders the same nextest filterset the guard renders. A filtered run: nextest
+# only, no doctests, no receipt. `print=yes` prints the filterset and the selected tests and
+# runs nothing.
+
+# Run the Mac boundary subset (`.config/macos-subset`); print=yes only prints it
+test-macos *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    print=no
+    for arg in "$@"; do
+        case "$arg" in
+            print=yes) print=yes ;;
+            *) echo "usage: just test-macos [print=yes]" >&2; exit 2 ;;
+        esac
+    done
+    {{ SUBSET }}
+    subset_render .config/macos-subset || { echo "test-macos: refused: $subset_why" >&2; exit 1; }
+    if [[ "$print" == yes ]]; then
+        printf '%s\n' "$subset_filterset"
+        cargo nextest list --locked --all-features --message-format oneline -E "$subset_filterset"
+        exit 0
+    fi
+    echo "test-macos: $subset_filterset" >&2
+    just _tmux-isolated test -E "$subset_filterset"
+
 # ── Lane lock ────────────────────────────────────────────────────────
 
 # One machine runs one gate at a time, so a slice takes the LANE LOCK before it
@@ -667,7 +699,7 @@ changelog:
 # published a version with no assets behind it, which is the half-done state
 # this ordering exists to prevent.
 
-# Full release pipeline: check → test (or a fresh gate receipt) → rust-deny → bump → bundles → smoke → changelog → tag → gh release
+# Full release pipeline: check → release-proof (hp whole suite + Mac subset) → rust-deny → bump → bundles → smoke → changelog → tag → gh release
 # Usage: just release
 release:
     #!/usr/bin/env bash
@@ -726,34 +758,33 @@ release:
         exit 1
     }
 
+    # The hp that vouches for the whole suite is a pre-flight question too: without a usable
+    # AE_RELEASE_HP and AE_RELEASE_HP_ROOT the release refuses here, before the fetch.
+    {{ PROOF }}
+    proof_destination || proof_refuse "$proof_why"
+
     git fetch {{GIT_REMOTE}} --tags
     git pull {{GIT_REMOTE}} {{default_branch}} --rebase
 
     # Gate 1: Quality
     just check
 
-    # Gate 2: Tests, unless a WHOLE green `just test` already vouched for exactly this
-    # tree. The receipt (`RECEIPT`, written by `rust-check`) is matched against the
-    # PRE-BUMP tree, here, before `just bump` writes a version file. A match skips
-    # ONLY nextest: fmt-check, lint, fuzz-check and the doctests run again below on
-    # the bumped tree, deny runs next, and the build, the proof and the smoke follow.
-    # No match, for whatever reason, is the gate as it always was. Deleting
-    # `.local/gate-receipts/<tree>` forces it.
-    {{ RECEIPT }}
-    reused=0
-    receipt_why="not inside a git checkout"
-    receipt_root_dir="$(receipt_root "$(git rev-parse --git-common-dir 2>/dev/null || true)")" || receipt_root_dir=""
-    receipt_file="$receipt_root_dir/.local/gate-receipts/$(git rev-parse 'HEAD^{tree}')"
-    if [ -n "$receipt_root_dir" ] && receipt_match "$receipt_file"; then
-        echo "gate-receipt: matched $receipt_file (age $((receipt_age / 60)) min, at most 24 h): nextest is skipped, the other gate steps run on the bumped tree"
-        reused=1
-    else
-        echo "gate-receipt: full gate, running just test: $receipt_why"
-        just test
-    fi
+    # Gate 2: Tests on two machines. The hp ran the WHOLE suite on exactly this commit and
+    # wrote its receipt; this Mac runs only the boundary subset. The proof recipe checks the
+    # receipt over ssh, runs the subset, and refuses on any doubt; it never falls back to the
+    # whole suite here (docs/development.md, "Release proof"). The identity it proves is
+    # snapshotted now, after the rebase, and named to it.
+    proof_identity || proof_refuse "$proof_why"
+    proof_head="$id_head"
+    proof_tree="$id_tree"
+    just release-proof "expect=$proof_head:$proof_tree"
 
-    # Gate 3: Supply chain on every release; advisory DB needs network, so offline refuses before bump.
+    # Gate 3: Supply chain on every release; advisory DB needs network, so offline refuses before the version is written.
     just rust-deny
+
+    # The last identity recheck: the tree the proof vouched for must still be the clean
+    # checkout, on the same HEAD, when the version is written.
+    proof_same "$proof_head" "$proof_tree" || proof_refuse "$proof_why after rust-deny; the release stops before bump"
 
     # Version
     VERSION=$(just bump)
@@ -781,29 +812,27 @@ release:
         exit 1
     fi
 
-    # A reused receipt vouched for nextest and nothing else. Every other step of the
-    # gate runs here, on the tree the release will publish: the bump changed the
-    # version every crate and doc test sees, so a break only the bump causes shows
-    # now, before the bundles, not after the tag.
-    if [ "$reused" = 1 ]; then
-        just rust-fmt-check
-        just rust-lint
-        just rust-fuzz-check
-        # The doctests, sized as the lane sizes them. A private TMPDIR and TMUX_TMPDIR
-        # and no inherited TMUX keep them off the live tmux server, as the lane does.
-        doc_dir="$(mktemp -d)"
-        (
-            {{ SIZING }}
-            size_counts
-            size_say "release doctests"
-            env -u TMUX -u TMUX_PANE TMPDIR="$doc_dir" TMUX_TMPDIR="$doc_dir" nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
-        ) || {
-            rm -rf "$doc_dir"
-            echo "Error: the doctests failed on the bumped tree" >&2
-            exit 1
-        }
+    # The release proof vouched for nextest on the pre-bump tree and for nothing else. Every
+    # other step of the gate runs here, on the tree the release will publish: the bump changed
+    # the version every crate and doc test sees, so a break only the bump causes shows now,
+    # before the bundles, not after the tag.
+    just rust-fmt-check
+    just rust-lint
+    just rust-fuzz-check
+    # The doctests, sized as the lane sizes them. A private TMPDIR and TMUX_TMPDIR
+    # and no inherited TMUX keep them off the live tmux server, as the lane does.
+    doc_dir="$(mktemp -d)"
+    (
+        {{ SIZING }}
+        size_counts
+        size_say "release doctests"
+        env -u TMUX -u TMUX_PANE TMPDIR="$doc_dir" TMUX_TMPDIR="$doc_dir" nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
+    ) || {
         rm -rf "$doc_dir"
-    fi
+        echo "Error: the doctests failed on the bumped tree" >&2
+        exit 1
+    }
+    rm -rf "$doc_dir"
 
     # Gate 4: the artifacts themselves. Both platform halves and the
     # release-level SHA256SUMS, built and proven HERE — this is what the release
@@ -884,7 +913,7 @@ release:
     RELEASE_BODY=$(just _cliff-run --tag "$TAG" --unreleased --strip header)
     RELEASE_BODY="${RELEASE_BODY:-Release $TAG}"
 
-    # THE BUMP PROOF. A reused receipt is evidence about the PRE-BUMP tree, so the
+    # THE BUMP PROOF. The release proof is evidence about the PRE-BUMP tree, so the
     # release must show the bump left it alone: every tracked path that differs from
     # HEAD, and so every path the commit below would carry, is one of the six
     # version paths. A build script, a formatter or a changelog tool that touched
@@ -965,6 +994,108 @@ release:
     fi
 
     echo "Released $TAG"
+
+# THE RELEASE PROOF (docs/development.md, "Release proof"): the tests of a release run on two
+# machines, and each one runs what only it can.
+#
+# 1. The hp ran the WHOLE suite: a green `just test` on exactly this commit, whose gate-receipt
+#    (`.local/gate-receipts/<tree hash>` in the hp's main checkout) says so. This recipe reads
+#    that receipt over ssh, bounded to 30 s, and checks it strictly: the grammar, the tree and
+#    HEAD of this clean checkout, Cargo.lock, the toolchain pin, rustc, the pinned nextest, a
+#    host that answered as the one the receipt names and that is not this Mac, and an age of
+#    at most 24 h with at most 300 s of clock skew.
+# 2. This Mac runs the boundary subset, `just test-macos`.
+#
+# The checkout must be clean and stay on the same HEAD and tree while the hp is asked and while
+# the subset runs. Any doubt is one `release-proof: refused:` line and exit 1. Nothing falls
+# back to the whole suite on the Mac. AE_RELEASE_HP=local is the HUMAN-ONLY override for a
+# release without the hp: a DEVIATION line, then a fresh local receipt of this tree vouches, or
+# the whole `just test` runs here. Agents never set it.
+
+# Prove the hp whole suite plus the Mac subset for this clean commit (AE_RELEASE_HP, AE_RELEASE_HP_ROOT)
+release-proof *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{ RECEIPT }}
+    {{ PROOF }}
+    expect=""
+    for arg in "$@"; do
+        case "$arg" in
+            expect=*) expect="${arg#expect=}" ;;
+            *) proof_refuse "unknown argument '$arg' (usage: just release-proof [expect=<head>:<tree>])" ;;
+        esac
+    done
+    proof_destination || proof_refuse "$proof_why"
+    proof_identity || proof_refuse "$proof_why"
+    head="$id_head"
+    tree="$id_tree"
+    if [[ -n "$expect" && "$expect" != "$head:$tree" ]]; then
+        proof_refuse "this checkout is $head:$tree, not the $expect the release named"
+    fi
+    echo "release-proof: clean tree $tree at HEAD $head"
+
+    if [[ "$AE_RELEASE_HP" == local ]]; then
+        echo "release-proof: DEVIATION: whole suite on this Mac, no hp proof (AE_RELEASE_HP=local, the human-only override)"
+        local_root="$(receipt_root "$(git rev-parse --git-common-dir 2>/dev/null || true)")" || proof_refuse "not inside a git checkout"
+        if receipt_match "$local_root/.local/gate-receipts/$tree"; then
+            echo "release-proof: a whole green just test on this Mac vouches for this tree ($((receipt_age / 60)) min ago): no tests run"
+        else
+            echo "release-proof: no local receipt matches ($receipt_why): running the whole gate, just test"
+            just test || proof_refuse "the whole gate failed on this Mac"
+        fi
+        proof_same "$head" "$tree" || proof_refuse "$proof_why while the whole Mac gate ran"
+        echo "release-proof: ok: DEVIATION, the whole suite ran on this Mac for HEAD $head"
+        exit 0
+    fi
+
+    bound="$(command -v timeout || command -v gtimeout || true)"
+    [[ -n "$bound" ]] || proof_refuse "the hp query needs timeout (GNU coreutils; gtimeout on a Mac with brew coreutils)"
+    reply_dir="$(mktemp -d)"
+    trap 'rm -rf "$reply_dir"' EXIT
+    echo "release-proof: asking $AE_RELEASE_HP for the receipt of tree $tree"
+    status=0
+    "$bound" 30 ssh -o BatchMode=yes -o ConnectTimeout=10 -- "$AE_RELEASE_HP" \
+        "hostname -s; head -c 8193 $AE_RELEASE_HP_ROOT/.local/gate-receipts/$tree" \
+        >"$reply_dir/reply" 2>"$reply_dir/err" || status=$?
+    if ((status != 0)); then
+        sed 's/^/release-proof: ssh: /' "$reply_dir/err" >&2
+        case "$status" in
+            124) proof_refuse "the hp did not answer within 30 s" ;;
+            255) proof_refuse "ssh could not reach $AE_RELEASE_HP (exit 255)" ;;
+            *) proof_refuse "the hp has no readable receipt for tree $tree under $AE_RELEASE_HP_ROOT (exit $status): run a whole green just test there on HEAD $head" ;;
+        esac
+    fi
+    hp_host="$(head -n 1 "$reply_dir/reply")"
+    tail -n +2 "$reply_dir/reply" >"$reply_dir/receipt"
+    host_re='^[A-Za-z0-9][A-Za-z0-9.-]*$'
+    [[ "$hp_host" =~ $host_re ]] || proof_refuse "the hp answered no plain host name on its first line"
+    size="$(wc -c <"$reply_dir/receipt" | tr -d ' ')"
+    ((size <= 8192)) || proof_refuse "the hp receipt is larger than 8192 bytes"
+    receipt_parse "$reply_dir/receipt" || proof_refuse "the hp receipt is $receipt_why"
+    [[ "$r_tree" == "$tree" ]] || proof_refuse "the hp receipt names tree $r_tree, not $tree"
+    [[ "$r_head" == "$head" ]] || proof_refuse "the hp receipt names HEAD $r_head, not $head"
+    for key in lock_hash toolchain_pin rustc; do
+        receipt_fact "$key" || proof_refuse "this Mac cannot read its $key: $receipt_why"
+        name="r_$key"
+        [[ "${!name}" == "$fact" ]] || proof_refuse "$key differs (hp: ${!name}; this Mac: $fact)"
+    done
+    hp_nextest="${r_nextest#cargo-nextest }"
+    if [[ "$hp_nextest" == "$r_nextest" || "${hp_nextest%% *}" != "{{ NEXTEST_VERSION }}" ]]; then
+        proof_refuse "the hp ran $r_nextest, not the pinned cargo-nextest {{ NEXTEST_VERSION }}"
+    fi
+    [[ "$r_host" == "$hp_host" ]] || proof_refuse "the receipt was written on $r_host, but the hp answered as $hp_host"
+    receipt_fact host || proof_refuse "this Mac cannot read its host name: $receipt_why"
+    [[ "$r_host" != "$fact" ]] || proof_refuse "the receipt was written on this Mac ($fact), not on the hp"
+    age=$(($(date -u +%s) - $(receipt_epoch "$r_time")))
+    ((age >= -300)) || proof_refuse "the hp receipt is dated $((-age)) s in the future, beyond the 300 s of clock skew allowed"
+    ((age <= 86400)) || proof_refuse "the hp receipt is stale: $((age / 3600)) h old, the limit is 24 h"
+    proof_same "$head" "$tree" || proof_refuse "$proof_why while the hp was asked"
+    echo "release-proof: hp $r_host ran the whole suite green on this tree $((age / 60)) min ago"
+
+    echo "release-proof: running the Mac boundary subset, just test-macos"
+    just test-macos || proof_refuse "the Mac boundary subset failed"
+    proof_same "$head" "$tree" || proof_refuse "$proof_why while the Mac subset ran"
+    echo "release-proof: ok: the hp ran the whole suite and this Mac the boundary subset, on HEAD $head"
 
 # ── Bundle ───────────────────────────────────────────────────────────
 
@@ -1892,6 +2023,106 @@ RECEIPT := '''
             name="r_$key"
             if [[ "$fact" != "${!name}" ]]; then receipt_why="$key differs (receipt: ${!name}; now: $fact)"; return 1; fi
         done
+    }
+'''
+
+# THE MAC SUBSET MANIFEST READER of `just test-macos`. It renders exactly the filterset the
+# guard renders (`filterset` in tests/it/gate/macos_subset.rs, which a frozen spec compares
+# with this output), and it refuses what the guard's parser refuses: a byte outside printable
+# ASCII, tab and LF, a line of no known kind, a `history` line without an issue number, and a
+# manifest without exactly one `unit` line. Line kinds, `#` starting a comment:
+#
+#   unit                                  every unit test: kind(lib) | kind(bin)
+#   module <path>                         an integration module and everything under it
+#   test <path>                           one integration test, exactly
+#   helper <file>::<item> = <test>        the one test pinned for a shared boundary helper
+#   history <path> # <issue>              a Mac-only regression, as a module and as a test
+#
+# bash 3.2 safe (a Mac's /bin/bash): no associative arrays, no mapfile, no empty "${a[@]}".
+SUBSET := '''
+    # subset_render <manifest>: the filterset in $subset_filterset, or return 1 with $subset_why
+    subset_render() {
+        local file="$1" raw body comment issue n=0 units=0 stray modules="" exact="" seen_mod="|" seen_exact="|" terms=""
+        local words=()
+        local path_re='^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$'
+        local item_re='^[A-Za-z0-9_./-]+[.]rs::[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$'
+        local issue_re='^[0-9]+$'
+        subset_why=""
+        subset_filterset=""
+        if [[ ! -f "$file" || ! -r "$file" ]]; then subset_why="$file is missing or unreadable"; return 1; fi
+        stray="$(LC_ALL=C tr -d '[:print:]\t\n' <"$file" | wc -c | tr -d ' ')" || stray=1
+        if [[ "$stray" != 0 ]]; then subset_why="$file holds bytes outside printable ASCII, tab and LF"; return 1; fi
+        subset_module() { [[ "$seen_mod" == *"|$1|"* ]] || { seen_mod="$seen_mod$1|"; modules="${modules:+$modules|}$1"; }; }
+        subset_exact() { [[ "$seen_exact" == *"|$1|"* ]] || { seen_exact="$seen_exact$1|"; exact="${exact:+$exact | }test(=$1)"; }; }
+        while IFS= read -r raw || [[ -n "$raw" ]]; do
+            n=$((n + 1))
+            body="${raw%%#*}"
+            comment=""
+            if [[ "$raw" == *"#"* ]]; then comment="${raw#*#}"; fi
+            read -r -a words <<<"$body" || true
+            if ((${#words[@]} == 0)); then
+                continue
+            elif [[ "${words[0]}" == unit && ${#words[@]} == 1 ]]; then
+                units=$((units + 1))
+            elif [[ "${words[0]}" == module && ${#words[@]} == 2 && "${words[1]}" =~ $path_re ]]; then
+                subset_module "${words[1]}"
+            elif [[ "${words[0]}" == test && ${#words[@]} == 2 && "${words[1]}" =~ $path_re ]]; then
+                subset_exact "${words[1]}"
+            elif [[ "${words[0]}" == helper && ${#words[@]} == 4 && "${words[1]}" =~ $item_re && "${words[2]}" == "=" && "${words[3]}" =~ $path_re ]]; then
+                subset_exact "${words[3]}"
+            elif [[ "${words[0]}" == history && ${#words[@]} == 2 && "${words[1]}" =~ $path_re ]]; then
+                issue="${comment#"${comment%%[![:space:]]*}"}"
+                issue="${issue%"${issue##*[![:space:]]}"}"
+                if [[ ! "$issue" =~ $issue_re ]]; then subset_why="line $n: a history line needs its issue number after #: $raw"; return 1; fi
+                subset_module "${words[1]}"
+                subset_exact "${words[1]}"
+            else
+                subset_why="line $n is not a manifest line: $raw"
+                return 1
+            fi
+        done <"$file"
+        if ((units != 1)); then subset_why="$file needs exactly one unit line, found $units"; return 1; fi
+        if [[ -n "$modules" ]]; then terms="test(/^($modules)::/)"; fi
+        if [[ -n "$exact" ]]; then terms="${terms:+$terms | }$exact"; fi
+        subset_filterset="kind(lib) | kind(bin)"
+        if [[ -n "$terms" ]]; then subset_filterset="$subset_filterset | (binary_id(ae::it) & ($terms))"; fi
+    }
+'''
+
+# THE RELEASE PROOF HELPERS, shared by `release-proof` and the `release` recipe that calls it.
+# A refusal is one `release-proof: refused: <why>` line on stderr and exit 1. The identity is
+# HEAD and its tree of a CLEAN checkout: staged, unstaged and untracked changes refuse, and so
+# does any git read that fails. The destination is read from the environment and validated
+# before any ssh: AE_RELEASE_HP is `host` or `user@host` and AE_RELEASE_HP_ROOT an absolute
+# path without a `..` segment. Neither has a default. `local` is the human-only override.
+PROOF := '''
+    proof_refuse() { echo "release-proof: refused: $*" >&2; exit 1; }
+    # proof_identity: the clean checkout's HEAD and tree in $id_head and $id_tree, or return 1 with $proof_why
+    proof_identity() {
+        local status sha_re='^[0-9a-f]{40}$'
+        id_head=""
+        id_tree=""
+        status="$(git status --porcelain=v1 --untracked-files=all 2>/dev/null)" || { proof_why="git status cannot be read"; return 1; }
+        if [[ -n "$status" ]]; then proof_why="the working tree is not clean (staged, unstaged or untracked changes)"; return 1; fi
+        id_head="$(git rev-parse --verify -q HEAD 2>/dev/null)" || { proof_why="git cannot read HEAD"; return 1; }
+        id_tree="$(git rev-parse --verify -q 'HEAD^{tree}' 2>/dev/null)" || { proof_why="git cannot read the tree of HEAD"; return 1; }
+        if [[ ! "$id_head" =~ $sha_re || ! "$id_tree" =~ $sha_re ]]; then proof_why="git named no HEAD or tree hash"; return 1; fi
+    }
+    # proof_same <head> <tree>: still clean and on that HEAD and tree, or return 1 with $proof_why
+    proof_same() {
+        proof_identity || return 1
+        if [[ "$id_head" != "$1" ]]; then proof_why="HEAD moved from $1 to $id_head"; return 1; fi
+        if [[ "$id_tree" != "$2" ]]; then proof_why="the tree moved from $2 to $id_tree"; return 1; fi
+    }
+    # proof_destination: a usable AE_RELEASE_HP and AE_RELEASE_HP_ROOT, or return 1 with $proof_why
+    proof_destination() {
+        local LC_ALL=C hp="${AE_RELEASE_HP:-}" root="${AE_RELEASE_HP_ROOT:-}"
+        local user_re='^[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9.-]*$' host_re='^[A-Za-z0-9][A-Za-z0-9.-]*$' root_re='^/[A-Za-z0-9._/-]+$'
+        if [[ -z "$hp" ]]; then proof_why="AE_RELEASE_HP is unset: name the hp as host or user@host, there is no default"; return 1; fi
+        if [[ "$hp" == local ]]; then return 0; fi
+        if [[ ! "$hp" =~ $user_re && ! "$hp" =~ $host_re ]]; then proof_why="AE_RELEASE_HP is not host or user@host: $hp"; return 1; fi
+        if [[ -z "$root" ]]; then proof_why="AE_RELEASE_HP_ROOT is unset: name the hp main checkout, there is no default"; return 1; fi
+        if [[ ! "$root" =~ $root_re || "$root/" == *"/../"* ]]; then proof_why="AE_RELEASE_HP_ROOT is not an absolute path without .. segments: $root"; return 1; fi
     }
 '''
 

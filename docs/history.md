@@ -684,6 +684,30 @@ the core's now, and the rule is pinned where the reader lives.
   caught, plus a control run against a deliberately weakened test that reports a missed
   mutant — a lane that cannot fail proves nothing.
 
+### Release tests on two machines (human ruling 2026-11-12)
+
+The human's direction, verbatim: "Honestly - I would like that during a merge we only run
+relevant tests (e.g. like in CI pipeline) - during a release we run the full tests only on hp
+- and relevant mac os boundary subset on the mac hardware - thats it!"
+
+- **Why.** The whole suite took about 18 min on the Mac for every release, while the hp ran
+  the same suite in about 17 min off the release machine. Most of the suite tests the same
+  code on both machines; only a boundary (OS conditionals, the process table, real tmux
+  clients, recipes, fsync, the clipboard, archive tools) behaves differently on a Mac.
+- **What landed first (P1).** `just release-proof` reads the hp's whole green gate-receipt
+  for the exact commit over ssh and checks it strictly, then runs `just test-macos`, the
+  boundary subset in `.config/macos-subset` (about a quarter of the Mac test time when it
+  was measured). Lead ruling C chose the subset's shape: every unit test, every integration
+  module with a boundary marker, one exact pinned test per shared boundary helper, and the
+  Mac-only regressions. A guard derives the boundary from the source, so a new boundary
+  site, `tmux-clients` member or shared helper fails the gate until the manifest names it.
+- **No silent fallback.** A missing hp, a stale or doubtful receipt or a changed checkout
+  refuses the release. `AE_RELEASE_HP=local` is a human-only override that runs the whole
+  suite on the Mac and says so with a DEVIATION line. A later red run does not invalidate a
+  fresh green receipt for the same tree: the writer never touches a receipt on a red run.
+- **Next (P2).** The merge half of the direction, a selector that runs only the tests a
+  change can reach, needs its own plan and ruling.
+
 ### Supply chain: cargo-deny with committed policy
 
 **The policy is the check.** cargo-deny with a default config asserts almost nothing, so

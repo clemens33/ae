@@ -1,44 +1,20 @@
-//! P2 — the release-gate receipt. Frozen spec-first acceptance.
+//! Independent receipt and P1 release acceptance.
 //!
-//! Requirements: `.local/brief-p2spec.md` (Clemens ruling 2026-11-11,
-//! ae-20261111T093745Z-df8aa527), `.local/buildspeed/plan.md` P2 (r4) and
-//! `.local/buildspeed/planreview-fable.md` I5. r2: lead review made
-//! `harness` recorded-only (the gate never executes a real harness binary);
-//! every other r1 choice confirmed. Frozen separately before implementation;
-//! review by a seat on another provider only. The implementer (Anthropic)
-//! installs this file byte-identically as the `receipt_spec`
-//! submodule of `gate` and must not change its oracles.
+//! The original P2 strict parser, local matcher, writer and window contracts
+//! remain frozen. The local matcher is now relevant only to the human-only
+//! `AE_RELEASE_HP=local` override.
 //!
-//! The contract pinned here:
+//! Superseding release requirements: lead ruling-r0 F2/F3-C/F4/F5, plan r2.
+//! Default release verifies an authenticated hp receipt for the clean pre-bump
+//! HEAD/tree and runs the guarded Mac subset. Missing proof refuses. The final
+//! identity recheck follows deny and immediately precedes the bump. All later
+//! non-nextest checks, version-path proof and bounded binary smoke remain.
 //!
-//! * Only a WHOLE `just test` (no filter argument) that exits 0 writes a
-//!   receipt; a filtered or failed run never does, a dirty tree writes none.
-//! * The receipt names the tree hash of the clean committed tree, HEAD,
-//!   Cargo.lock hash, toolchain pin, nextest and tmux versions, harness
-//!   binary versions, test inventory hash, scratch device kind, host, time.
-//!   It lives in the main checkout's `.local` (found like the lane lock),
-//!   never in the tree, keyed by tree hash.
-//! * `just release` matches it against the PRE-BUMP tree and reuses it only
-//!   on the same host, at most 24 h old, with every deciding recorded fact
-//!   equal (harness versions are recorded only and never decide);
-//!   after the bump it proves the bump commit changed only the version files.
-//! * With a match the release skips ONLY nextest; fmt-check, lint, fuzz-check,
-//!   doctests, cargo deny and a short smoke of the built release binary still
-//!   run. Without a match it runs `just test` as today. A malformed receipt
-//!   is hostile input and never causes a skip.
-//!
-//! Structure: text pins over the justfile (`*_ok`, synthetic green plus one
-//! planted mutation per rule, then the real justfile), a strict receipt
-//! oracle (`spec_parse`), and behaviour tests that run the real recipes in
-//! fixture checkouts with fake cargo, fake harness and gh shims. Every oracle
-//! below comes from the contract text, never from the implementation.
-//!
-//! Install: add `mod receipt_spec;` beside `mod mutantstime_spec;` in
-//! `tests/it/gate.rs` and place this file at `tests/it/gate/receipt_spec.rs`.
-//! Until the P2 justfile change lands these tests must fail; a green run on
-//! the pre-P2 tree is a false pass and must be investigated.
+//! `releaseproof_spec` supplies real-recipe behaviour controls with fake external
+//! cargo/SSH dependencies. The producer installs every frozen file unchanged.
 
-use std::os::unix::fs::PermissionsExt as _;
+mod releaseproof_spec;
+
 use std::path::{Path, PathBuf};
 
 use super::{read, recipe_text, root};
@@ -440,88 +416,27 @@ fn receipt_writer_ok(justfile: &str) -> bool {
     true
 }
 
-/// Whether `just release` matches a receipt before the bump and skips only
-/// nextest on a match.
-///
-/// Order is the contract: receipt match against the PRE-BUMP tree (before
-/// `just bump`), then the bump, then proof that only the version paths
-/// changed, then fmt-check, lint, fuzz-check, doctests, deny and the
-/// release-binary smoke on the bumped tree. A failed match runs `just test`.
-/// The decision is printed (the receipt used and its age, or why none
-/// matched). The smoke runs the built release binary behind a 10 s bound.
+/// The release order and retained non-nextest obligations, from plan r2.
 fn receipt_release_ok(justfile: &str) -> bool {
     let release = recipe_text(justfile, "release:");
     let position = |needle: &str| release.iter().position(|line| line.contains(needle));
-    let Some(bump) = position("just bump") else {
-        return false;
-    };
-    // Every `gate-receipt: matched` line precedes the bump, not only the
-    // first: a second print after it would claim the match it did not make.
-    let matched: Vec<usize> = release
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| line.contains("gate-receipt") && line.contains("matched"))
-        .map(|(at, _)| at)
-        .collect();
-    if matched.is_empty() || matched.iter().any(|at| *at >= bump) {
-        return false;
+    let (Some(proof), Some(deny), Some(bump)) =
+        (position("just release-proof"), position("just rust-deny"), position("just bump"))
+    else { return false; };
+    if !(proof < deny && deny < bump) { return false; }
+    for step in ["rust-fmt-check", "rust-lint", "rust-fuzz-check", "test --doc"] {
+        if !position(step).is_some_and(|at| at > bump) { return false; }
     }
-    let has = |needle: &str| position(needle).is_some();
-    // Skipped only nextest: the other gate members are still named on the
-    // release path, and a no-match runs `just test` in full.
-    for step in [
-        "rust-fmt-check",
-        "rust-lint",
-        "rust-fuzz-check",
-        "test --doc",
-        "rust-deny",
-    ] {
-        if !has(step) {
-            return false;
-        }
-    }
-    if !has("just test") {
-        return false;
-    }
-    // The bump proof: the six version paths, and a refusal that aborts.
     for path in VERSION_PATHS {
-        if !release
-            .iter()
-            .any(|line| line.contains(path))
-        {
-            return false;
-        }
+        if !release.iter().any(|line| line.contains(path)) { return false; }
     }
-    if !release.iter().any(|line| line.contains("exit 1")) {
-        return false;
-    }
-    // The smoke: the built release binary, version and doctor, bounded.
-    // Every probe line of the built binary (a `--version` or `doctor` call
-    // naming `release/ae` or through a `$bin*` variable) carries a timeout;
-    // a probe beside an unbounded one still refuses.
-    let smoke = has("release/ae") && has("--version");
-    let doctor = release.iter().any(|line| line.contains("doctor"));
-    let probes: Vec<&String> = release
-        .iter()
-        .filter(|line| {
-            (line.contains("--version") || line.contains("doctor"))
-                && (line.contains("release/ae") || line.contains("$bin"))
-        })
-        .collect();
-    let probes_bounded = !probes.is_empty()
-        && probes
-            .iter()
-            .all(|line| line.contains("timeout") || line.contains("gtimeout"));
-    if !(smoke && doctor && probes_bounded) {
-        return false;
-    }
-    // The decision is printed with the reason.
-    release
-        .iter()
-        .any(|line| {
-            line.contains("gate-receipt")
-                && (line.contains("matched") || line.contains("full"))
-        })
+    if !release.iter().any(|line| line.contains("exit 1")) { return false; }
+    let probes: Vec<_> = release.iter().filter(|line|
+        (line.contains("--version") || line.contains("doctor")) &&
+        (line.contains("release/ae") || line.contains("$bin"))).collect();
+    probes.iter().any(|line| line.contains("--version")) &&
+        probes.iter().any(|line| line.contains("doctor")) &&
+        probes.iter().all(|line| line.contains("timeout") || line.contains("gtimeout"))
 }
 
 /// The synthetic justfile the writer pin is proved against: both entry
@@ -1409,199 +1324,22 @@ fn a_receipt_write_failure_leaves_a_green_gate_green() {
 }
 
 // ---------------------------------------------------------------------------
-// The release: a match skips only nextest; anything else runs the gate.
+// The P1 release supersedes only the old local-receipt release oracles.
 // ---------------------------------------------------------------------------
 
-/// `just release` with a fresh match: the gate's nextest step is the only one
-/// that never runs; fmt, clippy, the fuzz check, doctests, deny and the
-/// builds all run on the bumped tree, and the release completes.
 #[test]
-fn a_release_on_a_match_skips_only_nextest() {
-    let fixture = ReceiptFixture::new("matched", false);
-    green_gate(&fixture, &[]);
-    let (_, tree) = fixture.tree_head();
-    assert!(
-        fixture.receipt(&tree).is_some(),
-        "the receipt the release matches"
-    );
-    // `just bundles` refuses off an Apple Silicon host, and the release reaches
-    // it; the green gate and its receipt above ran on this host.
-    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
-        return;
-    }
-    fixture.clear_record();
-    let (code, out, err) = fixture.release(&[]);
-    assert_eq!(code, 0, "a matched release completes: {out}{err}");
-    let seen = fixture.recorded();
-    for step in ["fmt", "clippy", "check", "doctest", "deny", "build"] {
-        assert!(
-            seen.contains(&step.to_owned()),
-            "the matched release still ran {step}: {seen:?}"
-        );
-    }
-    assert!(
-        !seen.iter().any(|step| step == "nextest"),
-        "the matched release skipped nextest: {seen:?}"
-    );
-    // The decision is printed with the receipt and its age.
-    assert!(
-        (out.contains("gate-receipt") && out.contains("matched"))
-            || (err.contains("gate-receipt") && err.contains("matched")),
-        "the match is printed: {out}{err}"
-    );
-    // The release published: a version tag exists.
-    let (code, tags, err) = fixture.git(&["tag", "--list", "v*"]);
-    assert_eq!(code, 0, "tags: {err}");
-    assert!(!tags.trim().is_empty(), "a tag was created: {tags}");
+fn a_release_uses_hp_proof_and_the_mac_subset_before_deny() {
+    releaseproof_spec::normal_release_uses_hp_then_mac();
 }
 
-/// One no-match variant: `edit` rewrites the receipt (or deletes it), then the
-/// release runs the gate's nextest step in full.
-fn no_match_variant(name: &str, edit: &dyn Fn(&ReceiptFixture, &str)) {
-    let fixture = ReceiptFixture::new(name, false);
-    green_gate(&fixture, &[]);
-    let (_, tree) = fixture.tree_head();
-    assert!(
-        fixture.receipt(&tree).is_some(),
-        "the receipt {name} rewrites"
-    );
-    edit(&fixture, &tree);
-    // `just bundles` refuses off an Apple Silicon host, and the release reaches
-    // it; the green gate and the receipt edit above ran on this host.
-    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
-        return;
-    }
-    fixture.clear_record();
-    let (code, out, err) = fixture.release(&[]);
-    assert_eq!(code, 0, "a no-match release completes: {out}{err}");
-    let seen = fixture.recorded();
-    assert!(
-        seen.iter().any(|step| step == "nextest"),
-        "{name} ran nextest in full: {seen:?}"
-    );
-    assert!(
-        (out.contains("gate-receipt") && out.contains("full"))
-            || (err.contains("gate-receipt") && err.contains("full")),
-        "{name} prints the full decision: {out}{err}"
-    );
-}
-
-/// One matched variant: after `edit`, the release still reuses the receipt
-/// and never runs nextest.
-fn matched_variant(name: &str, edit: &dyn Fn(&ReceiptFixture, &str)) {
-    let fixture = ReceiptFixture::new(name, false);
-    green_gate(&fixture, &[]);
-    let (_, tree) = fixture.tree_head();
-    assert!(
-        fixture.receipt(&tree).is_some(),
-        "the receipt {name} rewrites"
-    );
-    edit(&fixture, &tree);
-    // `just bundles` refuses off an Apple Silicon host, and the release reaches
-    // it; the green gate and the receipt edit above ran on this host.
-    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
-        return;
-    }
-    fixture.clear_record();
-    let (code, out, err) = fixture.release(&[]);
-    assert_eq!(code, 0, "a matched release completes: {out}{err}");
-    let seen = fixture.recorded();
-    assert!(
-        !seen.iter().any(|step| step == "nextest"),
-        "{name} still reuses, so nextest never runs: {seen:?}"
-    );
-    assert!(
-        (out.contains("gate-receipt") && out.contains("matched"))
-            || (err.contains("gate-receipt") && err.contains("matched")),
-        "{name} prints the match: {out}{err}"
-    );
-}
-
-/// Why this test takes about 120 s: it runs seven full fixture releases,
-/// six of them through the real test lane and tmux, one per no-match defect.
 #[test]
-fn a_release_without_a_match_runs_the_whole_gate() {
-    // A changed harness version still reuses: harness is recorded only.
-    matched_variant("harnessmoved", &|fixture, tree| {
-        let path = fixture.receipts_dir().join(tree);
-        let text = std::fs::read_to_string(&path).expect("the receipt");
-        spec_put(&path, &text.replacen("9.9.9-spec", "8.8.8-spec", 1));
-    });
-    // Missing: no receipt file at all.
-    no_match_variant("missing", &|fixture, tree| {
-        let _ = std::fs::remove_file(fixture.receipts_dir().join(tree));
-    });
-    // Stale: a valid receipt stamped 25 h back.
-    no_match_variant("stale", &|fixture, tree| {
-        let path = fixture.receipts_dir().join(tree);
-        let text = std::fs::read_to_string(&path).expect("the receipt");
-        let stamp = text
-            .lines()
-            .find(|line| line.starts_with("time="))
-            .unwrap_or_default()
-            .to_owned();
-        let at = stamp.trim_start_matches("time=").to_owned();
-        let at_secs = stamp_secs(&at).expect("the written stamp is real");
-        spec_put(&path, &text.replacen(&at, &secs_to_stamp(at_secs - 90_000), 1));
-    });
-    // Other host: the release resolves a different hostname.
-    no_match_variant("otherhost", &|fixture, tree| {
-        let path = fixture.receipts_dir().join(tree);
-        let text = std::fs::read_to_string(&path).expect("the receipt");
-        spec_put(&path, &text.replacen("host=spec-host", "host=other-host", 1));
-    });
-    // Any deciding fact differs: the inventory count moved.
-    no_match_variant("fact", &|fixture, tree| {
-        let path = fixture.receipts_dir().join(tree);
-        let text = std::fs::read_to_string(&path).expect("the receipt");
-        spec_put(&path, &text.replacen("inventory_count=2", "inventory_count=3", 1));
-    });
-    // Malformed: hostile bytes, still a file named by the tree.
-    no_match_variant("malformed", &|fixture, tree| {
-        spec_put(&fixture.receipts_dir().join(tree), "version=1\ntree=nothex\n");
-    });
-    // Unreadable: the file stands but cannot be read. The 000 mode stays
-    // through the release; the scratch drop still removes it.
-    no_match_variant("unreadable", &|fixture, tree| {
-        let path = fixture.receipts_dir().join(tree);
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
-            .expect("unreadable");
-    });
+fn a_release_without_hp_proof_refuses_before_bump() {
+    releaseproof_spec::missing_hp_is_a_refusal();
 }
 
-/// The bump proof: a tracked file outside the version paths, changed before
-/// the commit, aborts the release before any tag exists, and is named.
 #[test]
 fn the_bump_proof_refuses_a_non_version_path() {
-    let fixture = ReceiptFixture::new("bump", false);
-    green_gate(&fixture, &[]);
-    let (_, tree) = fixture.tree_head();
-    assert!(
-        fixture.receipt(&tree).is_some(),
-        "the receipt the release matches"
-    );
-    // `just bundles` refuses off an Apple Silicon host, and the release reaches
-    // it before the bump proof; the green gate and its receipt above ran here.
-    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
-        return;
-    }
-    // The fuzz-lock refresh touches a source file: the proof must refuse.
-    let (code, out, err) = fixture.release(&[("AE_SPEC_TOUCH", "1")]);
-    assert_eq!(code, 1, "a non-version bump refuses: {out}{err}");
-    assert!(
-        err.contains("src/lib.rs"),
-        "the offending path is named: {err}"
-    );
-    let tags = fixture.git(&["tag", "--list", "v*"]).1;
-    assert!(tags.trim().is_empty(), "no tag was created: {tags}");
-    // No version commit either: HEAD is still the fixture commit.
-    let (code, log, err) = fixture.git(&["log", "--oneline"]);
-    assert_eq!(code, 0, "log: {err}");
-    assert_eq!(
-        log.lines().count(),
-        1,
-        "no bump commit landed: {log}"
-    );
+    releaseproof_spec::non_version_bump_is_rejected();
 }
 
 // ---------------------------------------------------------------------------
@@ -1653,89 +1391,55 @@ fn the_justfile_writes_receipts_only_for_a_whole_green_run() {
 }
 
 #[test]
-fn the_justfile_matches_a_receipt_only_to_skip_nextest() {
-    let release_green = [
+fn the_justfile_proves_hp_and_mac_before_the_bump_and_keeps_other_checks() {
+    let green = concat!(
         "release:\n",
-        "    #!/usr/bin/env bash\n",
-        "    set -euo pipefail\n",
-        "    echo \"gate-receipt: matched /archive/tree (age 12m)\" >&2\n",
+        "    just release-proof expect=$head:$tree\n",
+        "    just rust-deny\n",
+        "    VERSION=$(just bump)\n",
         "    just rust-fmt-check\n",
         "    just rust-lint\n",
         "    just rust-fuzz-check\n",
         "    cargo test --doc --locked --all-features\n",
-        "    just test\n",
-        "    just rust-deny\n",
-        "    VERSION=$(just bump)\n",
-        "    $binary=\"target/release/ae\"\n",
+        "    binary=target/release/ae\n",
         "    timeout 10 \"$binary\" --version\n",
         "    timeout 10 \"$binary\" doctor\n",
         "    diff --name-only Cargo.toml Cargo.lock fuzz/Cargo.lock README.md docs/index.md CHANGELOG.md || exit 1\n",
-    ]
-    .join("");
-    assert!(
-        receipt_release_ok(&release_green),
-        "the synthetic match satisfies every rule"
     );
+    assert!(receipt_release_ok(green), "synthetic contract control");
     for (name, mutated) in [
-        (
-            "matched after the bump",
-            release_green.replace(
-                "    VERSION=$(just bump)\n",
-                "    VERSION=$(just bump)\n    echo \"gate-receipt: matched\" >&2\n",
-            ),
-        ),
-        (
-            "doctests dropped",
-            release_green.replace("    cargo test --doc --locked --all-features\n", ""),
-        ),
-        (
-            "deny dropped",
-            release_green.replace("    just rust-deny\n", ""),
-        ),
-        (
-            "smoke dropped",
-            release_green.replace("    timeout 10 \"$binary\" doctor\n", ""),
-        ),
-        (
-            "smoke unbounded",
-            release_green.replace("    timeout 10 \"$binary\" --version\n", "    \"$binary\" --version\n"),
-        ),
+        ("missing proof", green.replace("    just release-proof expect=$head:$tree\n", "")),
+        ("proof after bump", green.replace("    just release-proof expect=$head:$tree\n", "")
+            .replace("    VERSION=$(just bump)\n", "    VERSION=$(just bump)\n    just release-proof\n")),
+        ("deny after bump", green.replace("    just rust-deny\n", "")
+            .replace("    VERSION=$(just bump)\n", "    VERSION=$(just bump)\n    just rust-deny\n")),
+        ("missing doctests", green.replace("    cargo test --doc --locked --all-features\n", "")),
+        ("missing fuzz compile", green.replace("    just rust-fuzz-check\n", "")),
+        ("unbounded smoke", green.replace("timeout 10 \"$binary\" --version", "\"$binary\" --version")),
     ] {
-        assert!(
-            !receipt_release_ok(&mutated),
-            "guard failed to reject: {name}"
-        );
-        println!("rejected: {name}");
+        assert!(!receipt_release_ok(&mutated), "must reject {name}");
     }
-    assert!(
-        receipt_release_ok(&read(&root().join("justfile"))),
-        "the real release must match a pre-bump receipt, skip only nextest, keep fmt/lint/\
-         fuzz/doctests/deny plus a bounded release-binary smoke, print the decision, and \
-         prove the bump behind it"
-    );
+    assert!(receipt_release_ok(&read(&root().join("justfile"))),
+        "release proves hp and Mac before deny and bump, then keeps all non-nextest checks and bounded smoke");
 }
 
 #[test]
 fn the_contract_names_the_receipt_behaviour() {
     let agents = read(&root().join("AGENTS.md"));
     let development = read(&root().join("docs/development.md"));
-    let names_receipt = |text: &str| {
-        text.contains("gate-receipt") || text.contains("gate receipt")
-    };
-    assert!(
-        names_receipt(&agents),
-        "AGENTS.md must name the release-gate receipt beside the gate it reuses"
-    );
-    for row in ["skip", "nextest", "receipt"] {
-        assert!(
-            agents.contains(row),
-            "AGENTS.md must say a match skips only nextest ({row})"
-        );
+    for (label, text) in [("AGENTS.md", &agents), ("docs/development.md", &development)] {
+        for needle in ["test-macos", "release-proof", "hp"] {
+            assert!(text.contains(needle), "{label} must name {needle}");
+        }
     }
-    for needle in ["gate-receipt", "skip", "nextest", "24 h", "delete"] {
-        assert!(
-            development.contains(needle),
-            "docs/development.md must name `{needle}` in the receipt section"
-        );
+    let prose = development.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+    for phrase in [
+        "ae_release_hp=local",
+        "ae_release_hp_root",
+        "human-only override",
+        "agents never set `ae_release_hp=local`",
+        "a later red run does not invalidate a fresh green receipt for the same tree",
+    ] {
+        assert!(prose.contains(phrase), "development contract must state {phrase}");
     }
 }

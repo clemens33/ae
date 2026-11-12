@@ -39,6 +39,13 @@ mod mutantstime_spec;
 // Its bytes are frozen as the independent author wrote them, so rustfmt leaves the file alone.
 #[rustfmt::skip]
 mod receipt_spec;
+mod macos_subset;
+#[allow(
+    clippy::expect_used,
+    reason = "independent acceptance fixtures must fail with a named precondition"
+)]
+mod macos_subset_spec;
+mod modtree;
 mod receipt_window;
 
 /// The repository root — this file's crate manifest directory.
@@ -4400,12 +4407,12 @@ fn the_release_recipe_refreshes_the_fuzz_lock_with_the_product_compiler_or_stops
 /// The bump moves the ae version the fuzz lock records, and the gate's
 /// `rust-fuzz-check` runs `--locked`, so a lock still carrying the old version
 /// makes that check refuse (`cannot update the lock file ... because --locked was
-/// passed`). On a reused receipt the release runs the check right after the bump,
+/// passed`). The release always runs the check on the bumped tree,
 /// so the refresh and its "only the ae version moved" proof must stand between
 /// the bump and the first check: a later refresh is too late, and a check that
 /// runs before the proof would vouch for a lock the proof has not yet cleared.
-/// At least one check must remain on the bumped tree, because dropping it is how
-/// a reused receipt would skip more than nextest.
+/// At least one check must remain on the bumped tree. The hp proof covers the
+/// pre-bump tree and cannot prove that the refreshed fuzz lock still compiles.
 fn fuzz_lock_ready_before_bumped_fuzz_check_ok(justfile: &str) -> bool {
     let lines = recipe_text(justfile, "release:");
     let position = |needle: &str| lines.iter().position(|line| line.contains(needle));
@@ -4453,7 +4460,7 @@ fn the_release_refreshes_and_proves_the_fuzz_lock_before_the_bumped_fuzz_check()
     let refresh =
         "    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null\n";
     let proof = "    fuzz_delta=\"$(git diff --no-ext-diff --numstat -- fuzz/Cargo.lock)\"\n    if [ \"$fuzz_delta\" != \"1\t1\tfuzz/Cargo.lock\" ]; then\n        echo \"Error: fuzz/Cargo.lock must change only the ae version to $VERSION\" >&2\n        exit 1\n    fi\n";
-    let check = "    if [ \"$reused\" = 1 ]; then\n        just rust-fmt-check\n        just rust-fuzz-check\n    fi\n";
+    let check = "    just rust-fmt-check\n    just rust-fuzz-check\n";
     let head = "release:\n    set -euo pipefail\n    VERSION=$(just bump)\n";
     let tail = "    git commit -m \"chore(release): $TAG\"\n";
     // GREEN — refreshed, proved, then checked: the shape this pin demands.
@@ -4477,8 +4484,7 @@ fn the_release_refreshes_and_proves_the_fuzz_lock_before_the_bumped_fuzz_check()
     assert!(!fuzz_lock_ready_before_bumped_fuzz_check_ok(&format!(
         "{head}    cargo check --locked --manifest-path fuzz/Cargo.toml --bins\n{refresh}{proof}{tail}"
     )));
-    // RED — the bumped-tree check is dropped, so a reused receipt would skip more
-    // than nextest.
+    // RED — the bumped-tree check is dropped, so the refreshed lock never compiles.
     assert!(!fuzz_lock_ready_before_bumped_fuzz_check_ok(&format!(
         "{head}{refresh}{proof}{tail}"
     )));
