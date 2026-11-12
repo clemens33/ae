@@ -6231,7 +6231,7 @@ pub(crate) fn rebind_monitor_panes(
 ) -> Result<Option<u32>, String> {
     let events_command = vec![dir.join("events-tail").display().to_string()];
     if let Some(events) = monitor_pane(server, session, "_events") {
-        let (respawned, _) = transport::run_tmux_op(&argv(
+        let (respawned, reason) = transport::run_tmux_op(&argv(
             server,
             &Op::RespawnPane {
                 pane: &events,
@@ -6240,7 +6240,7 @@ pub(crate) fn rebind_monitor_panes(
             },
         ));
         if !respawned {
-            return Err(format!("could not respawn events pane {events}"));
+            return Err(format!("could not respawn events pane {events}: {reason}"));
         }
     } else if ensure_events_pane(server, session, dir).is_none() {
         return Err("could not recreate the events pane".to_owned());
@@ -6251,7 +6251,7 @@ pub(crate) fn rebind_monitor_panes(
     }
     if let Some(watchdog) = monitor_pane(server, session, "_watchdog") {
         let command = vec![dir.join("watchdog").display().to_string()];
-        let (respawned, _) = replace_watchdog_registration(dir, || {
+        let (respawned, reason) = replace_watchdog_registration(dir, || {
             transport::run_tmux_op(&argv(
                 server,
                 &Op::RespawnPane {
@@ -6262,7 +6262,9 @@ pub(crate) fn rebind_monitor_panes(
             ))
         });
         if !respawned {
-            return Err(format!("could not respawn watchdog pane {watchdog}"));
+            return Err(format!(
+                "could not respawn watchdog pane {watchdog}: {reason}"
+            ));
         }
     } else {
         let tail = ["start".to_owned(), session.to_owned()];

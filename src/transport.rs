@@ -2756,6 +2756,7 @@ fn write_run(server: &ServerId, args: &[String]) -> bool {
 
 /// The launch operation's tmux leg of the one process door — the ONLY way
 /// product code runs a tmux command that is not already a typed builder above.
+/// Success carries stdout unchanged; failure carries one bounded stderr line.
 #[must_use]
 pub(crate) fn run_tmux_op(argv: &crate::session_tmux::TmuxArgv) -> (bool, String) {
     if let Some((query, required)) = argv.if_missing_line() {
@@ -2770,12 +2771,24 @@ pub(crate) fn run_tmux_op(argv: &crate::session_tmux::TmuxArgv) -> (bool, String
         // duplicate row. It is harmless; later reads see it and stop growth.
     }
     match spawn(PROGRAM, argv.as_args(), &[], Streams::Captured, None) {
-        Some(output) => (
-            output.status.success(),
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-        ),
-        None => (false, String::new()),
+        Some(output) if output.status.success() => {
+            (true, String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        Some(output) => (false, tmux_op_failure(&output.stderr)),
+        None => (false, "tmux did not run".to_owned()),
     }
+}
+
+/// Keep tmux's reason readable in the caller's single diagnostic line.
+fn tmux_op_failure(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .next()
+        .unwrap_or("tmux gave no reason")
+        .chars()
+        .take(256)
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
 }
 
 /// Make `server` refuse `kill-server` (every spelling), when it is the server
