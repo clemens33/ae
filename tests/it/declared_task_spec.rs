@@ -148,10 +148,11 @@ fn task_appends_after_every_existing_key_and_leaves_reason_alone() {
         let keys = keys(&agent);
         assert_eq!(
             keys.last(),
-            Some(&"task"),
-            "{state}: task is the newest key, after conversation: {keys:?}"
+            Some(&"background_task"),
+            "{state}: background_task is the newest key, after task: {keys:?}"
         );
-        assert_eq!(keys[keys.len() - 2], "conversation", "{state}: {keys:?}");
+        assert_eq!(keys[keys.len() - 2], "task", "{state}: {keys:?}");
+        assert_eq!(keys[keys.len() - 3], "conversation", "{state}: {keys:?}");
         assert_eq!(
             agent.get("state"),
             Some(&Value::str(state)),
