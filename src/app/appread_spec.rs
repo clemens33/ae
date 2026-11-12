@@ -513,6 +513,31 @@ fn read_in_browse_asks_regardless_of_writing_and_the_ends_are_inert() {
     assert_eq!(model, before, "browse is bit-identical after g/G");
 }
 
+/// Issue 302: `G` and `End` take the chat to its newest row, as the click on
+/// the `↓ newer turns` hint does; where the chat already stands there they
+/// change nothing and ask for no redraw.
+#[test]
+fn g_and_end_scroll_the_chat_back_to_the_newest_row() {
+    let both = fleet(&["api", "web"]);
+    let mut model = Model::new(&both);
+    let _ = model.key(Key::PageUp, &both, false);
+    assert_eq!(model.key(Key::Bottom, &both, false), Act::Redraw, "a page");
+    assert_eq!(model.pages(), 0);
+    let _ = model.key(Key::PageUp, &both, false);
+    let _ = model.key(Key::PageUp, &both, false);
+    model.wheel(true, 10, 1000);
+    assert_eq!(model.scroll_rows(10), 23, "two pages and a notch up");
+    assert_eq!(model.key(Key::Bottom, &both, false), Act::Redraw);
+    assert_eq!(model.scroll_rows(10), 0, "back at the newest row");
+    assert_eq!(model.pages(), 0, "no page and no wheel row left");
+    let before = model.clone();
+    assert_eq!(model.key(Key::Bottom, &both, false), Act::None);
+    assert_eq!(model, before, "nothing changes at the newest row");
+    model.wheel(true, 10, 1000);
+    assert_eq!(model.newest(), Act::Redraw, "the click's own entry point");
+    assert_eq!(model.scroll_rows(10), 0);
+}
+
 #[test]
 fn the_new_keys_are_swallowed_while_settings_or_peek_are_open() {
     let both = fleet(&["api", "web"]);

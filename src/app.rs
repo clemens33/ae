@@ -2773,6 +2773,7 @@ impl App {
                 self.toggle_fold(key);
                 return true;
             }
+            draw::Hit::Newest => self.model.newest(),
         };
         apply(self, &act, Instant::now()).unwrap_or(false)
             || was_writing != self.composing()
@@ -9952,6 +9953,60 @@ mod tests {
         let spans: Vec<_> = app.layout.turns.iter().map(|t| (t.1, t.2)).collect();
         assert_eq!(spans[0].0, 0, "nothing beneath the newest turn");
         assert!(spans.windows(2).all(|w| w[1].0 == w[0].0 + w[0].1 + 1));
+    }
+
+    /// Issue 302: a press on the `↓ N newer turns · End` words scrolls the chat
+    /// to its newest turn, while writing too and with the draft kept; the
+    /// words are no turn, file or link target, and the row above them is a turn.
+    #[test]
+    fn a_press_on_the_newer_turns_hint_scrolls_to_the_newest_turn() {
+        let root = Root::new("hint-press");
+        let (mut app, _reader) = housed(&root);
+        let typed = writing(&mut app);
+        if let Answer::View(mut read) = view("api", ID, 1, "") {
+            read.lane.items = (0..30)
+                .map(|at| said(&format!("word{at:02}"), at))
+                .collect();
+            app.answer(Answer::View(read));
+        }
+        assert_eq!(app.compose(Key::Text(b"draft".to_vec()), typed), Some(()));
+        let _ = framed(&mut app);
+        for _ in 0..3 {
+            app.model
+                .wheel(true, app.layout.page_rows, app.layout.max_scroll);
+        }
+        let shown = framed(&mut app);
+        assert!(!shown.contains("word29"), "scrolled off the newest turn");
+        // Three notches hide nine rows: the three newest turns, three rows each.
+        let (row, column) = shown
+            .lines()
+            .enumerate()
+            .find_map(|(row, line)| {
+                let byte = line.find("↓ 3 newer turns · End")?;
+                Some((row, line[..byte].chars().count()))
+            })
+            .unwrap_or_else(|| panic!("the counted hint:\n{shown}"));
+        let press = |column: usize, row: usize| super::Mouse {
+            kind: super::MouseKind::Click,
+            column: u16::try_from(column).expect("column"),
+            row: u16::try_from(row).expect("row"),
+        };
+        let above = app.layout.hit(press(column + 2, row - 1));
+        assert!(
+            matches!(above, Some(super::draw::Hit::Turn(_))),
+            "{above:?}"
+        );
+        let on = press(column + 2, row);
+        assert!(app.layout.file(on).is_none() && !app.layout.link_at(on));
+        assert!(matches!(app.layout.hit(on), Some(super::draw::Hit::Newest)));
+        assert!(app.click(on), "a press on the words redraws");
+        assert_eq!(app.model.scroll_rows(app.layout.page_rows), 0);
+        assert_eq!(app.model.turn(), None, "no turn was marked");
+        assert!(app.composing(), "still writing");
+        assert_eq!(drafted(&app), "draft", "the draft is kept");
+        let shown = framed(&mut app);
+        assert!(shown.contains("word29"), "the newest turn is drawn");
+        assert!(!shown.contains(" · End"), "no hint at the newest turn");
     }
 
     /// With none marked `[` / `]` take the newest turn the window shows (a

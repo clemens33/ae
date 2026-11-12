@@ -219,6 +219,8 @@ Browsing:
 | Click a seat, or `v` on the highlighted seat | inside tmux: watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)); outside tmux a click works in the seat itself ([Working in a seat](#working-in-a-seat)) |
 | `n` / `p` | step the seat cursor (`▹`, `-` with `icons = off`) to the next / previous seat the body shows; with no cursor `n` lands on the first seat and `p` on the last, and both wrap |
 | `PgUp` / `PgDn` | scroll the chat a page |
+| `G` / `End` | scroll the chat to its newest turn |
+| Click the hint under a scrolled-up chat | the same: the accent line `↓ 3 newer turns · End` (`↓ 1 newer turn · End`, or `↓ more below · End` when only the rest of the newest turn waits) stands centered on the row under the lane and counts the turns that start below the window; a click on its words scrolls to the newest turn, also while writing, and keeps the draft |
 | `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
 | `y` | copy the marked turn ([Copying a turn](#copying-a-turn)) |
 | `r` | read the first file link of the marked turn in the chat column ([Reading a linked file](#reading-a-linked-file)) |

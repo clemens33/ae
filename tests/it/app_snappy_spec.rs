@@ -9,7 +9,7 @@
     reason = "acceptance owns private terminal fixtures and reads their effects"
 )]
 
-use crate::app_mode::writing;
+use crate::app_mode::{scrolled, writing};
 use std::fs;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -435,12 +435,10 @@ fn wheel_repaints_during_a_held_refresh() {
     rig.ready(&pane, 1);
     // Judge scrollability independently of the held-read oracle.
     rig.literal(&pane, "\x1b[<64;70;20M");
-    rig.wait(&pane, WAIT, "fixture lane scrolls", |screen| {
-        screen.contains("newer turns below")
-    });
+    rig.wait(&pane, WAIT, "fixture lane scrolls", scrolled);
     rig.literal(&pane, "\x1b[<65;70;20M");
     rig.wait(&pane, WAIT, "fixture lane returns to newest", |screen| {
-        !screen.contains("newer turns below") && screen.contains(&format!("{}-newest-39", rig.home))
+        !scrolled(screen) && screen.contains(&format!("{}-newest-39", rig.home))
     });
     let hold = rig.hold("@world");
     rig.held(&hold, "@world", "periodic world refresh");
@@ -449,17 +447,14 @@ fn wheel_repaints_during_a_held_refresh() {
         &pane,
         FRAME,
         "wheel scroll paints while refresh is held",
-        |screen| screen.contains("newer turns below"),
+        scrolled,
     );
     rig.literal(&pane, "\x1b[<65;70;20M");
     rig.wait(
         &pane,
         FRAME,
         "wheel returns to newest while refresh is held",
-        |screen| {
-            !screen.contains("newer turns below")
-                && screen.contains(&format!("{}-newest-39", rig.home))
-        },
+        |screen| !scrolled(screen) && screen.contains(&format!("{}-newest-39", rig.home)),
     );
     assert!(hold.path.exists());
 }

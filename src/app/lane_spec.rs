@@ -339,7 +339,25 @@ fn assert_window(buf: &Buffer, full: &[Line<'static>], scroll: usize) {
     }
     let last = full.len().saturating_sub(scroll).max(PAGE.min(full.len()));
     if scroll > 0 && last < full.len() {
-        expected.set_stringn(47, 32, "↓ newer turns below · PgDn", 111, Style::new());
+        // A turn starts below the window when its header row does: the
+        // fixtures' headers are the only rows that begin `lead  `.
+        let header = |line: &Line<'static>| {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            text.starts_with("lead  ")
+        };
+        let below = full[last..].iter().filter(|line| header(line)).count();
+        let words = match below {
+            0 => "↓ more below · End".to_owned(),
+            1 => "↓ 1 newer turn · End".to_owned(),
+            count => format!("↓ {count} newer turns · End"),
+        };
+        // Centered in the 111-cell column that starts at 47.
+        let at = 47 + (111 - u16::try_from(words.chars().count()).expect("short")) / 2;
+        expected.set_stringn(at, 32, &words, 111, Style::new());
     }
     for y in 2..=32 {
         for x in 47..158 {

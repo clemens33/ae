@@ -12,6 +12,12 @@ pub fn writing(screen: &str) -> bool {
     !held && footer.contains("Enter sends") && footer.trim_end().ends_with(['⚙', '*'])
 }
 
+/// The frame draws the chat's jump-to-newest hint, `↓ 3 newer turns · End` or
+/// `↓ more below · End`: only a lane scrolled off its newest row has one.
+pub fn scrolled(screen: &str) -> bool {
+    screen.contains(" · End")
+}
+
 /// A frame whose final row is `keys`.
 fn frame(keys: &str) -> String {
     format!("────\nto api\n\n{keys}")
@@ -43,6 +49,24 @@ fn the_other_modes_and_a_blank_final_row_are_not_writing() {
     for gear in ["⚙", "*"] {
         let held = format!("────\nnot writing: refused · Esc browses\n\n  ae 2026.10.45 {gear}");
         assert!(!writing(&held), "a blank-left held footer is not writable");
+    }
+}
+
+#[test]
+fn the_jump_hint_marks_a_scrolled_lane_and_no_keys_row_carries_it() {
+    for hint in [
+        "↓ 13 newer turns · End",
+        "↓ 1 newer turn · End",
+        "↓ more below · End",
+    ] {
+        assert!(scrolled(&format!("lane\n{hint}\n────")), "{hint}");
+    }
+    for keys in [
+        "   Enter sends · Alt+Enter ^J newline · Esc browses      ae 2026.10.45 ⚙",
+        "   Enter writes · ? keys      ae 2026.10.45 ⚙",
+        "  settings   Esc close      ae 2026.10.45 ⚙",
+    ] {
+        assert!(!scrolled(&frame(keys)), "{keys}");
     }
 }
 

@@ -141,6 +141,8 @@ pub(crate) enum Hit {
     Modal,
     /// A drawn fold row, by its turn's fold key: folds or unfolds the turn.
     Fold(u64),
+    /// The `↓ newer turns` hint's drawn words: scroll to the newest turn.
+    Newest,
 }
 
 /// A border as drawn: its edge, where it stands, its own cells and the cells
@@ -1776,7 +1778,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     let super::lane::Tail {
         mut rows,
         complete,
-        turns,
+        turns: produced,
         mut links,
         mut files,
     } = lane_tail(ctx, &clock, main, (room, need));
@@ -1785,7 +1787,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         links.push(Vec::new());
         files.push(Vec::new());
     }
-    let (turns, bars, folds) = place_turns(ctx, &turns, &mut rows, layout);
+    let (turns, bars, folds) = place_turns(ctx, &produced, &mut rows, layout);
     let last = rows
         .len()
         .saturating_sub(scroll)
@@ -1805,7 +1807,9 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     layout.lane(buf, (left, top, room, room_rows), &bars, (first..last, y0));
     let viewing = screen.composer.in_place();
     if room_rows > 0 && scroll > 0 && last < rows.len() && !viewing {
-        put(buf, left, bottom, "↓ newer turns below · PgDn", room, dim);
+        // Every row below the window is produced, so the count is exact.
+        let below = produced.iter().filter(|turn| turn.first >= last).count();
+        newer_hint(buf, layout, (left, bottom, room), (below, paint));
     }
     put(
         buf,
@@ -1846,6 +1850,26 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     layout.page_rows = room_rows;
     layout.max_scroll = rows.len().saturating_sub(room_rows);
     layout.complete = complete;
+}
+
+/// The hint on row `y`, under a scrolled-up lane whose column is `room` cells
+/// from `left`: how many turns start below the window, centered, in the
+/// accent. Its words are a click target that scrolls to the newest turn.
+fn newer_hint(
+    buf: &mut Buffer,
+    layout: &mut Layout,
+    (left, y, room): (u16, u16, u16),
+    (below, paint): (usize, Paint),
+) {
+    let words = match below {
+        0 => "↓ more below · End".to_owned(),
+        1 => "↓ 1 newer turn · End".to_owned(),
+        count => format!("↓ {count} newer turns · End"),
+    };
+    let width = cells(Span::raw(words.as_str()).width()).min(room);
+    let from = left + room.saturating_sub(width) / 2;
+    let end = put(buf, from, y, &words, room, paint.fg(|p| p.title));
+    layout.overlay(buf, Rect::new(from, y, end - from, 1), Hit::Newest);
 }
 
 /// The hint row, the pane's last: a pending line — an armed key, a refused
@@ -4234,12 +4258,88 @@ mod tests {
         assert!(spot(&buf, "today").is_some(), "the turn is drawn");
     }
 
+    /// Issue 302: the hint under a scrolled-up lane is centered in the chat
+    /// column, drawn in the accent, and counts the turns that start below the
+    /// window; its words are a click target and nothing beside them is.
+    #[test]
+    fn the_newer_turns_hint_is_centered_accented_counted_and_clickable() {
+        let mut shot = Shot::new();
+        shot.lane = turns(150);
+        shot.key(crate::app::model::Key::PageUp);
+        // 45 rows: the lane window is 38 rows (rows 2..40) and a page up
+        // hides the newest 38 of the 117 rows the frame produced, three per
+        // turn (blank, header, body), 39 turns. The window then ends on the
+        // blank row above the 14th-newest turn's header: 13 turns start below.
+        let (buf, layout) = shot.laid(160, 45, READ_ONLY);
+        let words = "↓ 13 newer turns · End";
+        let (y, x) = spot(&buf, words).expect("the counted hint");
+        let x = u16::try_from(x).expect("a column");
+        let width = u16::try_from(words.chars().count()).expect("a width");
+        // The composer's rule, the row under the hint, spans the chat column.
+        let end = (0..buf.area.width)
+            .rev()
+            .find(|x| buf[(*x, y + 1)].symbol() == "─")
+            .expect("the rule");
+        let begin = (0..=end)
+            .rev()
+            .take_while(|x| buf[(*x, y + 1)].symbol() == "─")
+            .last()
+            .expect("the rule's first cell");
+        let room = end + 1 - begin;
+        assert_eq!(x - begin, (room - width) / 2, "centered in the column");
+        let accent = super::colour(crate::theme::Palette::DARCULA.title);
+        let dim = super::colour(crate::theme::Palette::DARCULA.dim);
+        for at in x..x + width {
+            let cell = &buf[(at, y)];
+            assert_eq!(cell.fg, accent, "accent at {at}");
+            assert_ne!(cell.fg, dim);
+        }
+        let press = |column: u16, row: u16| Mouse {
+            kind: MouseKind::Click,
+            column,
+            row,
+        };
+        for at in x..x + width {
+            let mouse = press(at, y);
+            assert!(
+                matches!(layout.hit(mouse), Some(super::Hit::Newest)),
+                "the words are the target at {at}"
+            );
+            assert!(layout.file(mouse).is_none(), "no file link under it");
+            assert!(!layout.link_at(mouse), "no web link under it");
+        }
+        for beside in [x - 1, x + width] {
+            let hit = layout.hit(press(beside, y));
+            assert!(!matches!(hit, Some(super::Hit::Newest)), "beside the words");
+        }
+        let above = layout.hit(press(x, y - 1));
+        assert!(!matches!(above, Some(super::Hit::Newest)), "the row above");
+    }
+
+    /// One turn below reads in the singular, and the rest of the newest turn
+    /// alone below counts no turn.
+    #[test]
+    fn the_newer_turns_hint_counts_one_and_none() {
+        let mut shot = Shot::new();
+        shot.lane = turns(150);
+        shot.model.wheel(true, 38, 1000);
+        // One notch hides three rows: the newest turn's blank, header, body.
+        let buf = shot.draw(160, 45, READ_ONLY);
+        assert!(spot(&buf, "↓ 1 newer turn · End").is_some(), "one turn");
+        shot.lane.items.last_mut().expect("a turn").body = "a\nb\nc\nd\ne\nf".to_owned();
+        let buf = shot.draw(160, 45, READ_ONLY);
+        // Its blank, header and six body rows are drawn; the last three rows
+        // (d, e, f) hide, the header stays: no turn starts below.
+        assert!(spot(&buf, "↓ more below · End").is_some(), "no turn");
+        assert_eq!(spot(&buf, "newer turn"), None);
+    }
+
     /// The `↓ newer turns below` hint means newer turns are hidden below:
     /// none for a lane that fits, even asked to scroll; one on a long lane
     /// scrolled a page up.
     #[test]
     fn the_newer_turns_hint_shows_only_when_newer_turns_are_hidden() {
-        const HINT: &str = "newer turns below";
+        const HINT: &str = "newer turns · End";
         let mut shot = Shot::new();
         shot.lane = turns(2);
         shot.key(crate::app::model::Key::PageUp);
@@ -5103,9 +5203,11 @@ mod tests {
         assert_eq!(buf[(35, 1)].symbol(), "─", "the header rule");
         assert_eq!(buf[(2, 4)].symbol(), "─", "the composer's rule");
         assert!(line(&buf, 0).concat().contains("api"), "the header");
+        // One turn starts below the one drawn row; the 20-cell words are
+        // centered in the 36-cell column that starts at 2: `newer` at 2 + 8 + 4.
         assert_eq!(
-            spot(&buf, "newer turns"),
-            Some((3, 4)),
+            spot(&buf, "newer turn"),
+            Some((3, 14)),
             "the hint under the lane's one row, never over the header"
         );
         assert!(

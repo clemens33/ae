@@ -326,7 +326,8 @@ impl Model {
             Key::Read => Act::Read,
             Key::Orchestrator => Act::Orchestrator,
             Key::Quit => Act::Quit,
-            Key::Top | Key::Bottom | Key::Tab | Key::Compose | Key::Mode => Act::None,
+            Key::Bottom => self.newest(),
+            Key::Top | Key::Tab | Key::Compose | Key::Mode => Act::None,
         }
     }
 
@@ -393,6 +394,18 @@ impl Model {
         self.focus = None;
         self.turn = None;
         Act::Select(row.name.clone())
+    }
+
+    /// Scroll the chat back to its newest row: `G` / `End`, and a click on
+    /// the `↓ newer turns` hint. Where the chat already stands there it
+    /// changes nothing and asks for no redraw.
+    pub(crate) fn newest(&mut self) -> Act {
+        if self.pages == 0 && self.rows == 0 {
+            return Act::None;
+        }
+        self.pages = 0;
+        self.rows = 0;
+        Act::Redraw
     }
 
     /// The marked turn's fingerprint.

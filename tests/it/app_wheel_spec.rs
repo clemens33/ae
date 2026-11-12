@@ -9,7 +9,7 @@
     reason = "acceptance owns private terminal fixtures and reads their effects"
 )]
 
-use crate::app_mode::writing;
+use crate::app_mode::{scrolled, writing};
 use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
@@ -272,10 +272,7 @@ impl Rig {
             },
             "input mode preserved:\n{screen}"
         );
-        assert!(
-            !screen.contains("newer turns below"),
-            "sidebar wheel did not scroll chat"
-        );
+        assert!(!scrolled(screen), "sidebar wheel did not scroll chat");
     }
 }
 
@@ -828,7 +825,7 @@ fn resize_growth_clamps_body_offset_and_hidden_sidebar_has_no_live_wheel_target(
         &pane,
         FRAME,
         "A-HIDDEN-SIDEBAR only drawn chat owns old sidebar cells",
-        |s| s.contains("newer turns below"),
+        scrolled,
     );
 }
 

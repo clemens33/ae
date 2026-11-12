@@ -22,7 +22,7 @@
     reason = "acceptance owns private terminal fixtures and reads their effects"
 )]
 
-use crate::app_mode::writing;
+use crate::app_mode::{scrolled, writing};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -641,13 +641,37 @@ fn wheel_over_chat_scrolls_and_returns() {
         rig.wheel(&pane, true, col, row - 4);
     }
     rig.wait(&pane, WAIT, "scrolled back to the oldest turn", |screen| {
-        screen.contains("scrollprobe-oldest") && screen.contains("newer turns below")
+        screen.contains("scrollprobe-oldest") && scrolled(screen)
     });
     for _ in 0..8 {
         rig.wheel(&pane, false, col, row - 4);
     }
     rig.wait(&pane, WAIT, "settled back at the newest turn", |screen| {
-        !screen.contains("newer turns below") && screen.contains("scrollprobe-newest")
+        !scrolled(screen) && screen.contains("scrollprobe-newest")
+    });
+}
+
+/// Issue 302: a click on the `↓ N newer turns · End` words takes the chat back
+/// to its newest turn, through the app's real SGR decoder.
+#[test]
+fn a_click_on_the_newer_turns_hint_returns_to_the_newest_turn() {
+    let rig = Rig::new("amhint", 12, &[]);
+    let pane = rig.open_app();
+    let address = format!("to {}", rig.name);
+    let screen = rig.wait(&pane, WAIT, "newest turn at the bottom", |screen| {
+        screen.contains("scrollprobe-newest") && !screen.contains("scrollprobe-oldest")
+    });
+    let (col, row) = cell_of(&screen, &address).expect("the composer row");
+    for _ in 0..8 {
+        rig.wheel(&pane, true, col, row - 4);
+    }
+    let screen = rig.wait(&pane, WAIT, "scrolled back to the oldest turn", |screen| {
+        screen.contains("scrollprobe-oldest") && screen.contains("newer turn")
+    });
+    let (hint, y) = cell_of(&screen, "newer turn").expect("the hint's words");
+    rig.click(&pane, hint + 1, y);
+    rig.wait(&pane, WAIT, "back at the newest turn", |screen| {
+        screen.contains("scrollprobe-newest") && !screen.contains("newer turn")
     });
 }
 
@@ -666,10 +690,7 @@ fn wheel_over_sidebar_noops() {
     }
     std::thread::sleep(SETTLE);
     let screen = rig.screen(&pane);
-    assert!(
-        !screen.contains("newer turns below"),
-        "nothing scrolled:\n{screen}"
-    );
+    assert!(!scrolled(&screen), "nothing scrolled:\n{screen}");
     assert!(
         screen.contains("Enter writes"),
         "still browsing home:\n{screen}"
@@ -843,7 +864,7 @@ fn wheel_while_writing_scrolls_and_keeps_draft() {
         rig.wheel(&pane, true, col, row - 4);
     }
     rig.wait(&pane, WAIT, "scrolled and still writing", |screen| {
-        screen.contains("newer turns below") && writing(screen) && screen.contains("wheeldraft")
+        scrolled(screen) && writing(screen) && screen.contains("wheeldraft")
     });
 }
 
@@ -890,9 +911,7 @@ fn one_wheel_notch_moves_exactly_three_rows() {
     });
     let (col, row) = cell_of(&screen, &address).expect("the composer row");
     rig.wheel(&pane, true, col, row - 4);
-    let screen = rig.wait(&pane, WAIT, "scrolled back one notch", |screen| {
-        screen.contains("newer turns below")
-    });
+    let screen = rig.wait(&pane, WAIT, "scrolled back one notch", scrolled);
     let row1 = screen
         .lines()
         .position(|line| line.contains(MARK))

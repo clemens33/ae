@@ -10,7 +10,7 @@
     reason = "acceptance owns isolated terminal fixtures and reads their effects"
 )]
 
-use crate::app_mode::writing;
+use crate::app_mode::{scrolled, writing};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -663,18 +663,16 @@ fn live_wheel_cancels_drag_and_chat_wheel_still_scrolls() {
     rig.motion(&pane, 80, 1);
     let screen = rig.ordered(&pane, "sentinel processed after wheel and orphan motion");
     assert_eq!(vertical_rule(&screen), Some(66));
-    assert!(!screen.contains("newer turns below"));
+    assert!(!scrolled(&screen));
     for _ in 0..8 {
         rig.wheel(&pane, true, 75, 20);
     }
-    rig.wait(&pane, MOVE, "chat wheel unchanged", |screen| {
-        screen.contains("newer turns below")
-    });
+    rig.wait(&pane, MOVE, "chat wheel unchanged", scrolled);
     for _ in 0..8 {
         rig.wheel(&pane, false, 75, 20);
     }
     rig.wait(&pane, MOVE, "wheel returns to newest", |screen| {
-        screen.contains("scrollprobe-newest") && !screen.contains("newer turns below")
+        screen.contains("scrollprobe-newest") && !scrolled(screen)
     });
 }
 

@@ -8,7 +8,7 @@
     reason = "acceptance owns private terminal fixtures and reads their effects"
 )]
 
-use crate::app_mode::writing;
+use crate::app_mode::{scrolled, writing};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -645,9 +645,7 @@ fn wheel_over_grown_composer_moves_three_lane_rows_and_bounds_survive_shrink() {
     };
     let original = lane(&before);
     rig.report(&pane, 64, column, top, 1);
-    let after = rig.wait(&pane, FRAME, "one notch moved lane", |f| {
-        f.text.contains("newer turns below")
-    });
+    let after = rig.wait(&pane, FRAME, "one notch moved lane", |f| scrolled(&f.text));
     rig.holds(&after, &tail(), 9, 3);
     let shifted = lane(&after);
     assert_eq!(
