@@ -197,6 +197,14 @@ pub(super) struct UpkeepStep {
     s5_idle: bool,
     /// When the next Tools unit may run: `None` at once.
     tools_due: Option<Instant>,
+    /// Whether a test holds the schedule off the real clock: the work of a
+    /// wake then takes no time ([`Self::lapse`]).
+    #[cfg(test)]
+    still: bool,
+    /// A stall a test puts inside every Tools unit, as a loaded machine
+    /// would: it counts as the unit's own time.
+    #[cfg(test)]
+    unit_stall: Duration,
 }
 
 impl UpkeepStep {
@@ -218,7 +226,32 @@ impl UpkeepStep {
             s5_due: None,
             s5_idle: false,
             tools_due: None,
+            #[cfg(test)]
+            still: false,
+            #[cfg(test)]
+            unit_stall: Duration::ZERO,
         }
+    }
+
+    /// How long the work since `began` really took. The schedule runs on the
+    /// `now` its caller hands it, which a test simulates; this is the one
+    /// place it reads the real clock, so a test that holds the step
+    /// `still` never lets a load stall move the schedule.
+    #[cfg_attr(
+        not(test),
+        allow(
+            clippy::unused_self,
+            reason = "only a test's still flag is read from the step"
+        )
+    )]
+    fn lapse(&self, began: Instant) -> Duration {
+        #[cfg(test)]
+        {
+            if self.still {
+                return Duration::ZERO;
+            }
+        }
+        began.elapsed()
     }
 
     /// The S5 step, then at most one Tools unit: what [`Self::beat`] does
@@ -305,10 +338,14 @@ impl UpkeepStep {
         }
         let started = Instant::now();
         let unit = self.tools.step();
-        let spent = started.elapsed();
+        #[cfg(test)]
+        {
+            std::thread::sleep(self.unit_stall);
+        }
+        let spent = self.lapse(started);
         if let Some(unit) = unit {
             self.ran = Some(now);
-            let end = now.checked_add(began.elapsed());
+            let end = now.checked_add(self.lapse(began));
             self.tools_due = end.and_then(|end| end.checked_add(spent.max(TOOLS_BREATH)));
             if unit.kind == crate::usage::calls_read::UnitKind::Load && !self.tools.proven() {
                 // No proven S5 epoch: no discovery and no transcript read.

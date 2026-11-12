@@ -111,6 +111,9 @@ fn p4_2_tools_work_waits_for_a_proven_s5_epoch() {
 fn drive(outcome: &Outcome, active: Duration, window: Duration) -> (Vec<Instant>, Vec<Instant>) {
     let root = proven();
     let mut step = UpkeepStep::new(&root.0);
+    // The clock is simulated end to end: the real time a unit takes (a load
+    // stall) never enters the schedule these specs pin.
+    step.still = true;
     let start = Instant::now();
     let mut now = start;
     let (mut s5, mut tools) = (Vec::new(), Vec::new());
@@ -184,6 +187,51 @@ fn p4_3_tools_units_never_rerun_s5_before_its_pause() {
                 pair[1] - pair[0] <= TOOLS_FAIR,
                 "{name}: Tools runs at most {TOOLS_FAIR:?} apart while S5 has work: {:?}",
                 pair[1] - pair[0]
+            );
+        }
+    }
+}
+
+/// The next Tools unit is due once the wake has really ended (the S5 step
+/// and the unit, counted from the wake's start) plus a rest as long as the
+/// unit took, so Tools holds at most about half a core; only a step held
+/// still leaves that real time out of the simulated schedule. A stall in the
+/// S5 step and one in the unit move `tools_due` by both terms on the real
+/// clock, and by nothing on the still one (issue 329).
+#[test]
+fn a_real_stall_moves_the_tools_schedule_only_on_the_real_clock() {
+    let wake = Duration::from_millis(60);
+    let unit = Duration::from_millis(100);
+    for still in [true, false] {
+        let root = proven();
+        let mut step = UpkeepStep::new(&root.0);
+        step.still = still;
+        step.unit_stall = unit;
+        let now = Instant::now();
+        let turn = step.turn_with(now, |_| {
+            std::thread::sleep(wake);
+            synthetic(&Outcome::Deferred, Duration::ZERO)
+        });
+        assert!(
+            turn.tools.is_some(),
+            "control: the first turn runs a Tools unit (still: {still})"
+        );
+        let due = step
+            .tools_due
+            .expect("a unit ran, so the next has a due time");
+        if still {
+            assert_eq!(
+                due,
+                now + TOOLS_BREATH,
+                "a still step charges the stall nothing: the unit rests its breath"
+            );
+        } else {
+            // The wake's S5 stall and the unit's stall are charged as the
+            // wake's length, and the unit's stall once more as its rest.
+            assert!(
+                due >= now + wake + unit + unit,
+                "a real step charges the wake and then rests as long as the unit took: {:?}",
+                due.saturating_duration_since(now)
             );
         }
     }
