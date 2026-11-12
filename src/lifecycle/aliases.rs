@@ -92,6 +92,22 @@ fn entries(root: &Path) -> io::Result<Vec<(PathBuf, PathBuf)>> {
     Ok(aliases)
 }
 
+fn retarget_one(
+    alias: &Path,
+    prior: &Path,
+    old_dir: &Path,
+    new_dir: &Path,
+    err: &mut impl Write,
+) -> io::Result<()> {
+    if prior == old_dir && target(alias).as_deref() == Some(old_dir) {
+        match fs::remove_file(alias) {
+            Ok(()) => keep_alias(alias, new_dir, err)?,
+            Err(why) => not_kept(alias, &why, err)?,
+        }
+    }
+    Ok(())
+}
+
 /// Retarget every prior alias directly, including after a stopped rename.
 /// Never replace an entry that has ceased to be our alias.
 pub(crate) fn retarget(root: &Path, old: &str, new: &str, err: &mut impl Write) -> io::Result<()> {
@@ -103,12 +119,7 @@ pub(crate) fn retarget(root: &Path, old: &str, new: &str, err: &mut impl Write) 
         Err(why) => return not_kept(&old_dir, &why, err),
     };
     for (alias, prior) in aliases {
-        if prior == old_dir && target(&alias).as_ref() == Some(&old_dir) {
-            match fs::remove_file(&alias) {
-                Ok(()) => keep_alias(&alias, &new_dir, err)?,
-                Err(why) => not_kept(&alias, &why, err)?,
-            }
-        }
+        retarget_one(&alias, &prior, &old_dir, &new_dir, err)?;
     }
     Ok(())
 }
@@ -156,3 +167,7 @@ mod regsid_aliases_spec;
 #[cfg(test)]
 #[path = "../../tests/it/regsid_maintenance_spec.rs"]
 mod regsid_maintenance_spec;
+
+#[cfg(test)]
+#[path = "../../tests/it/regsid_retarget_spec.rs"]
+mod regsid_retarget_spec;
