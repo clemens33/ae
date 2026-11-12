@@ -922,8 +922,15 @@ store` and rebuilds the store once. Damage met again during that rebuild flashes
 `Statistics: the store was damaged again (<reason>); upkeep stopped`, and the
 upkeep stays stopped until `r` or the next `ae app` run.
 
-The tab has four pages: Spawns, Skills, MCP servers and Tools. `n` and `p`
-page between them, and an open shows Spawns first. The three tool pages count
+One row of three inner tabs, `Agents`, `Skills` and `Tools`, stands directly
+under the Settings tab row while Statistics is shown. It has one form at every
+width, so it holds on the smallest pane, and each title is clickable. The Left
+and Right arrows step the row and wrap. Agents shows the spawn counts above,
+Skills the skill table, and Tools the MCP server and tool tables. A Settings
+open shows Agents first, and a later visit to the tab keeps the inner tab
+until Settings closes. The tab has four pages: Spawns (Agents), Skills,
+MCP servers and Tools (the last two both under Tools). `n` and `p` page
+between the four, and the row follows the page. The three tool pages count
 observed skill loads, MCP calls and tool calls in the Claude and Codex
 conversations of the seats this state root recorded. Other harnesses are not
 read and show as `unsupported harness (<tool>: <n> conversations not read)`.

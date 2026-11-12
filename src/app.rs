@@ -114,6 +114,10 @@ pub mod select;
 mod select_spec;
 mod settings;
 #[cfg(test)]
+mod skilltab_inner_spec;
+#[cfg(test)]
+mod skilltab_spec;
+#[cfg(test)]
 mod stablesplit_spec;
 #[cfg(test)]
 mod stats_spec;
@@ -1383,6 +1387,27 @@ impl App {
         }
     }
 
+    /// Left or Right on the Statistics tab: the inner tab one step along the
+    /// row, wrapping. See [`Self::select_stats_tab`].
+    fn stats_tab(&mut self, next: bool) -> bool {
+        let shown = settings::StatsTab::of(self.settings_bodies.stats.page);
+        self.select_stats_tab(shown.step(next))
+    }
+
+    /// Show the inner tab `tab` on its first page unless it is the one shown
+    /// (a click on the shown title changes nothing). A new tab draws
+    /// `loading` with no filter until its own answer lands.
+    fn select_stats_tab(&mut self, tab: settings::StatsTab) -> bool {
+        let stats = &mut self.settings_bodies.stats;
+        if settings::StatsTab::of(stats.page) == tab {
+            return false;
+        }
+        stats.page = tab.first_page();
+        stats.filter = crate::tool_stats::Filter::All;
+        stats.tools = None;
+        true
+    }
+
     /// `n` or `p` on the Statistics tab: the next or previous page. A new
     /// page draws `loading` with no filter until its own answer lands.
     fn stats_page(&mut self, next: bool) -> bool {
@@ -2620,7 +2645,8 @@ impl App {
 
     /// A mouse event with the overlay open: the wheel scrolls its body
     /// wherever it lands, a press on the gear or the close label closes, one
-    /// on a tab title shows that tab, and any other press dies.
+    /// on a tab title shows that tab, one on an inner title shows that inner
+    /// tab, and any other press dies.
     fn settings_mouse(&mut self, mouse: Mouse) -> bool {
         match mouse.kind {
             MouseKind::WheelUp => {
@@ -2639,6 +2665,7 @@ impl App {
                 Some(draw::Hit::SettingsTab(tab)) => {
                     self.model.show_settings_tab(tab) == model::Act::Redraw
                 }
+                Some(draw::Hit::StatsTab(tab)) => self.select_stats_tab(tab),
                 _ => false,
             },
             MouseKind::Drag | MouseKind::Release | MouseKind::Menu => false,
@@ -2729,7 +2756,10 @@ impl App {
                 self.open_settings();
                 return true;
             }
-            draw::Hit::SettingsTab(_) | draw::Hit::SettingsClose | draw::Hit::PeekClose => {
+            draw::Hit::SettingsTab(_)
+            | draw::Hit::StatsTab(_)
+            | draw::Hit::SettingsClose
+            | draw::Hit::PeekClose => {
                 return held;
             }
             draw::Hit::Item(_) | draw::Hit::Modal => return held,
@@ -5338,6 +5368,11 @@ fn settings_key(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
         return Some(redraw);
     }
     let mut redraw = false;
+    if let Key::Left | Key::Right = key {
+        // An arrow steps the Statistics tab's inner row and means nothing on
+        // any other tab.
+        return Some(app.model.arrows_step_stats() && app.stats_tab(*key == Key::Right));
+    }
     for key in model::browse_keys(key) {
         // The overlay branch returns no Quit, Select or Compose; a close
         // shows as the state it leaves behind, told below.

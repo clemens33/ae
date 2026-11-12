@@ -798,6 +798,14 @@ impl Model {
         self.settings.is_some()
     }
 
+    /// Whether the Left and Right arrows step an inner row now: the overlay
+    /// is open on the Statistics tab. They are no browse key, so every other
+    /// mode and tab leaves them meaning nothing.
+    pub(crate) fn arrows_step_stats(&self) -> bool {
+        self.settings
+            .is_some_and(|open| open.tab == SettingsTab::Statistics)
+    }
+
     /// The open overlay, if any.
     pub(crate) fn settings(&self) -> Option<SettingsOverlay> {
         self.settings

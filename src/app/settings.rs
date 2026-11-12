@@ -155,6 +155,55 @@ pub(crate) enum StatsPage {
     Tools,
 }
 
+/// One title of the Statistics tab's inner row: Agents shows the recorded
+/// spawns, Skills the skill table, Tools the MCP server and tool tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatsTab {
+    Agents,
+    Skills,
+    Tools,
+}
+
+impl StatsTab {
+    /// Every inner tab, in the order the row draws them.
+    pub(crate) const ALL: [Self; 3] = [Self::Agents, Self::Skills, Self::Tools];
+
+    /// The title the row draws.
+    pub(crate) const fn title(self) -> &'static str {
+        match self {
+            Self::Agents => "Agents",
+            Self::Skills => "Skills",
+            Self::Tools => "Tools",
+        }
+    }
+
+    /// The inner tab a page belongs to: the MCP server and tool pages are
+    /// both the Tools tab.
+    pub(crate) const fn of(page: StatsPage) -> Self {
+        match page {
+            StatsPage::Spawns => Self::Agents,
+            StatsPage::Skills => Self::Skills,
+            StatsPage::Mcp | StatsPage::Tools => Self::Tools,
+        }
+    }
+
+    /// The page choosing this tab shows first.
+    pub(crate) const fn first_page(self) -> StatsPage {
+        match self {
+            Self::Agents => StatsPage::Spawns,
+            Self::Skills => StatsPage::Skills,
+            Self::Tools => StatsPage::Mcp,
+        }
+    }
+
+    /// The tab one step along the row, wrapping.
+    pub(crate) fn step(self, next: bool) -> Self {
+        let at = Self::ALL.iter().position(|tab| *tab == self).unwrap_or(0);
+        let step = if next { 1 } else { Self::ALL.len() - 1 };
+        Self::ALL[(at + step) % Self::ALL.len()]
+    }
+}
+
 /// What the Statistics store says of one scope, beside its numbers.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) enum ScopeLine {

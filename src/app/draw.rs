@@ -19,7 +19,7 @@ use super::overview::{Open, Overview};
 use super::peek;
 use super::reader;
 use super::select::{self, Map, Region};
-use super::settings::{AboutFacts, ConfigView, InstructionsView, SettingsBodies};
+use super::settings::{AboutFacts, ConfigView, InstructionsView, SettingsBodies, StatsTab};
 use crate::brief::age;
 use crate::console::input::View;
 use crate::console::input::{Mouse, ROWS_MAX};
@@ -127,6 +127,8 @@ pub(crate) enum Hit {
     Settings,
     /// A drawn Settings tab title.
     SettingsTab(SettingsTab),
+    /// A drawn title of the Statistics tab's inner row.
+    StatsTab(StatsTab),
     /// The overlay's drawn close label.
     SettingsClose,
     /// The peek panel's drawn close label.
@@ -2275,6 +2277,15 @@ const SETTINGS_TABS: [&str; 7] = [
 ];
 /// All seven targets stay reachable on the smallest pane.
 const SETTINGS_SHORT_TABS: [&str; 7] = ["Quota", "Conf", "About", "Instr", "Keys", "Cli", "Stats"];
+/// The Statistics tab's inner row, in one form at every width: it is short
+/// enough to stay whole on the smallest pane.
+const STATS_TABS: [&str; 3] = [
+    StatsTab::Agents.title(),
+    StatsTab::Skills.title(),
+    StatsTab::Tools.title(),
+];
+/// Between two inner titles.
+const STATS_GAP: &str = "  ";
 /// The clickable close label, right-aligned on the title row.
 const SETTINGS_CLOSE: &str = "Esc close";
 /// Plain-text links; no OSC 8 in this slice.
@@ -2334,6 +2345,18 @@ pub(crate) fn paint_settings(
                 Hit::SettingsTab(SettingsTab::Accounts),
                 Hit::SettingsTab(SettingsTab::Statistics),
             ],
+            inner: (tab == SettingsTab::Statistics).then_some(Inner {
+                tabs: &STATS_TABS,
+                hits: &[
+                    Hit::StatsTab(StatsTab::Agents),
+                    Hit::StatsTab(StatsTab::Skills),
+                    Hit::StatsTab(StatsTab::Tools),
+                ],
+                selected: StatsTab::ALL
+                    .iter()
+                    .position(|inner| *inner == StatsTab::of(bodies.stats.page))
+                    .unwrap_or(0),
+            }),
             close: (SETTINGS_CLOSE, Hit::SettingsClose),
             selected,
             body: &settings_body(
@@ -2356,11 +2379,23 @@ struct Panel<'a> {
     tabs: &'a [&'a str],
     /// The click target of each tab title, in tab order.
     hits: &'a [Hit],
+    /// A second row of tabs directly under the tab row, which pushes the
+    /// rule and the body one row down; none for most panels.
+    inner: Option<Inner<'a>>,
     /// The label drawn right-aligned on the title row, and its target.
     close: (&'a str, Hit),
     selected: usize,
     body: &'a [(String, Style)],
     scroll: Scroll,
+}
+
+/// A panel's inner tab row: one fixed form, a gap of [`STATS_GAP`] between
+/// titles.
+struct Inner<'a> {
+    tabs: &'a [&'a str],
+    /// The click target of each title, in order.
+    hits: &'a [Hit],
+    selected: usize,
 }
 
 /// How far a panel's body is scrolled.
@@ -2422,9 +2457,36 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
         x = put(buf, end, 1, gap, width.saturating_sub(end), style);
     }
     put(buf, LEFT, 1, panel.note, width - LEFT, paint.fg(|p| p.dim));
+    // The inner row stands on the row under the tabs; the rule and the body
+    // move down with it.
+    let rule_y: u16 = if let Some(inner) = &panel.inner {
+        let mut x = LEFT;
+        for (index, name) in inner.tabs.iter().enumerate() {
+            let style = if index == inner.selected {
+                paint.selected()
+            } else {
+                paint.fg(|p| p.text)
+            };
+            let end = put(buf, x, 2, name, width.saturating_sub(x), style);
+            if let Some(hit) = inner.hits.get(index) {
+                layout.record(buf, Rect::new(x, 2, end - x, 1), hit.clone());
+            }
+            x = put(
+                buf,
+                end,
+                2,
+                STATS_GAP,
+                width.saturating_sub(end),
+                paint.fg(|p| p.text),
+            );
+        }
+        3
+    } else {
+        2
+    };
     let rule: String = "─".repeat(usize::from(width));
-    put(buf, 0, 2, &rule, width, paint.fg(|p| p.border));
-    let visible = usize::from(height.saturating_sub(4));
+    put(buf, 0, rule_y, &rule, width, paint.fg(|p| p.border));
+    let visible = usize::from(height.saturating_sub(rule_y + 2));
     // The draw offset clamps to what is there before a line is chosen: past
     // the end paints an emptied body, and the model's clamp after this frame
     // converges the state to the same bound.
@@ -2439,7 +2501,7 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
         put(
             buf,
             LEFT,
-            3 + cells(at),
+            rule_y + 1 + cells(at),
             text,
             width.saturating_sub(LEFT),
             *style,
@@ -2496,6 +2558,7 @@ pub(crate) fn paint_peek(
             note: &note,
             tabs: &[],
             hits: &[],
+            inner: None,
             close: (PEEK_CLOSE, Hit::PeekClose),
             selected: 0,
             body: &peek_rows(
@@ -3206,8 +3269,9 @@ const READER_KEYS: [(&str, &str); 9] = [
     ("wheel", "scroll 3 rows per notch"),
     ("any other", "swallowed; nothing is typed or written"),
 ];
-const SETTINGS_KEYS: [(&str, &str); 11] = [
+const SETTINGS_KEYS: [(&str, &str); 12] = [
     ("Tab 1-7", "show that tab"),
+    ("Left/Right", "Statistics: previous or next inner tab"),
     ("m", "Statistics: all retained or this session"),
     ("j/k Up/Down", "scroll a line"),
     ("PgUp/PgDn", "scroll a page"),
@@ -3471,6 +3535,8 @@ mod s5_draw;
 mod s5_retention;
 #[cfg(test)]
 mod seatjoin_spec;
+#[cfg(test)]
+mod skilltab_spec;
 #[cfg(test)]
 mod stats_spec;
 
