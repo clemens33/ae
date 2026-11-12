@@ -2898,6 +2898,9 @@ pub(crate) mod fixture_tmux {
 pub(crate) mod quietwd_spec;
 
 #[cfg(test)]
+mod paneerr_spec;
+
+#[cfg(test)]
 mod tests {
     thread_local! {
         static SPAWNS: std::cell::RefCell<Option<Vec<Vec<String>>>> =
