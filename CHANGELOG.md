@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.40] - 2026-11-12
+- A call whose attempts all go stale is contended only while the deadline holds (#320)
+- The Tools schedule counts simulated time, not the wake's real elapsed time (#329)
+- A test can hold the release grace, so a late exit is not the backstop's kill (#331)
+- Pin nextest 0.9.151, which stops a macOS test inheriting a sibling's capture pipe (#330)
+- Transport tests: the stalled-server oracles judge the pids the wait spawned (issue 332)
+
 ## [v2026.11.39] - 2026-11-12
 - , and ? open Settings before the first fleet read (issue 314)
 
