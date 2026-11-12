@@ -97,6 +97,10 @@ pub struct AgentEntry {
     pub account: Option<Account>,
     /// Fresh roster-fact model and effort. JSON only.
     pub runtime: crate::harness_state::HarnessIdentity,
+    /// The fresh roster fact proved a live job of the seat's tool — the RAW
+    /// fact, whatever mark the seat draws. `false` without that proof.
+    /// Populated by [`crate::session::enrich_list_json`]; both `ae list` modes.
+    pub background_task: bool,
     /// What the running tool start did with its conversation; `None` where no
     /// start can run. Filled by `ae list` alone.
     pub conversation: Option<crate::conversation::Verdict>,
@@ -354,6 +358,11 @@ impl AgentEntry {
         {
             push_str_or_null(&mut fields, "task", declaration.task().as_deref());
         }
+        // Additive and LAST: `task` above keeps the declared words.
+        fields.push((
+            "background_task".to_owned(),
+            Value::Bool(self.background_task),
+        ));
         Value::Obj(fields)
     }
 }
@@ -1034,7 +1043,7 @@ mod tests {
             r#""needs_attention":true,"attention":"blocked","attention_rank":3,"#,
             r#""agents":[{"ref":"claude:lead","alias":"claude","name":"lead","#,
             r#""session_id":"e795c9e9","alive":true,"observed":"idle","state":"blocked","reason":"blocked","#,
-            r#""client":"unknown","account":null,"runtime":{"model":"unknown","effort":"unknown"},"conversation":null}],"#,
+            r#""client":"unknown","account":null,"runtime":{"model":"unknown","effort":"unknown"},"conversation":null,"background_task":false}],"#,
             r#""coverage":{"joined_live_seats":0,"live_seats":1,"unknown_seats":0}"#,
             r#"}],"inventory_complete":true}"#
         );
@@ -1387,7 +1396,8 @@ mod tests {
                 "client",
                 "account",
                 "runtime",
-                "conversation"
+                "conversation",
+                "background_task"
             ]),
             "every documented agent member is present: {value}"
         );

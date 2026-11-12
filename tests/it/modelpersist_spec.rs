@@ -946,7 +946,8 @@ fn a10_list_shows_manual_effort_and_keeps_the_json_key_contract() {
             "account",
             "runtime",
             "conversation",
-            "task"
+            "task",
+            "background_task"
         ])
     );
     assert_eq!(

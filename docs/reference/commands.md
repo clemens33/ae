@@ -460,7 +460,8 @@ script or agent; no `jq` is required to produce it. The filters
          "session_id": "e795c9e9", "alive": true, "observed": "idle", "state": "blocked",
          "reason": "blocked", "client": "unknown", "account": null,
          "runtime": {"model": "unknown", "effort": "unknown"},
-         "conversation": null, "task": "waiting on the design call"}
+         "conversation": null, "task": "waiting on the design call",
+         "background_task": false}
       ],
       "coverage": {"joined_live_seats": 0, "live_seats": 1, "unknown_seats": 0}
     }
@@ -490,8 +491,14 @@ session's count of asks/reviews unanswered and unaccepted past 1800 seconds; it 
 when the journal could not be read whole. Richer per-agent timing fields are a planned
 addition.
 
+`background_task`, always the last member, is `true` only when a fresh `@ae_agents` v3 roster
+fact, under the same match rules as `client` below, says the watchdog proved a live job of
+the seat's tool (a command its harness runs, for example a background tool call); it is
+`false` otherwise, including every v1 or v2 fact. It is the raw fact: a working seat can
+carry it too. The table appends ` +task` after the verdict cell when it is `true`.
+
 `client` and `runtime.model`/`runtime.effort` come only from a fresh watchdog
-`@ae_agents` v2 roster fact, matched by agent name, recorded profile and a unique
+`@ae_agents` v2 or v3 roster fact, matched by agent name, recorded profile and a unique
 slot pane. Fresh means at most two watchdog intervals old or one interval ahead
 of `generated_at`. Missing, stale, failed or mismatched observations read `"unknown"`;
 a degraded fact can retain its client or model while effort stays unknown.

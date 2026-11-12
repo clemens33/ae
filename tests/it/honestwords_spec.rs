@@ -349,7 +349,8 @@ fn honestwords_list_labels_declarations_and_observation_independently() {
                 "account",
                 "runtime",
                 "conversation",
-                "task"
+                "task",
+                "background_task"
             ]
         );
     }

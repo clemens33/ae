@@ -1207,6 +1207,7 @@ fn agent_entries(
                 .map(|found| found.class);
             let mut entry = AgentEntry {
                 conversation: None,
+                background_task: false,
                 harness_clash: None,
                 reference: reference.clone(),
                 // Schema 2 keeps publishing `alias`; for a v2 row that is the profile.
@@ -1418,9 +1419,10 @@ pub fn harness_clash_of<'t>(
     })
 }
 
-/// Enrich explicit JSON listings without changing activity or durable reads.
-/// Runtime cells require one fresh roster fact and a unique slot-pane proof
-/// from the listing's liveness snapshot; account identity is independently durable.
+/// Enrich `ae list` (both modes) without changing activity or durable reads.
+/// Runtime cells and the job flag require one fresh roster fact and a unique
+/// slot-pane proof from the listing's liveness snapshot; account identity is
+/// independently durable.
 pub fn enrich_list_json(
     entry: &mut SessionEntry,
     roster: &[crate::meta::RosterEntry],
@@ -1432,6 +1434,7 @@ pub fn enrich_list_json(
     for agent in &mut entry.agents {
         agent.client = None;
         agent.runtime = crate::harness_state::HarnessIdentity::default();
+        agent.background_task = false;
         let seat = roster.iter().find(|seat| seat.name == agent.name);
         agent.account = seat
             .and_then(crate::quota::recorded_identity)
@@ -1464,6 +1467,7 @@ pub fn enrich_list_json(
             agent.client = (!matches!(fact.client.as_str(), "" | "-")).then(|| fact.client.clone());
             agent.runtime.model = (!fact.model.is_empty()).then(|| fact.model.clone());
             agent.runtime.effort = (!fact.effort.is_empty()).then(|| fact.effort.clone());
+            agent.background_task = fact.task;
         }
     }
 }

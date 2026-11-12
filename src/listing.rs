@@ -417,6 +417,11 @@ fn push_agent_line(out: &mut String, session: &SessionEntry, agent: &AgentEntry,
     push_padded(out, agent.table_session_id(), ID_WIDTH);
     // Per-agent HEALTH is deliberately NOT a column here.
     push_verdict(out, session, agent, now);
+    // The roster fact proved a live job of the seat's tool: the RAW fact,
+    // beside whatever the verdict cell says.
+    if agent.background_task {
+        out.push_str(" +task");
+    }
     push_declaration(out, agent, session.agent_state_is_exact(), now);
     out.push_str(" · observed:");
     out.push_str(agent.observed.human());

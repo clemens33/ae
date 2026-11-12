@@ -632,10 +632,8 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     let wants_world = request_needs_world(&request);
     if wants_world && let Some(root) = state_root() {
         let mut read = fleet_read::world_read(&root, &mut session::RecordSnapshot::read);
-        if matches!(&request, cli::Request::List(options) if options.json) {
-            enrich_list_json(&read.snapshot, &mut read.world, &read.panes);
-        }
         if matches!(&request, cli::Request::List(_)) {
+            enrich_list_facts(&read.snapshot, &mut read.world, &read.panes);
             enrich_list_seats(&read.snapshot, &mut read.world, &read.pids);
         }
         return run_with(args, Some(&read.world), out, err);
@@ -643,8 +641,9 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     run_with(args, None, out, err)
 }
 
-/// Only explicit JSON listings pay for the per-Running-session roster read.
-fn enrich_list_json(
+/// `ae list` pays for one roster-fact read per Running session: the JSON
+/// runtime cells and, in both modes, the seat's proven background job.
+fn enrich_list_facts(
     snapshot: &liveness::Snapshot,
     world: &mut listing::World,
     listed: &fleet_read::ListedPanes,

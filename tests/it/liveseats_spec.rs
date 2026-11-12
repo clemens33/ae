@@ -40,7 +40,13 @@ const EXISTING_AGENT_KEYS: [&str; 8] = [
     "reason",
 ];
 
-const NEW_AGENT_KEYS: [&str; 4] = ["client", "account", "runtime", "conversation"];
+const NEW_AGENT_KEYS: [&str; 5] = [
+    "client",
+    "account",
+    "runtime",
+    "conversation",
+    "background_task",
+];
 
 // ---------------------------------------------------------------------------
 // seam fixtures
@@ -236,7 +242,7 @@ fn new_agent_keys_stay_last_when_state_and_reason_are_absent() {
         value.render()
     );
     assert_eq!(
-        &found[found.len() - 4..],
+        &found[found.len() - NEW_AGENT_KEYS.len()..],
         NEW_AGENT_KEYS,
         "{}",
         value.render()
