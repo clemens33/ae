@@ -128,11 +128,17 @@ fn launchsplit_tmux_creation_failure_removes_only_state_this_attempt_created() {
             }
             let before = std::fs::read(rig.dir(session).join("meta")).ok();
             let events = std::fs::read(rig.dir(session).join("events.jsonl")).ok();
+            // The socket's DIRECTORY is a regular file, so connect(2) fails with
+            // ENOTDIR and tmux gives up before it tries to start a server, on
+            // every supported tmux. A regular file AT the socket path would not
+            // do: tmux 3.6 on Linux replaces it and starts, tmux 3.7b on macOS
+            // refuses.
             let blocked = rig.scratch.join("blocked-socket");
             std::fs::write(&blocked, b"not a socket").expect("private blocked destination");
+            let socket = blocked.join("tmux.sock");
             let mut command = rig.launch_command_with_server(
                 "socket",
-                &blocked.display().to_string(),
+                &socket.display().to_string(),
                 &[mode, session],
             );
             // The blocked socket cannot answer the separate version gate. The
