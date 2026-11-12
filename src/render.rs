@@ -3227,8 +3227,9 @@ mod tests {
         // The skipped "Session s." prefix is 2 words; the owner line between
         // it and the anchor is excluded by the invariant.
         let words = 2 + document[start..stop].split_whitespace().count();
+        // 763: the 2026-11-12 Background doctrine joined CORE (ae-20261112T091850Z-fdacb03e).
         assert!(
-            words <= 700,
+            words <= 763,
             "CORE + WORKER card is {words} words: {document}"
         );
     }

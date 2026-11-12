@@ -43,6 +43,7 @@ mod archive_purge;
 mod autochoice_spec;
 mod autoreseat;
 mod autotrust_spec;
+mod bgmark_doctrine_spec;
 mod bgmark_spec;
 mod board;
 mod board_stream_spec;

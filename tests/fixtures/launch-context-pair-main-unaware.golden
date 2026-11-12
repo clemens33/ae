@@ -49,6 +49,10 @@ blocked — an external impediment (service, dependency, broken host), never ano
 done — you handed your result back, or your owner paused you for an explained reason; nothing is
 left for you to do, even if follow-up questions may come. Example: you replied with your
 report → done, not waiting-agent.
+Waiting on your own running job is working, not waiting-agent. Run long jobs as your harness's
+background tool call: ae sees and attributes only jobs under your seat. Use `nohup` or `setsid`
+only when a job must outlive your seat or runs in a remote session; then write its pid, log and
+exit files under .local/<slice>/ and name them in your state reason.
 Wait and blocked reasons: 80–600 characters naming who or what unblocks and the evidence path. On
 a watchdog challenge, check the condition: still true → declare it again; changed → declare the
 real state. Challenges authorize no extra edits.
