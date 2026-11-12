@@ -730,6 +730,141 @@ mod tests {
         assert!(kind(&journal(&[("rename", 5, "")]), &spawned).is_some());
     }
 
+    /// The record `_run` journals for a start of `slot`: `target_slot` and the
+    /// `<slot>:<launch>:<pid> <prior|-> <id>` ref.
+    fn started(slot: &str, prior: &str) -> String {
+        format!(
+            r#","target_slot":"{slot}","ref":"{slot}:11111111-1111-4111-8111-111111111111:7 {prior} abcd1234-abcd-4123-8123-123456789abc""#
+        )
+    }
+
+    const SLOT_MAIN: &str = r#","target_slot":"main""#;
+
+    /// Issue 282: a start that RESUMES keeps the conversation, and with it the
+    /// text that conversation opened under, so a rename that predates the
+    /// resume is still owed.
+    #[test]
+    fn a_resume_keeps_a_rename_owed() {
+        let main = started("main", "-");
+        // `launch_time` is the resume's own stamp, newer than the rename.
+        let resumed = Seat {
+            launch_time: Some(NOW - 1),
+            ..seat()
+        };
+        for action in ["conversation-resumed", "conversation-unproven"] {
+            let events = journal(&[
+                ("conversation-new", 100, &main),
+                ("rename", 50, ""),
+                (action, 1, &main),
+            ]);
+            assert_eq!(kind(&events, &resumed), Some((Kind::Rename, 0)), "{action}");
+        }
+        // A rename told before the stop is not told again after the resume.
+        let told = attempt_json("rename", "tok", "r1");
+        let end = ended("r1");
+        let events = journal(&[
+            ("conversation-new", 100, &main),
+            ("rename", 50, ""),
+            ("session-notice-attempt", 40, &told),
+            ("session-notice", 40, &end),
+            ("conversation-resumed", 1, &main),
+        ]);
+        assert_eq!(kind(&events, &resumed), None, "a told rename stays told");
+        // Another slot's resume, a record that breaks its grammar, and no
+        // record at all leave the legacy launch-time fallback in force.
+        let other = started("worker.0", "-");
+        let damaged = r#","target_slot":"main","ref":"main:not-a-launch:7 - abcd1234""#;
+        for events in [
+            journal(&[("rename", 50, ""), ("conversation-resumed", 1, &other)]),
+            journal(&[("rename", 50, ""), ("conversation-resumed", 1, damaged)]),
+            journal(&[("rename", 50, "")]),
+        ] {
+            assert_eq!(kind(&events, &resumed), None);
+        }
+        // `_run` captures its context BEFORE it journals a start record, so a
+        // rename between the launch and that record is not in the text: a
+        // start that opened a new conversation dates nothing either.
+        let launched_before = Seat {
+            launch_time: Some(NOW - 100),
+            ..seat()
+        };
+        for action in ["conversation-new", "conversation-lost-no-id"] {
+            let events = journal(&[("rename", 50, ""), (action, 40, &main)]);
+            assert_eq!(
+                kind(&events, &launched_before),
+                Some((Kind::Rename, 0)),
+                "{action}"
+            );
+        }
+    }
+
+    /// Issue 282: a relaunch or reseat whose `_run` resumed the same
+    /// conversation is a resume too. Only one that opened a new conversation
+    /// launched the seat into fresh context.
+    #[test]
+    fn a_reseat_or_relaunch_that_kept_the_conversation_is_no_boundary() {
+        let main = started("main", "-");
+        let prior = started("main", "abcd1234-abcd-4123-8123-123456789abc");
+        let other = started("worker.0", "-");
+        let resumed = Seat {
+            launch_time: Some(NOW - 9),
+            ..seat()
+        };
+        let launch = SLOT_MAIN;
+        for action in ["relaunch", "reseat"] {
+            for kept in ["conversation-resumed", "conversation-unproven"] {
+                let events = journal(&[
+                    ("conversation-new", 100, &main),
+                    ("rename", 50, ""),
+                    (kept, 10, &main),
+                    (action, 9, launch),
+                ]);
+                assert_eq!(
+                    kind(&events, &resumed),
+                    Some((Kind::Rename, 0)),
+                    "{action} after {kept}"
+                );
+            }
+            for (fresh, record) in [
+                ("conversation-new", &main),
+                ("conversation-lost-no-id", &main),
+                ("conversation-lost-not-found", &prior),
+                ("conversation-lost-unreadable", &prior),
+            ] {
+                let events = journal(&[
+                    ("conversation-new", 100, &main),
+                    ("rename", 50, ""),
+                    (fresh, 10, record),
+                    (action, 9, launch),
+                ]);
+                assert_eq!(kind(&events, &resumed), None, "{action} after {fresh}");
+            }
+            // Another slot's resume says nothing about this launch.
+            let events = journal(&[
+                ("rename", 50, ""),
+                ("conversation-resumed", 10, &other),
+                (action, 9, launch),
+            ]);
+            assert_eq!(kind(&events, &resumed), None, "{action} beside {other}");
+            // The scan stops at the previous launch record: this launch has
+            // no start record of its own, so it stays a boundary.
+            let events = journal(&[
+                ("conversation-resumed", 100, &main),
+                (action, 80, launch),
+                ("rename", 50, ""),
+                (action, 9, launch),
+            ]);
+            assert_eq!(kind(&events, &resumed), None, "{action} with no record");
+        }
+        // A fresh relaunch stays the boundary a LATER resume is judged against.
+        let events = journal(&[
+            ("relaunch", 100, launch),
+            ("rename", 50, ""),
+            ("conversation-resumed", 1, &main),
+        ]);
+        assert_eq!(kind(&events, &resumed), Some((Kind::Rename, 0)));
+    }
+
     #[test]
     fn the_texts_name_the_new_address_and_never_an_old_directory() {
         let told = attempt_json("rename", "tok", "r1");

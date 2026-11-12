@@ -171,6 +171,7 @@ mod relay_origin_spec;
 mod relay_status_spec;
 mod renametell_notice_spec;
 mod renametell_routing_spec;
+mod renres_spec;
 mod reqfilter_spec;
 mod reseat;
 mod reseat_carry;
