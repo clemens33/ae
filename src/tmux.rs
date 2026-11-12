@@ -2197,7 +2197,7 @@ pub fn confirm_before_args(
 /// A `run-shell -b` tmux command which re-execs `argv` without allowing any
 /// argv element to become shell syntax.
 ///
-/// There are two parsers. [`crate::launch::shell_quote`] protects each word
+/// There are two parsers. [`crate::words::shell_quote`] protects each word
 /// from the shell which `run-shell` starts; [`tmux_double_quote`] then carries
 /// that shell command through tmux's deferred command parser. Tmux removes a
 /// backslash before any character inside double quotes, so the second layer
@@ -2206,7 +2206,7 @@ pub fn confirm_before_args(
 pub fn run_shell_background_command(argv: &[String]) -> String {
     let shell = argv
         .iter()
-        .map(|word| crate::launch::shell_quote(word))
+        .map(|word| crate::words::shell_quote(word))
         .collect::<Vec<_>>()
         .join(" ");
     format!("run-shell -b {}", tmux_double_quote(&shell))
@@ -2223,7 +2223,7 @@ pub(crate) fn status_picker_command(launcher: &[String]) -> String {
     argv.extend(["orchestrator", "--popup", "--client"].map(ToOwned::to_owned));
     let shell = argv
         .iter()
-        .map(|word| mouse_dispatch_literal(&crate::launch::shell_quote(word)))
+        .map(|word| mouse_dispatch_literal(&crate::words::shell_quote(word)))
         .chain(std::iter::once("#{q:client_name}".to_owned()))
         .collect::<Vec<_>>()
         .join(" ");
@@ -2237,7 +2237,7 @@ pub(crate) fn status_settings_command(launcher: &[String]) -> String {
     argv.extend(["orchestrator", "--settings", "--client"].map(ToOwned::to_owned));
     let shell = argv
         .iter()
-        .map(|word| mouse_dispatch_literal(&crate::launch::shell_quote(word)))
+        .map(|word| mouse_dispatch_literal(&crate::words::shell_quote(word)))
         .chain(std::iter::once("#{q:client_name}".to_owned()))
         .collect::<Vec<_>>()
         .join(" ");
@@ -2254,7 +2254,7 @@ pub(crate) fn hotkey_picker_shell(launcher: &[String]) -> String {
     let mut argv = launcher.to_vec();
     argv.extend(["orchestrator", "--popup", "--client"].map(ToOwned::to_owned));
     argv.iter()
-        .map(|word| menu_literal(&crate::launch::shell_quote(word)))
+        .map(|word| menu_literal(&crate::words::shell_quote(word)))
         .chain(std::iter::once("#{q:client_name}".to_owned()))
         .collect::<Vec<_>>()
         .join(" ")
@@ -2298,7 +2298,7 @@ fn hotkey_verb_shell(launcher: &[String], verb: &[&str]) -> String {
     let mut argv = launcher.to_vec();
     argv.extend(verb.iter().map(|word| (*word).to_owned()));
     argv.iter()
-        .map(|word| menu_literal(&crate::launch::shell_quote(word)))
+        .map(|word| menu_literal(&crate::words::shell_quote(word)))
         .chain(std::iter::once("#{q:client_name}".to_owned()))
         .collect::<Vec<_>>()
         .join(" ")
@@ -2755,7 +2755,7 @@ pub fn run_shell_background_args(server: &ServerId, words: &[String]) -> Vec<Str
     line.extend(["run-shell", "-b"].map(ToOwned::to_owned));
     line.push(
         (words.iter())
-            .map(|word| crate::launch::shell_quote(word))
+            .map(|word| crate::words::shell_quote(word))
             .collect::<Vec<_>>()
             .join(" "),
     );

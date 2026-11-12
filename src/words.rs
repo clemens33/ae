@@ -4,7 +4,8 @@
 //! DIRECTLY — which is the whole reason `pane_current_command` reports the
 //! tool. So the one shell service a launch command needs has to
 //! be here: split a command line into words, honouring quotes, escapes and
-//! parameter expansion.
+//! parameter expansion. [`shell_quote`] is the inverse for one word: it spells
+//! a value so that this lexer, or any POSIX shell, reads it back unchanged.
 
 /// One lexed word: what the source said, and what the `exec` receives.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,22 @@ pub struct Word {
     pub value: String,
     /// Is this a `NAME=value` assignment *as written*?
     pub assignment: bool,
+}
+
+/// The POSIX single-quoted form of `text` — safe in any shell word position.
+#[must_use]
+pub fn shell_quote(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('\'');
+    for ch in text.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// Split `cmd` into words, keeping each word's source span beside its value.
@@ -442,9 +459,17 @@ mod tests {
     }
 
     #[test]
+    fn shell_quote_makes_every_byte_literal_including_the_quote_itself() {
+        assert_eq!(shell_quote("plain"), "'plain'");
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("a b$c`d\\e"), "'a b$c`d\\e'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
     fn the_single_quoted_form_this_crate_emits_round_trips_byte_for_byte() {
         let payload = "a line\nwith 'quotes' and $HOME and \\ backslashes";
-        let quoted = crate::launch::shell_quote(payload);
+        let quoted = shell_quote(payload);
         assert_eq!(split_ok(&format!("tool {quoted}")), ["tool", payload]);
     }
 

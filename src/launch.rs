@@ -9,21 +9,9 @@ use std::path::{Path, PathBuf};
 
 use crate::tool::{CommandForm, ContextChannel, IdStyle, InitialTurn, SessionFlags, ToolKind};
 
-/// The POSIX single-quoted form of `text` — safe in any shell word position.
-#[must_use]
-pub fn shell_quote(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('\'');
-    for ch in text.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
-}
+/// The POSIX single-quoted form of a word lives in [`crate::words`]; this path
+/// keeps it for the callers that name it through the launch builders.
+pub use crate::words::shell_quote;
 
 /// Escape a value about to be interpolated into a SINGLE-QUOTED shell word
 /// that the caller closes itself.
@@ -667,8 +655,8 @@ mod tests {
         MAX_FOLDED_TURN_BYTES, PENDING, build_launch_command, folded_turn_fits, generate_uuid,
         id_probeable, initial_prompt_for, initial_turn_with_brief, inject_ae_context,
         inject_ae_context_with_brief, inject_session_id, opencode_context_files, quoted_turn_len,
-        shell_quote, strip_agy_session_flags, strip_grok_session_flags, strip_session_flags,
-        toml_basic_string, user_turn_text,
+        strip_agy_session_flags, strip_grok_session_flags, strip_session_flags, toml_basic_string,
+        user_turn_text,
     };
     use crate::tool::ToolKind;
     use std::path::PathBuf;
@@ -678,14 +666,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    #[test]
-    fn shell_quote_makes_every_byte_literal_including_the_quote_itself() {
-        assert_eq!(shell_quote("plain"), "'plain'");
-        assert_eq!(shell_quote(""), "''");
-        assert_eq!(shell_quote("a b$c`d\\e"), "'a b$c`d\\e'");
-        assert_eq!(shell_quote("it's"), r"'it'\''s'");
     }
 
     #[test]

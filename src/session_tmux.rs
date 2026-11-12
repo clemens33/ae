@@ -626,7 +626,7 @@ fn picker_click_dispatch(picker: &str, settings: &str) -> Vec<String> {
 }
 
 fn fixed_mouse_shell_word(word: &str) -> String {
-    mouse_dispatch_literal(&crate::launch::shell_quote(word))
+    mouse_dispatch_literal(&crate::words::shell_quote(word))
 }
 
 /// The clicked session's facts, captured by the mouse dispatch that draws its
@@ -679,7 +679,7 @@ fn session_menu_show_command(launcher: &[String]) -> String {
     }
     let shell = argv
         .iter()
-        .map(|word| crate::launch::shell_quote(word))
+        .map(|word| crate::words::shell_quote(word))
         .collect::<Vec<_>>()
         .join(" ");
     let command = format!("run-shell -b {}", crate::tmux::tmux_double_quote(&shell));
@@ -723,9 +723,9 @@ fn session_menu_native_command(server: &ServerId, action: &str, menu_mouse: bool
     shell_words.extend(["-O", "-c"].map(fixed_mouse_shell_word));
     shell_words.push("#{q:client_name}".to_owned());
     shell_words.push(fixed_mouse_shell_word("-t"));
-    shell_words.push(crate::launch::shell_quote("#{pane_id}"));
+    shell_words.push(crate::words::shell_quote("#{pane_id}"));
     shell_words.push(fixed_mouse_shell_word("-T"));
-    shell_words.push(crate::launch::shell_quote("#{session_name}"));
+    shell_words.push(crate::words::shell_quote("#{session_name}"));
     shell_words.extend(["-x", "C", "-y", "C"].map(fixed_mouse_shell_word));
     shell_words.extend(["Flip lead/colead panes", "f", action].map(fixed_mouse_shell_word));
     format!(

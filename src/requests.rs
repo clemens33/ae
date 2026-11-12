@@ -467,7 +467,7 @@ pub fn header() -> Vec<u8> {
 fn footer(dir: &Path, hidden: usize, mode: Mode) -> Vec<u8> {
     format!(
         "{hidden} older closed requests hidden; all of them: {} {} --limit 0\n",
-        crate::launch::shell_quote(&dir.join("requests").display().to_string()),
+        crate::words::shell_quote(&dir.join("requests").display().to_string()),
         mode.token(),
     )
     .into_bytes()

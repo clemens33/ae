@@ -1427,7 +1427,7 @@ fn client_replacement(
     let expanded = expand_client_home(profile, label, config_home, client.tool, home)?;
     replacement = format!(
         "{variable}={} {replacement}",
-        crate::launch::shell_quote(&expanded)
+        crate::words::shell_quote(&expanded)
     );
     Ok(replacement)
 }
