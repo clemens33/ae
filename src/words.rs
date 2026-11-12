@@ -18,6 +18,20 @@ pub struct Word {
     pub assignment: bool,
 }
 
+/// `NAME=…` with a shell variable name before the `=` (the raw word, so a
+/// quoted `'A=1'` is a command word, as in bash).
+pub(crate) fn is_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    if name.is_empty() {
+        return false;
+    }
+    let mut bytes = name.bytes();
+    matches!(bytes.next(), Some(b) if b.is_ascii_alphabetic() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
 /// The POSIX single-quoted form of `text` — safe in any shell word position.
 #[must_use]
 pub fn shell_quote(text: &str) -> String {
@@ -52,7 +66,7 @@ pub fn split_words(cmd: &str, env: &impl Fn(&str) -> Option<String>) -> Result<V
         let (value, next) = one_word(&chars, index, env)?;
         let raw: String = chars[index..next].iter().collect();
         words.push(Word {
-            assignment: crate::launch_cmd::is_assignment(&raw),
+            assignment: is_assignment(&raw),
             raw,
             value,
         });

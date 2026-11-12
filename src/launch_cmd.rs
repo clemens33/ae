@@ -49,6 +49,10 @@ use crate::effort::Level;
 use crate::json::Value;
 use crate::tool::{EffortSpec, ToolKind};
 
+/// The assignment-word predicate lives in [`crate::words`]; this path keeps it
+/// for the callers that name it through the launch-command parser.
+pub(crate) use crate::words::is_assignment;
+
 /// Split `cmd` at its binary word, or `None` when it is malformed or carries
 /// nothing but prefix words.
 #[must_use]
@@ -1614,20 +1618,6 @@ fn launch_binary_index(argv: &[Word]) -> Option<usize> {
     } else {
         Some(i)
     }
-}
-
-/// `NAME=…` with a shell variable name before the `=` (the raw word, so a
-/// quoted `'A=1'` is a command word, as in bash).
-pub(crate) fn is_assignment(word: &str) -> bool {
-    let Some((name, _)) = word.split_once('=') else {
-        return false;
-    };
-    if name.is_empty() {
-        return false;
-    }
-    let mut bytes = name.bytes();
-    matches!(bytes.next(), Some(b) if b.is_ascii_alphabetic() || b == b'_')
-        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 #[cfg(test)]
