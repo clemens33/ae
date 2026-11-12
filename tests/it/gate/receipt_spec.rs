@@ -1424,6 +1424,11 @@ fn a_release_on_a_match_skips_only_nextest() {
         fixture.receipt(&tree).is_some(),
         "the receipt the release matches"
     );
+    // `just bundles` refuses off an Apple Silicon host, and the release reaches
+    // it; the green gate and its receipt above ran on this host.
+    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
+        return;
+    }
     fixture.clear_record();
     let (code, out, err) = fixture.release(&[]);
     assert_eq!(code, 0, "a matched release completes: {out}{err}");
@@ -1461,6 +1466,11 @@ fn no_match_variant(name: &str, edit: &dyn Fn(&ReceiptFixture, &str)) {
         "the receipt {name} rewrites"
     );
     edit(&fixture, &tree);
+    // `just bundles` refuses off an Apple Silicon host, and the release reaches
+    // it; the green gate and the receipt edit above ran on this host.
+    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
+        return;
+    }
     fixture.clear_record();
     let (code, out, err) = fixture.release(&[]);
     assert_eq!(code, 0, "a no-match release completes: {out}{err}");
@@ -1487,6 +1497,11 @@ fn matched_variant(name: &str, edit: &dyn Fn(&ReceiptFixture, &str)) {
         "the receipt {name} rewrites"
     );
     edit(&fixture, &tree);
+    // `just bundles` refuses off an Apple Silicon host, and the release reaches
+    // it; the green gate and the receipt edit above ran on this host.
+    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
+        return;
+    }
     fixture.clear_record();
     let (code, out, err) = fixture.release(&[]);
     assert_eq!(code, 0, "a matched release completes: {out}{err}");
@@ -1565,6 +1580,11 @@ fn the_bump_proof_refuses_a_non_version_path() {
         fixture.receipt(&tree).is_some(),
         "the receipt the release matches"
     );
+    // `just bundles` refuses off an Apple Silicon host, and the release reaches
+    // it before the bump proof; the green gate and its receipt above ran here.
+    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
+        return;
+    }
     // The fuzz-lock refresh touches a source file: the proof must refuse.
     let (code, out, err) = fixture.release(&[("AE_SPEC_TOUCH", "1")]);
     assert_eq!(code, 1, "a non-version bump refuses: {out}{err}");
