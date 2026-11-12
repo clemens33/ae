@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.43] - 2026-11-12
+- A --cross-session typed after the recipient is refused with where the flag counts (#281)
+- A stopped session named like a mistyped command resumes only with --resume (#284)
+- The exemption of a picker, menu or restore launch from the resume checks is one tested rule (#284)
+- A compact child is a creation, so a near-miss name is refused before a write (#284)
+
 ## [v2026.11.42] - 2026-11-12
 - Statistics holds Agents, Skills and Tools as inner tabs; the Skills & Tools tab goes
 - Seatproof tests: a fake tool that draws the pasted draft late exposes the screen captured too early (RED)
