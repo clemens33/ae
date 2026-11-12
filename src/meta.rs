@@ -2111,7 +2111,7 @@ fn is_prior_tool(tool: &str) -> bool {
 /// ```
 #[must_use]
 pub fn prior_parts(element: &str) -> Option<Prior<'_>> {
-    let uuid = crate::session_launch::capture::is_lowercase_uuid;
+    let uuid = crate::archive::is_canonical_uuid;
     match element.split_once(PRIOR_TAG) {
         // Split at the FIRST tag byte, and the tool grammar admits none of its
         // own, so one element can never split two ways.
@@ -2173,7 +2173,7 @@ pub fn priors_tagged(raw: &[&str], tool: &str) -> Option<String> {
 /// first, the oldest evicted once [`PRIOR_MAX`] is exceeded.
 ///
 /// Every element is `tool:uuid`, `opencode:ses_…` or a legacy bare UUID (the
-/// grammar [`crate::session_launch::capture::is_lowercase_uuid`] owns), and a list
+/// grammar [`crate::archive::is_canonical_uuid`] owns), and a list
 /// carrying anything unusable is not carried forward: the row restarts from
 /// `id` alone rather than refusing, because a hand-edited predecessor list
 /// must not make a session unresumable. The kept elements are tagged on the
@@ -2182,7 +2182,7 @@ pub fn priors_tagged(raw: &[&str], tool: &str) -> Option<String> {
 /// `None` means `id` itself is unusable; nothing is recorded.
 #[must_use]
 pub(crate) fn prior_with(raw: &[&str], id: &str, tool: &str) -> Option<String> {
-    if !crate::session_launch::capture::is_lowercase_uuid(id) && !opencode_prior(tool, id) {
+    if !crate::archive::is_canonical_uuid(id) && !opencode_prior(tool, id) {
         return None;
     }
     let mut ids: Vec<String> = if raw.len() <= PRIOR_MAX
@@ -2663,7 +2663,7 @@ fn fallback_fresh(
         let why = io::Error::new(io::ErrorKind::InvalidInput, why.to_owned());
         (Err(RewriteError::NotWritten(why)), Discard::Moved)
     };
-    if minted.is_some_and(|id| !crate::session_launch::capture::is_lowercase_uuid(id)) {
+    if minted.is_some_and(|id| !crate::archive::is_canonical_uuid(id)) {
         return refused("the fresh conversation id is not well-formed");
     }
     let path = crate::store::open(dir).meta_path();
