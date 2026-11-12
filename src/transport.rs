@@ -3052,6 +3052,111 @@ mod tests {
         (out, seen)
     }
 
+    /// What a finished wait left behind, judged by the children it started:
+    /// a start no reap closed, and a started pid still in `table`. A row the
+    /// wait never started is not its own, such as a child that was already
+    /// exiting when the process-table read itself was started.
+    fn wait_left_behind(events: &[WaitChildEvent], table: &[crate::procs::Proc]) -> Vec<String> {
+        let mut left = Vec::new();
+        for event in events {
+            let WaitChildEvent::Spawned(pid) = event else {
+                continue;
+            };
+            if !events
+                .iter()
+                .any(|seen| matches!(seen, WaitChildEvent::Reaped(reaped, _) if reaped == pid))
+            {
+                left.push(format!("pid {pid} was started and never reaped"));
+            }
+            if let Some(row) = table.iter().find(|row| row.pid == *pid) {
+                left.push(format!("pid {pid} is still in the process table: {row:?}"));
+            }
+        }
+        left
+    }
+
+    /// Fail unless the wait left nothing behind: the waiter's start is in
+    /// the trace, and [`wait_left_behind`] finds nothing in the live table.
+    fn assert_wait_left_nothing(waiter: u32, events: &[WaitChildEvent]) {
+        assert!(
+            events.contains(&WaitChildEvent::Spawned(waiter)),
+            "the trace lacks the waiter's start: {events:?}"
+        );
+        let table = crate::procs::snapshot().expect("process table");
+        let left = wait_left_behind(events, &table);
+        assert!(left.is_empty(), "a child outlived the wait: {left:?}");
+    }
+
+    fn exited(code: i32) -> std::process::ExitStatus {
+        std::os::unix::process::ExitStatusExt::from_raw(code)
+    }
+
+    fn row(pid: u32, parent: u32, comm: &str) -> crate::procs::Proc {
+        crate::procs::Proc {
+            pid,
+            ppid: parent,
+            comm: comm.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_row_the_wait_never_started_is_not_a_leftover_of_the_wait() {
+        // The shape the stalled-server tests met on macOS under load: the wait
+        // started and reaped two children (the waiter and its release), and the
+        // table read caught the test's own `ps` and three exiting children
+        // that carry the test process's name in parentheses.
+        let own = std::process::id();
+        let events = [
+            WaitChildEvent::Attempted,
+            WaitChildEvent::Spawned(41_001),
+            WaitChildEvent::Attempted,
+            WaitChildEvent::Spawned(41_002),
+            WaitChildEvent::Reaped(41_001, exited(9)),
+            WaitChildEvent::Reaped(41_002, exited(9)),
+        ];
+        let table = [
+            row(41_003, own, "(ae-bc7af8f05eb6f)"),
+            row(41_004, own, "(ae-bc7af8f05eb6f)"),
+            row(41_005, own, "ps"),
+            row(1, 0, "launchd"),
+        ];
+        assert_eq!(wait_left_behind(&events, &table), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_started_pid_still_in_the_table_is_a_leftover_of_the_wait() {
+        let own = std::process::id();
+        let events = [
+            WaitChildEvent::Attempted,
+            WaitChildEvent::Spawned(41_001),
+            WaitChildEvent::Reaped(41_001, exited(9)),
+        ];
+        let table = [
+            row(41_003, own, "(ae-bc7af8f05eb6f)"),
+            row(41_001, own, "tmux"),
+        ];
+        let left = wait_left_behind(&events, &table);
+        assert_eq!(
+            left.len(),
+            1,
+            "only the started pid is the wait's: {left:?}"
+        );
+        assert!(left[0].contains("41001"), "{left:?}");
+    }
+
+    #[test]
+    fn a_started_pid_with_no_reap_is_a_leftover_of_the_wait() {
+        let events = [
+            WaitChildEvent::Attempted,
+            WaitChildEvent::Spawned(41_001),
+            WaitChildEvent::Attempted,
+            WaitChildEvent::SpawnFailed,
+        ];
+        let left = wait_left_behind(&events, &[]);
+        assert_eq!(left.len(), 1, "one start has no reap: {left:?}");
+        assert!(left[0].contains("41001"), "{left:?}");
+    }
+
     #[test]
     fn an_unreachable_first_read_is_asked_again_once_past_the_settle_and_no_other_is() {
         use crate::tmux::Absence::{Listed, Proven, SocketMissing, Unreachable};
@@ -3855,7 +3960,7 @@ mod tests {
 
     #[test]
     fn a_stalled_server_cannot_hold_the_wait_or_its_release_past_their_bounds() {
-        use super::{Waited, run_tmux_wait, waiter_exits_during};
+        use super::{Waited, run_tmux_wait, wait_children_during, waiter_exits_during};
         use std::time::Instant;
         // A socket that accepts and never answers: every tmux client on it,
         // the waiter and its release alike, hangs until it is killed.
@@ -3868,17 +3973,19 @@ mod tests {
         let (tell, told) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let began = Instant::now();
-            let (result, exits) = waiter_exits_during(|| {
-                run_tmux_wait(
-                    &server,
-                    "current",
-                    "qw-stall",
-                    Instant::now() + Duration::from_millis(200),
-                )
+            let ((result, exits), events) = wait_children_during(|| {
+                waiter_exits_during(|| {
+                    run_tmux_wait(
+                        &server,
+                        "current",
+                        "qw-stall",
+                        Instant::now() + Duration::from_millis(200),
+                    )
+                })
             });
-            let _ = tell.send((result, exits, began.elapsed()));
+            let _ = tell.send((result, exits, events, began.elapsed()));
         });
-        let (result, exits, took) = told
+        let (result, exits, events, took) = told
             .recv_timeout(Duration::from_secs(5))
             .expect("a stalled release blocked the wait past every bound");
         drop(listener);
@@ -3886,21 +3993,12 @@ mod tests {
         assert_eq!(result, Waited::Failed, "a forced cleanup is no outcome");
         assert!(took < Duration::from_secs(3), "bounded: {took:?}");
         assert_eq!(exits.len(), 1, "the waiter was reaped");
-        let own = std::process::id();
-        let children: Vec<_> = crate::procs::snapshot()
-            .expect("process table")
-            .into_iter()
-            .filter(|proc| proc.ppid == own && !crate::procs::name_matches(&proc.comm, "ps"))
-            .collect();
-        assert!(
-            children.is_empty(),
-            "a child outlived the wait: {children:?}"
-        );
+        assert_wait_left_nothing(exits[0].0, &events);
     }
 
     #[test]
     fn a_stalled_release_alone_still_ends_the_wait_failed_after_its_cleanup() {
-        use super::{Waited, run_tmux_wait, waiter_exits_during};
+        use super::{Waited, run_tmux_wait, wait_children_during, waiter_exits_during};
         use std::time::Instant;
         // The waiter connects first and the mute server holds it; once its
         // release connects too, the server drops the waiter, which exits by
@@ -3921,20 +4019,22 @@ mod tests {
         let (tell, told) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let began = Instant::now();
-            let (result, exits) = waiter_exits_during(|| {
-                run_tmux_wait(
-                    &server,
-                    "current",
-                    "qw-stall-release",
-                    Instant::now() + Duration::from_millis(200),
-                )
+            let ((result, exits), events) = wait_children_during(|| {
+                waiter_exits_during(|| {
+                    run_tmux_wait(
+                        &server,
+                        "current",
+                        "qw-stall-release",
+                        Instant::now() + Duration::from_millis(200),
+                    )
+                })
             });
-            let _ = tell.send((result, exits, began.elapsed()));
+            let _ = tell.send((result, exits, events, began.elapsed()));
         });
         let held = handed
             .recv_timeout(Duration::from_secs(5))
             .expect("the waiter and then its release connect");
-        let (result, exits, took) = told
+        let (result, exits, events, took) = told
             .recv_timeout(Duration::from_secs(5))
             .expect("a stalled release blocked the wait past every bound");
         drop(held);
@@ -3951,16 +4051,7 @@ mod tests {
             None,
             "the waiter left by itself, unkilled"
         );
-        let own = std::process::id();
-        let children: Vec<_> = crate::procs::snapshot()
-            .expect("process table")
-            .into_iter()
-            .filter(|proc| proc.ppid == own && !crate::procs::name_matches(&proc.comm, "ps"))
-            .collect();
-        assert!(
-            children.is_empty(),
-            "a child outlived the wait: {children:?}"
-        );
+        assert_wait_left_nothing(exits[0].0, &events);
     }
 
     #[test]
