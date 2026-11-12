@@ -1,0 +1,19 @@
+worktree /r/ae
+HEAD 0123456789abcdef0123456789abcdef01234567
+branch refs/heads/main
+
+worktree /r/ae-wt/a b
+HEAD 0123456789abcdef0123456789abcdef01234567
+branch refs/heads/a
+locked
+
+worktree /r/ae-wt/det
+HEAD 0123456789abcdef0123456789abcdef01234567
+detached
+locked reason "x y"
+
+worktree /r/ae-wt/gone
+HEAD 0123456789abcdef0123456789abcdef01234567
+branch refs/heads/gone
+prunable gitdir file points to non-existent location
+

@@ -1665,7 +1665,7 @@ fn a_retire_takes_an_optional_reason_and_journals_it() {
     let (code, _, stderr) = rig.run(ae::cli::RETIRE, &[]);
     assert_eq!(code, Some(2), "{stderr}");
     assert!(
-        stderr.contains("Usage: retire <agent-name|pane-id> [reason]"),
+        stderr.contains("Usage: retire <agent-name|pane-id> [--keep-worktree] [reason]"),
         "{stderr}"
     );
 }

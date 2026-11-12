@@ -43,7 +43,7 @@ pub const SPAWN_USAGE: &str =
     "Usage: spawn <name> --using <profile[@client]> [--dir <absolute path>] [--] [prompt]";
 
 /// The `retire` usage.
-pub const RETIRE_USAGE: &str = "Usage: retire <agent-name|pane-id> [reason]";
+pub const RETIRE_USAGE: &str = "Usage: retire <agent-name|pane-id> [--keep-worktree] [reason]";
 
 /// How long to wait for a new pane's shell before pasting.
 const SHELL_SETTLE: Duration = Duration::from_millis(300);
@@ -66,6 +66,11 @@ const SPAWN_FAILED_ACTION: &str = "spawn-failed";
 
 /// The event action a retire records.
 const RETIRE_ACTION: &str = "retire";
+
+/// The one retire flag, recognized only as the first word after the target:
+/// retire a worker that still owns a dirty or unmerged worktree, and record
+/// that the caller now owns its cleanup.
+const KEEP_WORKTREE_FLAG: &str = "--keep-worktree";
 
 // ---- argv -----------------------------------------------------------------
 
@@ -1870,18 +1875,65 @@ fn retire_replaced_failure(pane: &str, name: &str, slot: &str) -> String {
     }
 }
 
-/// Prove the seat, take its pane, and drop the slot the PROOF named: the
-/// retire ladder between the target's resolution and the record. `Ok(None)`
-/// means a refusal was written and the caller exits 1. The event's identity
-/// comes from the proven slot, so a name that resolves elsewhere later cannot
-/// make the record describe the successor.
+/// What a completed retire ladder hands the record: the proven slot, the
+/// retired seat's roster identity, and the worktrees a `--keep-worktree`
+/// caller took over (empty when none).
+struct Retired {
+    slot: String,
+    identity: Option<meta::RosterEntry>,
+    kept_worktree: String,
+}
+
+/// The worktree guard between the proof and the first mutation: a seat that
+/// still owns a worktree which is not clean and merged is refused unless the
+/// caller passed `--keep-worktree`. `Ok(None)` means the refusal was written;
+/// `Ok(Some(kept))` carries the paths a `--keep-worktree` caller took over.
+fn retire_worktree_guard(
+    meta: Option<&Meta>,
+    slot: &str,
+    agent: &str,
+    keep_worktree: bool,
+    err: &mut impl Write,
+) -> io::Result<Option<String>> {
+    let check = crate::worktrees::retire_check(meta, slot, agent);
+    if !keep_worktree && !check.blocking.is_empty() {
+        for line in check.refusals(agent) {
+            writeln!(err, "{line}")?;
+        }
+        return Ok(None);
+    }
+    for note in &check.notes {
+        writeln!(err, "{note}")?;
+    }
+    let kept = if keep_worktree {
+        check.kept()
+    } else {
+        String::new()
+    };
+    if !kept.is_empty() {
+        writeln!(
+            err,
+            "note: '{}' retired with {KEEP_WORKTREE_FLAG}; the caller now owns the cleanup of {}.",
+            crate::event_text::sanitize_menu_text(agent),
+            crate::event_text::sanitize_menu_text(&kept)
+        )?;
+    }
+    Ok(Some(kept))
+}
+
+/// Prove the seat, check its worktrees, take its pane, and drop the slot the
+/// PROOF named: the retire ladder between the target's resolution and the
+/// record. `Ok(None)` means a refusal was written and the caller exits 1. The
+/// event's identity comes from the proven slot, so a name that resolves
+/// elsewhere later cannot make the record describe the successor.
 fn retire_proven_seat(
     dir: &Path,
     facts: &Facts,
     resolved: &str,
     agent: &str,
+    keep_worktree: bool,
     err: &mut impl Write,
-) -> io::Result<Option<(String, Option<meta::RosterEntry>)>> {
+) -> io::Result<Option<Retired>> {
     let proven = match crate::identity::prove_removable(dir, agent) {
         Ok(seat) => seat,
         Err(why) => {
@@ -1889,18 +1941,28 @@ fn retire_proven_seat(
             return Ok(None);
         }
     };
-    let retired_identity = crate::session::read_meta(dir).ok().and_then(|meta| {
+    let meta = crate::session::read_meta(dir).ok();
+    let retired_identity = meta.as_ref().and_then(|meta| {
         meta.roster()
             .iter()
             .find(|entry| entry.slot == proven.slot)
             .cloned()
     });
+    let Some(kept_worktree) =
+        retire_worktree_guard(meta.as_ref(), &proven.slot, agent, keep_worktree, err)?
+    else {
+        return Ok(None);
+    };
     if !resolved.is_empty() && kill_retire_pane(facts, resolved, agent, err)? {
         return Ok(None);
     }
     let drop = || drop_launch_artifacts(dir, &proven.slot);
     match crate::identity::remove_proven_slot(dir, agent, &proven, drop) {
-        Ok(slot) => Ok(Some((slot, retired_identity))),
+        Ok(slot) => Ok(Some(Retired {
+            slot,
+            identity: retired_identity,
+            kept_worktree,
+        })),
         Err(crate::identity::RemovalRefusal::Moved { now, proven }) => {
             writeln!(
                 err,
@@ -1932,10 +1994,21 @@ fn retire_reason(words: &[String]) -> String {
     state::summary_of(words.join(" ").trim()).trim().to_owned()
 }
 
-/// The retire record's line. Without a reason it is exactly the line written
-/// before reasons existed: an empty member is never written.
-fn retire_line(fields: &EventFields<'_>, reason: &str) -> String {
-    tracked::event_line_with(fields, "", &[(RETIRE_REASON_KEY, reason)])
+/// The member a `--keep-worktree` retire records: the worktree paths whose
+/// cleanup the caller took over. A human audit note; nothing reads it back.
+const KEPT_WORKTREE_KEY: &str = "kept_worktree";
+
+/// The retire record's line. Without a reason or kept worktrees it is exactly
+/// the line written before either existed: an empty member is never written.
+fn retire_line(fields: &EventFields<'_>, reason: &str, kept_worktree: &str) -> String {
+    tracked::event_line_with(
+        fields,
+        "",
+        &[
+            (RETIRE_REASON_KEY, reason),
+            (KEPT_WORKTREE_KEY, kept_worktree),
+        ],
+    )
 }
 
 /// `_retire <meta-dir> <name|%pane>`.
@@ -1951,12 +2024,22 @@ pub fn run_retire(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let Some((target, reason_words)) = tail.split_first() else {
+    let Some((target, rest)) = tail.split_first() else {
         writeln!(err, "{RETIRE_USAGE}")?;
         writeln!(err, "  Examples: retire researcher")?;
         writeln!(err, "           retire %5")?;
         writeln!(err, "           retire researcher 'review done'")?;
+        writeln!(
+            err,
+            "           retire researcher {KEEP_WORKTREE_FLAG} 'lead merges its worktree'"
+        )?;
         return Ok(EXIT_USAGE);
+    };
+    // The flag counts only as the FIRST word after the target: later it is
+    // reason text, so a reason can never turn into an override.
+    let (keep_worktree, reason_words) = match rest.split_first() {
+        Some((first, words)) if first == KEEP_WORKTREE_FLAG => (true, words),
+        _ => (false, rest),
     };
     let reason = retire_reason(reason_words);
     let facts = match facts(dir) {
@@ -1994,7 +2077,11 @@ pub fn run_retire(
         )?;
         return Ok(EXIT_FAILED);
     }
-    let Some((slot, retired_identity)) = retire_proven_seat(dir, &facts, &resolved, &agent, err)?
+    let Some(Retired {
+        slot,
+        identity: retired_identity,
+        kept_worktree,
+    }) = retire_proven_seat(dir, &facts, &resolved, &agent, keep_worktree, err)?
     else {
         return Ok(EXIT_FAILED);
     };
@@ -2037,7 +2124,7 @@ pub fn run_retire(
         &summary,
         "",
     );
-    let _ = store::open(dir).append_event(&retire_line(&fields, &reason));
+    let _ = store::open(dir).append_event(&retire_line(&fields, &reason, &kept_worktree));
     Ok(0)
 }
 
@@ -2775,14 +2862,20 @@ mod tests {
             "tool=claude profile=p config_home=/h config_home_base=",
             "",
         );
-        let bare = super::retire_line(&fields, "");
+        let bare = super::retire_line(&fields, "", "");
         assert_eq!(
             bare,
             crate::tracked::event_line(&fields),
             "no reason writes the record exactly as before"
         );
         assert!(!bare.contains("retire_reason"), "{bare}");
-        let reasoned = super::retire_line(&fields, "review done; \"merged\"");
+        assert!(!bare.contains("kept_worktree"), "{bare}");
+        let kept = super::retire_line(&fields, "", "/w/a, /w/b");
+        assert!(
+            kept.contains(r#""kept_worktree":"/w/a, /w/b""#) && !kept.contains("retire_reason"),
+            "{kept}"
+        );
+        let reasoned = super::retire_line(&fields, "review done; \"merged\"", "");
         let event = crate::events::Event::parse_line(&reasoned).expect("still an event");
         assert_eq!(event.action, "retire");
         assert_eq!(event.target.as_deref(), Some("scout"));

@@ -175,7 +175,7 @@ pub const HELPERS: [Helper; 27] = [
     },
     Helper {
         name: "retire",
-        usage: "Usage: retire <agent-name|pane-id> [reason]\nRemove a spawned agent. The optional reason is journaled on the retire record.\n",
+        usage: "Usage: retire <agent-name|pane-id> [--keep-worktree] [reason]\nRemove a spawned agent. The optional reason is journaled on the retire record.\nA worker that still owns a dirty or unmerged git worktree is refused; --keep-worktree,\nonly as the first word after the target, retires it anyway and journals the refusing\nworktrees as yours to clean up.\n",
         entry: crate::cli::RETIRE,
         prefix: &[],
     },

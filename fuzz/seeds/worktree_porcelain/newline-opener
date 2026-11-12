@@ -1,0 +1,9 @@
+worktree /r/ae
+HEAD 0123456789abcdef0123456789abcdef01234567
+branch refs/heads/main
+
+worktree /r/evil
+worktree /r/other
+HEAD 0123456789abcdef0123456789abcdef01234567
+branch refs/heads/evil
+

@@ -1633,6 +1633,91 @@ final event follows a valid counter, the valid counter remains as an approximate
 archives stay out of scope: retained vendor transcripts may remain unless `--purge-history` was used,
 but archive metadata carries no harness ids.
 
+## `ae worktree gc`
+
+```
+ae worktree gc [--idle <days>]                   # dry run, the default: removes nothing
+ae worktree gc [--idle <days>] --remove <token>  # removes exactly the listed set
+```
+
+Lists the linked git worktrees of the repository that holds your current directory and says
+which may go. One repository per run: worktrees under `~/.ae/worktrees` belong to their
+origin repositories, so run it from each origin. The command reads git and the durable
+session records only, never tmux, so it works with no server running.
+
+```
+Worktrees of /r/ae: target main @ 4f60379b, removable after 2 idle days.
+VERDICT              MERGED  IDLE  STATE    BRANCH    OWNER       PATH
+remove               yes     5d    clean    flakes2   -           /r/ae-wt/flakes2
+keep: owner          yes     0d    dirty    wtgc      aedev:wtgc  /r/ae-wt/wtgc
+keep: unmerged       no      3d    clean?   skilltab  -           /r/ae-wt/skilltab
+1 of 3 can go. To remove exactly these: ae worktree gc --idle 2 --remove 6f1c09a2b4e7d3a0
+```
+
+The main worktree is never listed. PATH is the last column, so a path with spaces stays
+whole. Every printed path, branch and owner is reduced to printable ASCII.
+
+- **MERGED:** `yes` when the worktree's HEAD is an ancestor of the TARGET, the branch the main
+  worktree has checked out. `no` covers both "not an ancestor" and a failed git call. `-`
+  means it was not asked.
+- **IDLE:** whole days since the newest entry of the worktree's OWN HEAD reflog (commit,
+  checkout, reset, rebase or creation). Edits without a HEAD move are invisible here, but they
+  make the tree dirty, which keeps it. `?` means the worktree has no reflog of its own
+  (expired, or `core.logAllRefUpdates=false`); HEAD commit time is never a stand-in.
+- **STATE:** `clean` only after the full proof: HEAD pinned at the commit the row was judged
+  on, the index pinned, every index entry a plain or executable file with no flag, both
+  diffs quiet with stat tricks off, every tracked file's raw bytes hashed with no filters
+  against its index hash, HEAD and the index re-read unchanged, no untracked file, and no
+  ignored path except whole `target/`, `.venv/` and `node_modules/` directories. `clean?` means only the cheap checks ran (everything but
+  the raw-byte hashing and the pins); only a row every other step lets through pays for the
+  full proof. Otherwise the failed check: `dirty`, `dirty (bytes)` (a clean filter hid a
+  change), `index-flags` (assume-unchanged, skip-worktree, a conflict), `unsupported mode` (a
+  tracked symlink or a submodule: such repositories are never removable), `untracked`,
+  `ignored-data <path>` (for example `.local/` evidence or a `*.bak`), `clean unknown` (a git
+  call failed).
+- **OWNER:** the session or `session:seat` that keeps the tree, `?` when the owner facts are
+  incomplete.
+
+**Verdicts,** first match wins: `bare`, `missing` (git says `prunable` or the directory is
+gone; `git worktree prune` drops the registration, ae never runs it), `locked`, `unknown`
+(a porcelain entry ae cannot read exactly), `not a real dir` (a symlink or a file: git would
+follow a link), `current dir` (your cwd is in it) or `caller unknown`, `owner`, `owners
+unknown`, `no target` (the main worktree is detached or bare), `unmerged`, `idle unknown`,
+`recent` (fewer idle days than `--idle`), a STATE failure, then `remove`.
+
+**Owners.** Every durable session record keeps a worktree, live or stopped, when the tree
+holds its session `work_dir`, its state directory (the older in-worktree layout), or a seat's
+recorded `work_dir.<slot>`, or when a seat's NAME equals the tree's branch or directory name.
+A recorded directory that no longer exists is compared by its recorded spelling: it still
+keeps a tree it lies in, and it blocks nothing else. A record ae cannot fully read — a
+session directory whose meta is missing or unreadable, an incomplete roster, a duplicate or
+unusable `work_dir` row, a recorded `work_dir` that is not exactly canonical (a `..`, a `.`, a
+symlink hop), a recorded path that cannot be read — makes EVERY tree `keep: owners unknown`,
+and the footer names the session. Repair that record and run again.
+
+**Removal.** `--idle <days>` is a whole number of at least 1 (default 2). The listing ends
+with the exact confirm command; its 16-hex token binds the repository, the target ref and
+commit, the idle value and each candidate's path, HEAD and branch. With `--remove <token>`
+ae lists everything again first: a different token prints `Error: the removable set changed
+since that listing; nothing was removed.` plus the fresh listing, exit 1. Otherwise it takes
+the candidates in path order and, for each one right before its removal, re-reads git and
+the owners and re-runs the whole verdict, then lists the worktrees once more as its last
+read; a tree whose verdict or identity changed is `skipped`. Removal is plain `git worktree
+remove` — never `--force`, never `prune`, never a branch command. It deletes the ignored
+caches with the tree and keeps the branch. Afterwards ae looks again: `removed <path>
+(branch <b> kept)` only when git succeeded and the directory and its registration are both
+gone; `git refused <path>; it is kept` only when git failed and both remain; anything else is `state unknown after git worktree remove …; inspect it by hand`.
+Residual: an ignored non-cache file written, or a commit made on a detached HEAD, between the
+last check and git's removal is deleted with the tree.
+
+Exit codes: 0 for a listing, or when every confirmed tree was removed; 1 when git listed no
+worktrees for the cwd, the token is stale, or any tree was skipped, refused or left in an
+unknown state; 2 for a usage error (`ae worktree` alone, another sub-command, an unknown or
+repeated flag, a missing value, an `--idle` below 1).
+
+The retire helper uses the same classifier for one seat: see `retire` under
+[Session helpers](#session-helpers).
+
 ## `ae board`
 
 Shows the filtered cross-fleet record: genuine human turns from every seat's

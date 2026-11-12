@@ -278,6 +278,10 @@ Usage:
                          --json prints the same rows as one JSON document
   ae usage [name…] [--hourly] [--json]
                          Show API-equivalent list-price usage for live sessions
+  ae worktree gc [--idle <days>] [--remove <token>]
+                         List this repo's linked worktrees and which may go: clean,
+                         merged, idle and owned by no session. A dry run by default;
+                         --remove with the listed token removes exactly that set
   ae orchestrator        Start or reattach the orchestrator seat (a session named
                          orchestrator; config: ~/.ae/orchestrator.config)
   ae orchestrator --popup --client <name>
@@ -438,6 +442,7 @@ pub const ROUTED_VERBS: &[&str] = &[
     "usage",
     "version",
     "watchdog",
+    "worktree",
 ];
 
 /// Whether a session may never be NAMED `name` — the ONE owner of that
@@ -708,6 +713,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         Some("app") => Route::Core(with_head("app", &tail())),
         Some("quota") => Route::Core(with_head("quota", &tail())),
         Some("usage") => Route::Core(with_head("usage", &tail())),
+        Some("worktree") => Route::Core(with_head("worktree", &tail())),
         Some("reboot") => Route::Core(with_head(crate::cli::COMPACT, &tail())),
         Some("compact") => Route::Compact(tail()),
         Some("archive") => match argv.get(1).map(String::as_str) {

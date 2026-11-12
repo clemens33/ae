@@ -599,7 +599,10 @@ fn removed_unsynced(
 }
 
 /// lstat classification of a path's final component, never following a link.
-enum DirKind {
+/// `ae worktree gc` and the retire guard ask it too: `git worktree remove`
+/// resolves a symlink, so only a `RealDir` may reach git.
+#[derive(Debug)]
+pub(crate) enum DirKind {
     RealDir,
     Symlink,
     NotDir,
@@ -607,7 +610,7 @@ enum DirKind {
     StatErr(io::Error),
 }
 
-fn classify_dir(path: &Path) -> DirKind {
+pub(crate) fn classify_dir(path: &Path) -> DirKind {
     match symlink_meta(path) {
         Ok(m) if m.file_type().is_symlink() => DirKind::Symlink,
         Ok(m) if !m.is_dir() => DirKind::NotDir,

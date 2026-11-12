@@ -219,3 +219,5 @@ mod worker_birth_decode_spec;
 mod worker_birth_folds_spec;
 mod worker_birth_retention_spec;
 mod worker_birth_unproved_spec;
+mod wtgc_driver;
+mod wtgc_spec;

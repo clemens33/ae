@@ -126,6 +126,7 @@ pub mod watchdog_daemon;
 pub mod watchdog_glue;
 pub mod watchdog_lifecycle;
 pub mod words;
+pub mod worktrees;
 
 use std::io::Write;
 
@@ -392,16 +393,17 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     // Quota reads only selected config and bounded vendor caches. Route it
     // before the ordinary preamble, whose tmux facts would violate that
     // observational boundary and make a missing server block the report.
-    if args.first().map(String::as_str) == Some("quota") {
-        let code = run_public_quota(shape, &args[1..], out, err)?;
-        err.flush()?;
-        error::with_status(code, out.flush())?;
-        return Ok(code);
-    }
     // Usage shares quota's observational boundary: the command classifies
     // sessions once, then hands only live durable roots to the pure reader.
-    if args.first().map(String::as_str) == Some("usage") {
-        let code = run_public_usage(shape, &args[1..], out, err)?;
+    // Worktree cleanup reads git and durable session records only — no tmux
+    // fact — so a missing server never blocks the listing or its removal.
+    let observational = match args.first().map(String::as_str) {
+        Some("quota") => Some(run_public_quota(shape, &args[1..], out, err)?),
+        Some("usage") => Some(run_public_usage(shape, &args[1..], out, err)?),
+        Some("worktree") => Some(run_public_worktree(shape, &args[1..], out, err)?),
+        _ => None,
+    };
+    if let Some(code) = observational {
         err.flush()?;
         error::with_status(code, out.flush())?;
         return Ok(code);
@@ -468,6 +470,30 @@ fn run_public_quota(
         out,
         err,
     )
+}
+
+/// `ae worktree gc`: usage first (exit 2 before any state is read), then the
+/// state root the durable owner scan needs.
+fn run_public_worktree(
+    shape: &shape::Shape,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let parsed = match worktrees::parse_args(tail) {
+        Ok(parsed) => parsed,
+        Err(complaint) => {
+            writeln!(err, "{complaint}")?;
+            writeln!(err, "{}", worktrees::USAGE)?;
+            return Ok(entry::EXIT_USAGE);
+        }
+    };
+    let Some(root) = doors::state_root(shape) else {
+        writeln!(err, "ae: {NO_STATE_ROOT}")?;
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    let now = crate::time::Timestamp::now().epoch();
+    Ok(worktrees::run(&root, &parsed, now, out, err)?)
 }
 
 fn run_public_usage(

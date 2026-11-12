@@ -475,3 +475,10 @@ path = "fuzz_targets/memo_view.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "worktree_porcelain"
+path = "fuzz_targets/worktree_porcelain.rs"
+test = false
+doc = false
+bench = false

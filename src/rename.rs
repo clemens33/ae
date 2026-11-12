@@ -1509,66 +1509,17 @@ struct WorktreeEntry {
     locked: bool,
 }
 
-/// Parse `git worktree list --porcelain`: blank-line-separated entries, a
-/// `worktree <path>` opener, a bare `locked` attribute when locked.
+/// Parse `git worktree list --porcelain` through the one shared parser
+/// ([`crate::git::parse_worktree_porcelain`]), keeping the two facts the
+/// stopped rename proves against: the path and whether it is locked.
 fn parse_worktree_porcelain(text: &str) -> Vec<WorktreeEntry> {
-    let mut entries = Vec::new();
-    let mut current: Option<WorktreeEntry> = None;
-    for line in text.lines() {
-        let line = line.trim_end();
-        if line.is_empty() {
-            if let Some(entry) = current.take() {
-                entries.push(entry);
-            }
-            continue;
-        }
-        if let Some(path) = line.strip_prefix("worktree ") {
-            if let Some(entry) = current.take() {
-                entries.push(entry);
-            }
-            current = Some(WorktreeEntry {
-                path: unquote_porcelain(path),
-                locked: false,
-            });
-        } else if (line == "locked" || line.starts_with("locked "))
-            && let Some(entry) = current.as_mut()
-        {
-            entry.locked = true;
-        }
-    }
-    if let Some(entry) = current.take() {
-        entries.push(entry);
-    }
-    entries
-}
-
-/// Unquote one porcelain path: plain, or C-quoted with the escapes git
-/// emits for spaces and quotes. Anything else rides through literally rather
-/// than failing the whole listing.
-fn unquote_porcelain(path: &str) -> String {
-    if path.len() < 2 || !path.starts_with('"') || !path.ends_with('"') {
-        return path.to_owned();
-    }
-    let inner = &path[1..path.len() - 1];
-    let mut out = String::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            out.push(ch);
-            continue;
-        }
-        match chars.next() {
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('"') => out.push('"'),
-            Some('\\') | None => out.push('\\'),
-            Some(other) => {
-                out.push('\\');
-                out.push(other);
-            }
-        }
-    }
-    out
+    crate::git::parse_worktree_porcelain(text)
+        .into_iter()
+        .map(|entry| WorktreeEntry {
+            path: entry.path,
+            locked: entry.locked,
+        })
+        .collect()
 }
 
 /// The recorded seat's harness, classified from its recorded binary the way
