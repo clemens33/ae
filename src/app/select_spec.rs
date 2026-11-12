@@ -122,6 +122,7 @@ fn list_and_body_ship_their_cells_and_list_clamps_before_lane() {
             model: String::new(),
             effort: String::new(),
             drift: false,
+            task: false,
         };
         let agents = vec![seat("first"), seat("BODYSEAT")];
         app.facts.insert(

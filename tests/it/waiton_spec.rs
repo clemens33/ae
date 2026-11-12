@@ -168,6 +168,7 @@ fn facts(world: &World) -> BTreeMap<String, Facts> {
                     model: String::new(),
                     effort: String::new(),
                     drift: false,
+                    task: false,
                 })
                 .collect();
             (

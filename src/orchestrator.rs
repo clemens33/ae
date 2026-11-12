@@ -2332,6 +2332,7 @@ mod tests {
             model: model.to_owned(),
             effort: effort.to_owned(),
             drift: false,
+            task: false,
         }
     }
 

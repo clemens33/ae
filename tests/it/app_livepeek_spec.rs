@@ -65,6 +65,7 @@ fn sample() -> (Root, App, Receiver<Request>) {
                         model: String::new(),
                         effort: String::new(),
                         drift: false,
+                        task: false,
                     })
                     .collect(),
             },

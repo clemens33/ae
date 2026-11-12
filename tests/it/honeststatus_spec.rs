@@ -78,6 +78,7 @@ fn seats() -> BTreeMap<String, fleet::Facts> {
                 model: String::new(),
                 effort: String::new(),
                 drift: false,
+                task: false,
             }],
         },
     )])

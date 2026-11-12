@@ -10421,6 +10421,7 @@ mod tests {
                             model: String::new(),
                             effort: String::new(),
                             drift: false,
+                            task: false,
                         })
                         .collect(),
                 },

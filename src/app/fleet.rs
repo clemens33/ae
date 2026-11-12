@@ -255,7 +255,7 @@ fn row(
             Mark::most_actionable(agents.iter().map(PickerAgent::mark).filter(|mark| {
                 matches!(
                     mark,
-                    Mark::Working | Mark::WaitingAgent | Mark::Done | Mark::Idle
+                    Mark::Working | Mark::Background | Mark::WaitingAgent | Mark::Done | Mark::Idle
                 )
             }))
         })
@@ -460,6 +460,7 @@ mod tests {
             model: String::new(),
             effort: String::new(),
             drift: false,
+            task: false,
         };
         let session_mark = |states: [&str; 2]| {
             let agents = vec![seat("lead", states[0]), seat("colead", states[1])];

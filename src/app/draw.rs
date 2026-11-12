@@ -3220,7 +3220,7 @@ const SETTINGS_KEYS: [(&str, &str); 11] = [
     ("any other", "swallowed; a paste too"),
 ];
 
-/// What each of the seven marks means, in the glyph vocabulary being drawn.
+/// What each of the eight marks means, in the glyph vocabulary being drawn.
 /// The words are the ones a seat row prints ([`crate::theme::seat_word`]); the
 /// rest says what the mark rests on, so a finished seat is only ever one that
 /// declared it and an empty input box is never read as completion.
@@ -3242,6 +3242,10 @@ fn marks_legend(paint: Paint, icons: bool) -> Vec<(String, Style)> {
                 "unknown — state unestablished, or silent past the window",
             ),
             (Mark::Working, "working — a turn is running"),
+            (
+                Mark::Background,
+                "background — a job of the seat runs while it is quiet",
+            ),
             (
                 Mark::WaitingAgent,
                 "waiting on an agent — declared; its reason may name whom",
@@ -3472,6 +3476,8 @@ mod stats_spec;
 
 #[cfg(test)]
 mod tests {
+    // Frozen bgmark acceptance (.local/bgmark/freeze.tsv), installed byte-identically.
+    include!("../../tests/spec/bgmark_draw.rs");
     use ratatui_core::buffer::Buffer;
     use ratatui_core::layout::{Position, Rect};
     use ratatui_core::style::Modifier;
@@ -3546,6 +3552,7 @@ mod tests {
             model: "Sonnet 5.5".to_owned(),
             effort: "xhigh".to_owned(),
             drift: false,
+            task: false,
         };
         Facts::Seats {
             id: "$1".to_owned(),
@@ -6217,6 +6224,7 @@ mod tests {
             model: model.to_owned(),
             effort: effort.to_owned(),
             drift: false,
+            task: false,
         };
         shot.agents = Some(Facts::Seats {
             id: "$1".to_owned(),
@@ -6271,6 +6279,7 @@ mod tests {
             model: model.to_owned(),
             effort: effort.to_owned(),
             drift: false,
+            task: false,
         };
         shot.agents = Some(Facts::Seats {
             id: "$1".to_owned(),

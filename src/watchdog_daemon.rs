@@ -160,7 +160,7 @@ pub struct SeatIdentity {
 struct AgentObservation {
     slot: String,
     pane: String,
-    verdict: Verdict,
+    verdict: SeatVerdict,
     /// What its own frame proved about the model it is running.
     identity: SeatIdentity,
 }
@@ -630,6 +630,48 @@ pub enum Verdict {
     Active,
     /// The orchestrator main, judged by its own cadence rather than by silence.
     Meta(SweepVerdict),
+}
+
+/// A cycle verdict with the seat tool's proven job beside it: the ONE carrier
+/// every published mark reads — pane border, window entry, ticker, session and
+/// slot rollups, the roster fact — so no surface can draw the bare verdict and
+/// disagree with another. The word stays the verdict's, which keeps the
+/// declaration readable beside the [`Mark::Background`] glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SeatVerdict {
+    verdict: Verdict,
+    /// [`crate::procs::task_running`] proved a live job of the seat's tool this
+    /// cycle. An unknown reading is `false`: a display claim needs proof.
+    task: bool,
+}
+
+impl SeatVerdict {
+    /// The mark this seat draws.
+    const fn mark(self) -> Mark {
+        mark_with_task(self.verdict, Some(self.task))
+    }
+
+    /// The word the pane border prints after the glyph.
+    const fn reason(self) -> &'static str {
+        self.verdict.reason()
+    }
+}
+
+impl From<Verdict> for SeatVerdict {
+    fn from(verdict: Verdict) -> Self {
+        Self {
+            verdict,
+            task: false,
+        }
+    }
+}
+
+/// The mark `verdict` draws when the seat tool's job reading is `task`:
+/// [`Mark::with_task`] over the verdict's own mark, and only a proven job
+/// (`Some(true)`) composes.
+#[must_use]
+pub const fn mark_with_task(verdict: Verdict, task: Option<bool>) -> Mark {
+    verdict.mark().with_task(matches!(task, Some(true)))
 }
 
 impl Verdict {
@@ -2131,10 +2173,10 @@ fn book_throttle(
 /// channel two of the retry's two, and pure so it can be pinned without a pane.
 /// A slot the cycle did not judge at all is not latched: absence of a verdict
 /// is not a verdict, and channel one still asks the pane for itself.
-fn slot_latched(verdicts: &[(String, Verdict)], slot: &str) -> bool {
+fn slot_latched(verdicts: &[(String, SeatVerdict)], slot: &str) -> bool {
     verdicts
         .iter()
-        .any(|(at, verdict)| at == slot && *verdict == Verdict::HumanPrompt)
+        .any(|(at, seat)| at == slot && seat.verdict == Verdict::HumanPrompt)
 }
 
 /// Count a human-only prompt, and NAME it once it has held. `None` means the
@@ -3494,8 +3536,8 @@ impl Counts {
 struct PaneMark {
     /// The `%<n>` pane id.
     pane: String,
-    /// What the accounting made of it.
-    verdict: Verdict,
+    /// What the accounting made of it, with the seat tool's job beside it.
+    verdict: SeatVerdict,
     /// The watchdog-owned public observation, including restart carry.
     observed: String,
 }
@@ -3505,7 +3547,7 @@ struct PaneMark {
 struct MotionVerdict {
     pane: String,
     window: String,
-    verdict: Verdict,
+    verdict: SeatVerdict,
 }
 
 /// The orchestrator target publication state, including not-yet-published.
@@ -7363,7 +7405,7 @@ impl Cycle<'_> {
         let clients = transport::observe_clients(self.server);
         let mut live: Vec<String> = Vec::new();
         let mut counts = Counts::default();
-        let mut by_slot: Vec<(String, Verdict)> = Vec::new();
+        let mut by_slot: Vec<(String, SeatVerdict)> = Vec::new();
         let mut by_agent: Vec<AgentObservation> = Vec::new();
         let mut by_pane: Vec<PaneMark> = Vec::new();
         // Cycle-wide: any seat leaving the limit this sweep requests ONE pass.
@@ -7717,7 +7759,20 @@ impl Cycle<'_> {
                     launch.map(str::to_owned),
                 )
             });
-            by_slot.push((slot.clone(), booked.verdict));
+            // The seat tool's job, as this cycle proved it: what every
+            // published mark composes with (`SeatVerdict`).
+            let task = activity.task_running == Some(true);
+            by_slot.push((
+                slot.clone(),
+                SeatVerdict {
+                    verdict: booked.verdict,
+                    task,
+                },
+            ));
+            let shown = SeatVerdict {
+                verdict: shown,
+                task,
+            };
             by_agent.push(AgentObservation {
                 slot,
                 pane: pane.pane_id.clone(),
@@ -7780,7 +7835,7 @@ impl Cycle<'_> {
         &self,
         carry: &mut Carry,
         counts: &Counts,
-        by_slot: &[(String, Verdict)],
+        by_slot: &[(String, SeatVerdict)],
         by_agent: &[AgentObservation],
         by_pane: &[PaneMark],
         live: &[String],
@@ -9079,7 +9134,7 @@ impl Cycle<'_> {
     fn retry_briefs(
         &self,
         cursor: &mut Option<String>,
-        verdicts: &[(String, Verdict)],
+        verdicts: &[(String, SeatVerdict)],
         events: &[Event],
         now: i64,
         err: &mut impl Write,
@@ -9140,14 +9195,14 @@ impl Cycle<'_> {
     /// The session-notice step: trigger the leg for every live, unlatched seat
     /// the fold finds a notice due for. The leg folds again under the target
     /// lock and journals every outcome, so a skip costs nothing here.
-    fn tell_seats(&self, verdicts: &[(String, Verdict)], events: &[Event], now: i64) {
+    fn tell_seats(&self, verdicts: &[(String, SeatVerdict)], events: &[Event], now: i64) {
         let bytes = crate::meta::read_bytes(self.meta_dir).unwrap_or_default();
         let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes));
         let interval = self.knobs.interval_secs;
         let bound = i64::try_from(interval).map_or(i64::MAX, |secs| secs.saturating_mul(2));
         for entry in &self.roster {
-            let live = verdicts.iter().any(|(slot, verdict)| {
-                *slot == entry.slot && !matches!(verdict, Verdict::Dead | Verdict::HumanPrompt)
+            let live = verdicts.iter().any(|(slot, seat)| {
+                *slot == entry.slot && !matches!(seat.verdict, Verdict::Dead | Verdict::HumanPrompt)
             });
             let seat = crate::session_notice::Seat::read(&meta, &bytes, &entry.slot, self.session);
             if live && crate::session_notice::due(events, &seat, now, bound).is_some() {
@@ -9335,7 +9390,7 @@ fn window_agents_line(
 /// pane has gone missing cannot disappear from session attention.
 fn slot_mark(
     entry: &RosterEntry,
-    by_slot: &[(String, Verdict)],
+    by_slot: &[(String, SeatVerdict)],
     missing: &[(String, MissingState)],
 ) -> Mark {
     let found = by_slot.iter().find(|(slot, _)| *slot == entry.slot);
@@ -9366,12 +9421,13 @@ enum FactRung {
     Full,
     /// Models and clients, without the effort or the drift mark.
     NoEffort,
-    /// The four v1 fields and the client, with nothing observed. The client
-    /// is the cheapest cell on the row and the one that never drops.
+    /// The four v1 fields, the client and the task, with no observed model,
+    /// effort or drift. The client and the task are the cheapest cells on the
+    /// row and the ones that never drop.
     ClientOnly,
     /// Exactly today's v1 bytes.
     ///
-    /// The LAST rung before nothing, and the reason it exists: v2 costs four
+    /// The LAST rung before nothing, and the reason it exists: v3 costs five
     /// more separators per entry, so without it a roster that fits today could
     /// vanish BECAUSE model cells were added — and a fact ae cannot publish is
     /// a roster the picker reports as unavailable.
@@ -9385,7 +9441,7 @@ impl FactRung {
     /// The version word this rung announces.
     const fn version(self) -> &'static str {
         match self {
-            Self::Full | Self::NoEffort | Self::ClientOnly => "v2",
+            Self::Full | Self::NoEffort | Self::ClientOnly => "v3",
             Self::Legacy => "v1",
         }
     }
@@ -9509,6 +9565,12 @@ fn fact_at(
             value.push_str(effort);
             value.push(':');
             value.push_str(drift);
+            // The cheapest cell, so every rung but Legacy keeps it: `1` when
+            // the seat tool's job is proven, else empty.
+            value.push(':');
+            if found.is_some_and(|seen| seen.verdict.task) {
+                value.push('1');
+            }
         }
         if value.len() > tmux::PICKER_AGENTS_MAX_BYTES {
             return None;
@@ -9967,6 +10029,8 @@ mod quietwd_spec;
 
 #[cfg(test)]
 mod tests {
+    // Frozen bgmark acceptance (.local/bgmark/freeze.tsv), installed byte-identically.
+    include!("../tests/spec/bgmark_daemon.rs");
     #[test]
     fn history_state_is_known_at_900_seconds_and_unknown_at_901() {
         assert_eq!(super::history_clock(Some(100), 1000), Some(100));
@@ -10260,9 +10324,9 @@ mod tests {
     #[test]
     fn the_retry_skips_exactly_the_slots_this_cycle_judged_to_be_on_a_prompt() {
         let judged = [
-            ("spawned.1".to_owned(), Verdict::HumanPrompt),
-            ("spawned.2".to_owned(), Verdict::Idle),
-            ("worker.0".to_owned(), Verdict::Dead),
+            ("spawned.1".to_owned(), Verdict::HumanPrompt.into()),
+            ("spawned.2".to_owned(), Verdict::Idle.into()),
+            ("worker.0".to_owned(), Verdict::Dead.into()),
         ];
         assert!(slot_latched(&judged, "spawned.1"));
         assert!(
@@ -13530,27 +13594,27 @@ mod tests {
                 MotionVerdict {
                     pane: "%1".to_owned(),
                     window: "@7".to_owned(),
-                    verdict: Verdict::Active,
+                    verdict: Verdict::Active.into(),
                 },
                 MotionVerdict {
                     pane: "%2".to_owned(),
                     window: "@7".to_owned(),
-                    verdict: Verdict::Quiet(QuietKind::Done),
+                    verdict: Verdict::Quiet(QuietKind::Done).into(),
                 },
                 MotionVerdict {
                     pane: "%3".to_owned(),
                     window: "@7".to_owned(),
-                    verdict: Verdict::Quiet(QuietKind::Blocked),
+                    verdict: Verdict::Quiet(QuietKind::Blocked).into(),
                 },
                 MotionVerdict {
                     pane: "%4".to_owned(),
                     window: "@7".to_owned(),
-                    verdict: Verdict::Dead,
+                    verdict: Verdict::Dead.into(),
                 },
                 MotionVerdict {
                     pane: "%6".to_owned(),
                     window: "@7".to_owned(),
-                    verdict: Verdict::Meta(SweepVerdict::MetaSweeping),
+                    verdict: Verdict::Meta(SweepVerdict::MetaSweeping).into(),
                 },
             ],
             panes: current.to_vec(),
@@ -13606,17 +13670,17 @@ mod tests {
                 MotionVerdict {
                     pane: "%1".to_owned(),
                     window: "@7".to_owned(),
-                    verdict: Verdict::Active,
+                    verdict: Verdict::Active.into(),
                 },
                 MotionVerdict {
                     pane: "%2".to_owned(),
                     window: "@7".to_owned(),
-                    verdict: Verdict::Quiet(QuietKind::WaitingAgent),
+                    verdict: Verdict::Quiet(QuietKind::WaitingAgent).into(),
                 },
                 MotionVerdict {
                     pane: "%3".to_owned(),
                     window: "@7".to_owned(),
-                    verdict: Verdict::Meta(SweepVerdict::MetaSweeping),
+                    verdict: Verdict::Meta(SweepVerdict::MetaSweeping).into(),
                 },
             ],
             panes: vec![
@@ -13650,7 +13714,7 @@ mod tests {
             verdicts: vec![MotionVerdict {
                 pane: "%1".to_owned(),
                 window: "@7".to_owned(),
-                verdict: Verdict::Active,
+                verdict: Verdict::Active.into(),
             }],
             panes: vec![pane],
             ..MotionState::default()
@@ -13668,7 +13732,7 @@ mod tests {
             verdicts: vec![MotionVerdict {
                 pane: "%1".to_owned(),
                 window: "@7".to_owned(),
-                verdict: Verdict::Active,
+                verdict: Verdict::Active.into(),
             }],
             panes: vec![pane.clone()],
             ..MotionState::default()
@@ -19533,7 +19597,7 @@ mod tests {
         motion.replace_verdicts(vec![MotionVerdict {
             pane: rig.pane.clone(),
             window: "@999999".to_owned(),
-            verdict: Verdict::Active,
+            verdict: Verdict::Active.into(),
         }]);
         let mut ticker = super::MotionTicker::new(motion, Adoption::default());
         let start = std::time::Instant::now();
@@ -19558,7 +19622,7 @@ mod tests {
             verdicts: vec![MotionVerdict {
                 pane: "%1".to_owned(),
                 window: "@7".to_owned(),
-                verdict: Verdict::Active,
+                verdict: Verdict::Active.into(),
             }],
             panes: vec![motion("%1", "lead")],
             ..MotionState::default()
@@ -19696,9 +19760,12 @@ mod tests {
         // Two registrations SHARE a display ref and differ only by slot — the
         // case that makes ref-keying wrong.
         let by_slot = vec![
-            ("main".to_owned(), Verdict::Active),
-            ("worker.0".to_owned(), Verdict::Stale),
-            ("spawned.0".to_owned(), Verdict::Quiet(QuietKind::Done)),
+            ("main".to_owned(), Verdict::Active.into()),
+            ("worker.0".to_owned(), Verdict::Stale.into()),
+            (
+                "spawned.0".to_owned(),
+                Verdict::Quiet(QuietKind::Done).into(),
+            ),
         ];
         let marks: Vec<Mark> = roster
             .iter()
@@ -19726,8 +19793,8 @@ mod tests {
         assert_eq!(
             agents_fact(&roster, &observed, &clients, 2_000, 60),
             Some(
-                "v2;2000;60;lead:fable5:working:%3:cc:::;builder:gpt56sol:done:%8:cx:::;\
-                 tests:gpt56luna:dead::cx:::"
+                "v3;2000;60;lead:fable5:working:%3:cc::::;builder:gpt56sol:done:%8:cx::::;\
+                 tests:gpt56luna:dead::cx::::"
                     .to_owned()
             ),
             "a seat ae observed nothing about still names the client it is \
@@ -19885,7 +19952,7 @@ mod tests {
         AgentObservation {
             slot: slot.to_owned(),
             pane: pane.to_owned(),
-            verdict,
+            verdict: verdict.into(),
             identity: SeatIdentity::default(),
         }
     }
@@ -19901,7 +19968,7 @@ mod tests {
         AgentObservation {
             slot: slot.to_owned(),
             pane: pane.to_owned(),
-            verdict: Verdict::Active,
+            verdict: Verdict::Active.into(),
             identity: SeatIdentity {
                 model: Some(model.to_owned()),
                 effort: effort.map(str::to_owned),
@@ -19911,7 +19978,7 @@ mod tests {
     }
 
     #[test]
-    fn the_agents_fact_emits_v2_and_empties_an_unrepresentable_model() {
+    fn the_agents_fact_emits_v3_and_empties_an_unrepresentable_model() {
         let roster = [
             entry("main", "fable5", "lead"),
             entry("worker.0", "spark13m", "nav"),
@@ -19930,12 +19997,12 @@ mod tests {
             ("worker.0", "muse".to_owned()),
             ("spawned.0", "oc".to_owned()),
         ];
-        let fact = agents_fact(&roster, &observed, &clients, 2_000, 60).expect("a v2 fact");
+        let fact = agents_fact(&roster, &observed, &clients, 2_000, 60).expect("a v3 fact");
         assert_eq!(
             fact,
-            "v2;2000;60;lead:fable5:working:%3:cc-mic:Fable 5.1:xhigh:!;\
-             nav:spark13m:working:%8:muse:muse-spark-1.3:max:;\
-             runner:ocds:working:%9:oc:::"
+            "v3;2000;60;lead:fable5:working:%3:cc-mic:Fable 5.1:xhigh:!:;\
+             nav:spark13m:working:%8:muse:muse-spark-1.3:max::;\
+             runner:ocds:working:%9:oc::::"
         );
         // The writer and the reader are one contract: whatever this publishes
         // must survive the strict parser that reads it back.
@@ -19970,7 +20037,7 @@ mod tests {
             let observation = vec![seen_running("main", "%3", hostile, Some("max"), false)];
             assert_eq!(
                 agents_fact(&one, &observation, &[("main", "cc".to_owned())], 2_000, 60),
-                Some("v2;2000;60;lead:fable5:working:%3:cc:::".to_owned()),
+                Some("v3;2000;60;lead:fable5:working:%3:cc::::".to_owned()),
                 "{hostile:?}"
             );
         }
@@ -19980,7 +20047,7 @@ mod tests {
         let observation = vec![seen_running("main", "%3", &at_cap, None, false)];
         assert_eq!(
             agents_fact(&one, &observation, &[("main", "cc".to_owned())], 2_000, 60),
-            Some(format!("v2;2000;60;lead:fable5:working:%3:cc:{at_cap}::"))
+            Some(format!("v3;2000;60;lead:fable5:working:%3:cc:{at_cap}:::"))
         );
     }
 
@@ -19988,8 +20055,9 @@ mod tests {
     ///
     /// One seat's entry costs `name + profile + 13` at v1 (state `working`,
     /// pane `%1`, four separators), `+ 6` for the client cell, `+ 6` more for
-    /// the model, and `+ 6` more for the effort and drift mark. Against the
-    /// 4096-byte bound that width alone decides which rung is first to fit.
+    /// the model, `+ 6` more for the effort and drift mark, and `+ 1` for the
+    /// empty task cell. Against the 4096-byte bound that width alone decides
+    /// which rung is first to fit.
     fn roster_of(width: usize) -> Vec<RosterEntry> {
         (0..64)
             .map(|index| {
@@ -20027,10 +20095,10 @@ mod tests {
     #[test]
     fn a_roster_that_cannot_fit_its_model_cells_degrades_before_it_vanishes() {
         for (width, expected, why) in [
-            (8_usize, "v2", "everything fits"),
-            (18, "v2", "the effort and the drift mark go first"),
-            (21, "v2", "then the models"),
-            (24, "v1", "then the whole v2 shape, back to today's bytes"),
+            (8_usize, "v3", "everything fits"),
+            (18, "v3", "the effort and the drift mark go first"),
+            (21, "v3", "then the models"),
+            (24, "v1", "then the whole v3 shape, back to today's bytes"),
         ] {
             let roster = roster_of(width);
             let clients = clients_of(&roster);
@@ -20342,7 +20410,7 @@ mod tests {
     #[test]
     fn a_slot_with_no_pane_is_neutral_on_its_first_absent_cycle_and_dead_on_its_second() {
         let roster = [entry("main", "cl", "lead"), entry("worker.0", "cl", "w")];
-        let by_slot = vec![("main".to_owned(), Verdict::Active)];
+        let by_slot = vec![("main".to_owned(), Verdict::Active.into())];
         // First absence: the debounce has not recorded it yet.
         assert_eq!(slot_mark(&roster[1], &by_slot, &[]), Mark::Idle);
         // Second: the streak is recorded, and now it wants a human.
@@ -20369,9 +20437,9 @@ mod tests {
     /// The session's own mark is the most actionable of its panes'.
     #[test]
     fn the_session_mark_is_the_rollup_of_its_panes() {
-        let pane = |pane: &str, verdict| PaneMark {
+        let pane = |pane: &str, verdict: Verdict| PaneMark {
             pane: pane.to_owned(),
-            verdict,
+            verdict: verdict.into(),
             observed: "unknown".to_owned(),
         };
         assert_eq!(session_mark(&[], &[]), Mark::Idle);
@@ -20424,9 +20492,9 @@ mod tests {
     /// `Done` before `Idle`), whatever order the panes and the roster arrive in.
     #[test]
     fn the_session_mark_takes_the_most_actionable_seat_in_either_order() {
-        let pane = |pane: &str, verdict| PaneMark {
+        let pane = |pane: &str, verdict: Verdict| PaneMark {
             pane: pane.to_owned(),
-            verdict,
+            verdict: verdict.into(),
             observed: "unknown".to_owned(),
         };
         let wait = || Verdict::Quiet(QuietKind::WaitingAgent);
@@ -21563,9 +21631,9 @@ mod tests {
         )
         .expect("a rename record");
         let verdicts = [
-            ("main".to_owned(), Verdict::Active),
-            ("worker.0".to_owned(), Verdict::Dead),
-            ("worker.1".to_owned(), Verdict::HumanPrompt),
+            ("main".to_owned(), Verdict::Active.into()),
+            ("worker.0".to_owned(), Verdict::Dead.into()),
+            ("worker.1".to_owned(), Verdict::HumanPrompt.into()),
         ];
         cycle.tell_seats(&verdicts, &[renamed], 1_791_000_000);
         let interval = cycle.knobs.interval_secs.to_string();

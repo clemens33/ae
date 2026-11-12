@@ -17,7 +17,7 @@ supervision.
 - **Self-terminates** if the tmux session or `meta` file disappears.
 
 Each completed verdict cycle replaces one session-scoped `@ae_agents` value:
-`v2;<epoch>;<interval_secs>;<name>:<profile>:<state>:<pane>:<client>:<model>:<effort>:<drift>;…`.
+`v3;<epoch>;<interval_secs>;<name>:<profile>:<state>:<pane>:<client>:<model>:<effort>:<drift>:<task>;…`.
 It contains every seat in the recorded roster's creation order, including
 missing panes as `dead` with an empty pane hint, and excludes the monitor panes.
 Present seats reuse that cycle's per-agent verdict and recorded profile;
@@ -26,7 +26,7 @@ value is one bounded atomic option write; an unrepresentable roster or cadence
 unsets it instead of publishing a partial fact. `watchdog stop` also unsets it,
 so a stopped daemon cannot leave the picker claiming a live roster snapshot.
 
-The last four cells are what the seat's OWN frame proved this cycle, for display
+The `client`, `model`, `effort` and `drift` cells are what the seat's OWN frame proved this cycle, for display
 only — nothing there reaches the meta, which keeps its own drift observer.
 `client` is the seat's `[clients]` label fully written (recorded override,
 then the profile's row, then the binary name, then the legacy short token)
@@ -37,7 +37,9 @@ model ae cannot spell EXACTLY empties that entry's trio rather than being
 escaped or clipped — over 32 bytes, or carrying anything the fact's own grammar
 reserves or cannot hold, including a separator, an edge space, a tmux style
 byte and any non-printable. Empty cells are not a guess: the reader falls back
-to the declared profile.
+to the declared profile. `task` is `1` when the cycle's one process snapshot
+proved a live job of the seat's tool (`procs::task_running`), else empty; the
+picker then draws a quiet seat with the background mark.
 
 An identity counts only when the tool's own composer is drawn in the SAME
 capture, so a frame mid-turn proves nothing. The last proven answer is then HELD
@@ -47,16 +49,16 @@ declared profile and back every time a seat got busy.
 
 A roster that will not fit the 4 KiB bound degrades in fleet-wide RUNGS, because
 the model cell is a column and one dropped for some rows and not others cannot
-be read down: `v2` full, `v2` with the effort and drift mark emptied, `v2` with
-only the client kept, then `v1` — byte-identical to what ae wrote before these
-cells existed — and only then nothing. Within `v2` the client is the cheapest
-cell on the row and the last to go; the `v1` rung carries no client at all. The `v1` rung exists because `v2` costs four
+be read down: `v3` full, `v3` with the effort and drift mark emptied, `v3` with
+only the client and task kept, then `v1` — byte-identical to what ae wrote before these
+cells existed — and only then nothing. Within `v3` the client and the task are the
+cheapest cells on the row and the last to go; the `v1` rung carries neither. The `v1` rung exists because `v3` costs five
 more separators per entry: without it a roster that fits today could vanish
 BECAUSE model cells were added, and a fact ae cannot publish is a roster the
 picker reports as unavailable.
 
-The parser accepts both words, so no compatibility shim is needed in either
-direction. An older core reading a `v2` fact fails its version check, reads
+The parser accepts all three words, so no compatibility shim is needed in either
+direction. An older core reading a `v3` fact fails its version check, reads
 nothing, and takes the `agents: unavailable` degrade it already has.
 
 A stop retracts everything only a live daemon could vouch for — that roster, the

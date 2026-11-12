@@ -1222,6 +1222,7 @@ fn bound_reading_app(body: &str) -> (App, Receiver<Request>) {
                     model: String::new(),
                     effort: String::new(),
                     drift: false,
+                    task: false,
                 })
                 .collect(),
         },

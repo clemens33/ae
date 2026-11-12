@@ -4156,13 +4156,20 @@ pub struct PickerAgent {
     pub effort: String,
     /// Whether the observed model differs from the profile's own pin.
     pub drift: bool,
+    /// Whether the watchdog proved a live job of the seat's tool: only a `v3`
+    /// fact can say so, and only as the RAW fact — the mark decides whether it
+    /// shows ([`Mark::with_task`]).
+    pub task: bool,
 }
 
 impl PickerAgent {
-    /// The shared static picker mark for this verdict word.
+    /// The shared static picker mark for this verdict word, with the seat's
+    /// proven job composed in by the one rule the watchdog uses too.
     #[must_use]
     pub fn mark(&self) -> Mark {
-        picker_agent_mark(&self.state).unwrap_or(Mark::Stale)
+        picker_agent_mark(&self.state)
+            .unwrap_or(Mark::Stale)
+            .with_task(self.task)
     }
 }
 
@@ -4173,6 +4180,8 @@ enum AgentsGrammar {
     V1,
     /// v1's four fields plus `client:model:effort:drift`.
     V2,
+    /// v2's eight fields plus `task`: `1` for a proven job, else empty.
+    V3,
 }
 
 impl AgentsGrammar {
@@ -4182,18 +4191,19 @@ impl AgentsGrammar {
         match self {
             Self::V1 => 4,
             Self::V2 => 8,
+            Self::V3 => 9,
         }
     }
 }
 
 /// Parse one bounded, versioned `@ae_agents` value.
 ///
-/// BOTH grammars are accepted, because versions run side by side: `ae upgrade`
+/// EVERY grammar is accepted, because versions run side by side: `ae upgrade`
 /// restarts the watchdogs it can reach, a skipped session keeps its old core,
 /// and a checkout core can share one server. A v1 fact read here simply proves
-/// no observed cells. The converse needs no shim: a v2 fact read by an OLD
-/// core fails its exact version check, yielding `None` and today's
-/// `agents: unavailable` row.
+/// no observed cells, and a v1 or v2 fact no job. The converse needs no shim: a
+/// newer fact read by an OLD core fails its exact version check, yielding
+/// `None` and today's `agents: unavailable` row.
 ///
 /// Any malformed byte rejects the whole snapshot. `None` therefore means
 /// unavailable, never a partially trusted roster. A snapshot becomes stale
@@ -4212,6 +4222,7 @@ pub fn parse_picker_agents(raw: &str, now_epoch: i64) -> Option<Vec<PickerAgent>
     let grammar = match parts.next() {
         Some("v1") => AgentsGrammar::V1,
         Some("v2") => AgentsGrammar::V2,
+        Some("v3") => AgentsGrammar::V3,
         _ => return None,
     };
     let epoch = parts
@@ -4243,13 +4254,18 @@ pub fn parse_picker_agents(raw: &str, now_epoch: i64) -> Option<Vec<PickerAgent>
         let [name, profile, state, pane] = [fields[0], fields[1], fields[2], fields[3]];
         let [client, model, effort, drift] = match grammar {
             AgentsGrammar::V1 => ["", "", "", ""],
-            AgentsGrammar::V2 => [fields[4], fields[5], fields[6], fields[7]],
+            AgentsGrammar::V2 | AgentsGrammar::V3 => [fields[4], fields[5], fields[6], fields[7]],
+        };
+        let task = match grammar {
+            AgentsGrammar::V1 | AgentsGrammar::V2 => "",
+            AgentsGrammar::V3 => fields[8],
         };
         if !crate::config::is_agent_name(name)
             || !crate::config::is_config_key(profile)
             || picker_agent_mark(state).is_none()
             || (!pane.is_empty() && !pane_id_is_valid(pane))
             || !observed_cells_are_coherent(client, model, effort, drift)
+            || !matches!(task, "" | "1")
             || agents.iter().any(|agent: &PickerAgent| agent.name == *name)
         {
             return None;
@@ -4263,6 +4279,7 @@ pub fn parse_picker_agents(raw: &str, now_epoch: i64) -> Option<Vec<PickerAgent>
             model: model.to_owned(),
             effort: effort.to_owned(),
             drift: drift == DRIFT_MARK,
+            task: task == "1",
         });
     }
     (!agents.is_empty()).then_some(agents)
@@ -5439,6 +5456,8 @@ pub fn rename_window_args(server: &ServerId, pane: &str, name: &str) -> Vec<Stri
 
 #[cfg(test)]
 mod tests {
+    // Frozen bgmark acceptance (.local/bgmark/freeze.tsv), installed byte-identically.
+    include!("../tests/spec/bgmark_old_reader.rs");
     use super::{
         CLIENT_FORMAT, Key, ObservedClient, ObservedPaneProbe, PANE_PROBE_FORMAT, Styling,
         capture_screen_args, confirm_before_args, display_client_message_args, hotkey_picker_shell,
@@ -7299,6 +7318,7 @@ mod tests {
             model: String::new(),
             effort: String::new(),
             drift: false,
+            task: false,
         }
     }
 
@@ -7415,6 +7435,7 @@ mod tests {
                     model: "Fable 5.1".to_owned(),
                     effort: "xhigh".to_owned(),
                     drift: true,
+                    task: false,
                 },
                 PickerAgent {
                     name: "nav".to_owned(),
@@ -7425,6 +7446,7 @@ mod tests {
                     model: "muse-spark-1.3".to_owned(),
                     effort: "max".to_owned(),
                     drift: false,
+                    task: false,
                 },
                 // A seat with no pane keeps its v1 shape and observes nothing:
                 // there was no frame to read.

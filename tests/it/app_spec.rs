@@ -76,6 +76,7 @@ fn picker(name: &str, state: &str) -> PickerAgent {
         model: "Sonnet 5.5".to_owned(),
         effort: "xhigh".to_owned(),
         drift: false,
+        task: false,
     }
 }
 

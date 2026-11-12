@@ -24,7 +24,7 @@ fn observed_motion(rig: &Rig, panes: &[String]) -> MotionState {
             .map(|pane| MotionVerdict {
                 pane: pane.clone(),
                 window: rig.window.clone(),
-                verdict: Verdict::Active,
+                verdict: Verdict::Active.into(),
             })
             .collect(),
     );
@@ -213,7 +213,7 @@ fn quietwd_detach_observation_stops_the_next_frames_without_changing_verdicts() 
     );
     assert_eq!(
         ticker.motion.verdicts[0].verdict,
-        Verdict::Active,
+        Verdict::Active.into(),
         "ticks never recalculate verdicts"
     );
 }
@@ -540,7 +540,7 @@ fn quietwd_attached_without_working_agents_keeps_five_hundred_ms_observation_cad
     rig.must(&["set-option", "-t", "=current:", "@ae_attn_rank", "1"]);
     rig.attach("current", 0);
     let mut carry = detached_carry(&rig, true);
-    carry.motion.verdicts[0].verdict = Verdict::Quiet(crate::watchdog::QuietKind::Done);
+    carry.motion.verdicts[0].verdict = Verdict::Quiet(crate::watchdog::QuietKind::Done).into();
     let mut clock = Clock::new([]);
     let began = clock.now;
     let ((), calls) = spawns_during(|| {

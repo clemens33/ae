@@ -62,6 +62,7 @@ fn picker_agent(state: &str) -> PickerAgent {
         model: String::new(),
         effort: String::new(),
         drift: false,
+        task: false,
     }
 }
 

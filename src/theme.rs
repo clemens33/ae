@@ -182,6 +182,10 @@ impl Palette {
             Mark::Dead => self.dead,
             Mark::NeedsYou => self.needs_you,
             Mark::Working => self.working,
+            // A job of the seat runs while the seat itself is quiet: the
+            // palette's own text token, an existing, sourced colour distinct
+            // from every other accent.
+            Mark::Background => self.text,
             Mark::WaitingAgent => self.waiting_agent,
             Mark::Done => self.done,
             Mark::Stale => self.stale,
@@ -196,8 +200,9 @@ impl Palette {
 
 /// What a session, a window, a pane or a picker row is saying.
 ///
-/// SEVEN states and no more: the colour carries the nuance and the pane border
-/// carries the word, so the glyph only has to be legible at one character wide.
+/// EIGHT states (the eighth, Background, by human ruling 2026-11-12): the
+/// colour carries the nuance and the pane border carries the word, so the glyph
+/// only has to be legible at one character wide.
 /// Every state has its own glyph as well as its own accent — a reader who
 /// cannot separate two of the colours still reads two different characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +214,10 @@ pub enum Mark {
     NeedsYou,
     /// Moving, or recently moved.
     Working,
+    /// The seat is quiet — waiting on an agent, done or idle — while a job of
+    /// its own tool still runs ([`crate::procs::task_running`]). A variant of
+    /// Working: the same published rank, its own glyph and accent, and no pulse.
+    Background,
     /// Waiting on ANOTHER agent — quiet, no human needed; escalates to
     /// `NeedsYou` past its ceiling. Its own glyph and accent, but the SAME
     /// published rank as Working: a rank is read by other sessions' older
@@ -226,11 +235,12 @@ pub enum Mark {
 
 impl Mark {
     /// Every mark, most actionable first.
-    pub const BY_URGENCY: [Self; 7] = [
+    pub const BY_URGENCY: [Self; 8] = [
         Self::Dead,
         Self::NeedsYou,
         Self::Stale,
         Self::Working,
+        Self::Background,
         Self::WaitingAgent,
         Self::Done,
         Self::Idle,
@@ -252,6 +262,8 @@ impl Mark {
             (Self::NeedsYou, false) => "!",
             (Self::Working, true) => "●",
             (Self::Working, false) => "*",
+            (Self::Background, true) => "◉",
+            (Self::Background, false) => "&",
             (Self::WaitingAgent, true) => "◔",
             (Self::WaitingAgent, false) => "~",
             (Self::Done, true) => "✓",
@@ -266,7 +278,7 @@ impl Mark {
     /// How urgently this mark wants a human — the fleet strip's sort key, and
     /// the number the watchdog publishes for other sessions to sort by.
     ///
-    /// `WaitingAgent` TIES with `Working` at 2: the numbers 0–5 are read by
+    /// `WaitingAgent` and `Background` TIE with `Working` at 2: the numbers 0–5 are read by
     /// other sessions' watchdogs and pickers, which may still run an older
     /// core, so no existing rank renumbers and `from_rank(2)` stays Working.
     #[must_use]
@@ -275,7 +287,7 @@ impl Mark {
             Self::Dead => 5,
             Self::NeedsYou => 4,
             Self::Stale => 3,
-            Self::Working | Self::WaitingAgent => 2,
+            Self::Working | Self::Background | Self::WaitingAgent => 2,
             Self::Done => 1,
             Self::Idle => 0,
         }
@@ -283,9 +295,9 @@ impl Mark {
 
     /// The mark a published rank names, or [`Mark::Idle`] for anything else.
     ///
-    /// Rank 2 names Working even though `WaitingAgent` publishes it too: an
-    /// explicit table, never an index into [`Mark::BY_URGENCY`], because the
-    /// tie means the table is no longer a bijection.
+    /// Rank 2 names Working even though `WaitingAgent` and `Background` publish
+    /// it too: an explicit table, never an index into [`Mark::BY_URGENCY`],
+    /// because the tie means the table is no longer a bijection.
     #[must_use]
     pub fn from_rank(raw: &str) -> Self {
         let rank = raw.trim().parse::<u8>().unwrap_or(0);
@@ -305,6 +317,25 @@ impl Mark {
         }
     }
 
+    /// This mark with a proven running job of the seat's tool composed in:
+    /// [`Mark::Background`] replaces a QUIET mark (waiting on an agent, done,
+    /// idle) and nothing else, so attention, death and work are never hidden.
+    /// The ONE composition rule; the watchdog and the picker both call it.
+    ///
+    /// ```
+    /// use ae::theme::Mark;
+    /// assert_eq!(Mark::Done.with_task(true), Mark::Background);
+    /// assert_eq!(Mark::Done.with_task(false), Mark::Done);
+    /// assert_eq!(Mark::NeedsYou.with_task(true), Mark::NeedsYou);
+    /// ```
+    #[must_use]
+    pub const fn with_task(self, task: bool) -> Self {
+        match self {
+            Self::WaitingAgent | Self::Done | Self::Idle if task => Self::Background,
+            other => other,
+        }
+    }
+
     /// The stable state word shown beside this mark in the fleet picker.
     #[must_use]
     pub const fn word(self) -> &'static str {
@@ -312,6 +343,7 @@ impl Mark {
             Self::Dead => "dead",
             Self::NeedsYou => "needs-you",
             Self::Working => "working",
+            Self::Background => "background",
             Self::WaitingAgent => "waiting-agent",
             Self::Done => "done",
             Self::Stale => "stale",
@@ -1608,6 +1640,8 @@ pub fn window_options(look: &Look) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    // Frozen bgmark acceptance (.local/bgmark/freeze.tsv), installed byte-identically.
+    include!("../tests/spec/bgmark_theme.rs");
     use super::{
         FleetRow, ICONS_OPTION, Look, Mark, PALETTE_OPTION, Palette, WINDOW_STAMP_OPTION,
         attention_style, fleet_strip, icons_wanted, mark_style, orchestrator_strip,
@@ -2015,8 +2049,10 @@ mod tests {
     #[test]
     fn the_two_ae_variants_differ_only_in_their_neutrals() {
         for mark in Mark::BY_URGENCY {
-            if mark == Mark::Idle {
-                continue; // idle IS the palette's dim, so it moves with it
+            if matches!(mark, Mark::Idle | Mark::Background) {
+                // idle IS the palette's dim and background its text, so
+                // each moves with it
+                continue;
             }
             assert_eq!(
                 Palette::NEUTRAL.accent(mark),
@@ -2946,12 +2982,13 @@ mod tests {
     /// A rank published by one session's watchdog is read back as the same mark
     /// by every other session's strip — the whole reason the rank exists.
     ///
-    /// With ONE tie: `WaitingAgent` publishes 2 and reads back as Working, so an
-    /// older core — or another session's strip — still sees a working session.
+    /// With TWO ties: `WaitingAgent` and `Background` publish 2 and read back
+    /// as Working, so an older core — or another session's strip — still sees
+    /// a working session.
     #[test]
     fn a_published_rank_round_trips_through_the_strip() {
         for mark in Mark::BY_URGENCY {
-            if mark == Mark::WaitingAgent {
+            if matches!(mark, Mark::WaitingAgent | Mark::Background) {
                 continue;
             }
             assert_eq!(Mark::from_rank(&mark.rank().to_string()), mark, "{mark:?}");
@@ -2970,6 +3007,7 @@ mod tests {
                 "needs-you",
                 "stale",
                 "working",
+                "background",
                 "waiting-agent",
                 "done",
                 "idle"
@@ -2988,7 +3026,7 @@ mod tests {
         assert_eq!(Mark::WaitingAgent.rank(), Mark::Working.rank());
         assert_eq!(Mark::from_rank("2"), Mark::Working);
         assert_eq!(Mark::from_rank_value(2), Mark::Working);
-        assert_eq!(Mark::BY_URGENCY.len(), 7);
+        assert_eq!(Mark::BY_URGENCY.len(), 8);
         assert_eq!(
             Mark::BY_URGENCY,
             [
@@ -2996,6 +3034,7 @@ mod tests {
                 Mark::NeedsYou,
                 Mark::Stale,
                 Mark::Working,
+                Mark::Background,
                 Mark::WaitingAgent,
                 Mark::Done,
                 Mark::Idle,

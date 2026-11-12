@@ -123,7 +123,7 @@ commas, so a comma-separated style list inside one tears the format in half.
 tmux reads a space-separated style list identically, and its own default
 `status-format[0]` is written that way for exactly this reason.
 
-## The seven marks
+## The eight marks
 
 One vocabulary, shared by the status bar, the window entries, the pane borders
 and the `ae orchestrator` picker. Every mark has its own glyph as well as its
@@ -135,12 +135,22 @@ different characters.
 | dead | `✖` | `x` | the process behind the pane is gone |
 | needs-you | `⚠` | `!` | waiting-user, blocked, limit, throttled — a session reads it when ANY seat does, whatever another seat's severity |
 | working | `●` | `*` | active within the watchdog's liveness window |
+| background | `◉` | `&` | quiet (waiting-agent, done or idle) while a job of the seat's own tool still runs; static, never pulsed |
 | waiting-agent | `◔` | `~` | waiting on ANOTHER agent — quiet, no human needed; escalates to needs-you past its ceiling |
 | done | `✓` | `+` | declared complete or paused |
 | stale / unknown | `◌` | `?` | silent past the window, or a fact ae could not establish |
 | idle | `·` | `-` | no agent, or no verdict yet |
 
-The waiting-agent glyph comes from Geometric Shapes, the block the other marks already draw from, so terminals render it from the same font instead of a mismatched fallback.
+The waiting-agent and background glyphs come from Geometric Shapes, the block the other marks already draw from, so terminals render them from the same font instead of a mismatched fallback.
+
+Background is a variant of working, and the eighth mark by human ruling (2026-11-12). The
+watchdog shows it when its one `ps` snapshot per cycle proves a live job under the seat's
+tool: a session-leading command shell, for example a harness background tool call. It
+replaces only the quiet marks — waiting-agent, done and idle — so needs-you, dead, stale and
+working are never hidden, and the border word keeps the declaration (`◉ waiting-agent`). It
+publishes rank 2 like working, and its accent is the palette's own text colour. A job detached with
+`nohup … &`, `disown` or `setsid` is seen only while it is still under the seat's tool: once
+the shell that started it exits, the job is reparented away from the seat and is not seen.
 
 Dead keeps its own mark because "this will never move again" is not the news
 that "this is waiting for you" is, and a gone process must never be drawn like a
@@ -175,7 +185,7 @@ A pane spawned after the last verdict cycle has no cached verdict yet, so it
 starts animating from the next cycle.
 
 The pulse is subordinate to the state: it stands in for the working glyph and
-nothing else, so done, needs-you, dead, stale, waiting-agent and idle panes stay still.
+nothing else, so done, needs-you, dead, stale, background, waiting-agent and idle panes stay still.
 `[workspace] icons = off` selects the ASCII column. `theme = off` disables the ticker; `motion = off`
 freezes the pulse but the ticker keeps re-observing the fleet at the observation cadence (0.5 s attached, 2 s
 detached) and republishes the strip on change, in the same invocation as the next observation. The watchdog re-reads the look every cycle, so flipping either

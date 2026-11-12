@@ -826,9 +826,9 @@ the gear closes it like `Esc`, `j` / `k` and `↓` / `↑` scroll a line, the
 wheel three rows per notch, `PgUp` / `PgDn` a page, everything else is
 swallowed (every other click too), and a draft being written is kept untouched
 until it closes. Six
-tabs: Keys lists what each of the seven marks means (`✖` dead, `⚠` needs you,
-`◌` unknown, `●` working, `◔` waiting on an agent, `✓` finished, `·` no current
-status; the `icons = off` letters when icons are off) and then every key of
+tabs: Keys lists what each of the eight marks means (`✖` dead, `⚠` needs you,
+`◌` unknown, `●` working, `◉` background, `◔` waiting on an agent, `✓` finished,
+`·` no current status; the `icons = off` letters when icons are off) and then every key of
 browsing, writing, a held composer, Settings and the mouse
 (`?` opens it while browsing); Quota draws the same table as the tmux quota dialog from one formatter — a column
 header, a head per scope, then per window a name, an 8-cell bar, `USED`, `COUNTS`, `NOTE`,

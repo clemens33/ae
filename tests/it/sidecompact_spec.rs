@@ -60,6 +60,7 @@ fn agent(name: &str, state: &str, client: &str, model: &str, effort: &str) -> Pi
         model: model.to_owned(),
         effort: effort.to_owned(),
         drift: false,
+        task: false,
     }
 }
 

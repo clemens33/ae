@@ -327,6 +327,7 @@ fn agent(name: &str, state: &str, pane: &str) -> PickerAgent {
         model: String::new(),
         effort: String::new(),
         drift: false,
+        task: false,
     }
 }
 
