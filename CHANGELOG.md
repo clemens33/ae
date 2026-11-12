@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.38] - 2026-11-12
+- Read the shortcut note from the reader column, wherever the hint wraps
+- Return early off Apple Silicon where the release reaches just bundles
+- Start the dash-forked pane fixtures with exec so the pane shows the process the test waits for
+- Block tmux creation with a socket directory that is a file, which every tmux refuses
+- Fail the run when its JUnit report shows a failed or missing iteration
+- Publish whole-record receipts by rename
+- A refused first Enter never reads as a verified submit
+- Step a test daemon through its cycles with a hidden --step-channel
+- Watchdog step: read a leading-dash channel as an operand, bound step_until inside a step
+- Step the restart watchdog instead of waiting real cycles
+- Watchdog step: refuse a lost stepper before any signal or predicate
+- Step the module's own watchdogs, keep watch and sweeps real for their callers
+- Step the module's watchdogs, keep the restart anchor on the real interval
+- Judge only the dismissal's own locked reads, keep the fresh-client hold on the real interval
+- Pin the step waiter, the stepped and retry rests, the knob refusal and the unstepped rebind
+- Judge the wait's own children, not the process table
+- Show a quiet seat with a proven job as the background mark
+- Show the background job flag (background_task, +task)
+- Waiting on your own running job is working, not waiting-agent
+- Pin that an unproven job never turns a real cycle's quiet mark into background
+- Start the cycle killer test's pane with exec, so every shell shows sleep
+- Background_task is the newest list key, after task (D3)
+- Autoupgrade test: the detached child publishes its marker by rename, so a poll never reads it empty
+
 ## [v2026.11.37] - 2026-11-11
 - Calls reader discovery, fold, ledger and view with fold fuzz target (#288 B0-B3)
 - Persistence pure layer (incr, combine, doc codecs, store plans) with fuzz targets (#288 P1-P2)
