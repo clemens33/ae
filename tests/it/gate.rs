@@ -2251,12 +2251,85 @@ fn the_thread_ceiling_and_the_load_guard_are_named_values_with_one_load_reading(
     )));
 }
 
-/// One `just rust-stress` run on the same private `PATH` as the other lane
-/// pins, with a fake `uptime` saying `load` and the host's real `timeout` (or
-/// GNU `gtimeout`) linked as `timeout`. The fake `cargo` records, for a nextest
-/// run, one argument per line, then the threads it was handed, its own niceness
-/// and the lane's. `None`, after proving the recipe refuses with status 2 and
-/// names `timeout`, where the host has neither tool.
+/// One `<testsuite>` row of a fake nextest `JUnit` report for a stress run, shaped
+/// as nextest 0.9.143 writes it: one row per test binary and iteration.
+struct Suite {
+    binary: &'static str,
+    /// Zero-based, as nextest's `@stress-N` counts.
+    iteration: u32,
+    tests: u32,
+    errors: u32,
+    failures: u32,
+    /// Tests that failed first and passed on a retry.
+    flaky: u32,
+}
+
+impl Suite {
+    fn pass(iteration: u32) -> Self {
+        Self {
+            binary: "ae::it",
+            iteration,
+            tests: 3,
+            errors: 0,
+            failures: 0,
+            flaky: 0,
+        }
+    }
+}
+
+/// The text of a fake `JUnit` report for `suites`; `closed` false cuts it short
+/// before the closing `</testsuites>`, as a killed writer would leave it.
+fn stress_junit(suites: &[Suite], closed: bool) -> String {
+    use std::fmt::Write as _;
+    let sum = |field: fn(&Suite) -> u32| suites.iter().map(field).sum::<u32>();
+    let mut text = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <testsuites name=\"nextest-run\" tests=\"{}\" skipped=\"0\" failures=\"{}\" errors=\"{}\" \
+         uuid=\"22c298ad-040b-4fb0-9b16-d5e3426060a8\" time=\"0.030\">\n",
+        sum(|suite| suite.tests),
+        sum(|suite| suite.failures),
+        sum(|suite| suite.errors),
+    );
+    for suite in suites {
+        let _ = writeln!(
+            text,
+            "    <testsuite name=\"{}@stress-{}\" tests=\"{}\" skipped=\"0\" errors=\"{}\" failures=\"{}\">",
+            suite.binary, suite.iteration, suite.tests, suite.errors, suite.failures
+        );
+        for case in 0..suite.tests {
+            let child = if case < suite.failures {
+                "<failure message=\"panicked\" type=\"test failure with exit code 101\">boom</failure>"
+            } else if case < suite.failures + suite.errors {
+                "<error message=\"spawn\" type=\"execution failure\">boom</error>"
+            } else if case < suite.failures + suite.errors + suite.flaky {
+                "<flakyFailure message=\"panicked\" type=\"test failure with exit code 101\">boom</flakyFailure>"
+            } else {
+                ""
+            };
+            if child.is_empty() {
+                let _ = writeln!(
+                    text,
+                    "        <testcase name=\"t{case}\" classname=\"{}\" time=\"0.010\"/>",
+                    suite.binary
+                );
+            } else {
+                let _ = write!(
+                    text,
+                    "        <testcase name=\"t{case}\" classname=\"{}\" time=\"0.010\">\n            {child}\n        </testcase>\n",
+                    suite.binary
+                );
+            }
+        }
+        text.push_str("    </testsuite>\n");
+    }
+    if closed {
+        text.push_str("</testsuites>\n");
+    }
+    text
+}
+
+/// One `just rust-stress` run whose fake nextest leaves a report saying every
+/// iteration of the named repeat count passed. See [`stress_lane_with`].
 fn stress_lane(
     base: &Path,
     load: &str,
@@ -2264,8 +2337,48 @@ fn stress_lane(
     env: &[(&str, &str)],
     args: &[&str],
 ) -> Option<(ExitOutcome, String)> {
+    let count: u32 = args.get(1).and_then(|raw| raw.parse().ok()).unwrap_or(1);
+    let passing: Vec<Suite> = (0..count).map(Suite::pass).collect();
+    stress_lane_with(
+        base,
+        load,
+        cargo,
+        env,
+        args,
+        Some(&stress_junit(&passing, true)),
+    )
+}
+
+/// One `just rust-stress` run on the same private `PATH` as the other lane
+/// pins, with a fake `uptime` saying `load` and the host's real `timeout` (or
+/// GNU `gtimeout`) linked as `timeout`. The fake `cargo` records, for a nextest
+/// run, one argument per line, then the threads it was handed, its own niceness
+/// and the lane's. A `report` is copied by the fake nextest to where the lane
+/// reads its `JUnit` report (a private `CARGO_TARGET_DIR`, so no test touches the
+/// checkout's own report); `None` leaves nothing there. `None` back, after
+/// proving the recipe refuses with status 2 and names `timeout`, where the host
+/// has neither tool.
+fn stress_lane_with(
+    base: &Path,
+    load: &str,
+    cargo: &str,
+    env: &[(&str, &str)],
+    args: &[&str],
+    report: Option<&str>,
+) -> Option<(ExitOutcome, String)> {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
-    let mut lane = lane_over(base, Some("6"), cargo);
+    let report_file = base.join("report.xml");
+    let _ = std::fs::remove_file(&report_file);
+    if let Some(text) = report {
+        std::fs::write(&report_file, text).unwrap_or_else(|why| panic!("the fake report: {why}"));
+    }
+    let cargo = format!(
+        "if [ \"$1\" = nextest ] && [ -f \"$AE_TEST_TMPDIR/report.xml\" ]; then \
+         mkdir -p \"$CARGO_TARGET_DIR/nextest/default\" && \
+         cp \"$AE_TEST_TMPDIR/report.xml\" \"$CARGO_TARGET_DIR/nextest/default/junit.xml\"; fi\n{cargo}"
+    );
+    let mut lane =
+        lane_over(base, Some("6"), &cargo).env("CARGO_TARGET_DIR", base.join("cargo-target"));
     let bin = base.join("bin");
     let uptime = bin.join("uptime");
     std::fs::write(&uptime, format!("#!/bin/sh\necho '{load}'\n"))
@@ -2463,8 +2576,8 @@ fn a_stress_run_is_sized_niced_bounded_and_leaves_no_child_behind() {
         return;
     };
     assert!(
-        matches!(outcome, ExitOutcome::Code(124)),
-        "the bound ends it: {stderr}"
+        matches!(outcome, ExitOutcome::Code(124)) && stderr.contains("bound ended the run"),
+        "the bound ends it and the lane says so: {stderr}"
     );
     let child = wait_written(&base.join("child"));
     let pid = child.trim();
@@ -2501,6 +2614,235 @@ fn a_stress_run_is_sized_niced_bounded_and_leaves_no_child_behind() {
         .filter(|entry| entry.starts_with("ae-rust-test."))
         .collect();
     assert!(left.is_empty(), "the stress lane was not reaped: {left:?}");
+}
+
+/// nextest 0.9.143 exits 0 when only the LAST stress iteration passed (issue
+/// 327), so `just rust-stress` judges the `JUnit` report itself: a fake nextest that
+/// exits 0 and leaves a report with a failed, errored, retried-then-passed or
+/// missing iteration must fail the lane, and say which iterations, counted from
+/// 1 as nextest's log counts them. Status 100 is a failed iteration, status 1 a
+/// run that cannot prove every iteration ran.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one flat case table: each row names the report it plants and what the lane must say"
+)]
+fn a_stress_run_fails_when_the_report_shows_a_failed_or_missing_iteration() {
+    let base = super::cli::OwnedScratch::root("gate", "stressverdict");
+    let quiet = " 15:25  up 1 day, 6 users, load averages: 0.50 0.50 0.50";
+    let args = ["test(=menu::x)", "3", "30"];
+    let exit0 = "case \"$1\" in nextest) ;; *) exit 0 ;; esac\n";
+    let pass = Suite::pass;
+    let broken = |iteration, errors, failures, flaky| Suite {
+        errors,
+        failures,
+        flaky,
+        ..Suite::pass(iteration)
+    };
+    let other = |iteration, failures| Suite {
+        binary: "ae",
+        failures,
+        ..Suite::pass(iteration)
+    };
+    // (what the report says, its text, the lane's status, what stderr must say)
+    let cases: Vec<(&str, String, i32, &str)> = vec![
+        (
+            "the first two failed and the last passed",
+            stress_junit(&[broken(0, 0, 1, 0), broken(1, 0, 2, 0), pass(2)], true),
+            100,
+            "iteration(s) 1, 2 of 3 failed",
+        ),
+        (
+            "only the last failed",
+            stress_junit(&[pass(0), pass(1), broken(2, 0, 1, 0)], true),
+            100,
+            "iteration(s) 3 of 3 failed",
+        ),
+        (
+            "an execution error without a failure",
+            stress_junit(&[pass(0), broken(1, 1, 0, 0), pass(2)], true),
+            100,
+            "iteration(s) 2 of 3 failed",
+        ),
+        (
+            "a test that passed only on a retry",
+            stress_junit(&[broken(0, 0, 0, 1), pass(1), pass(2)], true),
+            100,
+            "iteration(s) 1 of 3 failed",
+        ),
+        (
+            "a second binary failed beside a passing first one",
+            stress_junit(
+                &[
+                    pass(0),
+                    pass(1),
+                    pass(2),
+                    other(0, 0),
+                    other(1, 1),
+                    other(2, 0),
+                ],
+                true,
+            ),
+            100,
+            "iteration(s) 2 of 3 failed",
+        ),
+        (
+            "a failing binary listed before a passing one",
+            stress_junit(
+                &[
+                    other(0, 0),
+                    other(1, 1),
+                    other(2, 0),
+                    pass(0),
+                    pass(1),
+                    pass(2),
+                ],
+                true,
+            ),
+            100,
+            "iteration(s) 2 of 3 failed",
+        ),
+        (
+            "a suite row has lost its counts",
+            stress_junit(&[pass(0), pass(1), pass(2)], true).replacen(
+                " errors=\"0\" failures=\"0\">",
+                ">",
+                1,
+            ),
+            1,
+            "cut short or unreadable",
+        ),
+        (
+            "an iteration is missing",
+            stress_junit(&[pass(0), pass(2)], true),
+            1,
+            "iteration(s) 2 of 3 did not run",
+        ),
+        (
+            "an iteration ran no tests",
+            stress_junit(
+                &[
+                    pass(0),
+                    Suite {
+                        tests: 0,
+                        ..pass(1)
+                    },
+                    pass(2),
+                ],
+                true,
+            ),
+            1,
+            "iteration(s) 2 of 3 did not run",
+        ),
+        (
+            "one failed and one is missing",
+            stress_junit(&[broken(0, 0, 1, 0), pass(1)], true),
+            100,
+            "iteration(s) 1 of 3 failed although nextest exited 0; iteration(s) 3 of 3 did not run",
+        ),
+        (
+            "the report is cut short",
+            stress_junit(&[pass(0), pass(1), pass(2)], false),
+            1,
+            "cut short or unreadable",
+        ),
+        (
+            "the report has no stress rows at all",
+            stress_junit(&[], true),
+            1,
+            "iteration(s) 1, 2, 3 of 3 did not run",
+        ),
+        (
+            "every iteration passed",
+            stress_junit(&[pass(0), pass(1), pass(2)], true),
+            0,
+            "3 of 3 iterations passed",
+        ),
+    ];
+    for (what, report, status, said) in cases {
+        let Some((outcome, stderr)) =
+            stress_lane_with(&base, quiet, exit0, &[], &args, Some(&report))
+        else {
+            return;
+        };
+        assert!(
+            matches!(outcome, ExitOutcome::Code(code) if code == status),
+            "{what}: want status {status}: {stderr}"
+        );
+        assert!(stderr.contains(said), "{what}: want {said:?}: {stderr}");
+    }
+}
+
+/// The verdict reads THIS run's report and nothing else: a report left by an
+/// earlier run, a symlink, an old report that cannot be removed and a nextest
+/// that leaves nothing all fail the lane; a non-zero status from nextest stands
+/// as it is and is named.
+#[test]
+fn a_stress_run_judges_only_a_fresh_report_and_keeps_nextests_own_status() {
+    let base = super::cli::OwnedScratch::root("gate", "stressfresh");
+    let quiet = " 15:25  up 1 day, 6 users, load averages: 0.50 0.50 0.50";
+    let args = ["test(=menu::x)", "2", "30"];
+    let exit0 = "case \"$1\" in nextest) ;; *) exit 0 ;; esac\n";
+    let passing = stress_junit(&[Suite::pass(0), Suite::pass(1)], true);
+    let old = base.join("cargo-target/nextest/default/junit.xml");
+    let seed = |text: &str| {
+        let _ = std::fs::remove_dir_all(base.join("cargo-target"));
+        std::fs::create_dir_all(old.parent().expect("the report's dir"))
+            .unwrap_or_else(|why| panic!("the report's dir: {why}"));
+        std::fs::write(&old, text).unwrap_or_else(|why| panic!("the old report: {why}"));
+    };
+
+    // A passing report from an earlier run does not stand in for this run's.
+    seed(&passing);
+    let Some((outcome, stderr)) = stress_lane_with(&base, quiet, exit0, &[], &args, None) else {
+        return;
+    };
+    assert!(
+        matches!(outcome, ExitOutcome::Code(1)) && stderr.contains("left no JUnit report"),
+        "a stale report must not pass: {stderr}"
+    );
+
+    // A symlink is no report, even to a passing one.
+    seed(&passing);
+    let linked = "case \"$1\" in nextest) ;; *) exit 0 ;; esac\n\
+         mkdir -p \"$CARGO_TARGET_DIR/nextest/default\" && \
+         ln -s \"$AE_TEST_TMPDIR/linked.xml\" \"$CARGO_TARGET_DIR/nextest/default/junit.xml\"\n";
+    std::fs::write(base.join("linked.xml"), &passing)
+        .unwrap_or_else(|why| panic!("the linked report: {why}"));
+    let Some((outcome, stderr)) = stress_lane_with(&base, quiet, linked, &[], &args, None) else {
+        return;
+    };
+    assert!(
+        matches!(outcome, ExitOutcome::Code(1)) && stderr.contains("left no JUnit report"),
+        "a symlinked report must not pass: {stderr}"
+    );
+
+    // An old report that cannot be removed refuses before nextest starts.
+    let _ = std::fs::remove_dir_all(base.join("cargo-target"));
+    std::fs::create_dir_all(old.join("kept"))
+        .unwrap_or_else(|why| panic!("the unremovable report: {why}"));
+    let _ = std::fs::remove_file(base.join("seen"));
+    let ran = "case \"$1\" in nextest) echo ran >\"$AE_TEST_TMPDIR/seen\" ;; esac\n";
+    let Some((outcome, stderr)) = stress_lane_with(&base, quiet, ran, &[], &args, None) else {
+        return;
+    };
+    assert!(
+        matches!(outcome, ExitOutcome::Code(1)) && stderr.contains("cannot be removed"),
+        "an old report that stays must refuse: {stderr}"
+    );
+    assert!(!base.join("seen").exists(), "nextest ran anyway");
+
+    // nextest's own non-zero status is the lane's, whatever the report says.
+    let _ = std::fs::remove_dir_all(base.join("cargo-target"));
+    let fails = "case \"$1\" in nextest) ;; *) exit 0 ;; esac\nexit 17\n";
+    let Some((outcome, stderr)) = stress_lane_with(&base, quiet, fails, &[], &args, Some(&passing))
+    else {
+        return;
+    };
+    assert!(
+        matches!(outcome, ExitOutcome::Code(17)) && stderr.contains("exited with status 17"),
+        "nextest's status stands: {stderr}"
+    );
 }
 
 /// The niceness this test process runs at: `nice` with no argument prints the

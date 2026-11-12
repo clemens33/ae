@@ -2247,9 +2247,77 @@ _tmux-isolated lane *args:
             # Threads come from the sizing above (the least of the live budget, the
             # lane ceiling and an inherited export); nice 10; the time bound ends
             # the whole group (status 124) and the trap reaps the scratch.
+            # nextest 0.9.143 exits 0 when only the LAST iteration passed, whatever
+            # the earlier ones did (fixed upstream in 0.9.148, issue 327), so its
+            # exit status alone is no verdict. The default profile's JUnit report
+            # (.config/nextest.toml) holds one <testsuite name="<binary>@stress-N">
+            # per binary and iteration; the lane deletes the old report first and
+            # judges the fresh one after a zero exit: every iteration must be
+            # there with tests in it, none may carry a failure, an error or a
+            # retry that only passed, and a report that is missing, a symlink or
+            # cut short fails the run (status 1). A failed iteration exits 100,
+            # nextest's own failed-run status, and names the iterations as
+            # nextest's log counts them (1-based). A non-zero nextest or timeout
+            # status is the lane's status, never softened.
+            stress_verdict() {
+                local junit="$1" want="$2" said code=0
+                if [[ ! -f "$junit" || -L "$junit" ]]; then
+                    echo "rust-stress: FAILED: nextest exited 0 but left no JUnit report at $junit, so no iteration is proven to have passed" >&2
+                    return 1
+                fi
+                said="$(awk -v want="$want" '
+                    function join(list, sep, item) { return list == "" ? item : list sep item }
+                    function attr(line, key,   v) {
+                        if (!match(line, " " key "=\"[0-9]+\"")) return -1
+                        v = substr(line, RSTART + length(key) + 3, RLENGTH - length(key) - 4)
+                        return v + 0
+                    }
+                    /^[[:space:]]*<testsuite name="[^"]*@stress-[0-9]+" / {
+                        match($0, /@stress-[0-9]+"/)
+                        n = substr($0, RSTART + 8, RLENGTH - 9) + 0
+                        t = attr($0, "tests"); e = attr($0, "errors"); f = attr($0, "failures")
+                        if (t < 0 || e < 0 || f < 0) { garbled = 1; next }
+                        cur = n; seen[n] = 1; tests[n] += t; bad[n] += e + f
+                        next
+                    }
+                    /<flaky(Failure|Error)/ { if (cur != "") bad[cur]++ }
+                    /<\/testsuites>/ { closed = 1 }
+                    END {
+                        if (garbled || !closed) { print "the JUnit report is cut short or unreadable"; exit 1 }
+                        for (i = 0; i < want; i++) {
+                            if (!seen[i] || tests[i] == 0) lost = join(lost, ", ", i + 1)
+                            else if (bad[i] > 0) failed = join(failed, ", ", i + 1)
+                        }
+                        if (failed != "") say = "iteration(s) " failed " of " want " failed although nextest exited 0"
+                        if (lost != "") say = join(say, "; ", "iteration(s) " lost " of " want " did not run")
+                        if (say == "") { print want " of " want " iterations passed in the JUnit report"; exit 0 }
+                        print say
+                        exit (failed != "" ? 100 : 1)
+                    }' "$junit")" || code=$?
+                if ((code == 0)); then
+                    echo "rust-stress: $said" >&2
+                    return 0
+                fi
+                echo "rust-stress: FAILED: $said (JUnit report: $junit)" >&2
+                return "$code"
+            }
+            junit="${CARGO_TARGET_DIR:-target}/nextest/default/junit.xml"
+            rm -f "$junit" 2>/dev/null || true
+            if [[ -e "$junit" || -L "$junit" ]]; then
+                echo "rust-stress: refused: the old report $junit cannot be removed, and the verdict reads a fresh one" >&2
+                exit 1
+            fi
+            status=0
             detached nice -n 10 "$stress_timeout" -k 5 "$stress_secs" \
                 cargo nextest run --locked --all-features \
-                --test-threads "$NEXTEST_TEST_THREADS" --stress-count "$stress_count" -E "$stress_filter"
+                --test-threads "$NEXTEST_TEST_THREADS" --stress-count "$stress_count" -E "$stress_filter" || status=$?
+            if ((status != 0)); then
+                note=""
+                ((status != 124)) || note=" (the ${stress_secs} s bound ended the run before every iteration ran)"
+                echo "rust-stress: FAILED: nextest exited with status $status$note" >&2
+                exit "$status"
+            fi
+            stress_verdict "$junit" "$stress_count"
             ;;
         *) echo "Error: unknown isolated test lane '$lane'" >&2; exit 2 ;;
     esac
@@ -2341,7 +2409,10 @@ rust-mutants *args:
 # Threads come from the lane's sizing (the least of jobs-budget, the lane ceiling
 # and an inherited export), cargo runs at nice 10 under timeout -k 5 <secs>
 # (status 124 when the bound ends it), it refuses to start above load1 14, and the
-# lane reaps what it started. Synthetic CPU burners are not committed
+# lane reaps what it started. nextest 0.9.143 exits 0 when only the last iteration
+# passed, so the lane also judges the run's JUnit report and fails (status 100)
+# when any iteration failed, or (status 1) when one did not run or the report is
+# missing (issue 327). Synthetic CPU burners are not committed
 # (docs/development.md, Stress runs). Never reached by test, pre, rust-check,
 # mutants or CI. Example: just rust-stress 'test(=menu::a_test)' 20 600
 
