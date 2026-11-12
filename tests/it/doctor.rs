@@ -392,7 +392,16 @@ fn rename_moves_the_tmux_session_the_directory_and_the_meta_together() {
 
     let moved = rig.home.join("sessions").join("after");
     assert!(moved.is_dir(), "the state directory moved");
-    assert!(!dir.exists(), "the old directory is gone");
+    let alias_meta = std::fs::symlink_metadata(&dir).expect("old alias entry exists");
+    assert!(
+        alias_meta.file_type().is_symlink(),
+        "the old directory is a symlink alias, not a real directory"
+    );
+    assert_eq!(
+        std::fs::read_link(&dir).expect("readlink of alias"),
+        moved,
+        "the alias targets the new directory directly"
+    );
     let meta = std::fs::read_to_string(moved.join("meta")).unwrap_or_default();
     assert!(meta.contains("session=after\n"), "{meta}");
     // The manifest carries the name, so it is re-rendered under it.

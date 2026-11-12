@@ -301,13 +301,13 @@ pub fn rename_text(old: &[String], name: &str, dir: &Path, goal: &str) -> String
         format!("session renamed: {} -> {name}.", old.join(" -> "))
     };
     let gone = if gone.is_empty() {
-        "Old ae @<session> forms and old helper paths".to_owned()
+        "Old ae @<session> forms".to_owned()
     } else {
-        format!("ae @{} and the old helper paths", gone.join(", ae @"))
+        format!("ae @{} and other old short forms", gone.join(", ae @"))
     };
     let goal = if goal.is_empty() { "none" } else { goal };
     format!(
-        "{chain} {gone} no longer work.\nhelpers now: ae @{name} <helper>, or {dir}/<helper>.\npending requests survive: a reply command quoted earlier now reads ae @{name} reply <same id>.\nre-read {dir}/workspace.md now: roster and paths.\ngoal: {goal}"
+        "{chain} {gone} no longer work.\nhelpers now: ae @{name} <helper>, or {dir}/<helper>. Old filesystem helper paths remain until their name is reused or the session is removed, unless rename reported that the path was not kept.\npending requests survive: a reply command quoted earlier now reads ae @{name} reply <same id>.\nre-read {dir}/workspace.md now: roster and paths.\ngoal: {goal}"
     )
 }
 

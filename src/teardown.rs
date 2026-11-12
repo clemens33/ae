@@ -552,6 +552,11 @@ fn commit_teardown(
         );
     }
     // The resource is gone and the removal is durable.
+    if resource == "session"
+        && let Some(home) = root.parent()
+    {
+        crate::lifecycle::aliases::prune(home, Some(dir))?;
+    }
     Ok(0)
 }
 

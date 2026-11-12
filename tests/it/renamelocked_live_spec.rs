@@ -243,7 +243,16 @@ fn locked_live_exact_id_moves_only_the_short_name_and_preserves_work() {
         std::fs::read(rig.home.join("work-sentinel")).expect("work"),
         b"caller work\n"
     );
-    assert!(!rig.dir.exists());
+    let alias_meta = std::fs::symlink_metadata(&rig.dir).expect("old alias entry exists");
+    assert!(
+        alias_meta.file_type().is_symlink(),
+        "the old directory is a symlink alias, not a real directory"
+    );
+    assert_eq!(
+        std::fs::read_link(&rig.dir).expect("readlink of alias"),
+        new_dir,
+        "the alias targets the new directory directly"
+    );
     assert!(
         std::fs::read_to_string(new_dir.join("workspace.md"))
             .expect("published workspace")
@@ -317,7 +326,16 @@ fn locked_live_without_meta_has_only_plain_success_and_no_publication() {
         before,
         "no meta means no assets, journal or helpers published"
     );
-    assert!(!old.exists());
+    let alias_meta = std::fs::symlink_metadata(&old).expect("old alias entry exists");
+    assert!(
+        alias_meta.file_type().is_symlink(),
+        "the old directory is a symlink alias, not a real directory"
+    );
+    assert_eq!(
+        std::fs::read_link(&old).expect("readlink of alias"),
+        new,
+        "the alias targets the new directory directly"
+    );
     assert!(!rig.home.join("sessions/.rename.old.new.intent").exists());
 }
 
@@ -403,7 +421,16 @@ fn locked_live_journal_failure_still_publishes_and_reports_seats_not_told() {
         new_dir.join("events.jsonl.lock").is_dir(),
         "obstruction retained"
     );
-    assert!(!rig.dir.exists());
+    let alias_meta = std::fs::symlink_metadata(&rig.dir).expect("old alias entry exists");
+    assert!(
+        alias_meta.file_type().is_symlink(),
+        "the old directory is a symlink alias, not a real directory"
+    );
+    assert_eq!(
+        std::fs::read_link(&rig.dir).expect("readlink of alias"),
+        new_dir,
+        "the alias targets the new directory directly"
+    );
     no_intent(&rig, "fresh");
 }
 

@@ -2453,7 +2453,11 @@ fn launch(
     // captured target lock even though preflight saw its state. The read-only
     // preflight above exists only to place the tmux floor before this lock-file
     // write; every expected fact is re-read while the lock is held.
-    let mut lifecycle = if settings_start || expected_resume || preflight_meta_present {
+    let mut lifecycle = if settings_start
+        || expected_resume
+        || preflight_meta_present
+        || crate::lifecycle::aliases::target(&dir).is_some()
+    {
         let Ok(held) = crate::store::lock(
             &sessions.join(format!(".lifecycle.{session}.lock")),
             LIFECYCLE_WAIT,
@@ -2464,6 +2468,9 @@ fn launch(
     } else {
         None
     };
+    if lifecycle.is_some() {
+        step!(reclaim_launch_alias(&dir, err));
+    }
     let meta_present = if expected_launch.is_some() {
         node_exists(&dir.join(crate::store::META))
     } else {
@@ -2787,6 +2794,18 @@ fn check_launch_kind(
     settings_start: bool,
     err: &mut impl Write,
 ) -> crate::Result<ControlFlow<u8, bool>> {
+    if matches!(
+        crate::teardown::classify_dir(dir),
+        crate::teardown::DirKind::Symlink
+    ) && crate::lifecycle::aliases::target(dir).is_none()
+    {
+        writeln!(
+            err,
+            "Error: session path '{}' is a symlink; refusing to launch through it.",
+            dir.display()
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
     if settings_start && session != crate::orchestrator::ORCHESTRATOR_SESSION {
         writeln!(
             err,
@@ -2798,7 +2817,9 @@ fn check_launch_kind(
     // lifecycle lock below. Resume may inspect only to select the recorded
     // server for the tmux floor; absence makes the captured action stale and
     // is refused before a lock-file or any other effect.
-    let preflight_meta_present = !settings_start && node_exists(&dir.join(crate::store::META));
+    let preflight_meta_present = !settings_start
+        && crate::lifecycle::aliases::target(dir).is_none()
+        && node_exists(&dir.join(crate::store::META));
     // `--resume` is asked first: it names the missing session instead of the
     // near-miss hint that would tell a caller to pick another name to create.
     if let ControlFlow::Break(code) = check_resume_target(
@@ -4058,6 +4079,31 @@ struct Building<'a> {
     core: &'a Path,
 }
 
+/// Reclaim after the floor and under the name lock. Recheck at the final
+/// directory claim too, so a fresh-name launch never writes through a link.
+fn reclaim_launch_alias(dir: &Path, err: &mut impl Write) -> crate::Result<ControlFlow<u8>> {
+    if let Err(why) = crate::lifecycle::aliases::reclaim(dir) {
+        writeln!(
+            err,
+            "Error: could not reclaim the session alias '{}' ({why}).",
+            dir.display()
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    if matches!(
+        crate::teardown::classify_dir(dir),
+        crate::teardown::DirKind::Symlink
+    ) {
+        writeln!(
+            err,
+            "Error: session path '{}' is a symlink; refusing to launch through it.",
+            dir.display()
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    Ok(ControlFlow::Continue(()))
+}
+
 /// The launch's claim on its state, before any tmux write: the sessions root,
 /// the lifecycle lock, the core's own path, the session directory and the
 /// launch-attempt stamp, refusing at the first that fails. Answers the held
@@ -4095,6 +4141,10 @@ fn claim_state(
         };
         held
     };
+
+    if let ControlFlow::Break(code) = reclaim_launch_alias(dir, err)? {
+        return Ok(ControlFlow::Break(code));
+    }
 
     let Some(core) = crate::shape::resolved_exe() else {
         writeln!(err, "Error: the core could not name its own binary.")?;

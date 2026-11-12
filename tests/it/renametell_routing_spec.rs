@@ -446,6 +446,8 @@ impl Rig {
             .env("AE_HOME", &self.root)
             .env("CONFIG_FILE", &self.config)
             .env("TMUX_TMPDIR", &self.scratch)
+            .env("AE_TMUX_SERVER_KIND", "socket")
+            .env("AE_TMUX_SERVER", &self.socket)
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
         if let Some(pane) = pane {
@@ -516,6 +518,114 @@ impl Rig {
     fn rename(&self, old: &str, new: &str) {
         let result = self.run(&["rename", old, new], None);
         assert_eq!(result.0, Some(0), "live rename setup: {result:?}");
+    }
+
+    // Invoke a helper FILE through its path (the old filesystem address),
+    // with the Rig environment so the alias canonicalizes to the new name.
+    pub(super) fn helper_path(
+        &self,
+        session: &str,
+        helper_name: &str,
+        args: &[&str],
+        pane: Option<&str>,
+    ) -> (Option<i32>, String, String) {
+        let helper_path = self.dir(session).join(helper_name);
+        let mut command = helper(&helper_path);
+        command
+            .env("HOME", &self.scratch)
+            .env("AE_HOME", &self.root)
+            .env("CONFIG_FILE", &self.config)
+            .env("TMUX_TMPDIR", &self.scratch)
+            .env("AE_TMUX_SERVER_KIND", "socket")
+            .env("AE_TMUX_SERVER", &self.socket);
+        if let Some(pane) = pane {
+            command
+                .env("TMUX", format!("{},0,0", self.socket.display()))
+                .env("TMUX_PANE", pane);
+        } else {
+            command.env_remove("TMUX").env_remove("TMUX_PANE");
+        }
+        let out = command.args(args).output().expect("fixture helper process");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    // A real launch that reclaims a recognized alias under the lifecycle
+    // lock; never a fixture write over the alias. The launched seats keep
+    // the perl composer with its receipt argument fixed in the profile, so
+    // `rig.received` stays a live delivery oracle for the reused session.
+    pub(super) fn use_receipt_launch(&self, id: &str) {
+        let agent = self.scratch.join("claude");
+        let lead_receipt = self.receipt(id, "lead");
+        let peer_receipt = self.receipt(id, "colead");
+        fs::write(
+            &self.config,
+            format!(
+                "[profiles]\nfake = \"{}\"\nrelead = \"{} {}\"\nrecolead = \"{} {}\"\n[roster]\nlead = fake\ncolead = fake\n[workspace]\nmain = lead\nworkers = colead\nlayout = lead-pair\nwatchdog = false\nchat = off\nquota = off\n",
+                agent.display(),
+                agent.display(),
+                lead_receipt.display(),
+                agent.display(),
+                peer_receipt.display()
+            ),
+        )
+        .expect("receipt fixture config");
+    }
+
+    // A real launch of `name` whose seats run the receipt profiles.
+    pub(super) fn launch(&self, name: &str) -> (Option<i32>, String, String) {
+        let out = self
+            .command(None)
+            .current_dir(&self.scratch)
+            .args([
+                "--local",
+                name,
+                "--no-attach",
+                "--lead",
+                "relead",
+                "--colead",
+                "recolead",
+            ])
+            .output()
+            .expect("fixture launch process");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    // The live panes a created or launched session records. Real launches
+    // store only `main_pane` in meta and no per-slot pane column, so the
+    // registered socket's stamps (`@ae_slot`) are authoritative after a
+    // launch; fixture creation stamps them the same way.
+    pub(super) fn panes(&self, name: &str) -> [String; 2] {
+        let out = self.tmux(&[
+            "list-panes",
+            "-s",
+            "-t",
+            name,
+            "-F",
+            "#{pane_id} #{@ae_slot}",
+        ]);
+        let mut main: Option<String> = None;
+        let mut peer: Option<String> = None;
+        for line in out.lines() {
+            let mut fields = line.split_whitespace();
+            let Some(pane) = fields.next() else { continue };
+            match fields.next() {
+                Some("main") => main = Some(pane.to_owned()),
+                Some("worker.0") => peer = Some(pane.to_owned()),
+                _ => {}
+            }
+        }
+        [
+            main.expect("main pane stamp"),
+            peer.expect("colead pane stamp"),
+        ]
     }
 }
 
@@ -891,7 +1001,13 @@ fn cross_session_reply_survives_either_endpoint_rename_and_old_name_reuse() {
         };
         let id = rig.ask(from, pane, "ask", target);
         rig.rename("old", "new");
-        rig.create("old", C);
+        rig.use_receipt_launch(C);
+        let launched = rig.launch("old");
+        assert_eq!(
+            launched.0,
+            Some(0),
+            "R2 real launch did not reclaim the alias: {launched:?}"
+        );
         let (reply_dir, replier) = if renamed_asker {
             ("peer", &peer[1])
         } else {
@@ -945,7 +1061,13 @@ fn valid_asker_id_missing_or_ambiguous_never_routes_by_the_old_name() {
             fs::remove_dir_all(rig.dir("new")).expect("fixture ended state");
             rig.tmux(&["kill-session", "-t", "new"]);
         }
-        rig.create("old", C);
+        rig.use_receipt_launch(C);
+        let launched = rig.launch("old");
+        assert_eq!(
+            launched.0,
+            Some(0),
+            "R2 real launch did not reclaim the alias: {launched:?}"
+        );
         let before = rig.received(C, "lead").len();
         let reply = rig.helper("peer", "reply", &[&id, "wrong-place"], Some(&peer[1]));
         assert_eq!(
@@ -966,23 +1088,63 @@ fn valid_asker_id_missing_or_ambiguous_never_routes_by_the_old_name() {
 }
 
 #[test]
-fn stale_helper_path_is_gone_and_reused_path_cannot_answer_old_request() {
+fn old_helper_keeps_working_after_rename_but_reused_session_cannot_answer() {
     let rig = Rig::new("footer");
     let panes = rig.create("old", A);
     let id = rig.ask("old", &panes[0], "ask", "colead");
-    let stale = rig.dir("old").join("reply");
     rig.rename("old", "new");
-    let missing = helper(&stale).args([&id, "answer"]).output();
-    assert!(missing.is_err(), "R2 old helper alias was retained");
-    let replacement = rig.create("old", C);
-    let refused = rig.helper("old", "reply", &[&id, "answer"], Some(&replacement[1]));
+    // The old filesystem helper works immediately and acts under the new name.
+    let answered = rig.helper_path("old", "reply", &[&id, "answer"], Some(&panes[1]));
+    assert_eq!(
+        answered.0,
+        Some(0),
+        "R2 old helper did not answer as new: {answered:?}"
+    );
+    assert!(
+        rig.received(A, "lead")
+            .iter()
+            .any(|text| text.contains(&format!("[{id}] answer"))),
+        "R2 old-path reply missed the asker"
+    );
+    let journal = fs::read_to_string(rig.dir("new").join("events.jsonl")).expect("new events");
+    let reply = journal
+        .lines()
+        .find(|line| line.contains(&id) && line.contains("\"reply\""))
+        .unwrap_or_else(|| panic!("reply for {id} landed in the new journal: {journal}"));
+    assert!(
+        reply.contains(r#""actor_session":"new""#),
+        "R2 old-path reply acts under the new name: {reply}"
+    );
+    assert!(
+        row(
+            &rig.helper("new", "requests", &["all"], None).1,
+            &id,
+            "replied"
+        ),
+        "R2 old-path reply did not close the request"
+    );
+    // A second pending request owned by the renamed session.
+    let next = rig.helper("new", "ask", &["colead", "second"], Some(&panes[0]));
+    assert_eq!(next.0, Some(0), "second ask setup: {next:?}");
+    let pending = next.1.trim().to_owned();
+    assert!(ae::tracked::is_request_id(&pending), "second id: {next:?}");
+    // A real launch reclaims the old name; never a fixture write over it.
+    rig.use_receipt_launch(C);
+    let launched = rig.launch("old");
+    assert_eq!(
+        launched.0,
+        Some(0),
+        "R2 real launch did not reclaim the alias: {launched:?}"
+    );
+    let replacement = rig.panes("old");
+    let refused = rig.helper("old", "reply", &[&pending, "answer"], Some(&replacement[1]));
     assert_eq!(
         refused.0,
         Some(1),
-        "R2 reused helper accepted old request: {refused:?}"
+        "R2 reused helper accepted the renamed request: {refused:?}"
     );
     assert!(
-        refused.2.contains(&id) && refused.2.contains("not found"),
+        refused.2.contains(&pending) && refused.2.contains("not found"),
         "R2 reused helper refusal omitted remedy evidence: {refused:?}"
     );
 }

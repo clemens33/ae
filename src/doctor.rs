@@ -1546,6 +1546,12 @@ pub fn run(
     let roots = crate::inventory::Roots::under(root);
     let _ = std::fs::create_dir_all(roots.sessions());
     let _ = std::fs::create_dir_all(roots.worktrees());
+    if let Err(why) = crate::lifecycle::aliases::prune(root, None) {
+        writeln!(
+            err,
+            "Warning: dangling helper aliases could not all be pruned ({why})."
+        )?;
+    }
 
     // The override a launch from here reads, found as every other reader finds
     // it — `--local` names one explicitly.

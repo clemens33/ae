@@ -635,6 +635,19 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         return Ok(entry::EXIT_USAGE);
     }
     let request = cli::Request::parse(args);
+    // A live harness can retain a filesystem helper address from before a
+    // rename. Resolve its directory before any helper derives the session
+    // name, including the underscore entries that bypass shim translation.
+    if args
+        .first()
+        .is_some_and(|entry| shim::HELPERS.iter().any(|helper| helper.entry == entry))
+        && let Some(dir) = request.session_dir()
+        && let Some(canonical) = lifecycle::aliases::resolve(dir)
+    {
+        let mut canonical_args = args.to_vec();
+        canonical_args[1] = canonical.to_string_lossy().into_owned();
+        return run_dispatch(&canonical_args, out, err);
+    }
     // Only a listing needs a source, and `next` only needs one once its argv has
     // been accepted: a refused word must not pay for a tmux scan of every
     // session before it can say so, which is what frozen's parse-then-scan order
@@ -2003,7 +2016,10 @@ fn run_launch(
     // The NAME grammar is the launch's own and answers first, so a traversal
     // name is refused as a name rather than as a path object and the message
     // says what is actually wrong.
-    if session_name_usable(preamble, hint) && !session_path_is_safe(preamble, hint) {
+    if session_name_usable(preamble, hint)
+        && !session_path_is_safe(preamble, hint)
+        && lifecycle::aliases::target(&preamble.sessions().join(hint)).is_none()
+    {
         write_unsafe_path(&preamble.sessions().join(hint), err)?;
         err.flush()?;
         return Ok(entry::EXIT_FAILED);
@@ -2070,9 +2086,11 @@ fn run_named_landing(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
-    if let Some((recorded, requested)) = plan.dir.as_deref().and_then(|dir| {
-        session_launch::recorded_origin_conflict(&preamble.sessions().join(name), dir)
-    }) {
+    if lifecycle::aliases::target(&preamble.sessions().join(name)).is_none()
+        && let Some((recorded, requested)) = plan.dir.as_deref().and_then(|dir| {
+            session_launch::recorded_origin_conflict(&preamble.sessions().join(name), dir)
+        })
+    {
         writeln!(
             err,
             "Error: session '{name}' exists with a different origin; --dir cannot repoint it."

@@ -167,7 +167,8 @@ pub fn run(
     }
     let sessions = crate::lifecycle::sessions_dir(root);
     for name in [&old, &new] {
-        if is_symlink(&sessions.join(name)) {
+        let dir = sessions.join(name);
+        if is_symlink(&dir) && (name == &old || crate::lifecycle::aliases::target(&dir).is_none()) {
             writeln!(
                 err,
                 "Error: the session path for '{name}' is a symlink; refusing to rename through it."
@@ -1096,7 +1097,15 @@ fn refuse(err: &mut impl Write, refusal: &Refusal) -> crate::Result<u8> {
 /// pre-lock check must not be renamed through.
 fn recheck_symlinks(sessions: &Path, old: &str, new: &str) -> Result<(), Refusal> {
     for name in [old, new] {
-        if is_symlink(&sessions.join(name)) {
+        let dir = sessions.join(name);
+        if name == new && name != old {
+            crate::lifecycle::aliases::reclaim(&dir).map_err(|why| {
+                Refusal(format!(
+                    "Error: could not reclaim the alias '{name}' ({why}). Nothing was renamed."
+                ))
+            })?;
+        }
+        if is_symlink(&dir) {
             return Err(Refusal(format!(
                 "Error: the session path for '{name}' is a symlink; refusing to rename through it."
             )));
@@ -1142,6 +1151,7 @@ fn live(
     }
     // 3.
     if !crate::lifecycle::path_exists(&new_dir.join(crate::meta::FILE)) {
+        crate::lifecycle::aliases::keep_live(root, old, new, err)?;
         writeln!(out, "Renamed '{old}' → '{new}'")?;
         return Ok(0);
     }
@@ -1256,6 +1266,7 @@ fn republish(
     if chat.is_err() {
         return Ok(EXIT_FAILED);
     }
+    crate::lifecycle::aliases::keep_live(root, old, new, err)?;
     report_success(old, new, &new_dir, journaled, watchdog_expected, out)
 }
 
@@ -3280,7 +3291,9 @@ fn complete_transaction(
         crash,
         err,
         park_deadline(std::time::Instant::now()),
-    )
+    )?;
+    crate::lifecycle::aliases::retarget(root, &intent.old, &intent.new, err)
+        .map_err(|why| TxnError::Fail(format!("could not report the helper alias outcome ({why})")))
 }
 
 /// [`complete_transaction`] against an explicit park deadline: the production

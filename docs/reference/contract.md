@@ -91,6 +91,16 @@ The core LINKS 27 names into `~/.ae/sessions/<name>/`. Every one is a **symlink 
 binary**; the core dispatches on `argv[0]`'s basename and derives the session from its
 dirname. Names and argv are the compatibility contract.
 
+A live rename retains the old directory as a symlink to the new directory. Helper
+dispatch resolves that alias before it derives the session name, including underscore
+helpers such as `_register-sid`. Further renames keep aliases flat. These filesystem
+addresses live until their name is reused or their target session is removed. Listings
+never show aliases. A launch or rename reclaims only a symlink to a direct child of
+the same sessions root, checked without following it. Doctor and teardown prune dangling
+aliases. A stopped rename retargets prior aliases but creates no fresh alias.
+If alias creation fails, rename succeeds with one warning that the old helper path was
+not kept. The short form `ae @<old>` still refuses the symlink.
+
 A helper has TWO accepted spellings and `src/shim.rs` owns both, because a second helper
 table is a second set of names to drift: the LINK
 (`<state-root>/sessions/<session>/send lead 'hi'`) and the SHORT FORM

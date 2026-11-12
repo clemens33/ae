@@ -2069,6 +2069,15 @@ keeps its original path. That path is recorded session state, so a later `stop` 
 resume returns every agent to the same working directory instead of creating a second
 copy under the new session name. Live renames never move managed work.
 
+A live rename keeps the old filesystem helper directory as a symlink to the new
+directory. Helpers called through either path act under the new session name. Further
+renames retarget prior aliases directly. A stopped rename retargets prior aliases but
+creates no fresh alias. Aliases never appear in session listings. A launch or rename
+can reuse an alias name after checking the link without following it. Removing the target
+session removes its aliases; doctor and teardown prune dangling aliases. If the old
+name cannot become an alias, rename still succeeds and warns that the old helper path
+was not kept. The short form `ae @<old>` remains refused.
+
 A seat that resumes its conversation after a rename keeps the text that conversation opened
 under, which still names the old session and its helper paths. The watchdog tells such a seat
 the new name and helper paths too, once. A relaunch or reseat that keeps the conversation counts as a resume.

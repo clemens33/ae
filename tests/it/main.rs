@@ -166,6 +166,7 @@ mod quota_view_spec;
 mod reader;
 mod recovery_ladder_spec;
 mod refusal_rig;
+mod regsid_spec;
 mod relay_chat_spec;
 mod relay_origin_spec;
 mod relay_status_spec;

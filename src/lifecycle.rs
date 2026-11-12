@@ -18,6 +18,7 @@
 //!    archive fails the end with the whole session still on disk;
 //! 5. only then is the live state removed.
 
+pub(crate) mod aliases;
 pub(crate) mod claims;
 pub(crate) mod compaction;
 pub(crate) mod end;
@@ -219,15 +220,8 @@ pub(crate) fn all_sessions(root: &Path) -> Vec<String> {
 /// The underlying [`io::Error`] — the root could not be enumerated for any
 /// reason but its absence, or one of its entries could not be classified.
 pub(crate) fn census(root: &Path) -> io::Result<Option<Vec<String>>> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: `end all` / `stop all` enumerate the sessions root — the frozen list_ae_sessions + iter_stopped_sessions union"
-    )]
-    let entries = match fs::read_dir(sessions_dir(root)) {
-        Ok(entries) => entries,
-        // A state root that has never had a session. Not a failure to look.
-        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(why) => return Err(why),
+    let Some(entries) = session_entries(root)? else {
+        return Ok(None);
     };
     let mut names: Vec<String> = Vec::new();
     for entry in entries {
@@ -242,6 +236,21 @@ pub(crate) fn census(root: &Path) -> io::Result<Option<Vec<String>>> {
     }
     names.sort();
     Ok(Some(names))
+}
+
+/// The census's directory read, shared with alias maintenance. Classification
+/// stays with the caller: the census includes real directories only.
+fn session_entries(root: &Path) -> io::Result<Option<fs::ReadDir>> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: `end all` / `stop all` enumerate the sessions root — the frozen list_ae_sessions + iter_stopped_sessions union"
+    )]
+    match fs::read_dir(sessions_dir(root)) {
+        Ok(entries) => Ok(Some(entries)),
+        // A state root that has never had a session. Not a failure to look.
+        Err(why) if why.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(why) => Err(why),
+    }
 }
 
 /// Every session under `root` whose meta records `id` as its `session_id`:
