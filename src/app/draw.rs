@@ -1807,9 +1807,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     layout.lane(buf, (left, top, room, room_rows), &bars, (first..last, y0));
     let viewing = screen.composer.in_place();
     if room_rows > 0 && scroll > 0 && last < rows.len() && !viewing {
-        // Every row below the window is produced, so the count is exact.
-        let below = produced.iter().filter(|turn| turn.first >= last).count();
-        newer_hint(buf, layout, (left, bottom, room), (below, paint));
+        newer_hint(buf, layout, (left, bottom, room), (&produced, last, paint));
     }
     put(
         buf,
@@ -1853,14 +1851,17 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
 }
 
 /// The hint on row `y`, under a scrolled-up lane whose column is `room` cells
-/// from `left`: how many turns start below the window, centered, in the
-/// accent. Its words are a click target that scrolls to the newest turn.
+/// from `left`: how many of the produced `turns` start at or below row `last`,
+/// centered, in the accent. Its words are a click target that scrolls to the
+/// newest turn.
 fn newer_hint(
     buf: &mut Buffer,
     layout: &mut Layout,
     (left, y, room): (u16, u16, u16),
-    (below, paint): (usize, Paint),
+    (turns, last, paint): (&[super::lane::Turn], usize, Paint),
 ) {
+    // Every row below the window is produced, so the count is exact.
+    let below = turns.iter().filter(|turn| turn.first >= last).count();
     let words = match below {
         0 => "↓ more below · End".to_owned(),
         1 => "↓ 1 newer turn · End".to_owned(),
