@@ -10,21 +10,20 @@
 )]
 
 use super::retarget_one;
+use crate::tool_stats_fixture::Fixture;
 use std::path::PathBuf;
 
-fn scratch(tag: &str) -> PathBuf {
-    let dir = PathBuf::from(format!(
-        "/tmp/ae-regsid-retarget-{}-{tag}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
+// Shared RAII owner; the returned fixture must stay bound for the test.
+fn scratch(tag: &str) -> (Fixture, PathBuf) {
+    let fixture = Fixture::new();
+    let dir = fixture.0.join(format!("regsid-retarget-{tag}"));
     std::fs::create_dir_all(&dir).expect("scratch directories");
-    dir
+    (fixture, dir)
 }
 
 #[test]
 fn plain_file_replacing_the_alias_stays_untouched_with_no_creation() {
-    let dir = scratch("plain-race");
+    let (_owner, dir) = scratch("plain-race");
     let new_dir = dir.join("new");
     std::fs::create_dir_all(&new_dir).expect("target directory");
     let old_dir = dir.join("old");
@@ -45,12 +44,11 @@ fn plain_file_replacing_the_alias_stays_untouched_with_no_creation() {
         "no alias was created over the file"
     );
     assert!(err.is_empty(), "a skipped race warns nothing: {err:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn foreign_sibling_alias_stays_pointing_outside_with_no_retarget() {
-    let dir = scratch("foreign-race");
+    let (_owner, dir) = scratch("foreign-race");
     let new_dir = dir.join("new");
     std::fs::create_dir_all(&new_dir).expect("target directory");
     let old_dir = dir.join("old");
@@ -72,12 +70,11 @@ fn foreign_sibling_alias_stays_pointing_outside_with_no_retarget() {
         "nothing was written through the foreign link"
     );
     assert!(err.is_empty(), "a skipped race warns nothing: {err:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn unchanged_alias_retargets_directly_to_the_new_directory() {
-    let dir = scratch("changed-race");
+    let (_owner, dir) = scratch("changed-race");
     let new_dir = dir.join("new");
     std::fs::create_dir_all(&new_dir).expect("target directory");
     let old_dir = dir.join("old");
@@ -92,12 +89,11 @@ fn unchanged_alias_retargets_directly_to_the_new_directory() {
         "the unchanged alias retargets directly"
     );
     assert!(err.is_empty(), "a clean retarget warns nothing: {err:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn wrong_prior_never_retargets_an_unchanged_alias() {
-    let dir = scratch("wrong-prior");
+    let (_owner, dir) = scratch("wrong-prior");
     let new_dir = dir.join("new");
     std::fs::create_dir_all(&new_dir).expect("target directory");
     let old_dir = dir.join("old");
@@ -112,5 +108,4 @@ fn wrong_prior_never_retargets_an_unchanged_alias() {
         "a mismatched prior leaves the alias pointing at old"
     );
     assert!(err.is_empty(), "a skipped entry warns nothing: {err:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

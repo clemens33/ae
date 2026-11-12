@@ -10,24 +10,30 @@ use std::path::PathBuf;
 
 use super::{create_alias, prune, reclaim, resolve, target};
 
-struct Scratch(PathBuf);
+struct Scratch {
+    path: PathBuf,
+    _owner: crate::tool_stats_fixture::Fixture,
+}
 
 impl Scratch {
     fn new(tag: &str) -> Self {
-        let root = PathBuf::from(format!("/tmp/ae-regsid-maint-{}-{tag}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let owner = crate::tool_stats_fixture::Fixture::new();
+        let root = owner.0.join(format!("regsid-maint-{tag}"));
         fs::create_dir_all(root.join("sessions")).expect("sessions root");
-        Self(root)
+        Self {
+            path: root,
+            _owner: owner,
+        }
     }
 
     fn dir(&self, name: &str) -> PathBuf {
-        self.0.join("sessions").join(name)
+        self.path.join("sessions").join(name)
     }
 }
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -63,7 +69,7 @@ fn relative_session_roots_keep_working_filesystem_helpers() {
             relative.push("..");
         }
     }
-    relative.push(root.0.strip_prefix("/").expect("absolute fixture root"));
+    relative.push(root.path.strip_prefix("/").expect("absolute fixture root"));
     let alias = relative.join("sessions/old");
     let new = relative.join("sessions/new");
     create_alias(&alias, &new).expect("relative root alias");
@@ -85,12 +91,12 @@ fn pruning_keeps_busy_and_live_targets_and_foreign_entries() {
     fs::create_dir(&live).expect("live target");
     create_alias(&root.dir("live-old"), &live).expect("live alias");
     fs::write(root.dir("file"), b"keep").expect("foreign file");
-    std::os::unix::fs::symlink(&root.0, root.dir("external")).expect("external link");
-    let held = crate::lifecycle::lock(&root.0, "missing").expect("rename target lock");
-    prune(&root.0, None).expect("doctor skips busy rename target");
+    std::os::unix::fs::symlink(&root.path, root.dir("external")).expect("external link");
+    let held = crate::lifecycle::lock(&root.path, "missing").expect("rename target lock");
+    prune(&root.path, None).expect("doctor skips busy rename target");
     assert!(fs::read_link(&alias).is_ok(), "busy alias stays");
     drop(held);
-    prune(&root.0, None).expect("prune after rename lock released");
+    prune(&root.path, None).expect("prune after rename lock released");
     assert!(
         fs::symlink_metadata(&alias).is_err(),
         "dangling alias pruned"
@@ -102,6 +108,6 @@ fn pruning_keeps_busy_and_live_targets_and_foreign_entries() {
     assert_eq!(fs::read(root.dir("file")).expect("kept file"), b"keep");
     assert_eq!(
         fs::read_link(root.dir("external")).expect("external link"),
-        root.0
+        root.path
     );
 }

@@ -12,16 +12,15 @@
 )]
 
 use super::{create_alias, keep_alias};
+use crate::tool_stats_fixture::Fixture;
 use std::path::PathBuf;
 
-fn scratch(tag: &str) -> PathBuf {
-    let dir = PathBuf::from(format!(
-        "/tmp/ae-regsid-aliases-{}-{tag}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
+// Shared RAII owner; the returned fixture must stay bound for the test.
+fn scratch(tag: &str) -> (Fixture, PathBuf) {
+    let fixture = Fixture::new();
+    let dir = fixture.0.join(format!("regsid-aliases-{tag}"));
     std::fs::create_dir_all(&dir).expect("scratch directories");
-    dir
+    (fixture, dir)
 }
 
 fn target_dir(dir: &std::path::Path) -> PathBuf {
@@ -32,7 +31,7 @@ fn target_dir(dir: &std::path::Path) -> PathBuf {
 
 #[test]
 fn create_alias_links_when_absent_and_verifies() {
-    let dir = scratch("create-ok");
+    let (_owner, dir) = scratch("create-ok");
     let target = target_dir(&dir);
     let alias = dir.join("old");
     create_alias(&alias, &target).expect("absent alias links");
@@ -41,12 +40,11 @@ fn create_alias_links_when_absent_and_verifies() {
         target,
         "the new link verifies to its target"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn create_alias_refuses_an_existing_file_without_touching_it() {
-    let dir = scratch("create-file");
+    let (_owner, dir) = scratch("create-file");
     let target = target_dir(&dir);
     let alias = dir.join("old");
     std::fs::write(&alias, b"existing-content").expect("existing file");
@@ -64,12 +62,11 @@ fn create_alias_refuses_an_existing_file_without_touching_it() {
             .is_symlink(),
         "no link was written over the file"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn create_alias_refuses_an_existing_directory_without_touching_it() {
-    let dir = scratch("create-dir");
+    let (_owner, dir) = scratch("create-dir");
     let target = target_dir(&dir);
     let alias = dir.join("old");
     std::fs::create_dir_all(&alias).expect("existing directory");
@@ -87,12 +84,11 @@ fn create_alias_refuses_an_existing_directory_without_touching_it() {
             .is_dir(),
         "the directory was not turned into a link"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn create_alias_refuses_a_foreign_symlink_without_following_it() {
-    let dir = scratch("create-link");
+    let (_owner, dir) = scratch("create-link");
     let target = target_dir(&dir);
     let foreign = dir.join("foreign");
     std::fs::create_dir_all(&foreign).expect("foreign directory");
@@ -111,12 +107,11 @@ fn create_alias_refuses_a_foreign_symlink_without_following_it() {
         b"keep",
         "nothing was written through the foreign link"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn keep_alias_is_silent_on_success_and_warns_once_on_failure() {
-    let dir = scratch("keep-alias");
+    let (_owner, dir) = scratch("keep-alias");
     let target = target_dir(&dir);
     let alias = dir.join("old");
     let mut err = Vec::new();
@@ -165,5 +160,4 @@ fn keep_alias_is_silent_on_success_and_warns_once_on_failure() {
         b"raced",
         "the foreign file was never replaced"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
