@@ -4344,11 +4344,10 @@ mod tests {
         let mut shot = Shot::new();
         shot.lane = turns(2);
         shot.key(crate::app::model::Key::PageUp);
-        assert_eq!(
-            spot(&shot.draw(160, 45, READ_ONLY), HINT),
-            None,
-            "a lane that fits"
-        );
+        let fits = shot.draw(160, 45, READ_ONLY);
+        for label in [HINT, "newer turn · End", "more below · End"] {
+            assert_eq!(spot(&fits, label), None, "a lane that fits: {label}");
+        }
         shot.lane = turns(150);
         let buf = shot.draw(160, 45, READ_ONLY);
         assert!(spot(&buf, HINT).is_some(), "a long lane a page up");
@@ -4362,6 +4361,23 @@ mod tests {
             spot(&back, HINT).is_some(),
             "the hint returns with the chat"
         );
+    }
+
+    /// A pane with no row for the lane draws no hint, however far the chat is
+    /// scrolled: the hint stands under lane rows that hide newer ones.
+    #[test]
+    fn a_pane_with_no_room_for_the_lane_draws_no_hint() {
+        let mut shot = Shot::new();
+        shot.lane = turns(150);
+        shot.model.wheel(true, 38, 1000);
+        // The same scroll at a roomy height does draw it, so the absence below
+        // is the pane's, not the fixture's.
+        let roomy = shot.draw(160, 45, READ_ONLY);
+        assert!(spot(&roomy, "↓ 1 newer turn · End").is_some(), "roomy");
+        let cramped = shot.draw(160, 7, READ_ONLY);
+        for label in ["newer turn", "more below"] {
+            assert_eq!(spot(&cramped, label), None, "no room: {label}");
+        }
     }
 
     /// The header stays inside the chat column (frames: header text never

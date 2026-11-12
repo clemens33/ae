@@ -1618,6 +1618,38 @@ mod tests {
         }
     }
 
+    /// Issue 302: a folded turn with a day separator above it still counts its
+    /// fold row from its own header, so the click lands on the fold row and not
+    /// on a body row.
+    #[test]
+    fn the_fold_row_is_counted_from_the_header_under_a_day_separator() {
+        let body = (1..=31).map(|n| format!("l{n}")).collect::<Vec<_>>();
+        let lane = Lane {
+            items: vec![Item {
+                micros: TUE_10 * 1_000_000,
+                ..said(&body.join("\n"))
+            }],
+            coverage: vec![],
+        };
+        let show = super::Show {
+            clock: &view::Style::PLAIN,
+            main: "x",
+            open: Some(&[false]),
+            sent: &[false],
+            icons: true,
+            base: &crate::console::link::Base::default(),
+            today: Some("2026-11-12"),
+        };
+        let shown = super::tail_with(&lane, 40, Paint::of(None), &show, 100, None);
+        let rows = rows_of(&shown);
+        // The separator, the header, 24 body rows, then the fold row.
+        assert_eq!(rows[0], "── Tue 2026-11-03 ──");
+        assert_eq!(rows.len(), 27);
+        let turn = &shown.turns[0];
+        assert_eq!((turn.first, turn.rows, turn.fold), (1, 26, Some(25)));
+        assert_eq!(rows[turn.first + 25], "  ... 7 more lines");
+    }
+
     #[test]
     fn a_long_turn_folds_to_twenty_four_rows_and_its_fold_row_toggles_it() {
         let lines = |n: usize| (1..=n).map(|n| format!("l{n}")).collect::<Vec<_>>();
