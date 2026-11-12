@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.42] - 2026-11-12
+- Statistics holds Agents, Skills and Tools as inner tabs; the Skills & Tools tab goes
+- Seatproof tests: a fake tool that draws the pasted draft late exposes the screen captured too early (RED)
+- Seatproof tests: take the draft-case screen only after tmux parsed every frame the fake agent drew for the paste (the wire receipt comes before the redraw)
+
 ## [v2026.11.41] - 2026-11-12
 - A seat that resumed its conversation after a rename is still owed the rename notice, and a resumed start names only the new session (#282)
 - Session notice: a resume, or a relaunch or reseat that keeps the conversation, no longer hides a rename that predates it (#282)
