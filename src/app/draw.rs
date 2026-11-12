@@ -4335,7 +4335,7 @@ mod tests {
         assert_eq!(spot(&buf, "newer turn"), None);
     }
 
-    /// The `↓ newer turns below` hint means newer turns are hidden below:
+    /// The `↓ 3 newer turns · End` hint means newer turns are hidden below:
     /// none for a lane that fits, even asked to scroll; one on a long lane
     /// scrolled a page up.
     #[test]

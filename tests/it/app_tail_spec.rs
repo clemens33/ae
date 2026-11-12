@@ -104,7 +104,7 @@ fn reference(rows: &[String], area: Rect, scroll: usize) -> Buffer {
             1 => "↓ 1 newer turn · End".to_owned(),
             count => format!("↓ {count} newer turns · End"),
         };
-        // Centered in the column; wider than it, cut at its start.
+        // Centered in the column; wider than it, from its left edge, cut at the end.
         let width = u16::try_from(words.chars().count())
             .expect("short")
             .min(room);
