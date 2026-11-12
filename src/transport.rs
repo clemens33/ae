@@ -363,8 +363,8 @@ fn note_spawn<'a>(_: &std::ffi::OsStr, _: impl Iterator<Item = &'a std::ffi::OsS
 
 #[cfg(test)]
 pub(crate) use tests::{
-    WaitChildEvent, note_child_reaped, note_child_spawned, note_spawn, note_waiter_exit,
-    spawns_during, wait_children_during, waiter_exits_during,
+    WaitChildEvent, hold_release_grace, note_child_reaped, note_child_spawned, note_spawn,
+    note_waiter_exit, release_grace, spawns_during, wait_children_during, waiter_exits_during,
 };
 
 /// How each waiter [`run_tmux_wait`] started ended is observed by tests alone.
@@ -1445,6 +1445,14 @@ const RELEASE_POLL: Duration = Duration::from_millis(10);
 /// How long a released waiter gets to exit before the backstop kills it.
 const RELEASE_GRACE: Duration = Duration::from_secs(1);
 
+/// The grace [`release_waiter`] gives: [`RELEASE_GRACE`], which only a test
+/// can lengthen, for its own thread, so a loaded host's late exit is not the
+/// backstop's kill.
+#[cfg(not(test))]
+const fn release_grace() -> Duration {
+    RELEASE_GRACE
+}
+
 /// Wait until `session` on `server` has a client, `channel` is signalled, or
 /// `deadline` passes: ONE tmux client, [`tmux::waiter_args`], whose read and
 /// registration are one queued pass.
@@ -1577,7 +1585,7 @@ fn release_waiter(
         &tmux::wake_release_args(server, channel),
         std::process::Stdio::null(),
     );
-    let grace = std::time::Instant::now() + RELEASE_GRACE;
+    let grace = std::time::Instant::now() + release_grace();
     let mut reaped = false;
     loop {
         if !reaped {
@@ -1638,7 +1646,7 @@ fn release_waiter(
     let _ = writeln!(
         std::io::stderr(),
         "ae: watchdog: the {what} on {channel} did not exit within {}s of the release; {done}",
-        RELEASE_GRACE.as_secs()
+        release_grace().as_secs()
     );
     Waited::Failed
 }
@@ -2898,6 +2906,36 @@ mod tests {
             const { std::cell::RefCell::new(None) };
         static WAIT_CHILDREN: std::cell::RefCell<Option<Vec<WaitChildEvent>>> =
             const { std::cell::RefCell::new(None) };
+        static RELEASE_GRACE_HELD: std::cell::Cell<Option<std::time::Duration>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// The grace [`super::release_waiter`] gives on this thread: the one a
+    /// test holds with [`hold_release_grace`], else [`super::RELEASE_GRACE`].
+    pub(crate) fn release_grace() -> std::time::Duration {
+        RELEASE_GRACE_HELD
+            .with(std::cell::Cell::get)
+            .unwrap_or(super::RELEASE_GRACE)
+    }
+
+    /// Gives back the grace this thread had before [`hold_release_grace`].
+    pub(crate) struct HeldReleaseGrace {
+        prior: Option<std::time::Duration>,
+    }
+
+    impl Drop for HeldReleaseGrace {
+        fn drop(&mut self) {
+            RELEASE_GRACE_HELD.with(|held| held.set(self.prior));
+        }
+    }
+
+    /// Let a released waiter on this thread take `grace` to exit before the
+    /// backstop kills it, until the guard drops. The backstop itself is not
+    /// replaced: a waiter that never exits is still killed, after `grace`.
+    pub(crate) fn hold_release_grace(grace: std::time::Duration) -> HeldReleaseGrace {
+        HeldReleaseGrace {
+            prior: RELEASE_GRACE_HELD.with(|held| held.replace(Some(grace))),
+        }
     }
 
     /// One step in the life of a child this thread starts inside
@@ -3922,6 +3960,47 @@ mod tests {
         assert!(
             children.is_empty(),
             "a child outlived the wait: {children:?}"
+        );
+    }
+
+    #[test]
+    fn a_held_release_grace_lengthens_the_backstop_and_does_not_remove_it() {
+        use super::{Waited, hold_release_grace, run_tmux_wait};
+        use std::time::Instant;
+        // The same mute server as the stalled-server test: the waiter and its
+        // release hang until the backstop kills them. The grace held on the
+        // waiting thread is 2 s, past the 1 s default plus the 200 ms
+        // deadline, so only a backstop that waits the held grace takes this
+        // long, and only a backstop that still fires ends the wait Failed.
+        // The bound is a floor: load can only lengthen the wait.
+        let held_grace = Duration::from_secs(2);
+        let dir = std::env::temp_dir().join(format!("qwhg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).expect("fixture dir");
+        let socket = dir.join("s");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("mute server");
+        let server = ServerId::Selected(Selector::Socket(socket));
+        let (tell, told) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _held = hold_release_grace(held_grace);
+            let began = Instant::now();
+            let result = run_tmux_wait(
+                &server,
+                "current",
+                "qw-held-grace",
+                Instant::now() + Duration::from_millis(200),
+            );
+            let _ = tell.send((result, began.elapsed()));
+        });
+        let (result, took) = told
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the backstop never fired");
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(result, Waited::Failed, "the backstop still kills and fails");
+        assert!(
+            took >= held_grace,
+            "the backstop waited the held grace, not the default: {took:?}"
         );
     }
 

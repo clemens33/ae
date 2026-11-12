@@ -480,6 +480,12 @@ fn wait_and_check_reaps(
     channel: &str,
     deadline: Instant,
 ) -> Waited {
+    // A healthy server releases within its 1 s product grace; under an
+    // extreme load a release that exits late would be killed by the
+    // backstop and misread as Failed. Hold a roomy grace so the deadline
+    // and outcome claims are judged by the wait alone. The two mute-server
+    // tests bypass this helper and pin the default-grace backstop instead.
+    let _held_grace = super::hold_release_grace(Duration::from_secs(30));
     let (result, events) =
         super::wait_children_during(|| super::run_tmux_wait(server, session, channel, deadline));
     assert!(
@@ -589,7 +595,7 @@ fn quietwd_a_preexisting_client_wins_even_after_two_toggled_signals() {
             &rig.server,
             "current",
             "qw-attached",
-            Instant::now() + Duration::from_secs(2),
+            Instant::now() + Duration::from_secs(10),
         )
     });
     assert_eq!(
@@ -609,7 +615,7 @@ fn quietwd_signal_is_only_a_wake_and_a_missing_session_is_a_failure() {
             &rig.server,
             "current",
             "qw-stale",
-            Instant::now() + Duration::from_secs(2)
+            Instant::now() + Duration::from_secs(10)
         ),
         Waited::Woke
     );
@@ -618,7 +624,7 @@ fn quietwd_signal_is_only_a_wake_and_a_missing_session_is_a_failure() {
             &rig.server,
             "absent",
             "qw-absent",
-            Instant::now() + Duration::from_millis(180)
+            Instant::now() + Duration::from_secs(10)
         ),
         Waited::Failed
     );

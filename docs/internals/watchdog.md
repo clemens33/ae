@@ -175,8 +175,10 @@ The hidden `_watchdog-run` takes one more flag, for tests only: `--step-channel 
 (a bare tmux channel word). With it the startup cycle runs at once, and then the daemon
 signals `<name>-done` after every completed iteration and waits for a `wait-for -S <name>`
 before the next one. Real time, an attach or another channel never starts a cycle. Each
-wait holds one plain `wait-for` client that is released by a signal, never killed. A
-600-second backstop ends a wait that nobody steps. `--interval` keeps every arithmetic role,
+stepped wait holds one plain `wait-for` client that is released by a signal, never killed.
+This is not the quiet idle wait (`transport::run_tmux_wait`): its waiter is released by a
+signal too, but a 1-second backstop kills and reaps one that has not exited by then, and
+that wait reports `Failed`. A 600-second backstop ends a wait that nobody steps. `--interval` keeps every arithmetic role,
 and a rebind of the recorded server stops a stepped daemon with exit 1. `ae watchdog start
 <name> -- <flags>` refuses the flag with its usage. The integration rigs drive it through
 `tests/it/watchdog_step.rs`.
