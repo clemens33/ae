@@ -1098,30 +1098,41 @@ pub fn observe_pane_owner(
     server: &ServerId,
     pane: &str,
 ) -> Option<crate::watchdog_glue::PaneOwner> {
-    if !addressable(server) {
-        return None;
-    }
-    let (succeeded, stdout) = run(
-        PROGRAM,
-        &crate::watchdog_glue::pane_owner_args(server, pane),
-    );
-    crate::watchdog_glue::interpret_pane_owner(succeeded, &stdout)
+    pane_owner_observation(server, pane, &mut false)
 }
 
 /// Watchdog start/stop's existing caller-owner read, with one failed command
-/// re-asked. Kill proofs and other plain owner observations retain one read.
+/// re-asked. Kill proofs and other plain owner observations never re-ask.
 pub(crate) fn reask_pane_owner(
     server: &ServerId,
     pane: &str,
 ) -> Option<crate::watchdog_glue::PaneOwner> {
+    pane_owner_observation(server, pane, &mut true)
+}
+
+/// Ownership follows the same proven native-view home as every identity read.
+/// The caller's one re-ask budget spans the initial read and every view leg.
+fn pane_owner_observation(
+    server: &ServerId,
+    pane: &str,
+    reask: &mut bool,
+) -> Option<crate::watchdog_glue::PaneOwner> {
     if !addressable(server) {
         return None;
     }
+    let (succeeded, stdout) =
+        observation_read(&crate::watchdog_glue::pane_owner_args(server, pane), reask);
+    let owner = crate::watchdog_glue::interpret_pane_owner(succeeded, &stdout)?;
+    if !tmux::is_view_session(&owner.session) {
+        return Some(owner);
+    }
+    let home = home_of(server, &owner.session, pane, reask)?;
     let (succeeded, stdout) = observation_read(
-        &crate::watchdog_glue::pane_owner_args(server, pane),
-        &mut true,
+        &crate::watchdog_glue::pane_owner_args(server, &home.target),
+        reask,
     );
     crate::watchdog_glue::interpret_pane_owner(succeeded, &stdout)
+        .filter(|owner| owner.session == home.name)
 }
 
 /// Kill one pane by exact id.

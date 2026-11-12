@@ -162,6 +162,11 @@ fn a_seat_viewed_natively_still_reads_its_real_session() {
     let fixture = fixture("viewer");
     open_view(&fixture, "_aeview-1-1");
 
+    let owner = ae::transport::observe_pane_owner(&fixture.server, &fixture.pane)
+        .expect("the viewed seat's owner answers");
+    assert_eq!(owner.session, "real");
+    assert_eq!(owner.agent, "lead");
+
     let viewer = ae::transport::observe_viewer(&fixture.server, &fixture.pane)
         .expect("the seat pane answers");
     assert_eq!(viewer.session.as_deref(), Some("real"));
@@ -207,6 +212,11 @@ fn stamp_view_of(fixture: &Fixture, view: &str, value: Option<&str>) {
 
 /// Every pane-keyed identity read of `pane` answers nothing at all.
 fn assert_unknown(fixture: &Fixture, pane: &str, case: &str) {
+    assert_eq!(
+        ae::transport::observe_pane_owner(&fixture.server, pane),
+        None,
+        "{case}: owner"
+    );
     assert_eq!(
         ae::transport::observe_viewer(&fixture.server, pane),
         None,
@@ -302,6 +312,158 @@ fn a_view_whose_mapping_is_stale_or_malformed_answers_nothing() {
         stamp_view_of(&fixture, "_aeview-5-5", value);
         assert_unknown(&fixture, &fixture.pane, case);
     }
+}
+
+/// Retire must authorize the real owner through a view, but never a foreign group.
+#[test]
+fn retire_during_an_attached_grouped_view_accepts_only_the_real_owner() {
+    for (group, accepted) in [("_aeview-retire", true), ("foreign", false)] {
+        let fixture = fixture(if accepted {
+            "retireview"
+        } else {
+            "retireforeign"
+        });
+        let scope = format!("{}:", fixture.session_id);
+        let (made, worker) = tmux(
+            &fixture.server,
+            &fixture.scratch,
+            &[
+                "new-window",
+                "-d",
+                "-t",
+                &scope,
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "sleep 600",
+            ],
+        );
+        assert!(made, "a spawned worker window");
+        let worker = worker.trim();
+        for (key, value) in [("@ae_slot", "spawned.0"), ("@ae_agent", "worker")] {
+            assert!(
+                tmux(
+                    &fixture.server,
+                    &fixture.scratch,
+                    &["set-option", "-p", "-t", worker, key, value]
+                )
+                .0
+            );
+        }
+        let root = fixture.scratch.join("state");
+        let dir = root.join("sessions/real");
+        fs::create_dir_all(&dir).expect("private session state");
+        let socket = fixture.scratch.join("t.sock");
+        let before = format!(
+            "schema=2\nsession=real\nmain_pane={}\ntmux_server_kind=socket\ntmux_server={}\nseat.main=lead\nseat.spawned.0=worker\n",
+            fixture.pane,
+            socket.display(),
+        );
+        fs::write(dir.join("meta"), &before).expect("the worker's real roster");
+        if accepted {
+            open_view(&fixture, group);
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            assert!(
+                tmux(
+                    &fixture.server,
+                    &fixture.scratch,
+                    &["new-session", "-d", "-s", group, "-t", &scope]
+                )
+                .0
+            );
+        }
+        let _client = attach_group(&fixture, group);
+        let (_, owner) = tmux(
+            &fixture.server,
+            &fixture.scratch,
+            &["display-message", "-p", "-t", worker, "#{session_name}"],
+        );
+        assert_eq!(
+            owner.trim(),
+            group,
+            "precondition: tmux names the attached group"
+        );
+        let result = super::cli::ae()
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .arg(ae::cli::RETIRE)
+            .arg(&dir)
+            .arg("worker")
+            .output()
+            .expect("the actual retire command runs");
+        let err = String::from_utf8_lossy(&result.stderr);
+        let out = String::from_utf8_lossy(&result.stdout);
+        if accepted {
+            assert!(result.status.success(), "{out}\n{err}");
+            assert!(out.contains("Retired worker"), "{out}");
+            assert!(!pane_alive(&fixture, worker), "the retired pane is gone");
+            let after = fs::read_to_string(dir.join("meta")).expect("remaining roster");
+            assert!(!after.contains("seat.spawned.0="), "{after}");
+            assert_watchdog_caller_at_home(&fixture, &root, &dir);
+        } else {
+            assert_eq!(result.status.code(), Some(1), "{out}\n{err}");
+            assert!(err.contains("belongs to session 'foreign'"), "{err}");
+            assert!(err.contains("seat is kept"), "{err}");
+            assert!(!out.contains("Retired"), "{out}");
+            assert!(pane_alive(&fixture, worker), "the foreign pane remains");
+            assert_eq!(
+                fs::read_to_string(dir.join("meta")).expect("kept roster"),
+                before
+            );
+        }
+    }
+}
+
+fn attach_group(fixture: &Fixture, group: &str) -> super::cli::OwnedChild {
+    let client = super::cli::tmux_attached_client(&fixture.scratch.join("t.sock"), group)
+        .expect("a real client attaches to the group");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let (_, attached) = tmux(
+            &fixture.server,
+            &fixture.scratch,
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                &format!("={group}:"),
+                "#{session_attached}",
+            ],
+        );
+        if attached.trim() == "1" {
+            return client;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "the group has an attached client"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+fn assert_watchdog_caller_at_home(fixture: &Fixture, root: &Path, dir: &Path) {
+    let stopped = super::cli::ae()
+        .env("AE_HOME", root)
+        .env(
+            "TMUX",
+            format!("{},0,0", fixture.scratch.join("t.sock").display()),
+        )
+        .env_remove("TMUX_PANE")
+        .args(["watchdog", "stop", "real", "--pane", &fixture.pane])
+        .output()
+        .expect("watchdog stop reads its explicit caller pane");
+    assert!(
+        stopped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+    let events = fs::read_to_string(dir.join("events.jsonl")).expect("lifecycle audit");
+    let stop = events
+        .lines()
+        .find(|line| line.contains("\"action\":\"watchdog-stop\""))
+        .expect("watchdog stop reached its decision");
+    assert!(stop.contains("\"actor\":\"lead\""), "{stop}");
 }
 
 /// Whether tmux still knows `pane` on the fixture's server.
