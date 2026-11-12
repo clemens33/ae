@@ -348,7 +348,7 @@ die 'exec real private tmux';
             read(&wire).ends_with("\x1b[201~")
         });
         fs::write(&wire, "").expect("SETUP: reset draft receipt");
-        let before = w.screen();
+        let before = w.drawn("human draft");
         // Match the frozen nine-case draft's helper attribution entry exactly.
         // This is not the Role/cross-session constructor's authorization proof.
         let output = matching(&w, &w.main, false)

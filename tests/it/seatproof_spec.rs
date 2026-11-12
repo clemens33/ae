@@ -12,13 +12,15 @@ use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 const SLOT: &str = "spawned.0";
 const BODY: &str = "seatproof-original-task";
+/// The last line the fake agent draws: a frame that shows it is a whole frame.
+const LAST_LINE: &str = "bypass permissions on";
 const AGENT: &str = r#"#!/usr/bin/perl
 use strict; use warnings; use FindBin;
 my $out = (@ARGV && $ARGV[0] =~ m{^/}) ? $ARGV[0] : "$FindBin::Bin/spawn";
 system('stty raw -echo 2>/dev/null');
 binmode(STDIN, ':raw'); binmode(STDOUT, ':raw'); $| = 1;
 my $border = "\xe2\x94\x80" x 399;
-my ($buf, $paste, $enters, $ghost) = ('', 0, 0, '');
+my ($buf, $paste, $enters, $ghost, $pastes) = ('', 0, 0, '', 0);
 sub mode { if (open(my $f, '<', "$out.arm")) { my $m=<$f>; chomp($m); return $m; } return ''; }
 # A test that writes "$out.hold" models a slow tool: the paste and any key
 # after it stay unread in the pty until the test writes "$out.go".
@@ -56,7 +58,9 @@ draw(); while (sysread(STDIN, my $ch, 1)) {
     open(my $wire, '>>', "$out.wire") or die; binmode($wire); print $wire $ch; close($wire);
     $buf .= $ch;
     if ($buf =~ s/\e\[200~\z//) { $paste=1; hold(); next; }
-    if ($buf =~ s/\e\[201~\z//) { $paste=0; change('paste'); draw(slow()); next; }
+    # The title is written after the paste's last frame, so tmux sets it only after it parsed
+    # every frame before it; a test that sees it knows the screen is final until the next input.
+    if ($buf =~ s/\e\[201~\z//) { $paste=0; $pastes++; change('paste'); draw(slow()); print "\e]2;seatproof-pasted-$pastes\a"; next; }
     if ($paste && $ch eq "\r") { chop($buf); $buf .= "\n"; next; }
     if (!$paste && ($ch eq "\r" || $ch eq "\n")) {
         $buf =~ s/[\r\n]\z//; $enters++;
@@ -168,7 +172,7 @@ impl World {
         .expect("kid roster");
         wait("kid composer", || {
             rig.tmux(&["capture-pane", "-p", "-t", &pane])
-                .contains("fake-model")
+                .contains(LAST_LINE)
         });
         rig.world218_capture(tag, [&main, &colead, &pane]);
         Self {
@@ -241,6 +245,29 @@ impl World {
     }
     fn screen(&self) -> String {
         self.rig.tmux(&["capture-pane", "-p", "-t", &self.pane])
+    }
+    /// The screen once tmux parsed every frame the fake agent drew for the FIRST paste it read.
+    /// The agent writes its wire receipt before it redraws, and it also redraws after each
+    /// byte of the paste markers, so half an escape sequence reaches tmux and garbles the
+    /// frame until the clean one arrives. Neither the receipt nor a frame that contains the
+    /// text and the last line proves the draw is done; the agent's title marker, written
+    /// after the last frame, does, and `untouched` compares against that final screen.
+    fn drawn(&self, shown: &str) -> String {
+        wait(
+            "the title the agent sets after its first paste frame",
+            || {
+                self.rig
+                    .tmux(&["display-message", "-p", "-t", &self.pane, "#{pane_title}"])
+                    .trim()
+                    == "seatproof-pasted-1"
+            },
+        );
+        let screen = self.screen();
+        assert!(
+            screen.contains(shown) && screen.contains(LAST_LINE),
+            "SETUP: the drawn frame lacks {shown:?}: {screen:?}"
+        );
+        screen
     }
     fn events(&self) -> String {
         read(self.rig.dir("s").join("events.jsonl"))

@@ -215,7 +215,7 @@ mod admission218_p1 {
             read(&wire).ends_with("\x1b[201~")
         });
         fs::write(&wire, "").expect("SETUP: reset draft input receipt");
-        let before = w.screen();
+        let before = w.drawn("human draft");
         let output = expected(&w)
             .env("AE_SEND_DEFER_SEC", "0")
             .output()
