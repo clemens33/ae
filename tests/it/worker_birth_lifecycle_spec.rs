@@ -328,7 +328,11 @@ fn fixed_seats_restart_reseat_and_session_resume_do_not_create_new_births() {
         .find(|(_, found, _)| found == &slot)
         .expect("worker pane")
         .0;
-    assert!(rig.tmux(&["respawn-pane", "-k", "-t", &pane, "sh"]).0);
+    // `exec`: tmux runs the pane command as `$SHELL -c <cmd>`, and the suite's
+    // SHELL=/bin/sh is dash on Linux, which forks the inner `sh` under that
+    // wrapper, so the relaunch would find a process under the pane's shell and
+    // refuse BUSY.
+    assert!(rig.tmux(&["respawn-pane", "-k", "-t", &pane, "exec sh"]).0);
     super::wait_for_agent_gone(&rig, &slot, "claude");
     let (code, out, err) = rig.run("_relaunch", &["scout"]);
     assert_eq!(code, Some(0), "relaunch: {out}\n{err}");

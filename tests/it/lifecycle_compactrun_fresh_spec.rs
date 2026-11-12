@@ -9,8 +9,12 @@ fn compactrun_fresh_request_preserves_nonzero_memo_baseline_and_stays_open_on_ti
     let rig = Rig::new("crfresh");
     // A harmless real foreground process receives the real tracked delivery.
     // It never sends a reply or writes a memo; no delivery behavior is mocked.
+    // `exec`: tmux runs the pane command as `$SHELL -c <cmd>`, and the suite's
+    // SHELL=/bin/sh is dash on Linux, which forks `cat` and stays the
+    // foreground, so the pane would read `sh`, a shell, instead of the receiver.
     assert!(
-        rig.tmux(&["respawn-pane", "-k", "-t", &rig.pane, "cat"]).0,
+        rig.tmux(&["respawn-pane", "-k", "-t", &rig.pane, "exec cat"])
+            .0,
         "start fixture receiver"
     );
     assert!(
