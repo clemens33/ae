@@ -147,6 +147,24 @@ fn shown(app: &mut App) -> String {
         .join("\n")
 }
 
+/// What the reader column says, as one line: every row's text right of the
+/// divider (a row without one, whole), whitespace runs collapsed. The panel
+/// wraps a sentence at a column that depends on the platform's hint text, so a
+/// claim about WHAT the note says reads this, never one row of the frame.
+fn column_text(frame: &str) -> String {
+    frame
+        .lines()
+        .map(|row| row.split_once('│').map_or(row, |(_, right)| right))
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether the reader column of `frame` says `text`, wherever it wraps.
+fn says(frame: &str, text: &str) -> bool {
+    column_text(frame).contains(text)
+}
+
 /// The reader header the next frame draws.
 #[track_caller]
 fn header(app: &mut App) -> String {
@@ -216,7 +234,7 @@ fn assert_note(frame: &str, kind: &str) {
         "the note names the kind {kind:?}:\n{frame}"
     );
     assert!(
-        frame.contains(OPEN),
+        says(frame, OPEN),
         "the note carries the verified shortcut {OPEN:?}:\n{frame}"
     );
     assert!(
@@ -308,7 +326,7 @@ fn the_extension_is_matched_without_regard_to_case() {
             reads.len()
         );
         assert!(
-            shown(&mut app).contains(OPEN),
+            says(&shown(&mut app), OPEN),
             "{link}: the note carries the shortcut"
         );
     }
@@ -465,7 +483,7 @@ fn files_the_reader_shows_are_still_asked_for() {
         assert_eq!(reads[0].path, format!("/w/{link}"));
         assert!(app.model.reader_open());
         let frame = shown(&mut app);
-        assert!(!frame.contains(OPEN), "{link}: no open note:\n{frame}");
+        assert!(!says(&frame, OPEN), "{link}: no open note:\n{frame}");
         assert!(
             header(&mut app).ends_with("loading"),
             "{link}: awaits its answer"
@@ -484,7 +502,7 @@ fn a_binary_file_the_note_does_not_cover_keeps_its_refusal() {
     });
     let frame = shown(&mut app);
     assert!(frame.contains("binary file (NUL byte)"), "{frame}");
-    assert!(!frame.contains(OPEN), "{frame}");
+    assert!(!says(&frame, OPEN), "{frame}");
 }
 
 // ---------------------------------------------------------------------------
