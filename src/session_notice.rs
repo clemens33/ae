@@ -10,6 +10,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
+use crate::conversation::Start;
 use crate::deliver::{Delivered, Failure};
 use crate::events::{Event, RoutingMember};
 use crate::time::Timestamp;
@@ -115,14 +116,51 @@ struct Attempt {
     told: Option<bool>,
 }
 
-/// Whether `event` launched `seat` into fresh context: a spawn names its
-/// display, a reseat or relaunch its slot.
-fn launched(event: &Event, seat: &Seat) -> bool {
+/// Whether `event` records a launch of `seat`: a spawn names its display, a
+/// reseat or relaunch its slot.
+fn launch_record(event: &Event, seat: &Seat) -> bool {
     match event.action.as_str() {
         "spawn" => event.target.as_deref() == Some(seat.name.as_str()),
         "reseat" | "relaunch" => event.target_slot == RoutingMember::Value(seat.slot.clone()),
         _ => false,
     }
+}
+
+/// Whether the launch record at `events[at]` launched `seat` into fresh
+/// context. A spawn always did. A reseat or relaunch did unless the start
+/// behind it KEPT the conversation: `_run` journals that start before the
+/// launch record, so the nearest conversation record of the slot back to the
+/// previous launch record says so (issue 282).
+fn launched(events: &[Event], at: usize, seat: &Seat) -> bool {
+    if !launch_record(&events[at], seat) {
+        return false;
+    }
+    if events[at].action == "spawn" {
+        return true;
+    }
+    for earlier in events[..at].iter().rev() {
+        if launch_record(earlier, seat) {
+            break;
+        }
+        if let Some(kept) = kept_conversation(earlier, seat) {
+            return !kept;
+        }
+    }
+    true
+}
+
+/// For a whole conversation record of `seat`'s slot, whether its start KEPT
+/// the conversation it found: the text that conversation opened under stays in
+/// it, so a kept start dates nothing. `None` for any other event. A start that
+/// opened a new conversation is no boundary of its own: `_run` captures its
+/// context before it journals that record, so a rename in between sits before
+/// the record and is not in the text.
+fn kept_conversation(event: &Event, seat: &Seat) -> Option<bool> {
+    if event.target_slot != RoutingMember::Value(seat.slot.clone()) {
+        return None;
+    }
+    let record = crate::conversation::decode(event)?.ok()?;
+    Some(matches!(record.start, Start::Resumed | Start::Unproven))
 }
 
 /// Whether a setter keyed `slot` + `id` is `seat`: both proven and equal.
@@ -141,11 +179,19 @@ fn old_name(event: &Event) -> Option<String> {
 /// attempt with no ending stays in flight (two daemon intervals).
 #[must_use]
 pub fn due(events: &[Event], seat: &Seat, now: i64, bound: i64) -> Option<Due> {
-    let boundary = events.iter().rposition(|event| launched(event, seat));
+    let boundary = (0..events.len()).rposition(|at| launched(events, at, seat));
     let after = |at: usize, line: Option<usize>| line.is_none_or(|line| at > line);
+    // A resume stamps `launch_time` too, but it keeps the conversation and the
+    // text it opened under (issue 282), so with no boundary a kept start means
+    // the stamp dates no source. The cost is one notice, for a seat that started
+    // fresh after a rename and was resumed later; it is told once and not again.
+    let kept = events
+        .iter()
+        .any(|event| kept_conversation(event, seat) == Some(true));
     // No launch record: only a source STRICTLY newer than the launch time.
     let fresh = |at: usize| match boundary {
         Some(line) => at > line,
+        None if kept => true,
         None => seat
             .launch_time
             .is_none_or(|time| events[at].ts.epoch() > time),

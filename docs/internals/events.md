@@ -182,8 +182,15 @@ older core steps over the additive key as unknown data.
 ## Session notices
 
 `src/session_notice.rs` owns them. The pure fold judges each seat in journal ORDER: its
-boundary is its newest `spawn` (by `target`), `reseat` or `relaunch` (by `target_slot`); with
-none, a source counts only when STRICTLY newer than `launch_time.<slot>`. An attempt counts
+boundary is its newest `spawn` (by `target`), `reseat` or `relaunch` (by `target_slot`). A
+reseat or relaunch counts only when its start opened a new conversation: `_run` journals its
+conversation record before the launch record, so a `conversation-resumed` or
+`conversation-unproven` record of the slot, the nearest one back to the previous launch record,
+means the same conversation went on, with the text it opened under, and the launch is no
+boundary. A conversation record is never a boundary itself, because `_run` captures its context
+before it journals the record. With no boundary and one kept start journaled for the slot,
+every source counts, because the `launch_time.<slot>` the resume stamped dates nothing. With
+neither, a source counts only when STRICTLY newer than `launch_time.<slot>`. An attempt counts
 only for the seat's current `launch_id`. A rename is owed after the newest told rename
 attempt; a goal (main and the lead-pair colead only, never to the seat that set it) after the
 newest told attempt of either kind, because the rename text carries the goal. An attempt with

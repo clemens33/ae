@@ -1982,6 +1982,10 @@ keeps its original path. That path is recorded session state, so a later `stop` 
 resume returns every agent to the same working directory instead of creating a second
 copy under the new session name. Live renames never move managed work.
 
+A seat that resumes its conversation after a rename keeps the text that conversation opened
+under, which still names the old session and its helper paths. The watchdog tells such a seat
+the new name and helper paths too, once. A relaunch or reseat that keeps the conversation counts as a resume.
+
 ## `ae reseat <session> <agent> --using <profile[@client]> [--stop-unknown]`
 
 Move ONE seat to another profile, in place. Same slot, same pane, same name, same
