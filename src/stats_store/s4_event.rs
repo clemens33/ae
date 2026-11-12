@@ -336,6 +336,12 @@ fn s4_held_root_lock_returns_busy_within_one_poll_budget_and_preserves_the_journ
 
 #[test]
 fn s4_event_retry_exhaustion_writes_nothing_and_returns_contended() {
+    // Navigator revision (320 ruling B): the product keeps rule r2.4, so
+    // the deadline is shared by lock wait and warm starts. The test pins
+    // exhaustion only, so it holds a budget no load can pass: the stall
+    // below is inside the budget because the budget widened, and without
+    // the hold the same stall yields Busy (see the sibling below).
+    let _held_wait = disk::hold_event_wait(Duration::from_secs(3600));
     let root = Fixture::new();
     let dir = root.live("alpha", S, &birth(S, 1));
     drain(&mut root.maintainer());
@@ -344,7 +350,13 @@ fn s4_event_retry_exhaustion_writes_nothing_and_returns_contended() {
     let _ = disk::take_file_events();
     let _ = disk::take_journal_reads();
     let _ = disk::take_payload_reads();
-    disk::before_lock(|root, _| {
+    disk::before_lock(|root, attempt| {
+        if attempt == 2 {
+            // A load stall: the second attempt's warm starts inside the
+            // deadline (the deadline starts at attempt 1's lock request)
+            // and outlasts the event wait only if the budget is narrow.
+            std::thread::sleep(disk::EVENT_WAIT + Duration::from_millis(50));
+        }
         assert!(
             disk::take_file_events().is_empty(),
             "stale event attempt applies nothing"
@@ -363,6 +375,55 @@ fn s4_event_retry_exhaustion_writes_nothing_and_returns_contended() {
     disk::clear_before_lock();
     assert_eq!(result, Counted::Contended);
     assert_eq!(disk::take_attempts(), vec![Attempt::Stale; 3]);
+    assert_eq!(bytes(&mut Files::at(&root.0)), before);
+    assert!(disk::take_file_events().is_empty());
+    no_reads();
+    drain(&mut root.maintainer());
+    root.check(|| vec![source(&dir, "alpha")]);
+}
+
+/// The same stall at the product default wait: one deadline across warm
+/// starts, so attempt 3 never warms and the count is Busy (r2.4) without
+/// writing. Pairs with the retry test above: only the budget differs.
+#[test]
+fn s4_event_retry_expired_stale_attempt_is_busy_at_default_wait() {
+    let root = Fixture::new();
+    let dir = root.live("alpha", S, &birth(S, 1));
+    drain(&mut root.maintainer());
+    let before = bytes(&mut Files::at(&root.0));
+    let _ = disk::take_attempts();
+    let _ = disk::take_file_events();
+    let _ = disk::take_journal_reads();
+    let _ = disk::take_payload_reads();
+    disk::before_lock(|root, attempt| {
+        if attempt == 2 {
+            std::thread::sleep(disk::EVENT_WAIT + Duration::from_millis(50));
+        }
+        assert!(
+            disk::take_file_events().is_empty(),
+            "stale event attempt applies nothing"
+        );
+        fs::write(
+            root.join("replacement"),
+            fs::read(root.join("stats/view")).expect("view"),
+        )
+        .expect("fresh inode");
+        fs::rename(root.join("replacement"), root.join("stats/view"))
+            .expect("replaced each attempt");
+    });
+    let result = crate::store::open(&dir)
+        .append_event_counted(&line(S, 2))
+        .expect("journal append succeeds");
+    disk::clear_before_lock();
+    assert_eq!(
+        result,
+        Counted::Busy,
+        "expired stale work stays in the journal"
+    );
+    assert_eq!(
+        disk::take_attempts(),
+        vec![Attempt::Stale, Attempt::Stale, Attempt::Busy]
+    );
     assert_eq!(bytes(&mut Files::at(&root.0)), before);
     assert!(disk::take_file_events().is_empty());
     no_reads();

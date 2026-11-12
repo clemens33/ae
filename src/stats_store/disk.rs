@@ -985,6 +985,7 @@ mod observe {
         };
         pub(super) static ATTEMPTS: RefCell<Vec<Attempt>> = const { RefCell::new(Vec::new()) };
         pub(super) static CAP: Cell<Option<u64>> = const { Cell::new(None) };
+        pub(super) static EVENT_WAIT: Cell<Option<std::time::Duration>> = const { Cell::new(None) };
         pub(super) static HOLDS: RefCell<Vec<Hold>> = const { RefCell::new(Vec::new()) };
         pub(super) static BEFORE: RefCell<Option<BeforeLock>> = const { RefCell::new(None) };
     }
@@ -1077,6 +1078,11 @@ mod observe {
     /// The snapshot cap in force on this thread.
     pub(super) fn cap() -> Option<u64> {
         CAP.with(Cell::get)
+    }
+
+    /// The event wait this thread's test installed, if any.
+    pub(super) fn event_wait() -> Option<std::time::Duration> {
+        EVENT_WAIT.with(Cell::get)
     }
 
     /// Run the spec's hook, if one is installed.
@@ -2931,6 +2937,45 @@ impl Counted {
 /// The `stats.lock` poll budget of one counted call: one deadline across
 /// every attempt.
 pub const EVENT_WAIT: Duration = Duration::from_millis(200);
+
+/// The poll budget a counted call gets: [`EVENT_WAIT`], or the wait a test
+/// thread holds through [`hold_event_wait`].
+#[must_use]
+pub fn event_wait() -> Duration {
+    #[cfg(test)]
+    {
+        if let Some(wait) = observe::event_wait() {
+            return wait;
+        }
+    }
+    EVENT_WAIT
+}
+
+/// Holds an event wait on this thread until it is dropped, which restores
+/// the one before it (`cfg(test)` only).
+#[cfg(test)]
+#[derive(Debug)]
+#[must_use = "the wait is held only while the guard lives"]
+pub struct HeldEventWait {
+    prior: Option<Duration>,
+}
+
+#[cfg(test)]
+impl Drop for HeldEventWait {
+    fn drop(&mut self) {
+        observe::EVENT_WAIT.with(|held| held.set(self.prior));
+    }
+}
+
+/// Make every counted call on this thread wait up to `wait` instead of
+/// [`EVENT_WAIT`], until the guard drops. A test whose claim is not the
+/// deadline holds a wait no load can pass, so the deadline never decides
+/// its outcome (`cfg(test)` only).
+#[cfg(test)]
+pub fn hold_event_wait(wait: Duration) -> HeldEventWait {
+    let prior = observe::EVENT_WAIT.with(|held| held.replace(Some(wait)));
+    HeldEventWait { prior }
+}
 /// Held attempts per taker call.
 pub const ATTEMPTS: u32 = 3;
 /// Bytes one warm may record before it is refused.

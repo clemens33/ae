@@ -1199,7 +1199,7 @@ impl SessionStore {
         };
         // One record, its LF excluded.
         let line = stamped.strip_suffix('\n').unwrap_or(stamped);
-        disk::counted(root, &spec, at, line.as_bytes(), seen, disk::EVENT_WAIT)
+        disk::counted(root, &spec, at, line.as_bytes(), seen, disk::event_wait())
     }
 
     /// Append the event line `decide` chooses from the container as it stands
