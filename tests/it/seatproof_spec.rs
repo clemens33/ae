@@ -20,6 +20,15 @@ binmode(STDIN, ':raw'); binmode(STDOUT, ':raw'); $| = 1;
 my $border = "\xe2\x94\x80" x 399;
 my ($buf, $paste, $enters, $ghost) = ('', 0, 0, '');
 sub mode { if (open(my $f, '<', "$out.arm")) { my $m=<$f>; chomp($m); return $m; } return ''; }
+# A test that writes "$out.hold" models a slow tool: the paste and any key
+# after it stay unread in the pty until the test writes "$out.go".
+sub hold {
+    return unless -e "$out.hold"; my $end=time()+90;
+    # Redraw first: the frame drawn before the opener's last byte still shows
+    # a partial opener, and a held tool shows the box as it was before the paste.
+    draw(); open(my $held, '>', "$out.held") or die; close($held);
+    until (-e "$out.go") { die 'hold deadline' if time()>$end; select(undef,undef,undef,.01); }
+}
 sub change {
     my ($event) = @_; return unless mode() eq $event;
     open(my $arm, '<', "$out.arm") or die; my @a=<$arm>; close($arm); chomp(@a);
@@ -38,7 +47,7 @@ open(my $ready, '>', "$out.ready") or die; close($ready);
 draw(); while (sysread(STDIN, my $ch, 1)) {
     open(my $wire, '>>', "$out.wire") or die; binmode($wire); print $wire $ch; close($wire);
     $buf .= $ch;
-    if ($buf =~ s/\e\[200~\z//) { $paste=1; next; }
+    if ($buf =~ s/\e\[200~\z//) { $paste=1; hold(); next; }
     if ($buf =~ s/\e\[201~\z//) { $paste=0; change('paste'); draw(); next; }
     if ($paste && $ch eq "\r") { chop($buf); $buf .= "\n"; next; }
     if (!$paste && ($ch eq "\r" || $ch eq "\n")) {

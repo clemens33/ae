@@ -1783,6 +1783,10 @@ pub fn submit_staged(server: &ServerId, pane: &str, model: InputModel) -> Submit
 }
 
 /// [`submit_staged`] asking `may_press` before EVERY Enter; `Err` names the stage refused.
+///
+/// A refused FIRST Enter ends the submit as [`SubmitState::StillStaged`]: with
+/// no Enter delivered, a box that reads empty may only not have drawn the
+/// paste yet, so no read may call the turn submitted.
 fn submit_staged_with(
     server: &ServerId,
     pane: &str,
@@ -1793,7 +1797,9 @@ fn submit_staged_with(
     if !may_press(Stage::Pasted) {
         return Err(Stage::Pasted);
     }
-    let _ = transport::send_key(server, pane, Key::Enter);
+    if !transport::send_key(server, pane, Key::Enter) {
+        return Ok(SubmitState::StillStaged);
+    }
     for retry in 0..=VERIFY_RETRIES {
         std::thread::sleep(VERIFY_POLL);
         match verified(still_staged(server, pane, model), retry) {

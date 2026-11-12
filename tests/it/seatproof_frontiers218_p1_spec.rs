@@ -179,8 +179,31 @@ die 'exec real private tmux';
         physical("r218-p1f-physical-control", false);
     }
 
-    fn submit(tag: &str, fail: bool) {
+    /// Prove the held tool still shows the box as it was before the paste,
+    /// then let it read the paste and every key after it.
+    fn release(w: &World) {
+        wait("SETUP: the tool held the paste", || {
+            w.out.with_extension("held").is_file()
+        });
+        assert!(
+            read(w.out.with_extension("wire")).ends_with("\x1b[200~"),
+            "SETUP: the tool read past the paste opener while held"
+        );
+        let frame = w.rig.tmux(&["capture-pane", "-p", "-t", &w.pane]);
+        assert!(
+            frame.lines().any(|row| row.trim_end() == "❯"),
+            "SETUP: the held frame does not show an empty box: {frame}"
+        );
+        fs::write(w.out.with_extension("go"), "").expect("SETUP: release render");
+    }
+
+    fn submit(tag: &str, fail: bool, held: bool) {
         let w = World::new(tag);
+        if held {
+            // The tool reads nothing after the paste opener until the helper
+            // returned: every capture the helper takes shows an empty box.
+            fs::write(w.out.with_extension("hold"), "").expect("SETUP: hold render");
+        }
         let binding = fs::read(w.meta()).expect("SETUP: capture unchanged binding");
         let stamps = w.rig.tmux(&[
             "display-message",
@@ -198,6 +221,9 @@ die 'exec real private tmux';
             .env("SEATPROOF_PANE", &w.pane)
             .env("FRONTIER218_BLOCK_ENTER", if fail { "1" } else { "0" });
         let output = command.output().expect("SETUP: real post-paste helper");
+        if held {
+            release(&w);
+        }
         assert!(
             w.rig.scratch.join("barrier/enter-attempted").is_file(),
             "SETUP: submit wrapper never reached"
@@ -280,12 +306,22 @@ die 'exec real private tmux';
 
     #[test]
     fn r8_matching_expectation_keeps_unchanged_binding_unconfirmed() {
-        submit("r218-p1f-unconfirmed", true);
+        submit("r218-p1f-unconfirmed", true, false);
     }
 
     #[test]
     fn r8_matching_expectation_keeps_submit_forwarding_control() {
-        submit("r218-p1f-submit-control", false);
+        submit("r218-p1f-submit-control", false, false);
+    }
+
+    #[test]
+    fn r8_a_refused_enter_stays_unconfirmed_while_the_paste_is_undrawn() {
+        submit("r218-p1f-held-unconfirmed", true, true);
+    }
+
+    #[test]
+    fn r8_an_accepted_enter_still_delivers_while_the_paste_is_undrawn() {
+        submit("r218-p1f-held-control", false, true);
     }
 
     #[test]
