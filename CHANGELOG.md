@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.44] - 2026-11-12
+- Gate split: the hp runs the whole suite, the Mac its boundary subset
+- Macos subset: names seatproof_spec World::drawn, the shared tmux helper d067f40d added
+- Require the tmux reason for a missing respawn pane
+- Preserve tmux reasons when monitor respawns fail
+- Require a diagnostic after leading blank stderr lines
+- Skip blank stderr lines before the tmux reason
+
 ## [v2026.11.43] - 2026-11-12
 - A --cross-session typed after the recipient is refused with where the flag counts (#281)
 - A stopped session named like a mistyped command resumes only with --resume (#284)
