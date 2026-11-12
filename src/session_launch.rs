@@ -7368,10 +7368,10 @@ mod tests {
         }
     }
     use super::{
-        AttachAction, EVENTS_KEEP, EXIT_USAGE, ExpectedLaunch, ExpectedState, Mode, Plan, ToolKind,
-        attach_action, carries_own_proof, check_launch_kind, check_resume_target,
+        AttachAction, EVENTS_KEEP, EXIT_USAGE, ExpectedLaunch, ExpectedState, Mode, Plan, Relaunch,
+        ToolKind, attach_action, carries_own_proof, check_launch_kind, check_resume_target,
         check_stopped_near_miss, expected_launch_argv, launch_token, launch_turn_is_pasted,
-        layout_argvs, lead_pair_policy_argvs, parse_plan, parse_plan_with_attach,
+        layout_argvs, lead_pair_policy_argvs, parse_plan, parse_plan_with_attach, relaunch,
         replace_watchdog_registration, server_attach_hint, trim_events,
     };
     use crate::inventory::ServerId;
@@ -8027,6 +8027,40 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_compact_child_creates_so_a_near_miss_name_is_refused_before_a_write() {
+        let home = scratch("relaunch-near-miss");
+        let origin = home.to_string_lossy().into_owned();
+        let child = Relaunch {
+            home: &home,
+            name: "sessions",
+            mode: "local",
+            origin: &origin,
+            config: "",
+            uuid: "11111111-1111-4111-8111-111111111111",
+            proof: "none",
+            roster: "main=lead workers=-",
+            server_kind: "socket",
+            server_value: "/nonexistent/ae-test-server",
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = relaunch(&child, &mut out, &mut err).expect("the launch writes to buffers");
+        assert_eq!(code, EXIT_USAGE);
+        assert_eq!(
+            String::from_utf8_lossy(&err),
+            format!(
+                "{}\n",
+                crate::entry::near_miss_refusal("sessions").expect("a near-miss word")
+            )
+        );
+        assert!(out.is_empty());
+        assert!(
+            !home.join("sessions").exists(),
+            "the refusal wrote no session state"
+        );
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]
