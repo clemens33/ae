@@ -326,7 +326,20 @@ die 'exec real private tmux';
 
     #[test]
     fn r8_matching_expectation_qualifies_occupied_unviewed_draft() {
-        let w = World::new("r218-p1f-draft-occupied");
+        draft_occupied("r218-p1f-draft-occupied", None);
+    }
+
+    #[test]
+    fn r8_matching_expectation_qualifies_occupied_unviewed_draft_the_tool_draws_late() {
+        draft_occupied("r218-p1f-draft-late", Some(400));
+    }
+
+    fn draft_occupied(tag: &str, slow_draw_ms: Option<u32>) {
+        let w = World::new(tag);
+        if let Some(ms) = slow_draw_ms {
+            fs::write(w.out.with_extension("slowdraw"), ms.to_string())
+                .expect("SETUP: slow draw knob");
+        }
         w.rig.tmux(&["set-buffer", "-b", "p1-draft", "human draft"]);
         w.rig
             .tmux(&["paste-buffer", "-p", "-d", "-b", "p1-draft", "-t", &w.pane]);
@@ -343,7 +356,7 @@ die 'exec real private tmux';
             .output()
             .expect("SETUP: occupied unviewed draft helper");
         eprintln!(
-            "p1draft218 BEGIN tag=r218-p1f-draft-occupied native={:?}",
+            "p1draft218 BEGIN tag={tag} native={:?}",
             output.status.code()
         );
         eprintln!(
@@ -354,7 +367,7 @@ die 'exec real private tmux';
             "p1draft218 stderr: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        eprintln!("p1draft218 END tag=r218-p1f-draft-occupied");
+        eprintln!("p1draft218 END tag={tag}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
             error.contains("composer occupied")

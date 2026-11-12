@@ -38,7 +38,15 @@ sub change {
     rename('__META__.next', '__META__') or die;
     unlink("$out.arm") or die; open(my $seen, '>', "$out.changed") or die; close($seen);
 }
+# A test that writes milliseconds to "$out.slowdraw" models a tool that is slow to draw the
+# paste it already read: the frame appears that long after the paste-end marker reached the wire.
+sub slow {
+    open(my $f, '<', "$out.slowdraw") or return 0; my $ms = <$f>; close($f);
+    return (defined $ms && $ms =~ /^(\d+)/) ? $1 / 1000 : 0;
+}
 sub draw {
+    my ($pause) = @_;
+    select(undef,undef,undef,$pause) if $pause;
     my $text=$buf; $text =~ s/[\r\n]/ /g;
     print "\e[H\e[2J\e[?2004h✻ Crunched for 1s · done 4:01 PM\r\n$border\r\n\e[1m❯\e[0m $text\r\n$border\r\n🧠 fake-model ~/x\r\n⏵⏵ bypass permissions on\r\n$ghost";
 }
@@ -48,7 +56,7 @@ draw(); while (sysread(STDIN, my $ch, 1)) {
     open(my $wire, '>>', "$out.wire") or die; binmode($wire); print $wire $ch; close($wire);
     $buf .= $ch;
     if ($buf =~ s/\e\[200~\z//) { $paste=1; hold(); next; }
-    if ($buf =~ s/\e\[201~\z//) { $paste=0; change('paste'); draw(); next; }
+    if ($buf =~ s/\e\[201~\z//) { $paste=0; change('paste'); draw(slow()); next; }
     if ($paste && $ch eq "\r") { chop($buf); $buf .= "\n"; next; }
     if (!$paste && ($ch eq "\r" || $ch eq "\n")) {
         $buf =~ s/[\r\n]\z//; $enters++;

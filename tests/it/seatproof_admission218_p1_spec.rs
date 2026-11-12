@@ -193,7 +193,20 @@ mod admission218_p1 {
 
     #[test]
     fn r8_matching_expectation_preserves_human_draft_abandoned_and_resend() {
-        let w = World::new("r218-p1-draft");
+        draft_abandoned("r218-p1-draft", None);
+    }
+
+    #[test]
+    fn r8_matching_expectation_preserves_human_draft_abandoned_and_resend_the_tool_draws_late() {
+        draft_abandoned("r218-p1-draft-late", Some(400));
+    }
+
+    fn draft_abandoned(tag: &str, slow_draw_ms: Option<u32>) {
+        let w = World::new(tag);
+        if let Some(ms) = slow_draw_ms {
+            fs::write(w.out.with_extension("slowdraw"), ms.to_string())
+                .expect("SETUP: slow draw knob");
+        }
         w.rig.tmux(&["set-buffer", "-b", "p1-draft", "human draft"]);
         w.rig
             .tmux(&["paste-buffer", "-p", "-d", "-b", "p1-draft", "-t", &w.pane]);
