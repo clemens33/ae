@@ -990,12 +990,24 @@ pub enum RemovalRefusal {
     Refused(String),
 }
 
-/// Drop every line `slot` owns, under a lock the caller holds.
+/// Drop every line `slot` owns, under the meta lock the caller holds. An
+/// `effort.<slot>` claim of the seat named `agent` first gets its ONE journaled
+/// ending ([`meta::effort_discard`], reason `retire`), so a retired seat never
+/// takes an applied effort record away silently.
 ///
 /// # Errors
 ///
-/// The refusal text: the meta could not be published.
-fn drop_slot(dir: &Path, text: &str, slot: &str) -> Result<(), String> {
+/// The refusal text: the ending could not be journaled, so nothing is
+/// published, or the meta could not be published.
+fn drop_slot(dir: &Path, text: &str, slot: &str, agent: &str) -> Result<(), String> {
+    meta::effort_discard(
+        dir,
+        text,
+        slot,
+        agent,
+        crate::effort_journal::Discarded::Retire,
+    )
+    .map_err(|why| format!("cannot journal the effort discard: {why}"))?;
     let suffix = format!(".{slot}");
     let mut next = String::new();
     for row in records(text) {
@@ -1018,7 +1030,7 @@ pub fn remove_seat_slot(dir: &Path, name: &str) -> Result<String, String> {
     let _held = meta::lock(dir).map_err(|why| format!("cannot take the meta lock: {why}"))?;
     let text = text_of(dir)?;
     let slot = removable_slot(&Meta::parse(&text), name)?;
-    drop_slot(dir, &text, &slot)?;
+    drop_slot(dir, &text, &slot, name)?;
     Ok(slot)
 }
 
@@ -1083,7 +1095,7 @@ fn fenced(
         return Err(RemovalRefusal::Replaced { slot });
     }
     if drop_rows {
-        drop_slot(dir, &text, &slot).map_err(RemovalRefusal::Refused)?;
+        drop_slot(dir, &text, &slot, name).map_err(RemovalRefusal::Refused)?;
     }
     cleanup();
     Ok(slot)
@@ -1330,7 +1342,7 @@ mod tests {
         let before = "session=fixture\nseat.spawned.0=scout\nlaunch_id.spawned.0=old-launch\neffort.spawned.0=v1 applied slot:spawned.0 base:xhigh low:high at:80 ep:1700000000 sid:11111111-1111-4111-8111-111111111111 agent:scout tool:codex launch:old-launch pid:42 conv:22222222-2222-4222-8222-222222222222 profile:custom client:- model:gpt-6.1-sol win:weekly/~/10080/1700000000/1700000100\neffort.spawned.0\neffort.spawned.0=damaged duplicate\neffort.main=foreign\neffort.spawned.01=neighbor\ngoal=keep\n";
         scratch.file("meta", before);
         let _held = crate::meta::lock(scratch.dir()).expect("owner meta lock");
-        super::drop_slot(scratch.dir(), before, "spawned.0").expect("drop old slot");
+        super::drop_slot(scratch.dir(), before, "spawned.0", "scout").expect("drop old slot");
         assert_eq!(
             scratch.meta(),
             "session=fixture\neffort.main=foreign\neffort.spawned.01=neighbor\ngoal=keep\n",

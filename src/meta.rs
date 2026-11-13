@@ -2422,21 +2422,35 @@ pub(crate) fn publish_seat_move(
     rewrite_journaled(
         dir,
         |current| seat_move_for(current, slot, agent, move_to),
-        |current| reseat_discard(dir, current, slot, agent),
+        |current| {
+            effort_discard(
+                dir,
+                current,
+                slot,
+                agent,
+                crate::effort_journal::Discarded::Reseat,
+            )
+        },
     )
 }
 
-/// Journal the end of the seat's effort record before a reseat drops it: ONE
-/// watchdog `effort-discarded`, ref the record's episode (empty for a damaged
-/// record), summary `reseat`, decided and appended under the journal lock. A
-/// seat without an `effort.<slot>` line reads no journal. A journal that
-/// already ends the record's episode — this reseat's own discard or a
-/// resume's `off` or `fresh` one whose publish failed — is reused, never
+/// Journal the end of the seat's effort record before a reseat or a retire drops
+/// it: ONE watchdog `effort-discarded`, ref the record's episode (empty for a
+/// damaged record), summary `why`, decided and appended under the journal lock.
+/// The caller holds the meta lock. A seat without an `effort.<slot>` line reads
+/// no journal. A journal that already ends the record's episode — this path's
+/// own discard or another path's one whose publish failed — is reused, never
 /// written twice; an unterminated tail is terminated first
 /// ([`journal_records`]), so the watchdog reads exactly one ending. `Err` when
 /// the journal could not be read or appended: the caller then publishes
 /// nothing.
-fn reseat_discard(dir: &Path, current: &str, slot: &str, agent: &str) -> io::Result<()> {
+pub(crate) fn effort_discard(
+    dir: &Path,
+    current: &str,
+    slot: &str,
+    agent: &str,
+    why: crate::effort_journal::Discarded,
+) -> io::Result<()> {
     let bytes = current.as_bytes();
     if effort_claims(bytes, slot).is_empty() {
         return Ok(());
@@ -2451,7 +2465,6 @@ fn reseat_discard(dir: &Path, current: &str, slot: &str, agent: &str) -> io::Res
         slot,
         agent,
     };
-    let why = crate::effort_journal::Discarded::Reseat;
     let line =
         crate::effort_journal::discard_line(crate::time::Timestamp::now(), &seat, episode, why);
     let key = crate::events::SessionKey::new(&session, session_id);

@@ -2,7 +2,7 @@
 //! record was discarded, the one journal line ae writes for a seat, and
 //! whether the journal already ends an episode. It reads no world and names
 //! nothing above the state layer, so the meta writer can journal a reseat's
-//! discard; [`crate::effort`] re-exports it and owns the fold.
+//! or a retire's discard; [`crate::effort`] re-exports it and owns the fold.
 
 use crate::events::{Event, SessionKey};
 use crate::time::Timestamp;
@@ -25,9 +25,9 @@ pub const HELD: &str = "effort-held";
 pub const YIELDED: &str = "effort-yielded";
 /// The episode ends unmoved or yielded: ref `<ep>`.
 pub const REARMED: &str = "effort-rearmed";
-/// A resume or a reseat dropped the seat's record and everything the journal
-/// remembers of its episodes: ref `<ep>` or empty, summary `off`, `fresh` or
-/// `reseat`.
+/// A resume, a reseat or a retire dropped the seat's record and everything the
+/// journal remembers of its episodes: ref `<ep>` or empty, summary `off`,
+/// `fresh`, `reseat` or `retire`.
 pub const DISCARDED: &str = "effort-discarded";
 
 /// A canonical unsigned decimal: digits only, no leading zero.
@@ -42,7 +42,7 @@ pub(crate) fn epoch(text: &str) -> Option<i64> {
     decimal(text).filter(|value: &i64| *value > 0)
 }
 
-/// Why a resume or a reseat drops a record.
+/// Why a resume, a reseat or a retire drops a record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Discarded {
     /// `auto_effort = off`.
@@ -51,6 +51,8 @@ pub enum Discarded {
     Fresh,
     /// A reseat moved the seat to another setup.
     Reseat,
+    /// A retire removed the seat.
+    Retire,
 }
 
 impl Discarded {
@@ -61,6 +63,7 @@ impl Discarded {
             Self::Off => "off",
             Self::Fresh => "fresh",
             Self::Reseat => "reseat",
+            Self::Retire => "retire",
         }
     }
 }
@@ -132,9 +135,14 @@ pub(crate) fn well_formed_discard(event: &Event) -> bool {
     let reference = event.reference.as_deref().unwrap_or_default();
     let summary = event.summary.as_deref().unwrap_or_default();
     (reference.is_empty() || epoch(reference).is_some())
-        && [Discarded::Off, Discarded::Fresh, Discarded::Reseat]
-            .iter()
-            .any(|why| why.word() == summary)
+        && [
+            Discarded::Off,
+            Discarded::Fresh,
+            Discarded::Reseat,
+            Discarded::Retire,
+        ]
+        .iter()
+        .any(|why| why.word() == summary)
 }
 
 /// Whether the seat's journal already ends its CURRENT episode: a
@@ -142,8 +150,8 @@ pub(crate) fn well_formed_discard(event: &Event) -> bool {
 /// damaged record), addressed to the seat after the seat's last watchdog
 /// [`EPISODE`], whatever its reason. An applied episode has ONE journaled
 /// ending, whichever path wrote it: a reseat retried after a journaled
-/// discard whose meta publish failed, or a reseat after a resume's `off` or
-/// `fresh` discard whose publish failed, reuses that ending. Another actor,
+/// discard whose meta publish failed, or a reseat or a retire after another
+/// path's discard whose publish failed, reuses that ending. Another actor,
 /// slot or session, another ref, an unknown reason, or an ending before a
 /// newer episode does not count; a record of another actor between them, such
 /// as the reseat's own stop record, does not hide it.
