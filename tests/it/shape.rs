@@ -878,3 +878,11 @@ fn only_shape_asks_the_os_where_this_binary_is() {
         "current_exe() belongs to shape::resolved_exe, which resolves it: {offenders:?}"
     );
 }
+
+#[test]
+fn the_version_line_is_ae_and_the_cargo_version() {
+    // The oracle is the manifest's own variable, not the item under test.
+    let manifest = env!("CARGO_PKG_VERSION");
+    assert_eq!(ae::VERSION, manifest);
+    assert_eq!(ae::version_line(), format!("ae {manifest}"));
+}
