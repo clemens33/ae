@@ -2524,9 +2524,12 @@ HP_LEG := '''
         status=0
         (cd "$wt" && exec timeout -k 60 3600 just test) || status=$?
         gate=$status
-        if [ "$status" = 124 ] || [ "$status" = 137 ]; then
-            say "its own timeout stopped just test (exit $status): the lane lock stays held"
-            suspect "the leg's own timeout stopped just test"
+        # 124 is the leg's own timeout, 128 and above a signal (timeout reports its child's
+        # signal as 128+n, and 137 is its KILL). Either way part of the run may still live, so
+        # the lock stays held for the lead; only an ordinary end, green or red, releases it.
+        if [ "$status" -eq 124 ] || [ "$status" -ge 128 ]; then
+            say "a timeout or a signal stopped just test (exit $status): the lane lock stays held"
+            suspect "a timeout or a signal stopped just test (exit $status)"
             exit 1
         fi
         say "just test ended with exit $status"
@@ -2557,6 +2560,42 @@ HP_LEG := '''
         if [ -f "$dir/$runid.exit" ]; then cat "$dir/$runid.exit"; return 0; fi
         echo gone
     }
+    # mac_groups_stop <pid> <secs>: stop the process group <pid> leads and the process group of
+    # every descendant of <pid>, found once, before any signal, while the tree is intact (cargo's
+    # detached() session is one of them). TERM to each, up to <secs> s for all to be empty, then
+    # KILL to each, up to 10 s more. Returns 1 when one is still not empty; $mac_groups names them.
+    mac_groups_stop() {
+        local lead=$1 tries own group
+        own="$(ps -o pgid= -p "$$" | tr -d ' ')"
+        mac_groups="$(ps -axo pid=,ppid=,pgid= | awk -v root="$lead" -v own="$own" '
+            { pid[NR] = $1; ppid[NR] = $2; pgid[NR] = $3 }
+            END {
+                seen[root] = 1
+                for (grew = 1; grew;) {
+                    grew = 0
+                    for (i = 1; i <= NR; i++) if (seen[ppid[i]] && !seen[pid[i]]) { seen[pid[i]] = 1; grew = 1 }
+                }
+                groups[root] = 1
+                for (i = 1; i <= NR; i++) if (seen[pid[i]]) groups[pgid[i]] = 1
+                for (g in groups) if (g > 1 && g != own) print g
+            }')"
+        mac_groups_alive() {
+            for group in $mac_groups; do
+                if kill -0 -- "-$group" 2>/dev/null; then return 0; fi
+            done
+            return 1
+        }
+        for group in $mac_groups; do kill -TERM -- "-$group" 2>/dev/null || true; done
+        tries=$(($2 * 10))
+        while mac_groups_alive && ((--tries > 0)); do sleep 0.1; done
+        if mac_groups_alive; then
+            echo "release-proof: the Mac subset outlived $2 s after TERM: sending KILL to its process groups" >&2
+            for group in $mac_groups; do kill -KILL -- "-$group" 2>/dev/null || true; done
+            tries=100
+            while mac_groups_alive && ((--tries > 0)); do sleep 0.1; done
+        fi
+        ! mac_groups_alive
+    }
     # hp_remote <function> <args…>: one bounded `ssh <hp> bash -s`, its stdin the function's text.
     hp_remote() {
         local fn=$1
@@ -2565,11 +2604,13 @@ HP_LEG := '''
             "$bound" 30 ssh -o BatchMode=yes -o ConnectTimeout=10 -- "$AE_RELEASE_HP" bash -s -- "$@"
     }
     hp_parallel() {
-        local lock="release-${head:0:12}" ref="refs/ae-release/$head" runid code mac mac_status lost=0 line deadline path
+        local lock="release-${head:0:12}" ref="refs/ae-release/$head" runid code dropped mac mac_status lost=0 line deadline path
         local exit_re='^gate=([0-9]+|prep|lock|worktree|running|signal) run=([^ ]+) head=([0-9a-f]{40}) tree=([0-9a-f]{40}) lock=(released|held)$'
         runid="${head:0:12}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
         path="${AE_RELEASE_HP_PATH:-}"
-        if [[ -n "$path" && ! "$path" =~ ^/[A-Za-z0-9._/:-]+$ ]]; then proof_refuse "AE_RELEASE_HP_PATH is not a plain list of absolute directories: $path"; fi
+        if [[ -n "$path" && ! "$path" =~ ^/[A-Za-z0-9._/-]+(:/[A-Za-z0-9._/-]+)*$ ]]; then
+            proof_refuse "AE_RELEASE_HP_PATH is not a ':'-separated list of absolute directories: $path"
+        fi
         echo "release-proof: the hp has no receipt for tree $tree yet: its whole run starts now, beside the Mac subset (run $runid)"
         code=0
         hp_remote hp_pre "$AE_RELEASE_HP_ROOT" "$tree" "$head" "$lock" >"$reply_dir/pre" 2>"$reply_dir/err" || code=$?
@@ -2598,34 +2639,27 @@ HP_LEG := '''
             0) echo "release-proof: the hp leg $runid runs as pid $(head -n 1 "$reply_dir/launch")" ;;
             124 | 255) proof_refuse "the hp start of run $runid got no answer (exit $code): the leg may be running; it ends alone and deletes $ref, and a new release refuses until then" ;;
             *) sed 's/^/release-proof: ssh: /' "$reply_dir/err" >&2
-               code=0
+               dropped=0
                "$bound" 30 ssh -o BatchMode=yes -o ConnectTimeout=10 -- "$AE_RELEASE_HP" \
-                   "git -C $AE_RELEASE_HP_ROOT update-ref -d $ref $head" >/dev/null 2>&1 || code=$?
-               ((code == 0)) || echo "release-proof: $ref could not be deleted on the hp (exit $code); delete it by hand" >&2
+                   "git -C $AE_RELEASE_HP_ROOT update-ref -d $ref $head" >/dev/null 2>&1 || dropped=$?
+               ((dropped == 0)) || echo "release-proof: $ref could not be deleted on the hp (exit $dropped); delete it by hand" >&2
                proof_refuse "the hp leg did not start (exit $code)" ;;
         esac
 
         # The Mac subset in a process group of its own, so this shell runs its traps during the
-        # wait. An interrupt stops that group (the lane's detached() parent passes the signal on
-        # to cargo's session) and waits until the group is empty, so `just release` returns, and
-        # its caller releases the Mac lane lock, only after the subset and its lane cleanup ended.
+        # wait. An interrupt stops that group and every process group below it (the lane's
+        # detached() puts cargo in a session of its own) and waits until all of them are empty,
+        # so `just release` returns, and its caller releases the Mac lane lock, only after the
+        # subset and its lane cleanup ended.
         echo "release-proof: running the Mac boundary subset, just test-macos, while the hp runs"
         set -m
         just test-macos &
         mac=$!
         set +m
         mac_stop() {
-            local tries=600
             trap - INT TERM HUP
-            kill -TERM -- "-$mac" 2>/dev/null || true
-            while kill -0 -- "-$mac" 2>/dev/null; do
-                if ((--tries == 0)); then
-                    echo "release-proof: the Mac subset group $mac outlived 60 s after TERM: sending KILL" >&2
-                    kill -KILL -- "-$mac" 2>/dev/null || true
-                    break
-                fi
-                sleep 0.1
-            done
+            mac_groups_stop "$mac" 60 ||
+                echo "release-proof: a process group of the Mac subset outlived TERM and KILL: $mac_groups" >&2
             wait "$mac" 2>/dev/null || true
             proof_refuse "interrupted: the Mac subset is stopped; the hp leg $runid runs on alone and releases its own lane"
         }
@@ -2659,7 +2693,8 @@ HP_LEG := '''
                             0) ;;
                             lock) proof_refuse "the hp lane was not free within 1800 s; nothing ran there" ;;
                             worktree) proof_refuse "the warm hp worktree is not a clean worktree of $AE_RELEASE_HP_ROOT on this commit; nothing ran there" ;;
-                            124 | 137 | signal) proof_refuse "the hp leg $runid was stopped (${BASH_REMATCH[1]}); its lane lock stays held with a suspect note for the lead" ;;
+                            124 | 12[89] | 1[3-9][0-9] | 2[0-9][0-9] | signal)
+                                proof_refuse "the hp leg $runid was stopped (${BASH_REMATCH[1]}); its lane lock stays held with a suspect note for the lead" ;;
                             *) proof_refuse "the hp whole suite failed (exit ${BASH_REMATCH[1]})" ;;
                         esac
                         [[ "${BASH_REMATCH[5]}" == released ]] || proof_refuse "the hp leg ended green but kept its lane lock"

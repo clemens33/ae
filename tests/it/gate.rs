@@ -51,6 +51,7 @@ mod modtree;
 #[path = "gate/receipt_spec/parallel_spec.rs"]
 mod parallel_spec;
 mod receipt_window;
+mod relpar_regress;
 
 /// The repository root — this file's crate manifest directory.
 fn root() -> PathBuf {
