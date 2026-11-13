@@ -5,7 +5,9 @@
 //! means lowering or deleting its row in the same commit, and a row can never be raised
 //! to admit growth without a review that sees this file. Sorted by file, then spelling.
 
-use super::layers::Row;
+/// One pin: the file, the full spelling of an upward path, and how many times the file
+/// writes it.
+pub(super) type Row = (&'static str, &'static str, usize);
 
 /// Upward spellings that are defects to remove: a predicate, a constant or a value type
 /// that lives one layer above the module that names it.

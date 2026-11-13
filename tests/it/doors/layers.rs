@@ -47,12 +47,8 @@ use std::str::FromStr;
 
 use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
 
-use super::layers_allow::{DEBT, HANDSHAKE};
+use super::layers_allow::{DEBT, HANDSHAKE, Row};
 use crate::support::source_view;
-
-/// One pin: the file, the full spelling of an upward path, and how many times the file
-/// writes it.
-pub(super) type Row = (&'static str, &'static str, usize);
 
 /// The layer names, bottom first. A file may name its own layer and the ones before it.
 const LAYER_NAMES: [&str; 7] = [
