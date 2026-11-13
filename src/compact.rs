@@ -565,8 +565,8 @@ pub(crate) fn archive_step(
     Ok(0)
 }
 
-/// Return the holds with the complete snapshot proof so the teardown caller
-/// keeps cooperating writers out through canonical unregister.
+/// Return writer holds with the complete snapshot proof. Teardown keeps them
+/// through canonical unregister; archive_step releases them on return.
 fn retention_snapshot(
     dir: &Path,
     name: &str,

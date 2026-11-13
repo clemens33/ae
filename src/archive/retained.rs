@@ -1,4 +1,4 @@
-//! End's complete snapshot inventory. Files are streamed through the existing
+//! End and reboot's complete snapshot inventory. Files are streamed through the existing
 //! archive store door; links are classified by text and never traversed.
 
 use std::collections::BTreeMap;
@@ -12,7 +12,7 @@ pub(super) type Inventory = BTreeMap<PathBuf, bool>;
 
 fn refusal(path: &Path, why: impl std::fmt::Display) -> String {
     format!(
-        "archive: cannot capture {} ({why}); remove it, then ae end",
+        "archive: cannot capture {} ({why}); remove it, then retry the operation",
         path.display()
     )
 }

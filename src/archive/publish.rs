@@ -114,9 +114,10 @@ pub(crate) fn hold_retained_sources(dir: &Path) -> crate::error::Result<SourceGu
             })?,
         );
     }
-    let mut held = hold_sources(dir).map_err(io::Error::other)?;
-    held._activities = activities;
-    Ok(held)
+    Ok(SourceGuards {
+        _activities: activities,
+        ..hold_sources(dir).map_err(io::Error::other)?
+    })
 }
 
 /// Hold `path`'s lock, or say which lock could not be taken.
