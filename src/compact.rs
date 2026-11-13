@@ -535,52 +535,21 @@ pub(crate) fn archive_step(
         return Ok(EXIT_FAILED);
     };
     let archive_root = root.join("archive");
-    let archive_path = archive_root.join(&frozen.uuid);
-    // The C3 gate: an existing archive is REUSED only if the live payload still matches it;
-    // drift refuses (retain both); publish is NEVER called over an existing archive (it is
-    // immutable and would refuse).
-    if dir_exists(&archive_path) {
-        match crate::archive::publish::live_matches_existing_archive(
-            dir,
-            &archive_path,
-            &frozen.uuid,
-        ) {
-            Ok(true) => {
-                writeln!(
-                    err,
-                    "reboot: an archive for this session already exists and still matches the live state — reusing it as the recovery point."
-                )?;
-            }
-            Ok(false) => {
-                writeln!(
-                    err,
-                    "reboot: '{}' has an existing archive that no longer matches the live session (it drifted after a previous attempt). Refusing teardown — that would lose the drift. Both the live session and the archive are retained.",
-                    frozen.name
-                )?;
-                return Ok(EXIT_FAILED);
-            }
-            Err(reason) => {
-                writeln!(err, "{reason}")?;
-                return Ok(EXIT_FAILED);
-            }
-        }
-    } else {
-        let ops = crate::archive::publish::Ops {
-            reason: crate::archive::publish::Reason::Reboot,
-            push_outcome,
-            push_ref,
-            preserved,
-            workdir,
-            archived_at,
-        };
-        // publish's own `target\tfiles\tbytes` line is diagnostics for reboot; `out` is
-        // kept for the recovery contract alone.
-        let mut sink = Vec::new();
-        let code = crate::archive::publish::run(dir, &ops, &mut sink, err)?;
-        if code != 0 {
-            return Ok(code);
-        }
-    }
+    let ops = crate::archive::publish::Ops {
+        reason: crate::archive::publish::Reason::Reboot,
+        push_outcome,
+        push_ref,
+        preserved,
+        workdir,
+        archived_at,
+    };
+    // The same complete candidate and unchanged-reuse proof End uses, under
+    // the same writer holds. Existing archives are immutable, including old
+    // archives without retained/: none can be silently supplemented.
+    let Some(_held) = retention_snapshot(dir, &frozen.name, &ops, err).map_err(io::Error::other)?
+    else {
+        return Ok(EXIT_FAILED);
+    };
     // Preflight the recovery command itself: `--from` must accept this archive.
     let mut sink = Vec::new();
     let code = crate::archive::from::run(&archive_root, &frozen.uuid, &mut sink, err)?;
@@ -594,6 +563,34 @@ pub(crate) fn archive_step(
     // The recovery point, now durable and proven — printed BEFORE any teardown runs.
     writeln!(out, "recover: ae {} --from {}", frozen.name, frozen.uuid)?;
     Ok(0)
+}
+
+/// Return the holds with the complete snapshot proof so the teardown caller
+/// keeps cooperating writers out through canonical unregister.
+fn retention_snapshot(
+    dir: &Path,
+    name: &str,
+    ops: &crate::archive::publish::Ops,
+    err: &mut impl Write,
+) -> crate::error::Result<Option<crate::archive::publish::SourceGuards>> {
+    let held = match crate::archive::publish::hold_retained_sources(dir) {
+        Ok(held) => Some(held),
+        Err(why) => {
+            writeln!(err, "reboot: {why}")?;
+            None
+        }
+    };
+    if let Some(held) = held
+        && crate::archive::publish::retained_snapshot(dir, ops, &held, &mut io::sink(), err)? == 0
+    {
+        return Ok(Some(held));
+    }
+    writeln!(
+        err,
+        "reboot: retention failed; the stopped live directory {} remains registered. For a capture failure, fix the cause above, then run: ae reboot {name}. For a differing or incomplete archive, follow the recovery steps above instead. To resume the kept session, run: ae {name}.",
+        dir.display()
+    )?;
+    Ok(None)
 }
 
 /// Re-validate the durable archive as an inheritable recovery point,
@@ -643,6 +640,22 @@ pub(crate) fn teardown_step(
         )?;
         return Ok(EXIT_FAILED);
     }
+    // This stage is independently callable: prove the complete live payload
+    // still matches its recovery point, and hold every writer out until the
+    // canonical state is gone. Inheritability alone cannot prove retention.
+    let archived_at = crate::time::Timestamp::now().to_string();
+    let ops = crate::archive::publish::Ops {
+        reason: crate::archive::publish::Reason::Reboot,
+        push_outcome: "not-managed",
+        push_ref: "-",
+        preserved: "-",
+        workdir: "",
+        archived_at: &archived_at,
+    };
+    let Some(_held) = retention_snapshot(dir, &frozen.name, &ops, err).map_err(io::Error::other)?
+    else {
+        return Ok(EXIT_FAILED);
+    };
     let code = crate::teardown::run(dir, out, err)?;
     if code != 0 {
         return Ok(code);

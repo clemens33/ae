@@ -7,7 +7,6 @@
 //! This module only PUBLISHES: plan, mint, purge and teardown belong to those
 //! callers.
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
@@ -56,6 +55,7 @@ impl Reason {
 pub(crate) struct SourceGuards {
     dir: PathBuf,
     _files: [fs::File; 3],
+    _activities: Vec<fs::File>,
     pub(crate) removed_git: Option<GitFacts>,
 }
 
@@ -88,8 +88,35 @@ pub(crate) fn hold_sources(dir: &Path) -> Result<SourceGuards, String> {
     Ok(SourceGuards {
         dir: dir.to_owned(),
         _files: [meta, memo, events],
+        _activities: Vec::new(),
         removed_git: None,
     })
+}
+
+/// End and reboot keep cooperating writers out through the final snapshot
+/// comparison and canonical unregister. Activity holds precede source holds.
+pub(crate) fn hold_retained_sources(dir: &Path) -> crate::error::Result<SourceGuards> {
+    let mut activities = Vec::new();
+    for name in [
+        ".console-writer.lock",
+        ".console-admission.lock",
+        ".goal-setter.lock",
+        ".console-draft-mutation.lock",
+        "telegram-outbound.cursor.lock",
+    ] {
+        let path = dir.join(name);
+        activities.push(
+            crate::store::lock(&path, std::time::Duration::ZERO).map_err(|why| {
+                io::Error::other(format!(
+                    "retention could not lock {}: {why}",
+                    path.display()
+                ))
+            })?,
+        );
+    }
+    let mut held = hold_sources(dir).map_err(io::Error::other)?;
+    held._activities = activities;
+    Ok(held)
 }
 
 /// Hold `path`'s lock, or say which lock could not be taken.
@@ -115,8 +142,8 @@ pub(crate) fn run(
     run_policy(dir, ops, false, None, out, err)
 }
 
-/// Ordinary End alone requests complete retention and exact unchanged reuse.
-pub(crate) fn end_snapshot(
+/// End and reboot request complete retention and exact unchanged reuse.
+pub(crate) fn retained_snapshot(
     dir: &Path,
     ops: &Ops,
     held: &SourceGuards,
@@ -740,69 +767,6 @@ fn read_sources(dir: &Path) -> Result<CoreBytes, Vec<String>> {
     }
 }
 
-/// Whether the archive already at `archive_path` (for `aid`) is a byte-equivalent snapshot
-/// of the CURRENT live session at `dir` — the gate compact's retry crosses before reusing
-/// an existing archive as its recovery point instead of publishing (publish REFUSES over
-/// an existing archive; it is immutable).
-pub(crate) fn live_matches_existing_archive(
-    dir: &Path,
-    archive_path: &Path,
-    aid: &str,
-) -> Result<bool, String> {
-    // Ownership/tree: an existing archive is trusted as a recovery point only once it is
-    // proven a valid ae archive for this id.
-    validate_tree(archive_path, aid)?;
-    // The coherent locked live read — the same three locks `run` holds.
-    let _held = hold_sources(dir)?;
-    let (_live_meta, live_memo, live_events) =
-        read_sources(dir).map_err(|diags| diags.join("; "))?;
-    let arch_memo = read_file(&archive_path.join(super::store::MEMO))
-        .map_err(|why| format!("archive: cannot read archived memo.tsv: {why}"))?;
-    let arch_events = read_file(&archive_path.join(super::store::EVENTS))
-        .map_err(|why| format!("archive: cannot read archived events.jsonl: {why}"))?;
-    if live_memo != arch_memo || live_events != arch_events {
-        return Ok(false);
-    }
-    // messages/ by content — same eligible bodies, same bytes.
-    Ok(message_bodies(&dir.join("messages"))? == message_bodies(&archive_path.join("messages"))?)
-}
-
-/// `basename -> bytes` for the DIRECT, regular, non-symlink `*.txt` bodies
-/// under `dir` — exactly the inclusion rule `stage_messages` archives by, so
-/// the two sets are comparable.
-fn message_bodies(dir: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    let entries = match read_dir(dir) {
-        Ok(paths) => paths,
-        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(why) => {
-            return Err(format!(
-                "archive: cannot enumerate {} ({why}) — refusing to compare against a partially-read message set.",
-                dir.display()
-            ));
-        }
-    };
-    let mut bodies = BTreeMap::new();
-    for path in entries {
-        if path.extension().is_none_or(|ext| ext != "txt") {
-            continue;
-        }
-        let Ok(meta) = symlink_meta(&path) else {
-            continue;
-        };
-        if meta.file_type().is_symlink() || !meta.is_file() {
-            continue;
-        }
-        let base = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let bytes = read_file(&path)
-            .map_err(|why| format!("archive: cannot read {} ({why}).", path.display()))?;
-        bodies.insert(base, bytes);
-    }
-    Ok(bodies)
-}
-
 /// Copy the DIRECT, regular, non-symlink `messages/*.txt` into `dst` at `0600`.
 fn stage_messages(src: &Path, dst: &Path, err: &mut impl Write) -> Result<(), String> {
     let mut entries: Vec<PathBuf> = match read_dir(src) {
@@ -854,7 +818,7 @@ fn stage_messages(src: &Path, dst: &Path, err: &mut impl Write) -> Result<(), St
 
 #[cfg(test)]
 mod equivalence_tests {
-    use super::{Ops, Reason, live_matches_existing_archive, run};
+    use super::{Ops, Reason, hold_retained_sources, retained_snapshot, validate_tree};
     use std::path::{Path, PathBuf};
 
     const AID: &str = "33333333-3333-3333-3333-333333333333";
@@ -907,9 +871,32 @@ mod equivalence_tests {
         };
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = run(dir, &ops, &mut out, &mut err).expect("publish ran");
+        let held = hold_retained_sources(dir).expect("writer holds");
+        let code = retained_snapshot(dir, &ops, &held, &mut out, &mut err).expect("publish ran");
         assert_eq!(code, 0, "publish: {}", String::from_utf8_lossy(&err));
         code
+    }
+
+    /// Exercise the strict candidate comparison used by both destructive
+    /// callers; the legacy subset comparator no longer exists.
+    fn live_matches_existing_archive(
+        dir: &Path,
+        archive: &Path,
+        aid: &str,
+    ) -> Result<bool, String> {
+        validate_tree(archive, aid)?;
+        let held = hold_retained_sources(dir).map_err(|why| why.to_string())?;
+        let ops = Ops {
+            reason: Reason::End,
+            push_outcome: "-",
+            push_ref: "-",
+            preserved: "-",
+            workdir: "-",
+            archived_at: AT,
+        };
+        retained_snapshot(dir, &ops, &held, &mut std::io::sink(), &mut std::io::sink())
+            .map(|code| code == 0)
+            .map_err(|why| why.to_string())
     }
 
     #[test]

@@ -2565,7 +2565,7 @@ fn archive_keep(
         archived_at: &archived_at,
     };
     let mut captured = Vec::new();
-    let code = archive::publish::end_snapshot(dir, &ops, held, &mut captured, err)?;
+    let code = archive::publish::retained_snapshot(dir, &ops, held, &mut captured, err)?;
     if code != 0 {
         writeln!(
             err,

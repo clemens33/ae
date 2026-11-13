@@ -1,8 +1,6 @@
 //! Ordinary End's writer holds, retry decision and post-publication signal.
-use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use super::{
     Action, Git, Notice, Plan, archive, archive_keep, archive_step, cleanup, meta, meta_value,
@@ -37,29 +35,13 @@ fn target(dir: &Path, id: &str) -> PathBuf {
 }
 
 struct Holds {
-    _activities: Vec<File>,
     sources: archive::publish::SourceGuards,
 }
 
 impl Holds {
     fn take(dir: &Path) -> Result<Self, String> {
-        let mut activities = Vec::new();
-        for name in [
-            ".console-writer.lock",
-            ".console-admission.lock",
-            ".goal-setter.lock",
-            ".console-draft-mutation.lock",
-            "telegram-outbound.cursor.lock",
-        ] {
-            let path = dir.join(name);
-            activities.push(
-                crate::store::lock(&path, Duration::ZERO)
-                    .map_err(|why| format!("End could not lock {}: {why}", path.display()))?,
-            );
-        }
         Ok(Self {
-            _activities: activities,
-            sources: archive::publish::hold_sources(dir)?,
+            sources: archive::publish::hold_retained_sources(dir).map_err(|why| why.to_string())?,
         })
     }
 }
