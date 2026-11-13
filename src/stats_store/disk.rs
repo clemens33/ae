@@ -929,6 +929,18 @@ impl Dir for Files {
             Mode::Held => self.held_list(dir),
             Mode::Warm | Mode::Exception => {
                 let (names, listed) = self.list_now(dir);
+                // A warm answers a failed listing (its own error, or names
+                // through a node whose status proves no directory) with the
+                // error its record serves held, so what a warm decides from
+                // it is what a held run decides. The exception reads as it is,
+                // and a name that is no payload name fails held before any
+                // record, as it did here.
+                let names = match (&listed, self.snap.mode) {
+                    (Listed::Failed(_, failure), Mode::Warm) if self.path(dir).is_ok() => {
+                        Err(failure.error())
+                    }
+                    _ => names,
+                };
                 if let Some(was) = self.snap.dirs.insert(dir.to_owned(), listed)
                     && self.snap.dirs.get(dir) != Some(&was)
                 {
@@ -2884,9 +2896,35 @@ pub enum Tools<T> {
     Failed(String),
 }
 
-/// One warm's decision in [`tools`]: no epoch (`None`), or the epoch with
-/// the plan and value `build` decided in it; a refused epoch, described.
+/// One decision in [`tools`]: no epoch (`None`), or the epoch with the plan
+/// and value `build` decided in it; a refused epoch, described.
 type Decided<T> = Result<Option<(u64, Option<Plan>, T)>, String>;
+
+/// Read the epoch and run `build` in it, through `files` in its mode.
+fn decide<T>(
+    files: &mut Files,
+    build: &impl Fn(&mut dyn Dir, u64) -> (Option<Plan>, T),
+) -> Decided<T> {
+    match read_epoch(files) {
+        Ok(Some(epoch)) => {
+            let (plan, value) = build(files, epoch);
+            Ok(Some((epoch, plan, value)))
+        }
+        Ok(None) => Ok(None),
+        Err(refused) => Err(refused.describe()),
+    }
+}
+
+/// Apply a decision's plan, if any, under the lock.
+fn settle<T>(files: &mut Files, decided: Decided<T>) -> Result<Option<(u64, T)>, String> {
+    match decided? {
+        Some((epoch, plan, value)) => plan
+            .map_or(Ok(()), |plan| plan.apply(files, plan.ops.len()))
+            .map(|()| Some((epoch, value)))
+            .map_err(|why| why.to_string()),
+        None => Ok(None),
+    }
+}
 
 /// The one writer entry of the tools subtree (#288 P3, owner condition S5):
 /// `build` reads through the payload [`Dir`] and returns the plan to apply
@@ -2901,7 +2939,10 @@ type Decided<T> = Result<Option<(u64, Option<Plan>, T)>, String>;
 /// [`Files::replay`] proves by status alone that every name and listing the
 /// warm read still says the same, and the kept plan applies; a change, or a
 /// warm that saw one name answer two ways, makes the attempt stale, and the
-/// next attempt warms and decides again. That is sound only because `build`
+/// next attempt warms and decides again. Every warm answer is the one its
+/// record serves held: a failed listing, or one through a node whose status
+/// proves no directory, answers the recorded error in the warm too. That is
+/// sound only because `build`
 /// is a pure decision: it reads only through the given [`Dir`], never
 /// applies an operation itself, reads each name with one cap, and returns
 /// the same plan and value for the same answers and epoch (no clock, no
@@ -2922,28 +2963,15 @@ pub fn tools<T>(
         &mut held,
         |files, _| {
             if !files.held() {
-                kept = Some(match read_epoch(files) {
-                    Ok(Some(epoch)) => {
-                        let (plan, value) = build(files, epoch);
-                        Ok(Some((epoch, plan, value)))
-                    }
-                    Ok(None) => Ok(None),
-                    Err(refused) => Err(refused.describe()),
-                });
+                kept = Some(decide(files, &build));
                 return None;
             }
             files.replay();
             if files.stale() {
                 return None;
             }
-            Some(match kept.take()? {
-                Ok(Some((epoch, plan, value))) => plan
-                    .map_or(Ok(()), |plan| plan.apply(files, plan.ops.len()))
-                    .map(|()| Some((epoch, value)))
-                    .map_err(|why| why.to_string()),
-                Ok(None) => Ok(None),
-                Err(why) => Err(why),
-            })
+            let decided = kept.take()?;
+            Some(settle(files, decided))
         },
     );
     match taken {

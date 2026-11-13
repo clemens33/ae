@@ -502,3 +502,63 @@ fn statsplan_snapshot_over_cap_refuses_before_taking_the_lock() {
     assert!(disk::take_file_events().is_empty());
     unlocked_reads();
 }
+
+#[test]
+fn statsplan_a_symlinked_tools_directory_keeps_the_held_refusal_and_every_byte() {
+    let root = seed();
+    let reference = seed();
+    for path in [&root.0, &reference.0] {
+        fs::rename(path.join("stats/tools"), path.join("tools-target"))
+            .expect("move the real store");
+        symlink("../tools-target", path.join("stats/tools")).expect("directory symlink");
+        assert!(
+            Files::at(path).list("stats/tools").is_ok(),
+            "plain reads can list the link; held transactions refuse it"
+        );
+    }
+    let before = snapshot(&root.0);
+    let _controls = reset();
+    let mut held = Duration::ZERO;
+    let original = disk::transact(
+        &reference.0,
+        &mut Files::at(&reference.0),
+        &mut disk::FileJournals::at(&reference.0),
+        Duration::from_secs(1),
+        &mut held,
+        |files, _| {
+            let epoch = disk::active_epoch(files)
+                .expect("reference epoch")
+                .expect("reference payload");
+            let made = publication(files, epoch);
+            if let Ok(plan) = &made {
+                plan.apply(files, usize::MAX)
+                    .expect("warm is inert; held refuses before a plan");
+            }
+            made
+        },
+    );
+    assert!(
+        matches!(original, disk::Taken::Done(Err(_))),
+        "the original transaction decides a listing refusal: {original:?}"
+    );
+    assert!(disk::take_file_events().is_empty());
+    unlocked_reads();
+    let _candidate_controls = reset();
+    let (_, result) = run(&root.0, publication);
+    assert!(
+        result.is_err(),
+        "the warm success cannot replace held refusal"
+    );
+    assert_eq!(disk::take_attempts(), vec![disk::Attempt::Decided]);
+    assert!(disk::take_file_events().is_empty());
+    assert_eq!(
+        snapshot(&root.0),
+        before,
+        "every target-store byte survives"
+    );
+    assert_eq!(
+        fs::read_link(root.0.join("stats/tools")).expect("the link survives"),
+        Path::new("../tools-target")
+    );
+    unlocked_reads();
+}
