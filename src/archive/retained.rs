@@ -12,7 +12,7 @@ pub(super) type Inventory = BTreeMap<PathBuf, bool>;
 
 fn refusal(path: &Path, why: impl std::fmt::Display) -> String {
     format!(
-        "archive: cannot capture {} ({why}); remove it, then retry the operation",
+        "archive: cannot capture {} ({why}); remove it, then ae end",
         path.display()
     )
 }
