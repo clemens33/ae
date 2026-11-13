@@ -746,14 +746,47 @@ fn s2_line_boundaries_skip_restart_and_bounded_holding_turn() {
 #[test]
 fn s2_more_than_512_sources_are_eventually_published() {
     let root = Root::new();
-    for n in 0..513 {
+    // 513 real discovered sources: 510 singletons plus 3 sharing session S.
+    // Splitting groups keeps discovery/cardinality at 513 without a
+    // 513-record single-group aggregate; max group size 3 keeps debug cost low.
+    for n in 0..510u32 {
+        let session = format!("{:08x}-0000-4000-8000-{:012x}", n, n);
+        root.live(&format!("s{n:04}"), &session, &birth(&session, n));
+    }
+    for n in 510..513u32 {
         root.live(&format!("s{n:04}"), S, &birth(S, n));
     }
     let mut m = Maintainer::new(&root.0, limits(), Duration::ZERO);
     run_to_idle(&mut m, 1100);
-    let actual = view(&mut Files::at(&root.0), None);
-    assert_eq!(actual.all.total, 513);
-    assert_eq!(actual.all.sources_total, 513);
+    let mut files = Files::at(&root.0);
+    let actual = view(&mut files, None);
+    assert_eq!(
+        actual.all.total, 513,
+        "independent birth oracle: one birth per source"
+    );
+    assert_eq!(
+        actual.all.sources_total, 513,
+        "cardinality oracle: all 513 discovered sources materialized"
+    );
+    let shared = view(&mut files, Some(S));
+    let crate::stats::ThisSession::Ready(shared_scope) = &shared.this else {
+        panic!("shared session scope ready");
+    };
+    assert_eq!(
+        shared_scope.total, 3,
+        "same-group aggregation folds all births in scope"
+    );
+    assert_eq!(shared_scope.sources_total, 3, "same-group cardinality");
+    let solo = format!("{:08x}-0000-4000-8000-{:012x}", 0u32, 0u32);
+    let singleton = view(&mut files, Some(solo.as_str()));
+    let crate::stats::ThisSession::Ready(single_scope) = &singleton.this else {
+        panic!("singleton session scope ready");
+    };
+    assert_eq!(
+        single_scope.total, 1,
+        "singleton group does not leak into the shared group"
+    );
+    assert_eq!(single_scope.sources_total, 1, "singleton group cardinality");
 }
 
 #[test]
