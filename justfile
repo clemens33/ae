@@ -2560,42 +2560,6 @@ HP_LEG := '''
         if [ -f "$dir/$runid.exit" ]; then cat "$dir/$runid.exit"; return 0; fi
         echo gone
     }
-    # mac_groups_stop <pid> <secs>: stop the process group <pid> leads and the process group of
-    # every descendant of <pid>, found once, before any signal, while the tree is intact (cargo's
-    # detached() session is one of them). TERM to each, up to <secs> s for all to be empty, then
-    # KILL to each, up to 10 s more. Returns 1 when one is still not empty; $mac_groups names them.
-    mac_groups_stop() {
-        local lead=$1 tries own group
-        own="$(ps -o pgid= -p "$$" | tr -d ' ')"
-        mac_groups="$(ps -axo pid=,ppid=,pgid= | awk -v root="$lead" -v own="$own" '
-            { pid[NR] = $1; ppid[NR] = $2; pgid[NR] = $3 }
-            END {
-                seen[root] = 1
-                for (grew = 1; grew;) {
-                    grew = 0
-                    for (i = 1; i <= NR; i++) if (seen[ppid[i]] && !seen[pid[i]]) { seen[pid[i]] = 1; grew = 1 }
-                }
-                groups[root] = 1
-                for (i = 1; i <= NR; i++) if (seen[pid[i]]) groups[pgid[i]] = 1
-                for (g in groups) if (g > 1 && g != own) print g
-            }')"
-        mac_groups_alive() {
-            for group in $mac_groups; do
-                if kill -0 -- "-$group" 2>/dev/null; then return 0; fi
-            done
-            return 1
-        }
-        for group in $mac_groups; do kill -TERM -- "-$group" 2>/dev/null || true; done
-        tries=$(($2 * 10))
-        while mac_groups_alive && ((--tries > 0)); do sleep 0.1; done
-        if mac_groups_alive; then
-            echo "release-proof: the Mac subset outlived $2 s after TERM: sending KILL to its process groups" >&2
-            for group in $mac_groups; do kill -KILL -- "-$group" 2>/dev/null || true; done
-            tries=100
-            while mac_groups_alive && ((--tries > 0)); do sleep 0.1; done
-        fi
-        ! mac_groups_alive
-    }
     # hp_remote <function> <args…>: one bounded `ssh <hp> bash -s`, its stdin the function's text.
     hp_remote() {
         local fn=$1
@@ -2604,7 +2568,7 @@ HP_LEG := '''
             "$bound" 30 ssh -o BatchMode=yes -o ConnectTimeout=10 -- "$AE_RELEASE_HP" bash -s -- "$@"
     }
     hp_parallel() {
-        local lock="release-${head:0:12}" ref="refs/ae-release/$head" runid code dropped mac mac_status lost=0 line deadline path
+        local lock="release-${head:0:12}" ref="refs/ae-release/$head" runid code dropped mac_status lost=0 line deadline path
         local exit_re='^gate=([0-9]+|prep|lock|worktree|running|signal) run=([^ ]+) head=([0-9a-f]{40}) tree=([0-9a-f]{40}) lock=(released|held)$'
         runid="${head:0:12}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
         path="${AE_RELEASE_HP_PATH:-}"
@@ -2646,27 +2610,12 @@ HP_LEG := '''
                proof_refuse "the hp leg did not start (exit $code)" ;;
         esac
 
-        # The Mac subset in a process group of its own, so this shell runs its traps during the
-        # wait. An interrupt stops that group and every process group below it (the lane's
-        # detached() puts cargo in a session of its own) and waits until all of them are empty,
-        # so `just release` returns, and its caller releases the Mac lane lock, only after the
-        # subset and its lane cleanup ended.
+        # The Mac subset runs in the foreground, as it does when the hp already has its receipt:
+        # an interrupt reaches it as before, and a failure or an interrupt ends this proof nonzero
+        # before the bump. The hp leg runs on alone and releases its own lane.
         echo "release-proof: running the Mac boundary subset, just test-macos, while the hp runs"
-        set -m
-        just test-macos &
-        mac=$!
-        set +m
-        mac_stop() {
-            trap - INT TERM HUP
-            mac_groups_stop "$mac" 60 ||
-                echo "release-proof: a process group of the Mac subset outlived TERM and KILL: $mac_groups" >&2
-            wait "$mac" 2>/dev/null || true
-            proof_refuse "interrupted: the Mac subset is stopped; the hp leg $runid runs on alone and releases its own lane"
-        }
-        trap mac_stop INT TERM HUP
         mac_status=0
-        wait "$mac" || mac_status=$?
-        trap - INT TERM HUP
+        just test-macos || mac_status=$?
         ((mac_status == 0)) || proof_refuse "the Mac boundary subset failed (exit $mac_status); the hp leg $runid runs on alone and releases its own lane"
         proof_same "$head" "$tree" || proof_refuse "$proof_why while the Mac subset ran"
         echo "release-proof: the Mac boundary subset is green; waiting for the hp leg $runid"

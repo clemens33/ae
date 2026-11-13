@@ -462,7 +462,7 @@ time, so a release costs about the slower of the two legs:
    the staging ref, runs `timeout -k 60 3600 just test`, releases the lock on a normal end and writes
    `<root>/.local/release/<run>.exit` last. The run id is the head, the time and the Mac process id,
    so no attempt reads the exit record of another.
-4. The Mac runs `just test-macos` in a process group of its own, then polls the exit record every
+4. The Mac runs `just test-macos` in the foreground, as without an hp leg, then polls the exit record every
    30 s. It goes on only when the record names its own run, commit and tree, exit 0 and a released
    lock. Then the strict receipt check above runs on the receipt the hp leg wrote.
 
@@ -470,8 +470,8 @@ The hp leg has no remote cancel. A red Mac subset, three lost polls in a row or 
 stops the Mac waiting and refuses; the hp leg finishes alone, and its receipt serves a later release
 of the same tree. When its own timeout or a signal stops `just test`, the leg keeps the lane lock and
 writes `<root>/.local/release/<run>.suspect`; the lead clears the lock after checking that nothing of
-that run is left. An interrupt stops the Mac subset's process group and waits until the group is
-empty, so `just release` returns only after the subset and its lane cleanup ended. The Mac lane lock
+that run is left. An interrupt reaches the Mac subset exactly as it does without an hp leg, and
+`just release` refuses before the bump. The Mac lane lock
 stays with the caller of `just release`: the release itself claims none.
 `tests/it/gate/receipt_spec/parallel_spec.rs` is the frozen acceptance for this path.
 
