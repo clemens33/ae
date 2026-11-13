@@ -1295,3 +1295,6 @@ mod leadat;
 
 #[path = "effort_spawned_spec.rs"]
 mod spawned;
+
+#[path = "effort_floor_spec.rs"]
+mod floors;
