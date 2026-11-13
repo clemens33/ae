@@ -2431,8 +2431,10 @@ pub(crate) fn publish_seat_move(
 /// record), summary `reseat`, decided and appended under the journal lock. A
 /// seat without an `effort.<slot>` line reads no journal. A journal that
 /// already ends the record's episode so — a retry after a publish that failed
-/// — is reused, never written twice. `Err` when the journal could not be read
-/// or appended: the caller then publishes nothing.
+/// — is reused, never written twice; an unterminated tail is terminated first
+/// ([`journal_records`]), so the watchdog reads exactly one ending. `Err` when
+/// the journal could not be read or appended: the caller then publishes
+/// nothing.
 fn reseat_discard(dir: &Path, current: &str, slot: &str, agent: &str) -> io::Result<()> {
     let bytes = current.as_bytes();
     if effort_claims(bytes, slot).is_empty() {
@@ -2455,20 +2457,23 @@ fn reseat_discard(dir: &Path, current: &str, slot: &str, agent: &str) -> io::Res
     let line = crate::effort::discard_line(crate::time::Timestamp::now(), &seat, episode, why);
     let key = crate::events::SessionKey::new(&session, session_id);
     let appended = crate::store::open(dir).append_event_decided(|journal| {
-        let events: Vec<crate::events::Event> = match journal {
+        let bytes = match journal {
             crate::store::SourceRead::Absent => Vec::new(),
-            crate::store::SourceRead::Ready(bytes) => String::from_utf8_lossy(&bytes)
-                .lines()
-                .filter_map(|line| crate::events::Event::parse_line(line).ok())
-                .collect(),
+            crate::store::SourceRead::Ready(bytes) => bytes,
             crate::store::SourceRead::Invalid(why) | crate::store::SourceRead::Unreadable(why) => {
                 return Err(Some(why));
             }
         };
+        let (events, settle) = journal_records(&bytes);
         if crate::effort::ended(&events, key, slot, agent, episode, why) {
-            return Err(None);
+            // An ending in the unterminated tail becomes a complete record.
+            return if settle {
+                Ok("\n".to_owned())
+            } else {
+                Err(None)
+            };
         }
-        Ok(format!("{line}\n"))
+        Ok(format!("{}{line}\n", if settle { "\n" } else { "" }))
     });
     match appended {
         Ok(Ok(()) | Err(None)) => Ok(()),
@@ -2477,6 +2482,27 @@ fn reseat_discard(dir: &Path, current: &str, slot: &str, agent: &str) -> io::Res
         ))),
         Err(why) => Err(io::Error::other(why.to_string())),
     }
+}
+
+/// The journal's records as the effort reseat judges them: every complete
+/// (LF-terminated) record, as `watchdog_daemon::read_events` frames them, then
+/// the unterminated tail when it parses as a record; and whether the journal
+/// ends without an LF, so the next append must first terminate that tail. A
+/// tail that parses becomes the complete record it claims to be; one that
+/// does not becomes its own damaged line instead of gluing onto the append.
+fn journal_records(bytes: &[u8]) -> (Vec<crate::events::Event>, bool) {
+    let parse = |line: &[u8]| crate::events::Event::parse_line(&String::from_utf8_lossy(line)).ok();
+    let mut events: Vec<crate::events::Event> = crate::event_text::read_lines(bytes)
+        .into_iter()
+        .filter_map(parse)
+        .collect();
+    let complete = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |at| at + 1);
+    let tail = &bytes[complete..];
+    events.extend(parse(tail));
+    (events, !tail.is_empty())
 }
 
 /// The guarded replacement itself — PURE, so the guard is pinnable without a
