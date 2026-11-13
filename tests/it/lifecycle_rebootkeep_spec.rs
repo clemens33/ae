@@ -552,8 +552,8 @@ fn reboot_teardown_refuses_a_retained_file_that_changed_after_publishing() {
 /// tree is large on purpose, so staging lasts long enough to observe.
 #[test]
 fn reboot_keeps_writer_holds_through_staging() {
-    let rig = Rig::new("rk10");
     const BIG: [u8; 16384] = [0x5a; 16384];
+    let rig = Rig::new("rk10");
     for i in 0..300usize {
         put(&rig.dir, &format!("big/f{i}.bin"), &BIG);
     }
