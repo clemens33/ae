@@ -89,18 +89,34 @@ fuzz_target!(|data: &[u8]| {
             );
         }
     }
-    let twin = Ok(Twin {
-        baseline: Level::Xhigh,
-        target: Level::High,
-        aliases: vec!["low".into()],
+    // The first step from xhigh, and the second step from the first step's low.
+    let twins =
+        [(Level::Xhigh, Level::High), (Level::High, Level::Medium)].map(|(baseline, target)| {
+            Ok(Twin {
+                baseline,
+                target,
+                aliases: vec!["low".into()],
+            })
+        });
+    // A one-step record and the v2 record of the same seat two tiers down.
+    let two = VALID
+        .replace("v1 ", "v2 ")
+        .replace("low:high", "low:medium step:2");
+    let stores = [VALID, two.as_str()].map(|text| match Record::parse(text) {
+        Ok(record) => Stored::Present(record),
+        Err(damage) => panic!("a fixed record parses: {damage:?}"),
     });
-    let present = Record::parse(VALID).map_or(Stored::Absent, Stored::Present);
-    for stored in [Stored::Absent, present] {
+    for (stored, twin) in [Stored::Absent]
+        .iter()
+        .chain(&stores)
+        .flat_map(|s| twins.iter().map(move |t| (s, t)))
+    {
         for (judged, capped) in [
             (0.0, false),
             (74.9, false),
             (79.0, false),
             (80.0, false),
+            (90.0, false),
             (90.0, true),
         ] {
             let scope = Scope {
@@ -117,16 +133,16 @@ fuzz_target!(|data: &[u8]| {
                 }],
                 spend_capped: capped,
             };
-            for live in [Some(Level::Xhigh), Some(Level::High)] {
+            for live in [Some(Level::Xhigh), Some(Level::High), Some(Level::Medium)] {
                 let inputs = Inputs {
                     at: 80,
                     new_attempts: true,
                     scope: Some(&scope),
                     limited: false,
                     fold: &folded,
-                    stored: &stored,
+                    stored,
                     guard: Some(Ok(())),
-                    twin: &twin,
+                    twin,
                     live,
                     now: 1_700_000_010,
                 };
@@ -137,12 +153,16 @@ fuzz_target!(|data: &[u8]| {
                     ),
                     Decision::Up => {
                         assert!(
-                            open.is_some_and(
-                                |e| matches!(e.down, Leg::Done(_)) && e.up == Leg::Unspent
-                            ),
-                            "a step up needs a done down and an unspent up"
+                            open.is_some_and(|e| e.down.reached().is_some() && e.up == Leg::Unspent),
+                            "a step up needs a reached low and an unspent up"
                         )
                     }
+                    Decision::Deeper { .. } => assert!(
+                        open.is_some_and(|e| matches!(e.down, Leg::Done(_))
+                            && e.up == Leg::Unspent
+                            && !e.yielded),
+                        "a second step needs a done first step, an unspent up and no yield"
+                    ),
                     Decision::Open { .. } => assert_eq!(folded, Fold::Armed),
                     Decision::Reconcile(_)
                     | Decision::Rearm
