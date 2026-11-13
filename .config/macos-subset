@@ -143,6 +143,7 @@ helper tests/it/effort_live_spec.rs::unchanged = effort_live_spec::leadat::leada
 helper tests/it/effort_live_spec.rs::until = effort_live_spec::r3_up_with_record_already_cleared_is_unproven_never_failed_or_restored
 helper tests/it/effort_live_spec.rs::watch = effort_live_spec::leadat::leadat_control_nonpair_main_keeps_global_inversion
 helper tests/it/gate.rs::compiled_it_test_names = gate::mutantstime_spec::the_mutants_timeout_exceptions_are_named_and_finite
+helper tests/it/gate.rs::run_in_env = gate::the_lane_lock_is_one_lock_for_every_checkout_and_only_its_owner_releases_it
 helper tests/it/gate/receipt_spec.rs::ReceiptFixture::git = gate::receipt_spec::a_receipt_write_failure_leaves_a_green_gate_green
 helper tests/it/gate/receipt_spec.rs::ReceiptFixture::just_in = gate::receipt_spec::a_receipt_write_failure_leaves_a_green_gate_green
 helper tests/it/gate/receipt_spec.rs::ReceiptFixture::new = gate::receipt_spec::a_receipt_write_failure_leaves_a_green_gate_green

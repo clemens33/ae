@@ -48,6 +48,8 @@ mod macos_subset;
 )]
 mod macos_subset_spec;
 mod modtree;
+#[path = "gate/receipt_spec/parallel_spec.rs"]
+mod parallel_spec;
 mod receipt_window;
 
 /// The repository root — this file's crate manifest directory.
