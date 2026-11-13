@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.54] - 2026-11-13
+- Move state_root, VERSION, version_line and NO_STATE_ROOT callers to their owners (R1 group 2)
+- Pin version_line to the manifest version (R1 group 2 mutant)
+
 ## [v2026.11.53] - 2026-11-13
 - Freeze spawned effort eligibility and the retire ending (#318 S1)
 - Call the retire helper through its session (#318 S1)
