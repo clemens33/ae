@@ -2041,3 +2041,6 @@ fn authorized(record: &Record, ledger: Option<&Fold>) -> Resume {
 
 #[cfg(test)]
 mod tie_spec;
+
+#[cfg(test)]
+mod floor_tests;
