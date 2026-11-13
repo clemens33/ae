@@ -1206,7 +1206,7 @@ fn well_formed_discard(event: &Event) -> bool {
     let reference = event.reference.as_deref().unwrap_or_default();
     let summary = event.summary.as_deref().unwrap_or_default();
     (reference.is_empty() || epoch(reference).is_some())
-        && [Discarded::Off, Discarded::Fresh]
+        && [Discarded::Off, Discarded::Fresh, Discarded::Reseat]
             .iter()
             .any(|why| why.word() == summary)
 }
@@ -1245,6 +1245,43 @@ pub fn fold(events: &[Event], session: SessionKey<'_>, slot: &str, agent: &str) 
         Some(why) => Fold::Doubt(why),
         None => open.map_or(Fold::Armed, Fold::Open),
     }
+}
+
+/// Whether the seat's journal already ends its CURRENT episode with a
+/// watchdog [`DISCARDED`] for `why` whose ref is `episode` (empty for a
+/// damaged record): one addressed to the seat after the seat's last watchdog
+/// [`EPISODE`]. A retry after a journaled discard whose meta publish failed
+/// reuses that ending instead of writing a second one. Another actor, slot or
+/// session, another ref, or an ending before a newer episode does not count;
+/// a record of another actor between them, such as the reseat's own stop
+/// record, does not hide it.
+#[must_use]
+pub fn ended(
+    events: &[Event],
+    session: SessionKey<'_>,
+    slot: &str,
+    agent: &str,
+    episode: Option<i64>,
+    why: Discarded,
+) -> bool {
+    let reference = episode.map(|key| key.to_string()).unwrap_or_default();
+    let mut ended = false;
+    for event in events {
+        if event.actor != crate::watchdog::WATCHDOG_ACTOR
+            || !crate::watchdog::event_is_addressed_to_in(event, session, slot, agent)
+        {
+            continue;
+        }
+        if event.action == EPISODE {
+            ended = false;
+        } else if event.action == DISCARDED
+            && event.reference.as_deref().unwrap_or_default() == reference
+            && event.summary.as_deref() == Some(why.word())
+        {
+            ended = true;
+        }
+    }
+    ended
 }
 
 /// A seat whose meta holds a live effort record, as a resume trim reads it.
@@ -1579,13 +1616,15 @@ pub enum Switch {
     Unusable,
 }
 
-/// Why a resume drops a record.
+/// Why a resume or a reseat drops a record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Discarded {
     /// `auto_effort = off`.
     Off,
     /// The seat does not resume the record's conversation.
     Fresh,
+    /// A reseat moved the seat to another setup.
+    Reseat,
 }
 
 impl Discarded {
@@ -1595,6 +1634,7 @@ impl Discarded {
         match self {
             Self::Off => "off",
             Self::Fresh => "fresh",
+            Self::Reseat => "reseat",
         }
     }
 }

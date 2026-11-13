@@ -2419,7 +2419,64 @@ pub(crate) fn publish_seat_move(
     agent: &str,
     move_to: &SeatMove<'_>,
 ) -> Result<(), RewriteError> {
-    rewrite_under_lock(dir, |current| seat_move_for(current, slot, agent, move_to))
+    rewrite_journaled(
+        dir,
+        |current| seat_move_for(current, slot, agent, move_to),
+        |current| reseat_discard(dir, current, slot, agent),
+    )
+}
+
+/// Journal the end of the seat's effort record before a reseat drops it: ONE
+/// watchdog `effort-discarded`, ref the record's episode (empty for a damaged
+/// record), summary `reseat`, decided and appended under the journal lock. A
+/// seat without an `effort.<slot>` line reads no journal. A journal that
+/// already ends the record's episode so — a retry after a publish that failed
+/// — is reused, never written twice. `Err` when the journal could not be read
+/// or appended: the caller then publishes nothing.
+fn reseat_discard(dir: &Path, current: &str, slot: &str, agent: &str) -> io::Result<()> {
+    let bytes = current.as_bytes();
+    if effort_claims(bytes, slot).is_empty() {
+        return Ok(());
+    }
+    let episode = match crate::effort::stored(bytes, slot) {
+        crate::effort::Stored::Present(record) => Some(record.episode),
+        crate::effort::Stored::Absent | crate::effort::Stored::Damaged(_) => None,
+    };
+    let session = crate::lifecycle::meta_value(bytes, "session");
+    let parsed = Meta::parse(current);
+    let session_id = parsed.session_id().unwrap_or_default();
+    let seat = crate::effort::DiscardSeat {
+        session: &session,
+        session_id,
+        slot,
+        agent,
+    };
+    let why = crate::effort::Discarded::Reseat;
+    let line = crate::effort::discard_line(crate::time::Timestamp::now(), &seat, episode, why);
+    let key = crate::events::SessionKey::new(&session, session_id);
+    let appended = crate::store::open(dir).append_event_decided(|journal| {
+        let events: Vec<crate::events::Event> = match journal {
+            crate::store::SourceRead::Absent => Vec::new(),
+            crate::store::SourceRead::Ready(bytes) => String::from_utf8_lossy(&bytes)
+                .lines()
+                .filter_map(|line| crate::events::Event::parse_line(line).ok())
+                .collect(),
+            crate::store::SourceRead::Invalid(why) | crate::store::SourceRead::Unreadable(why) => {
+                return Err(Some(why));
+            }
+        };
+        if crate::effort::ended(&events, key, slot, agent, episode, why) {
+            return Err(None);
+        }
+        Ok(format!("{line}\n"))
+    });
+    match appended {
+        Ok(Ok(()) | Err(None)) => Ok(()),
+        Ok(Err(Some(why))) => Err(io::Error::other(format!(
+            "the journal is unreadable: {why}"
+        ))),
+        Err(why) => Err(io::Error::other(why.to_string())),
+    }
 }
 
 /// The guarded replacement itself — PURE, so the guard is pinnable without a
@@ -2964,6 +3021,17 @@ fn rewrite_under_lock(
     dir: &Path,
     transform: impl FnOnce(&str) -> Option<String>,
 ) -> Result<(), RewriteError> {
+    rewrite_journaled(dir, transform, |_| Ok(()))
+}
+
+/// [`rewrite_under_lock`] that runs `journal` over the current meta after
+/// `transform` decided a change and before the publish, under the same hold:
+/// a `journal` failure publishes nothing.
+fn rewrite_journaled(
+    dir: &Path,
+    transform: impl FnOnce(&str) -> Option<String>,
+    journal: impl FnOnce(&str) -> io::Result<()>,
+) -> Result<(), RewriteError> {
     let path = crate::store::open(dir).meta_path();
     let _held = crate::store::lock(
         &crate::store::open(dir).meta_lock(),
@@ -2986,6 +3054,7 @@ fn rewrite_under_lock(
     if let Some(why) = absent {
         return Err(RewriteError::NotWritten(why));
     }
+    journal(&current).map_err(RewriteError::NotWritten)?;
     publish_bytes(dir, &path, next.as_bytes())
 }
 

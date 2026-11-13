@@ -1034,6 +1034,7 @@ fn discard_said(slot: &str, why: Dropped, outcome: &crate::meta::Discard) -> Str
     let cause = match why {
         Dropped::Discard(crate::effort::Discarded::Off) => "auto_effort = off",
         Dropped::Discard(crate::effort::Discarded::Fresh) => "a new conversation",
+        Dropped::Discard(crate::effort::Discarded::Reseat) => "a reseat",
         Dropped::Failed(_) => "a new conversation: its authorized step down failed",
     };
     let what = match outcome {
