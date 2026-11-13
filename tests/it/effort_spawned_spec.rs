@@ -18,7 +18,8 @@ fn retire_applied(seat: &Seat) {
     ] {
         put_row(rig, key, value);
     }
-    let (code, stdout, stderr) = rig.run_top(&main, &["retire", "scout"]);
+    let (code, stdout, stderr) =
+        rig.run_top(&main, &[&format!("@{}", rig.session), "retire", "scout"]);
     assert_eq!(code, Some(0), "real retire: {stdout}\n{stderr}");
     let discarded = records(rig, "effort-discarded");
     assert_eq!(
