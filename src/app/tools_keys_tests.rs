@@ -45,6 +45,7 @@ fn tools_view() -> View {
         more: None,
         items: 1,
         totals: cols,
+        harnesses: Vec::new(),
         orphans: 0,
         detail: Vec::new(),
         detail_more: None,

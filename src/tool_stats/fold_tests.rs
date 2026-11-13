@@ -454,3 +454,230 @@ fn the_observation_temporary_charges_every_modelled_structure() {
         temporary()
     );
 }
+
+// #338: the view splits its observations by harness. Expected values are
+// hand counts of the events below, never read off the fold.
+
+fn codex(events: Vec<Event>) -> Conversation {
+    conversation(Adapter::Codex, vec![(0, events)])
+}
+
+fn ask_with(page: Page, filter: Filter) -> Ask {
+    Ask {
+        page,
+        scope: Scope::All,
+        filter,
+    }
+}
+
+fn unresolved(attempts: u64) -> Cols {
+    Cols::Tool(ToolCols {
+        attempts,
+        unresolved: attempts,
+        ..ToolCols::default()
+    })
+}
+
+fn tool_item(name: &str) -> Item {
+    Item::Tool(Ident::Name(name.into()))
+}
+
+/// The groups come in harness order whatever the feeding order or the
+/// counts, each holds its own ranked rows and totals, the totals of the
+/// groups add up to the view's, and the merged table is what it was.
+#[test]
+fn harness_groups_follow_harness_order_and_partition_the_totals() {
+    let claude_calls = claude(vec![attempt(1, "Read", None), attempt(2, "Bash", None)]);
+    let codex_calls = codex(vec![
+        attempt(11, "Read", None),
+        attempt(12, "Read", None),
+        attempt(13, "Read", None),
+    ]);
+    // Codex is fed first and has the larger count: only the harness order puts Claude first.
+    let view = fold(
+        &[codex_calls, claude_calls],
+        &ask_with(Page::Tools, Filter::All),
+        &Caps::SLICE,
+    );
+    let harnesses: Vec<Adapter> = view.harnesses.iter().map(|group| group.harness).collect();
+    assert_eq!(harnesses, [Adapter::Claude, Adapter::Codex]);
+    assert_eq!(view.harnesses[0].totals, unresolved(2));
+    assert_eq!(view.harnesses[0].items, 2);
+    assert_eq!(view.harnesses[1].totals, unresolved(3));
+    assert_eq!(view.harnesses[1].items, 1);
+    // Ties rank by item ascending: Bash before Read.
+    let ranked = |at: usize| -> Vec<(Item, Cols)> {
+        view.harnesses[at]
+            .rows
+            .iter()
+            .map(|row| (row.item.clone(), row.cols))
+            .collect()
+    };
+    assert_eq!(
+        ranked(0),
+        [
+            (tool_item("Bash"), unresolved(1)),
+            (tool_item("Read"), unresolved(1))
+        ]
+    );
+    assert_eq!(ranked(1), [(tool_item("Read"), unresolved(3))]);
+    let mut sum = empty_cols(Page::Tools);
+    for group in &view.harnesses {
+        add(&mut sum, &group.totals);
+    }
+    assert_eq!(sum, view.totals, "the groups partition the totals");
+    assert_eq!(view.totals, unresolved(5));
+    // The merged table counts Read once for both harnesses.
+    let merged: Vec<(Item, Cols)> = view
+        .rows
+        .iter()
+        .map(|row| (row.item.clone(), row.cols))
+        .collect();
+    assert_eq!(
+        merged,
+        [
+            (tool_item("Read"), unresolved(4)),
+            (tool_item("Bash"), unresolved(1))
+        ]
+    );
+    assert_eq!(view.items, 2);
+}
+
+/// Each group cuts its own rows to the cap and says what its cut left out;
+/// its totals and item count still cover every row, shown or not.
+#[test]
+fn harness_groups_cut_their_own_rows() {
+    let caps = Caps {
+        rows: 1,
+        ..Caps::SLICE
+    };
+    let view = fold(
+        &[
+            claude(vec![
+                attempt(1, "Read", None),
+                attempt(2, "Read", None),
+                attempt(3, "Bash", None),
+            ]),
+            codex(vec![attempt(11, "aaa", None), attempt(12, "bbb", None)]),
+        ],
+        &ask_with(Page::Tools, Filter::All),
+        &caps,
+    );
+    let shown = |at: usize| -> Vec<Item> {
+        view.harnesses[at]
+            .rows
+            .iter()
+            .map(|row| row.item.clone())
+            .collect()
+    };
+    assert_eq!(shown(0), [tool_item("Read")]);
+    assert_eq!(
+        view.harnesses[0].more,
+        Some(More {
+            items: 1,
+            attempts: 1
+        })
+    );
+    assert_eq!(
+        (view.harnesses[0].items, view.harnesses[0].totals),
+        (2, unresolved(3))
+    );
+    assert_eq!(shown(1), [tool_item("aaa")]);
+    assert_eq!(
+        view.harnesses[1].more,
+        Some(More {
+            items: 1,
+            attempts: 1
+        })
+    );
+    assert_eq!(
+        (view.harnesses[1].items, view.harnesses[1].totals),
+        (2, unresolved(2))
+    );
+}
+
+/// A skill read that was never invoked adds to its group's totals with no
+/// attempt of its own, and a harness with nothing counted has no group.
+#[test]
+fn a_reads_only_skill_counts_in_its_group_and_an_empty_harness_has_none() {
+    let id = Key([1; 16]);
+    let read = claude(vec![
+        attempt(1, "Read", None),
+        Event::Read {
+            id,
+            direct: Some((
+                Ident::Name("tdd".into()),
+                ScopeClass::User,
+                Resource([7; 6]),
+            )),
+            ancestors: Vec::new(),
+            over: false,
+            skills: true,
+        },
+        Event::Result {
+            id,
+            error: false,
+            load: None,
+        },
+    ]);
+    let view = fold(
+        &[read, codex(vec![attempt(11, "Read", None)])],
+        &ask_with(Page::Skills, Filter::All),
+        &Caps::SLICE,
+    );
+    assert_eq!(view.harnesses.len(), 1, "Codex has no skill evidence");
+    assert_eq!(view.harnesses[0].harness, Adapter::Claude);
+    assert_eq!(
+        view.harnesses[0].totals,
+        Cols::Skill(SkillCols {
+            reads: 1,
+            ..SkillCols::default()
+        })
+    );
+    assert_eq!(view.harnesses[0].rows.len(), 1);
+    assert_eq!(view.harnesses[0].rows[0].cols.attempts(), 0);
+    let quiet = fold(
+        &[claude(Vec::new())],
+        &ask_with(Page::Tools, Filter::All),
+        &Caps::SLICE,
+    );
+    assert!(quiet.harnesses.is_empty());
+    assert_eq!(
+        (quiet.read, quiet.listed, quiet.state),
+        (1, 1, State::Numbers)
+    );
+}
+
+/// A harness filter leaves exactly that harness's group, unchanged.
+#[test]
+fn a_harness_filter_leaves_that_harness_group_whole() {
+    let feeds = [
+        claude(vec![attempt(1, "Read", None)]),
+        codex(vec![attempt(11, "Read", None), attempt(12, "shell", None)]),
+    ];
+    let all = fold(&feeds, &ask_with(Page::Tools, Filter::All), &Caps::SLICE);
+    let only = fold(
+        &feeds,
+        &ask_with(Page::Tools, Filter::Harness(Adapter::Codex)),
+        &Caps::SLICE,
+    );
+    assert_eq!(all.harnesses.len(), 2);
+    assert_eq!(only.harnesses, vec![all.harnesses[1].clone()]);
+    assert_eq!(only.totals, only.harnesses[0].totals);
+}
+
+/// #338: `temporary()` charges the row map and the Detail map a whole
+/// Detail-sized entry each. The row map, the per-harness group map and the
+/// Detail map as held, each at `TREE` times its entry, fit in that charge,
+/// so the group map adds no byte to the ledger.
+#[test]
+fn the_group_map_fits_the_charge_of_the_row_and_detail_maps() {
+    let held = size_of::<(&Item, Cols)>()
+        + size_of::<((Adapter, &Item), Cols)>()
+        + size_of::<(DetailKey, u64)>();
+    let charged = 2 * size_of::<(DetailKey, Cols)>();
+    assert!(
+        held <= charged,
+        "held {held} entry bytes against {charged} charged"
+    );
+}

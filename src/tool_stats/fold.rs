@@ -6,9 +6,10 @@
 //! feeding or split point gives one view (the fuzz invariant).
 
 use super::{
-    Adapter, Ask, Caps, Cols, Conversation, DetailRow, Dir, Event, Filter, GapKind, GapLine, Ident,
-    Item, Key, Kind, Load, McpCols, McpOutcome, Membership, More, Page, Resource, Row, Scope,
-    ScopeClass, SkillCols, State, Stream, StreamRole, ToolCols, VIEW_RESERVE, View, client,
+    Adapter, Ask, Caps, Cols, Conversation, DetailRow, Dir, Event, Filter, GapKind, GapLine,
+    HarnessGroup, Ident, Item, Key, Kind, Load, McpCols, McpOutcome, Membership, More, Page,
+    Resource, Row, Scope, ScopeClass, SkillCols, State, Stream, StreamRole, ToolCols, VIEW_RESERVE,
+    View, client,
 };
 use crate::meta::RecordedClient;
 use crate::stats::Cell;
@@ -896,7 +897,10 @@ const fn temporary() -> usize {
         + TREE * size_of::<String>()
         // The observation list.
         + GROWN * size_of::<Obs>()
-        // The row and Detail maps, and the proven-directory map.
+        // The row and Detail maps, and the proven-directory map. Both maps are
+        // charged a whole Detail-sized entry; the row map holds a borrowed item
+        // and its counts and the Detail map a key and one count. The surplus
+        // pays for the per-harness group map (#338), pinned by a test.
         + 2 * TREE * size_of::<(DetailKey, Cols)>()
         + TREE * size_of::<(Dir, Item)>()
         // Spare: one keyed entry, the retired shared-id count (O1 = c).
@@ -1180,6 +1184,7 @@ pub(super) fn blank(ask: &Ask) -> View {
         more: None,
         items: 0,
         totals: empty_cols(ask.page),
+        harnesses: Vec::new(),
         orphans: 0,
         detail: Vec::new(),
         detail_more: None,
@@ -1329,13 +1334,22 @@ pub(super) fn tables(view: &mut View, obs: &[Obs], caps: &Caps) {
         filters.insert(Filter::Effort(one.effort.clone()));
     }
     view.filters = filters.into_iter().collect();
+    let page = view.ask.page;
     let mut rows: BTreeMap<&Item, Cols> = BTreeMap::new();
+    let mut split: BTreeMap<Adapter, (Cols, BTreeMap<&Item, Cols>)> = BTreeMap::new();
     let mut detail: BTreeMap<DetailKey, u64> = BTreeMap::new();
     for one in obs.iter().filter(|one| one.matches(&view.ask.filter)) {
         add(&mut view.totals, &one.cols);
         add(
-            rows.entry(&one.item)
-                .or_insert_with(|| empty_cols(view.ask.page)),
+            rows.entry(&one.item).or_insert_with(|| empty_cols(page)),
+            &one.cols,
+        );
+        let (totals, own) = split
+            .entry(one.harness)
+            .or_insert_with(|| (empty_cols(page), BTreeMap::new()));
+        add(totals, &one.cols);
+        add(
+            own.entry(&one.item).or_insert_with(|| empty_cols(page)),
             &one.cols,
         );
         let attempts = one.cols.attempts();
@@ -1351,17 +1365,25 @@ pub(super) fn tables(view: &mut View, obs: &[Obs], caps: &Caps) {
         }
     }
     view.items = u64::try_from(rows.len()).unwrap_or(u64::MAX);
-    let mut ranked: Vec<Row> = rows
-        .into_iter()
-        .map(|(item, cols)| Row {
-            item: item.clone(),
-            cols,
-        })
-        .collect();
-    // Stable: the map order (item ascending) breaks attempt ties.
-    ranked.sort_by_key(|row| Reverse(row.cols.attempts()));
+    let mut ranked = rank_rows(rows);
     view.more = cut(&mut ranked, caps.rows, |row| row.cols.attempts());
     view.rows = ranked;
+    // The map order is the harness order: Claude, then Codex.
+    view.harnesses = split
+        .into_iter()
+        .map(|(harness, (totals, own))| {
+            let items = u64::try_from(own.len()).unwrap_or(u64::MAX);
+            let mut rows = rank_rows(own);
+            let more = cut(&mut rows, caps.rows, |row| row.cols.attempts());
+            HarnessGroup {
+                harness,
+                items,
+                totals,
+                rows,
+                more,
+            }
+        })
+        .collect();
     let mut ranked: Vec<(DetailKey, u64)> = detail.into_iter().collect();
     ranked.sort_by_key(|row| Reverse(row.1));
     view.detail_more = cut(&mut ranked, caps.detail, |row| row.1);
@@ -1378,6 +1400,20 @@ pub(super) fn tables(view: &mut View, obs: &[Obs], caps: &Caps) {
             },
         )
         .collect();
+}
+
+/// `rows` ranked: attempts descending. The map order (item ascending) breaks
+/// the ties, because the sort is stable.
+fn rank_rows(rows: BTreeMap<&Item, Cols>) -> Vec<Row> {
+    let mut ranked: Vec<Row> = rows
+        .into_iter()
+        .map(|(item, cols)| Row {
+            item: item.clone(),
+            cols,
+        })
+        .collect();
+    ranked.sort_by_key(|row| Reverse(row.cols.attempts()));
+    ranked
 }
 
 /// Keep the first `cap` rows; say what the cut left out.

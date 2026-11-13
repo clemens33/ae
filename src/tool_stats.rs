@@ -549,7 +549,7 @@ pub struct Ask {
 pub struct Caps {
     /// Bytes the ledger may retain.
     pub ledger: usize,
-    /// Rows of a main table.
+    /// Rows of a main table, and of each harness group.
     pub rows: usize,
     /// Rows of Detail.
     pub detail: usize,
@@ -653,6 +653,21 @@ pub struct Row {
     pub cols: Cols,
 }
 
+/// One harness's part of a page (#338): its rows, ranked and cut like the
+/// main table's, with its own totals and item count. A harness with no
+/// counted observation on the page, after the filter, has no group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessGroup {
+    pub harness: Adapter,
+    /// Distinct items of this harness, shown or not.
+    pub items: u64,
+    /// Over every item of this harness, shown or not.
+    pub totals: Cols,
+    /// Ranked attempts desc, then item asc; at most `Caps::rows`.
+    pub rows: Vec<Row>,
+    pub more: Option<More>,
+}
+
 /// One Detail row: the joint breakdown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailRow {
@@ -693,6 +708,11 @@ pub struct View {
     /// Over every item, shown or not.
     pub items: u64,
     pub totals: Cols,
+    /// The same observations split by harness, in harness order (Claude,
+    /// then Codex): one group per harness with a counted observation. The
+    /// group totals add up to `totals`; `rows` and `more` above stay the
+    /// table over all harnesses.
+    pub harnesses: Vec<HarnessGroup>,
     /// Results with no attempt in their stream (Tools page line).
     pub orphans: u64,
     /// At most `Caps::detail` rows, same ranking.

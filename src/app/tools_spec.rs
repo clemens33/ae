@@ -56,6 +56,16 @@ fn answer_view(page: Page) -> View {
         more: None,
         items: 1,
         totals,
+        harnesses: vec![HarnessGroup {
+            harness: Adapter::Claude,
+            items: 1,
+            totals,
+            rows: vec![Row {
+                item: item.clone(),
+                cols: totals,
+            }],
+            more: None,
+        }],
         orphans: 0,
         detail: vec![DetailRow {
             item,
@@ -565,6 +575,7 @@ fn a5_more_rows_and_narrow_identity_are_visible_without_detail_below_forty() {
         items: 1,
         attempts: 2,
     });
+    view.harnesses[0].more = view.more;
     view.totals = Cols::Tool(ToolCols {
         attempts: 258,
         unresolved: 258,
@@ -573,6 +584,7 @@ fn a5_more_rows_and_narrow_identity_are_visible_without_detail_below_forty() {
     view.rows[0].item = Item::Tool(Ident::Name(
         "a-very-long-but-valid-tool-identity-that-needs-truncation".into(),
     ));
+    view.harnesses[0].rows[0].item = view.rows[0].item.clone();
     land(&mut app, generation, view);
     let wide = frame(&mut app, 200);
     assert!(

@@ -17,6 +17,8 @@ const DETAIL_MIN: u16 = 40;
 const IDENT_MIN: u16 = 12;
 /// Between two table columns.
 const GAP: &str = "  ";
+/// What a harness group's rows and notes are indented by.
+const ROW_INDENT: &str = "  ";
 const NO_SUPPORTED: &str = "No ae-associated Claude or Codex conversations in this state root";
 const NO_ID: &str = "This session has no session id: nothing to show";
 /// What every page says of its sources, always drawn (plan-r3 §8, D10).
@@ -180,7 +182,12 @@ struct Page {
 impl Page {
     /// `line`, whole: a row that does not fit wraps.
     fn sentence(&mut self, line: &str, style: Style) {
-        let wrapped = wrap_in(&terminal_text(line), usize::from(self.room), 0, 0);
+        self.indented(line, 0, style);
+    }
+
+    /// `line`, whole, its first row indented by `lead` cells.
+    fn indented(&mut self, line: &str, lead: usize, style: Style) {
+        let wrapped = wrap_in(&terminal_text(line), usize::from(self.room), lead, 0);
         self.rows.extend(
             wrapped
                 .into_iter()
@@ -226,25 +233,32 @@ impl Page {
         self.rows.push((String::new(), dim));
         let (first, rest) = heads(page);
         let skills = page == StatsPage::Skills;
-        let cells = |row: &Row| {
-            let mut cells = Vec::new();
-            if skills {
-                cells.push(scope(&row.item));
+        // One section per harness: its heading with its own totals, its ranked
+        // rows, what its cut left out; then the Total over every harness.
+        let mut body = Vec::new();
+        for group in &view.harnesses {
+            body.push(Line::Row {
+                label: format!("{} ({} items)", group.harness.word(), group.items),
+                cells: counts(&group.totals, skills),
+                heading: true,
+            });
+            for row in &group.rows {
+                body.push(Line::Row {
+                    label: format!("{ROW_INDENT}{}", item(&row.item)),
+                    cells: cells(row, skills),
+                    heading: false,
+                });
             }
-            cells.extend(numbers(&row.cols));
-            (item(&row.item), cells)
-        };
-        let mut body: Vec<(String, Vec<String>)> = view.rows.iter().map(cells).collect();
-        let mut total = Vec::new();
-        if skills {
-            total.push(String::new());
+            if let Some(left) = &group.more {
+                body.push(Line::Note(more(left)));
+            }
         }
-        total.extend(numbers(&view.totals));
-        body.push((format!("Total ({} items)", view.items), total));
-        self.table(first, rest, &body);
-        if let Some(left) = &view.more {
-            self.sentence(&more(left), dim);
-        }
+        body.push(Line::Row {
+            label: format!("Total ({} items)", view.items),
+            cells: counts(&view.totals, skills),
+            heading: false,
+        });
+        self.lines(first, rest, &body);
         if detail && !view.detail.is_empty() {
             self.rows.push((String::new(), dim));
             self.rows
@@ -265,8 +279,28 @@ impl Page {
     /// right-aligned, and trailing columns drop before the identity keeps
     /// fewer than [`IDENT_MIN`] cells.
     fn table(&mut self, first: &str, heads: &[&str], body: &[(String, Vec<String>)]) {
+        let lines: Vec<Line> = body
+            .iter()
+            .map(|(label, cells)| Line::Row {
+                label: label.clone(),
+                cells: cells.clone(),
+                heading: false,
+            })
+            .collect();
+        self.lines(first, heads, &lines);
+    }
+
+    /// [`Self::table`] whose body also holds notes: a note is a line of words
+    /// that takes no column, drawn dim under the rows above it.
+    fn lines(&mut self, first: &str, heads: &[&str], body: &[Line]) {
+        let rows = || {
+            body.iter().filter_map(|line| match line {
+                Line::Row { label, cells, .. } => Some((label, cells)),
+                Line::Note(_) => None,
+            })
+        };
         let mut widths: Vec<u16> = heads.iter().map(|head| drawn_cols(head)).collect();
-        for (_, cells) in body {
+        for (_, cells) in rows() {
             for (width, cell) in widths.iter_mut().zip(cells) {
                 *width = (*width).max(drawn_cols(&terminal_text(cell)));
             }
@@ -281,8 +315,7 @@ impl Page {
             widths.pop();
         }
         let ident = self.room.saturating_sub(spent(&widths));
-        let widest = body
-            .iter()
+        let widest = rows()
             .map(|(label, _)| drawn_cols(label))
             .chain(std::iter::once(drawn_cols(first)))
             .max()
@@ -304,11 +337,57 @@ impl Page {
         let head = line(first, &mut heads.iter().map(|head| (*head).to_owned()));
         self.rows
             .push((head, self.dim.add_modifier(Modifier::BOLD)));
-        for (label, cells) in body {
-            let row = line(label, &mut cells.iter().cloned());
-            self.rows.push((row, self.text));
+        for one in body {
+            match one {
+                Line::Row {
+                    label,
+                    cells,
+                    heading,
+                } => {
+                    let row = line(label, &mut cells.iter().cloned());
+                    let style = if *heading {
+                        self.text.add_modifier(Modifier::BOLD)
+                    } else {
+                        self.text
+                    };
+                    self.rows.push((row, style));
+                }
+                Line::Note(note) => self.indented(note, ROW_INDENT.len(), self.dim),
+            }
         }
     }
+}
+
+/// One line of a table body.
+enum Line {
+    /// A row; a `heading` is a harness group's own line.
+    Row {
+        label: String,
+        cells: Vec<String>,
+        heading: bool,
+    },
+    /// What a group's cut left out, under its rows.
+    Note(String),
+}
+
+/// A Skills row's scope cell first when `skills`, then its numbers.
+fn cells(row: &Row, skills: bool) -> Vec<String> {
+    let mut cells = Vec::new();
+    if skills {
+        cells.push(scope(&row.item));
+    }
+    cells.extend(numbers(&row.cols));
+    cells
+}
+
+/// The cells of a totals line: no scope on a Skills page.
+fn counts(cols: &Cols, skills: bool) -> Vec<String> {
+    let mut cells = Vec::new();
+    if skills {
+        cells.push(String::new());
+    }
+    cells.extend(numbers(cols));
+    cells
 }
 
 /// One Detail row: the item and all four dimensions.

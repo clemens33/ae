@@ -95,6 +95,16 @@ fn answer_view(page: Page) -> View {
         more: None,
         items: 1,
         totals,
+        harnesses: vec![HarnessGroup {
+            harness: Adapter::Claude,
+            items: 1,
+            totals,
+            rows: vec![Row {
+                item: item.clone(),
+                cols: totals,
+            }],
+            more: None,
+        }],
         orphans: 0,
         detail: vec![DetailRow {
             item,
