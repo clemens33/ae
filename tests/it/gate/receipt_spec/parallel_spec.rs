@@ -1,5 +1,5 @@
 //! Frozen relpar acceptance, authored by relpar-nav (OpenAI/gpt-6.1-sol).
-//! Contract: plan-r3 bbde9f09b7d4a65aa6010aa9aa772b24d5da4a82 and lead finish-alone ruling.
+//! Contract: plan-r3 bbde9f09b7d4a65aa6010aa9aa772b24d5da4a82, lead finish-alone and Mac foreground-parity rulings.
 //! These tests execute the real recipes, receipt writer and lane lock.
 //! Only external tools are substituted. The ssh substitute executes its command and stdin locally.
 //! Linux executes the real detached hp topology. macOS signal propagation also needs the P3 probe.
@@ -817,6 +817,8 @@ done
 recipe=$(ps -ax -o pid=,ppid=,args= | awk -v p="$top" '$2 == p && /release-proof/ {print $1; exit}')
 [ -n "$recipe" ] || exit 95
 kill -TERM "$recipe"
+# The foreground command may finish before bash delivers its pending TERM, as in today's recipe.
+: >"$AE_PAR_BASE/mac-release"
 wait "$top"
 "#;
     let (code, out, err) = f.call(
@@ -835,13 +837,7 @@ wait "$top"
         "the Mac signal does not release the hp lock"
     );
     assert!(!f.trace().contains("hp:nextest:end"));
-    f.until(
-        || {
-            std::fs::read_to_string(f.base.join("mac-cargo-pid"))
-                .is_ok_and(|p| !Path::new("/proc").join(p.trim()).exists())
-        },
-        "the proof waited for its Mac subset process to end",
-    );
+    // The lead scoped Mac interruption to foreground parity, not a new descendant-cleanup guarantee.
     f.release_hp();
     assert!(f.receipt().is_file());
     assert!(!f.owner().exists());
