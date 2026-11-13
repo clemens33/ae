@@ -688,7 +688,12 @@ pub enum RootRow {
 /// session's state directory name the SAME incarnation, else the short reason.
 /// The states, the facts and both sub-menus read this ONE verdict, so no
 /// surface can render another incarnation's records while its sibling refuses.
-fn correlation_gap(option: &crate::tmux::OptionReading, meta: &MetaSource) -> Option<String> {
+/// `ae chat` reads it too, to withhold its own records from a session tmux
+/// stamps with another incarnation's id.
+pub(crate) fn correlation_gap(
+    option: &crate::tmux::OptionReading,
+    meta: &MetaSource,
+) -> Option<String> {
     use crate::tmux::OptionReading;
     let uuid = match option {
         OptionReading::Set(value) => {

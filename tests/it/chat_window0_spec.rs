@@ -243,6 +243,64 @@ impl Rig {
             .to_owned()
     }
 
+    /// One `ae chat` pass over `session`, as a chat that starts late: stdout.
+    fn chat_pass(&self, session: &str) -> String {
+        let output = self
+            .command()
+            .args(["chat", session])
+            .output()
+            .unwrap_or_else(|why| panic!("private chat runs: {why}"));
+        assert!(
+            output.status.success(),
+            "chat {session}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// `actor` declares `state` with `reason` in `session`'s journal.
+    fn declare(&self, session: &str, actor: &str, state: &str, reason: &str) {
+        let ts = ae::time::Timestamp::now();
+        let line = format!(
+            "{{\"ts\":\"{ts}\",\"actor\":\"{actor}\",\"action\":\"state\",\"ref\":\"{state}\",\"summary\":\"{reason}\"}}\n"
+        );
+        let path = self
+            .home
+            .join("sessions")
+            .join(session)
+            .join("events.jsonl");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap_or_else(|why| panic!("journal opens: {why}"));
+        std::io::Write::write_all(&mut file, line.as_bytes())
+            .unwrap_or_else(|why| panic!("declaration writes: {why}"));
+    }
+
+    /// Another incarnation takes `session`'s state directory: its meta now
+    /// records `uuid`, while tmux still carries the one the launch stamped.
+    fn replace_incarnation(&self, session: &str, uuid: &str) {
+        let path = self.home.join("sessions").join(session).join("meta");
+        let meta = std::fs::read_to_string(&path).unwrap_or_else(|why| panic!("meta: {why}"));
+        let stamped = self.tmux(&["show-options", "-v", "-t", session, "@ae_session_uuid"]);
+        let stamped = stamped.trim();
+        assert!(
+            meta.contains(stamped),
+            "the launch recorded what it stamped"
+        );
+        assert_ne!(stamped, uuid, "the replacement is another incarnation");
+        std::fs::write(
+            &path,
+            meta.replace(
+                &format!("session_id={stamped}"),
+                &format!("session_id={uuid}"),
+            ),
+        )
+        .unwrap_or_else(|why| panic!("replacement meta: {why}"));
+    }
+
     fn key(&self, pane: &str, jump: bool) {
         let mut command = self.command();
         command
@@ -725,5 +783,116 @@ fn chat_window0_spawning_keeps_chat_and_lead_in_their_windows() {
             .lines()
             .any(|line| line.starts_with("extra|") && line.ends_with("|extra|spawned.0")),
         "spawn owns a separate agent window: {panes}"
+    );
+}
+
+/// The words a declaration carries in the journal of the incarnation it was
+/// written for.
+const DECLARED: &str = "DECLARED-BY-THE-PLACED-INCARNATION";
+
+/// A chat that starts after another incarnation replaced the session's state
+/// directory (its meta `session_id` is no longer the `@ae_session_uuid` tmux
+/// carries) draws nothing record-derived from that directory: the replaced
+/// directory's declaration is not shown, and the chat says why.
+#[test]
+fn chat_window0_a_late_chat_under_a_replaced_state_directory_draws_no_declaration() {
+    let rig = Rig::new("late-replaced", Shape::Pair, Some("off"));
+    rig.launch("cwLate");
+    rig.replace_incarnation("cwLate", "fa4a9b3e-0000-4000-8000-000000000000");
+    rig.declare("cwLate", "lead", "waiting-user", DECLARED);
+    let shown = rig.chat_pass("cwLate");
+    assert!(
+        !shown.contains(DECLARED),
+        "the replaced directory's declaration was drawn:\n{shown}"
+    );
+    assert!(
+        !shown.contains("needs you"),
+        "a needs section of the replaced directory was drawn:\n{shown}"
+    );
+    assert!(
+        shown.contains("identity mismatch"),
+        "the chat names why it draws no records:\n{shown}"
+    );
+    // The whole read is withheld, not only its needs section: the board's own
+    // coverage rows and the lane are record-derived too, so the gap this chat
+    // names is the only one it draws.
+    assert_eq!(
+        shown.matches("coverage incomplete").count(),
+        1,
+        "a record-derived coverage row of the replaced directory was drawn:\n{shown}"
+    );
+    assert!(
+        !shown.contains("lead (lead pair)"),
+        "a seat row of the replaced directory was drawn:\n{shown}"
+    );
+}
+
+/// The same chat on a session whose meta and tmux name one incarnation is
+/// unchanged: the declaration shows in its needs section.
+#[test]
+fn chat_window0_a_chat_with_matching_ids_still_draws_the_declaration() {
+    let rig = Rig::new("late-matching", Shape::Pair, Some("off"));
+    rig.launch("cwMatch");
+    rig.declare("cwMatch", "lead", "waiting-user", DECLARED);
+    let shown = rig.chat_pass("cwMatch");
+    assert!(
+        shown.contains(DECLARED),
+        "a matching chat lost the declaration:\n{shown}"
+    );
+    assert!(
+        !shown.contains("withheld"),
+        "a matching chat names a mismatch:\n{shown}"
+    );
+    assert!(
+        shown.contains("needs you"),
+        "a matching chat lost its needs section:\n{shown}"
+    );
+    assert!(
+        shown.matches("coverage incomplete").count() > 1,
+        "a matching chat lost the board's coverage rows:\n{shown}"
+    );
+}
+
+/// A session tmux carries no id for (its tmux session is gone) is no mismatch:
+/// its chat draws the records it always drew.
+#[test]
+fn chat_window0_a_chat_of_a_session_tmux_no_longer_carries_still_draws_the_declaration() {
+    let rig = Rig::new("late-gone", Shape::Pair, Some("off"));
+    rig.launch("cwGone");
+    rig.declare("cwGone", "lead", "waiting-user", DECLARED);
+    rig.tmux(&["kill-session", "-t", "cwGone"]);
+    let shown = rig.chat_pass("cwGone");
+    assert!(
+        shown.contains(DECLARED),
+        "a chat with no tmux id to compare lost the declaration:\n{shown}"
+    );
+    assert!(
+        !shown.contains("withheld"),
+        "a chat with no tmux id to compare names a mismatch:\n{shown}"
+    );
+}
+
+/// A live session whose tmux carries no id (an unstamped one) is no mismatch
+/// either: only an id that names another incarnation withholds the records.
+#[test]
+fn chat_window0_a_chat_of_an_unstamped_session_still_draws_the_declaration() {
+    let rig = Rig::new("late-unstamped", Shape::Pair, Some("off"));
+    rig.launch("cwBare");
+    rig.declare("cwBare", "lead", "waiting-user", DECLARED);
+    rig.tmux(&["set-option", "-u", "-t", "cwBare", "@ae_session_uuid"]);
+    assert_eq!(
+        rig.tmux(&["show-options", "-qv", "-t", "cwBare", "@ae_session_uuid"])
+            .trim(),
+        "",
+        "the session is live and carries no id"
+    );
+    let shown = rig.chat_pass("cwBare");
+    assert!(
+        shown.contains(DECLARED),
+        "a chat of an unstamped session lost the declaration:\n{shown}"
+    );
+    assert!(
+        !shown.contains("withheld"),
+        "a chat of an unstamped session names a mismatch:\n{shown}"
     );
 }

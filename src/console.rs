@@ -12,8 +12,8 @@ use crate::board::{self, Generations, Inputs, Replies, Row, follow::Follow, term
 use crate::events::{Event, Held};
 use crate::store::{self, Oversized, SourceRead};
 use crate::{
-    archive, doors, inventory, lifecycle, meta, reply, session, theme, tracked, transport, usage,
-    watchdog_daemon,
+    archive, doors, inventory, lifecycle, meta, reply, session, session_menu, theme, tmux, tracked,
+    transport, usage, watchdog_daemon,
 };
 use lane::Seat;
 
@@ -103,6 +103,10 @@ pub(crate) struct Console {
     standing: bool,
     /// How far a standing view's reads have come into the transcripts.
     staged: Staged,
+    /// The tmux server whose `@ae_session_uuid` this console proves its
+    /// records against: set by `ae chat` alone, so a view that reads a
+    /// session it does not sit in (`ae app`, the relay) never asks tmux.
+    proof: Option<inventory::ServerId>,
 }
 
 /// How far a staged read may go into the lead pair's transcripts.
@@ -183,6 +187,7 @@ impl Console {
             roster: None,
             standing: false,
             staged: Staged::default(),
+            proof: None,
         }
     }
 
@@ -303,6 +308,9 @@ impl Console {
     /// One pass: [`Console::read`], then the text this console has not
     /// printed yet.
     fn pass(&mut self) -> Result<String, String> {
+        if let Some(gap) = self.withheld() {
+            return self.withheld_pass(&gap);
+        }
         let read = self.read()?;
         let mut text = read
             .rebased
@@ -316,6 +324,31 @@ impl Console {
         text.push_str(&self.printed.needs(&read.needs, needs_size, now));
         self.printed.keep(read.lane);
         Ok(text)
+    }
+
+    /// Why this chat draws none of its session's records: tmux carries an
+    /// `@ae_session_uuid` the meta does not name, the verdict the tmux session
+    /// menu draws its own rows by. Only an id tmux CARRIES can contradict the
+    /// meta: a session it has no id for (stopped, unstamped, or tmux silent) is
+    /// no mismatch, so its chat draws as it always did.
+    fn withheld(&self) -> Option<String> {
+        let server = self.proof.as_ref()?;
+        let option = session_menu::live_identity(server, &self.name);
+        if !matches!(option, tmux::OptionReading::Set(_)) {
+            return None;
+        }
+        session_menu::correlation_gap(&option, &session_menu::MetaSource::read(&self.dir))
+    }
+
+    /// The pass of a chat whose records are withheld for `gap`: still proves
+    /// the console follows the session it opened, and draws the gap once.
+    fn withheld_pass(&mut self, gap: &str) -> Result<String, String> {
+        self.seats()?;
+        let lane = lane::Lane {
+            items: Vec::new(),
+            coverage: vec![format!("session records — withheld ({gap})")],
+        };
+        Ok(self.printed.step(&lane, 0, false))
     }
 
     /// One read: the first reads everything, each later one asks the board's
@@ -1064,6 +1097,8 @@ pub fn run(
     if args.all {
         console.replies = Replies::All;
     }
+    let declared = doors::declared_server(crate::shape::current());
+    console.proof = doors::launch_target(declared.as_ref());
     match console.seats() {
         Ok(seats) => {
             console.printed =
