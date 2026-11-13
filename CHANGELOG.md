@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.48] - 2026-11-13
+- Deterministic test for a file removed between classification and open (#316)
+- Distribute the 513-source stats fixture across groups (#335)
+- Inline fixture format arguments for clippy
+
 ## [v2026.11.47] - 2026-11-13
 - Add just test-affected, the one-hop merge gate
 - Codex capture: read the local-date partitions a rollout can sit in, not only the UTC days
