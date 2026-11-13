@@ -523,7 +523,13 @@ Three modules are about the REPOSITORY rather than the product:
 * `tests/it/doors.rs` — the capability boundary. `clippy.toml` denies
   `std::process::Command` and a short list of `std::fs` readers outside a named few files;
   these tests ask clippy itself, under `--force-warn`, whether that still holds, and pin
-  that `git` and `ps` each have exactly one product caller.
+  that `git` and `ps` each have exactly one product caller. Registered below it,
+  `tests/it/doors/layers.rs` is the LAYER RATCHET: every top-level module has a reviewed
+  layer, and a `crate::` path that names a higher layer must be pinned in
+  `tests/it/doors/layers_allow.rs` (exact file, spelling and count, so the pins only
+  shrink; the typed argv seals of the door layer are listed apart as permanent
+  handshakes). It reads path spellings only, and its doc comment states what it does not
+  see. It runs in every `just test-affected` because it lives under `doors`.
 * `tests/it/gate.rs` — the two build files ae owns. It proves the `lint` recipe redirects
   shellcheck's stdin (issue #67: the linter reads fd 0, an agent harness hands it a socket,
   and the process then blocks forever), that `install` carries no GNU-only coreutils, that

@@ -11,7 +11,9 @@
 //!   that have already beaten it, and sees exactly the ones present in the tree;
 //! * `git` and `ps` each have exactly one product caller;
 //! * a child process is run in exactly one place in the test harness, and is
-//!   wrapped there.
+//!   wrapped there;
+//! * a production file names no higher layer of the crate than its own unless the
+//!   allow-list pins that spelling, and the pins only shrink (`layers`).
 //!
 //! The suite has ONE child-process door, [`super::parity`]'s `Invocation` +
 //! `capture::raw`, and the last test below is about that door.
@@ -1277,3 +1279,12 @@ fn the_deny_list_reader_sees_a_bare_path_and_a_reasonless_table() {
 // Contract/reference owners, index, and startup budget share this door's reads.
 #[path = "doors/contract_spec.rs"]
 mod contract_spec;
+
+// The layer ratchet: a production file names no higher layer than its own except
+// where the allow-list pins the spelling, and the pins may only shrink.
+#[path = "doors/layers.rs"]
+mod layers;
+#[path = "doors/layers_allow.rs"]
+mod layers_allow;
+#[path = "doors/layers_spec.rs"]
+mod layers_spec;
