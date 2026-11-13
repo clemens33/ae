@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.49] - 2026-11-13
+- Layer ratchet guard pins upward crate:: spellings (R0)
+- Keep only timestamp extrema after new stream evidence
+- Use map_or in the timestamp acceptance helper
+
 ## [v2026.11.48] - 2026-11-13
 - Deterministic test for a file removed between classification and open (#316)
 - Distribute the 513-source stats fixture across groups (#335)
