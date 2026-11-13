@@ -334,6 +334,10 @@ struct Snap {
     stale: bool,
     /// A held attempt applied an operation.
     wrote: bool,
+    /// The warm saw one name answer two ways, or read bytes it could not
+    /// record: the record does not prove what the warm's decision read, so
+    /// a decision kept from it never applies ([`Files::replay`]).
+    torn: bool,
 }
 
 fn stale() -> io::Error {
@@ -403,6 +407,11 @@ impl Files {
         self.snap.wrote
     }
 
+    /// Whether reads answer from the record under the lock.
+    pub(super) fn held(&self) -> bool {
+        self.snap.mode == Mode::Held
+    }
+
     /// Run `body` as the exception: under the lock, reads open and are
     /// recorded. In any other mode than held, `body` runs as it is.
     pub(super) fn exception<T>(&mut self, body: impl FnOnce(&mut Self) -> T) -> T {
@@ -464,8 +473,12 @@ impl Files {
                 Found::Bytes(identity, bytes.clone())
             }
             (other, Some(identity)) => Found::Opened(identity, other.clone()),
-            // Bytes with no handle status prove nothing: never served.
-            (Read::Bytes(_), None) => return,
+            // Bytes with no handle status prove nothing: never served, and
+            // a decision that read them is not proven by the record.
+            (Read::Bytes(_), None) => {
+                self.snap.torn = true;
+                return;
+            }
             // A regular node that would not open (permissions): the same
             // answer while the status that classified it stays the same.
             (Read::Unreadable(_), None) => match seen
@@ -480,13 +493,17 @@ impl Files {
             },
             (other, None) => Found::Shape(proof, other.clone()),
         };
-        self.snap.files.insert(name.to_owned(), found);
+        if let Some(was) = self.snap.files.insert(name.to_owned(), found)
+            && self.snap.files.get(name) != Some(&was)
+        {
+            self.snap.torn = true;
+        }
     }
 
-    /// Under the lock: the recorded answer for `name` while its status says
-    /// the same, else stale. Never opens.
-    fn held_read(&mut self, path: &Path, name: &str, cap: u64) -> Read {
-        let now = match crate::store::node_meta(path) {
+    /// What a status read of `path` says now, as a [`Found`] that carries no
+    /// content: the held side of every comparison with the record.
+    fn found_now(path: &Path) -> Found {
+        match crate::store::node_meta(path) {
             Ok(meta) => match crate::store::nonregular_leg(meta.file_type()) {
                 Some(what) => {
                     Found::Shape(DirProof::of_meta(&meta), Read::Invalid(what.to_owned()))
@@ -507,28 +524,86 @@ impl Files {
                     Read::Unreadable(text),
                 )
             }
-        };
-        let answer = match (self.snap.files.get(name), &now) {
-            (Some(Found::Absent), Found::Absent) => Some(Read::Absent),
+        }
+    }
+
+    /// Whether the status `now` proves the node the record `was` describes.
+    fn still(was: &Found, now: &Found) -> bool {
+        match (was, now) {
+            (Found::Absent, Found::Absent) => true,
             // The same answer while the classifying status proves the same
             // node (or the same lstat error).
-            (Some(Found::Shape(was_proof, was)), Found::Shape(is_proof, is))
-                if was_proof == is_proof && was == is =>
-            {
-                Some(was.clone())
+            (Found::Shape(was_proof, was), Found::Shape(is_proof, is)) => {
+                was_proof == is_proof && was == is
             }
-            (Some(Found::Bytes(was, bytes)), Found::Opened(is, _)) if was == is => {
-                Some(if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > cap {
-                    Read::Oversized
-                } else {
-                    Read::Bytes(bytes.clone())
-                })
-            }
-            (Some(Found::Opened(was, read)), Found::Opened(is, _)) if was == is => {
-                Some(read.clone())
-            }
-            _ => None,
-        };
+            (Found::Bytes(was, _) | Found::Opened(was, _), Found::Opened(is, _)) => was == is,
+            _ => false,
+        }
+    }
+
+    /// Whether the directory status `now` proves the recorded listing `was`.
+    fn still_listed(was: &Listed, now: &DirProof) -> bool {
+        match (was, now) {
+            (Listed::Absent, DirProof::Error(kind, _)) => *kind == io::ErrorKind::NotFound,
+            (Listed::Names(was, _), DirProof::Status(is)) => is == was,
+            // The same failure while the directory's status says the same.
+            (Listed::Failed(was, _), is) => was == is,
+            _ => false,
+        }
+    }
+
+    /// Under the lock, before a decision kept from the warm applies: every
+    /// name and listing the warm recorded is checked by status alone, as a
+    /// held read of it would be, and any change, or a torn warm, makes this
+    /// attempt stale. Never opens, never lists.
+    ///
+    /// A held run of the same deterministic decision answers each read from
+    /// this record under these same checks, so with every entry proven and
+    /// the warm not torn, it would read the warm's answers in the warm's
+    /// order and decide the same, byte for byte.
+    pub(super) fn replay(&mut self) {
+        if self.snap.torn {
+            self.mark_stale();
+            return;
+        }
+        let mut proven = true;
+        for (name, was) in &self.snap.files {
+            proven = proven
+                && self
+                    .path(name)
+                    .is_ok_and(|path| Self::still(was, &Self::found_now(&path)));
+        }
+        for (dir, was) in &self.snap.dirs {
+            proven = proven
+                && self
+                    .path(dir)
+                    .is_ok_and(|path| Self::still_listed(was, &DirProof::of(&path)));
+        }
+        if !proven {
+            self.mark_stale();
+        }
+    }
+
+    /// Under the lock: the recorded answer for `name` while its status says
+    /// the same, else stale. Never opens.
+    fn held_read(&mut self, path: &Path, name: &str, cap: u64) -> Read {
+        let now = Self::found_now(path);
+        let answer = self
+            .snap
+            .files
+            .get(name)
+            .filter(|was| Self::still(was, &now))
+            .map(|was| match was {
+                Found::Absent => Read::Absent,
+                Found::Shape(_, read) | Found::Opened(_, read) => read.clone(),
+                Found::Bytes(_, bytes) => {
+                    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > cap {
+                        Read::Oversized
+                    } else {
+                        Read::Bytes(bytes.clone())
+                    }
+                }
+            });
         answer.unwrap_or_else(|| {
             self.mark_stale();
             Read::Unreadable("a dependency changed since it was read".to_owned())
@@ -581,19 +656,16 @@ impl Files {
     fn held_list(&mut self, dir: &str) -> io::Result<Vec<String>> {
         let path = self.path(dir)?;
         let now = DirProof::of(&path);
-        let answer = match (self.snap.dirs.get(dir), &now) {
-            (Some(Listed::Absent), DirProof::Error(kind, _))
-                if *kind == io::ErrorKind::NotFound =>
-            {
-                Some(Ok(Vec::new()))
-            }
-            (Some(Listed::Names(was, names)), DirProof::Status(is)) if is == was => {
-                Some(Ok(names.clone()))
-            }
-            // The same failure while the directory's status says the same.
-            (Some(Listed::Failed(was, failure)), is) if was == is => Some(Err(failure.error())),
-            _ => None,
-        };
+        let answer = self
+            .snap
+            .dirs
+            .get(dir)
+            .filter(|was| Self::still_listed(was, &now))
+            .map(|was| match was {
+                Listed::Absent => Ok(Vec::new()),
+                Listed::Names(_, names) => Ok(names.clone()),
+                Listed::Failed(_, failure) => Err(failure.error()),
+            });
         answer.unwrap_or_else(|| {
             self.mark_stale();
             Err(stale())
@@ -857,7 +929,11 @@ impl Dir for Files {
             Mode::Held => self.held_list(dir),
             Mode::Warm | Mode::Exception => {
                 let (names, listed) = self.list_now(dir);
-                self.snap.dirs.insert(dir.to_owned(), listed);
+                if let Some(was) = self.snap.dirs.insert(dir.to_owned(), listed)
+                    && self.snap.dirs.get(dir) != Some(&was)
+                {
+                    self.snap.torn = true;
+                }
                 names
             }
         }
@@ -2808,20 +2884,36 @@ pub enum Tools<T> {
     Failed(String),
 }
 
+/// One warm's decision in [`tools`]: no epoch (`None`), or the epoch with
+/// the plan and value `build` decided in it; a refused epoch, described.
+type Decided<T> = Result<Option<(u64, Option<Plan>, T)>, String>;
+
 /// The one writer entry of the tools subtree (#288 P3, owner condition S5):
 /// `build` reads through the payload [`Dir`] and returns the plan to apply
 /// with its result; it runs warm without the lock, then held under
 /// `stats.lock` taken within `wait`, as every writer here does (ruling 19).
-/// The active epoch is read under the lock first and handed to `build`, so a
-/// plan never lands in a payload it did not see. `tools::store` builds the
-/// plans; this module stays the one executor of writes under `<root>/stats/`.
+/// The active epoch is read with the warm's other reads and handed to
+/// `build`, so a plan never lands in a payload it did not see.
+/// `tools::store` builds the plans; this module stays the one executor of
+/// writes under `<root>/stats/`.
+///
+/// The decision is made once per attempt, in the warm. Under the lock
+/// [`Files::replay`] proves by status alone that every name and listing the
+/// warm read still says the same, and the kept plan applies; a change, or a
+/// warm that saw one name answer two ways, makes the attempt stale, and the
+/// next attempt warms and decides again. That is sound only because `build`
+/// is a pure decision: it reads only through the given [`Dir`], never
+/// applies an operation itself, reads each name with one cap, and returns
+/// the same plan and value for the same answers and epoch (no clock, no
+/// randomness, no state of its own that one call leaves for the next).
 pub fn tools<T>(
     root: &Path,
     wait: Duration,
-    mut build: impl FnMut(&mut dyn Dir, u64) -> (Option<Plan>, T),
+    build: impl Fn(&mut dyn Dir, u64) -> (Option<Plan>, T),
 ) -> Tools<T> {
     let mut files = Files::at(root);
     let mut held = Duration::ZERO;
+    let mut kept: Option<Decided<T>> = None;
     let taken = transact(
         root,
         &mut files,
@@ -2829,23 +2921,38 @@ pub fn tools<T>(
         wait,
         &mut held,
         |files, _| {
-            let epoch = match read_epoch(files) {
-                Ok(Some(epoch)) => epoch,
-                Ok(None) => return Ok(None),
-                Err(refused) => return Err(refused.describe()),
-            };
-            let (plan, value) = build(files, epoch);
-            if let Some(plan) = plan {
-                plan.apply(files, plan.ops.len())
-                    .map_err(|why| why.to_string())?;
+            if !files.held() {
+                kept = Some(match read_epoch(files) {
+                    Ok(Some(epoch)) => {
+                        let (plan, value) = build(files, epoch);
+                        Ok(Some((epoch, plan, value)))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(refused) => Err(refused.describe()),
+                });
+                return None;
             }
-            Ok(Some((epoch, value)))
+            files.replay();
+            if files.stale() {
+                return None;
+            }
+            Some(match kept.take()? {
+                Ok(Some((epoch, plan, value))) => plan
+                    .map_or(Ok(()), |plan| plan.apply(files, plan.ops.len()))
+                    .map(|()| Some((epoch, value)))
+                    .map_err(|why| why.to_string()),
+                Ok(None) => Ok(None),
+                Err(why) => Err(why),
+            })
         },
     );
     match taken {
-        Taken::Done(Ok(Some((epoch, value)))) => Tools::Done { epoch, value },
-        Taken::Done(Ok(None)) => Tools::NoEpoch,
-        Taken::Done(Err(why)) => Tools::Failed(why),
+        Taken::Done(Some(Ok(Some((epoch, value))))) => Tools::Done { epoch, value },
+        Taken::Done(Some(Ok(None))) => Tools::NoEpoch,
+        Taken::Done(Some(Err(why))) => Tools::Failed(why),
+        // A held step with no warm decision before it: never reached, since
+        // every attempt warms first; nothing was written.
+        Taken::Done(None) => Tools::Failed("no warm decision before the lock".to_owned()),
         Taken::Unlocked(why) if why.kind() == io::ErrorKind::WouldBlock => Tools::Busy,
         Taken::Contended => Tools::Busy,
         Taken::Unlocked(why) => Tools::Failed(format!("{LOCK}: {why}")),

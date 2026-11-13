@@ -1800,3 +1800,5 @@ mod s5_requirements;
 mod s5_retained;
 #[cfg(test)]
 mod s5_store;
+#[cfg(test)]
+mod statsplan_spec;
