@@ -304,6 +304,20 @@ fn render(
     caps: &Caps,
     width: u16,
 ) -> Vec<String> {
+    render_styled(conversations, kind, filter, caps, width)
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect()
+}
+
+/// [`render`] with each row's style.
+fn render_styled(
+    conversations: &[Conversation],
+    kind: Kind,
+    filter: Filter,
+    caps: &Caps,
+    width: u16,
+) -> Vec<(String, Style)> {
     let ask = Ask {
         page: kind,
         scope: Scope::All,
@@ -321,9 +335,6 @@ fn render(
         ..StatsBody::default()
     };
     super::rows(&body, Paint::of(None), width)
-        .into_iter()
-        .map(|(line, _)| line)
-        .collect()
 }
 
 /// The main table's rows: after its head line, up to and including `Total`.
@@ -672,6 +683,55 @@ fn detail_keeps_the_joint_rows_beside_the_groups() {
             vec!["Read", "codex", "unknown", "gpt-x", "high", "2"],
             vec!["Bash", "claude", "work", "unknown", "unknown", "1"],
             vec!["shell", "codex", "unknown", "gpt-x", "high", "1"],
+        ]
+    );
+}
+
+/// #338: a group's heading is bold, so the sections read at a glance; the
+/// rows under it, its cut note and the Total are not. Colour is off here, so
+/// the weight is the only mark.
+#[test]
+fn group_headings_are_bold_and_what_stands_under_them_is_not() {
+    let calls = |adapter: Adapter, id: &str, first: u8, names: &[&str]| {
+        let events = names
+            .iter()
+            .zip(first..)
+            .map(|(name, at)| seen_call(at, name, None, None))
+            .collect();
+        convo(adapter, id, None, events)
+    };
+    let conversations = [
+        calls(Adapter::Claude, "claude-bold", 1, &["aaa", "aaa", "bbb"]),
+        calls(Adapter::Codex, "codex-bold", 11, &["ccc", "ddd"]),
+    ];
+    let caps = Caps {
+        rows: 1,
+        ..Caps::SLICE
+    };
+    let styled = render_styled(&conversations, Kind::Tools, Filter::All, &caps, WIDE);
+    let head = styled
+        .iter()
+        .position(|(line, _)| line.starts_with("Tool") && line.contains("Attempts"))
+        .unwrap_or_else(|| panic!("a table head: {styled:?}"));
+    let rows: Vec<(&str, bool)> = styled[head + 1..]
+        .iter()
+        .take_while(|(line, _)| !line.is_empty())
+        .map(|(line, style)| (line.as_str(), style.add_modifier.contains(Modifier::BOLD)))
+        .collect();
+    let drawn: Vec<(Vec<&str>, bool)> = rows
+        .iter()
+        .map(|(line, bold)| (words(line)[..2].to_vec(), *bold))
+        .collect();
+    assert_eq!(
+        drawn,
+        [
+            (vec!["claude", "(2"], true),
+            (vec!["aaa", "2"], false),
+            (vec!["+1", "more"], false),
+            (vec!["codex", "(2"], true),
+            (vec!["ccc", "1"], false),
+            (vec!["+1", "more"], false),
+            (vec!["Total", "(4"], false),
         ]
     );
 }
