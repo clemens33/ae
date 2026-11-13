@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.51] - 2026-11-13
+- App chat: a dim day separator above a turn from another local day (#302)
+- App chat: the newer-turns hint is centered, counts the turns below and jumps to the newest turn on a click; G and End do the same (#302)
+- The newer-turns hint counts its turns inside newer_hint, so chat_column stays under the line limit
+- App chat tests: the hint comments name the counted label and the cut at the end
+- App chat tests: the lane that fits shows neither hint label, a cramped pane shows none, and a folded turn under a day separator counts its fold row from its header
+- App chat tests: a pane whose draft leaves the lane no row draws no hint
+- Withhold a chat's records under a session id mismatch
+
 ## [v2026.11.50] - 2026-11-13
 - Name the error module from production callers
 - Let the layer allow-list own its row type
