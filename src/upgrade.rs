@@ -324,7 +324,7 @@ pub fn run(
     tail: &[String],
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     if !tail.is_empty() {
         writeln!(err, "{USAGE}")?;
         writeln!(err, "{USAGE_DETAIL}")?;

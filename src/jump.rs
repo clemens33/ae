@@ -144,7 +144,7 @@ struct Client {
 }
 
 /// The verb: exit 0 only once the client is seen where it was sent.
-pub(crate) fn run(tail: &[String], err: &mut impl Write) -> crate::Result<u8> {
+pub(crate) fn run(tail: &[String], err: &mut impl Write) -> crate::error::Result<u8> {
     let Some(press) = parse_press(tail) else {
         writeln!(
             err,

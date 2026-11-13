@@ -4538,12 +4538,16 @@ fn draw_frame<W: Write>(
 ///
 /// # Errors
 ///
-/// [`crate::Error::Io`] when the terminal or `err` cannot be written.
+/// [`crate::error::Error::Io`] when the terminal or `err` cannot be written.
 #[allow(
     clippy::too_many_lines,
     reason = "the one loop: its setup, then draw, show, drain"
 )]
-pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
+pub fn run(
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::error::Result<u8> {
     let Some(Operands {
         session,
         own,
@@ -4734,7 +4738,7 @@ fn step(
     upkeep: &mut maintainer::Upkeep,
     typed: &[String],
     err: &mut impl Write,
-) -> crate::Result<Step> {
+) -> crate::error::Result<Step> {
     // A thread a failed exec owes starts here, on the first turn after the
     // stopped one ended.
     upkeep.tend();
@@ -4870,7 +4874,7 @@ fn end(
     code: u8,
     restart: Option<(String, toggle::Restart)>,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     // The store's upkeep stops before anything else.
     upkeep.stop(maintainer::STOP_BOUND);
     drop(tty);

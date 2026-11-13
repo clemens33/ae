@@ -373,7 +373,7 @@ pub fn run(
     verdicts: &[Verdict],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<Report> {
+) -> crate::error::Result<Report> {
     let restoring = verdicts.iter().any(|v| v.guard.is_some());
     for verdict in verdicts
         .iter()

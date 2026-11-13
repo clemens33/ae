@@ -1170,7 +1170,7 @@ pub fn run(
     tail: &[String],
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let (dir, newer_only) = match tail {
         [flag, dir] if flag == "--from" => (dir, false),
         [flag, dir, mode] if flag == "--from" && mode == NEWER_ONLY => (dir, true),

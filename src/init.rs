@@ -931,7 +931,7 @@ fn publish(
     now: crate::time::Timestamp,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let old = match existing_bytes(path) {
         Ok(old) => old,
         Err(why) => {
@@ -1041,7 +1041,7 @@ pub fn run(
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
     run_with(
         path,
@@ -1062,7 +1062,7 @@ fn run_with(
     mut terminal: Option<&mut impl Read>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let args = match parse(tail) {
         Ok(args) => args,
         Err(word) => {

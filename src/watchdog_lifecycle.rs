@@ -89,7 +89,7 @@ pub fn run(
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     run_inner(root, tail, None, out, err)
 }
 
@@ -100,7 +100,7 @@ pub(crate) fn run_with_actor(
     actor: &str,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     run_inner(root, tail, Some(actor), out, err)
 }
 
@@ -110,7 +110,7 @@ fn run_inner(
     actor: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let mut action = None;
     let mut target = String::new();
     let mut pane = String::new();
@@ -311,7 +311,7 @@ fn status(
     session: &str,
     meta_dir: &Path,
     out: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     match presence(server, session, meta_dir) {
         Presence::Running(pid) => writeln!(out, "Watchdog is running (pid {pid}).")?,
         Presence::Stopped => writeln!(out, "Watchdog is not running.")?,
@@ -333,7 +333,7 @@ fn abort_start(
     err: &mut impl Write,
     err_line: &str,
     audit: &str,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     writeln!(err, "{err_line}")?;
     caller.audit(meta_dir, audit, err);
     Ok(EXIT_FAILED)
@@ -348,7 +348,7 @@ fn abort_on_live_legacy(
     meta_dir: &Path,
     caller: &Caller,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, bool>> {
+) -> crate::error::Result<ControlFlow<u8, bool>> {
     let scan = watchdog_glue::reap_legacy(server, session, meta_dir, err)?;
     match legacy_start(session, &scan) {
         LegacyStart::Proceed => Ok(ControlFlow::Continue(false)),
@@ -409,7 +409,7 @@ fn abort_on_missing_registration(
     caller: &Caller,
     pane: &str,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let kill = watchdog_glue::kill_owned_pane(server, pane, session, Some(AGENT_STAMP), err)?;
     let (err_line, audit) = registration_abort_lines(session, pane, &kill);
     abort_start(meta_dir, caller, err, &err_line, &audit)
@@ -447,7 +447,7 @@ fn start(
     caller: &Caller,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     // A pre-rename watchdog can outlive a `doctor --refresh` (helpers are
     // rewritten, a running daemon is not restarted), so it is reaped before the
     // check-and-spawn — never two watchdogs side by side.
@@ -747,7 +747,7 @@ fn stop(
     caller: &Caller,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let legacy = watchdog_glue::reap_legacy(server, session, meta_dir, err)?
         .unless_unregistered(watchdog_glue::legacy_registered(meta_dir));
     let seen = presence(server, session, meta_dir);

@@ -1028,8 +1028,12 @@ fn lead_name(seats: &[Seat]) -> &str {
 ///
 /// # Errors
 ///
-/// [`crate::Error::Io`] when `out` or `err` cannot be written.
-pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
+/// [`crate::error::Error::Io`] when `out` or `err` cannot be written.
+pub fn run(
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::error::Result<u8> {
     let args = match parse(tail) {
         Ok(args) => args,
         Err(usage) => {
@@ -1124,7 +1128,7 @@ fn pump(
     follow: bool,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let poll = std::time::Duration::from_secs(board::follow::POLL_SECS);
     let mut next = std::time::Instant::now();
     loop {

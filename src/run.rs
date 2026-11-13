@@ -405,7 +405,7 @@ pub fn run(
     command_snapshot: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let (mut plan, mut choice) = match build_with_snapshot(dir, slot, command_snapshot) {
         Ok(built) => built,
         Err(why) => {
@@ -533,7 +533,7 @@ fn record_resume(
     slot: &str,
     plan: &Plan,
     err: &mut impl Write,
-) -> crate::Result<Result<(), crate::meta::RewriteError>> {
+) -> crate::error::Result<Result<(), crate::meta::RewriteError>> {
     let mut discarded = None;
     let recorded = match (plan.fresh.as_ref(), plan.effort.as_ref()) {
         (Some(fresh), Some(step)) => {

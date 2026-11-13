@@ -275,7 +275,7 @@ pub fn kill_owned_pane(
     want_session: &str,
     want_agent: Option<&str>,
     err: &mut impl Write,
-) -> crate::Result<KillOutcome> {
+) -> crate::error::Result<KillOutcome> {
     kill_matching(server, pane, want_session, want_agent, false, err)
 }
 
@@ -292,7 +292,7 @@ pub fn kill_created_pane(
     want_session: &str,
     want_agent: &str,
     err: &mut impl Write,
-) -> crate::Result<KillOutcome> {
+) -> crate::error::Result<KillOutcome> {
     kill_matching(server, pane, want_session, Some(want_agent), true, err)
 }
 
@@ -304,7 +304,7 @@ fn kill_matching(
     want_agent: Option<&str>,
     unstamped_ok: bool,
     err: &mut impl Write,
-) -> crate::Result<KillOutcome> {
+) -> crate::error::Result<KillOutcome> {
     if pane.is_empty() {
         return Ok(KillOutcome::Nothing);
     }
@@ -390,7 +390,7 @@ pub fn reap_legacy(
     session: &str,
     meta_dir: &Path,
     err: &mut impl Write,
-) -> crate::Result<LegacyScan> {
+) -> crate::error::Result<LegacyScan> {
     // ONE enumeration for both names: two `list-panes` runs could disagree.
     // A FAILED enumeration is not evidence that anything is gone, so the
     // artifacts stay and the gap is named — as they stay for a refused kill.

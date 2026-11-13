@@ -1214,7 +1214,7 @@ pub fn run_manifest(
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let [session, work_dir, origin, mode, main_pane, rest @ ..] = tail else {
         writeln!(
             err,
@@ -1268,7 +1268,7 @@ pub fn run_context(
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let [session, work_dir, slot, rest @ ..] = tail else {
         writeln!(err, "ae: _context needs <session> <work-dir> <slot>")?;
         return Ok(EXIT_USAGE);

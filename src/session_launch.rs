@@ -650,7 +650,11 @@ fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> {
 /// # Errors
 ///
 /// Only a failure to write `out` or `err`. Every refusal is an exit code.
-pub fn run(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
+pub fn run(
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::error::Result<u8> {
     run_with_expected(tail, None, None, out, err)
 }
 
@@ -661,7 +665,7 @@ pub(crate) fn run_expected(
     expected: &ExpectedLaunch,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let argv = expected_launch_argv(preamble, user, expected);
     run_with_expected(&argv[1..], Some(expected), None, out, err)
 }
@@ -674,7 +678,7 @@ pub(crate) fn run_restore(
     attempt: &crate::restore::Attempt,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let user = [name.to_owned(), "--no-attach".to_owned()];
     let argv = preamble.launch_argv(&user);
     run_with_expected(&argv[1..], None, Some(attempt), out, err)
@@ -707,7 +711,7 @@ fn run_with_expected(
     restore: Option<&crate::restore::Attempt>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let (mut env, args) = match read_env(tail) {
         Ok(pair) => pair,
         Err(EnvError::OffendingWord(word)) => {
@@ -790,7 +794,7 @@ pub fn relaunch(
     plan: &Relaunch<'_>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let env = Env {
         home: plan.home.to_path_buf(),
         cwd: PathBuf::from(plan.origin),
@@ -2221,7 +2225,7 @@ fn refuse_unproven(
     session: &str,
     why: Option<String>,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     if !recorded.legacy
         && let Some(attempt) = restore
     {
@@ -2369,7 +2373,7 @@ fn launch(
     restore: Option<&crate::restore::Attempt>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let sessions = env.sessions();
     let worktrees = env.worktrees();
 
@@ -2720,7 +2724,7 @@ fn check_name(
     plan: &Plan,
     expected_launch: Option<&ExpectedLaunch>,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, String>> {
+) -> crate::error::Result<ControlFlow<u8, String>> {
     let Some(session) = plan.name.clone() else {
         writeln!(err, "{MISSING_NAME}")?;
         writeln!(err, "{PUBLIC_USAGE}")?;
@@ -2793,7 +2797,7 @@ fn check_launch_kind(
     expected_resume: bool,
     settings_start: bool,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, bool>> {
+) -> crate::error::Result<ControlFlow<u8, bool>> {
     if matches!(
         crate::teardown::classify_dir(dir),
         crate::teardown::DirKind::Symlink
@@ -2873,7 +2877,7 @@ fn check_resume_target(
     carries_own_proof: bool,
     preflight_meta_present: bool,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, ()>> {
+) -> crate::error::Result<ControlFlow<u8, ()>> {
     if resume && !carries_own_proof && !preflight_meta_present {
         writeln!(
             err,
@@ -2895,7 +2899,7 @@ fn check_stopped_near_miss(
     preflight_meta_present: bool,
     running_preflight: bool,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, ()>> {
+) -> crate::error::Result<ControlFlow<u8, ()>> {
     if !deliberate
         && preflight_meta_present
         && !running_preflight
@@ -2918,7 +2922,7 @@ fn preflight_server(
     placing: Placing<'_>,
     preflight_meta_present: bool,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, ServerId>> {
+) -> crate::error::Result<ControlFlow<u8, ServerId>> {
     if !preflight_meta_present {
         return Ok(ControlFlow::Continue(placing.proposed.clone()));
     }
@@ -2960,7 +2964,7 @@ fn check_seat_overrides(
     preflight_meta_present: bool,
     running_preflight: bool,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, Option<SeatOverrideSnapshot>>> {
+) -> crate::error::Result<ControlFlow<u8, Option<SeatOverrideSnapshot>>> {
     let seat_overrides =
         match validate_seat_overrides(env, plan, dir, preflight_meta_present, running_preflight) {
             Ok(snapshot) => snapshot,
@@ -2998,7 +3002,7 @@ fn check_spawned_labels(
     preflight_meta_present: bool,
     running_preflight: bool,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, Vec<JudgedSpawned>>> {
+) -> crate::error::Result<ControlFlow<u8, Vec<JudgedSpawned>>> {
     if !preflight_meta_present || running_preflight {
         return Ok(ControlFlow::Continue(Vec::new()));
     }
@@ -3045,7 +3049,7 @@ fn resolve_server(
     placing: Placing<'_>,
     meta_present: bool,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, Option<ServerId>>> {
+) -> crate::error::Result<ControlFlow<u8, Option<ServerId>>> {
     if !meta_present {
         if transport::session_exists(placing.proposed, session) {
             writeln!(
@@ -3157,7 +3161,7 @@ fn adopt_legacy_session(
     dir: &Path,
     overrides: bool,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, ServerId>> {
+) -> crate::error::Result<ControlFlow<u8, ServerId>> {
     let ownership = transport::observe_session_ownership(historical, session);
     let main_pane = meta_value(dir, "main_pane").unwrap_or_default();
     let pane_belongs = !main_pane.is_empty()
@@ -3205,7 +3209,7 @@ fn adopt_recorded_config(
     meta_present: bool,
     overridden: bool,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, bool>> {
+) -> crate::error::Result<ControlFlow<u8, bool>> {
     // THE CHAIN, before anything reads a field of this meta: a resume or a
     // reattach is ae touching a session, and a shape it cannot place is one it
     // must not act on.
@@ -3257,7 +3261,7 @@ fn prove_lineage(
     exists: impl FnOnce() -> bool,
     session: &str,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, FromProof>> {
+) -> crate::error::Result<ControlFlow<u8, FromProof>> {
     let proof = match from_preflight(root, uuid) {
         Ok(proof) => proof,
         Err(line) => {
@@ -3392,7 +3396,7 @@ fn seed_orchestrator_seat(
     env: &Env,
     orchestrator_config: &Path,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8>> {
+) -> crate::error::Result<ControlFlow<u8>> {
     if let Some(global) = env.global.as_deref() {
         // The global roster chooses the seat's profile.
         let cfg = match config::read_identity(Some(global), None) {
@@ -3443,7 +3447,7 @@ fn resolve_watchdog_cadences(
     resumed: Option<&Path>,
     configured_quota: &str,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, WatchdogCadences>> {
+) -> crate::error::Result<ControlFlow<u8, WatchdogCadences>> {
     let recorded = |key: &str| resumed.and_then(|dir| meta_value(dir, key));
     let quota_every_secs = match recorded_wins_seconds(
         recorded("quota_every_secs"),
@@ -3529,7 +3533,7 @@ fn resolve_seats(
     plan: &Plan,
     home: Option<&Path>,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, Vec<Seat>>> {
+) -> crate::error::Result<ControlFlow<u8, Vec<Seat>>> {
     if let Some(workers) = &plan.workers {
         cfg.workers = Some(workers.clone());
     }
@@ -3551,7 +3555,7 @@ fn check_resumed_roster(
     session: &str,
     cfg: &IdentityConfig,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8>> {
+) -> crate::error::Result<ControlFlow<u8>> {
     let parsed = meta::read_bytes(dir)
         .ok()
         .map(|bytes| Meta::parse(&String::from_utf8_lossy(&bytes)));
@@ -3599,7 +3603,7 @@ fn prepare_working_copy(
     resumed: Option<&Path>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, WorkingCopy>> {
+) -> crate::error::Result<ControlFlow<u8, WorkingCopy>> {
     let mut origin = cwd.to_path_buf();
     let mut work_dir = work_root.to_path_buf();
     if mode == Mode::Local {
@@ -3674,7 +3678,7 @@ fn create_working_copy(
     mode: Mode,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, Mode>> {
+) -> crate::error::Result<ControlFlow<u8, Mode>> {
     if dir_exists(work_root) {
         writeln!(
             err,
@@ -3740,7 +3744,7 @@ fn restore_roster(
     seat_overrides: Option<&SeatOverrideSnapshot>,
     seats: &mut [Seat],
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8>> {
+) -> crate::error::Result<ControlFlow<u8>> {
     if let Some(dir) = resumed {
         let overridden: Vec<&str> = seat_overrides.map_or_else(Vec::new, |snapshot| {
             snapshot
@@ -3780,7 +3784,7 @@ fn lex_spawned_seats(
     judged: &[JudgedSpawned],
     home: Option<&Path>,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8>> {
+) -> crate::error::Result<ControlFlow<u8>> {
     let spawned = match spawned_entries(dir, session) {
         Ok(spawned) => spawned,
         Err(line) => {
@@ -3943,7 +3947,7 @@ fn build(
     lifecycle: Option<std::fs::File>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let server = env.server();
     let home = crate::doors::home();
     let sessions = env.sessions();
@@ -4081,7 +4085,7 @@ struct Building<'a> {
 
 /// Reclaim after the floor and under the name lock. Recheck at the final
 /// directory claim too, so a fresh-name launch never writes through a link.
-fn reclaim_launch_alias(dir: &Path, err: &mut impl Write) -> crate::Result<ControlFlow<u8>> {
+fn reclaim_launch_alias(dir: &Path, err: &mut impl Write) -> crate::error::Result<ControlFlow<u8>> {
     if let Err(why) = crate::lifecycle::aliases::reclaim(dir) {
         writeln!(
             err,
@@ -4114,7 +4118,7 @@ fn claim_state(
     dir: &Path,
     lifecycle: Option<std::fs::File>,
     err: &mut impl Write,
-) -> crate::Result<ControlFlow<u8, (std::fs::File, PathBuf)>> {
+) -> crate::error::Result<ControlFlow<u8, (std::fs::File, PathBuf)>> {
     if let Err(why) = std::fs::create_dir_all(sessions) {
         writeln!(
             err,
@@ -6797,7 +6801,7 @@ fn rollback_launch(
     server: &ServerId,
     why: &str,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     writeln!(err, "ae: launch failed — rolling back '{}'.", shape.name)?;
     writeln!(err, "{why}")?;
     let _ = kill_session(server, &shape.name);
@@ -7977,7 +7981,7 @@ mod tests {
 
     /// Whether `check` refused, and what it wrote to stderr.
     fn refused_with(
-        check: impl FnOnce(&mut Vec<u8>) -> crate::Result<std::ops::ControlFlow<u8, ()>>,
+        check: impl FnOnce(&mut Vec<u8>) -> crate::error::Result<std::ops::ControlFlow<u8, ()>>,
     ) -> (Option<u8>, String) {
         let mut err = Vec::new();
         let flow = check(&mut err).expect("the check writes to a buffer");

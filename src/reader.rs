@@ -34,7 +34,7 @@ pub(crate) fn run(
     tail: &[String],
     _out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let client = match tail {
         [] => None,
         [flag, name] if flag == "--client" => Some(name.clone()),

@@ -565,7 +565,7 @@ fn prove_socket(server: &ServerId, socket: String) -> (String, String) {
 pub fn inside_tmux(
     server: Option<&ServerId>,
     err: &mut impl std::io::Write,
-) -> crate::Result<bool> {
+) -> crate::error::Result<bool> {
     if tmux_env().is_none() {
         return Ok(false);
     }

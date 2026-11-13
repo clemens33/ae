@@ -49,19 +49,19 @@ fn trailer(count: usize) -> String {
 }
 
 /// Write a built document to stdout.
-fn emit(body: &str, out: &mut impl Write) -> crate::Result<u8> {
+fn emit(body: &str, out: &mut impl Write) -> crate::error::Result<u8> {
     out.write_all(body.as_bytes())?;
     Ok(0)
 }
 
 /// A refusal: one line on stderr, nothing on stdout.
-fn refuse(message: &str, err: &mut impl Write) -> crate::Result<u8> {
+fn refuse(message: &str, err: &mut impl Write) -> crate::error::Result<u8> {
     writeln!(err, "Error: {message}")?;
     Ok(EXIT_REFUSED)
 }
 
 /// A usage error: the offending word named on stderr.
-fn usage(entry: &str, word: &str, err: &mut impl Write) -> crate::Result<u8> {
+fn usage(entry: &str, word: &str, err: &mut impl Write) -> crate::error::Result<u8> {
     writeln!(err, "ae: {entry}: unexpected argument: {word}")?;
     Ok(EXIT_USAGE)
 }
@@ -149,12 +149,12 @@ fn launch_flags(tail: &[String]) -> Result<LaunchFlags, String> {
 ///
 /// # Errors
 ///
-/// [`crate::Error::Io`] when `out` or `err` cannot be written.
+/// [`crate::error::Error::Io`] when `out` or `err` cannot be written.
 pub fn launch_plan(
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let flags = match launch_flags(tail) {
         Ok(flags) => flags,
         Err(word) => return usage(crate::cli::LAUNCH_PLAN, &word, err),
@@ -368,14 +368,14 @@ fn optional(field: &str) -> Option<String> {
 ///
 /// # Errors
 ///
-/// [`crate::Error::Io`] when `out` or `err` cannot be written.
+/// [`crate::error::Error::Io`] when `out` or `err` cannot be written.
 pub fn meta_init(
     dir: &Path,
     tail: &[String],
     stdin: &str,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let flags = match meta_init_flags(tail) {
         Ok(flags) => flags,
         Err(word) => return usage(crate::cli::META_INIT, &word, err),
@@ -483,13 +483,13 @@ pub fn meta_init(
 ///
 /// # Errors
 ///
-/// [`crate::Error::Io`] when `out` or `err` cannot be written.
+/// [`crate::error::Error::Io`] when `out` or `err` cannot be written.
 pub fn roster(
     dir: &Path,
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let Some((subcommand, rest)) = tail.split_first() else {
         writeln!(
             err,
@@ -585,14 +585,14 @@ fn key_of(record: &str) -> &str {
 ///
 /// # Errors
 ///
-/// [`crate::Error::Io`] when `out` or `err` cannot be written.
+/// [`crate::error::Error::Io`] when `out` or `err` cannot be written.
 fn add_seat(
     dir: &Path,
     name: &str,
     flags: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let AddSeatFlags {
         profile,
         binary,
@@ -893,13 +893,13 @@ fn lowest_free_spawned(text: &str) -> usize {
 ///
 /// # Errors
 ///
-/// [`crate::Error::Io`] when `out` or `err` cannot be written.
+/// [`crate::error::Error::Io`] when `out` or `err` cannot be written.
 fn remove_seat(
     dir: &Path,
     name: &str,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     match remove_seat_slot(dir, name) {
         Ok(slot) => {
             let mut body = match record(&["slot", &slot]) {
@@ -1094,14 +1094,14 @@ fn fenced(
 ///
 /// # Errors
 ///
-/// [`crate::Error::Io`] when `out` or `err` cannot be written.
+/// [`crate::error::Error::Io`] when `out` or `err` cannot be written.
 fn set_harness_session(
     dir: &Path,
     slot: &str,
     sid: &str,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let current = match parse_meta(dir) {
         Ok(current) => current,
         Err(why) => return refuse(&why, err),
@@ -1140,13 +1140,13 @@ enum SeatResolution {
 ///
 /// # Errors
 ///
-/// [`crate::Error::Io`] when `err` cannot be written.
+/// [`crate::error::Error::Io`] when `err` cannot be written.
 fn list_seat_command(
     cfg: &IdentityConfig,
     entry: &meta::RosterEntry,
     home: Option<&Path>,
     err: &mut impl Write,
-) -> Result<SeatResolution, crate::Error> {
+) -> Result<SeatResolution, crate::error::Error> {
     let Some(profile) = entry.profile.as_deref() else {
         return Ok(SeatResolution::Resolved(None));
     };
@@ -1203,13 +1203,13 @@ fn list_seat_command(
 ///
 /// # Errors
 ///
-/// [`crate::Error::Io`] when `out` or `err` cannot be written.
+/// [`crate::error::Error::Io`] when `out` or `err` cannot be written.
 fn list(
     dir: &Path,
     flags: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let files = match config_files(flags) {
         Ok(files) => files,
         Err(word) => return usage(crate::cli::ROSTER, &word, err),

@@ -75,7 +75,7 @@ enum CrashGate {
 ///
 /// The shape check runs BEFORE the environment read: an installed core takes
 /// the unarmed path without reading the variable at all.
-fn crash_gate(err: &mut impl Write) -> crate::Result<CrashGate> {
+fn crash_gate(err: &mut impl Write) -> crate::error::Result<CrashGate> {
     if !crate::shape::current().honours_environment() {
         return Ok(CrashGate::Proceed(None));
     }
@@ -109,7 +109,7 @@ pub fn run(
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let (old, new) = match tail {
         [old, new] => (old.clone(), new.clone()),
         [new] => {
@@ -217,7 +217,7 @@ fn same_name_noop(
     name: &str,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let held = crate::lifecycle::lock(root, name);
     let Ok(_held) = held else {
         writeln!(
@@ -1016,7 +1016,7 @@ fn crash_cut(
     boundary: &str,
     armed: Option<&str>,
     err: &mut impl Write,
-) -> crate::Result<Option<u8>> {
+) -> crate::error::Result<Option<u8>> {
     crash_cut_until(
         boundary,
         armed,
@@ -1040,7 +1040,7 @@ fn crash_cut_until(
     armed: Option<&str>,
     err: &mut impl Write,
     deadline: std::time::Instant,
-) -> crate::Result<Option<u8>> {
+) -> crate::error::Result<Option<u8>> {
     if armed != Some(boundary) {
         return Ok(None);
     }
@@ -1065,7 +1065,7 @@ fn locked(
     crash: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let sessions = crate::lifecycle::sessions_dir(root);
     let server = match recheck_symlinks(&sessions, old, new)
         .and_then(|()| resolve_server(&sessions.join(old), old))
@@ -1088,7 +1088,7 @@ fn locked(
 }
 
 /// Write one whole refusal line and exit [`EXIT_FAILED`].
-fn refuse(err: &mut impl Write, refusal: &Refusal) -> crate::Result<u8> {
+fn refuse(err: &mut impl Write, refusal: &Refusal) -> crate::error::Result<u8> {
     writeln!(err, "{}", refusal.0)?;
     Ok(EXIT_FAILED)
 }
@@ -1136,7 +1136,7 @@ fn live(
     session_id: &str,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let sessions = crate::lifecycle::sessions_dir(root);
     let (old_dir, new_dir) = (sessions.join(old), sessions.join(new));
     // The look is diagnosed BEFORE mutation: a session whose look cannot be
@@ -1225,7 +1225,7 @@ fn republish(
     look: Option<&crate::theme::Look>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let new_dir = crate::lifecycle::sessions_dir(root).join(new);
     if let Err(why) = crate::meta::rewrite(&new_dir, "session", Some(new)) {
         return refuse(
@@ -1334,7 +1334,7 @@ fn report_success(
     journaled: bool,
     watchdog_expected: bool,
     out: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     writeln!(out, "Renamed '{old}' → '{new}'")?;
     match told(journaled, watchdog_expected) {
         Told::Told => writeln!(out, "{}", crate::session_notice::TOLD_LINE)?,
@@ -3031,7 +3031,7 @@ fn stopped(
     crash: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     // A recorded carrier for this exact pair decides first: recover a
     // pending transaction, converge a durable result, refuse damage — never
     // a new ordinary rename over any of them.
@@ -3097,7 +3097,7 @@ fn converge_completed(
     crash: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let sessions = crate::lifecycle::sessions_dir(root);
     if !crate::lifecycle::path_exists(&sessions.join(old))
         && crate::meta::session_id_in(&sessions.join(new)) == intent.uuid
@@ -3192,7 +3192,7 @@ fn stopped_fresh(
     crash: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let (work_dev, work_ino) = match plan.mode {
         WorkMode::Local => (0, 0),
         _ => dir_id(Path::new(&plan.old_work)),
@@ -3454,7 +3454,7 @@ fn print_stopped_success(
     warn_implicit: bool,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     if intent.mode == WorkMode::Local {
         if intent.old_work.is_empty() {
             writeln!(
@@ -3591,7 +3591,7 @@ fn recover(
     crash: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let mut intent = intent.clone();
     match reprove(root, old, new, &mut intent) {
         Err(refusal) => {

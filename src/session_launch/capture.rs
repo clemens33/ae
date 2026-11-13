@@ -698,7 +698,7 @@ pub fn register_sid(
     id: Option<&str>,
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     if slot.is_empty() {
         writeln!(err, "{REGISTER_SID_USAGE}")?;
         return Ok(crate::state::EXIT_USAGE);

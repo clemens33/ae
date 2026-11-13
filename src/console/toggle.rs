@@ -58,7 +58,7 @@ pub(crate) fn run(
     tail: &[String],
     _out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let (jump, rest) = match tail {
         [flag, rest @ ..] if flag == "--jump" => (true, rest),
         _ => (false, tail),

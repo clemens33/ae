@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::net::ToSocketAddrs as _;
 
-use crate::Result;
+use crate::error::Result;
 
 /// The port a probe resolves for when none is given.
 pub const DEFAULT_PORT: u16 = 443;

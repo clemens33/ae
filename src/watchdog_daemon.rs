@@ -4423,7 +4423,7 @@ pub fn run(
     knobs: Knobs,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     run_paced(meta_dir, knobs, None, out, err)
 }
 
@@ -4444,7 +4444,7 @@ pub fn run_stepped(
     channel: &str,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     run_paced(meta_dir, knobs, Some(channel), out, err)
 }
 
@@ -4455,7 +4455,7 @@ fn run_paced(
     step: Option<&str>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let Ok(bytes) = crate::meta::read_bytes(meta_dir) else {
         writeln!(
             err,
@@ -4584,7 +4584,7 @@ fn run_cycle(
     deferred: &mut crate::watchdog_glue::Deferred,
     journal: &Journal<'_>,
     err: &mut impl Write,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     // ONE identity read per cycle, handed to every writer.
     carry.pending = PendingCycle::new(transport::observe_session_identity(
         cycle.server,
@@ -4692,7 +4692,7 @@ fn watch(
     deferred: &mut crate::watchdog_glue::Deferred,
     step: &mut Option<StepPace>,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let mut carry = Carry::new();
     // The global config PATH is stable for this daemon's life; its CONTENT is
     // re-read every cycle below, so a config flip — quota awareness, or the
@@ -4848,7 +4848,7 @@ fn stop_stepped_rebind(
     server: &crate::inventory::ServerId,
     session: &str,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let _ = clear_published(server, session);
     writeln!(
         err,
@@ -4858,7 +4858,11 @@ fn stop_stepped_rebind(
 }
 
 /// Refresh the restore beat; a failure never stops the watcher and is said once.
-fn refresh_beat(meta_dir: &Path, failing: &mut bool, err: &mut impl Write) -> crate::Result<()> {
+fn refresh_beat(
+    meta_dir: &Path,
+    failing: &mut bool,
+    err: &mut impl Write,
+) -> crate::error::Result<()> {
     match crate::watchdog_glue::touch_beat(meta_dir) {
         Ok(()) => *failing = false,
         Err(why) if !*failing => {
@@ -5379,7 +5383,7 @@ fn tick_pane_duties(
     journal: &Journal<'_>,
     pending: &mut PendingCycle,
     err: &mut impl Write,
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     if let Some(session_id) = pending.session_id() {
         let ops = crate::watchdog_glue::branch_ops(
             session_id,
@@ -5447,7 +5451,7 @@ impl Journal<'_> {
         target: &str,
         summary: &str,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         self.record_referring(action, target, "", summary, err)
     }
 
@@ -5460,7 +5464,7 @@ impl Journal<'_> {
         reference: &str,
         summary: &str,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         if let Err(why) = self.append_referring(action, target, reference, summary) {
             writeln!(
                 err,
@@ -5643,7 +5647,7 @@ fn adopt_server(
     retract: impl FnOnce(&crate::inventory::ServerId) -> bool,
     journal: &Journal<'_>,
     err: &mut impl Write,
-) -> crate::Result<crate::inventory::ServerId> {
+) -> crate::error::Result<crate::inventory::ServerId> {
     // 1. BEST-EFFORT: retract our bars while the old server is still
     //    addressable. Nothing targets it after this function returns.
     if !retract(&leaving) {
@@ -6459,7 +6463,7 @@ impl Cycle<'_> {
         state: &mut PaneState,
         quota_refresh: &mut bool,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         for effect in effects {
             if matches!(effect, Effect::QuotaRefresh) {
                 *quota_refresh = true;
@@ -6480,7 +6484,7 @@ impl Cycle<'_> {
         inputs: &QuotaInputs<'_>,
         now: i64,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         if requested && self.knobs.quota_aware {
             self.refresh_quota(carry, inputs, now, err)?;
         }
@@ -6524,7 +6528,7 @@ impl Cycle<'_> {
         actions: Vec<QuotaAction>,
         now: i64,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         for action in actions {
             match action {
                 QuotaAction::Dropped { recipient, summary } => {
@@ -6735,7 +6739,7 @@ impl Cycle<'_> {
         inputs: &QuotaInputs<'_>,
         now: i64,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         match self.quota_observation(now) {
             Ok(observation) => {
                 let mut recipients = quota_recipients(&self.roster, self.lead_pair);
@@ -7211,7 +7215,7 @@ impl Cycle<'_> {
         inputs: &QuotaInputs<'_>,
         now: i64,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         let regular = quota_observation_due(carry, &self.knobs);
         // Zero disables the periodic pass, and this one with it; a session with
         // no seat auto reseat may move reads exactly as it did.
@@ -7339,7 +7343,7 @@ impl Cycle<'_> {
         reason = "the cycle's branch order and its per-pane handoff read as one place; the \
                   cycle-wide quota request is the one addition past the line limit"
     )]
-    fn run(&self, carry: &mut Carry, err: &mut impl Write) -> crate::Result<()> {
+    fn run(&self, carry: &mut Carry, err: &mut impl Write) -> crate::error::Result<()> {
         // FIRST, so this cycle's journal read already folds the record (I15).
         let clock = crate::watchdog::CycleClock {
             wall: Timestamp::now().epoch(),
@@ -7857,7 +7861,7 @@ impl Cycle<'_> {
         now_epoch: i64,
         table: Option<&[procs::Proc]>,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         // The LOOK is re-read every cycle, so flipping `@ae_icons` on a live
         // session takes effect on the next one rather than at the next launch.
         // A read that did not answer keeps the last one and RECONCILES NOTHING:
@@ -8425,7 +8429,7 @@ impl Cycle<'_> {
         on: &Acting<'_>,
         state: &mut PaneState,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         let agent = on.agent;
         match effect {
             // A panel's naming and an unreachable failure are keyed to their
@@ -8642,7 +8646,7 @@ impl Cycle<'_> {
         action: &str,
         code: Option<i32>,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         if !on.seen.unreachable || code != Some(0) {
             return Ok(());
         }
@@ -8664,7 +8668,7 @@ impl Cycle<'_> {
         on: &Acting<'_>,
         state: &mut PaneState,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         let Some(_observed) = on.seen.sweep.as_ref() else {
             // Unreachable by construction: only the sweep branch emits this
             // effect, and it runs only where the observation exists.
@@ -8758,7 +8762,7 @@ impl Cycle<'_> {
         events: &[Event],
         now: i64,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         let context = (self.session, self.meta_agent, self.lead_pair);
         for act in auto_acts_with(&self.auto, seats, events, context, now, named) {
             let AutoAct::Trigger { agent } = &act else {
@@ -8785,7 +8789,12 @@ impl Cycle<'_> {
         clippy::too_many_lines,
         reason = "one ordered writer per act, each re-reading the journal under the lock"
     )]
-    fn auto_record(&self, act: &AutoAct, now: i64, err: &mut impl Write) -> crate::Result<()> {
+    fn auto_record(
+        &self,
+        act: &AutoAct,
+        now: i64,
+        err: &mut impl Write,
+    ) -> crate::error::Result<()> {
         use crate::autoreseat::Trigger;
         let (slot, agent) = match act {
             AutoAct::Held { slot, agent, .. }
@@ -8948,7 +8957,7 @@ impl Cycle<'_> {
     /// `auto_reseat_lead_floor` left, target-less, once per daemon start and
     /// note: the operator sees the threshold ae fell back to, or the floor that
     /// holds every lead seat, without a move having to say it.
-    fn auto_note(&self, noted: &mut Vec<String>, err: &mut impl Write) -> crate::Result<()> {
+    fn auto_note(&self, noted: &mut Vec<String>, err: &mut impl Write) -> crate::error::Result<()> {
         let journal = Journal {
             meta_dir: self.meta_dir,
             session: self.session,
@@ -8972,7 +8981,11 @@ impl Cycle<'_> {
 
     /// Name an unusable `auto_trust` value once per daemon start: it answers
     /// nothing, exactly like `off`.
-    fn trust_note(&self, noted: &mut Vec<String>, err: &mut impl Write) -> crate::Result<()> {
+    fn trust_note(
+        &self,
+        noted: &mut Vec<String>,
+        err: &mut impl Write,
+    ) -> crate::error::Result<()> {
         let crate::config::AutoTrust::Unusable(note) = &self.auto_trust else {
             return Ok(());
         };
@@ -9028,7 +9041,7 @@ impl Cycle<'_> {
         on: &Acting<'_>,
         state: &mut PaneState,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         let tool = self.agent_bin(on.slot).unwrap_or_default();
         let seat = self.trust_seat(on.slot, on.pane, &tool);
         // A panel is named at the bound already (`name` is false): the clear
@@ -9153,7 +9166,7 @@ impl Cycle<'_> {
         events: &[Event],
         now: i64,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         let mut ready: Vec<(i64, String, String)> = Vec::new();
         for entry in &self.roster {
             // CHANNEL TWO of two. This cycle already judged the seat, so a
@@ -9248,7 +9261,7 @@ impl Cycle<'_> {
         events: &[Event],
         now: i64,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         if !crate::brief_retry::should_destroy(&damaged, now) {
             writeln!(
                 err,
@@ -9310,7 +9323,7 @@ impl Cycle<'_> {
         agent: &str,
         summary: &str,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         Journal {
             meta_dir: self.meta_dir,
             session: self.session,
@@ -9324,7 +9337,7 @@ impl Cycle<'_> {
         live: &[String],
         missing: &mut Vec<(String, MissingState)>,
         err: &mut impl Write,
-    ) -> crate::Result<()> {
+    ) -> crate::error::Result<()> {
         for entry in &self.roster {
             let reference = entry.reference();
             if live.contains(&reference) {

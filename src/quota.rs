@@ -873,7 +873,7 @@ pub fn run_profiles(
     transcript_bytes: u64,
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let cfg = match crate::config::read_identity(inputs.global, inputs.local) {
         Ok(cfg) => cfg,
         Err(error) => {
@@ -3060,7 +3060,11 @@ fn kept_note(answer: &AgyRun, at: i64) -> String {
 /// # Errors
 ///
 /// Returns an I/O error only when the supplied output stream cannot be written.
-pub fn run(inputs: &Inputs<'_>, out: &mut impl Write, err: &mut impl Write) -> crate::Result<u8> {
+pub fn run(
+    inputs: &Inputs<'_>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::error::Result<u8> {
     run_as(inputs, Format::Table, out, err)
 }
 
@@ -3100,7 +3104,7 @@ pub fn run_as(
     format: Format,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     run_with(inputs, format, out, err, crate::transport::run_agy_quota)
 }
 
@@ -3111,7 +3115,7 @@ fn run_with(
     out: &mut impl Write,
     err: &mut impl Write,
     leg: impl FnOnce(&Path) -> AgyRun,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     // ONE config read: the scopes the leg was judged on are the scopes folded.
     let scopes = match crate::config::read_identity(inputs.global, inputs.local) {
         Ok(cfg) => configured_scopes_with(&cfg, inputs.home, &OptIns::of(inputs)),

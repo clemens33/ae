@@ -415,7 +415,7 @@ pub(crate) fn run_resume(
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let captured = match parse_resume(tail) {
         Ok(captured) => captured,
         Err(why) => {
@@ -535,7 +535,7 @@ fn echo_launch(
     err: &mut impl Write,
     launch_out: &[u8],
     launch_err: &[u8],
-) -> crate::Result<()> {
+) -> crate::error::Result<()> {
     out.write_all(launch_out)?;
     err.write_all(launch_err)?;
     Ok(())

@@ -912,7 +912,7 @@ pub(crate) fn run_apply(
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let captured = match parse_apply(tail) {
         Ok(captured) => captured,
         Err(why) => {

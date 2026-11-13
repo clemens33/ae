@@ -1794,7 +1794,11 @@ pub fn render(observation: &Observation, json: bool) -> String {
 /// # Errors
 ///
 /// Returns an I/O error when the supplied output stream cannot be written.
-pub fn run(inputs: &Inputs<'_>, json: bool, out: &mut impl std::io::Write) -> crate::Result<u8> {
+pub fn run(
+    inputs: &Inputs<'_>,
+    json: bool,
+    out: &mut impl std::io::Write,
+) -> crate::error::Result<u8> {
     write!(out, "{}", render(&observe(inputs), json))?;
     Ok(0)
 }

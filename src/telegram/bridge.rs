@@ -297,7 +297,7 @@ fn lead_pair(bytes: &[u8], meta: &Meta) -> Vec<String> {
 /// failure degrades within its own cycle and is reported rather than fatal —
 /// a bridge that exits because one poll failed is a bridge that stops relaying
 /// the first time a laptop's wifi drops.
-pub fn run(paths: &Paths, knobs: Knobs, err: &mut impl Write) -> crate::Result<u8> {
+pub fn run(paths: &Paths, knobs: Knobs, err: &mut impl Write) -> crate::error::Result<u8> {
     let settings = match super::load_settings(&paths.config, &paths.home) {
         Ok(settings) => settings,
         Err(why) => {
@@ -455,7 +455,7 @@ fn pump(
     words: Option<&Receiver<Word>>,
     stop: &AtomicBool,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     // Keyed by state directory, so each session's cursor and scan position
     // survive between passes.
     let mut bridges: BTreeMap<PathBuf, Outbound> = BTreeMap::new();
@@ -520,7 +520,7 @@ const MENU: [(&str, &str); 5] = [
 ];
 
 /// Publish [`MENU`], and CARRY ON WHATEVER HAPPENS.
-fn register_commands(api: &Api, err: &mut impl Write) -> crate::Result<()> {
+fn register_commands(api: &Api, err: &mut impl Write) -> crate::error::Result<()> {
     if let Err(failure) = api.set_my_commands(&MENU) {
         writeln!(err, "ae: telegram: command menu not registered: {failure}")?;
     }
@@ -536,7 +536,7 @@ enum Drained {
 }
 
 /// Take every word waiting right now.
-fn drain(words: &Receiver<Word>, api: &Api, err: &mut impl Write) -> crate::Result<Drained> {
+fn drain(words: &Receiver<Word>, api: &Api, err: &mut impl Write) -> crate::error::Result<Drained> {
     loop {
         match words.try_recv() {
             Ok(word) => say(api, word, err)?,
@@ -547,7 +547,7 @@ fn drain(words: &Receiver<Word>, api: &Api, err: &mut impl Write) -> crate::Resu
 }
 
 /// Act on one word.
-fn say(api: &Api, word: Word, err: &mut impl Write) -> crate::Result<()> {
+fn say(api: &Api, word: Word, err: &mut impl Write) -> crate::error::Result<()> {
     match word {
         Word::Note(text) => writeln!(err, "{text}")?,
         Word::Say(text) => {
@@ -582,7 +582,7 @@ fn forward(
     state: &Path,
     bridges: &mut BTreeMap<PathBuf, Outbound>,
     err: &mut impl Write,
-) -> crate::Result<usize> {
+) -> crate::error::Result<usize> {
     // A session with no lead pair has no shared chat to relay.
     let running: Vec<_> = (world.running().into_iter())
         .filter(|session| !session.pair.is_empty())

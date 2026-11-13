@@ -102,7 +102,7 @@ pub fn run(
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let mut paths = Paths::under(ae_home);
     let mut action = None;
     let mut server_kind = String::new();
@@ -170,7 +170,7 @@ fn start(
     server: &ServerId,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     // BEFORE the lock and before the intent flag: a start that cannot possibly
     // work must not leave `enabled = true` behind for a later autostart to act
     // on.
@@ -223,7 +223,7 @@ fn stop(
     server: &ServerId,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let Ok(_held) = control_lock(&paths.ae_home, CONTROL_WAIT) else {
         writeln!(
             err,
@@ -258,7 +258,7 @@ fn stop(
 }
 
 /// `telegram status` — intent, backend, runtime, and the facts behind them.
-fn status(paths: &Paths, server: &ServerId, out: &mut impl Write) -> crate::Result<u8> {
+fn status(paths: &Paths, server: &ServerId, out: &mut impl Write) -> crate::error::Result<u8> {
     let config = read_config(&paths.config);
     let intent = config.as_deref().is_some_and(enabled_in);
     let runtime = match daemon_running(server) {
@@ -344,7 +344,7 @@ pub fn autostart(
     session: &str,
     session_dir: &Path,
     err: &mut impl Write,
-) -> crate::Result<bool> {
+) -> crate::error::Result<bool> {
     let Some(config) = read_config(&paths.config) else {
         return Ok(false);
     };

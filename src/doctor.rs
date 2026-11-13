@@ -1536,7 +1536,7 @@ pub fn run(
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> crate::Result<u8> {
+) -> crate::error::Result<u8> {
     let Ok(args) = parse(tail) else {
         writeln!(err, "{USAGE}")?;
         return Ok(EXIT_USAGE);
@@ -1767,7 +1767,7 @@ fn or_dot(value: String) -> String {
 /// # Errors
 ///
 /// Propagates a write failure on the caller's streams.
-pub fn check_deps(tail: &[String], err: &mut impl Write) -> crate::Result<u8> {
+pub fn check_deps(tail: &[String], err: &mut impl Write) -> crate::error::Result<u8> {
     if !tail.is_empty() {
         writeln!(err, "{CHECK_DEPS_USAGE}")?;
         return Ok(EXIT_USAGE);
@@ -1785,7 +1785,7 @@ pub fn check_deps(tail: &[String], err: &mut impl Write) -> crate::Result<u8> {
 /// # Errors
 ///
 /// Propagates a write failure on the caller's streams.
-pub fn shims_render(dir: &Path, tail: &[String], err: &mut impl Write) -> crate::Result<u8> {
+pub fn shims_render(dir: &Path, tail: &[String], err: &mut impl Write) -> crate::error::Result<u8> {
     if let [extra, ..] = tail {
         writeln!(err, "ae: _shims-render: unexpected argument: {extra}")?;
         return Ok(EXIT_USAGE);
