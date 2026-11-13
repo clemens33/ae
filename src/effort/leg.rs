@@ -40,6 +40,12 @@ fn lead_pair(slot: &str) -> bool {
     matches!(slot, "main" | "worker.0")
 }
 
+/// Whether the seat at `other` is told of the effort move of the seat at
+/// `mover`: a lead-pair seat other than the mover itself.
+fn told_of(other: &str, mover: &str) -> bool {
+    other != mover && lead_pair(other)
+}
+
 /// The pane facts a restart waits on, as one reading saw them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Point {
@@ -756,7 +762,7 @@ impl Ctx<'_> {
         for other in meta
             .roster()
             .iter()
-            .filter(|other| other.slot != self.slot && lead_pair(&other.slot))
+            .filter(|other| told_of(&other.slot, &self.slot))
         {
             self.notice(other, &seat.bytes, &told, err)?;
         }
@@ -954,7 +960,7 @@ mod tests {
     )]
     // Driver units (#253 b4, supplementary): what a client list proves, and
     // that a close revalidates the identity CAS even when its record stands.
-    use super::{Ctx, Outcome, client_input, eligible, model_hold, read};
+    use super::{Ctx, Outcome, client_input, eligible, model_hold, read, told_of};
     use crate::effort::{Direction, Level, Transition};
     use crate::inventory::ServerId;
     use crate::tmux::ObservedClient;
@@ -988,6 +994,29 @@ mod tests {
             "",
         ] {
             assert!(!eligible(slot), "{slot:?}");
+        }
+    }
+
+    /// A move is told to the lead-pair seats other than the mover alone
+    /// (contract row 378): never to the mover, another spawned seat or another worker.
+    #[test]
+    fn only_the_other_lead_pair_seats_are_told_of_a_move() {
+        for (other, mover) in [
+            ("main", "spawned.0"),
+            ("worker.0", "spawned.0"),
+            ("worker.0", "main"),
+            ("main", "worker.0"),
+        ] {
+            assert!(told_of(other, mover), "{other} of {mover}");
+        }
+        for (other, mover) in [
+            ("main", "main"),
+            ("worker.0", "worker.0"),
+            ("spawned.1", "spawned.0"),
+            ("spawned.0", "main"),
+            ("worker.1", "main"),
+        ] {
+            assert!(!told_of(other, mover), "{other} of {mover}");
         }
     }
 
