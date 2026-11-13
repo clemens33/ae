@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.52] - 2026-11-13
+- Waits accept only the full screen, so a torn capture cannot fail the second assertion
+- The keys-row wait names the whole footer string the assertion reads
+- Specify complete reboot file retention and safe refusal
+- Specify copy failure and final reboot retention proof
+- Format reboot retention acceptance imports for Rust 2024
+- Reuse complete End retention before reboot teardown
+- Keep retention guards owned without reading private fields
+- Preserve the existing End capture refusal contract
+- Format the reboot retention hold comment
+- Prove reboot retains activity holds during staging
+- Place the staging fixture constant before statements
+- Order the reboot retention test module registration
+- Group the Statistics tool pages by harness (#338)
+- Pin the bold group headings of the Statistics tool pages (#338)
+
 ## [v2026.11.51] - 2026-11-13
 - App chat: a dim day separator above a turn from another local day (#302)
 - App chat: the newer-turns hint is centered, counts the turns below and jumps to the newest turn on a click; G and End do the same (#302)
