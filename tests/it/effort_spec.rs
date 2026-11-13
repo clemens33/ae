@@ -935,7 +935,7 @@ fn effort_stored_absent_damage_and_foreign_slot_never_become_new_episode() {
         );
     }
     assert_eq!(
-        stored(b"effort.spawned.0=v2 nonsense\n", "spawned.0"),
+        stored(b"effort.spawned.0=v3 nonsense\n", "spawned.0"),
         Stored::Damaged(Damage::Version)
     );
     assert_eq!(
