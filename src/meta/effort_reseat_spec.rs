@@ -311,6 +311,141 @@ fn effort_reseat_an_older_discard_does_not_close_a_newer_applied_claim() {
     assert_eq!(discarded[1].summary.as_deref(), Some("reseat"));
 }
 
+fn ending_with_reason(reference: &str, reason: &str) -> String {
+    let summary = format!("\"summary\":\"{reason}\"");
+    let line = discard_line(reference).replace("\"summary\":\"reseat\"", &summary);
+    assert!(line.contains(&summary), "the fixture must name its reason");
+    line
+}
+
+fn assert_reuses_other_path_ending(reason: &str) {
+    let fixture = applied();
+    let journal = format!(
+        "{}{}",
+        applied_trace(),
+        ending_with_reason("1700000000", reason)
+    );
+    std::fs::write(fixture.dir().join("events.jsonl"), &journal)
+        .expect("another path journaled its ending before meta publication failed");
+    let consumed = crate::watchdog_daemon::read_events(&fixture.dir());
+    assert_eq!(consumed.len(), 4, "the literal ending is consumer-visible");
+    assert_eq!(
+        crate::effort::fold(&consumed, SessionKey::new("fixture", SID), "main", "lead"),
+        Fold::Armed,
+        "the real consumer accepts the other path's ending"
+    );
+    assert!(matches!(
+        crate::effort::stored(fixture.meta().as_bytes(), "main"),
+        Stored::Present(_)
+    ));
+    publish_seat_move(
+        &fixture.dir(),
+        "main",
+        "lead",
+        &destination(Conversation::Kept),
+    )
+    .expect("reseat republishes after another path's failed publication");
+    assert!(matches!(
+        crate::effort::stored(fixture.meta().as_bytes(), "main"),
+        Stored::Absent
+    ));
+    assert_eq!(
+        std::fs::read_to_string(fixture.dir().join("events.jsonl")).expect("retry journal"),
+        journal,
+        "an applied episode already has its one ending, regardless of the path"
+    );
+    assert_eq!(
+        crate::effort::fold(
+            &crate::watchdog_daemon::read_events(&fixture.dir()),
+            SessionKey::new("fixture", SID),
+            "main",
+            "lead"
+        ),
+        Fold::Armed
+    );
+}
+
+#[test]
+fn effort_reseat_reuses_a_fresh_ending_after_its_meta_publication_failed() {
+    assert_reuses_other_path_ending("fresh");
+}
+
+#[test]
+fn effort_reseat_reuses_an_off_ending_after_its_meta_publication_failed() {
+    assert_reuses_other_path_ending("off");
+}
+
+fn assert_unmatched_ending_cannot_close_claim(reference: &str, reason: &str, expected: &Fold) {
+    let fixture = applied();
+    let journal = format!(
+        "{}{}",
+        applied_trace(),
+        ending_with_reason(reference, reason)
+    );
+    std::fs::write(fixture.dir().join("events.jsonl"), journal)
+        .expect("the nonmatching ending follows this episode's opening");
+    let consumed = crate::watchdog_daemon::read_events(&fixture.dir());
+    assert_eq!(
+        consumed.len(),
+        4,
+        "the negative control is consumer-visible"
+    );
+    assert_eq!(
+        &crate::effort::fold(&consumed, SessionKey::new("fixture", SID), "main", "lead"),
+        expected
+    );
+    publish_seat_move(
+        &fixture.dir(),
+        "main",
+        "lead",
+        &destination(Conversation::Kept),
+    )
+    .expect("the unmatched claim still needs its own valid ending");
+    let consumed = crate::watchdog_daemon::read_events(&fixture.dir());
+    let endings: Vec<_> = consumed
+        .iter()
+        .filter(|event| event.action == "effort-discarded")
+        .collect();
+    assert_eq!(
+        endings.len(),
+        2,
+        "the earlier record cannot close this claim"
+    );
+    let actual = endings[1];
+    assert_eq!(actual.actor, "watchdog");
+    assert_eq!(actual.reference.as_deref(), Some("1700000000"));
+    assert_eq!(actual.summary.as_deref(), Some("reseat"));
+    assert!(
+        SessionKey::new("fixture", SID)
+            .seat("main")
+            .matches(actual.target_identity().expect("routed ending"))
+    );
+    assert_eq!(
+        crate::effort::fold(&consumed, SessionKey::new("fixture", SID), "main", "lead"),
+        Fold::Armed
+    );
+    assert!(matches!(
+        crate::effort::stored(fixture.meta().as_bytes(), "main"),
+        Stored::Absent
+    ));
+}
+
+#[test]
+fn effort_reseat_a_late_old_ref_ending_cannot_close_the_current_claim() {
+    // The fold is already Armed because any well-formed discard resets it.
+    // This pins claim-to-ref binding even when fold state alone cannot do so.
+    assert_unmatched_ending_cannot_close_claim("1699999999", "reseat", &Fold::Armed);
+}
+
+#[test]
+fn effort_reseat_an_invalid_reason_cannot_close_the_current_claim() {
+    assert_unmatched_ending_cannot_close_claim(
+        "1700000000",
+        "unrecognized",
+        &Fold::Doubt("unreadable effort discard"),
+    );
+}
+
 #[test]
 fn effort_reseat_a_matching_ref_for_another_identity_cannot_suppress_this_outcome() {
     let original = discard_line("1700000000");
