@@ -329,6 +329,10 @@ pub(crate) fn read_capped_identified(path: &Path, cap: u64) -> CappedRead {
     if let Some(what) = nonregular_leg(shape.file_type()) {
         return read(Ok(SourceRead::Invalid(what.to_owned())));
     }
+    #[cfg(test)]
+    {
+        classified_hook::run(path);
+    }
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the classified, capped read of a file ae keeps for the console — see clippy.toml"
@@ -358,6 +362,46 @@ pub(crate) fn read_capped_identified(path: &Path, cap: u64) -> CappedRead {
         return done(Err(Oversized));
     }
     done(Ok(SourceRead::Ready(body)))
+}
+
+/// A one-shot hook between the classification and the open of
+/// [`read_capped_identified`] (`cfg(test)` only): the instant a file seen as
+/// regular can still vanish before it is opened.
+#[cfg(test)]
+pub(crate) mod classified_hook {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    type Hook = Box<dyn FnOnce()>;
+
+    thread_local! {
+        static ARMED: RefCell<Option<(PathBuf, Hook)>> = const { RefCell::new(None) };
+    }
+
+    /// The next classified read of `path` on this thread runs `hook` once,
+    /// after the classification and before the open. A read of another path
+    /// leaves it armed.
+    pub(crate) fn arm(path: &Path, hook: impl FnOnce() + 'static) {
+        ARMED.with(|armed| *armed.borrow_mut() = Some((path.to_owned(), Box::new(hook))));
+    }
+
+    /// Run and disarm the hook when `path` is the armed one. The hook runs
+    /// after the cell is released, so it may read through the door itself.
+    pub(super) fn run(path: &Path) {
+        let hook = ARMED.with(|armed| {
+            let mut armed = armed.borrow_mut();
+            match armed.take() {
+                Some((at, hook)) if at == path => Some(hook),
+                other => {
+                    *armed = other;
+                    None
+                }
+            }
+        });
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
 }
 
 /// [`read_capped`] of the one file `name` directly inside `dir`, where `dir`
@@ -2548,6 +2592,49 @@ mod tests {
             read_capped(&path, 4),
             Ok(SourceRead::Invalid("a directory".to_owned()))
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The read-door contract for a regular file that is removed after it was
+    /// classified and before it is opened (#316): the node is gone, so the read
+    /// is `Absent` — never `Unreadable`, never an empty or stale `Ready` — nothing
+    /// was opened, and `node` still carries the status that classified it.
+    #[test]
+    fn a_file_removed_between_classification_and_open_reads_absent() {
+        use super::{SourceRead, classified_hook, read_capped_identified};
+        let dir = scratch("removed-at-open");
+        let (path, other) = (dir.join("draft"), dir.join("other"));
+        std::fs::write(&path, b"abcd").unwrap();
+        std::fs::write(&other, b"zz").unwrap();
+
+        // The hook belongs to `path` alone: a read of another file leaves it
+        // armed, and the file it would remove is still read whole.
+        let victim = path.clone();
+        classified_hook::arm(&path, move || std::fs::remove_file(&victim).unwrap());
+        let unrelated = read_capped_identified(&other, 4);
+        assert_eq!(unrelated.read, Ok(SourceRead::Ready(b"zz".to_vec())));
+        assert!(path.exists(), "a read of another path ran the hook");
+
+        // The read of `path` classifies it as a regular file of 4 bytes, then
+        // the hook removes it, then the open finds nothing.
+        let seen = read_capped_identified(&path, 4);
+        assert!(!path.exists(), "the hook did not run between the two steps");
+        assert_eq!(seen.read, Ok(SourceRead::Absent));
+        assert!(
+            seen.opened.is_none(),
+            "nothing was opened: {:?}",
+            seen.opened
+        );
+        let node = seen
+            .node
+            .expect("the classification came before the removal");
+        assert!(node.is_file() && node.len() == 4, "{node:?}");
+
+        // One shot: with the file back, the next read is a plain read.
+        std::fs::write(&path, b"abcd").unwrap();
+        let again = read_capped_identified(&path, 4);
+        assert_eq!(again.read, Ok(SourceRead::Ready(b"abcd".to_vec())));
+        assert!(again.opened.is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
