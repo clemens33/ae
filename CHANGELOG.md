@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.47] - 2026-11-13
+- Add just test-affected, the one-hop merge gate
+- Codex capture: read the local-date partitions a rollout can sit in, not only the UTC days
+- Freeze #315 acceptance for information during a proof hold
+- Information keeps an established proof hold (#315)
+
 ## [v2026.11.46] - 2026-11-13
 - Resolve pane owners through native views
 - Use explicit failures in native view test helpers
