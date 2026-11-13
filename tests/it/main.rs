@@ -88,6 +88,7 @@ mod doors;
 mod draftclaim_spec;
 mod effort_live_spec;
 mod effort_resume_spec;
+mod effort_retire_spec;
 mod effort_spec;
 mod entry;
 mod entry_app_spec;

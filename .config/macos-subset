@@ -134,6 +134,7 @@ helper tests/it/clientfollow_resume_spec.rs::Rig::tmux = clientfollow_cover_spec
 helper tests/it/deliver.rs::Rig::drop = deliver::a_prove_leg_skips_with_the_send_lock_released
 helper tests/it/deliver.rs::Rig::new = deliver::a_prove_leg_skips_with_the_send_lock_released
 helper tests/it/deliver.rs::Rig::run = deliver::human_prompt_blocks_bare_interrupt_without_body_or_request_transition
+helper tests/it/effort_live_spec.rs::remap_main = effort_live_spec::spawned::p2_s1_spawned_claude_adjusts_and_restores_without_changing_identity
 helper tests/it/effort_live_spec.rs::reserve_same_episode = effort_live_spec::leadat::leadat_new_red_detached_effort_leg_rechecks_lead_bar
 helper tests/it/effort_live_spec.rs::setup = effort_live_spec::r3_up_with_record_already_cleared_is_unproven_never_failed_or_restored
 helper tests/it/effort_live_spec.rs::still_held = effort_live_spec::leadat::leadat_new_red_detached_effort_leg_holds_at_lower_lead_bar

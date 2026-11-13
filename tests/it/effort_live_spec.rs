@@ -883,10 +883,9 @@ fn remap_main(seat: &Seat, slot: &str, agent: &str) {
 }
 
 #[test]
-fn colead_is_eligible_but_spawned_and_orchestrator_seats_are_excluded() {
+fn colead_is_eligible_but_orchestrator_seats_are_excluded() {
     for (tag, slot, agent, orchestrator) in [
         ("effcolead", "worker.0", "colead", false),
-        ("effspawned", "spawned.0", "scout", false),
         ("efforchestrator", "main", "lead", true),
     ] {
         let seat = setup(tag, "claude", "xhigh", "auto_effort = on");
@@ -1293,3 +1292,6 @@ fn r3_up_with_record_already_cleared_is_unproven_never_failed_or_restored() {
 
 #[path = "leadat_effort_spec.rs"]
 mod leadat;
+
+#[path = "effort_spawned_spec.rs"]
+mod spawned;
