@@ -566,7 +566,7 @@ pub(crate) fn archive_step(
 }
 
 /// Return writer holds with the complete snapshot proof. Teardown keeps them
-/// through canonical unregister; archive_step releases them on return.
+/// through canonical unregister; `archive_step` releases them on return.
 fn retention_snapshot(
     dir: &Path,
     name: &str,
