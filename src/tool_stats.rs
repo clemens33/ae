@@ -730,3 +730,7 @@ mod budget_spec;
 #[cfg(test)]
 #[path = "tool_stats/persist_spec.rs"]
 mod persist_spec;
+
+#[cfg(test)]
+#[path = "tool_stats/timestamp_spec.rs"]
+mod timestamp_spec;

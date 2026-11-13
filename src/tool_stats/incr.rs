@@ -277,6 +277,7 @@ impl Conv {
         }
         let dropped = &self.resume.dropped;
         let set = self.resume.streams.entry(stream.clone()).or_default();
+        let held = set.len();
         for event in events {
             if let Event::Read { id, .. } = event
                 && dropped.contains(id)
@@ -285,6 +286,21 @@ impl Conv {
             }
             if !set.contains(event) {
                 set.insert(event.clone());
+            }
+        }
+        if set.len() > held {
+            // Coverage reads only extrema. Keep them per stream so a gone
+            // source retains its range, and leave untouched legacy sets alone.
+            let mut stamps = set.range(Event::Stamp(i64::MIN)..=Event::Stamp(i64::MAX));
+            if let Some(Event::Stamp(first)) = stamps.next() {
+                let first = *first;
+                let last = match stamps.next_back() {
+                    Some(Event::Stamp(last)) => *last,
+                    _ => first,
+                };
+                set.retain(
+                    |event| !matches!(event, Event::Stamp(at) if *at != first && *at != last),
+                );
             }
         }
         if self.resume.fallback {
