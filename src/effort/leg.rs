@@ -954,7 +954,7 @@ mod tests {
     )]
     // Driver units (#253 b4, supplementary): what a client list proves, and
     // that a close revalidates the identity CAS even when its record stands.
-    use super::{Ctx, Outcome, client_input, model_hold, read};
+    use super::{Ctx, Outcome, client_input, eligible, model_hold, read};
     use crate::effort::{Direction, Level, Transition};
     use crate::inventory::ServerId;
     use crate::tmux::ObservedClient;
@@ -968,6 +968,26 @@ mod tests {
                 "✻ Fake · done (0s)\n{bar}\n❯ \n{bar}\n  🧠 {model} (xhigh)  📁 work\n  ⏵⏵ bypass permissions on\n"
             ),
             _ => format!("• ok\n\n› Ask Codex to do anything\n\n  {model} xhigh · /tmp/work\n"),
+        }
+    }
+
+    /// The lead pair and every well-formed spawned seat are eligible (#318);
+    /// another worker seat and a malformed slot are not.
+    #[test]
+    fn only_the_lead_pair_and_spawned_seats_are_eligible() {
+        for slot in ["main", "worker.0", "spawned.0", "spawned.12"] {
+            assert!(eligible(slot), "{slot}");
+        }
+        for slot in [
+            "worker.1",
+            "worker.10",
+            "spawned.",
+            "spawned.x",
+            "spawned.0x",
+            "Spawned.0",
+            "",
+        ] {
+            assert!(!eligible(slot), "{slot:?}");
         }
     }
 
