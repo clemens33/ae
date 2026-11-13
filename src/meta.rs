@@ -2443,7 +2443,7 @@ fn reseat_discard(dir: &Path, current: &str, slot: &str, agent: &str) -> io::Res
     }
     let parsed = Meta::parse(current);
     let episode = parsed.effort(slot).episode();
-    let session = crate::lifecycle::meta_value(bytes, "session");
+    let session = String::from_utf8_lossy(first_value(bytes, "session").unwrap_or_default());
     let session_id = parsed.session_id().unwrap_or_default();
     let seat = crate::effort_journal::DiscardSeat {
         session: &session,
