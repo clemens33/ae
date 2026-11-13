@@ -427,8 +427,8 @@ strict reader.
 The human ruled the split on 2026-11-12: during a merge only the relevant tests run, and during a
 release the full suite runs only on the hp and the relevant macOS boundary subset on the Mac
 (docs/history.md §10, "Release tests on two machines"). `just release` therefore never runs the whole suite on the Mac. It calls
-`just release-proof expect=<head>:<tree>` with the clean pre-bump identity, after `just check` and
-before `just rust-deny`.
+`just release-proof expect=<head>:<tree> hp=run` with the clean pre-bump identity, after `just check`
+and before `just rust-deny`.
 
 **The hp half.** Run a whole green `just test` on the hp at exactly the commit you will release. It
 writes `.local/gate-receipts/<tree hash>` in the hp's main checkout. `release-proof` reads that receipt
@@ -444,6 +444,36 @@ host-key checking. It refuses unless ALL of these hold:
 
 `tmux`, `harness`, `scratch`, `inventory` and `inventory_count` are recorded only: the two machines
 differ there by design.
+
+**Both halves at the same time.** `just release` passes `hp=run`. When the hp already has a receipt
+for the tree, the proof runs as described above: the hp check first, then the Mac subset. When the
+hp has no receipt yet, the proof makes one, and the hp whole run and the Mac subset run at the same
+time, so a release costs about the slower of the two legs:
+
+1. On the hp, `bash -s` runs a missing-only check: the receipt and its directories are not symbolic
+   links, every directory on the path is readable and searchable, and the receipt does not exist. A
+   receipt that exists but cannot be read refuses. So does `refs/ae-release/<head>` in the hp root, or
+   an hp lane lock held as `release-<head12>`: both mean a release leg for this commit is running.
+2. The Mac pushes the commit to the hp root as `refs/ae-release/<head>` (never forced; origin and its
+   tags are never touched), then starts the hp leg detached under `setsid nohup`.
+3. The hp leg claims the hp lane lock as `release-<head12>` (it waits at most 1800 s and honours
+   `next`). Only then does it check out the commit in the warm worktree `<root>-wt/release`, which
+   only the release leg uses and which must be clean on exactly that commit and tree. It deletes
+   the staging ref, runs `timeout -k 60 3600 just test`, releases the lock on a normal end and writes
+   `<root>/.local/release/<run>.exit` last. The run id is the head, the time and the Mac process id,
+   so no attempt reads the exit record of another.
+4. The Mac runs `just test-macos` in a process group of its own, then polls the exit record every
+   30 s. It goes on only when the record names its own run, commit and tree, exit 0 and a released
+   lock. Then the strict receipt check above runs on the receipt the hp leg wrote.
+
+The hp leg has no remote cancel. A red Mac subset, three lost polls in a row or an interrupt only
+stops the Mac waiting and refuses; the hp leg finishes alone, and its receipt serves a later release
+of the same tree. When its own timeout or a signal stops `just test`, the leg keeps the lane lock and
+writes `<root>/.local/release/<run>.suspect`; the lead clears the lock after checking that nothing of
+that run is left. An interrupt stops the Mac subset's process group and waits until the group is
+empty, so `just release` returns only after the subset and its lane cleanup ended. The Mac lane lock
+stays with the caller of `just release`: the release itself claims none.
+`tests/it/gate/receipt_spec/parallel_spec.rs` is the frozen acceptance for this path.
 
 **The Mac half.** `just test-macos` runs every unit test plus the integration modules and exact tests
 `.config/macos-subset` names: the tests that touch what differs on a Mac (OS conditionals, the process
@@ -462,7 +492,9 @@ release rechecks it right before `just bump`. Any change, and any git read that 
 the absolute path of the hp's main checkout (no `..` segment). Neither has a default and neither lives
 in a tracked file: an unset or malformed value refuses before any ssh, and the release refuses in its
 pre-flight. Every refusal is one `release-proof: refused: <why>` line and exit 1. Nothing falls back to
-the whole suite on the Mac.
+the whole suite on the Mac. `AE_RELEASE_HP_PATH` is optional: a `:`-separated list of absolute
+directories that the hp leg puts in front of its `PATH`, for an hp whose non-interactive ssh shell
+does not find `just` or the pinned tools.
 
 **The human-only override.** `AE_RELEASE_HP=local` releases without the hp. It prints
 `release-proof: DEVIATION: whole suite on this Mac, no hp proof`. A fresh local receipt of this tree
@@ -814,7 +846,7 @@ recovered with `just bump-recover`.
 
 1. Pre-flight: clean working tree; on `main`; `gh` authenticated **and** `repos/<owner>/<repo>` reporting `permissions.push=true`; the musl cross compiler present; a usable `AE_RELEASE_HP` and `AE_RELEASE_HP_ROOT`; fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
-3. `just release-proof` (see [Release proof](#release-proof)): the hp's whole green receipt for exactly this commit, over ssh, then the Mac boundary subset `just test-macos`. fmt-check, lint, fuzz-check and the doctests run again after the bump.
+3. `just release-proof hp=run` (see [Release proof](#release-proof)): the hp's whole green receipt for exactly this commit, over ssh, then the Mac boundary subset `just test-macos`; without a receipt, the hp whole run and the Mac subset run at the same time. fmt-check, lint, fuzz-check and the doctests run again after the bump.
 4. `just rust-deny` audits advisories, licenses, bans and sources (`cargo deny --locked check`). The advisory DB needs network; an offline release refuses here, before the bump. The identity recheck follows: the checkout must still be clean on the proved HEAD and tree.
 5. `just bump` updates the version — `Cargo.toml` and `Cargo.lock`, which since slice Z3 are the only files that hold one — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
 6. `just bundles` builds both halves into `dist/` and proves them; a bounded smoke (`--version` and `doctor`, 10 s each) of the native binary follows.

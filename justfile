@@ -1038,15 +1038,16 @@ release:
     # Gate 1: Quality
     just check
 
-    # Gate 2: Tests on two machines. The hp ran the WHOLE suite on exactly this commit and
-    # wrote its receipt; this Mac runs only the boundary subset. The proof recipe checks the
-    # receipt over ssh, runs the subset, and refuses on any doubt; it never falls back to the
-    # whole suite here (docs/development.md, "Release proof"). The identity it proves is
-    # snapshotted now, after the rebase, and named to it.
+    # Gate 2: Tests on two machines. The hp runs the WHOLE suite on exactly this commit and
+    # writes its receipt; this Mac runs only the boundary subset. The proof recipe checks the
+    # receipt over ssh and runs the subset; with hp=run and no receipt yet, it starts the hp
+    # whole run and runs the subset at the same time. It refuses on any doubt and never falls
+    # back to the whole suite here (docs/development.md, "Release proof"). The identity it
+    # proves is snapshotted now, after the rebase, and named to it.
     proof_identity || proof_refuse "$proof_why"
     proof_head="$id_head"
     proof_tree="$id_tree"
-    just release-proof "expect=$proof_head:$proof_tree"
+    just release-proof "expect=$proof_head:$proof_tree" hp=run
 
     # Gate 3: Supply chain on every release; advisory DB needs network, so offline refuses before the version is written.
     just rust-deny
@@ -1275,6 +1276,10 @@ release:
 #    at most 24 h with at most 300 s of clock skew.
 # 2. This Mac runs the boundary subset, `just test-macos`.
 #
+# With `hp=run` (the release passes it) and no receipt for the tree on the hp, the two halves run
+# at the same time: HP_LEG's hp_parallel starts the hp whole run and runs the subset beside it,
+# then this recipe checks the receipt that run wrote exactly as above.
+#
 # The checkout must be clean and stay on the same HEAD and tree while the hp is asked and while
 # the subset runs. Any doubt is one `release-proof: refused:` line and exit 1. Nothing falls
 # back to the whole suite on the Mac. AE_RELEASE_HP=local is the HUMAN-ONLY override for a
@@ -1288,10 +1293,12 @@ release-proof *args:
     {{ RECEIPT }}
     {{ PROOF }}
     expect=""
+    hp_run=no
     for arg in "$@"; do
         case "$arg" in
             expect=*) expect="${arg#expect=}" ;;
-            *) proof_refuse "unknown argument '$arg' (usage: just release-proof [expect=<head>:<tree>])" ;;
+            hp=run) hp_run=yes ;;
+            *) proof_refuse "unknown argument '$arg' (usage: just release-proof [expect=<head>:<tree>] [hp=run])" ;;
         esac
     done
     proof_destination || proof_refuse "$proof_why"
@@ -1322,17 +1329,38 @@ release-proof *args:
     reply_dir="$(mktemp -d)"
     trap 'status=$?; rm -rf "$reply_dir"; exit "$status"' EXIT
     echo "release-proof: asking $AE_RELEASE_HP for the receipt of tree $tree"
-    status=0
-    "$bound" 30 ssh -o BatchMode=yes -o ConnectTimeout=10 -- "$AE_RELEASE_HP" \
-        "hostname -s; head -c 8193 $AE_RELEASE_HP_ROOT/.local/gate-receipts/$tree" \
-        >"$reply_dir/reply" 2>"$reply_dir/err" || status=$?
+    hp_query() {
+        status=0
+        "$bound" 30 ssh -o BatchMode=yes -o ConnectTimeout=10 -- "$AE_RELEASE_HP" \
+            "hostname -s; head -c 8193 $AE_RELEASE_HP_ROOT/.local/gate-receipts/$tree" \
+            >"$reply_dir/reply" 2>"$reply_dir/err" || status=$?
+    }
+    hp_query
+    parallel=no
     if ((status != 0)); then
-        sed 's/^/release-proof: ssh: /' "$reply_dir/err" >&2
-        case "$status" in
-            124) proof_refuse "the hp did not answer within 30 s" ;;
-            255) proof_refuse "ssh could not reach $AE_RELEASE_HP (exit 255)" ;;
-            *) proof_refuse "the hp has no readable receipt for tree $tree under $AE_RELEASE_HP_ROOT (exit $status): run a whole green just test there on HEAD $head" ;;
-        esac
+        # With hp=run (the release passes it), a receipt the hp provably does not have yet is
+        # made now: the hp whole run and the Mac subset run at the same time (hp_parallel).
+        # A timeout or an unreachable hp still refuses, and so does anything the missing-only
+        # check on the hp cannot prove absent.
+        if [[ "$hp_run" == yes && "$status" != 124 && "$status" != 255 ]]; then
+            parallel=yes
+        else
+            sed 's/^/release-proof: ssh: /' "$reply_dir/err" >&2
+            case "$status" in
+                124) proof_refuse "the hp did not answer within 30 s" ;;
+                255) proof_refuse "ssh could not reach $AE_RELEASE_HP (exit 255)" ;;
+                *) proof_refuse "the hp has no readable receipt for tree $tree under $AE_RELEASE_HP_ROOT (exit $status): run a whole green just test there on HEAD $head" ;;
+            esac
+        fi
+    fi
+    if [[ "$parallel" == yes ]]; then
+        {{ HP_LEG }}
+        hp_parallel
+        hp_query
+        if ((status != 0)); then
+            sed 's/^/release-proof: ssh: /' "$reply_dir/err" >&2
+            proof_refuse "the hp leg ended green, but its receipt for tree $tree cannot be read (exit $status)"
+        fi
     fi
     hp_host="$(head -n 1 "$reply_dir/reply")"
     tail -n +2 "$reply_dir/reply" >"$reply_dir/receipt"
@@ -1360,6 +1388,10 @@ release-proof *args:
     ((age <= 86400)) || proof_refuse "the hp receipt is stale: $((age / 3600)) h old, the limit is 24 h"
     proof_same "$head" "$tree" || proof_refuse "$proof_why while the hp was asked"
     echo "release-proof: the hp ($r_host) ran the whole suite green on this tree $((age / 60)) min ago"
+    if [[ "$parallel" == yes ]]; then
+        echo "release-proof: ok: the hp ran the whole suite and this Mac the boundary subset at the same time, on HEAD $head"
+        exit 0
+    fi
 
     echo "release-proof: running the Mac boundary subset, just test-macos"
     just test-macos || proof_refuse "the Mac boundary subset failed"
@@ -2392,6 +2424,253 @@ PROOF := '''
         if [[ ! "$hp" =~ $user_re && ! "$hp" =~ $host_re ]]; then proof_why="AE_RELEASE_HP is not host or user@host: $hp"; return 1; fi
         if [[ -z "$root" ]]; then proof_why="AE_RELEASE_HP_ROOT is unset: name the hp main checkout, there is no default"; return 1; fi
         if [[ ! "$root" =~ $root_re || "$root/" == *"/../"* ]]; then proof_why="AE_RELEASE_HP_ROOT is not an absolute path without .. segments: $root"; return 1; fi
+    }
+'''
+
+# THE PARALLEL RELEASE PROOF (docs/development.md, "Release proof"): `release-proof hp=run`
+# when the hp has no receipt for the tree yet. The hp whole run and the Mac subset run at the
+# same time, and the release goes on only when both are green for this exact commit.
+#
+# The Mac side, hp_parallel, runs in release-proof. The hp side is four functions, which reach
+# the hp as text on the stdin of `ssh <hp> bash -s` (declare -f), so the hp login shell never
+# parses them:
+#   hp_pre     the missing-only check: the receipt is provably absent and nothing stands in the way
+#   hp_launch  starts hp_leg detached (setsid nohup) and prints its pid
+#   hp_leg     claims the hp lane lock, ONLY THEN prepares the warm worktree <root>-wt/release
+#              at exactly this commit, runs `timeout -k 60 3600 just test` there, releases the
+#              lock on a normal end, and writes <root>/.local/release/<run>.exit last
+#   hp_poll    prints that exit record, `running`, or `gone`
+# The hp leg has no remote cancel: once started it always runs to its end. A Mac refusal (a red
+# subset, three lost polls, an interrupt) only stops waiting; the leg finishes alone, and its
+# receipt serves a later release of the same tree. On its own timeout or a signal the leg keeps
+# the hp lock and writes <run>.suspect; the lead clears that lock after checking. The staging
+# ref refs/ae-release/<head> in the hp root carries the commit there; the leg deletes it once
+# it has checked the commit out, or when it ends earlier. The Mac lane lock stays with the
+# caller of `just release`.
+HP_LEG := '''
+    hp_pre() {
+        local root=$1 tree=$2 head=$3 lock=$4 g r l owner
+        g="$root/.local/gate-receipts"
+        r="$g/$tree"
+        l="$root/.local"
+        [ -d "$root" ] && [ -r "$root" ] && [ -x "$root" ] || exit 5
+        if [ -L "$l" ] || [ -L "$g" ] || [ -L "$r" ]; then exit 4; fi
+        if [ -e "$g" ]; then
+            [ -d "$g" ] && [ -r "$g" ] && [ -x "$g" ] || exit 5
+        elif [ -e "$l" ]; then
+            [ -d "$l" ] && [ -r "$l" ] && [ -x "$l" ] || exit 5
+        fi
+        if [ -e "$r" ]; then exit 3; fi
+        git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || exit 6
+        if git -C "$root" rev-parse -q --verify "refs/ae-release/$head" >/dev/null 2>&1; then exit 7; fi
+        owner="$root/.local/locks/gate/owner"
+        if [ -f "$owner" ] && [ "$(head -n 1 "$owner" | cut -d ' ' -f 1)" = "$lock" ]; then exit 8; fi
+        exit 0
+    }
+    hp_leg() {
+        local root=$1 head=$2 tree=$3 lock=$4 runid=$5
+        local dir="$root/.local/release" wt="$root-wt/release" ref="refs/ae-release/$head"
+        local gate=prep held=no status common
+        say() { echo "$(date -u +%FT%TZ) leg $runid: $*"; }
+        finish() {
+            local state=released
+            [ "$held" = no ] || state=held
+            printf 'gate=%s run=%s head=%s tree=%s lock=%s\n' "$gate" "$runid" "$head" "$tree" "$state" >"$dir/$runid.exit.tmp" &&
+                mv "$dir/$runid.exit.tmp" "$dir/$runid.exit"
+        }
+        suspect() {
+            printf 'run=%s\nhead=%s\ntree=%s\nlock=%s\nstatus=%s\nwhy=%s\nThe hp lane lock %s stays held: the lead clears it after checking that no process of this run is left.\n' \
+                "$runid" "$head" "$tree" "$lock" "$gate" "$1" "$lock" >"$dir/$runid.suspect"
+        }
+        drop_ref() { git -C "$root" update-ref -d "$ref" "$head" 2>/dev/null || say "note: $ref could not be deleted"; }
+        unlock() { if just -f "$root/justfile" -d "$root" lane-lock release "$lock"; then held=no; fi; }
+        # Whatever ends the leg, its exit record exists afterwards (written last, by finish).
+        leg_exit() { [ -e "$dir/$runid.exit" ] || finish; }
+        trap leg_exit EXIT
+        trap 'gate=signal; suspect "a signal stopped the leg"; exit 1' INT TERM
+        say "claiming the hp lane as $lock"
+        if ! just -f "$root/justfile" -d "$root" lane-lock claim "$lock" 1800; then
+            gate=lock
+            drop_ref
+            exit 1
+        fi
+        held=yes
+        say "preparing $wt at $head"
+        if [ -e "$wt" ] || [ -L "$wt" ]; then
+            common="$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+            if [ "$common" != "$(cd -P "$root" && pwd -P)/.git" ] || [ -n "$(git -C "$wt" status --porcelain --untracked-files=all 2>&1)" ]; then
+                say "refused: $wt is not a clean worktree of $root"
+                gate=worktree
+            fi
+        elif ! git -C "$root" worktree add -q --detach "$wt" "$head"; then
+            gate=worktree
+        fi
+        if [ "$gate" = prep ]; then
+            if ! git -C "$wt" checkout -q --detach "$head" ||
+                [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" != "$head" ] ||
+                [ "$(git -C "$wt" rev-parse 'HEAD^{tree}' 2>/dev/null)" != "$tree" ] ||
+                [ -n "$(git -C "$wt" status --porcelain --untracked-files=all 2>&1)" ]; then
+                say "refused: $wt is not clean on $head and tree $tree"
+                gate=worktree
+            fi
+        fi
+        drop_ref
+        if [ "$gate" != prep ]; then
+            unlock
+            exit 1
+        fi
+        gate=running
+        say "running just test"
+        status=0
+        (cd "$wt" && exec timeout -k 60 3600 just test) || status=$?
+        gate=$status
+        if [ "$status" = 124 ] || [ "$status" = 137 ]; then
+            say "its own timeout stopped just test (exit $status): the lane lock stays held"
+            suspect "the leg's own timeout stopped just test"
+            exit 1
+        fi
+        say "just test ended with exit $status"
+        unlock
+        exit 0
+    }
+    hp_launch() {
+        local root=$1 head=$2 tree=$3 lock=$4 runid=$5 path=$6 dir file
+        dir="$root/.local/release"
+        mkdir -p "$dir" || exit 6
+        for file in "$dir/$runid".*; do
+            [ ! -e "$file" ] || exit 9
+        done
+        if [ "$path" != - ]; then
+            PATH="$path:$PATH"
+            export PATH
+        fi
+        setsid nohup bash -c "$(declare -f hp_leg); hp_leg \"\$@\"" hp-leg "$root" "$head" "$tree" "$lock" "$runid" \
+            </dev/null >"$dir/$runid.log" 2>&1 &
+        echo "$!" >"$dir/$runid.pid"
+        echo "$!"
+    }
+    hp_poll() {
+        local dir="$1/.local/release" runid=$2 pid
+        if [ -f "$dir/$runid.exit" ]; then cat "$dir/$runid.exit"; return 0; fi
+        pid="$(cat "$dir/$runid.pid" 2>/dev/null || true)"
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo running; return 0; fi
+        if [ -f "$dir/$runid.exit" ]; then cat "$dir/$runid.exit"; return 0; fi
+        echo gone
+    }
+    # hp_remote <function> <args…>: one bounded `ssh <hp> bash -s`, its stdin the function's text.
+    hp_remote() {
+        local fn=$1
+        shift
+        { declare -f "$fn"; [ "$fn" != hp_launch ] || declare -f hp_leg; echo "$fn \"\$@\""; } |
+            "$bound" 30 ssh -o BatchMode=yes -o ConnectTimeout=10 -- "$AE_RELEASE_HP" bash -s -- "$@"
+    }
+    hp_parallel() {
+        local lock="release-${head:0:12}" ref="refs/ae-release/$head" runid code mac mac_status lost=0 line deadline path
+        local exit_re='^gate=([0-9]+|prep|lock|worktree|running|signal) run=([^ ]+) head=([0-9a-f]{40}) tree=([0-9a-f]{40}) lock=(released|held)$'
+        runid="${head:0:12}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+        path="${AE_RELEASE_HP_PATH:-}"
+        if [[ -n "$path" && ! "$path" =~ ^/[A-Za-z0-9._/:-]+$ ]]; then proof_refuse "AE_RELEASE_HP_PATH is not a plain list of absolute directories: $path"; fi
+        echo "release-proof: the hp has no receipt for tree $tree yet: its whole run starts now, beside the Mac subset (run $runid)"
+        code=0
+        hp_remote hp_pre "$AE_RELEASE_HP_ROOT" "$tree" "$head" "$lock" >"$reply_dir/pre" 2>"$reply_dir/err" || code=$?
+        case "$code" in
+            0) ;;
+            3) proof_refuse "the hp has a receipt for tree $tree that cannot be read" ;;
+            4) proof_refuse "the hp receipt path for tree $tree runs through a symbolic link" ;;
+            5) proof_refuse "a directory on the hp receipt path under $AE_RELEASE_HP_ROOT is not a readable, searchable directory" ;;
+            7) proof_refuse "the hp already has $ref: a release leg for this commit is running, or one ended without deleting it; check it, then delete the ref by hand" ;;
+            8) proof_refuse "the hp lane is held by $lock: a release leg for this commit is running" ;;
+            124) proof_refuse "the hp did not answer the missing-only check within 30 s" ;;
+            255) proof_refuse "ssh could not reach $AE_RELEASE_HP for the missing-only check (exit 255)" ;;
+            *) sed 's/^/release-proof: ssh: /' "$reply_dir/err" >&2
+               proof_refuse "the missing-only check on the hp failed (exit $code)" ;;
+        esac
+        code=0
+        GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10" "$bound" 120 \
+            git push -q "ssh://$AE_RELEASE_HP$AE_RELEASE_HP_ROOT" "$head:$ref" >"$reply_dir/push" 2>&1 || code=$?
+        if ((code != 0)); then
+            sed 's/^/release-proof: git push: /' "$reply_dir/push" >&2
+            proof_refuse "the commit could not be staged on the hp as $ref (exit $code)"
+        fi
+        code=0
+        hp_remote hp_launch "$AE_RELEASE_HP_ROOT" "$head" "$tree" "$lock" "$runid" "${path:--}" >"$reply_dir/launch" 2>"$reply_dir/err" || code=$?
+        case "$code" in
+            0) echo "release-proof: the hp leg $runid runs as pid $(head -n 1 "$reply_dir/launch")" ;;
+            124 | 255) proof_refuse "the hp start of run $runid got no answer (exit $code): the leg may be running; it ends alone and deletes $ref, and a new release refuses until then" ;;
+            *) sed 's/^/release-proof: ssh: /' "$reply_dir/err" >&2
+               code=0
+               "$bound" 30 ssh -o BatchMode=yes -o ConnectTimeout=10 -- "$AE_RELEASE_HP" \
+                   "git -C $AE_RELEASE_HP_ROOT update-ref -d $ref $head" >/dev/null 2>&1 || code=$?
+               ((code == 0)) || echo "release-proof: $ref could not be deleted on the hp (exit $code); delete it by hand" >&2
+               proof_refuse "the hp leg did not start (exit $code)" ;;
+        esac
+
+        # The Mac subset in a process group of its own, so this shell runs its traps during the
+        # wait. An interrupt stops that group (the lane's detached() parent passes the signal on
+        # to cargo's session) and waits until the group is empty, so `just release` returns, and
+        # its caller releases the Mac lane lock, only after the subset and its lane cleanup ended.
+        echo "release-proof: running the Mac boundary subset, just test-macos, while the hp runs"
+        set -m
+        just test-macos &
+        mac=$!
+        set +m
+        mac_stop() {
+            local tries=600
+            trap - INT TERM HUP
+            kill -TERM -- "-$mac" 2>/dev/null || true
+            while kill -0 -- "-$mac" 2>/dev/null; do
+                if ((--tries == 0)); then
+                    echo "release-proof: the Mac subset group $mac outlived 60 s after TERM: sending KILL" >&2
+                    kill -KILL -- "-$mac" 2>/dev/null || true
+                    break
+                fi
+                sleep 0.1
+            done
+            wait "$mac" 2>/dev/null || true
+            proof_refuse "interrupted: the Mac subset is stopped; the hp leg $runid runs on alone and releases its own lane"
+        }
+        trap mac_stop INT TERM HUP
+        mac_status=0
+        wait "$mac" || mac_status=$?
+        trap - INT TERM HUP
+        ((mac_status == 0)) || proof_refuse "the Mac boundary subset failed (exit $mac_status); the hp leg $runid runs on alone and releases its own lane"
+        proof_same "$head" "$tree" || proof_refuse "$proof_why while the Mac subset ran"
+        echo "release-proof: the Mac boundary subset is green; waiting for the hp leg $runid"
+
+        deadline=$(($(date -u +%s) + 1800 + 3660 + 120))
+        while :; do
+            code=0
+            hp_remote hp_poll "$AE_RELEASE_HP_ROOT" "$runid" >"$reply_dir/poll" 2>"$reply_dir/err" || code=$?
+            if ((code != 0)); then
+                lost=$((lost + 1))
+                echo "release-proof: poll $lost of 3 of the hp leg was lost (exit $code)" >&2
+                ((lost < 3)) || proof_refuse "three polls of the hp leg in a row were lost; it runs on alone and releases its own lane"
+            else
+                lost=0
+                line="$(head -n 1 "$reply_dir/poll")"
+                case "$line" in
+                    running) ;;
+                    gone) proof_refuse "the hp leg $runid ended without an exit record" ;;
+                    *)
+                        [[ "$line" =~ $exit_re ]] || proof_refuse "the hp leg $runid left an exit record this proof cannot read"
+                        [[ "${BASH_REMATCH[2]}" == "$runid" ]] || proof_refuse "the exit record names run ${BASH_REMATCH[2]}, not $runid"
+                        [[ "${BASH_REMATCH[3]}" == "$head" && "${BASH_REMATCH[4]}" == "$tree" ]] || proof_refuse "the exit record names another commit or tree"
+                        case "${BASH_REMATCH[1]}" in
+                            0) ;;
+                            lock) proof_refuse "the hp lane was not free within 1800 s; nothing ran there" ;;
+                            worktree) proof_refuse "the warm hp worktree is not a clean worktree of $AE_RELEASE_HP_ROOT on this commit; nothing ran there" ;;
+                            124 | 137 | signal) proof_refuse "the hp leg $runid was stopped (${BASH_REMATCH[1]}); its lane lock stays held with a suspect note for the lead" ;;
+                            *) proof_refuse "the hp whole suite failed (exit ${BASH_REMATCH[1]})" ;;
+                        esac
+                        [[ "${BASH_REMATCH[5]}" == released ]] || proof_refuse "the hp leg ended green but kept its lane lock"
+                        echo "release-proof: the hp leg $runid ended green and released its lane"
+                        return 0
+                        ;;
+                esac
+            fi
+            (($(date -u +%s) < deadline)) || proof_refuse "the hp leg $runid did not end within its bound"
+            sleep 30
+        done
     }
 '''
 
