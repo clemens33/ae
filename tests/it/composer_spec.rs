@@ -320,7 +320,10 @@ fn app_writing_shows_its_keys() {
     rig.write(&pane);
     rig.literal(&pane, "probe-keys");
     let screen = rig.wait(&pane, "app is writing", |s| {
-        s.contains("probe-keys") && s.lines().last().is_some_and(|l| l.contains("Esc browses"))
+        s.contains("probe-keys")
+            && s.lines()
+                .last()
+                .is_some_and(|l| l.contains("Enter sends · Alt+Enter ^J newline · Esc browses"))
     });
     let footer = screen.lines().last().unwrap_or_default();
     assert!(
