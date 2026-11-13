@@ -750,7 +750,7 @@ fn s2_more_than_512_sources_are_eventually_published() {
     // Splitting groups keeps discovery/cardinality at 513 without a
     // 513-record single-group aggregate; max group size 3 keeps debug cost low.
     for n in 0..510u32 {
-        let session = format!("{:08x}-0000-4000-8000-{:012x}", n, n);
+        let session = format!("{n:08x}-0000-4000-8000-{n:012x}");
         root.live(&format!("s{n:04}"), &session, &birth(&session, n));
     }
     for n in 510..513u32 {
