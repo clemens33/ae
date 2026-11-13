@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.55] - 2026-11-13
+- Stats store: decide a tools write once, in the warm, and prove it by status under the lock (#322 follow-up)
+- Stats store: a warm answers a failed listing with the error its record serves held
+- Release-proof tests: the hp whole run and the Mac subset in parallel when the hp has no receipt (relpar P1, frozen by relpar-nav)
+- Release-proof hp=run: start the hp whole run beside the Mac subset when the hp has no receipt yet (relpar P2)
+- Release-proof hp=run: stop every Mac process group on an interrupt and keep the hp lock after a signal (relpar P2 review)
+- Release-proof tests: a TERM to the proof recipe keeps foreground parity for the Mac subset (relpar parity amendment, frozen by relpar-nav)
+- Release-proof hp=run: run the Mac subset in the foreground, as without an hp leg
+
 ## [v2026.11.54] - 2026-11-13
 - Move state_root, VERSION, version_line and NO_STATE_ROOT callers to their owners (R1 group 2)
 - Pin version_line to the manifest version (R1 group 2 mutant)
