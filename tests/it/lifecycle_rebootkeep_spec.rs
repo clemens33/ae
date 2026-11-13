@@ -471,3 +471,78 @@ fn reboot_teardown_refuses_an_incomplete_recovery_point_and_keeps_the_live_sessi
         "the incomplete archive keeps the live session",
     );
 }
+
+/// A regular file the copy cannot read fails during staging, after the
+/// inventory classified it: the refusal names the node and the next step,
+/// publishes nothing and keeps every byte.
+#[test]
+fn reboot_refuses_an_unreadable_retained_file_and_keeps_its_bytes() {
+    use std::os::unix::fs::PermissionsExt;
+    let rig = Rig::new("rk8");
+    put(&rig.dir, "notes/locked.txt", b"secret");
+    let node = rig.dir.join("notes/locked.txt");
+    std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o600)).expect("a live file");
+    let before = tree(&rig.dir);
+    std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o000)).expect("unreadable");
+    if std::fs::read(&node).is_ok() {
+        eprintln!("SKIPPED: a privileged runner reads a mode-000 file; not exercised");
+        let _ = std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o600));
+        return;
+    }
+
+    let plan = rig.home.join("plan");
+    let (code, out, err) = reboot(&rig, &plan);
+    let _ = std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o600));
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(out.is_empty(), "nothing crossed the boundary");
+    assert!(
+        err.contains(&node.display().to_string()),
+        "the refusal names the unreadable node: {err}"
+    );
+    assert!(
+        err.contains("ae reboot"),
+        "the refusal names the step the human runs next: {err}"
+    );
+    assert!(!exists(&rig.archive()), "no archive");
+    assert!(!exists(&claim(&rig)), "no claim left");
+    kept_all(&before, &rig.dir, "the unreadable file keeps the session");
+    assert!(exists(&rig.dir.join("meta")), "still registered");
+}
+
+/// Standalone teardown re-proves the retained bytes, not only their presence:
+/// a live retained file changed after publishing refuses the teardown and
+/// keeps both trees exact.
+#[test]
+fn reboot_teardown_refuses_a_retained_file_that_changed_after_publishing() {
+    let rig = Rig::new("rk9");
+    let first = half_rebooted(&rig);
+    put(&rig.dir, "notes/a.txt", b"retained twice");
+    let live = tree(&rig.dir);
+    let (code, tuple_out, err) =
+        rig.run(&["_compact-freeze", rig.dir.to_str().expect("session dir")]);
+    assert_eq!(code, Some(0), "frozen for the second stage: {err}");
+    let tuple = tuple_out.trim_end().to_owned();
+    let (code, out, err) = rig.run(&[
+        "_compact-teardown",
+        rig.dir.to_str().expect("session dir"),
+        tuple.as_str(),
+    ]);
+    assert_eq!(code, Some(1), "stdout: {out}\nstderr: {err}");
+    assert!(out.is_empty(), "nothing crossed the boundary");
+    assert!(
+        err.contains(&rig.archive().display().to_string())
+            && err.contains(&rig.dir.display().to_string()),
+        "the refusal names the archive and the live dir: {err}"
+    );
+    let lower = err.to_lowercase();
+    assert!(
+        lower.contains("outside") && lower.contains("fresh name"),
+        "the refusal names the bounded recovery: {err}"
+    );
+    assert!(
+        err.contains("ae reboot"),
+        "the refusal names the step the human runs next: {err}"
+    );
+    assert_eq!(tree(&rig.archive()), first, "the archive is exact");
+    kept_all(&live, &rig.dir, "teardown drift keeps the live session");
+}
