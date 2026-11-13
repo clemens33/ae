@@ -133,6 +133,255 @@ test-macos *args:
     echo "test-macos: $subset_filterset" >&2
     just _tmux-isolated test -E "$subset_filterset"
 
+# THE MERGE GATE (M1, one hop), what a slice passes before it lands, while a release still runs
+# the whole suite on the hp (`just release-proof`, docs/development.md "The merge gate"). It runs
+# the three checks of `just test` (fmt, lint, fuzz compile) and then only the tests the change
+# reaches: every unit test, the guard modules `doors`, `floor` and `gate`, the integration
+# modules the selector names, and the doctests when a `src/` file changed. The selector is
+# `examples/affected.rs` (tests/it/gate/affected.rs): this recipe writes it the change as framed
+# records, reads its answer strictly and prints why it chose the whole suite or how many
+# integration tests the subset leaves out (the M1 gap). A change it cannot place runs the whole
+# lane, and so does any failure of the producer or the selector. The checkout must be clean, and
+# HEAD and its tree must not move from the start to the end, or the recipe refuses. It never
+# writes a gate receipt: only a whole `just test` vouches for a tree. `base=<ref>` (default main)
+# measures the change from the merge-base with that ref. `print=yes` measures the working tree
+# instead, dirt included, prints the selector's answer with every reason and runs nothing else.
+
+# Run the merge gate: the checks, then the tests the change reaches; print=yes only prints the selection
+test-affected *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{ SIZING }}
+    base=main
+    print=no
+    for arg in "$@"; do
+        case "$arg" in
+            base=?*) base="${arg#base=}" ;;
+            print=yes) print=yes ;;
+            *) echo "usage: just test-affected [base=<ref>] [print=yes]" >&2; exit 2 ;;
+        esac
+    done
+    refuse() { echo "test-affected: refused: $*" >&2; exit 1; }
+    scratch="$(mktemp -d)"
+    doc_dir=""
+    trap 'rm -rf "$scratch" ${doc_dir:+"$doc_dir"}' EXIT
+    mode=gate
+    [[ "$print" == no ]] || mode=preview
+
+    # HEAD, its tree and a clean checkout. Untracked files count: the tests would see them.
+    identity() {
+        local names dirt
+        names="$(git rev-parse HEAD 'HEAD^{tree}' 2>/dev/null)" || { why="git cannot name HEAD and its tree"; return 1; }
+        dirt="$(git --no-optional-locks status --porcelain --untracked-files=all 2>/dev/null)" || { why="git cannot read the status of the working tree"; return 1; }
+        [[ -z "$dirt" ]] || { why="the working tree is not clean (untracked files count)"; return 1; }
+        now="${names//$'\n'/ }"
+    }
+    steady() {
+        identity || refuse "$why $1"
+        [[ "$now" == "$start" ]] || refuse "HEAD or its tree moved $1 (${start:0:12} became ${now:0:12})"
+    }
+
+    # THE PRODUCER: the change as framed records, `<tag> <bytes>\n<payload>\n`, in the order
+    # tests/it/gate/affected.rs `decode` reads them. It runs as an `if` condition, where `set -e`
+    # stops nothing, so every git, cat and wc call is checked here. LC_ALL=C makes `${#x}` count bytes.
+    record() { printf '%s %s\n%s\n' "$1" "${#2}" "$2" && records=$((records + 1)); }
+    change() {
+        if (($# == 3)); then
+            printf 'change %s\n%s\0%s\0%s\n' "$((${#1} + ${#3} + ${#2} + 2))" "$1" "$3" "$2"
+        else
+            printf 'change %s\n%s\0%s\n' "$((${#1} + ${#2} + 1))" "$1" "$2"
+        fi && records=$((records + 1))
+    }
+    # A file's bytes as a `new` or `old` record, read without a child process: a few hundred
+    # files cost seconds when each needs its own `wc` and `cat`. `read -d ''` stops early only
+    # at a NUL byte, so a file that holds one fails here instead of being cut short.
+    content() {
+        local fd text
+        exec {fd}<"$3" || return 1
+        if IFS= read -r -d '' text <&"$fd"; then
+            exec {fd}<&-
+            return 1
+        fi
+        exec {fd}<&-
+        # A read error assigns nothing, not even the text read before it: `text` stays unset.
+        [[ -v text ]] || return 1
+        printf '%s %s\n%s\0%s\n' "$1" "$((${#2} + 1 + ${#text}))" "$2" "$text" && records=$((records + 1))
+    }
+    # A `.rs` file under `src/` or `tests/`, as the selector's `is_source` reads the name.
+    source_path() { [[ ("$1" == src/* || "$1" == tests/*) && "$1" == *.rs && "${1##*/}" != .rs ]]; }
+    produce() {
+        local LC_ALL=C merge_base head status from path
+        local -a sources=() modified=()
+        local -A seen=()
+        records=0
+        merge_base="$(git merge-base HEAD "$base" 2>/dev/null)" || { why="git finds no merge-base of HEAD and $base"; return 1; }
+        head="$(git rev-parse HEAD 2>/dev/null)" || { why="git cannot name HEAD"; return 1; }
+        if [[ "$mode" == gate ]]; then
+            git diff -z --no-color --no-ext-diff --name-status -M "$merge_base" HEAD >"$scratch/diff" 2>/dev/null &&
+                git ls-tree -r -z --name-only HEAD >"$scratch/tracked" 2>/dev/null &&
+                : >"$scratch/untracked" || { why="git cannot list the change or the tree"; return 1; }
+        else
+            git diff -z --no-color --no-ext-diff --name-status -M "$merge_base" >"$scratch/diff" 2>/dev/null &&
+                git ls-files -z --others --exclude-standard >"$scratch/untracked" 2>/dev/null &&
+                git ls-files -z --cached --others --exclude-standard >"$scratch/tracked" 2>/dev/null || { why="git cannot list the change or the tree"; return 1; }
+        fi
+        record version 1 && record mode "$mode" && record base "$base" &&
+            record merge-base "$merge_base" && record head "$head" || { why="the header could not be written"; return 1; }
+        while IFS= read -r -d '' status; do
+            case "$status" in
+                R* | C*)
+                    IFS= read -r -d '' from && IFS= read -r -d '' path || { why="git diff ended inside a rename"; return 1; }
+                    change "$status" "$path" "$from" || return 1
+                    ;;
+                *)
+                    IFS= read -r -d '' path || { why="git diff ended inside a record"; return 1; }
+                    change "$status" "$path" || return 1
+                    if [[ "$status" == [MT] ]] && source_path "$path"; then modified+=("$path"); fi
+                    ;;
+            esac
+        done <"$scratch/diff"
+        while IFS= read -r -d '' path; do change U "$path" || return 1; done <"$scratch/untracked"
+        while IFS= read -r -d '' path; do
+            [[ -z "${seen[$path]:-}" ]] || continue
+            seen[$path]=1
+            # A preview skips an indexed path the working tree no longer has.
+            [[ "$mode" == gate || -e "$path" || -L "$path" ]] || continue
+            record tracked "$path" || return 1
+            if source_path "$path"; then sources+=("$path"); fi
+        done <"$scratch/tracked"
+        for path in "${sources[@]}"; do
+            content new "$path" "$path" || { why="$path cannot be read"; return 1; }
+        done
+        for path in "${modified[@]}"; do
+            git cat-file blob "$merge_base:$path" >"$scratch/blob" 2>/dev/null &&
+                content old "$path" "$scratch/blob" || { why="git cannot read $path at the merge-base"; return 1; }
+        done
+        record end "$records" || { why="the end record could not be written"; return 1; }
+    }
+
+    # THE CONSUMER: the selector's answer, line by line in its one order. Anything else is
+    # malformed, and the gate then runs the whole lane.
+    listed() {
+        local want="$1" item
+        shift
+        for item in "$@"; do [[ "$item" != "$want" ]] || return 0; done
+        return 1
+    }
+    parse_answer() {
+        local -a lines terms
+        local at=2 term reason_re='^reason [a-z][a-z0-9-]* .' counter_re='^counter (0|[1-9][0-9]{0,8}) (0|[1-9][0-9]{0,8})$'
+        local module='[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*'
+        local filter_re="^kind\\(lib\\) \\| kind\\(bin\\) \\| \\(binary_id\\(ae::it\\) & test\\(/\\^\\(($module(\\|$module)*)\\)::/\\)\\)\$"
+        verdict="" doctests="" check="" not_selected="" total="" filterset=""
+        reasons=() owners=()
+        [[ -s "$1" && -z "$(tail -c 1 "$1")" ]] || { why="the answer is empty or does not end with a newline"; return 1; }
+        mapfile -t lines <"$1"
+        [[ "${lines[0]-}" == "version 1" ]] || { why="line 1 is not 'version 1'"; return 1; }
+        case "${lines[1]-}" in
+            "verdict whole") verdict=whole ;;
+            "verdict subset") verdict=subset ;;
+            *) why="line 2 is not a verdict"; return 1 ;;
+        esac
+        while [[ "${lines[at]-}" =~ $reason_re ]]; do reasons+=("${lines[at]#reason }"); at=$((at + 1)); done
+        while [[ "${lines[at]-}" == "owner "?* ]]; do owners+=("${lines[at]#owner }"); at=$((at + 1)); done
+        while [[ "${lines[at]-}" == "why "?* ]]; do at=$((at + 1)); done
+        case "${lines[at]-}" in
+            "doctests yes" | "doctests no") doctests="${lines[at]#doctests }" ;;
+            *) why="line $((at + 1)) is not 'doctests yes|no'"; return 1 ;;
+        esac
+        at=$((at + 1))
+        case "${lines[at]-}" in
+            "check yes" | "check no") check="${lines[at]#check }" ;;
+            *) why="line $((at + 1)) is not 'check yes|no'"; return 1 ;;
+        esac
+        at=$((at + 1))
+        if [[ "$verdict" == subset ]]; then
+            [[ "${lines[at]-}" =~ $counter_re ]] && ((BASH_REMATCH[1] <= BASH_REMATCH[2])) || { why="line $((at + 1)) is not 'counter <N> <M>' with N <= M"; return 1; }
+            not_selected="${BASH_REMATCH[1]}"
+            total="${BASH_REMATCH[2]}"
+            at=$((at + 1))
+            [[ "${lines[at]-}" == "filterset "?* ]] || { why="line $((at + 1)) is not 'filterset <filterset>'"; return 1; }
+            filterset="${lines[at]#filterset }"
+            # Every unit test, then the selected owners: the three guards and only owner lines.
+            [[ "$filterset" =~ $filter_re ]] || { why="the filterset is not 'kind(lib) | kind(bin) | (binary_id(ae::it) & test(/^(<owner>|…)::/))'"; return 1; }
+            IFS='|' read -r -a terms <<<"${BASH_REMATCH[1]}"
+            for term in doors floor gate; do
+                listed "$term" "${terms[@]}" || { why="the filterset leaves out the guard $term"; return 1; }
+            done
+            for term in "${terms[@]}"; do
+                listed "$term" "${owners[@]}" || { why="the filterset names $term, which no owner line selects"; return 1; }
+            done
+            at=$((at + 1))
+            ((${#reasons[@]} == 0)) || { why="a subset names a reason"; return 1; }
+        else
+            ((${#reasons[@]} > 0 && ${#owners[@]} == 0)) || { why="a whole verdict names no reason, or names owners"; return 1; }
+        fi
+        [[ "${lines[at]-}" == end ]] || { why="line $((at + 1)) is not 'end'"; return 1; }
+        ((at + 1 == ${#lines[@]})) || { why="lines follow 'end'"; return 1; }
+    }
+    selector() {
+        selector_status=0
+        nice -n 10 cargo run --locked --quiet --all-features --example affected <"$scratch/stream" >"$scratch/answer" || selector_status=$?
+    }
+
+    if [[ "$mode" == preview ]]; then
+        size_counts
+        produce >"$scratch/stream" || refuse "$why"
+        selector
+        ((selector_status == 0)) || refuse "the selector exited with status $selector_status"
+        parse_answer "$scratch/answer" || refuse "the selector's answer is malformed: $why"
+        cat "$scratch/answer"
+        exit 0
+    fi
+
+    identity || refuse "$why"
+    start="$now"
+    just rust-fmt-check
+    just rust-lint
+    just rust-fuzz-check
+    size_counts
+    fallback=""
+    if produce >"$scratch/stream"; then
+        selector
+        if ((selector_status != 0)); then
+            fallback="selector-exit: the selector exited with status $selector_status"
+        elif ! parse_answer "$scratch/answer"; then
+            fallback="selector-output: $why"
+        fi
+    else
+        fallback="producer: $why"
+    fi
+    steady "during the selection"
+    if [[ -n "$fallback" ]]; then
+        # Without an answer nothing is known about the change: the whole lane, and the install
+        # checks too, because `install` may be part of it.
+        verdict=whole check=yes
+        reasons=()
+        echo "test-affected: whole: $fallback" >&2
+    fi
+    if [[ "$verdict" == whole ]]; then
+        for reason in "${reasons[@]}"; do
+            echo "test-affected: whole: ${reason%% *}: ${reason#* }" >&2
+        done
+        just _tmux-isolated test
+    else
+        echo "test-affected: subset: ${owners[*]}" >&2
+        echo "test-affected: not selected: $not_selected of $total integration tests (M1 gap)" >&2
+        echo "test-affected: $filterset" >&2
+        just _tmux-isolated test -E "$filterset"
+        if [[ "$doctests" == yes ]]; then
+            # The doctests a filtered lane skips, sized and isolated as the release runs them.
+            doc_dir="$(mktemp -d)"
+            size_say "test-affected doctests"
+            env -u TMUX -u TMUX_PANE TMPDIR="$doc_dir" TMUX_TMPDIR="$doc_dir" nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
+        fi
+    fi
+    if [[ "$check" == yes ]]; then
+        just check
+    fi
+    steady "while the tests ran"
+    echo "test-affected: green ($verdict)" >&2
+
 # ── Lane lock ────────────────────────────────────────────────────────
 
 # One machine runs one gate at a time, so a slice takes the LANE LOCK before it
@@ -1090,7 +1339,7 @@ release-proof *args:
     ((age >= -300)) || proof_refuse "the hp receipt is dated $((-age)) s in the future, beyond the 300 s of clock skew allowed"
     ((age <= 86400)) || proof_refuse "the hp receipt is stale: $((age / 3600)) h old, the limit is 24 h"
     proof_same "$head" "$tree" || proof_refuse "$proof_why while the hp was asked"
-    echo "release-proof: hp $r_host ran the whole suite green on this tree $((age / 60)) min ago"
+    echo "release-proof: the hp ($r_host) ran the whole suite green on this tree $((age / 60)) min ago"
 
     echo "release-proof: running the Mac boundary subset, just test-macos"
     just test-macos || proof_refuse "the Mac boundary subset failed"

@@ -705,8 +705,18 @@ relevant tests (e.g. like in CI pipeline) - during a release we run the full tes
   refuses the release. `AE_RELEASE_HP=local` is a human-only override that runs the whole
   suite on the Mac and says so with a DEVIATION line. A later red run does not invalidate a
   fresh green receipt for the same tree: the writer never touches a receipt on a red run.
-- **Next (P2).** The merge half of the direction, a selector that runs only the tests a
-  change can reach, needs its own plan and ruling.
+- **The merge gate (P2).** `just test-affected` runs fmt, lint and the fuzz compile, then
+  only what a change reaches in one hop: every unit test, the `doors`, `floor` and `gate`
+  guards and the integration modules the selector names, or the whole lane when the selector
+  cannot place the change. The lead's ruling on the plan: unit tests always run; the
+  shared-rig rule is mechanical, and only a `#[test]` fn counts as a local change; any
+  justfile edit runs the whole lane; the change stream gets no fuzz target, because one recipe
+  run writes and reads it and nothing stores it (a malformed stream runs the whole lane); and
+  the selector is an example target that mounts its test-suite source, with no process, file
+  or environment access of its own. The accepted gaps are the indirect A → B → C reach, the
+  tests that drive only the binary (3752 of 4022 integration tests when measured) and run-time
+  paths. Every subset prints how many integration tests it leaves out, and the release's whole
+  hp run is the backstop.
 
 ### Supply chain: cargo-deny with committed policy
 

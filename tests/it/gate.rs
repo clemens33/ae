@@ -39,6 +39,7 @@ mod mutantstime_spec;
 // Its bytes are frozen as the independent author wrote them, so rustfmt leaves the file alone.
 #[rustfmt::skip]
 mod receipt_spec;
+mod affected;
 mod macos_subset;
 #[allow(
     clippy::expect_used,

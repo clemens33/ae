@@ -60,8 +60,12 @@ tests/it/           — the one integration-test target. The behaviours of the r
                       tmux observations fixtures wait on (a failed read is never a pane);
                       support/source_view.rs = the one source view a text guard reads (all
                       production text of a file, or a failure naming file:line).
+                      gate/modtree.rs = the module-tree walk and lexer the Mac subset guard
+                      and the merge-gate selector share; gate/affected.rs = that selector.
                       Unit tests sit beside the code
 tests/fixtures/     — frozen inputs the suites read (session shapes, list goldens)
+examples/affected.rs — the merge-gate selector `just test-affected` runs: it mounts
+                      tests/it/gate/affected.rs and modtree.rs, reads stdin, writes stdout
 install             — the bootstrap: download a bundle, prove it against the release
                       manifest, extract, `ae-core _install --from <tmp>`. 83 lines; the only
                       bash file

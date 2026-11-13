@@ -34,8 +34,10 @@ Rationale and retired rules: [docs/history.md](docs/history.md). Product directi
 
 The loop, in order:
 
-1. `just test` is the gate: exactly `just rust-check`, run whole, with no per-commit fast/slow split.
-   `just pre` is ADVISORY and never cited as the gate.
+1. `just test-affected` is the merge gate: fmt, lint and the fuzz compile, then every unit test,
+   the guard modules and the integration modules the change reaches, or the whole lane when the
+   selector cannot place the change. `just test` is the whole gate, exactly `just rust-check`, and
+   the hp runs it for every release (step 5). `just pre` is ADVISORY and never cited as the gate.
 2. `just check` only when you touched `install` (shellcheck + shfmt).
 3. Cross-model review before the commit, for anything significant. Route it through ae
    (`<session>/ask`, `<session>/review`, `<session>/spawn <alias>:reviewer`) — never shell
@@ -48,7 +50,7 @@ The loop, in order:
 
 Ship small vertical slices: commit, release and roll out standalone intermediate state or
 sub-features instead of waiting for the whole feature. A slice ships when it is green, reviewed
-and leaves the product coherent; `just test`, cross-model review, the freeze protocol and every
+and leaves the product coherent; the merge gate, cross-model review, the freeze protocol and every
 hard rule stay mandatory.
 
 `ae upgrade` migrates and relinks every placeable session before it moves the command link,
@@ -146,6 +148,7 @@ Every recipe: [docs/development.md](docs/development.md#lane-reference). These c
 | Recipe | What it is |
 |---|---|
 | `just test` / `just rust-check` | the gate: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test` (nextest and doctests: nextest does not run doctests) |
+| `just test-affected [base=<ref>] [print=yes]` | the merge gate (M1, one hop): fmt-check, lint and fuzz-check, then every unit test, the `doors`, `floor` and `gate` guards and the integration modules the change reaches (doctests when `src/` changed, `just check` when `install` changed), or the whole lane when the selector cannot place the change. Each subset prints `not selected: <N> of <M>`, the M1 gap that the release's whole hp run backs. Clean committed tree, no receipt; `print=yes` previews and runs nothing ([docs/development.md](docs/development.md#the-merge-gate)) |
 | the gate-receipt | a whole green `just test` that started on a clean committed tree and ended on the same HEAD and tree, still clean, writes `<main checkout>/.local/gate-receipts/<tree hash>`. The hp's receipt is what a release proves ([docs/development.md](docs/development.md#the-gate-receipt)) |
 | `just release-proof` / `just test-macos` | the release's tests on two machines: `release-proof` reads the hp's receipt for this clean HEAD over ssh (`AE_RELEASE_HP`, `AE_RELEASE_HP_ROOT`; strict parse, every deciding fact equal, written on the hp, at most 24 h old), then runs `test-macos`, the Mac boundary subset `.config/macos-subset` that the `gate::macos_subset` guard keeps complete. Any doubt refuses before the bump; nothing falls back to the whole suite on the Mac. fmt-check, lint, fuzz-check, doctests, deny, the six-path bump proof and a 10 s smoke still run on the bumped tree. `AE_RELEASE_HP=local` is a human-only override; agents never set it ([docs/development.md](docs/development.md#release-proof)) |
 | `just pre` | ADVISORY, NOT the gate, never cited as it: `rust-fmt-check` + `rust-lint` + the unit tests + the `doors`, `floor` and `gate` guard modules of `tests/it`, through the lane's filtered arm. No doctests, no fuzz compile, no retries; `just test` stays exact |

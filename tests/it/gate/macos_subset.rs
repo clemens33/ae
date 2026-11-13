@@ -41,7 +41,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use super::modtree::{self, Crate, Files, Kind, Lexed, ModPath, TreeError, join_path};
+use super::modtree::{self, Crate, Files, Kind, Lexed, ModPath, TreeError, join_path, read_uses};
 
 /// The nextest config whose `tmux-clients` group members are boundary modules.
 pub(crate) const NEXTEST: &str = ".config/nextest.toml";
@@ -462,21 +462,9 @@ fn client_modules(filter: &str) -> Option<Vec<String>> {
 // Tests and helpers
 // ---------------------------------------------------------------------------
 
-/// Every `#[test]` fn of the integration crate, by its full nextest name, sorted.
-pub(crate) fn test_names(files: &Files, modules: &BTreeMap<String, Vec<ModPath>>) -> Vec<String> {
-    let index = Index::build(files, modules);
-    let names: BTreeSet<String> = index
-        .nodes
-        .iter()
-        .filter(|node| node.test)
-        .flat_map(|node| {
-            node.contexts
-                .iter()
-                .map(|context| join_path(context, &node.name))
-        })
-        .collect();
-    names.into_iter().collect()
-}
+/// Every `#[test]` fn of the integration crate, by its full nextest name, sorted. The walk lives
+/// in `modtree`, which the merge-gate selector shares.
+pub(crate) use modtree::test_names;
 
 /// Every shared boundary helper of the integration crate, with the tests that drive it.
 pub(crate) fn helpers(files: &Files, modules: &BTreeMap<String, Vec<ModPath>>) -> Vec<Helper> {
@@ -1928,94 +1916,6 @@ fn parent_module(module: &str) -> Option<String> {
             .rsplit_once("::")
             .map_or_else(String::new, |(parent, _)| parent.to_owned()),
     )
-}
-
-/// Every `use` leaf of a file: (module context, alias, path, glob).
-fn read_uses(lexed: &Lexed, roots: &[String]) -> Vec<(String, String, Vec<String>, bool)> {
-    let spans = lexed.inline_modules();
-    let mut found = Vec::new();
-    for at in 0..lexed.tokens.len() {
-        if !lexed.is_ident(at, "use") {
-            continue;
-        }
-        let Some(end) = (at + 1..lexed.tokens.len()).find(|end| lexed.is_punct(*end, b';')) else {
-            continue;
-        };
-        let mut leaves = Vec::new();
-        use_tree(lexed, at + 1, end, &[], &mut leaves);
-        let inline = Lexed::inline_path(&spans, at);
-        for root in roots {
-            let context = join_path(root, &inline);
-            for (path, alias, glob) in &leaves {
-                found.push((context.clone(), alias.clone(), path.clone(), *glob));
-            }
-        }
-    }
-    found
-}
-
-/// Expand the use tree in tokens `start..end` under `prefix` into (path, alias, glob) leaves.
-fn use_tree(
-    lexed: &Lexed,
-    start: usize,
-    end: usize,
-    prefix: &[String],
-    leaves: &mut Vec<(Vec<String>, String, bool)>,
-) {
-    let mut path = prefix.to_vec();
-    let mut at = start;
-    while at < end {
-        if lexed.is_punct(at, b'{') {
-            let Some(close) = lexed.matching(at).filter(|close| *close < end) else {
-                return;
-            };
-            let mut item = at + 1;
-            let mut depth = 0usize;
-            for cursor in at + 1..=close {
-                if lexed.is_punct(cursor, b'{') {
-                    depth += 1;
-                } else if lexed.is_punct(cursor, b'}') && depth > 0 {
-                    depth -= 1;
-                } else if depth == 0 && (lexed.is_punct(cursor, b',') || cursor == close) {
-                    if item < cursor {
-                        use_tree(lexed, item, cursor, &path, leaves);
-                    }
-                    item = cursor + 1;
-                }
-            }
-            return;
-        }
-        if lexed.is_punct(at, b'*') {
-            leaves.push((path, String::new(), true));
-            return;
-        }
-        if let Some(segment) = lexed.ident(at) {
-            if segment == "as" {
-                // `a::b as c` and `a::{self as c}` both bind `c` to `a::b` or `a`.
-                if path.last().is_some_and(|last| last == "self") {
-                    path.pop();
-                }
-                if let Some(alias) = lexed.ident(at + 1)
-                    && !path.is_empty()
-                {
-                    leaves.push((path, alias.to_owned(), false));
-                }
-                return;
-            }
-            path.push(segment.to_owned());
-        }
-        at += 1;
-    }
-    if let Some(last) = path.last().cloned() {
-        if last == "self" {
-            path.pop();
-            if let Some(name) = path.last().cloned() {
-                leaves.push((path, name, false));
-            }
-        } else {
-            leaves.push((path, last, false));
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

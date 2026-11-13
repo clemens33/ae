@@ -132,7 +132,8 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 | Recipe | What it is |
 |---|---|
 | `just rust-setup` | bootstrap: toolchain + pinned tools. Idempotent, and CI asserts it |
-| `just test` / `just rust-check` | **the gate**: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test` |
+| `just test` / `just rust-check` | **the whole gate**: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test`. The hp runs it for every release ([Release proof](#release-proof)) |
+| `just test-affected [base=<ref>] [print=yes]` | **the merge gate** (M1, one hop): `rust-fmt-check` + `rust-lint` + `rust-fuzz-check`, then every unit test, the `doors`, `floor` and `gate` guard modules and the integration modules the change reaches, through the lane's filtered arm, plus the doctests when a `src/` file changed and `just check` when `install` changed. The whole lane when the selector cannot place the change. A clean committed tree that does not move, no receipt. `print=yes` measures the working tree, prints the selection and runs nothing (see [The merge gate](#the-merge-gate)) |
 | `just pre` | **ADVISORY, NOT the gate**, never cited as it: `rust-fmt-check` + `rust-lint` + the unit tests + the `doors`, `floor` and `gate` guard modules of `tests/it`, through the lane's filtered arm. No doctests, no fuzz compile, no retries; `just test` stays exact |
 | `just lane-lock claim <name> [secs]` / `release <name>` / `status` | the gate lane lock, one gate per machine: the MAIN checkout's `.local/locks/gate` directory (resolved from a linked worktree), whose `owner` line the recipe creates EXCLUSIVELY: that create is the claim, because `mkdir` is not atomic on every host (Ubuntu 26.04's uutils reports success for a directory that exists) and there the hand protocol has no owner proof; the `next` queue file. Same on-disk protocol as the hand one. `release` refuses any other owner; it never steals or clears a stale lock, it reports one (`status` exit 1 while held) |
 | `just check` | the bash lane: shellcheck + shfmt over `install` |
@@ -157,8 +158,9 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 **The whole test surface is Rust.** `just rust-check` is format, lint, a locked stable
 `cargo check --bins` of every fuzz target, `cargo nextest` over
 the unit tests and the single `tests/it` integration target, and `cargo test --doc` for the
-doctests. `just test` is that same command — there is no inner-loop/gate split any more,
-because the whole suite now costs what one scoped bash domain used to. `just rust-mutants`
+doctests. `just test` is that same command, the whole gate, and the hp runs it for every release.
+A merge runs `just test-affected`, the same checks with only the tests the change reaches (see
+[The merge gate](#the-merge-gate)). `just rust-mutants`
 asks the harder question: whether those tests would ever go red (see Mutation testing below). The `menu` module drives a
 real tmux server and real attached clients, so `.config/nextest.toml` keeps all of it in one
 small test-group: parallel load can starve a client the test is waiting on, and the group
@@ -168,7 +170,8 @@ bounds that contention without weakening a single assertion.
 (library and bin) and the `doors`, `floor` and `gate` guard modules of `tests/it` through the
 lane's filtered arm, so a format, lint or guard failure shows in minutes less than the gate
 needs to reach it. It skips the rest of `tests/it`, the fuzz compile and the doctests, retries
-nothing, and a green `just pre` is never cited as a green gate: only `just test` is.
+nothing, and a green `just pre` is never cited as a green gate: only `just test-affected` (the
+merge gate) and `just test` (the whole gate) are.
 
 **The lane lock.** One machine runs one gate at a time. `just lane-lock claim <name> [secs]`
 takes the lock (waiting up to `secs`, printing the holder every 30 s), `release <name>` gives it
@@ -272,6 +275,89 @@ is the canary for the link set: it clobbers a helper, refreshes, and pins the li
 against what the core links at launch, so the refresh entry and the launch entry cannot
 drift. It asserts the set is EXACTLY the core's list, never `>= N`, so an artifact quietly
 appearing or vanishing is a failure rather than a different number.
+
+### The merge gate
+
+The human ruled on 2026-11-12 that a merge runs only the relevant tests, and that a release runs
+the whole suite on the hp and the Mac boundary subset on the Mac (docs/history.md §10, "Release
+tests on two machines"). `just test-affected` is that merge gate, model M1: it follows one hop
+from the change to the tests. It measures the change from `git merge-base HEAD <base>` (`base=main`
+by default) and runs, in this order:
+
+1. `rust-fmt-check`, `rust-lint` and `rust-fuzz-check`, as `just test` runs them.
+2. The selection. The recipe writes the change as framed records (paths, statuses, the text of
+   every `.rs` file under `src/` and `tests/`, the merge-base text of each modified one), and the
+   selector `examples/affected.rs` answers with one verdict. The selector source is
+   `tests/it/gate/affected.rs`, and `tests/it/gate/affected/` holds its frozen acceptance.
+3. A subset verdict runs every unit test, the guard modules `doors`, `floor` and `gate` and the
+   integration modules the change reaches, through the lane's filtered arm, and then the doctests
+   when a `src/` file changed. A whole verdict runs the bare lane, which runs the doctests itself.
+4. `just check` when `install` changed, under both verdicts.
+
+The checkout must be clean (untracked files count), and HEAD and its tree must stay the same from
+the start to the end. Otherwise, and when git cannot say, the recipe prints one
+`test-affected: refused: <why>` line and exits 1. It never writes a gate receipt: only a whole
+`just test` vouches for a tree.
+
+**What a change selects.** A changed integration file selects every module that owns it. A changed
+library module selects the integration files that name it: an `ae::` path to it or below it, a
+`use ae::…` of it, or a name that `src/lib.rs` or its parent module re-exports from it with
+`pub use`. Every changed path is also data: an `include!`, `include_str!` or `include_bytes!`, a
+`#[path]` or a string literal that names it (or its base name) selects the reader, and a library
+module that includes it counts as changed. Docs, top-level Markdown, `fuzz/` and
+`.config/macos-subset` add nothing when nobody names them. A selected module becomes a filter term
+when a test name is under it, or when a `macro_rules!` body in it writes a `#[test] fn $name`. A
+selected module with neither is explained by its `why` lines and adds no term.
+
+**What runs the whole lane.** Each reason prints as `test-affected: whole: <id>: <detail>`:
+`selector-source` (the selector, its walk or its example), `build-input` (`Cargo.toml`,
+`Cargo.lock`, `build.rs`, `rust-toolchain.toml`, `.cargo/`), `justfile`, `config` (`.config/`
+except the Mac manifest), `crate-root` (a change to `src/main.rs`, or to `src/lib.rs` or
+`tests/it/main.rs` other than an added `mod` of an added file), `module-map` (a file whose owners
+change), `shared-rig` (a changed item other than a `#[test]` fn in an integration file that other
+modules reference), `deleted` and `renamed` (a Rust file), `macro` (a changed `macro_rules!`),
+`unknown-path` (a path no rule places) and `stream` (a change stream the selector cannot decode). A
+failed producer, a failed selector or an answer that is not exactly the protocol runs the whole lane
+and `just check` too (`producer`, `selector-exit`, `selector-output`): nothing then says that
+`install` did not change.
+
+**The M1 gaps.** The human accepted three, with the release's whole hp run as the backstop:
+
+- a test that reaches a changed module only through another module (A → B → C);
+- a test that drives only the binary: most integration tests run `ae` as a process and name no
+  library module (3752 of 4022 when the plan was measured);
+- a path built at run time or by a macro.
+
+Every subset prints `test-affected: not selected: <N> of <M> integration tests (M1 gap)`: the
+statically enumerated integration tests outside every selected module. A test that a macro writes
+has no static name, so the counter leaves it out on both sides.
+
+`just test-affected print=yes` measures the working tree instead, staged, unstaged and untracked
+changes included. It prints the selector's answer with every reason and every `why` line (owner,
+`file:line`, rule, target) and runs nothing else.
+
+**Dry runs.** The selector on five slices that landed before it, 2026-11-13:
+
+| Slice | Range | Verdict | Selection | Not selected (slice tree) | Selected tests (current inventory) | Subset nextest on the hp |
+|---|---|---|---|---|---|---|
+| wtgc | `6812606a..cf7fa4ff` | whole: `crate-root` `src/lib.rs`, `justfile` | 8.4 s | — | all | whole lane |
+| seatproof | `7b65e90c..d067f40d` | subset: `seatproof_spec` + guards, no doctests | 8.4 s | 3756 of 3974 | 6479 of 10289 | 180.5 s |
+| cliword | `7e533bcd..5c6b51a9` | subset: 27 owners in 26 terms (`cli`, `entry`, `session_launch`, …), doctests | 8.6 s | 3035 of 3978 | 7234 of 10289 | 269.5 s + doctests |
+| paneerr | `27c863c6..dfb95d41` | subset: 21 owners (`transport`, `session_launch`, …), doctests | 8.9 s | 3145 of 4026 | 7140 of 10289 | 336.2 s + doctests |
+| chatday | `e21d2ba5..86a0863d` | whole: `shared-rig` `tests/it/app_mode.rs` | 9.0 s | — | all | whole lane |
+
+- **Selection** is the warm wall time of `just test-affected base=<base> print=yes` on the Mac at
+  the slice's tip: the producer, which reads every source file, and the debug-built selector.
+- **Not selected** is the selector's own counter on the slice's tree.
+- **Selected tests** are list matches, not an executed gate: the slice's filterset against the
+  `cargo nextest list` of the current tree (6102 unit tests, 4187 integration tests).
+- **Subset nextest on the hp** is one executed run of that filterset on the current tree through
+  the lane's filtered arm, with other agents' lanes running beside it. The hp listed 6478 and 7139
+  tests for seatproof and paneerr, one fewer than the Mac. The doctests (110) took 7 s on the hp.
+- **Whole-run reference** (a timing reference, not a green gate): the P1 whole `just test` on the
+  hp on 2026-11-12 ran its nextest phase in 852.9 s for 10067 tests and ended with one failure.
+- `rust-fmt-check`, `rust-lint` and `rust-fuzz-check` run in both lanes alike and are not in these
+  numbers.
 
 ### The gate ledger
 

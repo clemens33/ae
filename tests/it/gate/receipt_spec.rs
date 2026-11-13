@@ -14,6 +14,7 @@
 //! cargo/SSH dependencies. The producer installs every frozen file unchanged.
 
 mod releaseproof_spec;
+#[path = "affected/recipe_spec.rs"] mod recipe_spec;
 
 use std::path::{Path, PathBuf};
 

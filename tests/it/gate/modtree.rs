@@ -9,7 +9,9 @@
 //! never a guess: a guard that cannot place a file fails closed.
 //!
 //! Pure: the caller reads the files. No process, no filesystem, no environment.
-//! The lexer is shared with the Mac subset guard (`macos_subset.rs`).
+//! The lexer, the use-tree parser and the test-name walk are shared by the Mac subset guard
+//! (`macos_subset.rs`) and the merge-gate selector (`affected.rs`, also built as
+//! `examples/affected.rs`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -647,5 +649,245 @@ impl Lexed<'_> {
             .map(|(_, _, name)| name.as_str())
             .collect::<Vec<_>>()
             .join("::")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Use trees and test names, shared by the Mac subset guard and the merge-gate selector.
+// ---------------------------------------------------------------------------
+
+/// Every `#[test]` fn of the integration crate, by its full nextest name, sorted: the fn name
+/// under every integration owner of its file and the inline modules around it.
+pub(crate) fn test_names(files: &Files, modules: &BTreeMap<String, Vec<ModPath>>) -> Vec<String> {
+    let mut names = BTreeSet::new();
+    for (file, owners) in modules {
+        let roots: Vec<&str> = owners
+            .iter()
+            .filter(|owner| owner.krate == Crate::It)
+            .map(|owner| owner.path.as_str())
+            .collect();
+        let Some(text) = files.get(file) else {
+            continue;
+        };
+        if roots.is_empty() {
+            continue;
+        }
+        let lexed = lex(text);
+        let spans = lexed.inline_modules();
+        for (at, name) in lexed.test_fns() {
+            let inline = Lexed::inline_path(&spans, at);
+            for root in &roots {
+                names.insert(join_path(&join_path(root, &inline), name));
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
+/// The module of every `#[test]` fn that a `macro_rules!` body writes (`fn $name`), once per
+/// integration owner of its file: those tests exist, but no name in the text says what they are.
+pub(crate) fn generated_roots(
+    files: &Files,
+    modules: &BTreeMap<String, Vec<ModPath>>,
+) -> Vec<String> {
+    let mut roots = BTreeSet::new();
+    for (file, owners) in modules {
+        let Some(text) = files.get(file) else {
+            continue;
+        };
+        let lexed = lex(text);
+        let spans = lexed.inline_modules();
+        for at in lexed.unnamed_tests() {
+            let inline = Lexed::inline_path(&spans, at);
+            for owner in owners.iter().filter(|owner| owner.krate == Crate::It) {
+                roots.insert(join_path(&owner.path, &inline));
+            }
+        }
+    }
+    roots.into_iter().collect()
+}
+
+/// Every `use` leaf of a file: (module context, alias, path, glob).
+pub(crate) fn read_uses(
+    lexed: &Lexed,
+    roots: &[String],
+) -> Vec<(String, String, Vec<String>, bool)> {
+    let spans = lexed.inline_modules();
+    let mut found = Vec::new();
+    for at in 0..lexed.tokens.len() {
+        if !lexed.is_ident(at, "use") {
+            continue;
+        }
+        let Some(end) = (at + 1..lexed.tokens.len()).find(|end| lexed.is_punct(*end, b';')) else {
+            continue;
+        };
+        let mut leaves = Vec::new();
+        use_tree(lexed, at + 1, end, &[], &mut leaves);
+        let inline = Lexed::inline_path(&spans, at);
+        for root in roots {
+            let context = join_path(root, &inline);
+            for (path, alias, glob) in &leaves {
+                found.push((context.clone(), alias.clone(), path.clone(), *glob));
+            }
+        }
+    }
+    found
+}
+
+/// Expand the use tree in tokens `start..end` under `prefix` into (path, alias, glob) leaves.
+pub(crate) fn use_tree(
+    lexed: &Lexed,
+    start: usize,
+    end: usize,
+    prefix: &[String],
+    leaves: &mut Vec<(Vec<String>, String, bool)>,
+) {
+    let mut path = prefix.to_vec();
+    let mut at = start;
+    while at < end {
+        if lexed.is_punct(at, b'{') {
+            let Some(close) = lexed.matching(at).filter(|close| *close < end) else {
+                return;
+            };
+            let mut item = at + 1;
+            let mut depth = 0usize;
+            for cursor in at + 1..=close {
+                if lexed.is_punct(cursor, b'{') {
+                    depth += 1;
+                } else if lexed.is_punct(cursor, b'}') && depth > 0 {
+                    depth -= 1;
+                } else if depth == 0 && (lexed.is_punct(cursor, b',') || cursor == close) {
+                    if item < cursor {
+                        use_tree(lexed, item, cursor, &path, leaves);
+                    }
+                    item = cursor + 1;
+                }
+            }
+            return;
+        }
+        if lexed.is_punct(at, b'*') {
+            leaves.push((path, String::new(), true));
+            return;
+        }
+        if let Some(segment) = lexed.ident(at) {
+            if segment == "as" {
+                // `a::b as c` and `a::{self as c}` both bind `c` to `a::b` or `a`.
+                if path.last().is_some_and(|last| last == "self") {
+                    path.pop();
+                }
+                if let Some(alias) = lexed.ident(at + 1)
+                    && !path.is_empty()
+                {
+                    leaves.push((path, alias.to_owned(), false));
+                }
+                return;
+            }
+            path.push(segment.to_owned());
+        }
+        at += 1;
+    }
+    if let Some(last) = path.last().cloned() {
+        if last == "self" {
+            path.pop();
+            if let Some(name) = path.last().cloned() {
+                leaves.push((path, name, false));
+            }
+        } else {
+            leaves.push((path, last, false));
+        }
+    }
+}
+
+impl Lexed<'_> {
+    /// Every fn with a body and an exact `#[test]` attribute: its `fn` token and its name.
+    /// Attributes carry across `pub`, `async`, `const`, `unsafe` and `extern`; the scan also
+    /// enters fn bodies and inline modules, so a nested test fn counts.
+    pub(crate) fn test_fns(&self) -> Vec<(usize, &str)> {
+        let mut found = Vec::new();
+        let mut test = false;
+        let mut at = 0;
+        while at < self.tokens.len() {
+            if let Some(end) = self.attribute_end(at) {
+                test |= end == at + 3 && self.is_ident(at + 2, "test");
+                at = end + 1;
+                continue;
+            }
+            match self.ident(at) {
+                Some("pub") => {
+                    at = self.skip_visibility(at);
+                    continue;
+                }
+                Some("async" | "const" | "unsafe" | "extern") if self.ident(at + 1).is_some() => {
+                    at += 1;
+                    continue;
+                }
+                Some("fn") => {
+                    if test
+                        && let Some(name) = self.ident(at + 1)
+                        && self.has_body(at)
+                    {
+                        found.push((at, name));
+                    }
+                }
+                _ => {}
+            }
+            test = false;
+            at += 1;
+        }
+        found
+    }
+
+    /// The `#[test]` attribute of every fn whose name is not an identifier, as in a
+    /// `macro_rules!` body that writes `fn $name`.
+    pub(crate) fn unnamed_tests(&self) -> Vec<usize> {
+        let mut found = Vec::new();
+        let mut test = None;
+        let mut at = 0;
+        while at < self.tokens.len() {
+            if let Some(end) = self.attribute_end(at) {
+                if end == at + 3 && self.is_ident(at + 2, "test") {
+                    test = test.or(Some(at));
+                }
+                at = end + 1;
+                continue;
+            }
+            match self.ident(at) {
+                Some("pub") => {
+                    at = self.skip_visibility(at);
+                    continue;
+                }
+                Some("async" | "const" | "unsafe" | "extern") if self.ident(at + 1).is_some() => {
+                    at += 1;
+                    continue;
+                }
+                Some("fn") => {
+                    if let Some(attribute) = test
+                        && self.ident(at + 1).is_none()
+                    {
+                        found.push(attribute);
+                    }
+                }
+                _ => {}
+            }
+            test = None;
+            at += 1;
+        }
+        found
+    }
+
+    /// Whether the fn whose `fn` keyword is at `at` has a body: a `{` at bracket depth zero
+    /// before any `;` at that depth.
+    fn has_body(&self, at: usize) -> bool {
+        let mut depth = 0usize;
+        for open in at + 2..self.tokens.len() {
+            match self.tokens[open].kind {
+                Kind::Punct(b'(' | b'[') => depth += 1,
+                Kind::Punct(b')' | b']') => depth = depth.saturating_sub(1),
+                Kind::Punct(b';') if depth == 0 => return false,
+                Kind::Punct(b'{') if depth == 0 => return self.matching(open).is_some(),
+                _ => {}
+            }
+        }
+        false
     }
 }
