@@ -347,6 +347,101 @@ fn p2_effective_weekly_credit_keeps_a_raw_ninety_five_percent_account_below_entr
     hold(&seat, 0, "xhigh");
 }
 
+/// Feed distinct long Codex windows through the same vendor transcript as `quota()`.
+fn codex_windows(seat: &Seat, at: i64, reset: i64, windows: &[(&str, f64)]) {
+    let mut text = "{\"type\":\"user\"}\n".to_owned();
+    for (bucket, used) in windows {
+        let line = r#"{"timestamp":"$TS","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"$BUCKET","plan_type":"pro","secondary":{"used_percent":$USED,"window_minutes":10080,"resets_at":$RESET}}}}"#
+            .replace("$TS", &Timestamp::from_epoch(at).to_string())
+            .replace("$BUCKET", bucket)
+            .replace("$USED", &used.to_string())
+            .replace("$RESET", &reset.to_string());
+        ae::json::parse(&line).expect("independent Codex window fixture JSON");
+        writeln!(text, "{line}").expect("window transcript line");
+    }
+    std::fs::write(
+        seat.account
+            .join(format!("sessions/2026/10/20/rollout-{CONV}.jsonl")),
+        text,
+    )
+    .expect("all long-window readings from the same account");
+}
+
+#[test]
+fn p2_step_two_merges_window_receipts_and_new_window_at_seventy_seven_holds_recovery() {
+    // Lead ae-20261113T133321Z-5df4adf6: retain a first-step-only key,
+    // replace a key pressed by both steps, and add a newly pressed key.
+    let seat = floor_seat("p2merged", "codex", "xhigh", FLOORS);
+    let rig = &seat.rig;
+    let first_at = Timestamp::now().epoch();
+    let first_reset = first_at + 86_400;
+    codex_windows(
+        &seat,
+        first_at,
+        first_reset,
+        &[("codex-a", 80.0), ("codex-b", 80.0)],
+    );
+    let _daemon = watch(&seat);
+    applied(&seat, 1, "high");
+    let first = Record::parse(&rig.meta_row("effort.main")).expect("first applied record");
+    assert_eq!(first.windows.len(), 2, "both first-step keys are recorded");
+    until(rig, || Timestamp::now().epoch() > first_at);
+    let second_at = Timestamp::now().epoch();
+    let second_reset = second_at + 172_800;
+    codex_windows(
+        &seat,
+        second_at,
+        second_reset,
+        &[("codex-a", 74.9), ("codex-b", 90.0), ("codex-c", 90.0)],
+    );
+    applied(&seat, 2, "medium");
+    let merged = Record::parse(&rig.meta_row("effort.main")).expect("second applied record");
+    assert_eq!(
+        merged.episode, first.episode,
+        "one episode across both steps"
+    );
+    assert_eq!(merged.windows.len(), 3, "merge retains every moving key");
+    for (window, (bucket, at, reset)) in merged.windows.iter().zip([
+        ("codex-a", first_at, first_reset),
+        ("codex-b", second_at, second_reset),
+        ("codex-c", second_at, second_reset),
+    ]) {
+        assert_eq!(window.key.bucket, bucket, "merged keys stay ordered");
+        assert_eq!(window.key.qualifier.as_deref(), Some("pro"));
+        assert_eq!(window.key.minutes, Some(10_080));
+        assert_eq!(window.observed_at, at, "the moving step owns the receipt");
+        assert_eq!(
+            window.resets_at,
+            Some(reset),
+            "the moving step owns the reset"
+        );
+    }
+    two_step_journal(rig, false);
+    let launches = rig.launched().lines().count();
+    codex_windows(
+        &seat,
+        Timestamp::now().epoch(),
+        second_reset,
+        &[("codex-a", 74.9), ("codex-b", 74.9), ("codex-c", 77.0)],
+    );
+    hold(&seat, 2, "medium");
+    assert!(
+        records(rig, "effort-restored").is_empty(),
+        "new step-two window at 77 is below the 80 veto but not relieved below 75"
+    );
+    codex_windows(
+        &seat,
+        Timestamp::now().epoch(),
+        second_reset,
+        &[("codex-a", 74.9), ("codex-b", 74.9), ("codex-c", 74.9)],
+    );
+    until(rig, || records(rig, "effort-restored").len() == 1);
+    last_effort(&seat, "xhigh");
+    assert_eq!(rig.launched().lines().count(), launches + 1);
+    assert!(rig.meta_row("effort.main").is_empty());
+    two_step_journal(rig, true);
+}
+
 #[test]
 fn p2_a_literal_v1_applied_record_can_take_step_two_and_restore_the_v1_baseline() {
     // Final state is the state old ae emits after xhigh -> high. Only vendor
@@ -383,7 +478,7 @@ fn p2_a_literal_v1_applied_record_can_take_step_two_and_restore_the_v1_baseline(
     let launch = rig.meta_row("launch_id.main");
     assert!(!launch.is_empty());
     let value = format!(
-        "v1 applied slot:main base:xhigh low:high at:80 ep:{ep} sid:{SID} agent:lead tool:codex launch:{launch} pid:{pid} conv:{CONV} profile:fake-effort-base client:- model:gpt-6.1-sol win:weekly/~/10080/{ep}/{}",
+        "v1 applied slot:main base:xhigh low:high at:80 ep:{ep} sid:{SID} agent:lead tool:codex launch:{launch} pid:{pid} conv:{CONV} profile:fake-effort-base client:- model:gpt-6.1-sol win:codex/pro/10080/{ep}/{}",
         ep + 86_400
     );
     let record =
