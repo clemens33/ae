@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.50] - 2026-11-13
+- Name the error module from production callers
+- Let the layer allow-list own its row type
+- Refuse test-affected under a bash older than 4.4 and keep the status through EXIT traps
+- Freeze the effort outcome of a reseat (#308 gap 2)
+- Journal the effort outcome a reseat drops (#308 gap 2)
+- Name the reseat effort discard and its retry reuse
+- Frame the reseat discard check on complete journal records
+- Freeze the unterminated journal tail cases of the reseat discard
+- Freeze one effort ending per episode across reseat and resume paths
+- Reuse any journaled ending of the episode a reseat drops
+- Move the effort journal vocabulary to a state-layer module
+- Name no Reseat variant in the resume discard line
+- Read the reseat discard session with meta own first_value
+
 ## [v2026.11.49] - 2026-11-13
 - Layer ratchet guard pins upward crate:: spellings (R0)
 - Keep only timestamp extrema after new stream evidence
