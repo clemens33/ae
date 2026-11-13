@@ -46,6 +46,8 @@ mod purgeguard_spec;
 mod renamelocked_live_spec;
 #[path = "lifecycle_retain_spec.rs"]
 mod retain_spec;
+#[path = "lifecycle_rebootkeep_spec.rs"]
+mod rebootkeep_spec;
 #[path = "lifecycle_runstop_census_spec.rs"]
 mod runstop_census_spec;
 #[path = "lifecycle_runstop_orphan_spec.rs"]
