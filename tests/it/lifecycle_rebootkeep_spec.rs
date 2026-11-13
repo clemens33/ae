@@ -546,3 +546,66 @@ fn reboot_teardown_refuses_a_retained_file_that_changed_after_publishing() {
     assert_eq!(tree(&rig.archive()), first, "the archive is exact");
     kept_all(&live, &rig.dir, "teardown drift keeps the live session");
 }
+
+/// While the publisher stages under its claim, the writer holds must still be
+/// held: a probe inside the claim window must find them busy. The retained
+/// tree is large on purpose, so staging lasts long enough to observe.
+#[test]
+fn reboot_keeps_writer_holds_through_staging() {
+    let rig = Rig::new("rk10");
+    const BIG: [u8; 16384] = [0x5a; 16384];
+    for i in 0..300usize {
+        put(&rig.dir, &format!("big/f{i}.bin"), &BIG);
+    }
+    put(&rig.dir, "seed.lead.md", b"# seed\n");
+
+    let plan = rig.home.join("plan");
+    let mut reboot = ae();
+    reboot
+        .env("AE_HOME", &rig.home)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([
+            "_compact",
+            rig.name.as_str(),
+            "-f",
+            "--digest-only",
+            "--exec-plan",
+            plan.to_str().expect("plan path"),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = reboot.spawn().expect("the reboot starts");
+
+    let claim = claim(&rig);
+    let writer = rig.dir.join(".console-writer.lock");
+    let mutation = rig.dir.join(MUTATION);
+    let mut claimed = false;
+    let mut busy = false;
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll the reboot") {
+            break status;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "the reboot did not finish"
+        );
+        if claim.exists() {
+            claimed = true;
+            if ae::store::lock(&writer, Duration::ZERO).is_err()
+                && ae::store::lock(&mutation, Duration::ZERO).is_err()
+            {
+                busy = true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(status.code(), Some(0), "the reboot crossed the boundary");
+    assert!(
+        claimed,
+        "the claim was observed: the fixture is not too fast"
+    );
+    assert!(busy, "activity holds are kept while the publisher stages");
+}
