@@ -2126,9 +2126,10 @@ pub(crate) struct Seat {
     /// The EXACT config pair this read handed [`crate::config::read_identity`],
     /// so the FOLLOW lookup asks the one config owner the same question this
     /// seat's own command was resolved by. Not `config_files`, which keeps the
-    /// orchestrator-seat overlay [`identity_config_pair`] drops.
-    identity_global: Option<PathBuf>,
-    identity_local: Option<PathBuf>,
+    /// orchestrator-seat overlay [`identity_config_pair`] drops. The effort leg
+    /// reads its second step's twin from the same pair.
+    pub(crate) identity_global: Option<PathBuf>,
+    pub(crate) identity_local: Option<PathBuf>,
     /// The tool class the RECORDED `agent_bin.<slot>` names — the observation's
     /// only provenance, because a recorded model says what ran and never which
     /// harness ran it.

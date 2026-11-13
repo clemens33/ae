@@ -505,8 +505,8 @@ pub enum OverrideError {
     Refused(ConfigError),
 }
 
-/// The identity v2 config: `[clients]`, `[profiles]`, `[roster]`, and the two
-/// workspace seat keys.
+/// The identity v2 config: `[clients]`, `[profiles]`, `[roster]`,
+/// `[effort_floor]`, and the two workspace seat keys.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IdentityConfig {
     /// `[clients] <label> = <executable> [config_home=<path>]`.
@@ -515,6 +515,9 @@ pub struct IdentityConfig {
     pub profiles: Vec<(String, String)>,
     /// `[roster] <name> = <profile>` — the agents promised to launch.
     pub roster: Vec<(String, String)>,
+    /// `[effort_floor] "<model flag value>" = "<level>"`, both raw: the key
+    /// without its quotes, the value as written. Only `effort` reads a level.
+    pub effort_floor: Vec<(String, String)>,
     /// `[workspace] main`, raw.
     pub main: Option<String>,
     /// `[workspace] workers`, raw (comma-separated).
@@ -973,8 +976,8 @@ pub fn read_identity_with_global_default(
     Ok(cfg)
 }
 
-/// The four identity sections.
-const IDENTITY_SECTIONS: [&str; 4] = ["clients", "profiles", "roster", "workspace"];
+/// The five identity sections.
+const IDENTITY_SECTIONS: [&str; 5] = ["clients", "profiles", "roster", "effort_floor", "workspace"];
 
 fn overlay_identity(file: &Path, cfg: &mut IdentityConfig) -> Result<(), ConfigError> {
     let text = read_selected(file)?;
@@ -1037,7 +1040,7 @@ fn claim_once(
 }
 
 /// Write one claimed value into `cfg`: a `[clients]` value must parse as a
-/// client; `[profiles]` and `[roster]` replace in place or append; a
+/// client; `[profiles]`, `[roster]` and `[effort_floor]` replace in place or append; a
 /// `[workspace]` value sets `main` or `workers`.
 fn apply_identity_value(
     file: &Path,
@@ -1054,6 +1057,7 @@ fn apply_identity_value(
         }
         "profiles" => upsert(&mut cfg.profiles, key, value),
         "roster" => upsert(&mut cfg.roster, key, value),
+        "effort_floor" => upsert(&mut cfg.effort_floor, key, value),
         _ => {
             if key == "main" {
                 cfg.main = Some(value);
@@ -1079,10 +1083,11 @@ fn identity_section(file: &Path, line: usize, name: String) -> Result<String, Co
 
 /// The identity key a line claims in `section`. `Ok(None)` contributes
 /// nothing: a section outside the identity set, a line without a key claim
-/// (comments excluded), a `[profiles]` key outside the config-key grammar, or
-/// a `[workspace]` key other than `main` and `workers`. A `[roster]` or
-/// `[clients]` label outside the agent grammar, or the `[clients]` label
-/// `env`, refuses.
+/// (comments excluded), a `[profiles]` key outside the config-key grammar, an
+/// `[effort_floor]` key that is empty once its quotes are gone, or a
+/// `[workspace]` key other than `main` and `workers`. An `[effort_floor]` key
+/// is claimed without its quotes. A `[roster]` or `[clients]` label outside
+/// the agent grammar, or the `[clients]` label `env`, refuses.
 fn identity_key_claim<'a>(
     file: &Path,
     section: &str,
@@ -1095,6 +1100,13 @@ fn identity_key_claim<'a>(
     let Some(key) = key_claim(trimmed) else {
         return Ok(None);
     };
+    if section == "effort_floor" {
+        let key = key
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap_or(key);
+        return Ok((!key.is_empty()).then_some(key));
+    }
     let claims = match section {
         "roster" | "clients" => {
             if let Some(refusal) = label_refusal(file, section, line, key) {

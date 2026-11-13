@@ -1,13 +1,17 @@
 //! Quota-driven reasoning-effort adaptation: the PURE half.
 //!
 //! A seat whose own account runs hot on its LONG quota window steps its
-//! reasoning effort down ONE tier (max to xhigh, xhigh to high, never past
-//! high) in its OWN profile command — the effort value alone changes, and a
-//! configured twin profile at the tier below proves that command — then steps
-//! back once that window is relieved. This module owns the vocabulary, the
-//! twin derivation over `[profiles]`, the quota entry and recovery rules, the
-//! persisted `effort.<slot>` record, the journal fold and the one decision.
-//! Nothing here reads the world or acts on a pane; [`leg`] is the live half.
+//! reasoning effort down in its OWN profile command — the effort value alone
+//! changes, and a configured twin profile at the target tier proves that
+//! command — then steps back to its baseline in one restart once that window
+//! is relieved. Without an `[effort_floor]` row for the seat's model it takes
+//! ONE step (max to xhigh, xhigh to high, never past high); with one it takes
+//! a step at the episode threshold and a second, one adjacent tier lower each,
+//! [`SECOND_GAP`] above it, never below the row's level. This module owns the
+//! vocabulary, the twin derivation over `[profiles]`, the floors, the quota
+//! entry and recovery rules, the persisted `effort.<slot>` record, the
+//! journal fold and the one decision. Nothing here reads the world or acts on
+//! a pane; [`leg`] is the live half.
 
 pub(crate) mod leg;
 
@@ -87,18 +91,73 @@ impl Level {
             _ => None,
         }
     }
+
+    /// The adjacent level below, whatever it is.
+    #[must_use]
+    pub fn below(self) -> Option<Self> {
+        let at = Self::ALL.iter().position(|level| *level == self)?;
+        at.checked_sub(1).map(|below| Self::ALL[below])
+    }
+
+    /// The adjacent level above, whatever it is.
+    #[must_use]
+    pub fn above(self) -> Option<Self> {
+        let at = Self::ALL.iter().position(|level| *level == self)?;
+        Self::ALL.get(at + 1).copied()
+    }
+
+    /// The level `steps` adjacent tiers below.
+    #[must_use]
+    pub fn lowered(self, steps: u8) -> Option<Self> {
+        (0..steps).try_fold(self, |level, _| level.below())
+    }
+}
+
+/// How far above its episode's threshold the second step down opens.
+pub const SECOND_GAP: u8 = 10;
+
+/// The level the `[effort_floor]` row for `model` names: the key equal to the
+/// model byte for byte. A row whose value is no level is no row.
+#[must_use]
+pub fn floor_of(cfg: &IdentityConfig, model: &str) -> Option<Level> {
+    cfg.effort_floor
+        .iter()
+        .find(|(key, _)| key == model)
+        .and_then(|(_, level)| Level::parse(level))
+}
+
+/// One line per `[effort_floor]` row the policy cannot use: a value that is
+/// no effort level, or a model no profile in `pinned` pins.
+#[must_use]
+pub fn floor_notes(rows: &[(String, String)], pinned: &[String]) -> Vec<String> {
+    rows.iter()
+        .filter_map(|(model, level)| {
+            let row = format!("[effort_floor] \"{model}\" = \"{level}\"");
+            if Level::parse(level).is_none() {
+                Some(format!(
+                    "{row}: \"{level}\" is not an effort level, so the row is ignored"
+                ))
+            } else if !pinned.contains(model) {
+                Some(format!(
+                    "{row}: no profile pins the model {model}, so the row floors nothing"
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Which way a transition moves effort.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    /// From the baseline to the tier below.
+    /// One adjacent tier down.
     Down,
-    /// Back from that tier to the baseline.
+    /// Back to the baseline.
     Up,
 }
 
-/// One effort move. Only max/xhigh and xhigh/high, each way, exist.
+/// One effort move: down one adjacent tier, or up to the baseline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Transition {
     /// Which way it moves.
@@ -131,12 +190,13 @@ impl Transition {
     }
 }
 
-/// A seat's baseline profile and the configured profiles one tier below it.
+/// A step down's start and the configured profiles at its target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Twin {
-    /// The level the seat's own profile runs.
+    /// The level the step starts from: the profile's own for the first step,
+    /// the first step's target for the second.
     pub baseline: Level,
-    /// The one tier below.
+    /// The tier the step reaches.
     pub target: Level,
     /// Every profile at `target` differing from the baseline in its effort
     /// value alone, in config order.
@@ -157,6 +217,9 @@ pub enum TwinRefusal {
     Model,
     /// The baseline already sits at or below the floor.
     Floor(Level),
+    /// The step would go below the model's `[effort_floor]` row, or past the
+    /// second step: no step is taken from this level.
+    Floored(Level),
     /// The baseline level has no tier ae steps from.
     Level(Level),
     /// No profile runs the tier below with everything else equal.
@@ -172,20 +235,15 @@ impl TwinRefusal {
             Self::Unresolved => "unresolved",
             Self::Flag(why) => why.word(),
             Self::Model => "model-unproven",
-            Self::Floor(_) => "floor",
+            Self::Floor(_) | Self::Floored(_) => "floor",
             Self::Level(_) => "unsupported-level",
             Self::NoTwin(_) => "no-twin",
         }
     }
 }
 
-/// The effort twin of `profile` for a seat recorded with `client` on `tool`.
-///
-/// Every profile is resolved through the SAME seat resolution `_run` uses,
-/// under the seat's own client override, so a twin never crosses an account.
-/// A candidate qualifies only when its command equals the baseline's in every
-/// word but the effort value, and that value is exactly one tier lower: a
-/// missing xhigh twin is never skipped to high.
+/// The effort twin of `profile`'s FIRST step down, for a seat recorded with
+/// `client` on `tool`: [`twin_from`] with no step taken.
 ///
 /// # Errors
 ///
@@ -197,21 +255,55 @@ pub fn twin_in(
     client: &RecordedClient,
     tool: ToolKind,
 ) -> Result<Twin, TwinRefusal> {
+    twin_from(cfg, home, profile, client, tool, None)
+}
+
+/// The effort twin of `profile`'s next step down, for a seat recorded with
+/// `client` on `tool`: the first step when `first` is `None`, else the second
+/// from `first`, the tier the first step reached.
+///
+/// Every profile is resolved through the SAME seat resolution `_run` uses,
+/// under the seat's own client override, so a twin never crosses an account.
+/// A candidate qualifies only when its command equals the baseline's in every
+/// word but the effort value, and that value is exactly the step's target: a
+/// missing twin is never skipped to the tier below it. Without a usable
+/// `[effort_floor]` row for the pinned model the first step is the legacy one
+/// and there is no second; with one each step goes one adjacent tier down and
+/// never below the row's level.
+///
+/// # Errors
+///
+/// The first [`TwinRefusal`] met, in declaration order.
+pub fn twin_from(
+    cfg: &IdentityConfig,
+    home: Option<&Path>,
+    profile: &str,
+    client: &RecordedClient,
+    tool: ToolKind,
+    first: Option<Level>,
+) -> Result<Twin, TwinRefusal> {
     if !tool.adapter().effort.supported() {
         return Err(TwinRefusal::Unsupported);
     }
     let resolve = |name: &str| crate::run::read_seat_command(cfg, name, "", "", client, home).ok();
     let baseline = resolve(profile).ok_or(TwinRefusal::Unresolved)?;
     let (skeleton, level) = effort_skeleton(baseline.as_str(), tool).map_err(TwinRefusal::Flag)?;
-    if model_flag_value(baseline.as_str(), tool).is_none_or(|model| model.is_empty()) {
+    let model = model_flag_value(baseline.as_str(), tool).unwrap_or_default();
+    if model.is_empty() {
         return Err(TwinRefusal::Model);
     }
-    let Some(target) = level.step_down() else {
-        return Err(if level > Level::Max {
+    let start = first.unwrap_or(level);
+    let target = match (floor_of(cfg, &model), first) {
+        (Some(floor), _) => start
+            .below()
+            .filter(|target| *target >= floor)
+            .ok_or(TwinRefusal::Floored(start))?,
+        (None, Some(_)) => return Err(TwinRefusal::Floor(start)),
+        (None, None) => level.step_down().ok_or(if level > Level::Max {
             TwinRefusal::Level(level)
         } else {
             TwinRefusal::Floor(level)
-        });
+        })?,
     };
     let mut aliases: Vec<String> = Vec::new();
     for (name, _) in &cfg.profiles {
@@ -226,7 +318,7 @@ pub fn twin_in(
         return Err(TwinRefusal::NoTwin(target));
     }
     Ok(Twin {
-        baseline: level,
+        baseline: start,
         target,
         aliases,
     })
@@ -590,7 +682,7 @@ pub struct Record {
     pub slot: String,
     /// The seat's baseline level.
     pub base: Level,
-    /// The tier below it.
+    /// The tier the episode's steps reach: one or two adjacent tiers below.
     pub low: Level,
     /// The threshold the episode opened at.
     pub threshold: u8,
@@ -627,13 +719,13 @@ pub enum Damage {
     Bare,
     /// The value is not ASCII.
     Encoding,
-    /// The value is not version `v1`.
+    /// The value is neither version `v1` nor `v2`.
     Version,
-    /// The tokens are not the record's.
+    /// The tokens are not the record's, or a `v2` spells what `v1` spells.
     Shape,
     /// This field is outside its grammar.
     Field(&'static str),
-    /// The levels are not one valid step.
+    /// The levels are not the steps the record claims.
     Incoherent,
 }
 
@@ -742,8 +834,22 @@ fn take<'v, T>(
     }
 }
 
+/// A `v2` record's `step:` value: exactly `1` or `2`.
+fn step_count(text: &str) -> Option<u8> {
+    match text {
+        "1" => Some(1),
+        "2" => Some(2),
+        _ => None,
+    }
+}
+
 impl Record {
-    /// The record a `v1` value spells, refusing anything else.
+    /// The record a `v1` or `v2` value spells, refusing anything else.
+    ///
+    /// `v1` holds the legacy one-step pairs (max to xhigh, xhigh to high);
+    /// `v2` adds `step:<1|2>` right after `low`, and `low` is `base` moved
+    /// down exactly that many adjacent tiers. A `v2` of a pair `v1` spells is
+    /// not canonical and refuses.
     ///
     /// # Errors
     ///
@@ -756,21 +862,32 @@ impl Record {
             return Err(Damage::Encoding);
         }
         let mut tokens = value.split(' ');
-        if tokens.next() != Some("v1") {
-            return Err(Damage::Version);
-        }
+        let v2 = match tokens.next() {
+            Some("v1") => false,
+            Some("v2") => true,
+            _ => return Err(Damage::Version),
+        };
         let state = tokens.next().ok_or(Damage::Shape)?;
         let t = &mut tokens;
+        let state = State::ALL
+            .into_iter()
+            .find(|known| known.word() == state)
+            .ok_or(Damage::Field("state"))?;
+        let slot = take(t, "slot", |slot| {
+            owned(slot, crate::requests::is_slot(slot) && slot.len() <= 32)
+        })?;
+        let base = take(t, "base", Level::parse)?;
+        let low = take(t, "low", Level::parse)?;
+        let step = if v2 {
+            Some(take(t, "step", step_count)?)
+        } else {
+            None
+        };
         let record = Self {
-            state: State::ALL
-                .into_iter()
-                .find(|known| known.word() == state)
-                .ok_or(Damage::Field("state"))?,
-            slot: take(t, "slot", |slot| {
-                owned(slot, crate::requests::is_slot(slot) && slot.len() <= 32)
-            })?,
-            base: take(t, "base", Level::parse)?,
-            low: take(t, "low", Level::parse)?,
+            state,
+            slot,
+            base,
+            low,
             threshold: take(t, "at", |at| {
                 decimal(at).filter(|at| (50..=100).contains(at))
             })?,
@@ -813,14 +930,29 @@ impl Record {
         if tokens.next().is_some() {
             return Err(Damage::Shape);
         }
-        if record.base.step_down() != Some(record.low) {
-            return Err(Damage::Incoherent);
+        let legacy = record.base.step_down() == Some(record.low);
+        match step {
+            None if !legacy => return Err(Damage::Incoherent),
+            Some(step) if record.base.lowered(step) != Some(record.low) => {
+                return Err(Damage::Incoherent);
+            }
+            Some(1) if legacy => return Err(Damage::Shape),
+            _ => {}
         }
         Ok(record)
     }
 
-    /// The record's one spelling. A record [`Self::parse`] would refuse spells
-    /// a value it refuses too, so a writer proves `parse(encode(r)) == r`.
+    /// How many adjacent tiers `low` sits below `base`.
+    #[must_use]
+    pub fn step(&self) -> u8 {
+        (1..=2)
+            .find(|step| self.base.lowered(*step) == Some(self.low))
+            .unwrap_or(0)
+    }
+
+    /// The record's one spelling: `v1` for a legacy one-step pair, `v2` with
+    /// its step otherwise. A record [`Self::parse`] would refuse spells a value
+    /// it refuses too, so a writer proves `parse(encode(r)) == r`.
     #[must_use]
     pub fn encode(&self) -> String {
         let windows: Vec<String> = self
@@ -828,9 +960,14 @@ impl Record {
             .iter()
             .map(|window| window_word(window).unwrap_or_default())
             .collect();
+        let (version, step) = if self.base.step_down() == Some(self.low) {
+            ("v1", String::new())
+        } else {
+            ("v2", format!(" step:{}", self.step()))
+        };
         format!(
-            "v1 {} slot:{} base:{} low:{} at:{} ep:{} sid:{} agent:{} tool:{} launch:{} pid:{} \
-             conv:{} profile:{} client:{} model:{} win:{}",
+            "{version} {} slot:{} base:{} low:{}{step} at:{} ep:{} sid:{} agent:{} tool:{} \
+             launch:{} pid:{} conv:{} profile:{} client:{} model:{} win:{}",
             self.state.word(),
             self.slot,
             self.base.word(),
@@ -850,14 +987,23 @@ impl Record {
         )
     }
 
-    /// The move a pending or restart state reserved; `None` once applied.
+    /// The move a pending or restart state reserved; `None` once applied. A
+    /// step down reaches `low` from the adjacent tier above it; a step up
+    /// returns from `low` to `base` in one move.
     #[must_use]
     pub fn pending(&self) -> Option<Transition> {
-        match self.state {
-            State::PendingDown | State::RestartDown => Transition::down(self.base),
-            State::PendingUp | State::RestartUp => Transition::up(self.base),
-            State::Applied => None,
-        }
+        let (direction, from, to) = match self.state {
+            State::PendingDown | State::RestartDown => {
+                (Direction::Down, self.low.above()?, self.low)
+            }
+            State::PendingUp | State::RestartUp => (Direction::Up, self.low, self.base),
+            State::Applied => return None,
+        };
+        Some(Transition {
+            direction,
+            from,
+            to,
+        })
     }
 }
 
@@ -988,6 +1134,69 @@ pub enum Leg {
     Done(Transition),
     /// Proven not moved.
     Failed(Transition),
+    /// The first step down proven moved, then a second one adjacent tier
+    /// lower: the first move and where the second stands.
+    Deeper(Transition, Second),
+}
+
+/// Where an episode's second step down stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Second {
+    /// Reserved and not yet proven either way.
+    Reserved(Transition),
+    /// Proven moved.
+    Done(Transition),
+    /// Proven not moved: the seat stays on the first step's tier.
+    Failed(Transition),
+}
+
+impl Second {
+    /// The same state as a [`Leg`].
+    const fn leg(self) -> Leg {
+        match self {
+            Self::Reserved(t) => Leg::Reserved(t),
+            Self::Done(t) => Leg::Done(t),
+            Self::Failed(t) => Leg::Failed(t),
+        }
+    }
+
+    /// `leg` as a second step; `None` for an unspent leg or a deeper one.
+    const fn of(leg: Leg) -> Option<Self> {
+        match leg {
+            Leg::Reserved(t) => Some(Self::Reserved(t)),
+            Leg::Done(t) => Some(Self::Done(t)),
+            Leg::Failed(t) => Some(Self::Failed(t)),
+            Leg::Unspent | Leg::Deeper(..) => None,
+        }
+    }
+}
+
+impl Leg {
+    /// The leg of the step down being taken or last taken: the second once
+    /// it exists, else this one.
+    #[must_use]
+    pub const fn active(self) -> Self {
+        match self {
+            Self::Deeper(_, second) => second.leg(),
+            leg => leg,
+        }
+    }
+
+    /// The baseline and the tier the steps down proven so far reach: `None`
+    /// while a step is reserved or before one is proven moved.
+    #[must_use]
+    pub const fn reached(self) -> Option<(Level, Level)> {
+        match self {
+            Self::Done(first) | Self::Deeper(first, Second::Failed(_)) => {
+                Some((first.from, first.to))
+            }
+            Self::Deeper(first, Second::Done(second)) => Some((first.from, second.to)),
+            Self::Unspent
+            | Self::Reserved(_)
+            | Self::Failed(_)
+            | Self::Deeper(_, Second::Reserved(_)) => None,
+        }
+    }
 }
 
 /// One open episode, as the journal folds it.
@@ -997,9 +1206,9 @@ pub struct Episode {
     pub key: i64,
     /// The threshold it opened at, kept whatever the config says later.
     pub threshold: u8,
-    /// The step down.
+    /// The steps down: the first, and the second once it is reserved.
     pub down: Leg,
-    /// The step back up.
+    /// The step back up to the baseline.
     pub up: Leg,
     /// The reasons already named, each once.
     pub named: Vec<String>,
@@ -1039,15 +1248,53 @@ pub(crate) const REASONS: [&str; 17] = [
     "no-twin",
 ];
 
-/// The transition a `<from>-><to>` summary names in `direction`.
+/// The transition a `<from>-><to>` summary names in `direction`: down one
+/// adjacent tier, or up one or two.
 fn pair(summary: &str, direction: Direction) -> Option<Transition> {
     let (from, to) = summary.split_once("->")?;
     let (from, to) = (Level::parse(from)?, Level::parse(to)?);
-    let named = match direction {
-        Direction::Down => Transition::down(from)?,
-        Direction::Up => Transition::up(to)?,
+    let fits = match direction {
+        Direction::Down => from.below() == Some(to),
+        Direction::Up => [1, 2]
+            .into_iter()
+            .any(|steps| to.lowered(steps) == Some(from)),
     };
-    (named.from == from && named.to == to).then_some(named)
+    fits.then_some(Transition {
+        direction,
+        from,
+        to,
+    })
+}
+
+/// Which move of an episode a directed record's ref names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    /// `<ep>-down`: the first step down.
+    First,
+    /// `<ep>-down2`: the second step down.
+    Second,
+    /// `<ep>-up`: back to the baseline.
+    Up,
+}
+
+impl Stage {
+    const fn direction(self) -> Direction {
+        match self {
+            Self::First | Self::Second => Direction::Down,
+            Self::Up => Direction::Up,
+        }
+    }
+
+    /// The leg of this move in an episode whose legs are `down` and `up`.
+    const fn leg(self, down: Leg, up: Leg) -> Leg {
+        match (self, down) {
+            (Self::First, Leg::Deeper(first, _)) => Leg::Done(first),
+            (Self::First, down) => down,
+            (Self::Second, Leg::Deeper(_, second)) => second.leg(),
+            (Self::Second, _) => Leg::Unspent,
+            (Self::Up, _) => up,
+        }
+    }
 }
 
 /// The leg an outcome record moves, and the leg it leaves behind.
@@ -1103,15 +1350,16 @@ fn step(
     let summary = event.summary.as_deref().unwrap_or_default();
     let summary = summary.split_once("; ").map_or(summary, |(head, _)| head);
     let action = event.action.as_str();
-    let (key, direction) = match reference.split_once('-') {
-        Some((key, "down")) => (key, Some(Direction::Down)),
-        Some((key, "up")) => (key, Some(Direction::Up)),
+    let (key, stage) = match reference.split_once('-') {
+        Some((key, "down")) => (key, Some(Stage::First)),
+        Some((key, "down2")) => (key, Some(Stage::Second)),
+        Some((key, "up")) => (key, Some(Stage::Up)),
         Some(_) => return Err("unreadable effort ref"),
         None => (reference, None),
     };
     let key = epoch(key).ok_or("unreadable effort ref")?;
     let directed = matches!(action, RESERVED | APPLIED | RESTORED | FAILED);
-    if directed != direction.is_some() {
+    if directed != stage.is_some() {
         return Err("effort ref does not fit its action");
     }
     if action == EPISODE {
@@ -1120,39 +1368,39 @@ fn step(
         *open = Some(opened(key, summary, fresh)?);
         return Ok(());
     }
-    let moved = match direction {
-        Some(direction) => Some((
-            direction,
-            pair(summary, direction).ok_or("unreadable effort pair")?,
+    let moved = match stage {
+        Some(stage) => Some((
+            stage,
+            pair(summary, stage.direction()).ok_or("unreadable effort pair")?,
         )),
         None => None,
     };
     if let Some(done) = closed.iter().find(|e| e.key == key) {
-        let Some((direction, t)) = moved else {
+        let Some((stage, t)) = moved else {
             return undirected(action, summary);
         };
-        let leg = if direction == Direction::Down {
-            done.down
-        } else {
-            done.up
-        };
-        return (outcome(action, direction, t) == Some(leg))
+        let leg = stage.leg(done.down, done.up);
+        return (outcome(action, stage.direction(), t) == Some(leg))
             .then_some(())
             .ok_or("effort record conflicts with a closed episode");
     }
     let Some(episode) = open.as_mut().filter(|e| e.key == key) else {
         return Err("effort record names no open episode");
     };
-    if let Some((direction, t)) = moved {
-        let inverse = match episode.down {
-            Leg::Done(d) => d.from == t.to && d.to == t.from,
-            _ => false,
+    if let Some((stage, t)) = moved {
+        let direction = stage.direction();
+        let ready = match stage {
+            Stage::First => true,
+            Stage::Second => {
+                matches!(episode.down, Leg::Done(first) if first.to == t.from)
+                    && episode.up == Leg::Unspent
+            }
+            Stage::Up => matches!(
+                episode.down.reached(),
+                Some((base, at)) if at == t.from && base == t.to
+            ),
         };
-        let (leg, ready) = match direction {
-            Direction::Down => (&mut episode.down, true),
-            Direction::Up => (&mut episode.up, inverse),
-        };
-        *leg = match (action, *leg) {
+        let next = match (action, stage.leg(episode.down, episode.up)) {
             (RESERVED, Leg::Unspent) if ready => Leg::Reserved(t),
             (_, Leg::Reserved(r)) if r == t && action != RESERVED => {
                 outcome(action, direction, t).ok_or("effort outcome does not fit its leg")?
@@ -1160,6 +1408,17 @@ fn step(
             (_, done) if Some(done) == outcome(action, direction, t) => done,
             _ => return Err("effort record does not fit its leg"),
         };
+        match (stage, episode.down) {
+            // A record of the first step after the second exists only repeats it.
+            (Stage::First, Leg::Deeper(..)) => {}
+            (Stage::First, _) => episode.down = next,
+            (Stage::Second, Leg::Done(first) | Leg::Deeper(first, _)) => {
+                let second = Second::of(next).ok_or("effort record does not fit its leg")?;
+                episode.down = Leg::Deeper(first, second);
+            }
+            (Stage::Second, _) => return Err("effort record does not fit its leg"),
+            (Stage::Up, _) => episode.up = next,
+        }
         if episode.up != Leg::Done(t) {
             return Ok(());
         }
@@ -1173,9 +1432,9 @@ fn step(
     } else if action == YIELDED {
         episode.yielded = true;
         return Ok(());
-    } else if matches!(episode.down, Leg::Reserved(_))
+    } else if matches!(episode.down.active(), Leg::Reserved(_))
         || matches!(episode.up, Leg::Reserved(_) | Leg::Failed(_))
-        || matches!(episode.down, Leg::Done(_)) && !episode.yielded
+        || matches!(episode.down, Leg::Done(_) | Leg::Deeper(..)) && !episode.yielded
     {
         return Err("effort episode re-armed while it owns a move");
     }
@@ -1391,6 +1650,14 @@ pub enum Decision {
         /// The windows the record keeps.
         windows: Vec<Pressured>,
     },
+    /// Take the episode's second step down, to the twin's level.
+    Deeper {
+        /// The twin of the second step.
+        twin: Twin,
+        /// The first step's windows merged with the second step's by key,
+        /// the second step's reading kept for a key both name.
+        windows: Vec<Pressured>,
+    },
     /// Step back up.
     Up,
     /// Settle this direction's reservation first.
@@ -1418,7 +1685,7 @@ pub fn decide(inputs: &Inputs<'_>) -> Decision {
         Fold::Armed => None,
     };
     if let Some(episode) = episode {
-        if matches!(episode.down, Leg::Reserved(_)) {
+        if matches!(episode.down.active(), Leg::Reserved(_)) {
             return Decision::Reconcile(Direction::Down);
         }
         if matches!(episode.up, Leg::Reserved(_)) {
@@ -1431,6 +1698,8 @@ pub fn decide(inputs: &Inputs<'_>) -> Decision {
     let Some(episode) = episode else {
         return match entry(scope, inputs.at) {
             _ if present.is_some() => Decision::Hold(Hold::Doubt),
+            // A floor row at or above the baseline leaves nothing to step.
+            _ if matches!(inputs.twin, Err(TwinRefusal::Floored(_))) => Decision::Idle,
             Entry::Unread => Decision::Hold(Hold::Unread),
             Entry::Below => Decision::Idle,
             _ => Decision::Open {
@@ -1463,14 +1732,14 @@ pub fn decide(inputs: &Inputs<'_>) -> Decision {
         Leg::Unspent if present.is_some() => Decision::Hold(Hold::Doubt),
         Leg::Unspent => down(inputs, episode, scope, relief(Hold::Near)),
         Leg::Failed(_) => relief(Hold::Spent),
-        Leg::Done(done) => match present {
-            Some(record)
+        Leg::Done(_) | Leg::Deeper(..) => match (present, episode.down.reached()) {
+            (Some(record), Some(reached))
                 if record.state == State::Applied
                     && record.episode == episode.key
                     && record.threshold == threshold
-                    && (record.base, record.low) == (done.from, done.to) =>
+                    && (record.base, record.low) == reached =>
             {
-                up(inputs, episode, scope, record, done)
+                up(inputs, episode, scope, record)
             }
             _ => Decision::Hold(Hold::Doubt),
         },
@@ -1511,14 +1780,9 @@ fn down(inputs: &Inputs<'_>, episode: &Episode, scope: &Scope, relief: Decision)
     }
 }
 
-/// An open episode whose step down is done and agrees with its record.
-fn up(
-    inputs: &Inputs<'_>,
-    episode: &Episode,
-    scope: &Scope,
-    record: &Record,
-    done: Transition,
-) -> Decision {
+/// An open episode whose steps down are proven and agree with its record,
+/// which runs the seat at `record.low`.
+fn up(inputs: &Inputs<'_>, episode: &Episode, scope: &Scope, record: &Record) -> Decision {
     match inputs.guard {
         None => return Decision::Hold(Hold::Unread),
         Some(Err(_)) => return Decision::Yield("baseline-changed"),
@@ -1526,7 +1790,7 @@ fn up(
     }
     match inputs.live {
         None => return Decision::Hold(Hold::Unread),
-        Some(live) if live != done.to => return Decision::Yield("manual-effort"),
+        Some(live) if live != record.low => return Decision::Yield("manual-effort"),
         Some(_) => {}
     }
     match (
@@ -1536,8 +1800,72 @@ fn up(
         (Recovery::Relieved, Leg::Unspent) => Decision::Up,
         (Recovery::Relieved, Leg::Failed(_)) => Decision::Hold(Hold::TerminalUp),
         (Recovery::Relieved, _) => Decision::Hold(Hold::Doubt),
+        (Recovery::Hold, Leg::Unspent) => deeper(inputs, episode, scope, record),
         _ => Decision::Hold(Hold::Pressure),
     }
+}
+
+/// An episode at its first step, still under pressure: the second step when
+/// a long window reads at or past the threshold plus [`SECOND_GAP`] and the
+/// twin is the second step's, from the tier the seat runs. The record then
+/// keeps every window that moved the seat: the first step's, with the second
+/// step's crossed windows merged in by key. A twin refused by the floor or the
+/// step cap holds silently; any other refusal, and windows that cannot be
+/// recorded, is named once.
+fn deeper(inputs: &Inputs<'_>, episode: &Episode, scope: &Scope, record: &Record) -> Decision {
+    let pressure = Decision::Hold(Hold::Pressure);
+    let second = episode.threshold.saturating_add(SECOND_GAP);
+    let crossed = entry(scope, second);
+    if !matches!(episode.down, Leg::Done(_))
+        || !matches!(crossed, Entry::Crossed(_) | Entry::Unrecordable)
+    {
+        return pressure;
+    }
+    let twin = match inputs.twin {
+        Err(TwinRefusal::Floor(_) | TwinRefusal::Floored(_)) => return pressure,
+        Err(refusal) if episode.named.iter().any(|named| named == refusal.word()) => {
+            return Decision::Hold(Hold::Skipped);
+        }
+        Err(refusal) => return Decision::Name(refusal.word()),
+        Ok(twin) if twin.baseline != record.low => return pressure,
+        Ok(twin) => twin,
+    };
+    if !inputs.new_attempts {
+        return Decision::Hold(Hold::Disabled);
+    }
+    match crossed {
+        Entry::Crossed(windows) => match merged(&record.windows, windows) {
+            Some(windows) => Decision::Deeper {
+                twin: twin.clone(),
+                windows,
+            },
+            None => unrecordable(episode),
+        },
+        _ => unrecordable(episode),
+    }
+}
+
+/// Second-step windows that cannot be recorded: named once, then held.
+fn unrecordable(episode: &Episode) -> Decision {
+    if episode.named.iter().any(|named| named == "unrecordable") {
+        Decision::Hold(Hold::Skipped)
+    } else {
+        Decision::Name("unrecordable")
+    }
+}
+
+/// `first` with every window of `second` put in by key, `second`'s reading
+/// replacing one `first` already keeps, sorted by key; `None` past
+/// [`MAX_WINDOWS`].
+fn merged(first: &[Pressured], second: Vec<Pressured>) -> Option<Vec<Pressured>> {
+    let mut windows: Vec<Pressured> = first
+        .iter()
+        .filter(|kept| second.iter().all(|new| new.key != kept.key))
+        .cloned()
+        .collect();
+    windows.extend(second);
+    windows.sort_by(|left, right| left.key.cmp(&right.key));
+    (windows.len() <= MAX_WINDOWS).then_some(windows)
 }
 
 /// `[workspace] auto_effort`, as a resume reads it.
@@ -1612,12 +1940,18 @@ pub fn on_resume(
     };
     let episode = record.map(|record| record.episode);
     let discard = |why| Resume::Discard { episode, why };
-    // A fresh conversation spends an authorized step down rather than
-    // forgetting it, or the pressure that reserved it would restart again.
+    // A fresh conversation spends an authorized first step down rather than
+    // forgetting it, or the pressure that reserved it would restart again. It
+    // runs the profile's own effort, so a second step ends like an applied one.
     let fresh = match record {
-        Some(record) if record.state == State::RestartDown => Resume::Failed {
-            episode: record.episode,
-        },
+        Some(record)
+            if record.state == State::RestartDown
+                && record.pending().is_some_and(|t| t.from == record.base) =>
+        {
+            Resume::Failed {
+                episode: record.episode,
+            }
+        }
         _ => discard(Discarded::Fresh),
     };
     if !retained {
@@ -1658,7 +1992,15 @@ pub fn on_resume(
         from: record.base,
         to: record.low,
     };
-    let moved = matches!(open.down, Leg::Reserved(t) | Leg::Done(t) if t == down);
+    // A second step that is reserved or failed leaves the seat on the first's tier.
+    let moved = match open.down {
+        Leg::Reserved(t) | Leg::Done(t) => t == down,
+        Leg::Deeper(first, Second::Reserved(_) | Second::Failed(_)) => first == down,
+        Leg::Deeper(first, Second::Done(second)) => {
+            first.from == record.base && second.to == record.low
+        }
+        Leg::Unspent | Leg::Failed(_) => false,
+    };
     let unspent = matches!(open.up, Leg::Unspent | Leg::Reserved(_) | Leg::Failed(_));
     if open.threshold == record.threshold && moved && unspent {
         Resume::Replay(record.low)
@@ -1676,10 +2018,18 @@ fn authorized(record: &Record, ledger: Option<&Fold>) -> Resume {
         return refuse;
     };
     let legs = match t.direction {
-        Direction::Down => open.down == Leg::Reserved(t) && open.up == Leg::Unspent,
+        Direction::Down => {
+            let reserved = match open.down {
+                Leg::Reserved(first) => first == t && t.from == record.base,
+                Leg::Deeper(first, Second::Reserved(second)) => {
+                    second == t && first.from == record.base && first.to == t.from
+                }
+                _ => false,
+            };
+            reserved && open.up == Leg::Unspent
+        }
         Direction::Up => {
-            Transition::down(record.base).is_some_and(|down| open.down == Leg::Done(down))
-                && open.up == Leg::Reserved(t)
+            open.down.reached() == Some((record.base, record.low)) && open.up == Leg::Reserved(t)
         }
     };
     if legs && open.key == record.episode && open.threshold == record.threshold && !open.yielded {

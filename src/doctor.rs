@@ -1562,6 +1562,7 @@ pub fn run(
         .or_else(|| crate::doors::local_config(&crate::doors::cwd(), Some(&global)));
     let facts = gather(root, args.global.as_deref(), local.as_deref());
     let mut document = report(&facts);
+    effort_floor_rows(&global, local.as_deref(), &mut document);
     append_autoupgrade_status(crate::shape::current(), &mut document);
     report_pending_renames(root, &mut document);
     if let Some(target) = &args.refresh {
@@ -1603,6 +1604,43 @@ fn report_pending_renames(root: &Path, document: &mut Report) {
                 damaged.why
             ),
         );
+    }
+}
+
+/// The `effort-floor` rows: one WARN per `[effort_floor]` row the effort
+/// policy cannot use, an unknown level or a model no profile pins, because
+/// such a row silently keeps the one-step policy. Nothing without a row, and
+/// nothing for a config the `config` row already fails. A WARN never costs the
+/// exit code.
+fn effort_floor_rows(global: &Path, local: Option<&Path>, document: &mut Report) {
+    const LABEL: &str = "effort-floor";
+    let Ok(identity) = crate::config::read_identity(Some(global), local) else {
+        return;
+    };
+    if identity.effort_floor.is_empty() {
+        return;
+    }
+    let home = crate::doors::home();
+    let pinned: Vec<String> = identity
+        .profiles
+        .iter()
+        .filter_map(|(profile, _)| {
+            let command = identity.command(profile, home.as_deref()).ok()??;
+            let tool = crate::tool::ToolKind::from_cmd(command.as_str());
+            crate::launch_cmd::model_flag_value(command.as_str(), tool)
+        })
+        .collect();
+    let notes = crate::effort::floor_notes(&identity.effort_floor, &pinned);
+    if notes.is_empty() {
+        let rows = identity.effort_floor.len();
+        document.push(
+            Level::Ok,
+            LABEL,
+            &format!("{rows} usable [effort_floor] row(s)"),
+        );
+    }
+    for note in &notes {
+        document.push(Level::Warn, LABEL, note);
     }
 }
 

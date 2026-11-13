@@ -197,6 +197,15 @@ fn read_with(dir: &Path, session: &str, slot: &str, events: &[Event]) -> Option<
         Stored::Absent | Stored::Damaged(_) => None,
     };
     let (twin, resumable) = crate::run::effort_twin(&run, &entry);
+    // Applied at its first step, an episode's next move down is the second.
+    let twin = match (&fold, &stored) {
+        (Fold::Open(open), Stored::Present(record))
+            if matches!(open.down, Leg::Done(_)) && record.state == State::Applied =>
+        {
+            second_twin(&run, &entry, record.low)
+        }
+        _ => twin,
+    };
     let pin = crate::launch_cmd::model_flag_value(run.command.as_str(), run.tool);
     Some(Seat {
         session: session.to_owned(),
@@ -211,6 +220,28 @@ fn read_with(dir: &Path, session: &str, slot: &str, events: &[Event]) -> Option<
         resumable,
         pin,
     })
+}
+
+/// The twin of the seat's second step down, from `first`, the tier its first
+/// step reached, in the seat's own config pair.
+fn second_twin(
+    run: &crate::run::Seat,
+    entry: &crate::meta::RosterEntry,
+    first: Level,
+) -> Result<Twin, TwinRefusal> {
+    let cfg = crate::config::read_identity(
+        run.identity_global.as_deref(),
+        run.identity_local.as_deref(),
+    )
+    .map_err(|_| TwinRefusal::Unresolved)?;
+    super::twin_from(
+        &cfg,
+        crate::doors::home().as_deref(),
+        entry.profile.as_deref().unwrap_or_default(),
+        &entry.client,
+        run.tool,
+        Some(first),
+    )
 }
 
 /// The global config file.
@@ -367,7 +398,12 @@ pub(crate) fn step(
                 });
                 continue;
             }
-            Decision::Down { .. } | Decision::Up | Decision::Reconcile(_) if !started => {
+            Decision::Down { .. }
+            | Decision::Deeper { .. }
+            | Decision::Up
+            | Decision::Reconcile(_)
+                if !started =>
+            {
                 if !matches!(decision, Decision::Reconcile(_)) {
                     match holds(cycle.dir, &seat, &sight.point, &sight.capture, cycle.now) {
                         None => {}
@@ -559,6 +595,13 @@ impl Ctx<'_> {
                 model: seat.pin.clone().unwrap_or_default(),
                 windows: windows.clone(),
             },
+            (Decision::Deeper { twin, windows }, Stored::Present(record)) => Record {
+                state: State::RestartDown,
+                low: twin.target,
+                pid,
+                windows: windows.clone(),
+                ..record.clone()
+            },
             (Decision::Up, Stored::Present(record)) => Record {
                 state: State::RestartUp,
                 pid,
@@ -692,7 +735,8 @@ impl Ctx<'_> {
     ) -> io::Result<()> {
         if let Stored::Present(record) = &seat.stored {
             // A proven step down is applied at its new pid; a failed step back
-            // up returns to the applied record it started from; else dropped.
+            // up returns to the applied record it started from, and a failed
+            // second step down to the first step's tier; else dropped.
             let next = match (outcome, t.direction) {
                 (Outcome::Moved(pid), Direction::Down) => Some(Record {
                     state: State::Applied,
@@ -701,6 +745,11 @@ impl Ctx<'_> {
                 }),
                 (Outcome::Failed(_), Direction::Up) => Some(Record {
                     state: State::Applied,
+                    ..record.clone()
+                }),
+                (Outcome::Failed(_), Direction::Down) if t.from != record.base => Some(Record {
+                    state: State::Applied,
+                    low: t.from,
                     ..record.clone()
                 }),
                 _ => None,
@@ -770,9 +819,14 @@ impl Ctx<'_> {
         Ok(())
     }
 
-    /// Journal `action` on the move `t` of this episode, as the watchdog.
+    /// Journal `action` on the move `t` of this episode, as the watchdog: a
+    /// step down after the proven first is the second, `<ep>-down2`.
     fn journal(&self, seat: &Seat, action: &str, t: Transition, summary: &str) -> bool {
+        let second = seat.episode().is_some_and(
+            |open| matches!(open.down, Leg::Done(first) | Leg::Deeper(first, _) if first != t),
+        );
         let reference = match t.direction {
+            Direction::Down if second => format!("{}-down2", self.episode),
             Direction::Down => format!("{}-down", self.episode),
             Direction::Up => format!("{}-up", self.episode),
         };
@@ -828,13 +882,17 @@ impl Ctx<'_> {
 /// The moved seat's line after a step down (lead ruling: the target is the
 /// profile's effort; another is the human's `ae reseat`).
 fn applied_words(seat: &Seat, t: Transition) -> String {
+    let base = match &seat.stored {
+        Stored::Present(record) => record.base,
+        Stored::Absent | Stored::Damaged(_) => t.from,
+    };
     format!(
         "ae lowered your reasoning effort {} on quota pressure, restarting you in place: same \
          conversation and profile. Your target stays the profile's effort ({}), restored once \
          your account's long windows read under {}%. Another effort is `ae reseat {} {} --using \
          <a profile at that effort>`; a change in your own pane is yours, never restored over.",
         pair(t),
-        t.from.word(),
+        base.word(),
         AT - 5,
         seat.session,
         seat.entry.name
@@ -861,9 +919,10 @@ enum Proof {
     Unproven,
 }
 
+/// The leg of the move `direction` takes now: the second step down once it exists.
 fn leg_of(episode: &super::Episode, direction: Direction) -> Leg {
     match direction {
-        Direction::Down => episode.down,
+        Direction::Down => episode.down.active(),
         Direction::Up => episode.up,
     }
 }
@@ -933,7 +992,7 @@ pub(crate) fn run(root: &Path, tail: &[String], err: &mut impl Write) -> io::Res
     let decision = ctx.decide(&seat, &ctx.capture());
     let direction = match decision {
         Decision::Reconcile(direction) => direction,
-        Decision::Down { .. } => Direction::Down,
+        Decision::Down { .. } | Decision::Deeper { .. } => Direction::Down,
         Decision::Up => Direction::Up,
         _ => return Ok(0),
     };
