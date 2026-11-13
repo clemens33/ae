@@ -133,6 +133,25 @@ test-macos *args:
     echo "test-macos: $subset_filterset" >&2
     just _tmux-isolated test -E "$subset_filterset"
 
+# THE BASH FLOOR of a recipe that uses bash 4 syntax (#337). A recipe that opens with this refuses a
+# bash older than 4.4 with a message and exit 1, before bash reads any later line. Without it, macOS
+# /bin/bash 3.2 stops at the first construct it cannot parse (`[[ -v`, `exec {fd}<`, `local -A`,
+# `mapfile`) and then returns the status of the recipe's `trap ... EXIT` command, so a gate that ran
+# nothing exits 0; the trap sees `$?` as 0 there, so no trap can repair it. The 4.4 floor is the empty
+# `"${a[@]}"` under `set -u` that older bash rejects. It is POSIX shell on purpose and sits BEFORE
+# `set -euo pipefail`: a shell that does not know `pipefail` (dash) reaches it too, and it is one
+# complete command, which a bash runs before it parses the rest of the script. tests/it/gate/bashfloor.rs
+# pins the position, the version patterns, and that every recipe holding bash 4 syntax opens with it.
+BASH_FLOOR := '''
+    case "${BASH_VERSION-}" in
+        4.[4-9].* | 4.[1-9][0-9].* | [5-9].* | [1-9][0-9].*) ;;
+        *)
+            echo "${0##*/}: refused: needs bash 4.4 or newer, found ${BASH_VERSION:-a shell that is not bash}; put a newer bash first on PATH (macOS: /opt/homebrew/bin) and run it again" >&2
+            exit 1
+            ;;
+    esac
+'''
+
 # THE MERGE GATE (M1, one hop), what a slice passes before it lands, while a release still runs
 # the whole suite on the hp (`just release-proof`, docs/development.md "The merge gate"). It runs
 # the three checks of `just test` (fmt, lint, fuzz compile) and then only the tests the change
@@ -150,6 +169,7 @@ test-macos *args:
 # Run the merge gate: the checks, then the tests the change reaches; print=yes only prints the selection
 test-affected *args:
     #!/usr/bin/env bash
+    {{ BASH_FLOOR }}
     set -euo pipefail
     {{ SIZING }}
     base=main
@@ -164,7 +184,7 @@ test-affected *args:
     refuse() { echo "test-affected: refused: $*" >&2; exit 1; }
     scratch="$(mktemp -d)"
     doc_dir=""
-    trap 'rm -rf "$scratch" ${doc_dir:+"$doc_dir"}' EXIT
+    trap 'status=$?; rm -rf "$scratch" ${doc_dir:+"$doc_dir"}; exit "$status"' EXIT
     mode=gate
     [[ "$print" == no ]] || mode=preview
 
@@ -1300,7 +1320,7 @@ release-proof *args:
     bound="$(command -v timeout || command -v gtimeout || true)"
     [[ -n "$bound" ]] || proof_refuse "the hp query needs timeout (GNU coreutils; gtimeout on a Mac with brew coreutils)"
     reply_dir="$(mktemp -d)"
-    trap 'rm -rf "$reply_dir"' EXIT
+    trap 'status=$?; rm -rf "$reply_dir"; exit "$status"' EXIT
     echo "release-proof: asking $AE_RELEASE_HP for the receipt of tree $tree"
     status=0
     "$bound" 30 ssh -o BatchMode=yes -o ConnectTimeout=10 -- "$AE_RELEASE_HP" \
@@ -3316,7 +3336,7 @@ _linux-gate flavor image bus:
     lane="$(mktemp -d "${TMPDIR:-/tmp}/ae-linux-lane.XXXXXX")"
     # Cleanup makes the lane writable before removing it (C83): an archive
     # member extracted 0555 refuses its own unlink.
-    trap 'chmod -R u+w "$lane" 2>/dev/null || true; rm -rf "$lane"' EXIT
+    trap 'status=$?; chmod -R u+w "$lane" 2>/dev/null || true; rm -rf "$lane"; exit "$status"' EXIT
     # just and rustup-init are fetched on the HOST and digest-checked here, then
     # bind-mounted read-only: the container needs no curl and fetches nothing
     # beyond what cargo and rustup themselves fetch.
@@ -3465,7 +3485,7 @@ rust-linux-smoke:
         exit 1
     }
     lane="$(mktemp -d "${TMPDIR:-/tmp}/ae-linux-smoke.XXXXXX")"
-    trap 'chmod -R u+w "$lane" 2>/dev/null || true; rm -rf "$lane"' EXIT
+    trap 'status=$?; chmod -R u+w "$lane" 2>/dev/null || true; rm -rf "$lane"; exit "$status"' EXIT
     printf '%s\n' "$line" | ( cd dist && sums -c - ) >/dev/null
     tar -xzf "$tarball" -C "$lane"
     if ! out="$(docker run --rm --label ae.lane=linux --platform linux/amd64 \

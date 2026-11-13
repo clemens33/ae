@@ -299,6 +299,13 @@ the start to the end. Otherwise, and when git cannot say, the recipe prints one
 `test-affected: refused: <why>` line and exits 1. It never writes a gate receipt: only a whole
 `just test` vouches for a tree.
 
+The recipe needs bash 4.4 or newer. Under an older bash, such as the macOS stock `/bin/bash` 3.2,
+its first command prints `test-affected: refused: needs bash 4.4 or newer, found <version>` and
+exits 1, before bash reads any syntax it cannot parse. Without that refusal, bash 3.2 stops at the
+first such construct and exits 0 through the recipe's `EXIT` trap (#337). Put Homebrew bash first on
+`PATH` (`/opt/homebrew/bin` on Apple Silicon) for the run. `tests/it/gate/bashfloor.rs` pins the
+refusal and the rule that every recipe with bash 4 syntax opens with it.
+
 **What a change selects.** A changed integration file selects every module that owns it. A changed
 library module selects the integration files that name it: an `ae::` path to it or below it, a
 `use ae::…` of it, or a name that `src/lib.rs` or its parent module re-exports from it with

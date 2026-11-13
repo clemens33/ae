@@ -40,6 +40,7 @@ mod mutantstime_spec;
 #[rustfmt::skip]
 mod receipt_spec;
 mod affected;
+mod bashfloor;
 mod macos_subset;
 #[allow(
     clippy::expect_used,
