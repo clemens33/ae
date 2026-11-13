@@ -27,9 +27,16 @@ const PROOF_BOUND: Duration = Duration::from_secs(20);
 /// How long the step waits before starting another leg for one seat.
 const LEG_GAP: i64 = 15;
 
-/// Whether ae moves the effort of the seat at `slot`: the lead pair alone (R2).
+/// Whether ae moves the effort of the seat at `slot`: the lead pair and every
+/// spawned seat (#318). An orchestrator session is refused by its caller.
 #[must_use]
 pub(crate) fn eligible(slot: &str) -> bool {
+    lead_pair(slot) || (slot.starts_with("spawned.") && crate::requests::is_slot(slot))
+}
+
+/// Whether `slot` is one of the lead pair, the seats told of another seat's
+/// effort move.
+fn lead_pair(slot: &str) -> bool {
     matches!(slot, "main" | "worker.0")
 }
 
@@ -749,7 +756,7 @@ impl Ctx<'_> {
         for other in meta
             .roster()
             .iter()
-            .filter(|other| other.slot != self.slot && eligible(&other.slot))
+            .filter(|other| other.slot != self.slot && lead_pair(&other.slot))
         {
             self.notice(other, &seat.bytes, &told, err)?;
         }
