@@ -147,6 +147,95 @@ fn effort_reseat_retry_reuses_its_outcome_across_another_reseat_stop_record() {
     assert_seeded_retry_with_trace(&format!("effort.main={VALID}\n"), "1700000000", &journal);
 }
 
+fn assert_unterminated_tail(tail: &str, committed: usize) {
+    let fixture = applied();
+    let journal = format!("{}{tail}", applied_trace());
+    let path = fixture.dir().join("events.jsonl");
+    std::fs::write(&path, &journal).expect("crash left an unterminated tail");
+    let before = fixture.meta();
+    // The actual watchdog consumer excludes an unterminated tail. A parser
+    // over String::lines would see a complete JSON tail too early.
+    let consumed = crate::watchdog_daemon::read_events(&fixture.dir());
+    assert_eq!(
+        consumed
+            .iter()
+            .filter(|event| event.action == "effort-discarded")
+            .count(),
+        committed,
+        "the complete-record precondition must apply: {tail:?}"
+    );
+    let fold = crate::effort::fold(&consumed, SessionKey::new("fixture", SID), "main", "lead");
+    assert!(
+        matches!((committed, fold), (0, Fold::Open(_)) | (1, Fold::Armed)),
+        "the consumer proves the pre-publication state: {tail:?}"
+    );
+    let result = publish_seat_move(
+        &fixture.dir(),
+        "main",
+        "lead",
+        &destination(Conversation::Kept),
+    );
+    if result.is_err() {
+        assert_eq!(fixture.meta(), before, "refusal keeps the applied claim");
+        assert_eq!(
+            std::fs::read_to_string(path).expect("refused journal"),
+            journal
+        );
+    } else {
+        let consumed = crate::watchdog_daemon::read_events(&fixture.dir());
+        assert_eq!(
+            consumed
+                .iter()
+                .filter(|event| event.action == "effort-discarded")
+                .count(),
+            1,
+            "a successful publication requires one consumer-visible ending: {tail:?}"
+        );
+        assert_eq!(
+            crate::effort::fold(&consumed, SessionKey::new("fixture", SID), "main", "lead"),
+            Fold::Armed,
+            "the consumer must accept the ending before the claim disappears: {tail:?}"
+        );
+        assert!(matches!(
+            crate::effort::stored(fixture.meta().as_bytes(), "main"),
+            Stored::Absent
+        ));
+    }
+}
+
+#[test]
+fn effort_reseat_an_unterminated_ending_cannot_authorize_losing_the_claim() {
+    assert_unterminated_tail(discard_line("1700000000").trim_end_matches('\n'), 0);
+}
+
+#[test]
+fn effort_reseat_a_torn_tail_cannot_swallow_the_new_ending() {
+    assert_unterminated_tail("{\"ts\":\"2023-11-14T22:13:21Z\",\"actor\":\"watch", 0);
+}
+
+#[test]
+fn effort_reseat_a_torn_stop_after_an_ending_cannot_duplicate_it() {
+    assert_unterminated_tail(
+        &format!(
+            "{}{{\"ts\":\"2023-11-14T22:13:22Z\",\"actor\":\"human",
+            discard_line("1700000000")
+        ),
+        1,
+    );
+}
+
+#[test]
+fn effort_reseat_an_unterminated_stop_after_an_ending_cannot_duplicate_it() {
+    assert_unterminated_tail(
+        &format!(
+            "{}{}",
+            discard_line("1700000000"),
+            stop_line().trim_end_matches('\n')
+        ),
+        1,
+    );
+}
+
 #[test]
 fn effort_reseat_an_old_empty_ref_ending_does_not_close_a_newer_damaged_claim() {
     let fixture = Fixture::new("effort.main=damaged\r\n");
