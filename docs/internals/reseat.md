@@ -337,10 +337,14 @@ record's end, under `meta.lock` and then the journal lock: ONE watchdog
 `effort-discarded`, ref the record's episode (empty for a damaged record),
 summary `reseat`. A seat without an effort line reads no journal. An append
 that fails publishes nothing, so the seat keeps its profile, its rows and its
-record, and the reseat says the move could not be recorded. A retry after a
-journaled discard whose publish failed reuses that ending: the journal already
-holds a matching watchdog discard for the seat after its last
-`effort-episode`, so none is written twice (`effort::ended`). The retire path
+record, and the reseat says the move could not be recorded. An applied episode has
+ONE journaled ending, whichever path wrote it: when the journal already holds
+a well-formed watchdog discard for the seat with the record's ref after its
+last `effort-episode` (a retried reseat, or a resume's `off` or `fresh`
+discard whose meta publish failed), the reseat reuses it and writes none
+(`effort::ended`). A discard for another episode or with an unknown reason
+does not count. An unterminated journal tail is terminated first, so the
+watchdog reads exactly that one ending. The retire path
 does not journal one: `identity::removable_slot` refuses `main` and every
 `worker.*` slot, and only `main` and `worker.0` carry effort records.
 A resume decides the same record in `effort::on_resume`, first rule wins. It

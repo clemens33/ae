@@ -2430,8 +2430,9 @@ pub(crate) fn publish_seat_move(
 /// watchdog `effort-discarded`, ref the record's episode (empty for a damaged
 /// record), summary `reseat`, decided and appended under the journal lock. A
 /// seat without an `effort.<slot>` line reads no journal. A journal that
-/// already ends the record's episode so — a retry after a publish that failed
-/// — is reused, never written twice; an unterminated tail is terminated first
+/// already ends the record's episode — this reseat's own discard or a
+/// resume's `off` or `fresh` one whose publish failed — is reused, never
+/// written twice; an unterminated tail is terminated first
 /// ([`journal_records`]), so the watchdog reads exactly one ending. `Err` when
 /// the journal could not be read or appended: the caller then publishes
 /// nothing.
@@ -2465,7 +2466,7 @@ fn reseat_discard(dir: &Path, current: &str, slot: &str, agent: &str) -> io::Res
             }
         };
         let (events, settle) = journal_records(&bytes);
-        if crate::effort::ended(&events, key, slot, agent, episode, why) {
+        if crate::effort::ended(&events, key, slot, agent, episode) {
             // An ending in the unterminated tail becomes a complete record.
             return if settle {
                 Ok("\n".to_owned())

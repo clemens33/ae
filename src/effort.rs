@@ -1248,14 +1248,16 @@ pub fn fold(events: &[Event], session: SessionKey<'_>, slot: &str, agent: &str) 
     }
 }
 
-/// Whether the seat's journal already ends its CURRENT episode with a
-/// watchdog [`DISCARDED`] for `why` whose ref is `episode` (empty for a
-/// damaged record): one addressed to the seat after the seat's last watchdog
-/// [`EPISODE`]. A retry after a journaled discard whose meta publish failed
-/// reuses that ending instead of writing a second one. Another actor, slot or
-/// session, another ref, or an ending before a newer episode does not count;
-/// a record of another actor between them, such as the reseat's own stop
-/// record, does not hide it.
+/// Whether the seat's journal already ends its CURRENT episode: a
+/// well-formed watchdog [`DISCARDED`] whose ref is `episode` (empty for a
+/// damaged record), addressed to the seat after the seat's last watchdog
+/// [`EPISODE`], whatever its reason. An applied episode has ONE journaled
+/// ending, whichever path wrote it: a reseat retried after a journaled
+/// discard whose meta publish failed, or a reseat after a resume's `off` or
+/// `fresh` discard whose publish failed, reuses that ending. Another actor,
+/// slot or session, another ref, an unknown reason, or an ending before a
+/// newer episode does not count; a record of another actor between them, such
+/// as the reseat's own stop record, does not hide it.
 #[must_use]
 pub fn ended(
     events: &[Event],
@@ -1263,7 +1265,6 @@ pub fn ended(
     slot: &str,
     agent: &str,
     episode: Option<i64>,
-    why: Discarded,
 ) -> bool {
     let reference = episode.map(|key| key.to_string()).unwrap_or_default();
     let mut ended = false;
@@ -1277,7 +1278,7 @@ pub fn ended(
             ended = false;
         } else if event.action == DISCARDED
             && event.reference.as_deref().unwrap_or_default() == reference
-            && event.summary.as_deref() == Some(why.word())
+            && well_formed_discard(event)
         {
             ended = true;
         }
