@@ -1244,4 +1244,118 @@ mod tests {
         assert!(journaled, "positive control: an unchanged identity closes");
         assert!(after.contains("effort.main=v1 applied "), "{after}");
     }
+
+    /// A session whose lead seat holds the `effort.main` value `record`, with
+    /// these watchdog records `(action, ref, summary)` in its journal.
+    fn seat_session(
+        tag: &str,
+        record: &str,
+        journal: &[(&str, String, &str)],
+    ) -> std::path::PathBuf {
+        use std::fmt::Write as _;
+        let dir = applied_session(tag);
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        let (head, _) = meta.split_once("effort.main=").expect("fixture record row");
+        std::fs::write(dir.join("meta"), format!("{head}effort.main={record}\n")).expect("meta");
+        let mut lines = String::new();
+        for (action, reference, summary) in journal {
+            writeln!(
+                lines,
+                "{{\"ts\":\"2023-11-14T22:13:20Z\",\"actor\":\"watchdog\",\"action\":\"{action}\",\
+                 \"target\":\"lead\",\"target_slot\":\"main\",\"target_session\":\"fx\",\
+                 \"target_session_id\":\"{SID}\",\"ref\":\"{reference}\",\"summary\":\"{summary}\"}}"
+            )
+            .expect("a String takes every line");
+        }
+        std::fs::write(dir.join("events.jsonl"), lines).expect("scratch journal");
+        dir
+    }
+
+    /// Close the restart `t` of the seat at `record` as failed: the journal's
+    /// last effort record and the effort row after.
+    fn close_failed(
+        tag: &str,
+        record: &str,
+        journal: &[(&str, String, &str)],
+        t: Transition,
+    ) -> (String, Option<crate::effort::Record>) {
+        let dir = seat_session(tag, record, journal);
+        let seat = read(&dir, "fx", "main").expect("the fixture seat reads");
+        let ctx = Ctx {
+            root: &dir,
+            dir: dir.clone(),
+            session: "fx".to_owned(),
+            slot: "main".to_owned(),
+            episode: EP,
+            server: ServerId::Ambient,
+            pane: "%0".to_owned(),
+            identity: crate::meta::effort_identity(&seat.bytes, "main"),
+        };
+        ctx.close(&seat, t, Outcome::Failed("fixture"), &mut Vec::new())
+            .expect("close writes no error stream");
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        let _ = std::fs::remove_dir_all(&dir);
+        let last = events
+            .lines()
+            .rfind(|line| line.contains("\"action\":\"effort-"))
+            .unwrap_or_default()
+            .to_owned();
+        let row = meta
+            .lines()
+            .find_map(|line| line.strip_prefix("effort.main="))
+            .map(|value| crate::effort::Record::parse(value).expect("a written row parses"));
+        (last, row)
+    }
+
+    fn down(from: Level, to: Level) -> Transition {
+        Transition {
+            direction: Direction::Down,
+            from,
+            to,
+        }
+    }
+
+    #[test]
+    fn a_failed_second_step_returns_to_the_first_steps_tier_and_a_failed_first_drops_the_record() {
+        let tail = format!(
+            "at:80 ep:{EP} sid:{SID} agent:lead tool:claude launch:tok-1 pid:4242 conv:{CONV} \
+             profile:opus55x client:- model:opus win:weekly/~/10080/{EP}/1700000100"
+        );
+        let episode = ("effort-episode", EP.to_string(), "threshold 80");
+        let first = |action| (action, format!("{EP}-down"), "xhigh->high");
+        let (last, row) = close_failed(
+            "second",
+            &format!("v2 restart-down slot:main base:xhigh low:medium step:2 {tail}"),
+            &[
+                episode.clone(),
+                first("effort-reserved"),
+                first("effort-applied"),
+                ("effort-reserved", format!("{EP}-down2"), "high->medium"),
+            ],
+            down(Level::High, Level::Medium),
+        );
+        assert!(
+            last.contains("\"action\":\"effort-failed\"")
+                && last.contains(&format!("\"ref\":\"{EP}-down2\"")),
+            "{last}"
+        );
+        let row = row.expect("the first step's record stays");
+        assert_eq!(
+            (row.state, row.base, row.low),
+            (crate::effort::State::Applied, Level::Xhigh, Level::High)
+        );
+        let (last, row) = close_failed(
+            "first",
+            &format!("v1 restart-down slot:main base:xhigh low:high {tail}"),
+            &[episode, first("effort-reserved")],
+            down(Level::Xhigh, Level::High),
+        );
+        assert!(
+            last.contains("\"action\":\"effort-failed\"")
+                && last.contains(&format!("\"ref\":\"{EP}-down\"")),
+            "{last}"
+        );
+        assert_eq!(row, None, "a failed first step leaves no record");
+    }
 }
