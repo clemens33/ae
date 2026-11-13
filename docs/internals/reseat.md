@@ -342,7 +342,7 @@ ONE journaled ending, whichever path wrote it: when the journal already holds
 a well-formed watchdog discard for the seat with the record's ref after its
 last `effort-episode` (a retried reseat, or a resume's `off` or `fresh`
 discard whose meta publish failed), the reseat reuses it and writes none
-(`effort::ended`). A discard for another episode or with an unknown reason
+(`effort_journal::ended`). A discard for another episode or with an unknown reason
 does not count. An unterminated journal tail is terminated first, so the
 watchdog reads exactly that one ending. The retire path
 does not journal one: `identity::removable_slot` refuses `main` and every

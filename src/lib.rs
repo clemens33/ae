@@ -31,6 +31,7 @@ pub mod digest;
 pub mod doctor;
 pub mod doors;
 pub mod effort;
+pub mod effort_journal;
 pub mod entry;
 pub mod error;
 pub mod event_text;

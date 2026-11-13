@@ -67,7 +67,9 @@ const TOP: usize = 6;
 
 /// The reviewed layer of each top-level module, from the architecture review
 /// (`.local/archrev/report.html` section 5). `worktrees` (layer 4) was added after it:
-/// it names `teardown`. The `#[cfg(test)]` fixture modules have no entry: no production
+/// it names `teardown`. `effort_journal` (layer 2) was added after it too: the effort
+/// journal vocabulary the meta writer journals a reseat discard with, moved out of
+/// `effort` (layer 4). The `#[cfg(test)]` fixture modules have no entry: no production
 /// file names them.
 const MODULE_LAYERS: [(usize, &[&str]); 7] = [
     (
@@ -108,6 +110,7 @@ const MODULE_LAYERS: [(usize, &[&str]); 7] = [
             "theme",
             "store",
             "events",
+            "effort_journal",
             "state",
             "requests",
             "inventory",

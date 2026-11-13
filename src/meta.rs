@@ -2441,21 +2441,19 @@ fn reseat_discard(dir: &Path, current: &str, slot: &str, agent: &str) -> io::Res
     if effort_claims(bytes, slot).is_empty() {
         return Ok(());
     }
-    let episode = match crate::effort::stored(bytes, slot) {
-        crate::effort::Stored::Present(record) => Some(record.episode),
-        crate::effort::Stored::Absent | crate::effort::Stored::Damaged(_) => None,
-    };
-    let session = crate::lifecycle::meta_value(bytes, "session");
     let parsed = Meta::parse(current);
+    let episode = parsed.effort(slot).episode();
+    let session = crate::lifecycle::meta_value(bytes, "session");
     let session_id = parsed.session_id().unwrap_or_default();
-    let seat = crate::effort::DiscardSeat {
+    let seat = crate::effort_journal::DiscardSeat {
         session: &session,
         session_id,
         slot,
         agent,
     };
-    let why = crate::effort::Discarded::Reseat;
-    let line = crate::effort::discard_line(crate::time::Timestamp::now(), &seat, episode, why);
+    let why = crate::effort_journal::Discarded::Reseat;
+    let line =
+        crate::effort_journal::discard_line(crate::time::Timestamp::now(), &seat, episode, why);
     let key = crate::events::SessionKey::new(&session, session_id);
     let appended = crate::store::open(dir).append_event_decided(|journal| {
         let bytes = match journal {
@@ -2466,7 +2464,7 @@ fn reseat_discard(dir: &Path, current: &str, slot: &str, agent: &str) -> io::Res
             }
         };
         let (events, settle) = journal_records(&bytes);
-        if crate::effort::ended(&events, key, slot, agent, episode) {
+        if crate::effort_journal::ended(&events, key, slot, agent, episode) {
             // An ending in the unterminated tail becomes a complete record.
             return if settle {
                 Ok("\n".to_owned())
