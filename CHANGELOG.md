@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.46] - 2026-11-13
+- Resolve pane owners through native views
+- Use explicit failures in native view test helpers
+
 ## [v2026.11.45] - 2026-11-12
 - Keep helper paths valid across live session renames
 - Cover alias retarget replacement races
