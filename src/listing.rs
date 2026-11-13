@@ -1018,7 +1018,7 @@ mod tests {
             &format!(
                 "meta_version={}\nae_core_version={}\nae_core=/private/tmp/x/ae-core\n",
                 crate::migrate::CURRENT,
-                crate::VERSION
+                crate::shape::VERSION
             )
         )));
         assert!(!crate::session::is_behind(&crate::meta::Meta::parse(

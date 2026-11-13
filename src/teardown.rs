@@ -234,8 +234,8 @@ struct ConfiguredRoots {
 /// Resolve the configured roots from `state_root()` (`AE_HOME` nonempty else
 /// `HOME/.ae`).
 fn configured_roots(err: &mut impl Write) -> io::Result<Result<ConfiguredRoots, u8>> {
-    let Some(state_root) = crate::state_root() else {
-        writeln!(err, "teardown: {} — refusing.", crate::NO_STATE_ROOT)?;
+    let Some(state_root) = crate::doors::state_root(crate::shape::current()) else {
+        writeln!(err, "teardown: {} — refusing.", crate::shape::NO_STATE_ROOT)?;
         return Ok(Err(EXIT_FAILED));
     };
     let roots = crate::inventory::Roots::under(state_root);

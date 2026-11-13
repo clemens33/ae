@@ -162,7 +162,7 @@ pub(crate) fn freeze(
     };
     let roster = roster_string(roster_main, workspace.workers.as_deref());
 
-    let Some(root) = crate::state_root() else {
+    let Some(root) = crate::doors::state_root(crate::shape::current()) else {
         writeln!(err, "reboot: cannot resolve the ae state root.")?;
         return Ok(EXIT_FAILED);
     };
@@ -530,7 +530,7 @@ pub(crate) fn archive_step(
     {
         return Ok(code);
     }
-    let Some(root) = crate::state_root() else {
+    let Some(root) = crate::doors::state_root(crate::shape::current()) else {
         writeln!(err, "reboot: cannot resolve the ae state root.")?;
         return Ok(EXIT_FAILED);
     };
@@ -624,7 +624,7 @@ pub(crate) fn teardown_step(
     {
         return Ok(code);
     }
-    let Some(root) = crate::state_root() else {
+    let Some(root) = crate::doors::state_root(crate::shape::current()) else {
         writeln!(err, "reboot: cannot resolve the ae state root.")?;
         return Ok(EXIT_FAILED);
     };

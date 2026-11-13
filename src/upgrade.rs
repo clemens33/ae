@@ -707,7 +707,7 @@ mod tests {
     fn the_instance_floor_never_claims_a_release_this_build_has_not_reached() {
         assert!(crate::install::is_version(INSTANCE_UNAWARE_LAST));
         assert_ne!(
-            crate::install::compare_versions(INSTANCE_UNAWARE_LAST, crate::VERSION),
+            crate::install::compare_versions(INSTANCE_UNAWARE_LAST, crate::shape::VERSION),
             Some(std::cmp::Ordering::Greater)
         );
     }

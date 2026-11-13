@@ -1615,7 +1615,7 @@ mod tests {
     #[test]
     fn settings_title_uses_only_the_exact_session_version_fact() {
         let other_core = "ae 2099.1.2";
-        assert_ne!(other_core, crate::version_line());
+        assert_ne!(other_core, crate::shape::version_line());
         let long_calver = format!("ae {}.1.1", "9".repeat(500));
         let cases = [
             (Some(other_core), "ae 2099.1.2 settings"),

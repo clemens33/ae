@@ -248,7 +248,7 @@ fn test_viewing_keys_escape_close_and_column_wheel() {
         "peek keys: {bottom}"
     );
     assert!(
-        bottom.contains(&crate::version_line()),
+        bottom.contains(&crate::shape::version_line()),
         "version kept: {bottom}"
     );
     assert!(

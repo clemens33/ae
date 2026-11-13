@@ -1113,7 +1113,7 @@ pub fn gather(root: &Path, global: Option<&Path>, local: Option<&Path>) -> Facts
         now,
     });
     Facts {
-        version: crate::VERSION.to_owned(),
+        version: crate::shape::VERSION.to_owned(),
         core_writable: core.as_deref().and_then(is_writable),
         core_published: matches!(
             crate::shape::current(),
@@ -1687,8 +1687,8 @@ fn refresh_one(name: &str, dir: &Path, core: &Path, global: Option<&Path>, docum
     // The pin is rebound to the binary DOING the refresh.
     for (key, new) in [
         ("ae_core", core.display().to_string()),
-        ("ae_core_version", crate::VERSION.to_owned()),
-        ("ae_version", crate::VERSION.to_owned()),
+        ("ae_core_version", crate::shape::VERSION.to_owned()),
+        ("ae_version", crate::shape::VERSION.to_owned()),
     ] {
         if let Err(why) = crate::meta::rewrite(dir, key, Some(&new)) {
             document.push(

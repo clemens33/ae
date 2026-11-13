@@ -1074,8 +1074,8 @@ pub fn run(
             return Ok(crate::entry::EXIT_USAGE);
         }
     };
-    let Some(root) = crate::state_root() else {
-        writeln!(err, "ae: {}", crate::NO_STATE_ROOT)?;
+    let Some(root) = crate::doors::state_root(crate::shape::current()) else {
+        writeln!(err, "ae: {}", crate::shape::NO_STATE_ROOT)?;
         return Ok(crate::EXIT_UNAVAILABLE);
     };
     let Some(name) = args.session.clone().or_else(crate::calling_session_name) else {

@@ -135,19 +135,7 @@ pub use error::{Error, Result};
 pub use fleet_read::current_world;
 #[cfg(debug_assertions)]
 pub use fleet_read::set_after_classify_hook;
-
-/// The crate version, as recorded in `Cargo.toml`.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// The line `ae --version` prints.
-///
-/// ```
-/// assert!(ae::version_line().starts_with("ae "));
-/// ```
-#[must_use]
-pub fn version_line() -> String {
-    format!("ae {VERSION}")
-}
+pub use shape::{NO_STATE_ROOT, VERSION, version_line};
 
 /// The read-only automatic-upgrade rows shared by every version entry.
 fn write_autoupgrade_status(out: &mut impl Write) -> Result<()> {
@@ -181,9 +169,6 @@ pub fn help_text() -> String {
         cli::EVENTS_TAIL
     )
 }
-
-/// What the binary says when it cannot derive its own state root.
-pub const NO_STATE_ROOT: &str = "cannot derive the state root: neither AE_HOME nor HOME is set";
 
 /// What the binary says for a top-level session name.
 pub const NO_LAUNCHER: &str = "start is not implemented in this build";
@@ -3450,7 +3435,7 @@ fn run_usage_helper(
 
 /// Where this invocation's state lives — [`doors::state_root`] for this
 /// process's [`shape`], which is the one derivation.
-pub(crate) fn state_root() -> Option<std::path::PathBuf> {
+fn state_root() -> Option<std::path::PathBuf> {
     doors::state_root(shape::current())
 }
 

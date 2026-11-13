@@ -381,8 +381,12 @@ fn schedule_with(
     };
     if !automatic(shape, no_autostart)
         || !due(&check_state(home), now)
-        || crate::shape::validate(&crate::shape::OnDisk(version_dir), version, crate::VERSION)
-            .is_err()
+        || crate::shape::validate(
+            &crate::shape::OnDisk(version_dir),
+            version,
+            crate::shape::VERSION,
+        )
+        .is_err()
     {
         return false;
     }
@@ -667,8 +671,8 @@ mod tests {
     fn installed(home: &Path) -> crate::shape::Shape {
         crate::shape::Shape::Installed {
             home: home.to_owned(),
-            version_dir: home.join("versions").join(crate::VERSION),
-            version: crate::VERSION.to_owned(),
+            version_dir: home.join("versions").join(crate::shape::VERSION),
+            version: crate::shape::VERSION.to_owned(),
         }
     }
 
@@ -884,7 +888,7 @@ mod tests {
     fn only_a_structurally_valid_install_reaches_the_detached_spawn() {
         let root = root("validated");
         let _ = std::fs::remove_dir_all(&root);
-        let version = root.join("versions").join(crate::VERSION);
+        let version = root.join("versions").join(crate::shape::VERSION);
         std::fs::create_dir_all(&version).expect("version dir");
         std::fs::write(root.join("config"), "[workspace]\nauto_upgrade = on\n").expect("config");
         let mut spawned = 0;

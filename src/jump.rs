@@ -464,7 +464,7 @@ impl Jump {
         let session_id = transport::observe_session_id(&self.server, name)?;
         let stamp =
             transport::observe_session_option(&self.server, name, crate::theme::SESSION_ID_OPTION)?;
-        let recorded = crate::state_root()
+        let recorded = crate::doors::state_root(crate::shape::current())
             .and_then(|root| crate::console::locate(&root, name))
             .map(|dir| crate::console::recorded_uuid(&dir))?;
         if recorded.is_empty() || recorded != stamp {

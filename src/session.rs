@@ -860,7 +860,7 @@ pub(crate) fn is_behind(meta: &crate::meta::Meta) -> bool {
         return true;
     }
     meta.ae_core_version()
-        .is_some_and(|recorded| recorded != crate::VERSION)
+        .is_some_and(|recorded| recorded != crate::shape::VERSION)
 }
 
 /// The digest entry for a record already read.
@@ -1175,10 +1175,11 @@ fn agent_entries(
                             || pair.model.clone(),
                             |(drawn, _)| format!("{} ({})", pair.model, drawn.word()),
                         );
-                        let refused = crate::state_root().and_then(|root| {
-                            let dir = root.join("sessions").join(session);
-                            crate::run::observed_not_applied(&dir, &slot.slot)
-                        });
+                        let refused =
+                            crate::doors::state_root(crate::shape::current()).and_then(|root| {
+                                let dir = root.join("sessions").join(session);
+                                crate::run::observed_not_applied(&dir, &slot.slot)
+                            });
                         refused.map_or(shown.clone(), |why| format!("{shown} (not applied: {why})"))
                     }
                     Rows::Damaged(why) => format!("observed record damaged ({why})"),

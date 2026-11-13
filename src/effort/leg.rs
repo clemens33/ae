@@ -215,7 +215,8 @@ fn read_with(dir: &Path, session: &str, slot: &str, events: &[Event]) -> Option<
 
 /// The global config file.
 fn global() -> Option<PathBuf> {
-    crate::state_root().map(|root| crate::doors::config_file(crate::shape::current(), &root))
+    crate::doors::state_root(crate::shape::current())
+        .map(|root| crate::doors::config_file(crate::shape::current(), &root))
 }
 
 /// Whether `auto_effort` is on.

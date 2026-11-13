@@ -4562,8 +4562,8 @@ pub fn run(
         write!(err, "{NO_TERMINAL}")?;
         return Ok(crate::EXIT_UNAVAILABLE);
     }
-    let Some(root) = crate::state_root() else {
-        writeln!(err, "ae: {}", crate::NO_STATE_ROOT)?;
+    let Some(root) = crate::doors::state_root(crate::shape::current()) else {
+        writeln!(err, "ae: {}", crate::shape::NO_STATE_ROOT)?;
         return Ok(crate::EXIT_UNAVAILABLE);
     };
     // The human's operands as typed: what an exec restart hands on, unchanged.
@@ -4709,7 +4709,7 @@ fn reader_of(
 /// this process: the view it keeps, or the version it was meant to be.
 fn handed_on(text: Option<String>) -> (Option<Keep>, Option<String>) {
     let now = Timestamp::now().epoch();
-    match text.map(|text| upgrade::carried(&text, std::process::id(), crate::VERSION, now)) {
+    match text.map(|text| upgrade::carried(&text, std::process::id(), crate::shape::VERSION, now)) {
         Some(upgrade::Carried::View(view, at)) => (Some(Keep { view, at }), None),
         Some(upgrade::Carried::Landed(version)) => (None, Some(version)),
         Some(upgrade::Carried::Ignored) | None => (None, None),
@@ -4761,7 +4761,7 @@ fn step(
     let pid = format!("%{}", std::process::id());
     let view = app.handover(&pid, &version, Timestamp::now().epoch());
     let view = view.map(|handover| handover.render());
-    let argv = upgrade::exec_argv(&link, typed, view, &version, crate::VERSION);
+    let argv = upgrade::exec_argv(&link, typed, view, &version, crate::shape::VERSION);
     // The store's upkeep stops before the process is replaced: an exec never
     // returns to stop it.
     upkeep.pause(maintainer::STOP_BOUND);
@@ -9209,7 +9209,7 @@ mod tests {
         let shown = text(&buf);
         let keys = shown.lines().last().expect("keys row");
         let tail = keys.trim_end();
-        let version = crate::version_line();
+        let version = crate::shape::version_line();
         assert!(
             tail.ends_with(&format!("{version} \u{2699}"))
                 || tail.ends_with(&format!("{version} *")),

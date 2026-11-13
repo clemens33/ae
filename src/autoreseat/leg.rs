@@ -2242,8 +2242,8 @@ pub(crate) fn trigger(
     let text = capture.as_deref().unwrap_or_default();
     let clients = crate::transport::observe_clients(&server);
     let input = crate::watchdog_daemon::viewing_input(clients.as_deref(), &resolved.pane);
-    let config =
-        crate::state_root().map(|root| crate::doors::config_file(crate::shape::current(), &root));
+    let config = crate::doors::state_root(crate::shape::current())
+        .map(|root| crate::doors::config_file(crate::shape::current(), &root));
     let global = super::settings(config.as_deref());
     let lead_pair = crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair";
     // The seat's own threshold: the lead pair reads its own row when it is set.
@@ -2254,7 +2254,8 @@ pub(crate) fn trigger(
     let observed = || {
         quota
             .get_or_init(|| {
-                crate::state_root().and_then(|root| read_quota_at(&root, dir, &meta, now))
+                crate::doors::state_root(crate::shape::current())
+                    .and_then(|root| read_quota_at(&root, dir, &meta, now))
             })
             .as_ref()
     };

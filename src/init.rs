@@ -374,7 +374,7 @@ fn render_header(now: crate::time::Timestamp) -> String {
     let date = timestamp.get(..10).unwrap_or(timestamp.as_str());
     format!(
         "# written by ae init on {date}; model pins as of ae {}\n",
-        crate::VERSION
+        crate::shape::VERSION
     )
 }
 

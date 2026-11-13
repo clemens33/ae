@@ -4009,7 +4009,7 @@ fn enumerate_adoption(
     table: Option<&[procs::Proc]>,
     prior: &Adoption,
 ) -> Option<Adoption> {
-    let root = crate::state_root()?;
+    let root = crate::doors::state_root(crate::shape::current())?;
     // META ONLY: the picker's read. Identities and the `placed` rule, never a
     // session's journal — nothing here is derived from events.
     let scan = crate::inventory::durable_meta_records(&crate::inventory::Roots::under(&root));
@@ -6494,7 +6494,7 @@ impl Cycle<'_> {
     /// The state root, the global config and the home the session-relative
     /// quota inputs are read from.
     fn quota_paths(&self) -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
-        let root = crate::state_root().or_else(|| {
+        let root = crate::doors::state_root(crate::shape::current()).or_else(|| {
             self.meta_dir
                 .parent()
                 .and_then(Path::parent)
@@ -6791,7 +6791,7 @@ impl Cycle<'_> {
     /// same card collector as `ae brief --all`, then touch the watchdog-owned
     /// checkpoint without advancing the last-delivered hash.
     fn overview(&self, now: i64, err: &mut impl Write) -> Option<OverviewReading> {
-        let Some(root) = crate::state_root() else {
+        let Some(root) = crate::doors::state_root(crate::shape::current()) else {
             let _ = writeln!(
                 err,
                 "ae: watchdog: no state root for fleet overview — skipped"
@@ -7021,7 +7021,7 @@ impl Cycle<'_> {
     /// The profile's model flag value, from the same config files `_run`
     /// reads. An unreadable config is `None`, never a guess.
     fn profile_pins(&self, profile: &str, tool: crate::tool::ToolKind) -> crate::model_drift::Pins {
-        let root = crate::state_root();
+        let root = crate::doors::state_root(crate::shape::current());
         let global = root
             .as_deref()
             .map(|root| crate::doors::config_file(crate::shape::current(), root));
@@ -7893,7 +7893,7 @@ impl Cycle<'_> {
         // The client is RECORDED, so every seat has it — including one whose
         // pane is gone. One config read per cycle serves all seats; `None`
         // falls every seat back to its binary name, never a guess.
-        let root = crate::state_root();
+        let root = crate::doors::state_root(crate::shape::current());
         let global = root
             .as_deref()
             .map(|root| crate::doors::config_file(crate::shape::current(), root));
@@ -8116,7 +8116,7 @@ impl Cycle<'_> {
         );
         // The core THIS daemon runs on. An upgrade restarts the daemon on the
         // new core, so the value moves with the install and never with a launch.
-        ops.push(set(theme::VERSION_OPTION, &crate::version_line()));
+        ops.push(set(theme::VERSION_OPTION, &crate::shape::version_line()));
         carry.pending.ops.extend(ops);
         // The windows first: they decide this cycle's verdicts, and the fleet
         // stages a copy of the motion state that must already hold them.

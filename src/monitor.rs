@@ -823,7 +823,9 @@ pub fn run(
 ) -> std::io::Result<u8> {
     // AHEAD OF EVERY EFFECT — the lock, the write and the `say` all live inside
     // `dir`, so the target is proven before the first one of them.
-    if !crate::state_root().is_some_and(|root| is_session_dir(&root, dir)) {
+    if !crate::doors::state_root(crate::shape::current())
+        .is_some_and(|root| is_session_dir(&root, dir))
+    {
         writeln!(err, "ae: monitor: {TARGET_RULE}: {}", dir.display())?;
         return Ok(crate::state::EXIT_USAGE);
     }

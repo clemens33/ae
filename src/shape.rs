@@ -27,6 +27,22 @@ pub const INSTALLER: &str = "install";
 /// The directory a version directory sits in, under ae's home.
 pub const VERSIONS: &str = "versions";
 
+/// The crate version, as recorded in `Cargo.toml`.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The line `ae --version` prints.
+///
+/// ```
+/// assert!(ae::version_line().starts_with("ae "));
+/// ```
+#[must_use]
+pub fn version_line() -> String {
+    format!("ae {VERSION}")
+}
+
+/// What the binary says when it cannot derive its own state root.
+pub const NO_STATE_ROOT: &str = "cannot derive the state root: neither AE_HOME nor HOME is set";
+
 /// What this binary is, and whose environment it therefore trusts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Shape {

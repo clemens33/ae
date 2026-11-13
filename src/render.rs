@@ -457,7 +457,7 @@ fn peer_without_quota() -> String {
 fn archive_root() -> PathBuf {
     // Both variables unset is the degenerate case — an empty `${HOME}` leaves
     // `/.ae`.
-    crate::state_root()
+    crate::doors::state_root(crate::shape::current())
         .unwrap_or_else(|| PathBuf::from("/.ae"))
         .join("archive")
 }

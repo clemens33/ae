@@ -5538,7 +5538,7 @@ fn meta_document(
         );
     }
     row("main_pane", &main_pane);
-    row("ae_version", crate::VERSION);
+    row("ae_version", crate::shape::VERSION);
     if let Some(core) = crate::shape::resolved_exe() {
         // The core binding, pinned per session as a PAIR: a helper that found a
         // binary whose version disagreed with the session's would be running a
@@ -5547,7 +5547,7 @@ fn meta_document(
         row("ae_core", &ae_core.display().to_string());
         row(
             "ae_core_version",
-            env.core_version.as_deref().unwrap_or(crate::VERSION),
+            env.core_version.as_deref().unwrap_or(crate::shape::VERSION),
         );
     }
     row("tmux_server", &env.server_value);

@@ -2266,9 +2266,9 @@ fn tail(
     let width = buf.area.width;
     let gear = if ctx.icons { "\u{2699}" } else { "*" };
     let tail = if peeking {
-        crate::version_line()
+        crate::shape::version_line()
     } else {
-        format!("{} {gear}", crate::version_line())
+        format!("{} {gear}", crate::shape::version_line())
     };
     let tail_cells = cells(Span::raw(tail.as_str()).width());
     let gear_cells = cells(Span::raw(gear).width());
@@ -3391,7 +3391,7 @@ fn keys_body(paint: Paint) -> Vec<(String, Style)> {
 fn about_body(about: &AboutFacts, text: Style) -> Vec<(String, Style)> {
     let clean = crate::board::terminal_text;
     let mut rows = vec![
-        (format!("ae   {}", crate::version_line()), text),
+        (format!("ae   {}", crate::shape::version_line()), text),
         (
             format!(
                 "tmux {} ({})",
@@ -3438,7 +3438,7 @@ fn instructions_body(view: &InstructionsView, width: u16, paint: Paint) -> Vec<(
     out.extend(rows(
         &format!(
             "<session>, <helpers> and <owner line> stand for what a launch fills in per seat. Rendered now by {}: the text a launch injects today. A running seat holds the text of its own launch time.",
-            crate::version_line()
+            crate::shape::version_line()
         ),
         dim,
     ));
@@ -4920,7 +4920,7 @@ mod tests {
     fn the_hint_row_and_the_panel_footer_carry_at_most_one_hint() {
         let mut shot = Shot::new();
         let draft = drafted(&["a draft"]);
-        let tail = format!("{} \u{2699}", crate::version_line());
+        let tail = format!("{} \u{2699}", crate::shape::version_line());
         let named = [
             "Enter",
             "Esc browse",
@@ -4974,7 +4974,7 @@ mod tests {
     fn narrowing_the_hint_row_drops_the_version_then_the_gear() {
         let shot = Shot::new();
         let gear = "\u{2699}";
-        let tail = format!("{} {gear}", crate::version_line());
+        let tail = format!("{} {gear}", crate::shape::version_line());
         let head = "  Enter writes · ? keys";
         let full = head.chars().count() + 2 + tail.chars().count();
         let drop = |width: usize, drawn: &str| {
@@ -5091,7 +5091,7 @@ mod tests {
                 "{draft:?}: the hint row: {shown:?}"
             );
             assert!(
-                shown.ends_with(&format!("{} \u{2699}", crate::version_line())),
+                shown.ends_with(&format!("{} \u{2699}", crate::shape::version_line())),
                 "{draft:?}: version and gear end it: {shown:?}"
             );
             assert_eq!(layout.cursor, None, "{draft:?}");
@@ -5128,7 +5128,7 @@ mod tests {
                 "{words}: the hint row: {shown:?}"
             );
             assert!(
-                shown.ends_with(&format!("{} \u{2699}", crate::version_line())),
+                shown.ends_with(&format!("{} \u{2699}", crate::shape::version_line())),
                 "{words}: the tail stands: {shown:?}"
             );
         }
@@ -5168,7 +5168,7 @@ mod tests {
         );
         assert_eq!(spot(&buf, "? keys"), None, "no room for the keys");
         assert_eq!(
-            spot(&buf, &crate::version_line()),
+            spot(&buf, &crate::shape::version_line()),
             None,
             "no room for the version either"
         );
@@ -6948,7 +6948,7 @@ mod tests {
         let mut shot = Shot::new();
         shot.model.open_peek(1);
         let (row, layout) = shot.footer_at(100, browsing(""), false);
-        let tail = crate::version_line();
+        let tail = crate::shape::version_line();
         assert_eq!(
             row.strip_suffix(tail.as_str())
                 .map(|head| head.trim_end().to_owned()),
@@ -7283,7 +7283,7 @@ mod tests {
             matches!(layout.hit(at_mouse(col)), Some(super::Hit::Settings))
         };
         let gear = "\u{2699}";
-        let tail = format!("{} {gear}", crate::version_line());
+        let tail = format!("{} {gear}", crate::shape::version_line());
         let head = "  Enter writes · ? keys";
         let full = head.chars().count() + 2 + tail.chars().count();
         for (width, drawn) in [(full, tail.as_str()), (full - 1, gear)] {

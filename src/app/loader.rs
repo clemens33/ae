@@ -623,7 +623,7 @@ impl Reader {
         let _ = transport::clear_option(server, tmux::OptionScope::Session, &id, handover::OPTION);
         let held = handover::parse(&text)?;
         let now = Timestamp::now().epoch();
-        held.admits(pane, crate::VERSION, now)
+        held.admits(pane, crate::shape::VERSION, now)
             .then_some((held.view, held.at))
     }
 
@@ -1059,7 +1059,7 @@ impl Reader {
         if let Some(version) = &self.landed {
             return Err(format!(
                 "restarted for ae {version} but running ae {}",
-                crate::VERSION
+                crate::shape::VERSION
             ));
         }
         let stamp =

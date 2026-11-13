@@ -100,7 +100,7 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
         return tmux(&Op::SelectPane { pane: &main }).map(drop);
     }
     let uuid = option(theme::SESSION_ID_OPTION).ok_or("this session has no @ae_session_uuid")?;
-    let bound = crate::state_root()
+    let bound = crate::doors::state_root(crate::shape::current())
         .and_then(|root| super::locate(&root, &session))
         .map(|dir| super::recorded_uuid(&dir))
         .unwrap_or_default();
@@ -119,7 +119,8 @@ fn act(jump: bool, client: Option<&str>) -> Result<(), String> {
             pane.clone()
         }
         Plan::Open | Plan::Respawn(_) => {
-            let root = crate::state_root().ok_or("ae cannot name its own state")?;
+            let root = crate::doors::state_root(crate::shape::current())
+                .ok_or("ae cannot name its own state")?;
             let config = crate::doors::config_file(crate::shape::current(), &root);
             let dir = super::locate(&root, &session);
             let home = Home::of(&root, &config, dir.as_deref());
