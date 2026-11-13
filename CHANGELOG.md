@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.53] - 2026-11-13
+- Freeze spawned effort eligibility and the retire ending (#318 S1)
+- Call the retire helper through its session (#318 S1)
+- Journal one effort ending when a retire drops a seat (#318 S1)
+- Let auto effort move spawned seats (#318 S1)
+- Effort tests: only the lead pair and well-formed spawned seats are eligible (#318 S1)
+- Tell a move to the other lead-pair seats through one predicate, pinned by a unit test (#318 S1)
+
 ## [v2026.11.52] - 2026-11-13
 - Waits accept only the full screen, so a torn capture cannot fail the second assertion
 - The keys-row wait names the whole footer string the assertion reads
