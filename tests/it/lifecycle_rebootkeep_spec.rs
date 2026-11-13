@@ -16,7 +16,7 @@
 //! says `outside` and `fresh name` (case-insensitive); every refusal says what
 //! the human runs next.
 
-use super::guard_spec::{keepalive, obstruct_teardown, put, tree, Tree, CURSOR_LOCK, MUTATION};
+use super::guard_spec::{CURSOR_LOCK, MUTATION, Tree, keepalive, obstruct_teardown, put, tree};
 use super::*;
 
 fn names(dir: &Path) -> Vec<String> {
