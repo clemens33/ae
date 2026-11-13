@@ -990,8 +990,9 @@ pub const HELD: &str = "effort-held";
 pub const YIELDED: &str = "effort-yielded";
 /// The episode ends unmoved or yielded: ref `<ep>`.
 pub const REARMED: &str = "effort-rearmed";
-/// A resume dropped the seat's record and everything the journal remembers of
-/// its episodes: ref `<ep>` or empty, summary `off` or `fresh`.
+/// A resume or a reseat dropped the seat's record and everything the journal
+/// remembers of its episodes: ref `<ep>` or empty, summary `off`, `fresh` or
+/// `reseat`.
 pub const DISCARDED: &str = "effort-discarded";
 
 /// Where one direction of an episode stands.
