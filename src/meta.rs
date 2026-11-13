@@ -30,6 +30,10 @@ use std::path::{Path, PathBuf};
 #[path = "meta/presetreseat_spec.rs"]
 mod presetreseat_spec;
 
+#[cfg(test)]
+#[path = "meta/effort_reseat_spec.rs"]
+mod effort_reseat_spec;
+
 /// The file this module reads. The NAME is [`crate::store::META`] — one
 /// spelling for the data file and the lock beside it, so neither can move
 /// without the other.

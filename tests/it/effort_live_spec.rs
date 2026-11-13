@@ -695,6 +695,50 @@ fn watchdog_down_and_recovery_keep_pane_profile_account_model_and_conversation()
     }
 }
 
+/// #308 Gap 2: the real actuator must close an actually applied episode.
+/// The watchdog creates the claim through its normal quota-driven restart.
+/// A peer then reseats that seat through the public command.
+#[test]
+fn effort_reseat_real_command_closes_an_actually_applied_episode_once() {
+    let seat = setup("effreseatclose", "claude", "xhigh", "auto_effort = on");
+    quota(&seat, 85.0, 0.0);
+    let rig = &seat.rig;
+    let daemon = watch(&seat);
+    until(rig, || records(rig, "effort-applied").len() == 1);
+    drop(daemon);
+    let Stored::Present(applied) = ae::effort::stored(rig.meta().as_bytes(), "main") else {
+        panic!("the real step must publish an applied effort claim");
+    };
+    assert_eq!(applied.state, ae::effort::State::Applied);
+    rig.seat_rows("spawned.0", "peer", "claude", "claude");
+    let caller = rig.new_pane("spawned.0", "peer");
+    let (code, out, err) = rig.run_top(
+        &caller,
+        &["reseat", &rig.session, "lead", "--using", "fake-effort-low"],
+    );
+    assert_eq!(code, Some(0), "out={out} err={err}");
+    assert_eq!(rig.meta_row("profile.main"), "fake-effort-low");
+    assert!(matches!(
+        ae::effort::stored(rig.meta().as_bytes(), "main"),
+        Stored::Absent
+    ));
+    let discarded = records(rig, "effort-discarded");
+    assert_eq!(discarded.len(), 1, "journal={}", rig.events());
+    assert_eq!(discarded[0].actor, "watchdog");
+    assert_eq!(discarded[0].target.as_deref(), Some("lead"));
+    assert_eq!(
+        discarded[0].reference.as_deref(),
+        Some(applied.episode.to_string().as_str())
+    );
+    assert_eq!(discarded[0].summary.as_deref(), Some("reseat"));
+    assert!(records(rig, "effort-restored").is_empty());
+    assert_eq!(records(rig, "effort-applied").len(), 1);
+    assert!(
+        !records(rig, "reseat").is_empty(),
+        "the public reseat completed"
+    );
+}
+
 #[test]
 fn manual_change_after_move_yields_instead_of_restoring_over_the_human() {
     let seat = setup("effmanual", "claude", "xhigh", "auto_effort = on");
