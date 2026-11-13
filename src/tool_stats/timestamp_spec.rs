@@ -45,15 +45,11 @@ fn result(id: u8, error: bool) -> Event {
 }
 
 fn stamp_count(conv: &Conv, key: &StreamKey) -> usize {
-    conv.resume
-        .streams
-        .get(key)
-        .map(|set| {
-            set.iter()
-                .filter(|event| matches!(event, Event::Stamp(_)))
-                .count()
-        })
-        .unwrap_or(0)
+    conv.resume.streams.get(key).map_or(0, |set| {
+        set.iter()
+            .filter(|event| matches!(event, Event::Stamp(_)))
+            .count()
+    })
 }
 
 fn stamp_values(conv: &Conv, key: &StreamKey) -> Vec<i64> {
