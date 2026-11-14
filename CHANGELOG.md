@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.58] - 2026-11-14
+- A registered scratch owner is its pid with its start identity, so a reused pid no longer fails a green run
+- The text readers select the module's family view
+- The fact helpers move to facts.rs
+- The automatic reseat decisions move to acts.rs
+- The fleet strip adoption moves to adoption.rs
+- The motion ticker moves to ticker.rs
+- The quota carry moves to quota_carry.rs
+- The pure accounting moves to accounting.rs
+- The cycle's observation and quota steps move to cycle_observe.rs
+- The cycle's publication steps move to cycle_publish.rs
+- The cycle's applying steps move to cycle_apply.rs
+- The moved doc links resolve in their new modules
+- Expose effort leg starter and pin cycle budget
+- Use an infallible cycle counter
+- Identify fixture slots without path suffix heuristics
+- Retain the explicit effort process start call
+
 ## [v2026.11.57] - 2026-11-14
 - Move the inline test modules to files
 - Seat start and readiness move to ready.rs
