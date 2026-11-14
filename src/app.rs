@@ -317,6 +317,8 @@ struct Panel {
     pin: Option<String>,
     /// What an inert opening says.
     opened: String,
+    /// When it opened: a press made on a panel drawn before is not this one's.
+    since: Instant,
     column: Column,
 }
 
@@ -730,6 +732,9 @@ struct App {
     last_input: Option<Instant>,
     /// The drag in progress, or the highlight it left.
     select: Option<Held>,
+    /// The open panel's column, not the main column, drew the text `select`
+    /// holds: its frames are checked against that column's map.
+    select_on_panel: bool,
     /// A link press bound to its pointer and panel epoch until release.
     read_press: Option<(Press, Position, u64)>,
     /// The cells of the frame on screen, before any highlight.
@@ -864,6 +869,7 @@ impl App {
             failed: None,
             last_input: None,
             select: None,
+            select_on_panel: false,
             read_press: None,
             shot: Buffer::default(),
             again: false,
@@ -2746,20 +2752,23 @@ impl App {
     /// other: the panel frame on screen when it was made stands in for the
     /// panel's current one, from the panel column's own history, while the
     /// main column's frames resolve the rest as for any press; one made on a
-    /// panel frame the bound dropped is not taken.
+    /// panel frame the bound dropped is not taken. The panel's cells are the
+    /// ones the press's own frame drew, whatever mode the panel took since; a
+    /// press on a panel that closed or opened again since is not taken.
     fn panel_made(&mut self, mouse: Mouse, origin: Instant) -> Option<bool> {
         if mouse.kind != MouseKind::Click || self.orch.active {
             return None;
         }
-        let area = self.layout_at(origin).area();
-        let split = self.model.split();
-        let panel = self.orch.panel.as_mut()?;
-        let columns = model::Columns {
-            panel: Some((panel.full, panel.focused)),
-            ..model::Columns::default()
-        };
         let at = Position::new(mouse.column, mouse.row);
-        draw::panel_area(area, split, columns).filter(|cells| cells.contains(at))?;
+        (self.layout_at(origin).panel).filter(|cells| cells.contains(at))?;
+        let Some(panel) = self
+            .orch
+            .panel
+            .as_mut()
+            .filter(|panel| panel.since <= origin)
+        else {
+            return Some(self.frame_gone());
+        };
         if panel.column.lost.is_some_and(|lost| origin <= lost) {
             return Some(self.frame_gone());
         }
@@ -3037,6 +3046,7 @@ impl App {
             stage: Stage::None,
             touched: Instant::now(),
         });
+        self.select_on_panel = self.orch.active;
     }
 
     /// The button is down on a selection and the pointer is at `mouse`: its
@@ -3173,19 +3183,27 @@ impl App {
     /// fingerprint is compared with these NEW cells, before they replace
     /// `shot` or wear the highlight: a retained shot could never differ from
     /// itself. Passing, a requested copy becomes the very text the highlight
-    /// covers; failing, the selection and its copy are gone.
+    /// covers; failing, the selection and its copy are gone. The cells are
+    /// checked against the map of the column that drew them: the panel's for
+    /// a selection made in the panel, gone with the panel.
     fn settle_selection(&mut self, buf: &mut Buffer) {
         let epoch = self.model.epoch();
-        let map = &self.layout.map;
+        let owner = if self.select_on_panel {
+            (self.orch.panel.as_ref()).map(|panel| &panel.column.layout.map)
+        } else {
+            Some(&self.layout.map)
+        };
         let proven = (self.select.as_ref()).map(|held| {
-            let region = map.region(held.sel.panel());
-            held.epoch == epoch
-                && region.is_some_and(|region| region.area == held.sel.area())
-                && select::fingerprint(buf, held.sel.area(), &map.blanks) == held.sel.fp()
+            owner.is_some_and(|map| {
+                let region = map.region(held.sel.panel());
+                held.epoch == epoch
+                    && region.is_some_and(|region| region.area == held.sel.area())
+                    && select::fingerprint(buf, held.sel.area(), &map.blanks) == held.sel.fp()
+            })
         });
         self.shot.clone_from(buf);
-        match (proven, self.select.as_mut()) {
-            (Some(true), Some(held)) => {
+        match (proven, self.select.as_mut(), owner) {
+            (Some(true), Some(held), Some(map)) => {
                 if held.stage == Stage::Requested {
                     held.stage = Stage::Ready(select::text(buf, &held.sel, &map.blanks));
                 }
@@ -3193,7 +3211,7 @@ impl App {
                     select::highlight(buf, &held.sel, &map.blanks);
                 }
             }
-            (Some(false), Some(_)) => {
+            (Some(false), Some(_), _) => {
                 let lost = self.select.take();
                 if lost
                     .is_some_and(|held| held.down && held.sel.moved() || held.stage != Stage::None)
@@ -4797,6 +4815,7 @@ impl App {
             focused: true,
             pin,
             opened: inert_line(&self.orch.proof).unwrap_or_default(),
+            since: Instant::now(),
             column: Column {
                 chat: model::Chat::of(ORCH),
                 ..Column::default()
@@ -4987,10 +5006,11 @@ impl App {
         }
     }
 
-    /// Whether a mouse event lands on the open panel.
+    /// Whether a mouse event lands on the panel in the frame it is resolved
+    /// against: the one on screen, or the one a delayed press was made on.
     fn on_panel(&self, mouse: Mouse) -> bool {
-        self.panel_area()
-            .is_some_and(|area| area.contains(Position::new(mouse.column, mouse.row)))
+        (self.layout.panel)
+            .is_some_and(|cells| cells.contains(Position::new(mouse.column, mouse.row)))
     }
 
     /// A mouse event on the open panel: its button, mode label and gear act
@@ -5027,6 +5047,7 @@ impl App {
     /// panel the main column covers draws nothing and sees no turn.
     fn frame_panel(&mut self, buf: &mut Buffer) {
         let mut columns = self.columns();
+        self.layout.panel = draw::panel_drawn(buf.area, self.model.split(), columns);
         if draw::panel_area(buf.area, self.model.split(), columns).is_none() {
             return;
         }

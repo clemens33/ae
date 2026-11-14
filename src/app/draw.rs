@@ -226,6 +226,9 @@ pub(crate) struct Layout {
     files: Vec<(Rect, FileHit)>,
     /// The cells the lane's rows drew in, for the keys that read its links.
     pub(super) lane_width: u16,
+    /// The cells the open panel drew over in this frame, `None` while none
+    /// did: a press made on this frame belongs to the panel there.
+    pub(crate) panel: Option<Rect>,
 }
 
 impl Layout {
@@ -757,6 +760,15 @@ fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
 /// panel that did not fit.
 pub(crate) fn panel_full(area: Rect, split: Split, columns: Columns) -> bool {
     matches!(stand(area, split, columns), Stand::Full { .. })
+}
+
+/// The cells the open panel draws over in a frame of `area`: none below the
+/// app's size floor, where the floor note stands alone.
+pub(crate) fn panel_drawn(area: Rect, split: Split, columns: Columns) -> Option<Rect> {
+    if area.width < MIN.0 || area.height < MIN.1 {
+        return None;
+    }
+    panel_area(area, split, columns)
 }
 
 /// The cells the open panel covers in `area`, `None` while it is closed.

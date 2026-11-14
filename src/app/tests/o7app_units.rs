@@ -949,3 +949,106 @@ fn a_late_wheel_on_the_panel_is_never_refused() {
         .is_some_and(|(line, _)| line == "click not taken: its frame is gone");
     assert!(!refused, "a wheel is never refused");
 }
+
+/// A drag in the panel keeps its selection across the frames it spans and
+/// its release copies the panel's own text, side by side and full, as a drag
+/// in the main column does.
+#[test]
+fn a_panel_drag_keeps_its_selection_across_a_redraw_and_copies() {
+    for full in [false, true] {
+        let root = Root::new("o7paneldrag");
+        let (mut app, _reader) = orchestrated(&root, full);
+        let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+        app.answer(view(orch, ID, 100, "PANELWORDS alpha beta gamma delta"));
+        app.answer(view("api", ID, 100, "MAINWORDS alpha beta gamma delta"));
+        let buf = at(160, 45, &mut app);
+        let (x, y) = (0..45)
+            .find_map(|y| cell_of(&buf, "PANELWORDS", y, 0).map(|x| (x, y)))
+            .unwrap_or_else(|| panic!("the panel's words: {}", text(&buf)));
+        let event = |app: &mut App, kind, column| {
+            let mouse = Mouse {
+                kind,
+                column,
+                row: y,
+            };
+            take_keys(app, vec![(Key::Mouse(mouse), Instant::now())])
+        };
+        assert!(event(&mut app, MouseKind::Click, x).is_some());
+        assert!(event(&mut app, MouseKind::Drag, x + 9).is_some());
+        let _ = at(160, 45, &mut app);
+        assert!(
+            app.select.as_ref().is_some_and(|held| held.sel.moved()),
+            "full {full}: the drag outlives the redraw: {:?}",
+            app.flash
+        );
+        assert!(event(&mut app, MouseKind::Release, x + 9).is_some());
+        let _ = at(160, 45, &mut app);
+        let copied = app.select.as_ref().and_then(|held| match &held.stage {
+            super::super::Stage::Ready(text) => Some(text.clone()),
+            _ => None,
+        });
+        assert_eq!(copied.as_deref(), Some("PANELWORDS"), "full {full}");
+    }
+}
+
+/// The main sidebar cell of `ops` in `app`'s closed frame at 160x45.
+fn ops_cell(app: &mut App) -> Mouse {
+    let closed = at(160, 45, app);
+    let (column, row) = (0..45)
+        .find_map(|y| cell_of(&closed, "ops", y, 0).map(|x| (x, y)))
+        .expect("the ops row");
+    Mouse {
+        kind: MouseKind::Click,
+        column,
+        row,
+    }
+}
+
+/// A press made on a full panel is pinned to the frame it was made on: after
+/// `F` turned the panel side, after the panel closed and after it opened
+/// again, it never acts on the main row that the full panel covered and
+/// never takes the keys from the panel.
+#[test]
+fn a_full_panel_press_never_acts_on_the_main_row_it_covered() {
+    let wrong: Vec<String> = ["F", "close", "reopen"]
+        .into_iter()
+        .filter_map(full_panel_press_after)
+        .collect();
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// What a press made on a full panel did wrong when it arrived after
+/// `after`, or `None`.
+fn full_panel_press_after(after: &str) -> Option<String> {
+    {
+        let mut app = app(None);
+        two(&mut app);
+        let stale = ops_cell(&mut app);
+        opened(&mut app, true);
+        let _ = at(160, 45, &mut app);
+        let origin = Instant::now();
+        match after {
+            "F" => press(&mut app, b"F"),
+            "close" => {
+                assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
+            }
+            _ => {
+                assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
+                let _ = at(160, 45, &mut app);
+                press(&mut app, b"O");
+            }
+        }
+        let _ = at(160, 45, &mut app);
+        assert!(take_keys(&mut app, vec![(Key::Mouse(stale), origin)]).is_some());
+        if app.model.selected() != Some("web") {
+            return Some(format!(
+                "after {after}: selected {:?}",
+                app.model.selected()
+            ));
+        }
+        if after != "close" && !app.panel_focused() {
+            return Some(format!("after {after}: the panel lost the keys"));
+        }
+        None
+    }
+}
