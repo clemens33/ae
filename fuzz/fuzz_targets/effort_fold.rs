@@ -1,7 +1,7 @@
 #![no_main]
 
 use ae::effort::{
-    Decision, Direction, Fold, Inputs, Leg, Level, Record, Resume, Scope, Stored, Switch,
+    Decision, Direction, Fold, Inputs, Leg, Level, Record, Resume, Scope, Second, Stored, Switch,
     Transition, Twin, Window, decide, fold, on_resume,
 };
 use ae::events::{Event, SessionKey};
@@ -76,15 +76,30 @@ fuzz_target!(|data: &[u8]| {
                 from: Level::High,
                 to: Level::Xhigh,
             };
-            let legs = match direction {
-                Direction::Down => (Leg::Reserved(down), Leg::Unspent, Level::High),
-                Direction::Up => (Leg::Done(down), Leg::Reserved(up), Level::Xhigh),
+            let second = Transition {
+                direction: Direction::Down,
+                from: Level::High,
+                to: Level::Medium,
+            };
+            // The record's low is high: a restart up starts there after the
+            // first step, or after a second step that failed and left the seat
+            // on the first step's tier.
+            let legs: &[(Leg, Leg, Level)] = match direction {
+                Direction::Down => &[(Leg::Reserved(down), Leg::Unspent, Level::High)],
+                Direction::Up => &[
+                    (Leg::Done(down), Leg::Reserved(up), Level::Xhigh),
+                    (
+                        Leg::Deeper(down, Second::Failed(second)),
+                        Leg::Reserved(up),
+                        Level::Xhigh,
+                    ),
+                ],
             };
             assert!(
                 open.is_some_and(|e| e.key == 1_700_000_000
                     && e.threshold == 80
                     && !e.yielded
-                    && (e.down, e.up, level) == legs),
+                    && legs.contains(&(e.down, e.up, level))),
                 "a restart replays only this episode's reserved move"
             );
         }
