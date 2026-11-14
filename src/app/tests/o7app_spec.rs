@@ -1176,3 +1176,193 @@ fn p1_unread_cues_and_fleet_order_never_reintroduce_the_orchestrator() {
         "an explicit orchestrator order pin cannot create a session row",
     );
 }
+
+#[test]
+fn p2_narrowing_keeps_the_main_writer_and_its_draft_on_screen() {
+    let mut rig = Rig::new(Some("api"));
+    rig.open();
+    rig.click_word(MAIN);
+    rig.key(Key::Enter);
+    rig.text(b"MAIN_NARROW_DRAFT");
+    assert_eq!(
+        rig.app.writer.as_ref().map(|w| w.console.name()),
+        Some("api")
+    );
+    let narrow = text(&rig.frame(90, 20));
+    assert!(
+        narrow.contains(MAIN) && narrow.contains("MAIN_NARROW_DRAFT"),
+        "the column that owns a writing entry must stay visible: {narrow}"
+    );
+    assert!(
+        !narrow.contains(PANEL),
+        "a panel that cannot fit must not cover the main writer: {narrow}"
+    );
+    assert!(
+        rig.app.composing(),
+        "narrowing does not end the visible writer"
+    );
+    rig.text(b"_CONTINUED");
+    let continued = text(&rig.frame(90, 20));
+    assert!(
+        continued.contains("MAIN_NARROW_DRAFT_CONTINUED"),
+        "new keys must appear in the visible draft: {continued}"
+    );
+    assert_eq!(rig.draft("api", ID), "MAIN_NARROW_DRAFT_CONTINUED");
+    assert_eq!(rig.draft(ORCH, OID), "");
+    let wide = text(&rig.frame(160, 45));
+    assert!(
+        wide.contains(MAIN) && wide.contains(PANEL) && wide.contains("F full"),
+        "widening restores the still-open side panel: {wide}"
+    );
+    assert!(rig.app.composing());
+    assert_eq!(
+        rig.app.writer.as_ref().map(|w| w.console.name()),
+        Some("api")
+    );
+    assert!(rig.deliveries.lock().unwrap().is_empty());
+}
+
+#[test]
+fn p2_needy_navigation_at_narrow_width_shows_the_column_that_receives_the_keys() {
+    let mut rig = Rig::new(Some("api"));
+    rig.refresh(&[ORCH, "b"]);
+    rig.open();
+    assert!(text(&rig.frame(90, 20)).contains(PANEL));
+    rig.text(b"!");
+    assert_eq!(rig.app.model.selected(), Some("b"));
+    rig.app.answer(view("b", ID, 301, "B_NARROW_TARGET"));
+    let main = text(&rig.frame(90, 20));
+    assert!(
+        main.contains("B_NARROW_TARGET") && !main.contains(PANEL),
+        "! must show its ordinary target instead of covering it: {main}"
+    );
+    rig.key(Key::Enter);
+    assert_eq!(rig.app.writer.as_ref().map(|w| w.console.name()), Some("b"));
+    rig.text(b"B_NARROW_DRAFT");
+    assert!(text(&rig.frame(90, 20)).contains("B_NARROW_DRAFT"));
+    rig.key(Key::Escape);
+    rig.text(b"!");
+    let panel = text(&rig.frame(90, 20));
+    assert!(
+        panel.contains(PANEL) && !panel.contains("B_NARROW_TARGET"),
+        "! must also show its orchestrator target: {panel}"
+    );
+    assert_eq!(rig.app.model.selected(), Some("b"));
+    rig.key(Key::Enter);
+    assert_eq!(
+        rig.app.writer.as_ref().map(|w| w.console.name()),
+        Some(ORCH)
+    );
+    rig.text(b"ORCH_NARROW_DRAFT");
+    assert!(text(&rig.frame(90, 20)).contains("ORCH_NARROW_DRAFT"));
+    assert_eq!(rig.draft("b", ID), "B_NARROW_DRAFT");
+    assert!(rig.deliveries.lock().unwrap().is_empty());
+}
+
+#[test]
+fn p2_r_on_a_panel_turn_at_narrow_width_shows_the_main_reader() {
+    let mut rig = Rig::new(Some("api"));
+    rig.open();
+    let path = rig.root.0.join("narrow-panel-note.rs");
+    let link = format!("PANEL_NARROW_LINK\nopen {}:1", path.display());
+    rig.app.answer(view(ORCH, OID, 301, &link));
+    let panel = text(&rig.frame(90, 20));
+    assert!(panel.contains("PANEL_NARROW_LINK"), "{panel}");
+    rig.text(b"[");
+    assert!(
+        take_keys(
+            &mut rig.app,
+            vec![(Key::Text(b"r".to_vec()), Instant::now())],
+        )
+        .is_some()
+    );
+    let mut requested = None;
+    for ask in rig.rx.try_iter() {
+        match ask {
+            loader::Request::Read(Some(ask)) => {
+                assert!(requested.is_none(), "one reader request per open");
+                requested = Some(ask);
+            }
+            other => rig.reader.take(other),
+        }
+    }
+    let ask = requested.expect("r must read the marked panel turn's file");
+    assert_eq!(ask.path, path.to_str().unwrap());
+    assert_eq!(ask.line, Some(1));
+    rig.app.answer(Answer::Read {
+        generation: ask.generation,
+        body: crate::app::reader::Body::Text {
+            lines: vec!["NARROW_FILE_CONTENT".to_owned()],
+            size: 0,
+        },
+    });
+    let opened = text(&rig.frame(90, 20));
+    assert!(rig.app.model.reader_open());
+    assert!(
+        opened.contains("NARROW_FILE_CONTENT") && !opened.contains("PANEL_NARROW_LINK"),
+        "r must uncover its main-column reader target: {opened}"
+    );
+    assert_eq!(rig.app.model.selected(), Some("api"));
+    rig.key(Key::Escape);
+    assert!(!rig.app.model.reader_open());
+    let main = text(&rig.frame(90, 20));
+    assert!(
+        main.contains(MAIN) && !main.contains("PANEL_NARROW_LINK"),
+        "closing the reader leaves its main column visible: {main}"
+    );
+    rig.key(Key::Enter);
+    assert_eq!(
+        rig.app.writer.as_ref().map(|w| w.console.name()),
+        Some("api")
+    );
+    rig.text(b"AFTER_NARROW_READER");
+    assert!(text(&rig.frame(90, 20)).contains("AFTER_NARROW_READER"));
+    assert!(rig.deliveries.lock().unwrap().is_empty());
+}
+
+#[test]
+fn p2_widening_restores_the_open_side_panel_after_either_column_covered_the_frame() {
+    let mut rig = Rig::new(Some("api"));
+    rig.open();
+    rig.key(Key::Enter);
+    rig.text(b"PANEL_WIDTH_DRAFT");
+    rig.key(Key::Escape);
+    let narrow_panel = text(&rig.frame(90, 20));
+    assert!(
+        narrow_panel.contains(PANEL)
+            && !narrow_panel.contains(MAIN)
+            && narrow_panel.contains("F side")
+            && narrow_panel.contains("side needs"),
+        "{narrow_panel}"
+    );
+    let first_wide = rig.frame(160, 45);
+    assert!(cell(&first_wide, MAIN).unwrap().0 < cell(&first_wide, PANEL).unwrap().0);
+    assert!(text(&first_wide).contains("F full"));
+    rig.click_word(MAIN);
+    let narrow_main = text(&rig.frame(90, 20));
+    assert!(
+        narrow_main.contains(MAIN) && !narrow_main.contains(PANEL),
+        "a narrow frame follows main focus as well: {narrow_main}"
+    );
+    assert!(!rig.app.composing(), "focus alone creates no writer");
+    let second_wide = rig.frame(160, 45);
+    assert!(
+        cell(&second_wide, MAIN).unwrap().0 < cell(&second_wide, PANEL).unwrap().0,
+        "covering the panel does not close it"
+    );
+    assert!(text(&second_wide).contains("F full"));
+    rig.key(Key::Enter);
+    assert_eq!(
+        rig.app.writer.as_ref().map(|w| w.console.name()),
+        Some("api"),
+        "widening does not steal main focus"
+    );
+    rig.key(Key::Escape);
+    rig.click_word(PANEL);
+    rig.key(Key::Enter);
+    assert_eq!(
+        rig.app.writer.as_ref().map(|w| w.console.name()),
+        Some(ORCH)
+    );
+    assert_eq!(rig.draft(ORCH, OID), "PANEL_WIDTH_DRAFT");
+}
