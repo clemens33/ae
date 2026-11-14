@@ -100,8 +100,48 @@ fn an_open_panel_draws_nothing_below_the_size_floor() {
     }
 }
 
+/// The draft rows drawn in columns `from..to` of `buf`: each row that holds
+/// at least ten digits and nothing else, as its digits and the column of its
+/// last digit.
+fn draft_rows(buf: &Buffer, from: u16, to: u16) -> Vec<(String, u16)> {
+    (0..buf.area.height)
+        .filter_map(|y| {
+            let cells: Vec<(u16, &str)> = (from..to).map(|x| (x, buf[(x, y)].symbol())).collect();
+            let digits: Vec<&(u16, &str)> = cells
+                .iter()
+                .filter(|(_, s)| s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty())
+                .collect();
+            let row: String = cells.iter().map(|(_, s)| *s).collect();
+            let rest = row.trim().trim_start_matches(|c: char| !c.is_ascii_digit());
+            (digits.len() >= 10 && rest.chars().all(|c| c.is_ascii_digit()))
+                .then(|| (rest.to_owned(), digits.last().map_or(0, |(x, _)| *x)))
+        })
+        .collect()
+}
+
+/// A wrapped draft fills each full row up to its column's right margin of
+/// two cells and never into it, and every character stays drawn.
+fn assert_fills_to_the_margin(rows: &[(String, u16)], draft: &str, end: u16) {
+    assert!(rows.len() > 1, "the draft wraps: {rows:#?}");
+    let shown: String = rows.iter().map(|(digits, _)| digits.as_str()).collect();
+    assert_eq!(shown, draft, "{rows:#?}");
+    let (last, full) = rows.split_last().expect("rows");
+    for (_, x) in full {
+        assert_eq!(*x, end - 3, "a full row ends before the margin: {rows:#?}");
+    }
+    assert!(last.1 <= end - 3, "{rows:#?}");
+}
+
+/// The side panel's border column in `buf`.
+fn border_of(buf: &Buffer) -> u16 {
+    (0..buf.area.width)
+        .rev()
+        .find(|x| (2..buf.area.height - 5).all(|y| buf[(*x, y)].symbol() == "│"))
+        .expect("the side panel's border")
+}
+
 /// A draft written in the main column beside a side panel wraps inside the
-/// main column's own cells: every character stays drawn left of the border.
+/// main column's own cells, up to the margin before the border.
 #[test]
 fn a_main_draft_beside_a_side_panel_wraps_inside_its_column() {
     let root = Root::new("o7width");
@@ -115,27 +155,147 @@ fn a_main_draft_beside_a_side_panel_wraps_inside_its_column() {
         Some(())
     );
     let buf = at(160, 45, &mut app);
-    let border = (0..buf.area.width)
-        .rev()
-        .find(|x| (2..buf.area.height - 5).all(|y| buf[(*x, y)].symbol() == "│"))
-        .expect("the side panel's border");
-    let rows: Vec<String> = (0..buf.area.height)
-        .map(|y| {
-            (0..border)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .filter(|row| {
-            let digits = row.trim().trim_start_matches(|c: char| !c.is_ascii_digit());
-            digits.len() >= 10 && digits.chars().all(|c| c.is_ascii_digit())
-        })
-        .collect();
-    let shown: String = rows
-        .iter()
-        .flat_map(|row| row.chars().filter(char::is_ascii_digit))
-        .collect();
-    assert!(rows.len() > 1, "the draft wraps: {rows:#?}\n{}", text(&buf));
-    assert_eq!(shown, draft, "{rows:#?}");
+    let border = border_of(&buf);
+    assert_fills_to_the_margin(&draft_rows(&buf, 0, border), &draft, border);
+}
+
+/// `api` home and a running orchestrator under `root`, proven as the
+/// fixture's incarnation, with the panel open on it and the keys given.
+fn orchestrated(root: &Root, full: bool) -> (App, Reader) {
+    let (mut app, reader) = housed(root);
+    let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+    session(root, orch, "");
+    refold(
+        &mut app,
+        &reader,
+        root,
+        &[("api", Status::Running), (orch, Status::Running)],
+    );
+    app.orch.proof = loader::Proof::Proven(ID.to_owned());
+    app.open_panel(full);
+    assert!(app.panel_focused());
+    (app, reader)
+}
+
+/// Enter in the panel that holds the keys writes the orchestrator.
+fn panel_writes(app: &mut App) {
+    assert!(take_keys(app, vec![(Key::Enter, Instant::now())]).is_some());
+    assert_eq!(
+        app.writer_name(),
+        Some(crate::orchestrator::ORCHESTRATOR_SESSION),
+        "the panel writes its orchestrator"
+    );
+}
+
+/// The panel's draft is its own: the main column beside it never shows it.
+#[test]
+fn the_panel_draft_never_shows_in_the_main_column() {
+    let root = Root::new("o7own");
+    let (mut app, _reader) = orchestrated(&root, false);
+    panel_writes(&mut app);
+    press(&mut app, b"PANEL_ONLY_DRAFT");
+    let buf = at(160, 45, &mut app);
+    let border = border_of(&buf);
+    let row = |from: u16, to: u16| -> String {
+        (0..buf.area.height)
+            .map(|y| (from..to).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        row(border, 160).contains("PANEL_ONLY_DRAFT"),
+        "{}",
+        text(&buf)
+    );
+    assert!(
+        !row(0, border).contains("PANEL_ONLY_DRAFT"),
+        "{}",
+        text(&buf)
+    );
+}
+
+/// A full panel's draft wraps to the whole frame it covers, up to its margin.
+#[test]
+fn a_full_panel_draft_wraps_to_the_frame_it_covers() {
+    let root = Root::new("o7full");
+    let (mut app, _reader) = orchestrated(&root, true);
+    panel_writes(&mut app);
+    let draft = "0123456789".repeat(40);
+    press(&mut app, draft.as_bytes());
+    let buf = at(160, 45, &mut app);
+    assert_fills_to_the_margin(&draft_rows(&buf, 0, 160), &draft, 160);
+}
+
+/// Hiding the panel while it writes ends its entry and keeps its draft, by
+/// the main column's button beside a side panel and by a full panel's own.
+#[test]
+fn hiding_a_writing_panel_ends_its_entry_and_keeps_its_draft() {
+    for full in [false, true] {
+        hide_while_writing(full);
+    }
+}
+
+fn hide_while_writing(full: bool) {
+    let root = Root::new("o7hide");
+    let (mut app, _reader) = orchestrated(&root, full);
+    panel_writes(&mut app);
+    press(&mut app, b"KEPT_PANEL_DRAFT");
+    let shown = framed(&mut app);
+    let (row, column) = shown
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.chars().position(|c| c == '\u{25c6}').map(|x| (row, x)))
+        .expect("the orchestrator button");
+    let click = |kind| Mouse {
+        kind,
+        column: u16::try_from(column).expect("column"),
+        row: u16::try_from(row).expect("row"),
+    };
+    assert!(app.mouse(click(MouseKind::Click)));
+    let _ = app.mouse(click(MouseKind::Release));
+    assert!(app.orch.panel.is_none(), "the button hides the panel");
+    assert!(
+        !app.composing() && app.writer_name().is_none(),
+        "no hidden writer (full: {full})"
+    );
+    let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+    let kept = app.inputs.get(&(orch.to_owned(), ID.to_owned()));
+    assert_eq!(kept.map(Input::draft).as_deref(), Some("KEPT_PANEL_DRAFT"));
+}
+
+/// `F` from the main column beside a side panel turns the panel full, and a
+/// full panel holds the keys.
+#[test]
+fn f_from_the_main_column_turns_the_panel_full_with_the_keys() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    let _ = framed(&mut app);
+    app.focus_column(false);
+    press(&mut app, b"F");
+    assert!(app.orch.panel.as_ref().is_some_and(|panel| panel.full));
+    assert!(app.panel_focused(), "a full panel holds the keys");
+    assert!(text(&at(160, 45, &mut app)).contains("F side"));
+}
+
+/// A click that selects another row owes a redraw.
+#[test]
+fn a_click_that_selects_a_row_redraws() {
+    let mut app = app(None);
+    two(&mut app);
+    let shown = framed(&mut app);
+    let (row, column) = shown
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find("ops").map(|column| (row, column)))
+        .expect("drawn ops row");
+    let redraw = app.mouse(Mouse {
+        kind: MouseKind::Click,
+        column: u16::try_from(column).expect("frame column"),
+        row: u16::try_from(row).expect("frame row"),
+    });
+    assert_eq!(app.model.selected(), Some("ops"));
+    assert!(redraw, "the selection changed what is drawn");
 }
 
 /// Lead ruling ae-20261114T141913Z-163e6319 (2): in a frame too narrow for
