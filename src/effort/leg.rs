@@ -1234,7 +1234,7 @@ mod tests {
             .lines()
             .filter(|line| {
                 line.split_once('=')
-                    .is_some_and(|(key, _)| key.ends_with(".main"))
+                    .is_some_and(|(key, _)| key.rsplit('.').next() == Some("main"))
             })
             .map(|line| {
                 line.replace(".main=", ".worker.0=")
