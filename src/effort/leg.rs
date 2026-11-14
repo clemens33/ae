@@ -363,6 +363,23 @@ pub(crate) fn step(
     if !switch() {
         return Ok(());
     }
+    step_with(
+        cycle,
+        seats,
+        carry,
+        err,
+        &mut crate::transport::spawn_detached,
+    )
+}
+
+/// The cycle loop with only the detached process start supplied by the caller.
+fn step_with(
+    cycle: &Cycle<'_>,
+    seats: &[Sight],
+    carry: &mut Carry,
+    err: &mut impl Write,
+    start: &mut impl FnMut(&Path, &crate::session_launch::capture::CaptureArgv) -> bool,
+) -> io::Result<()> {
     let mut started = false;
     for sight in seats {
         let Some(seat) = read_with(cycle.dir, cycle.session, &sight.slot, cycle.events) else {
@@ -427,7 +444,7 @@ pub(crate) fn step(
                     crate::session_launch::capture::auto_effort_argv(cycle.dir, &sight.slot, key);
                 started = crate::shape::resolved_exe()
                     .zip(leg)
-                    .is_some_and(|(exe, leg)| crate::transport::spawn_detached(&exe, &leg));
+                    .is_some_and(|(exe, leg)| start(&exe, &leg));
                 carry.legs.push((sight.slot.clone(), cycle.now));
                 continue;
             }
@@ -1205,6 +1222,97 @@ mod tests {
             + &line("effort-reserved", &format!("{EP}-down"), "xhigh->high");
         std::fs::write(dir.join("events.jsonl"), journal).expect("scratch journal");
         dir
+    }
+
+    /// Two reserved legs after a crash both need reconciliation. A successful
+    /// start must leave the other seat for a later watchdog cycle (#341).
+    #[test]
+    fn a_cycle_starts_only_one_leg_and_carries_only_that_attempt() {
+        let dir = applied_session("one-per-cycle");
+        let meta = std::fs::read_to_string(dir.join("meta")).expect("meta");
+        let other = meta
+            .lines()
+            .filter(|line| {
+                line.split_once('=')
+                    .is_some_and(|(key, _)| key.ends_with(".main"))
+            })
+            .map(|line| {
+                line.replace(".main=", ".worker.0=")
+                    .replace("slot:main", "slot:worker.0")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("seat.worker.0=lead", "seat.worker.0=mate");
+        std::fs::write(dir.join("meta"), format!("{meta}{other}\n")).expect("two seats");
+        let journal = std::fs::read_to_string(dir.join("events.jsonl")).expect("journal");
+        let other = journal
+            .replace("\"target\":\"lead\"", "\"target\":\"mate\"")
+            .replace("\"target_slot\":\"main\"", "\"target_slot\":\"worker.0\"");
+        std::fs::write(dir.join("events.jsonl"), format!("{journal}{other}"))
+            .expect("two reserved episodes");
+        let events = crate::autotrust::ledger(crate::store::open(&dir).events_source())
+            .expect("strict journal");
+        let auto = crate::autoreseat::settings_in(&dir.join("config"), "");
+        let mut seats = ["main", "worker.0"].map(|slot| {
+            assert!(eligible(slot));
+            let seat = super::read_with(&dir, "fx", slot, &events).expect("eligible fixture seat");
+            assert_eq!(
+                seat.decide(None, ("", false), true, EP),
+                crate::effort::Decision::Reconcile(Direction::Down),
+                "each seat independently needs a leg"
+            );
+            super::Sight {
+                slot: slot.to_owned(),
+                capture: String::new(),
+                limited: false,
+                point: super::Point {
+                    ready: false,
+                    input: None,
+                    reseating: false,
+                    pane_pid: None,
+                },
+            }
+        });
+        let mut carry = super::Carry::default();
+        // Reverse the order on the next cycle, after the prior attempt expires:
+        // the budget resets and either eligible seat can be the sole starter.
+        for offset in 0..2 {
+            let order = &seats;
+            let now = EP + i64::try_from(offset).expect("two cycles") * super::LEG_GAP;
+            let cycle = super::Cycle {
+                dir: &dir,
+                session: "fx",
+                events: &events,
+                quota: None,
+                auto: &auto,
+                now,
+            };
+            let mut starts = Vec::new();
+            super::step_with(
+                &cycle,
+                order,
+                &mut carry,
+                &mut Vec::new(),
+                &mut |_, argv| {
+                    starts.push(argv.as_args().to_vec());
+                    true
+                },
+            )
+            .expect("cycle");
+            assert_eq!(starts.len(), 1, "one successful start per cycle");
+            assert_eq!(
+                starts[0],
+                vec![
+                    "_auto-effort".to_owned(),
+                    dir.display().to_string(),
+                    order[0].slot.clone(),
+                    EP.to_string()
+                ]
+            );
+            assert_eq!(carry.legs, vec![(order[0].slot.clone(), now)]);
+            seats.reverse();
+        }
+        std::fs::remove_dir_all(dir).expect("remove scratch session");
     }
 
     /// Close the applied step down again, the account row moved to `home`
