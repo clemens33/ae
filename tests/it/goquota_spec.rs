@@ -876,7 +876,7 @@ fn flying_guard_clears_when_the_closure_panics() {
 
 #[test]
 fn watchdog_refresh_is_gated_on_quota_aware_and_is_single_flight() {
-    let src = product_src("src/watchdog_daemon.rs");
+    let src = crate::support::source_view::module_family("src/watchdog_daemon.rs", false);
     let product = src
         .split_once("#[cfg(test)]\nmod tests {")
         .map_or(src.as_str(), |(m, _)| m);

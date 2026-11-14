@@ -708,7 +708,12 @@ fn no_decision_path_reads_quota_history() {
         "effort/leg.rs",
         "doctor.rs",
     ] {
-        let text = read(file);
+        let text = match file {
+            "watchdog_daemon.rs" => {
+                crate::support::source_view::module_family("src/watchdog_daemon.rs", false)
+            }
+            _ => read(file),
+        };
         for word in reads {
             assert!(!text.contains(word), "{file} reaches {word}");
         }

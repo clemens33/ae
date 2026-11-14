@@ -719,6 +719,39 @@ pub(crate) fn load(root: &Path, dirs: &[&str]) -> Result<Vec<(String, String)>, 
     Ok(out)
 }
 
+/// The raw text of one module tree, in path order: the file `root_file` (`src/a.rs`) and every file below its
+/// directory (`src/a/..`). With `tests` false only the files the view `product` calls production (a file registered by
+/// test code alone is left out); with `tests` true every file of the tree. A `root_file` that is not among `files` is an
+/// error, never an empty text: a negative guard must not pass over nothing.
+pub(crate) fn module_family_of(
+    files: &[(String, String)],
+    product: &Product,
+    root_file: &str,
+    tests: bool,
+) -> Result<String, String> {
+    let dir = format!("{}/", root_file.trim_end_matches(".rs"));
+    if !files.iter().any(|(path, _)| path == root_file) {
+        return Err(format!("{root_file} is not among the loaded files"));
+    }
+    let mut out = String::new();
+    for (path, text) in files {
+        let below = path == root_file || path.starts_with(&dir);
+        let shown = tests || product.files.iter().any(|file| &file.path == path);
+        if below && shown {
+            out.push_str(text);
+        }
+    }
+    Ok(out)
+}
+
+/// [`module_family_of`] over this crate's own tree. Panics when the root file is missing.
+pub(crate) fn module_family(root_file: &str, tests: bool) -> String {
+    match module_family_of(tree(), product(), root_file, tests) {
+        Ok(text) => text,
+        Err(what) => panic!("{what}"),
+    }
+}
+
 /// Every `.rs` file of `src/` and `tests/` of this crate, read once. Panics
 /// with the failure's `file:line:` when any of it cannot be read.
 pub(crate) fn tree() -> &'static [(String, String)] {

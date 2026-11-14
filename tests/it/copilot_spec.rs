@@ -1094,7 +1094,8 @@ fn doctor_never_asks_the_endpoint() {
 
 #[test]
 fn the_watchdog_neither_fetches_nor_feeds_copilot() {
-    let daemon = product_part("src/watchdog_daemon.rs").to_lowercase();
+    let daemon =
+        crate::support::source_view::module_family("src/watchdog_daemon.rs", false).to_lowercase();
     assert!(
         !daemon.contains("copilot"),
         "display-only: the watchdog carries no Copilot path"

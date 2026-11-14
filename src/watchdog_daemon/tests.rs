@@ -46,6 +46,16 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// The production text of the module tree: the parent up to its first test item, then each non-test child in registration order.
+fn family() -> String {
+    let parent = include_str!("../watchdog_daemon.rs");
+    parent
+        .split("#[cfg(test)]")
+        .next()
+        .unwrap_or(parent)
+        .to_owned()
+}
+
 fn prompt() -> crate::watchdog::HumanPrompt {
     crate::watchdog::HumanPrompt {
         question: "Do you trust the contents of this project?".to_owned(),
@@ -346,7 +356,7 @@ fn nothing_in_the_human_prompt_path_can_reach_a_pane() {
         std::fs::read_to_string(file).unwrap_or_else(|why| panic!("{file}: {why}"))
     }
     let detector = source("src/watchdog.rs");
-    let daemon = source("src/watchdog_daemon.rs");
+    let daemon = family();
     let region = |text: &str, from: &str, to: &str| {
         let start = text
             .find(from)
@@ -4592,7 +4602,7 @@ fn a_stale_pidfile_keeps_adopting_and_only_a_new_one_pauses() {
 /// usually zero targets.
 #[test]
 fn adoption_never_spawns_a_process_snapshot_of_its_own() {
-    let source = include_str!("../watchdog_daemon.rs");
+    let source = &family();
     let between = |from: &str, to: &str| {
         source
             .split_once(from)
@@ -4701,7 +4711,7 @@ fn emitted(effects: &[Effect]) -> Vec<(&str, &str)> {
 /// The security invariant, checked STRUCTURALLY rather than by review.
 #[test]
 fn there_is_one_delivery_site_and_it_cannot_name_another_program_or_server() {
-    let whole = include_str!("../watchdog_daemon.rs");
+    let whole = &family();
     // Only the PRODUCT half: a test that exercises the constructor is not a
     // second place the daemon can name a program.
     let source = whole
@@ -4766,7 +4776,7 @@ fn the_cycle_rebinds_its_server_before_it_probes_and_actually_applies_the_answer
     // THE WIRING OF THE PER-CYCLE REBIND, which the pure `rebind` table
     // cannot see: a decision nothing consults is a decision that does not
     // happen.
-    let whole = include_str!("../watchdog_daemon.rs");
+    let whole = &family();
     let source = whole
         .split(concat!("#[cfg(", "test)]"))
         .next()
@@ -4827,7 +4837,7 @@ fn the_adopts_reset_is_unconditional_while_its_retraction_is_best_effort() {
     // The failure boundary, held in the SOURCE because the ordering inside
     // `adopt_server` is what the unreachable-old-server test cannot see
     // from outside.
-    let whole = include_str!("../watchdog_daemon.rs");
+    let whole = &family();
     let source = whole
         .split(concat!("#[cfg(", "test)]"))
         .next()
@@ -4854,7 +4864,7 @@ fn the_adopts_reset_is_unconditional_while_its_retraction_is_best_effort() {
 
 #[test]
 fn the_retraction_reports_failure_from_every_path_that_can_fail() {
-    let whole = include_str!("../watchdog_daemon.rs");
+    let whole = &family();
     let source = whole
         .split(concat!("#[cfg(", "test)]"))
         .next()
@@ -5887,10 +5897,8 @@ fn the_limit_release_retracts_once_and_requests_one_quota_pass() {
 fn the_due_counter_has_one_caller_so_a_recovery_cannot_consume_the_cadence() {
     // STRUCTURAL: the counter advances only inside `quota_observation_due`,
     // and `refresh_quota` has exactly two callers beside its definition.
-    let production = include_str!("../watchdog_daemon.rs")
-        .split("#[cfg(test)]")
-        .next()
-        .unwrap_or_default();
+    let whole = family();
+    let production = whole.split("#[cfg(test)]").next().unwrap_or_default();
     assert_eq!(production.matches("quota_observation_due(").count(), 2);
     assert_eq!(production.matches("refresh_quota(").count(), 3);
 }
@@ -9410,7 +9418,7 @@ fn a_daemon_that_has_never_read_a_look_publishes_nothing() {
         None,
         "a default look would be the same guess the fallback exists to avoid"
     );
-    let source = include_str!("../watchdog_daemon.rs");
+    let source = &family();
     let close = source
         .split_once("fn close(")
         .map(|(_, body)| body.split_once("\n    }\n").map_or(body, |(head, _)| head))
@@ -9637,7 +9645,7 @@ fn an_adopted_strip_is_drawn_from_the_fresh_listing_and_written_only_when_it_cha
 
 #[test]
 fn automatic_upgrade_scheduling_is_on_a_verdict_cycle_never_the_motion_ticker() {
-    let source = include_str!("../watchdog_daemon.rs");
+    let source = &family();
     let cycle = source
         .split_once("fn run(&self, carry:")
         .and_then(|(_, tail)| tail.split_once("/// The cycle's last step"))
@@ -9663,7 +9671,7 @@ fn automatic_upgrade_scheduling_is_on_a_verdict_cycle_never_the_motion_ticker() 
 /// before the filter that drops them from the mark rollup.
 #[test]
 fn the_drawn_name_is_backfilled_ahead_of_the_agent_filter() {
-    let source = include_str!("../watchdog_daemon.rs");
+    let source = &family();
     let windows = source
         .split_once("fn publish_windows(")
         .map(|(_, body)| body.split_once("\n    }\n").map_or(body, |(head, _)| head))

@@ -1,7 +1,7 @@
 //! Independent R2c acceptance controls. Frozen by r2c-nav before implementation.
 //! A prefix-only/silently truncating view must fail the positive tail assertions.
 
-use super::source_view::{classify, load, product_of};
+use super::source_view::{classify, load, module_family_of, product_of};
 
 fn files(input: &[(&str, &str)]) -> Vec<(String, String)> {
     input
@@ -336,4 +336,63 @@ fn loader_refuses_a_missing_directory_and_an_unreadable_source_by_name() {
         .expect("invalid UTF-8 source must fail");
     assert!(bad.file.ends_with("tests/broken.rs"), "{bad}");
     assert!(!bad.what.is_empty());
+}
+
+fn family_tree() -> Vec<(String, String)> {
+    files(&[
+        ("src/lib.rs", "pub mod a;\npub mod a_b;\n"),
+        (
+            "src/a.rs",
+            "mod child;\n#[cfg(test)]\nmod tests;\n// a comment\nfn parent() {}\n",
+        ),
+        ("src/a/child.rs", "fn child() {}\n"),
+        ("src/a/tests.rs", "fn only_in_tests() {}\n"),
+        ("src/a_b.rs", "fn lookalike() {}\n"),
+    ])
+}
+
+#[test]
+fn a_module_family_is_the_file_and_its_directory_in_path_order_without_test_only_files() {
+    let tree = family_tree();
+    let product = product_of(&tree).expect("the controls classify");
+    let text = module_family_of(&tree, &product, "src/a.rs", false).expect("the root is loaded");
+    assert_eq!(
+        text, "mod child;\n#[cfg(test)]\nmod tests;\n// a comment\nfn parent() {}\nfn child() {}\n",
+        "the parent as written, then each production child; comments stay, test-only files do not"
+    );
+}
+
+#[test]
+fn a_written_module_family_also_holds_the_test_only_files() {
+    let tree = family_tree();
+    let product = product_of(&tree).expect("the controls classify");
+    let text = module_family_of(&tree, &product, "src/a.rs", true).expect("the root is loaded");
+    assert!(text.contains("fn only_in_tests()"), "{text}");
+    assert!(
+        text.contains("fn child()") && text.contains("fn parent()"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_module_family_never_takes_a_sibling_whose_name_starts_the_same() {
+    let tree = family_tree();
+    let product = product_of(&tree).expect("the controls classify");
+    for tests in [false, true] {
+        let text =
+            module_family_of(&tree, &product, "src/a.rs", tests).expect("the root is loaded");
+        assert!(
+            !text.contains("lookalike"),
+            "src/a_b.rs is another module: {text}"
+        );
+    }
+}
+
+#[test]
+fn a_module_family_of_a_missing_root_is_an_error_not_an_empty_text() {
+    let tree = family_tree();
+    let product = product_of(&tree).expect("the controls classify");
+    for tests in [false, true] {
+        assert!(module_family_of(&tree, &product, "src/missing.rs", tests).is_err());
+    }
 }
