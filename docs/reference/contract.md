@@ -87,6 +87,43 @@ clippy.toml         — tests-only unwrap/expect relaxation + the two capability
 README.md  VISION.md  AGENTS.md  CLAUDE.md (@AGENTS.md)
 ```
 
+### Layer map
+
+A file may name its own layer and the layers below it. A `crate::` path that names a higher layer is an upward reference: pinned debt that may only shrink, enforced by [the layer ratchet](../../tests/it/doors/layers.rs) with its pins in [layers_allow.rs](../../tests/it/doors/layers_allow.rs).
+
+- **0 base** — pure values, parsers and vocabularies, the ground every other layer stands on.
+  Modules: `json`, `time`, `token`, `event_text`, `attention`, `provenance`, `error`, `words`,
+  `sanitize`.
+- **1 platform doors** — the operating-system boundary: the entry's ambient facts, the one
+  child-process exec, the process table, git, the tmux version floor, the network probe. Modules:
+  `doors`, `transport`, `procs`, `git`, `shape`, `instance`, `tmux_floor`, `netprobe`.
+- **2 state and model** — what config, session files, journals, tmux addressing and the agent-tool
+  capability rows say, and the pure classifiers and verdicts over them. Modules: `config`, `meta`,
+  `tool`, `harness_state`, `launch_cmd`, `theme`, `store`, `events`, `effort_journal`, `state`,
+  `requests`, `inventory`, `tracked`, `roster`, `pairs`, `tmux`, `session_tmux`, `archive`,
+  `digest`, `filters`, `memo`, `goal`, `wait_on`, `birth`, `model_drift`, `liveness`,
+  `conversation`, `watchdog`.
+- **3 services** — one capability each over that state: delivery and the helper verbs, the board,
+  usage and Statistics reads, Telegram, launch builders, install and upgrade. Modules: `deliver`,
+  `send`, `reply`, `relay`, `brief`, `brief_retry`, `board`, `quota`, `usage`, `go_usage`,
+  `muse_usage`, `stats`, `stats_store`, `tool_stats`, `telegram`, `render`, `listing`, `fleet_read`,
+  `session`, `launch`, `run`, `install`, `upgrade`, `autoupgrade`, `init`, `compact`, `carry`.
+- **4 seat and session orchestration** — operations on a live session or seat: launch, spawn,
+  reseat, rename, lifecycle, teardown, the watchdog daemon. Modules: `session_launch`,
+  `request_verb`, `effort`, `migrate`, `lifecycle`, `spawn`, `reseat`, `seat_relaunch`, `rename`,
+  `autoreseat`, `autotrust`, `watchdog_daemon`, `watchdog_glue`, `watchdog_lifecycle`,
+  `telegram_lifecycle`, `orchestrator`, `seatpack`, `seatcompact`, `seatcompact_run`, `restore`,
+  `teardown`, `interrupt`, `session_notice`, `worktrees`.
+- **5 terminal UI** — what the human sees and presses: `ae chat`, `ae app`, the menus, the overview,
+  the monitor, the reader, `ae doctor`. Modules: `console`, `clipboard`, `doctor`, `app`,
+  `session_menu`, `settings_menu`, `overview`, `profile_view`, `monitor`, `jump`, `panes`, `next`,
+  `events_tail`, `reader`.
+- **6 CLI shell** — argv to intent, the entry, the identity entries and the shim links;
+  `src/lib.rs`, `src/main.rs` and every root item of `src/lib.rs` belong here too. Modules: `cli`,
+  `entry`, `identity`, `shim`.
+
+A new top-level module gets its layer first: decide which layers it may name and which may name it, then add it to `MODULE_LAYERS` in `tests/it/doors/layers.rs`. The ratchet refuses a module the table does not list, and `tests/it/doors/layers_map.rs` fails until this list shows the same modules per layer, so change the table and this list together. A submodule has the layer of its top-level module.
+
 ## Session helpers
 
 Every helper accepts a leading `--help` or `-h`: static usage on stdout, exit 0, no session access; later occurrences remain operands.

@@ -1,7 +1,7 @@
 # ae
 
 Before touching a module, read its matching topic below.
-Module map: [Structure](docs/reference/contract.md#structure).
+Module map: [Structure](docs/reference/contract.md#structure), layer map: [Layer map](docs/reference/contract.md#layer-map).
 
 | When | Read first |
 |---|---|

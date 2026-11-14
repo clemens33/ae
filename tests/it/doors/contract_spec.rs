@@ -10,7 +10,7 @@ const LIMIT: usize = 22 * 1024;
 const REFERENCE: &str = "docs/reference/contract.md";
 const AUTOMATION: &str = "Automation features are allowed again, but the focus stays on code quality, architecture and guardrails: a new one must earn its place by daily use.";
 const OLD_PAUSE: &str = "New automation features are paused until a daily-use inventory exists. Only the human may lift this pause.";
-const MODULE_MAP: &str = "Module map: [Structure](docs/reference/contract.md#structure).";
+const MODULE_MAP: &str = "Module map: [Structure](docs/reference/contract.md#structure), layer map: [Layer map](docs/reference/contract.md#layer-map).";
 const TOPICS: [&str; 7] = [
     "Structure",
     "Session helpers",
@@ -358,7 +358,8 @@ fn the_split_guards_reject_independent_planted_edits() {
     assert!(size_ok("# ae\n"));
     assert!(!size_ok(&"x".repeat(LIMIT + 1)));
     assert!(!size_ok(""));
-    let mut reference = String::new();
+    // The module-map line also links the layer map, a subsection of Structure.
+    let mut reference = "### Layer map\n".to_owned();
     let mut agents = "Before touching a module, read its matching topic below.\n".to_owned();
     agents.push_str(MODULE_MAP);
     agents.push('\n');
@@ -375,6 +376,7 @@ fn the_split_guards_reject_independent_planted_edits() {
     assert!(index_errors(&agents, &reference).is_empty());
     assert!(!index_errors(&agents.replace("#config)", "#missing)"), &reference).is_empty());
     assert!(!index_errors(&agents, &reference.replace("## Config", "## Gone")).is_empty());
+    assert!(!index_errors(&agents, &reference.replace("### Layer map", "### Gone")).is_empty());
     assert!(
         !index_errors(
             &agents.replace("Before touching", "After touching"),

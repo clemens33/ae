@@ -569,6 +569,8 @@ Three modules are about the REPOSITORY rather than the product:
   shrink; the typed argv seals of the door layer are listed apart as permanent
   handshakes). It reads path spellings only, and its doc comment states what it does not
   see. It runs in every `just test-affected` because it lives under `doors`.
+  `tests/it/doors/layers_map.rs` keeps the contract's `### Layer map` equal to the
+  ratchet's module-to-layer table, in both directions.
 * `tests/it/gate.rs` — the two build files ae owns. It proves the `lint` recipe redirects
   shellcheck's stdin (issue #67: the linter reads fd 0, an agent harness hands it a socket,
   and the process then blocks forever), that `install` carries no GNU-only coreutils, that

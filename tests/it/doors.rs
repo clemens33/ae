@@ -1288,3 +1288,6 @@ mod layers;
 mod layers_allow;
 #[path = "doors/layers_spec.rs"]
 mod layers_spec;
+// The layer map in the contract reference lists the table's modules, layer by layer.
+#[path = "doors/layers_map.rs"]
+mod layers_map;

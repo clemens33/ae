@@ -51,7 +51,7 @@ use super::layers_allow::{DEBT, HANDSHAKE, Row};
 use crate::support::source_view;
 
 /// The layer names, bottom first. A file may name its own layer and the ones before it.
-const LAYER_NAMES: [&str; 7] = [
+pub(super) const LAYER_NAMES: [&str; 7] = [
     "base",
     "platform doors",
     "state and model",
@@ -70,8 +70,9 @@ const TOP: usize = 6;
 /// it names `teardown`. `effort_journal` (layer 2) was added after it too: the effort
 /// journal vocabulary the meta writer journals a reseat discard with, moved out of
 /// `effort` (layer 4). The `#[cfg(test)]` fixture modules have no entry: no production
-/// file names them.
-const MODULE_LAYERS: [(usize, &[&str]); 7] = [
+/// file names them. This table is the single source: the layer map in
+/// `docs/reference/contract.md` mirrors it and `layers_map.rs` fails when the two differ.
+pub(super) const MODULE_LAYERS: [(usize, &[&str]); 7] = [
     (
         0,
         &[
