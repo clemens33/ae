@@ -604,8 +604,14 @@ fn a_side_panel_frame_shows_one_orchestrator_button() {
     let mut app = app(None);
     two(&mut app);
     opened(&mut app, false);
-    let shown = text(&at(160, 45, &mut app));
+    let buf = at(160, 45, &mut app);
+    let shown = text(&buf);
     assert_eq!(shown.matches('\u{25c6}').count(), 1, "{shown}");
+    let border = border_of(&buf);
+    let x = (0..160)
+        .find(|&x| (0..45).any(|y| buf[(x, y)].symbol() == "\u{25c6}"))
+        .expect("the orchestrator button");
+    assert!(x < border, "the button is the main column's: {x}\n{shown}");
 }
 
 /// Opening the panel by its button while the main column writes hands the
@@ -710,4 +716,80 @@ fn a_fallen_back_panel_names_the_width_side_needs() {
     assert!(at_need.contains("F full"), "{need}: side fits: {at_need}");
     let below = head(&mut app, need - 1);
     assert!(below.contains("side needs"), "{}: {below}", need - 1);
+}
+
+/// A press on the side panel's gear opens the settings and leaves the keys
+/// where they are: the gear acts on the app, not on the panel.
+#[test]
+fn the_side_panel_gear_opens_the_settings_and_moves_no_keys() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    app.focus_column(false);
+    let buf = at(160, 45, &mut app);
+    let border = border_of(&buf);
+    let (x, y) = (0..buf.area.height)
+        .flat_map(|y| (border..160).map(move |x| (x, y)))
+        .find(|&(x, y)| buf[(x, y)].symbol() == "\u{2699}")
+        .expect("the side panel's gear");
+    assert!(app.mouse(Mouse {
+        kind: MouseKind::Click,
+        column: x,
+        row: y,
+    }));
+    assert!(app.model.settings_open(), "the gear opens the settings");
+    assert!(!app.panel_focused(), "the gear moves no keys");
+}
+
+/// An incomplete read that omits the main column's selection moves it the
+/// same way while the panel writes as while nothing writes: the panel's
+/// entry never holds the main column's selection on a row the read dropped.
+#[test]
+fn an_incomplete_read_moves_the_main_selection_alike_while_the_panel_writes() {
+    let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+    let moved = |panel_writes_now: bool| -> Option<String> {
+        let root = Root::new("o7partial");
+        let (mut app, reader) = orchestrated(&root, false);
+        session(&root, "web", "");
+        let all = [
+            ("api", Status::Running),
+            ("web", Status::Running),
+            (orch, Status::Running),
+        ];
+        refold(&mut app, &reader, &root, &all);
+        let _ = app.model.select_name(&app.fleet, "web", 0);
+        assert_eq!(app.model.selected(), Some("web"));
+        if panel_writes_now {
+            panel_writes(&mut app);
+        }
+        let mut read = read_of(&app, &[("api", ID), ("web", ID), (orch, ID)]);
+        read.fleet.rows.retain(|row| row.name != "web");
+        read.scanned = false;
+        app.answer(Answer::Fleet(read));
+        app.model.selected().map(str::to_owned)
+    };
+    let alone = moved(false);
+    assert_ne!(
+        alone.as_deref(),
+        Some("web"),
+        "the read moves the selection"
+    );
+    assert_eq!(moved(true), alone, "the panel's entry changes nothing");
+}
+
+/// `F` owes a redraw whenever it flips the panel, with no armed press to
+/// end: side to full and full to side.
+#[test]
+fn f_that_flips_the_panel_redraws() {
+    for full in [false, true] {
+        let mut app = app(None);
+        two(&mut app);
+        opened(&mut app, full);
+        let _ = framed(&mut app);
+        assert!(app.armed.is_none());
+        let redraw = take_keys(&mut app, vec![(Key::Text(b"F".to_vec()), Instant::now())]);
+        let flipped = app.orch.panel.as_ref().is_some_and(|panel| panel.full);
+        assert_eq!(flipped, !full, "F flips the panel");
+        assert_eq!(redraw, Some(true), "the flip redraws (full: {full})");
+    }
 }
