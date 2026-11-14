@@ -307,7 +307,7 @@ impl Fixture {
 
     fn until(&self, mut check: impl FnMut() -> bool, why: &str) {
         let start = Instant::now();
-        while !check() && start.elapsed() < Duration::from_secs(20) {
+        while !check() && start.elapsed() < Duration::from_mins(1) {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(check(), "{why}; trace={}", self.trace());
@@ -387,7 +387,21 @@ exec "$AE_PAR_REAL_JUST" "${args[@]}"
 const TIMEOUT: &str = r#"#!/usr/bin/env bash
 # A real timeout drives the hp's timeout branch. All other calls preserve their real bound.
 if [[ "$AE_PAR_SIDE" == hp && "$AE_PAR_MODE" == hp-timeout && "$*" == *"3600 just test"* ]]; then
-    exec "$AE_PAR_REAL_TIMEOUT" -k 0.2 5 just test
+    # The clock starts when the fake gate has really started, so load cannot fire it first. A watcher
+    # (bounded at 60 s) sends this process, the real timeout, SIGALRM, which takes its own timeout path (exit 124).
+    # The 600 s bound is only a backstop for a dead watcher: the binding clock is that SIGALRM, 0.3 s after hp-start.
+    parent=$$
+    (
+        for ((i=0; i<2400; i++)); do
+            [[ ! -f "$AE_PAR_BASE/hp-start" ]] || break
+            kill -0 "$parent" 2>/dev/null || exit 0
+            "$AE_PAR_REAL_SLEEP" 0.025
+        done
+        [[ -f "$AE_PAR_BASE/hp-start" ]] || { kill -TERM "$parent" 2>/dev/null; exit 0; }
+        "$AE_PAR_REAL_SLEEP" 0.3
+        kill -ALRM "$parent" 2>/dev/null
+    ) </dev/null >/dev/null 2>&1 &
+    exec "$AE_PAR_REAL_TIMEOUT" -k 0.2 600 just test
 fi
 exec "$AE_PAR_REAL_TIMEOUT" "$@"
 "#;
@@ -445,7 +459,7 @@ case "${1-}:${2-}" in
         other=hp
         [[ "$side" != hp ]] || other=mac
         if [[ "$AE_PAR_MODE" == barrier || "$side" == mac && "$AE_PAR_MODE" == hold* ]]; then
-            for ((i=0; i<400; i++)); do [[ ! -f "$AE_PAR_BASE/$other-start" ]] || break; "$AE_PAR_REAL_SLEEP" 0.025; done
+            for ((i=0; i<2400; i++)); do [[ ! -f "$AE_PAR_BASE/$other-start" ]] || break; "$AE_PAR_REAL_SLEEP" 0.025; done
             [[ -f "$AE_PAR_BASE/$other-start" ]] || { echo 'barrier: peer never started' >&2; exit 91; }
         fi
         if [[ "$side" == hp ]]; then
@@ -809,7 +823,7 @@ fn a_term_to_the_proof_recipe_refuses_and_leaves_the_hp_running() {
     // P3 must separately check the human-facing top-level just release pid.
     let runner = r#"just release-proof hp=run &
 top=$!
-for i in $(seq 1 400); do
+for i in $(seq 1 2400); do
     [ ! -f "$AE_PAR_BASE/hp-start" ] || [ ! -f "$AE_PAR_BASE/mac-start" ] || break
     "$AE_PAR_REAL_SLEEP" 0.025
 done
