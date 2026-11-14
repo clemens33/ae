@@ -40,6 +40,14 @@ fn list_keys_beside_a_side_panel_move_the_main_selection() {
     assert_eq!(app.model.selected(), Some("ops"), "j moves the main list");
     press(&mut app, b"1");
     assert_eq!(app.model.selected(), Some("web"), "a digit selects its row");
+    assert!(take_keys(&mut app, vec![(Key::Down, Instant::now())]).is_some());
+    assert_eq!(
+        app.model.selected(),
+        Some("ops"),
+        "Down steps the main list"
+    );
+    assert!(take_keys(&mut app, vec![(Key::Up, Instant::now())]).is_some());
+    assert_eq!(app.model.selected(), Some("web"), "Up steps it back");
     assert!(app.panel_focused(), "the panel keeps the keys");
     app.close_panel();
     opened(&mut app, true);
@@ -454,4 +462,92 @@ fn a_fallen_back_panel_says_why_at_every_width() {
         }
     }
     assert!(fell >= 40, "the narrow widths fall back: {fell}");
+}
+
+/// At exactly the app's floor, 40x8, an open panel draws: the floor is a
+/// least size, not a size the panel refuses.
+#[test]
+fn an_open_panel_draws_at_exactly_the_size_floor() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    let shown = text(&at(40, 8, &mut app));
+    assert!(!shown.contains("ae app needs at least"), "{shown}");
+    assert!(
+        shown.contains("F side"),
+        "the panel covers the floor frame: {shown}"
+    );
+}
+
+/// The first column of `word` on row `y` of `buf`, searched from `from`.
+fn cell_of(buf: &Buffer, word: &str, y: u16, from: u16) -> Option<u16> {
+    let wide = u16::try_from(word.chars().count()).ok()?;
+    (from..buf.area.width.saturating_sub(wide)).find(|&x| {
+        word.chars()
+            .zip(x..)
+            .all(|(c, at)| buf[(at, y)].symbol() == c.to_string())
+    })
+}
+
+/// With colour, the column that holds the keys has its name in the title
+/// ink and the other column's name is dim; giving the keys away swaps them.
+#[test]
+fn the_focused_column_name_alone_wears_the_title_ink() {
+    let root = Root::new("o7ink");
+    let (mut app, _reader) = orchestrated(&root, false);
+    for name in ["api", crate::orchestrator::ORCHESTRATOR_SESSION] {
+        app.looks
+            .insert(name.to_owned(), (Some(crate::theme::Look::DEFAULT), None));
+    }
+    let ink = |app: &mut App| {
+        let buf = at(160, 45, app);
+        let border = border_of(&buf);
+        let main = cell_of(&buf, "api", 0, 0).expect("the main column's name");
+        let panel = cell_of(&buf, "orchestrator", 0, border).expect("the panel's name");
+        (buf[(main, 0)].fg, buf[(panel, 0)].fg)
+    };
+    let (main, panel) = ink(&mut app);
+    assert_ne!(main, panel, "the panel holds the keys");
+    app.focus_column(false);
+    let (main_after, panel_after) = ink(&mut app);
+    assert_eq!(
+        (main_after, panel_after),
+        (panel, main),
+        "the inks swap with the keys"
+    );
+}
+
+/// A press on the panel acts on the panel frame it was made on while the
+/// bound keeps that frame, HISTORY frames back, and one made on a frame
+/// the bound dropped is not taken, as in the main column.
+#[test]
+fn a_delayed_panel_press_acts_within_the_frame_bound_and_not_beyond() {
+    for (frames, taken) in [
+        (super::super::HISTORY, true),
+        (super::super::HISTORY + 1, false),
+    ] {
+        let mut app = app(None);
+        two(&mut app);
+        opened(&mut app, false);
+        let buf = at(160, 45, &mut app);
+        let y = 0;
+        let x = cell_of(&buf, "F full", y, border_of(&buf)).expect("the mode label");
+        let origin = Instant::now();
+        for _ in 0..frames {
+            let _ = at(160, 45, &mut app);
+        }
+        let press = Mouse {
+            kind: MouseKind::Click,
+            column: x,
+            row: y,
+        };
+        assert!(take_keys(&mut app, vec![(Key::Mouse(press), origin)]).is_some());
+        let full = app.orch.panel.as_ref().is_some_and(|panel| panel.full);
+        assert_eq!(full, taken, "{frames} frames back");
+        let refused = app
+            .flash
+            .as_ref()
+            .is_some_and(|(line, _)| line == "click not taken: its frame is gone");
+        assert_eq!(refused, !taken, "{frames} frames back");
+    }
 }

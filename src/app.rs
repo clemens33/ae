@@ -2706,23 +2706,74 @@ impl App {
         // Every press ends a selection first, a stale or refused one too: no
         // frame is kept to aim a drag at.
         let cleared = mouse.kind == MouseKind::Click && self.unselect();
+        let acted = match self.panel_made(mouse, origin) {
+            Some(acted) => acted,
+            None => self.frame_made(mouse, origin),
+        };
+        acted || cleared
+    }
+
+    /// [`App::mouse_made`] against the main column's frames: a press made
+    /// before a frame replaced the layout is hit against the layout that frame
+    /// replaced, one made on a frame the bound dropped is not taken.
+    fn frame_made(&mut self, mouse: Mouse, origin: Instant) -> bool {
         if mouse.kind == MouseKind::Click && self.lost.is_some_and(|lost| origin <= lost) {
-            self.flash = Some((
-                "click not taken: its frame is gone".to_owned(),
-                Instant::now(),
-            ));
-            self.model.let_go();
-            return true;
+            return self.frame_gone();
         }
         let seen = (self.history.iter()).position(|(replaced, _)| origin <= *replaced);
         let Some(at) = seen.filter(|_| mouse.kind == MouseKind::Click) else {
-            return self.mouse(mouse) || cleared;
+            return self.mouse(mouse);
         };
         let older = std::mem::take(&mut self.history[at].1);
         let current = std::mem::replace(&mut self.layout, older);
         let acted = self.mouse_in(mouse, false);
         self.history[at].1 = std::mem::replace(&mut self.layout, current);
-        acted || cleared
+        acted
+    }
+
+    /// A press whose frame the bound dropped: not taken, and the hint row
+    /// says so.
+    fn frame_gone(&mut self) -> bool {
+        self.flash = Some((
+            "click not taken: its frame is gone".to_owned(),
+            Instant::now(),
+        ));
+        self.model.let_go();
+        true
+    }
+
+    /// [`App::mouse_made`] for a press on the open panel, `None` for any
+    /// other: the panel frame on screen when it was made stands in for the
+    /// panel's current one, from the panel column's own history, while the
+    /// main column's frames resolve the rest as for any press; one made on a
+    /// panel frame the bound dropped is not taken.
+    fn panel_made(&mut self, mouse: Mouse, origin: Instant) -> Option<bool> {
+        if mouse.kind != MouseKind::Click || self.orch.active {
+            return None;
+        }
+        let area = self.layout_at(origin).area();
+        let split = self.model.split();
+        let panel = self.orch.panel.as_mut()?;
+        let columns = model::Columns {
+            panel: Some((panel.full, panel.focused)),
+            ..model::Columns::default()
+        };
+        let at = Position::new(mouse.column, mouse.row);
+        draw::panel_area(area, split, columns).filter(|cells| cells.contains(at))?;
+        if panel.column.lost.is_some_and(|lost| origin <= lost) {
+            return Some(self.frame_gone());
+        }
+        let seen = (panel.column.history.iter()).position(|(replaced, _)| origin <= *replaced)?;
+        let older = std::mem::take(&mut panel.column.history[seen].1);
+        let current = std::mem::replace(&mut panel.column.layout, older);
+        let acted = self.frame_made(mouse, origin);
+        if let Some(panel) = self.orch.panel.as_mut() {
+            let older = std::mem::replace(&mut panel.column.layout, current);
+            if let Some(entry) = panel.column.history.get_mut(seen) {
+                entry.1 = older;
+            }
+        }
+        Some(acted)
     }
 
     /// Every wake up to now was read: the layouts older than the oldest held key
