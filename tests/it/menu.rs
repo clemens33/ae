@@ -8877,11 +8877,11 @@ fn cell_clipping_runs_through_the_one_cutter() {
     assert_eq!(
         head_holders,
         [
+            "accounting.rs".to_owned(),
             "event_text.rs".to_owned(),
             "menu.rs".to_owned(),
             "requests.rs".to_owned(),
             "view.rs".to_owned(),
-            "watchdog_daemon.rs".to_owned(),
         ],
         "the prose projector gained an unnamed caller"
     );
