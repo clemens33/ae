@@ -214,16 +214,81 @@ fn the_panel_draft_never_shows_in_the_main_column() {
     );
 }
 
-/// A full panel's draft wraps to the whole frame it covers, up to its margin.
+/// A panel's draft wraps to the cells the panel covers, up to its margin:
+/// the whole frame full, its own half side by side.
 #[test]
-fn a_full_panel_draft_wraps_to_the_frame_it_covers() {
-    let root = Root::new("o7full");
-    let (mut app, _reader) = orchestrated(&root, true);
-    panel_writes(&mut app);
-    let draft = "0123456789".repeat(40);
-    press(&mut app, draft.as_bytes());
-    let buf = at(160, 45, &mut app);
-    assert_fills_to_the_margin(&draft_rows(&buf, 0, 160), &draft, 160);
+fn a_panel_draft_wraps_to_the_cells_the_panel_covers() {
+    for full in [true, false] {
+        let root = Root::new("o7full");
+        let (mut app, _reader) = orchestrated(&root, full);
+        panel_writes(&mut app);
+        let draft = "0123456789".repeat(if full { 40 } else { 20 });
+        press(&mut app, draft.as_bytes());
+        let buf = at(160, 45, &mut app);
+        let from = if full { 0 } else { border_of(&buf) + 1 };
+        assert_fills_to_the_margin(&draft_rows(&buf, from, 160), &draft, 160);
+    }
+}
+
+/// The orchestrator button's cell in the frame `shown`.
+fn button(shown: &str) -> Mouse {
+    let (row, column) = shown
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.chars().position(|c| c == '\u{25c6}').map(|x| (row, x)))
+        .expect("the orchestrator button");
+    Mouse {
+        kind: MouseKind::Click,
+        column: u16::try_from(column).expect("column"),
+        row: u16::try_from(row).expect("row"),
+    }
+}
+
+/// Hiding the panel beside a main column that writes leaves that entry on.
+#[test]
+fn hiding_the_panel_leaves_the_main_writer_writing() {
+    let root = Root::new("o7keep");
+    let (mut app, _reader) = orchestrated(&root, false);
+    app.focus_column(false);
+    let started = writing(&mut app);
+    assert_eq!(
+        app.compose(Key::Text(b"MAIN_GOES_ON".to_vec()), started),
+        Some(())
+    );
+    let shown = framed(&mut app);
+    assert!(app.mouse(button(&shown)));
+    assert!(app.orch.panel.is_none(), "the button hides the panel");
+    assert!(app.composing(), "the main entry goes on");
+    assert_eq!(app.writer_name(), Some("api"));
+}
+
+/// A refused panel entry is HELD in the panel: Enter there tries the
+/// orchestrator again, never the main column's session.
+#[test]
+fn a_held_panel_entry_retries_in_the_panel() {
+    let root = Root::new("o7held");
+    let (mut app, _reader) = orchestrated(&root, false);
+    let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+    let meta = root.0.join("sessions").join(orch).join("meta");
+    std::fs::write(
+        &meta,
+        format!("schema=2\nsession_id={ID}\nlayout=lead-pair\n"),
+    )
+    .expect("meta");
+    assert!(take_keys(&mut app, vec![(Key::Enter, Instant::now())]).is_some());
+    assert!(
+        app.held.is_some(),
+        "a panel entry without its pair is refused"
+    );
+    assert!(app.writer_name().is_none());
+    session(&root, orch, "");
+    assert!(take_keys(&mut app, vec![(Key::Enter, Instant::now())]).is_some());
+    assert_eq!(
+        app.writer_name(),
+        Some(orch),
+        "Enter retried the panel's entry"
+    );
+    assert!(app.held.is_none());
 }
 
 /// Hiding the panel while it writes ends its entry and keeps its draft, by
@@ -345,4 +410,48 @@ fn a_frame_too_narrow_for_side_shows_the_column_that_holds_the_keys() {
         covered.contains("side needs") && !covered.contains("WRITTEN_UNDER_NARROWING"),
         "the panel that holds the keys covers the frame: {covered}"
     );
+}
+
+/// The reader open in the main column beside a side panel: the panel's
+/// footer ends the frame with its gear, the frame's only one (the version
+/// before it drops first on a narrow row).
+#[test]
+fn the_reader_beside_a_side_panel_leaves_the_panel_footer_its_gear() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    app.focus_column(false);
+    app.model.open_reader(1);
+    let buf = at(160, 45, &mut app);
+    let border = border_of(&buf);
+    let gears: Vec<(u16, u16)> = (0..buf.area.height)
+        .flat_map(|y| (0..160).map(move |x| (x, y)))
+        .filter(|&(x, y)| buf[(x, y)].symbol() == "\u{2699}")
+        .collect();
+    assert_eq!(gears.len(), 1, "{}", text(&buf));
+    let (x, y) = gears[0];
+    assert!(
+        x > border && y == buf.area.height - 1,
+        "{x},{y}\n{}",
+        text(&buf)
+    );
+}
+
+/// A side request that cannot fit covers the frame with the panel, whose
+/// header says why, at every width from the app's floor up.
+#[test]
+fn a_fallen_back_panel_says_why_at_every_width() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    let mut fell = 0;
+    for width in 40..160 {
+        let shown = text(&at(width, 20, &mut app));
+        let head = shown.lines().next().unwrap_or_default();
+        if head.contains("F side") {
+            fell += 1;
+            assert!(head.contains("side needs"), "{width}: {head}");
+        }
+    }
+    assert!(fell >= 40, "the narrow widths fall back: {fell}");
 }
