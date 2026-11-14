@@ -143,11 +143,13 @@ impl Fleet {
     }
 }
 
-/// The sidebar's rows: running sessions with the orchestrator first, then the
-/// human's `fleet_order` pins, then the rest by the newest AI answer to the
-/// human, newest first (`answer_epoch`); a session never answered after them
-/// in creation order; then stopped ones as the picker sorts them — dated by
-/// `last_live` newest first, undated after, ties by name.
+/// The sidebar's rows: running sessions in the human's `fleet_order` pins,
+/// then the rest by the newest AI answer to the human, newest first
+/// (`answer_epoch`); a session never answered after them in creation order;
+/// then stopped ones as the picker sorts them — dated by `last_live` newest
+/// first, undated after, ties by name. The orchestrator is never a row,
+/// running or stopped, pinned or not: it has its own panel
+/// ([`orchestrator`]).
 #[must_use]
 pub fn rows(
     world: &World,
@@ -161,6 +163,7 @@ pub fn rows(
     let (stopped, running): (Vec<&SessionEntry>, Vec<&SessionEntry>) = world
         .sessions
         .iter()
+        .filter(|entry| entry.name != crate::orchestrator::ORCHESTRATOR_SESSION)
         .partition(|entry| entry.status == Status::Stopped);
     let strip: Vec<FleetRow> = running
         .iter()
@@ -185,10 +188,7 @@ pub fn rows(
         crate::theme::ordered_fleet_rows(&strip, order)
             .into_iter()
             .filter_map(|row| running.iter().find(|entry| entry.name == row.name))
-            .partition(|entry| {
-                entry.name == crate::orchestrator::ORCHESTRATOR_SESSION
-                    || order.place(&entry.name) != usize::MAX
-            });
+            .partition(|entry| order.place(&entry.name) != usize::MAX);
     rest.sort_by_key(|entry| std::cmp::Reverse(entry.answer_epoch));
     let ordered = pinned
         .into_iter()
@@ -217,6 +217,30 @@ pub fn rows(
         .filter(|home| rows.iter().any(|row| row.name == *home))
         .map(str::to_owned);
     Fleet { rows, home }
+}
+
+/// The orchestrator's own row, built as any session's row is but never listed:
+/// its panel button wears its mark and its needs. `None` when the world has no
+/// orchestrator.
+#[must_use]
+pub fn orchestrator(
+    world: &World,
+    facts: &BTreeMap<String, Facts>,
+    needs: &BTreeMap<String, Section>,
+    now: Timestamp,
+) -> Option<Row> {
+    let name = crate::orchestrator::ORCHESTRATOR_SESSION;
+    let entry = world.sessions.iter().find(|entry| entry.name == name)?;
+    let empty = Section::default();
+    let section = needs.get(name).unwrap_or(&empty);
+    Some(row(
+        entry,
+        facts.get(name),
+        &BTreeMap::new(),
+        section,
+        0,
+        now,
+    ))
 }
 
 /// One session's row.

@@ -61,6 +61,9 @@ pub(super) const KEEP: usize = 64;
 pub(super) enum Request {
     /// The session the UI shows now.
     Focus(Option<String>),
+    /// The session the open orchestrator panel shows beside it, or none: read
+    /// through every stage as the selection is, never instead of it.
+    Panel(Option<String>),
     /// Read this session again: the UI wrote into it.
     Reread(String),
     /// The writer to re-prove each fleet read, `None` once it stopped.
@@ -244,6 +247,9 @@ pub(super) enum Answer {
         generation: u64,
         view: Box<crate::tool_stats::View>,
     },
+    /// Whether the orchestrator this fleet read found is one proven
+    /// incarnation: sent right after each [`Answer::Fleet`].
+    Orchestrator(Proof),
     /// How pressed each lead-pair seat of session `name` (bound to `id`) is,
     /// by seat name: its own account's judged quota, `None` when unknown.
     Pressure {
@@ -251,6 +257,47 @@ pub(super) enum Answer {
         id: String,
         pressure: Pressure,
     },
+}
+
+/// Whether the orchestrator a fleet read found is one incarnation, proven by
+/// the owners the session menu proves a card with: its live
+/// `@ae_session_uuid`, the meta it names ([`session_menu::correlated`]) and
+/// the one `session_id` the meta records ([`sole_uuid`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) enum Proof {
+    /// No orchestrator runs: none is recorded, or it is stopped.
+    #[default]
+    Absent,
+    /// It runs as this incarnation.
+    Proven(String),
+    /// It runs, and the proof failed for this reason.
+    Gap(String),
+}
+
+/// The [`Proof`] of the orchestrator `read` lists.
+fn orchestrator_proof(read: &FleetRead) -> Proof {
+    let name = crate::orchestrator::ORCHESTRATOR_SESSION;
+    let running = (read.world.sessions.iter())
+        .any(|entry| entry.name == name && entry.status == Status::Running);
+    let Some(dir) = read.dirs.get(name).filter(|_| running) else {
+        return Proof::Absent;
+    };
+    let option = match crate::session_launch::recorded_server_resolved(dir) {
+        Some(server) => session_menu::live_identity(&server, name),
+        None => tmux::OptionReading::Unknown,
+    };
+    let meta = session_menu::MetaSource::read(dir);
+    if let Some(gap) = session_menu::correlation_gap(&option, &meta) {
+        return Proof::Gap(gap);
+    }
+    let live = match &option {
+        tmux::OptionReading::Set(value) => crate::archive::canonical_uuid(value),
+        _ => String::new(),
+    };
+    match sole_uuid(dir) {
+        Some(sole) if !live.is_empty() && sole == live => Proof::Proven(live),
+        _ => Proof::Gap("meta: session_id not recorded once".to_owned()),
+    }
 }
 
 /// How pressed each lead-pair seat of a session is, by seat name: its own
@@ -408,6 +455,8 @@ pub(super) struct Reader {
     ids: BTreeMap<String, String>,
     rows: Vec<String>,
     selected: Option<String>,
+    /// The session the open orchestrator panel shows, read as the selection is.
+    panel: Option<String>,
     focus_at: Instant,
     fleet_at: Option<Instant>,
     live_facts: Option<(Vec<crate::quota::LiveSeatFact>, bool, i64)>,
@@ -509,6 +558,7 @@ impl Reader {
             ids: BTreeMap::new(),
             rows: Vec::new(),
             selected: None,
+            panel: None,
             focus_at: Instant::now(),
             fleet_at: None,
             live_facts: None,
@@ -649,6 +699,10 @@ impl Reader {
                 }
                 self.selected = selected;
                 self.focus_at = Instant::now();
+                self.evict();
+            }
+            Request::Panel(panel) => {
+                self.panel = panel;
                 self.evict();
             }
             Request::Reread(name) => drop(self.rereads.insert(name)),
@@ -858,7 +912,8 @@ impl Reader {
         {
             return Job::Peek(ask.clone());
         }
-        let mut order = order(&self.rows, self.selected.as_deref(), self.home.as_deref())
+        let mut order = self
+            .kept()
             .into_iter()
             .filter(|(name, _)| self.readable(name))
             .map(|(name, tier)| (Some(name.clone()), self.due(&name, tier, now)))
@@ -1004,7 +1059,9 @@ impl Reader {
         self.ids.clone_from(&read.ids);
         self.rows = read.fleet.rows.iter().map(|row| row.name.clone()).collect();
         self.evict();
+        let proof = orchestrator_proof(&read);
         answers.push(Answer::Fleet(read));
+        answers.push(Answer::Orchestrator(proof));
         answers.extend(self.ended());
         answers
     }
@@ -1170,11 +1227,25 @@ impl Reader {
         }
     }
 
+    /// The sessions to keep read: the [`order`] of the selection, home and the
+    /// rows, with the open panel's session hot right after the selection.
+    fn kept(&self) -> Vec<(String, Tier)> {
+        let mut kept = order(&self.rows, self.selected.as_deref(), self.home.as_deref());
+        if let Some(panel) = &self.panel
+            && !kept.iter().any(|(name, _)| name == panel)
+        {
+            let at = usize::from(self.selected.is_some()).min(kept.len());
+            kept.insert(at, (panel.clone(), Tier::Hot));
+        }
+        kept
+    }
+
     /// Drop every foreign console no longer kept: out of the [`order`], gone
     /// from the fleet, moved, or bound to an identity its session no longer
     /// records. Its next read opens it afresh.
     fn evict(&mut self) {
-        let keep: Vec<String> = order(&self.rows, self.selected.as_deref(), self.home.as_deref())
+        let keep: Vec<String> = self
+            .kept()
             .into_iter()
             .map(|(name, _)| name)
             .collect();
@@ -1285,7 +1356,7 @@ impl Reader {
     /// How far session `name`'s staged reads go: predecessors only for the
     /// selection.
     fn reach(&self, name: &str) -> Reach {
-        if self.selected.as_deref() == Some(name) {
+        if self.selected.as_deref() == Some(name) || self.panel.as_deref() == Some(name) {
             Reach::Every
         } else {
             Reach::Current

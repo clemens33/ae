@@ -658,6 +658,8 @@ struct App {
     cue: cue::Cue,
     /// How an admitted ask is carried to its seat: the helpers' tracked path.
     carry: Carry,
+    /// Whether the last fleet read proved one orchestrator incarnation.
+    proof: loader::Proof,
     /// How a process that must outlive this app is started: Stop's supervisor
     /// and a Start outside tmux.
     detach: Detach,
@@ -773,6 +775,7 @@ impl App {
             cue: cue::Cue::default(),
             carry: Arc::new(term::Carry::run),
             detach: Box::new(transport::run_detached),
+            proof: loader::Proof::Absent,
         }
     }
 
@@ -835,6 +838,7 @@ impl App {
             Answer::Pressure { name, id, pressure } => {
                 self.pressures.insert(name, (id, pressure));
             }
+            Answer::Orchestrator(proof) => self.proof = proof,
         }
     }
 
@@ -8139,6 +8143,7 @@ mod tests {
                 | loader::Request::Peek(_)
                 | loader::Request::Read(_)
                 | loader::Request::Records(_)
+                | loader::Request::Panel(_)
                 | loader::Request::Ending(_)
                 | loader::Request::Stats { .. }
                 | loader::Request::Tools { .. }
@@ -8381,6 +8386,7 @@ mod tests {
                     | loader::Request::Peek(_)
                     | loader::Request::Read(_)
                     | loader::Request::Records(_)
+                    | loader::Request::Panel(_)
                     | loader::Request::Ending(_)
                     | loader::Request::Stats { .. }
                     | loader::Request::Tools { .. }
@@ -8414,6 +8420,7 @@ mod tests {
                 | loader::Request::Peek(_)
                 | loader::Request::Read(_)
                 | loader::Request::Records(_)
+                | loader::Request::Panel(_)
                 | loader::Request::Ending(_)
                 | loader::Request::Stats { .. }
                 | loader::Request::Tools { .. }
@@ -8451,6 +8458,7 @@ mod tests {
                     | loader::Request::Peek(_)
                     | loader::Request::Read(_)
                     | loader::Request::Records(_)
+                    | loader::Request::Panel(_)
                     | loader::Request::Ending(_)
                     | loader::Request::Stats { .. }
                     | loader::Request::Tools { .. }
