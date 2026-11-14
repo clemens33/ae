@@ -58,6 +58,12 @@ fn list_keys_beside_a_side_panel_move_the_main_selection() {
         Some("web"),
         "j over a full panel is inert"
     );
+    assert!(take_keys(&mut app, vec![(Key::Down, Instant::now())]).is_some());
+    assert_eq!(
+        app.model.selected(),
+        Some("web"),
+        "Down over a full panel is inert"
+    );
 }
 
 /// A mouse event on the panel owes a redraw exactly when it changes what is
@@ -680,4 +686,28 @@ fn a_mode_label_press_ends_a_held_panel_entry() {
         }));
         assert!(app.held.is_none(), "{label}: the press ends the held entry");
     }
+}
+
+/// The width a fallen-back panel names is the one it needs: there the panel
+/// stands beside the main column, one column less it still falls back.
+#[test]
+fn a_fallen_back_panel_names_the_width_side_needs() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    let head = |app: &mut App, width: u16| -> String {
+        let shown = text(&at(width, 20, app));
+        shown.lines().next().unwrap_or_default().to_owned()
+    };
+    let narrow = head(&mut app, 60);
+    let need: u16 = narrow
+        .split("side needs ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("the fallback names a width: {narrow}"));
+    let at_need = head(&mut app, need);
+    assert!(at_need.contains("F full"), "{need}: side fits: {at_need}");
+    let below = head(&mut app, need - 1);
+    assert!(below.contains("side needs"), "{}: {below}", need - 1);
 }
