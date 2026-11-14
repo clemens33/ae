@@ -905,3 +905,20 @@ fn a_panel_just_opened_says_loading_until_its_lane_is_read() {
         text(&buf)
     );
 }
+
+/// `r` in the panel with no turn to read opens no reader and leaves the
+/// panel as it stands: the keys stay, a full panel stays full.
+#[test]
+fn r_with_nothing_to_read_leaves_the_panel_as_it_stands() {
+    for full in [false, true] {
+        let mut app = app(None);
+        two(&mut app);
+        opened(&mut app, full);
+        let _ = framed(&mut app);
+        let _ = take_keys(&mut app, vec![(Key::Text(b"r".to_vec()), Instant::now())]);
+        assert!(!app.model.reader_open(), "nothing to read (full: {full})");
+        assert!(app.panel_focused(), "the keys stay (full: {full})");
+        let stays = app.orch.panel.as_ref().is_some_and(|panel| panel.full);
+        assert_eq!(stays, full, "the panel keeps its mode");
+    }
+}
