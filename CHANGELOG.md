@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.57] - 2026-11-14
+- Move the inline test modules to files
+- Seat start and readiness move to ready.rs
+- The launch record moves to record.rs
+- Launch-time tmux stamping moves to stamp.rs
+- Launch preflight moves to preflight.rs
+- Seat overrides move to overrides.rs
+- Launch arguments and environment move to plan.rs
+- Move the inline test module to a file
+- The fleet reads move to fleet.rs
+- The _aeview views move to views.rs
+- Client UI commands move to menu.rs
+- Queued reads and batched writes move to queue.rs
+- Option and identity writes move to options.rs
+- The hp timeout clock starts after the fake gate has started
+- Move the inline test modules to files
+
 ## [v2026.11.56] - 2026-11-14
 - A one-screen layer map, and a guard that keeps it equal to the ratchet table
 - Freeze effort floors, two steps and the v2 record (#318 S2)
