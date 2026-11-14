@@ -551,3 +551,53 @@ fn a_delayed_panel_press_acts_within_the_frame_bound_and_not_beyond() {
         assert_eq!(refused, !taken, "{frames} frames back");
     }
 }
+
+/// A press on a full panel's own button hides the panel and nothing else: it
+/// arms no selection in the main column that the panel uncovers.
+#[test]
+fn a_full_panel_button_press_hides_the_panel_and_arms_nothing() {
+    let root = Root::new("o7fullbutton");
+    let (mut app, _reader) = orchestrated(&root, true);
+    let shown = framed(&mut app);
+    assert!(app.mouse(button(&shown)));
+    assert!(app.orch.panel.is_none(), "the button hides the panel");
+    assert!(app.select.is_none(), "the press arms no selection");
+}
+
+/// A press the last drawn frame does not cover, as after the terminal grew
+/// and before the redraw, leaves the keys where they are: it never gives a
+/// side panel the keys, never takes them from one, and never hands them to
+/// the main column a full panel covers.
+#[test]
+fn a_press_beyond_the_drawn_frame_leaves_the_keys_where_they_are() {
+    for (full, focused) in [(false, false), (false, true), (true, true)] {
+        let mut app = app(None);
+        two(&mut app);
+        opened(&mut app, full);
+        let _ = at(160, 45, &mut app);
+        app.focus_column(focused);
+        for column in [160, 200, 250] {
+            let _ = app.mouse(Mouse {
+                kind: MouseKind::Click,
+                column,
+                row: 20,
+            });
+            assert_eq!(
+                app.panel_focused(),
+                focused,
+                "full {full}, column {column}: the keys stay"
+            );
+        }
+    }
+}
+
+/// Beside a side panel the frame shows one orchestrator button, the main
+/// column's: the panel's footer draws none.
+#[test]
+fn a_side_panel_frame_shows_one_orchestrator_button() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    let shown = text(&at(160, 45, &mut app));
+    assert_eq!(shown.matches('\u{25c6}').count(), 1, "{shown}");
+}

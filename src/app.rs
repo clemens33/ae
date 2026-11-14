@@ -2823,7 +2823,11 @@ impl App {
         if !self.orch.active && self.on_panel(mouse) {
             return self.panel_route(mouse, fresh);
         }
-        if !self.orch.active && mouse.kind == MouseKind::Click && self.orch.panel.is_some() {
+        // A press beyond the drawn frame, before the redraw after a resize,
+        // lands on no column and moves no keys.
+        let drawn = (self.layout.area()).contains(Position::new(mouse.column, mouse.row));
+        if !self.orch.active && mouse.kind == MouseKind::Click && self.orch.panel.is_some() && drawn
+        {
             self.focus_column(false);
         }
         if mouse.kind == MouseKind::Drag {
