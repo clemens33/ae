@@ -1958,6 +1958,36 @@ mod tests {
         );
     }
 
+    /// The open panel's session is no fleet row, yet it is kept read hot
+    /// right after the selection, and only once when the selection or home
+    /// already keeps it.
+    #[test]
+    fn the_open_panel_session_is_kept_hot_after_the_selection_once() {
+        let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+        let root = Root::new("panel");
+        let mut reader = Reader::new(root.0.clone(), None, None);
+        reader.rows = rows(&["a", "b", "c"]);
+        reader.take(Request::Focus(Some("b".to_owned())));
+        reader.take(Request::Panel(Some(orch.to_owned())));
+        let kept = |reader: &Reader| -> Vec<(String, Tier)> { reader.kept() };
+        assert_eq!(
+            kept(&reader),
+            vec![
+                ("b".to_owned(), Tier::Hot),
+                (orch.to_owned(), Tier::Hot),
+                ("c".to_owned(), Tier::Warm),
+                ("a".to_owned(), Tier::Warm),
+            ]
+        );
+        let mut homed = Reader::new(root.0.clone(), Some(orch.to_owned()), None);
+        homed.rows = rows(&["a"]);
+        homed.take(Request::Panel(Some(orch.to_owned())));
+        assert_eq!(
+            kept(&homed),
+            vec![(orch.to_owned(), Tier::Hot), ("a".to_owned(), Tier::Cold)]
+        );
+    }
+
     /// Ruling 3: a neighbour read before the last change of selection is read
     /// again a REFRESH after that read completed, not sooner.
     #[test]

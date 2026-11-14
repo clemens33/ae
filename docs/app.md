@@ -427,8 +427,12 @@ the panel when it is hidden.
 
 The panel is a second chat column on the orchestrator, drawn by the chat's
 own renderer with its own composer, scroll, marked turn and draft. Side by side
-it takes the right half of the chat column, each half at least 40 cells;
-narrower, it covers the frame and its header says `side needs <N> columns`.
+it takes the right half of the chat column, each half at least 40 cells.
+Narrower, the column that holds the keys covers the frame: the panel, its
+header saying `side needs <N> columns`, or the main column, so a writer, the
+reader `r` opens and the session `!` selects stay on screen. The panel stays
+open behind the main column and stands beside it again when the frame
+widens; `O` or the button then hands it the keys, and it covers the frame.
 `F` or a click on its header's `F full` / `F side` switches it between side
 and full. Full screen it holds the keys; side by side a click gives the keys to
 the column it lands on, and the focused column's name is in the title ink

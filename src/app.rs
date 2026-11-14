@@ -4766,13 +4766,25 @@ impl App {
         self.focus();
     }
 
-    /// `O` and the button: open the panel beside the main column, or hide it.
+    /// `O` and the button: open the panel beside the main column, or hide
+    /// it; an open panel a main column covers takes the keys and shows.
     fn toggle_panel(&mut self) {
-        if self.orch.panel.is_some() {
-            self.close_panel();
-        } else {
-            self.open_panel(false);
+        match self.panel_area() {
+            _ if self.orch.panel.is_none() => self.open_panel(false),
+            None => self.focus_column(true),
+            Some(_) => self.close_panel(),
         }
+    }
+
+    /// The cells the open panel covers in the last frame, `None` while it is
+    /// closed or the main column covers it.
+    fn panel_area(&self) -> Option<ratatui_core::layout::Rect> {
+        let panel = self.orch.panel.as_ref()?;
+        let columns = model::Columns {
+            panel: Some((panel.full, panel.focused)),
+            ..model::Columns::default()
+        };
+        draw::panel_area(self.layout.area(), self.model.split(), columns)
     }
 
     /// `F` and the mode label: the panel between side and full as the last
@@ -4920,14 +4932,7 @@ impl App {
 
     /// Whether a mouse event lands on the open panel.
     fn on_panel(&self, mouse: Mouse) -> bool {
-        let Some(panel) = self.orch.panel.as_ref() else {
-            return false;
-        };
-        let columns = model::Columns {
-            panel: Some((panel.full, panel.focused)),
-            ..model::Columns::default()
-        };
-        draw::panel_area(self.layout.area(), self.model.split(), columns)
+        self.panel_area()
             .is_some_and(|area| area.contains(Position::new(mouse.column, mouse.row)))
     }
 
@@ -4957,10 +4962,11 @@ impl App {
             || mouse.kind == MouseKind::Click
     }
 
-    /// Draw the open panel over its cells of `buf`, from its own column.
+    /// Draw the open panel over its cells of `buf`, from its own column; a
+    /// panel the main column covers draws nothing and sees no turn.
     fn frame_panel(&mut self, buf: &mut Buffer) {
         let mut columns = self.columns();
-        if columns.panel.is_none() {
+        if draw::panel_area(buf.area, self.model.split(), columns).is_none() {
             return;
         }
         columns.drawing_panel = true;
@@ -6250,6 +6256,7 @@ mod tests {
     mod menu_records;
     mod menu_units;
     mod o7app_spec;
+    mod o7app_units;
     mod s2_exec_spec;
 
     pub(in crate::app) const ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";

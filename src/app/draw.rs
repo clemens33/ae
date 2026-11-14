@@ -717,7 +717,8 @@ const PANEL_FLOOR: u16 = 40;
 /// Where the orchestrator panel stands in a frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Stand {
-    /// No panel.
+    /// No panel drawn: none is open, or a side panel did not fit while the
+    /// main column holds the keys and covers the frame.
     Closed,
     /// Right of the main column, from its border column to the frame's end.
     Side { border: u16 },
@@ -727,9 +728,10 @@ enum Stand {
 
 /// Where the panel `columns` describe stands in `area` split as `split`:
 /// side takes half of the chat columns when both halves keep
-/// [`PANEL_FLOOR`], else it falls back to the full frame and says why.
+/// [`PANEL_FLOOR`]. Else the column that holds the keys covers the frame:
+/// the panel, saying why, or the main column, the panel not drawn.
 fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
-    let Some((full, _)) = columns.panel else {
+    let Some((full, focused)) = columns.panel else {
         return Stand::Closed;
     };
     if full {
@@ -741,6 +743,9 @@ fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
         return Stand::Side {
             border: area.width - half,
         };
+    }
+    if !focused {
+        return Stand::Closed;
     }
     let need = start.saturating_add(PANEL_FLOOR * 2);
     Stand::Full {
