@@ -427,7 +427,11 @@ fn no_tmux_format_literal_in_src_carries_a_control_character() {
     let extracted = extracted_test_modules(source_view::product());
     assert_eq!(
         extracted,
-        ["src/session_launch/tests.rs", "src/tmux/tests.rs"],
+        [
+            "src/session_launch/tests.rs",
+            "src/tmux/tests.rs",
+            "src/watchdog_daemon/tests.rs"
+        ],
         "the extracted test modules the scan leaves out changed: review the new one"
     );
     let (mut hits, mut offenders) = (0, Vec::new());
