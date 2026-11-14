@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.56] - 2026-11-14
+- A one-screen layer map, and a guard that keeps it equal to the ratchet table
+- Freeze effort floors, two steps and the v2 record (#318 S2)
+- An unknown effort record version is v3 now that v2 is valid (#318 S2)
+- Step two merges its windows into the effort record by key (#318 S2)
+- Floors per model, a second step at 90 and the v2 record (#318 S2)
+- V2 records, the second step and the two-tier step up (#318 S2)
+- Effort tests: a floored step lands on the floor and never below it (#318 S2)
+- Effort tests: the second step needs ninety, merges its windows and names a refusal once (#318 S2)
+- Effort tests: the fold, resume and close paths of the second step, each pinned by a unit test (#318 S2)
+- Effort leg: the second step's reservation record is one pure function, pinned to the live tool pid (#318 S2)
+- A restart up may follow a failed second step on the first step's tier (#318 S2 review)
+
 ## [v2026.11.55] - 2026-11-13
 - Stats store: decide a tools write once, in the warm, and prove it by status under the lock (#322 follow-up)
 - Stats store: a warm answers a failed listing with the error its record serves held
