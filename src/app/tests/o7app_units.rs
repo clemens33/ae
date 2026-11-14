@@ -601,3 +601,30 @@ fn a_side_panel_frame_shows_one_orchestrator_button() {
     let shown = text(&at(160, 45, &mut app));
     assert_eq!(shown.matches('\u{25c6}').count(), 1, "{shown}");
 }
+
+/// Opening the panel by its button while the main column writes hands the
+/// panel the keys and ends the main entry, its draft kept: no column writes
+/// without the keys.
+#[test]
+fn opening_the_panel_by_its_button_ends_the_main_entry_and_keeps_its_draft() {
+    let root = Root::new("o7openwrite");
+    let (mut app, _reader) = housed(&root);
+    app.orch.proof = loader::Proof::Proven(OID.to_owned());
+    let started = writing(&mut app);
+    assert_eq!(
+        app.compose(Key::Text(b"MAIN_DRAFT_KEPT".to_vec()), started),
+        Some(())
+    );
+    let shown = framed(&mut app);
+    assert!(app.mouse(button(&shown)));
+    assert!(
+        app.panel_focused(),
+        "the button opens the panel with the keys"
+    );
+    assert!(
+        !app.composing() && app.writer_name().is_none(),
+        "the main entry ends"
+    );
+    let kept = app.inputs.get(&("api".to_owned(), app.id("api")));
+    assert_eq!(kept.map(Input::draft).as_deref(), Some("MAIN_DRAFT_KEPT"));
+}
