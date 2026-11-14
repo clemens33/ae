@@ -668,7 +668,7 @@ happens next.
 The watchdog moves a seat PROVEN stuck on its vendor usage limit the same way,
 through the same verb: the only difference is who types it. The decisions live
 in `src/autoreseat.rs`, the legs in `src/autoreseat/leg.rs`, the daemon step in
-`src/watchdog_daemon.rs::auto_reseat`. The config is `[workspace] auto_reseat`
+`src/watchdog_daemon/cycle_apply.rs::Cycle::auto_reseat`. The config is `[workspace] auto_reseat`
 (`off` by default), `auto_reseat_sessions`, `auto_reseat_grace_secs`,
 `auto_reseat_at`, and the `[auto_reseat]` map; see
 [Configuration](../getting-started/config.md).

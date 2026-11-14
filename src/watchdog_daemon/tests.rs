@@ -60,6 +60,7 @@ fn family() -> String {
         + include_str!("ticker.rs")
         + include_str!("quota_carry.rs")
         + include_str!("accounting.rs")
+        + include_str!("cycle_apply.rs")
         + include_str!("cycle_observe.rs")
         + include_str!("cycle_publish.rs")
 }
