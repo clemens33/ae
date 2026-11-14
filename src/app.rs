@@ -4799,10 +4799,10 @@ impl App {
             opened: inert_line(&self.orch.proof).unwrap_or_default(),
             column: Column {
                 chat: model::Chat::of(ORCH),
-                loading: true,
                 ..Column::default()
             },
         });
+        // `show` sets the column's `loading` on every path.
         self.in_panel(Self::show);
     }
 

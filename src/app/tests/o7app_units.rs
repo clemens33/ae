@@ -883,3 +883,25 @@ fn a_side_panel_takes_half_the_cells_right_of_the_sidebar() {
         );
     }
 }
+
+/// A panel just opened has read nothing of its orchestrator's lane yet, and
+/// says so: its chat shows one `loading` row until the first read lands.
+#[test]
+fn a_panel_just_opened_says_loading_until_its_lane_is_read() {
+    let root = Root::new("o7loading");
+    let (mut app, _reader) = orchestrated(&root, false);
+    let buf = at(160, 45, &mut app);
+    let border = border_of(&buf);
+    let panel: Vec<String> = (0..buf.area.height)
+        .map(|y| {
+            (border + 1..160)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect();
+    assert!(
+        panel.iter().any(|row| row.trim() == "loading"),
+        "{}",
+        text(&buf)
+    );
+}
