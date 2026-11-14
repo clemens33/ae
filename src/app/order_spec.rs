@@ -106,7 +106,8 @@ fn answered(root: &Root, name: &str, sink: &str, epoch: i64) {
 }
 
 #[test]
-fn orchestrator_then_config_pins_then_answer_recency_then_unknown_then_stopped() {
+// O7 amendment authorized by lead ae-20261114T105439Z-8470dfcb.
+fn config_pins_then_answer_recency_then_unknown_then_stopped_without_orchestrator() {
     let root = Root::new("order-precedence");
     recorded(&root, "stopold", "console:local", "ask", NOW - 1);
     answered(&root, "recent", "console:local", NOW - 10);
@@ -150,19 +151,11 @@ fn orchestrator_then_config_pins_then_answer_recency_then_unknown_then_stopped()
     assert_eq!(
         names(&read.fleet),
         [
-            "orchestrator",
-            "pin1",
-            "pin2",
-            "recent",
-            "older",
-            "unknown",
-            "stopnew",
-            "stopold",
-            "undated"
+            "pin1", "pin2", "recent", "older", "unknown", "stopnew", "stopold", "undated"
         ]
     );
     let indices: Vec<usize> = read.fleet.rows.iter().map(|row| row.index).collect();
-    assert_eq!(indices, (1..=9).collect::<Vec<_>>());
+    assert_eq!(indices, (1..=8).collect::<Vec<_>>());
 }
 
 #[test]

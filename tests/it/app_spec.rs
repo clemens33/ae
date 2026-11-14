@@ -247,19 +247,20 @@ fn fleet() -> Fleet {
     )
 }
 
-/// Orchestrator pinned first, then the human's order, then creation, then
-/// stopped; indexes are the sidebar's own 1-based run; home flagged once.
+/// The orchestrator has its own panel. Listed rows follow the human's order,
+/// then creation, then stopped, with renumbered indices and one home flag.
+/// O7 amendment authorized by lead ae-20261114T105439Z-8470dfcb.
 #[test]
-fn app_fleet_rows_order_pin_orchestrator_order_creation_stopped() {
+fn app_fleet_rows_order_excludes_orchestrator_then_order_creation_stopped() {
     let fleet = fleet();
     let names: Vec<&str> = fleet.rows.iter().map(|row| row.name.as_str()).collect();
     assert_eq!(
         names,
-        ["orchestrator", "docs", "api", "infra", "deadseat", "old"],
-        "pinned, ordered, created, stopped"
+        ["docs", "api", "infra", "deadseat", "old"],
+        "orchestrator excluded, then ordered, created, stopped"
     );
     let indexes: Vec<usize> = fleet.rows.iter().map(|row| row.index).collect();
-    assert_eq!(indexes, [1, 2, 3, 4, 5, 6], "sidebar's own 1-based run");
+    assert_eq!(indexes, [1, 2, 3, 4, 5], "sidebar's own 1-based run");
     let home: Vec<&str> = fleet
         .rows
         .iter()
@@ -290,7 +291,14 @@ fn app_fleet_rows_mark_and_needy() {
     assert!(!by_name("api").needy, "no Section, no need");
     assert_eq!(by_name("docs").mark, Mark::Working);
     assert!(!by_name("docs").needy, "counts never make needy");
-    assert_eq!(by_name("orchestrator").mark, Mark::Working);
+    // The panel control retains the orchestrator's mark, outside the list.
+    let (world, facts, _, needs) = world();
+    let orchestrator = ae::app::fleet::orchestrator(&world, &facts, &needs, now())
+        .expect("the hidden live orchestrator still has its panel facts");
+    assert_eq!(orchestrator.name, "orchestrator");
+    assert_eq!(orchestrator.mark, Mark::Working);
+    assert!(!orchestrator.needy, "no orchestrator Section, no need");
+    assert!(!fleet.rows.iter().any(|row| row.name == "orchestrator"));
 }
 
 /// Counts tally picker marks in `BY_URGENCY` order, non-zero only; blocked
