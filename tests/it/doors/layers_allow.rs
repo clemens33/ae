@@ -270,7 +270,7 @@ pub(super) const DEBT: &[Row] = &[
     ("src/tmux.rs", "crate::cli::CONSOLE_TOGGLE", 1),
     ("src/tmux.rs", "crate::cli::ORCHESTRATOR_JUMP", 1),
     ("src/tmux.rs", "crate::cli::READER", 1),
-    ("src/tmux.rs", "crate::session_launch::name::is_session_name", 4),
+    ("src/tmux/fleet.rs", "crate::session_launch::name::is_session_name", 4),
     ("src/tmux_floor.rs", "crate::inventory::ServerId", 1),
     ("src/tmux_floor.rs", "crate::meta::Selector", 1),
     ("src/tool.rs", "crate::effort::Level", 1),
