@@ -2740,10 +2740,26 @@ _tmux-isolated lane *args:
     base="${AE_TEST_TMPDIR:-/tmp}"
     base_real="$(cd -P "$base" 2>/dev/null && pwd || printf '%s' "$base")"
     legacy="${TMPDIR:-/tmp}"
+    # A process's start identity: its `ps -o lstart=` start time, keeping the ASCII
+    # letters and digits, as tests/it/parity.rs::process_identity computes it. A pid
+    # alone cannot prove who holds it once its owner ended and the number was reused.
+    proc_identity() {
+        LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | LC_ALL=C tr -cd 'A-Za-z0-9'
+    }
+    # owner_is_dead PID [RECORDED_IDENTITY]. Dead when the pid names no process, or
+    # when its identity was recorded at registration and the process now holding the
+    # pid has a different, readable one (the pid was reused). Fail-safe: an owner
+    # with no recorded identity, or one that cannot be read now, is ALIVE, so a
+    # live owner's root is never reaped on a guess.
     owner_is_dead() {
-        local owner="$1" error
-        error="$(LC_ALL=C kill -0 "$owner" 2>&1)" && return 1
-        [[ "$error" == *"No such process"* ]]
+        local owner="$1" recorded="${2-}" error current
+        if error="$(LC_ALL=C kill -0 "$owner" 2>&1)" || [[ "$error" != *"No such process"* ]]; then
+            [[ -n "$recorded" ]] || return 1
+            current="$(proc_identity "$owner" || true)"
+            [[ -n "$current" && "$current" != "$recorded" ]]
+            return
+        fi
+        return 0
     }
     # A socket whose server is already gone counts as reaped. An installed-shape
     # test server refuses kill-server (src/session_tmux.rs): its guard is dropped
@@ -2781,13 +2797,16 @@ _tmux-isolated lane *args:
     }
     # Reap every root a DEAD owner registered in lane $1; fails if any is left.
     reap_registry() {
-        local registry="$1/.ae-parity-fixtures" owner_dir owner entry scratch failed=0
+        local registry="$1/.ae-parity-fixtures" owner_dir owner recorded entry scratch failed=0
         [[ -e "$registry" ]] || return 0
         [[ -d "$registry" && ! -L "$registry" && -r "$registry" && -x "$registry" ]] || return 1
         for owner_dir in "$registry"/*; do
             [[ -e "$owner_dir" ]] || continue
+            # `<pid>` or `<pid>.<identity>`, the writer's name for an owner.
             owner="${owner_dir##*/}"
-            if [[ ! -d "$owner_dir" || ! "$owner" =~ ^[0-9]+$ ]] || ! owner_is_dead "$owner"; then
+            recorded=""
+            [[ "$owner" != *.* ]] || { recorded="${owner#*.}"; owner="${owner%%.*}"; }
+            if [[ ! -d "$owner_dir" || ! "$owner" =~ ^[0-9]+$ || ( -n "$recorded" && ! "$recorded" =~ ^[A-Za-z0-9]+$ ) ]] || ! owner_is_dead "$owner" "$recorded"; then
                 failed=1
                 continue
             fi

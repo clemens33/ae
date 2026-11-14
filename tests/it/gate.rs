@@ -191,6 +191,8 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "lane=\"$1\"",
         "shift",
         "owner_is_dead()",
+        "proc_identity()",
+        "owner_is_dead \"$owner\" \"$recorded\"",
         "reap_sockets()",
         "reap_stale_lanes()",
         "reap_stale_lanes",
@@ -6884,6 +6886,189 @@ fn registered_readonly_residue_is_reaped_without_following_links() {
             .permissions()
             .mode(),
         outside_file_mode
+    );
+}
+
+/// Runs the real `_tmux-isolated test` lane whose fake cargo registers the
+/// owner directories named in `register` (one `<owner dir name> <root>` pair
+/// per line, the root relative to the lane's scratch base, created with a
+/// `held` file in it) and ends green. Returns the lane's outcome and stderr
+/// with the scratch base, whose drop removes it.
+fn lane_with_registered_owners(
+    tag: &str,
+    register: &str,
+) -> (ExitOutcome, String, super::cli::OwnedScratch) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let base = super::cli::OwnedScratch::root("gate", tag);
+    let cargo = base.join("bin").join("cargo");
+    std::fs::create_dir_all(base.join("bin"))
+        .unwrap_or_else(|why| panic!("the fake cargo directory: {why}"));
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\n\
+         [ \"$1\" = nextest ] || exit 0\n\
+         printf '%s\\n' \"$AE_GATE_REGISTER\" | while read -r name target; do\n\
+         \x20 [ -n \"$name\" ] || continue\n\
+         \x20 mkdir -p \"$AE_TEST_TMPDIR/$target\" \"$TMUX_TMPDIR/.ae-parity-fixtures/$name\" || exit 1\n\
+         \x20 echo held >\"$AE_TEST_TMPDIR/$target/held\" || exit 1\n\
+         \x20 ln -s \"$AE_TEST_TMPDIR/$target\" \"$TMUX_TMPDIR/.ae-parity-fixtures/$name/0\" || exit 1\n\
+         done\n\
+         exit 0\n",
+    )
+    .unwrap_or_else(|why| panic!("the fake cargo registers the owners: {why}"));
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755))
+        .unwrap_or_else(|why| panic!("an executable fake cargo: {why}"));
+    let path = std::env::var("PATH").unwrap_or_default();
+    let swept = raw::run(
+        &Invocation::new("just")
+            .arg("_tmux-isolated")
+            .arg("test")
+            .env("PATH", format!("{}:{path}", base.join("bin").display()))
+            .env("HOME", &*base)
+            .env("AE_GATE_REGISTER", register)
+            .env("TMPDIR", &*base)
+            .env("AE_TEST_TMPDIR", &*base),
+        &root(),
+        &base.join("lane-out"),
+        &base.join("lane-err"),
+    )
+    .unwrap_or_else(|why| panic!("the lane runs to teardown: {why}"));
+    let stderr = read(&base.join("lane-err"));
+    (swept.outcome(), stderr, base)
+}
+
+/// #339: an ended owner's pid reused by an unrelated live process must not
+/// fail a green lane. The registered owner `<pid>.<identity>` names a pid
+/// that is alive (this test process) with an identity that is not its own
+/// start, which is what a reused pid looks like. The ended owner's root is
+/// reaped.
+#[test]
+fn a_reused_pid_does_not_make_an_ended_owner_look_alive() {
+    let pid = std::process::id();
+    let register = format!("{pid}.StaleStart0000 ae-it-{pid}/ended\n");
+    let (outcome, stderr, base) = lane_with_registered_owners("reuse-ended", &register);
+    assert!(
+        matches!(outcome, ExitOutcome::Code(0)),
+        "an owner whose pid was reused must be reaped, not fail the lane: {stderr}"
+    );
+    assert!(
+        !base.join(format!("ae-it-{pid}")).exists(),
+        "the ended owner's root is reaped"
+    );
+}
+
+/// #339, the fail-safe direction: a live owner is never reaped, neither with
+/// its own recorded identity nor with none recorded (a legacy bare pid, or an
+/// identity that could not be read). Both keep the lane red and their roots.
+#[test]
+fn a_live_owner_is_never_reaped_with_or_without_a_recorded_identity() {
+    let pid = std::process::id();
+    let own = super::parity::capture::raw::process_identity(pid, &std::env::temp_dir())
+        .expect("this process has a readable start identity");
+    let register = format!("{pid}.{own} ae-it-{pid}/a\n{pid} ae-it-{pid}/b\n");
+    let (outcome, stderr, base) = lane_with_registered_owners("live-owner", &register);
+    assert!(
+        matches!(outcome, ExitOutcome::Code(1)),
+        "a live owner keeps the lane red instead of being reaped: {stderr}"
+    );
+    assert!(
+        stderr.contains("outlived the lane"),
+        "the lane names the leak: {stderr}"
+    );
+    for root in ["a", "b"] {
+        assert_eq!(
+            read(&base.join(format!("ae-it-{pid}/{root}/held"))),
+            "held\n",
+            "the live owner's root {root} is untouched"
+        );
+    }
+}
+
+/// #339 writer and reader grammar: the registry names an owner `<pid>` or
+/// `<pid>.<identity>`, an identity is ASCII letters and digits only, and
+/// anything else is not an owner a reader may act on.
+#[test]
+fn the_registry_owner_name_round_trips_and_rejects_foreign_names() {
+    use super::parity::capture::raw::{owner_name, parse_owner_name};
+
+    assert_eq!(owner_name(42, Some("FriNov14102030")), "42.FriNov14102030");
+    assert_eq!(owner_name(42, None), "42");
+    assert_eq!(parse_owner_name("42"), Some((42, None)));
+    assert_eq!(
+        parse_owner_name("42.FriNov14102030"),
+        Some((42, Some("FriNov14102030")))
+    );
+    assert_eq!(parse_owner_name("42."), Some((42, None)));
+    for foreign in ["", "x", "x.Abc", "42.a-b", "42.a b", "1.2.3", ".Abc", "-1"] {
+        assert_eq!(parse_owner_name(foreign), None, "{foreign:?} is no owner");
+    }
+}
+
+/// #339 writer: a process registers under `<pid>.<its own start identity>`, a
+/// second root under the same owner directory, and an unreadable identity
+/// registers under the bare pid.
+#[test]
+fn the_registry_writer_records_the_start_identity_beside_the_pid() {
+    use super::parity::capture::raw::{process_identity, remember_fixture_in};
+
+    let scratch = super::cli::OwnedScratch::root("gate", "writer-identity");
+    let lane = scratch.join("lane");
+    let probe = scratch.join("probe");
+    std::fs::create_dir_all(&lane).expect("the lane");
+    std::fs::create_dir_all(&probe).expect("the probe directory");
+    let pid = std::process::id();
+    let identity = process_identity(pid, &probe).expect("this process has a start identity");
+    assert_eq!(
+        process_identity(pid, &probe).as_deref(),
+        Some(identity.as_str()),
+        "a process's identity is stable"
+    );
+    assert!(
+        identity.chars().all(|c| c.is_ascii_alphanumeric()),
+        "an identity is a file-name-safe token: {identity}"
+    );
+    let cwd = scratch.join("fixture");
+    remember_fixture_in(&lane, &cwd, Some(&identity)).expect("the first root registers");
+    remember_fixture_in(&lane, &cwd, Some(&identity)).expect("the second root registers");
+    let owner = lane.join(format!(".ae-parity-fixtures/{pid}.{identity}"));
+    assert!(owner.join("0").is_symlink() && owner.join("1").is_symlink());
+    remember_fixture_in(&lane, &cwd, None).expect("an unknown identity still registers");
+    assert!(
+        lane.join(format!(".ae-parity-fixtures/{pid}/0"))
+            .is_symlink(),
+        "no identity registers under the bare pid"
+    );
+    assert_eq!(
+        process_identity(4_000_000_000, &probe),
+        None,
+        "no such process has no identity"
+    );
+}
+
+/// #339 reader, fail-safe direction: a live pid is dead only when a recorded
+/// identity differs from the readable current one. None recorded, or the
+/// owner's own identity, is alive.
+#[test]
+fn a_live_pid_is_dead_only_when_its_recorded_identity_differs() {
+    use super::parity::capture::raw::{owner_is_dead, process_identity};
+
+    let scratch = super::cli::OwnedScratch::root("gate", "reader-identity");
+    let probe = scratch.join("probe");
+    std::fs::create_dir_all(&probe).expect("the probe directory");
+    let pid = std::process::id();
+    let own = process_identity(pid, &probe).expect("this process has a start identity");
+    assert!(
+        !owner_is_dead(pid, Some(&own), &probe),
+        "the same process is alive"
+    );
+    assert!(
+        !owner_is_dead(pid, None, &probe),
+        "no recorded identity never reaps a live owner"
+    );
+    assert!(
+        owner_is_dead(pid, Some("StaleStart0000"), &probe),
+        "a reused pid with another start identity is an ended owner"
     );
 }
 

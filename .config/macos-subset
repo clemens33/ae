@@ -30,6 +30,7 @@ module menu  # OsConditional,TmuxClient
 module o4jump_spec  # TmuxClient
 module o6list_live_spec  # ProcessTable
 module o6list_spec  # ProcessTable
+module parity  # ProcessTable
 module pipequiet_spec  # OsConditional
 module presetspawn_spec  # ProcessTable
 module quota_agy_spec  # ProcessTable
@@ -199,6 +200,10 @@ helper tests/it/o2guard_p2_spec.rs::World::stamp = relay_chat_spec::r8_final_env
 helper tests/it/o2guard_p2_spec.rs::World::tmux = relay_chat_spec::r8_final_envelope_cap_refuses_even_when_body_alone_fits
 helper tests/it/o2guard_p2_spec.rs::World::tmux_args = relay_chat_spec::r8_final_envelope_cap_refuses_even_when_body_alone_fits
 helper tests/it/parity.rs::kill_servers_under = cli::a_panicking_test_leaves_no_scratch_and_no_tmux_server
+helper tests/it/parity.rs::owner_is_dead = gate::a_live_pid_is_dead_only_when_its_recorded_identity_differs
+helper tests/it/parity.rs::process_identity = gate::the_registry_writer_records_the_start_identity_beside_the_pid
+helper tests/it/parity.rs::register_fixture_root = cli::a_panicking_test_leaves_no_scratch_and_no_tmux_server
+helper tests/it/parity.rs::register_owned_root = cli::a_panicking_test_leaves_no_scratch_and_no_tmux_server
 helper tests/it/parity.rs::run = gate::stale_lane_sweep_reaps_a_nested_socket_owned_by_a_dead_lane
 helper tests/it/phase2.rs::capture_tmux = cli::the_black_box_runner_cannot_see_the_developers_own_home_or_tmux
 helper tests/it/phase2.rs::run_tmux = cli::the_black_box_runner_cannot_see_the_developers_own_home_or_tmux

@@ -154,15 +154,12 @@ pub(crate) mod capture {
                     if !kind.is_dir() {
                         continue;
                     }
-                    let Some(owner) = owner_entry
-                        .file_name()
-                        .to_str()
-                        .and_then(|name| name.parse::<u32>().ok())
-                    else {
+                    let name = owner_entry.file_name();
+                    let Some((owner, recorded)) = name.to_str().and_then(parse_owner_name) else {
                         continue;
                     };
                     // Any ambiguous liveness result is ALIVE: leave it alone.
-                    if !owner_is_dead(owner, &probe) {
+                    if !owner_is_dead(owner, recorded, &probe) {
                         continue;
                     }
                     let mut complete = true;
@@ -217,9 +214,37 @@ pub(crate) mod capture {
             if !cwd.is_absolute() {
                 return Err(io::Error::other("tmux test fixture root must be absolute"));
             }
+            remember_fixture_in(&lane, cwd, own_identity(&lane).as_deref())
+        }
+
+        /// This process's start identity, read once; `None` when unreadable, and
+        /// then the owner registers under its bare pid (never reaped on a guess).
+        #[cfg(unix)]
+        fn own_identity(lane: &Path) -> Option<String> {
+            static IDENTITY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+            IDENTITY
+                .get_or_init(|| {
+                    let probe = lane.join(format!(".ae-parity-ident-{}", std::process::id()));
+                    fs::create_dir_all(&probe).ok()?;
+                    let identity = process_identity(std::process::id(), &probe);
+                    let _ = fs::remove_dir_all(&probe);
+                    identity
+                })
+                .clone()
+        }
+
+        /// Register `cwd` under this process's owner directory in `lane`,
+        /// `<pid>.<identity>` when the identity is known: a reader tells the
+        /// owner from a later process that reused its pid by the identity.
+        #[cfg(unix)]
+        pub(crate) fn remember_fixture_in(
+            lane: &Path,
+            cwd: &Path,
+            identity: Option<&str>,
+        ) -> io::Result<()> {
             let owner = lane
                 .join(FIXTURE_REGISTRY)
-                .join(std::process::id().to_string());
+                .join(owner_name(std::process::id(), identity));
             fs::create_dir_all(&owner)?;
             for index in 0..usize::MAX {
                 let entry = owner.join(index.to_string());
@@ -252,10 +277,10 @@ pub(crate) mod capture {
             clippy::disallowed_methods,
             reason = "the parity reaper reads its own probe stderr to distinguish ESRCH"
         )]
-        fn owner_is_dead(owner: u32, probe: &Path) -> bool {
+        pub(crate) fn owner_is_dead(owner: u32, recorded: Option<&str>, probe: &Path) -> bool {
             let out = probe.join("owner-out");
             let err = probe.join("owner-err");
-            run_unreaped(
+            let gone = run_unreaped(
                 &Invocation::new("kill")
                     .env("LC_ALL", "C")
                     .arg("-0")
@@ -265,7 +290,84 @@ pub(crate) mod capture {
                 &err,
             )
             .is_ok_and(|status| matches!(status.outcome(), ExitOutcome::Code(1)))
-                && fs::read_to_string(err).is_ok_and(|text| text.contains("No such process"))
+                && fs::read_to_string(err).is_ok_and(|text| text.contains("No such process"));
+            gone || owner_pid_was_reused(owner, recorded, probe)
+        }
+
+        /// Whether a LIVE pid now belongs to another process than the owner that
+        /// registered it. Only a recorded identity that differs from a readable
+        /// current one says so; no recorded identity, or one that cannot be read
+        /// now, leaves the owner alive, so a live owner is never reaped on a guess.
+        #[cfg(unix)]
+        fn owner_pid_was_reused(owner: u32, recorded: Option<&str>, probe: &Path) -> bool {
+            recorded.is_some_and(|recorded| {
+                process_identity(owner, probe).is_some_and(|current| current != recorded)
+            })
+        }
+
+        /// The registry's name for an owner: `<pid>`, or `<pid>.<identity>` when
+        /// the start identity was recorded. Anything else is not an owner.
+        #[cfg(unix)]
+        pub(crate) fn parse_owner_name(name: &str) -> Option<(u32, Option<&str>)> {
+            let (pid, identity) = match name.split_once('.') {
+                Some((pid, identity)) => (pid, Some(identity)),
+                None => (name, None),
+            };
+            let identity = identity.filter(|identity| !identity.is_empty());
+            if !identity.is_none_or(|identity| identity.chars().all(|c| c.is_ascii_alphanumeric()))
+            {
+                return None;
+            }
+            pid.parse::<u32>().ok().map(|pid| (pid, identity))
+        }
+
+        /// The registry name a process registers under: its pid and, when `ps`
+        /// can tell it, its start identity; else the bare pid (identity unknown).
+        #[cfg(unix)]
+        pub(crate) fn owner_name(pid: u32, identity: Option<&str>) -> String {
+            identity.map_or_else(|| pid.to_string(), |identity| format!("{pid}.{identity}"))
+        }
+
+        /// A process's start identity: the characters of `ps -o lstart=` (its
+        /// start time to the second) that are ASCII letters or digits. A pid
+        /// alone cannot prove which process holds it, since a pid is reused
+        /// once its owner ends; the pid with this identity can. The justfile
+        /// lane computes the same string with the same command and filter
+        /// (`proc_identity`). `None` when the process is gone or `ps` cannot
+        /// tell, which every reader treats as "identity unknown".
+        ///
+        /// `probe` is a directory the command's output files go in.
+        #[cfg(unix)]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the parity door reads its own ps output to learn a process start identity"
+        )]
+        pub(crate) fn process_identity(pid: u32, probe: &Path) -> Option<String> {
+            let out = probe.join(format!("ident-{pid}-out"));
+            let err = probe.join(format!("ident-{pid}-err"));
+            let status = run_unreaped(
+                &Invocation::new("ps")
+                    .env("LC_ALL", "C")
+                    .arg("-o")
+                    .arg("lstart=")
+                    .arg("-p")
+                    .arg(pid.to_string()),
+                probe,
+                &out,
+                &err,
+            );
+            let text = fs::read_to_string(&out);
+            let _ = fs::remove_file(&out);
+            let _ = fs::remove_file(&err);
+            if !status.is_ok_and(|status| matches!(status.outcome(), ExitOutcome::Code(0))) {
+                return None;
+            }
+            let identity: String = text
+                .ok()?
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .collect();
+            (!identity.is_empty()).then_some(identity)
         }
 
         /// Kill every server under a dead owner's registered root, then delete
