@@ -55,6 +55,7 @@ fn family() -> String {
         .unwrap_or(parent)
         .to_owned()
         + include_str!("facts.rs")
+        + include_str!("acts.rs")
 }
 
 fn prompt() -> crate::watchdog::HumanPrompt {
