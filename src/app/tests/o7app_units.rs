@@ -793,3 +793,32 @@ fn f_that_flips_the_panel_redraws() {
         assert_eq!(redraw, Some(true), "the flip redraws (full: {full})");
     }
 }
+
+/// `o` and `v` over the panel that holds the keys do nothing: the panel
+/// opens no session and arms no press.
+#[test]
+fn o_and_v_over_the_panel_are_inert() {
+    for byte in [b'o', b'v'] {
+        let mut app = app(None);
+        two(&mut app);
+        opened(&mut app, false);
+        let _ = framed(&mut app);
+        let redraw = take_keys(&mut app, vec![(Key::Text(vec![byte]), Instant::now())]);
+        assert_eq!(redraw, Some(false), "{} redraws nothing", char::from(byte));
+        assert!(app.armed.is_none(), "{} arms nothing", char::from(byte));
+        assert!(app.panel_focused());
+    }
+}
+
+/// A fallen-back panel's header keeps the orchestrator's name beside its
+/// reason when the row has room for both.
+#[test]
+fn a_fallen_back_header_keeps_the_name_beside_its_reason() {
+    let root = Root::new("o7fellname");
+    let (mut app, _reader) = orchestrated(&root, false);
+    let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+    let shown = text(&at(60, 20, &mut app));
+    let head = shown.lines().next().unwrap_or_default();
+    assert!(head.contains("side needs"), "{head}");
+    assert!(head.contains(orch), "{head}");
+}
