@@ -357,8 +357,10 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
             "src/lifecycle/end.rs".to_owned(),
             // The resume, at `resume_absence`.
             "src/session_launch.rs".to_owned(),
-            // Its own definition and unit table.
+            // Its own definition.
             "src/tmux.rs".to_owned(),
+            // Its unit table, in the module's test file.
+            "src/tmux/tests.rs".to_owned(),
         ],
         "the boot-time verdict gained (or lost) a caller"
     );

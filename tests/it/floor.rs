@@ -24,6 +24,7 @@ use ae::tmux_floor::{self, Probe};
 
 use super::parity::Invocation;
 use super::parity::capture::raw;
+use super::support::source_view;
 
 /// Every `.rs` file under `src/`.
 fn product_sources() -> Vec<PathBuf> {
@@ -345,6 +346,24 @@ fn product_head<'a>(text: &'a str, name: &str) -> Result<&'a str, String> {
     Ok(&text[..cut])
 }
 
+/// The extracted counterparts of an inline `#[cfg(test)] mod tests { .. }`: the
+/// `tests.rs` files that the source view proves are registered by test code
+/// alone. The view parses every registration (attributes, `#[path]`, inline
+/// nesting), so a comment, a literal or an ungated registration of the same
+/// file cannot put a production file on this list.
+fn extracted_test_modules(product: &source_view::Product) -> Vec<&str> {
+    product
+        .test_only
+        .iter()
+        .map(String::as_str)
+        .filter(|path| {
+            Path::new(path)
+                .file_name()
+                .is_some_and(|name| name == "tests.rs")
+        })
+        .collect()
+}
+
 /// Every tmux format literal in product code carries printable bytes only
 /// (#195): a control byte reaches a tmux client as `_`, and the reading side
 /// cannot parse what it cannot see (#187). The unit pin in `tmux.rs` names
@@ -352,7 +371,10 @@ fn product_head<'a>(text: &'a str, name: &str) -> Result<&'a str, String> {
 /// carries a format (`#{`), wherever it lives.
 ///
 /// Named residuals: a test-only format inside `mod tests` is not scanned (the
-/// module is cut away, `product_head` proves the cut), and a format assembled
+/// module is cut away, `product_head` proves the cut), nor is one in an
+/// extracted `<module>/tests.rs` that only test code registers
+/// (`extracted_test_modules` takes the source view's proof; the exact list is
+/// pinned below, so a new one is a review), and a format assembled
 /// from pieces, where the control byte sits in a piece without `#{`
 /// (`concat!`, `format!`), escapes the scan.
 #[test]
@@ -402,15 +424,24 @@ fn no_tmux_format_literal_in_src_carries_a_control_character() {
         "code after the module"
     );
 
+    let extracted = extracted_test_modules(source_view::product());
+    assert_eq!(
+        extracted,
+        ["src/session_launch/tests.rs", "src/tmux/tests.rs"],
+        "the extracted test modules the scan leaves out changed: review the new one"
+    );
     let (mut hits, mut offenders) = (0, Vec::new());
     for path in product_sources() {
-        let text =
-            fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
         let name = path
             .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")))
             .unwrap_or(&path)
             .display()
             .to_string();
+        if extracted.contains(&name.as_str()) {
+            continue;
+        }
+        let text =
+            fs::read_to_string(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
         let product = product_head(&text, &name).unwrap_or_else(|why| panic!("{why}"));
         for lit in lits(product).iter().filter(|l| l.0.contains("#{")) {
             hits += 1;
@@ -423,6 +454,98 @@ fn no_tmux_format_literal_in_src_carries_a_control_character() {
     assert!(
         offenders.is_empty(),
         "a tmux format would carry a control byte: {offenders:?}"
+    );
+}
+
+/// The extracted-test-module cut of the format scan above is fail-closed: a
+/// `tests.rs` leaves the scan only when test code alone registers it. Each
+/// decoy below would pass a substring check on the parent's text, and each must
+/// leave `src/a/tests.rs` in the scan (or refuse the tree) instead.
+#[test]
+fn only_a_tests_rs_that_test_code_alone_registers_leaves_the_format_scan() {
+    fn tree(files: &[(&str, &str)]) -> Vec<(String, String)> {
+        files
+            .iter()
+            .map(|(path, text)| ((*path).to_owned(), (*text).to_owned()))
+            .collect()
+    }
+    fn extracted(files: &[(&str, &str)]) -> Result<Vec<String>, String> {
+        let product = source_view::product_of(&tree(files)).map_err(|f| f.to_string())?;
+        Ok(extracted_test_modules(&product)
+            .into_iter()
+            .map(str::to_owned)
+            .collect())
+    }
+    let a_tests = "#[cfg(test)]\nmod tests;\n";
+    let body = "fn t() {}\n";
+
+    // Positive: the declaration is real, so the file is an extracted test module.
+    assert_eq!(
+        extracted(&[
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", a_tests),
+            ("src/a/tests.rs", body),
+        ]),
+        Ok(vec!["src/a/tests.rs".to_owned()])
+    );
+    // A gated test module under another name is not on this list.
+    assert_eq!(
+        extracted(&[
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", "#[cfg(test)]\nmod checks;\n"),
+            ("src/a/checks.rs", body),
+        ]),
+        Ok(Vec::new())
+    );
+    // Decoy: an ungated `mod tests;` plus the needle in a block comment.
+    assert_eq!(
+        extracted(&[
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", "mod tests;\n/*\n#[cfg(test)]\nmod tests;\n*/\n"),
+            ("src/a/tests.rs", body),
+        ]),
+        Ok(Vec::new())
+    );
+    // Decoy: an ungated `mod tests;` plus the needle in a raw string fixture.
+    assert_eq!(
+        extracted(&[
+            ("src/lib.rs", "mod a;\n"),
+            (
+                "src/a.rs",
+                "mod tests;\nconst D: &str = r#\"\n#[cfg(test)]\nmod tests;\n\"#;\n",
+            ),
+            ("src/a/tests.rs", body),
+        ]),
+        Ok(Vec::new())
+    );
+    // The same file registered by production code too: it is production.
+    assert_eq!(
+        extracted(&[
+            (
+                "src/lib.rs",
+                "mod a;\n#[path = \"a/tests.rs\"]\nmod real;\n"
+            ),
+            ("src/a.rs", a_tests),
+            ("src/a/tests.rs", body),
+        ]),
+        Ok(Vec::new())
+    );
+    // A `#[path]` that redirects the gated declaration away from the file leaves
+    // `src/a/tests.rs` registered by nothing: the view refuses the tree.
+    let redirected = extracted(&[
+        ("src/lib.rs", "mod a;\n"),
+        (
+            "src/a.rs",
+            "#[cfg(test)]\n#[path = \"other.rs\"]\nmod tests;\n",
+        ),
+        ("src/other.rs", body),
+        ("src/a/tests.rs", body),
+    ]);
+    assert!(
+        redirected
+            .as_ref()
+            .is_err_and(|why| why.contains("src/a/tests.rs")),
+        "a redirected declaration must refuse the tree: {redirected:?}"
     );
 }
 
