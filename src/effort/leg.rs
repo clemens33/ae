@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use super::{
     APPLIED, Decision, Direction, DiscardSeat, EPISODE, FAILED, Fold, Foreign, HELD, Leg, Level,
-    REARMED, RESERVED, RESTORED, Record, State, Stored, Transition, Twin, TwinRefusal, YIELDED,
+    Pressured, REARMED, RESERVED, RESTORED, Record, State, Stored, Transition, Twin, TwinRefusal,
+    YIELDED,
 };
 use crate::events::{Event, SessionKey};
 use crate::inventory::ServerId;
@@ -452,6 +453,19 @@ fn locked(dir: &Path, seat: &Seat, write: impl FnOnce(&Seat) -> bool) -> bool {
     read(dir, &seat.session, seat.slot()).is_some_and(|now| now.fold == seat.fold) && write(seat)
 }
 
+/// The record that reserves the second step down: the first step's applied
+/// `record`, now restarting down to the second twin's target, with the merged
+/// `windows` and the live tool `pid` the reservation found.
+fn deeper_record(record: &Record, twin: &Twin, windows: &[Pressured], pid: u32) -> Record {
+    Record {
+        state: State::RestartDown,
+        low: twin.target,
+        pid,
+        windows: windows.to_vec(),
+        ..record.clone()
+    }
+}
+
 /// The leg's world: the seat's pane, and its identity and account rows as the
 /// leg found them.
 struct Ctx<'a> {
@@ -595,13 +609,9 @@ impl Ctx<'_> {
                 model: seat.pin.clone().unwrap_or_default(),
                 windows: windows.clone(),
             },
-            (Decision::Deeper { twin, windows }, Stored::Present(record)) => Record {
-                state: State::RestartDown,
-                low: twin.target,
-                pid,
-                windows: windows.clone(),
-                ..record.clone()
-            },
+            (Decision::Deeper { twin, windows }, Stored::Present(record)) => {
+                deeper_record(record, twin, windows, pid)
+            }
             (Decision::Up, Stored::Present(record)) => Record {
                 state: State::RestartUp,
                 pid,
@@ -1357,5 +1367,34 @@ mod tests {
             "{last}"
         );
         assert_eq!(row, None, "a failed first step leaves no record");
+    }
+
+    #[test]
+    fn a_second_step_reserves_at_the_live_tool_pid_with_the_merged_windows() {
+        let row = |head: &str, pid: u32, win: &str| {
+            crate::effort::Record::parse(&format!(
+                "{head} at:80 ep:{EP} sid:{SID} agent:lead tool:claude launch:tok-1 pid:{pid} \
+                 conv:{CONV} profile:opus55x client:- model:opus win:{win}"
+            ))
+            .expect("a fixture row parses")
+        };
+        let first = format!("weekly/~/10080/{EP}/1700000100");
+        let merged = format!("{first},opus/~/10080/{EP}/1700000200");
+        let applied = row("v1 applied slot:main base:xhigh low:high", 4242, &first);
+        let twin = crate::effort::Twin {
+            baseline: Level::High,
+            target: Level::Medium,
+            aliases: Vec::new(),
+        };
+        let windows = row("v1 applied slot:main base:xhigh low:high", 1, &merged).windows;
+        assert_eq!(
+            super::deeper_record(&applied, &twin, &windows, 5151),
+            row(
+                "v2 restart-down slot:main base:xhigh low:medium step:2",
+                5151,
+                &merged
+            ),
+            "the reservation moves to the live pid, the second target and the merged windows"
+        );
     }
 }
