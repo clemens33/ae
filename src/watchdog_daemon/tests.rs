@@ -58,6 +58,7 @@ fn family() -> String {
         + include_str!("acts.rs")
         + include_str!("adoption.rs")
         + include_str!("ticker.rs")
+        + include_str!("quota_carry.rs")
 }
 
 fn prompt() -> crate::watchdog::HumanPrompt {
