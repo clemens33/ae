@@ -798,7 +798,7 @@ fn f_that_flips_the_panel_redraws() {
 /// opens no session and arms no press.
 #[test]
 fn o_and_v_over_the_panel_are_inert() {
-    for byte in [b'o', b'v'] {
+    for byte in *b"ov" {
         let mut app = app(None);
         two(&mut app);
         opened(&mut app, false);
