@@ -628,3 +628,56 @@ fn opening_the_panel_by_its_button_ends_the_main_entry_and_keeps_its_draft() {
     let kept = app.inputs.get(&("api".to_owned(), app.id("api")));
     assert_eq!(kept.map(Input::draft).as_deref(), Some("MAIN_DRAFT_KEPT"));
 }
+
+/// A press on the panel's mode label flips the panel and nothing else: it
+/// arms no selection, side to full and full to side.
+#[test]
+fn a_mode_label_press_flips_the_panel_and_arms_nothing() {
+    for (full, label) in [(false, "F full"), (true, "F side")] {
+        let mut app = app(None);
+        two(&mut app);
+        opened(&mut app, full);
+        let buf = at(160, 45, &mut app);
+        let from = if full { 0 } else { border_of(&buf) };
+        let x = cell_of(&buf, label, 0, from).expect("the mode label");
+        assert!(app.mouse(Mouse {
+            kind: MouseKind::Click,
+            column: x,
+            row: 0,
+        }));
+        let flipped = app.orch.panel.as_ref().is_some_and(|panel| panel.full);
+        assert_eq!(flipped, !full, "{label} flips the panel");
+        assert!(app.select.is_none(), "{label}: the press arms no selection");
+    }
+}
+
+/// Any press ends a HELD entry, as in the main column: a press on the mode
+/// label of the panel that holds the keys ends the panel's refused entry.
+#[test]
+fn a_mode_label_press_ends_a_held_panel_entry() {
+    for (full, label) in [(false, "F full"), (true, "F side")] {
+        let root = Root::new("o7labelheld");
+        let (mut app, _reader) = orchestrated(&root, full);
+        let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+        let meta = root.0.join("sessions").join(orch).join("meta");
+        std::fs::write(
+            &meta,
+            format!("schema=2\nsession_id={ID}\nlayout=lead-pair\n"),
+        )
+        .expect("meta");
+        assert!(take_keys(&mut app, vec![(Key::Enter, Instant::now())]).is_some());
+        assert!(
+            app.held.is_some(),
+            "a panel entry without its pair is refused"
+        );
+        let buf = at(160, 45, &mut app);
+        let from = if full { 0 } else { border_of(&buf) };
+        let x = cell_of(&buf, label, 0, from).expect("the mode label");
+        assert!(app.mouse(Mouse {
+            kind: MouseKind::Click,
+            column: x,
+            row: 0,
+        }));
+        assert!(app.held.is_none(), "{label}: the press ends the held entry");
+    }
+}

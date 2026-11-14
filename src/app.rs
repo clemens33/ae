@@ -4811,7 +4811,9 @@ impl App {
         if self.orch.active {
             self.swap_column();
         }
-        if self.writer_name() == Some(ORCH) || self.panel_focused() && self.held.is_some() {
+        // No entry is HELD here: every caller acts on a press, which ended
+        // it, or on a key, which a HELD entry takes for itself.
+        if self.writer_name() == Some(ORCH) {
             self.write(false);
         }
         self.orch.panel = None;
@@ -4994,6 +4996,10 @@ impl App {
     /// A mouse event on the open panel: its button, mode label and gear act
     /// on the app; a press gives it the keys, and the rest is its chat's.
     fn panel_route(&mut self, mouse: Mouse, fresh: bool) -> bool {
+        // Any press ends a HELD entry, as in the main column's `click`.
+        if mouse.kind == MouseKind::Click {
+            self.held = None;
+        }
         let hit = (self.orch.panel.as_ref())
             .filter(|_| mouse.kind == MouseKind::Click)
             .and_then(|panel| panel.column.layout.hit(mouse));
