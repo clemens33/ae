@@ -1276,9 +1276,9 @@ mod tests {
         let mut carry = super::Carry::default();
         // Reverse the order on the next cycle, after the prior attempt expires:
         // the budget resets and either eligible seat can be the sole starter.
-        for offset in 0..2 {
+        for offset in 0..2_i64 {
             let order = &seats;
-            let now = EP + i64::try_from(offset).expect("two cycles") * super::LEG_GAP;
+            let now = EP + offset * super::LEG_GAP;
             let cycle = super::Cycle {
                 dir: &dir,
                 session: "fx",
