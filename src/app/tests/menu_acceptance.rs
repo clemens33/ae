@@ -357,16 +357,34 @@ fn historical_right_press_on_discarded_frame_refuses() {
 }
 
 #[test]
-fn orchestrator_has_no_menu_and_row_refusals_never_reach_an_owner() {
+fn orchestrator_has_no_sidebar_card_and_row_refusals_never_reach_an_owner() {
     let (root, mut app, reader) = fixture("menu-row-states");
     let name = crate::orchestrator::ORCHESTRATOR_SESSION;
     session(&root, name, "meta_agent=true\n");
     refold(&mut app, &reader, &root, &[(name, Status::Running)]);
-    framed(&mut app);
-    right(&mut app, name, Instant::now());
+    // Lead ae-20261114T105439Z-8470dfcb extends the hidden-row decision here.
     let screen = shown(&mut app, Instant::now());
-    assert!(!menu(&screen), "the orchestrator offers nothing: {screen}");
-    assert!(screen.contains("nothing to start or stop"), "{screen}");
+    assert!(
+        !app.layout.cards.contains_key(name),
+        "the hidden orchestrator has no sidebar card that can open a menu"
+    );
+    assert!(
+        !screen.lines().any(|line| line
+            .chars()
+            .take(30)
+            .collect::<String>()
+            .split_whitespace()
+            .any(|word| word == name)),
+        "the orchestrator is absent from the drawn sidebar: {screen}"
+    );
+    assert!(
+        !menu(&screen),
+        "the orchestrator offers no session menu: {screen}"
+    );
+    assert!(
+        app.queued.is_empty() && app.notices.is_empty(),
+        "the absent card reaches no action owner"
+    );
     for (status, fact, reason) in [
         (Status::Unknown, fleet::Facts::NotPublished, "unknown"),
         (Status::Running, fleet::Facts::OtherServer, "server"),

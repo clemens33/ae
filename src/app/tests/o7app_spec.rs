@@ -164,6 +164,13 @@ impl Rig {
         for answer in self.reader.fleet() {
             let answer = match answer {
                 Answer::Fleet(mut read) => {
+                    // The lane sentry and other tests may publish sessions on
+                    // another endpoint. This fixture's input World is exactly
+                    // its four sessions, including the orchestrator under test.
+                    // Keep the actual identity proof from the private socket.
+                    read.world
+                        .sessions
+                        .retain(|entry| matches!(entry.name.as_str(), "api" | "b" | "c" | ORCH));
                     // The independent World input names attention. Keep every
                     // actual identity proof produced by this real fleet read.
                     for entry in &mut read.world.sessions {
@@ -663,7 +670,7 @@ fn p3_two_visible_lanes_refresh_without_changing_each_others_selected_view() {
         "{shown}"
     );
     // Main session changes through the actual drawn list, while panel state survives.
-    rig.click_word(MAIN);
+    rig.click_word("MAIN_NEW");
     rig.text(b"2");
     assert_eq!(rig.app.model.selected(), Some("b"));
     rig.app.answer(view("b", ID, 102, "B_NEW"));
@@ -692,8 +699,18 @@ fn p3_panel_scroll_is_independent_of_the_main_column_and_survives_selection_chan
         roster: None,
     }));
     let initial = rig.frame(160, 45);
-    let split = cell(&initial, "ORCH_ROW_79").unwrap().0;
+    let panel_body_x = cell(&initial, "ORCH_ROW_79").unwrap().0;
     let main_x = cell(&initial, MAIN).unwrap().0;
+    // Turn bodies are indented. Their x is not the column boundary.
+    // Find the actual continuous vertical border, independently of the hit map.
+    let split = (main_x..panel_body_x)
+        .rev()
+        .find(|x| {
+            (2..initial.area.height.saturating_sub(5))
+                .all(|y| matches!(initial[(*x, y)].symbol(), "│" | "|"))
+        })
+        .expect("a visible border separates the two native columns");
+    assert!(main_x < split && split < panel_body_x);
     let main_before = body(&initial, main_x, split.saturating_sub(main_x));
     rig.key(Key::PageUp);
     let scrolled = rig.frame(160, 45);
