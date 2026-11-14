@@ -363,13 +363,9 @@ pub(crate) fn step(
     if !switch() {
         return Ok(());
     }
-    step_with(
-        cycle,
-        seats,
-        carry,
-        err,
-        &mut crate::transport::spawn_detached,
-    )
+    step_with(cycle, seats, carry, err, &mut |exe, leg| {
+        crate::transport::spawn_detached(exe, leg)
+    })
 }
 
 /// The cycle loop with only the detached process start supplied by the caller.
