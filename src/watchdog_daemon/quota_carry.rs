@@ -1,5 +1,7 @@
 //! The quota carry: the keys, samples and asks the daemon keeps between cycles, the reconcile pass and the readout line.
 
+#[cfg(doc)]
+use super::Cycle;
 use super::{
     ACTOR, AtomicBool, Event, HOLD_MAX_CYCLES, Knobs, PaneState, Path, QuotaLevel, RosterEntry,
     launch_id_for, quiet_hash,

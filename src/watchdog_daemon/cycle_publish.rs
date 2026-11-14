@@ -1,5 +1,7 @@
 //! The cycle's publication steps: the look, the windows, the fleet strip and the per-pane writes.
 
+#[cfg(doc)]
+use super::flush_cycle;
 use super::{
     CYCLE_LOOK_OPTIONS, Carry, Cycle, CycleLookRead, Look, Mark, MotionState, MotionVerdict,
     NON_AGENT_PANES, OptionScope, PaneMark, Published, PublishedOrchestratorStrip, StagedFleet,

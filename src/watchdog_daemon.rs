@@ -57,6 +57,8 @@ use quota_carry::{
     start_pass_due, throttle_quota_line,
 };
 mod accounting;
+#[cfg(doc)]
+use accounting::waiting_agent_escalates;
 pub use accounting::{
     Accounting, LIMIT_WAKE_GRACE_SECS, NO_EVENT_AGE, WaitCheck, account, account_with_activity,
     account_with_trust, age_secs, declaration_age, declared_clause, done_challenge_text,

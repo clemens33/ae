@@ -4,6 +4,8 @@ use super::{
     DETACHED_MOTION_TICK, Duration, Instant, Look, Mark, OptionScope, Path, PathBuf, Status, procs,
     theme, tmux, transport,
 };
+#[cfg(doc)]
+use super::{MotionState, ticker::TickerMode};
 
 // ---------------------------------------------------------------------------
 // ADOPTION: the fleet strip of a session whose own watchdog is not running.

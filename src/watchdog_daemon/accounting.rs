@@ -632,7 +632,7 @@ fn book_target_moved(
 
 /// Whether this cycle's quiet `waiting-agent` is past its ceiling — the one
 /// answer the escalated verdict and the challenge text both read.
-fn waiting_agent_escalates(seen: &Observation, knobs: &Knobs) -> bool {
+pub(super) fn waiting_agent_escalates(seen: &Observation, knobs: &Knobs) -> bool {
     seen.quiet == Some(QuietKind::WaitingAgent)
         && !seen.wait_ends_elsewhere
         && crate::watchdog::waiting_agent_escalated_at(
