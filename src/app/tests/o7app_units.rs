@@ -822,3 +822,64 @@ fn a_fallen_back_header_keeps_the_name_beside_its_reason() {
     assert!(head.contains("side needs"), "{head}");
     assert!(head.contains(orch), "{head}");
 }
+
+/// Hiding the panel clears only a flash the panel itself raised: a flash
+/// the main column shows stays on.
+#[test]
+fn hiding_the_panel_keeps_the_main_columns_flash() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    let _ = framed(&mut app);
+    app.flash = Some(("MAIN_NOTE".to_owned(), Instant::now()));
+    let _ = framed(&mut app);
+    assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
+    assert!(app.orch.panel.is_none(), "Esc hides the panel");
+    assert_eq!(
+        app.flash.as_ref().map(|(line, _)| line.as_str()),
+        Some("MAIN_NOTE"),
+        "the main column's flash stays"
+    );
+}
+
+/// `!` that moves the selection to the next entry that needs the human owes
+/// a redraw.
+#[test]
+fn a_bang_that_moves_the_selection_redraws() {
+    let mut app = app(None);
+    two(&mut app);
+    let _ = framed(&mut app);
+    assert_eq!(app.model.selected(), Some("web"));
+    if let Some(row) = app.fleet.rows.iter_mut().find(|row| row.name == "ops") {
+        row.needy = true;
+    }
+    let redraw = take_keys(&mut app, vec![(Key::Text(b"!".to_vec()), Instant::now())]);
+    assert_eq!(app.model.selected(), Some("ops"), "! selects the needy row");
+    assert_eq!(redraw, Some(true), "the move redraws");
+}
+
+/// Beside the sidebar a side panel takes half of the cells right of the
+/// sidebar's rule, rounded down, and the main column the rest.
+#[test]
+fn a_side_panel_takes_half_the_cells_right_of_the_sidebar() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    for width in [160_u16, 161] {
+        let buf = at(width, 45, &mut app);
+        let rules: Vec<u16> = (0..width)
+            .filter(|x| (2..buf.area.height - 5).all(|y| buf[(*x, y)].symbol() == "│"))
+            .collect();
+        let [rule, border] = rules[..] else {
+            panic!(
+                "{width}: the sidebar rule and the border: {rules:?}\n{}",
+                text(&buf)
+            );
+        };
+        assert_eq!(
+            width - border,
+            (width - (rule + 1)) / 2,
+            "{width}: {rules:?}"
+        );
+    }
+}
