@@ -1272,14 +1272,14 @@ fn app_draw_home_160x43() {
     assert!(
         chat_text(&buf, 42, 44)
             .trim_start()
-            .starts_with("draft kept · Enter writes · ? keys")
+            .starts_with("◆ draft kept · Enter writes · ? keys")
     );
     assert!(side_text(&buf, 42, 44).trim_start().is_empty());
     assert_eq!(cell_at(&buf, 44, 42).symbol(), "│");
     let keys = chat_text(&buf, 42, 44);
     assert!(
         keys.trim_start()
-            .starts_with("draft kept · Enter writes · ? keys"),
+            .starts_with("◆ draft kept · Enter writes · ? keys"),
         "browse hint without a mode word: {keys:?}"
     );
     assert!(keys.contains("? keys"), "the one hint: {keys:?}");
@@ -1469,7 +1469,7 @@ fn app_draw_narrow_100x28() {
     assert!(
         chat_text(&buf, 27, 34)
             .trim_start()
-            .starts_with("Enter writes · ? keys"),
+            .starts_with("◆ Enter writes · ? keys"),
         "hint stays in the chat on the last row"
     );
     let head = row_text(&buf, 0);

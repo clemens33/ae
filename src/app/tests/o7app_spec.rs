@@ -669,7 +669,7 @@ fn p3_two_visible_lanes_refresh_without_changing_each_others_selected_view() {
         shown.contains("MAIN_NEW") && shown.contains("ORCH_NEW"),
         "{shown}"
     );
-    // Main session changes through the actual drawn list, while panel state survives.
+    // Main focus follows its drawn body; the digit selects b while panel state survives.
     rig.click_word("MAIN_NEW");
     rig.text(b"2");
     assert_eq!(rig.app.model.selected(), Some("b"));
