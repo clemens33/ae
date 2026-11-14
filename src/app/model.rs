@@ -247,6 +247,43 @@ pub struct Model {
     epoch: u64,
     /// Where `O` left from: the session's name and its recorded uuid.
     prior: Option<(String, String)>,
+    /// How the orchestrator panel stands; the App writes it each frame.
+    columns: Columns,
+}
+
+/// The view state one chat column keeps for itself: the session it shows,
+/// its scroll, its seat cursor and its marked turn. The orchestrator panel
+/// keeps its own, which [`Model::swap_chat`] trades with the main column's.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct Chat {
+    selected: Option<String>,
+    pages: usize,
+    rows: usize,
+    focus: Option<String>,
+    turn: Option<u64>,
+}
+
+impl Chat {
+    /// A column that shows `name` from its newest turn.
+    pub(crate) fn of(name: &str) -> Self {
+        Self {
+            selected: Some(name.to_owned()),
+            ..Self::default()
+        }
+    }
+}
+
+/// How the orchestrator panel stands in the frame, written by the App before
+/// each draw: the button's ink, and the open panel's mode and focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Columns {
+    /// The button wears the needs-you mark.
+    pub(crate) needy: bool,
+    /// The open panel: whether it asked for the full frame, and whether it
+    /// holds the keys.
+    pub(crate) panel: Option<(bool, bool)>,
+    /// The frame drawn now is the panel's own column.
+    pub(crate) drawing_panel: bool,
 }
 
 impl Model {
@@ -256,6 +293,7 @@ impl Model {
         let selected = fleet
             .home
             .clone()
+            .filter(|home| home != crate::orchestrator::ORCHESTRATOR_SESSION)
             .or_else(|| fleet.rows.first().map(|row| row.name.clone()));
         Self {
             selected,
@@ -366,6 +404,11 @@ impl Model {
         act
     }
 
+    /// Select row `at` as a selection key does: `!` names its target by place.
+    pub(crate) fn select_at(&mut self, fleet: &Fleet, at: usize) -> Act {
+        self.select(fleet, Some(at))
+    }
+
     /// A selection key: the list follows the selection again, which redraws
     /// even when the key names the session already selected.
     fn select(&mut self, fleet: &Fleet, target: Option<usize>) -> Act {
@@ -442,6 +485,26 @@ impl Model {
             self.rows = 0;
         }
         self.pages = self.pages.min(max);
+    }
+
+    /// Trade this model's chat column for `chat`: what the selection shows
+    /// and how far it scrolls, never the list, the borders or an overlay.
+    pub(crate) fn swap_chat(&mut self, chat: &mut Chat) {
+        std::mem::swap(&mut self.selected, &mut chat.selected);
+        std::mem::swap(&mut self.pages, &mut chat.pages);
+        std::mem::swap(&mut self.rows, &mut chat.rows);
+        std::mem::swap(&mut self.focus, &mut chat.focus);
+        std::mem::swap(&mut self.turn, &mut chat.turn);
+    }
+
+    /// How the orchestrator panel stands this frame.
+    pub(crate) fn columns(&self) -> Columns {
+        self.columns
+    }
+
+    /// Write how the orchestrator panel stands, before a frame is drawn.
+    pub(crate) fn set_columns(&mut self, columns: Columns) {
+        self.columns = columns;
     }
 
     /// The selected session.

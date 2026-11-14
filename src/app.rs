@@ -303,6 +303,110 @@ struct Merged {
     lane: Rc<Lane>,
 }
 
+/// The orchestrator's session name, which never is a row of the list.
+const ORCH: &str = crate::orchestrator::ORCHESTRATOR_SESSION;
+
+/// The open orchestrator panel: how it stands, which incarnation it opened
+/// on, and its own chat column.
+struct Panel {
+    /// It covers the frame instead of standing beside the main column.
+    full: bool,
+    /// It takes the keys; the main column does otherwise.
+    focused: bool,
+    /// The incarnation it opened on; `None` opened inert and stays so.
+    pin: Option<String>,
+    /// What an inert opening says.
+    opened: String,
+    column: Column,
+}
+
+/// The state a chat column draws and acts from, beyond the model's chat:
+/// the main column's lives in the [`App`], the panel's here, and
+/// [`App::swap_column`] trades them.
+#[derive(Default)]
+struct Column {
+    chat: model::Chat,
+    lane: Rc<Lane>,
+    merged: Option<Merged>,
+    loading: bool,
+    overview: overview::Overview,
+    pair: Vec<String>,
+    read_only: String,
+    read_line: String,
+    draft_view: View,
+    draft: String,
+    keyed: Option<(Rc<Lane>, Rc<[u64]>)>,
+    layout: draw::Layout,
+    history: Vec<(Instant, draw::Layout)>,
+    lost: Option<Instant>,
+    drawn: Option<Drawn>,
+}
+
+/// The orchestrator's state beside the main column.
+#[derive(Default)]
+struct Orch {
+    /// Whether the last fleet read proved one orchestrator incarnation.
+    proof: loader::Proof,
+    /// The open panel; `None` while it is hidden.
+    panel: Option<Panel>,
+    /// The panel's column stands in the app's fields now ([`App::in_panel`]).
+    active: bool,
+    /// The panel the reader was last told of.
+    told: Option<String>,
+    /// Whether the next proof opens the panel full.
+    opening: Opening,
+    /// When the panel raised the hint row's flash: its own line, which
+    /// hiding the panel drops.
+    flash: Option<Instant>,
+}
+
+impl Orch {
+    /// An app homed on the orchestrator shows it in its panel, full.
+    fn homed(home: Option<&str>) -> Self {
+        let opening = if home == Some(ORCH) {
+            Opening::Home
+        } else {
+            Opening::No
+        };
+        Self {
+            opening,
+            ..Self::default()
+        }
+    }
+}
+
+/// Whether the next proof of the orchestrator opens its panel full.
+#[derive(Debug, Default, PartialEq, Eq)]
+enum Opening {
+    #[default]
+    No,
+    /// The app's home is the orchestrator.
+    Home,
+    /// A handed-over view of the orchestrator, bound to this uuid.
+    Handed(String),
+}
+
+/// What the panel says when it opens on `proof` and acts on nothing, `None`
+/// when it opens on a proven incarnation.
+fn inert_line(proof: &loader::Proof) -> Option<String> {
+    match proof {
+        loader::Proof::Proven(_) => None,
+        loader::Proof::Gap(gap) => Some(format!("orchestrator unproven: {gap}")),
+        loader::Proof::Absent => Some("no orchestrator running".to_owned()),
+    }
+}
+
+/// What the open panel's view state does with a browse byte (see
+/// [`App::panel_byte`]).
+enum PanelByte {
+    /// The main column takes it, as with no panel.
+    Main,
+    /// The panel's own column takes it.
+    Panel,
+    /// It does nothing in the panel.
+    Inert,
+}
+
 /// What the open peek panel holds of its pane, pinned to the model's
 /// generation: a capture that landed for another is dropped.
 #[derive(Debug, Default)]
@@ -658,8 +762,8 @@ struct App {
     cue: cue::Cue,
     /// How an admitted ask is carried to its seat: the helpers' tracked path.
     carry: Carry,
-    /// Whether the last fleet read proved one orchestrator incarnation.
-    proof: loader::Proof,
+    /// The orchestrator, which has its own panel instead of a row.
+    orch: Orch,
     /// How a process that must outlive this app is started: Stop's supervisor
     /// and a Start outside tmux.
     detach: Detach,
@@ -684,6 +788,7 @@ impl App {
             rows: Vec::new(),
             home: home.clone(),
         };
+        let orch = Orch::homed(home.as_deref());
         Self {
             home,
             model: model::Model::new(&fleet),
@@ -775,7 +880,7 @@ impl App {
             cue: cue::Cue::default(),
             carry: Arc::new(term::Carry::run),
             detach: Box::new(transport::run_detached),
-            proof: loader::Proof::Absent,
+            orch,
         }
     }
 
@@ -783,7 +888,7 @@ impl App {
     fn answer(&mut self, answer: Answer) {
         let paints = matches!(
             answer,
-            Answer::Fleet(_) | Answer::Look { .. } | Answer::View(_)
+            Answer::Fleet(_) | Answer::Look { .. } | Answer::View(_) | Answer::Orchestrator(_)
         );
         if paints && (!self.parked.is_empty() || self.holds_lane()) {
             return self.park(answer);
@@ -824,6 +929,12 @@ impl App {
             Answer::Stats { generation, glance } => self.stats_landed(generation, &glance),
             Answer::Tools { generation, view } => self.tools_landed(generation, view),
             Answer::Core(seen) => self.upgrade = seen,
+            // A handed-over view of the orchestrator opens its panel, never a row.
+            Answer::Handover { view, .. } if view.session == ORCH => {
+                if !self.touched {
+                    self.orch.opening = Opening::Handed(view.id);
+                }
+            }
             Answer::Handover { view, at } => {
                 self.keep = (!self.touched).then_some(Keep { view, at });
             }
@@ -838,7 +949,7 @@ impl App {
             Answer::Pressure { name, id, pressure } => {
                 self.pressures.insert(name, (id, pressure));
             }
-            Answer::Orchestrator(proof) => self.proof = proof,
+            Answer::Orchestrator(proof) => self.proved(proof),
         }
     }
 
@@ -1584,7 +1695,10 @@ impl App {
         for (why, key, mut input) in dropped {
             if self.writer.as_ref().is_some_and(|w| w.key() == key) {
                 self.write(false);
-                self.held = Some(why.to_owned());
+                // The panel ends its own entry and says why in its one line.
+                if key.0 != ORCH {
+                    self.held = Some(why.to_owned());
+                }
             }
             self.bound.remove(&key);
             if !input.draft().is_empty() {
@@ -1601,11 +1715,13 @@ impl App {
         // it moves nothing (R-B4 ext); a read that moved it or proved its own
         // incarnation stopped ends the writing HELD, never into browse (D3).
         let writing = self.writer.as_ref().map(Binding::key);
-        let listed = |name: &str| self.fleet.rows.iter().any(|row| row.name == name);
+        let listed =
+            |name: &str| name == ORCH || self.fleet.rows.iter().any(|row| row.name == name);
         if read.scanned || writing.as_ref().is_none_or(|(name, _)| listed(name)) {
             self.model.reconcile(&self.fleet);
         }
-        if let Some((name, id)) = writing {
+        // The panel's entry is the panel's: its proof ends it ([`App::proved`]).
+        if let Some((name, id)) = writing.filter(|(name, _)| name != ORCH) {
             let stopped = self.id(&name) == id
                 && (self.entry(&name)).is_some_and(|entry| entry.status == Status::Stopped);
             if stopped || Some(name.as_str()) != self.model.selected() {
@@ -1762,6 +1878,14 @@ impl App {
     /// lane stays until its next read.
     fn viewed(&mut self, view: loader::ViewRead) {
         let home = self.home.as_deref() == Some(view.name.as_str());
+        // The orchestrator's lane is read for its panel: open on that very
+        // incarnation, else dropped.
+        let panel = view.name == ORCH;
+        let pinned =
+            (self.orch.panel.as_ref()).is_some_and(|panel| panel.pin.as_ref() == Some(&view.id));
+        if panel && !pinned && !home {
+            return;
+        }
         if !home && self.ids.get(&view.name) != Some(&view.id) {
             return;
         }
@@ -1792,18 +1916,33 @@ impl App {
         if selected {
             self.show();
         }
+        if panel {
+            self.in_panel(Self::show);
+        }
     }
 
     /// Keep only the lanes of the sessions the reader keeps read.
     fn evict(&mut self) {
         let rows: Vec<String> = self.fleet.rows.iter().map(|row| row.name.clone()).collect();
         let keep = loader::order(&rows, self.model.selected(), self.home.as_deref());
+        let open = self.orch.panel.is_some();
         self.shown
-            .retain(|name, _| keep.iter().any(|(kept, _)| kept == name));
+            .retain(|name, _| open && name == ORCH || keep.iter().any(|(kept, _)| kept == name));
     }
 
     /// Tell the reader which session shows now, once per change.
     fn focus(&mut self) {
+        if self.orch.active {
+            return;
+        }
+        let panel = self.orch.panel.as_ref().map(|_| ORCH.to_owned());
+        if panel != self.orch.told {
+            if let Some(ask) = &self.ask {
+                let _ = ask.send(Request::Panel(panel.clone()));
+            }
+            self.orch.told = panel;
+            self.evict();
+        }
         let selected = self.model.selected().map(str::to_owned);
         if selected == self.focused {
             return;
@@ -1967,7 +2106,9 @@ impl App {
     /// The input the composer shows: the writer's, else the selection's.
     fn shown_input(&self) -> Option<&Input> {
         let name = self.model.selected()?;
-        let writer = self.writer.as_ref().map(Binding::key);
+        let writer = (self.writer.as_ref())
+            .filter(|writer| writer.console.name() == name)
+            .map(Binding::key);
         let key = writer.unwrap_or_else(|| (name.to_owned(), self.id(name)));
         self.inputs.get(&key)
     }
@@ -2053,6 +2194,14 @@ impl App {
             self.loading = false;
             return;
         };
+        // An inert panel shows no lane and writes nothing: its one line says why.
+        if let Some(line) = self.panel_line().filter(|_| self.orch.active) {
+            (self.lane, self.overview) = (Rc::default(), overview::Overview::default());
+            (self.merged, self.loading, self.pair) = (None, false, Vec::new());
+            self.read_only.clone_from(&line);
+            self.read_line = line;
+            return;
+        }
         self.read_only = self.writable(&name).err().unwrap_or_default();
         let stopped = format!("{name} is stopped");
         self.read_line = if self.read_only == stopped {
@@ -2060,7 +2209,7 @@ impl App {
         } else {
             self.read_only.clone()
         };
-        if self.held.is_some() && !self.read_only.is_empty() {
+        if self.held.is_some() && !self.read_only.is_empty() && !self.orch.active {
             self.held = Some(self.read_only.clone());
         }
         let pair = self.pairs.get(&name).and_then(|pair| pair.as_deref().ok());
@@ -2620,6 +2769,12 @@ impl App {
         if self.model.reader_open() {
             return self.reader_mouse(mouse, fresh);
         }
+        if !self.orch.active && self.on_panel(mouse) {
+            return self.panel_route(mouse, fresh);
+        }
+        if !self.orch.active && mouse.kind == MouseKind::Click && self.orch.panel.is_some() {
+            self.focus_column(false);
+        }
         if mouse.kind == MouseKind::Drag {
             return self.drag(mouse) || self.stretch(mouse);
         }
@@ -2778,6 +2933,11 @@ impl App {
                 return true;
             }
             draw::Hit::Newest => self.model.newest(),
+            draw::Hit::Orchestrator => {
+                self.toggle_panel();
+                return true;
+            }
+            draw::Hit::PanelMode => return self.flip_panel() || held,
         };
         apply(self, &act, Instant::now()).unwrap_or(false)
             || was_writing != self.composing()
@@ -3610,16 +3770,31 @@ impl App {
         match (self.model.selected(), &self.held) {
             (None, _) => draw::Composer::NoHome,
             (Some(_), Some(why)) => draw::Composer::Held { why },
-            (Some(_), None) if !self.read_only.is_empty() && !self.composing() => {
+            (Some(_), None) if !self.read_only.is_empty() && !self.writes_here() => {
                 draw::Composer::ReadOnly {
                     why: &self.read_line,
                 }
             }
             (Some(name), None) => draw::Composer::Home {
                 home: name,
-                view: self.composing().then_some(&self.draft_view),
+                view: self.writes_here().then_some(&self.draft_view),
                 draft: &self.draft,
             },
+        }
+    }
+
+    /// The columns this frame stands in, and the selection's draft wrapped
+    /// to the width its column leaves.
+    fn frame_columns(&mut self, area: ratatui_core::layout::Rect) {
+        let columns = self.columns();
+        self.model.set_columns(columns);
+        if self.model.selected().is_some() {
+            let size = Size {
+                width: draw::column_width(area, self.model.split(), columns),
+                height: draw::composer_pane(area),
+            };
+            let shown = self.shown_input().map(|i| (i.bare_view(size), i.draft()));
+            (self.draft_view, self.draft) = shown.unwrap_or_default();
         }
     }
 
@@ -3630,15 +3805,7 @@ impl App {
         if let Some(order) = self.pending.take() {
             self.fleet = std::mem::take(&mut self.fleet).arranged(&order);
         }
-        if self.model.selected().is_some() {
-            let area = buf.area;
-            let size = Size {
-                width: draw::draft_width(area, self.model.split()),
-                height: draw::composer_pane(area),
-            };
-            let shown = self.shown_input().map(|i| (i.bare_view(size), i.draft()));
-            (self.draft_view, self.draft) = shown.unwrap_or_default();
-        }
+        self.frame_columns(buf.area);
         // An ask the lane shows needs no word of its own.
         let shown = |item: &Item, id: &str| matches!(&item.kind, Kind::Asked { id: ask, .. } | Kind::NotDelivered { id: ask, .. } if ask == id);
         let lane = Rc::clone(&self.lane);
@@ -3699,6 +3866,7 @@ impl App {
         }
         self.model
             .settle(self.layout.list_start, self.layout.body_top);
+        self.frame_panel(buf);
         // Held keys replay from the scroll they were read at, as one read. A
         // handed-over scroll waits for the lane it scrolls: until that is
         // read there is no bound to hold it to.
@@ -4445,6 +4613,416 @@ const REPLACED: &str =
     "its record no longer names the session_id the menu was drawn from - replaced or changed";
 
 /// How a copy names its text: `1 line`, `3 lines`.
+/// The orchestrator panel: a second chat column on the orchestrator, which is
+/// no row of the list. Its column state lives in [`Panel::column`] and stands
+/// in the app's own fields only inside [`App::in_panel`], so the chat's
+/// renderer, keys and composer serve it unchanged.
+impl App {
+    /// Trade the main column's state for the panel's, either way.
+    fn swap_column(&mut self) {
+        let Some(panel) = self.orch.panel.as_mut() else {
+            return;
+        };
+        let column = &mut panel.column;
+        self.model.swap_chat(&mut column.chat);
+        std::mem::swap(&mut self.lane, &mut column.lane);
+        std::mem::swap(&mut self.merged, &mut column.merged);
+        std::mem::swap(&mut self.loading, &mut column.loading);
+        std::mem::swap(&mut self.overview, &mut column.overview);
+        std::mem::swap(&mut self.pair, &mut column.pair);
+        std::mem::swap(&mut self.read_only, &mut column.read_only);
+        std::mem::swap(&mut self.read_line, &mut column.read_line);
+        std::mem::swap(&mut self.draft_view, &mut column.draft_view);
+        std::mem::swap(&mut self.draft, &mut column.draft);
+        std::mem::swap(&mut self.keyed, &mut column.keyed);
+        std::mem::swap(&mut self.layout, &mut column.layout);
+        std::mem::swap(&mut self.history, &mut column.history);
+        std::mem::swap(&mut self.lost, &mut column.lost);
+        std::mem::swap(&mut self.drawn, &mut column.drawn);
+        self.orch.active = !self.orch.active;
+    }
+
+    /// Run `act` with the panel's column in the app's fields, then put the
+    /// main column back and tell the reader what changed. `None` with no
+    /// panel open.
+    fn in_panel<R>(&mut self, act: impl FnOnce(&mut Self) -> R) -> Option<R> {
+        self.orch.panel.as_ref()?;
+        if self.orch.active {
+            return Some(act(self));
+        }
+        let flash = |app: &Self| app.flash.as_ref().map(|(_, at)| *at);
+        let before = flash(self);
+        self.swap_column();
+        let done = act(self);
+        if self.orch.active {
+            self.swap_column();
+        }
+        if flash(self) != before && self.orch.panel.is_some() {
+            self.orch.flash = flash(self);
+        }
+        self.focus();
+        Some(done)
+    }
+
+    /// Whether the open panel takes the keys.
+    fn panel_focused(&self) -> bool {
+        self.orch.panel.as_ref().is_some_and(|panel| panel.focused)
+    }
+
+    /// The session the running entry writes.
+    fn writer_name(&self) -> Option<&str> {
+        self.writer.as_ref().map(|writer| writer.console.name())
+    }
+
+    /// Whether the column standing in the app's fields writes: the entry is
+    /// its own, not the other column's.
+    fn writes_here(&self) -> bool {
+        self.composing()
+            && self
+                .writer_name()
+                .is_none_or(|name| Some(name) == self.model.selected())
+    }
+
+    /// Why the open panel acts on nothing now; `None` while the orchestrator
+    /// is the incarnation it opened on. It never takes another.
+    fn panel_line(&self) -> Option<String> {
+        let panel = self.orch.panel.as_ref()?;
+        let Some(pin) = &panel.pin else {
+            return Some(panel.opened.clone());
+        };
+        match &self.orch.proof {
+            loader::Proof::Proven(uuid) if uuid == pin => None,
+            loader::Proof::Proven(_) => Some("orchestrator replaced; O reopens".to_owned()),
+            proof => inert_line(proof),
+        }
+    }
+
+    /// Whether the orchestrator needs the human as a target of `!` and the
+    /// button: the incarnation the open panel is pinned to, or while hidden
+    /// the one this read proved.
+    fn orchestrator_needy(&self) -> bool {
+        let proven = match &self.orch.panel {
+            Some(_) => self.panel_line().is_none(),
+            None => matches!(self.orch.proof, loader::Proof::Proven(_)),
+        };
+        proven
+            && fleet::orchestrator(&self.world, &self.facts, &self.needs, Timestamp::now())
+                .is_some_and(|row| row.needy)
+    }
+
+    /// How the panel stands, for the model to draw by.
+    fn columns(&self) -> model::Columns {
+        model::Columns {
+            needy: self.orchestrator_needy(),
+            panel: self
+                .orch
+                .panel
+                .as_ref()
+                .map(|panel| (panel.full, panel.focused)),
+            drawing_panel: false,
+        }
+    }
+
+    /// Open the panel with the keys, side by side or `full`, on the
+    /// incarnation this read proved: one step, so what it shows and what it
+    /// pinned cannot differ. Nothing proven opens it inert.
+    fn open_panel(&mut self, full: bool) {
+        if self.orch.panel.is_some() {
+            return;
+        }
+        if self.composing() || self.held.is_some() {
+            self.write(false);
+        }
+        let pin = match &self.orch.proof {
+            loader::Proof::Proven(uuid) => Some(uuid.clone()),
+            _ => None,
+        };
+        self.orch.panel = Some(Panel {
+            full,
+            focused: true,
+            pin,
+            opened: inert_line(&self.orch.proof).unwrap_or_default(),
+            column: Column {
+                chat: model::Chat::of(ORCH),
+                loading: true,
+                ..Column::default()
+            },
+        });
+        self.in_panel(Self::show);
+    }
+
+    /// Hide the panel: its entry ends, its draft stays under its input.
+    fn close_panel(&mut self) {
+        if self.orch.active {
+            self.swap_column();
+        }
+        if self.writer_name() == Some(ORCH) || self.panel_focused() && self.held.is_some() {
+            self.write(false);
+        }
+        self.orch.panel = None;
+        let mine = std::mem::take(&mut self.orch.flash);
+        self.flash
+            .take_if(|(_, at)| mine.is_some_and(|mine| mine == *at));
+        self.focus();
+    }
+
+    /// `O` and the button: open the panel beside the main column, or hide it.
+    fn toggle_panel(&mut self) {
+        if self.orch.panel.is_some() {
+            self.close_panel();
+        } else {
+            self.open_panel(false);
+        }
+    }
+
+    /// `F` and the mode label: the panel between side and full as the last
+    /// frame showed it; full takes the keys. Whether the panel is open.
+    fn flip_panel(&mut self) -> bool {
+        let shown = self.orch.panel.as_ref().is_some_and(|panel| {
+            let columns = model::Columns {
+                panel: Some((panel.full, panel.focused)),
+                ..model::Columns::default()
+            };
+            draw::panel_full(self.layout.area(), self.model.split(), columns)
+        });
+        if self.orch.panel.is_none() {
+            return false;
+        }
+        if !shown {
+            self.focus_column(true);
+        }
+        if let Some(panel) = self.orch.panel.as_mut() {
+            panel.full = !shown;
+        }
+        true
+    }
+
+    /// Give the keys to the panel or to the main column: a change ends the
+    /// running entry as Esc does, its draft kept under its own input.
+    fn focus_column(&mut self, on_panel: bool) {
+        let Some(panel) = self.orch.panel.as_mut() else {
+            return;
+        };
+        if panel.focused == on_panel {
+            return;
+        }
+        panel.focused = on_panel;
+        if self.composing() || self.held.is_some() {
+            self.write(false);
+        }
+    }
+
+    /// `!`: the next entry that needs the human after the cursor, in one ring
+    /// of the orchestrator first and then the rows, wrapping. The cursor is
+    /// the orchestrator while the panel holds the keys, else the selection.
+    /// The orchestrator opens or focuses the side panel; a row is selected in
+    /// the main column, which takes the keys, a full panel turning side.
+    fn next_need(&mut self) -> bool {
+        let count = self.fleet.rows.len() + 1;
+        let cursor = if self.panel_focused() {
+            Some(0)
+        } else {
+            self.model.position(&self.fleet).map(|at| at + 1)
+        };
+        let after = cursor.map_or(0, |at| at + 1);
+        let orchestrator = self.orchestrator_needy();
+        let target =
+            (0..count)
+                .map(|step| (after + step) % count)
+                .find(|at| match at.checked_sub(1) {
+                    None => orchestrator,
+                    Some(row) => self.fleet.rows[row].needy,
+                });
+        match target {
+            None => false,
+            Some(0) => {
+                if self.orch.panel.is_none() {
+                    self.open_panel(false);
+                }
+                self.focus_column(true);
+                if let Some(panel) = self.orch.panel.as_mut() {
+                    panel.full = false;
+                }
+                true
+            }
+            Some(at) => {
+                if let Some(panel) = self.orch.panel.as_mut() {
+                    panel.full = false;
+                }
+                self.focus_column(false);
+                let act = self.model.select_at(&self.fleet, at - 1);
+                let _ = apply(self, &act, Instant::now());
+                true
+            }
+        }
+    }
+
+    /// Who takes browse byte `byte` while the panel holds the keys: the
+    /// list's own keys stay the main column's beside a side panel and do
+    /// nothing over a full one, a seat view or pane does nothing, and the
+    /// rest is the panel's chat.
+    fn panel_byte(&self, byte: u8) -> PanelByte {
+        let full = self.orch.panel.as_ref().is_some_and(|panel| {
+            let columns = model::Columns {
+                panel: Some((panel.full, panel.focused)),
+                ..model::Columns::default()
+            };
+            draw::panel_full(self.layout.area(), self.model.split(), columns)
+        });
+        match byte {
+            b'v' | b'o' => PanelByte::Inert,
+            b'1'..=b'9' | b'j' | b'k' if full => PanelByte::Inert,
+            b'1'..=b'9' | b'j' | b'k' | b'q' | b',' | b'?' | b's' | b'z' | b'm' => PanelByte::Main,
+            _ => PanelByte::Panel,
+        }
+    }
+
+    /// A key the composer of the column that holds the keys takes.
+    fn compose_routed(&mut self, key: Key, origin: Instant) -> Option<()> {
+        if self.panel_focused() && !self.orch.active {
+            return self
+                .in_panel(|app| app.compose(key, origin))
+                .unwrap_or(Some(()));
+        }
+        self.compose(key, origin)
+    }
+
+    /// The reader a panel turn opened stands in the main column, which takes
+    /// the keys; a full panel turns side so the file shows.
+    fn reader_to_main(&mut self) {
+        if let Some(panel) = self.orch.panel.as_mut() {
+            panel.full = false;
+        }
+        self.focus_column(false);
+    }
+
+    /// The fold of one proof of the orchestrator: an open panel that lost its
+    /// incarnation ends its own entry, never HELD and never the main
+    /// column's; a home or handed-over view of it opens the panel full.
+    fn proved(&mut self, proof: loader::Proof) {
+        self.orch.proof = proof;
+        let opening = std::mem::take(&mut self.orch.opening);
+        let opens = match (&opening, &self.orch.proof) {
+            (Opening::Home, _) => true,
+            (Opening::Handed(id), loader::Proof::Proven(uuid)) => id == uuid,
+            _ => false,
+        };
+        if opens {
+            self.open_panel(true);
+        }
+        if self.orch.panel.is_some() {
+            if self.panel_line().is_some() && self.writer_name() == Some(ORCH) {
+                self.write(false);
+            }
+            self.in_panel(Self::show);
+        }
+    }
+
+    /// Whether a mouse event lands on the open panel.
+    fn on_panel(&self, mouse: Mouse) -> bool {
+        let Some(panel) = self.orch.panel.as_ref() else {
+            return false;
+        };
+        let columns = model::Columns {
+            panel: Some((panel.full, panel.focused)),
+            ..model::Columns::default()
+        };
+        draw::panel_area(self.layout.area(), self.model.split(), columns)
+            .is_some_and(|area| area.contains(Position::new(mouse.column, mouse.row)))
+    }
+
+    /// A mouse event on the open panel: its button, mode label and gear act
+    /// on the app; a press gives it the keys, and the rest is its chat's.
+    fn panel_route(&mut self, mouse: Mouse, fresh: bool) -> bool {
+        let hit = (self.orch.panel.as_ref())
+            .filter(|_| mouse.kind == MouseKind::Click)
+            .and_then(|panel| panel.column.layout.hit(mouse));
+        match hit {
+            Some(draw::Hit::Orchestrator) => {
+                self.toggle_panel();
+                return true;
+            }
+            Some(draw::Hit::PanelMode) => return self.flip_panel(),
+            Some(draw::Hit::Settings) => {
+                self.open_settings();
+                return true;
+            }
+            _ => {}
+        }
+        if mouse.kind == MouseKind::Click {
+            self.focus_column(true);
+        }
+        self.in_panel(|app| app.route(mouse, fresh))
+            .unwrap_or(false)
+            || mouse.kind == MouseKind::Click
+    }
+
+    /// Draw the open panel over its cells of `buf`, from its own column.
+    fn frame_panel(&mut self, buf: &mut Buffer) {
+        let mut columns = self.columns();
+        if columns.panel.is_none() {
+            return;
+        }
+        columns.drawing_panel = true;
+        let main = self.model.columns();
+        let cursor = self.in_panel(|app| {
+            app.show();
+            app.model.set_columns(columns);
+            let area = buf.area;
+            let size = Size {
+                width: draw::column_width(area, app.model.split(), columns),
+                height: draw::composer_pane(area),
+            };
+            let shown = app.shown_input().map(|i| (i.bare_view(size), i.draft()));
+            (app.draft_view, app.draft) = shown.unwrap_or_default();
+            let keys = app.keys();
+            let (folds, open, sent) = app.fold_state();
+            let entry = app.entry(ORCH);
+            let (look, zone) = app.dressed();
+            let screen = draw::Screen {
+                fleet: &app.fleet,
+                model: &app.model,
+                overview: &app.overview,
+                selected: entry,
+                pair: &app.pair,
+                agents: app.facts.get(ORCH),
+                lane: &app.lane,
+                composer: app.composer(),
+                look,
+                zone,
+                now: Timestamp::now(),
+            };
+            let dest = app.destination(ORCH);
+            let wait = draw::Wait {
+                fleet: !app.fleeted,
+                lane: app.loading,
+                keys: &keys,
+                folds: &folds,
+                open: &open,
+                sent: &sent,
+                dest: dest.as_ref().map(draw::Dest::of),
+                md: Some(&app.md),
+            };
+            let drawn = draw::draw_panel(&screen, wait, buf);
+            let replaced = std::mem::replace(&mut app.layout, drawn);
+            app.history.push((Instant::now(), replaced));
+            if app.history.len() > HISTORY {
+                app.lost = Some(app.history.remove(0).0);
+            }
+            if app.deferred.is_empty() {
+                app.model
+                    .clamp_scroll(app.layout.max_scroll, app.layout.page_rows);
+            }
+            app.drawn = Some(app.freeze(ORCH));
+            app.model.set_columns(main);
+            app.layout.cursor
+        });
+        if let Some(cursor) = cursor.flatten() {
+            self.layout.cursor = Some(cursor);
+        }
+    }
+}
+
 fn lines_word(text: &str) -> String {
     match text.lines().count() {
         1 => "1 line".to_owned(),
@@ -5106,7 +5684,10 @@ fn by_mode(app: &mut App, key: Key, origin: Instant) -> Option<bool> {
         Mode::Settings => settings_key(app, &key, origin),
         Mode::Peek => peek_key(app, &key, origin),
         Mode::Reader => reader_key(app, &key, origin),
-        Mode::Composer => app.compose(key, origin).map(|()| true),
+        Mode::Composer => app.compose_routed(key, origin).map(|()| true),
+        Mode::Held if app.panel_focused() && !app.orch.active => {
+            app.in_panel(|app| app.retry(&key)).unwrap_or(Some(false))
+        }
         Mode::Held => app.retry(&key),
         Mode::Browse => browse(app, &key, origin),
     }
@@ -5268,7 +5849,7 @@ fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
             if app.composing() {
                 // Writing started mid-chunk: the rest is draft, whole, with
                 // its original instant — never re-spelled per byte.
-                app.compose(Key::Text(rest.to_vec()), origin)
+                app.compose_routed(Key::Text(rest.to_vec()), origin)
                     .map(|()| true)?;
                 return Some(true);
             }
@@ -5276,6 +5857,26 @@ fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> {
             rest = tail;
         }
         return Some(redraw);
+    }
+    // With the panel holding the keys, Esc hides it, the arrows step the
+    // list beside a side panel, and the rest is the panel's chat.
+    if app.panel_focused() && !app.orch.active {
+        match key {
+            Key::Escape => {
+                app.close_panel();
+                return Some(true);
+            }
+            // The arrows are `j` / `k`: the list's beside a side panel only.
+            Key::Up | Key::Down if matches!(app.panel_byte(b'j'), PanelByte::Inert) => {
+                return Some(false);
+            }
+            Key::Up | Key::Down | Key::Interrupt => {}
+            _ => {
+                return app
+                    .in_panel(|app| browse(app, key, origin))
+                    .unwrap_or(Some(false));
+            }
+        }
     }
     if let Key::Pasted(bytes) = key {
         paste(app, bytes, origin);
@@ -5320,6 +5921,30 @@ fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bool> {
         return Some(false);
     }
     let disarmed = !matches!(byte, b'q' | b'o') && app.armed.take().is_some();
+    if !app.orch.active {
+        match byte {
+            b'O' => {
+                app.toggle_panel();
+                return Some(true);
+            }
+            b'F' => return Some(app.flip_panel() || disarmed),
+            b'!' => return Some(app.next_need() || disarmed),
+            _ => {}
+        }
+        if app.panel_focused() {
+            match app.panel_byte(byte) {
+                PanelByte::Inert => return Some(disarmed),
+                PanelByte::Panel => {
+                    let done = app.in_panel(|app| browse_byte(app, byte, origin));
+                    if byte == b'r' && app.model.reader_open() {
+                        app.reader_to_main();
+                    }
+                    return done.unwrap_or(Some(disarmed));
+                }
+                PanelByte::Main => {}
+            }
+        }
+    }
     match byte {
         b'q' => return app.press(Arm::Quit, origin).is_none().then_some(true),
         b',' => {
@@ -5575,13 +6200,13 @@ fn apply(app: &mut App, act: &model::Act, origin: Instant) -> Option<bool> {
             app.open_reader();
             Some(true)
         }
+        // `O` is the panel's own control; the main column never selects the
+        // orchestrator.
         model::Act::Orchestrator => {
-            let live: Vec<(String, String)> = (app.world.sessions.iter())
-                .filter(|entry| entry.status == Status::Running)
-                .filter_map(|entry| Some((entry.name.clone(), app.ids.get(&entry.name)?.clone())))
-                .collect();
-            let act = app.model.toggle_orchestrator(&app.fleet, &live);
-            apply(app, &act, origin)
+            if !app.orch.active {
+                app.toggle_panel();
+            }
+            Some(true)
         }
         model::Act::Notice(line) => {
             app.flash = Some((line.clone(), Instant::now()));

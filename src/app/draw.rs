@@ -14,7 +14,7 @@ use ratatui_core::style::{Color, Modifier, Style};
 use ratatui_core::text::{Line, Span};
 
 use super::fleet::{Counts, Facts, Fleet, Line2, Row, summary};
-use super::model::{Drag, Edge, Model, SettingsTab, Split, Stopped};
+use super::model::{Columns, Drag, Edge, Model, SettingsTab, Split, Stopped};
 use super::overview::{Open, Overview};
 use super::peek;
 use super::reader;
@@ -143,6 +143,10 @@ pub(crate) enum Hit {
     Fold(u64),
     /// The `↓ newer turns` hint's drawn words: scroll to the newest turn.
     Newest,
+    /// The hint row's orchestrator button: opens or hides the panel.
+    Orchestrator,
+    /// The panel header's mode label: side or full.
+    PanelMode,
 }
 
 /// A border as drawn: its edge, where it stands, its own cells and the cells
@@ -638,6 +642,7 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Bu
         area,
         ..Layout::default()
     };
+    let stand = stand(area, screen.model.split(), screen.model.columns());
     let ctx = Ctx {
         screen,
         paint: Paint::of(screen.look.as_ref()),
@@ -688,9 +693,14 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Bu
         ));
         0..width
     };
-    layout.chat = Rect::new(chat.start, 0, width - chat.start, height);
+    // A side panel takes the right of the chat; the main column keeps the rest.
+    let end = match stand {
+        Stand::Side { border } => border,
+        _ => width,
+    };
+    layout.chat = Rect::new(chat.start, 0, end - chat.start, height);
     layout.seats_session = ctx.screen.selected.map(|entry| entry.name.clone());
-    chat_column(&ctx, buf, chat.start + 2..width - 2, &mut layout);
+    chat_column(&ctx, buf, chat.start + 2..end - 2, &mut layout);
     // The warning rides the chat's rule row, over the left of the rule.
     if let Some(line) = fallback {
         put(buf, 0, 1, &line, width, dim);
@@ -698,6 +708,107 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Bu
     if overlay_open(screen.model) {
         keys_row(&ctx, buf, &mut layout);
     }
+    layout
+}
+
+/// The fewest cells each of the main column and a side panel keeps.
+const PANEL_FLOOR: u16 = 40;
+
+/// Where the orchestrator panel stands in a frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Stand {
+    /// No panel.
+    Closed,
+    /// Right of the main column, from its border column to the frame's end.
+    Side { border: u16 },
+    /// Over the whole frame; `note` says why a side panel did not fit.
+    Full { note: Option<String> },
+}
+
+/// Where the panel `columns` describe stands in `area` split as `split`:
+/// side takes half of the chat columns when both halves keep
+/// [`PANEL_FLOOR`], else it falls back to the full frame and says why.
+fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
+    let Some((full, _)) = columns.panel else {
+        return Stand::Closed;
+    };
+    if full {
+        return Stand::Full { note: None };
+    }
+    let start = sidebar_width(area, split).map_or(0, |rule| rule + 1);
+    let half = area.width.saturating_sub(start) / 2;
+    if half >= PANEL_FLOOR {
+        return Stand::Side {
+            border: area.width - half,
+        };
+    }
+    let need = start.saturating_add(PANEL_FLOOR * 2);
+    Stand::Full {
+        note: Some(format!("side needs {need} columns")),
+    }
+}
+
+/// Whether the open panel covers the whole frame now: asked for, or a side
+/// panel that did not fit.
+pub(crate) fn panel_full(area: Rect, split: Split, columns: Columns) -> bool {
+    matches!(stand(area, split, columns), Stand::Full { .. })
+}
+
+/// The cells the open panel covers in `area`, `None` while it is closed.
+pub(crate) fn panel_area(area: Rect, split: Split, columns: Columns) -> Option<Rect> {
+    match stand(area, split, columns) {
+        Stand::Closed => None,
+        Stand::Side { border } => Some(Rect::new(border, 0, area.width - border, area.height)),
+        Stand::Full { .. } => Some(area),
+    }
+}
+
+/// Draw the open orchestrator panel over its cells of the frame `buf` holds:
+/// `screen` is the panel's own column, drawn by the chat's renderer. A side
+/// panel has its border on its left column; a full one covers the frame.
+pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) -> Layout {
+    let area = buf.area;
+    let mut layout = Layout {
+        area,
+        ..Layout::default()
+    };
+    let columns = screen.model.columns();
+    let stand = stand(area, screen.model.split(), columns);
+    if area.width < MIN.0 || area.height < MIN.1 || stand == Stand::Closed {
+        return layout;
+    }
+    let ctx = Ctx {
+        screen,
+        paint: Paint::of(screen.look.as_ref()),
+        icons: screen.look.is_none_or(|look| look.icons),
+        wait,
+    };
+    let (height, width) = (area.height, area.width);
+    let from = match stand {
+        Stand::Side { border } => border,
+        _ => 0,
+    };
+    for y in 0..height {
+        for x in from..width {
+            buf[(x, y)].reset();
+        }
+    }
+    buf.set_style(
+        Rect::new(from, 0, width - from, height),
+        ctx.paint.ground(|p| p.ink),
+    );
+    let left = if from == 0 {
+        0
+    } else {
+        let border = ctx.paint.rule(false);
+        for y in 0..height {
+            put(buf, from, y, "│", 1, border);
+        }
+        from + 1
+    };
+    layout.chat = Rect::new(left, 0, width - left, height);
+    layout.seats_session = ctx.screen.selected.map(|entry| entry.name.clone());
+    chat_column(&ctx, buf, left + 2..width - 2, &mut layout);
     layout
 }
 
@@ -712,6 +823,18 @@ fn overlay_open(model: &Model) -> bool {
 pub(crate) fn draft_width(area: Rect, split: Split) -> usize {
     let left = sidebar_width(area, split).map_or(0, |rule| rule + 1) + 2;
     usize::from(area.width.saturating_sub(2).saturating_sub(left)).max(1)
+}
+
+/// [`draft_width`] for the column `columns` draws now: the main column beside
+/// an open side panel keeps its half, the panel its own.
+pub(crate) fn column_width(area: Rect, split: Split, columns: Columns) -> usize {
+    let width = match stand(area, split, columns) {
+        Stand::Side { border } if columns.drawing_panel => area.width - border - 1,
+        Stand::Side { border } => border - sidebar_width(area, split).map_or(0, |rule| rule + 1),
+        Stand::Full { .. } if columns.drawing_panel => area.width,
+        Stand::Closed | Stand::Full { .. } => return draft_width(area, split),
+    };
+    usize::from(width.saturating_sub(4)).max(1)
 }
 
 /// The height a draft in `area` is laid out in. A view keeps one row of its
@@ -1747,7 +1870,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     let (left, end) = (columns.start, columns.end);
     let room = end - left;
     let (dim, border) = (paint.fg(|p| p.dim), paint.fg(|p| p.border));
-    header(ctx, buf, left, end);
+    header(ctx, buf, (left, end), layout);
     put(buf, left, 1, &"─".repeat(usize::from(room)), room, border);
     // While writing, the composer has a row for each row of the draft's view,
     // under the address row; the hint row, the pane's last, follows.
@@ -1908,10 +2031,40 @@ fn hint_row(
     if fits(&rest) {
         at = put(buf, at, y, &rest, end - at, paint.fg(|p| p.dim));
     }
-    // A panel's footer is its own row: no second gear under it.
-    if !overlay_open(ctx.screen.model) {
+    // A panel's footer is its own row: no second gear under it. The open
+    // orchestrator panel draws the frame's tail, and the main column none.
+    let model = ctx.screen.model;
+    let columns = model.columns();
+    let side = matches!(stand(buf.area, model.split(), columns), Stand::Side { .. });
+    let panel = columns.drawing_panel;
+    let ends = panel || !side;
+    if ends && (!overlay_open(model) || panel && !model.settings_open()) {
         tail(ctx, buf, layout, (y, at), false);
     }
+    // The orchestrator button stands in the gutter left of the hint: the
+    // main column's, or a full panel's that covers it.
+    if (!panel || !side) && !overlay_open(model) {
+        orchestrator_button(ctx, buf, layout, (left.saturating_sub(2), y));
+    }
+}
+
+/// The orchestrator panel's button at `(x, y)`: `◆` (`O` with `icons = off`),
+/// in the needs-you ink while the orchestrator waits on the human, else dim. A
+/// click on it or the blank after it opens or hides the panel.
+fn orchestrator_button(
+    ctx: &Ctx<'_, '_>,
+    buf: &mut Buffer,
+    layout: &mut Layout,
+    (x, y): (u16, u16),
+) {
+    let button = if ctx.icons { "\u{25c6}" } else { "O" };
+    let ink = if ctx.screen.model.columns().needy {
+        ctx.paint.mark(Mark::NeedsYou)
+    } else {
+        ctx.paint.fg(|p| p.dim)
+    };
+    put(buf, x, y, button, 1, ink);
+    layout.record(buf, Rect::new(x, y, 2, 1), Hit::Orchestrator);
 }
 
 /// The keys that work in this mode: writing names the three that matter,
@@ -2019,16 +2172,30 @@ fn turn_targets(
 
 /// The chat header: the session, its pair, and right-aligned its branch (at
 /// 140 columns or more) and its activity.
-fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16) {
+fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, (left, end): (u16, u16), layout: &mut Layout) {
     let screen = ctx.screen;
     let paint = ctx.paint;
+    let end = panel_head(ctx, buf, (left, end), layout);
     let Some(entry) = screen.selected else {
         return;
     };
+    // With the panel open, the column that takes the keys is named in the
+    // title ink and the other dim; with no colour a `▸` marks it.
+    let columns = screen.model.columns();
+    let focused = columns
+        .panel
+        .map(|(_, panel)| panel == columns.drawing_panel);
+    let ink = match focused {
+        Some(false) => paint.fg(|p| p.dim),
+        _ => paint.fg(|p| p.title),
+    };
     let name = match paint.0 {
-        Some(_) => paint.fg(|p| p.title).add_modifier(Modifier::BOLD),
+        Some(_) => ink.add_modifier(Modifier::BOLD),
         None => Style::new().add_modifier(Modifier::BOLD),
     };
+    if focused == Some(true) && paint.0.is_none() {
+        put(buf, left.saturating_sub(2), 0, "▸", 1, name);
+    }
     let after = put(buf, left, 0, &entry.name, end - left, name);
     let middle = screen.pair.join(" + ");
     let after = put(
@@ -2093,6 +2260,44 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, left: u16, end: u16) {
     }
     let shown = clip_tail(dir, usize::from(room));
     put(buf, dir_from, 0, &shown, room, paint.fg(|p| p.dim));
+}
+
+/// The panel header's right end: the mode label, `F full` or `F side`, a
+/// click target, and before it why a side panel did not fit. The answer is
+/// where the rest of the header ends; the main column's header keeps `end`.
+fn panel_head(
+    ctx: &Ctx<'_, '_>,
+    buf: &mut Buffer,
+    (left, end): (u16, u16),
+    layout: &mut Layout,
+) -> u16 {
+    let model = ctx.screen.model;
+    let columns = model.columns();
+    if !columns.drawing_panel {
+        return end;
+    }
+    let stand = stand(buf.area, model.split(), columns);
+    let label = if matches!(stand, Stand::Full { .. }) {
+        "F side"
+    } else {
+        "F full"
+    };
+    let width = cells(label.chars().count());
+    if end < left + width {
+        return end;
+    }
+    let from = end - width;
+    put(buf, from, 0, label, width, ctx.paint.fg(|p| p.title));
+    layout.record(buf, Rect::new(from, 0, width, 1), Hit::PanelMode);
+    let mut stop = from.saturating_sub(2);
+    if let Stand::Full { note: Some(note) } = stand {
+        let need = cells(note.chars().count());
+        if stop >= left + need {
+            put(buf, stop - need, 0, &note, need, ctx.paint.fg(|p| p.dim));
+            stop = stop.saturating_sub(need + 2);
+        }
+    }
+    stop.max(left)
 }
 
 /// The fewest cells the header's reason segment, or a directory beside it, is
@@ -2191,7 +2396,7 @@ const BROWSE_KEYS: [(&str, &str); 20] = [
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
     ("oo", "open seat; twice in 2 s"),
-    ("O", "orchestrator, and back to where you were"),
+    ("O F", "orchestrator panel; F: side or full"),
     ("m", "session menu; right-click a card too"),
     ("s", "start / stop the selected session"),
     ("z", "show / hide stopped sessions"),
@@ -4954,7 +5159,12 @@ mod tests {
             let head = row
                 .strip_suffix(tail.as_str())
                 .expect("version and gear end it");
-            assert_eq!(head.trim_end(), format!("  {words}").trim_end(), "{words}");
+            // The orchestrator button stands in the gutter before the hint.
+            assert_eq!(
+                head.trim_end(),
+                format!("\u{25c6} {words}").trim_end(),
+                "{words}"
+            );
             if words.is_empty() {
                 assert!(named.iter().all(|key| !row.contains(key)), "{row}");
             }
@@ -4975,7 +5185,7 @@ mod tests {
         let shot = Shot::new();
         let gear = "\u{2699}";
         let tail = format!("{} {gear}", crate::shape::version_line());
-        let head = "  Enter writes · ? keys";
+        let head = "\u{25c6} Enter writes · ? keys";
         let full = head.chars().count() + 2 + tail.chars().count();
         let drop = |width: usize, drawn: &str| {
             let at = u16::try_from(width).unwrap_or(0);
@@ -5231,6 +5441,8 @@ mod tests {
         );
         assert!(
             row_from(&buf, 7, 0)
+                .trim_start()
+                .trim_start_matches('\u{25c6}')
                 .trim_start()
                 .starts_with("Enter writes · ? keys"),
             "the hint row"
@@ -7284,7 +7496,7 @@ mod tests {
         };
         let gear = "\u{2699}";
         let tail = format!("{} {gear}", crate::shape::version_line());
-        let head = "  Enter writes · ? keys";
+        let head = "\u{25c6} Enter writes · ? keys";
         let full = head.chars().count() + 2 + tail.chars().count();
         for (width, drawn) in [(full, tail.as_str()), (full - 1, gear)] {
             let at = u16::try_from(width).unwrap_or(0);

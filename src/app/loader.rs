@@ -1244,11 +1244,7 @@ impl Reader {
     /// from the fleet, moved, or bound to an identity its session no longer
     /// records. Its next read opens it afresh.
     fn evict(&mut self) {
-        let keep: Vec<String> = self
-            .kept()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
+        let keep: Vec<String> = self.kept().into_iter().map(|(name, _)| name).collect();
         let (dirs, ids) = (&self.dirs, &self.ids);
         self.consoles.retain(|name, console| {
             keep.contains(name)

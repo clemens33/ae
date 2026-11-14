@@ -79,10 +79,12 @@ recorded config first.
   tally down to its most urgent count, then the name's tail. `↑` / `↓` at the band's first row's right end show needy
   rows outside the list, and `!` reaches the next one. The `Agents N` heading
   under the list keeps its raised panel band. Running sessions come in
-  this order: the orchestrator, then the sessions your `[workspace]
+  this order: the sessions your `[workspace]
   fleet_order` names (the pins), then the rest by their newest AI answer to
   you, newest first, and a session with none after them in creation order;
-  stopped ones come last. Your own input never reorders the list. A needy row says so by its `⚠` mark, with no edge, and `!` reaches it. One row is lifted: the one the chat column shows, the selected session while its shared chat is and a seat only while that seat's screen is. It wears a `▸` (`>` with `icons = off`) in its first cell and the selected ground over its one row; with `theme = off` the row is reversed. While a seat's screen is shown its session is a context row: no lift, its name keeps the title ink. A session that answered you while you looked elsewhere carries a `▸` (`>` with `icons = off`) in the blank cell left of its status mark, from the next fleet read until you select it; the home session and the selected one never carry it. The order is unchanged: the cue only says which row answered, the same newest AI answer that orders the list. The wheel moves a list that does not fit one session a notch; a
+  stopped ones come last. The orchestrator is never a row, running or
+  stopped, and no count, digit, cue or pin reaches it: it has its own panel
+  ([Orchestrator panel](#orchestrator-panel)). Your own input never reorders the list. A needy row says so by its `⚠` mark, with no edge, and `!` reaches it. One row is lifted: the one the chat column shows, the selected session while its shared chat is and a seat only while that seat's screen is. It wears a `▸` (`>` with `icons = off`) in its first cell and the selected ground over its one row; with `theme = off` the row is reversed. While a seat's screen is shown its session is a context row: no lift, its name keeps the title ink. A session that answered you while you looked elsewhere carries a `▸` (`>` with `icons = off`) in the blank cell left of its status mark, from the next fleet read until you select it; the home session and the selected one never carry it. The order is unchanged: the cue only says which row answered, the same newest AI answer that orders the list. The wheel moves a list that does not fit one session a notch; a
   selection key brings the selection back into view, a click keeps the list
   where it is.
 - **Agents** under the list: every seat of the selected session: its mark, its
@@ -213,7 +215,8 @@ Browsing:
 | `1`-`9` | select the Nth session of the list, counted by position (no number is drawn) |
 | `j` / `k`, `↓` / `↑` | next / previous session |
 | `!` | the next session that needs you |
-| `O` | select the orchestrator and remember where from; pressed on the orchestrator, select that session again. A session replaced under its name, or no orchestrator running, refuses with a line and changes nothing |
+| `O`, click `◆` | open the orchestrator panel beside the chat, or hide it ([Orchestrator panel](#orchestrator-panel)) |
+| `F`, click `F full` / `F side` | the open panel full screen, or side by side again |
 | `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
 | Click a seat, or `v` on the highlighted seat | inside tmux: watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)); outside tmux a click works in the seat itself ([Working in a seat](#working-in-a-seat)) |
@@ -411,6 +414,38 @@ that detaches in that instant refuses the open. If the app dies while a client
 views a seat, `F12` and `C-]` still go back, but nothing takes the client back
 when the seat's session ends meanwhile. The cursor steps only through the rows
 drawn.
+
+## Orchestrator panel
+
+The orchestrator is no row of the list. Its control is the `◆` (`O` with
+`icons = off`) at the hint row's left end, in the gutter before the first
+hint, while the version and the gear keep the right end: a click or `O`
+opens the panel and the same click or `O` hides it; the orchestrator keeps
+running either way. The button wears the orchestrator's needs-you mark while
+it waits on you, and `!` reaches it first in its ring of the needy, opening
+the panel when it is hidden.
+
+The panel is a second chat column on the orchestrator, drawn by the chat's
+own renderer with its own composer, scroll, marked turn and draft. Side by side
+it takes the right half of the chat column, each half at least 40 cells;
+narrower, it covers the frame and its header says `side needs <N> columns`.
+`F` or a click on its header's `F full` / `F side` switches it between side
+and full. Full screen it holds the keys; side by side a click gives the keys to
+the column it lands on, and the focused column's name is in the title ink
+(`▸` before it with `theme = off`). Any change of focus ends writing as `Esc`
+does and keeps each draft. While the panel holds the keys, `Esc` (not writing)
+hides it, `1`-`9`, `j` / `k` and the arrows still step the list beside a side
+panel, `v` and `oo` do nothing, `r` opens the reader in the main column, and
+the rest acts on the panel's chat; `O` and `F` are plain text while writing.
+
+The panel opens on the orchestrator incarnation the last fleet read proved:
+its live `@ae_session_uuid`, its meta and the one `session_id` that meta
+records. It shows and writes that incarnation only. With none it says one line
+and acts on nothing: `no orchestrator running`, `orchestrator unproven: <why>`,
+or, when another incarnation took the name while it was open,
+`orchestrator replaced; O reopens`. Only hiding and opening it again binds a
+new one. An app started on the orchestrator (`ae app orchestrator`, or a
+handed-over view of it) opens the panel full screen.
 
 ## Session menu
 
