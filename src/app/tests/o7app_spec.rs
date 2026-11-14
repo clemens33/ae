@@ -1366,3 +1366,93 @@ fn p2_widening_restores_the_open_side_panel_after_either_column_covered_the_fram
     );
     assert_eq!(rig.draft(ORCH, OID), "PANEL_WIDTH_DRAFT");
 }
+
+#[test]
+fn p3_a_panel_press_from_an_older_frame_never_targets_the_replacement_turn() {
+    // Run the same event sequence against main and panel. Both must preserve
+    // the target of the frame on which the press was made, or refuse it.
+    for panel in [false, true] {
+        let mut rig = Rig::new(Some("api"));
+        if panel {
+            rig.open();
+        }
+        let name = if panel { ORCH } else { "api" };
+        let uuid = if panel { OID } else { ID };
+        let old_path = rig.root.0.join("old-click.rs");
+        let new_path = rig.root.0.join("new-click.rs");
+        let old_body = format!("OLD_CLICK_TARGET\nopen {}:1", old_path.display());
+        let new_body = format!("NEW_CLICK_TARGET\nopen {}:1", new_path.display());
+        rig.app.answer(view(name, uuid, 401, &old_body));
+        let old = rig.frame(160, 45);
+        let (x, y) = cell(&old, "OLD_CLICK_TARGET").expect("old turn is drawn");
+        let origin = Instant::now();
+        rig.app.answer(view(name, uuid, 402, &new_body));
+        let current = rig.frame(160, 45);
+        assert_eq!(
+            cell(&current, "NEW_CLICK_TARGET"),
+            Some((x, y)),
+            "the replacement must occupy exactly the old press cells"
+        );
+        assert!(!text(&current).contains("OLD_CLICK_TARGET"));
+        let press = Mouse {
+            kind: MouseKind::Click,
+            column: x,
+            row: y,
+        };
+        let release = Mouse {
+            kind: MouseKind::Release,
+            ..press
+        };
+        assert!(
+            take_keys(
+                &mut rig.app,
+                vec![
+                    (Key::Mouse(press), origin),
+                    (Key::Mouse(release), origin),
+                    (Key::Text(b"r".to_vec()), Instant::now()),
+                ],
+            )
+            .is_some()
+        );
+        let mut stale_reads = Vec::new();
+        for ask in rig.rx.try_iter() {
+            match ask {
+                loader::Request::Read(Some(ask)) => stale_reads.push(ask.path),
+                other => rig.reader.take(other),
+            }
+        }
+        assert!(
+            stale_reads
+                .iter()
+                .all(|path| path == old_path.to_str().unwrap()),
+            "a delayed press must refuse or retain its old target, never the replacement: panel={panel}, reads={stale_reads:?}"
+        );
+        assert_eq!(rig.app.model.selected(), Some("api"));
+        if rig.app.model.reader_open() {
+            rig.key(Key::Escape);
+        }
+        // A refusal of every press cannot satisfy the contract: a fresh
+        // press at the same visible turn must still open its actual file.
+        rig.click_word("NEW_CLICK_TARGET");
+        assert!(
+            take_keys(
+                &mut rig.app,
+                vec![(Key::Text(b"r".to_vec()), Instant::now())],
+            )
+            .is_some()
+        );
+        let mut fresh_reads = Vec::new();
+        for ask in rig.rx.try_iter() {
+            match ask {
+                loader::Request::Read(Some(ask)) => fresh_reads.push(ask.path),
+                other => rig.reader.take(other),
+            }
+        }
+        assert_eq!(
+            fresh_reads,
+            [new_path.to_str().unwrap()],
+            "a fresh press must select the currently drawn turn: panel={panel}"
+        );
+        assert!(rig.deliveries.lock().unwrap().is_empty());
+    }
+}
