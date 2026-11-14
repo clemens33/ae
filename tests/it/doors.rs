@@ -982,7 +982,7 @@ fn a_live_session_file_is_named_in_exactly_one_place() {
         // happens to be spelled the same, so it is pinned by count: a second
         // one is a review, not a diff.
         let occurrences = code.matches("\"meta\"").count();
-        let allowed = usize::from(name == "src/session_launch.rs");
+        let allowed = usize::from(name == "src/session_launch/preflight.rs");
         assert_eq!(
             occurrences, allowed,
             "{name} spells \"meta\" {occurrences} time(s); the file is named in src/store.rs \
