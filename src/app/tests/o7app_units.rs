@@ -922,3 +922,30 @@ fn r_with_nothing_to_read_leaves_the_panel_as_it_stands() {
         assert_eq!(stays, full, "the panel keeps its mode");
     }
 }
+
+/// Only a press is refused when the frame it was made on is gone: a wheel
+/// notch on the panel, however late, acts on the frame on screen, as in the
+/// main column.
+#[test]
+fn a_late_wheel_on_the_panel_is_never_refused() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    let buf = at(160, 45, &mut app);
+    let x = border_of(&buf) + 10;
+    let origin = Instant::now();
+    for _ in 0..=super::super::HISTORY {
+        let _ = at(160, 45, &mut app);
+    }
+    let wheel = Mouse {
+        kind: MouseKind::WheelDown,
+        column: x,
+        row: 20,
+    };
+    assert!(take_keys(&mut app, vec![(Key::Mouse(wheel), origin)]).is_some());
+    let refused = app
+        .flash
+        .as_ref()
+        .is_some_and(|(line, _)| line == "click not taken: its frame is gone");
+    assert!(!refused, "a wheel is never refused");
+}
