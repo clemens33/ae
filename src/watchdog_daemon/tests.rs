@@ -56,6 +56,7 @@ fn family() -> String {
         .to_owned()
         + include_str!("facts.rs")
         + include_str!("acts.rs")
+        + include_str!("adoption.rs")
 }
 
 fn prompt() -> crate::watchdog::HumanPrompt {
@@ -4615,7 +4616,7 @@ fn adoption_never_spawns_a_process_snapshot_of_its_own() {
     for (name, body) in [
         (
             "enumerate_adoption",
-            between("fn enumerate_adoption(", "\nfn adoption_from("),
+            between("fn enumerate_adoption(", "\npub(super) fn adoption_from("),
         ),
         (
             "adoption_from",
