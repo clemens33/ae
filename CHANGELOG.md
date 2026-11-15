@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.61] - 2026-11-15
+- Move the inline test module to a file
+- A guard reads the retained parent and every child it registers
+- Cut the orchestrator panel out of app.rs
+- Cut the peek panel and the file reader out of app.rs
+- Cut the settings overlay out of app.rs
+- Name the app children panel, viewer, settings_flow and tests
+
 ## [v2026.11.60] - 2026-11-15
 - Install the frozen #340 gate reap acceptance (spec r3)
 - Install the frozen #340 gate reap acceptance r4 (short fixture names)
