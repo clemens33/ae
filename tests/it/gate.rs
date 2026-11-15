@@ -255,12 +255,17 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
     ) else {
         return false;
     };
+    // Each caller execs the nested just, so a TERM from the outer just reaches the
+    // lane itself: dash keeps a single command as a child (#340).
     let callers = [
-        ("rust-test:", "just _tmux-isolated test"),
-        ("rust-cov:", "just _tmux-isolated cov"),
+        ("rust-test:", "exec just _tmux-isolated test"),
+        ("rust-cov:", "exec just _tmux-isolated cov"),
         // Positional words, never `{{ args }}`: that splices the arguments back into
         // a command line, where a space splits one and a `|` starts a pipeline (#221).
-        ("rust-mutants *args:", "just _tmux-isolated mutants \"$@\""),
+        (
+            "rust-mutants *args:",
+            "exec just _tmux-isolated mutants \"$@\"",
+        ),
     ];
     reap < mktemp
         && registry < remove
@@ -9352,8 +9357,8 @@ fn the_advisory_pre_check_stays_out_of_the_gate_and_the_contract_says_so() {
     );
     let body = recipe_text(&justfile, "_pre-test:").join(" ");
     assert!(
-        body.starts_with("just _tmux-isolated test -E '"),
-        "the unit and guard tests run through the lane's filtered arm: {body}"
+        body.starts_with("exec just _tmux-isolated test -E '"),
+        "the unit and guard tests run through the lane's filtered arm, exec'd so a TERM reaches it (#340): {body}"
     );
     for module in ["doors", "floor", "gate"] {
         assert!(body.contains(module), "the guard module {module} is run");
