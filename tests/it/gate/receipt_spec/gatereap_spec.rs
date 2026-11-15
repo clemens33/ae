@@ -178,7 +178,9 @@ fn executable_tool(name: &str) -> PathBuf {
 }
 
 fn process_case(recipe: &str, action: &str, mode: &str, held: bool) {
-    let fixture = ProofFixture::new(&format!("reap-{recipe}-{action}-{mode}"));
+    static NEXT_CASE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+    let case = NEXT_CASE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let fixture = ProofFixture::new(&format!("gp{case:02x}"));
     let old = &fixture.old;
     let dir = old.base.join("reap");
     std::fs::create_dir(&dir).expect("process evidence directory");
@@ -375,7 +377,7 @@ fn killing_the_supervisor_keeps_its_registry_and_the_lock() {
 }
 
 fn registry_fixture(tag: &str) -> ReceiptFixture {
-    let fixture = ReceiptFixture::new(&format!("reap-registry-{tag}"), false);
+    let fixture = ReceiptFixture::new(&format!("gr-{tag}"), false);
     let (code, out, err) =
         fixture.just_in(&fixture.tree, "lane-lock", &["claim", "reap-spec"], &[]);
     assert_eq!(code, 0, "scratch claim: {out}{err}");
@@ -562,7 +564,7 @@ fn malformed_current_claim_entries_refuse_release_instead_of_disappearing() {
 
 #[test]
 fn a_registration_failure_prevents_cargo_from_starting() {
-    let fixture = ProofFixture::new("reap-registration-failure");
+    let fixture = ProofFixture::new("gr-regfail");
     let old = &fixture.old;
     let groups = old.tree.join(".local/locks/groups");
     if groups.is_dir() {
