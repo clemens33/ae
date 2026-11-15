@@ -1,7 +1,7 @@
 //! Independent #340 acceptance. Real recipes, lock, signals and process census.
 //! External cargo/SSH are fixtures. Only census-fault cases change ps output.
 //! Frozen against plan-p0-r2.md 39017b7b094b1c152915478f490b5c7a91999958c07956f43bda966ca75aab5f.
-//! Install beside releaseproof_spec.rs and add its path module in that file.
+//! Install beside `releaseproof_spec.rs` and add its path module in that file.
 
 use super::*;
 
