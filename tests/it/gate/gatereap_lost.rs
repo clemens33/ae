@@ -14,10 +14,14 @@ use crate::parity::capture::{ExitOutcome, raw};
 /// makes the entry itself read-only too, so the lost mark cannot be written.
 /// The member ignores TERM, so the cleanup needs its KILL step, and the release
 /// census runs once while that member and its supervisor still live.
+/// Until `go`, the stand-in cargo blocks in a builtin read on a FIFO, so it has
+/// no child a census could catch before the directory turns read-only. It
+/// ignores TERM, so the cleanup cannot end it before it records the member.
 /// The driver kills only the pids it recorded, each after a start-identity match.
 const DRIVER: &str = r#"set -u
 dir=$1 arm=$2
 mkdir "$dir/groups"
+mkfifo "$dir/go"
 echo owner-x >"$dir/owner"
 identity() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -cd A-Za-z0-9; }
 cleanup() {
@@ -34,7 +38,8 @@ cleanup() {
 trap cleanup EXIT
 AE_GATE_GROUPS="$dir/groups" AE_GATE_OWNER="$dir/owner" AE_GATE_REAP_TERM_SECS=1 AE_GATE_REAP_KILL_SECS=1 \
     perl -e "$AE_LOST_REAP" run bash -c '
-        while [[ ! -e "$0/go" ]]; do sleep 0.05; done
+        trap "" TERM
+        read -r _ <"$0/go"
         bash -c "trap \"\" TERM; exec sleep 300" &
         echo "$! $(LC_ALL=C ps -o lstart= -p $! | tr -cd A-Za-z0-9)" >"$0/member.tmp"
         mv "$0/member.tmp" "$0/member"
@@ -47,7 +52,7 @@ for ((tick = 0; tick < 400; tick++)); do
 done
 chmod 555 "$dir/groups"
 if [[ "$arm" == both ]]; then chmod 444 "$dir"/groups/*; fi
-touch "$dir/go"
+echo go >"$dir/go"
 for ((tick = 0; tick < 400; tick++)); do
     [[ -s "$dir/member" ]] && break
     sleep 0.05
