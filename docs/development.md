@@ -208,7 +208,9 @@ keep this true:
 2. `detached` starts cargo under the perl supervisor (the justfile's `REAP`). Cargo still gets a
    session of its own without a controlling terminal (#149). Before cargo can exist, the supervisor
    writes an entry to `<main checkout>/.local/locks/groups/<pid>.<identity>`. The entry holds its own
-   pid and start identity and the lock's owner line (or `free`). The child waits on a pipe and execs
+   pid and start identity and the lock's owner line (or `free`). Only an owner file that does not
+   exist means `free`: one that exists but cannot be read, or holds no owner line, stops the run
+   before the entry or cargo exists. The child waits on a pipe and execs
    cargo only after the supervisor has recorded cargo's process group G in the entry. While cargo runs,
    the supervisor reads the process table about once per second. It keeps every process of the run
    with its start identity: the members of group G, every descendant of a known member, and every
@@ -223,8 +225,9 @@ keep this true:
    written either, the supervisor stays alive and repeats TERM, the grace and KILL until its own
    census proves the run empty. Its live `run` line keeps release refused until then.
 3. `just lane-lock release <name>` repeats that census for every entry of the current claim, and also
-   counts the recorded supervisor. A pending, malformed, lost or still-running entry, or a census
-   that fails, appends one `suspect: <entry>: <why>` line to `.local/locks/gate/suspect` and refuses: the
+   counts the recorded supervisor. Only an absent registry skips this census. A pending, malformed,
+   lost or still-running entry, a census that fails, or a registry that is a link, not a directory
+   or not readable appends one `suspect: <entry>: <why>` line to `.local/locks/gate/suspect` and refuses: the
    owner line stays. From then on every release refuses on its own, because the gate directory holds
    more than its owner line. `just lane-lock status` prints the suspect lines. An entry of another
    claim (another owner line, or `free` from an unlocked scoped run) is never signalled, and it is

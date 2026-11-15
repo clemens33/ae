@@ -87,13 +87,17 @@ struct Outcome {
     left: String,
 }
 
-fn lost_case(arm: &str) -> Outcome {
-    let reap = justfile_variable(&read(&root().join("justfile")), "REAP");
+/// Runs one bounded bash driver in a fresh scratch case directory with the
+/// justfile's `REAP` text in `AE_LOST_REAP` and the justfile's path in
+/// `AE_LOST_JUSTFILE`. The scratch root stays alive with the returned handle.
+fn drive(driver: &str, tag: &str, arm: &str) -> (crate::cli::OwnedScratch, std::path::PathBuf) {
+    let justfile = root().join("justfile");
+    let reap = justfile_variable(&read(&justfile), "REAP");
     assert!(
         !reap.is_empty(),
         "the justfile has the REAP supervisor text"
     );
-    let base = crate::cli::OwnedScratch::root("gate", &format!("reap-lost-{arm}"));
+    let base = crate::cli::OwnedScratch::root("gate", &format!("{tag}-{arm}"));
     let dir = base.join("case");
     std::fs::create_dir(&dir).unwrap_or_else(|why| panic!("the case dir: {why}"));
     let timeout = if cfg!(target_os = "macos") {
@@ -107,21 +111,27 @@ fn lost_case(arm: &str) -> Outcome {
         .arg("60")
         .arg("bash")
         .arg("-c")
-        .arg(DRIVER)
-        .arg("reap-lost")
+        .arg(driver)
+        .arg(tag)
         .arg(&dir)
         .arg(arm)
-        .env("AE_LOST_REAP", &reap);
+        .env("AE_LOST_REAP", &reap)
+        .env("AE_LOST_JUSTFILE", &justfile);
     let out = base.join("driver.out");
     let err = base.join("driver.err");
     let status = raw::run(&invocation, &base, &out, &err)
-        .unwrap_or_else(|why| panic!("the bounded lost-member driver: {why}"));
+        .unwrap_or_else(|why| panic!("the bounded {tag} driver: {why}"));
     assert!(
         matches!(status.outcome(), ExitOutcome::Code(0)),
         "driver setup or timeout:\n{}\n{}",
         read(&out),
         read(&err)
     );
+    (base, dir)
+}
+
+fn lost_case(arm: &str) -> Outcome {
+    let (_base, dir) = drive(DRIVER, "reap-lost", arm);
     Outcome {
         during_status: read(&dir.join("during-status")).trim().to_owned(),
         during_out: read(&dir.join("during.out")),
@@ -201,4 +211,116 @@ fn an_unwritable_lost_mark_keeps_release_refused_until_the_supervisor_proves_emp
         case.check_out
     );
     assert_eq!(case.left.trim(), "", "the proved-empty stale entry is gone");
+}
+
+/// The real `just lane-lock release` in a scratch git repository whose claim
+/// has a registry that exists but cannot be read (`unreadable`) or is a
+/// symbolic link (`symlink`). Neither shape may count as an empty registry.
+const RELEASE_DRIVER: &str = r#"set -u
+dir=$1 arm=$2
+git init -q "$dir/repo" || exit 3
+cd "$dir/repo" || exit 3
+cp "$AE_LOST_JUSTFILE" justfile || exit 3
+locks=.local/locks
+restore() { chmod 755 "$locks/groups" 2>/dev/null; return 0; }
+trap restore EXIT
+just lane-lock claim reg-spec >"$dir/claim.out" 2>&1 || { cat "$dir/claim.out"; exit 3; }
+case "$arm" in
+    unreadable)
+        mkdir -p "$locks/groups"
+        printf 'x\n' >"$locks/groups/1.Abc"
+        chmod 000 "$locks/groups" ;;
+    symlink)
+        mkdir "$dir/elsewhere"
+        printf 'x\n' >"$dir/elsewhere/1.Abc"
+        ln -s "$dir/elsewhere" "$locks/groups" ;;
+esac
+status=0
+just lane-lock release reg-spec >"$dir/release.out" 2>&1 || status=$?
+restore
+echo "$status" >"$dir/release-status"
+if [[ -f "$locks/gate/owner" ]]; then echo kept >"$dir/owner-state"; else echo gone >"$dir/owner-state"; fi
+cat "$locks/gate/suspect" >"$dir/suspect" 2>/dev/null || : >"$dir/suspect"
+"#;
+
+fn release_refuses(arm: &str) {
+    let (_base, dir) = drive(RELEASE_DRIVER, "reg-fail", arm);
+    let out = read(&dir.join("release.out"));
+    assert_ne!(
+        read(&dir.join("release-status")).trim(),
+        "0",
+        "release refuses a {arm} registry: {out}"
+    );
+    assert_eq!(
+        read(&dir.join("owner-state")).trim(),
+        "kept",
+        "the owner line stays: {out}"
+    );
+    assert!(
+        out.contains("a process this claim started may still run"),
+        "{out}"
+    );
+    assert!(
+        read(&dir.join("suspect")).starts_with("suspect: groups: "),
+        "the suspect note names the registry: {}",
+        read(&dir.join("suspect"))
+    );
+}
+
+#[test]
+fn release_refuses_a_registry_it_cannot_read() {
+    release_refuses("unreadable");
+}
+
+#[test]
+fn release_refuses_a_registry_that_is_a_symbolic_link() {
+    release_refuses("symlink");
+}
+
+/// The supervisor with an owner file that exists but cannot be read
+/// (`unreadable`) or holds no owner line (`empty`). Only an absent owner means
+/// an unlocked run; these must stop before any entry or child exists.
+const OWNER_DRIVER: &str = r#"set -u
+dir=$1 arm=$2
+mkdir "$dir/groups" "$dir/gate"
+restore() { chmod 644 "$dir/gate/owner" 2>/dev/null; return 0; }
+trap restore EXIT
+case "$arm" in
+    unreadable) echo owner-x >"$dir/gate/owner"; chmod 000 "$dir/gate/owner" ;;
+    empty) : >"$dir/gate/owner" ;;
+esac
+status=0
+AE_GATE_GROUPS="$dir/groups" AE_GATE_OWNER="$dir/gate/owner" \
+    perl -e "$AE_LOST_REAP" run bash -c 'touch "$0/started"' "$dir" >"$dir/run.out" 2>&1 || status=$?
+restore
+echo "$status" >"$dir/run-status"
+ls -A "$dir/groups" >"$dir/left"
+if [[ -e "$dir/started" ]]; then echo yes >"$dir/started-state"; else echo no >"$dir/started-state"; fi
+"#;
+
+fn owner_aborts(arm: &str) {
+    let (_base, dir) = drive(OWNER_DRIVER, "owner-fail", arm);
+    let out = read(&dir.join("run.out"));
+    assert_ne!(
+        read(&dir.join("run-status")).trim(),
+        "0",
+        "an {arm} owner ends the run red: {out}"
+    );
+    assert!(out.contains("detached: ") && out.contains("owner"), "{out}");
+    assert_eq!(
+        read(&dir.join("started-state")).trim(),
+        "no",
+        "cargo never starts"
+    );
+    assert_eq!(read(&dir.join("left")), "", "no entry is left: {out}");
+}
+
+#[test]
+fn an_owner_file_that_cannot_be_read_stops_the_run_before_cargo() {
+    owner_aborts("unreadable");
+}
+
+#[test]
+fn an_owner_file_without_an_owner_line_stops_the_run_before_cargo() {
+    owner_aborts("empty");
 }

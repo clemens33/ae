@@ -268,9 +268,11 @@ REAP := '''
         # lane-lock release: one census for every entry. Prints one suspect line per entry that keeps
         # the claim and exits 1 when there is any; removes the entries it proved empty.
         my ($dir, $owner) = @ARGV;
+        if (-l $dir || !-d $dir) { print "suspect: groups: the registry $dir is not a plain directory\n"; exit 1 }
         opendir(my $dh, $dir) or do { print "suspect: groups: the registry $dir cannot be read\n"; exit 1 };
         my @names = sort grep { !/^\./ } readdir($dh);
-        closedir($dh);
+        closedir($dh) or do { print "suspect: groups: the registry $dir cannot be read\n"; exit 1 };
+        exit 0 unless @names;
         my $row = census();
         my $refused = 0;
         my $say = sub { print "suspect: $_[0]: $_[1]\n"; $refused = 1 };
@@ -314,12 +316,17 @@ REAP := '''
     # Step 1, before any fork: the pending entry with the claim this run serves.
     if ($groups ne "") {
         die "detached: no start identity for pid $self\n" if $sid eq "";
-        my $claim = "free";
-        if (open(my $fh, "<", $ENV{AE_GATE_OWNER} // "")) {
+        # Only an owner file that is provably absent means an unlocked run. One that exists but
+        # cannot be read, or holds no owner line, stops the run here, before any entry or child.
+        my ($claim, $owner) = ("free", $ENV{AE_GATE_OWNER} // "");
+        if ($owner ne "" && open(my $fh, "<", $owner)) {
             my $line = <$fh>;
             close($fh);
             chomp($line) if defined $line;
-            $claim = $line if defined $line && $line =~ /^[^\x00-\x1f]+$/;
+            die "detached: the lane lock owner $owner holds no owner line\n" unless defined $line && $line =~ /^[^\x00-\x1f]+$/;
+            $claim = $line;
+        } elsif ($owner ne "" && !$!{ENOENT}) {
+            die "detached: the lane lock owner $owner cannot be read: $!\n";
         }
         make_path($groups, { error => \my $ignored });
         ($entry, $tmp) = ("$groups/$self.$sid", "$groups/.$self.$sid.tmp");
@@ -872,7 +879,9 @@ lane-lock verb name="" wait="0":
             # entry of this claim that is pending, malformed or still running, or a census that fails,
             # keeps the lock: the reasons go to <gate>/suspect, and from then on every release refuses
             # on its own until a human clears it (docs/development.md, "The gate process registry").
-            if [[ -d "$locks/groups" && ! -L "$locks/groups" ]] && compgen -G "$locks/groups/[!.]*" >/dev/null; then
+            # Only an absent registry skips the census: one that is a link, not a directory or not
+            # readable is checked, and the check refuses it.
+            if [[ -e "$locks/groups" || -L "$locks/groups" ]]; then
                 census=0
                 verdict="$(perl -e '{{ REAP }}' check "$locks/groups" "$h_line" 2>&1)" || census=$?
                 if ((census != 0)); then
