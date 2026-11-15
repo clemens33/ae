@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.63] - 2026-11-15
+- Cut the mouse out of app.rs
+- Cut the selection out of app.rs
+- Cut the keys out of app.rs
+- Name the app children mouse, selection and keys
+
 ## [v2026.11.62] - 2026-11-15
 - Cut the menu and confirmation modals out of app.rs
 - Cut the frame out of app.rs
