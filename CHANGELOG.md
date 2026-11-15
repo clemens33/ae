@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.62] - 2026-11-15
+- Cut the menu and confirmation modals out of app.rs
+- Cut the frame out of app.rs
+- Cut the lifecycle asks out of app.rs
+- Cut the run loop out of app.rs
+- Name the app children run, frame, modal and lifecycle
+
 ## [v2026.11.61] - 2026-11-15
 - Move the inline test module to a file
 - A guard reads the retained parent and every child it registers
