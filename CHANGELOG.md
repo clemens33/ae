@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.64] - 2026-11-15
+- Derive the stalled-wait bound from its named constants (#344)
+- Install the frozen lanefix #343 acceptance spec
+- A run serves the claim of its worktree or the one it names (#343)
+- An invalid AE_LANE_CLAIM refusal stays one line (#343)
+
 ## [v2026.11.63] - 2026-11-15
 - Cut the mouse out of app.rs
 - Cut the selection out of app.rs
