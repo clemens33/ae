@@ -773,3 +773,6 @@ fn a_word_the_entry_answers_is_a_reserved_session_name() {
     assert!(!rig.dir("hold").exists(), "a refused name built state");
     assert!(!rig.dir("upgrade").exists(), "a refused name built state");
 }
+
+#[path = "o8_panel_spec.rs"]
+mod o8_panel_spec;

@@ -65,15 +65,20 @@ fn every_modal_key_steps_as_the_keys_row_says() {
         &mut stopped,
         vec![(typed(b"s"), start), (Key::Enter, start)],
     );
-    let orchestrator = card(crate::orchestrator::ORCHESTRATOR_SESSION, Status::Running);
-    assert!(orchestrator.items().is_empty());
-    let mut lone = Modal::Menu(Menu::new(orchestrator));
+    // Outcome 2: a listed name never confers the dedicated seat role.
+    let namesake = card(crate::orchestrator::ORCHESTRATOR_SESSION, Status::Running);
+    assert_eq!(
+        namesake.items(),
+        [Item::Stop, Item::Activity, Item::Memos, Item::End],
+        "a listed orchestrator namesake has ordinary actions"
+    );
+    let mut named = Modal::Menu(Menu::new(namesake));
     run(
-        &mut lone,
+        &mut named,
         vec![
-            (typed(b"s"), Step::Kept),
-            (typed(b"j"), Step::Kept),
-            (Key::Enter, Step::Kept),
+            (typed(b"s"), stop),
+            (typed(b"j"), Step::Moved),
+            (Key::Enter, Step::Act(Item::Activity)),
         ],
     );
     let question = Question::new(card("api", Status::Running), expectation(0));

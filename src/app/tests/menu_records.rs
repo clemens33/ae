@@ -61,7 +61,7 @@ fn later(at: Instant, ms: u64) -> Instant {
 }
 
 #[test]
-fn every_session_card_offers_both_read_only_items_and_the_orchestrator_none() {
+fn every_listed_card_offers_read_only_items_including_an_orchestrator_namesake() {
     let card = |name: &str, status| Card::new(name, ID, Some(ID), Some(status), None);
     assert_eq!(
         card("api", Status::Running).items(),
@@ -71,8 +71,14 @@ fn every_session_card_offers_both_read_only_items_and_the_orchestrator_none() {
         card("api", Status::Stopped).items(),
         [Item::Start, Item::Activity, Item::Memos, Item::End]
     );
-    let lead = card(crate::orchestrator::ORCHESTRATOR_SESSION, Status::Running);
-    assert!(lead.items().is_empty());
+    // Outcome 2: the proved holder has no list card. A card bearing this
+    // name is an ordinary listed namesake, regardless of its spelling.
+    let namesake = card(crate::orchestrator::ORCHESTRATOR_SESSION, Status::Running);
+    assert_eq!(
+        namesake.items(),
+        [Item::Stop, Item::Activity, Item::Memos, Item::End],
+        "a listed orchestrator namesake has the ordinary running menu"
+    );
     assert_eq!(Item::Activity.dialog(), Some(Dialog::Activity));
     assert_eq!(Item::Memos.dialog(), Some(Dialog::Memos));
     assert_eq!((Item::Start.dialog(), Item::Stop.dialog()), (None, None));
@@ -101,17 +107,17 @@ fn the_keys_choose_the_dialogs_and_a_waiting_menu_takes_no_second_item() {
     }
     assert_eq!(menu.key(&typed(b"q")), Step::Close);
     assert_eq!(menu.key(&Key::Escape), Step::Close);
-    // The orchestrator's menu has no items, so no key reaches one.
-    let lead = Card::new(
+    // A listed namesake has the same read-only keys as every other card.
+    let namesake = Card::new(
         crate::orchestrator::ORCHESTRATOR_SESSION,
         ID,
         Some(ID),
         Some(Status::Running),
         None,
     );
-    let mut lone = Modal::Menu(Menu::new(lead));
-    assert_eq!(lone.key(&typed(b"a")), Step::Kept);
-    assert_eq!(lone.key(&typed(b"o")), Step::Kept);
+    let mut named = Modal::Menu(Menu::new(namesake));
+    assert_eq!(named.key(&typed(b"a")), Step::Act(Item::Activity));
+    assert_eq!(named.key(&typed(b"o")), Step::Act(Item::Memos));
 }
 
 #[test]

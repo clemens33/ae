@@ -31,6 +31,8 @@ mod menu_records;
 mod menu_units;
 mod o7app_spec;
 mod o7app_units;
+mod o8_handover_spec;
+mod o8_identity_spec;
 mod s2_exec_spec;
 
 pub(in crate::app) const ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";

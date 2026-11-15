@@ -360,7 +360,14 @@ fn historical_right_press_on_discarded_frame_refuses() {
 fn orchestrator_has_no_sidebar_card_and_row_refusals_never_reach_an_owner() {
     let (root, mut app, reader) = fixture("menu-row-states");
     let name = crate::orchestrator::ORCHESTRATOR_SESSION;
-    session(&root, name, "meta_agent=true\n");
+    session(
+        &root,
+        name,
+        &format!(
+            "meta_agent=true\nlocal_config={}\nmain_pane=%7\n",
+            root.0.join("orchestrator.config").display()
+        ),
+    );
     refold(&mut app, &reader, &root, &[(name, Status::Running)]);
     // Lead ae-20261114T105439Z-8470dfcb extends the hidden-row decision here.
     let screen = shown(&mut app, Instant::now());

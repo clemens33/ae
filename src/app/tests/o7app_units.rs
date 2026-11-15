@@ -178,7 +178,14 @@ fn a_main_draft_beside_a_side_panel_wraps_inside_its_column() {
 fn orchestrated(root: &Root, full: bool) -> (App, Reader) {
     let (mut app, reader) = housed(root);
     let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
-    session(root, orch, "");
+    session(
+        root,
+        orch,
+        &format!(
+            "meta_agent=true\nlocal_config={}\nmain_pane=%7\n",
+            root.0.join("orchestrator.config").display()
+        ),
+    );
     refold(
         &mut app,
         &reader,
@@ -295,7 +302,14 @@ fn a_held_panel_entry_retries_in_the_panel() {
         "a panel entry without its pair is refused"
     );
     assert!(app.writer_name().is_none());
-    session(&root, orch, "");
+    session(
+        &root,
+        orch,
+        &format!(
+            "meta_agent=true\nlocal_config={}\nmain_pane=%7\n",
+            root.0.join("orchestrator.config").display()
+        ),
+    );
     assert!(take_keys(&mut app, vec![(Key::Enter, Instant::now())]).is_some());
     assert_eq!(
         app.writer_name(),

@@ -112,8 +112,12 @@ fn config_pins_then_answer_recency_then_unknown_then_stopped_without_orchestrato
     recorded(&root, "stopold", "console:local", "ask", NOW - 1);
     answered(&root, "recent", "console:local", NOW - 10);
     answered(&root, "older", "telegram:42", NOW - 20);
+    let seat = format!(
+        "meta_agent=true\nlocal_config={}\nmain_pane=%7\n",
+        root.0.join("orchestrator.config").display()
+    );
     for (name, tail) in [
-        ("orchestrator", ""),
+        ("orchestrator", seat.as_str()),
         ("pin1", ""),
         ("pin2", ""),
         ("older", ""),

@@ -85,7 +85,6 @@ impl Rig {
         };
         rig.isolate();
         for name in ["api", "b", "c", ORCH] {
-            rig.record(name, if name == ORCH { OID } else { ID });
             let (ok, _) = crate::transport::run_tmux_op(&crate::session_tmux::argv(
                 &rig.socket.server,
                 &crate::session_tmux::Op::NewSession {
@@ -94,6 +93,7 @@ impl Rig {
                 },
             ));
             assert!(ok, "create private session {name}");
+            rig.record(name, if name == ORCH { OID } else { ID });
             for (key, value) in [
                 ("AE_SESSION", name),
                 ("AE_HOME", rig.root.0.to_str().unwrap()),
@@ -147,8 +147,20 @@ impl Rig {
         std::fs::create_dir_all(&dir).unwrap();
         let lead = if name == ORCH { "olead" } else { "lead" };
         let peer = if name == ORCH { "opeer" } else { "colead" };
+        let role = if name == ORCH {
+            let panes = crate::transport::observe_window_panes(&self.socket.server, name)
+                .expect("the fixture seat exists on its private server");
+            let pane = panes.first().expect("the fixture seat has its lead pane");
+            format!(
+                "meta_agent=true\nlocal_config={}\nmain_pane={}\n",
+                self.root.0.join("orchestrator.config").display(),
+                pane.pane_id,
+            )
+        } else {
+            String::new()
+        };
         std::fs::write(dir.join("meta"), format!(
-            "schema=2\nsession_id={uuid}\nlayout=lead-pair\nseat.main={lead}\nseat.worker.0={peer}\ntmux_server_kind=socket\ntmux_server={}\nwork_dir={}\n",
+            "schema=2\nsession_id={uuid}\nlayout=lead-pair\nseat.main={lead}\nseat.worker.0={peer}\ntmux_server_kind=socket\ntmux_server={}\nwork_dir={}\n{role}",
             self.root.0.join("s").display(), self.root.0.display(),
         )).unwrap();
     }
@@ -859,23 +871,6 @@ fn p3_an_open_with_gap_panel_never_pins_a_later_recovery_until_reopened() {
     rig.text(b"O");
     rig.lanes();
     assert!(text(&rig.frame(160, 45)).contains(PANEL));
-}
-
-#[test]
-fn p3_no_running_orchestrator_has_one_inert_line_and_never_starts_a_session() {
-    let mut rig = Rig::new(Some("api"));
-    rig.command("kill-session -t =orchestrator");
-    rig.refresh(&[]);
-    rig.text(b"O");
-    let shown = text(&rig.frame(160, 45));
-    assert_eq!(
-        shown.matches("no orchestrator running").count(),
-        1,
-        "{shown}"
-    );
-    rig.assert_no_delivery();
-    rig.refresh(&[]);
-    assert_eq!(rig.app.entry(ORCH).map(|e| e.status), Some(Status::Stopped));
 }
 
 #[test]

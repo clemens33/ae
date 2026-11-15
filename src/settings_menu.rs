@@ -1781,3 +1781,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "settings_menu/o8_spec.rs"]
+mod o8_spec;
