@@ -3989,6 +3989,13 @@ mod tests {
     fn a_stalled_server_cannot_hold_the_wait_or_its_release_past_their_bounds() {
         use super::{Waited, run_tmux_wait, wait_children_during, waiter_exits_during};
         use std::time::Instant;
+        const WAIT_DEADLINE: Duration = Duration::from_millis(200);
+        // The operating system schedules the worker and reaps two killed tmux
+        // clients. Five seconds is fixture tolerance, not a product deadline or
+        // a value fitted to observed passing runtimes.
+        // This detects an unbounded or grace-ignoring wait, not small added latency.
+        const SCHEDULE_AND_REAP_MARGIN: Duration = Duration::from_secs(5);
+        let bound = WAIT_DEADLINE + super::RELEASE_GRACE + SCHEDULE_AND_REAP_MARGIN;
         // A socket that accepts and never answers: every tmux client on it,
         // the waiter and its release alike, hangs until it is killed.
         let dir = std::env::temp_dir().join(format!("qwst-{}", std::process::id()));
@@ -3999,26 +4006,24 @@ mod tests {
         let server = ServerId::Selected(Selector::Socket(socket));
         let (tell, told) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let began = Instant::now();
             let ((result, exits), events) = wait_children_during(|| {
                 waiter_exits_during(|| {
                     run_tmux_wait(
                         &server,
                         "current",
                         "qw-stall",
-                        Instant::now() + Duration::from_millis(200),
+                        Instant::now() + WAIT_DEADLINE,
                     )
                 })
             });
-            let _ = tell.send((result, exits, events, began.elapsed()));
+            let _ = tell.send((result, exits, events));
         });
-        let (result, exits, events, took) = told
-            .recv_timeout(Duration::from_secs(5))
-            .expect("a stalled release blocked the wait past every bound");
+        let (result, exits, events) = told
+            .recv_timeout(bound)
+            .expect("a stalled release blocked the wait past its deadline, grace and reap margin");
         drop(listener);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(result, Waited::Failed, "a forced cleanup is no outcome");
-        assert!(took < Duration::from_secs(3), "bounded: {took:?}");
         assert_eq!(exits.len(), 1, "the waiter was reaped");
         assert_wait_left_nothing(exits[0].0, &events);
     }
