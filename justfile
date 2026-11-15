@@ -99,7 +99,7 @@ test: rust-check
 pre: rust-fmt-check rust-lint _pre-test
 
 _pre-test:
-    just _tmux-isolated test -E 'kind(lib) | kind(bin) | (binary(it) & test(/^(doors|floor|gate)::/))'
+    exec just _tmux-isolated test -E 'kind(lib) | kind(bin) | (binary(it) & test(/^(doors|floor|gate)::/))'
 
 # THE MAC BOUNDARY SUBSET, what a release runs on the Mac while the hp runs the whole suite
 # (`just release-proof`, docs/development.md "Release proof"): every unit test, plus the
@@ -2215,8 +2215,8 @@ rust-check: rust-fmt-check rust-lint rust-fuzz-check rust-test
 
 # Check formatting in both languages of the build: Rust and TOML
 rust-fmt-check:
-    cargo fmt --all --check
-    taplo fmt --check
+    exec cargo fmt --all --check
+    exec taplo fmt --check
 
 # Auto-format Rust + TOML
 rust-fmt:
@@ -3444,7 +3444,7 @@ _tmux-isolated lane *args:
 
 # Run the test suite: nextest + doctests
 rust-test:
-    just _tmux-isolated test
+    exec just _tmux-isolated test
 
 # ON-DEMAND live smoke of ae's adapter rows against the REAL harness binaries and
 # logins (docs/development.md, "Live harness smoke"). It spends a few short model
@@ -3515,14 +3515,14 @@ harness-smoke mode="":
 
 # Coverage report (not a gate)
 rust-cov:
-    just _tmux-isolated cov
+    exec just _tmux-isolated cov
 
 # The lane that asks whether the tests DISCRIMINATE, not just whether they pass.
 # Agents write tests that pass; this is the check that costs them something.
 
 # Mutation testing
 rust-mutants *args:
-    just _tmux-isolated mutants "$@"
+    exec just _tmux-isolated mutants "$@"
 
 # The BOUNDED repeat run for a flake hunt: nextest --stress-count over ONE named
 # filterset (a module or a test, never the suite) through the isolated lane.

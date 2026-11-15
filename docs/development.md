@@ -203,8 +203,10 @@ keep this true:
    waits until the child is gone, so a signal to any level reaches the cargo run, and every level
    waits for the level below. After a signal, every level ends nonzero (128 + the first signal), and no
    later step starts (a stopped `just test` runs no doctests). A linewise recipe whose only line is a
-   nested `just` (`rust-test`, `_pre-test`) needs no `nest`: `sh -c` execs that one command (macOS `sh`
-   and dash both do), so the nested `just` itself receives the TERM.
+   nested `just` (`rust-test`, `_pre-test`, `rust-cov`, `rust-mutants`) needs no `nest`: it starts
+   with `exec`, so the nested `just` itself receives the TERM. Without `exec`, dash keeps the command
+   as a child of `sh -c`, and the TERM ends only dash. The two `rust-fmt-check` lines exec cargo and
+   taplo the same way.
 2. `detached` starts cargo under the perl supervisor (the justfile's `REAP`). Cargo still gets a
    session of its own without a controlling terminal (#149). Before cargo can exist, the supervisor
    writes an entry to `<main checkout>/.local/locks/groups/<pid>.<identity>`. The entry holds its own
