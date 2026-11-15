@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.59] - 2026-11-15
+- Freeze the app-native orchestrator panel acceptance tests (o7app)
+- O7app P1 wip: the orchestrator leaves the session rows; the fleet read proves its incarnation
+- Frozen pins follow the human decision that the orchestrator is no session row
+- Spec correction 4, and the menu pin follows the human decision that the orchestrator is no session row
+- Hint-row pins follow the human decision on the orchestrator button in the chat gutter
+- O7app P2-P3 wip: the orchestrator panel beside or over the chat, with its own composer
+- O7app spec: narrow-frame addendum, the column that holds the keys covers a frame too narrow for side
+- A frame too narrow for side shows the column that holds the keys; survivor tests for shard 0
+- Survivor tests for mutant shard 1
+- Survivor tests for mutant shard 2
+- O7app spec: a delayed press on the panel never targets the replacement turn
+- A delayed press on the panel resolves against the panel history
+- A press beyond the drawn frame moves no keys
+- Survivor test for mutant sixteenth 4
+- Any press on the panel ends a HELD entry
+- Survivor tests for mutant sixteenth 5
+- Survivor tests for mutant sixteenth 13
+- Survivor tests for mutant sixteenth 6
+- The o and v units loop over a byte string
+- Survivor tests for mutant sixteenth 14
+- Open_panel leaves the loading flag to show
+- Survivor test for mutant sixteenth 15
+- Survivor test for the delta mutants
+- Panel selections and delayed panel presses keep the column of their frame
+- A press on a frame below the size floor moves no keys
+- An old main press is not taken where the panel covers it now
+- The main column never holds the keys under a full panel
+- A main row click read with the F that covers it is not taken
+
 ## [v2026.11.58] - 2026-11-14
 - A registered scratch owner is its pid with its start identity, so a reused pid no longer fails a green run
 - The text readers select the module's family view
