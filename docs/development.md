@@ -210,9 +210,9 @@ keep this true:
 2. `detached` starts cargo under the perl supervisor (the justfile's `REAP`). Cargo still gets a
    session of its own without a controlling terminal (#149). Before cargo can exist, the supervisor
    writes an entry to `<main checkout>/.local/locks/groups/<pid>.<identity>`. The entry holds its own
-   pid and start identity and the lock's owner line (or `free`). Only an owner file that does not
-   exist means `free`: one that exists but cannot be read, or holds no owner line, stops the run
-   before the entry or cargo exists. The child waits on a pipe and execs
+   pid and start identity and the claim the run serves: the lock's owner line, or `free` (see "Which
+   claim a run serves" below). Only an owner file that does not exist means a free lane: one that
+   exists but cannot be read, or holds no owner line, stops the run before the entry or cargo exists. The child waits on a pipe and execs
    cargo only after the supervisor has recorded cargo's process group G in the entry. While cargo runs,
    the supervisor reads the process table about once per second. It keeps every process of the run
    with its start identity: the members of group G, every descendant of a known member, and every
@@ -234,6 +234,40 @@ keep this true:
    more than its owner line. `just lane-lock status` prints the suspect lines. An entry of another
    claim (another owner line, or `free` from an unlocked scoped run) is never signalled, and it is
    removed only when its census is empty. The release itself never signals a process.
+
+**Which claim a run serves (#343).** A run that the claim did not start never blocks that claim's
+release, and a run that the claim did start never escapes its census. The registry is shared by
+every worktree of the clone, so the owner line alone cannot tell the two apart. Three facts decide,
+once, before the entry exists:
+
+1. After its owner create wins, `lane-lock claim` writes `<main checkout>/.local/locks/binding`:
+   its exact owner line, then the canonical root of the worktree it ran in (`pwd -P` of the
+   toplevel, so a symlinked path neither splits nor merges worktrees). A binding is proof only
+   while its first line equals the current owner line. A release removes the binding of its own
+   claim after the census and before it removes `owner`, so a re-claim never meets an old one.
+2. `AE_LANE_CLAIM=<name>` names the claim a run serves. The current owner must be `<name>`;
+   otherwise (a free lane, another holder, an empty or malformed value) the supervisor prints
+   `detached: refused: ...`, writes no entry, starts no cargo and exits 1. The supervisor removes
+   the variable before cargo starts, so no test inherits it. Use it when the run is in another
+   worktree than the claim: the hp release leg claims in its root and runs `just test` in
+   `<root>-wt/release` with `AE_LANE_CLAIM=<lock>`.
+3. Without `AE_LANE_CLAIM`, a run serves the holder, unless a valid binding names another
+   worktree: then the entry says `free`, the run prints one `detached: note:` line, and the
+   holder's release neither waits for it nor signals it. Every case without proof (no binding, a
+   stale one, a link, an unknown worktree) gives the run to the holder: it errs toward a held
+   lock, never toward an escaped run.
+
+The worktree is the unit of ownership: a second caller in the claimer's worktree counts as the
+claim's and keeps the lock with a suspect note while it lives. The name is the proof, not the claim
+incarnation: after a same-name re-claim, a run that names the name joins the new claim, and an old
+entry with an identical owner line (same name, same second) keeps the new claim held.
+
+**The compatibility residual (#343).** The fix holds only where both sides run a justfile that has
+it. A claim made by an older justfile (or by hand) writes no binding, so while it holds the lane
+every run without `AE_LANE_CLAIM`, from any worktree, counts as its own: a foreign run blocks its
+release again, as before #343. A run started from a worktree whose justfile predates the fix
+ignores the binding and `AE_LANE_CLAIM` and registers under the holder, so it blocks any claim
+until that worktree is rebased. Both cases keep a lock held; neither frees a run.
 
 A process counts only when its pid and its start identity both match (`LC_ALL=C ps -o lstart=`,
 letters and digits, as #339). A reused pid is not a member, and a group number G that a new process

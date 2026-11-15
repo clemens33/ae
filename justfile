@@ -173,7 +173,8 @@ NEST := '''
 # THE GATE SUPERVISOR (#340, #149), the perl text `detached` runs and `lane-lock release` checks
 # with. `run <command...>`: cargo runs in a session of its own with no controlling terminal (#149);
 # this process supervises its group G, records the run in `<main checkout>/.local/locks/groups/`
-# before cargo can exist, and does not end while a process of the run is left. `check <dir>
+# before cargo can exist under the claim it serves (AE_LANE_CLAIM, else the worktree binding,
+# #343), and does not end while a process of the run is left. `check <dir>
 # <owner line>`: the release census of every entry. The registry grammar, the census and the
 # residual are in docs/development.md ("The gate process registry"). No single quote may appear
 # in this text: the recipes pass it inside one.
@@ -313,26 +314,53 @@ REAP := '''
         my $ok = print {$fh} $text;
         return (close($fh) && $ok && rename($tmp, $entry)) ? 1 : 0;
     };
-    # Step 1, before any fork: the pending entry with the claim this run serves.
+    # Step 1, before any fork: the pending entry with the claim this run serves (#343).
+    # AE_LANE_CLAIM=<name> joins the claim of that name or does not start. Without it, the run
+    # serves the holder unless a binding of the current owner line names another worktree:
+    # then it serves no claim. Missing proof gives the run to the holder, never frees it. A
+    # set AE_LANE_CLAIM, also an empty one, is a claim the caller means: it is never ignored.
+    my $want = $ENV{AE_LANE_CLAIM};
+    my $refuse = sub { print STDERR "detached: refused: $_[0]\n"; exit 1 };
+    $refuse->("AE_LANE_CLAIM is not a lock name: \"$want\"") if defined $want && $want !~ /\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/;
+    $refuse->("this run serves lane claim $want, but this checkout has no lane lock") if defined $want && $groups eq "";
     if ($groups ne "") {
         die "detached: no start identity for pid $self\n" if $sid eq "";
         # Only an owner file that is provably absent means an unlocked run. One that exists but
         # cannot be read, or holds no owner line, stops the run here, before any entry or child.
-        my ($claim, $owner) = ("free", $ENV{AE_GATE_OWNER} // "");
+        my ($claim, $owner, $line) = ("free", $ENV{AE_GATE_OWNER} // "");
         if ($owner ne "" && open(my $fh, "<", $owner)) {
-            my $line = <$fh>;
+            $line = <$fh>;
             close($fh);
             chomp($line) if defined $line;
             die "detached: the lane lock owner $owner holds no owner line\n" unless defined $line && $line =~ /^[^\x00-\x1f]+$/;
-            $claim = $line;
         } elsif ($owner ne "" && !$!{ENOENT}) {
             die "detached: the lane lock owner $owner cannot be read: $!\n";
+        }
+        if (defined $want) {
+            $refuse->("this run serves lane claim $want, but the lane is free") unless defined $line;
+            (my $holder = $line) =~ s/ .*//s;
+            $refuse->("this run serves lane claim $want, but the lane is held by $line") unless $holder eq $want;
+            $claim = $line;
+        } elsif (defined $line) {
+            $claim = $line;
+            my ($here, $bind) = ($ENV{AE_GATE_WORKTREE} // "", $ENV{AE_GATE_BINDING} // "");
+            if ($here ne "" && $bind ne "" && !-l $bind && -f $bind && open(my $bh, "<", $bind)) {
+                my $n = read($bh, my $text, 8193);
+                close($bh);
+                if (defined $n && $n <= 8192 && $text =~ m{\A([^\x00-\x1f]+)\n(/[^\x00-\x1f]*)\n\z} && $1 eq $line && $2 ne $here) {
+                    print STDERR "detached: note: the lane is held by $line from $2; this run in $here is not part of that claim (AE_LANE_CLAIM=<name> makes it one)\n";
+                    $claim = "free";
+                }
+            }
         }
         make_path($groups, { error => \my $ignored });
         ($entry, $tmp) = ("$groups/$self.$sid", "$groups/.$self.$sid.tmp");
         $header = "ae-gate-group 1\nrun $self $sid\nclaim $claim\n";
         -d $groups && !-l $groups && $publish->($header) or die "detached: cannot register the run in $groups: $!\n";
     }
+    # The claim proof is spent here: cargo and every test it runs start without it, so a scratch
+    # recipe inside a test never inherits the claim of the gate that runs it.
+    delete @ENV{qw(AE_LANE_CLAIM AE_GATE_BINDING AE_GATE_WORKTREE)};
     # Step 2: fork with the signals blocked. The child takes a session of its own, then waits for the
     # go byte: it never execs before the running entry is durable, and it exits on EOF.
     my ($set, $old) = (POSIX::SigSet->new(SIGINT, SIGTERM, SIGHUP), POSIX::SigSet->new);
@@ -737,6 +765,15 @@ test-affected *args:
 # resolved from `git rev-parse --git-common-dir`, so a linked worktree meets the
 # same lock. `.local` is untracked: claim creates what it needs.
 #
+# WHICH RUNS A CLAIM OWNS (#343). After its owner create wins, a claim writes
+# `<main checkout>/.local/locks/binding`: its exact owner line, then the canonical root
+# (`pwd -P` of the toplevel) of the worktree it ran in. A run started without
+# AE_LANE_CLAIM belongs to the claim only from that worktree; from another worktree it
+# registers under no claim and never blocks the release. A run in another worktree
+# that the claim did start names it: `AE_LANE_CLAIM=<name> just <recipe>`. A binding
+# is proof only while its first line equals the current owner line; without one,
+# every run counts as the holder's. Release removes the binding of its own claim.
+#
 # claim <name> [wait-secs]  take it, or with a wait poll every 30 s up to that
 #                           many seconds, printing the holder; 0 = try once. Exit 1 when not taken.
 # release <name>            give it back. Refused, lock untouched, when the owner line
@@ -795,7 +832,26 @@ lane-lock verb name="" wait="0":
     inode_of() { ls -di "$1" | awk '{print $1}'; }
     # The claim: the owner line created EXCLUSIVELY. Noclobber makes bash open it with O_EXCL; the
     # subshell keeps it from reaching anything else in the recipe. Fails when the line exists.
-    claim_owner() { ( set -C; printf '%s %s\n' "$name" "$(date -u +%FT%TZ)" >"$owner_file" ) 2>/dev/null; }
+    claim_owner() {
+        claim_line="$name $(date -u +%FT%TZ)"
+        ( set -C; printf '%s\n' "$claim_line" >"$owner_file" ) 2>/dev/null
+    }
+    binding_file="$locks/binding"
+    # The binding of the claim just won (#343): its owner line and the canonical root of this
+    # worktree, by temp file and rename. Run only by the holder, so no other claim can race it.
+    # A binding that cannot be written must not outlive this claim with an older owner line:
+    # without one, every run counts as this claim's, never as free.
+    bind_claim() {
+        local top tmp="$locks/.binding.$$"
+        if top="$(git rev-parse --show-toplevel 2>/dev/null)" && top="$(cd -P "$top" && pwd -P)" &&
+            [[ "$top" == /* && "$top" != *$'\n'* && ! -d "$binding_file" ]] &&
+            printf '%s\n%s\n' "$claim_line" "$top" >"$tmp" 2>/dev/null && mv "$tmp" "$binding_file" 2>/dev/null; then
+            return 0
+        fi
+        rm "$tmp" 2>/dev/null || true
+        [[ ! -f "$binding_file" || -L "$binding_file" ]] || rm "$binding_file" 2>/dev/null || true
+        echo "note: $binding_file could not be written: every run while $name holds the lane counts as its own"
+    }
     span() {
         local s=$1
         (( s >= 0 )) || s=0
@@ -890,6 +946,11 @@ lane-lock verb name="" wait="0":
                     refuse "a process this claim started may still run; the lock stays held: $(head -n 1 suspect)"
                 fi
             fi
+            # The binding of this claim goes while the lock is still held, so no later claim can race
+            # it, and a re-claim of the same name in the same second never meets it (#343).
+            if [[ -f "$binding_file" && ! -L "$binding_file" && "$(head -n 1 "$binding_file" 2>/dev/null)" == "$h_line" ]]; then
+                rm "$binding_file" 2>/dev/null || echo "note: $binding_file could not be removed"
+            fi
             err="$(rm owner 2>&1)" || refuse "the owner line could not be removed ($err); the gate this release checked is gone or changed, so nothing else was removed"
             [[ "$(inode_of "$gate" 2>/dev/null)" == "$entered" ]] || refuse "the owner line is removed, but $gate is no longer the directory this release entered; left alone"
             rmdir "$gate" || refuse "the owner line is removed, but $gate could not be removed"
@@ -910,6 +971,7 @@ lane-lock verb name="" wait="0":
                     fi
                     if [[ "$made" == yes ]] && claim_owner; then
                         echo "lane-lock: claimed by $name"
+                        bind_claim
                         [[ ! -s "$next_file" ]] || echo "note: $next_file still names $(cat "$next_file"); the lead clears it"
                         exit 0
                     fi
@@ -2775,7 +2837,8 @@ PROOF := '''
 #   hp_pre     the missing-only check: the receipt is provably absent and nothing stands in the way
 #   hp_launch  starts hp_leg detached (setsid nohup) and prints its pid
 #   hp_leg     claims the hp lane lock, ONLY THEN prepares the warm worktree <root>-wt/release
-#              at exactly this commit, runs `timeout -k 60 3600 just test` there, releases the
+#              at exactly this commit, runs `timeout -k 60 3600 just test` there under
+#              AE_LANE_CLAIM=<lock> (another worktree than the claim), releases the
 #              lock on a normal end, and writes <root>/.local/release/<run>.exit last
 #   hp_poll    prints that exit record, `running`, or `gone`
 # The hp leg has no remote cancel: once started it always runs to its end. A Mac refusal (a red
@@ -2860,7 +2923,8 @@ HP_LEG := '''
         gate=running
         say "running just test"
         status=0
-        (cd "$wt" && exec timeout -k 60 3600 just test) || status=$?
+        # The claim was taken in $root and the run is in $wt, another worktree: it names its claim (#343).
+        (cd "$wt" && AE_LANE_CLAIM="$lock" exec timeout -k 60 3600 just test) || status=$?
         gate=$status
         # 124 is the leg's own timeout, 128 and above a signal (timeout reports its child's
         # signal as 128+n, and 137 is its KILL). Either way part of the run may still live, so
@@ -3245,6 +3309,8 @@ _tmux-isolated lane *args:
     # starts, reaps every process of the run, and ends as cargo did (#340).
     gate_groups=""
     gate_owner=""
+    gate_binding=""
+    gate_worktree=""
     if gate_common="$(git rev-parse --git-common-dir 2>/dev/null)" && gate_common="$(cd -P "$gate_common" && pwd -P)" && [[ "${gate_common##*/}" == .git ]]; then
         gate_root="${gate_common%/.git}"
         # Where `.local` or `.local/locks` cannot be a directory, `lane-lock claim` cannot make a
@@ -3255,11 +3321,18 @@ _tmux-isolated lane *args:
         else
             gate_groups="$gate_root/.local/locks/groups"
             gate_owner="$gate_root/.local/locks/gate/owner"
+            # Which claim the run serves (#343): the binding `lane-lock claim` wrote, and this
+            # worktree's root computed exactly as the claim computes it (`pwd -P` of the toplevel).
+            gate_binding="$gate_root/.local/locks/binding"
+            if gate_top="$(git rev-parse --show-toplevel 2>/dev/null)" && gate_top="$(cd -P "$gate_top" && pwd -P)"; then
+                gate_worktree="$gate_top"
+            fi
         fi
     fi
     {{ NEST }}
     detached() {
-        nest env AE_GATE_GROUPS="$gate_groups" AE_GATE_OWNER="$gate_owner" perl -e '{{ REAP }}' run "$@"
+        nest env AE_GATE_GROUPS="$gate_groups" AE_GATE_OWNER="$gate_owner" AE_GATE_BINDING="$gate_binding" \
+            AE_GATE_WORKTREE="$gate_worktree" perl -e '{{ REAP }}' run "$@"
     }
     reap_dead_scratch
     mkdir "$test_tmux_tmp/tmp"
