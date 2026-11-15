@@ -321,7 +321,11 @@ REAP := '''
     # set AE_LANE_CLAIM, also an empty one, is a claim the caller means: it is never ignored.
     my $want = $ENV{AE_LANE_CLAIM};
     my $refuse = sub { print STDERR "detached: refused: $_[0]\n"; exit 1 };
-    $refuse->("AE_LANE_CLAIM is not a lock name: \"$want\"") if defined $want && $want !~ /\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/;
+    if (defined $want && $want !~ /\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/) {
+        # The refusal stays one line: control characters are shown escaped, never raw.
+        (my $shown = $want) =~ s/([\x00-\x1f\x7f])/sprintf("\\x%02x", ord($1))/ge;
+        $refuse->("AE_LANE_CLAIM is not a lock name: \"$shown\"");
+    }
     $refuse->("this run serves lane claim $want, but this checkout has no lane lock") if defined $want && $groups eq "";
     if ($groups ne "") {
         die "detached: no start identity for pid $self\n" if $sid eq "";
