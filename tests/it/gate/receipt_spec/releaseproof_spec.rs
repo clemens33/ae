@@ -802,3 +802,11 @@ fn the_local_override_is_explicit_and_never_runs_a_duplicate_subset() {
         "the whole run already covers the subset"
     );
 }
+
+#[allow(
+    clippy::expect_used,
+    clippy::too_many_lines,
+    reason = "independent #340 acceptance uses named fixture preconditions and one complete process observer"
+)]
+#[path = "gatereap_spec.rs"]
+mod gatereap_spec;
