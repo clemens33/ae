@@ -2852,6 +2852,11 @@ impl App {
         if !self.orch.active && mouse.kind == MouseKind::Click && self.orch.panel.is_some() && drawn
         {
             self.focus_column(false);
+            // A full panel kept the keys: the main column this press was aimed
+            // at is covered now, so nothing there acts on it.
+            if self.panel_focused() {
+                return self.frame_gone();
+            }
         }
         if mouse.kind == MouseKind::Drag {
             return self.drag(mouse) || self.stretch(mouse);
@@ -4900,12 +4905,14 @@ impl App {
     }
 
     /// Give the keys to the panel or to the main column: a change ends the
-    /// running entry as Esc does, its draft kept under its own input.
+    /// running entry as Esc does, its draft kept under its own input. A full
+    /// panel keeps them: the main column it covers never holds the keys, so
+    /// it never writes unseen.
     fn focus_column(&mut self, on_panel: bool) {
         let Some(panel) = self.orch.panel.as_mut() else {
             return;
         };
-        if panel.focused == on_panel {
+        if panel.focused == on_panel || (panel.full && !on_panel) {
             return;
         }
         panel.focused = on_panel;

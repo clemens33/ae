@@ -1146,3 +1146,199 @@ fn old_main_press_from(from: &str) -> Option<String> {
         )
     })
 }
+
+/// One step of [`no_order_of_steps_lets_the_main_column_write_under_a_full_panel`].
+#[derive(Clone, Copy, Debug)]
+enum Step {
+    O,
+    F,
+    Click,
+    Enter,
+    Paste,
+}
+
+/// How the steps of one run reach the app.
+#[derive(Clone, Copy, Debug)]
+enum Feed {
+    /// All in one `take_keys` batch, one frame after.
+    Batch,
+    /// One `take_keys` each, no frame between them.
+    Each,
+    /// One `take_keys` each, a frame after every one.
+    Drawn,
+}
+
+/// Every order of `O`, `F`, a main-column click, Enter and a paste, from
+/// closed, from side with the main column's keys and from side with the
+/// panel's, fed in one batch, step by step, or with a frame between steps:
+/// whenever the panel is full, the panel holds the keys, the main column is
+/// not the writer, and no step changed the main column's draft.
+#[test]
+fn no_order_of_steps_lets_the_main_column_write_under_a_full_panel() {
+    let steps = [Step::O, Step::F, Step::Click, Step::Enter, Step::Paste];
+    let mut orders = vec![Vec::new()];
+    for _ in 0..steps.len() {
+        orders = (orders.iter())
+            .flat_map(|order: &Vec<Step>| {
+                let left: Vec<Step> = (steps.iter())
+                    .filter(|step| {
+                        !order.iter().any(|done| {
+                            std::mem::discriminant(*step) == std::mem::discriminant(done)
+                        })
+                    })
+                    .copied()
+                    .collect();
+                left.into_iter().map(move |step| {
+                    let mut next = order.clone();
+                    next.push(step);
+                    next
+                })
+            })
+            .collect();
+    }
+    assert_eq!(orders.len(), 120);
+    let mut wrong = Vec::new();
+    let mut by = std::collections::BTreeMap::new();
+    let mut runs = 0;
+    for start in ["closed", "side main", "side panel"] {
+        for feed in [Feed::Batch, Feed::Each, Feed::Drawn] {
+            for order in &orders {
+                runs += 1;
+                if let Some(why) = full_panel_run(runs, start, feed, order) {
+                    *by.entry(format!("{start}, {feed:?}")).or_insert(0) += 1;
+                    wrong.push(why);
+                }
+            }
+        }
+    }
+    assert_eq!(runs, 1080);
+    assert!(
+        wrong.is_empty(),
+        "{} of {runs} runs wrong, by start and feed {by:?}: {:#?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(6)]
+    );
+}
+
+/// What one run did wrong while the panel was full, or `None`.
+fn full_panel_run(run: usize, start: &str, feed: Feed, order: &[Step]) -> Option<String> {
+    let root = Root::new(&format!("o7steps{run}"));
+    let (mut app, _reader) = orchestrated(&root, false);
+    let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+    let api = ("api".to_owned(), app.id("api"));
+    match start {
+        "closed" => {
+            assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
+        }
+        "side main" => {
+            let _ = at(160, 45, &mut app);
+            app.focus_column(false);
+        }
+        _ => {}
+    }
+    let _ = at(160, 45, &mut app);
+    let click = (20..45)
+        .flat_map(|row| {
+            (0..80).map(move |column| Mouse {
+                kind: MouseKind::Click,
+                column,
+                row,
+            })
+        })
+        .find(|mouse| app.layout.in_chat(*mouse))
+        .expect("a main chat cell");
+    let key = |step: Step| match step {
+        Step::O => Key::Text(b"O".to_vec()),
+        Step::F => Key::Text(b"F".to_vec()),
+        Step::Click => Key::Mouse(click),
+        Step::Enter => Key::Enter,
+        Step::Paste => Key::Pasted(b"STEPQX".to_vec()),
+    };
+    let draft = |app: &App| app.inputs.get(&api).map(Input::draft).unwrap_or_default();
+    let full = |app: &App| app.orch.panel.as_ref().is_some_and(|panel| panel.full);
+    let check = |app: &App, before: &str, at: &str| -> Option<String> {
+        if !full(app) {
+            return None;
+        }
+        let writer = app.writer_name();
+        let changed = draft(app) != before;
+        (!app.panel_focused() || writer == Some("api") || changed).then(|| {
+            format!(
+                "{start}, {feed:?}, {order:?}, {at}: panel keys {}, writer {writer:?}, main draft changed {changed}",
+                app.panel_focused()
+            )
+        })
+    };
+    match feed {
+        Feed::Batch => {
+            let batch = order
+                .iter()
+                .map(|step| (key(*step), Instant::now()))
+                .collect();
+            assert!(take_keys(&mut app, batch).is_some());
+            let _ = at(160, 45, &mut app);
+            let after = draft(&app);
+            if let Some(why) = check(&app, &after, "after the batch") {
+                return Some(why);
+            }
+            let pasted = vec![(Key::Pasted(b"LATERQX".to_vec()), Instant::now())];
+            assert!(take_keys(&mut app, pasted).is_some());
+            let shown = text(&at(160, 45, &mut app));
+            let wrong = check(&app, &after, "a paste after the batch");
+            let hidden =
+                full(&app) && app.writer_name() == Some(orch) && !shown.contains("LATERQX");
+            wrong.or_else(|| {
+                hidden.then(|| {
+                    format!("{start}, Batch, {order:?}: the panel's paste is not on screen")
+                })
+            })
+        }
+        Feed::Each | Feed::Drawn => {
+            for (n, step) in order.iter().enumerate() {
+                let before = draft(&app);
+                assert!(take_keys(&mut app, vec![(key(*step), Instant::now())]).is_some());
+                if matches!(feed, Feed::Drawn) {
+                    let _ = at(160, 45, &mut app);
+                }
+                if let Some(why) = check(&app, &before, &format!("after step {n} {step:?}")) {
+                    return Some(why);
+                }
+            }
+            None
+        }
+    }
+}
+
+/// A main-column press from before a side panel opened over its cell is not
+/// taken: the panel that covers the cell now keeps the keys, and the press
+/// says its frame is gone.
+#[test]
+fn an_old_main_press_under_a_side_panel_moves_no_keys() {
+    let root = Root::new("o7underside");
+    let (mut app, _reader) = orchestrated(&root, false);
+    assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
+    let _ = at(160, 45, &mut app);
+    let stale = (20..45)
+        .flat_map(|row| {
+            (120..150).map(move |column| Mouse {
+                kind: MouseKind::Click,
+                column,
+                row,
+            })
+        })
+        .find(|mouse| app.layout.in_chat(*mouse))
+        .expect("a main chat cell the side panel will cover");
+    let origin = Instant::now();
+    press(&mut app, b"O");
+    let buf = at(160, 45, &mut app);
+    assert!(
+        border_of(&buf) < stale.column,
+        "the side panel covers the cell"
+    );
+    assert!(take_keys(&mut app, vec![(Key::Mouse(stale), origin)]).is_some());
+    assert!(app.panel_focused(), "the covering panel keeps the keys");
+    assert_eq!(
+        app.flash.as_ref().map(|(text, _)| text.as_str()),
+        Some("click not taken: its frame is gone")
+    );
+}
