@@ -41,6 +41,7 @@ mod mutantstime_spec;
 mod receipt_spec;
 mod affected;
 mod bashfloor;
+mod gatereap_lost;
 mod macos_subset;
 #[allow(
     clippy::expect_used,

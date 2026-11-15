@@ -193,6 +193,68 @@ retires once the recipe is the only spelling. Nothing here steals or
 clears a lock: one that looks abandoned (`status` says `suspect`) is reported, and the holder,
 the lead or a human clears it by hand.
 
+**The gate process registry (#340).** A lane lock is released only after every process a gate
+started under that claim has ended. Otherwise the lock stays held with a suspect note. Three parts
+keep this true:
+
+1. Every nested step of a gate recipe (a nested `just`, the selector and the doctests of
+   `test-affected`, and the supervisor of `detached`) runs through `nest` (the justfile's `NEST`).
+   `just` passes a TERM only to the recipe shell it started. `nest` passes TERM on to its child and
+   waits until the child is gone, so a signal to any level reaches the cargo run, and every level
+   waits for the level below. After a signal, every level ends nonzero (128 + the first signal), and no
+   later step starts (a stopped `just test` runs no doctests). A linewise recipe whose only line is a
+   nested `just` (`rust-test`, `_pre-test`) needs no `nest`: `sh -c` execs that one command (macOS `sh`
+   and dash both do), so the nested `just` itself receives the TERM.
+2. `detached` starts cargo under the perl supervisor (the justfile's `REAP`). Cargo still gets a
+   session of its own without a controlling terminal (#149). Before cargo can exist, the supervisor
+   writes an entry to `<main checkout>/.local/locks/groups/<pid>.<identity>`. The entry holds its own
+   pid and start identity and the lock's owner line (or `free`). The child waits on a pipe and execs
+   cargo only after the supervisor has recorded cargo's process group G in the entry. While cargo runs,
+   the supervisor reads the process table about once per second. It keeps every process of the run
+   with its start identity: the members of group G, every descendant of a known member, and every
+   process it has ever seen, also one that later leaves group G (a nextest test in a group of its own).
+   On the first INT, TERM or HUP, or when cargo ends with members left, it sends TERM to them and to
+   -G and waits up to 15 s. Then it sends KILL and waits up to 5 s. Only when no process of the run
+   is left does it remove the entry and end as cargo did. Otherwise it keeps the entry and prints
+   `detached: suspect: <entry>: <why>`. When the supervisor cannot rewrite the entry with a new
+   member, it starts the cleanup at once, retries the write on every pass and ends red. Before it
+   ends, it marks the entry with a last `lost` line (the whole text, or else that line appended in
+   place), and release refuses a lost entry even when its census is empty. When no mark can be
+   written either, the supervisor stays alive and repeats TERM, the grace and KILL until its own
+   census proves the run empty. Its live `run` line keeps release refused until then.
+3. `just lane-lock release <name>` repeats that census for every entry of the current claim, and also
+   counts the recorded supervisor. A pending, malformed, lost or still-running entry, or a census
+   that fails, appends one `suspect: <entry>: <why>` line to `.local/locks/gate/suspect` and refuses: the
+   owner line stays. From then on every release refuses on its own, because the gate directory holds
+   more than its owner line. `just lane-lock status` prints the suspect lines. An entry of another
+   claim (another owner line, or `free` from an unlocked scoped run) is never signalled, and it is
+   removed only when its census is empty. The release itself never signals a process.
+
+A process counts only when its pid and its start identity both match (`LC_ALL=C ps -o lstart=`,
+letters and digits, as #339). A reused pid is not a member, and a group number G that a new process
+now leads is not this run, so neither one keeps a lock. The census is one POSIX call,
+`LC_ALL=C ps -A -o pid= -o ppid= -o pgid= -o lstart=` (eight fields on macOS and on procps). A
+failing `ps` or a row with another field count counts as "not empty".
+
+**The residual.** The census misses one case: a process that leaves group G and is reparented to
+pid 1 between two passes, before any pass has seen it. A pass that finds group G empty is not, by
+itself, proof that every descendant has ended. macOS `ps` prints no session id, so there is no
+portable census by session. A double fault also escapes: the entry and its lost mark both cannot be
+written, and then the supervisor itself is killed (KILL) before its census proves empty. A member
+that only the lost write would have named, and that has left group G, is then invisible to release.
+
+**Clearing a suspect lock (a human).** Read `.local/locks/gate/suspect` and the entries it names under
+`.local/locks/groups/`. Check that no process of those entries is still alive: each `run`, `leader`
+and `member` line names a pid and its start identity, which `LC_ALL=C ps -o lstart= -p <pid>` (letters
+and digits only) must no longer show. End any survivor by its pid after that identity check, never by
+a name pattern. Then remove the named entries, `.local/locks/gate/suspect`, the `owner` line and the
+`gate` directory by hand. Agents never clear a suspect lock.
+
+**Test seam.** `AE_GATE_REAP_TERM_SECS` and `AE_GATE_REAP_KILL_SECS` exist only so that the
+acceptance tests run fast. Each is a whole number of seconds that can only shorten its wait: a value
+from 1 up to the default (15 and 5) is used, and anything else gives the default. A gate never sets
+them.
+
 `just rust-fuzz-check` also runs in CI, using the gate's target cache. A cold registry
 fetches the independent fuzz graph; `libfuzzer-sys` builds C++ even under `cargo check`,
 so a C++ compiler is required. This graph remains outside product deny/vet. No nightly

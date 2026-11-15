@@ -116,6 +116,7 @@ _pre-test:
 test-macos *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{ NEST }}
     print=no
     for arg in "$@"; do
         case "$arg" in
@@ -131,7 +132,318 @@ test-macos *args:
         exit 0
     fi
     echo "test-macos: $subset_filterset" >&2
-    just _tmux-isolated test -E "$subset_filterset"
+    nest just _tmux-isolated test -E "$subset_filterset"
+
+# THE NESTED STEP (#340). just passes a TERM only to the recipe shell it started, and a shell that a
+# signal ends leaves its foreground child running: a nested just, or the supervisor in `detached`,
+# then went on alone with its cargo. `nest <command...>` runs one step as this shell's child and
+# waits for it. A trap records the first INT, TERM or HUP and sends TERM to the child on every one;
+# the wait is re-entered while the child lives, so the step always ends before this shell does.
+# After a signal the result is 128 + the first signal, even when the child exits 0, and every later
+# `nest` in the same shell refuses to start (a stopped gate starts no further leg). The traps live
+# only while a step runs. Bash 3.2 syntax on purpose: `release-proof` has no bash floor.
+NEST := '''
+    nest_signal=0
+    nest_child=""
+    nest_on() {
+        ((nest_signal)) || nest_signal=$1
+        [[ -z "$nest_child" ]] || kill -TERM "$nest_child" 2>/dev/null || true
+    }
+    nest() {
+        local status
+        ((nest_signal == 0)) || return $((128 + nest_signal))
+        trap 'nest_on 2' INT
+        trap 'nest_on 15' TERM
+        trap 'nest_on 1' HUP
+        "$@" 0<&0 &
+        nest_child=$!
+        ((nest_signal == 0)) || kill -TERM "$nest_child" 2>/dev/null || true
+        while :; do
+            status=0
+            wait "$nest_child" || status=$?
+            kill -0 "$nest_child" 2>/dev/null || break
+        done
+        nest_child=""
+        trap - INT TERM HUP
+        ((nest_signal == 0)) || return $((128 + nest_signal))
+        return "$status"
+    }
+'''
+
+# THE GATE SUPERVISOR (#340, #149), the perl text `detached` runs and `lane-lock release` checks
+# with. `run <command...>`: cargo runs in a session of its own with no controlling terminal (#149);
+# this process supervises its group G, records the run in `<main checkout>/.local/locks/groups/`
+# before cargo can exist, and does not end while a process of the run is left. `check <dir>
+# <owner line>`: the release census of every entry. The registry grammar, the census and the
+# residual are in docs/development.md ("The gate process registry"). No single quote may appear
+# in this text: the recipes pass it inside one.
+REAP := '''
+    use strict;
+    use warnings;
+    use POSIX qw(:sys_wait_h :signal_h setsid);
+    use Time::HiRes qw(sleep time);
+    use File::Path qw(make_path);
+    my %signum = (INT => 2, TERM => 15, HUP => 1);
+    my $mode = shift @ARGV // "";
+    # The census seam: one ps read of the whole table, C locale. A row is pid, ppid, pgid and the
+    # five lstart words; anything else, or a ps that fails, is a failed census (undef).
+    sub census {
+        local $ENV{LC_ALL} = "C";
+        open(my $ps, "-|", "ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "lstart=") or return undef;
+        my (%row, $bad);
+        while (my $line = <$ps>) {
+            my @f = split " ", $line;
+            if (@f != 8 || "@f[0..2]" !~ /^[0-9]+ [0-9]+ [0-9]+$/) { $bad = 1; next }
+            (my $id = join("", @f[3..7])) =~ s/[^A-Za-z0-9]//g;
+            $row{$f[0]} = [$f[1], $f[2], $id];
+        }
+        close($ps) or return undef;
+        return ($bad || !%row) ? undef : \%row;
+    }
+    # A start identity as #339 reads it: lstart, letters and digits only; empty when the pid is gone.
+    sub identity {
+        local $ENV{LC_ALL} = "C";
+        open(my $ps, "-|", "ps", "-o", "lstart=", "-p", $_[0]) or return "";
+        my $id = join("", <$ps>);
+        close($ps);
+        $id =~ s/[^A-Za-z0-9]//g;
+        return $id;
+    }
+    # A registry entry, parsed (plan-p0-r2.md section 1). Returns a hash; {bad} names why it is malformed,
+    # {claim} is undef when even the header cannot be read.
+    sub parse_entry {
+        my ($path) = @_;
+        my %e = (members => {});
+        open(my $fh, "<", $path) or return { bad => "unreadable", header => 0 };
+        my $n = read($fh, my $text, 65537);
+        close($fh);
+        return { bad => "unreadable", header => 0 } unless defined $n;
+        $e{text} = $text;
+        return { %e, bad => "larger than 64 KiB", header => 0 } if length($text) > 65536;
+        my @lines = split /\n/, $text, -1;
+        my $tail = pop @lines;
+        my $id = qr/[A-Za-z0-9]{1,64}/;
+        my $pid = qr/[1-9][0-9]{0,9}/;
+        if (@lines < 3 || $lines[0] ne "ae-gate-group 1" || $lines[1] !~ /^run ($pid) ($id)$/) {
+            return { %e, bad => "no readable header", header => 0 };
+        }
+        @e{qw(spid sid)} = ($1, $2);
+        return { %e, bad => "no readable claim line", header => 0 } unless $lines[2] =~ /^claim (.+)$/;
+        $e{claim} = $1;
+        $e{header} = 1;
+        return { %e, bad => "the last line has no newline" } if $tail ne "";
+        for my $i (3 .. $#lines) {
+            if ($i == 3 && $lines[$i] =~ /^leader ($pid) ($id)$/) { @e{qw(g gid)} = ($1, $2); next }
+            if ($i > 3 && defined $e{g} && $lines[$i] =~ /^member ($pid) ($id)$/) { $e{members}{$1} = $2; next }
+            if ($i > 3 && $i == $#lines && defined $e{g} && $lines[$i] eq "lost") { $e{lost} = 1; next }
+            return { %e, bad => "line " . ($i + 1) . " is not part of the grammar" };
+        }
+        $e{state} = defined $e{g} ? "running" : "pending";
+        return \%e;
+    }
+    # The run set of an entry in one census: recorded pids alive with the same identity, the rows of
+    # group G unless pid G now belongs to another process (G was reused), and every descendant of
+    # those, to a fixed point. The supervisor itself is never part of it.
+    sub run_set {
+        my ($row, $e, $self) = @_;
+        my %set;
+        my %kept = (%{ $e->{members} }, $e->{g} => $e->{gid});
+        for my $p (keys %kept) { $set{$p} = 1 if $row->{$p} && $row->{$p}[2] eq $kept{$p} }
+        unless ($row->{ $e->{g} } && $row->{ $e->{g} }[2] ne $e->{gid}) {
+            for my $p (keys %$row) { $set{$p} = 1 if $row->{$p}[1] == $e->{g} }
+        }
+        for (my $grew = 1; $grew;) {
+            $grew = 0;
+            for my $p (keys %$row) {
+                next if $set{$p} || !$set{ $row->{$p}[0] };
+                $set{$p} = 1;
+                $grew = 1;
+            }
+        }
+        delete $set{$self} if defined $self;
+        return \%set;
+    }
+
+    if ($mode eq "check") {
+        # lane-lock release: one census for every entry. Prints one suspect line per entry that keeps
+        # the claim and exits 1 when there is any; removes the entries it proved empty.
+        my ($dir, $owner) = @ARGV;
+        opendir(my $dh, $dir) or do { print "suspect: groups: the registry $dir cannot be read\n"; exit 1 };
+        my @names = sort grep { !/^\./ } readdir($dh);
+        closedir($dh);
+        my $row = census();
+        my $refused = 0;
+        my $say = sub { print "suspect: $_[0]: $_[1]\n"; $refused = 1 };
+        for my $name (@names) {
+            my $path = "$dir/$name";
+            my $e = parse_entry($path);
+            my $mine = !$e->{header} || $e->{claim} eq $owner;
+            if ($e->{bad}) { $say->($name, "malformed entry: $e->{bad}") if $mine; next }
+            if ($e->{state} eq "pending") { $say->($name, "pending: its supervisor never confirmed a start") if $mine; next }
+            if ($e->{lost}) { $say->($name, "lost: its supervisor could not record a member") if $mine; next }
+            if (!$row) { $say->($name, "the process census failed") if $mine; next }
+            my $set = run_set($row, $e, undef);
+            $set->{ $e->{spid} } = 1 if $row->{ $e->{spid} } && $row->{ $e->{spid} }[2] eq $e->{sid};
+            if (%$set) { $say->($name, "still running: " . join(" ", sort { $a <=> $b } keys %$set)) if $mine; next }
+            # Proved empty, so no writer is left: remove it if it is still the text that was read.
+            my $again = parse_entry($path);
+            unlink($path) if defined $again->{text} && $again->{text} eq $e->{text};
+        }
+        exit($refused ? 1 : 0);
+    }
+
+    # Run mode: `run <command...>`. Cargo runs in a session of its own with no controlling terminal, so
+    # no test can take the terminal of the lane (#149). This process stays in the process group of the caller as
+    # the supervisor of the cargo group G: it records the run in the registry before cargo can exist, and
+    # it does not end while any process of the run is left (#340).
+    die "detached: usage: run <command...>\n" unless $mode eq "run" && @ARGV;
+    my $groups = $ENV{AE_GATE_GROUPS} // "";
+    my $clamp = sub { my ($v, $d) = @_; (defined $v && $v =~ /^[1-9][0-9]*$/ && $v <= $d) ? $v : $d };
+    my $term_secs = $clamp->($ENV{AE_GATE_REAP_TERM_SECS}, 15);
+    my $kill_secs = $clamp->($ENV{AE_GATE_REAP_KILL_SECS}, 5);
+    my $self = $$;
+    my $sid = identity($self);
+    my ($entry, $tmp, $header);
+    # Writes the entry by temp file and rename, so a reader sees a whole old or a whole new text.
+    my $publish = sub {
+        my ($text) = @_;
+        open(my $fh, ">", $tmp) or return 0;
+        my $ok = print {$fh} $text;
+        return (close($fh) && $ok && rename($tmp, $entry)) ? 1 : 0;
+    };
+    # Step 1, before any fork: the pending entry with the claim this run serves.
+    if ($groups ne "") {
+        die "detached: no start identity for pid $self\n" if $sid eq "";
+        my $claim = "free";
+        if (open(my $fh, "<", $ENV{AE_GATE_OWNER} // "")) {
+            my $line = <$fh>;
+            close($fh);
+            chomp($line) if defined $line;
+            $claim = $line if defined $line && $line =~ /^[^\x00-\x1f]+$/;
+        }
+        make_path($groups, { error => \my $ignored });
+        ($entry, $tmp) = ("$groups/$self.$sid", "$groups/.$self.$sid.tmp");
+        $header = "ae-gate-group 1\nrun $self $sid\nclaim $claim\n";
+        -d $groups && !-l $groups && $publish->($header) or die "detached: cannot register the run in $groups: $!\n";
+    }
+    # Step 2: fork with the signals blocked. The child takes a session of its own, then waits for the
+    # go byte: it never execs before the running entry is durable, and it exits on EOF.
+    my ($set, $old) = (POSIX::SigSet->new(SIGINT, SIGTERM, SIGHUP), POSIX::SigSet->new);
+    sigprocmask(SIG_BLOCK, $set, $old) or die "detached: sigprocmask: $!\n";
+    pipe(my $go_r, my $go_w) or die "detached: pipe: $!\n";
+    defined(my $g = fork) or die "detached: fork: $!\n";
+    if (!$g) {
+        close($go_w);
+        setsid() or POSIX::_exit(127);
+        $SIG{$_} = "DEFAULT" for qw(INT TERM HUP QUIT);
+        POSIX::_exit(127) unless (sysread($go_r, my $byte, 1) // 0) == 1;
+        close($go_r);
+        sigprocmask(SIG_SETMASK, $old);
+        exec { $ARGV[0] } @ARGV or do { print STDERR "detached: $ARGV[0]: $!\n"; POSIX::_exit(127) };
+    }
+    close($go_r);
+    # Step 3: the running entry (leader G), then the go byte. A failure here reaps the blocked child
+    # first, then removes the entry: cargo never starts.
+    my $gid = identity($g);
+    my (%kept, $marked);
+    my $entry_text = sub { $header . "leader $g $gid\n" . join("", map { "member $_ $kept{$_}\n" } sort { $a <=> $b } keys %kept) . ($marked ? "lost\n" : "") };
+    if ($groups ne "" && ($gid eq "" || !$publish->($entry_text->()))) {
+        kill("KILL", $g);
+        waitpid($g, 0);
+        unlink($entry);
+        die "detached: cannot record the run in $entry\n";
+    }
+    syswrite($go_w, "g", 1) == 1 or do { kill("KILL", $g); waitpid($g, 0); unlink($entry) if $entry; die "detached: cannot start $ARGV[0]\n" };
+    close($go_w);
+    # Step 4: a signal is passed to the cargo group at once and starts the cleanup; later ones only pass on.
+    my ($first, $status, $reaped);
+    for my $name (qw(INT TERM HUP)) {
+        $SIG{$name} = sub { $first //= $name; kill($name, -$g) unless $reaped };
+    }
+    sigprocmask(SIG_SETMASK, $old);
+    # Signals one pid, or group G, only while it is still the process the census saw.
+    my $signal = sub {
+        my ($name, $p, $id) = @_;
+        kill($name, $p) if identity($p) eq $id;
+    };
+    # Step 5: watch, then reap. One census a second while cargo runs keeps every member it ever saw,
+    # with its identity, also one that later leaves group G. Cleanup starts on the first signal or
+    # when cargo ends with members left: TERM, the TERM grace, KILL, the KILL wait. A member set the
+    # entry could not record starts the cleanup too, is retried every pass and ends the run as a suspect.
+    my $e = { g => $g, gid => $gid, members => \%kept };
+    my ($phase, $deadline, $last, $why, $dirty, $lost) = ("watch", 0, {});
+    # The lost mark: a member the entry never recorded may have left group G, so a census of the stale
+    # entry could prove nothing. The whole text with a last `lost` line, else that line appended in
+    # place; release refuses a lost entry. True once one write landed.
+    my $mark = sub {
+        return 1 if $marked;
+        $marked = 1;
+        return 1 if $publish->($entry_text->());
+        $marked = 0;
+        if (open(my $fh, ">>", $entry)) {
+            my $ok = print {$fh} "lost\n";
+            $marked = (close($fh) && $ok) ? 1 : 0;
+        }
+        return $marked;
+    };
+    while (1) {
+        if (!$reaped && waitpid($g, WNOHANG) == $g) { ($status, $reaped) = ($?, 1) }
+        my $row = census();
+        if ($row) {
+            my $run = run_set($row, $e, $self);
+            $last = { map { $_ => $row->{$_}[2] } keys %$run };
+            my $changed = 0;
+            for my $p (keys %kept) { if (!$run->{$p} && !($row->{$p} && $row->{$p}[2] eq $kept{$p})) { delete $kept{$p}; $changed = 1 } }
+            for my $p (keys %$run) { next if $p == $g || exists $kept{$p}; $kept{$p} = $row->{$p}[2]; $changed = 1 }
+            $dirty = 1 if $changed;
+            if ($dirty && $groups ne "") { if ($publish->($entry_text->())) { $dirty = 0 } else { $lost = 1 } }
+            last if $reaped && !%$run;
+        }
+        if ($phase eq "watch" && ($first || $reaped || $lost)) {
+            ($phase, $deadline) = ("term", time + $term_secs);
+            $signal->("TERM", $_, $last->{$_}) for keys %$last;
+            kill("TERM", -$g) unless $row && $row->{$g} && $row->{$g}[2] ne $gid;
+        } elsif ($phase eq "term" && time >= $deadline) {
+            ($phase, $deadline) = ("kill", time + $kill_secs);
+            $signal->("KILL", $_, $last->{$_}) for keys %$last;
+            kill("KILL", -$g) unless $row && $row->{$g} && $row->{$g}[2] ne $gid;
+        } elsif ($phase eq "kill" && time >= $deadline && $lost && !$mark->()) {
+            # Neither the entry nor the mark holds the run, so only this live process keeps release
+            # refused: it stays and reaps again (TERM, grace, KILL) until its own census proves empty.
+            ($phase, $deadline) = ("term", time + $term_secs);
+            $signal->("TERM", $_, $last->{$_}) for keys %$last;
+            kill("TERM", -$g) unless $row && $row->{$g} && $row->{$g}[2] ne $gid;
+        } elsif ($phase eq "kill" && time >= $deadline) {
+            $why = $row ? "still running after KILL: " . join(" ", sort { $a <=> $b } keys %$last) : "the process census failed";
+            last;
+        }
+        sleep($phase eq "watch" ? 1 : 0.1);
+    }
+    # Step 6: the end. Proved empty: remove the entry (still ours) and end as cargo did. Otherwise the
+    # entry stays for lane-lock release, which then keeps the lock with a suspect note.
+    if (!$reaped && waitpid($g, defined $why ? WNOHANG : 0) == $g) { ($status, $reaped) = ($?, 1) }
+    $status //= 0;
+    $SIG{$_} = "DEFAULT" for qw(INT TERM HUP);
+    # A lost run ends red and keeps its entry, marked when a write still lands. Unmarked, it got here
+    # only with its census proved empty, so release may then remove the stale entry.
+    if ($lost) {
+        $why //= "a member could not be recorded";
+        $why .= " (the lost mark could not be written)" unless $mark->();
+    }
+    if (defined $why) {
+        print STDERR "detached: suspect: " . ($entry // "group $g") . ": $why\n";
+        exit($first ? 128 + $signum{$first} : 1);
+    }
+    if ($groups ne "") {
+        my $now = parse_entry($entry);
+        unlink($entry) if defined $now->{spid} && $now->{spid} == $self && $now->{sid} eq $sid;
+    }
+    exit(128 + $signum{$first}) if $first;
+    my $sig = $status & 127;
+    exit($status >> 8) unless $sig;
+    kill($sig, $$);
+    exit(128 + $sig);
+'''
 
 # THE BASH FLOOR of a recipe that uses bash 4 syntax (#337). A recipe that opens with this refuses a
 # bash older than 4.4 with a message and exit 1, before bash reads any later line. Without it, macOS
@@ -171,6 +483,7 @@ test-affected *args:
     #!/usr/bin/env bash
     {{ BASH_FLOOR }}
     set -euo pipefail
+    {{ NEST }}
     {{ SIZING }}
     base=main
     print=no
@@ -341,7 +654,7 @@ test-affected *args:
     }
     selector() {
         selector_status=0
-        nice -n 10 cargo run --locked --quiet --all-features --example affected <"$scratch/stream" >"$scratch/answer" || selector_status=$?
+        nest nice -n 10 cargo run --locked --quiet --all-features --example affected <"$scratch/stream" >"$scratch/answer" || selector_status=$?
     }
 
     if [[ "$mode" == preview ]]; then
@@ -356,9 +669,9 @@ test-affected *args:
 
     identity || refuse "$why"
     start="$now"
-    just rust-fmt-check
-    just rust-lint
-    just rust-fuzz-check
+    nest just rust-fmt-check
+    nest just rust-lint
+    nest just rust-fuzz-check
     size_counts
     fallback=""
     if produce >"$scratch/stream"; then
@@ -383,17 +696,17 @@ test-affected *args:
         for reason in "${reasons[@]}"; do
             echo "test-affected: whole: ${reason%% *}: ${reason#* }" >&2
         done
-        just _tmux-isolated test
+        nest just _tmux-isolated test
     else
         echo "test-affected: subset: ${owners[*]}" >&2
         echo "test-affected: not selected: $not_selected of $total integration tests (M1 gap)" >&2
         echo "test-affected: $filterset" >&2
-        just _tmux-isolated test -E "$filterset"
+        nest just _tmux-isolated test -E "$filterset"
         if [[ "$doctests" == yes ]]; then
             # The doctests a filtered lane skips, sized and isolated as the release runs them.
             doc_dir="$(mktemp -d)"
             size_say "test-affected doctests"
-            env -u TMUX -u TMUX_PANE TMPDIR="$doc_dir" TMUX_TMPDIR="$doc_dir" nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
+            nest env -u TMUX -u TMUX_PANE TMPDIR="$doc_dir" TMUX_TMPDIR="$doc_dir" nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
         fi
     fi
     if [[ "$check" == yes ]]; then
@@ -522,6 +835,7 @@ lane-lock verb name="" wait="0":
                     elif [[ -n "$h_age" ]] && (( h_age > suspect_secs )); then
                         echo "suspect: held longer than $(span "$suspect_secs"); the holder may be gone"
                     fi
+                    if [[ -f "$gate/suspect" && ! -L "$gate/suspect" ]]; then cat "$gate/suspect"; fi
                 else
                     echo "gate: $gate exists and is not a directory"
                     echo "suspect: not a lock this protocol made"
@@ -554,6 +868,19 @@ lane-lock verb name="" wait="0":
                 [[ "${entry##*/}" == owner ]] || extra="$extra ${entry##*/}"
             done
             [[ -z "$extra" ]] || refuse "the gate holds more than its owner line ($extra ); lock left intact"
+            # THE RUN CENSUS (#340): every process a gate started under this claim must have ended. An
+            # entry of this claim that is pending, malformed or still running, or a census that fails,
+            # keeps the lock: the reasons go to <gate>/suspect, and from then on every release refuses
+            # on its own until a human clears it (docs/development.md, "The gate process registry").
+            if [[ -d "$locks/groups" && ! -L "$locks/groups" ]] && compgen -G "$locks/groups/[!.]*" >/dev/null; then
+                census=0
+                verdict="$(perl -e '{{ REAP }}' check "$locks/groups" "$h_line" 2>&1)" || census=$?
+                if ((census != 0)); then
+                    [[ -n "$verdict" ]] || verdict="suspect: groups: the run census exited with status $census"
+                    printf '%s\n' "$verdict" >>suspect
+                    refuse "a process this claim started may still run; the lock stays held: $(head -n 1 suspect)"
+                fi
+            fi
             err="$(rm owner 2>&1)" || refuse "the owner line could not be removed ($err); the gate this release checked is gone or changed, so nothing else was removed"
             [[ "$(inode_of "$gate" 2>/dev/null)" == "$entered" ]] || refuse "the owner line is removed, but $gate is no longer the directory this release entered; left alone"
             rmdir "$gate" || refuse "the owner line is removed, but $gate could not be removed"
@@ -973,6 +1300,7 @@ changelog:
 release:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{ NEST }}
 
     # Pre-flight: clean working tree (staged, unstaged, AND untracked)
     if ! git diff --quiet HEAD || [ -n "$(git ls-files --others --exclude-standard)" ]; then
@@ -1047,7 +1375,7 @@ release:
     proof_identity || proof_refuse "$proof_why"
     proof_head="$id_head"
     proof_tree="$id_tree"
-    just release-proof "expect=$proof_head:$proof_tree" hp=run
+    nest just release-proof "expect=$proof_head:$proof_tree" hp=run
 
     # Gate 3: Supply chain on every release; advisory DB needs network, so offline refuses before the version is written.
     just rust-deny
@@ -1290,6 +1618,7 @@ release:
 release-proof *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{ NEST }}
     {{ RECEIPT }}
     {{ PROOF }}
     expect=""
@@ -1317,7 +1646,7 @@ release-proof *args:
             echo "release-proof: a whole green just test on this Mac vouches for this tree ($((receipt_age / 60)) min ago): no tests run"
         else
             echo "release-proof: no local receipt matches ($receipt_why): running the whole gate, just test"
-            just test || proof_refuse "the whole gate failed on this Mac"
+            nest just test || proof_refuse "the whole gate failed on this Mac"
         fi
         proof_same "$head" "$tree" || proof_refuse "$proof_why while the whole Mac gate ran"
         echo "release-proof: ok: DEVIATION, the whole suite ran on this Mac for HEAD $head"
@@ -1394,7 +1723,7 @@ release-proof *args:
     fi
 
     echo "release-proof: running the Mac boundary subset, just test-macos"
-    just test-macos || proof_refuse "the Mac boundary subset failed"
+    nest just test-macos || proof_refuse "the Mac boundary subset failed"
     proof_same "$head" "$tree" || proof_refuse "$proof_why while the Mac subset ran"
     echo "release-proof: ok: the hp ran the whole suite and this Mac the boundary subset, on HEAD $head"
 
@@ -2615,7 +2944,7 @@ HP_LEG := '''
         # before the bump. The hp leg runs on alone and releases its own lane.
         echo "release-proof: running the Mac boundary subset, just test-macos, while the hp runs"
         mac_status=0
-        just test-macos || mac_status=$?
+        nest just test-macos || mac_status=$?
         ((mac_status == 0)) || proof_refuse "the Mac boundary subset failed (exit $mac_status); the hp leg $runid runs on alone and releases its own lane"
         proof_same "$head" "$tree" || proof_refuse "$proof_why while the Mac subset ran"
         echo "release-proof: the Mac boundary subset is green; waiting for the hp leg $runid"
@@ -2901,27 +3230,27 @@ _tmux-isolated lane *args:
     trap cleanup EXIT
     # Cargo runs in a session of its own with no controlling terminal, so no
     # test can take the lane's terminal for a tmux pane it is in (#149). The
-    # perl parent stays in this shell's process group: a Ctrl-C reaches it, it
-    # passes the signal to cargo's whole group, and it ends as cargo did.
+    # perl supervisor (REAP) stays in this shell's process group and is started
+    # through `nest`, so a signal to any level reaches it and this shell waits
+    # for it. It records the run in the main checkout's registry before cargo
+    # starts, reaps every process of the run, and ends as cargo did (#340).
+    gate_groups=""
+    gate_owner=""
+    if gate_common="$(git rev-parse --git-common-dir 2>/dev/null)" && gate_common="$(cd -P "$gate_common" && pwd -P)" && [[ "${gate_common##*/}" == .git ]]; then
+        gate_root="${gate_common%/.git}"
+        # Where `.local` or `.local/locks` cannot be a directory, `lane-lock claim` cannot make a
+        # lock either, so no claim exists to protect: the lane runs without a registry, as outside a
+        # checkout. A registry that fails anywhere else stops cargo from starting.
+        if [[ ( -e "$gate_root/.local" && ! -d "$gate_root/.local" ) || ( -e "$gate_root/.local/locks" && ! -d "$gate_root/.local/locks" ) ]]; then
+            echo "note: no gate process registry: $gate_root/.local/locks cannot be a directory, so no lane lock can be held for this checkout" >&2
+        else
+            gate_groups="$gate_root/.local/locks/groups"
+            gate_owner="$gate_root/.local/locks/gate/owner"
+        fi
+    fi
+    {{ NEST }}
     detached() {
-        perl -MPOSIX -e '
-            my ($set, $old) = (POSIX::SigSet->new(SIGINT, SIGTERM, SIGHUP), POSIX::SigSet->new);
-            sigprocmask(SIG_BLOCK, $set, $old) or die "detached: sigprocmask: $!\n";
-            defined(my $pid = fork) or die "detached: fork: $!\n";
-            if (!$pid) {
-                setsid() or die "detached: setsid: $!\n";
-                sigprocmask(SIG_SETMASK, $old);
-                exec { $ARGV[0] } @ARGV or die "detached: $ARGV[0]: $!\n";
-            }
-            $SIG{$_} = sub { kill("-$_[0]", $pid) or kill($_[0], $pid) } for qw(INT TERM HUP);
-            sigprocmask(SIG_SETMASK, $old);
-            waitpid($pid, 0) == $pid or die "detached: waitpid: $!\n";
-            my $signal = $? & 127;
-            exit($? >> 8) unless $signal;
-            $SIG{$_} = "DEFAULT" for qw(INT TERM HUP);
-            kill($signal, $$);
-            exit(128 + $signal);
-        ' "$@"
+        nest env AE_GATE_GROUPS="$gate_groups" AE_GATE_OWNER="$gate_owner" perl -e '{{ REAP }}' run "$@"
     }
     reap_dead_scratch
     mkdir "$test_tmux_tmp/tmp"
