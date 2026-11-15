@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.60] - 2026-11-15
+- Install the frozen #340 gate reap acceptance (spec r3)
+- Install the frozen #340 gate reap acceptance r4 (short fixture names)
+- Install the frozen #340 gate reap acceptance r5 (doc lint)
+- Install #340 spec r6 diagnostic evidence (gatereap-nav, lead-approved)
+- Install #340 spec r8 observer startup and census fix (gatereap-nav, lead-approved)
+- Reap every process a gate started before its lane lock is released (#340)
+- Refuse an unreadable registry and an unreadable lane owner (#340)
+- Require exec for the nested lane recipes (#340, lead ruling ae-20261115T133234Z-f74339d3)
+- Exec the nested lane and the format checks so a TERM reaches them (#340, lead ruling ae-20261115T133234Z-f74339d3)
+- Keep the lost-mark pin free of children before go (#340)
+
 ## [v2026.11.59] - 2026-11-15
 - Freeze the app-native orchestrator panel acceptance tests (o7app)
 - O7app P1 wip: the orchestrator leaves the session rows; the fleet read proves its incarnation
