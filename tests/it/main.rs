@@ -10,6 +10,7 @@ mod app_cli_spec;
 mod app_clip_spec;
 mod app_composer_spec;
 mod app_copy_spec;
+mod app_family_spec;
 mod app_live;
 mod app_loop_pin_spec;
 mod app_menu_activity_memos_spec;
