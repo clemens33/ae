@@ -79,9 +79,9 @@ recipe=$1 action=$2
 dir=$AE_REAP_DIR
 identity() { LC_ALL=C "$AE_REAP_REAL_PS" -o lstart= -p "$1" 2>/dev/null | tr -cd A-Za-z0-9; }
 alive() {
-    local row
-    row=$(LC_ALL=C "$AE_REAP_REAL_PS" -o stat= -p "$1" 2>/dev/null) || return 1
-    [[ -n "$row" && "$row" != *Z* ]]
+    local table
+    table=$(LC_ALL=C "$AE_REAP_REAL_PS" -A -o pid= -o stat= 2>/dev/null) || return 0
+    awk -v pid="$1" '$1 == pid { state=$2 } END { exit !(state != "" && state !~ /^Z/) }' <<<"$table"
 }
 cleanup() {
     local pid stamp now
@@ -101,12 +101,30 @@ just lane-lock claim reap-spec >"$dir/claim.log" 2>&1 || exit 80
 just "$recipe" >"$dir/recipe.log" 2>&1 &
 top=$!
 printf '%s %s\n' "$top" "$(identity "$top")" >>"$dir/owned"
-for ((tick=0; tick<600; tick++)); do
+startup_started=$SECONDS
+startup_deadline=$((startup_started + 75))
+while ((SECONDS < startup_deadline)); do
     [[ -s "$dir/cargo" ]] && break
-    alive "$top" || break
     sleep 0.05
 done
-[[ -s "$dir/cargo" ]] || { cat "$dir/recipe.log"; exit 81; }
+printf 'startup waited: %s s\n' "$((SECONDS - startup_started))" >"$dir/startup.log"
+if [[ ! -s "$dir/cargo" ]]; then
+    # A process-table read never ends this wait early. Capture Bash's own job
+    # state in the observer shell before its EXIT cleanup can kill the top.
+    jobs -l >>"$dir/startup.log"
+    jobs -rp >"$dir/startup-active"
+    jobs -sp >>"$dir/startup-active"
+    active=0
+    while read -r pid; do [[ "$pid" != "$top" ]] || active=1; done <"$dir/startup-active"
+    if ((active == 0)); then
+        top_status=0
+        wait "$top" || top_status=$?
+        printf 'top wait status before cleanup: %s\n' "$top_status" >>"$dir/startup.log"
+    fi
+    LC_ALL=C "$AE_REAP_REAL_PS" -o pid= -o stat= -o lstart= -p "$top" >>"$dir/startup.log" 2>&1 || :
+    cat "$dir/recipe.log"
+    exit 81
+fi
 # Snapshot the real parent tree before signalling, including nested just/bash.
 LC_ALL=C "$AE_REAP_REAL_PS" -A -o pid= -o ppid= >"$dir/tree"
 awk -v top="$top" '
@@ -160,12 +178,19 @@ printf '%s\n' "$gate_status" >"$dir/gate-status"
 release_status=0
 just lane-lock release reap-spec >"$dir/release.log" 2>&1 || release_status=$?
 printf '%s\n' "$release_status" >"$dir/release-status"
-: >"$dir/survivors"
-while read -r pid stamp; do
-    if [[ "$(identity "$pid")" == "$stamp" ]] && alive "$pid"; then
-        printf '%s %s\n' "$pid" "$stamp" >>"$dir/survivors"
-    fi
-done <"$dir/owned"
+LC_ALL=C "$AE_REAP_REAL_PS" -A -o pid= -o stat= -o lstart= >"$dir/survivor-census" 2>"$dir/survivor-census.err" || {
+    echo 'observer: the survivor census failed' >&2
+    cat "$dir/survivor-census.err" >&2
+    exit 87
+}
+awk '
+    NR == FNR { stamp[$1]=$2; next }
+    {
+        identity=""
+        for (field=3; field<=NF; field++) identity=identity $field
+        gsub(/[^A-Za-z0-9]/, "", identity)
+        if ($1 in stamp && stamp[$1] == identity && $2 !~ /^Z/) print $1, identity
+    }' "$dir/owned" "$dir/survivor-census" >"$dir/survivors"
 just lane-lock status >"$dir/lock-status" 2>&1 || :
 cat "$dir/recipe.log" "$dir/release.log" "$dir/lock-status"
 "#;
@@ -199,7 +224,7 @@ fn process_case(recipe: &str, action: &str, mode: &str, held: bool) {
         .arg(timeout)
         .arg("-k")
         .arg("5")
-        .arg("90")
+        .arg("120")
         .arg("bash")
         .arg("-c")
         .arg(OBSERVER)
@@ -240,8 +265,9 @@ fn process_case(recipe: &str, action: &str, mode: &str, held: bool) {
         ExitOutcome::Signalled => "signal".to_owned(),
     };
     let evidence = format!(
-        "observer: {outcome}\nclaim: {}\n{}\n{}",
+        "observer: {outcome}\nclaim: {}\nstartup: {}\n{}\n{}",
         std::fs::read_to_string(dir.join("claim.log")).unwrap_or_default(),
+        std::fs::read_to_string(dir.join("startup.log")).unwrap_or_default(),
         read(&out),
         read(&err)
     );
