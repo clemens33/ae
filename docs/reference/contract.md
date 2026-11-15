@@ -34,8 +34,9 @@ src/                — Rust sources. main.rs thin (argv in, exit code out); lib
                       the socket proof cache, discovery and the snapshot's assembly.
                       worktrees.rs is the one worktree-cleanup classifier `ae worktree gc`
                       and the retire guard share; its git facts come through git.rs
-src/app/            — `ae app`; src/app.rs is the coordinator (loop, frame, keys, the one
-                      write). loader.rs the one background reader; journals.rs its
+src/app/            — `ae app`; src/app.rs is the coordinator (the `App` state, its
+                      constants, `new`, `answer` and `absorb`). loader.rs the one
+                      background reader; journals.rs its
                       parsed-journal cache; backend.rs the one writer of its escapes;
                       tty.rs the terminal door (rustix termios); settings.rs the
                       settings-overlay bodies, read by the loader through `config`;
@@ -48,8 +49,10 @@ src/app/            — `ae app`; src/app.rs is the coordinator (loop, frame, ke
                       modals, lifecycle.rs the Start, Stop and End asks and the
                       records reads, mouse.rs the mouse and its drag state,
                       selection.rs which session, seat or item is selected and
-                      opened, keys.rs the key routing by mode (each with its
-                      `App` members),
+                      opened, keys.rs the key routing by mode, flight.rs the
+                      staged copy, the asks in flight and their settle, compose.rs
+                      the chat input's write mode, route, draft and quit guard
+                      (each with its `App` members),
                       tests.rs the unit tests. PURE halves:
                       fleet.rs sidebar rows, overview.rs what waits + the work dir,
                       model.rs the browse reducer, lane.rs chat turns as rows, draw.rs
