@@ -1342,3 +1342,30 @@ fn an_old_main_press_under_a_side_panel_moves_no_keys() {
         Some("click not taken: its frame is gone")
     );
 }
+
+/// A click on a main sidebar row read in the same batch as the `F` that
+/// turns the panel full is not taken: the row it was aimed at is covered
+/// before the click is handled, so the selection stays and the panel keeps
+/// the keys.
+#[test]
+fn a_main_row_click_read_with_the_f_that_covers_it_is_not_taken() {
+    let mut app = app(None);
+    two(&mut app);
+    let row = ops_cell(&mut app);
+    opened(&mut app, false);
+    let _ = at(160, 45, &mut app);
+    app.focus_column(false);
+    let _ = at(160, 45, &mut app);
+    let batch = vec![
+        (Key::Text(b"F".to_vec()), Instant::now()),
+        (Key::Mouse(row), Instant::now()),
+    ];
+    assert!(take_keys(&mut app, batch).is_some());
+    assert!(app.orch.panel.as_ref().is_some_and(|panel| panel.full));
+    assert!(app.panel_focused(), "the full panel keeps the keys");
+    assert_eq!(
+        app.model.selected(),
+        Some("web"),
+        "the covered row is not selected"
+    );
+}
