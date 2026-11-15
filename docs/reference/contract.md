@@ -46,7 +46,10 @@ src/app/            — `ae app`; src/app.rs is the coordinator (loop, frame, ke
                       run.rs the run loop and its terminal handoffs, frame.rs the
                       frame and its composer, modal.rs the menu and confirmation
                       modals, lifecycle.rs the Start, Stop and End asks and the
-                      records reads (each with its `App` members),
+                      records reads, mouse.rs the mouse and its drag state,
+                      selection.rs which session, seat or item is selected and
+                      opened, keys.rs the key routing by mode (each with its
+                      `App` members),
                       tests.rs the unit tests. PURE halves:
                       fleet.rs sidebar rows, overview.rs what waits + the work dir,
                       model.rs the browse reducer, lane.rs chat turns as rows, draw.rs
