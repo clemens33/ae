@@ -227,7 +227,9 @@ pub(crate) struct Layout {
     /// The cells the lane's rows drew in, for the keys that read its links.
     pub(super) lane_width: u16,
     /// The cells the open panel drew over in this frame, `None` while none
-    /// did: a press made on this frame belongs to the panel there.
+    /// did: a press made on this frame belongs to the panel there. The
+    /// panel's own column records them as it draws, the main column's frame
+    /// takes them over.
     pub(crate) panel: Option<Rect>,
 }
 
@@ -762,13 +764,10 @@ pub(crate) fn panel_full(area: Rect, split: Split, columns: Columns) -> bool {
     matches!(stand(area, split, columns), Stand::Full { .. })
 }
 
-/// The cells the open panel draws over in a frame of `area`: none below the
-/// app's size floor, where the floor note stands alone.
-pub(crate) fn panel_drawn(area: Rect, split: Split, columns: Columns) -> Option<Rect> {
-    if area.width < MIN.0 || area.height < MIN.1 {
-        return None;
-    }
-    panel_area(area, split, columns)
+/// Whether a frame of `area` meets the app's size floor: below it the floor
+/// note stands alone and no column draws.
+pub(crate) fn floor_met(area: Rect) -> bool {
+    area.width >= MIN.0 && area.height >= MIN.1
 }
 
 /// The cells the open panel covers in `area`, `None` while it is closed.
@@ -791,7 +790,7 @@ pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) 
     };
     let columns = screen.model.columns();
     let stand = stand(area, screen.model.split(), columns);
-    if area.width < MIN.0 || area.height < MIN.1 || stand == Stand::Closed {
+    if !floor_met(area) || stand == Stand::Closed {
         return layout;
     }
     let ctx = Ctx {
@@ -810,6 +809,7 @@ pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) 
             buf[(x, y)].reset();
         }
     }
+    layout.panel = Some(Rect::new(from, 0, width - from, height));
     buf.set_style(
         Rect::new(from, 0, width - from, height),
         ctx.paint.ground(|p| p.ink),

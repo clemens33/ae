@@ -2833,8 +2833,10 @@ impl App {
             return self.panel_route(mouse, fresh);
         }
         // A press beyond the drawn frame, before the redraw after a resize,
-        // lands on no column and moves no keys.
-        let drawn = (self.layout.area()).contains(Position::new(mouse.column, mouse.row));
+        // or on a frame below the size floor lands on no column and moves no
+        // keys.
+        let area = self.layout.area();
+        let drawn = draw::floor_met(area) && area.contains(Position::new(mouse.column, mouse.row));
         if !self.orch.active && mouse.kind == MouseKind::Click && self.orch.panel.is_some() && drawn
         {
             self.focus_column(false);
@@ -5047,7 +5049,6 @@ impl App {
     /// panel the main column covers draws nothing and sees no turn.
     fn frame_panel(&mut self, buf: &mut Buffer) {
         let mut columns = self.columns();
-        self.layout.panel = draw::panel_drawn(buf.area, self.model.split(), columns);
         if draw::panel_area(buf.area, self.model.split(), columns).is_none() {
             return;
         }
@@ -5103,11 +5104,13 @@ impl App {
             }
             app.drawn = Some(app.freeze(ORCH));
             app.model.set_columns(main);
-            app.layout.cursor
+            (app.layout.cursor, app.layout.panel)
         });
-        if let Some(cursor) = cursor.flatten() {
+        let (cursor, cells) = cursor.unwrap_or_default();
+        if let Some(cursor) = cursor {
             self.layout.cursor = Some(cursor);
         }
+        self.layout.panel = cells;
     }
 }
 

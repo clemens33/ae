@@ -1052,3 +1052,33 @@ fn full_panel_press_after(after: &str) -> Option<String> {
         None
     }
 }
+
+/// Below the app's size floor the floor note stands alone, so a press lands
+/// on no column and moves no keys; at the floor a press on the panel's cells
+/// gives the panel the keys.
+#[test]
+fn a_press_below_the_size_floor_moves_no_keys() {
+    for (width, height, full, focused, after) in [
+        (39, 20, true, true, true),
+        (39, 20, false, true, true),
+        (160, 7, false, false, false),
+        (160, 8, false, false, true),
+    ] {
+        let mut app = app(None);
+        two(&mut app);
+        opened(&mut app, full);
+        let _ = at(width, height, &mut app);
+        app.focus_column(focused);
+        let _ = at(width, height, &mut app);
+        let _ = app.mouse(Mouse {
+            kind: MouseKind::Click,
+            column: width - 3,
+            row: height / 2,
+        });
+        assert_eq!(
+            app.panel_focused(),
+            after,
+            "{width}x{height}, full {full}, focused {focused}"
+        );
+    }
+}
