@@ -39,7 +39,11 @@ src/app/            — `ae app`; src/app.rs is the coordinator (loop, frame, ke
                       parsed-journal cache; backend.rs the one writer of its escapes;
                       tty.rs the terminal door (rustix termios); settings.rs the
                       settings-overlay bodies, read by the loader through `config`;
-                      upgrade.rs the follow-the-link restart verdicts. PURE halves:
+                      upgrade.rs the follow-the-link restart verdicts;
+                      panel.rs the orchestrator panel, viewer.rs the peek panel
+                      and the file reader, settings_flow.rs the settings overlay's
+                      opening, reads and keys (each with its `App` members),
+                      tests.rs the unit tests. PURE halves:
                       fleet.rs sidebar rows, overview.rs what waits + the work dir,
                       model.rs the browse reducer, lane.rs chat turns as rows, draw.rs
                       the cells, peek.rs the peek panel, reader.rs the file
