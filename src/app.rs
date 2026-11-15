@@ -2714,9 +2714,21 @@ impl App {
         let cleared = mouse.kind == MouseKind::Click && self.unselect();
         let acted = match self.panel_made(mouse, origin) {
             Some(acted) => acted,
+            None if self.covered_since(mouse, origin) => self.frame_gone(),
             None => self.frame_made(mouse, origin),
         };
         acted || cleared
+    }
+
+    /// Whether `mouse`, a press made at `origin` on the main column, lands
+    /// where the open panel draws now: its target is covered, so it never
+    /// moves the keys or starts an entry there.
+    fn covered_since(&self, mouse: Mouse, origin: Instant) -> bool {
+        let at = Position::new(mouse.column, mouse.row);
+        let on = |cells: Option<ratatui_core::layout::Rect>| {
+            cells.is_some_and(|cells| cells.contains(at))
+        };
+        mouse.kind == MouseKind::Click && !on(self.layout_at(origin).panel) && on(self.layout.panel)
     }
 
     /// [`App::mouse_made`] against the main column's frames: a press made

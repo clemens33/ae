@@ -1082,3 +1082,67 @@ fn a_press_below_the_size_floor_moves_no_keys() {
         );
     }
 }
+
+/// A main-column press from before the panel came to cover its cell, by
+/// `O` then `F` from closed or by `F` from side, is not taken: the keys
+/// stay with the covering panel, and what is typed next shows on screen as
+/// the panel's, never as a hidden main draft.
+#[test]
+fn an_old_main_press_never_writes_under_the_panel_that_covers_it() {
+    let wrong: Vec<String> = ["closed", "side"]
+        .into_iter()
+        .filter_map(old_main_press_from)
+        .collect();
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// What a main-column press made on a `from` frame did wrong when it arrived
+/// after the panel went full, or `None`.
+fn old_main_press_from(from: &str) -> Option<String> {
+    let root = Root::new(&format!("o7covered{from}"));
+    let (mut app, _reader) = orchestrated(&root, false);
+    let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+    if from == "closed" {
+        assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
+    } else {
+        let _ = at(160, 45, &mut app);
+        app.focus_column(false);
+    }
+    let _ = at(160, 45, &mut app);
+    let stale = (20..45)
+        .flat_map(|row| {
+            (0..80).map(move |column| Mouse {
+                kind: MouseKind::Click,
+                column,
+                row,
+            })
+        })
+        .find(|mouse| app.layout.in_chat(*mouse))
+        .expect("a main chat cell");
+    let origin = Instant::now();
+    if from == "closed" {
+        press(&mut app, b"O");
+        let _ = at(160, 45, &mut app);
+    }
+    press(&mut app, b"F");
+    let _ = at(160, 45, &mut app);
+    assert!(take_keys(&mut app, vec![(Key::Mouse(stale), origin)]).is_some());
+    let _ = at(160, 45, &mut app);
+    let kept = app.panel_focused();
+    assert!(take_keys(&mut app, vec![(Key::Enter, Instant::now())]).is_some());
+    let pasted = vec![(Key::Pasted(b"COVEREDQX".to_vec()), Instant::now())];
+    assert!(take_keys(&mut app, pasted).is_some());
+    let shown = text(&at(160, 45, &mut app));
+    let owners: Vec<String> = (app.inputs.iter())
+        .filter(|(_, input)| input.draft().contains("COVEREDQX"))
+        .map(|((name, _), _)| name.clone())
+        .collect();
+    let seen = shown.contains("COVEREDQX");
+    let right = kept && app.writer_name() == Some(orch) && owners == [orch] && seen;
+    (!right).then(|| {
+        format!(
+            "from {from}: panel kept the keys {kept}, writer {:?}, draft owners {owners:?}, on screen {seen}",
+            app.writer_name()
+        )
+    })
+}
