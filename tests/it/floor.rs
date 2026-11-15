@@ -428,6 +428,7 @@ fn no_tmux_format_literal_in_src_carries_a_control_character() {
     assert_eq!(
         extracted,
         [
+            "src/app/tests.rs",
             "src/session_launch/tests.rs",
             "src/tmux/tests.rs",
             "src/watchdog_daemon/tests.rs"
