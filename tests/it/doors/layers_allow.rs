@@ -13,15 +13,15 @@ pub(super) type Row = (&'static str, &'static str, usize);
 /// that lives one layer above the module that names it.
 #[rustfmt::skip]
 pub(super) const DEBT: &[Row] = &[
-    ("src/app.rs", "crate::EXIT_UNAVAILABLE", 6),
-    ("src/app.rs", "crate::calling_session_name", 1),
-    ("src/app.rs", "crate::entry::EXIT_FAILED", 2),
-    ("src/app.rs", "crate::entry::EXIT_USAGE", 1),
-    ("src/app.rs", "crate::read_gate", 1),
     ("src/app/lifecycle.rs", "crate::entry::name_is_routed_verb", 1),
     ("src/app/lifecycle.rs", "crate::picker_launcher_for", 1),
     ("src/app/loader.rs", "crate::fleet_order", 1),
     ("src/app/loader.rs", "crate::read_gate", 3),
+    ("src/app/run.rs", "crate::EXIT_UNAVAILABLE", 6),
+    ("src/app/run.rs", "crate::calling_session_name", 1),
+    ("src/app/run.rs", "crate::entry::EXIT_FAILED", 2),
+    ("src/app/run.rs", "crate::entry::EXIT_USAGE", 1),
+    ("src/app/run.rs", "crate::read_gate", 1),
     ("src/archive.rs", "crate::install::sha256_hex", 1),
     ("src/archive/purge.rs", "crate::stats_store::disk::PURGE_WAIT", 1),
     ("src/archive/purge.rs", "crate::stats_store::disk::Purged", 1),
