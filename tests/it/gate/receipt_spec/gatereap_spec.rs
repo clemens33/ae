@@ -235,7 +235,16 @@ fn process_case(recipe: &str, action: &str, mode: &str, held: bool) {
     let err = dir.join("observer.err");
     let status =
         raw::run(&invocation, &old.tree, &out, &err).expect("bounded real recipe observer");
-    let evidence = format!("{}\n{}", read(&out), read(&err));
+    let outcome = match status.outcome() {
+        ExitOutcome::Code(code) => format!("exit {code}"),
+        ExitOutcome::Signalled => "signal".to_owned(),
+    };
+    let evidence = format!(
+        "observer: {outcome}\nclaim: {}\n{}\n{}",
+        std::fs::read_to_string(dir.join("claim.log")).unwrap_or_default(),
+        read(&out),
+        read(&err)
+    );
     assert!(
         matches!(status.outcome(), ExitOutcome::Code(0)),
         "observer setup or timeout: {evidence}"
