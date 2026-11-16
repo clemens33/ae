@@ -1,6 +1,7 @@
 // Frozen bgmark acceptance (.local/bgmark/freeze.tsv), installed byte-identically.
 include!("../../tests/spec/bgmark_daemon.rs");
 include!("../../tests/spec/bgmark_cycle.rs");
+include!("../../tests/spec/deadnotify.rs");
 #[test]
 fn history_state_is_known_at_900_seconds_and_unknown_at_901() {
     assert_eq!(super::history_clock(Some(100), 1000), Some(100));
