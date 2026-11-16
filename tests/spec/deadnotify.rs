@@ -14,6 +14,16 @@ impl DnRig {
     fn new(actor: &str, parent: bool) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let tmux = crate::transport::quietwd_spec::Rig::new("deadnotify");
+        tmux.must(&[
+            "respawn-pane",
+            "-k",
+            "-t",
+            &tmux.pane,
+            "/bin/sh",
+            "-c",
+            "sleep 600; :",
+        ]);
+        Self::wait_harness(&tmux, &tmux.pane);
         let dir = tmux.path("record");
         std::fs::create_dir(&dir).expect("owned record");
         let rows = format!(
@@ -45,11 +55,14 @@ impl DnRig {
                 "-P",
                 "-F",
                 "#{pane_id}",
-                "sleep 600",
+                "/bin/sh",
+                "-c",
+                "sleep 600; :",
             ]);
             let pane = pane.trim();
             tmux.must(&["set-option", "-p", "-t", pane, "@ae_agent", "parent"]);
             tmux.must(&["set-option", "-p", "-t", pane, "@ae_slot", "spawned.1"]);
+            Self::wait_harness(&tmux, pane);
         }
         // Keep the stub external to the behavior under judgment. Its contract
         // matches the helper's supplied action, ref and addressed target.
@@ -66,13 +79,13 @@ impl DnRig {
             dir,
             helper: SendHelper(helper_path),
         };
-        fixture.append(&format!(
+        fixture.append_spawn(&format!(
             "{{\"ts\":\"2026-11-15T00:00:00Z\",\"actor\":\"{actor}\",\"action\":\"spawn\",\"target\":\"worker\",\"birth\":\"worker-first\"}}"
         ));
         fixture
     }
 
-    fn append(&self, line: &str) {
+    fn append_spawn(&self, line: &str) {
         crate::store::open(&self.dir)
             .append_event(&format!("{line}\n"))
             .expect("owned event");
@@ -112,9 +125,10 @@ impl DnRig {
             .collect()
     }
 
-    fn command(&self, command: &str, expected: &str) {
-        self.tmux
-            .must(&["respawn-pane", "-k", "-t", &self.tmux.pane, command]);
+    fn command(&self, command: &[&str], expected: &str) {
+        let mut args = vec!["respawn-pane", "-k", "-t", &self.tmux.pane];
+        args.extend_from_slice(command);
+        self.tmux.must(&args);
         let end = std::time::Instant::now() + Duration::from_mins(1);
         loop {
             let actual = self.tmux.must(&[
@@ -136,19 +150,23 @@ impl DnRig {
     }
 
     fn shell(&self) {
-        self.command("/bin/sh", "sh");
+        self.command(&["/bin/sh"], "sh");
     }
 
     fn revive(&self) {
         // A harness is a descendant of the pane shell, not the pane root.
-        self.command("/bin/sh -c 'sleep 600; :'", "sh");
+        self.command(&["/bin/sh", "-c", "sleep 600; :"], "sh");
+        Self::wait_harness(&self.tmux, &self.tmux.pane);
+    }
+
+    fn wait_harness(tmux: &crate::transport::quietwd_spec::Rig, pane: &str) {
         let end = std::time::Instant::now() + Duration::from_mins(1);
         loop {
-            let panes = crate::transport::observe_watch_panes(&self.tmux.server, "current")
+            let panes = crate::transport::observe_watch_panes(&tmux.server, "current")
                 .expect("owned panes");
             let pid = panes
                 .iter()
-                .find(|p| p.pane_id == self.tmux.pane)
+                .find(|p| p.pane_id == pane)
                 .and_then(|p| p.pane_pid);
             let table = crate::procs::snapshot();
             if matches!((pid, table.as_deref()), (Some(pid), Some(table)) if crate::procs::has_descendant_named(table, pid, "sleep"))
@@ -157,7 +175,7 @@ impl DnRig {
             }
             assert!(
                 std::time::Instant::now() < end,
-                "fixture must prove the harness descendant returned"
+                "fixture must prove the harness descendant is live in {pane}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -367,13 +385,16 @@ fn deadnotify_real_cycle_missing_then_live_then_missing_rearms_notice_only() {
         "-P",
         "-F",
         "#{pane_id}",
-        "sleep 600",
+        "/bin/sh",
+        "-c",
+        "sleep 600; :",
     ]);
     let pane = pane.trim();
     rig.tmux
         .must(&["set-option", "-p", "-t", pane, "@ae_agent", "worker"]);
     rig.tmux
         .must(&["set-option", "-p", "-t", pane, "@ae_slot", "spawned.0"]);
+    DnRig::wait_harness(&rig.tmux, pane);
     let before = crate::session::alerts_since_in(
         &read_events(&rig.dir),
         "current",
