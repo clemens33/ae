@@ -2867,6 +2867,8 @@ mod quietwd_spec;
 #[cfg(test)]
 mod sleepgap_cycle_spec;
 #[cfg(test)]
+mod sleepgap_refresh_spec;
+#[cfg(test)]
 mod sleepgap_spec;
 #[cfg(test)]
 mod sleepgap_tests;
