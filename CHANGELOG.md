@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.71] - 2026-11-16
+- The five Mac release-subset load reds wait on evidence and match elapsed by shape (#234)
+
 ## [v2026.11.70] - 2026-11-16
 - Autotrust waits on evidence use the 60 s witness bound (#234)
 - Menu cancel, checkout-shape and failed-exec waits observe fleet frames, not wall-clock holds (#234)
