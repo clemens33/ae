@@ -1,5 +1,5 @@
 //! Independent #238 acceptance through the real cycle and owned tmux socket.
-//! The socket fixture is shared with transport::quietwd_spec::Rig.
+//! The socket fixture is shared with `transport::quietwd_spec::Rig`.
 
 use super::{Carry, Cycle, Knobs, PaneState, SendHelper};
 use crate::time::Timestamp;
