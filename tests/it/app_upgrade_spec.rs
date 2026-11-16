@@ -415,8 +415,8 @@ impl InstalledRig {
     }
 
     /// The `n`th stopped session record (1, 2, 3), which no tmux session
-    /// backs: the sidebar of a running app counts it (`Stopped (n)`) from the
-    /// first fleet read begun after this call, and from no earlier read.
+    /// backs: the sidebar of a running app counts it (`Stopped (n)`) in the
+    /// first fleet read that finishes after this call, and in no earlier read.
     ///
     /// Three of these, each waited for on the screen before the next is
     /// recorded and with no key sent, are the evidence that an app has decided
@@ -424,11 +424,13 @@ impl InstalledRig {
     /// place of a wall-clock hold. The loader answers a fleet read with
     /// `Fleet`, then `Core` (the command link read), on one FIFO channel, and
     /// `run.rs` applies every answer already waiting, takes its step (the
-    /// restart decision) and only then draws the next frame. So the frame that
-    /// counts `n` stopped sessions shows a read begun after frame `n - 1`
-    /// drew, and the `Core` of the read behind frame `n - 1` was applied and
-    /// stepped before it: frames 2 and 3 prove two decisions. A key would
-    /// block a restart for the quiet window, so none is sent.
+    /// restart decision) and only then draws the next frame. The frame that
+    /// counts `n` stopped sessions holds a record made after frame `n - 1`
+    /// drew, so its read is a later read than frame `n - 1`'s. The `Core` of
+    /// the earlier read was sent before the later `Fleet` answer, so it was
+    /// applied and stepped before that frame: frames 2 and 3 prove two
+    /// decisions. A key would block a restart for the quiet window, so none
+    /// is sent.
     fn record_stopped(&self, n: usize) {
         let name = format!("zfleet{n}");
         let dir = self.ae_home.join("sessions").join(&name);
@@ -633,7 +635,7 @@ fn checkout_shape_never_restarts_and_shows_no_hint() {
     });
     rig.repoint_link(&crate::calver::newer());
 
-    // Not a wall-clock hold: three fleet frames, each from a read begun after
+    // Not a wall-clock hold: three fleet frames, each from a later read than
     // the one before, so the app has decided at least twice since the link
     // named the newer core. No key is sent: input itself would block a restart.
     for n in 1..=3 {

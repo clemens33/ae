@@ -250,7 +250,7 @@ fn failed_exec_keeps_interaction_and_terminal_and_does_not_retry_same_version() 
     hand.wait("failed exec resumes app with reason", |s| {
         s.contains(&failed)
     });
-    // Not a wall-clock hold: three fleet frames, each from a read begun after
+    // Not a wall-clock hold: three fleet frames, each from a later read than
     // the one before, so the app has decided at least twice since the failed
     // exec whether to try the same version again. No key is sent.
     for n in 1..=3 {
