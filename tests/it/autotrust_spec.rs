@@ -259,15 +259,13 @@ fn text(path: impl AsRef<Path>) -> String {
 fn write(path: impl AsRef<Path>, body: impl AsRef<[u8]>) {
     assert!(fs::write(path, body).is_ok(), "setup: fixture write");
 }
-/// The bound of a witness standing where a fixed sleep stood. A passing run
-/// spends none of it, and a slow machine must not be a new way to fail.
+/// The bound of every wait on evidence: a witness standing where a fixed sleep
+/// stood and an ordinary wait alike. A passing run spends none of it, and a
+/// slow machine must not be a new way to fail (#234).
 const WITNESS_WAIT: Duration = Duration::from_mins(1);
 
-/// The bound of an ordinary wait.
-const WAIT: Duration = Duration::from_secs(15);
-
 fn wait_for(what: &str, ready: impl Fn() -> bool) {
-    wait_within(what, WAIT, ready);
+    wait_within(what, WITNESS_WAIT, ready);
 }
 
 fn wait_within(what: &str, within: Duration, ready: impl Fn() -> bool) {
@@ -577,7 +575,7 @@ impl Rig {
     }
     /// [`wait_for`] on what the watchdog does.
     fn until(&self, what: &str, ready: impl Fn() -> bool) {
-        self.until_within(what, WAIT, ready);
+        self.until_within(what, WITNESS_WAIT, ready);
     }
     /// [`wait_within`] on what the watchdog does. A stepped watchdog runs no
     /// cycle on its own, so it is stepped while `ready` is false; a real one
