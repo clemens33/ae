@@ -1717,6 +1717,9 @@ struct Carry {
     /// memory like `clock`: a restarted daemon has no previous reading, so it
     /// detects no suspension to hold for.
     settle: u8,
+    /// A limit-release quota refresh the wake settle held
+    /// ([`release_refresh`]): owed until the first free cycle.
+    refresh_owed: bool,
 }
 
 /// One verdict cycle's publication while the cycle is still deciding it: every
@@ -1779,6 +1782,7 @@ impl Carry {
             pending: PendingCycle::default(),
             clock: None,
             settle: 0,
+            refresh_owed: false,
         }
     }
 
@@ -1786,6 +1790,15 @@ impl Carry {
     fn reset(&mut self) {
         *self = Self::new();
     }
+}
+
+/// Whether this cycle runs the limit-release quota refresh (#238). A seat
+/// leaving its limit requests it once, on the cycle its latch clears; a
+/// request the wake settle holds stays `owed` in the carry until the first
+/// free cycle, which runs it and clears it.
+fn release_refresh(owed: &mut bool, requested: bool, settling: bool) -> bool {
+    let _ = owed;
+    requested && !settling
 }
 
 /// Move this daemon from one server to another, in the ONE order that is safe.
@@ -2651,8 +2664,9 @@ impl Cycle<'_> {
             held: &carry.panes,
             events: &events,
         };
+        let refresh = release_refresh(&mut carry.refresh_owed, quota_refresh, settling);
+        self.refresh_after_limit_release(refresh, &mut carry.quota, &inputs, now, err)?;
         if !settling {
-            self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &inputs, now, err)?;
             self.retry_briefs(&mut carry.brief_cursor, &by_slot, &events, now, err)?;
             self.tell_seats(&by_slot, &events, now);
         }
@@ -2854,6 +2868,8 @@ mod quietwd_spec;
 mod sleepgap_cycle_spec;
 #[cfg(test)]
 mod sleepgap_spec;
+#[cfg(test)]
+mod sleepgap_tests;
 
 #[cfg(test)]
 mod tests;
