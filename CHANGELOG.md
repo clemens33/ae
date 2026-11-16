@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.67] - 2026-11-16
+- App reader: acceptance spec for built-in syntax highlighting (#274)
+- App reader: built-in syntax highlighting for files and fenced code (#274)
+
 ## [v2026.11.66] - 2026-11-16
 - Install the frozen #342 acceptance spec (gatephase_spec)
 - End every long gate step before the recipe exits (#342)
