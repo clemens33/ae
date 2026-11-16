@@ -2810,6 +2810,8 @@ mod leadfloor2_notice_spec;
 mod protowd_spec;
 #[cfg(test)]
 mod quietwd_spec;
+#[cfg(test)]
+mod sleepgap_cycle_spec;
 
 #[cfg(test)]
 mod tests;
