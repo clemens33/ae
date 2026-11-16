@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.66] - 2026-11-16
+- Install the frozen #342 acceptance spec (gatephase_spec)
+- End every long gate step before the recipe exits (#342)
+- End a justfile variable at its concatenated close
+
 ## [v2026.11.65] - 2026-11-16
 - Cut the flight out of app.rs
 - Cut the compose out of app.rs

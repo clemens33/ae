@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ae"
-version = "2026.11.65"
+version = "2026.11.66"
 dependencies = [
  "proc-macro2",
  "pulldown-cmark",
