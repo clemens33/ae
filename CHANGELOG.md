@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.72] - 2026-11-16
+- Inert wake-settle seam: settle() and account_settling() (#238)
+- Freeze watchdog sleep-gap cycle acceptance
+- Mark the shared watchdog fixture as code in documentation
+- Freeze watchdog recovery timing and delivery acceptance
+- Register the sleepgap acceptance specs (#238)
+- Hold every delivery for the wake cycle and one stable cycle after a host suspension (#238)
+- Carry a held limit-release refresh (RED stub) (#238)
+- Freeze retention of a quota refresh across watchdog recovery
+- Register the sleepgap refresh acceptance spec (#238)
+- Keep a limit-release quota refresh owed through the wake settle (#238)
+- Say the wake settle moves no delivery counter (#238)
+
 ## [v2026.11.71] - 2026-11-16
 - The five Mac release-subset load reds wait on evidence and match elapsed by shape (#234)
 
