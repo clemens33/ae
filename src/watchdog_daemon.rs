@@ -60,10 +60,11 @@ mod accounting;
 #[cfg(doc)]
 use accounting::waiting_agent_escalates;
 pub use accounting::{
-    Accounting, LIMIT_WAKE_GRACE_SECS, NO_EVENT_AGE, WaitCheck, account, account_with_activity,
-    account_with_trust, age_secs, declaration_age, declared_clause, done_challenge_text,
-    idle_nudge_text, idle_nudge_text_waiting, last_actor_event_age, limit_wake_text, nudge_text,
-    nudge_words, record_nudge, stale_display, target_moved_text, wait_challenge_text,
+    Accounting, LIMIT_WAKE_GRACE_SECS, NO_EVENT_AGE, WaitCheck, account, account_settling,
+    account_with_activity, account_with_trust, age_secs, declaration_age, declared_clause,
+    done_challenge_text, idle_nudge_text, idle_nudge_text_waiting, last_actor_event_age,
+    limit_wake_text, nudge_text, nudge_words, record_nudge, stale_display, target_moved_text,
+    wait_challenge_text,
 };
 use accounting::{
     capture_pane, epoch_second, held_seats, last_done_event_at, last_working_declaration_at,

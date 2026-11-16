@@ -2887,6 +2887,14 @@ pub fn host_suspended(prev: CycleClock, now: CycleClock, interval_secs: u64) -> 
     })
 }
 
+/// The wake settle (#238): the cycles still held after a detected
+/// suspension, given the previous count and this cycle's detection.
+#[must_use]
+pub const fn settle(prev: u8, gap: Option<Suspended>) -> u8 {
+    let _ = (prev, gap);
+    0
+}
+
 /// A suspension's journal summary: the slept seconds first, then the two clock
 /// readings it rests on. It states what was measured, never a cause.
 #[must_use]

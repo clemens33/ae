@@ -739,6 +739,21 @@ pub fn account_with_activity(
     trust: Option<&crate::autotrust::Due>,
     activity: &Activity,
 ) -> Accounting {
+    account_settling(prior, seen, knobs, trust, activity, false)
+}
+
+/// [`account_with_activity`], inside or outside the wake settle (#238):
+/// `settling` is [`crate::watchdog::settle`]'s hold for this cycle. `false`
+/// is exactly [`account_with_activity`].
+#[must_use]
+pub fn account_settling(
+    prior: &PaneState,
+    seen: &Observation,
+    knobs: &Knobs,
+    trust: Option<&crate::autotrust::Due>,
+    activity: &Activity,
+    _settling: bool,
+) -> Accounting {
     let reset = PaneState::default();
     let mut prior = if prior
         .identity
