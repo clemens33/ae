@@ -253,7 +253,11 @@ fn failed_exec_keeps_interaction_and_terminal_and_does_not_retry_same_version() 
     // Not a wall-clock hold: three fleet frames, each from a read begun after
     // the one before, so the app has decided at least twice since the failed
     // exec whether to try the same version again. No key is sent.
-    hand.rig.fresh_fleet_frames(&hand.pane);
+    for n in 1..=3 {
+        hand.rig.record_stopped(n);
+        let counted = format!("Stopped ({n})");
+        hand.wait("a fleet read after the record", |s| s.contains(&counted));
+    }
     let trace = hand.receipt("trace");
     assert_eq!(
         trace.matches("\x1b[?1049l").count(),

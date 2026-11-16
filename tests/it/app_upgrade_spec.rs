@@ -414,49 +414,39 @@ impl InstalledRig {
         }
     }
 
-    /// Three fleet frames that each show a read begun after the one before,
-    /// with no key sent: the evidence that an app has decided what the command
-    /// link says at least twice since now, in place of a wall-clock hold.
+    /// The `n`th stopped session record (1, 2, 3), which no tmux session
+    /// backs: the sidebar of a running app counts it (`Stopped (n)`) from the
+    /// first fleet read begun after this call, and from no earlier read.
     ///
-    /// Each step records one more stopped session, which no tmux session
-    /// backs, and waits for the sidebar to count it (`Stopped (n)`). Only a
-    /// fleet read begun after the record sees it. The loader answers a fleet
-    /// read with `Fleet`, then `Core` (the command link read), on one FIFO
-    /// channel, and `run.rs` applies every answer already waiting, takes its
-    /// step (the restart decision) and only then draws the next frame. So
-    /// the frame that counts `n` stopped sessions shows a read begun after
-    /// frame `n - 1` drew, and the `Core` of the read behind frame `n - 1`
-    /// was applied and stepped before it: frames 2 and 3 prove two decisions.
-    /// A key would block a restart for the quiet window, so none is sent.
-    fn fresh_fleet_frames(&self, pane: &str) -> Vec<String> {
+    /// Three of these, each waited for on the screen before the next is
+    /// recorded and with no key sent, are the evidence that an app has decided
+    /// what the command link says at least twice since the first record, in
+    /// place of a wall-clock hold. The loader answers a fleet read with
+    /// `Fleet`, then `Core` (the command link read), on one FIFO channel, and
+    /// `run.rs` applies every answer already waiting, takes its step (the
+    /// restart decision) and only then draws the next frame. So the frame that
+    /// counts `n` stopped sessions shows a read begun after frame `n - 1`
+    /// drew, and the `Core` of the read behind frame `n - 1` was applied and
+    /// stepped before it: frames 2 and 3 prove two decisions. A key would
+    /// block a restart for the quiet window, so none is sent.
+    fn record_stopped(&self, n: usize) {
+        let name = format!("zfleet{n}");
+        let dir = self.ae_home.join("sessions").join(&name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("meta"),
+            format!(
+                "session={name}\nmode=local\nsession_id=0199c0de-dddd-4890-abcd-ef01234567{n:02}\nlayout=lead-pair\ntmux_server_kind=socket\ntmux_server={}\nseat.main=lead\nagent_bin.main=codex\nlaunch_id.main=tok-{name}\nseat.worker.0=colead\nagent_bin.worker.0=codex\nlaunch_id.worker.0=tok-{name}-colead\n",
+                self.socket.display()
+            ),
+        )
+        .unwrap();
         let epoch = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        (1..=3)
-            .map(|n| {
-                let name = format!("zfleet{n}");
-                let dir = self.ae_home.join("sessions").join(&name);
-                fs::create_dir_all(&dir).unwrap();
-                fs::write(
-                    dir.join("meta"),
-                    format!(
-                        "session={name}\nmode=local\nsession_id=0199c0de-dddd-4890-abcd-ef01234567{n:02}\nlayout=lead-pair\ntmux_server_kind=socket\ntmux_server={}\nseat.main=lead\nagent_bin.main=codex\nlaunch_id.main=tok-{name}\nseat.worker.0=colead\nagent_bin.worker.0=codex\nlaunch_id.worker.0=tok-{name}-colead\n",
-                        self.socket.display()
-                    ),
-                )
-                .unwrap();
-                fs::write(dir.join(".launch-attempt"), epoch.to_string()).unwrap();
-                fs::write(dir.join("events.jsonl"), "").unwrap();
-                let counted = format!("Stopped ({n})");
-                self.wait(
-                    pane,
-                    WITNESS_WAIT,
-                    &format!("a fleet read that counts {n} stopped session(s)"),
-                    |screen| screen.contains(&counted),
-                )
-            })
-            .collect()
+        fs::write(dir.join(".launch-attempt"), epoch.to_string()).unwrap();
+        fs::write(dir.join("events.jsonl"), "").unwrap();
     }
 }
 
@@ -646,7 +636,12 @@ fn checkout_shape_never_restarts_and_shows_no_hint() {
     // Not a wall-clock hold: three fleet frames, each from a read begun after
     // the one before, so the app has decided at least twice since the link
     // named the newer core. No key is sent: input itself would block a restart.
-    for screen in rig.fresh_fleet_frames(&pane) {
+    for n in 1..=3 {
+        rig.record_stopped(n);
+        let counted = format!("Stopped ({n})");
+        let screen = rig.wait(&pane, WITNESS_WAIT, "a fleet read after the record", |s| {
+            s.contains(&counted)
+        });
         assert!(
             !screen.contains("installed"),
             "checkout shape never shows upgrade hint: {screen}"

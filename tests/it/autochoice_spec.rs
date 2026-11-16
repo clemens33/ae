@@ -410,12 +410,17 @@ fn choice_published_after_booking_holds_on_the_lifecycle_guarded_path() {
     // Settling assumption, not lifecycle-arrival proof: the auto lock precedes
     // all leg reads. A single probe avoids the old rapid acquiring poll.
     // WouldBlock proves ownership only; final placement needs source review.
+    // A hold, left on purpose (#234): a probe loop would take the leg's
+    // non-waiting auto lock whenever the leg has not yet, so it would change
+    // what it judges, and no read-only witness of the lock exists.
     std::thread::sleep(Duration::from_secs(2));
     let probe = ae::store::lock(&leg_lock, Duration::from_millis(200));
     assert!(
         matches!(&probe, Err(why) if why.kind() == std::io::ErrorKind::WouldBlock),
         "seam precondition: leg must already own its auto lock: {probe:?}"
     );
+    // A hold, left on purpose (#234): the leg writes nothing between its auto
+    // lock and its wait on the lifecycle lock, so nothing shows its reads done.
     std::thread::sleep(Duration::from_secs(1));
     observation(&rig, "Opus 5", true);
     let before = rig.meta();
