@@ -16,6 +16,7 @@
 mod gatephase_spec;
 mod lanefix_spec;
 mod releaseproof_spec;
+mod relleaves_spec;
 #[path = "affected/recipe_spec.rs"] mod recipe_spec;
 
 use std::path::{Path, PathBuf};
