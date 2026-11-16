@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.65] - 2026-11-16
+- Cut the flight out of app.rs
+- Cut the compose out of app.rs
+- Name the app children flight and compose
+
 ## [v2026.11.64] - 2026-11-15
 - Derive the stalled-wait bound from its named constants (#344)
 - Install the frozen lanefix #343 acceptance spec
