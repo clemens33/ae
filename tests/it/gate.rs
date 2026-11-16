@@ -65,7 +65,9 @@ fn read(path: &Path) -> String {
 }
 
 /// The text of one string variable (`NAME := '''` ... `'''`) of the justfile, or
-/// an empty string where there is none.
+/// an empty string where there is none. The text ends at the first line that opens with
+/// the closing `'''`, also when a concatenation follows it (`DETACHED` ends with
+/// `''' + "gate_reap='" + REAP + "'\n"`), so it never runs on into the next variable.
 fn justfile_variable(justfile: &str, name: &str) -> String {
     let opener = format!("{name} := '''");
     let mut lines = justfile
@@ -74,7 +76,9 @@ fn justfile_variable(justfile: &str, name: &str) -> String {
     if lines.next().is_none() {
         return String::new();
     }
-    let body: Vec<&str> = lines.take_while(|line| line.trim() != "'''").collect();
+    let body: Vec<&str> = lines
+        .take_while(|line| !line.trim_start().starts_with("'''"))
+        .collect();
     body.join("\n")
 }
 
@@ -3423,15 +3427,53 @@ fn every_long_gate_step_is_detached_nested_or_execd() {
         "in the claimed gate recipes every cargo step must run `detached`, every nested just and \
          taplo lint through `nest`, and the linewise shellcheck and shfmt lines with `exec` (#342)"
     );
-    let good = "DETACHED := '''\n    gate_groups=\"\"\n    detached() {\n        nest env AE_GATE_GROUPS=\"$g\" perl -e \"$r\" run \"$@\"\n    }\n'''\n\n\
-        lint: _shellcheck-pin\n    exec shellcheck -x install < /dev/null\n\n\
+    // The shipped grammar: DETACHED closes with the perl text concatenated, and another
+    // variable follows it.
+    let registry = "    gate_groups=\"\"\n    detached() {\n        nest env AE_GATE_GROUPS=\"$g\" perl -e \"$r\" run \"$@\"\n    }\n";
+    let close = "''' + \"gate_reap='\" + REAP + \"'\\n\"\n";
+    let recipes = "lint: _shellcheck-pin\n    exec shellcheck -x install < /dev/null\n\n\
         format-check:\n    exec shfmt -d install < /dev/null\n\n\
         rust-fmt-check:\n    #!/usr/bin/env bash\n    {{ NEST }}\n    {{ DETACHED }}\n    detached cargo fmt --all --check\n    exec taplo fmt --check\n\n\
         rust-lint:\n    #!/usr/bin/env bash\n    {{ NEST }}\n    {{ DETACHED }}\n    detached nice -n 10 cargo clippy --locked\n    nest taplo lint\n\n\
         rust-fuzz-check:\n    #!/usr/bin/env bash\n    {{ NEST }}\n    {{ DETACHED }}\n    detached nice -n 10 cargo check --locked\n\n\
         test-affected *args:\n    #!/usr/bin/env bash\n    {{ NEST }}\n    {{ DETACHED }}\n    nest just rust-lint\n    detached nice -n 10 cargo run --example affected || s=$?\n    nest just check\n\n\
         _tmux-isolated lane *args:\n    #!/usr/bin/env bash\n    {{ NEST }}\n    {{ DETACHED }}\n    detached nice -n 10 cargo nextest run \\\n        --locked\n";
+    let good = &[
+        "DETACHED := '''\n",
+        registry,
+        close,
+        "\nBASH_FLOOR := '''\n    true\n'''\n\n",
+        recipes,
+    ]
+    .concat();
     assert!(gate_long_steps_ok(good), "synthetic control");
+    // RED — the registry and `detached` moved into the next variable: each still exists once,
+    // but outside DETACHED.
+    let moved = good
+        .replacen(
+            &format!("DETACHED := '''\n{registry}"),
+            "DETACHED := '''\n    true\n",
+            1,
+        )
+        .replacen(
+            "BASH_FLOOR := '''\n    true\n",
+            &format!("BASH_FLOOR := '''\n{registry}"),
+            1,
+        );
+    assert!(
+        !moved.contains(&format!("DETACHED := '''\n{registry}")) && moved.contains(registry),
+        "the move must apply"
+    );
+    assert!(
+        !gate_long_steps_ok(&moved),
+        "must reject: the registry outside DETACHED"
+    );
+    // The variable ends at its concatenated close, not at the next bare delimiter.
+    assert_eq!(
+        justfile_variable(good, "DETACHED"),
+        registry.trim_end_matches('\n'),
+        "DETACHED ends at its own close"
+    );
     for (name, from, to) in [
         // A cargo step back in the foreground, the shape #342 found.
         (
@@ -3477,6 +3519,10 @@ fn every_long_gate_step_is_detached_nested_or_execd() {
             "must reject: {name}"
         );
     }
+}
+
+#[test]
+fn the_cargo_scanner_of_the_long_step_guard_reads_commands_not_text() {
     // A folded continuation is one command, and a case arm may open the line: the cargo is
     // still an argument of `detached`.
     for line in [
