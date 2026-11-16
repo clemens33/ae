@@ -6223,7 +6223,13 @@ fn a_right_click_offers_stop_and_only_a_confirmed_row_stops_the_clicked_session(
     // CANCEL, then ESCAPE: dismissing the question and answering "no" must be
     // the same act, and neither may touch anything.
     assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "c"]).0);
-    std::thread::sleep(Duration::from_secs(2));
+    // The confirmation was seen open above: its text leaving the viewer's
+    // capture is the evidence the key was taken, with no wall-clock floor.
+    wait_for(
+        "the confirmation menu closed by Cancel",
+        || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1,
+        |seen| !seen.contains("Stop 'menu-clicked' now"),
+    );
     let dismissed = open_context_menu(&socket, &scratch, viewer, &client);
     assert!(dismissed.contains("Stop session"), "{dismissed}");
     assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "s"]).0);
@@ -6845,7 +6851,13 @@ fn a_right_click_shows_declared_state_and_keeps_flip_and_stop() {
         |seen| seen.contains("Stop 'state-clicked' now"),
     );
     assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "c"]).0);
-    std::thread::sleep(Duration::from_secs(2));
+    // The confirmation was seen open above: its text leaving the viewer's
+    // capture is the evidence the key was taken, with no wall-clock floor.
+    wait_for(
+        "the confirmation menu closed by Cancel",
+        || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1,
+        |seen| !seen.contains("Stop 'state-clicked' now"),
+    );
 
     // `f` still flips the captured pane's window — the CLICKED session's.
     let _ = open_context_menu(&socket, &scratch, viewer, &client);

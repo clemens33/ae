@@ -250,7 +250,10 @@ fn failed_exec_keeps_interaction_and_terminal_and_does_not_retry_same_version() 
     hand.wait("failed exec resumes app with reason", |s| {
         s.contains(&failed)
     });
-    std::thread::sleep(Duration::from_secs(12));
+    // Not a wall-clock hold: three fleet frames, each from a read begun after
+    // the one before, so the app has decided at least twice since the failed
+    // exec whether to try the same version again. No key is sent.
+    hand.rig.fresh_fleet_frames(&hand.pane);
     let trace = hand.receipt("trace");
     assert_eq!(
         trace.matches("\x1b[?1049l").count(),
