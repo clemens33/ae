@@ -830,18 +830,10 @@ struct Baseline {
     timeout: SlowTimeout,
 }
 
-const BASELINE: [Baseline; 3] = [
-    Baseline {
-        header: HEADER_DEFAULT_OVERRIDE,
-        filter: Some(
-            "test(=compact::a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking)",
-        ),
-        timeout: SlowTimeout {
-            period: 5,
-            terminate_after: 2,
-            grace: None,
-        },
-    },
+// The stamp-hold FIFO test lost its 5 s x 2 override (#234): it bounds itself
+// now, a thread it waits on for 30 s, so no default-profile per-test timeout
+// remains and any new one is refused as unexplained.
+const BASELINE: [Baseline; 2] = [
     Baseline {
         header: HEADER_LINUX,
         filter: None,

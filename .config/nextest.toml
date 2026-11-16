@@ -81,12 +81,6 @@ max-threads = 2
 filter = 'test(/^spawn::tests::tmux_/)'
 test-group = 'tmux-spawn-unit'
 
-# The stamp-hold FIFO proof (compact::) blocks in open(2) if the hold ever
-# loses O_NONBLOCK. End that one test instead of waiting out the default.
-[[profile.default.overrides]]
-filter = 'test(=compact::a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking)'
-slow-timeout = { period = "5s", terminate-after = 2 }
-
 # The Linux container lane runs the WHOLE suite with a bound: fail-fast off, so
 # one run lists every Linux-only failure instead of hiding the ~1830 tests
 # behind the first two, and a hard terminate-after for the three menu-client

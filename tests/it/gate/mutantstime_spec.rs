@@ -13,7 +13,10 @@ const APPROVED: [&str; 3] = [
 const CAP: &str = "slow-timeout = { period = \"90s\", terminate-after = 2, grace-period = \"0s\" }";
 const GLOBAL: &str =
     "slow-timeout = { period = \"30s\", terminate-after = 2, grace-period = \"0s\" }";
+// The per-test override the stamp-hold FIFO test carried until #234. It is gone:
+// the test bounds itself, so the policy must now refuse it as unexplained.
 const COMPACT: &str = "slow-timeout = { period = \"5s\", terminate-after = 2 }";
+const COMPACT_OVERRIDE: &str = "\n[[profile.default.overrides]]\nfilter = 'test(=compact::a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking)'\nslow-timeout = { period = \"5s\", terminate-after = 2 }\n";
 const LINUX: &str = "slow-timeout = { period = \"60s\", terminate-after = 5 }";
 const MENU: &str = "slow-timeout = { period = \"30s\", terminate-after = 2 }";
 
@@ -24,7 +27,6 @@ fn baseline() -> String {
         "[profile.default]\ntest-threads = 8\nfail-fast = false\n\n\
          [test-groups.tmux-clients]\nmax-threads = 3\n\n\
          [[profile.default.overrides]]\nfilter = 'test(/^menu::/)'\ntest-group = 'tmux-clients'\n\n\
-         [[profile.default.overrides]]\nfilter = 'test(=compact::a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking)'\n{COMPACT}\n\n\
          [profile.linux]\nfail-fast = false\n{LINUX}\n\n\
          [[profile.linux.overrides]]\nfilter = 'test(/^menu::/)'\n{MENU}\n\n\
          [profile.mutants]\ntest-threads = 2\nfail-fast = true\n{GLOBAL}\n"
@@ -77,7 +79,7 @@ fn the_mutants_timeout_exceptions_are_named_and_finite() {
             cases.push((label.to_owned(), input, APPROVED.to_vec(), accepted));
         };
         add(
-            "approved 180-second caps; compact20; linux baselines; group-only",
+            "approved 180-second caps; linux baselines; group-only",
             good.clone(),
             true,
         );
@@ -299,13 +301,13 @@ fn the_mutants_timeout_exceptions_are_named_and_finite() {
             false,
         );
         add(
-            "compact inherited20 widened",
-            good.replacen(COMPACT, CAP, 1),
+            "compact inherited20 reintroduced",
+            format!("{good}{COMPACT_OVERRIDE}"),
             false,
         );
         add(
-            "compact inherited20 removed",
-            good.replacen(COMPACT, "", 1),
+            "compact inherited20 reintroduced widened",
+            format!("{good}{}", COMPACT_OVERRIDE.replacen(COMPACT, CAP, 1)),
             false,
         );
         add(

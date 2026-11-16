@@ -32,6 +32,33 @@ use super::cli::ae;
 use super::phase2::run_tmux;
 use super::support::{PANE_WAIT, SETUP_WAIT, first_pane, is_shell, observe, pane_command};
 
+/// A wait on ONE local effect: a first draw, a listed client, a sensor reading.
+/// The evidence ends the wait the moment it exists, so the bound only ends a
+/// fixture that never produces it, and a host under load never reaches it (#234).
+const WITNESS_WAIT: Duration = Duration::from_mins(1);
+
+/// A wait on a run's own progress: the `ae compact` child writing its ledger
+/// records, the fake's frame, the child's exit. Generous because every step of
+/// the run spawns tmux, and on a loaded host each spawn takes seconds (#234).
+/// A fixture that never produces its evidence fails after this long.
+const RUN_WAIT: Duration = Duration::from_mins(5);
+
+/// Poll `read` every 50 ms until it yields evidence or `within` has passed:
+/// `None` at the deadline. The bound is an `Instant`, never an iteration count,
+/// so a slow read cannot shrink or stretch it.
+fn await_evidence<T>(within: Duration, mut read: impl FnMut() -> Option<T>) -> Option<T> {
+    let until = Instant::now() + within;
+    loop {
+        if let Some(found) = read() {
+            return Some(found);
+        }
+        if Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// The fake TUI.
 const FAKE_TUI: &str = r#"#!/usr/bin/perl
 use strict;
@@ -429,14 +456,39 @@ impl Rig {
     /// Wait until the pane has drawn something — perl's start-up, not the
     /// product's.
     fn settle(&self) {
-        for _ in 0..100 {
+        let drawn = await_evidence(WITNESS_WAIT, || {
             let (ok, screen) = self.tmux(&["capture-pane", "-p", "-t", &self.pane]);
-            if ok && !screen.trim().is_empty() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        panic!("the fake TUI never drew anything");
+            (ok && !screen.trim().is_empty()).then_some(())
+        });
+        assert!(
+            drawn.is_some(),
+            "the fake TUI never drew anything within {WITNESS_WAIT:?}"
+        );
+    }
+
+    /// Poll, under [`WITNESS_WAIT`], until the PRODUCTION sensor reads the
+    /// composer occupied: the draft the test typed is in the box.
+    fn composer_reads_occupied(&self) -> bool {
+        await_evidence(WITNESS_WAIT, || {
+            deliver::input_busy(&self.server(), &self.pane, InputModel::BorderDelimited)
+                .then_some(())
+        })
+        .is_some()
+    }
+
+    /// The median wall time of five reads of the production sensor on an
+    /// unchanged pane: this host's cost of ONE quiet-gate snapshot right now.
+    fn snapshot_cost(&self) -> Duration {
+        let mut costs: Vec<Duration> = (0..5)
+            .map(|_| {
+                let started = Instant::now();
+                let _ =
+                    deliver::input_busy(&self.server(), &self.pane, InputModel::BorderDelimited);
+                started.elapsed()
+            })
+            .collect();
+        costs.sort();
+        costs.get(2).copied().unwrap_or_default()
     }
 
     /// Run one core subcommand from this pane.
@@ -529,17 +581,14 @@ impl Rig {
     /// Poll, bounded, until the PRODUCTION grammar judges the fake's frame by
     /// `row`: a frame it cannot read fails here, as setup, never as behaviour.
     fn await_frame(&self, row: &str) -> ae::harness_state::FrameReading {
-        for _ in 0..600 {
-            let frame =
-                ae::transport::capture_pane(&self.server(), &self.pane).and_then(|capture| {
+        await_evidence(RUN_WAIT, || {
+            ae::transport::capture_pane(&self.server(), &self.pane)
+                .and_then(|capture| {
                     ae::harness_state::read_frame(&capture, ae::tool::ToolKind::Claude)
-                });
-            if let Some(frame) = frame.filter(|frame| frame.current.as_deref() == Some(row)) {
-                return frame;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        panic!("setup: no frame judged by {row}");
+                })
+                .filter(|frame| frame.current.as_deref() == Some(row))
+        })
+        .unwrap_or_else(|| panic!("setup: no frame judged by {row} within {RUN_WAIT:?}"))
     }
 
     /// Take the launch stamp away, as a seat recorded before stamps existed.
@@ -593,16 +642,47 @@ impl Rig {
             .unwrap_or_else(|why| panic!("ae compact should start: {why}"))
     }
 
-    /// The first ledger line carrying `needle`, bounded: a broken fake fails
-    /// here, and no sleep ever picks a mode.
-    fn await_event(&self, needle: &str) -> String {
-        for _ in 0..600 {
-            if let Some(line) = self.events().lines().find(|line| line.contains(needle)) {
-                return line.to_owned();
+    /// The first ledger line carrying `needle`, from the run `child` drives: no
+    /// sleep ever picks a mode. The run's exit before the line is the failure,
+    /// because no line can come any more, and its output is the evidence. The
+    /// bound [`RUN_WAIT`] is an `Instant`, so a slow host stretches no count.
+    fn await_event(&self, child: &mut super::cli::OwnedChild, needle: &str) -> String {
+        use std::io::Read as _;
+        let find = || {
+            self.events()
+                .lines()
+                .find(|line| line.contains(needle))
+                .map(str::to_owned)
+        };
+        let until = Instant::now() + RUN_WAIT;
+        loop {
+            if let Some(line) = find() {
+                return line;
             }
+            if let Ok(Some(status)) = child.try_wait() {
+                // The record is written before the run exits: one more read.
+                if let Some(line) = find() {
+                    return line;
+                }
+                let (mut out, mut err) = (String::new(), String::new());
+                if let Some(mut pipe) = child.stdout.take() {
+                    let _ = pipe.read_to_string(&mut out);
+                }
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_string(&mut err);
+                }
+                panic!(
+                    "setup: ae compact exited ({status}) before an event with {needle}: ledger {} stdout {out:?} stderr {err:?}",
+                    self.events()
+                );
+            }
+            assert!(
+                Instant::now() < until,
+                "setup: no event with {needle} within {RUN_WAIT:?}: {}",
+                self.events()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
-        panic!("setup: no event with {needle}: {}", self.events());
     }
 
     /// The seat's half of the checkpoint, from this pane so both records carry
@@ -642,10 +722,10 @@ const COMPACTED: &str = "⎿  Compacted (ctrl+o to see full summary)";
 /// checkpoint answered, the `seat-compact` record written, the command
 /// received exactly once.
 fn dispatched(rig: &Rig) -> super::cli::OwnedChild {
-    let child = rig.compact_run();
-    let ask = rig.await_event("\"action\":\"ask\"");
+    let mut child = rig.compact_run();
+    let ask = rig.await_event(&mut child, "\"action\":\"ask\"");
     rig.answer(&ask);
-    let record = rig.await_event("\"action\":\"seat-compact\"");
+    let record = rig.await_event(&mut child, "\"action\":\"seat-compact\"");
     assert!(
         record.contains("\"summary\":\"dispatched main\""),
         "setup: A4 {record}"
@@ -661,8 +741,8 @@ fn dispatched(rig: &Rig) -> super::cli::OwnedChild {
 
 /// The run's exit code and report.
 fn finished(child: super::cli::OwnedChild) -> (Option<i32>, String) {
-    let out = super::cli::bounded(child, Duration::from_mins(1))
-        .unwrap_or_else(|| panic!("ae compact returned"));
+    let out = super::cli::bounded(child, RUN_WAIT)
+        .unwrap_or_else(|| panic!("ae compact returned within {RUN_WAIT:?}"));
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     (out.status.code(), stdout)
 }
@@ -1431,6 +1511,63 @@ fn a_watched_idle_composer_abandons_on_the_attention_half() {
     );
 }
 
+/// The attention half reads a client's last INPUT: only a client younger than
+/// `VIEW_GRACE` (4 s) counts, and a control-mode client's own commands do not
+/// refresh it (probed on tmux 3.6 and 3.7b). On a loaded host the send starts
+/// seconds after the watcher attached, so one attach goes stale before the
+/// send samples. This keeps a FRESH control-mode client coming instead: a
+/// thread attaches a new one every [`PUMP_EVERY`], keeps at most
+/// [`PUMP_CLIENTS`] and ends each by its own handle. No key and no command ever
+/// reaches a pane, so the composer the test judges stays untouched. Residual: a
+/// host stall over 4 s that starves this thread or its tmux spawns lapses the
+/// half, and the test then reads red on a loaded host (#234).
+struct WatcherPump {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+const PUMP_EVERY: Duration = Duration::from_millis(500);
+const PUMP_CLIENTS: usize = 3;
+
+impl WatcherPump {
+    fn start(sock: PathBuf, session: String) -> Self {
+        use std::sync::atomic::Ordering;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let mut clients = std::collections::VecDeque::new();
+            while !flag.load(Ordering::Acquire) {
+                if let Ok(client) = super::cli::tmux_attached_client(&sock, &session) {
+                    clients.push_back(client);
+                    // Dropping the handle kills and reaps exactly that child.
+                    while clients.len() > PUMP_CLIENTS {
+                        drop(clients.pop_front());
+                    }
+                }
+                let until = Instant::now() + PUMP_EVERY;
+                while Instant::now() < until && !flag.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+            // Every client this thread started ends with the deque, by its handle.
+            drop(clients);
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for WatcherPump {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// Both halves true at once is its own state: a draft under a watcher's eye
 /// names both, in the one observation.
 #[test]
@@ -1440,30 +1577,26 @@ fn a_draft_under_a_watchers_eye_names_both_halves() {
         rig.tmux(&["send-keys", "-t", &rig.pane, "-l", "half a question"])
             .0
     );
-    let seen = (0..100).any(|_| {
-        deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited) || {
-            std::thread::sleep(Duration::from_millis(50));
-            false
-        }
-    });
-    assert!(seen, "a draft in the box reads OCCUPIED");
-    let _watcher = super::cli::tmux_attached_client(&rig.sock, &rig.session)
-        .expect("a control-mode client attaches");
-    let watched = (0..100).any(|_| {
+    assert!(
+        rig.composer_reads_occupied(),
+        "a draft in the box reads OCCUPIED"
+    );
+    let pump = WatcherPump::start(rig.sock.clone(), rig.session.clone());
+    // The watcher must be LISTED on the pane before the send is asked to.
+    let watched = await_evidence(WITNESS_WAIT, || {
         rig.tmux(&["list-clients", "-F", "#{pane_id}"])
             .1
             .contains(&rig.pane)
-            || {
-                std::thread::sleep(Duration::from_millis(50));
-                false
-            }
+            .then_some(())
     });
-    assert!(watched, "the watcher is listed on the pane");
+    assert!(watched.is_some(), "the watcher is listed on the pane");
     let (code, stderr) = rig.run(
         ae::cli::SEND,
         &["tui", "hello"],
         &[("AE_SEND_DEFER_SEC", "1")],
     );
+    // Every client the pump started is ended and reaped before the test judges.
+    drop(pump);
     assert_eq!(code, Some(1), "{stderr}");
     assert!(
         stderr.contains(
@@ -2015,25 +2148,32 @@ fn a_seat_dead_to_shell_after_step_1_is_refused_pre_paste() {
 fn a_composer_busy_between_step_1_and_3_skips_at_once() {
     // R10 pin: the composer turns busy between step 1 and step 3 — one
     // snapshot refuses at once, no wait. A loop would burn the 30 s deferral.
+    // "At once" is pinned against that deferral, never against a raw limit that
+    // load can break: the time from the proof's return to the refusal must stay
+    // under a bound that scales with this host's measured cost of ONE snapshot
+    // and is capped below the deferral a looping refusal would burn (#234).
     let rig = Rig::new("guardbusy", "claude", 0);
     let server = rig.server();
-    let request = rig.guarded(&server, "/compact", Duration::from_secs(30));
-    let started = std::time::Instant::now();
+    let deferral = Duration::from_secs(30);
+    let snapshot = rig.snapshot_cost();
+    let bound = (snapshot * 50).clamp(Duration::from_secs(5), Duration::from_secs(25));
+    let request = rig.guarded(&server, "/compact", deferral);
+    let proved = std::cell::Cell::new(None);
     let done = deliver::deliver_guarded(&request, || {
         assert!(
             rig.tmux(&["send-keys", "-t", &rig.pane, "-l", "a half-typed draft"])
                 .0,
             "the composer turns busy under the lock"
         );
-        let seen = (0..100).any(|_| {
-            deliver::input_busy(&rig.server(), &rig.pane, InputModel::BorderDelimited) || {
-                std::thread::sleep(Duration::from_millis(50));
-                false
-            }
-        });
-        assert!(seen, "the snapshot must see the draft");
-        prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO)
+        assert!(
+            rig.composer_reads_occupied(),
+            "the snapshot must see the draft"
+        );
+        let held = prove_lock(&rig.lifecycle_lock_path(), Duration::ZERO);
+        proved.set(Some(Instant::now()));
+        held
     });
+    let after_proof = proved.get().map(|at| at.elapsed());
     assert!(
         matches!(
             done,
@@ -2043,9 +2183,11 @@ fn a_composer_busy_between_step_1_and_3_skips_at_once() {
         ),
         "{done:?}"
     );
+    let after_proof = after_proof.expect("the proof ran under the lock");
     assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "no wait, at once"
+        after_proof < bound,
+        "no wait, at once: {after_proof:?} from the proof to the refusal, bound {bound:?} \
+         (one snapshot costs {snapshot:?}, the deferral to burn is {deferral:?})"
     );
     assert_eq!(rig.enter_count(), 0, "no Enter over the draft");
 }

@@ -381,6 +381,11 @@ fn compact_cancel_withdraws_end_to_end() {
     );
 }
 
+/// How long a public verb may run before its test calls it hung. A verb that
+/// exits is waited on at once; the bound only ends a real hang, and a host under
+/// load takes seconds for a process that needs milliseconds (#234).
+const PUBLIC_VERB_WAIT: Duration = Duration::from_mins(1);
+
 /// Run a PUBLIC verb (`compact`, `reboot`) with the hermetic env the entry
 /// rig uses: a scratch `HOME`/`AE_HOME`/config, no tmux inheritance.
 /// `rootless` drops every state-root door instead, for the pre-preamble pin.
@@ -409,7 +414,7 @@ fn public_with(s: &Scratch, args: &[&str], rootless: bool) -> std::process::Outp
             .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("spawn public verb"),
-        Duration::from_secs(10),
+        PUBLIC_VERB_WAIT,
     )
     .expect("public verb returned")
 }
@@ -596,9 +601,53 @@ fn the_watchdog_ledger_reader_reads_an_answered_seat_checkpoint_as_closed() {
     );
 }
 
+/// How long the stamp open may take before the test calls it blocked. A correct
+/// open returns in microseconds; the bound only has to stay below the 60 s kill
+/// of the mutants profile, so a lost `O_NONBLOCK` ends as this test's own
+/// assertion and never as an uncaught kill (#234).
+const OPEN_BOUND: Duration = Duration::from_secs(30);
+
+/// `O_NONBLOCK` for a writer, on the targets where the stamp hold can reach the
+/// FIFO at all (the pair `HOLD_FLAGS` spells, duplicated on purpose, #188).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const WRITER_NONBLOCK: Option<i32> = Some(0x0004);
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const WRITER_NONBLOCK: Option<i32> = Some(0o4000);
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+)))]
+const WRITER_NONBLOCK: Option<i32> = None;
+
+/// Free a reader blocked in its open of the FIFO at `path`: a NON-blocking
+/// writer open fails with `ENXIO` until a reader is inside its open, then
+/// succeeds and is closed at once, which wakes the reader. Retried until
+/// [`OPEN_BOUND`], so the rescue itself never hangs.
+fn free_a_blocked_fifo_reader(path: &Path) -> bool {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let Some(flag) = WRITER_NONBLOCK else {
+        return false;
+    };
+    let until = std::time::Instant::now() + OPEN_BOUND;
+    while std::time::Instant::now() < until {
+        if std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(flag)
+            .open(path)
+            .is_ok()
+        {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
 /// D1: the stamp hold refuses a writerless FIFO swapped in between its `lstat`
 /// and its open, PROMPTLY: `O_NONBLOCK` keeps the open from waiting for a
-/// writer. A lost bit hangs here, and `.config/nextest.toml` ends that.
+/// writer. A lost bit blocks the open; the open runs on a thread the test waits
+/// on for [`OPEN_BOUND`], then frees it and fails, so the red names the cause
+/// whatever the host load and no per-test kill is needed (#234).
 #[test]
 fn a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking() {
     // The target list `HOLD_FLAGS` spells, duplicated on purpose (#188): the pair
@@ -619,12 +668,24 @@ fn a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking() {
     let node = store.stamp_node().expect("a regular stamp");
     let fifo = s.0.join("fifo");
     crate::cli::mkfifo(&fifo);
-    std::fs::rename(&fifo, store.launch_attempt_path()).unwrap();
-    let started = std::time::Instant::now();
-    assert_eq!(node.open().err(), Some(refusal));
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "refused promptly"
+    let stamp = store.launch_attempt_path();
+    std::fs::rename(&fifo, &stamp).unwrap();
+    let (done, answered) = std::sync::mpsc::channel();
+    let opener = std::thread::spawn(move || {
+        let _ = done.send(node.open().err());
+    });
+    if let Ok(gap) = answered.recv_timeout(OPEN_BOUND) {
+        opener.join().expect("the opener thread ended cleanly");
+        assert_eq!(gap, Some(refusal));
+        return;
+    }
+    let freed = free_a_blocked_fifo_reader(&stamp);
+    let ended = freed && answered.recv_timeout(OPEN_BOUND).is_ok();
+    if ended {
+        opener.join().expect("the freed opener thread ended");
+    }
+    panic!(
+        "the stamp open blocked on a writerless FIFO for {OPEN_BOUND:?} (reader freed: {freed}, thread ended: {ended})"
     );
 }
 
@@ -641,8 +702,27 @@ fn a_run_that_admits_no_seat_says_so_and_exits_zero() {
     let out = public_with(&s, &["compact", "sess"], false);
 
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
-    assert_eq!(
-        stdout(&out),
-        "skipped (spawned) spawned.0 (0s)\nno seat admitted\n"
+    assert_eq!(stderr(&out), "", "nothing on stderr");
+    // The elapsed span is host time, so it is matched by SHAPE: the whole
+    // grammar of `seatcompact::span`, digits then one of s, m, h, d. Every
+    // other byte of the report is exact (#234).
+    let text = stdout(&out);
+    let lines: Vec<&str> = text
+        .strip_suffix('\n')
+        .map_or_else(Vec::new, |body| body.split('\n').collect());
+    assert_eq!(lines.len(), 2, "two lines, newline-ended: {text:?}");
+    assert!(
+        lines[0]
+            .strip_prefix("skipped (spawned) spawned.0 (")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .is_some_and(is_span),
+        "the verdict line: {text:?}"
     );
+    assert_eq!(lines[1], "no seat admitted", "{text:?}");
+}
+
+/// `seatcompact::span`'s whole output grammar: ASCII digits, then one unit.
+fn is_span(text: &str) -> bool {
+    text.strip_suffix(['s', 'm', 'h', 'd'])
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
