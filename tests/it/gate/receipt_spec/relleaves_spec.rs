@@ -559,9 +559,10 @@ fn safety_control_case(mode: &str) {
         raw::run(&invocation, &fixture.tree, &out, &err).expect("bounded cleanup safety control");
     assert!(
         matches!(status.outcome(), ExitOutcome::Code(0)),
-        "{mode}: {}\n{}",
+        "{mode}: {}\n{}\n{}",
         read(&out),
-        read(&err)
+        read(&err),
+        run_evidence(status.outcome(), &dir, &["owned", "qualified"])
     );
     assert_eq!(read(&out), "control alive after cleanup\n");
     if mode == "cap" {
@@ -569,6 +570,32 @@ fn safety_control_case(mode: &str) {
     } else {
         assert!(read(&err).contains("live recorded pid lacks readable run marker"));
     }
+}
+
+/// How a bounded bash run ended, and the named evidence files it left in
+/// `dir`, so a failure that prints nothing still names its exit and its step.
+/// Only regular files are read: the observer's hold FIFO would block a read.
+fn run_evidence(outcome: ExitOutcome, dir: &Path, names: &[&str]) -> String {
+    let mut text = match outcome {
+        ExitOutcome::Code(code) => format!("ended: exit {code}\n"),
+        ExitOutcome::Signalled => "ended: killed by a signal\n".to_owned(),
+    };
+    for name in names {
+        let path = dir.join(name);
+        let body = match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() => {
+                std::fs::read_to_string(&path).unwrap_or_else(|why| format!("<unreadable: {why}>"))
+            }
+            Ok(_) => "<not a regular file>".to_owned(),
+            Err(_) => "<absent>".to_owned(),
+        };
+        text.push_str("--- ");
+        text.push_str(name);
+        text.push('\n');
+        text.push_str(&body);
+        text.push('\n');
+    }
+    text
 }
 
 #[test]
@@ -669,7 +696,25 @@ fn interrupted_step_case(kind: &str) {
     let evidence = format!("{}\n{}", read(&out), read(&err));
     assert!(
         matches!(status.outcome(), ExitOutcome::Code(0)),
-        "observer setup or timeout: {evidence}"
+        "observer setup or timeout: {evidence}\n{}",
+        run_evidence(
+            status.outcome(),
+            &dir,
+            &[
+                "claim.out",
+                "events",
+                "ready",
+                "tool",
+                "owned",
+                "tree-pids",
+                "step-status",
+                "survivors",
+                "release.out",
+                "release-status",
+                "run.out",
+                "run.err",
+            ],
+        )
     );
     assert_ne!(read(&dir.join("step-status")).trim(), "0", "{evidence}");
     assert_eq!(
