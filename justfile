@@ -144,6 +144,13 @@ test-macos *args:
 # After a signal the result is 128 + the first signal, even when the child exits 0, and every later
 # `nest` in the same shell refuses to start (a stopped gate starts no further leg). The traps live
 # only while a step runs. Bash 3.2 syntax on purpose: `release-proof` has no bash floor.
+#
+# `nest_capture <var> <command...>` is `var=$(command...)` for a long step (#345). A command
+# substitution is a subshell that the shell waits for outside any trap, so a TERM ends the shell
+# and leaves the step running; a `nest` inside it is out of reach, because just signals only the
+# recipe shell. Here the step is nest's child with its stdout in a temporary file under TMPDIR,
+# which `$(<file)` reads back with the same trailing-newline rule as `$( )`. The text is data,
+# never a printf format. The file is removed on every return, and the status is nest's, unchanged.
 NEST := '''
     nest_signal=0
     nest_child=""
@@ -169,6 +176,15 @@ NEST := '''
         trap - INT TERM HUP
         ((nest_signal == 0)) || return $((128 + nest_signal))
         return "$status"
+    }
+    nest_capture() {
+        local nest_var=$1 nest_out nest_status=0
+        shift
+        nest_out="$(mktemp "${TMPDIR:-/tmp}/nest-capture.XXXXXX")" || return 1
+        nest "$@" >"$nest_out" || nest_status=$?
+        printf -v "$nest_var" '%s' "$(<"$nest_out")"
+        rm -f "$nest_out"
+        return "$nest_status"
     }
 '''
 
@@ -486,10 +502,11 @@ REAP := '''
     exit(128 + $sig);
 '''
 
-# THE DETACHED STEP (#340, #342), one copy for every recipe that starts cargo in a gate: the test lane
-# (`_tmux-isolated`), `rust-fmt-check`, `rust-lint`, `rust-fuzz-check`, and the selector and the
-# doctests of `test-affected`. `detached <command...>` runs one cargo step under the REAP supervisor, through
-# `nest`: cargo gets a session of its own with no controlling terminal (#149), the run is recorded
+# THE DETACHED STEP (#340, #342, #345), one copy for every recipe that starts cargo in a gate or a
+# release: the test lane (`_tmux-isolated`), `rust-fmt-check`, `rust-lint`, `rust-fuzz-check`, the
+# selector and the doctests of `test-affected`, `rust-deny`, and the cargo steps of `release` and
+# `bundles`. `detached <command...>` runs one cargo step under the REAP supervisor, through `nest`:
+# cargo gets a session of its own with no controlling terminal (#149), the run is recorded
 # in the main checkout's registry under the claim it serves (#343) before cargo can exist, and the
 # step ends only when no process of the run is left (#340). `nest` alone does not stop a cargo
 # step: a TERM to the cargo pid leaves `cargo check` and its compilers running (#342, measured on
@@ -1383,14 +1400,18 @@ _cliff-skip:
 # all. A quoted crossing (one joined argument, silently ignored by git-cliff) is the
 # failure the boundary test executes these recipes to refuse. Why the list exists and what
 # keeps it complete: `_cliff-skip` above.
+#
+# The skip list comes through `nest_capture` and git-cliff is exec'd, so a TERM from just reaches
+# whichever of the two runs (#345).
 _cliff-run +args:
     #!/usr/bin/env bash
     set -euo pipefail
-    skip=$(just _cliff-skip)
+    {{ NEST }}
+    nest_capture skip just _cliff-skip
     if [ -n "$skip" ]; then
         set -- --skip-commit $skip "$@"
     fi
-    git-cliff "$@"
+    exec git-cliff "$@"
 
 # Generate full CHANGELOG.md from git history (skip list: `_cliff-skip`; boundary: `_cliff-run`)
 changelog:
@@ -1417,6 +1438,7 @@ release:
     #!/usr/bin/env bash
     set -euo pipefail
     {{ NEST }}
+    {{ DETACHED }}
 
     # Pre-flight: clean working tree (staged, unstaged, AND untracked)
     if ! git diff --quiet HEAD || [ -n "$(git ls-files --others --exclude-standard)" ]; then
@@ -1480,7 +1502,7 @@ release:
     git pull {{GIT_REMOTE}} {{default_branch}} --rebase
 
     # Gate 1: Quality
-    just check
+    nest just check
 
     # Gate 2: Tests on two machines. The hp runs the WHOLE suite on exactly this commit and
     # writes its receipt; this Mac runs only the boundary subset. The proof recipe checks the
@@ -1494,24 +1516,24 @@ release:
     nest just release-proof "expect=$proof_head:$proof_tree" hp=run
 
     # Gate 3: Supply chain on every release; advisory DB needs network, so offline refuses before the version is written.
-    just rust-deny
+    nest just rust-deny
 
     # The last identity recheck: the tree the proof vouched for must still be the clean
     # checkout, on the same HEAD, when the version is written.
     proof_same "$proof_head" "$proof_tree" || proof_refuse "$proof_why after rust-deny; the release stops before bump"
 
     # Version
-    VERSION=$(just bump)
+    nest_capture VERSION just bump
     echo "Releasing v$VERSION"
     # Re-parse and compile after bump before any changelog or tag publication.
-    cargo check --locked
+    detached cargo check --locked
 
     # The separate fuzz lock must carry the bump too, and it must before any gate step
     # below reads it: the bump changed the ae version that lock records, and
     # `rust-fuzz-check` runs `--locked`, so it refuses a lock that still records the
     # replaced version. Any refresh failure stops here under errexit, even if cargo
     # wrote a valid-looking partial update.
-    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
+    detached cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
 
     fuzz_delta="$(git diff --no-ext-diff --no-color --numstat -- fuzz/Cargo.lock)"
     # Compare all bytes, allowing only this ae version. A failed git show also
@@ -1530,19 +1552,25 @@ release:
     # other step of the gate runs here, on the tree the release will publish: the bump changed
     # the version every crate and doc test sees, so a break only the bump causes shows now,
     # before the bundles, not after the tag.
-    just rust-fmt-check
-    just rust-lint
-    just rust-fuzz-check
+    nest just rust-fmt-check
+    nest just rust-lint
+    nest just rust-fuzz-check
     # The doctests, sized as the lane sizes them. A private TMPDIR and TMUX_TMPDIR
     # and no inherited TMUX keep them off the live tmux server, as the lane does.
+    # `nest` runs the function in a forked shell, as the `( )` it replaces did, so the
+    # sizing exports never reach the bundles below; a `( )` would leave its cargo running
+    # after a TERM (#345).
     doc_dir="$(mktemp -d)"
-    (
+    release_doctests() {
         {{ SIZING }}
         size_counts
         size_say "release doctests"
-        env -u TMUX -u TMUX_PANE TMPDIR="$doc_dir" TMUX_TMPDIR="$doc_dir" nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
-    ) || {
+        detached env -u TMUX -u TMUX_PANE TMPDIR="$doc_dir" TMUX_TMPDIR="$doc_dir" nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
+    }
+    nest release_doctests || {
+        doc_status=$?
         rm -rf "$doc_dir"
+        ((nest_signal == 0)) || exit "$doc_status"
         echo "Error: the doctests failed on the bumped tree" >&2
         exit 1
     }
@@ -1553,7 +1581,7 @@ release:
     # gate guards. It runs BEFORE the tag deliberately: a failed
     # cross build or a musl binary that is not static costs a `git checkout` of
     # two version files, not an orphan tag with nothing behind it.
-    just bundles
+    nest just bundles
 
     # THE SMOKE of the binary the bundle carries (the native one, the half this
     # machine can run): it answers --version with the version just bumped to, and
@@ -1571,8 +1599,12 @@ release:
         exit 1
     fi
     smoke_status=0
-    env -u TMUX -u TMUX_PANE HOME="$smoke_dir" AE_HOME="$smoke_dir/state" CONFIG_FILE="$smoke_dir/config" TMUX_TMPDIR="$smoke_dir" \
+    nest env -u TMUX -u TMUX_PANE HOME="$smoke_dir" AE_HOME="$smoke_dir/state" CONFIG_FILE="$smoke_dir/config" TMUX_TMPDIR="$smoke_dir" \
         "$smoke_timeout" 10 "$binary" doctor >"$smoke_dir/health.out" 2>&1 || smoke_status=$?
+    if ((nest_signal)); then
+        rm -rf "$smoke_dir"
+        exit "$smoke_status"
+    fi
     if [ "$smoke_status" -gt 1 ]; then
         cat "$smoke_dir/health.out" >&2
         rm -rf "$smoke_dir"
@@ -1623,8 +1655,8 @@ release:
     # Generate changelog. The skip list, its WHY and its guards: `_cliff-skip`; the
     # text-to-argv boundary owner (and the proofs over it): `_cliff-run`.
     TAG="v$VERSION"
-    just _cliff-run --tag "$TAG" -o CHANGELOG.md
-    RELEASE_BODY=$(just _cliff-run --tag "$TAG" --unreleased --strip header)
+    nest just _cliff-run --tag "$TAG" -o CHANGELOG.md
+    nest_capture RELEASE_BODY just _cliff-run --tag "$TAG" --unreleased --strip header
     RELEASE_BODY="${RELEASE_BODY:-Release $TAG}"
 
     # THE BUMP PROOF. The release proof is evidence about the PRE-BUMP tree, so the
@@ -1860,6 +1892,7 @@ release-proof *args:
 bundle version platform binary:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{ NEST }}
     version="{{ version }}"
     platform="{{ platform }}"
     binary="{{ binary }}"
@@ -1921,7 +1954,7 @@ bundle version platform binary:
     if tar --version 2>/dev/null | grep -qi bsdtar; then
         tar_flags+=(--no-mac-metadata)
     fi
-    COPYFILE_DISABLE=1 tar "${tar_flags[@]}" -czf "$root.tar.gz" "$root"
+    nest env COPYFILE_DISABLE=1 tar "${tar_flags[@]}" -czf "$root.tar.gz" "$root"
     echo "==> $root.tar.gz"
 
 # Both release halves, and the release-level SHA256SUMS over them, built HERE.
@@ -1948,6 +1981,8 @@ bundle version platform binary:
 bundles:
     #!/usr/bin/env bash
     set -euo pipefail
+    {{ NEST }}
+    {{ DETACHED }}
 
     case "$(uname -s):$(uname -m)" in
         Darwin:arm64) : ;;
@@ -1970,7 +2005,7 @@ bundles:
     readobj="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-readobj"
     [ -x "$readobj" ] || { echo "Error: $readobj is missing — rustup component add llvm-tools" >&2; exit 1; }
 
-    version="$(just version)"
+    nest_capture version just version
     out="dist"
     native_bin="target/{{ RUST_NATIVE_TARGET }}/release/ae"
     musl_bin="target/{{ RUST_CROSS_TARGET }}/release/ae"
@@ -1990,9 +2025,11 @@ bundles:
     # .cargo/config.toml; CC_<target> is what the `cc` crate reads, it is scoped
     # to the musl target so it leaves the native half alone, and it is set HERE
     # rather than there because that name does not exist on the Linux CI leg,
-    # which builds this same target against musl-tools.
+    # which builds this same target against musl-tools. The build runs `detached` (#345), so a
+    # TERM to the release ends both compiles before the recipe exits; bash exports an assignment
+    # that precedes a function call to the commands the function runs, so cargo still sees it.
     CC_x86_64_unknown_linux_musl={{ RUST_MUSL_CC }} \
-        cargo build --release --locked --target {{ RUST_NATIVE_TARGET }} --target {{ RUST_CROSS_TARGET }}
+        detached cargo build --release --locked --target {{ RUST_NATIVE_TARGET }} --target {{ RUST_CROSS_TARGET }}
 
     # The native half is RUN, which is the whole reason it is the native half.
     echo "==> native: $("$native_bin" --version)"
@@ -2028,8 +2065,8 @@ bundles:
     rm -rf "$out"
     mkdir "$out"
 
-    just bundle "$version" darwin-arm64 "$native_bin"
-    just bundle "$version" linux-x86_64-musl "$musl_bin"
+    nest just bundle "$version" darwin-arm64 "$native_bin"
+    nest just bundle "$version" linux-x86_64-musl "$musl_bin"
     for platform in darwin-arm64 linux-x86_64-musl; do
         root="ae-$version-$platform"
         mv "$root.tar.gz" "$out/"
@@ -3747,9 +3784,14 @@ rust-fuzz-all secs="secs=60":
 # than the zero-dependency baseline noise it used to be. Do not re-add the flag;
 # prune or extend the allow-list instead.
 
+# Cargo runs `detached`, as every cargo step of the gate and the release does (#342, #345).
 # Supply chain: advisories, licenses, bans, sources (policy in deny.toml)
 rust-deny:
-    cargo deny --locked check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{ NEST }}
+    {{ DETACHED }}
+    detached cargo deny --locked check
 
 # Supply-chain PROVENANCE: has a human reviewed each dependency's code? cargo-vet
 # arrived with the first runtime dependency (P4.3), orthogonal to cargo-deny (do

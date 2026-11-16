@@ -6935,7 +6935,9 @@ fn every_changelog_invocation_takes_the_skip_list_from_the_one_owner() {
         "the owner passes the list unquoted, one argv per sha: {owner:?}"
     );
     assert!(
-        owner.iter().any(|line| line.trim() == "git-cliff \"$@\""),
+        owner
+            .iter()
+            .any(|line| line.trim() == "exec git-cliff \"$@\""),
         "and emits no skip flag when the list is empty: {owner:?}"
     );
 }
@@ -6967,8 +6969,10 @@ fn git_cliff_sites(justfile: &str) -> Vec<(String, String)> {
             // Command position only: the command word itself, or inside a command
             // substitution. The rust-setup probe (`ensure git-cliff … 'git-cliff
             // --version'`) installs and asks a version; it runs neither generator nor
-            // changelog, so it is not an invocation.
+            // changelog, so it is not an invocation. `exec git-cliff` (#345) is the command
+            // word under exec, so it is a site too.
             trimmed.starts_with("git-cliff")
+                || trimmed.starts_with("exec git-cliff")
                 || trimmed.contains("$(git-cliff")
                 || trimmed.contains("| git-cliff")
         } else {

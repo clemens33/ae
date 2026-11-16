@@ -219,9 +219,30 @@ keep this true:
    macOS and on Linux. Without `exec`, dash keeps the command of a linewise line as a child of
    `sh -c`, and the TERM ends only dash.
 
+   `just release` and the recipes it runs follow the same three shapes (#345). Every nested `just`
+   of `release`, `bundles` and `_cliff-run` runs through `nest`. Every cargo step of `release`,
+   `bundles` and `rust-deny` runs `detached`, including the release doctests and the two-target
+   release build. `bundle` runs `tar` through `nest`, the release smoke runs `ae doctor` through
+   `nest`, and `_cliff-run` execs `git-cliff`. A command substitution such as `VERSION=$(just bump)`
+   runs in a subshell that no trap reaches, so a long step whose output a recipe keeps runs through
+   `nest_capture <var> <command...>` (in `NEST`): the step is a child of `nest`, its stdout goes to a
+   temporary file under TMPDIR, and `$(<file)` reads the text back with the same newline rule as
+   `$( )`. The release doctests run as a function through `nest`, which forks as the `( )` they
+   replace did, so the sizing exports stay out of the bundles.
+
+   An accepted output delta (lead ruling, #345, the same as #342): `rust-deny` is now a shebang
+   recipe, so `just` no longer echoes its `cargo deny` line, and under `just --quiet` the cargo deny
+   streams can show. The exit codes, the failure text of cargo deny and the release order are
+   unchanged.
+
    The residual: a short foreground command of about one second or less (git, ps, tmux, a receipt
    probe, `shellcheck --version`) runs outside these shapes. A TERM during such a command can leave it
-   running for the rest of its short life. It holds no target lock.
+   running for the rest of its short life. It holds no target lock. In `just release` the residual
+   also holds the network steps of the publication, bounded by the network and some seconds long:
+   `git fetch`, `git pull --rebase`, `git push`, and `gh release view`, `upload`, `edit` and `create`.
+   They stay in the foreground on purpose (lead ruling, #345). The release smoke's
+   `ae --version` probe runs inside its `timeout 10` bound, and a TERM during `nest_capture` can leave
+   its one temporary file behind.
 2. `detached` starts cargo under the perl supervisor (the justfile's `REAP`). Cargo still gets a
    session of its own without a controlling terminal (#149). Before cargo can exist, the supervisor
    writes an entry to `<main checkout>/.local/locks/groups/<pid>.<identity>`. The entry holds its own
