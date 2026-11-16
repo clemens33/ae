@@ -53,13 +53,15 @@ _shellcheck-pin:
         exit 1
     fi
 
+# `exec` (#342): dash keeps the one command of `sh -cu` as its child, so without it a TERM from
+# `just` ends only dash and leaves shellcheck running. `format-check` execs shfmt for the same reason.
 # Lint with shellcheck.
 # SEVERITY FLOOR: warning and error are the gate; everything BELOW warning — info and
 # style — is advisory and is NOT enforced. State it plainly: a green run here does NOT
 # mean the raw linter reports nothing. The SC2016 and SC2329 sites carry their own reasoned comments
 # instead. Full rationale: docs/development.md.
 lint: _shellcheck-pin
-    shellcheck --severity=warning -x install < /dev/null
+    exec shellcheck --severity=warning -x install < /dev/null
 
 # `< /dev/null` here is insurance, not a fix: shfmt reads stdin only when given
 # no paths, and it is given two. Deliberately NOT pinned by a test — pinning
@@ -67,7 +69,7 @@ lint: _shellcheck-pin
 
 # Check formatting (shfmt, diff mode)
 format-check:
-    shfmt -d -i 4 -ci install < /dev/null
+    exec shfmt -d -i 4 -ci install < /dev/null
 
 # Auto-format
 format:
@@ -484,6 +486,44 @@ REAP := '''
     exit(128 + $sig);
 '''
 
+# THE DETACHED STEP (#340, #342), one copy for every recipe that starts cargo in a gate: the test lane
+# (`_tmux-isolated`), `rust-fmt-check`, `rust-lint`, `rust-fuzz-check`, and the selector and the
+# doctests of `test-affected`. `detached <command...>` runs one cargo step under the REAP supervisor, through
+# `nest`: cargo gets a session of its own with no controlling terminal (#149), the run is recorded
+# in the main checkout's registry under the claim it serves (#343) before cargo can exist, and the
+# step ends only when no process of the run is left (#340). `nest` alone does not stop a cargo
+# step: a TERM to the cargo pid leaves `cargo check` and its compilers running (#342, measured on
+# the hp). A recipe includes `{{ NEST }}` before this text. The perl text is kept in `gate_reap`,
+# so the supervisor gets the same argv as when `REAP` is written inline. Where `.local` or
+# `.local/locks` cannot be a directory, `lane-lock claim` cannot make a lock either, so no claim
+# exists to protect: the step runs without a registry, as outside a checkout. A registry that fails
+# anywhere else stops cargo from starting.
+DETACHED := '''
+    gate_groups=""
+    gate_owner=""
+    gate_binding=""
+    gate_worktree=""
+    if gate_common="$(git rev-parse --git-common-dir 2>/dev/null)" && gate_common="$(cd -P "$gate_common" && pwd -P)" && [[ "${gate_common##*/}" == .git ]]; then
+        gate_root="${gate_common%/.git}"
+        if [[ ( -e "$gate_root/.local" && ! -d "$gate_root/.local" ) || ( -e "$gate_root/.local/locks" && ! -d "$gate_root/.local/locks" ) ]]; then
+            echo "note: no gate process registry: $gate_root/.local/locks cannot be a directory, so no lane lock can be held for this checkout" >&2
+        else
+            gate_groups="$gate_root/.local/locks/groups"
+            gate_owner="$gate_root/.local/locks/gate/owner"
+            # Which claim the run serves (#343): the binding `lane-lock claim` wrote, and this
+            # worktree's root computed exactly as the claim computes it (`pwd -P` of the toplevel).
+            gate_binding="$gate_root/.local/locks/binding"
+            if gate_top="$(git rev-parse --show-toplevel 2>/dev/null)" && gate_top="$(cd -P "$gate_top" && pwd -P)"; then
+                gate_worktree="$gate_top"
+            fi
+        fi
+    fi
+    detached() {
+        nest env AE_GATE_GROUPS="$gate_groups" AE_GATE_OWNER="$gate_owner" AE_GATE_BINDING="$gate_binding" \
+            AE_GATE_WORKTREE="$gate_worktree" perl -e "$gate_reap" run "$@"
+    }
+''' + "gate_reap='" + REAP + "'\n"
+
 # THE BASH FLOOR of a recipe that uses bash 4 syntax (#337). A recipe that opens with this refuses a
 # bash older than 4.4 with a message and exit 1, before bash reads any later line. Without it, macOS
 # /bin/bash 3.2 stops at the first construct it cannot parse (`[[ -v`, `exec {fd}<`, `local -A`,
@@ -523,6 +563,7 @@ test-affected *args:
     {{ BASH_FLOOR }}
     set -euo pipefail
     {{ NEST }}
+    {{ DETACHED }}
     {{ SIZING }}
     base=main
     print=no
@@ -693,7 +734,7 @@ test-affected *args:
     }
     selector() {
         selector_status=0
-        nest nice -n 10 cargo run --locked --quiet --all-features --example affected <"$scratch/stream" >"$scratch/answer" || selector_status=$?
+        detached nice -n 10 cargo run --locked --quiet --all-features --example affected <"$scratch/stream" >"$scratch/answer" || selector_status=$?
     }
 
     if [[ "$mode" == preview ]]; then
@@ -745,11 +786,11 @@ test-affected *args:
             # The doctests a filtered lane skips, sized and isolated as the release runs them.
             doc_dir="$(mktemp -d)"
             size_say "test-affected doctests"
-            nest env -u TMUX -u TMUX_PANE TMPDIR="$doc_dir" TMUX_TMPDIR="$doc_dir" nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
+            detached env -u TMUX -u TMUX_PANE TMPDIR="$doc_dir" TMUX_TMPDIR="$doc_dir" nice -n 10 cargo test --doc --locked --all-features -- --test-threads "$NEXTEST_TEST_THREADS"
         fi
     fi
     if [[ "$check" == yes ]]; then
-        just check
+        nest just check
     fi
     steady "while the tests ran"
     echo "test-affected: green ($verdict)" >&2
@@ -2279,9 +2320,16 @@ rust-check: rust-fmt-check rust-lint rust-fuzz-check rust-test
     receipt_write || true
     exit 0
 
+# Cargo fmt runs `detached`, as every cargo step of the gate does (#342): `exec` alone left its
+# rustfmt children running after a TERM. taplo is the last command and is exec'd, so the TERM
+# that just passes on reaches taplo itself.
 # Check formatting in both languages of the build: Rust and TOML
 rust-fmt-check:
-    exec cargo fmt --all --check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{ NEST }}
+    {{ DETACHED }}
+    detached cargo fmt --all --check
     exec taplo fmt --check
 
 # Auto-format Rust + TOML
@@ -3064,27 +3112,34 @@ HP_LEG := '''
     }
 '''
 
+# Cargo runs `detached` and taplo through `nest`, so a TERM to any level ends both before the
+# recipe does (#342).
 # Clippy (-D warnings) + taplo lint
 rust-lint:
     #!/usr/bin/env bash
     set -euo pipefail
     {{ SIZING }}
+    {{ NEST }}
+    {{ DETACHED }}
     size_counts
     size_say rust-lint
-    nice -n 10 cargo clippy --locked --all-targets --all-features -- -D warnings
-    taplo lint
+    detached nice -n 10 cargo clippy --locked --all-targets --all-features -- -D warnings
+    nest taplo lint
 
-# Sized by the one helper, then capped at four jobs (a small crate set).
+# Sized by the one helper, then capped at four jobs (a small crate set). Cargo runs `detached`,
+# as in rust-lint (#342).
 # Type-check every fuzz bin with the product compiler, sharing the gate cache.
 rust-fuzz-check:
     #!/usr/bin/env bash
     set -euo pipefail
     {{ SIZING }}
+    {{ NEST }}
+    {{ DETACHED }}
     size_counts
     size_say rust-fuzz-check
     jobs="${CARGO_BUILD_JOBS:-4}"
     plain "$jobs" && [ "$jobs" -le 4 ] || jobs=4
-    nice -n 10 cargo check --locked --manifest-path fuzz/Cargo.toml --bins --target-dir "${CARGO_TARGET_DIR:-$PWD/target}" --jobs "$jobs"
+    detached nice -n 10 cargo check --locked --manifest-path fuzz/Cargo.toml --bins --target-dir "${CARGO_TARGET_DIR:-$PWD/target}" --jobs "$jobs"
 
 # nextest does NOT run doctests. Doctests are KEPT — they are the executable half
 # of the public docs — so they get their own invocation. Dropping that second
@@ -3310,34 +3365,10 @@ _tmux-isolated lane *args:
     # perl supervisor (REAP) stays in this shell's process group and is started
     # through `nest`, so a signal to any level reaches it and this shell waits
     # for it. It records the run in the main checkout's registry before cargo
-    # starts, reaps every process of the run, and ends as cargo did (#340).
-    gate_groups=""
-    gate_owner=""
-    gate_binding=""
-    gate_worktree=""
-    if gate_common="$(git rev-parse --git-common-dir 2>/dev/null)" && gate_common="$(cd -P "$gate_common" && pwd -P)" && [[ "${gate_common##*/}" == .git ]]; then
-        gate_root="${gate_common%/.git}"
-        # Where `.local` or `.local/locks` cannot be a directory, `lane-lock claim` cannot make a
-        # lock either, so no claim exists to protect: the lane runs without a registry, as outside a
-        # checkout. A registry that fails anywhere else stops cargo from starting.
-        if [[ ( -e "$gate_root/.local" && ! -d "$gate_root/.local" ) || ( -e "$gate_root/.local/locks" && ! -d "$gate_root/.local/locks" ) ]]; then
-            echo "note: no gate process registry: $gate_root/.local/locks cannot be a directory, so no lane lock can be held for this checkout" >&2
-        else
-            gate_groups="$gate_root/.local/locks/groups"
-            gate_owner="$gate_root/.local/locks/gate/owner"
-            # Which claim the run serves (#343): the binding `lane-lock claim` wrote, and this
-            # worktree's root computed exactly as the claim computes it (`pwd -P` of the toplevel).
-            gate_binding="$gate_root/.local/locks/binding"
-            if gate_top="$(git rev-parse --show-toplevel 2>/dev/null)" && gate_top="$(cd -P "$gate_top" && pwd -P)"; then
-                gate_worktree="$gate_top"
-            fi
-        fi
-    fi
+    # starts, reaps every process of the run, and ends as cargo did (#340). The
+    # registry and `detached` are the one shared text DETACHED.
     {{ NEST }}
-    detached() {
-        nest env AE_GATE_GROUPS="$gate_groups" AE_GATE_OWNER="$gate_owner" AE_GATE_BINDING="$gate_binding" \
-            AE_GATE_WORKTREE="$gate_worktree" perl -e '{{ REAP }}' run "$@"
-    }
+    {{ DETACHED }}
     reap_dead_scratch
     mkdir "$test_tmux_tmp/tmp"
     export TMPDIR="$test_tmux_tmp/tmp"

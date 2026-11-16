@@ -147,8 +147,10 @@ fn lint_redirect_ok(justfile: &str) -> bool {
     lines.iter().filter(|line| bearing(line)).count() == 1
 }
 
-/// Whether one line IS the shellcheck command and carries the stdin redirect.
+/// Whether one line IS the shellcheck command and carries the stdin redirect. A leading
+/// `exec` (#342) keeps it the command: the shell becomes shellcheck, the redirect still applies.
 fn bearing(line: &str) -> bool {
+    let line = line.strip_prefix("exec ").unwrap_or(line);
     let Some(rest) = line.strip_prefix("shellcheck") else {
         return false;
     };
@@ -432,6 +434,12 @@ fn the_lint_recipe_protects_shellchecks_stdin() {
     assert!(lint_redirect_ok(
         "lint:\n    shellcheck -x install \\\n        tests/x \\\n        y < /dev/null\n"
     ));
+    // GREEN — `exec` (#342) keeps the line the shellcheck command and its redirect.
+    assert!(lint_redirect_ok(
+        "lint:\n    exec shellcheck -x install < /dev/null\n"
+    ));
+    // RED — `exec` does not excuse a missing redirect.
+    assert!(!lint_redirect_ok("lint:\n    exec shellcheck -x install\n"));
 }
 
 #[test]
@@ -3319,6 +3327,185 @@ fn one_sizing_helper_serves_the_lane_lint_and_the_fuzz_check() {
         &good.replace("export CARGO_BUILD_JOBS=\"$jobs\"", "")
     ));
     assert!(!sizing_shared_ok("rust-lint:\n    cargo clippy\n"));
+}
+
+/// The gate recipes that start cargo (#342): each runs every cargo step `detached`.
+const DETACHED_CARGO_RECIPES: [&str; 5] = [
+    "rust-fmt-check:",
+    "rust-lint:",
+    "rust-fuzz-check:",
+    "test-affected *args:",
+    "_tmux-isolated lane *args:",
+];
+
+/// Where `line` runs cargo as a command: the bare word `cargo` at the start of the line or
+/// after a separator, followed by a space and a subcommand.
+fn cargo_commands(line: &str) -> Vec<usize> {
+    line.match_indices("cargo ")
+        .filter(|(at, _)| {
+            let before = line[..*at].chars().next_back();
+            let after = line[at + "cargo ".len()..].chars().next();
+            before.is_none_or(|ch| " \t;&|(".contains(ch))
+                && after.is_some_and(|ch| ch.is_ascii_lowercase() || ch == '-')
+        })
+        .map(|(at, _)| at)
+        .collect()
+}
+
+fn invokes_cargo(line: &str) -> bool {
+    !cargo_commands(line).is_empty()
+}
+
+/// Whether every cargo command of `line` is an argument of `detached` in the same simple
+/// command: a `detached` word before it, and no `;`, `&` or `|` between the two.
+fn cargo_detached(line: &str) -> bool {
+    cargo_commands(line).iter().all(|&at| {
+        let head = &line[..at];
+        head.match_indices("detached ")
+            .filter(|(start, _)| {
+                head[..*start]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|ch| " \t;&|(".contains(ch))
+            })
+            .last()
+            .is_some_and(|(start, _)| !head[start..].contains([';', '&', '|']))
+    })
+}
+
+/// Whether every long step of the claimed gate recipes has one of the three shapes of #342:
+/// cargo runs `detached` (the REAP supervisor), every other long step of a shebang recipe runs
+/// through `nest`, and a linewise long step execs its command, so a TERM to any level ends the
+/// work before the recipe exits. The registry and `detached` exist once, in `DETACHED`.
+fn gate_long_steps_ok(justfile: &str) -> bool {
+    let shared = justfile_variable(justfile, "DETACHED");
+    if justfile.matches("detached() {").count() != 1
+        || justfile.matches("gate_groups=\"\"").count() != 1
+        || !shared.contains("detached() {")
+        || !shared.contains("gate_groups=\"\"")
+        || !shared.contains("nest env AE_GATE_GROUPS=")
+    {
+        return false;
+    }
+    let cargo_detached = DETACHED_CARGO_RECIPES.iter().all(|header| {
+        let lines = recipe_text(justfile, header);
+        let position = |needle: &str| lines.iter().position(|line| line == needle);
+        let included = matches!(
+            (position("{{ NEST }}"), position("{{ DETACHED }}")),
+            (Some(nest), Some(detached)) if nest < detached
+        );
+        let cargo: Vec<&String> = lines.iter().filter(|line| invokes_cargo(line)).collect();
+        included && !cargo.is_empty() && cargo.iter().all(|line| cargo_detached(line))
+    });
+    let affected = recipe_text(justfile, "test-affected *args:");
+    let lint = recipe_text(justfile, "rust-lint:");
+    let fmt = recipe_text(justfile, "rust-fmt-check:");
+    let exec_only = |header: &str| {
+        let lines = recipe_text(justfile, header);
+        !lines.is_empty() && lines.iter().all(|line| line.starts_with("exec "))
+    };
+    cargo_detached
+        && !affected.iter().any(|line| line.starts_with("just "))
+        && affected.iter().any(|line| line == "nest just check")
+        && !lint.iter().any(|line| line.starts_with("taplo "))
+        && lint.iter().any(|line| line == "nest taplo lint")
+        && fmt
+            .last()
+            .is_some_and(|line| line == "exec taplo fmt --check")
+        && exec_only("lint: _shellcheck-pin")
+        && exec_only("format-check:")
+}
+
+#[test]
+fn every_long_gate_step_is_detached_nested_or_execd() {
+    assert!(
+        gate_long_steps_ok(&read(&root().join("justfile"))),
+        "in the claimed gate recipes every cargo step must run `detached`, every nested just and \
+         taplo lint through `nest`, and the linewise shellcheck and shfmt lines with `exec` (#342)"
+    );
+    let good = "DETACHED := '''\n    gate_groups=\"\"\n    detached() {\n        nest env AE_GATE_GROUPS=\"$g\" perl -e \"$r\" run \"$@\"\n    }\n'''\n\n\
+        lint: _shellcheck-pin\n    exec shellcheck -x install < /dev/null\n\n\
+        format-check:\n    exec shfmt -d install < /dev/null\n\n\
+        rust-fmt-check:\n    #!/usr/bin/env bash\n    {{ NEST }}\n    {{ DETACHED }}\n    detached cargo fmt --all --check\n    exec taplo fmt --check\n\n\
+        rust-lint:\n    #!/usr/bin/env bash\n    {{ NEST }}\n    {{ DETACHED }}\n    detached nice -n 10 cargo clippy --locked\n    nest taplo lint\n\n\
+        rust-fuzz-check:\n    #!/usr/bin/env bash\n    {{ NEST }}\n    {{ DETACHED }}\n    detached nice -n 10 cargo check --locked\n\n\
+        test-affected *args:\n    #!/usr/bin/env bash\n    {{ NEST }}\n    {{ DETACHED }}\n    nest just rust-lint\n    detached nice -n 10 cargo run --example affected || s=$?\n    nest just check\n\n\
+        _tmux-isolated lane *args:\n    #!/usr/bin/env bash\n    {{ NEST }}\n    {{ DETACHED }}\n    detached nice -n 10 cargo nextest run \\\n        --locked\n";
+    assert!(gate_long_steps_ok(good), "synthetic control");
+    for (name, from, to) in [
+        // A cargo step back in the foreground, the shape #342 found.
+        (
+            "foreground clippy",
+            "    detached nice -n 10 cargo clippy",
+            "    nice -n 10 cargo clippy",
+        ),
+        // `nest` alone leaves cargo's compilers running after a TERM to the cargo pid.
+        (
+            "nested selector",
+            "    detached nice -n 10 cargo run",
+            "    nest nice -n 10 cargo run",
+        ),
+        ("foreground fmt", "    detached cargo fmt", "    cargo fmt"),
+        ("exec'd fmt", "    detached cargo fmt", "    exec cargo fmt"),
+        ("unnested check", "    nest just check", "    just check"),
+        ("unnested taplo", "    nest taplo lint", "    taplo lint"),
+        (
+            "linewise shellcheck",
+            "    exec shellcheck",
+            "    shellcheck",
+        ),
+        ("linewise shfmt", "    exec shfmt", "    shfmt"),
+        (
+            "taplo fmt not last",
+            "    exec taplo fmt --check\n",
+            "    exec taplo fmt --check\n    true\n",
+        ),
+        (
+            "no shared supervisor",
+            "    {{ DETACHED }}\n    detached nice -n 10 cargo check",
+            "    detached nice -n 10 cargo check",
+        ),
+        (
+            "a second registry",
+            "    nest taplo lint\n",
+            "    nest taplo lint\n    gate_groups=\"\"\n",
+        ),
+    ] {
+        assert!(good.contains(from), "the mutation {name} must apply");
+        assert!(
+            !gate_long_steps_ok(&good.replacen(from, to, 1)),
+            "must reject: {name}"
+        );
+    }
+    // A folded continuation is one command, and a case arm may open the line: the cargo is
+    // still an argument of `detached`.
+    for line in [
+        "detached nice -n 10 \"$t\" -k 5 \"$s\" cargo nextest run --locked",
+        "cov) detached nice -n 10 cargo llvm-cov nextest --locked ;;",
+        "detached nice -n 10 cargo mutants --jobs 1 \"$@\" || status=$?",
+    ] {
+        assert!(cargo_detached(line), "`{line}` runs its cargo detached");
+    }
+    // A `detached` that ends before the cargo command does not cover it.
+    for line in [
+        "detached true; cargo check --locked",
+        "detached true && cargo check --locked",
+        "undetached cargo check --locked",
+        "nest cargo check --locked",
+    ] {
+        assert!(
+            !cargo_detached(line),
+            "`{line}` runs a cargo outside `detached`"
+        );
+    }
+    // Not a cargo command: a word inside another word, a variable, a message.
+    for line in [
+        "if (exe[p] ~ /(^|\\/)cargo-mutants$/) cm = 1",
+        "junit=\"${CARGO_TARGET_DIR:-target}/nextest/default/junit.xml\"",
+        "echo \"cargo jobs ${CARGO_BUILD_JOBS:-unset}\" >&2",
+    ] {
+        assert!(!invokes_cargo(line), "`{line}` runs no cargo");
+    }
 }
 
 /// Whether the mutants arm of the isolated lane starts the memory watcher

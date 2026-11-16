@@ -197,16 +197,31 @@ the lead or a human clears it by hand.
 started under that claim has ended. Otherwise the lock stays held with a suspect note. Three parts
 keep this true:
 
-1. Every nested step of a gate recipe (a nested `just`, the selector and the doctests of
-   `test-affected`, and the supervisor of `detached`) runs through `nest` (the justfile's `NEST`).
-   `just` passes a TERM only to the recipe shell it started. `nest` passes TERM on to its child and
-   waits until the child is gone, so a signal to any level reaches the cargo run, and every level
-   waits for the level below. After a signal, every level ends nonzero (128 + the first signal), and no
-   later step starts (a stopped `just test` runs no doctests). A linewise recipe whose only line is a
-   nested `just` (`rust-test`, `_pre-test`, `rust-cov`, `rust-mutants`) needs no `nest`: it starts
-   with `exec`, so the nested `just` itself receives the TERM. Without `exec`, dash keeps the command
-   as a child of `sh -c`, and the TERM ends only dash. The two `rust-fmt-check` lines exec cargo and
-   taplo the same way.
+1. Every long step of a gate recipe that runs under a lane claim (`test`, `rust-check`,
+   `test-affected`, `pre`) has one of three shapes (#342):
+   - Every cargo step runs `detached` (part 2): `cargo fmt` in `rust-fmt-check`, clippy in
+     `rust-lint`, the fuzz `cargo check`, the selector and the doctests of `test-affected`, and every
+     cargo run of the test lane. The registry and `detached` are one shared text, the justfile's
+     `DETACHED`.
+   - Every other long step of a shebang recipe runs through `nest` (the justfile's `NEST`): a nested
+     `just`, `taplo lint`, and the supervisor of `detached` itself.
+   - A linewise line, or the last command of a recipe, runs with `exec`: `rust-test`, `_pre-test`,
+     `rust-cov` and `rust-mutants` exec their nested `just`, `lint` and `format-check` exec
+     shellcheck and shfmt, and `rust-fmt-check` execs `taplo fmt` last.
+
+   `just` passes a TERM only to the recipe process it started. It does not pass on an INT or a HUP
+   sent to its pid alone: it waits until the recipe ends. `nest` passes TERM on to its child and waits
+   until the child is gone, so a signal to any level reaches the cargo run, and every level waits for
+   the level below. After a signal, every level ends nonzero (128 + the first signal), and no later
+   step starts (a stopped `just test` runs no doctests). `nest` alone does not stop a cargo step: a
+   TERM to the cargo pid leaves `cargo check` and its compilers running (measured on Linux), so cargo
+   needs the supervisor. A shebang bash ends on a TERM and leaves its foreground child running, on
+   macOS and on Linux. Without `exec`, dash keeps the command of a linewise line as a child of
+   `sh -c`, and the TERM ends only dash.
+
+   The residual: a short foreground command of about one second or less (git, ps, tmux, a receipt
+   probe, `shellcheck --version`) runs outside these shapes. A TERM during such a command can leave it
+   running for the rest of its short life. It holds no target lock.
 2. `detached` starts cargo under the perl supervisor (the justfile's `REAP`). Cargo still gets a
    session of its own without a controlling terminal (#149). Before cargo can exist, the supervisor
    writes an entry to `<main checkout>/.local/locks/groups/<pid>.<identity>`. The entry holds its own
