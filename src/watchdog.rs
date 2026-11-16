@@ -29,6 +29,9 @@ mod protowd_spec;
 #[cfg(test)]
 #[path = "watchdog/quiet225_spec.rs"]
 mod quiet225_spec;
+#[cfg(test)]
+#[path = "watchdog/sleepgap_spec.rs"]
+mod sleepgap_spec;
 
 /// The shell-name predicate lives in [`crate::procs`]; this path keeps it for
 /// the callers that name it through the watchdog.

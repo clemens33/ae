@@ -2812,6 +2812,8 @@ mod protowd_spec;
 mod quietwd_spec;
 #[cfg(test)]
 mod sleepgap_cycle_spec;
+#[cfg(test)]
+mod sleepgap_spec;
 
 #[cfg(test)]
 mod tests;
