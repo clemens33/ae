@@ -256,7 +256,7 @@ fn failed_exec_keeps_interaction_and_terminal_and_does_not_retry_same_version() 
     for n in 1..=3 {
         hand.rig.record_stopped(n);
         let counted = format!("Stopped ({n})");
-        hand.wait("a fleet read after the record", |s| s.contains(&counted));
+        hand.witness("a fleet read after the record", |s| s.contains(&counted));
     }
     let trace = hand.receipt("trace");
     assert_eq!(
