@@ -135,7 +135,7 @@ const CENSUS: [(&str, [usize; 6]); 22] = [
     ("src/shape.rs", [2, 1, 0, 0, 0, 0]),
     ("src/spawn.rs", [1, 0, 0, 0, 0, 0]),
     ("src/telegram_lifecycle.rs", [2, 0, 0, 0, 0, 0]),
-    ("src/transport.rs", [0, 0, 0, 1, 1, 1]),
+    ("src/transport.rs", [1, 0, 0, 1, 1, 1]),
     ("src/watchdog_lifecycle.rs", [1, 0, 0, 0, 0, 0]),
 ];
 

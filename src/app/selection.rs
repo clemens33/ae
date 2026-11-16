@@ -149,12 +149,13 @@ impl App {
     /// lane stays until its next read.
     pub(super) fn viewed(&mut self, view: loader::ViewRead) {
         let home = self.home.as_deref() == Some(view.name.as_str());
-        // The orchestrator's lane is read for its panel: open on that very
-        // incarnation, else dropped.
-        let panel = view.name == ORCH;
+        // The seat's lane is read for its panel: open on that very
+        // incarnation, else dropped. A listed namesake is an ordinary row.
         let pinned =
-            (self.orch.panel.as_ref()).is_some_and(|panel| panel.pin.as_ref() == Some(&view.id));
-        if panel && !pinned && !home {
+            (self.orch.panel.as_ref()).is_some_and(|panel| panel.pin() == Some(view.id.as_str()));
+        let panel = view.name == ORCH && pinned;
+        let listed = self.fleet.rows.iter().any(|row| row.name == view.name);
+        if view.name == ORCH && !pinned && !home && !listed {
             return;
         }
         if !home && self.ids.get(&view.name) != Some(&view.id) {

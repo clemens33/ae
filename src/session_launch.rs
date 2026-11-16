@@ -172,14 +172,26 @@ pub(crate) fn prove_server(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExpectedLaunch {
     state: ExpectedState,
-    server: ServerId,
-    server_pid: String,
-    server_start: String,
-    client: String,
-    client_pid: String,
+    attachment: Attachment,
     deadline: i64,
     #[cfg(debug_assertions)]
     test_pre_lock_marker: bool,
+}
+
+/// Who asked for the launch, as the launch re-proves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Attachment {
+    /// A tmux menu click: the server and the exact client that clicked.
+    Client {
+        server: ServerId,
+        server_pid: String,
+        server_start: String,
+        client: String,
+        client_pid: String,
+    },
+    /// The app's waited child: no client exists to re-prove or to tell, so
+    /// the deadline window and the locked role proofs are the whole check.
+    Unattended,
 }
 
 impl ExpectedLaunch {
@@ -195,11 +207,25 @@ impl ExpectedLaunch {
     ) -> Self {
         Self {
             state,
-            server,
-            server_pid,
-            server_start,
-            client,
-            client_pid,
+            attachment: Attachment::Client {
+                server,
+                server_pid,
+                server_start,
+                client,
+                client_pid,
+            },
+            deadline,
+            #[cfg(debug_assertions)]
+            test_pre_lock_marker: false,
+        }
+    }
+
+    /// The expectation of an unattended apply: the role state and the
+    /// deadline, with no client to re-prove.
+    pub(crate) fn unattended(state: ExpectedState, deadline: i64) -> Self {
+        Self {
+            state,
+            attachment: Attachment::Unattended,
             deadline,
             #[cfg(debug_assertions)]
             test_pre_lock_marker: false,
@@ -212,13 +238,28 @@ impl ExpectedLaunch {
     }
 
     /// Prove that the captured row is still inside its validity window, then
-    /// re-prove the server and attachment that selected it.
+    /// re-prove the server and attachment that selected it. An unattended
+    /// apply has no attachment: its window is the whole proof.
     pub(crate) fn check_action(&self, now: i64) -> Result<(), String> {
+        let unattended = self.attachment == Attachment::Unattended;
         if now > self.deadline {
-            return Err("the menu action expired".to_owned());
+            return Err(if unattended {
+                "the start request expired"
+            } else {
+                "the menu action expired"
+            }
+            .to_owned());
         }
         if now < self.deadline - crate::session_menu::CONFIRM_WINDOW_SECS {
-            return Err("the menu action is stamped in the future".to_owned());
+            return Err(if unattended {
+                "the start request is stamped in the future"
+            } else {
+                "the menu action is stamped in the future"
+            }
+            .to_owned());
+        }
+        if unattended {
+            return Ok(());
         }
         self.check_attachment()
     }
@@ -227,13 +268,23 @@ impl ExpectedLaunch {
     ///
     /// Failure reports use this narrower proof: an expired action may tell its
     /// still-attached clicker why it refused, but a forged or replaced client
-    /// may never receive a message.
+    /// may never receive a message. An unattended apply has nobody to tell.
     pub(crate) fn check_attachment(&self) -> Result<(), String> {
-        prove_server(&self.server, &self.server_pid, &self.server_start)?;
-        let Some(client) = transport::observe_menu_client(&self.server, &self.client) else {
+        let Attachment::Client {
+            server,
+            server_pid,
+            server_start,
+            client,
+            client_pid,
+        } = &self.attachment
+        else {
+            return Err("an unattended start has no client".to_owned());
+        };
+        prove_server(server, server_pid, server_start)?;
+        let Some(observed) = transport::observe_menu_client(server, client) else {
             return Err("the invoking client is no longer attached".to_owned());
         };
-        if client.pid != self.client_pid {
+        if observed.pid != *client_pid {
             return Err("the invoking client is a different attachment now".to_owned());
         }
         Ok(())

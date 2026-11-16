@@ -242,7 +242,14 @@ impl App {
             self.overview = overview::of(&entry, None, user.as_deref(), now);
             return;
         }
-        let shown = self.shown.get(&name).map(|shown| Rc::clone(&shown.lane));
+        // The bound panel draws only its own incarnation's read: a lane
+        // another uuid answered under the seat's name stays `loading`.
+        let pin = (self.orch.panel.as_ref())
+            .and_then(super::panel::Panel::pin)
+            .filter(|_| self.orch.active);
+        let shown = (self.shown.get(&name))
+            .filter(|shown| pin.is_none_or(|pin| shown.id == pin))
+            .map(|shown| Rc::clone(&shown.lane));
         self.loading = shown.is_none();
         self.lane = self.merge(&name, shown);
         self.overview = overview::of(&entry, self.needs.get(&name), user.as_deref(), now);

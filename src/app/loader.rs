@@ -13,6 +13,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 pub(super) use self::ending::EndingAsk;
+pub(super) use self::seat::Said;
 use super::handover::{self, View};
 use super::journals::Journals;
 use super::menu::Dialog;
@@ -49,6 +50,7 @@ mod records_spec;
 mod s5_loader;
 #[cfg(test)]
 mod s5_red;
+mod seat;
 #[cfg(test)]
 #[path = "loader_tools_spec.rs"]
 mod tools_spec;
@@ -88,6 +90,9 @@ pub(super) enum Request {
         shown: bool,
         ask: crate::tool_stats::Ask,
     },
+    /// The panel opened with no orchestrator running, under this generation:
+    /// start or resume the canonical seat, or say why none starts.
+    Seat(u64),
 }
 
 /// What an open peek panel asks the reader to capture, every refresh: the
@@ -250,6 +255,11 @@ pub(super) enum Answer {
     /// Whether the orchestrator this fleet read found is one proven
     /// incarnation: sent right after each [`Answer::Fleet`].
     Orchestrator(Proof),
+    /// What the panel's seat ask of `generation` came to.
+    Seat {
+        generation: u64,
+        said: Said,
+    },
     /// How pressed each lead-pair seat of session `name` (bound to `id`) is,
     /// by seat name: its own account's judged quota, `None` when unknown.
     Pressure {
@@ -274,14 +284,34 @@ pub(super) enum Proof {
     Gap(String),
 }
 
-/// The [`Proof`] of the orchestrator `read` lists.
-fn orchestrator_proof(read: &FleetRead) -> Proof {
+/// The [`Proof`] of the orchestrator `read` lists: the seat named
+/// `orchestrator` only while it is the role `holder` of state root `root`. A
+/// namesake without the role, or a holder under another name, is no seat
+/// here: the panel's seat ask says what it is. A role census that failed
+/// proves no absence: a running seat is then unproven, never absent.
+fn orchestrator_proof(read: &FleetRead, root: &Path, holder: Result<Option<&str>, &str>) -> Proof {
     let name = crate::orchestrator::ORCHESTRATOR_SESSION;
     let running = (read.world.sessions.iter())
         .any(|entry| entry.name == name && entry.status == Status::Running);
-    let Some(dir) = read.dirs.get(name).filter(|_| running) else {
+    let holder = match holder {
+        Ok(holder) => holder,
+        Err(why) if running => return Proof::Gap(format!("role census: {why}")),
+        Err(_) => None,
+    };
+    let Some(dir) = read
+        .dirs
+        .get(name)
+        .filter(|_| running && holder == Some(name))
+    else {
         return Proof::Absent;
     };
+    // The census proved the holder; its meta proves the seat again as it
+    // reads now, by the census's own predicate.
+    let seat =
+        crate::meta::read_bytes(dir).is_ok_and(|meta| crate::settings_menu::is_seat(&meta, root));
+    if !seat {
+        return Proof::Gap("meta: local_config is not the seat overlay".to_owned());
+    }
     let option = match crate::session_launch::recorded_server_resolved(dir) {
         Some(server) => session_menu::live_identity(&server, name),
         None => tmux::OptionReading::Unknown,
@@ -478,6 +508,8 @@ pub(super) struct Reader {
     records: Option<Box<RecordsAsk>>,
     /// The Ends handed to their owners and not heard of yet.
     endings: Vec<EndingAsk>,
+    /// The panel's seat ask not yet handed to its own thread.
+    seat: Option<u64>,
     /// The session the open overlay's instructions tab is for: the selection
     /// when it opened, never retargeted while it stays open.
     settings_session: Option<String>,
@@ -520,9 +552,11 @@ struct Flight {
     done: Receiver<(crate::transport::AgyRun, i64)>,
 }
 
-/// Where [`Reader::fold`] reads a session's needs.
+/// Where [`Reader::fold`] reads a session's needs, and which session the
+/// role census names the orchestrator role holder.
 struct Sources<'a> {
     needs: &'a mut dyn FnMut(&str, &Path) -> Result<Section, String>,
+    holder: Option<&'a str>,
 }
 
 /// Start the reader on its own thread; answers arrive on `wake`.
@@ -573,6 +607,7 @@ impl Reader {
             read: None,
             records: None,
             endings: Vec::new(),
+            seat: None,
             settings_session: None,
             agy: crate::quota::AgyCache::default(),
             history: crate::quota::HistoryCache::default(),
@@ -621,6 +656,12 @@ impl Reader {
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => return,
                 }
+            }
+            if let Some(generation) = self.seat.take()
+                && let Some(answer) = self.ask_seat(generation, wake)
+                && !send(answer)
+            {
+                return;
             }
             let now = Instant::now();
             let job = self.next(now);
@@ -727,6 +768,7 @@ impl Reader {
                 self.endings.retain(|held| held.name != ask.name);
                 self.endings.push(*ask);
             }
+            Request::Seat(generation) => self.seat = Some(generation),
             // Hidden, the watch goes; shown, a fresh one is due at once and
             // answers whatever it reads. A stale overlay's arm is dropped.
             Request::Stats { generation, shown } => {
@@ -1040,7 +1082,14 @@ impl Reader {
             console::lead_pair_at(dir)
                 .and_then(|lead_pair| console::needs_in(name, dir, snapshot, lead_pair, panes))
         };
-        let mut sources = Sources { needs: &mut needs };
+        // A failed or damaged census proves no holder: nothing is hidden, and
+        // the panel's seat ask tells why. The proof keeps the failure.
+        let census = crate::settings_menu::role_holder(&self.root);
+        let holder = census.clone().ok().flatten();
+        let mut sources = Sources {
+            needs: &mut needs,
+            holder: holder.as_deref(),
+        };
         let order = crate::fleet_order();
         let home = self.home.as_deref();
         let mut read = Self::fold_from(
@@ -1059,7 +1108,11 @@ impl Reader {
         self.ids.clone_from(&read.ids);
         self.rows = read.fleet.rows.iter().map(|row| row.name.clone()).collect();
         self.evict();
-        let proof = orchestrator_proof(&read);
+        let census = census
+            .as_ref()
+            .map(Option::as_deref)
+            .map_err(String::as_str);
+        let proof = orchestrator_proof(&read, &self.root, census);
         answers.push(Answer::Fleet(read));
         answers.push(Answer::Orchestrator(proof));
         answers.extend(self.ended());
@@ -1149,8 +1202,10 @@ impl Reader {
         order: &theme::FleetOrder,
         now: Timestamp,
     ) -> FleetRead {
+        let holder = crate::settings_menu::role_holder(&self.root).ok().flatten();
         let mut sources = Sources {
             needs: &mut console::needs_of,
+            holder: holder.as_deref(),
         };
         let home = self.home.as_deref();
         Self::fold_from(home, dirs, world, picker, order, now, &mut sources)
@@ -1197,7 +1252,16 @@ impl Reader {
                 Some((entry.name.clone(), section))
             })
             .collect();
-        let fleet = fleet::rows(&world, &facts, &last_live, order, &needs, home, now);
+        let fleet = fleet::rows(
+            &world,
+            sources.holder,
+            &facts,
+            &last_live,
+            order,
+            &needs,
+            home,
+            now,
+        );
         // Each identity and its lead pair from one console, so they agree.
         let (ids, pairs): (BTreeMap<String, String>, _) = dirs
             .iter()
@@ -1627,6 +1691,29 @@ impl Reader {
             asked_at,
             done,
         });
+    }
+
+    /// Ask for the orchestrator seat of panel `generation` on its own thread,
+    /// detached: discovery and a start can take the launch's whole wait, and
+    /// the reader keeps answering. The thread answers on `wake` itself; the
+    /// answer returned here is the refusal when no thread starts.
+    fn ask_seat(&self, generation: u64, wake: &Sender<Wake>) -> Option<Answer> {
+        let (root, wake) = (self.root.clone(), wake.clone());
+        let launch = self.server.clone();
+        let invoking = self.own.as_ref().map(|(server, _)| server.clone());
+        let spawned = std::thread::Builder::new()
+            .name("ae-app-seat".to_owned())
+            .spawn(move || {
+                let said = seat::ask(&root, invoking.as_ref(), launch.as_ref());
+                let answer = Answer::Seat { generation, said };
+                let _ = wake.send(Wake::Answer(Box::new(answer)));
+            });
+        spawned.is_err().then(|| Answer::Seat {
+            generation,
+            said: Said::Waiting(Some(
+                "orchestrator not started: its start thread could not run".to_owned(),
+            )),
+        })
     }
 
     /// The instructions tab for the session the overlay opened on: its records

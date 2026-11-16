@@ -49,8 +49,6 @@ pub(super) struct Card {
     pub(super) stopped: bool,
     /// This app's own pane is in it: known once a question read it.
     pub(super) home: bool,
-    /// The orchestrator: its menu offers nothing.
-    pub(super) orchestrator: bool,
 }
 
 impl Card {
@@ -83,16 +81,15 @@ impl Card {
             refused,
             stopped: status == Some(Status::Stopped),
             home: false,
-            orchestrator: name == crate::orchestrator::ORCHESTRATOR_SESSION,
         }
     }
 
     /// What the menu offers, in its drawn order.
     pub(super) fn items(&self) -> &'static [Item] {
-        match (self.orchestrator, self.stopped) {
-            (true, _) => &[],
-            (false, true) => &[Item::Start, Item::Activity, Item::Memos, Item::End],
-            (false, false) => &[Item::Stop, Item::Activity, Item::Memos, Item::End],
+        if self.stopped {
+            &[Item::Start, Item::Activity, Item::Memos, Item::End]
+        } else {
+            &[Item::Stop, Item::Activity, Item::Memos, Item::End]
         }
     }
 

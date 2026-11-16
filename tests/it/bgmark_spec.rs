@@ -209,6 +209,7 @@ fn bgmark_fleet_row_and_tally_keep_background_ahead_of_other_quiet_marks() {
         let world = ae::listing::World::new(now, vec![SessionEntry::new("s", Status::Running)]);
         let fleet = ae::app::fleet::rows(
             &world,
+            None,
             &facts,
             &BTreeMap::new(),
             &ae::theme::FleetOrder::EMPTY,
@@ -234,6 +235,7 @@ fn bgmark_fleet_row_and_tally_keep_background_ahead_of_other_quiet_marks() {
     let world = ae::listing::World::new(now, vec![SessionEntry::new("s", Status::Running)]);
     let fleet = ae::app::fleet::rows(
         &world,
+        None,
         &facts,
         &BTreeMap::new(),
         &ae::theme::FleetOrder::EMPTY,

@@ -147,12 +147,19 @@ impl Fleet {
 /// then the rest by the newest AI answer to the human, newest first
 /// (`answer_epoch`); a session never answered after them in creation order;
 /// then stopped ones as the picker sorts them — dated by `last_live` newest
-/// first, undated after, ties by name. The orchestrator is never a row,
-/// running or stopped, pinned or not: it has its own panel
-/// ([`orchestrator`]).
+/// first, undated after, ties by name. The proved orchestrator role `holder`
+/// is never a row, running or stopped, pinned or not, under whatever name it
+/// holds the role: it has its own panel ([`orchestrator`]). Every other
+/// session is an ordinary row, an `orchestrator` namesake without the role
+/// included.
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one fleet fold: the world, the proved role holder and each per-session fact table"
+)]
 pub fn rows(
     world: &World,
+    holder: Option<&str>,
     facts: &BTreeMap<String, Facts>,
     last_live: &BTreeMap<String, i64>,
     order: &FleetOrder,
@@ -163,7 +170,7 @@ pub fn rows(
     let (stopped, running): (Vec<&SessionEntry>, Vec<&SessionEntry>) = world
         .sessions
         .iter()
-        .filter(|entry| entry.name != crate::orchestrator::ORCHESTRATOR_SESSION)
+        .filter(|entry| Some(entry.name.as_str()) != holder)
         .partition(|entry| entry.status == Status::Stopped);
     let strip: Vec<FleetRow> = running
         .iter()
@@ -220,16 +227,21 @@ pub fn rows(
 }
 
 /// The orchestrator's own row, built as any session's row is but never listed:
-/// its panel button wears its mark and its needs. `None` when the world has no
-/// orchestrator.
+/// its panel button wears its mark and its needs. `None` unless the proved
+/// role `holder` is the canonical seat name and the world has it: a renamed
+/// holder or a namesake without the role has no panel row.
 #[must_use]
 pub fn orchestrator(
     world: &World,
+    holder: Option<&str>,
     facts: &BTreeMap<String, Facts>,
     needs: &BTreeMap<String, Section>,
     now: Timestamp,
 ) -> Option<Row> {
     let name = crate::orchestrator::ORCHESTRATOR_SESSION;
+    if holder != Some(name) {
+        return None;
+    }
     let entry = world.sessions.iter().find(|entry| entry.name == name)?;
     let empty = Section::default();
     let section = needs.get(name).unwrap_or(&empty);
@@ -431,6 +443,7 @@ mod tests {
             .collect();
         rows(
             &World::new(now, sessions),
+            None,
             &BTreeMap::new(),
             &BTreeMap::new(),
             &FleetOrder::EMPTY,
@@ -498,6 +511,7 @@ mod tests {
             let world = World::new(now, vec![SessionEntry::new("s", Status::Running)]);
             let fleet = rows(
                 &world,
+                None,
                 &facts,
                 &BTreeMap::new(),
                 &FleetOrder::EMPTY,

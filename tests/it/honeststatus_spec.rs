@@ -227,6 +227,7 @@ fn honeststatus_console_fleet_and_overview_use_the_same_human_needs_table() {
         let needs = BTreeMap::from([("one".to_owned(), folded.clone())]);
         let fleet = fleet::rows(
             &world,
+            None,
             &seats(),
             &BTreeMap::new(),
             &FleetOrder::EMPTY,
@@ -900,6 +901,7 @@ fn honeststatus_mixed_stale_and_blocked_seats_keep_the_human_mark() {
     let world = World::new(now(), vec![entry]);
     let fleet = fleet::rows(
         &world,
+        None,
         &seats(),
         &BTreeMap::new(),
         &FleetOrder::EMPTY,
@@ -928,6 +930,7 @@ fn painted(
     let facts = seats();
     let fleet = fleet::rows(
         &world,
+        None,
         &facts,
         &BTreeMap::new(),
         &FleetOrder::EMPTY,

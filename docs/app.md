@@ -84,7 +84,10 @@ recorded config first.
   you, newest first, and a session with none after them in creation order;
   stopped ones come last. The orchestrator is never a row, running or
   stopped, and no count, digit, cue or pin reaches it: it has its own panel
-  ([Orchestrator panel](#orchestrator-panel)). Your own input never reorders the list. A needy row says so by its `⚠` mark, with no edge, and `!` reaches it. One row is lifted: the one the chat column shows, the selected session while its shared chat is and a seat only while that seat's screen is. It wears a `▸` (`>` with `icons = off`) in its first cell and the selected ground over its one row; with `theme = off` the row is reversed. While a seat's screen is shown its session is a context row: no lift, its name keeps the title ink. A session that answered you while you looked elsewhere carries a `▸` (`>` with `icons = off`) in the blank cell left of its status mark, from the next fleet read until you select it; the home session and the selected one never carry it. The order is unchanged: the cue only says which row answered, the same newest AI answer that orders the list. The wheel moves a list that does not fit one session a notch; a
+  ([Orchestrator panel](#orchestrator-panel)). The orchestrator is the session
+  whose meta records the role (`meta_agent=true`) and the seat overlay
+  `orchestrator.config`; any other session, whatever its name, is an ordinary
+  row. Your own input never reorders the list. A needy row says so by its `⚠` mark, with no edge, and `!` reaches it. One row is lifted: the one the chat column shows, the selected session while its shared chat is and a seat only while that seat's screen is. It wears a `▸` (`>` with `icons = off`) in its first cell and the selected ground over its one row; with `theme = off` the row is reversed. While a seat's screen is shown its session is a context row: no lift, its name keeps the title ink. A session that answered you while you looked elsewhere carries a `▸` (`>` with `icons = off`) in the blank cell left of its status mark, from the next fleet read until you select it; the home session and the selected one never carry it. The order is unchanged: the cue only says which row answered, the same newest AI answer that orders the list. The wheel moves a list that does not fit one session a notch; a
   selection key brings the selection back into view, a click keeps the list
   where it is.
 - **Agents** under the list: every seat of the selected session: its mark, its
@@ -143,11 +146,13 @@ record, and a session with none recorded (or none in the listing) draws none.
 A session replaced between two reads of its record can therefore show the
 previous incarnation's dir for at most one refresh (5 seconds).
 
-Both borders can be dragged with the mouse. The rule between the sidebar and
+Every border can be dragged with the mouse. The rule between the sidebar and
 the chat sets the sidebar's width: at least 30 cells, and the chat keeps at
 least 40. The rule under the `Agents` heading moves the split between the session
 list and the body: the list keeps one session and its more row, the body three rows (or
-as few as it had undragged). The rule being dragged is drawn in the title
+as few as it had undragged). The left border of a side-by-side
+[orchestrator panel](#orchestrator-panel) sets the panel's width: the panel and
+the chat beside it each keep at least 40 cells. The rule being dragged is drawn in the title
 colour, reversed with `theme = off`; letting go ends the drag. The sizes last
 for this run of the app and are not remembered; a smaller pane narrows them
 only while it is small.
@@ -234,7 +239,7 @@ Browsing:
 | Click a seat row | highlight that seat |
 | Wheel over chat or the Agents body | scroll three rows per notch, also while writing |
 | Wheel over the session list | scroll one session per notch, also while writing |
-| Drag a border | resize the sidebar or the session list, also while writing |
+| Drag a border | resize the sidebar, the session list or the orchestrator panel, also while writing |
 | Click composer | write the selected session, when no other app writes it |
 | `Esc` | clear the seat cursor, else back to home |
 | `Enter` or `i` | write the selected session, when no other app writes it |
@@ -427,7 +432,9 @@ the panel when it is hidden.
 
 The panel is a second chat column on the orchestrator, drawn by the chat's
 own renderer with its own composer, scroll, marked turn and draft. Side by side
-it takes the right half of the chat column, each half at least 40 cells.
+it takes the right half of the chat column, each half at least 40 cells, until
+you drag its left border; the width you dragged stays while the panel is hidden
+or full screen, and a restart carries it.
 Narrower, the column that holds the keys covers the frame: the panel, its
 header saying `side needs <N> columns`, or the main column, so a writer, the
 reader `r` opens and the session `!` selects stay on screen. The panel stays
@@ -443,13 +450,27 @@ panel, `v` and `oo` do nothing, `r` opens the reader in the main column, and
 the rest acts on the panel's chat; `O` and `F` are plain text while writing.
 
 The panel opens on the orchestrator incarnation the last fleet read proved:
-its live `@ae_session_uuid`, its meta and the one `session_id` that meta
-records. It shows and writes that incarnation only. With none it says one line
-and acts on nothing: `no orchestrator running`, `orchestrator unproven: <why>`,
-or, when another incarnation took the name while it was open,
-`orchestrator replaced; O reopens`. Only hiding and opening it again binds a
-new one. An app started on the orchestrator (`ae app orchestrator`, or a
-handed-over view of it) opens the panel full screen.
+its live `@ae_session_uuid`, its meta, the one `session_id` that meta records
+and its seat overlay `orchestrator.config`. It shows and writes that
+incarnation only. When no orchestrator runs, opening the panel starts the seat
+as `ae orchestrator` does, and a stopped seat resumes its own session. A start
+creates the launch server when its socket does not exist yet; a socket path
+that exists but does not answer starts nothing. A seat stopped by a host reboot
+resumes on the same last-live proof as `ae <name>`; the
+panel says `waiting for the orchestrator seat` until a fleet read proves it,
+and a start that fails says why, never a note the start wrote before it. A
+role claim without the seat overlay starts and resumes nothing: the panel says
+so on its line. A panel bound to no running orchestrator is a
+status column: its header names `orchestrator`, its body holds one line, its
+composer row says `read-only`, and it acts on nothing. The line is the start's
+own, `orchestrator unproven: <why>`, the session that holds the orchestrator
+role under another name with the `ae <name>` command that reaches it,
+`orchestrator stopped; O starts it` when the seat it showed stops (the panel
+never starts it again by itself), or `orchestrator replaced; O reopens` when
+another incarnation took the name while it was open. Only hiding and opening it
+again binds or starts one. An app started on the orchestrator (`ae app
+orchestrator`, or a handed-over view of it) opens the panel full screen when
+the seat runs.
 
 ## Session menu
 

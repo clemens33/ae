@@ -133,6 +133,8 @@ pub(crate) enum Edge {
     Sidebar,
     /// The horizontal rule under the tab row.
     List,
+    /// The side panel's border, its left column.
+    Panel,
 }
 
 /// The sizes the borders were dragged to, kept for the app's run and clamped
@@ -143,6 +145,8 @@ pub(crate) struct Split {
     pub(crate) sidebar: Option<u16>,
     /// The session list's rows, its more row included.
     pub(crate) list: Option<u16>,
+    /// The side panel's width, its border included.
+    pub(crate) panel: Option<u16>,
 }
 
 /// A drag in progress: the edge, the pointer's cell along the edge's axis at
@@ -287,13 +291,13 @@ pub(crate) struct Columns {
 }
 
 impl Model {
-    /// The state a fresh app starts in: the home row, else the first row.
+    /// The state a fresh app starts in: the home row, else the first row. The
+    /// orchestrator role holder is no row, so never the home row.
     #[must_use]
     pub fn new(fleet: &Fleet) -> Self {
         let selected = fleet
             .home
             .clone()
-            .filter(|home| home != crate::orchestrator::ORCHESTRATOR_SESSION)
             .or_else(|| fleet.rows.first().map(|row| row.name.clone()));
         Self {
             selected,
@@ -659,6 +663,7 @@ impl Model {
             rows: self.rows,
             list_top: self.list_top,
             body_top: self.body_top,
+            panel: self.split.panel,
         })
     }
 
@@ -679,6 +684,7 @@ impl Model {
             split: Split {
                 sidebar: view.sidebar,
                 list: view.list,
+                panel: view.panel,
             },
             epoch: self.epoch.wrapping_add(1),
             ..Self::default()
@@ -734,6 +740,7 @@ impl Model {
         let kept = match drag.edge {
             Edge::Sidebar => &mut self.split.sidebar,
             Edge::List => &mut self.split.list,
+            Edge::Panel => &mut self.split.panel,
         };
         kept.replace(size) != Some(size)
     }
@@ -1593,6 +1600,7 @@ mod tests {
             rows: 0,
             list_top: None,
             body_top: 0,
+            panel: None,
         };
         model.adopt(&both, &view);
         assert_eq!(model.epoch(), before + 1);

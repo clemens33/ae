@@ -219,6 +219,7 @@ impl Rig {
                     }
                     read.fleet = fleet::rows(
                         &read.world,
+                        Some(ORCH),
                         &read.facts,
                         &std::collections::BTreeMap::new(),
                         &crate::theme::FleetOrder::EMPTY,
@@ -896,6 +897,7 @@ fn p3_an_orchestrator_home_or_handover_opens_full_without_an_ordinary_row() {
                     rows: 0,
                     list_top: None,
                     body_top: 0,
+                    panel: None,
                 },
                 at: Timestamp::now().epoch(),
             });
@@ -1149,6 +1151,7 @@ fn p1_unread_cues_and_fleet_order_never_reintroduce_the_orchestrator() {
     let empty = std::collections::BTreeMap::new();
     let ordered = fleet::rows(
         &rig.app.world,
+        Some(ORCH),
         &empty,
         &std::collections::BTreeMap::new(),
         &crate::theme::FleetOrder::from_validated(

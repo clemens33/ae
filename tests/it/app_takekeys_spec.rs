@@ -88,6 +88,7 @@ fn keep() -> Keep {
             rows: 0,
             list_top: None,
             body_top: 0,
+            panel: None,
         },
         at: 0,
     }

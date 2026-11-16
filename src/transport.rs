@@ -467,6 +467,16 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
     child.wait_with_output().ok()
 }
 
+/// Where a deadline-bounded run's stdout is read from.
+#[derive(Clone, Copy)]
+enum Out<'a> {
+    /// A capture the caller made, which the child writes by path: its stdout
+    /// is discarded.
+    Into(&'a CaptureScratch),
+    /// A private scratch file of its own, named for its leg.
+    Tagged(&'static str),
+}
+
 /// How a deadline-bounded run ended.
 enum Ran {
     /// It exited by itself: its status and its stdout, at most `cap` bytes.
@@ -492,7 +502,7 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
     envs: &[(&str, &str)],
     cap: u64,
     deadline: Duration,
-    capture: Option<&CaptureScratch>,
+    out: Out<'_>,
     cwd: Option<&Path>,
 ) -> Ran {
     const POLL: Duration = Duration::from_millis(25);
@@ -501,17 +511,16 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
         let _ = child.wait();
         ended
     }
-    let owned = capture
-        .is_none()
-        .then(|| {
-            CaptureScratch::tagged(match program {
-                "agy" => "agy",
-                "muse" => "muse",
-                _ => "clipboard",
-            })
-        })
-        .flatten();
-    let Some(scratch) = capture.or(owned.as_ref()) else {
+    let owned = match out {
+        Out::Into(_) => None,
+        Out::Tagged(tag) => CaptureScratch::tagged(tag),
+    };
+    let supplied = matches!(out, Out::Into(_));
+    let scratch = match out {
+        Out::Into(scratch) => Some(scratch),
+        Out::Tagged(_) => owned.as_ref(),
+    };
+    let Some(scratch) = scratch else {
         return Ran::Failed;
     };
     let Ok(handle) = scratch.file().try_clone() else {
@@ -523,7 +532,7 @@ fn spawn_until<A: AsRef<std::ffi::OsStr>>(
         command.current_dir(dir);
     }
     command.stdin(std::process::Stdio::null());
-    command.stdout(capture_output(handle, capture.is_some()));
+    command.stdout(capture_output(handle, supplied));
     command.stderr(std::process::Stdio::null());
     let started = std::time::Instant::now();
     let mut child = match command.spawn() {
@@ -612,7 +621,7 @@ pub(crate) fn run_clipboard_image() -> Result<Vec<u8>, String> {
         &[],
         20 * 1024 * 1024,
         Duration::from_secs(8),
-        scratch.as_ref(),
+        scratch.as_ref().map_or(Out::Tagged("clipboard"), Out::Into),
         None,
     ) {
         Ran::Exited(exit, bytes) if exit.success() => Ok(bytes),
@@ -851,7 +860,7 @@ fn agy_quota_with(home: &Path, envs: &[(&str, &str)], deadlines: [Duration; 2]) 
         envs,
         4096,
         version_deadline,
-        None,
+        Out::Tagged("agy"),
         None,
     ) {
         Ran::Absent => return AgyRun::Absent,
@@ -859,7 +868,15 @@ fn agy_quota_with(home: &Path, envs: &[(&str, &str)], deadlines: [Duration; 2]) 
         Ran::Exited(..) | Ran::TimedOut | Ran::Failed | Ran::Over => return AgyRun::TooOld,
     }
     let quota = ["-p", "/quota", "--output-format", "json"];
-    match spawn_until("agy", &quota, envs, 65_536, quota_deadline, None, None) {
+    match spawn_until(
+        "agy",
+        &quota,
+        envs,
+        65_536,
+        quota_deadline,
+        Out::Tagged("agy"),
+        None,
+    ) {
         Ran::Exited(exit, out) if exit.success() => {
             String::from_utf8(out).map_or(AgyRun::Failed, |text| AgyRun::Done { text })
         }
@@ -975,7 +992,7 @@ fn muse_quota_with(home: &Path, envs: &[(&str, &str)], deadline: Duration) -> Mu
         envs,
         MUSE_OUTPUT_CAP,
         deadline,
-        None,
+        Out::Tagged("muse"),
         Some(workspace.path()),
     ) {
         Ran::Exited(exit, out) if exit.success() => {
@@ -1061,6 +1078,73 @@ pub(crate) fn run_detached(argv: &crate::lifecycle::DetachedArgv) -> bool {
 /// is sealed by `autoupgrade`; this layer only adds fixed `nohup` and streams.
 pub(crate) fn run_autoupgrade_detached(argv: &crate::autoupgrade::DetachedArgv) -> bool {
     spawn("nohup", argv.as_args(), &[], Streams::Detached, None).is_some()
+}
+
+/// How the app's waited seat child ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SeatApplyRun {
+    /// It exited by itself: its code (none when a signal ended it) and its
+    /// stdout, at most [`SEAT_APPLY_CAP`] bytes.
+    Ended { code: Option<i32>, stdout: Vec<u8> },
+    /// It ran past `wait` and was killed and reaped.
+    TimedOut,
+    /// It was not started, watched or read back.
+    Failed,
+}
+
+/// The seat child's stdout cap: its contract is one line.
+const SEAT_APPLY_CAP: u64 = 4096;
+
+/// The seat leg's words after its program: `orchestrator --settings-apply
+/// start|resume --target orchestrator --uuid <uuid or empty> --unattended
+/// --deadline <epoch>`, a Start without `resume`, else a Resume of exactly
+/// that identity. Fixed words only: the settings apply parser pins them by
+/// parsing this very argv.
+pub(crate) fn seat_apply_args(resume: Option<&str>, deadline: i64) -> Vec<String> {
+    let action = if resume.is_some() { "resume" } else { "start" };
+    let uuid = resume.unwrap_or_default();
+    let deadline = deadline.to_string();
+    [
+        "orchestrator",
+        "--settings-apply",
+        action,
+        "--target",
+        "orchestrator",
+        "--uuid",
+        uuid,
+        "--unattended",
+        "--deadline",
+        &deadline,
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+/// The app's unattended seat apply: THIS binary with [`seat_apply_args`],
+/// waited for at most `wait` on the deadline-bounded leg. stdin and stderr
+/// are closed, stdout is a private scratch file, and nothing ever attaches a
+/// client.
+pub(crate) fn run_seat_apply(resume: Option<&str>, deadline: i64, wait: Duration) -> SeatApplyRun {
+    let own = crate::shape::resolved_exe();
+    let Some(program) = own.as_deref().and_then(Path::to_str) else {
+        return SeatApplyRun::Failed;
+    };
+    match spawn_until(
+        program,
+        &seat_apply_args(resume, deadline),
+        &[],
+        SEAT_APPLY_CAP,
+        wait,
+        Out::Tagged("seat"),
+        None,
+    ) {
+        Ran::Exited(status, stdout) => SeatApplyRun::Ended {
+            code: status.code(),
+            stdout,
+        },
+        Ran::TimedOut => SeatApplyRun::TimedOut,
+        Ran::Absent | Ran::Over | Ran::Failed => SeatApplyRun::Failed,
+    }
 }
 
 /// The watchdog's pane roster of `session` on `server` — richer than
@@ -3219,7 +3303,7 @@ mod tests {
                 &[],
                 1024,
                 std::time::Duration::from_secs(8),
-                Some(&scratch),
+                super::Out::Into(&scratch),
                 None,
             );
             assert!(

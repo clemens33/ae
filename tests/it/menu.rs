@@ -2801,6 +2801,7 @@ fn settings_rechecks_role_liveness_and_uuid_after_each_captured_action() {
     let source_dir = root.join("sessions/role-source");
     let mut source_meta = String::from_utf8(meta_bytes(&source_dir)).expect("text source meta");
     source_meta.push_str("meta_agent=true\n");
+    let source_meta = seat_overlay(&source_meta, &root);
     assert!(fs::write(source_dir.join("meta"), source_meta).is_ok());
     let renamed = ae()
         .env("HOME", &scratch)
@@ -2839,6 +2840,7 @@ fn settings_rechecks_role_liveness_and_uuid_after_each_captured_action() {
     let renamed_dir = root.join("sessions/renamed");
     let mut role_meta = String::from_utf8(meta_bytes(&renamed_dir)).expect("text role meta");
     role_meta.push_str("meta_agent=true\n");
+    let role_meta = seat_overlay(&role_meta, &root);
     assert!(fs::write(renamed_dir.join("meta"), role_meta).is_ok());
     assert!(tmux(&socket, &scratch, &["kill-session", "-t", "=renamed"]).0);
     let stopped = meta_bytes(&renamed_dir);
@@ -2849,6 +2851,7 @@ fn settings_rechecks_role_liveness_and_uuid_after_each_captured_action() {
     launch_ae_session(&socket, &scratch, &root, &project, &config, "renamed");
     let mut live_role = String::from_utf8(meta_bytes(&renamed_dir)).expect("text live meta");
     live_role.push_str("meta_agent=true\n");
+    let live_role = seat_overlay(&live_role, &root);
     assert!(fs::write(renamed_dir.join("meta"), live_role).is_ok());
     let live_before = meta_bytes(&renamed_dir);
     let now_live = settings_invocation(
@@ -2908,6 +2911,15 @@ fn settings_rechecks_role_liveness_and_uuid_after_each_captured_action() {
     assert!(!tmux(&socket, &scratch, &["has-session", "-t", "=renamed"]).0);
     assert_eq!(meta_bytes(&renamed_dir), replacement.as_bytes());
     assert_eq!(meta_bytes(&root.join("sessions/viewed")), bystander_before);
+}
+
+/// `meta` as the seat records it: the role claim with state root `root`'s seat
+/// overlay as its one local config, which the role census requires. The
+/// overlay is written empty, so a later resume reads it as any overlay.
+fn seat_overlay(meta: &str, root: &Path) -> String {
+    let overlay = root.join("orchestrator.config");
+    assert!(fs::write(&overlay, "").is_ok(), "the empty seat overlay");
+    ae::meta::rewritten(meta, "local_config", Some(&overlay.display().to_string()))
 }
 
 fn rendered_status(socket: &Path, scratch: &Path, client: &str) -> String {

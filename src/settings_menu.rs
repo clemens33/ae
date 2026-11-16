@@ -21,6 +21,20 @@ struct RoleRecord {
     meta: Vec<u8>,
 }
 
+/// How long a session directory may go without its meta and still count as
+/// STARTING, in seconds from its launch-attempt stamp. A launch makes the
+/// directory and stamps it under the lifecycle lock before its tmux create,
+/// and publishes the meta only after that create; past this bound, a missing
+/// meta is an error again.
+pub(crate) const STARTING_BOUND_SECS: u64 = 30;
+
+/// The complete raw role census: every published record, and the session
+/// directories still starting, which have published no claim yet.
+struct RoleCensus {
+    records: Vec<RoleRecord>,
+    starting: Vec<String>,
+}
+
 /// What a complete raw role census found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RoleSelection {
@@ -47,6 +61,8 @@ pub(crate) enum Control {
         target: RoleTarget,
         session_id: String,
     },
+    /// A canonical start is between its state directory and its meta.
+    Starting,
     Unavailable(String),
 }
 
@@ -60,11 +76,30 @@ pub(crate) struct Snapshot<'a> {
     pub(crate) deadline: i64,
 }
 
-fn select_role(records: &[RoleRecord]) -> RoleSelection {
+/// The seat proof: `meta` records the one orchestrator role claim and, once,
+/// state root `root`'s seat overlay as its local config. The role census and
+/// the app's proof of the seat decide by this one predicate.
+pub(crate) fn is_seat(meta: &[u8], root: &Path) -> bool {
+    crate::meta::meta_agent_role(meta) == MetaAgentRole::Role
+        && crate::meta::sole_value(meta, crate::config::LOCAL_CONFIG_KEY).is_some_and(|value| {
+            let value = String::from_utf8_lossy(value);
+            crate::orchestrator::is_seat_overlay(Path::new(value.as_ref()), root)
+        })
+}
+
+/// The role census of state root `root`: a role claim without the seat
+/// overlay ([`is_seat`]) is no seat, and starts or resumes nothing.
+fn select_role(records: &[RoleRecord], root: &Path) -> RoleSelection {
     let mut role = None;
     for record in records {
         match crate::meta::meta_agent_role(&record.meta) {
             MetaAgentRole::Absent => {}
+            MetaAgentRole::Role if !is_seat(&record.meta, root) => {
+                return RoleSelection::Unavailable(format!(
+                    "session '{}' claims the orchestrator role without the seat overlay",
+                    record.name
+                ));
+            }
             MetaAgentRole::Role if role.is_none() => role = Some(record.name.clone()),
             MetaAgentRole::Role => {
                 return RoleSelection::Unavailable(
@@ -82,22 +117,107 @@ fn select_role(records: &[RoleRecord]) -> RoleSelection {
     role.map_or(RoleSelection::Zero, RoleSelection::One)
 }
 
-fn role_records(root: &Path) -> Result<Vec<RoleRecord>, String> {
+/// The role census of state root `root`. Only a directory that is visibly
+/// mid-launch, with no meta and a readable launch-attempt stamp within
+/// [`STARTING_BOUND_SECS`], counts as starting; any other meta that cannot be
+/// read fails the census, as a damaged one does.
+fn role_census(root: &Path) -> Result<RoleCensus, String> {
     let names = crate::lifecycle::census(root)
         .map_err(|why| format!("the session census failed ({why})"))?
         .unwrap_or_default();
-    names
-        .into_iter()
-        .map(|name| {
-            let dir = crate::lifecycle::sessions_dir(root).join(&name);
-            crate::meta::read_bytes(&dir)
-                .map(|meta| RoleRecord {
-                    name: name.clone(),
-                    meta,
-                })
-                .map_err(|why| format!("metadata for session '{name}' is unreadable ({why})"))
-        })
-        .collect()
+    let now = crate::time::Timestamp::now().epoch();
+    let mut census = RoleCensus {
+        records: Vec::new(),
+        starting: Vec::new(),
+    };
+    for name in names {
+        let dir = crate::lifecycle::sessions_dir(root).join(&name);
+        let read = match crate::meta::read_bytes(&dir) {
+            Err(why) if why.kind() == std::io::ErrorKind::NotFound => {
+                match unpublished(&dir, now) {
+                    Unpublished::Starting => {
+                        census.starting.push(name);
+                        continue;
+                    }
+                    Unpublished::Appeared => crate::meta::read_bytes(&dir),
+                    Unpublished::Unclaimed => Err(why),
+                }
+            }
+            read => read,
+        };
+        match read {
+            Ok(meta) => census.records.push(RoleRecord { name, meta }),
+            Err(why) => {
+                return Err(format!(
+                    "metadata for session '{name}' is unreadable ({why})"
+                ));
+            }
+        }
+    }
+    Ok(census)
+}
+
+/// The state of a directory whose meta read found nothing.
+enum Unpublished {
+    /// No meta node yet, and a current launch-attempt stamp.
+    Starting,
+    /// A meta node exists after all: published since the read, or a node
+    /// that cannot be read, such as a dangling link. It is read once more.
+    Appeared,
+    /// No meta node and no current launch-attempt stamp.
+    Unclaimed,
+}
+
+/// What `dir`, whose meta read just found nothing, is at `now`. The lstat
+/// decides first, so a publication that lands between the read and this
+/// check is read again, never reported missing. Only an absent node with a
+/// launch-attempt stamp at most [`STARTING_BOUND_SECS`] before `now` is
+/// starting; the stamp outlives the publication, so its later read cannot miss
+/// a launch, and a stamp from the future is damage, never a start.
+fn unpublished(dir: &Path, now: i64) -> Unpublished {
+    let store = crate::store::open(dir);
+    if crate::archive::retained::node_exists(&store.meta_path()) {
+        return Unpublished::Appeared;
+    }
+    match store.launch_attempt() {
+        crate::tmux::Evidence::At(at) if at <= now && now.abs_diff(at) <= STARTING_BOUND_SECS => {
+            Unpublished::Starting
+        }
+        _ => Unpublished::Unclaimed,
+    }
+}
+
+/// The published records of the role census; a starting directory claims
+/// nothing yet.
+fn role_records(root: &Path) -> Result<Vec<RoleRecord>, String> {
+    role_census(root).map(|census| census.records)
+}
+
+/// The session that records the orchestrator role, by the same census and
+/// classifier as the settings control: `None` when no session claims it, Err
+/// when the census fails or the claim is damaged or duplicated.
+pub(crate) fn role_holder(root: &Path) -> Result<Option<String>, String> {
+    match select_role(&role_records(root)?, root) {
+        RoleSelection::Zero => Ok(None),
+        RoleSelection::One(name) => Ok(Some(name)),
+        RoleSelection::Unavailable(why) => Err(why),
+    }
+}
+
+/// Whether the canonical orchestrator name is absent on `launch_server` for a
+/// Start: the strict [`crate::transport::verify_session_absent`] verdict, and
+/// also a socket missing at the server's path, because a Start creates that
+/// server under the canonical lifecycle lock. A path that exists but does not
+/// answer stays Unknown. Stop, kill and end keep the strict verdict; Resume
+/// takes the boot proof of [`resume_absence`].
+fn start_absence(launch_server: &ServerId) -> StopProbe {
+    let name = crate::orchestrator::ORCHESTRATOR_SESSION;
+    match crate::transport::verify_session_absent(launch_server, name) {
+        StopProbe::Unknown if crate::transport::server_socket_missing(launch_server) => {
+            StopProbe::Absent
+        }
+        probe => probe,
+    }
 }
 
 /// Authoritative Start proof, called only while the canonical lifecycle lock
@@ -106,7 +226,7 @@ fn role_records(root: &Path) -> Result<Vec<RoleRecord>, String> {
 /// authorized creation under a different name.
 pub(crate) fn prove_absent_start(root: &Path, launch_server: &ServerId) -> Result<(), String> {
     let records = role_records(root)?;
-    match select_role(&records) {
+    match select_role(&records, root) {
         RoleSelection::Zero => {}
         RoleSelection::One(name) => {
             return Err(format!(
@@ -120,10 +240,7 @@ pub(crate) fn prove_absent_start(root: &Path, launch_server: &ServerId) -> Resul
     if crate::lifecycle::path_exists(&canonical) {
         return Err("canonical orchestrator state is no longer absent".to_owned());
     }
-    match crate::transport::verify_session_absent(
-        launch_server,
-        crate::orchestrator::ORCHESTRATOR_SESSION,
-    ) {
+    match start_absence(launch_server) {
         StopProbe::Absent => Ok(()),
         StopProbe::Present => Err("canonical tmux namesake is no longer absent".to_owned()),
         StopProbe::Unknown => {
@@ -141,7 +258,7 @@ pub(crate) fn prove_stopped_role(
     expected_uuid: &str,
 ) -> Result<ServerId, String> {
     let records = role_records(root)?;
-    match select_role(&records) {
+    match select_role(&records, root) {
         RoleSelection::One(found) if found == name => {}
         RoleSelection::One(found) => {
             return Err(format!(
@@ -166,15 +283,29 @@ pub(crate) fn prove_stopped_role(
             "role target '{name}' was replaced since the settings menu opened"
         ));
     }
-    match crate::transport::verify_session_absent(&target.server, name) {
-        StopProbe::Absent => Ok(target.server),
-        StopProbe::Present => Err(format!(
+    match resume_absence(root, &target) {
+        (StopProbe::Absent, _) => Ok(target.server),
+        (StopProbe::Present, _) => Err(format!(
             "role target '{name}' is live now; stale Resume refused"
         )),
-        StopProbe::Unknown => Err(format!(
-            "the recorded server cannot prove role target '{name}' stopped"
-        )),
+        (StopProbe::Unknown, why) => Err(unproven(&target.name, why)),
     }
+}
+
+/// Whether the role target is stopped, for a Resume only: the launch path's
+/// own [`crate::session_launch::resume_absence`], which widens the strict
+/// [`crate::transport::verify_session_absent`] only by the last-live evidence
+/// ae wrote, so a seat stopped by a host reboot resumes. Every evidence gap
+/// stays Unknown. Stop, kill and end keep the strict verdict.
+fn resume_absence(root: &Path, target: &RoleTarget) -> (StopProbe, Option<String>) {
+    let dir = crate::lifecycle::sessions_dir(root).join(&target.name);
+    crate::session_launch::resume_absence(&target.server, &target.name, &dir)
+}
+
+/// The one line a Resume without a stopped proof says: the launch path's own
+/// reason when it has one, the same line `ae <name>` prints.
+fn unproven(name: &str, why: Option<String>) -> String {
+    why.unwrap_or_else(|| format!("the recorded server cannot prove role target '{name}' stopped"))
 }
 
 fn target_from(name: String, meta: &[u8]) -> Result<RoleTarget, String> {
@@ -209,24 +340,27 @@ pub(crate) fn discover(
     invoking_server: &ServerId,
     launch_server: &ServerId,
 ) -> Control {
-    let records = match role_records(root) {
-        Ok(records) => records,
+    let RoleCensus { records, starting } = match role_census(root) {
+        Ok(census) => census,
         Err(why) => return Control::Unavailable(why),
     };
-    let name = match select_role(&records) {
+    let name = match select_role(&records, root) {
         RoleSelection::Zero => {
+            // A canonical start between its state directory and its meta.
+            if (starting.iter()).any(|name| name == crate::orchestrator::ORCHESTRATOR_SESSION) {
+                return Control::Starting;
+            }
             let canonical = crate::lifecycle::sessions_dir(root)
                 .join(crate::orchestrator::ORCHESTRATOR_SESSION);
             if crate::lifecycle::path_exists(&canonical) {
+                // "collision" leads: one word no narrow panel wraps apart.
                 return Control::Unavailable(
-                    "the canonical 'orchestrator' state exists without the orchestrator role"
+                    "name collision: the canonical 'orchestrator' state exists without the \
+                     orchestrator role"
                         .to_owned(),
                 );
             }
-            return match crate::transport::verify_session_absent(
-                launch_server,
-                crate::orchestrator::ORCHESTRATOR_SESSION,
-            ) {
+            return match start_absence(launch_server) {
                 StopProbe::Absent => Control::Start,
                 StopProbe::Present => Control::Unavailable(
                     "a live canonical namesake exists without proven orchestrator state".to_owned(),
@@ -247,13 +381,10 @@ pub(crate) fn discover(
         Ok(target) => target,
         Err(why) => return Control::Unavailable(why),
     };
-    match crate::transport::verify_session_absent(&target.server, &target.name) {
-        StopProbe::Absent => Control::Resume(target),
-        StopProbe::Unknown => Control::Unavailable(format!(
-            "the recorded server cannot prove role target '{}' stopped",
-            target.name
-        )),
-        StopProbe::Present => {
+    match resume_absence(root, &target) {
+        (StopProbe::Absent, _) => Control::Resume(target),
+        (StopProbe::Unknown, why) => Control::Unavailable(unproven(&target.name, why)),
+        (StopProbe::Present, _) => {
             let mut sockets = crate::fleet_read::SocketPaths::live();
             if !sockets.proven_same(invoking_server, &target.server) {
                 return Control::Unavailable(format!(
@@ -271,6 +402,14 @@ pub(crate) fn discover(
         }
     }
 }
+
+/// How long an unattended apply stays valid, in epoch seconds: inside the
+/// settings confirm window, and long enough for the launch lock wait.
+pub(crate) const UNATTENDED_WINDOW_SECS: i64 = 60;
+
+/// How long the app waits for its unattended child before killing it: past
+/// the window, so a launch that began in time can finish.
+pub(crate) const UNATTENDED_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 
 fn launch_argv(
     launcher: &[String],
@@ -372,6 +511,12 @@ pub(crate) fn menu(
             MenuAction::Run(crate::tmux::menu_run_shell_command(&pause_argv(
                 launcher, target, session_id, snapshot,
             ))),
+        ),
+        Control::Starting => (
+            "orchestrator: starting".to_owned(),
+            "the orchestrator seat is starting".to_owned(),
+            String::new(),
+            MenuAction::Disabled,
         ),
         Control::Unavailable(why) => (
             "orchestrator: unavailable".to_owned(),
@@ -672,6 +817,9 @@ enum LaunchAction {
     Resume,
 }
 
+/// One parsed apply. The attached form carries the clicking client; the
+/// unattended form (the app's waited child) carries none, and its four client
+/// fields stay empty.
 struct CapturedLaunch {
     action: LaunchAction,
     target: String,
@@ -681,9 +829,13 @@ struct CapturedLaunch {
     server_pid: String,
     server_start: String,
     deadline: i64,
+    unattended: bool,
     #[cfg(debug_assertions)]
     test_pre_lock_marker: bool,
 }
+
+/// The unattended apply's form flag: no client attachment travels with it.
+pub(crate) const UNATTENDED_FLAG: &str = "--unattended";
 
 /// Whether the public orchestrator word carries the settings continuation.
 pub(crate) fn is_apply(tail: &[String]) -> bool {
@@ -807,10 +959,19 @@ fn parse_apply(tail: &[String]) -> Result<CapturedLaunch, String> {
     let mut server_pid = None;
     let mut server_start = None;
     let mut deadline = None;
+    let mut unattended = false;
     #[cfg(debug_assertions)]
     let mut test_pre_lock_marker = false;
     let mut remaining = rest;
     while let [flag, after @ ..] = remaining {
+        if flag == UNATTENDED_FLAG {
+            if unattended {
+                return Err(format!("{UNATTENDED_FLAG} may be given only once"));
+            }
+            unattended = true;
+            remaining = after;
+            continue;
+        }
         if flag == "--test-pre-lock-marker" {
             #[cfg(debug_assertions)]
             {
@@ -856,6 +1017,39 @@ fn parse_apply(tail: &[String]) -> Result<CapturedLaunch, String> {
     } else if crate::archive::canonical_uuid(&uuid).is_empty() {
         return Err("--uuid is not a session identity".to_owned());
     }
+    let deadline = required(deadline, "--deadline")?
+        .parse::<i64>()
+        .map_err(|_| "--deadline is not an epoch second".to_owned())?;
+    if unattended {
+        // The unattended form names only the canonical seat and carries no
+        // attachment: a client flag beside it is a mixed form.
+        if [&client, &client_pid, &server_pid, &server_start]
+            .iter()
+            .any(|slot| slot.is_some())
+        {
+            return Err(format!(
+                "{UNATTENDED_FLAG} carries no client, client pid or server identity"
+            ));
+        }
+        if target != crate::orchestrator::ORCHESTRATOR_SESSION {
+            return Err(format!(
+                "{UNATTENDED_FLAG} names only the canonical orchestrator seat"
+            ));
+        }
+        return Ok(CapturedLaunch {
+            action,
+            target,
+            uuid,
+            client: String::new(),
+            client_pid: String::new(),
+            server_pid: String::new(),
+            server_start: String::new(),
+            deadline,
+            unattended,
+            #[cfg(debug_assertions)]
+            test_pre_lock_marker,
+        });
+    }
     let client = required(client, "--client")?;
     if !is_client_name(&client) {
         return Err("--client is not an addressable tmux client".to_owned());
@@ -870,9 +1064,6 @@ fn parse_apply(tail: &[String]) -> Result<CapturedLaunch, String> {
     let client_pid = decimal(client_pid, "--client-pid")?;
     let server_pid = decimal(server_pid, "--server-pid")?;
     let server_start = decimal(server_start, "--server-start")?;
-    let deadline = required(deadline, "--deadline")?
-        .parse::<i64>()
-        .map_err(|_| "--deadline is not an epoch second".to_owned())?;
     Ok(CapturedLaunch {
         action,
         target,
@@ -882,6 +1073,7 @@ fn parse_apply(tail: &[String]) -> Result<CapturedLaunch, String> {
         server_pid,
         server_start,
         deadline,
+        unattended,
         #[cfg(debug_assertions)]
         test_pre_lock_marker,
     })
@@ -892,7 +1084,7 @@ fn report(
     expectation: Option<&crate::session_launch::ExpectedLaunch>,
     captured: &CapturedLaunch,
     text: &str,
-    err: &mut impl Write,
+    err: &mut dyn Write,
 ) {
     if let (Some(server), Some(expectation)) = (server, expectation)
         && expectation.check_attachment().is_ok()
@@ -903,6 +1095,11 @@ fn report(
 }
 
 /// Apply Start/Resume through the ordinary launch owner with an expectation.
+/// The attached form tells its exact client; the unattended form (the app's
+/// waited child) tells nobody and writes exactly ONE line to stdout, the line
+/// the app's panel shows: what it did, else why nothing (or the launch's first
+/// refusal line), with the launch's own streams on stderr. The exit code is
+/// the launch's.
 #[allow(
     clippy::too_many_lines,
     reason = "one action from captured identity proof through exact-client report"
@@ -920,30 +1117,40 @@ pub(crate) fn run_apply(
             return Ok(crate::entry::EXIT_USAGE);
         }
     };
-    let Some(server) = preamble.caller_server.clone() else {
-        report(
-            None,
-            None,
-            &captured,
-            "no calling tmux server; nothing was done",
-            err,
-        );
-        return Ok(crate::entry::EXIT_FAILED);
+    // The attached form needs its caller's server; the unattended one has
+    // no client to tell and proves no server.
+    let server = match (captured.unattended, preamble.caller_server.clone()) {
+        (true, _) => None,
+        (false, Some(server)) => Some(server),
+        (false, None) => {
+            report(
+                None,
+                None,
+                &captured,
+                "no calling tmux server; nothing was done",
+                err,
+            );
+            return Ok(crate::entry::EXIT_FAILED);
+        }
     };
-    let expectation = crate::session_launch::ExpectedLaunch::new(
-        match captured.action {
-            LaunchAction::Start => crate::session_launch::ExpectedState::AbsentCanonical,
-            LaunchAction::Resume => crate::session_launch::ExpectedState::StoppedRole {
-                uuid: crate::archive::canonical_uuid(&captured.uuid),
-            },
+    let state = match captured.action {
+        LaunchAction::Start => crate::session_launch::ExpectedState::AbsentCanonical,
+        LaunchAction::Resume => crate::session_launch::ExpectedState::StoppedRole {
+            uuid: crate::archive::canonical_uuid(&captured.uuid),
         },
-        server.clone(),
-        captured.server_pid.clone(),
-        captured.server_start.clone(),
-        captured.client.clone(),
-        captured.client_pid.clone(),
-        captured.deadline,
-    );
+    };
+    let expectation = match &server {
+        None => crate::session_launch::ExpectedLaunch::unattended(state, captured.deadline),
+        Some(server) => crate::session_launch::ExpectedLaunch::new(
+            state,
+            server.clone(),
+            captured.server_pid.clone(),
+            captured.server_start.clone(),
+            captured.client.clone(),
+            captured.client_pid.clone(),
+            captured.deadline,
+        ),
+    };
     #[cfg(debug_assertions)]
     let expectation = {
         let mut expectation = expectation;
@@ -952,25 +1159,22 @@ pub(crate) fn run_apply(
         }
         expectation
     };
+    // Nothing was done: the unattended form says so on its one line.
+    let refuse = |out: &mut dyn Write, err: &mut dyn Write, why: &str| match &server {
+        None => writeln!(out, "orchestrator not started: {why}"),
+        Some(server) => {
+            let text = format!("{why}; nothing was done");
+            report(Some(server), Some(&expectation), &captured, &text, err);
+            Ok(())
+        }
+    };
     if let Err(why) = expectation.check_action(crate::time::Timestamp::now().epoch()) {
-        report(
-            Some(&server),
-            Some(&expectation),
-            &captured,
-            &format!("{why}; nothing was done"),
-            err,
-        );
+        refuse(out, err, &why)?;
         return Ok(crate::entry::EXIT_FAILED);
     }
     let deps = crate::doctor::check_deps(&[], err)?;
     if deps != 0 {
-        report(
-            Some(&server),
-            Some(&expectation),
-            &captured,
-            "launch dependencies are unavailable; nothing was done",
-            err,
-        );
+        refuse(out, err, "launch dependencies are unavailable")?;
         return Ok(deps);
     }
     let mut seat = preamble.clone();
@@ -991,6 +1195,12 @@ pub(crate) fn run_apply(
         &mut launch_out,
         &mut launch_err,
     )?;
+    let Some(server) = server else {
+        err.write_all(&launch_out)?;
+        err.write_all(&launch_err)?;
+        writeln!(out, "{}", unattended_line(&captured, code, &launch_err))?;
+        return Ok(code);
+    };
     out.write_all(&launch_out)?;
     err.write_all(&launch_err)?;
     if code == 0 {
@@ -1020,6 +1230,36 @@ pub(crate) fn run_apply(
     Ok(code)
 }
 
+/// The prefixes a launch refusal line starts with.
+const REFUSAL_PREFIXES: [&str; 2] = ["Error:", "ae orchestrator:"];
+
+/// The unattended apply's one stdout line after a launch that exited `code`:
+/// what it did, else the refusal on `launch_err`: its last line that carries
+/// a refusal prefix, else its last nonblank line. A note the launch wrote
+/// before it refused never stands in for the refusal.
+fn unattended_line(captured: &CapturedLaunch, code: u8, launch_err: &[u8]) -> String {
+    if code == 0 {
+        return match captured.action {
+            LaunchAction::Start => "started orchestrator",
+            LaunchAction::Resume => "resumed orchestrator",
+        }
+        .to_owned();
+    }
+    let text = String::from_utf8_lossy(launch_err);
+    let lines: Vec<&str> = (text.lines().map(str::trim))
+        .filter(|line| !line.is_empty())
+        .collect();
+    let refusal = |line: &&str| REFUSAL_PREFIXES.iter().any(|at| line.starts_with(at));
+    (lines.iter().rev().copied().find(refusal))
+        .or(lines.last().copied())
+        .unwrap_or("launch refused")
+        .to_owned()
+}
+
+#[cfg(test)]
+#[path = "settings_menu/o8_spec.rs"]
+mod o8_spec;
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -1032,6 +1272,10 @@ mod tests {
     use crate::meta::Selector;
 
     const UUID: &str = "33333333-3333-4333-8333-333333333333";
+    /// A state root and its seat overlay row: a role claim is the seat only
+    /// with both ([`super::is_seat`]).
+    const ROOT: &str = "/r";
+    const SEAT: &str = "local_config=/r/orchestrator.config\n";
 
     fn target(name: &str) -> RoleTarget {
         RoleTarget {
@@ -1080,24 +1324,27 @@ mod tests {
             },
             RoleRecord {
                 name: "renamed".to_owned(),
-                meta: b"session=renamed\nmeta_agent=true\n".to_vec(),
+                meta: format!("session=renamed\nmeta_agent=true\n{SEAT}").into_bytes(),
             },
         ];
         assert_eq!(
-            select_role(&records),
+            select_role(&records, Path::new(ROOT)),
             RoleSelection::One("renamed".to_owned())
         );
     }
 
     #[test]
     fn zero_canonical_and_renamed_censuses_have_distinct_exact_answers() {
-        assert_eq!(select_role(&[]), RoleSelection::Zero);
+        assert_eq!(select_role(&[], Path::new(ROOT)), RoleSelection::Zero);
         for name in ["orchestrator", "renamed"] {
             assert_eq!(
-                select_role(&[RoleRecord {
-                    name: name.to_owned(),
-                    meta: b"meta_agent=true\n".to_vec(),
-                }]),
+                select_role(
+                    &[RoleRecord {
+                        name: name.to_owned(),
+                        meta: format!("meta_agent=true\n{SEAT}").into_bytes(),
+                    }],
+                    Path::new(ROOT)
+                ),
                 RoleSelection::One(name.to_owned())
             );
         }
@@ -1130,22 +1377,22 @@ mod tests {
             meta: b"meta_agent=true\nmeta_agent=true\n".to_vec(),
         }];
         assert!(matches!(
-            select_role(&damaged),
+            select_role(&damaged, Path::new(ROOT)),
             RoleSelection::Unavailable(_)
         ));
 
         let multiple = [
             RoleRecord {
                 name: "one".to_owned(),
-                meta: b"meta_agent=true\n".to_vec(),
+                meta: format!("meta_agent=true\n{SEAT}").into_bytes(),
             },
             RoleRecord {
                 name: "two".to_owned(),
-                meta: b"meta_agent=true\n".to_vec(),
+                meta: format!("meta_agent=true\n{SEAT}").into_bytes(),
             },
         ];
         assert!(matches!(
-            select_role(&multiple),
+            select_role(&multiple, Path::new(ROOT)),
             RoleSelection::Unavailable(_)
         ));
     }
@@ -1780,8 +2027,32 @@ mod tests {
             assert!(!super::is_client_name(bad), "{bad:?}");
         }
     }
-}
 
-#[cfg(test)]
-#[path = "settings_menu/o8_spec.rs"]
-mod o8_spec;
+    #[test]
+    fn the_app_seat_leg_argv_is_the_strict_unattended_form_the_apply_parses() {
+        for (resume, action, uuid) in [
+            (None, LaunchAction::Start, ""),
+            (Some(UUID), LaunchAction::Resume, UUID),
+        ] {
+            let argv = crate::transport::seat_apply_args(resume, 1_789_109_780);
+            let [command, tail @ ..] = argv.as_slice() else {
+                panic!("the command leads the argv");
+            };
+            assert_eq!(command, crate::orchestrator::ORCHESTRATOR_SESSION);
+            let parsed = parse_apply(tail).expect("the minted argv parses");
+            assert_eq!(parsed.action, action);
+            assert_eq!(parsed.target, crate::orchestrator::ORCHESTRATOR_SESSION);
+            assert_eq!(parsed.uuid, uuid);
+            assert_eq!(parsed.deadline, 1_789_109_780);
+            assert!(parsed.unattended, "the minted argv is the unattended form");
+            for field in [
+                &parsed.client,
+                &parsed.client_pid,
+                &parsed.server_pid,
+                &parsed.server_start,
+            ] {
+                assert!(field.is_empty(), "no client identity travels: {field}");
+            }
+        }
+    }
+}

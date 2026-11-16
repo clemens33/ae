@@ -32,6 +32,7 @@ fn saved() -> View {
         rows: 3,
         list_top: Some(1),
         body_top: 4,
+        panel: None,
     }
 }
 
@@ -244,6 +245,7 @@ fn writer_snapshot_preserves_only_view_and_requires_a_readable_selection_uuid() 
             rows: 0,
             list_top: None,
             body_top: 3,
+            panel: None,
             ..saved()
         },
     };

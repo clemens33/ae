@@ -33,6 +33,12 @@ mod o7app_spec;
 mod o7app_units;
 mod o8_handover_spec;
 mod o8_identity_spec;
+mod o8_mutation_spec;
+mod o8_namesake_spec;
+mod o8_overlay_spec;
+mod o8_transition_spec;
+mod o8_units;
+mod o8_uuid_spec;
 mod s2_exec_spec;
 
 pub(in crate::app) const ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
@@ -2550,6 +2556,7 @@ fn a_composer_write_asks_for_a_home_reread() {
             | loader::Request::Ending(_)
             | loader::Request::Stats { .. }
             | loader::Request::Tools { .. }
+            | loader::Request::Seat(_)
             | loader::Request::Settings { .. } => None,
         })
         .collect();
@@ -2792,6 +2799,7 @@ fn every_change_of_selection_is_told_to_the_reader() {
                 | loader::Request::Ending(_)
                 | loader::Request::Stats { .. }
                 | loader::Request::Tools { .. }
+                | loader::Request::Seat(_)
                 | loader::Request::Settings { .. } => None,
             })
             .collect()
@@ -2826,6 +2834,7 @@ fn settings_requests(asks: &std::sync::mpsc::Receiver<loader::Request>) -> Vec<(
             | loader::Request::Ending(_)
             | loader::Request::Stats { .. }
             | loader::Request::Tools { .. }
+            | loader::Request::Seat(_)
             | loader::Request::Writing(_) => None,
         })
         .collect()
@@ -2864,6 +2873,7 @@ fn settings_open_tells_the_current_selection_first() {
                 | loader::Request::Ending(_)
                 | loader::Request::Stats { .. }
                 | loader::Request::Tools { .. }
+                | loader::Request::Seat(_)
                 | loader::Request::Writing(_) => String::new(),
             })
             .collect()
@@ -5827,6 +5837,7 @@ fn handed(pages: usize, rows: usize) -> Answer {
         rows,
         list_top: None,
         body_top: 0,
+        panel: None,
     };
     let at = Timestamp::now().epoch();
     Answer::Handover { view, at }

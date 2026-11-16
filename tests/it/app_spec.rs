@@ -238,6 +238,7 @@ fn fleet() -> Fleet {
     let order = FleetOrder::from_validated(vec!["docs".to_owned()]);
     rows(
         &world,
+        Some("orchestrator"),
         &facts,
         &last_live,
         &order,
@@ -293,8 +294,9 @@ fn app_fleet_rows_mark_and_needy() {
     assert!(!by_name("docs").needy, "counts never make needy");
     // The panel control retains the orchestrator's mark, outside the list.
     let (world, facts, _, needs) = world();
-    let orchestrator = ae::app::fleet::orchestrator(&world, &facts, &needs, now())
-        .expect("the hidden live orchestrator still has its panel facts");
+    let orchestrator =
+        ae::app::fleet::orchestrator(&world, Some("orchestrator"), &facts, &needs, now())
+            .expect("the hidden live orchestrator still has its panel facts");
     assert_eq!(orchestrator.name, "orchestrator");
     assert_eq!(orchestrator.mark, Mark::Working);
     assert!(!orchestrator.needy, "no orchestrator Section, no need");
@@ -343,6 +345,7 @@ fn app_fleet_rows_counts() {
         let world = World::new(now(), vec![entry]);
         let fleet = rows(
             &world,
+            None,
             &BTreeMap::from([("offsite".to_owned(), facts)]),
             &BTreeMap::new(),
             &FleetOrder::EMPTY,
@@ -399,6 +402,7 @@ fn app_fleet_rows_line_two() {
     let world = World::new(now(), vec![entry]);
     let fleet = rows(
         &world,
+        None,
         &BTreeMap::from([(
             "bare".to_owned(),
             Facts::Seats {
@@ -418,6 +422,7 @@ fn app_fleet_rows_line_two() {
     let world = World::new(now(), vec![SessionEntry::new("vague", Status::Running)]);
     let fleet = rows(
         &world,
+        None,
         &BTreeMap::new(),
         &BTreeMap::new(),
         &FleetOrder::EMPTY,
@@ -461,6 +466,7 @@ fn app_fleet_rows_stopped_order() {
     ]);
     let fleet = rows(
         &world,
+        None,
         &BTreeMap::new(),
         &last_live,
         &FleetOrder::EMPTY,

@@ -188,6 +188,7 @@ fn app(world: &World) -> (Mark, String) {
     let needs = BTreeMap::new();
     let fleet = fleet::rows(
         world,
+        None,
         &facts,
         &last_live,
         &FleetOrder::EMPTY,

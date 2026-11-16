@@ -621,7 +621,11 @@ impl App {
     fn answer(&mut self, answer: Answer) {
         let paints = matches!(
             answer,
-            Answer::Fleet(_) | Answer::Look { .. } | Answer::View(_) | Answer::Orchestrator(_)
+            Answer::Fleet(_)
+                | Answer::Look { .. }
+                | Answer::View(_)
+                | Answer::Orchestrator(_)
+                | Answer::Seat { .. }
         );
         if paints && (!self.parked.is_empty() || self.holds_lane()) {
             return self.park(answer);
@@ -662,13 +666,13 @@ impl App {
             Answer::Stats { generation, glance } => self.stats_landed(generation, &glance),
             Answer::Tools { generation, view } => self.tools_landed(generation, view),
             Answer::Core(seen) => self.upgrade = seen,
-            // A handed-over view of the orchestrator opens its panel, never a row.
-            Answer::Handover { view, .. } if view.session == ORCH => {
-                if !self.touched {
-                    self.orch.opening = Opening::Handed(view.id);
-                }
-            }
+            // A handed-over view named `orchestrator` is the seat's or a
+            // namesake row's: the seat's proof opens its panel, and the role
+            // holder is no row, so only a namesake row takes the view.
             Answer::Handover { view, at } => {
+                if view.session == ORCH && !self.touched {
+                    self.orch.opening = Opening::Handed(view.id.clone());
+                }
                 self.keep = (!self.touched).then_some(Keep { view, at });
             }
             Answer::Peek {
@@ -683,6 +687,7 @@ impl App {
                 self.pressures.insert(name, (id, pressure));
             }
             Answer::Orchestrator(proof) => self.proved(proof),
+            Answer::Seat { generation, said } => self.seated(generation, said),
         }
     }
 
@@ -731,7 +736,7 @@ impl App {
             if self.writer.as_ref().is_some_and(|w| w.key() == key) {
                 self.write(false);
                 // The panel ends its own entry and says why in its one line.
-                if key.0 != ORCH {
+                if !self.panel_entry(&key) {
                     self.held = Some(why.to_owned());
                 }
             }
@@ -750,13 +755,15 @@ impl App {
         // it moves nothing (R-B4 ext); a read that moved it or proved its own
         // incarnation stopped ends the writing HELD, never into browse (D3).
         let writing = self.writer.as_ref().map(Binding::key);
-        let listed =
-            |name: &str| name == ORCH || self.fleet.rows.iter().any(|row| row.name == name);
-        if read.scanned || writing.as_ref().is_none_or(|(name, _)| listed(name)) {
+        let listed = |key: &(String, String)| {
+            self.panel_entry(key) || self.fleet.rows.iter().any(|row| row.name == key.0)
+        };
+        if read.scanned || writing.as_ref().is_none_or(listed) {
             self.model.reconcile(&self.fleet);
         }
-        // The panel's entry is the panel's: its proof ends it ([`App::proved`]).
-        if let Some((name, id)) = writing.filter(|(name, _)| name != ORCH) {
+        // The panel's entry is the panel's: the read that stops its seat or
+        // its proof ends it ([`App::end_inert_panel_entry`]).
+        if let Some((name, id)) = writing.filter(|key| !self.panel_entry(key)) {
             let stopped = self.id(&name) == id
                 && (self.entry(&name)).is_some_and(|entry| entry.status == Status::Stopped);
             if stopped || Some(name.as_str()) != self.model.selected() {
@@ -769,6 +776,7 @@ impl App {
                 self.held = Some(format!("{name} {why}"));
             }
         }
+        self.end_inert_panel_entry();
         if let Some(why) = lapsed.filter(|_| self.held.is_some()) {
             self.held = Some(why.to_owned());
         }

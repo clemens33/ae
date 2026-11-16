@@ -6,21 +6,52 @@ use super::{
     Size, Timestamp, View, apply, draw, fleet, loader, model, overview,
 };
 
-/// The open orchestrator panel: how it stands, which incarnation it opened
-/// on, and its own chat column.
+/// The open orchestrator panel: how it stands, what it is bound to, and its
+/// own chat column.
 pub(super) struct Panel {
     /// It covers the frame instead of standing beside the main column.
     pub(super) full: bool,
     /// It takes the keys; the main column does otherwise.
     focused: bool,
-    /// The incarnation it opened on; `None` opened inert and stays so.
-    pub(super) pin: Option<String>,
-    /// What an inert opening says.
-    opened: String,
+    /// The incarnation it acts on, or why it acts on none.
+    bind: Bind,
     /// When it opened: a press made on a panel drawn before is not this one's.
     since: Instant,
     pub(super) column: Column,
 }
+
+impl Panel {
+    /// The incarnation the panel is bound to; `None` while it acts on none.
+    pub(super) fn pin(&self) -> Option<&str> {
+        match &self.bind {
+            Bind::Live(uuid) => Some(uuid),
+            Bind::Awaiting { .. } | Bind::Line(_) => None,
+        }
+    }
+}
+
+/// What the open panel acts on. The cause of its opening decides whether a
+/// later proof may bind it: only an opening that asked for the seat waits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Bind {
+    /// The incarnation it opened on or waited for: it never takes another.
+    Live(String),
+    /// It opened with no orchestrator running and asked for the seat under
+    /// `generation`: the first proof of the seat binds it. `line` is what the
+    /// ask said last, `None` before it answered or when it ran.
+    Awaiting {
+        line: Option<String>,
+        generation: u64,
+    },
+    /// It acts on nothing until it is opened again, and says why.
+    Line(String),
+}
+
+/// What an awaiting panel says before its ask tells more.
+const AWAITING: &str = "waiting for the orchestrator seat";
+
+/// What a bound panel says once its seat no longer runs.
+const LOST: &str = "orchestrator stopped; O starts it";
 
 /// The state a chat column draws and acts from, beyond the model's chat:
 /// the main column's lives in the [`App`], the panel's here, and
@@ -57,6 +88,8 @@ pub(super) struct Orch {
     pub(super) told: Option<String>,
     /// Whether the next proof opens the panel full.
     pub(super) opening: Opening,
+    /// The generation of the last seat ask an opening made.
+    asked: u64,
     /// When the panel raised the hint row's flash: its own line, which
     /// hiding the panel drops.
     flash: Option<Instant>,
@@ -88,14 +121,9 @@ pub(super) enum Opening {
     Handed(String),
 }
 
-/// What the panel says when it opens on `proof` and acts on nothing, `None`
-/// when it opens on a proven incarnation.
-pub(super) fn inert_line(proof: &loader::Proof) -> Option<String> {
-    match proof {
-        loader::Proof::Proven(_) => None,
-        loader::Proof::Gap(gap) => Some(format!("orchestrator unproven: {gap}")),
-        loader::Proof::Absent => Some("no orchestrator running".to_owned()),
-    }
+/// Why a running orchestrator is no incarnation the panel can bind.
+fn unproven(gap: &str) -> String {
+    format!("orchestrator unproven: {gap}")
 }
 
 /// What the open panel's view state does with a browse byte (see
@@ -258,6 +286,18 @@ impl App {
         self.writer.as_ref().map(|writer| writer.console.name())
     }
 
+    /// Whether the input `key` is the panel's own: the seat incarnation the
+    /// open panel is pinned to. A listed session of the seat's name is an
+    /// ordinary session, whatever its name.
+    pub(super) fn panel_entry(&self, key: &(String, String)) -> bool {
+        key.0 == ORCH && self.orch.panel.as_ref().and_then(Panel::pin) == Some(key.1.as_str())
+    }
+
+    /// Whether the running entry is the panel's own ([`App::panel_entry`]).
+    fn writes_panel(&self) -> bool {
+        (self.writer.as_ref()).is_some_and(|writer| self.panel_entry(&writer.key()))
+    }
+
     /// Whether the column standing in the app's fields writes: the entry is
     /// its own, not the other column's.
     pub(super) fn writes_here(&self) -> bool {
@@ -268,17 +308,61 @@ impl App {
     }
 
     /// Why the open panel acts on nothing now; `None` while the orchestrator
-    /// is the incarnation it opened on. It never takes another.
+    /// is the incarnation it is bound to. It never takes another. A fleet read
+    /// that shows the seat stopped is a loss already: the loader sends that
+    /// read and its proof as two wakes, and a frame between them never draws
+    /// the stopped seat.
     pub(super) fn panel_line(&self) -> Option<String> {
         let panel = self.orch.panel.as_ref()?;
-        let Some(pin) = &panel.pin else {
-            return Some(panel.opened.clone());
+        let pin = match &panel.bind {
+            Bind::Live(pin) => pin,
+            Bind::Awaiting { line, .. } => {
+                return Some(line.clone().unwrap_or_else(|| AWAITING.to_owned()));
+            }
+            Bind::Line(line) => return Some(line.clone()),
         };
+        let stopped =
+            (self.entry(ORCH)).is_some_and(|seat| seat.status == crate::digest::Status::Stopped);
         match &self.orch.proof {
+            loader::Proof::Proven(uuid) if uuid == pin && stopped => Some(LOST.to_owned()),
             loader::Proof::Proven(uuid) if uuid == pin => None,
             loader::Proof::Proven(_) => Some("orchestrator replaced; O reopens".to_owned()),
-            proof => inert_line(proof),
+            loader::Proof::Gap(gap) => Some(unproven(gap)),
+            loader::Proof::Absent => Some(LOST.to_owned()),
         }
+    }
+
+    /// End the panel's entry once the panel acts on nothing: no HELD reason,
+    /// and its draft stays under its input. The fleet read that stops the
+    /// seat ([`App::absorb`]) and the proof after it ([`App::proved`]) both
+    /// call it, so no frame between the two keeps a writable composer.
+    pub(super) fn end_inert_panel_entry(&mut self) {
+        if self.panel_line().is_some() && self.writes_panel() {
+            self.write(false);
+        }
+    }
+
+    /// What the seat ask of `generation` came to: an awaiting panel of that
+    /// generation shows its line, and a refusal ends the wait. Anything else
+    /// is an older opening's and changes nothing.
+    pub(super) fn seated(&mut self, generation: u64, said: loader::Said) {
+        let Some(panel) = self.orch.panel.as_mut() else {
+            return;
+        };
+        let Bind::Awaiting {
+            generation: asked, ..
+        } = panel.bind
+        else {
+            return;
+        };
+        if asked != generation {
+            return;
+        }
+        panel.bind = match said {
+            loader::Said::Waiting(line) => Bind::Awaiting { line, generation },
+            loader::Said::Refused(line) => Bind::Line(line),
+        };
+        self.in_panel(Self::show);
     }
 
     /// Whether the orchestrator needs the human as a target of `!` and the
@@ -289,9 +373,16 @@ impl App {
             Some(_) => self.panel_line().is_none(),
             None => matches!(self.orch.proof, loader::Proof::Proven(_)),
         };
+        // A proof proves the role holder named `orchestrator`.
         proven
-            && fleet::orchestrator(&self.world, &self.facts, &self.needs, Timestamp::now())
-                .is_some_and(|row| row.needy)
+            && fleet::orchestrator(
+                &self.world,
+                Some(ORCH),
+                &self.facts,
+                &self.needs,
+                Timestamp::now(),
+            )
+            .is_some_and(|row| row.needy)
     }
 
     /// How the panel stands, for the model to draw by.
@@ -309,7 +400,8 @@ impl App {
 
     /// Open the panel with the keys, side by side or `full`, on the
     /// incarnation this read proved: one step, so what it shows and what it
-    /// pinned cannot differ. Nothing proven opens it inert.
+    /// pinned cannot differ. With no orchestrator running it asks the reader
+    /// for the seat and waits for its proof; an unproven one opens it inert.
     pub(super) fn open_panel(&mut self, full: bool) {
         if self.orch.panel.is_some() {
             return;
@@ -317,15 +409,25 @@ impl App {
         if self.composing() || self.held.is_some() {
             self.write(false);
         }
-        let pin = match &self.orch.proof {
-            loader::Proof::Proven(uuid) => Some(uuid.clone()),
-            _ => None,
+        let bind = match &self.orch.proof {
+            loader::Proof::Proven(uuid) => Bind::Live(uuid.clone()),
+            loader::Proof::Gap(gap) => Bind::Line(unproven(gap)),
+            loader::Proof::Absent => {
+                self.orch.asked += 1;
+                let generation = self.orch.asked;
+                if let Some(ask) = &self.ask {
+                    let _ = ask.send(loader::Request::Seat(generation));
+                }
+                Bind::Awaiting {
+                    line: None,
+                    generation,
+                }
+            }
         };
         self.orch.panel = Some(Panel {
             full,
             focused: true,
-            pin,
-            opened: inert_line(&self.orch.proof).unwrap_or_default(),
+            bind,
             since: Instant::now(),
             column: Column {
                 chat: model::Chat::of(ORCH),
@@ -343,7 +445,7 @@ impl App {
         }
         // No entry is HELD here: every caller acts on a press, which ended
         // it, or on a key, which a HELD entry takes for itself.
-        if self.writer_name() == Some(ORCH) {
+        if self.writes_panel() {
             self.write(false);
         }
         self.orch.panel = None;
@@ -497,14 +599,22 @@ impl App {
         self.focus_column(false);
     }
 
-    /// The fold of one proof of the orchestrator: an open panel that lost its
-    /// incarnation ends its own entry, never HELD and never the main
-    /// column's; a home or handed-over view of it opens the panel full.
+    /// The fold of one proof of the orchestrator: an awaiting panel binds the
+    /// first proven incarnation; an open panel that lost its incarnation ends
+    /// its own entry, never HELD and never the main column's; a home or
+    /// handed-over view of a running orchestrator opens the panel full.
     pub(super) fn proved(&mut self, proof: loader::Proof) {
         self.orch.proof = proof;
+        if let Some(panel) = self.orch.panel.as_mut()
+            && matches!(panel.bind, Bind::Awaiting { .. })
+            && let loader::Proof::Proven(uuid) = &self.orch.proof
+        {
+            panel.bind = Bind::Live(uuid.clone());
+        }
         let opening = std::mem::take(&mut self.orch.opening);
+        // A home that runs no seat opens nothing: O asks for it.
         let opens = match (&opening, &self.orch.proof) {
-            (Opening::Home, _) => true,
+            (Opening::Home, proof) => *proof != loader::Proof::Absent,
             (Opening::Handed(id), loader::Proof::Proven(uuid)) => id == uuid,
             _ => false,
         };
@@ -512,9 +622,7 @@ impl App {
             self.open_panel(true);
         }
         if self.orch.panel.is_some() {
-            if self.panel_line().is_some() && self.writer_name() == Some(ORCH) {
-                self.write(false);
-            }
+            self.end_inert_panel_entry();
             self.in_panel(Self::show);
         }
     }
@@ -577,7 +685,10 @@ impl App {
             (app.draft_view, app.draft) = shown.unwrap_or_default();
             let keys = app.keys();
             let (folds, open, sent) = app.fold_state();
-            let entry = app.entry(ORCH);
+            // A panel bound to no running seat is a status column: it draws
+            // no session, so never a stopped one.
+            let bound = app.panel_line().is_none();
+            let entry = app.entry(ORCH).filter(|_| bound);
             let (look, zone) = app.dressed();
             let screen = draw::Screen {
                 fleet: &app.fleet,
@@ -585,7 +696,7 @@ impl App {
                 overview: &app.overview,
                 selected: entry,
                 pair: &app.pair,
-                agents: app.facts.get(ORCH),
+                agents: app.facts.get(ORCH).filter(|_| bound),
                 lane: &app.lane,
                 composer: app.composer(),
                 look,
@@ -622,5 +733,6 @@ impl App {
             self.layout.cursor = Some(cursor);
         }
         self.layout.panel = cells;
+        self.layout.panel_border(buf, self.model.split(), columns);
     }
 }

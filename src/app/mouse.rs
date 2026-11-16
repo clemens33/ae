@@ -155,6 +155,11 @@ impl App {
         if self.model.reader_open() {
             return self.reader_mouse(mouse, fresh);
         }
+        if !self.orch.active
+            && let Some(acted) = self.panel_edge(mouse)
+        {
+            return acted;
+        }
         if !self.orch.active && self.on_panel(mouse) {
             return self.panel_route(mouse, fresh);
         }
@@ -233,7 +238,7 @@ impl App {
         let held = self.held.take().is_some();
         if let Some((edge, at)) = self.layout.grab(mouse) {
             let from = match edge {
-                model::Edge::Sidebar => mouse.column,
+                model::Edge::Sidebar | model::Edge::Panel => mouse.column,
                 model::Edge::List => mouse.row,
             };
             self.model.grab(model::Drag { edge, from, at });
@@ -322,8 +327,30 @@ impl App {
             return false;
         }
         let count = draw::list_len(&self.fleet, self.stopped());
-        let size = draw::dragged_to(drag, mouse, self.layout.area(), count);
+        let size = draw::dragged_to(drag, mouse, self.layout.area(), self.model.split(), count);
         self.model.drag_to(size)
+    }
+
+    /// The side panel's border, before the panel takes the event: a press on
+    /// it grabs it, and that drag's motion and release stay here wherever the
+    /// pointer goes. It moves no keys. `None` for every other event.
+    pub(super) fn panel_edge(&mut self, mouse: Mouse) -> Option<bool> {
+        let dragging = (self.model.drag()).is_some_and(|drag| drag.edge == model::Edge::Panel);
+        match mouse.kind {
+            MouseKind::Click => {
+                let (edge, at) = self.layout.grab(mouse)?;
+                if edge != model::Edge::Panel {
+                    return None;
+                }
+                self.held = None;
+                let from = mouse.column;
+                self.model.grab(model::Drag { edge, from, at });
+                Some(true)
+            }
+            MouseKind::Drag if dragging => Some(self.drag(mouse)),
+            MouseKind::Release if dragging => Some(self.model.let_go()),
+            _ => None,
+        }
     }
 
     /// Begin a selection at the press `mouse` made on the frame on screen:

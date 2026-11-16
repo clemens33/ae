@@ -8,11 +8,14 @@
 //! so it is hostile text: one canonical line, fixed field order, every field
 //! bounded. Pure: no clock, no tmux, no app.
 //!
-//! `v1|pane|version|at|session|uuid|tab|focus|sidebar|list|pages|rows|list_top|body_top`
+//! `v1|pane|version|at|session|uuid|tab|focus|sidebar|list|pages|rows|list_top|body_top[|panel]`
 //!
-//! Empty means `None`. Integers are canonical decimal. [`parse`] accepts only
+//! Empty means `None`. Integers are canonical decimal. The trailing `panel`
+//! field is written only when the side panel's width was dragged, so a line
+//! without one is the 14 fields an older core wrote. [`parse`] accepts only
 //! text that [`Handover::render`] could have written, except that the
-//! `overview` view token an older core wrote reads as `agents`, the one view.
+//! `overview` view token an older core wrote reads as `agents`, the one view,
+//! and an empty trailing `panel` field reads as the line without it.
 
 use crate::archive::is_canonical_uuid;
 use crate::config::is_agent_name;
@@ -50,6 +53,9 @@ pub struct View {
     pub rows: usize,
     pub list_top: Option<usize>,
     pub body_top: usize,
+    /// The side panel's width as dragged, its border column included; the
+    /// layout clamps it, never this preference.
+    pub panel: Option<u16>,
 }
 
 /// A [`View`] bound to the pane and version it is for, and to the instant it
@@ -92,7 +98,11 @@ impl Handover {
             (view.list_top.map(|n| n.min(ROWS_MAX).to_string())).unwrap_or_default(),
             view.body_top.min(PAGES_MAX).to_string(),
         ];
-        fields.join("|")
+        let line = fields.join("|");
+        match view.panel {
+            Some(width) => format!("{line}|{width}"),
+            None => line,
+        }
     }
 
     /// Whether this handover is for the app in `pane` running `version`, and
@@ -143,6 +153,10 @@ pub fn parse(text: &str) -> Option<Handover> {
         return None;
     }
     let parts: Vec<&str> = text.split('|').collect();
+    let (parts, panel) = match parts.as_slice() {
+        [fields @ .., panel] if fields.len() == 14 => (fields, Some(*panel)),
+        fields => (fields, None),
+    };
     let [
         tag,
         pane,
@@ -158,7 +172,7 @@ pub fn parse(text: &str) -> Option<Handover> {
         rows,
         list_top,
         body_top,
-    ] = parts.as_slice()
+    ] = parts
     else {
         return None;
     };
@@ -202,6 +216,10 @@ pub fn parse(text: &str) -> Option<Handover> {
         rows: size(rows, ROWS_MAX)?,
         list_top,
         body_top: size(body_top, PAGES_MAX)?,
+        panel: match panel {
+            Some(panel) => small(panel)?,
+            None => None,
+        },
     };
     let digits = pane.strip_prefix('%')?;
     let pane =
@@ -243,6 +261,19 @@ mod tests {
         let old = WIRE.replace("|agents|", "|overview|");
         assert_ne!(old, WIRE);
         assert_eq!(parse(&old).map(|h| h.render()).as_deref(), Some(WIRE));
+    }
+
+    /// A dragged panel width rides as a trailing field written only when
+    /// there is one; an empty field reads as the line without it.
+    #[test]
+    fn a_panel_width_is_a_trailing_field_written_only_when_dragged() {
+        let wide = format!("{WIRE}|56");
+        let read = parse(&wide).expect("a dragged width parses");
+        assert_eq!(read.view.panel, Some(56));
+        assert_eq!(read.render(), wide);
+        let empty = parse(&format!("{WIRE}|")).expect("an empty width parses");
+        assert_eq!((empty.view.panel, empty.render()), (None, WIRE.to_owned()));
+        assert_eq!(parse(WIRE).map(|h| h.view.panel), Some(None));
     }
 
     #[test]

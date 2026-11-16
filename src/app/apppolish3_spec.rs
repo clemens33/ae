@@ -375,6 +375,7 @@ fn agent_total_uses_current_live_roster_across_running_sessions_and_ignores_dead
     ]);
     let fleet = fleet::rows(
         &world,
+        None,
         &facts,
         &BTreeMap::new(),
         &FleetOrder::EMPTY,
@@ -579,6 +580,7 @@ fn restored_view_of_stopped_session_opens_group_and_preserves_explicit_selection
             rows: 0,
             list_top: None,
             body_top: 0,
+            panel: None,
         },
         at: Timestamp::now().epoch(),
     });

@@ -402,7 +402,9 @@ impl Layout {
     /// Record a border at `at` over `cells`, grabbed within a cell of it.
     fn border(&mut self, buf: &Buffer, edge: Edge, at: u16, cells: Rect) {
         let grab = match edge {
-            Edge::Sidebar => Rect::new(cells.x.saturating_sub(1), cells.y, 3, cells.height),
+            Edge::Sidebar | Edge::Panel => {
+                Rect::new(cells.x.saturating_sub(1), cells.y, 3, cells.height)
+            }
             Edge::List => Rect::new(cells.x, cells.y.saturating_sub(1), cells.width, 3),
         };
         self.borders.push(Border {
@@ -424,6 +426,15 @@ impl Layout {
         let near = |border: &&Border| border.grab.contains(cell);
         let border = (self.borders.iter().find(on)).or_else(|| self.borders.iter().find(near))?;
         Some((border.edge, border.at))
+    }
+
+    /// Record the border of a side panel drawn in `buf` over this main
+    /// column's frame, so a press grabs it before the panel takes the press.
+    pub(crate) fn panel_border(&mut self, buf: &Buffer, split: Split, columns: Columns) {
+        if let Stand::Side { border } = stand(buf.area, split, columns) {
+            let cells = Rect::new(border, 0, 1, buf.area.height);
+            self.border(buf, Edge::Panel, buf.area.width - border, cells);
+        }
     }
 
     /// Whether the frame drew `edge`.
@@ -731,10 +742,23 @@ enum Stand {
     Full { note: Option<String> },
 }
 
+/// How wide a side panel stands in `area` split as `split`, its border
+/// included: the width it was dragged to, else half of the chat columns,
+/// always leaving both columns [`PANEL_FLOOR`]. `None` when no side panel
+/// fits. The one clamp: a dragged width is kept as asked and clamped here.
+fn side_width(area: Rect, split: Split) -> Option<u16> {
+    let start = sidebar_width(area, split).map_or(0, |rule| rule + 1);
+    let chat = area.width.saturating_sub(start);
+    let half = chat / 2;
+    // Both halves keep the floor, so the clamp's bounds never cross.
+    (half >= PANEL_FLOOR)
+        .then(|| (split.panel).map_or(half, |asked| asked.clamp(PANEL_FLOOR, chat - PANEL_FLOOR)))
+}
+
 /// Where the panel `columns` describe stands in `area` split as `split`:
-/// side takes half of the chat columns when both halves keep
-/// [`PANEL_FLOOR`]. Else the column that holds the keys covers the frame:
-/// the panel, saying why, or the main column, the panel not drawn.
+/// side, [`side_width`] wide, when both columns keep [`PANEL_FLOOR`]. Else
+/// the column that holds the keys covers the frame: the panel, saying why,
+/// or the main column, the panel not drawn.
 fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
     let Some((full, focused)) = columns.panel else {
         return Stand::Closed;
@@ -742,16 +766,15 @@ fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
     if full {
         return Stand::Full { note: None };
     }
-    let start = sidebar_width(area, split).map_or(0, |rule| rule + 1);
-    let half = area.width.saturating_sub(start) / 2;
-    if half >= PANEL_FLOOR {
+    if let Some(width) = side_width(area, split) {
         return Stand::Side {
-            border: area.width - half,
+            border: area.width - width,
         };
     }
     if !focused {
         return Stand::Closed;
     }
+    let start = sidebar_width(area, split).map_or(0, |rule| rule + 1);
     let need = start.saturating_add(PANEL_FLOOR * 2);
     Stand::Full {
         note: Some(format!("side needs {need} columns")),
@@ -817,7 +840,7 @@ pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) 
     let left = if from == 0 {
         0
     } else {
-        let border = ctx.paint.rule(false);
+        let border = ctx.paint.rule(dragged(screen.model, Edge::Panel));
         for y in 0..height {
             put(buf, from, y, "│", 1, border);
         }
@@ -937,17 +960,27 @@ fn list_border(rows: u16) -> u16 {
 }
 
 /// The size a drag asks for: where its edge stood at the press, moved as far
-/// as the pointer has since, clamped to `area` as it is now.
-pub(crate) fn dragged_to(drag: Drag, mouse: Mouse, area: Rect, count: usize) -> u16 {
-    let now = match drag.edge {
-        Edge::Sidebar => mouse.column,
-        Edge::List => mouse.row,
+/// as the pointer has since, clamped to `area` split as `split` is now.
+pub(crate) fn dragged_to(drag: Drag, mouse: Mouse, area: Rect, split: Split, count: usize) -> u16 {
+    let (at, from) = (i32::from(drag.at), i32::from(drag.from));
+    let moved = match drag.edge {
+        Edge::Sidebar => at + i32::from(mouse.column) - from,
+        Edge::List => at + i32::from(mouse.row) - from,
+        // The panel's border is its left column: moving it left widens it.
+        Edge::Panel => at + from - i32::from(mouse.column),
     };
-    let moved = i32::from(drag.at) + i32::from(now) - i32::from(drag.from);
     let to = u16::try_from(moved.max(0)).unwrap_or(u16::MAX);
     match drag.edge {
         Edge::Sidebar => sidebar_clamp(to, area),
         Edge::List => list_clamp(to.saturating_sub(list_border(0)), area, count),
+        Edge::Panel => side_width(
+            area,
+            Split {
+                panel: Some(to),
+                ..split
+            },
+        )
+        .unwrap_or(to),
     }
 }
 
@@ -1921,7 +1954,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         turns: produced,
         mut links,
         mut files,
-    } = lane_tail(ctx, &clock, main, (room, need));
+    } = body_tail(ctx, &clock, main, (room, need));
     if ctx.wait.lane {
         rows.push(Line::from(Span::styled("loading", dim)));
         links.push(Vec::new());
@@ -2096,6 +2129,52 @@ fn mode_hint(composer: &Composer<'_>) -> &'static str {
 
 /// The lane's newest rows as the app's own state shows them: `size` is the
 /// column's width and how many rows are wanted.
+/// The chat body's rows: a status column's line, else the lane's tail.
+fn body_tail(
+    ctx: &Ctx<'_, '_>,
+    clock: &view::Style,
+    main: &str,
+    size: (u16, usize),
+) -> super::lane::Tail {
+    match status_line(ctx) {
+        Some(why) => status_tail(ctx, why, size.0),
+        None => lane_tail(ctx, clock, main, size),
+    }
+}
+
+/// The line an orchestrator panel bound to no running seat shows: the panel
+/// draws no session then, and its read-only reason is its whole body.
+fn status_line<'a>(ctx: &Ctx<'a, '_>) -> Option<&'a str> {
+    let screen = ctx.screen;
+    match screen.composer {
+        Composer::ReadOnly { why }
+            if screen.model.columns().drawing_panel && screen.selected.is_none() =>
+        {
+            Some(why)
+        }
+        _ => None,
+    }
+}
+
+/// The body of a status column: its line `why`, wrapped to `room` cells, in
+/// the text ink, with no turn, link or file.
+fn status_tail(ctx: &Ctx<'_, '_>, why: &str, room: u16) -> super::lane::Tail {
+    let ink = ctx.paint.fg(|p| p.text);
+    let text = crate::board::terminal_text(why);
+    let rows: Vec<Line<'static>> = crate::console::wrap::wrap_in(&text, usize::from(room), 0, 0)
+        .into_iter()
+        .map(|(lead, piece)| Line::from(Span::styled(format!("{}{piece}", " ".repeat(lead)), ink)))
+        .collect();
+    let count = rows.len();
+    super::lane::Tail {
+        rows,
+        complete: true,
+        turns: Vec::new(),
+        links: vec![Vec::new(); count],
+        files: vec![Vec::new(); count],
+    }
+}
+
 fn lane_tail(
     ctx: &Ctx<'_, '_>,
     clock: &view::Style,
@@ -2194,6 +2273,13 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, (left, end): (u16, u16), layout: 
     let paint = ctx.paint;
     let end = panel_head(ctx, buf, (left, end), layout);
     let Some(entry) = screen.selected else {
+        // A panel bound to no running seat names the seat and nothing else:
+        // no state, no age, no pair.
+        if screen.model.columns().drawing_panel {
+            let name = paint.fg(|p| p.title).add_modifier(Modifier::BOLD);
+            let seat = crate::orchestrator::ORCHESTRATOR_SESSION;
+            put(buf, left, 0, seat, end.saturating_sub(left), name);
+        }
         return;
     };
     // With the panel open, the column that takes the keys is named in the
@@ -2372,6 +2458,12 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
             };
             (address, kept, hint.to_owned())
         }
+        // A status column's reason is its body: the row says only read-only.
+        Composer::ReadOnly { .. } if status_line(ctx).is_some() => (
+            quiet("read-only".to_owned()),
+            Line::default(),
+            String::new(),
+        ),
         Composer::ReadOnly { why } => (
             quiet(format!("read-only · {why}")),
             Line::default(),
@@ -5989,12 +6081,14 @@ mod tests {
         let at = match edge {
             Edge::Sidebar => vertical(buf),
             Edge::List => horizontal(buf),
+            // A shot draws no orchestrator panel, so no panel border.
+            Edge::Panel => None,
         }
         .expect("the border is drawn");
         let drag = Drag { edge, from: at, at };
         shot.model.grab(drag);
         let mouse = match edge {
-            Edge::Sidebar => Mouse {
+            Edge::Sidebar | Edge::Panel => Mouse {
                 kind: MouseKind::Drag,
                 column: to,
                 row: 1,
@@ -6005,7 +6099,13 @@ mod tests {
                 row: to,
             },
         };
-        let size = dragged_to(drag, mouse, buf.area, shot.fleet.rows.len());
+        let size = dragged_to(
+            drag,
+            mouse,
+            buf.area,
+            shot.model.split(),
+            shot.fleet.rows.len(),
+        );
         let _ = shot.model.drag_to(size);
         let _ = shot.model.let_go();
         shot.draw(buf.area.width, buf.area.height, READ_ONLY)
@@ -7406,6 +7506,7 @@ mod tests {
                 row: 1,
             },
             area,
+            shot.model.split(),
             1,
         );
         assert_eq!(requested, 32_775, "the actual drag allows this sidebar");

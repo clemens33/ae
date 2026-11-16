@@ -30,6 +30,7 @@ fn view() -> View {
         rows: 0,
         list_top: Some(1),
         body_top: 4,
+        panel: None,
     }
 }
 
