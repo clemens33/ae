@@ -493,7 +493,10 @@ control_marker=foreign
 [[ "$mode" != cap ]] || control_marker=$dir
 # A missing marker never triggers a fallback kill; the sentinel ends itself
 # inside the outer 30-second bound even when direct teardown must refuse.
-AE_RELLEAVES_MARKER="$control_marker" AE_RELLEAVES_CONTROL="$dir" "$AE_RELLEAVES_SENTINEL" 10 &
+# It lives 25 s, not less: the 33-record cap census reads ps about 100 times
+# and took over 10 s under nice 10 at load 9, and a sentinel that ends
+# mid-census leaves fewer than 33 qualified records and no cap verdict.
+AE_RELLEAVES_MARKER="$control_marker" AE_RELLEAVES_CONTROL="$dir" "$AE_RELLEAVES_SENTINEL" 25 &
 control_pid=$!
 control_stamp=$(identity "$control_pid")
 for ((tick=0; tick<200; tick++)); do
