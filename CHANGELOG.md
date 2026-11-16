@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.69] - 2026-11-16
+- Freeze the orchestrator panel acceptance
+- The orchestrator panel reaches a live seat
+
 ## [v2026.11.68] - 2026-11-16
 - Install the re-frozen #345 acceptance spec (relleaves_spec, safety cleanup)
 - End every long release step before the recipe exits (#345)
