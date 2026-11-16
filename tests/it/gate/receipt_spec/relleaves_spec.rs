@@ -314,11 +314,16 @@ printf 'ended\n' >>"$dir/events"
 // alone. The list is capped before any kill, and each pid is rechecked again
 // immediately before its kill. Duplicate records make the cap stricter.
 const SAFE_CLEANUP: &str = r#"
-identity() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -cd A-Za-z0-9; }
+# Every ps read here decides on its OUTPUT, never on the ps exit status: macOS
+# ps eww can print the right line and still exit non-zero (seen 3 of 30 at
+# 09fb7506, .local/relflake/macxtrace.log). Empty, partial or foreign output
+# still means unmatched or unmarked, so nothing qualifies without both the exact
+# start identity and the exact run-marker word in that pid's own ps line.
+identity() { { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null || :; } | tr -cd A-Za-z0-9; }
 matched() { [[ -n "$2" && "$(identity "$1")" == "$2" ]]; }
 marked() {
     local description
-    description=$(LC_ALL=C ps eww -p "$1" -o command= 2>/dev/null) || return 1
+    description=$(LC_ALL=C ps eww -p "$1" -o command= 2>/dev/null) || :
     case " $description " in
         *" $2=$dir "*) return 0 ;;
         *) return 1 ;;
@@ -328,10 +333,7 @@ qualified() {
     local state
     [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 1
     matched "$1" "$2" || return 1
-    state=$(LC_ALL=C ps -p "$1" -o stat= 2>/dev/null) || {
-        matched "$1" "$2" || return 1
-        return 2
-    }
+    state=$(LC_ALL=C ps -p "$1" -o stat= 2>/dev/null) || :
     case "${state// /}" in Z*) return 1 ;; esac
     marked "$1" AE_RELLEAVES_MARKER || {
         matched "$1" "$2" || return 1
