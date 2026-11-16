@@ -848,6 +848,26 @@ pub enum Effect {
     Note(String),
 }
 
+impl Effect {
+    /// Whether the wake settle (#238) holds this effect: every paste, key
+    /// answer or journal credit that stands for one, which the next free cycle
+    /// books again. Records, notices and notes pass.
+    #[must_use]
+    pub const fn held_while_settling(&self) -> bool {
+        matches!(
+            self,
+            Self::Nudge
+                | Self::DoneChallenge { .. }
+                | Self::DoneHeld { .. }
+                | Self::WaitChallenge { .. }
+                | Self::TargetMoved { .. }
+                | Self::LimitWake { .. }
+                | Self::SweepNudge
+                | Self::AnswerTrust { .. }
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The loop — observation and effects.
 
@@ -1693,6 +1713,10 @@ struct Carry {
     /// the RECORD it writes is the durable fact; a restart only misses a
     /// suspension it did not watch.
     clock: Option<crate::watchdog::CycleClock>,
+    /// The wake settle's held cycles left ([`crate::watchdog::settle`]). In
+    /// memory like `clock`: a restarted daemon has no previous reading, so it
+    /// detects no suspension to hold for.
+    settle: u8,
 }
 
 /// One verdict cycle's publication while the cycle is still deciding it: every
@@ -1754,6 +1778,7 @@ impl Carry {
             wake: None,
             pending: PendingCycle::default(),
             clock: None,
+            settle: 0,
         }
     }
 
@@ -2155,11 +2180,14 @@ impl Cycle<'_> {
             wall: Timestamp::now().epoch(),
             mono: Instant::now(),
         };
-        if let Some(found) = carry
-            .clock
-            .replace(clock)
-            .and_then(|prev| crate::watchdog::host_suspended(prev, clock, self.knobs.interval_secs))
-        {
+        let found = carry.clock.replace(clock).and_then(|prev| {
+            crate::watchdog::host_suspended(prev, clock, self.knobs.interval_secs)
+        });
+        // The wake settle (#238): this cycle and the next stable one deliver
+        // nothing. Every held step below runs again on the first free cycle.
+        carry.settle = crate::watchdog::settle(carry.settle, found);
+        let settling = carry.settle > 0;
+        if let Some(found) = found {
             Journal {
                 meta_dir: self.meta_dir,
                 session: self.session,
@@ -2205,7 +2233,9 @@ impl Cycle<'_> {
             held: &carry.panes,
             events: &events,
         };
-        self.run_quota_cadence(&mut carry.quota, &inputs, now, err)?;
+        if !settling {
+            self.run_quota_cadence(&mut carry.quota, &inputs, now, err)?;
+        }
 
         let seats = held_seats(&observed, table.as_deref(), &|slot| self.agent_bin(slot));
         let session_id = crate::meta::session_id_in(self.meta_dir);
@@ -2490,8 +2520,14 @@ impl Cycle<'_> {
                 .client_activity
                 .and_then(|(_, at)| i64::try_from(at).ok());
             let trust = self.trust_due(&seen, (&slot, &pane.pane_id), agent_bin.as_deref(), input);
-            let booked =
-                account_with_activity(carried, &seen, &self.knobs, trust.as_ref(), &activity);
+            let booked = account_settling(
+                carried,
+                &seen,
+                &self.knobs,
+                trust.as_ref(),
+                &activity,
+                settling,
+            );
             *carried = booked.next;
             self.apply_booked(&booked.effects, &acting, carried, &mut quota_refresh, err)?;
             if crate::effort::leg::eligible(&slot) && !self.meta_agent {
@@ -2615,9 +2651,11 @@ impl Cycle<'_> {
             held: &carry.panes,
             events: &events,
         };
-        self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &inputs, now, err)?;
-        self.retry_briefs(&mut carry.brief_cursor, &by_slot, &events, now, err)?;
-        self.tell_seats(&by_slot, &events, now);
+        if !settling {
+            self.refresh_after_limit_release(quota_refresh, &mut carry.quota, &inputs, now, err)?;
+            self.retry_briefs(&mut carry.brief_cursor, &by_slot, &events, now, err)?;
+            self.tell_seats(&by_slot, &events, now);
+        }
         self.auto_note(&mut carry.auto_noted, err)?;
         self.trust_note(&mut carry.trust_noted, err)?;
         let effort = crate::effort::leg::Cycle {
@@ -2628,14 +2666,16 @@ impl Cycle<'_> {
             auto: &self.auto,
             now,
         };
-        crate::effort::leg::step(&effort, &effort_seats, &mut carry.effort, err)?;
-        self.auto_reseat(
-            &mut carry.auto_named,
-            (&auto_seats, &homes),
-            &events,
-            now,
-            err,
-        )?;
+        if !settling {
+            crate::effort::leg::step(&effort, &effort_seats, &mut carry.effort, err)?;
+            self.auto_reseat(
+                &mut carry.auto_named,
+                (&auto_seats, &homes),
+                &events,
+                now,
+                err,
+            )?;
+        }
         self.close(
             carry,
             &counts,

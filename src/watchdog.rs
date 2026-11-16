@@ -2890,12 +2890,22 @@ pub fn host_suspended(prev: CycleClock, now: CycleClock, interval_secs: u64) -> 
     })
 }
 
-/// The wake settle (#238): the cycles still held after a detected
-/// suspension, given the previous count and this cycle's detection.
+/// The verdict cycles a detected suspension holds every delivery: the cycle
+/// that detects it, which may run in a dark wake, and the one stable cycle
+/// after it (#238).
+pub const SETTLE_CYCLES: u8 = 2;
+
+/// The wake settle (#238): the held cycles left, this one included, given the
+/// previous count and this cycle's detection. A suspension re-arms the whole
+/// hold; a cycle without one spends one held cycle. This cycle holds every
+/// delivery while the answer is above zero.
 #[must_use]
 pub const fn settle(prev: u8, gap: Option<Suspended>) -> u8 {
-    let _ = (prev, gap);
-    0
+    if gap.is_some() {
+        SETTLE_CYCLES
+    } else {
+        prev.saturating_sub(1)
+    }
 }
 
 /// A suspension's journal summary: the slept seconds first, then the two clock

@@ -743,8 +743,11 @@ pub fn account_with_activity(
 }
 
 /// [`account_with_activity`], inside or outside the wake settle (#238):
-/// `settling` is [`crate::watchdog::settle`]'s hold for this cycle. `false`
-/// is exactly [`account_with_activity`].
+/// `settling` is [`crate::watchdog::settle`]'s hold for this cycle. While it
+/// holds, every effect that reaches the seat ([`Effect::held_while_settling`])
+/// is dropped before anything applies it, and no counter moves: each one is
+/// booked only when its delivery is applied, so the next free cycle books the
+/// same delivery again. `false` is exactly [`account_with_activity`].
 #[must_use]
 pub fn account_settling(
     prior: &PaneState,
@@ -752,7 +755,30 @@ pub fn account_settling(
     knobs: &Knobs,
     trust: Option<&crate::autotrust::Due>,
     activity: &Activity,
-    _settling: bool,
+    settling: bool,
+) -> Accounting {
+    let mut booked = book_pane(prior, seen, knobs, trust, activity);
+    if settling {
+        // A held trust answer that was to name its prompt names it now: the
+        // naming cycle is the bound, and the streak passes it either way.
+        let named = booked.effects.contains(&Effect::AnswerTrust { name: true });
+        booked
+            .effects
+            .retain(|effect| !effect.held_while_settling());
+        if named && let Some(prompt) = seen.human_prompt.as_ref() {
+            booked.effects.extend(naming(prompt));
+        }
+    }
+    booked
+}
+
+/// The branch order of one pane in one cycle, outside the wake settle.
+fn book_pane(
+    prior: &PaneState,
+    seen: &Observation,
+    knobs: &Knobs,
+    trust: Option<&crate::autotrust::Due>,
+    activity: &Activity,
 ) -> Accounting {
     let reset = PaneState::default();
     let mut prior = if prior
