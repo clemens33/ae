@@ -21,6 +21,9 @@ pub const LINE_CHARS: usize = 2000;
 pub const BINARY_PROBE: usize = 8192;
 /// The rows of context kept above a line the view jumps to.
 const CONTEXT: usize = 3;
+/// The column `wrap` starts a line's first row at, which fixes its tab stops:
+/// one cell behind the bar the painter does not draw.
+pub const WRAP_COLUMN: usize = 1;
 
 /// The files a browser opens natively and the reader cannot show: each
 /// extension (matched without regard to case) and the kind the note names. Raw
@@ -185,6 +188,27 @@ impl Flow {
         let row = self.rows.get(at)?;
         let first = self.starts.get(row.line) == Some(&at);
         Some((row.line, first, row.gap, row.text.as_str()))
+    }
+
+    /// Where display row `at`'s text stands in its line's `flat` text (the
+    /// line neutralised and its tabs spent from [`WRAP_COLUMN`]): the bytes the
+    /// wrap kept, found by walking the line's rows from its first with a
+    /// cursor that skips only the blanks the wrap dropped. `None` when a row
+    /// is not where the cursor says, so a caller never colours text it cannot
+    /// place.
+    pub(crate) fn span_of(&self, at: usize, flat: &str) -> Option<std::ops::Range<usize>> {
+        let line = self.rows.get(at)?.line;
+        let first = *self.starts.get(line)?;
+        let mut cursor = 0;
+        for row in self.rows.get(first..=at)? {
+            let rest = flat.get(cursor..)?;
+            cursor += rest.len() - rest.trim_start_matches(' ').len();
+            if !flat.get(cursor..)?.starts_with(row.text.as_str()) {
+                return None;
+            }
+            cursor += row.text.len();
+        }
+        Some(cursor - self.rows.get(at)?.text.len()..cursor)
     }
 }
 

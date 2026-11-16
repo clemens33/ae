@@ -1,10 +1,12 @@
 //! Inert Markdown: offset events cached once, bounded semantic rows per width.
+use std::cell::Cell;
 use std::ops::Range;
 
 use crate::console::wrap::split_row;
 use crate::event_text::cell;
-use pulldown_cmark::{Alignment, Event, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd};
 
+use super::highlight::{self, Scanner, Token};
 use super::reader;
 use crate::board::terminal_text;
 
@@ -76,6 +78,8 @@ pub struct Marks {
     pub target: bool,
     pub html: bool,
     pub note: bool,
+    /// What a tagged fence's text is, when its language is known; `Plain` anywhere else.
+    pub syn: Token,
 }
 
 #[must_use]
@@ -273,16 +277,23 @@ impl Document {
             .saturating_sub(1)
     }
 
+    /// The file reader's layout: its fences of a known language are coloured.
     pub(crate) fn layout(&self, width: usize) -> Rendered {
-        self.layout_in(width, &Budget::READER, Opts::default())
+        self.layout_with(width, &Budget::READER, Opts::default(), true)
     }
 
+    /// A layout whose fences stay plain, as the lane draws them.
     pub(crate) fn layout_in(&self, width: usize, budget: &Budget, opts: Opts) -> Rendered {
+        self.layout_with(width, budget, opts, false)
+    }
+
+    fn layout_with(&self, width: usize, budget: &Budget, opts: Opts, syntax: bool) -> Rendered {
         let width = width.clamp(1, 4096);
         let mut out = Rendered {
             budget: *budget,
             ..Rendered::default()
         };
+        let runs = Cell::new(highlight::MAX_RUNS);
         for block in &self.blocks {
             let mut depth = 0usize;
             let mut deepest = 0;
@@ -310,7 +321,9 @@ impl Document {
             let mapped = if deepest > MAX_DEPTH || columns > MAX_COLUMNS {
                 Mapped::default()
             } else {
-                Mapper::new(self, block, opts).map()
+                Mapper::new(self, block, opts)
+                    .coloured(syntax.then_some(&runs))
+                    .map()
             };
             let reason = if deepest > MAX_DEPTH {
                 Some("nested deeper than 32".to_owned())
@@ -698,6 +711,11 @@ struct Mapper<'a> {
     hang: usize,
     code: bool,
     opts: Opts,
+    /// The runs the whole layout may still colour, shared by its blocks; none
+    /// where fences are not coloured (the lane, not the file reader).
+    runs: Option<&'a Cell<usize>>,
+    /// The scanner of the open fence, when its tag names a language.
+    fence: Option<Scanner>,
 }
 
 impl<'a> Mapper<'a> {
@@ -718,7 +736,14 @@ impl<'a> Mapper<'a> {
             prefix: String::new(),
             hang: 0,
             code: false,
+            runs: None,
+            fence: None,
         }
+    }
+    /// Colour the fences of a known language out of `runs`, or not (`None`).
+    fn coloured(mut self, runs: Option<&'a Cell<usize>>) -> Self {
+        self.runs = runs;
+        self
     }
     fn flush(&mut self) {
         if !self.row.text.is_empty() {
@@ -769,17 +794,62 @@ impl<'a> Mapper<'a> {
     /// Text kept as written: one row per source line, a bare newline a one-cell row.
     fn literal(&mut self, text: &str, marks: Marks) {
         for line in text.split_inclusive('\n') {
-            self.add(
-                if line == "\n" {
-                    " "
-                } else {
-                    line.trim_end_matches('\n')
-                },
-                marks,
-            );
+            let line_text = if line == "\n" {
+                " "
+            } else {
+                line.trim_end_matches('\n')
+            };
+            if self.fence.is_some() {
+                self.add_coloured(line_text, marks);
+            } else {
+                self.add(line_text, marks);
+            }
             if line.ends_with('\n') {
                 self.flush();
             }
+        }
+    }
+    /// One line of a fence of a known language, its runs each marked with what
+    /// they are. The cleaned text is what the scanner reads and what is added,
+    /// so the text is the plain one; past the fence's run budget the fence is
+    /// drawn plain.
+    fn add_coloured(&mut self, text: &str, marks: Marks) {
+        let cleaned = clean(text);
+        let (Some(mut scanner), Some(left)) = (self.fence.take(), self.runs) else {
+            self.add(&cleaned, marks);
+            return;
+        };
+        let runs = scanner.line(&cleaned);
+        if !highlight::within(left.get(), runs.len()) {
+            // Spent for this layout: this line and every line after it are plain.
+            left.set(0);
+            self.add(&cleaned, marks);
+            return;
+        }
+        left.set(left.get() - runs.len());
+        self.fence = Some(scanner);
+        if runs.is_empty() {
+            self.add(&cleaned, marks);
+        }
+        for (token, range) in runs {
+            self.add(
+                &cleaned[range],
+                Marks {
+                    syn: token,
+                    ..marks
+                },
+            );
+        }
+    }
+    /// A fence opens: a known language tag starts a scanner for its lines.
+    fn open_fence(&mut self, kind: &CodeBlockKind<'_>) {
+        if self.runs.is_none() {
+            return;
+        }
+        if let CodeBlockKind::Fenced(info) = kind
+            && let Some(lang) = highlight::lang_of_tag(info)
+        {
+            self.fence = Some(Scanner::new(lang));
         }
     }
     /// A paragraph, heading or code block starts; an HTML block only asks for its
@@ -805,6 +875,7 @@ impl<'a> Mapper<'a> {
         self.gap();
         self.code = false;
         self.marks.code_block = false;
+        self.fence = None;
     }
     /// Quote, list and item each ask `block` first, so the ENCLOSING scope is
     /// checked and marked seen before the new one is pushed. A quote and a list
@@ -992,7 +1063,10 @@ impl<'a> Mapper<'a> {
     fn start_marks(&mut self, tag: &Tag<'_>) {
         match tag {
             Tag::Heading { level, .. } => self.marks.heading = Some(*level as u8),
-            Tag::CodeBlock(_) => self.open_code(),
+            Tag::CodeBlock(kind) => {
+                self.open_code();
+                self.open_fence(kind);
+            }
             Tag::Emphasis => {
                 self.save();
                 self.marks.emphasis = true;

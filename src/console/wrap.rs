@@ -52,7 +52,7 @@ pub(crate) fn wrap_in(text: &str, width: usize, first: usize, bar: usize) -> Vec
 }
 
 /// `line` with each tab spent as spaces, its first scalar `column` cells in.
-fn expand_tabs(line: &str, column: usize) -> String {
+pub(crate) fn expand_tabs(line: &str, column: usize) -> String {
     let mut out = String::with_capacity(line.len());
     let mut column = column;
     for ch in line.chars() {

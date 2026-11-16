@@ -1742,6 +1742,21 @@ mod tests {
             ("text on ink", palette.text, palette.ink, 4.5),
             ("title on ink", palette.title, palette.ink, 4.5),
             ("working on ink", palette.working, palette.ink, 4.5),
+            // The reader's syntax colour is text (src/app/highlight.rs): a keyword
+            // wears `waiting_agent` on the file's ground and on a fence's, strings
+            // and numbers `working` and `title`, comments and keys `text`.
+            (
+                "waiting_agent on ink",
+                palette.waiting_agent,
+                palette.ink,
+                4.5,
+            ),
+            (
+                "waiting_agent on panel",
+                palette.waiting_agent,
+                palette.panel,
+                4.5,
+            ),
             ("dim on ink", palette.dim, palette.ink, 3.0),
         ] {
             pairs.push(ContrastPair {

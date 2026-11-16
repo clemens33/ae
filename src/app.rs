@@ -85,6 +85,7 @@ mod fleet_spec;
 mod flight;
 mod frame;
 pub mod handover;
+pub mod highlight;
 mod journals;
 mod keys;
 mod lane;

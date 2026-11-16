@@ -2976,7 +2976,7 @@ fn paint_markdown(
                     if mark != old {
                         spans.push(Span::styled(
                             crate::board::terminal_text(&text[from..at]),
-                            markdown_style(old, paint),
+                            super::highlight::fenced(markdown_style(old, paint), old.syn, paint),
                         ));
                         from = at;
                         old = mark;
@@ -2984,7 +2984,7 @@ fn paint_markdown(
                 }
                 spans.push(Span::styled(
                     crate::board::terminal_text(&text[from..]),
-                    markdown_style(old, paint),
+                    super::highlight::fenced(markdown_style(old, paint), old.syn, paint),
                 ));
                 let y = body.y + cells(step);
                 if r.marks(row, text.len()).code_block {
@@ -3163,6 +3163,7 @@ fn paint_file_rows(
     let text_x = body.x.saturating_add(cells(gutter).min(body.width));
     let room = body.right().saturating_sub(text_x);
     let number = dim.add_modifier(Modifier::BOLD);
+    let mut syntax = super::highlight::Reading::open(view, flow, start, paint);
     for (step, row) in (start..flow.rows()).take(visible).enumerate() {
         let Some((line, first, gap, piece)) = flow.display(row) else {
             break;
@@ -3182,6 +3183,10 @@ fn paint_file_rows(
                 cells(gutter),
                 style,
             );
+        }
+        if let Some(line) = syntax.as_mut().and_then(|syntax| syntax.row(row)) {
+            put_line(buf, text_x, y, &line, room);
+            continue;
         }
         put(
             buf,

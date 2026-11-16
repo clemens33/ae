@@ -819,7 +819,7 @@ fn draw_rendered_has_no_gutter_and_wears_the_inline_modifiers() {
 
 #[test]
 fn draw_with_a_look_dims_link_targets_and_grounds_code_apart() {
-    let src = "see [label](https://x.io/t) and `let n = 4;` plain\n\n```rust\nlet s = \"str\"; // note 42\nfn main() { s.len() }\n```\n";
+    let src = "see [label](https://x.io/t) and `let n = 4;` plain\n\n```txt\nlet s = \"str\"; // note 42\nfn main() { s.len() }\n```\n";
     let lines = source_lines(src);
     let rendered = markdown::render(src, 50);
     let view = markdown::View {
@@ -849,8 +849,9 @@ fn draw_with_a_look_dims_link_targets_and_grounds_code_apart() {
     }
     assert_ne!(cell("label", y).fg, dim, "its label is not");
     let plain = cell("plain", y).bg;
-    // No syntax colour: every visible character of a code span or row wears
-    // ONE foreground, whatever its token (keyword, string, comment, number).
+    // Inline code and unknown-tag fenced code keep one foreground: every
+    // visible character of a code span or row wears ONE foreground, whatever
+    // its token (keyword, string, comment, number).
     let one_ink = |row: u16, from: u16, to: u16, what: &str| {
         let inks: Vec<_> = (from..to)
             .filter(|&x| !cells[(x, row)].symbol().trim().is_empty())
@@ -873,7 +874,7 @@ fn draw_with_a_look_dims_link_targets_and_grounds_code_apart() {
     let second = row_with("fn main()");
     assert_eq!(second, first + 1, "fence lines are not drawn between");
     assert!(
-        !whole(&cells).contains("rust"),
+        !whole(&cells).contains("txt"),
         "the info string is not drawn"
     );
     for row in [first, second] {
