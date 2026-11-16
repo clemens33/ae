@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.70] - 2026-11-16
+- Autotrust waits on evidence use the 60 s witness bound (#234)
+- Menu cancel, checkout-shape and failed-exec waits observe fleet frames, not wall-clock holds (#234)
+- Keep the menu holds with their reasons, name the autochoice holds, record stopped sessions without a new helper (#234)
+- The failed-exec fleet frames use the 60 s witness bound (#234)
+- Say what the fleet-frame ordering proves, no more (#234)
+
 ## [v2026.11.69] - 2026-11-16
 - Freeze the orchestrator panel acceptance
 - The orchestrator panel reaches a live seat
