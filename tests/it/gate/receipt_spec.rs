@@ -13,6 +13,7 @@
 //! `releaseproof_spec` supplies real-recipe behaviour controls with fake external
 //! cargo/SSH dependencies. The producer installs every frozen file unchanged.
 
+mod gatephase_spec;
 mod lanefix_spec;
 mod releaseproof_spec;
 #[path = "affected/recipe_spec.rs"] mod recipe_spec;
