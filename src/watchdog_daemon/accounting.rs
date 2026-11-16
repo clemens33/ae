@@ -745,9 +745,10 @@ pub fn account_with_activity(
 /// [`account_with_activity`], inside or outside the wake settle (#238):
 /// `settling` is [`crate::watchdog::settle`]'s hold for this cycle. While it
 /// holds, every effect that reaches the seat ([`Effect::held_while_settling`])
-/// is dropped before anything applies it, and no counter moves: each one is
-/// booked only when its delivery is applied, so the next free cycle books the
-/// same delivery again. `false` is exactly [`account_with_activity`].
+/// is dropped before anything applies it, and no delivery counter moves: each
+/// one is booked only when its delivery is applied, so the next free cycle
+/// books the same delivery again. Observation counters such as the
+/// human-prompt streak advance as on any cycle. `false` is exactly [`account_with_activity`].
 #[must_use]
 pub fn account_settling(
     prior: &PaneState,
