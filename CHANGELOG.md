@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.73] - 2026-11-16
+- Name the exit and the step evidence of a failed relleaves observer or safety control (#345)
+- Let the relleaves safety sentinel outlive a slow cap census (#345)
+- Let the relleaves cleanup ps reads decide on their output, not the ps exit status (#345)
+
 ## [v2026.11.72] - 2026-11-16
 - Inert wake-settle seam: settle() and account_settling() (#238)
 - Freeze watchdog sleep-gap cycle acceptance
