@@ -241,3 +241,7 @@ pub fn status(view: &View<'_>, visible: usize) -> String {
     };
     format!("rows {first}-{last}/{total}{more}")
 }
+
+#[cfg(test)]
+#[path = "synhl_spec.rs"]
+mod synhl_spec;
