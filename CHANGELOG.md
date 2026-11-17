@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.78] - 2026-11-17
+- The lead or a human clears a suspect lock; document stopping your own claimed run
+- Frozen acceptance spec and the config roster edit seam (stub)
+- Edit the [roster] orchestrator row in place, with backup, byte-compare and a fuzz target
+- Allow the scratch-file reads in the roster edit unit tests
+- Refuse a replacement copy whose group differs from the file's
+- Refuse an edit past the config cap and test the owner and group refusal through the replace step
+- Frame the CRLF fuzz seed with an LF profile line so it reaches an edit
+- Frozen Settings UI acceptance and the orchestrator profile seam (stub)
+- Pick the orchestrator profile in Settings and write it on its own thread
+- Document the orchestrator row, add its key help and rename the answer variant
+- End the answer arm with a semicolon
+- Install the refrozen terminal acceptance spec
+- Tests for the batch 2 review findings
+- Fix the batch 2 review findings
+- Keep the picker heading on screen while it fits with the highlight
+- Group the pick state, build the review fixture without push_str format
+- Build the review fixture with writeln
+- Test that the Config tab keeps its effective values on top
+- The orchestrator block follows the Config tab effective values
+- Name the orchestrator tail instead of a nested tuple
+- Pin the blanks around the equals sign and a quoted value with text in the roster edit
+- The quoted-value test uses profiles the config defines
+- Pin the file mode, the refusal kinds and the seen text of the roster edit
+- Pin the loader's orchestrator profile read to the orchestrator session and the first read of an open
+- Pin the answer generation and the second o of the picker
+- Pin the unchanged note, the picker on its tab and the redraw off the Config tab
+- The roster edit scratch tests remove their directories; the loader repeat read asserts no orchestrator answer in any view
+
 ## [v2026.11.77] - 2026-11-17
 - Install the frozen folder tree acceptance and its type and cap seam
 - Install the frozen synhl_spec compile amendment for the tree body
