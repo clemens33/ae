@@ -163,7 +163,7 @@ fn tree_mark(node: &filedoor::Node) -> String {
         Kind::Link => "@",
         Kind::Fifo => "|",
         Kind::Socket => "=",
-        Kind::File | Kind::Device | Kind::Unknown => "",
+        Kind::File | Kind::Other => "",
     };
     let state = match &node.listed {
         Listed::Walked => String::new(),
@@ -449,7 +449,7 @@ mod tree_tests {
             nodes: vec![
                 node("", Kind::Folder, Listed::Walked, vec![1]),
                 node("only", Kind::Folder, Listed::Walked, vec![2]),
-                node("leaf", Kind::Device, Listed::Walked, vec![]),
+                node("leaf", Kind::Other, Listed::Walked, vec![]),
             ],
         };
         assert_eq!(tree_lines(&tree), ["└── only/", "    └── leaf"]);

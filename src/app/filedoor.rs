@@ -78,9 +78,8 @@ pub enum Kind {
     Link,
     Fifo,
     Socket,
-    Device,
-    /// The listing could not say.
-    Unknown,
+    /// A device, or a kind the listing could not say.
+    Other,
 }
 
 /// What became of a folder's own entries.
@@ -234,10 +233,8 @@ fn kind_of(kind: std::fs::FileType) -> Kind {
         Kind::Fifo
     } else if kind.is_socket() {
         Kind::Socket
-    } else if kind.is_block_device() || kind.is_char_device() {
-        Kind::Device
     } else {
-        Kind::Unknown
+        Kind::Other
     }
 }
 
@@ -301,20 +298,20 @@ fn walk(root: &Path) -> Read {
                 continue;
             }
         };
-        let (mut found, mut lost, mut exact) = (Vec::new(), 0, true);
+        // A listing that fails part way ends there, its count a lower bound.
+        let (mut found, mut exact) = (Vec::new(), true);
         for entry in entries {
+            let Ok(entry) = entry else {
+                exact = false;
+                break;
+            };
             if read >= TREE_MAX_READ {
                 exact = false;
                 break;
             }
             read += 1;
-            match entry {
-                Ok(entry) => {
-                    let kind = entry.file_type().map_or(Kind::Unknown, kind_of);
-                    found.push((entry.file_name(), kind));
-                }
-                Err(_) => lost += 1,
-            }
+            let kind = entry.file_type().map_or(Kind::Other, kind_of);
+            found.push((entry.file_name(), kind));
         }
         found.sort_by(|(a, a_kind), (b, b_kind)| {
             (*b_kind == Kind::Folder)
@@ -345,7 +342,7 @@ fn walk(root: &Path) -> Read {
         }
         listed += keep;
         let parent = &mut tree.nodes[at];
-        parent.more = cut + lost;
+        parent.more = cut;
         parent.exact = exact;
     }
     Read::Tree(tree)
@@ -437,6 +434,72 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn a_small_folder_is_its_whole_tree_and_only_real_folders_are_listed_in_turn() {
+        let root = fixture("small");
+        fs::create_dir_all(root.join("a/b")).expect("the folders are made");
+        fs::write(root.join("a/b/c"), b"").expect("the fixture file is written");
+        fs::write(root.join("a/f"), b"").expect("the fixture file is written");
+        fs::write(root.join("z"), b"").expect("the fixture file is written");
+        std::os::unix::fs::symlink(root.join("a"), root.join("l")).expect("the link is made");
+        let tree = tree_of(&root);
+        let shape: Vec<(String, Kind, Listed, usize)> = tree
+            .nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.name.to_string_lossy().into_owned(),
+                    node.kind,
+                    node.listed.clone(),
+                    node.children.len(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (String::new(), Kind::Folder, Listed::Walked, 3),
+                ("a".to_owned(), Kind::Folder, Listed::Walked, 2),
+                ("l".to_owned(), Kind::Link, Listed::Walked, 0),
+                ("z".to_owned(), Kind::File, Listed::Walked, 0),
+                ("b".to_owned(), Kind::Folder, Listed::Walked, 1),
+                ("f".to_owned(), Kind::File, Listed::Walked, 0),
+                ("c".to_owned(), Kind::File, Listed::Walked, 0),
+            ]
+        );
+        assert!(tree.nodes.iter().all(|node| node.more == 0 && node.exact));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_linked_folder_that_cannot_be_listed_is_refused_by_its_error() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = fixture("locked");
+        let locked = root.join("locked");
+        fs::create_dir(&locked).expect("the folder is made");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000))
+            .expect("the folder is locked");
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "test: whether this process can list the locked fixture (root can)"
+        )]
+        let listable = fs::read_dir(&locked).is_ok();
+        let roots = Roots {
+            dir: Some(root.clone()),
+            home: None,
+        };
+        let answer = open(&locked, &roots, 100);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700))
+            .expect("the folder is unlocked");
+        if !listable {
+            assert!(
+                matches!(&answer, Read::Refused(why) if why == "unreadable: permission denied"),
+                "{answer:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
