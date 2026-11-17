@@ -178,6 +178,11 @@ pub(super) enum Wake {
         generation: u64,
         outcome: Result<disk::Reset, disk::Refused>,
     },
+    /// What became of the orchestrator profile pick of `generation`.
+    OrchestratorPick {
+        generation: u64,
+        outcome: Result<crate::config::Applied, crate::config::ApplyRefusal>,
+    },
 }
 
 /// One answer from the reader.

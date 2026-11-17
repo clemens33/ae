@@ -462,6 +462,14 @@ pub(super) fn drain(
                 redraw = true;
                 continue;
             }
+            Wake::OrchestratorPick {
+                generation,
+                outcome,
+            } => {
+                app.orchestrator_landed(generation, outcome);
+                redraw = true;
+                continue;
+            }
             Wake::Closed => return None,
         };
         redraw |= take_keys(app, keyed)?;

@@ -191,6 +191,19 @@ impl App {
         self.settings_bodies.stats.store.reset = Some(line);
     }
 
+    /// The orchestrator profile pick owed to the writer thread, handed once.
+    pub(super) const fn take_orchestrator_pick(&mut self) -> Option<settings::OrchestratorPick> {
+        None
+    }
+
+    /// What became of the pick of `generation`, drawn only under that open.
+    pub(super) fn orchestrator_landed(
+        &mut self,
+        _generation: u64,
+        _outcome: Result<crate::config::Applied, crate::config::ApplyRefusal>,
+    ) {
+    }
+
     /// Show the other scope of the read already held.
     pub(super) fn flip_stats_scope(&mut self) {
         let stats = &mut self.settings_bodies.stats;

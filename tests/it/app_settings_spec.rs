@@ -31,6 +31,8 @@ use ratatui_core::style::Color;
 mod hint;
 #[path = "app_instructions_spec.rs"]
 mod instructions;
+#[path = "app_orchprof_spec.rs"]
+mod orchprof;
 #[path = "app_typing_spec.rs"]
 mod typing;
 

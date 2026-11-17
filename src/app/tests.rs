@@ -2,6 +2,15 @@ mod chrome_spec {
     include!("../../tests/it/app_chrome_spec.rs");
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    clippy::expect_used,
+    reason = "frozen acceptance owns scratch config files and UI channels"
+)]
+mod orchprof_flow_spec {
+    include!("../../tests/it/app_orchprof_flow_spec.rs");
+}
+
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};

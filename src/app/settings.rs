@@ -328,6 +328,57 @@ pub(crate) struct StatsBody {
     pub(crate) tools: Option<Box<crate::tool_stats::View>>,
 }
 
+/// The orchestrator profile facts the Config tab draws and the picker offers.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum OrchestratorView {
+    /// No answer yet.
+    #[default]
+    Loading,
+    /// The row can be read and edited.
+    Ready(OrchestratorReady),
+    /// The row cannot be edited, and why: nothing is offered.
+    Unreadable(String),
+}
+
+/// What an editable orchestrator row shows and offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OrchestratorReady {
+    /// `[roster] orchestrator`, as the reader binds it.
+    pub(crate) configured: String,
+    /// The profile the saved orchestrator session recorded, if one exists.
+    pub(crate) recorded: Option<String>,
+    /// The `[profiles]` keys a launch accepts, in config order.
+    pub(crate) choices: Vec<String>,
+    /// The config bytes this was read from: an apply must still find them.
+    pub(crate) seen: crate::config::ConfigSeen,
+    /// The file the row was read from and an apply writes.
+    pub(crate) global: PathBuf,
+}
+
+/// One pick the human made, handed to the thread that writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OrchestratorPick {
+    /// The overlay generation the pick was made under.
+    pub(crate) generation: u64,
+    /// The profile to bind.
+    pub(crate) profile: String,
+    /// The display read the apply compares against.
+    pub(crate) seen: crate::config::ConfigSeen,
+    /// The file to edit.
+    pub(crate) global: PathBuf,
+}
+
+/// Read the orchestrator profile facts: the editable row of the global file,
+/// the profiles a launch accepts, and what the saved orchestrator session at
+/// `meta_dir` recorded.
+pub(crate) fn resolve_orchestrator(
+    _meta_dir: Option<&Path>,
+    _global: &Path,
+    _home: Option<&Path>,
+) -> OrchestratorView {
+    OrchestratorView::Loading
+}
+
 /// Everything the overlay draws. Cold until the first answer lands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SettingsBodies {
@@ -341,6 +392,8 @@ pub(crate) struct SettingsBodies {
     /// one lands; `Some` with empty groups is a read with no live seats.
     pub(crate) live_seats: Option<crate::quota::LiveSeats>,
     pub(crate) config: ConfigView,
+    /// The Config tab's orchestrator profile row and picker.
+    pub(crate) orchestrator: OrchestratorView,
     pub(crate) about: Option<AboutFacts>,
     pub(crate) instructions: InstructionsView,
     pub(crate) stats: StatsBody,
@@ -353,6 +406,7 @@ impl Default for SettingsBodies {
             quota_kept: None,
             live_seats: None,
             config: ConfigView::Loading,
+            orchestrator: OrchestratorView::Loading,
             about: None,
             instructions: InstructionsView::Loading,
             stats: StatsBody::default(),
