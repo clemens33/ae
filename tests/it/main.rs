@@ -149,6 +149,7 @@ mod obsreask_spec;
 mod oc2b_spec;
 mod ocwarn_env_supplement;
 mod ocwarn_io_spec;
+mod ocwarn_mutation_spec;
 mod ocwarn_spec;
 mod pairguard_after;
 mod pairguard_spec;
