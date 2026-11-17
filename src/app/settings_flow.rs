@@ -649,6 +649,7 @@ mod review_tests {
     use ratatui_core::layout::Rect;
 
     use crate::app::loader::{Answer, Wake};
+    use crate::app::model;
     use crate::app::settings::{OrchestratorView, resolve_orchestrator};
     use crate::app::tests::Root;
     use crate::app::{App, drain, take_keys};
@@ -882,6 +883,60 @@ mod review_tests {
         assert!(
             shown.contains("> p01") && !shown.contains("> p00"),
             "a second o is the picker's and moves nothing: {shown}"
+        );
+    }
+
+    #[test]
+    fn an_edit_that_changed_nothing_is_never_called_saved() {
+        let (_root, mut app) = fixture("orchprof-rev-unchanged", 3);
+        text(&mut app, "o");
+        key(&mut app, Key::Enter);
+        let pick = app
+            .take_orchestrator_pick()
+            .expect("the configured choice queues");
+        land(
+            &mut app,
+            pick.generation,
+            Ok(Applied {
+                changed: false,
+                backup: None,
+            }),
+        );
+        let shown = frame(&mut app, 220, 60);
+        assert!(
+            shown.contains("orchestrator profile unchanged: p00"),
+            "{shown}"
+        );
+        assert!(!shown.contains("saved"), "nothing was written: {shown}");
+    }
+
+    #[test]
+    fn the_picker_stays_through_a_scroll_key_and_closes_when_the_tab_is_left() {
+        let (_root, mut app) = fixture("orchprof-rev-picker-tab", 3);
+        text(&mut app, "o");
+        assert!(frame(&mut app, 220, 60).contains("Orchestrator profile"));
+        key(&mut app, Key::PageDown);
+        assert!(
+            frame(&mut app, 220, 60).contains("Orchestrator profile"),
+            "a scroll key on the Config tab leaves the picker open"
+        );
+        text(&mut app, "3");
+        text(&mut app, "2");
+        let shown = frame(&mut app, 220, 60);
+        assert!(
+            !shown.contains("Orchestrator profile")
+                && shown.contains("o  choose the orchestrator profile"),
+            "leaving the Config tab closed the picker: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_key_the_model_leaves_alone_is_no_redraw_off_the_config_tab() {
+        let (_root, mut app) = fixture("orchprof-rev-act", 3);
+        text(&mut app, "3");
+        assert!(
+            !super::settings_act(&mut app, model::Key::Open),
+            "o means nothing on the About tab"
         );
     }
 
