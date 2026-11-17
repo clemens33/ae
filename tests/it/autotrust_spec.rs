@@ -239,6 +239,9 @@ if ($owned && $mode eq 'decline' && locked()) {
         open(my $log, '>>', "$root/decline-proofs") or die; print $log "proof\n"; close $log;
     }
 }
+if ($owned && $mode eq 'count-captures' && grep { $_ eq 'capture-pane' } @ARGV) {
+    open(my $log, '>>', "$root/captures") or die; print $log "capture\n"; close $log;
+}
 if ($owned && (grep { $_ eq 'display-message' } @ARGV) && $ARGV[-1] =~ /^\[ae watchdog\] /) {
     open(my $log, '>>', "$root/notifications") or die; print $log "$ARGV[-1]\n"; close $log;
 }
@@ -1526,7 +1529,7 @@ fn v14_off_reseat_names_a_trust_prompt_fast_without_keys() {
         )
     });
     fs::remove_file(rig.root.join("ready")).expect("old tool receipt");
-    let started = Instant::now();
+    write(rig.root.join("wrapper"), "count-captures");
     let (code, out, err) = rig.invoke(
         rig.environment()
             .env("TMUX_PANE", caller.trim())
@@ -1542,9 +1545,18 @@ fn v14_off_reseat_names_a_trust_prompt_fast_without_keys() {
         "successor drew modal: code={code} out={out} err={err}"
     );
     assert_eq!(code, 1, "off seed stays undelivered: {out}\n{err}");
+    // The requirement: the pane comes back once the same human-only question
+    // held on two consecutive readiness chunks, not after the whole launch
+    // wait. The product spends that wait in polls, so the evidence is the
+    // count of pane reads the wrapper saw, which a slower host does not change:
+    // the fast path read the pane 10 times at 0 s and at 1 s of tmux lag, and a
+    // run that waited the whole budget out read it 225 times at 0 s. A
+    // wall-clock bound fails the fast path under load, because every poll
+    // then takes longer (#234).
+    let captures = text(rig.root.join("captures")).lines().count();
     assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "off gives the pane back before the full wait: {err}"
+        captures < 60,
+        "off gives the pane back before the full wait: {captures} pane reads: {err}"
     );
     for words in [
         "Quick safety check: Is this a project you created or one you trust?",
