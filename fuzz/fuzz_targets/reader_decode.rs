@@ -44,6 +44,7 @@ fuzz_target!(|data: &[u8]| {
             );
             check_flow(lines, width);
         }
+        Body::Tree { .. } => panic!("decoded bytes became a folder tree"),
     }
     let [a, b, c, d] = [data.get(1), data.get(2), data.get(3), data.get(4)]
         .map(|byte| usize::from(byte.copied().unwrap_or(0)));
