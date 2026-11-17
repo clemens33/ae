@@ -1136,3 +1136,4 @@ fn runparsed_a_clear_failure_says_the_carried_copy_is_inert_and_the_marker_is_ba
     assert!(!rig.dir.join("seed.scout.md").exists());
     assert!(rig.received().is_empty());
 }
+include!("seatinc_move_spec.rs");
