@@ -2555,6 +2555,55 @@ mod tests {
         assert!(matches!(none, Some(View::Gap(why)) if why.contains("no session selected")));
     }
 
+    /// The first settings read of an open carries the profile the saved
+    /// orchestrator session recorded, from the session NAMED orchestrator and
+    /// no other; a repeat read of the same open does not read it again.
+    #[test]
+    fn the_first_settings_read_of_an_open_carries_the_orchestrator_sessions_profile() {
+        use crate::app::settings::OrchestratorView;
+        let root = Root::new("settings-orchestrator");
+        let (home, global) = (root.0.join("home"), root.0.join("config"));
+        std::fs::create_dir_all(&home).expect("scratch home");
+        std::fs::write(
+            &global,
+            "[profiles]\na = /bin/echo a\n[roster]\norchestrator = a\n",
+        )
+        .expect("identity config");
+        let _ = session(&root, "orchestrator", "profile.main=recorded_orch\n");
+        let _ = session(&root, "other", "profile.main=other_profile\n");
+        let mut reader = Reader::new(root.0.clone(), None, None);
+        reader.settings_paths(super::SettingsPaths {
+            home: Some(home),
+            global,
+            local: None,
+        });
+        reader.take(Request::Settings {
+            open: true,
+            generation: 3,
+        });
+        let profile = |answers: &[Answer]| {
+            answers.iter().find_map(|answer| match answer {
+                Answer::OrchestratorProfile {
+                    generation,
+                    view: OrchestratorView::Ready(ready),
+                } => Some((*generation, ready.recorded.clone())),
+                _ => None,
+            })
+        };
+        let first = reader.settings_answers();
+        assert_eq!(
+            profile(&first),
+            Some((3, Some("recorded_orch".to_owned()))),
+            "the first read of the open names the orchestrator session's profile"
+        );
+        let repeat = reader.settings_answers();
+        assert_eq!(
+            profile(&repeat),
+            None,
+            "the same open does not read the profile again"
+        );
+    }
+
     /// I11: a settings read completed at t cannot reread at t or
     /// t+REFRESH/2; the reader waits until exactly t+REFRESH, then the
     /// settings read is due again. An open overlay reads immediately; a
