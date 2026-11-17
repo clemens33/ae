@@ -125,37 +125,60 @@ impl DnRig {
             .collect()
     }
 
-    fn command(&self, command: &[&str], expected: &str) {
+    fn command(&self, command: &[&str], without_harness: bool) {
+        let previous: u32 = self
+            .tmux
+            .must(&[
+                "display-message",
+                "-p",
+                "-t",
+                &self.tmux.pane,
+                "#{pane_pid}",
+            ])
+            .trim()
+            .parse()
+            .expect("owned pane PID before respawn");
         let mut args = vec!["respawn-pane", "-k", "-t", &self.tmux.pane];
         args.extend_from_slice(command);
         self.tmux.must(&args);
         let end = std::time::Instant::now() + Duration::from_mins(1);
         loop {
-            let actual = self.tmux.must(&[
-                "display-message",
-                "-p",
-                "-t",
-                &self.tmux.pane,
-                "#{pane_current_command}",
-            ]);
-            if actual.trim() == expected {
-                return;
+            let panes = crate::transport::observe_watch_panes(&self.tmux.server, "current")
+                .expect("owned panes after respawn");
+            let actual = panes.iter().find(|pane| pane.pane_id == self.tmux.pane);
+            if let Some(pane) = actual
+                && let Some(pid) = pane.pane_pid
+            {
+                let command = pane.current_command.trim();
+                if pid != previous
+                    && !command.is_empty()
+                    && crate::watchdog::command_is_shell(command)
+                {
+                    let dead = !without_harness
+                        || crate::procs::snapshot().is_some_and(|table| {
+                            table.iter().any(|row| row.pid == pid)
+                                && !crate::procs::has_descendant_named(&table, pid, "sleep")
+                        });
+                    if dead {
+                        return;
+                    }
+                }
             }
             assert!(
                 std::time::Instant::now() < end,
-                "fixture command did not settle: {actual}"
+                "fixture command did not settle after PID {previous}: {actual:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
     }
 
     fn shell(&self) {
-        self.command(&["/bin/sh"], "sh");
+        self.command(&["/bin/sh"], true);
     }
 
     fn revive(&self) {
         // A harness is a descendant of the pane shell, not the pane root.
-        self.command(&["/bin/sh", "-c", "sleep 600; :"], "sh");
+        self.command(&["/bin/sh", "-c", "sleep 600; :"], false);
         Self::wait_harness(&self.tmux, &self.tmux.pane);
     }
 
