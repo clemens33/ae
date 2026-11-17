@@ -1,21 +1,27 @@
-//! A seat that died tells the agent that spawned it (#211).
+//! A seat that died tells the agent that spawned it (#211), and the human is
+//! alerted once per death across daemon restarts.
 //!
-//! The watchdog already latches a seat's death and alerts the human; that path
-//! is unchanged. This module owns what the spawner is told on top of it:
+//! This module owns what the spawner is told on top of the human's alert:
 //! whom (the roster member the seat's newest `spawn` record names, never the
 //! seat itself), what (one line naming the seat and the observed state), how
 //! often (three tries, a retry only for a refusal the send helper proves came
 //! before the paste) and how the journal proves it was told once per death
-//! episode, across a daemon restart.
+//! episode, across a daemon restart. It also owns the journal half of the
+//! human's dead latch: [`death_episode`] says whether the human's dead alert
+//! already stands for the seat's current episode, so a restarted daemon never
+//! alerts the same death twice.
 //!
 //! ONE function reads the episode: [`episode`] folds the journal records of the
-//! seat, and the daemon's own records of this cycle, into the episode's key
-//! and whether the spawner was told in it. The key changes exactly at a
-//! closer: a record the seat itself wrote (the routing rule every reader
-//! shares, which never reads a record that speaks for the daemon as a seat's),
-//! or a `dead-cleared`, `pane-back`, `spawn` or `reseat` addressed to it. A `dead-notice` is told for the
-//! episode it follows. The durable half (told) and the in-memory half (the
-//! [`Standing`] below) both come from that fold, so they cannot disagree.
+//! seat, and the daemon's own records of this cycle, into the episode's key,
+//! whether the spawner was told in it and whether the human was alerted in it.
+//! The key changes exactly at a closer: a record the seat itself wrote (the
+//! routing rule every reader shares, which never reads a record that speaks for
+//! the daemon as a seat's), or a `dead-cleared`, `pane-back`, `spawn`, `reseat`
+//! or `ae _run` start record (`conversation-*`) addressed to it. A
+//! `dead-notice` is told for, and a dead `alert` alerts, the episode it
+//! follows. The durable half (told, alerted) and the in-memory half (the
+//! [`Standing`] below, the pane's `dead_latched`) both come from that fold, so
+//! they cannot disagree.
 //!
 //! A death episode is the seat's whole stretch from its first sign of death to
 //! the next closer, whichever way it dies: dropped to its shell, or its pane
@@ -46,9 +52,14 @@ pub(super) const BACK_ACTION: &str = "pane-back";
 /// Tries one episode's notice gets, the first included.
 const TRIES: u8 = 3;
 
-/// How the spawner's seat was seen to die.
+/// The human's dead alert for a seat that dropped to its shell.
+pub(super) const SHELL_ALERT: &str = "agent process dead — dropped to shell";
+/// The human's dead alert for a roster seat whose pane left the session.
+pub(super) const MISSING_ALERT: &str = "pane missing — agent no longer visible in session";
+
+/// How a seat was seen to die: the leg of its death episode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Death {
+pub enum Death {
     /// The agent process exited and the pane fell back to its shell.
     Shell,
     /// The pane left the session.
@@ -63,6 +74,34 @@ impl Death {
             Self::PaneGone => "pane gone",
         }
     }
+
+    /// The leg of a human dead alert, by the summary the watchdog wrote it
+    /// with; `None` for any other record.
+    fn of_alert(event: &Event) -> Option<Self> {
+        if event.action != "alert" {
+            return None;
+        }
+        match event.summary.as_deref()? {
+            SHELL_ALERT => Some(Self::Shell),
+            MISSING_ALERT => Some(Self::PaneGone),
+            _ => None,
+        }
+    }
+}
+
+/// What the journal holds of the human's dead alert in a seat's current death
+/// episode, as [`crate::watchdog_daemon::Activity`] carries it into the
+/// accounting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeathEpisode {
+    /// Not read: the accounting keeps its memory-only latch and the clear by
+    /// the cycle's outstanding alert, exactly as before the journal half.
+    #[default]
+    Unread,
+    /// The human was alerted in the current episode, first on this leg.
+    Open(Death),
+    /// No dead alert follows the seat's newest closer.
+    Closed,
 }
 
 /// Where one seat's death-episode notice stands.
@@ -137,13 +176,15 @@ impl Standing {
 
 /// What one cycle saw of a live pane's seat.
 pub(super) struct Reading<'a> {
-    /// The death latch before this cycle's booking.
+    /// The death latch before this cycle's booking: the carried latch or the
+    /// journal's standing dead alert.
     pub(super) was_latched: bool,
     /// The death latch after it.
     pub(super) latched: bool,
-    /// The cycle booked its own `dead-cleared` for the seat: a record the
-    /// events the cycle read at its start do not hold, and which a same-cycle
-    /// re-latch hides behind both latch readings.
+    /// The cycle booked its own closer for the seat (`dead-cleared`, or
+    /// `pane-back` for a pane-gone death): a record the events the cycle read
+    /// at its start do not hold, and which a same-cycle re-latch hides behind
+    /// both latch readings.
     pub(super) cleared: bool,
     /// The pane's foreground command.
     pub(super) command: &'a str,
@@ -187,14 +228,17 @@ struct Episode {
     key: usize,
     /// A `dead-notice` for the seat follows the newest closer.
     told: bool,
+    /// The leg of the first human dead alert for the seat after the newest
+    /// closer.
+    alerted: Option<Death>,
 }
 
 /// The seat's episode over `events`, the journal as it stands, the cycle's own
 /// records included. The ONE rule of what ends an episode: the seat's own
 /// record (the routing rule every reader shares: its key, or its display name
 /// for a keyless legacy record, and never a record that speaks for the
-/// daemon), or a retraction, return, spawn or reseat addressed to it. The
-/// notice record is never a closer.
+/// daemon), or a retraction, return, spawn, reseat or start addressed to it.
+/// The notice and the alert record are never closers.
 fn episode(events: &[Event], session: &str, (slot, agent): (&str, &str)) -> Episode {
     let mut seen = Episode::default();
     for event in events {
@@ -204,20 +248,41 @@ fn episode(events: &[Event], session: &str, (slot, agent): (&str, &str)) -> Epis
             seen = Episode {
                 key: seen.key + 1,
                 told: false,
+                alerted: None,
             };
+        } else if seen.alerted.is_none()
+            && crate::watchdog::event_is_addressed_to(event, session, slot, agent)
+        {
+            seen.alerted = Death::of_alert(event);
         }
     }
     seen
 }
 
-/// Whether the record ends a death episode of the seat.
+/// Whether the record ends a death episode of the seat. An `ae _run` start
+/// record (`conversation-*`, damaged or not) addressed to the seat is a new
+/// incarnation starting, so it ends the episode too: a session resume or a
+/// re-run in place writes no other record the seat's death could end at.
 fn closes(event: &Event, session: &str, slot: &str, agent: &str) -> bool {
     crate::watchdog::event_is_actor(event, session, slot, agent)
         || (crate::watchdog::event_is_addressed_to(event, session, slot, agent)
-            && matches!(
+            && (matches!(
                 event.action.as_str(),
                 "dead-cleared" | BACK_ACTION | "spawn" | crate::reseat::RESEAT_ACTION
-            ))
+            ) || crate::conversation::decode(event).is_some()))
+}
+
+/// The journal half of the human's dead latch for the seat: whether a dead
+/// alert already stands in its current episode, and on which leg it was
+/// raised. `events` must hold the records this cycle already wrote.
+pub(super) fn death_episode(
+    events: &[Event],
+    session: &str,
+    seat: (&str, &str),
+) -> DeathEpisode {
+    episode(events, session, seat)
+        .alerted
+        .map_or(DeathEpisode::Closed, DeathEpisode::Open)
 }
 
 /// Whether the journal holds a notice for the seat at all, which is the cheap

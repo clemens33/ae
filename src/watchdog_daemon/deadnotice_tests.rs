@@ -354,7 +354,11 @@ fn a_notice_belongs_to_the_episode_it_follows() {
     ];
     assert_eq!(
         episode(&notice_after, SESSION, SEAT),
-        super::Episode { key: 1, told: true }
+        super::Episode {
+            key: 1,
+            told: true,
+            alerted: None,
+        }
     );
     let closed = [
         notice("worker"),
@@ -364,7 +368,8 @@ fn a_notice_belongs_to_the_episode_it_follows() {
         episode(&closed, SESSION, SEAT),
         super::Episode {
             key: 1,
-            told: false
+            told: false,
+            alerted: None
         }
     );
 }

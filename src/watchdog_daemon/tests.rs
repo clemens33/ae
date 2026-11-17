@@ -10286,20 +10286,14 @@ fn a_slot_with_no_pane_is_neutral_on_its_first_absent_cycle_and_dead_on_its_seco
     // Second: the streak is recorded, and now it wants a human.
     let missing = vec![(
         "worker.0".to_owned(),
-        MissingState {
-            streak: 1,
-            alerted: true,
-        },
+        MissingState { streak: 1 },
     )];
     assert_eq!(slot_mark(&roster[1], &by_slot, &missing), Mark::NeedsYou);
     // The debounce is keyed by SLOT: a streak against some other slot must
     // not make this one say so.
     let elsewhere = vec![(
         "spawned.9".to_owned(),
-        MissingState {
-            streak: 4,
-            alerted: true,
-        },
+        MissingState { streak: 4 },
     )];
     assert_eq!(slot_mark(&roster[1], &by_slot, &elsewhere), Mark::Idle);
 }

@@ -71,6 +71,7 @@ use accounting::{
     naming, observed_option, restore_idle, slot_latched, sweep_effects, system_time_from_epoch,
 };
 mod deadnotice;
+pub use deadnotice::{Death, DeathEpisode};
 use deadnotice::{Reading, Standing};
 mod cycle_apply;
 mod cycle_observe;
@@ -263,10 +264,15 @@ pub struct PaneState {
     pub history_capture: Option<(i64, String, Option<String>)>,
     /// Dead is LATCHED once alerted, and the latch ends exactly once: on a
     /// POSITIVE process reading that shows the seat's harness back under the
-    /// pane (a re-run in place), or on the seat's own later journal activity
-    /// — which alerts nothing further and clears it with one `dead-cleared`.
+    /// pane (a re-run in place), or on a closer of its death episode in the
+    /// journal (its own later activity, a spawn, reseat or `ae _run` start)
+    /// — which alerts nothing further and clears it with one `dead-cleared`
+    /// (`pane-back` when the standing alert says the pane was gone).
     /// A probe gap is not evidence of life, so an UNKNOWN snapshot keeps the
-    /// latch. A seat that dies again after a clear is alerted again.
+    /// latch. A seat that dies again after a clear is alerted again. The
+    /// memory is only half the latch: a dead alert the journal holds for the
+    /// seat's current episode ([`Activity::death`]) latches a fresh carry, so a
+    /// restarted daemon never alerts the same death twice.
     pub dead_latched: bool,
     /// The previous cycle's filtered pane hash; `None` before the first.
     pub prev_hash: Option<u64>,
@@ -345,6 +351,9 @@ pub struct Activity {
     pub proof: Option<crate::watchdog::ProofQuiet>,
     /// The watchdog's newest painting delivery to the seat, epoch seconds.
     pub painting: Option<i64>,
+    /// The journal half of the dead latch: whether the human's dead alert
+    /// already stands in the seat's current death episode.
+    pub death: DeathEpisode,
 }
 
 /// The pane frame of one proof (#225): when it settled and whether it moved.
@@ -2018,11 +2027,12 @@ pub(crate) fn seed_unwatched(
     ok
 }
 
-/// The debounce for a roster agent whose pane is not in the session.
+/// The debounce for a roster agent whose pane is not in the session. Whether
+/// the human was alerted is not memory: the journal's death episode says it
+/// ([`deadnotice::death_episode`]), so a restart never alerts the same death again.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct MissingState {
     streak: u32,
-    alerted: bool,
 }
 
 /// A wait the cycle's quiet resolution ENDED on the human's input in the pane:
@@ -2456,6 +2466,7 @@ impl Cycle<'_> {
                     agent,
                 )
                 .map(Timestamp::epoch),
+                death: deadnotice::death_episode(&events, self.session, (&slot, agent)),
             };
             let alerts =
                 crate::session::alerts_since_in(&events, self.session, &slot, agent, self.started);
@@ -2585,7 +2596,10 @@ impl Cycle<'_> {
                 &activity,
                 settling,
             );
-            let was_latched = carried.dead_latched;
+            // The latch this cycle started from: the carried one, or the journal's
+            // standing dead alert a fresh carry was rebuilt from.
+            let was_latched =
+                carried.dead_latched || matches!(activity.death, DeathEpisode::Open(_));
             let reading = Reading {
                 was_latched,
                 latched: booked.next.dead_latched,
@@ -2593,7 +2607,7 @@ impl Cycle<'_> {
                     matches!(
                         effect,
                         Effect::Emit {
-                            action: "dead-cleared",
+                            action: "dead-cleared" | deadnotice::BACK_ACTION,
                             ..
                         }
                     )

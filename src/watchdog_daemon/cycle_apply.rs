@@ -10,6 +10,7 @@ use super::{
     record_sweep, slot_latched, stale_display, store, sweep_effects, system_time_from_epoch,
     target_moved_text, tmux, tracked, transport, wait_challenge_text,
 };
+use super::{DeathEpisode, deadnotice};
 
 impl Cycle<'_> {
     /// The RESOLVED quiet suppression for one pane: `done` while its episode
@@ -1047,7 +1048,8 @@ impl Cycle<'_> {
         let Carry {
             missing, notices, ..
         } = carry;
-        // Read once, and only when a seat is missing and the paste is not held.
+        // Read only when a seat is missing, and again after an alert this
+        // sweep wrote, so every later fold holds it.
         let mut journal: Option<Vec<Event>> = None;
         for entry in &self.roster {
             let reference = entry.reference();
@@ -1062,15 +1064,21 @@ impl Cycle<'_> {
             // slot.
             let state = entry_mut(missing, &entry.slot);
             state.streak = state.streak.saturating_add(1);
-            if !state.alerted {
-                state.alerted = true;
-                self.emit(
-                    "alert",
-                    &reference,
-                    "pane missing — agent no longer visible in session",
-                    err,
-                )?;
+            // One human alert per death episode, whichever leg it showed
+            // first, and the journal says whether it was raised: a restart
+            // never repeats it, and a closer since then makes a new death.
+            let alerted = {
+                let events = journal.get_or_insert_with(|| read_events(self.meta_dir));
+                let seat = (entry.slot.as_str(), entry.name.as_str());
+                matches!(
+                    deadnotice::death_episode(events, self.session, seat),
+                    DeathEpisode::Open(_)
+                )
+            };
+            if !alerted {
+                self.emit("alert", &reference, deadnotice::MISSING_ALERT, err)?;
                 self.notify(&reference, "pane is MISSING");
+                journal = None;
             }
             // The spawner's notice is a paste: the wake settle holds it, and
             // the standing keeps it owed for the first free cycle (#238).

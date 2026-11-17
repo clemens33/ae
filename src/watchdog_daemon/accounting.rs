@@ -1,5 +1,6 @@
 //! The pure accounting: the nudge and challenge texts, the book_* rules and the per-pane account_* steps.
 
+use super::deadnotice::{BACK_ACTION, Death, DeathEpisode, SHELL_ALERT};
 use super::{
     Activity, Descendancy, DoneProgress, Duration, Effect, Event, FrameSample, FrameVerdict,
     HarnessState, Knobs, NON_AGENT_PANES, NUDGE_GOAL_PREFIX, NUDGE_IDLE_PREFIX, NUDGE_SENTENCE,
@@ -659,36 +660,62 @@ fn book_sweep(
     Some(Verdict::Meta(booked.verdict))
 }
 
+/// Whether the seat is latched dead before this cycle's booking: the carried
+/// latch, or a dead alert the journal holds for its current episode, which is
+/// how a restarted daemon learns a death it already alerted.
+fn dead_before(prior: &PaneState, activity: &Activity) -> bool {
+    prior.dead_latched || matches!(activity.death, DeathEpisode::Open(_))
+}
+
 /// The TWO ends a death latch has: a POSITIVE process-tree reading shows the
-/// seat's harness back under the pane (the human's re-run in place), or the
-/// seat's own later journal activity cleared the alert — a dead agent journals
-/// nothing, so its own record is proof of life the process name cannot give.
+/// seat's harness back under the pane (the human's re-run in place), or a
+/// closer ended the episode in the journal — the seat's own later activity (a
+/// dead agent journals nothing, so its own record is proof of life the process
+/// name cannot give), a spawn, reseat or `ae _run` start of the seat. The
+/// journal is read without the session-start cut-off the outstanding alert
+/// has, so a latch rebuilt after a restart never clears on that cut-off alone;
+/// [`DeathEpisode::Unread`] keeps the outstanding-alert rule.
 /// An UNKNOWN snapshot is not evidence of life, so a probe gap — and a
 /// reading that says the process is still gone — keeps the latch and returns
-/// `None`. On a clear it emits the one `dead-cleared` and hands back the
-/// episode the ordinary judgement must run on: identity kept, and every clock,
-/// hash and nudge field the death interrupted reset, because a pre-death hash
-/// or idle clock must not feed a stale verdict. No hysteresis and no
-/// second-alert suppression: the caller alerts again if the seat dies again,
-/// because that is a real event each time.
+/// `None`. On a clear it emits the one closer and hands back the episode the
+/// ordinary judgement must run on: identity kept, and every clock, hash and
+/// nudge field the death interrupted reset, because a pre-death hash or idle
+/// clock must not feed a stale verdict. The closer is `dead-cleared`, which
+/// retracts the human's alert, unless the standing alert says the pane was
+/// gone: then it is `pane-back`, which ends the episode and leaves the
+/// pane-missing alert alone. No hysteresis and no second-alert suppression:
+/// the caller alerts again if the seat dies again, because that is a real
+/// event each time.
 fn clear_death_latch(
     prior: &PaneState,
     next: &PaneState,
-    seen: &Observation,
+    (seen, activity): (&Observation, &Activity),
     effects: &mut Vec<Effect>,
 ) -> Option<PaneState> {
-    if !prior.dead_latched {
+    if !dead_before(prior, activity) {
         return None;
     }
-    let back = matches!(seen.descendancy, Descendancy::Present) || seen.outstanding_alert.is_none();
+    let closed = match activity.death {
+        DeathEpisode::Unread => seen.outstanding_alert.is_none(),
+        DeathEpisode::Open(_) => false,
+        DeathEpisode::Closed => true,
+    };
+    let back = matches!(seen.descendancy, Descendancy::Present) || closed;
     if !back {
         return None;
     }
-    effects.push(Effect::Emit {
-        action: "dead-cleared",
-        summary: "agent process back — resumed in place".to_owned(),
-    });
-    effects.push(Effect::Notify("is BACK — process resumed".to_owned()));
+    if activity.death == DeathEpisode::Open(Death::PaneGone) {
+        effects.push(Effect::Emit {
+            action: BACK_ACTION,
+            summary: "pane back — agent visible in session again".to_owned(),
+        });
+    } else {
+        effects.push(Effect::Emit {
+            action: "dead-cleared",
+            summary: "agent process back — resumed in place".to_owned(),
+        });
+        effects.push(Effect::Notify("is BACK — process resumed".to_owned()));
+    }
     Some(PaneState {
         dead_latched: false,
         prev_hash: None,
@@ -804,14 +831,17 @@ fn book_pane(
 
     // 1. Already dead: no second alert, no further judgement — until the one
     //    clear rule holds (`clear_death_latch`), which this cycle then judges.
+    //    A dead alert the journal already holds for this episode latches a
+    //    fresh carry too, so a restart never alerts the same death again.
     let unlatched;
-    match clear_death_latch(prior, &next, seen, &mut effects) {
+    match clear_death_latch(prior, &next, (seen, activity), &mut effects) {
         Some(state) => {
             unlatched = state;
             prior = &unlatched;
             next = unlatched.clone();
         }
-        None if prior.dead_latched => {
+        None if dead_before(prior, activity) => {
+            next.dead_latched = true;
             return Accounting {
                 next,
                 effects,
@@ -829,7 +859,7 @@ fn book_pane(
         next.dead_latched = true;
         effects.push(Effect::Emit {
             action: "alert",
-            summary: "agent process dead — dropped to shell".to_owned(),
+            summary: SHELL_ALERT.to_owned(),
         });
         effects.push(Effect::Notify(
             "is DEAD — process dropped to shell".to_owned(),
