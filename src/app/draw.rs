@@ -2679,7 +2679,8 @@ pub(crate) fn paint_settings(
     let width = buf.area.width;
     layout.settings_keep = (layout.settings_reveal && tab == SettingsTab::Config)
         .then(|| {
-            settings::orchestrator_block(bodies, usize::from(width.saturating_sub(LEFT)) + 1).picker
+            let above = config_rows(bodies, paint).len();
+            orchestrator_tail(bodies, paint, width, above).1
         })
         .flatten();
     let selected = match tab {
@@ -3420,6 +3421,74 @@ fn orchestrator_rows(bodies: &SettingsBodies, paint: Paint, room: usize) -> Vec<
         .collect()
 }
 
+/// The Config tab's effective-value rows: the session, the files and every
+/// configured key with its source.
+fn config_rows(bodies: &SettingsBodies, paint: Paint) -> Vec<(String, Style)> {
+    let dim = paint.fg(|p| p.dim);
+    let text = paint.fg(|p| p.text);
+    let clean = crate::board::terminal_text;
+    match &bodies.config {
+        ConfigView::Loading => vec![("loading".to_owned(), dim)],
+        ConfigView::Unreadable(why) => vec![(clean(why), text)],
+        ConfigView::Rows { header, rows } => {
+            let mut out = vec![
+                (
+                    format!(
+                        "session: {}",
+                        header
+                            .session
+                            .as_deref()
+                            .map(clean)
+                            .as_deref()
+                            .unwrap_or("none")
+                    ),
+                    dim,
+                ),
+                (format!("global: {}", clean(&header.global)), dim),
+            ];
+            if let Some(current) = header.current_global.as_ref() {
+                out.push((format!("current global: {}", clean(current)), dim));
+            }
+            out.extend(rows.iter().map(|row| {
+                let mut line = format!(
+                    "{} = {}  ({})",
+                    row.key,
+                    clean(&row.value),
+                    row.source.word()
+                );
+                if row.global_only {
+                    line.push_str("  global only");
+                }
+                (line, text)
+            }));
+            out
+        }
+    }
+}
+
+/// The orchestrator block under the `above` effective-value rows, set off by
+/// one blank row, and the body rows of the picker's heading and highlight when
+/// it is open. The block follows the effective values, so the tab keeps its top.
+fn orchestrator_tail(
+    bodies: &SettingsBodies,
+    paint: Paint,
+    width: u16,
+    above: usize,
+) -> (Vec<(String, Style)>, Option<(usize, usize)>) {
+    let room = usize::from(width.saturating_sub(LEFT)) + 1;
+    let block = settings::orchestrator_block(bodies, room);
+    let gap = usize::from(above > 0);
+    let picker = block
+        .picker
+        .map(|(top, at)| (above + gap + top, above + gap + at));
+    let mut rows = Vec::new();
+    if above > 0 {
+        rows.push((String::new(), paint.fg(|p| p.text)));
+    }
+    rows.extend(orchestrator_rows(bodies, paint, room));
+    (rows, picker)
+}
+
 /// The overlay body's styled rows: every field through the terminal-text
 /// neutraliser, because paths and config values are hostile text.
 fn settings_body(
@@ -3460,45 +3529,9 @@ fn settings_body(
             .collect(),
         },
         SettingsTab::Config => {
-            let mut out =
-                orchestrator_rows(bodies, paint, usize::from(width.saturating_sub(LEFT)) + 1);
-            out.extend(match &bodies.config {
-                ConfigView::Loading => vec![("loading".to_owned(), dim)],
-                ConfigView::Unreadable(why) => vec![(clean(why), text)],
-                ConfigView::Rows { header, rows } => {
-                    let mut out = vec![
-                        (
-                            format!(
-                                "session: {}",
-                                header
-                                    .session
-                                    .as_deref()
-                                    .map(clean)
-                                    .as_deref()
-                                    .unwrap_or("none")
-                            ),
-                            dim,
-                        ),
-                        (format!("global: {}", clean(&header.global)), dim),
-                    ];
-                    if let Some(current) = header.current_global.as_ref() {
-                        out.push((format!("current global: {}", clean(current)), dim));
-                    }
-                    out.extend(rows.iter().map(|row| {
-                        let mut line = format!(
-                            "{} = {}  ({})",
-                            row.key,
-                            clean(&row.value),
-                            row.source.word()
-                        );
-                        if row.global_only {
-                            line.push_str("  global only");
-                        }
-                        (line, text)
-                    }));
-                    out
-                }
-            });
+            let mut out = config_rows(bodies, paint);
+            let above = out.len();
+            out.extend(orchestrator_tail(bodies, paint, width, above).0);
             out
         }
         SettingsTab::About => match bodies.about.as_ref() {

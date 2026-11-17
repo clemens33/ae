@@ -529,7 +529,6 @@ pub(crate) fn orchestrator_block(bodies: &SettingsBodies, room: usize) -> Orches
         }
         OrchestratorView::Unreadable(why) => {
             put(&mut block, RowTone::Plain, &format!("orchestrator: {why}"));
-            put(&mut block, RowTone::Plain, "");
             return block;
         }
         OrchestratorView::Ready(ready) => ready,
@@ -600,7 +599,6 @@ pub(crate) fn orchestrator_block(bodies: &SettingsBodies, room: usize) -> Orches
             "o  choose the orchestrator profile",
         );
     }
-    put(&mut block, RowTone::Plain, "");
     block
 }
 

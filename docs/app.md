@@ -939,13 +939,13 @@ alone when neither exists,
 with and where each came from — `launch` (pinned in its meta), `session` (its
 origin overlay), `global` (the meta-recorded file, the current global only
 when that row is empty) or `default` — with `global only` on the keys that
-read the current global alone. Above them the tab shows the orchestrator row:
+read the current global alone. Below them the tab shows the orchestrator row:
 `[roster] orchestrator` of the current global (`global`), the profile the saved
-orchestrator session recorded (`recorded orchestrator`, or `(no session)`), and
+orchestrator session recorded (`recorded orchestrator`, `(no session)` when none is saved, or `(unknown: …)` when the record cannot be read), and
 that a pick applies at the next fresh start (after `ae end`) while Pause/Resume
 keeps the recorded profile. `o` opens a picker over the `[profiles]` a launch
 accepts, in config order, on the configured one; `j` / `k` move, `Enter` writes
-the pick into that one row and `Esc` cancels. The write changes only that value:
+the pick into that one row and `Esc` cancels, one write at a time. The write changes only that value:
 every other byte stays, the old file is kept as `<config>.<epoch>.bak`, and ae
 refuses, with the reason drawn under the row, a file that changed since it was
 shown, a symlink, a copy it could not give the file's owner, group and mode, or
