@@ -2597,10 +2597,11 @@ mod tests {
             "the first read of the open names the orchestrator session's profile"
         );
         let repeat = reader.settings_answers();
-        assert_eq!(
-            profile(&repeat),
-            None,
-            "the same open does not read the profile again"
+        assert!(
+            !repeat
+                .iter()
+                .any(|answer| matches!(answer, Answer::OrchestratorProfile { .. })),
+            "the same open does not read the profile again, in any view"
         );
     }
 

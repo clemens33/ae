@@ -740,6 +740,7 @@ mod tests {
                 .expect("a plain edit applies");
             let kept = crate::store::node_meta(&path).expect("meta").mode() & 0o7777;
             assert_eq!(kept, mode, "mode {mode:o} is what the file had");
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 
@@ -759,6 +760,7 @@ mod tests {
             "a directory is not regular"
         );
         assert!(read_config_seen(&path).is_ok(), "the file itself is read");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -768,6 +770,7 @@ mod tests {
         std::fs::write(&path, CONFIG).expect("config");
         let seen = read_config_seen(&path).expect("seen");
         assert_eq!(seen.text(), CONFIG);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
