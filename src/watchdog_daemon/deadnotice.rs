@@ -275,11 +275,7 @@ fn closes(event: &Event, session: &str, slot: &str, agent: &str) -> bool {
 /// The journal half of the human's dead latch for the seat: whether a dead
 /// alert already stands in its current episode, and on which leg it was
 /// raised. `events` must hold the records this cycle already wrote.
-pub(super) fn death_episode(
-    events: &[Event],
-    session: &str,
-    seat: (&str, &str),
-) -> DeathEpisode {
+pub(super) fn death_episode(events: &[Event], session: &str, seat: (&str, &str)) -> DeathEpisode {
     episode(events, session, seat)
         .alerted
         .map_or(DeathEpisode::Closed, DeathEpisode::Open)

@@ -10284,17 +10284,11 @@ fn a_slot_with_no_pane_is_neutral_on_its_first_absent_cycle_and_dead_on_its_seco
     // First absence: the debounce has not recorded it yet.
     assert_eq!(slot_mark(&roster[1], &by_slot, &[]), Mark::Idle);
     // Second: the streak is recorded, and now it wants a human.
-    let missing = vec![(
-        "worker.0".to_owned(),
-        MissingState { streak: 1 },
-    )];
+    let missing = vec![("worker.0".to_owned(), MissingState { streak: 1 })];
     assert_eq!(slot_mark(&roster[1], &by_slot, &missing), Mark::NeedsYou);
     // The debounce is keyed by SLOT: a streak against some other slot must
     // not make this one say so.
-    let elsewhere = vec![(
-        "spawned.9".to_owned(),
-        MissingState { streak: 4 },
-    )];
+    let elsewhere = vec![("spawned.9".to_owned(), MissingState { streak: 4 })];
     assert_eq!(slot_mark(&roster[1], &by_slot, &elsewhere), Mark::Idle);
 }
 
@@ -11115,10 +11109,7 @@ fn loaded() -> Carry {
 /// Every assertion that `%0` on the NEW server starts from nothing.
 fn assert_neutral(carry: &mut Carry) {
     assert!(carry.panes.is_empty(), "no pane history survives the move");
-    assert!(
-        carry.missing.is_empty(),
-        "nor the missing-pane debounce"
-    );
+    assert!(carry.missing.is_empty(), "nor the missing-pane debounce");
     let fresh = entry_mut(&mut carry.panes, "%0").clone();
     assert_eq!(fresh, PaneState::default());
     assert!(!fresh.dead_latched, "a live pane is not inherited dead");
