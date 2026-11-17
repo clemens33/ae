@@ -1,5 +1,5 @@
 //! Independent #279 part 1 live FIFO acceptance. Wire as a child of
-//! app_copy_spec.rs: `#[path = "foldertree_fifo_spec.rs"] mod foldertree_fifo_spec;`.
+//! `app_copy_spec.rs`: `#[path = "foldertree_fifo_spec.rs"] mod foldertree_fifo_spec;`.
 //! Reuses its owned live rig and the existing integration FIFO fixture door.
 use super::Rig;
 

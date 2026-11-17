@@ -658,13 +658,36 @@ or refused. One link has no position suffix.
 
 The file is read once, off the UI thread, and only when it is a regular file
 whose real path lies under the session's work dir or your home: a path that
-leaves both by `..` or a symlink, a missing file, a directory, a file over 1 MiB
-or 50,000 lines, and a file with a NUL byte in its first 8192 bytes are not
+leaves both by `..` or a symlink, a missing file, a FIFO or device, a file over
+1 MiB or 50,000 lines, and a file with a NUL byte in its first 8192 bytes are not
 shown, and the panel says why (`refused: read <path>: <why>`) where the file
 would be. The terminal's own link still opens such a path. Text is decoded
 lossily; every line is neutralised when painted (a control character or escape
 shows as `�`), a tab expands and a line wraps to the column with its
 continuation rows two cells in. A line over 2000 characters ends in `…`.
+
+A link to a folder under the same two roots shows the folder's tree, read-only
+and without line numbers: folders first, then names in byte order, each entry
+once under `tree`-style branches with an `ls -F` mark (`/` folder, `@` link,
+`|` FIFO, `=` socket). The tree is listed off the UI thread and never opens an
+entry: a symlink is a link entry and is never followed, and a FIFO or device is
+named, never opened. It lists three levels, 300 entries and reads at most
+10,000 entries in all (one more is fetched, unread, to tell whether a count is
+exact), level by level, so a cut falls on the deepest and last
+folders: a folder whose entries were cut ends in `+N more` (`+N or more, not all
+read` when the read bound ran out inside it), and a folder not listed, at the
+third level or once the bounds are spent, ends in `…`. `.git` and `target` are
+named with `…` and never listed. A name is one row: a control character, tab,
+newline or bidi control in it shows as `�`. A folder that cannot be listed is
+refused by its error; a deeper one that cannot be listed says `(unreadable:
+<why>)`. Named limit: a folder named like a visual file (`site.html`, say) gets
+that file's note below, not a tree, because the extension decides before any
+read. A child folder is listed in turn only if its real path is still where its
+parent listed it; one that was swapped for a symlink says `(changed while
+listed)` and is not descended. Named limit: a process running as you that swaps
+a child folder for a symlink in the instant between that check and the listing
+gets the names under the link's target shown, even outside both roots; contents
+are never read.
 
 A link to a file a browser opens is not read at all. The extension decides, without
 regard to case and before any read: `.html`, `.htm`, `.xhtml`, `.svg`, `.png`,

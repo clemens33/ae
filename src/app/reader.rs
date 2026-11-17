@@ -7,6 +7,7 @@
 //! aside) and neutralised where it is wrapped for paint, by the one
 //! `board::terminal_text`.
 
+use super::filedoor;
 use crate::board::terminal_text;
 use crate::console::wrap::wrap;
 
@@ -85,6 +86,19 @@ pub enum Body {
     Gap(String),
 }
 
+impl Body {
+    /// The lines a body shows and the gutter cells they take: a file's lines
+    /// are numbered, a tree's rows are not; a gap has none.
+    #[must_use]
+    pub fn lines(&self) -> Option<(&[String], usize)> {
+        match self {
+            Self::Text { lines, .. } => Some((lines, gutter(lines.len()))),
+            Self::Tree { lines } => Some((lines, 0)),
+            Self::Gap(_) => None,
+        }
+    }
+}
+
 /// The body `bytes` become, `size` being the file's length on disk. Binary
 /// (a NUL inside the first [`BINARY_PROBE`] bytes) and a file past
 /// [`MAX_LINES`] are named gaps. Otherwise the text is lossy UTF-8, split on
@@ -113,6 +127,96 @@ pub fn decode(bytes: &[u8], size: u64) -> Body {
     Body::Text {
         lines: lines.iter().map(|line| capped(line)).collect(),
         size,
+    }
+}
+
+/// The bidi format controls: a name holding one could reorder what the row
+/// shows around it.
+const BIDI: [char; 12] = [
+    '\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}',
+    '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+];
+
+/// An entry name as one tree row shows it: lossy UTF-8 through
+/// `board::terminal_text`, and the `\n`, `\t` and bidi controls that owner
+/// keeps for text become U+FFFD too, so one name is one row and cannot forge
+/// another entry.
+fn tree_name(name: &std::ffi::OsStr) -> String {
+    terminal_text(&name.to_string_lossy())
+        .chars()
+        .map(|ch| {
+            if ch == '\n' || ch == '\t' || BIDI.contains(&ch) {
+                '\u{FFFD}'
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+/// The mark after an entry's name: `ls -F`'s for its kind, and for a folder
+/// not listed, why.
+fn tree_mark(node: &filedoor::Node) -> String {
+    use filedoor::{Kind, Listed};
+    let kind = match node.kind {
+        Kind::Folder => "/",
+        Kind::Link => "@",
+        Kind::Fifo => "|",
+        Kind::Socket => "=",
+        Kind::File | Kind::Device | Kind::Unknown => "",
+    };
+    let state = match &node.listed {
+        Listed::Walked => String::new(),
+        Listed::Collapsed | Listed::Deep | Listed::Spent => " …".to_owned(),
+        Listed::Unreadable(why) => format!(" (unreadable: {why})"),
+        Listed::Moved => " (changed while listed)".to_owned(),
+    };
+    format!("{kind}{state}")
+}
+
+/// The rows a folder's tree shows, pre-order under `tree(1)`'s branch glyphs:
+/// each listed entry once, its name made one row by `tree_name`, and under
+/// a folder whose entries were cut one `+N more` row (`+N or more, not all
+/// read` when the read budget ran out inside it). A tree with no entries is
+/// one `(empty folder)` row.
+#[must_use]
+pub fn tree_lines(tree: &filedoor::Tree) -> Vec<String> {
+    let mut rows = Vec::new();
+    tree_rows(tree, 0, "", &mut rows);
+    if rows.is_empty() {
+        rows.push("(empty folder)".to_owned());
+    }
+    rows
+}
+
+/// [`tree_lines`] for node `at`'s entries, each row led by `prefix`.
+fn tree_rows(tree: &filedoor::Tree, at: usize, prefix: &str, rows: &mut Vec<String>) {
+    let Some(node) = tree.nodes.get(at) else {
+        return;
+    };
+    let cut = node.more > 0 || !node.exact;
+    let count = node.children.len() + usize::from(cut);
+    for (step, child) in node.children.iter().enumerate() {
+        let Some(entry) = tree.nodes.get(*child) else {
+            continue;
+        };
+        let last = step + 1 == count;
+        let branch = if last { "└── " } else { "├── " };
+        rows.push(format!(
+            "{prefix}{branch}{}{}",
+            tree_name(&entry.name),
+            tree_mark(entry)
+        ));
+        let hang = if last { "    " } else { "│   " };
+        tree_rows(tree, *child, &format!("{prefix}{hang}"), rows);
+    }
+    if cut {
+        let more = if node.exact {
+            format!("+{} more", node.more)
+        } else {
+            format!("+{} or more, not all read", node.more)
+        };
+        rows.push(format!("{prefix}└── {more}"));
     }
 }
 
@@ -272,3 +376,108 @@ pub fn status(view: &View<'_>, visible: usize) -> String {
 #[cfg(test)]
 #[path = "synhl_spec.rs"]
 mod synhl_spec;
+
+#[cfg(test)]
+mod tree_tests {
+    use super::filedoor::{Kind, Listed, Node, Tree};
+    use super::{tree_lines, tree_name};
+    use std::ffi::OsString;
+
+    fn node(name: &str, kind: Kind, listed: Listed, children: Vec<usize>) -> Node {
+        Node {
+            name: OsString::from(name),
+            kind,
+            listed,
+            children,
+            more: 0,
+            exact: true,
+        }
+    }
+
+    #[test]
+    fn a_tree_is_drawn_pre_order_with_branches_marks_and_states() {
+        let mut root = node(
+            "",
+            Kind::Folder,
+            Listed::Walked,
+            vec![1, 3, 4, 5, 6, 7, 8, 9],
+        );
+        root.more = 2;
+        let mut src = node("src", Kind::Folder, Listed::Walked, vec![2]);
+        src.more = 4;
+        src.exact = false;
+        let tree = Tree {
+            nodes: vec![
+                root,
+                src,
+                node("main.rs", Kind::File, Listed::Walked, vec![]),
+                node(".git", Kind::Folder, Listed::Collapsed, vec![]),
+                node("deep", Kind::Folder, Listed::Deep, vec![]),
+                node("late", Kind::Folder, Listed::Spent, vec![]),
+                node(
+                    "locked",
+                    Kind::Folder,
+                    Listed::Unreadable("permission denied".to_owned()),
+                    vec![],
+                ),
+                node("alias", Kind::Link, Listed::Walked, vec![]),
+                node("pipe", Kind::Fifo, Listed::Walked, vec![]),
+                node("sock", Kind::Socket, Listed::Walked, vec![]),
+            ],
+        };
+        assert_eq!(
+            tree_lines(&tree),
+            [
+                "├── src/",
+                "│   ├── main.rs",
+                "│   └── +4 or more, not all read",
+                "├── .git/ …",
+                "├── deep/ …",
+                "├── late/ …",
+                "├── locked/ (unreadable: permission denied)",
+                "├── alias@",
+                "├── pipe|",
+                "├── sock=",
+                "└── +2 more",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_last_entry_closes_its_branch_and_an_empty_tree_says_so() {
+        let tree = Tree {
+            nodes: vec![
+                node("", Kind::Folder, Listed::Walked, vec![1]),
+                node("only", Kind::Folder, Listed::Walked, vec![2]),
+                node("leaf", Kind::Device, Listed::Walked, vec![]),
+            ],
+        };
+        assert_eq!(tree_lines(&tree), ["└── only/", "    └── leaf"]);
+        let moved = Tree {
+            nodes: vec![
+                node("", Kind::Folder, Listed::Walked, vec![1]),
+                node("swapped", Kind::Folder, Listed::Moved, vec![]),
+            ],
+        };
+        assert_eq!(tree_lines(&moved), ["└── swapped/ (changed while listed)"]);
+        let empty = Tree {
+            nodes: vec![node("", Kind::Folder, Listed::Walked, vec![])],
+        };
+        assert_eq!(tree_lines(&empty), ["(empty folder)"]);
+    }
+
+    #[test]
+    fn a_name_is_one_row_of_terminal_text() {
+        assert_eq!(tree_name("plain name.rs".as_ref()), "plain name.rs");
+        for hostile in [
+            "a\nb",
+            "a\tb",
+            "a\u{1b}b",
+            "a\u{202e}b",
+            "a\u{2066}b",
+            "a\u{061c}b",
+        ] {
+            assert_eq!(tree_name(hostile.as_ref()), "a\u{FFFD}b", "{hostile:?}");
+        }
+    }
+}

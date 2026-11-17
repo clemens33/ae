@@ -3204,11 +3204,9 @@ fn paint_reader(
     buf.set_style(area, paint.ground(|p| p.ink));
     let dim = paint.fg(|p| p.dim);
     let visible = usize::from(area.height.saturating_sub(1));
-    let lines = match view.body {
-        Some(reader::Body::Text { lines, .. }) => Some(lines),
-        _ => None,
-    };
-    let gutter = lines.map_or(0, |lines| reader::gutter(lines.len()));
+    let shown = view.body.and_then(reader::Body::lines);
+    let lines = shown.map(|(lines, _)| lines);
+    let gutter = shown.map_or(0, |(_, gutter)| gutter);
     // A text body the caller has not wrapped is wrapped here, at the width
     // the panel leaves it.
     let own;

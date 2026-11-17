@@ -1,9 +1,9 @@
 //! Independent acceptance for #279 part 1, from the issue and foldertree brief.
 //! Install byte-identically and wire `#[cfg(test)] mod foldertree_spec;`
 //! inside app/loader.rs. Decorations and numeric cap choices remain product choices.
-//! The companion live FIFO/UI case is tests/it/foldertree_fifo_spec.rs.
+//! The companion live FIFO/UI case is `tests/it/foldertree_fifo_spec.rs`.
 //! Names sort by raw name bytes within each kind, including case (B before a).
-//! Residual: terminal_text alone preserves bidi controls, which can reorder a row.
+//! Residual: `terminal_text` alone preserves bidi controls, which can reorder a row.
 //! These tests permit additional per-name neutralisation without fixing its spelling.
 #![allow(
     clippy::disallowed_methods,
@@ -300,7 +300,7 @@ fn an_unreadable_child_is_named_without_hiding_readable_siblings_or_refusing_the
         .expect("child metadata")
         .permissions();
     let _restore = RestorePermissions(unreadable.clone(), original);
-    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0)).expect("deny child read");
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).expect("deny child read");
     assert_eq!(
         fs::read_dir(&unreadable)
             .expect_err("fixture must refuse reads")

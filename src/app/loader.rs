@@ -1523,7 +1523,8 @@ impl Reader {
     }
 
     /// The file the open reader asked for, read once: through the one door,
-    /// then decoded. Every refusal, the door's or the decoder's, is the one
+    /// then decoded, or the folder it asked for, listed as its bounded tree's
+    /// rows. Every refusal, the door's or the decoder's, is the one
     /// gap `refused: read <path>: <why>`. The read gate holds the whole read
     /// before anything is touched; the ask is gone once it is answered.
     pub(super) fn read(&mut self, ask: &ReadAsk) -> Answer {
@@ -1533,8 +1534,11 @@ impl Reader {
             home: ask.base.home.as_ref().map(PathBuf::from),
         };
         let gap = |why: &str| reader::Body::Gap(format!("refused: read {}: {why}", ask.path));
-        let body = match filedoor::read(Path::new(&ask.path), &roots, reader::MAX_BYTES) {
+        let body = match filedoor::open(Path::new(&ask.path), &roots, reader::MAX_BYTES) {
             filedoor::Read::Refused(why) => gap(&why),
+            filedoor::Read::Tree(tree) => reader::Body::Tree {
+                lines: reader::tree_lines(&tree),
+            },
             filedoor::Read::Bytes { bytes, size } => match reader::decode(&bytes, size) {
                 reader::Body::Gap(why) => gap(&why),
                 text => text,

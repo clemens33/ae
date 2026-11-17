@@ -73,10 +73,10 @@ impl ReaderPane {
 
     fn reflow(&mut self, width: usize, top: usize) {
         let source = self.source_line(top);
-        let Some(reader::Body::Text { lines, .. }) = &self.body else {
+        let Some((lines, gutter)) = self.body.as_ref().and_then(reader::Body::lines) else {
             return;
         };
-        let room = width.saturating_sub(reader::gutter(lines.len()));
+        let room = width.saturating_sub(gutter);
         if self.flow.as_ref().is_none_or(|(held, _)| *held != room) {
             self.flow = Some((room, reader::flow(lines, room)));
         }
