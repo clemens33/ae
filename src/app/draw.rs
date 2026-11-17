@@ -883,7 +883,8 @@ pub(crate) fn column_width(area: Rect, split: Split, columns: Columns) -> usize 
     let width = match stand(area, split, columns) {
         Stand::Side { border } if columns.drawing_panel => area.width - border - 1,
         Stand::Side { border } => border - chat_start(area, split),
-        Stand::Full { .. } if columns.drawing_panel => area.width - chat_start(area, split),
+        // A full panel stands in the cells of the main column, so both draw a
+        // draft as wide as the main column's.
         Stand::Closed | Stand::Full { .. } => return draft_width(area, split),
     };
     usize::from(width.saturating_sub(4)).max(1)
