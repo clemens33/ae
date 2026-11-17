@@ -414,6 +414,7 @@ fn depth_cap_stops_a_real_nested_walk_and_names_the_cut() {
 
 #[test]
 fn hostile_names_remain_visible_valid_terminal_text_without_inventing_extra_rows() {
+    const EILSEQ_MACOS: i32 = 92;
     let f = Fixture::new();
     let base = f.base();
     let folder = f.dir("work/tree");
@@ -429,11 +430,17 @@ fn hostile_names_remain_visible_valid_terminal_text_without_inventing_extra_rows
     }
     let long = format!("long-{}", "x".repeat(235));
     fs::write(folder.join(&long), b"x").expect("long fixture name");
-    fs::write(
+    // APFS refuses a file name that is not valid UTF-8 (EILSEQ, raw OS error 92 on
+    // macOS), so on macOS only this one fixture and its `invalid-` presence check are
+    // skipped. Linux keeps creating and pinning the name, and any other error panics.
+    let invalid_name_created = match fs::write(
         folder.join(std::ffi::OsString::from_vec(b"invalid-\xff-name".to_vec())),
         b"x",
-    )
-    .expect("non UTF-8 fixture name");
+    ) {
+        Ok(()) => true,
+        Err(err) if cfg!(target_os = "macos") && err.raw_os_error() == Some(EILSEQ_MACOS) => false,
+        Err(err) => panic!("non UTF-8 fixture name: {err:?}"),
+    };
     let body = load(&ask(&folder, base));
     let lines = tree(&body);
     for line in lines {
@@ -447,10 +454,11 @@ fn hostile_names_remain_visible_valid_terminal_text_without_inventing_extra_rows
             "one name stays on one logical row: {line:?}"
         );
     }
-    for prefix in [
-        "escape-", "control-", "newline-", "tab-", "bidi-", "long-", "invalid-",
-    ] {
+    for prefix in ["escape-", "control-", "newline-", "tab-", "bidi-", "long-"] {
         at(lines, prefix);
+    }
+    if invalid_name_created {
+        at(lines, "invalid-");
     }
     assert!(
         lines.join("\n").contains('\u{fffd}'),
