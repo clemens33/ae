@@ -2680,7 +2680,7 @@ pub(crate) fn paint_settings(
     layout.settings_keep = (layout.settings_reveal && tab == SettingsTab::Config)
         .then(|| {
             let above = config_rows(bodies, paint).len();
-            orchestrator_tail(bodies, paint, width, above).1
+            orchestrator_tail(bodies, paint, width, above).picker
         })
         .flatten();
     let selected = match tab {
@@ -3466,6 +3466,13 @@ fn config_rows(bodies: &SettingsBodies, paint: Paint) -> Vec<(String, Style)> {
     }
 }
 
+/// What [`orchestrator_tail`] lays out: the rows, and while the picker is open the
+/// body rows of its heading and its highlighted choice.
+struct OrchestratorTail {
+    rows: Vec<(String, Style)>,
+    picker: Option<(usize, usize)>,
+}
+
 /// The orchestrator block under the `above` effective-value rows, set off by
 /// one blank row, and the body rows of the picker's heading and highlight when
 /// it is open. The block follows the effective values, so the tab keeps its top.
@@ -3474,7 +3481,7 @@ fn orchestrator_tail(
     paint: Paint,
     width: u16,
     above: usize,
-) -> (Vec<(String, Style)>, Option<(usize, usize)>) {
+) -> OrchestratorTail {
     let room = usize::from(width.saturating_sub(LEFT)) + 1;
     let block = settings::orchestrator_block(bodies, room);
     let gap = usize::from(above > 0);
@@ -3486,7 +3493,7 @@ fn orchestrator_tail(
         rows.push((String::new(), paint.fg(|p| p.text)));
     }
     rows.extend(orchestrator_rows(bodies, paint, room));
-    (rows, picker)
+    OrchestratorTail { rows, picker }
 }
 
 /// The overlay body's styled rows: every field through the terminal-text
@@ -3531,7 +3538,7 @@ fn settings_body(
         SettingsTab::Config => {
             let mut out = config_rows(bodies, paint);
             let above = out.len();
-            out.extend(orchestrator_tail(bodies, paint, width, above).0);
+            out.extend(orchestrator_tail(bodies, paint, width, above).rows);
             out
         }
         SettingsTab::About => match bodies.about.as_ref() {
