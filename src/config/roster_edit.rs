@@ -690,12 +690,16 @@ mod tests {
 
     #[test]
     fn a_quoted_value_with_text_is_replaced_between_its_quotes_and_nothing_else_moves() {
-        let text = CONFIG.replace("orchestrator = old", "orchestrator = \"old\"");
-        for profile in ["x", "newer_profile"] {
+        let config = CONFIG.replace(
+            "new = sleep 601\n",
+            "new = sleep 601\nnewer_profile = sleep 602\n",
+        );
+        let text = config.replace("orchestrator = old", "orchestrator = \"old\"");
+        for profile in ["new", "newer_profile"] {
             let edit = set_roster_row(&text, "orchestrator", profile).expect("quoted value");
             assert_eq!(
                 edit.text,
-                CONFIG.replace(
+                config.replace(
                     "orchestrator = old",
                     &format!("orchestrator = \"{profile}\"")
                 ),
