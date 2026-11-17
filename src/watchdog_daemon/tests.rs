@@ -11108,7 +11108,7 @@ fn loaded() -> Carry {
         state.sweep.unreachable_alerted = true;
         state.sweep.fails = 5;
     }
-    entry_mut(&mut carry.missing, "main").alerted = true;
+    entry_mut(&mut carry.missing, "main").streak = 3;
     carry
 }
 
@@ -11117,7 +11117,7 @@ fn assert_neutral(carry: &mut Carry) {
     assert!(carry.panes.is_empty(), "no pane history survives the move");
     assert!(
         carry.missing.is_empty(),
-        "nor the missing-pane debounce, which latches for the daemon's life"
+        "nor the missing-pane debounce"
     );
     let fresh = entry_mut(&mut carry.panes, "%0").clone();
     assert_eq!(fresh, PaneState::default());
