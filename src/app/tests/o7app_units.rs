@@ -154,6 +154,13 @@ pub(super) fn border_of(buf: &Buffer) -> u16 {
         .expect("the side panel's border")
 }
 
+/// The sidebar's rule: the leftmost column that is a full-height `│`.
+pub(super) fn rule_of(buf: &Buffer) -> u16 {
+    (0..buf.area.width)
+        .find(|x| (2..buf.area.height - 5).all(|y| buf[(*x, y)].symbol() == "│"))
+        .expect("a full-height rule: the sidebar's")
+}
+
 /// A draft written in the main column beside a side panel wraps inside the
 /// main column's own cells, up to the margin before the border.
 #[test]
@@ -236,7 +243,7 @@ fn the_panel_draft_never_shows_in_the_main_column() {
 }
 
 /// A panel's draft wraps to the cells the panel covers, up to its margin:
-/// the whole frame full, its own half side by side.
+/// the cells right of the sidebar full, its own half side by side.
 #[test]
 fn a_panel_draft_wraps_to_the_cells_the_panel_covers() {
     for full in [true, false] {
@@ -246,7 +253,11 @@ fn a_panel_draft_wraps_to_the_cells_the_panel_covers() {
         let draft = "0123456789".repeat(if full { 40 } else { 20 });
         press(&mut app, draft.as_bytes());
         let buf = at(160, 45, &mut app);
-        let from = if full { 0 } else { border_of(&buf) + 1 };
+        let from = if full {
+            rule_of(&buf) + 1
+        } else {
+            border_of(&buf) + 1
+        };
         assert_fills_to_the_margin(&draft_rows(&buf, from, 160), &draft, 160);
     }
 }
@@ -664,7 +675,11 @@ fn a_mode_label_press_flips_the_panel_and_arms_nothing() {
         two(&mut app);
         opened(&mut app, full);
         let buf = at(160, 45, &mut app);
-        let from = if full { 0 } else { border_of(&buf) };
+        let from = if full {
+            rule_of(&buf) + 1
+        } else {
+            border_of(&buf)
+        };
         let x = cell_of(&buf, label, 0, from).expect("the mode label");
         assert!(app.mouse(Mouse {
             kind: MouseKind::Click,
@@ -697,7 +712,11 @@ fn a_mode_label_press_ends_a_held_panel_entry() {
             "a panel entry without its pair is refused"
         );
         let buf = at(160, 45, &mut app);
-        let from = if full { 0 } else { border_of(&buf) };
+        let from = if full {
+            rule_of(&buf) + 1
+        } else {
+            border_of(&buf)
+        };
         let x = cell_of(&buf, label, 0, from).expect("the mode label");
         assert!(app.mouse(Mouse {
             kind: MouseKind::Click,
@@ -1049,12 +1068,39 @@ fn ops_cell(app: &mut App) -> Mouse {
     }
 }
 
+/// The cell of `web`'s one turn in `app`'s closed frame at 160x45, in the
+/// main column: a press there marks the turn.
+fn turn_cell(app: &mut App) -> Mouse {
+    app.answer(view("web", ID, 100, "MAINWORDS"));
+    let closed = at(160, 45, app);
+    let (column, row) = (0..45)
+        .find_map(|y| cell_of(&closed, "MAINWORDS", y, 0).map(|x| (x, y)))
+        .expect("web's turn");
+    Mouse {
+        kind: MouseKind::Click,
+        column,
+        row,
+    }
+}
+
+/// The oracle of the cases below: with nothing covering it, a press on the
+/// main column's turn marks the turn.
+#[test]
+fn a_press_on_a_main_turn_marks_it() {
+    let mut app = app(None);
+    two(&mut app);
+    let turn = turn_cell(&mut app);
+    assert!(app.model.turn().is_none());
+    assert!(app.mouse(turn));
+    assert!(app.model.turn().is_some(), "the press marks the turn");
+}
+
 /// A press made on a full panel is pinned to the frame it was made on: after
 /// `F` turned the panel side, after the panel closed and after it opened
-/// again, it never acts on the main row that the full panel covered and
-/// never takes the keys from the panel.
+/// again, it never acts on the main column cell that the full panel covered
+/// and never takes the keys from the panel.
 #[test]
-fn a_full_panel_press_never_acts_on_the_main_row_it_covered() {
+fn a_full_panel_press_never_acts_on_the_main_cell_it_covered() {
     let wrong: Vec<String> = ["F", "close", "reopen"]
         .into_iter()
         .filter_map(full_panel_press_after)
@@ -1068,7 +1114,7 @@ fn full_panel_press_after(after: &str) -> Option<String> {
     {
         let mut app = app(None);
         two(&mut app);
-        let stale = ops_cell(&mut app);
+        let stale = turn_cell(&mut app);
         opened(&mut app, true);
         let _ = at(160, 45, &mut app);
         let origin = Instant::now();
@@ -1085,10 +1131,11 @@ fn full_panel_press_after(after: &str) -> Option<String> {
         }
         let _ = at(160, 45, &mut app);
         assert!(take_keys(&mut app, vec![(Key::Mouse(stale), origin)]).is_some());
-        if app.model.selected() != Some("web") {
+        if app.model.turn().is_some() || app.model.selected() != Some("web") {
             return Some(format!(
-                "after {after}: selected {:?}",
-                app.model.selected()
+                "after {after}: selected {:?}, turn {:?}",
+                app.model.selected(),
+                app.model.turn()
             ));
         }
         if after != "close" && !app.panel_focused() {
@@ -1388,12 +1435,36 @@ fn an_old_main_press_under_a_side_panel_moves_no_keys() {
     );
 }
 
-/// A click on a main sidebar row read in the same batch as the `F` that
-/// turns the panel full is not taken: the row it was aimed at is covered
-/// before the click is handled, so the selection stays and the panel keeps
-/// the keys.
+/// A click on a main column turn read in the same batch as the `F` that turns
+/// the panel full is not taken: the cell it was aimed at is covered before
+/// the click is handled, so the turn stays unmarked and the panel keeps the
+/// keys.
 #[test]
-fn a_main_row_click_read_with_the_f_that_covers_it_is_not_taken() {
+fn a_main_turn_click_read_with_the_f_that_covers_it_is_not_taken() {
+    let mut app = app(None);
+    two(&mut app);
+    let turn = turn_cell(&mut app);
+    opened(&mut app, false);
+    let _ = at(160, 45, &mut app);
+    app.focus_column(false);
+    let _ = at(160, 45, &mut app);
+    let batch = vec![
+        (Key::Text(b"F".to_vec()), Instant::now()),
+        (Key::Mouse(turn), Instant::now()),
+    ];
+    assert!(take_keys(&mut app, batch).is_some());
+    assert!(app.orch.panel.as_ref().is_some_and(|panel| panel.full));
+    assert!(app.panel_focused(), "the full panel keeps the keys");
+    assert!(app.model.turn().is_none(), "the covered turn is not marked");
+    assert_eq!(app.model.selected(), Some("web"));
+}
+
+/// A click on a sidebar row read in the same batch as the `F` that turns the
+/// panel full is taken: the full panel leaves the sidebar drawn, so the row
+/// is selected and the panel turns side to show it, with the keys on the
+/// main column.
+#[test]
+fn a_sidebar_row_click_read_with_the_f_is_taken_and_turns_the_panel_side() {
     let mut app = app(None);
     two(&mut app);
     let row = ops_cell(&mut app);
@@ -1406,11 +1477,11 @@ fn a_main_row_click_read_with_the_f_that_covers_it_is_not_taken() {
         (Key::Mouse(row), Instant::now()),
     ];
     assert!(take_keys(&mut app, batch).is_some());
-    assert!(app.orch.panel.as_ref().is_some_and(|panel| panel.full));
-    assert!(app.panel_focused(), "the full panel keeps the keys");
     assert_eq!(
         app.model.selected(),
-        Some("web"),
-        "the covered row is not selected"
+        Some("ops"),
+        "the sidebar row is taken"
     );
+    assert!(!app.orch.panel.as_ref().is_some_and(|panel| panel.full));
+    assert!(!app.panel_focused(), "the main column holds the keys");
 }

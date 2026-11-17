@@ -467,7 +467,7 @@ impl App {
 
     /// The cells the open panel covers in the last frame, `None` while it is
     /// closed or the main column covers it.
-    fn panel_area(&self) -> Option<ratatui_core::layout::Rect> {
+    pub(super) fn panel_area(&self) -> Option<ratatui_core::layout::Rect> {
         let panel = self.orch.panel.as_ref()?;
         let columns = model::Columns {
             panel: Some((panel.full, panel.focused)),

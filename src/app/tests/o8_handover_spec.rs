@@ -81,10 +81,16 @@ fn a_panel_width_crosses_adopt_view_render_and_a_second_app() {
         56,
         "a new app restores the panel width"
     );
+    // The full fallback covers the main column: from where its draft starts
+    // (two margins before the draft, two after) to the frame's end.
+    let narrow = Rect::new(0, 0, 100, 45);
+    let draft = u16::try_from(draw::draft_width(narrow, second.model.split())).expect("width");
+    let start = 100 - 4 - draft;
+    assert!(start > 0, "the sidebar stays drawn");
     assert_eq!(
         width(&second, 100),
-        100,
-        "a narrow frame uses full fallback"
+        100 - start,
+        "a narrow frame uses full fallback over the main column"
     );
     assert_eq!(
         width(&second, 160),

@@ -168,13 +168,21 @@ impl App {
         // keys.
         let area = self.layout.area();
         let drawn = draw::floor_met(area) && area.contains(Position::new(mouse.column, mouse.row));
-        // A full panel covers the main column alone, so a press off the panel
-        // is the sidebar's: it acts as in the main column and keeps the keys
-        // on the panel, until it selects another session.
+        // A full panel covers the main column alone: a press off the panel is
+        // the sidebar's, acts as in the main column and keeps the keys on the
+        // panel until it selects another session.
         let full = !self.orch.active && self.orch.panel.as_ref().is_some_and(|panel| panel.full);
         if !self.orch.active && mouse.kind == MouseKind::Click && self.orch.panel.is_some() && drawn
         {
             self.focus_column(false);
+            // A full panel kept the keys: a press on a main column cell it
+            // covers, aimed at a frame drawn before it turned full, acts on
+            // nothing.
+            let at = Position::new(mouse.column, mouse.row);
+            let covered = self.panel_area().is_some_and(|cells| cells.contains(at));
+            if self.panel_focused() && covered {
+                return self.frame_gone();
+            }
         }
         if mouse.kind == MouseKind::Drag {
             return self.drag(mouse) || self.stretch(mouse);

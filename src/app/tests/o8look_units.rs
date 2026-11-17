@@ -5,7 +5,7 @@
 //! header) or of the frame of a peer app, never a colour typed here. A
 //! child of `app::tests`, driven by hand without tmux.
 
-use super::o7app_units::{at as frame, border_of, cell_of, opened, orchestrated};
+use super::o7app_units::{at as frame, border_of, cell_of, opened, orchestrated, rule_of};
 use super::*;
 use crate::theme::{Look, Palette};
 use ratatui_core::style::{Color, Modifier};
@@ -38,13 +38,6 @@ fn standing(root: &Root, full: bool, look: Look) -> (App, Reader) {
     app.looks.insert("api".to_owned(), read);
     assert_eq!(app.model.selected(), Some("api"));
     (app, reader)
-}
-
-/// The sidebar's rule: the leftmost column that is a full-height `│`.
-fn rule_of(buf: &Buffer) -> u16 {
-    (0..buf.area.width)
-        .find(|x| (2..buf.area.height - 5).all(|y| buf[(*x, y)].symbol() == "│"))
-        .expect("a full-height rule: the sidebar's")
 }
 
 /// Where the sidebar's rule stands in a frame of this size with no panel
