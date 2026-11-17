@@ -212,7 +212,7 @@ impl App {
         };
         // One write at a time, whatever overlay asked for the first: while it
         // runs the picker stays shut and the row says what is being written.
-        if let Some((_, profile)) = &self.orchestrator_inflight {
+        if let Some((_, profile)) = &self.orchestrator.inflight {
             self.settings_bodies.orchestrator_note =
                 Some(settings::OrchestratorNote::Saving(profile.clone()));
             return true;
@@ -223,7 +223,7 @@ impl App {
             .position(|choice| *choice == ready.configured)
             .unwrap_or(0);
         self.settings_bodies.orchestrator_picker = Some(at);
-        self.orchestrator_reveal = true;
+        self.orchestrator.reveal = true;
         true
     }
 
@@ -239,11 +239,11 @@ impl App {
         match key {
             model::Key::Up => {
                 self.settings_bodies.orchestrator_picker = Some(at.saturating_sub(1));
-                self.orchestrator_reveal = true;
+                self.orchestrator.reveal = true;
             }
             model::Key::Down => {
                 self.settings_bodies.orchestrator_picker = Some((at + 1).min(last));
-                self.orchestrator_reveal = true;
+                self.orchestrator.reveal = true;
             }
             model::Key::Compose => self.queue_orchestrator_pick(at),
             model::Key::Esc | model::Key::Quit => self.settings_bodies.orchestrator_picker = None,
@@ -263,20 +263,20 @@ impl App {
         let (Some(profile), Some(open)) = (ready.choices.get(at), self.model.settings()) else {
             return;
         };
-        self.orchestrator_pick = Some(settings::OrchestratorPick {
+        self.orchestrator.pick = Some(settings::OrchestratorPick {
             generation: open.generation,
             profile: profile.clone(),
             seen: ready.seen.clone(),
             global: ready.global.clone(),
         });
-        self.orchestrator_inflight = Some((open.generation, profile.clone()));
+        self.orchestrator.inflight = Some((open.generation, profile.clone()));
         self.settings_bodies.orchestrator_note =
             Some(settings::OrchestratorNote::Saving(profile.clone()));
     }
 
     /// The orchestrator profile pick owed to the writer thread, handed once.
     pub(super) const fn take_orchestrator_pick(&mut self) -> Option<settings::OrchestratorPick> {
-        self.orchestrator_pick.take()
+        self.orchestrator.pick.take()
     }
 
     /// What became of the pick of `generation`, drawn only under that open.
@@ -289,7 +289,7 @@ impl App {
     ) {
         use settings::OrchestratorNote;
         // The write ended, whichever overlay is open now.
-        let inflight = self.orchestrator_inflight.take();
+        let inflight = self.orchestrator.inflight.take();
         if !self.model.settings_generation(generation) {
             return;
         }
@@ -684,11 +684,10 @@ mod review_tests {
     /// An app on the Config tab over `count` profiles `p00..`, p00 configured.
     fn fixture(tag: &str, count: usize) -> (Root, App) {
         let root = Root::new(tag);
-        let mut config = String::from("[profiles]\n");
-        for at in 0..count {
-            config.push_str(&format!("p{at:02} = /bin/echo {at}\n"));
-        }
-        config.push_str("[roster]\norchestrator = p00\n");
+        let profiles: String = (0..count)
+            .map(|at| format!("p{at:02} = /bin/echo {at}\n"))
+            .collect();
+        let config = format!("[profiles]\n{profiles}[roster]\norchestrator = p00\n");
         fs::write(root.0.join("config"), config).expect("config");
         let mut app = App::new(None, None, None, None);
         app.fleeted = true;

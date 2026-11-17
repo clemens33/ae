@@ -159,7 +159,7 @@ impl App {
         self.settings_due();
         if let Some(open) = self.model.settings() {
             self.layout.strip_for_settings();
-            let revealed = std::mem::take(&mut self.orchestrator_reveal);
+            let revealed = std::mem::take(&mut self.orchestrator.reveal);
             self.layout.settings_reveal = revealed;
             draw::paint_settings(
                 open.tab,

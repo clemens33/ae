@@ -346,6 +346,18 @@ pub(crate) enum OrchestratorView {
     Unreadable(String),
 }
 
+/// Where the orchestrator profile pick stands in the App: one write at a time,
+/// whatever overlay is open, and the landing says which write it was.
+#[derive(Debug, Default)]
+pub(crate) struct OrchestratorFlow {
+    /// The pick owed to the writer thread, not yet handed.
+    pub(crate) pick: Option<OrchestratorPick>,
+    /// The write that has not landed: the overlay generation and the profile.
+    pub(crate) inflight: Option<(u64, String)>,
+    /// The picker's highlight moved: the next frame keeps it on screen.
+    pub(crate) reveal: bool,
+}
+
 /// What an editable orchestrator row shows and offers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OrchestratorReady {
