@@ -49,6 +49,11 @@ history autotrust_spec # 330
 history transport # 332
 
 # One pinned test per shared boundary helper: the cheapest test that drives it.
+helper tests/it/app_copy_spec.rs::Rig::key = app_copy_spec::foldertree_fifo_spec::a_folder_fifo_is_listed_without_opening_and_escape_remains_responsive
+helper tests/it/app_copy_spec.rs::Rig::new = app_copy_spec::foldertree_fifo_spec::a_folder_fifo_is_listed_without_opening_and_escape_remains_responsive
+helper tests/it/app_copy_spec.rs::Rig::open = app_copy_spec::foldertree_fifo_spec::a_folder_fifo_is_listed_without_opening_and_escape_remains_responsive
+helper tests/it/app_copy_spec.rs::Rig::raw = app_copy_spec::foldertree_fifo_spec::a_folder_fifo_is_listed_without_opening_and_escape_remains_responsive
+helper tests/it/app_copy_spec.rs::Rig::wait_screen = app_copy_spec::foldertree_fifo_spec::a_folder_fifo_is_listed_without_opening_and_escape_remains_responsive
 helper tests/it/app_open_live_spec.rs::Rig::agents = app_open_live_spec::typing::armed_open_does_not_turn_a_later_q_into_quit
 helper tests/it/app_open_live_spec.rs::Rig::app = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question
 helper tests/it/app_open_live_spec.rs::Rig::at = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question
