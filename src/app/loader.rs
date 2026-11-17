@@ -41,6 +41,8 @@ mod early_settings_spec;
 mod end_reader_spec;
 mod ending;
 #[cfg(test)]
+mod foldertree_spec;
+#[cfg(test)]
 mod peek_spec;
 #[cfg(test)]
 mod read_spec;

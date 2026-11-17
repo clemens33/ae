@@ -81,6 +81,7 @@ pub fn gutter(lines: usize) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Body {
     Text { lines: Vec<String>, size: u64 },
+    Tree { lines: Vec<String> },
     Gap(String),
 }
 
@@ -253,7 +254,9 @@ pub fn status(view: &View<'_>, visible: usize) -> String {
     let total = match view.body {
         None => return "loading".to_owned(),
         Some(Body::Gap(_)) => return "not read".to_owned(),
-        Some(Body::Text { lines, .. }) => view.flow.map_or(lines.len(), Flow::rows),
+        Some(Body::Text { lines, .. } | Body::Tree { lines }) => {
+            view.flow.map_or(lines.len(), Flow::rows)
+        }
     };
     let (start, _) = window(total, visible, view.top);
     let first = if total == 0 { 0 } else { start + 1 };

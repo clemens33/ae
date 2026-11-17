@@ -14,6 +14,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+#[path = "foldertree_fifo_spec.rs"]
+mod foldertree_fifo_spec;
+
 const UUID: &str = "0199c0de-cccc-4890-abcd-ef0123456789";
 const TID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
 const WAIT: Duration = Duration::from_secs(20);

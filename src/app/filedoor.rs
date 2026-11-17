@@ -18,6 +18,12 @@
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
+/// The deepest level a folder's tree lists: the linked folder's own entries
+/// are level 1, and a folder at this level is listed but not read.
+pub const TREE_MAX_DEPTH: usize = 3;
+/// The most entries a folder's tree lists in all, every level counted.
+pub const TREE_MAX_ENTRIES: usize = 300;
+
 /// The roots a file may be read under: the session's recorded work dir and the
 /// viewer's home. A root that does not canonicalise is no root.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
