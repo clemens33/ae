@@ -1683,4 +1683,340 @@ mod tests {
             );
         }
     }
+
+    /// One expected non-plain run of `marked`.
+    fn run(token: Token, text: &str) -> (Token, String) {
+        (token, text.to_owned())
+    }
+
+    /// `text`'s runs, plain ones left out, read by the scanner that has read
+    /// the line `before` first.
+    fn marked_after(lang: Lang, before: &str, text: &str) -> Vec<(Token, String)> {
+        let mut scanner = Scanner::new(lang);
+        let _ = scanner.line(before);
+        scanner
+            .line(text)
+            .into_iter()
+            .filter(|(token, _)| *token != Token::Plain)
+            .map(|(token, range)| (token, text[range].to_owned()))
+            .collect()
+    }
+
+    /// The raw reader's colouring of `lines` at `width`, from the first row:
+    /// `then` gets it and the number of display rows. `None` when it reads nothing.
+    fn reading_of<R>(
+        path: &str,
+        lines: &[&str],
+        width: usize,
+        then: impl FnOnce(&mut Reading<'_>, usize) -> R,
+    ) -> Option<R> {
+        let body = Body::Text {
+            lines: lines.iter().map(|line| (*line).to_owned()).collect(),
+            size: 0,
+        };
+        let Body::Text { lines, .. } = &body else {
+            return None;
+        };
+        let flow = reader::flow(lines, width);
+        let view = View {
+            path,
+            line: None,
+            body: Some(&body),
+            flow: Some(&flow),
+            top: 0,
+            links: 0,
+        };
+        let look = Look::DEFAULT;
+        let mut reading = Reading::open(&view, &flow, 0, Paint::of(Some(&look)))?;
+        Some(then(&mut reading, flow.rows()))
+    }
+
+    #[test]
+    fn a_long_language_name_is_a_fence_tag_and_never_an_extension() {
+        for name in ["rust", "python", "shell", "javascript", "typescript"] {
+            assert_eq!(lang_of_path(&format!("a.{name}")), None, "{name}");
+            assert!(lang_of_tag(name).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_language_opens_only_the_quotes_it_has() {
+        // A JSON string is double-quoted only (RFC 8259, section 7).
+        assert_eq!(marked(Lang::Json, "'x'"), []);
+        // A backtick quotes a string in JavaScript and TypeScript alone.
+        for lang in [
+            Lang::Rust,
+            Lang::Python,
+            Lang::Shell,
+            Lang::Toml,
+            Lang::Json,
+            Lang::Yaml,
+        ] {
+            assert_eq!(marked(lang, "`x`"), [], "{lang:?}");
+        }
+        assert_eq!(marked(Lang::Script, "`x`"), [run(Token::Str, "`x`")]);
+    }
+
+    #[test]
+    fn only_a_block_a_triple_or_a_template_string_goes_on_to_the_next_line() {
+        // A string cut at the line's end, or closed on it, leaves the next
+        // line to be read as code.
+        for (lang, before, word) in [
+            (Lang::Rust, "let s = \"cut", "fn"),
+            (Lang::Python, "x = 'cut", "def"),
+            (Lang::Python, "x = '''a'''", "def"),
+            (Lang::Shell, "echo \"cut", "fi"),
+            (Lang::Toml, "k = \"\"\"a\"\"\"", "true"),
+            (Lang::Json, "\"cut", "null"),
+            (Lang::Yaml, "k: \"cut", "true"),
+            (Lang::Script, "const s = \"cut", "let"),
+            (Lang::Script, "const s = `a`;", "let"),
+        ] {
+            assert_eq!(
+                marked_after(lang, before, word),
+                [run(Token::Keyword, word)],
+                "{lang:?} after {before:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_triple_string_closed_on_its_line_ends_there_and_an_escape_does_not_close_it() {
+        assert_eq!(
+            marked(Lang::Python, "x = '''a''' + 1"),
+            [run(Token::Str, "'''a'''"), run(Token::Number, "1")]
+        );
+        assert_eq!(
+            marked(Lang::Python, "'''a''' 1"),
+            [run(Token::Str, "'''a'''"), run(Token::Number, "1")]
+        );
+        assert_eq!(
+            marked(Lang::Toml, "k = \"\"\"a\"\"\" # c"),
+            [
+                run(Token::Key, "k"),
+                run(Token::Str, "\"\"\"a\"\"\""),
+                run(Token::Comment, "# c")
+            ]
+        );
+        // The backslash takes the first of the four quotes: the other three close it.
+        assert_eq!(
+            marked(Lang::Python, "s = '''a\\'''' + 1"),
+            [run(Token::Str, "'''a\\''''"), run(Token::Number, "1")]
+        );
+    }
+
+    #[test]
+    fn only_r_br_and_b_prefix_a_rust_string() {
+        // Any other word before a quote or a hash is a word of its own.
+        for line in ["let s = xr\"a\";", "let s = c\"a\";", "let s = ar#\"a\"#;"] {
+            assert_eq!(
+                marked(Lang::Rust, line),
+                [run(Token::Keyword, "let"), run(Token::Str, "\"a\"")],
+                "{line:?}"
+            );
+        }
+        assert_eq!(
+            marked(Lang::Rust, "br\"a\" r\"b\""),
+            [run(Token::Str, "br\"a\""), run(Token::Str, "r\"b\"")]
+        );
+    }
+
+    #[test]
+    fn equal_neighbours_are_one_run_and_the_runs_of_two_lines_are_kept_apart() {
+        assert_eq!(
+            Scanner::new(Lang::Rust).line("a + b"),
+            [(Token::Plain, 0..5)]
+        );
+        // `scan` appends: the second line's offsets are its own, so its run
+        // does not join the last of the first line.
+        let mut scanner = Scanner::new(Lang::Rust);
+        let mut runs = Vec::new();
+        scanner.scan("a", &mut runs);
+        scanner.scan("b", &mut runs);
+        assert_eq!(runs, [(Token::Plain, 0..1), (Token::Plain, 0..1)]);
+    }
+
+    #[test]
+    fn a_dot_belongs_to_a_number_only_between_digits() {
+        assert_eq!(
+            marked(Lang::Rust, "0..5"),
+            [run(Token::Number, "0"), run(Token::Number, "5")]
+        );
+        assert_eq!(marked(Lang::Rust, "1.foo()"), [run(Token::Number, "1")]);
+        assert_eq!(marked(Lang::Rust, "1.5"), [run(Token::Number, "1.5")]);
+    }
+
+    #[test]
+    fn a_rust_character_literal_is_one_string_whatever_scalar_or_escape_it_holds() {
+        // The Rust reference (character literals): one scalar, or one escape.
+        for literal in [
+            "'a'",
+            "'\\n'",
+            "'\\\\'",
+            "'\\x41'",
+            "'\\u{e9}'",
+            "'\\u{10FFFF}'",
+            "'é'",
+            "'界'",
+            "'😀'",
+        ] {
+            assert_eq!(
+                marked(Lang::Rust, &format!("{literal} + 1")),
+                [run(Token::Str, literal), run(Token::Number, "1")],
+                "{literal}"
+            );
+            // Later in the line, where an offset bound that counts from the
+            // line's start cannot reach it.
+            assert_eq!(
+                marked(Lang::Rust, &format!("let a_long_name = {literal} + 1")),
+                [
+                    run(Token::Keyword, "let"),
+                    run(Token::Str, literal),
+                    run(Token::Number, "1")
+                ],
+                "{literal}"
+            );
+        }
+        // Not a literal: no scalar between the quotes, and no escape runs on
+        // so long (the longest is `'\u{10FFFF}'`).
+        assert_eq!(marked(Lang::Rust, "'''"), []);
+        assert_eq!(marked(Lang::Rust, "x = '\\abcdefghijklmnop'"), []);
+    }
+
+    #[test]
+    fn toml_keys_are_bare_or_quoted_and_an_equals_sign_follows_them() {
+        for (line, key) in [
+            ("\"quoted key\" = 1", "\"quoted key\""),
+            ("'lit key' = 1", "'lit key'"),
+            // A basic string has escapes, a literal string has none (the TOML spec).
+            ("\"a\\\"b\" = 1", "\"a\\\"b\""),
+            ("'C:\\' = 1", "'C:\\'"),
+        ] {
+            assert_eq!(
+                marked(Lang::Toml, line),
+                [run(Token::Key, key), run(Token::Number, "1")],
+                "{line:?}"
+            );
+        }
+        // No equals sign, no key.
+        assert_eq!(marked(Lang::Toml, "just words"), []);
+        assert_eq!(
+            marked(Lang::Toml, "  \"alone\""),
+            [run(Token::Str, "\"alone\"")]
+        );
+        // The inside of an array-of-tables header is the key, brackets left out.
+        assert_eq!(marked(Lang::Toml, "[[bin]]"), [run(Token::Key, "bin")]);
+        assert_eq!(
+            marked(Lang::Toml, "  [[bin.x]] # c"),
+            [run(Token::Key, "bin.x"), run(Token::Comment, "# c")]
+        );
+    }
+
+    #[test]
+    fn yaml_keys_end_at_their_colon_and_a_comment_needs_a_blank_before_it() {
+        // A plain key may hold blanks, and a `#` that no blank precedes.
+        assert_eq!(marked(Lang::Yaml, "my key: v"), [run(Token::Key, "my key")]);
+        assert_eq!(
+            marked(Lang::Yaml, "a#b: 1"),
+            [run(Token::Key, "a#b"), run(Token::Number, "1")]
+        );
+        assert_eq!(marked(Lang::Yaml, "a# b: c"), [run(Token::Key, "a# b")]);
+        // A `#` after a blank starts a comment, whatever a colon later says.
+        assert_eq!(
+            marked(Lang::Yaml, "a # b: c"),
+            [run(Token::Comment, "# b: c")]
+        );
+        assert_eq!(
+            marked(Lang::Yaml, "a #b: c"),
+            [run(Token::Comment, "#b: c")]
+        );
+        // The blanks before the colon are not the key's.
+        assert_eq!(marked(Lang::Yaml, "key : v"), [run(Token::Key, "key")]);
+        // A double-quoted key has escapes, a single-quoted one has none (the YAML spec).
+        assert_eq!(
+            marked(Lang::Yaml, "\"a\\\"b\": 1"),
+            [run(Token::Key, "\"a\\\"b\""), run(Token::Number, "1")]
+        );
+        assert_eq!(
+            marked(Lang::Yaml, "'a\\': 1"),
+            [run(Token::Key, "'a\\'"), run(Token::Number, "1")]
+        );
+    }
+
+    #[test]
+    fn the_look_back_reads_exactly_its_byte_bound() {
+        let above = |filler: usize| {
+            vec![
+                "/* open".to_owned(),
+                "x".repeat(filler),
+                "fn here() {}".to_owned(),
+            ]
+        };
+        // The two lines above hold LOOKBACK_BYTES bytes: all are read.
+        assert_eq!(
+            last_is_comment(&above(LOOKBACK_BYTES - "/* open".len())),
+            Some(true)
+        );
+        // One more byte and the comment's line is beyond the bound.
+        assert_eq!(
+            last_is_comment(&above(LOOKBACK_BYTES - "/* open".len() + 1)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_row_is_never_an_empty_span() {
+        let lines = [
+            "fn a() { let s = \"aaa bbb ccc\"; } // and a comment that wraps",
+            "    let long_name = 12345; // another one over rows",
+            "x",
+        ];
+        for width in 1..40 {
+            let rows = reading_of("/f/a.rs", &lines, width, |reading, rows| {
+                (0..rows).map(|at| reading.row(at)).collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+            assert!(!rows.is_empty(), "width {width}");
+            for row in rows {
+                let Some(line) = row else {
+                    panic!("width {width}: a row left plain");
+                };
+                assert!(
+                    line.spans.iter().all(|span| !span.content.is_empty()),
+                    "width {width}: {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_row_above_the_lines_already_read_is_left_plain() {
+        // The scanner only follows the rows down: line 0 cannot be placed once
+        // line 2 is read, whatever text the lines hold.
+        let lines = ["let x = 1;"; 3];
+        let got = reading_of("/f/a.rs", &lines, 80, |reading, _| {
+            (
+                reading.row(2).is_some(),
+                reading.row(0).is_none(),
+                reading.row(2).is_some(),
+            )
+        });
+        assert_eq!(got, Some((true, true, true)));
+    }
+
+    #[test]
+    fn a_row_past_the_run_budget_stays_plain_each_time_it_is_asked_for() {
+        let paid = MAX_RUNS / 1000;
+        let line = "1 ".repeat(500);
+        let lines: Vec<&str> = (0..=paid).map(|_| line.as_str()).collect();
+        let got = reading_of("/f/a.rs", &lines, 2000, |reading, rows| {
+            for at in 0..rows {
+                let _ = reading.row(at);
+            }
+            (0..3)
+                .map(|_| reading.row(rows - 1).is_none())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(got, Some(vec![true; 3]));
+    }
 }
