@@ -97,6 +97,10 @@ impl Cycle<'_> {
                     err,
                 )
             }
+            // The dead latch's records are routed to the seat's slot.
+            Effect::Emit { action, summary } if deadnotice::routes_to_slot(action, summary) => {
+                self.emit_at(action, (agent, on.slot), summary, err)
+            }
             Effect::Emit { action, summary } => self.emit(action, agent, summary, err),
             Effect::Notify(text) => {
                 self.notify(agent, text);
@@ -997,7 +1001,7 @@ impl Cycle<'_> {
             }
             .append_referring(
                 crate::brief_retry::GAVE_UP_ACTION,
-                name,
+                (name, ""),
                 &destination_ref,
                 &format!(
                     "brief record damaged ({}) — given up; the record goes to {}; the brief is \
@@ -1033,6 +1037,23 @@ impl Cycle<'_> {
             session: self.session,
         }
         .record(action, agent, summary, err)
+    }
+
+    /// Append one watchdog event for the seat at `slot`, routed by slot and
+    /// session: the dead latch's own records, so two seats sharing one
+    /// display name keep separate death episodes.
+    pub(super) fn emit_at(
+        &self,
+        action: &str,
+        seat: (&str, &str),
+        summary: &str,
+        err: &mut impl Write,
+    ) -> crate::error::Result<()> {
+        Journal {
+            meta_dir: self.meta_dir,
+            session: self.session,
+        }
+        .record_routed(action, seat, "", summary, err)
     }
 
     /// Roster agents with no live pane. The carry holds each seat's one
@@ -1076,7 +1097,8 @@ impl Cycle<'_> {
                 )
             };
             if !alerted {
-                self.emit("alert", &reference, deadnotice::MISSING_ALERT, err)?;
+                let seat = (reference.as_str(), entry.slot.as_str());
+                self.emit_at("alert", seat, deadnotice::MISSING_ALERT, err)?;
                 self.notify(&reference, "pane is MISSING");
                 journal = None;
             }

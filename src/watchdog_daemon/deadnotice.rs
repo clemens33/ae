@@ -272,6 +272,17 @@ fn closes(event: &Event, session: &str, slot: &str, agent: &str) -> bool {
             ) || crate::conversation::decode(event).is_some()))
 }
 
+/// Whether a watchdog record belongs to the dead latch and is therefore routed
+/// to the seat's slot: a dead alert of either leg, `dead-cleared` or
+/// `pane-back`. Every other watchdog record keeps its keyless line.
+pub(super) fn routes_to_slot(action: &str, summary: &str) -> bool {
+    match action {
+        "dead-cleared" | BACK_ACTION => true,
+        "alert" => matches!(summary, SHELL_ALERT | MISSING_ALERT),
+        _ => false,
+    }
+}
+
 /// The journal half of the human's dead latch for the seat: whether a dead
 /// alert already stands in its current episode, and on which leg it was
 /// raised. `events` must hold the records this cycle already wrote.
@@ -393,9 +404,9 @@ impl Cycle<'_> {
         }
         // A latch the daemon itself clears books its own `dead-cleared`.
         if back && episode.told {
-            self.emit(
+            self.emit_at(
                 BACK_ACTION,
-                on.agent,
+                (on.agent, on.slot),
                 "seat live again — a new death is told again",
                 err,
             )?;

@@ -1658,7 +1658,22 @@ impl Journal<'_> {
         summary: &str,
         err: &mut impl Write,
     ) -> crate::error::Result<()> {
-        if let Err(why) = self.append_referring(action, target, reference, summary) {
+        self.record_routed(action, (target, ""), reference, summary, err)
+    }
+
+    /// Append one watchdog event addressed to one SEAT: `target` is its display
+    /// name, and a non-empty `slot` routes the record by slot and this session
+    /// too, so two seats sharing one display name never read each other's
+    /// record. An empty `slot` writes the keyless line every other record uses.
+    fn record_routed(
+        &self,
+        action: &str,
+        (target, slot): (&str, &str),
+        reference: &str,
+        summary: &str,
+        err: &mut impl Write,
+    ) -> crate::error::Result<()> {
+        if let Err(why) = self.append_referring(action, (target, slot), reference, summary) {
             writeln!(
                 err,
                 "ae: watchdog: {action} for {target} not recorded: {why}"
@@ -1671,13 +1686,16 @@ impl Journal<'_> {
     /// give-up path must not rename before its event is proven durable, so it
     /// is the one caller that sees a failed append. Every other caller keeps
     /// the swallow above. The ONE owner of the watchdog's event-line shape.
+    /// A non-empty `slot` fills the routing key (`target_slot` and
+    /// `target_session`): half a key addresses nobody, so both go together.
     fn append_referring(
         &self,
         action: &str,
-        target: &str,
+        (target, slot): (&str, &str),
         reference: &str,
         summary: &str,
     ) -> Result<(), store::Error> {
+        let target_session = if slot.is_empty() { "" } else { self.session };
         let line = tracked::event_line(&EventFields {
             ts: Timestamp::now(),
             actor: ACTOR,
@@ -1686,8 +1704,8 @@ impl Journal<'_> {
             reference,
             actor_slot: "",
             actor_session: self.session,
-            target_slot: "",
-            target_session: "",
+            target_slot: slot,
+            target_session,
             actor_session_id: "",
             target_session_id: "",
             target_server: "",
