@@ -318,12 +318,23 @@ portable census by session. A double fault also escapes: the entry and its lost 
 written, and then the supervisor itself is killed (KILL) before its census proves empty. A member
 that only the lost write would have named, and that has left group G, is then invisible to release.
 
-**Clearing a suspect lock (a human).** Read `.local/locks/gate/suspect` and the entries it names under
+**Stopping your own claimed run.** Never send TERM to the whole process group of a claimed run:
+the group kill also ends the trap, so the trap never releases the lock and a suspect lock stays.
+TERM to the script pid alone is not enough either: the lane supervisor (a perl child of the recipe
+bash) keeps the run, for example `cargo-mutants`, alive. Do these steps in order:
+
+1. Send TERM to the script pid.
+2. Send TERM to the lane supervisor pid alone. It reaps its own children.
+3. Run `just lane-lock release <name>`.
+4. If the release still refuses, report the `suspect` line to the lead. The lead verifies and clears.
+
+**Clearing a suspect lock (the lead or a human).** Read `.local/locks/gate/suspect` and the entries it names under
 `.local/locks/groups/`. Check that no process of those entries is still alive: each `run`, `leader`
 and `member` line names a pid and its start identity, which `LC_ALL=C ps -o lstart= -p <pid>` (letters
 and digits only) must no longer show. End any survivor by its pid after that identity check, never by
 a name pattern. Then remove the named entries, `.local/locks/gate/suspect`, the `owner` line and the
-`gate` directory by hand. Agents never clear a suspect lock.
+`gate` directory by hand. Only the lead or a human clears a suspect lock, and only after this check
+shows that every named pid is gone and the `groups` entries are gone. Every other agent never clears one.
 
 **Test seam.** `AE_GATE_REAP_TERM_SECS` and `AE_GATE_REAP_KILL_SECS` exist only so that the
 acceptance tests run fast. Each is a whole number of seconds that can only shorten its wait: a value
