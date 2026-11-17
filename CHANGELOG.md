@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.80] - 2026-11-17
+- The Spawn section of workspace.md lists the approved profile@client pairs from the gate's own reader over the session's recorded global config, a void row or an unreadable section named in the refusal's words with no pair listed
+- The off-reseat spec counts pane reads, which a loaded host does not change, instead of timing the reseat against 20 s
+
 ## [v2026.11.79] - 2026-11-17
 - Judge a labeled spawned seat on the global config at relaunch, snapshot-less _run and reseat admission
 - A chain root that carried a client returns through the pair gate as profile@client, and a root the gate refuses closes one refused record with the reason whole
