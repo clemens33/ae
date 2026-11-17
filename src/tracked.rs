@@ -5060,6 +5060,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
+    fn a_malformed_expected_slot_is_unproven_never_a_replaced_seat() {
+        // Requirement (#218 2b/2c): an expectation that cannot be read is refused
+        // as "could not be proven", with nothing typed and one refused record as
+        // the deciding actor; only a readable different seat reads "replaced".
+        let actor = crate::watchdog::WATCHDOG_ACTOR;
+        let root = std::env::temp_dir().join(format!("aetrexp.{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("work");
+        std::fs::create_dir_all(&dir).expect("a session dir");
+        let seat = ("scout", "spawned.0");
+        let judged = ("spawned.0", "L1");
+
+        let mut err = Vec::new();
+        let go = super::expected_is_judged(&dir, actor, seat, judged, Ok(Some(judged)), &mut err)
+            .expect("the unchanged seat is judged");
+        assert!(go && err.is_empty(), "{}", String::from_utf8_lossy(&err));
+        assert!(
+            !dir.join("events.jsonl").exists(),
+            "the unchanged seat writes no record"
+        );
+
+        let expect = Ok(Some(("bogus", "L1")));
+        let go = super::expected_is_judged(&dir, actor, seat, judged, expect, &mut err)
+            .expect("the refusal is written");
+        let shown = String::from_utf8_lossy(&err);
+        assert!(!go, "{shown}");
+        assert!(
+            shown.contains(
+                "seat scout (spawned.0) could not be proven: its expected slot is malformed"
+            ) && !shown.contains("replaced"),
+            "{shown}"
+        );
+        let journal = std::fs::read_to_string(dir.join("events.jsonl")).expect("the refusal");
+        let events: Vec<_> = journal
+            .lines()
+            .map(|line| crate::events::Event::parse_line(line).expect("an event"))
+            .collect();
+        assert_eq!(events.len(), 1, "{journal}");
+        assert_eq!(
+            (
+                events[0].action.as_str(),
+                events[0].actor.as_str(),
+                events[0].target.as_deref()
+            ),
+            ("refused", actor, None),
+            "{journal}"
+        );
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+    #[test]
     fn stale_or_empty_actor_session_cannot_skip_a_role_requests_record_only_binding() {
         for role in [false, true] {
             let role_row = if role { "meta_agent=true\n" } else { "" };
