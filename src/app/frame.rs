@@ -159,6 +159,8 @@ impl App {
         self.settings_due();
         if let Some(open) = self.model.settings() {
             self.layout.strip_for_settings();
+            let revealed = std::mem::take(&mut self.orchestrator_reveal);
+            self.layout.settings_reveal = revealed;
             draw::paint_settings(
                 open.tab,
                 open.scroll,
@@ -169,6 +171,9 @@ impl App {
             );
             self.model
                 .set_settings_page_rows(self.layout.settings_page_rows);
+            if revealed {
+                self.model.set_settings_scroll(self.layout.settings_start);
+            }
             if self.deferred.is_empty() {
                 self.model
                     .clamp_settings_scroll(self.layout.settings_max_scroll);

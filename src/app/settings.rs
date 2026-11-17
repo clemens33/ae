@@ -353,6 +353,10 @@ pub(crate) struct OrchestratorReady {
     pub(crate) configured: String,
     /// The profile the saved orchestrator session recorded, if one exists.
     pub(crate) recorded: Option<String>,
+    /// Why the recorded profile is unknown while a saved session may exist: its
+    /// record cannot be read, names no profile, or the lookup was incomplete.
+    /// `None` with `recorded` `None` is no saved session at all.
+    pub(crate) recorded_gap: Option<String>,
     /// The `[profiles]` keys a launch accepts, in config order.
     pub(crate) choices: Vec<String>,
     /// The config bytes this was read from: an apply must still find them.
@@ -393,7 +397,9 @@ pub(crate) enum OrchestratorNote {
 ///
 /// The editable row comes from [`crate::config::read_config_seen`] and
 /// [`crate::config::roster_row_value`], so a row the writer could not place,
-/// or a file it would not write, answers with its reason before any pick.
+/// or a file it would not write, answers with its reason before any pick. The
+/// profiles come from [`crate::config::parse_identity_in`], the launch
+/// reader's own validation, so a config a launch refuses offers nothing.
 /// `meta_dir` is the orchestrator session's record directory, not the
 /// selected session's: the recorded profile is the seat `main` of that meta.
 pub(crate) fn resolve_orchestrator(
@@ -409,7 +415,7 @@ pub(crate) fn resolve_orchestrator(
         Ok(value) => value,
         Err(why) => return OrchestratorView::Unreadable(why.to_string()),
     };
-    let cfg = match crate::config::parse_identity(seen.text()) {
+    let cfg = match crate::config::parse_identity_in(global, seen.text()) {
         Ok(cfg) => cfg,
         Err(why) => return OrchestratorView::Unreadable(why.to_string()),
     };
@@ -419,17 +425,169 @@ pub(crate) fn resolve_orchestrator(
             "no [profiles] entry resolves to a launchable command".to_owned(),
         );
     }
-    let recorded = meta_dir
-        .and_then(|dir| crate::meta::read_bytes(dir).ok())
-        .map(|bytes| crate::lifecycle::meta_value(&bytes, RECORDED_KEY))
-        .filter(|profile| !profile.is_empty());
+    let (recorded, recorded_gap) = match meta_dir.map(crate::meta::read_bytes) {
+        None => (None, None),
+        Some(Err(why)) => (
+            None,
+            Some(format!("the saved session's record cannot be read: {why}")),
+        ),
+        Some(Ok(bytes)) => {
+            let profile = crate::lifecycle::meta_value(&bytes, RECORDED_KEY);
+            if profile.is_empty() {
+                (
+                    None,
+                    Some("the saved session records no orchestrator profile".to_owned()),
+                )
+            } else {
+                (Some(profile), None)
+            }
+        }
+    };
     OrchestratorView::Ready(OrchestratorReady {
         configured,
         recorded,
+        recorded_gap,
         choices,
         seen,
         global: global.to_path_buf(),
     })
+}
+
+impl OrchestratorView {
+    /// The view for a lookup of the orchestrator session that could not look
+    /// everywhere: with no record found, the profile is unknown, not absent.
+    #[must_use]
+    pub(crate) fn with_incomplete_lookup(mut self) -> Self {
+        if let Self::Ready(ready) = &mut self
+            && ready.recorded.is_none()
+            && ready.recorded_gap.is_none()
+        {
+            ready.recorded_gap = Some(
+                "the session records could not all be read, so a saved orchestrator may exist"
+                    .to_owned(),
+            );
+        }
+        self
+    }
+}
+
+/// How a row of the orchestrator block is toned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowTone {
+    Plain,
+    Dim,
+    Head,
+    Critical,
+}
+
+/// The Config tab's orchestrator block as drawn rows, and the row of the
+/// highlighted choice while the picker is open. One builder serves the draw
+/// and the scroll that keeps the highlight on screen, so they cannot disagree
+/// about where the picker's rows are.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct OrchestratorBlock {
+    pub(crate) rows: Vec<(RowTone, String)>,
+    /// The index in `rows` of the highlighted choice.
+    pub(crate) selected: Option<usize>,
+}
+
+/// Lay out the orchestrator block for a body `room` cells wide: the configured
+/// profile, the recorded one, when a pick applies, what became of the last
+/// pick and the open picker. Every row is neutralised, then wrapped, a
+/// continuation row hanging two cells; nothing is cut, the panel scrolls.
+pub(crate) fn orchestrator_block(bodies: &SettingsBodies, room: usize) -> OrchestratorBlock {
+    let mut block = OrchestratorBlock::default();
+    let mut put = |block: &mut OrchestratorBlock, tone: RowTone, text: &str| {
+        let text = crate::board::terminal_text(text);
+        if text.is_empty() {
+            block.rows.push((tone, String::new()));
+            return;
+        }
+        for (gap, piece) in crate::console::wrap::wrap(&text, room, 0) {
+            block
+                .rows
+                .push((tone, format!("{}{piece}", " ".repeat(gap))));
+        }
+    };
+    let ready = match &bodies.orchestrator {
+        OrchestratorView::Loading => {
+            put(&mut block, RowTone::Dim, "orchestrator: loading");
+            return block;
+        }
+        OrchestratorView::Unreadable(why) => {
+            put(&mut block, RowTone::Plain, &format!("orchestrator: {why}"));
+            put(&mut block, RowTone::Plain, "");
+            return block;
+        }
+        OrchestratorView::Ready(ready) => ready,
+    };
+    put(
+        &mut block,
+        RowTone::Plain,
+        &format!("orchestrator = {}  (global)", ready.configured),
+    );
+    let recorded = match (&ready.recorded, &ready.recorded_gap) {
+        (Some(profile), _) => profile.clone(),
+        (None, Some(gap)) => format!("(unknown: {gap})"),
+        (None, None) => "(no session)".to_owned(),
+    };
+    put(
+        &mut block,
+        RowTone::Plain,
+        &format!("recorded orchestrator = {recorded}"),
+    );
+    put(
+        &mut block,
+        RowTone::Dim,
+        "applies at next fresh start (after ae end)",
+    );
+    put(
+        &mut block,
+        RowTone::Dim,
+        "Pause/Resume keeps the recorded profile",
+    );
+    match &bodies.orchestrator_note {
+        None => {}
+        Some(OrchestratorNote::Saving(profile)) => {
+            put(&mut block, RowTone::Dim, &format!("saving {profile}..."));
+        }
+        Some(OrchestratorNote::Saved(line) | OrchestratorNote::Unchanged(line)) => {
+            put(&mut block, RowTone::Plain, line);
+        }
+        Some(OrchestratorNote::Refused(why)) => {
+            put(&mut block, RowTone::Critical, &format!("not saved: {why}"));
+        }
+    }
+    if let Some(at) = bodies.orchestrator_picker {
+        let at = at.min(ready.choices.len().saturating_sub(1));
+        put(&mut block, RowTone::Head, "Orchestrator profile");
+        for (index, choice) in ready.choices.iter().enumerate() {
+            let marker = if index == at { ">" } else { " " };
+            let configured = if *choice == ready.configured {
+                "  (configured)"
+            } else {
+                ""
+            };
+            if index == at {
+                block.selected = Some(block.rows.len());
+            }
+            let tone = if index == at {
+                RowTone::Head
+            } else {
+                RowTone::Plain
+            };
+            put(&mut block, tone, &format!("{marker} {choice}{configured}"));
+        }
+        put(&mut block, RowTone::Dim, "j/k move, Enter pick, Esc cancel");
+    } else {
+        put(
+            &mut block,
+            RowTone::Dim,
+            "o  choose the orchestrator profile",
+        );
+    }
+    put(&mut block, RowTone::Plain, "");
+    block
 }
 
 /// Everything the overlay draws. Cold until the first answer lands.

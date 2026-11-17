@@ -210,12 +210,20 @@ impl App {
         let settings::OrchestratorView::Ready(ready) = &self.settings_bodies.orchestrator else {
             return false;
         };
+        // One write at a time, whatever overlay asked for the first: while it
+        // runs the picker stays shut and the row says what is being written.
+        if let Some((_, profile)) = &self.orchestrator_inflight {
+            self.settings_bodies.orchestrator_note =
+                Some(settings::OrchestratorNote::Saving(profile.clone()));
+            return true;
+        }
         let at = ready
             .choices
             .iter()
             .position(|choice| *choice == ready.configured)
             .unwrap_or(0);
         self.settings_bodies.orchestrator_picker = Some(at);
+        self.orchestrator_reveal = true;
         true
     }
 
@@ -229,8 +237,14 @@ impl App {
             _ => 0,
         };
         match key {
-            model::Key::Up => self.settings_bodies.orchestrator_picker = Some(at.saturating_sub(1)),
-            model::Key::Down => self.settings_bodies.orchestrator_picker = Some((at + 1).min(last)),
+            model::Key::Up => {
+                self.settings_bodies.orchestrator_picker = Some(at.saturating_sub(1));
+                self.orchestrator_reveal = true;
+            }
+            model::Key::Down => {
+                self.settings_bodies.orchestrator_picker = Some((at + 1).min(last));
+                self.orchestrator_reveal = true;
+            }
             model::Key::Compose => self.queue_orchestrator_pick(at),
             model::Key::Esc | model::Key::Quit => self.settings_bodies.orchestrator_picker = None,
             model::Key::Open => return Some(false),
@@ -255,6 +269,7 @@ impl App {
             seen: ready.seen.clone(),
             global: ready.global.clone(),
         });
+        self.orchestrator_inflight = Some((open.generation, profile.clone()));
         self.settings_bodies.orchestrator_note =
             Some(settings::OrchestratorNote::Saving(profile.clone()));
     }
@@ -273,13 +288,16 @@ impl App {
         outcome: Result<crate::config::Applied, crate::config::ApplyRefusal>,
     ) {
         use settings::OrchestratorNote;
+        // The write ended, whichever overlay is open now.
+        let inflight = self.orchestrator_inflight.take();
         if !self.model.settings_generation(generation) {
             return;
         }
-        let asked = match self.settings_bodies.orchestrator_note.take() {
-            Some(OrchestratorNote::Saving(profile)) => profile,
-            _ => String::new(),
-        };
+        let asked = inflight
+            .filter(|(started, _)| *started == generation)
+            .map(|(_, profile)| profile)
+            .unwrap_or_default();
+        self.settings_bodies.orchestrator_note = None;
         let (note, reread) = match outcome {
             Ok(applied) if applied.changed => {
                 let kept = applied

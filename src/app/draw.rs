@@ -20,8 +20,7 @@ use super::peek;
 use super::reader;
 use super::select::{self, Map, Region};
 use super::settings::{
-    AboutFacts, ConfigView, InstructionsView, OrchestratorNote, OrchestratorView, SettingsBodies,
-    StatsTab,
+    self, AboutFacts, ConfigView, InstructionsView, RowTone, SettingsBodies, StatsTab,
 };
 use crate::brief::age;
 use crate::console::input::View;
@@ -202,6 +201,13 @@ pub(crate) struct Layout {
     pub settings_page_rows: usize,
     /// How far the open panel's body can scroll.
     pub settings_max_scroll: usize,
+    /// Set by the frame for one draw: keep the Config tab's highlighted
+    /// picker row on screen, moving the scroll the least it takes.
+    pub settings_reveal: bool,
+    /// The body row that request resolved to, while the picker is open.
+    settings_keep: Option<usize>,
+    /// The first body row the open panel drew: the scroll the frame keeps.
+    pub settings_start: usize,
     /// The session list's cells, the first session it drew, and the
     /// furthest first session it could draw.
     list: Rect,
@@ -500,6 +506,8 @@ impl Layout {
         self.cursor = None;
         self.settings_page_rows = 0;
         self.settings_max_scroll = 0;
+        self.settings_keep = None;
+        self.settings_start = 0;
         self.map = Map::default();
     }
 }
@@ -2669,6 +2677,12 @@ pub(crate) fn paint_settings(
 ) {
     let paint = Paint::of(look);
     let width = buf.area.width;
+    layout.settings_keep = (layout.settings_reveal && tab == SettingsTab::Config)
+        .then(|| {
+            settings::orchestrator_block(bodies, usize::from(width.saturating_sub(LEFT)) + 1)
+                .selected
+        })
+        .flatten();
     let selected = match tab {
         SettingsTab::Quota => 0,
         SettingsTab::Config => 1,
@@ -2852,7 +2866,19 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
     let (start, max) = match panel.scroll {
         Scroll::Top(offset) => {
             let max = panel.body.len().saturating_sub(visible);
-            (offset.min(max), max)
+            let mut start = offset.min(max);
+            // A row the panel was told to keep on screen moves the window the
+            // least it takes: up to the row, or down to end on it.
+            if let Some(row) = layout.settings_keep {
+                if row < start {
+                    start = row;
+                } else if row >= start + visible {
+                    start = (row + 1).saturating_sub(visible);
+                }
+                start = start.min(max);
+            }
+            layout.settings_start = start;
+            (start, max)
         }
         Scroll::Back(back) => peek::window(panel.body.len(), visible, back),
     };
@@ -3372,78 +3398,26 @@ fn peek_rows(view: &peek::View<'_>, paint: Paint, room: usize) -> Vec<(String, S
     }
 }
 
-/// The Config tab's orchestrator profile block: the configured profile, the
-/// recorded one, when a pick applies, what became of the last pick and the
-/// open picker. A row the writer cannot edit says why and offers nothing.
-fn orchestrator_rows(bodies: &SettingsBodies, paint: Paint) -> Vec<(String, Style)> {
+/// The Config tab's orchestrator profile block, toned: the rows `settings`
+/// lays out for a body `room` cells wide. A row the writer cannot edit says why
+/// and offers nothing.
+fn orchestrator_rows(bodies: &SettingsBodies, paint: Paint, room: usize) -> Vec<(String, Style)> {
     let dim = paint.fg(|p| p.dim);
     let text = paint.fg(|p| p.text);
     let head = paint.fg(|p| p.text).add_modifier(Modifier::BOLD);
-    let clean = crate::board::terminal_text;
-    let ready = match &bodies.orchestrator {
-        OrchestratorView::Loading => return vec![("orchestrator: loading".to_owned(), dim)],
-        OrchestratorView::Unreadable(why) => {
-            return vec![
-                (format!("orchestrator: {}", clean(why)), text),
-                (String::new(), text),
-            ];
-        }
-        OrchestratorView::Ready(ready) => ready,
-    };
-    let mut out = vec![
-        (
-            format!("orchestrator = {}  (global)", clean(&ready.configured)),
-            text,
-        ),
-        (
-            format!(
-                "recorded orchestrator = {}",
-                ready
-                    .recorded
-                    .as_deref()
-                    .map_or_else(|| "(no session)".to_owned(), clean)
-            ),
-            text,
-        ),
-        ("applies at next fresh start (after ae end)".to_owned(), dim),
-        ("Pause/Resume keeps the recorded profile".to_owned(), dim),
-    ];
-    match &bodies.orchestrator_note {
-        None => {}
-        Some(OrchestratorNote::Saving(profile)) => {
-            out.push((format!("saving {}...", clean(profile)), dim));
-        }
-        Some(OrchestratorNote::Saved(line) | OrchestratorNote::Unchanged(line)) => {
-            out.push((clean(line), text));
-        }
-        Some(OrchestratorNote::Refused(why)) => {
-            out.push((
-                format!("not saved: {}", clean(why)),
-                paint.fg(|p| p.needs_you),
-            ));
-        }
-    }
-    if let Some(at) = bodies.orchestrator_picker {
-        let at = at.min(ready.choices.len().saturating_sub(1));
-        out.push(("Orchestrator profile".to_owned(), head));
-        for (index, choice) in ready.choices.iter().enumerate() {
-            let marker = if index == at { ">" } else { " " };
-            let configured = if *choice == ready.configured {
-                "  (configured)"
-            } else {
-                ""
+    settings::orchestrator_block(bodies, room)
+        .rows
+        .into_iter()
+        .map(|(tone, row)| {
+            let style = match tone {
+                RowTone::Plain => text,
+                RowTone::Dim => dim,
+                RowTone::Head => head,
+                RowTone::Critical => paint.fg(|p| p.needs_you),
             };
-            out.push((
-                format!("{marker} {}{configured}", clean(choice)),
-                if index == at { head } else { text },
-            ));
-        }
-        out.push(("j/k move, Enter pick, Esc cancel".to_owned(), dim));
-    } else {
-        out.push(("o  choose the orchestrator profile".to_owned(), dim));
-    }
-    out.push((String::new(), text));
-    out
+            (row, style)
+        })
+        .collect()
 }
 
 /// The overlay body's styled rows: every field through the terminal-text
@@ -3486,7 +3460,8 @@ fn settings_body(
             .collect(),
         },
         SettingsTab::Config => {
-            let mut out = orchestrator_rows(bodies, paint);
+            let mut out =
+                orchestrator_rows(bodies, paint, usize::from(width.saturating_sub(LEFT)) + 1);
             out.extend(match &bodies.config {
                 ConfigView::Loading => vec![("loading".to_owned(), dim)],
                 ConfigView::Unreadable(why) => vec![(clean(why), text)],

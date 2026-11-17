@@ -1628,15 +1628,26 @@ impl Reader {
     fn orchestrator(&self) -> Answer {
         let (generation, _) = self.settings.unwrap_or((0, None));
         let paths = &self.settings_paths;
-        let meta_dir =
-            crate::console::locate(&self.root, crate::orchestrator::ORCHESTRATOR_SESSION);
+        // The scan, not `console::locate`: a source that failed to enumerate
+        // means a saved orchestrator may be hiding there, so no record found
+        // is then an unknown profile, never "no session".
+        let scan =
+            crate::inventory::durable_meta_records(&crate::inventory::Roots::under(&self.root));
+        let meta_dir = (scan.records.iter())
+            .find(|record| record.name == crate::orchestrator::ORCHESTRATOR_SESSION)
+            .map(|record| record.path.clone());
+        let view = super::settings::resolve_orchestrator(
+            meta_dir.as_deref(),
+            &paths.global,
+            paths.home.as_deref(),
+        );
         Answer::OrchestratorProfile {
             generation,
-            view: super::settings::resolve_orchestrator(
-                meta_dir.as_deref(),
-                &paths.global,
-                paths.home.as_deref(),
-            ),
+            view: if scan.incomplete.is_empty() {
+                view
+            } else {
+                view.with_incomplete_lookup()
+            },
         }
     }
 

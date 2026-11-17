@@ -408,6 +408,12 @@ struct App {
     stats_reset: Option<u64>,
     /// The orchestrator profile pick owed to the writer thread, not yet handed.
     orchestrator_pick: Option<settings::OrchestratorPick>,
+    /// The write of an orchestrator pick that has not landed: the overlay
+    /// generation and the profile it writes. One at a time, whatever overlay is
+    /// open, and the landing says which write it was.
+    orchestrator_inflight: Option<(u64, String)>,
+    /// The picker's highlight moved: the next frame keeps it on screen.
+    orchestrator_reveal: bool,
     /// The open peek panel's captures, and the generation the next open mints.
     peek: PeekPane,
     peek_generation: u64,
@@ -574,6 +580,8 @@ impl App {
             tools_asked: None,
             stats_reset: None,
             orchestrator_pick: None,
+            orchestrator_inflight: None,
+            orchestrator_reveal: false,
             peek: PeekPane::default(),
             peek_generation: 0,
             reader: ReaderPane::default(),

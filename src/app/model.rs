@@ -938,6 +938,14 @@ impl Model {
         }
     }
 
+    /// Put the open body's scroll at `row`: the frame reports where a window
+    /// that keeps a row on screen starts.
+    pub(crate) fn set_settings_scroll(&mut self, row: usize) {
+        if let Some(open) = self.settings.as_mut() {
+            open.scroll = row;
+        }
+    }
+
     /// Scroll the open body by `rows`, down positive, for the App's wheel.
     pub(crate) fn settings_wheel(&mut self, rows: isize) {
         let _ = self.settings_scroll_by(rows);
