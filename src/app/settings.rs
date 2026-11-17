@@ -328,6 +328,12 @@ pub(crate) struct StatsBody {
     pub(crate) tools: Option<Box<crate::tool_stats::View>>,
 }
 
+/// The `[roster]` row the picker edits.
+const ORCHESTRATOR_ROW: &str = "orchestrator";
+
+/// The meta key the orchestrator session records its seat's profile under.
+const RECORDED_KEY: &str = "profile.main";
+
 /// The orchestrator profile facts the Config tab draws and the picker offers.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) enum OrchestratorView {
@@ -368,15 +374,62 @@ pub(crate) struct OrchestratorPick {
     pub(crate) global: PathBuf,
 }
 
+/// What became of the last pick, drawn under the picker row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OrchestratorNote {
+    /// The pick of this profile was handed over and has not landed.
+    Saving(String),
+    /// The pick was written.
+    Saved(String),
+    /// The pick named what was already configured: nothing was written.
+    Unchanged(String),
+    /// The pick was refused, with the full reason.
+    Refused(String),
+}
+
 /// Read the orchestrator profile facts: the editable row of the global file,
 /// the profiles a launch accepts, and what the saved orchestrator session at
 /// `meta_dir` recorded.
+///
+/// The editable row comes from [`crate::config::read_config_seen`] and
+/// [`crate::config::roster_row_value`], so a row the writer could not place,
+/// or a file it would not write, answers with its reason before any pick.
+/// `meta_dir` is the orchestrator session's record directory, not the
+/// selected session's: the recorded profile is the seat `main` of that meta.
 pub(crate) fn resolve_orchestrator(
-    _meta_dir: Option<&Path>,
-    _global: &Path,
-    _home: Option<&Path>,
+    meta_dir: Option<&Path>,
+    global: &Path,
+    home: Option<&Path>,
 ) -> OrchestratorView {
-    OrchestratorView::Loading
+    let seen = match crate::config::read_config_seen(global) {
+        Ok(seen) => seen,
+        Err(why) => return OrchestratorView::Unreadable(why.to_string()),
+    };
+    let configured = match crate::config::roster_row_value(seen.text(), ORCHESTRATOR_ROW) {
+        Ok(value) => value,
+        Err(why) => return OrchestratorView::Unreadable(why.to_string()),
+    };
+    let cfg = match crate::config::parse_identity(seen.text()) {
+        Ok(cfg) => cfg,
+        Err(why) => return OrchestratorView::Unreadable(why.to_string()),
+    };
+    let choices = crate::config::launchable_profiles(&cfg, home);
+    if choices.is_empty() {
+        return OrchestratorView::Unreadable(
+            "no [profiles] entry resolves to a launchable command".to_owned(),
+        );
+    }
+    let recorded = meta_dir
+        .and_then(|dir| crate::meta::read_bytes(dir).ok())
+        .map(|bytes| crate::lifecycle::meta_value(&bytes, RECORDED_KEY))
+        .filter(|profile| !profile.is_empty());
+    OrchestratorView::Ready(OrchestratorReady {
+        configured,
+        recorded,
+        choices,
+        seen,
+        global: global.to_path_buf(),
+    })
 }
 
 /// Everything the overlay draws. Cold until the first answer lands.
@@ -394,6 +447,10 @@ pub(crate) struct SettingsBodies {
     pub(crate) config: ConfigView,
     /// The Config tab's orchestrator profile row and picker.
     pub(crate) orchestrator: OrchestratorView,
+    /// The open picker's highlighted choice, an index into the offered ones.
+    pub(crate) orchestrator_picker: Option<usize>,
+    /// What became of the last pick.
+    pub(crate) orchestrator_note: Option<OrchestratorNote>,
     pub(crate) about: Option<AboutFacts>,
     pub(crate) instructions: InstructionsView,
     pub(crate) stats: StatsBody,
@@ -407,6 +464,8 @@ impl Default for SettingsBodies {
             live_seats: None,
             config: ConfigView::Loading,
             orchestrator: OrchestratorView::Loading,
+            orchestrator_picker: None,
+            orchestrator_note: None,
             about: None,
             instructions: InstructionsView::Loading,
             stats: StatsBody::default(),

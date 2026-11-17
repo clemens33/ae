@@ -644,6 +644,40 @@ impl Upkeep {
         Handed::Held
     }
 
+    /// Write one orchestrator profile pick on a thread of its own and answer
+    /// exactly one [`Wake::OrchestratorPick`]: the write waits on disk, never
+    /// on the upkeep thread or the UI, and a thread that cannot start answers
+    /// with the refusal.
+    pub(super) fn orchestrator(&self, pick: super::settings::OrchestratorPick) {
+        let notices = self.notices.clone();
+        let generation = pick.generation;
+        let write = move || {
+            let outcome = crate::config::apply_roster_row(
+                &pick.global,
+                &pick.seen,
+                "orchestrator",
+                &pick.profile,
+                crate::time::Timestamp::now().epoch(),
+            );
+            let _ = notices.send(Wake::OrchestratorPick {
+                generation: pick.generation,
+                outcome,
+            });
+        };
+        let spawned = std::thread::Builder::new()
+            .name("ae-app-orchestrator".to_owned())
+            .spawn(write);
+        if let Err(why) = spawned {
+            let _ = self.notices.send(Wake::OrchestratorPick {
+                generation,
+                outcome: Err(crate::config::ApplyRefusal::Publish {
+                    why: format!("could not start the write: {why}"),
+                    backup: None,
+                }),
+            });
+        }
+    }
+
     /// The reset held until a thread runs, if any.
     #[cfg(test)]
     pub(super) const fn owed_reset(&self) -> Option<u64> {

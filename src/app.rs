@@ -406,6 +406,8 @@ struct App {
     tools_asked: Option<(u64, crate::tool_stats::Ask)>,
     /// The open generation whose `r` is owed to the upkeep, not yet handed.
     stats_reset: Option<u64>,
+    /// The orchestrator profile pick owed to the writer thread, not yet handed.
+    orchestrator_pick: Option<settings::OrchestratorPick>,
     /// The open peek panel's captures, and the generation the next open mints.
     peek: PeekPane,
     peek_generation: u64,
@@ -571,6 +573,7 @@ impl App {
             stats_shown: None,
             tools_asked: None,
             stats_reset: None,
+            orchestrator_pick: None,
             peek: PeekPane::default(),
             peek_generation: 0,
             reader: ReaderPane::default(),
@@ -662,6 +665,9 @@ impl App {
                 if current && let Some(seats) = live_seats {
                     self.settings_bodies.live_seats = Some(seats);
                 }
+            }
+            Answer::Orchestrator { generation, view } => {
+                self.orchestrator_resolved(generation, view)
             }
             Answer::Stats { generation, glance } => self.stats_landed(generation, &glance),
             Answer::Tools { generation, view } => self.tools_landed(generation, view),

@@ -217,6 +217,10 @@ pub(super) fn step(
     // A thread a failed exec owes starts here, on the first turn after the
     // stopped one ended.
     upkeep.tend();
+    // A profile pick of the Config tab is written on a thread of its own.
+    if let Some(pick) = app.take_orchestrator_pick() {
+        upkeep.orchestrator(pick);
+    }
     // `r` on the Statistics tab goes to the thread, or waits for one to run.
     let mut waits = false;
     if let Some(generation) = app.take_reset()

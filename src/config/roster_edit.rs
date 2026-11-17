@@ -93,6 +93,39 @@ impl fmt::Display for RosterEditRefusal {
 
 impl std::error::Error for RosterEditRefusal {}
 
+/// The value the reader binds to `[roster] <name>` when the edit could place
+/// that row exactly: what the picker shows as the configured profile and the
+/// refusal it shows before any pick.
+///
+/// # Errors
+///
+/// The [`RosterEditRefusal`] the edit would answer: the row absent, repeated,
+/// or in a shape the edit cannot place.
+pub fn roster_row_value(text: &str, name: &str) -> Result<String, RosterEditRefusal> {
+    if name != ROW {
+        return Err(RosterEditRefusal::Row(name.to_owned()));
+    }
+    find_row(text).map(|placed| placed.current)
+}
+
+/// The `[profiles]` keys of `cfg` a launch accepts, in config order: each
+/// resolves its client with `home` and its resolved command lexes as one
+/// simple command, the two checks a roster seat must pass at launch.
+#[must_use]
+pub fn launchable_profiles(cfg: &IdentityConfig, home: Option<&Path>) -> Vec<String> {
+    cfg.profiles
+        .iter()
+        .filter(|(name, _)| {
+            matches!(
+                cfg.command(name, home),
+                Ok(Some(command))
+                    if crate::launch_cmd::lex_simple_command(command.as_str()).is_ok()
+            )
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
 /// Where the value of the one row sits.
 struct Placed {
     /// 1-based line of the row.
@@ -245,6 +278,14 @@ fn place(text: &str, line: usize, raw: &str) -> Result<Placed, RosterEditRefusal
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigSeen {
     text: String,
+}
+
+impl ConfigSeen {
+    /// The text the display read.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
 }
 
 /// Why a read or an apply refused.
@@ -737,5 +778,55 @@ mod tests {
         assert_eq!(names(&dir), ["config"], "no backup, no temp");
         assert!(read_config_seen(&path).is_ok(), "the file stays readable");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_configured_value_is_what_the_reader_binds_or_the_edits_refusal() {
+        assert_eq!(
+            roster_row_value(CONFIG, "orchestrator"),
+            Ok("old".to_owned())
+        );
+        let quoted = CONFIG.replace("orchestrator = old", "orchestrator = \"new\"");
+        assert_eq!(
+            roster_row_value(&quoted, "orchestrator"),
+            Ok("new".to_owned())
+        );
+        let absent = CONFIG.replace("orchestrator = old\n", "");
+        assert_eq!(
+            roster_row_value(&absent, "orchestrator"),
+            Err(RosterEditRefusal::Absent)
+        );
+        let twice = CONFIG.replace(
+            "orchestrator = old\n",
+            "orchestrator = old\norchestrator = new\n",
+        );
+        assert_eq!(
+            roster_row_value(&twice, "orchestrator"),
+            Err(RosterEditRefusal::Duplicate)
+        );
+        let comment = CONFIG.replace("orchestrator = old", "orchestrator = \"old\" # why");
+        assert!(matches!(
+            roster_row_value(&comment, "orchestrator"),
+            Err(RosterEditRefusal::Shape { line: 5, .. })
+        ));
+        assert_eq!(
+            roster_row_value(CONFIG, "helper"),
+            Err(RosterEditRefusal::Row("helper".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_profile_is_launchable_when_its_client_resolves_and_its_command_is_one_simple_command() {
+        let text = "[clients]\naccount = claude config_home=$HOME/.account\n[profiles]\nzz = /bin/echo a\nbad_chain = /bin/echo one && /bin/echo two\nbad_quote = /bin/echo 'open\nmm = account --model x\n[roster]\norchestrator = zz\n";
+        let cfg = crate::config::parse_identity(text).expect("fixture parses");
+        assert_eq!(
+            launchable_profiles(&cfg, Some(Path::new("/home/someone"))),
+            ["zz", "mm"]
+        );
+        assert_eq!(
+            launchable_profiles(&cfg, None),
+            ["zz"],
+            "a $HOME client without a home is not launchable"
+        );
     }
 }

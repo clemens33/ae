@@ -191,17 +191,125 @@ impl App {
         self.settings_bodies.stats.store.reset = Some(line);
     }
 
+    /// The orchestrator view the reader read for `generation`, drawn only
+    /// under that open.
+    pub(super) fn orchestrator_resolved(
+        &mut self,
+        generation: u64,
+        view: settings::OrchestratorView,
+    ) {
+        if self.model.settings_generation(generation) {
+            self.settings_bodies.orchestrator = view;
+        }
+    }
+
+    /// `o` on the Config tab: open the orchestrator profile picker on the
+    /// configured profile. A row that cannot be edited opens nothing: its
+    /// reason is already drawn.
+    pub(super) fn open_orchestrator_picker(&mut self) -> bool {
+        let settings::OrchestratorView::Ready(ready) = &self.settings_bodies.orchestrator else {
+            return false;
+        };
+        let at = ready
+            .choices
+            .iter()
+            .position(|choice| *choice == ready.configured)
+            .unwrap_or(0);
+        self.settings_bodies.orchestrator_picker = Some(at);
+        true
+    }
+
+    /// One key with the picker open on the Config tab: whether it was the
+    /// picker's, and whether it changed the screen. Navigation never saves;
+    /// Enter queues the highlighted choice once and closes the picker.
+    fn orchestrator_picker_key(&mut self, key: model::Key) -> Option<bool> {
+        let at = self.settings_bodies.orchestrator_picker?;
+        let last = match &self.settings_bodies.orchestrator {
+            settings::OrchestratorView::Ready(ready) => ready.choices.len().saturating_sub(1),
+            _ => 0,
+        };
+        match key {
+            model::Key::Up => self.settings_bodies.orchestrator_picker = Some(at.saturating_sub(1)),
+            model::Key::Down => self.settings_bodies.orchestrator_picker = Some((at + 1).min(last)),
+            model::Key::Compose => self.queue_orchestrator_pick(at),
+            model::Key::Esc | model::Key::Quit => self.settings_bodies.orchestrator_picker = None,
+            model::Key::Open => return Some(false),
+            _ => return None,
+        }
+        Some(true)
+    }
+
+    /// Queue the `at`th offered profile for the writer thread and close the
+    /// picker. The note says it is being saved until the answer lands.
+    fn queue_orchestrator_pick(&mut self, at: usize) {
+        self.settings_bodies.orchestrator_picker = None;
+        let settings::OrchestratorView::Ready(ready) = &self.settings_bodies.orchestrator else {
+            return;
+        };
+        let (Some(profile), Some(open)) = (ready.choices.get(at), self.model.settings()) else {
+            return;
+        };
+        self.orchestrator_pick = Some(settings::OrchestratorPick {
+            generation: open.generation,
+            profile: profile.clone(),
+            seen: ready.seen.clone(),
+            global: ready.global.clone(),
+        });
+        self.settings_bodies.orchestrator_note =
+            Some(settings::OrchestratorNote::Saving(profile.clone()));
+    }
+
     /// The orchestrator profile pick owed to the writer thread, handed once.
     pub(super) const fn take_orchestrator_pick(&mut self) -> Option<settings::OrchestratorPick> {
-        None
+        self.orchestrator_pick.take()
     }
 
     /// What became of the pick of `generation`, drawn only under that open.
+    /// A write asks the reader for the file again, so the row and the
+    /// offered profiles show what is on disk now.
     pub(super) fn orchestrator_landed(
         &mut self,
-        _generation: u64,
-        _outcome: Result<crate::config::Applied, crate::config::ApplyRefusal>,
+        generation: u64,
+        outcome: Result<crate::config::Applied, crate::config::ApplyRefusal>,
     ) {
+        use settings::OrchestratorNote;
+        if !self.model.settings_generation(generation) {
+            return;
+        }
+        let asked = match self.settings_bodies.orchestrator_note.take() {
+            Some(OrchestratorNote::Saving(profile)) => profile,
+            _ => String::new(),
+        };
+        let (note, reread) = match outcome {
+            Ok(applied) if applied.changed => {
+                let kept = applied
+                    .backup
+                    .map(|path| format!("; the previous file is kept as {}", path.display()))
+                    .unwrap_or_default();
+                (
+                    OrchestratorNote::Saved(format!("orchestrator profile saved: {asked}{kept}")),
+                    true,
+                )
+            }
+            Ok(_) => (
+                OrchestratorNote::Unchanged(format!(
+                    "orchestrator profile unchanged: {asked} is already configured, nothing was written"
+                )),
+                false,
+            ),
+            Err(refusal) => (OrchestratorNote::Refused(refusal.to_string()), false),
+        };
+        self.settings_bodies.orchestrator_note = Some(note);
+        if reread && let Some(ask) = &self.ask {
+            // The reader forgets its watches on a repeat open, so this
+            // overlay asks for the Statistics and tool pages again.
+            let _ = ask.send(Request::Settings {
+                open: true,
+                generation,
+            });
+            self.stats_shown = None;
+            self.tools_asked = None;
+        }
     }
 
     /// Show the other scope of the read already held.
@@ -465,6 +573,28 @@ pub(super) fn settings_byte(app: &mut App, byte: u8) -> bool {
 
 /// One decoded key with the overlay open: whether it changed the screen.
 pub(super) fn settings_act(app: &mut App, key: model::Key) -> bool {
+    let on_config =
+        (app.model.settings()).is_some_and(|open| open.tab == model::SettingsTab::Config);
+    if on_config {
+        if let Some(redraw) = app.orchestrator_picker_key(key) {
+            return redraw;
+        }
+        if key == model::Key::Open {
+            return app.open_orchestrator_picker();
+        }
+    }
+    let redraw = settings_act_model(app, key);
+    // A picker belongs to the Config tab: leaving it closes the picker.
+    let on_config =
+        (app.model.settings()).is_some_and(|open| open.tab == model::SettingsTab::Config);
+    if !on_config && app.settings_bodies.orchestrator_picker.take().is_some() {
+        return true;
+    }
+    redraw
+}
+
+/// One decoded key the model decides, with the overlay open.
+fn settings_act_model(app: &mut App, key: model::Key) -> bool {
     match app.model.key(key, &app.fleet, app.can_compose()) {
         model::Act::Redraw => true,
         model::Act::StatsScope => {

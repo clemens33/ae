@@ -19,7 +19,10 @@ use super::overview::{Open, Overview};
 use super::peek;
 use super::reader;
 use super::select::{self, Map, Region};
-use super::settings::{AboutFacts, ConfigView, InstructionsView, SettingsBodies, StatsTab};
+use super::settings::{
+    AboutFacts, ConfigView, InstructionsView, OrchestratorNote, OrchestratorView, SettingsBodies,
+    StatsTab,
+};
 use crate::brief::age;
 use crate::console::input::View;
 use crate::console::input::{Mouse, ROWS_MAX};
@@ -3369,6 +3372,80 @@ fn peek_rows(view: &peek::View<'_>, paint: Paint, room: usize) -> Vec<(String, S
     }
 }
 
+/// The Config tab's orchestrator profile block: the configured profile, the
+/// recorded one, when a pick applies, what became of the last pick and the
+/// open picker. A row the writer cannot edit says why and offers nothing.
+fn orchestrator_rows(bodies: &SettingsBodies, paint: Paint) -> Vec<(String, Style)> {
+    let dim = paint.fg(|p| p.dim);
+    let text = paint.fg(|p| p.text);
+    let head = paint.fg(|p| p.text).add_modifier(Modifier::BOLD);
+    let clean = crate::board::terminal_text;
+    let ready = match &bodies.orchestrator {
+        OrchestratorView::Loading => return vec![("orchestrator: loading".to_owned(), dim)],
+        OrchestratorView::Unreadable(why) => {
+            return vec![
+                (format!("orchestrator: {}", clean(why)), text),
+                (String::new(), text),
+            ];
+        }
+        OrchestratorView::Ready(ready) => ready,
+    };
+    let mut out = vec![
+        (
+            format!("orchestrator = {}  (global)", clean(&ready.configured)),
+            text,
+        ),
+        (
+            format!(
+                "recorded orchestrator = {}",
+                ready
+                    .recorded
+                    .as_deref()
+                    .map_or_else(|| "(no session)".to_owned(), clean)
+            ),
+            text,
+        ),
+        ("applies at next fresh start (after ae end)".to_owned(), dim),
+        ("Pause/Resume keeps the recorded profile".to_owned(), dim),
+    ];
+    match &bodies.orchestrator_note {
+        None => {}
+        Some(OrchestratorNote::Saving(profile)) => {
+            out.push((format!("saving {}...", clean(profile)), dim));
+        }
+        Some(OrchestratorNote::Saved(line) | OrchestratorNote::Unchanged(line)) => {
+            out.push((clean(line), text));
+        }
+        Some(OrchestratorNote::Refused(why)) => {
+            out.push((
+                format!("not saved: {}", clean(why)),
+                paint.fg(|p| p.needs_you),
+            ));
+        }
+    }
+    if let Some(at) = bodies.orchestrator_picker {
+        let at = at.min(ready.choices.len().saturating_sub(1));
+        out.push(("Orchestrator profile".to_owned(), head));
+        for (index, choice) in ready.choices.iter().enumerate() {
+            let marker = if index == at { ">" } else { " " };
+            let configured = if *choice == ready.configured {
+                "  (configured)"
+            } else {
+                ""
+            };
+            out.push((
+                format!("{marker} {}{configured}", clean(choice)),
+                if index == at { head } else { text },
+            ));
+        }
+        out.push(("j/k move, Enter pick, Esc cancel".to_owned(), dim));
+    } else {
+        out.push(("o  choose the orchestrator profile".to_owned(), dim));
+    }
+    out.push((String::new(), text));
+    out
+}
+
 /// The overlay body's styled rows: every field through the terminal-text
 /// neutraliser, because paths and config values are hostile text.
 fn settings_body(
@@ -3408,43 +3485,47 @@ fn settings_body(
             })
             .collect(),
         },
-        SettingsTab::Config => match &bodies.config {
-            ConfigView::Loading => vec![("loading".to_owned(), dim)],
-            ConfigView::Unreadable(why) => vec![(clean(why), text)],
-            ConfigView::Rows { header, rows } => {
-                let mut out = vec![
-                    (
-                        format!(
-                            "session: {}",
-                            header
-                                .session
-                                .as_deref()
-                                .map(clean)
-                                .as_deref()
-                                .unwrap_or("none")
+        SettingsTab::Config => {
+            let mut out = orchestrator_rows(bodies, paint);
+            out.extend(match &bodies.config {
+                ConfigView::Loading => vec![("loading".to_owned(), dim)],
+                ConfigView::Unreadable(why) => vec![(clean(why), text)],
+                ConfigView::Rows { header, rows } => {
+                    let mut out = vec![
+                        (
+                            format!(
+                                "session: {}",
+                                header
+                                    .session
+                                    .as_deref()
+                                    .map(clean)
+                                    .as_deref()
+                                    .unwrap_or("none")
+                            ),
+                            dim,
                         ),
-                        dim,
-                    ),
-                    (format!("global: {}", clean(&header.global)), dim),
-                ];
-                if let Some(current) = header.current_global.as_ref() {
-                    out.push((format!("current global: {}", clean(current)), dim));
-                }
-                out.extend(rows.iter().map(|row| {
-                    let mut line = format!(
-                        "{} = {}  ({})",
-                        row.key,
-                        clean(&row.value),
-                        row.source.word()
-                    );
-                    if row.global_only {
-                        line.push_str("  global only");
+                        (format!("global: {}", clean(&header.global)), dim),
+                    ];
+                    if let Some(current) = header.current_global.as_ref() {
+                        out.push((format!("current global: {}", clean(current)), dim));
                     }
-                    (line, text)
-                }));
-                out
-            }
-        },
+                    out.extend(rows.iter().map(|row| {
+                        let mut line = format!(
+                            "{} = {}  ({})",
+                            row.key,
+                            clean(&row.value),
+                            row.source.word()
+                        );
+                        if row.global_only {
+                            line.push_str("  global only");
+                        }
+                        (line, text)
+                    }));
+                    out
+                }
+            });
+            out
+        }
         SettingsTab::About => match bodies.about.as_ref() {
             None => vec![("loading".to_owned(), dim)],
             Some(about) => about_body(about, text),

@@ -217,6 +217,12 @@ pub(super) enum Answer {
         /// This generation's live-seat snapshot; `None` when none was read.
         live_seats: Option<crate::quota::LiveSeats>,
     },
+    /// The orchestrator profile row and the profiles a launch accepts, read
+    /// once per open of the overlay with its config.
+    Orchestrator {
+        generation: u64,
+        view: super::settings::OrchestratorView,
+    },
     /// What the command link says to this app, after every fleet read.
     Core(Option<super::upgrade::Upgrade>),
     /// The view the restart that started this app handed over, written at
@@ -677,7 +683,7 @@ impl Reader {
                 Job::Fleet => self.fleet(),
                 Job::Look(name) => vec![self.look(&name)],
                 Job::View(name) => self.view_answers(&name),
-                Job::Settings => vec![self.settings()],
+                Job::Settings => self.settings_answers(),
                 Job::Read(ask) => vec![self.read(&ask)],
                 Job::Records(ask) => vec![self.records(&ask)],
                 Job::Peek(ask) => vec![self.peek(&ask)],
@@ -1603,6 +1609,34 @@ impl Reader {
         Answer::Records {
             generation: ask.generation,
             rows,
+        }
+    }
+
+    /// The settings answer, and with the first of an open the orchestrator
+    /// profile facts that ride beside the config.
+    fn settings_answers(&mut self) -> Vec<Answer> {
+        let first = !self.settings_full;
+        let mut answers = vec![self.settings()];
+        if first {
+            answers.push(self.orchestrator());
+        }
+        answers
+    }
+
+    /// The orchestrator row of the current global, the profiles a launch
+    /// accepts and what the saved orchestrator session recorded.
+    fn orchestrator(&self) -> Answer {
+        let (generation, _) = self.settings.unwrap_or((0, None));
+        let paths = &self.settings_paths;
+        let meta_dir =
+            crate::console::locate(&self.root, crate::orchestrator::ORCHESTRATOR_SESSION);
+        Answer::Orchestrator {
+            generation,
+            view: super::settings::resolve_orchestrator(
+                meta_dir.as_deref(),
+                &paths.global,
+                paths.home.as_deref(),
+            ),
         }
     }
 
