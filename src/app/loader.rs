@@ -1537,7 +1537,7 @@ impl Reader {
             filedoor::Read::Refused(why) => gap(&why),
             filedoor::Read::Bytes { bytes, size } => match reader::decode(&bytes, size) {
                 reader::Body::Gap(why) => gap(&why),
-                text @ reader::Body::Text { .. } => text,
+                text => text,
             },
         };
         if (self.read.as_ref()).is_some_and(|held| held.generation == ask.generation) {

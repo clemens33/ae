@@ -137,6 +137,7 @@ fn lines(body: &Body) -> &[String] {
     match body {
         Body::Text { lines, .. } => lines,
         Body::Gap(why) => panic!("expected retained text, got {why}"),
+        Body::Tree { .. } => panic!("expected retained text, got a tree"),
     }
 }
 
