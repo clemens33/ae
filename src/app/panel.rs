@@ -673,6 +673,10 @@ impl App {
         }
         columns.drawing_panel = true;
         let main = self.model.columns();
+        // The panel wears the look and the clock the main column wears: the
+        // orchestrator is no listed session, so its own column reads none.
+        let (look, zone) = self.dressed();
+        let zone = zone.map(str::to_owned);
         let cursor = self.in_panel(|app| {
             app.show();
             app.model.set_columns(columns);
@@ -689,7 +693,6 @@ impl App {
             // no session, so never a stopped one.
             let bound = app.panel_line().is_none();
             let entry = app.entry(ORCH).filter(|_| bound);
-            let (look, zone) = app.dressed();
             let screen = draw::Screen {
                 fleet: &app.fleet,
                 model: &app.model,
@@ -700,7 +703,7 @@ impl App {
                 lane: &app.lane,
                 composer: app.composer(),
                 look,
-                zone,
+                zone: zone.as_deref(),
                 now: Timestamp::now(),
             };
             let dest = app.destination(ORCH);

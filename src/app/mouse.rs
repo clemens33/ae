@@ -168,21 +168,29 @@ impl App {
         // keys.
         let area = self.layout.area();
         let drawn = draw::floor_met(area) && area.contains(Position::new(mouse.column, mouse.row));
+        // A full panel covers the main column alone, so a press off the panel
+        // is the sidebar's: it acts as in the main column and keeps the keys
+        // on the panel, until it selects another session.
+        let full = !self.orch.active && self.orch.panel.as_ref().is_some_and(|panel| panel.full);
         if !self.orch.active && mouse.kind == MouseKind::Click && self.orch.panel.is_some() && drawn
         {
             self.focus_column(false);
-            // A full panel kept the keys: the main column this press was aimed
-            // at is covered now, so nothing there acts on it.
-            if self.panel_focused() {
-                return self.frame_gone();
-            }
         }
         if mouse.kind == MouseKind::Drag {
             return self.drag(mouse) || self.stretch(mouse);
         }
         let ended = self.model.let_go();
         match mouse.kind {
-            MouseKind::Click => self.clicked(mouse, fresh) || ended,
+            MouseKind::Click => {
+                let before = self.model.selected().map(str::to_owned);
+                let acted = self.clicked(mouse, fresh) || ended;
+                // The selection shows in the main column the full panel covers:
+                // the panel turns side, as `!` does for a row.
+                if full && self.model.selected() != before.as_deref() {
+                    self.reader_to_main();
+                }
+                acted
+            }
             MouseKind::WheelUp | MouseKind::WheelDown => {
                 let (up, layout) = (mouse.kind == MouseKind::WheelUp, &self.layout);
                 if layout.in_chat(mouse) {

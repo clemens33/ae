@@ -730,6 +730,12 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Bu
 /// The fewest cells each of the main column and a side panel keeps.
 const PANEL_FLOOR: u16 = 40;
 
+/// The column the main column starts at in `area` split as `split`: right of
+/// the sidebar's rule, or the frame's first column where no sidebar is drawn.
+fn chat_start(area: Rect, split: Split) -> u16 {
+    sidebar_width(area, split).map_or(0, |rule| rule + 1)
+}
+
 /// Where the orchestrator panel stands in a frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Stand {
@@ -738,7 +744,9 @@ enum Stand {
     Closed,
     /// Right of the main column, from its border column to the frame's end.
     Side { border: u16 },
-    /// Over the whole frame; `note` says why a side panel did not fit.
+    /// Over the main column: right of the sidebar's rule, to the frame's end,
+    /// the whole frame where no sidebar is drawn. `note` says why a side
+    /// panel did not fit.
     Full { note: Option<String> },
 }
 
@@ -747,7 +755,7 @@ enum Stand {
 /// always leaving both columns [`PANEL_FLOOR`]. `None` when no side panel
 /// fits. The one clamp: a dragged width is kept as asked and clamped here.
 fn side_width(area: Rect, split: Split) -> Option<u16> {
-    let start = sidebar_width(area, split).map_or(0, |rule| rule + 1);
+    let start = chat_start(area, split);
     let chat = area.width.saturating_sub(start);
     let half = chat / 2;
     // Both halves keep the floor, so the clamp's bounds never cross.
@@ -774,7 +782,7 @@ fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
     if !focused {
         return Stand::Closed;
     }
-    let start = sidebar_width(area, split).map_or(0, |rule| rule + 1);
+    let start = chat_start(area, split);
     let need = start.saturating_add(PANEL_FLOOR * 2);
     Stand::Full {
         note: Some(format!("side needs {need} columns")),
@@ -798,13 +806,17 @@ pub(crate) fn panel_area(area: Rect, split: Split, columns: Columns) -> Option<R
     match stand(area, split, columns) {
         Stand::Closed => None,
         Stand::Side { border } => Some(Rect::new(border, 0, area.width - border, area.height)),
-        Stand::Full { .. } => Some(area),
+        Stand::Full { .. } => {
+            let start = chat_start(area, split);
+            Some(Rect::new(start, 0, area.width - start, area.height))
+        }
     }
 }
 
 /// Draw the open orchestrator panel over its cells of the frame `buf` holds:
 /// `screen` is the panel's own column, drawn by the chat's renderer. A side
-/// panel has its border on its left column; a full one covers the frame.
+/// panel has its border on its left column; a full one covers the main
+/// column, the sidebar's rule being the divider it keeps.
 pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) -> Layout {
     let area = buf.area;
     let mut layout = Layout {
@@ -825,7 +837,7 @@ pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) 
     let (height, width) = (area.height, area.width);
     let from = match stand {
         Stand::Side { border } => border,
-        _ => 0,
+        _ => chat_start(area, screen.model.split()),
     };
     for y in 0..height {
         for x in from..width {
@@ -837,14 +849,14 @@ pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) 
         Rect::new(from, 0, width - from, height),
         ctx.paint.ground(|p| p.ink),
     );
-    let left = if from == 0 {
-        0
-    } else {
+    let left = if let Stand::Side { .. } = stand {
         let border = ctx.paint.rule(dragged(screen.model, Edge::Panel));
         for y in 0..height {
             put(buf, from, y, "│", 1, border);
         }
         from + 1
+    } else {
+        from
     };
     layout.chat = Rect::new(left, 0, width - left, height);
     layout.seats_session = ctx.screen.selected.map(|entry| entry.name.clone());
@@ -861,7 +873,7 @@ fn overlay_open(model: &Model) -> bool {
 /// The cells a draft has in the chat column of `area` split as `split`: what
 /// the caller wraps it to.
 pub(crate) fn draft_width(area: Rect, split: Split) -> usize {
-    let left = sidebar_width(area, split).map_or(0, |rule| rule + 1) + 2;
+    let left = chat_start(area, split) + 2;
     usize::from(area.width.saturating_sub(2).saturating_sub(left)).max(1)
 }
 
@@ -870,8 +882,8 @@ pub(crate) fn draft_width(area: Rect, split: Split) -> usize {
 pub(crate) fn column_width(area: Rect, split: Split, columns: Columns) -> usize {
     let width = match stand(area, split, columns) {
         Stand::Side { border } if columns.drawing_panel => area.width - border - 1,
-        Stand::Side { border } => border - sidebar_width(area, split).map_or(0, |rule| rule + 1),
-        Stand::Full { .. } if columns.drawing_panel => area.width,
+        Stand::Side { border } => border - chat_start(area, split),
+        Stand::Full { .. } if columns.drawing_panel => area.width - chat_start(area, split),
         Stand::Closed | Stand::Full { .. } => return draft_width(area, split),
     };
     usize::from(width.saturating_sub(4)).max(1)
