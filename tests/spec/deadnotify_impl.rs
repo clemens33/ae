@@ -389,13 +389,12 @@ fn deadnotify_impl_a_seat_named_watchdog_is_not_told_again_by_a_restarted_daemon
     assert_eq!(dispatches(&rig, &mut Carry::new(), 4), [0, 0, 0, 0]);
     assert_eq!(records(&rig, "dead-notice"), 1);
     assert_eq!(records(&rig, "dead-cleared"), 0);
-    // The human alert state is memory-only: a restarted daemon alerts once per
-    // lifetime, with or without this feature (main books the same second alert
-    // for a legacy seat named `watchdog` and for a plain worker alike).
+    // The journal latches the human alert across daemon restarts, including
+    // a legacy seat named `watchdog`; daemon activity is no seat recovery.
     assert_eq!(
         records(&rig, "alert"),
-        2,
-        "one human alert per daemon lifetime"
+        1,
+        "one human alert per death across daemon restarts"
     );
 }
 
