@@ -610,3 +610,269 @@ fn settings_act_model(app: &mut App, key: model::Key) -> bool {
         _ => false,
     }
 }
+
+/// What a review of the orchestrator profile picker found: one write at a time,
+/// a selection that stays on screen, refusals that reach the end of a narrow
+/// panel, the launch reader's own validation, and a recorded profile that is
+/// never claimed absent when it is only unknown.
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::expect_used,
+    reason = "tests own scratch config files and UI channels"
+)]
+mod review_tests {
+    use std::fs;
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    use ratatui_core::buffer::Buffer;
+    use ratatui_core::layout::Rect;
+
+    use crate::app::loader::Wake;
+    use crate::app::settings::{OrchestratorView, resolve_orchestrator};
+    use crate::app::tests::Root;
+    use crate::app::{App, drain, take_keys};
+    use crate::config::{self, Applied, ApplyRefusal};
+    use crate::console::input::{Key, Keys};
+
+    fn key(app: &mut App, key: Key) {
+        assert!(take_keys(app, vec![(key, Instant::now())]).is_some());
+    }
+
+    fn text(app: &mut App, line: &str) {
+        key(app, Key::Text(line.as_bytes().to_vec()));
+    }
+
+    fn frame(app: &mut App, width: u16, height: u16) -> String {
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        app.frame(&mut buf);
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn land(app: &mut App, generation: u64, outcome: Result<Applied, ApplyRefusal>) {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Wake::OrchestratorPick {
+            generation,
+            outcome,
+        })
+        .expect("completion");
+        assert!(drain(app, &mut Keys::app(), &rx, &mut None).is_some());
+    }
+
+    /// An app on the Config tab over `count` profiles `p00..`, p00 configured.
+    fn fixture(tag: &str, count: usize) -> (Root, App) {
+        let root = Root::new(tag);
+        let mut config = String::from("[profiles]\n");
+        for at in 0..count {
+            config.push_str(&format!("p{at:02} = /bin/echo {at}\n"));
+        }
+        config.push_str("[roster]\norchestrator = p00\n");
+        fs::write(root.0.join("config"), config).expect("config");
+        let mut app = App::new(None, None, None, None);
+        app.fleeted = true;
+        text(&mut app, ",2");
+        app.settings_bodies.config =
+            crate::app::settings::resolve_config(None, &root.0.join("config"));
+        app.settings_bodies.orchestrator =
+            resolve_orchestrator(None, &root.0.join("config"), Some(&root.0));
+        (root, app)
+    }
+
+    #[test]
+    fn a_second_pick_waits_for_the_first_write_and_the_saved_line_names_the_write_that_landed() {
+        let (root, mut app) = fixture("orchprof-rev-race", 3);
+        text(&mut app, "oj");
+        key(&mut app, Key::Enter);
+        let first = app.take_orchestrator_pick().expect("first queued");
+        assert_eq!(first.profile, "p01");
+        text(&mut app, "ojj");
+        key(&mut app, Key::Enter);
+        assert!(
+            app.take_orchestrator_pick().is_none(),
+            "one write at a time: a pick made while the first is writing is not queued"
+        );
+        let actual = config::apply_roster_row(
+            &root.0.join("config"),
+            &first.seen,
+            "orchestrator",
+            &first.profile,
+            19,
+        )
+        .expect("first real apply");
+        land(&mut app, first.generation, Ok(actual));
+        let shown = frame(&mut app, 220, 60);
+        assert!(shown.contains("orchestrator profile saved: p01"), "{shown}");
+        assert!(!shown.contains("saved: p02"), "{shown}");
+        app.settings_bodies.orchestrator =
+            resolve_orchestrator(None, &root.0.join("config"), Some(&root.0));
+        text(&mut app, "ojj");
+        key(&mut app, Key::Enter);
+        let second = app
+            .take_orchestrator_pick()
+            .expect("a pick after the landing");
+        assert_eq!(second.profile, "p02");
+    }
+
+    #[test]
+    fn a_write_still_running_blocks_a_new_pick_across_a_reopened_overlay() {
+        let (root, mut app) = fixture("orchprof-rev-reopen", 3);
+        text(&mut app, "oj");
+        key(&mut app, Key::Enter);
+        let first = app.take_orchestrator_pick().expect("first queued");
+        key(&mut app, Key::Escape);
+        assert!(!app.model.settings_open());
+        text(&mut app, ",2");
+        app.settings_bodies.orchestrator =
+            resolve_orchestrator(None, &root.0.join("config"), Some(&root.0));
+        text(&mut app, "ojj");
+        key(&mut app, Key::Enter);
+        assert!(
+            app.take_orchestrator_pick().is_none(),
+            "the first write has not landed: no second write starts"
+        );
+        let shown = frame(&mut app, 220, 60);
+        assert!(
+            shown.contains("saving p01"),
+            "the reopened overlay says a write runs: {shown}"
+        );
+        assert!(!shown.contains("Orchestrator profile"), "{shown}");
+        let before = frame(&mut app, 220, 60);
+        land(
+            &mut app,
+            first.generation,
+            Ok(Applied {
+                changed: true,
+                backup: None,
+            }),
+        );
+        assert_eq!(
+            frame(&mut app, 220, 60),
+            before,
+            "an old overlay's landing paints nothing in the new one"
+        );
+        text(&mut app, "o");
+        assert!(
+            frame(&mut app, 220, 60).contains("Orchestrator profile"),
+            "the landing ended the write: the picker opens again"
+        );
+    }
+
+    #[test]
+    fn the_highlighted_choice_stays_on_screen_in_a_short_panel() {
+        let (_root, mut app) = fixture("orchprof-rev-scroll", 50);
+        text(&mut app, "o");
+        frame(&mut app, 90, 20);
+        for _ in 0..25 {
+            text(&mut app, "j");
+            frame(&mut app, 90, 20);
+        }
+        let shown = frame(&mut app, 90, 20);
+        assert!(
+            shown.contains("> p25"),
+            "the active choice is visible: {shown}"
+        );
+        for _ in 0..25 {
+            text(&mut app, "k");
+            frame(&mut app, 90, 20);
+        }
+        assert!(frame(&mut app, 90, 20).contains("> p00"));
+    }
+
+    #[test]
+    fn opening_the_picker_scrolls_a_scrolled_config_tab_to_the_highlighted_choice() {
+        let (_root, mut app) = fixture("orchprof-rev-reveal", 50);
+        frame(&mut app, 90, 20);
+        for _ in 0..3 {
+            key(&mut app, Key::PageDown);
+            frame(&mut app, 90, 20);
+        }
+        text(&mut app, "o");
+        let shown = frame(&mut app, 90, 20);
+        assert!(
+            shown.contains("> p00"),
+            "the preselected choice is visible: {shown}"
+        );
+        assert!(shown.contains("Orchestrator profile"), "{shown}");
+    }
+
+    #[test]
+    fn a_refusal_and_the_backup_it_names_are_reachable_in_a_narrow_panel() {
+        let (_root, mut app) = fixture("orchprof-rev-width", 3);
+        text(&mut app, "oj");
+        key(&mut app, Key::Enter);
+        let first = app.take_orchestrator_pick().expect("first queued");
+        let backup = std::path::PathBuf::from(
+            "/scratch/a-long-but-valid-config-directory/config.1234567890.bak",
+        );
+        let reason = "the replacement copy has a different owner or group; edit the file by hand";
+        land(
+            &mut app,
+            first.generation,
+            Err(ApplyRefusal::Publish {
+                why: reason.into(),
+                backup: Some(backup),
+            }),
+        );
+        let mut seen = String::new();
+        for _ in 0..8 {
+            seen.push_str(&frame(&mut app, 90, 20));
+            key(&mut app, Key::PageDown);
+        }
+        assert!(seen.contains("config.1234567890.bak"), "{seen}");
+        assert!(seen.contains("edit the file by hand"), "{seen}");
+    }
+
+    #[test]
+    fn a_config_the_launch_reader_refuses_offers_nothing() {
+        let root = Root::new("orchprof-rev-client");
+        let path = root.0.join("config");
+        let bytes = "[clients]\ncc = claude config_home=/client\n[profiles]\ngood = /bin/echo good\nbad = CLAUDE_CONFIG_DIR=/other cc\n[roster]\norchestrator = good\n";
+        fs::write(&path, bytes).expect("config");
+        let refusal =
+            config::read_identity(Some(&path), None).expect_err("the launch owner refuses");
+        match resolve_orchestrator(None, &path, Some(&root.0)) {
+            OrchestratorView::Unreadable(why) => {
+                assert!(why.contains("CLAUDE_CONFIG_DIR"), "{why} vs {refusal}");
+            }
+            other => {
+                panic!("the launch reader refuses this config, so nothing is offered: {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn a_saved_record_that_cannot_be_read_is_unknown_not_absent() {
+        let (root, mut app) = fixture("orchprof-rev-meta", 3);
+        let dir = root.0.join("sessions/orchestrator");
+        fs::create_dir_all(dir.join("meta")).expect("an existing record whose meta is no file");
+        app.settings_bodies.orchestrator =
+            resolve_orchestrator(Some(&dir), &root.0.join("config"), Some(&root.0));
+        let shown = frame(&mut app, 220, 60);
+        assert!(!shown.contains("(no session)"), "{shown}");
+        assert!(
+            shown.contains("recorded orchestrator = (unknown"),
+            "{shown}"
+        );
+        fs::remove_dir_all(dir.join("meta")).expect("reset");
+        fs::write(
+            dir.join("meta"),
+            "schema=2\nsession=orchestrator\nprofile.main=\n",
+        )
+        .expect("meta");
+        app.settings_bodies.orchestrator =
+            resolve_orchestrator(Some(&dir), &root.0.join("config"), Some(&root.0));
+        let shown = frame(&mut app, 220, 60);
+        assert!(
+            !shown.contains("(no session)"),
+            "an empty record is not no session: {shown}"
+        );
+        assert!(
+            shown.contains("recorded orchestrator = (unknown"),
+            "{shown}"
+        );
+    }
+}
