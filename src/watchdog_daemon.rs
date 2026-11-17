@@ -342,7 +342,7 @@ pub struct PaneState {
 /// What the cycle knows BESIDE its [`Observation`] (#225, #283): carried as a
 /// separate value so the observation's shape — built literally by many specs
 /// — does not change. [`Activity::default`] is exactly today's accounting.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Activity {
     /// [`crate::procs::task_running`] for the seat this cycle.
     pub task_running: Option<bool>,
@@ -354,6 +354,79 @@ pub struct Activity {
     /// The journal half of the dead latch: whether the human's dead alert
     /// already stands in the seat's current death episode.
     pub death: DeathEpisode,
+    /// The seat's held-on target this cycle ([`crate::wait_on::held_on`])
+    /// with its trusted motion (#225). `None` buys no target hold.
+    pub wait_target: Option<WaitTarget>,
+    /// The wait episode's `wait-held` witness
+    /// ([`crate::watchdog::WaitReading::held`]).
+    pub wait_witness: Option<crate::watchdog::HoldWitness>,
+}
+
+/// The motion the watchdog already trusts for a waited-on seat (#225), each
+/// half independent: its own newest journal record, its pane's newest
+/// motion (a busy frame or a changed hash, from its carry) and a live own
+/// job within the task lease.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TargetMotion {
+    /// Epoch of the target's newest own journal record.
+    pub journal: Option<i64>,
+    /// Epoch of the target pane's newest motion (`PaneState::last_hash_change`).
+    pub pane: Option<i64>,
+    /// The target's tool runs a live task within its lease this cycle.
+    pub job: bool,
+}
+
+impl TargetMotion {
+    /// The newest motion epoch: a live job counts as `now`.
+    #[must_use]
+    pub fn newest(&self, now: i64) -> Option<i64> {
+        let _ = now;
+        None
+    }
+}
+
+/// A waited-on seat a due wait challenge may be held on (#225).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WaitTarget {
+    /// The waited-on seat's name.
+    pub agent: String,
+    /// Its trusted motion this cycle.
+    pub motion: TargetMotion,
+}
+
+/// The target's motion from `events` (its own records, by
+/// [`crate::watchdog::event_is_actor`]) beside the pane and job halves the
+/// daemon reads from the target's carry and the process table (#225).
+#[must_use]
+pub fn target_motion(
+    events: &[Event],
+    session: &str,
+    slot: &str,
+    agent: &str,
+    pane: Option<i64>,
+    job: bool,
+) -> TargetMotion {
+    let _ = (events, session, slot, agent);
+    TargetMotion {
+        journal: None,
+        pane,
+        job,
+    }
+}
+
+/// Whether a target hold holds the due `waiting-agent` challenge this cycle
+/// (#225): the episode is due and younger than
+/// [`crate::watchdog::wait_hold_cap`], and the target's newest motion is
+/// younger than [`crate::watchdog::quiet_ceiling`].
+#[must_use]
+pub fn target_held(
+    progress: WaitProgress,
+    target: Option<&WaitTarget>,
+    now: i64,
+    cadence: u64,
+) -> bool {
+    let _ = (progress, target, now, cadence);
+    false
 }
 
 /// The pane frame of one proof (#225): when it settled and whether it moved.
@@ -823,6 +896,13 @@ pub enum Effect {
     /// Journal `done-held` instead of the LAST done challenge (#225): an
     /// unchanged proof fills it. Paints nothing.
     DoneHeld { confirmations: u8, required: u8 },
+    /// Journal `wait-held` (#225): the due wait challenge is held for
+    /// `reason`, a stronger reason than the episode's witness; `on` names
+    /// the waited-on seat of a target hold. Paints nothing.
+    WaitHeld {
+        reason: crate::watchdog::HoldReason,
+        on: Option<String>,
+    },
     /// Deliver a wait proof challenge for the RAW declared `state`;
     /// `escalated` is [`waiting_agent_escalates`]'s answer for this cycle.
     WaitChallenge {
@@ -870,6 +950,7 @@ impl Effect {
             Self::Nudge
                 | Self::DoneChallenge { .. }
                 | Self::DoneHeld { .. }
+                | Self::WaitHeld { .. }
                 | Self::WaitChallenge { .. }
                 | Self::TargetMoved { .. }
                 | Self::LimitWake { .. }
@@ -2454,11 +2535,13 @@ impl Cycle<'_> {
                 progress: wait_progress,
                 quiet: wait_proof,
                 rung: wait_rung,
+                held: _,
             } = wait_state.map_or(
                 crate::watchdog::WaitReading {
                     progress: WaitProgress::None,
                     quiet: crate::watchdog::ProofQuiet::default(),
                     rung: 0,
+                    held: None,
                 },
                 |state| {
                     crate::watchdog::wait_reading(
@@ -2495,6 +2578,8 @@ impl Cycle<'_> {
                 )
                 .map(Timestamp::epoch),
                 death: deadnotice::death_episode(&events, key, (&slot, agent)),
+                wait_target: None,
+                wait_witness: None,
             };
             let alerts =
                 crate::session::alerts_since_in(&events, self.session, &slot, agent, self.started);

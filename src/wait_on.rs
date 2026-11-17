@@ -255,6 +255,18 @@ pub fn ends_elsewhere(links: &[Link<'_>], seat: &str) -> bool {
     matches!(end_from(links, seat), Some(End::External { .. }))
 }
 
+/// The seat a target hold may wait on (#225): `seat`'s CURRENT typed
+/// `waiting-agent` names a live seat of this session (bare or
+/// `<this session>:<agent>`) that is `working`, and not `seat` itself.
+/// `None` for an untyped wait, another session's seat, any `@session`, an
+/// absent seat, or a target in any other state — so a chain through a
+/// waiting seat never buys a hold.
+#[must_use]
+pub fn held_on<'a>(links: &[Link<'a>], seat: &str) -> Option<&'a str> {
+    let _ = (links, seat);
+    None
+}
+
 /// One live seat's wait facts, owned, read from the journal the way its
 /// state cell reads it — the one builder both the read side and the
 /// watchdog fold from, so they cannot disagree about a chain.

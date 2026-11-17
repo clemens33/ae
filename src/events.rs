@@ -557,6 +557,21 @@ impl Event {
         }
     }
 
+    /// The watchdog's `wait-held` record (#225), typed: the held wait state,
+    /// the hold reason and, for a target hold, the waited-on agent. `None`
+    /// for any other actor or action and for a summary that is not exactly
+    /// [`crate::watchdog::wait_held_summary`]'s grammar.
+    #[must_use]
+    pub fn wait_held(
+        &self,
+    ) -> Option<(
+        crate::watchdog::WaitState,
+        crate::watchdog::HoldReason,
+        Option<&str>,
+    )> {
+        None
+    }
+
     /// How to name this event's actor, preferring the routing key.
     #[must_use]
     pub fn actor_identity(&self) -> Identity<'_> {

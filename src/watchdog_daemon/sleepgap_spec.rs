@@ -65,6 +65,7 @@ fn delivery(effect: &Effect) -> bool {
         Effect::Nudge
         | Effect::DoneChallenge { .. }
         | Effect::DoneHeld { .. }
+        | Effect::WaitHeld { .. }
         | Effect::WaitChallenge { .. }
         | Effect::TargetMoved { .. }
         | Effect::LimitWake { .. }

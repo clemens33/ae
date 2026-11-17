@@ -220,6 +220,7 @@ mod tmuxlock_spec;
 mod transport;
 mod trustmiss_spec;
 mod usage;
+mod waithold_spec;
 mod waiton_moved_spec;
 mod waiton_spec;
 mod watchdog_glue;

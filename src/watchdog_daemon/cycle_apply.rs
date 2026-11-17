@@ -236,6 +236,7 @@ impl Cycle<'_> {
                     err,
                 )
             }
+            Effect::WaitHeld { .. } => Ok(()),
             Effect::TargetMoved { moved, age_secs } => {
                 let target =
                     crate::session::declaration_of(on.events, self.session, on.slot, agent)

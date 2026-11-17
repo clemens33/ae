@@ -1670,6 +1670,55 @@ pub(crate) const WAIT_CHALLENGE_ACTION: &str = "wait-challenge";
 /// pane: the ref is the launch witness, the summary the existing
 /// `confirmation n/m` grammar, which no fold parses for it.
 pub const DONE_HELD_ACTION: &str = "done-held";
+/// The watchdog's journal-only record that a due wait challenge is held
+/// (#225): one per hold reason and proof episode, never per cycle. It paints
+/// no pane: the ref is the launch witness, the summary
+/// [`wait_held_summary`], read back only through
+/// [`crate::events::Event::wait_held`].
+pub const WAIT_HELD_ACTION: &str = "wait-held";
+
+/// Why a due wait challenge is held (#225). Ordered: a `Target` hold is
+/// stronger than an `Unchanged` one, so an episode first held unchanged
+/// records once more when its target hold starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HoldReason {
+    /// Nothing changed since the seat's proof: no actionable news and an
+    /// unmoved frame.
+    Unchanged,
+    /// The seat's direct same-session `--on` target holds `working` with
+    /// fresh motion.
+    Target,
+}
+
+impl HoldReason {
+    /// The reason word a `wait-held` record carries.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Unchanged => "unchanged",
+            Self::Target => "target",
+        }
+    }
+}
+
+/// What the wait fold knows about the episode's `wait-held` records (#225).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HoldWitness {
+    /// The strongest reason recorded since the newest proof.
+    pub reason: HoldReason,
+    /// No `wait-challenge` record of this wait (delivered or an attempt)
+    /// follows the newest `wait-held` record.
+    pub open: bool,
+}
+
+/// A `wait-held` record's summary: `<state> held: unchanged`, or
+/// `waiting-agent held: target on <agent>`.
+/// [`crate::events::Event::wait_held`] is the one reader.
+#[must_use]
+pub fn wait_held_summary(state: WaitState, reason: HoldReason, on: Option<&str>) -> String {
+    let _ = (state, reason, on);
+    String::new()
+}
 
 /// Which proof challenge a watchdog record carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2624,6 +2673,9 @@ pub struct WaitReading {
     /// ([`wait_rung_spacing`]) and the `waiting-agent` ceiling
     /// ([`waiting_agent_ceiling_secs`]).
     pub rung: u8,
+    /// The episode's `wait-held` witness (#225): `None` when no record of
+    /// this launch follows the newest proof.
+    pub held: Option<HoldWitness>,
 }
 
 /// The ONE wait fold: [`wait_progress`] and [`wait_progress_proof`] are its
@@ -2649,6 +2701,7 @@ pub fn wait_reading(
         progress: WaitProgress::None,
         quiet: ProofQuiet::default(),
         rung: 0,
+        held: None,
     };
     if required == 0 || cadence == 0 {
         return none;
@@ -2732,11 +2785,39 @@ pub fn wait_reading(
         progress,
         quiet,
         rung,
+        held: None,
     }
 }
 
 /// The highest backoff rung: `2^3 = 8` cadences, 40 min at the default 300 s.
 pub const WAIT_RUNG_CAP: u8 = 3;
+
+/// How long a target hold may hold a due wait challenge, in seconds from
+/// the seat's newest declaration (#225, lead ruling): the top rung's
+/// spacing, [`wait_rung_spacing`] at [`WAIT_RUNG_CAP`]. Never renewed by the
+/// target's motion.
+#[must_use]
+pub fn wait_hold_cap(cadence: u64) -> u64 {
+    let _ = cadence;
+    0
+}
+
+/// The rung a `waiting-agent` ceiling is read on (#225): [`WAIT_RUNG_CAP`]
+/// while the daemon's journaled target hold is open (`witness`), the seat's
+/// direct target still works (`on_working`) and the due episode is younger
+/// than [`wait_hold_cap`]; the seat's own `rung` otherwise. The ONE rule
+/// the daemon and `ae list` both read.
+#[must_use]
+pub fn promoted_rung(
+    progress: WaitProgress,
+    rung: u8,
+    witness: Option<HoldWitness>,
+    on_working: bool,
+    cadence: u64,
+) -> u8 {
+    let _ = (progress, witness, on_working, cadence);
+    rung
+}
 
 /// A rung's cadence multiple: `min(2^rung, 8)`.
 fn rung_multiple(rung: u8) -> u64 {
