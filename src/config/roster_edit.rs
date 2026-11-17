@@ -20,8 +20,8 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 use super::{
-    ConfigLine, IdentityConfig, config_lines, is_config_key, key_claim, parse_identity_in,
-    read_selected, section_header, upsert,
+    CONFIG_MAX_BYTES, ConfigLine, IdentityConfig, config_lines, is_config_key, key_claim,
+    parse_identity_in, read_selected, section_header, upsert,
 };
 
 /// The one editable `[roster]` row. It is the orchestrator seat's name, spelled
@@ -65,6 +65,9 @@ pub enum RosterEditRefusal {
     ProfileGrammar,
     /// The profile is not defined in `[profiles]`.
     ProfileUnknown(String),
+    /// The edited config would be larger than the readers accept, so the
+    /// saved file could no longer be read.
+    TooLarge,
 }
 
 impl fmt::Display for RosterEditRefusal {
@@ -81,6 +84,9 @@ impl fmt::Display for RosterEditRefusal {
             Self::ProfileUnknown(profile) => {
                 write!(f, "profile '{profile}' is not defined in [profiles]")
             }
+            Self::TooLarge => f.write_str(
+                "the edited config would be larger than the 1 MiB ae reads; edit the file by hand",
+            ),
         }
     }
 }
@@ -133,6 +139,9 @@ pub fn set_roster_row(
     edited.push_str(&text[..placed.span.start]);
     edited.push_str(profile);
     edited.push_str(&text[placed.span.end..]);
+    if !u64::try_from(edited.len()).is_ok_and(|len| len <= CONFIG_MAX_BYTES) {
+        return Err(RosterEditRefusal::TooLarge);
+    }
     if !only_the_binding_moved(&before, &edited, profile) {
         return Err(RosterEditRefusal::Shape {
             line: placed.line,
@@ -351,13 +360,21 @@ pub fn apply_roster_row(
     profile: &str,
     now_epoch: i64,
 ) -> Result<Applied, ApplyRefusal> {
-    apply_with(path, seen, name, profile, now_epoch, |from, to| {
-        std::fs::rename(from, to)
-    })
+    apply_with(
+        path,
+        seen,
+        name,
+        profile,
+        now_epoch,
+        |from, to| std::fs::rename(from, to),
+        |staged| crate::store::node_meta(staged).map(|meta| (meta.uid(), meta.gid())),
+    )
 }
 
-/// [`apply_roster_row`] with its last step handed in, so a test can fail the
-/// rename itself.
+/// [`apply_roster_row`] with its two outside facts handed in, so a test can
+/// fail the rename itself and give the staged copy another owner or group than
+/// any account the test can reach: `rename` moves the staged copy into place,
+/// and `staged_owner` reads the `(uid, gid)` the staged copy took.
 fn apply_with(
     path: &Path,
     seen: &ConfigSeen,
@@ -365,6 +382,7 @@ fn apply_with(
     profile: &str,
     now_epoch: i64,
     rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    staged_owner: impl FnOnce(&Path) -> io::Result<(u32, u32)>,
 ) -> Result<Applied, ApplyRefusal> {
     regular(path)?;
     let current = read_selected(path).map_err(|_| ApplyRefusal::Unreadable(path.to_owned()))?;
@@ -392,7 +410,7 @@ fn apply_with(
     })?;
     let mut refused = None;
     let published = crate::store::publish_private_with(path, edit.text.as_bytes(), |temp, to| {
-        replace_step(temp, to, &current, &backup, rename).map_err(|why| {
+        replace_step(temp, to, &current, &backup, rename, staged_owner).map_err(|why| {
             let text = why.to_string();
             refused = Some(why);
             io::Error::other(text)
@@ -445,18 +463,16 @@ fn replace_step(
     seen: &str,
     backup: &Path,
     rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    staged_owner: impl FnOnce(&Path) -> io::Result<(u32, u32)>,
 ) -> Result<(), ApplyRefusal> {
     let publish = |why: String| ApplyRefusal::Publish {
         why,
         backup: Some(backup.to_owned()),
     };
     let original = regular(to).map_err(|why| publish(why.to_string()))?;
-    let staged = crate::store::node_meta(temp)
+    let staged = staged_owner(temp)
         .map_err(|why| publish(format!("could not inspect the staged copy: {why}")))?;
-    if !owner_and_group_kept(
-        (original.uid(), original.gid()),
-        (staged.uid(), staged.gid()),
-    ) {
+    if !owner_and_group_kept((original.uid(), original.gid()), staged) {
         return Err(publish(format!(
             "{} has an owner or group that a replacement copy cannot keep (ae never changes either); edit the file by hand",
             to.display()
@@ -512,6 +528,20 @@ mod tests {
 
     const CONFIG: &str = "[profiles]\nold = sleep 600\nnew = sleep 601\n[roster]\norchestrator = old\n[workspace]\nmain = orchestrator\n";
 
+    /// The `(uid, gid)` the staged copy really took.
+    fn real_owner(staged: &Path) -> io::Result<(u32, u32)> {
+        crate::store::node_meta(staged).map(|meta| (meta.uid(), meta.gid()))
+    }
+
+    /// A config whose edit from `a` to `bbb` grows it by two bytes.
+    const SIZED: &str = "[profiles]\na = sleep 600\nbbb = sleep 601\n[roster]\norchestrator = a\n";
+
+    /// `SIZED` plus one comment line, `len` bytes in all.
+    fn padded(len: usize) -> String {
+        let fill = len - SIZED.len() - 2;
+        format!("{SIZED}#{}\n", "x".repeat(fill))
+    }
+
     #[test]
     fn a_failed_rename_leaves_the_original_whole_removes_the_temp_and_names_the_backup() {
         let dir = scratch("rename");
@@ -523,9 +553,15 @@ mod tests {
         );
         let before = std::fs::metadata(&path).expect("original metadata");
         let seen = read_config_seen(&path).expect("display read");
-        let refusal = apply_with(&path, &seen, "orchestrator", "new", 7, |_, _| {
-            Err(io::Error::other("injected rename failure"))
-        })
+        let refusal = apply_with(
+            &path,
+            &seen,
+            "orchestrator",
+            "new",
+            7,
+            |_, _| Err(io::Error::other("injected rename failure")),
+            real_owner,
+        )
         .expect_err("the rename is failed");
         let backup = dir.join("config.7.bak");
         assert_eq!(
@@ -618,5 +654,88 @@ mod tests {
             set_roster_row(&text, "orchestrator", "new"),
             Err(RosterEditRefusal::Shape { line: 5, .. })
         ));
+    }
+
+    #[test]
+    fn another_owner_or_group_on_the_staged_copy_refuses_before_the_rename() {
+        for (uid_step, gid_step) in [(0_u32, 1_u32), (1, 0), (1, 1)] {
+            let dir = scratch("owner");
+            let path = dir.join("config");
+            assert!(std::fs::write(&path, CONFIG).is_ok());
+            assert!(
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).is_ok(),
+                "the original mode"
+            );
+            let before = std::fs::metadata(&path).expect("original metadata");
+            let seen = read_config_seen(&path).expect("display read");
+            let renamed = std::cell::Cell::new(false);
+            let refusal = apply_with(
+                &path,
+                &seen,
+                "orchestrator",
+                "new",
+                7,
+                |_, _| {
+                    renamed.set(true);
+                    Ok(())
+                },
+                |staged| {
+                    real_owner(staged)
+                        .map(|(uid, gid)| (uid.wrapping_add(uid_step), gid.wrapping_add(gid_step)))
+                },
+            )
+            .expect_err("another owner or group refuses");
+            assert!(!renamed.get(), "the rename never ran");
+            let ApplyRefusal::Publish { why, backup } = refusal else {
+                panic!("a refusal inside the replace names the backup: {refusal:?}");
+            };
+            assert!(why.contains("owner or group"), "{why}");
+            assert!(why.contains("edit the file by hand"), "{why}");
+            assert_eq!(backup, Some(dir.join("config.7.bak")));
+            let after = std::fs::metadata(&path).expect("original metadata after");
+            assert_eq!(std::fs::read_to_string(&path).expect("bytes"), CONFIG);
+            assert_eq!(after.mode() & 0o7777, 0o640);
+            assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+            assert_eq!(names(&dir), ["config", "config.7.bak"], "no temp stays");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn an_edit_may_fill_the_config_cap_exactly_and_never_pass_it() {
+        let cap = usize::try_from(CONFIG_MAX_BYTES).expect("the cap fits");
+        let edit = set_roster_row(&padded(cap - 2), "orchestrator", "bbb")
+            .expect("the result is exactly the cap");
+        assert_eq!(edit.text.len(), cap);
+        for len in [cap - 1, cap] {
+            assert_eq!(
+                set_roster_row(&padded(len), "orchestrator", "bbb"),
+                Err(RosterEditRefusal::TooLarge),
+                "{len} bytes grow past the cap"
+            );
+        }
+        let same = set_roster_row(&padded(cap), "orchestrator", "a").expect("a same pick");
+        assert!(
+            !same.changed,
+            "a same pick at the cap is a no-op, not a refusal"
+        );
+    }
+
+    #[test]
+    fn an_apply_that_would_pass_the_cap_writes_no_backup_and_no_copy() {
+        let cap = usize::try_from(CONFIG_MAX_BYTES).expect("the cap fits");
+        let dir = scratch("cap");
+        let path = dir.join("config");
+        let text = padded(cap);
+        assert!(std::fs::write(&path, &text).is_ok());
+        let seen = read_config_seen(&path).expect("a file of exactly the cap reads");
+        let refusal = apply_roster_row(&path, &seen, "orchestrator", "bbb", 7)
+            .expect_err("two more bytes pass the cap");
+        assert_eq!(refusal, ApplyRefusal::Edit(RosterEditRefusal::TooLarge));
+        assert!(refusal.to_string().contains("1 MiB"), "{refusal}");
+        assert_eq!(std::fs::read_to_string(&path).expect("bytes"), text);
+        assert_eq!(names(&dir), ["config"], "no backup, no temp");
+        assert!(read_config_seen(&path).is_ok(), "the file stays readable");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
