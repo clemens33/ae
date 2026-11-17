@@ -9,7 +9,8 @@ use super::{
 /// The open orchestrator panel: how it stands, what it is bound to, and its
 /// own chat column.
 pub(super) struct Panel {
-    /// It covers the frame instead of standing beside the main column.
+    /// It covers the main column instead of standing beside it; the sidebar
+    /// stays drawn.
     pub(super) full: bool,
     /// It takes the keys; the main column does otherwise.
     focused: bool,

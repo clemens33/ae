@@ -221,7 +221,7 @@ Browsing:
 | `j` / `k`, `↓` / `↑` | next / previous session |
 | `!` | the next session that needs you |
 | `O`, click `◆` | open the orchestrator panel beside the chat, or hide it ([Orchestrator panel](#orchestrator-panel)) |
-| `F`, click `F full` / `F side` | the open panel full screen, or side by side again |
+| `F`, click `F full` / `F side` | the open panel full screen over the chat column (the sidebar stays), or side by side again |
 | `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
 | Click a seat, or `v` on the highlighted seat | inside tmux: watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)); outside tmux a click works in the seat itself ([Working in a seat](#working-in-a-seat)) |
@@ -435,14 +435,17 @@ own renderer with its own composer, scroll, marked turn and draft. Side by side
 it takes the right half of the chat column, each half at least 40 cells, until
 you drag its left border; the width you dragged stays while the panel is hidden
 or full screen, and a restart carries it.
-Narrower, the column that holds the keys covers the frame: the panel, its
+Narrower, the column that holds the keys fills the chat column: the panel, its
 header saying `side needs <N> columns`, or the main column, so a writer, the
 reader `r` opens and the session `!` selects stay on screen. The panel stays
 open behind the main column and stands beside it again when the frame
-widens; `O` or the button then hands it the keys, and it covers the frame.
+widens; `O` or the button then hands it the keys, and it fills the chat column.
 `F` or a click on its header's `F full` / `F side` switches it between side
-and full. Full screen it holds the keys; side by side a click gives the keys to
-the column it lands on, and the focused column's name is in the title ink
+and full. Full screen it fills the chat column, leaves the sidebar drawn and
+holds the keys; a click on a session in the sidebar selects it and turns the
+panel side, so the selection shows, and a drag of the sidebar's rule keeps it
+full. Side by side a click gives the keys to the column it lands on, and the
+focused column's name is in the title ink
 (`▸` before it with `theme = off`). Any change of focus ends writing as `Esc`
 does and keeps each draft. While the panel holds the keys, `Esc` (not writing)
 hides it, `1`-`9`, `j` / `k` and the arrows still step the list beside a side

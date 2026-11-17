@@ -765,7 +765,7 @@ fn side_width(area: Rect, split: Split) -> Option<u16> {
 
 /// Where the panel `columns` describe stands in `area` split as `split`:
 /// side, [`side_width`] wide, when both columns keep [`PANEL_FLOOR`]. Else
-/// the column that holds the keys covers the frame: the panel, saying why,
+/// the column that holds the keys fills the chat column: the panel, saying why,
 /// or the main column, the panel not drawn.
 fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
     let Some((full, focused)) = columns.panel else {
@@ -789,8 +789,8 @@ fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
     }
 }
 
-/// Whether the open panel covers the whole frame now: asked for, or a side
-/// panel that did not fit.
+/// Whether the open panel covers the main column now, the sidebar beside it
+/// drawn: asked for, or a side panel that did not fit.
 pub(crate) fn panel_full(area: Rect, split: Split, columns: Columns) -> bool {
     matches!(stand(area, split, columns), Stand::Full { .. })
 }
