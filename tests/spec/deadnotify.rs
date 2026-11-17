@@ -467,10 +467,9 @@ fn deadnotify_real_cycle_missing_then_live_then_missing_rearms_notice_only() {
     );
 }
 
-// This test makes no new-notice assertion. Its passing main receipt pins the
-// existing human behavior independently of the feature's failing acceptance.
+// The alertlatch ruling replaces the old per-daemon human-alert baseline.
 #[test]
-fn deadnotify_baseline_missing_human_alert_repeats_after_daemon_restart() {
+fn deadnotify_missing_human_alert_survives_daemon_restart() {
     let rig = DnRig::new("parent", true);
     rig.tmux.must(&["kill-pane", "-t", &rig.tmux.pane]);
     rig.pass(&mut Carry::new());
@@ -483,8 +482,8 @@ fn deadnotify_baseline_missing_human_alert_repeats_after_daemon_restart() {
         })
         .count();
     assert_eq!(
-        alerts, 2,
-        "the unchanged human missing-alert latch is memory only"
+        alerts, 1,
+        "one human alert per death survives a fresh daemon carry"
     );
 }
 
