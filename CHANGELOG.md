@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.77] - 2026-11-17
+- Install the frozen folder tree acceptance and its type and cap seam
+- Install the frozen synhl_spec compile amendment for the tree body
+- App reader: a linked folder shows a bounded read-only tree (#279 part 1)
+- App reader: the folder walk ends a failed listing as not all read, and its tree shape is pinned
+- Reader_decode names a folder tree as a body decode never makes
+- The macOS subset pins the app_copy_spec rig helpers to the live folder FIFO case
+- The folder FIFO case waits for the turn before it marks it
+- Install the frozen alertlatch acceptance and invert the restart baseline
+- One human dead alert per death across daemon restarts
+- Document the journal half of the dead latch and fix the carry fixture
+- Rustfmt the alertlatch change
+- Install the frozen alertlatch slot-routing acceptance
+- Route the dead latch's records to the seat's slot
+- Install the frozen deadnotify_impl restart inversion
+- Install the revised frozen alertlatch slot acceptance
+- Install the frozen alertlatch session-rename acceptance
+- Pin the dead latch records by session id
+- The missing-pane comment names the slot-routed alert
+- The hostile-names tree case skips only the non-UTF-8 fixture where APFS refuses the name
+
 ## [v2026.11.76] - 2026-11-17
 - Tmux status: drop the orchestrator button from line one
 - Panel look and full stand acceptance (red on main)
