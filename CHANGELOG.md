@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.74] - 2026-11-17
+- Answer the overnight mutation survivors with tests
+- End a quote-escape character literal at its own closing quote
+- Freeze spawner death notice acceptance
+- Prove live harnesses before death notice cycles
+- Reinstall the spawner death notice acceptance on the portable fixture
+- Tell a worker's spawner when the worker dies (#211)
+- Kill the o8 mutation survivors in stand, App::viewed and check_attachment
+
 ## [v2026.11.73] - 2026-11-16
 - Name the exit and the step evidence of a failed relleaves observer or safety control (#345)
 - Let the relleaves safety sentinel outlive a slow cap census (#345)
