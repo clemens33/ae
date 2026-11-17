@@ -161,7 +161,11 @@ fn b1_real_loader_shows_current_global_separately_from_recorded_and_saves_only_n
         1,
         "one backup, no leaked temp: {backup_names:?}"
     );
-    assert!(backup_names[0].ends_with(".bak"));
+    assert!(
+        std::path::Path::new(&backup_names[0])
+            .extension()
+            .is_some_and(|ext| ext == "bak")
+    );
     assert_eq!(
         fs::read(rig.root.join(&backup_names[0])).expect("exact prior backup"),
         original
