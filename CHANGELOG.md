@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.76] - 2026-11-17
+- Tmux status: drop the orchestrator button from line one
+- Panel look and full stand acceptance (red on main)
+- A full panel covers the main column alone and wears the main column look
+- A full panel leaves the sidebar usable; covered-cell presses stay refused
+- The full panel covers the chat column and leaves the sidebar
+- Pass the look by reference
+- A wheel over the sidebar list under a full panel; an undrawn look stays plain
+- Column_width drops the full arm, which equals draft_width
+
 ## [v2026.11.75] - 2026-11-17
 - Frozen acceptance for watchdog and auto-reseat incarnation proof (#218 2c)
 - Watchdog and auto-reseat deliveries prove the decided incarnation (#218 2c)
