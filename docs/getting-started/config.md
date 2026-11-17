@@ -138,7 +138,11 @@ win. An entry naming a profile or client that does not exist is inert. Remove a 
 route for new spawns; a seat already recorded on it keeps resuming. The `spawn_instructions`
 text is the place to tell your agents which spellings you allow: written policy is never turned
 into a permission, and an unlisted pair is refused with where to approve it and the clients that
-profile is approved for. See [Spawn on another account](../reference/helpers.md#spawn-on-another-account).
+profile is approved for. The Spawn section of each session's `workspace.md` lists the approved
+pairs from this section, so an agent need not guess: a row ae cannot read is named there with
+no pair, and a file without the section adds nothing. The list is written when `workspace.md` is
+rendered (launch, spawn, retire, rename), so an edit shows after the next render.
+See [Spawn on another account](../reference/helpers.md#spawn-on-another-account).
 
 A client row also takes `manual_resets=<0-9>`, in any order beside `config_home=`:
 

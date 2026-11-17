@@ -101,14 +101,29 @@ impl Verdict {
                 ))
             }
             Self::Void { profile, why } => Some(format!(
-                "is not an approved pair — [client_pairs] '{profile}' is unusable ({why})."
+                "is not an approved pair — {}.",
+                unusable_row(profile, why)
             )),
             Self::Unreadable(why) => Some(format!(
-                "is not an approved pair — [client_pairs] in {} cannot be read ({why}).",
-                global.display()
+                "is not an approved pair — {}.",
+                unreadable_section(global, why)
             )),
         }
     }
+}
+
+/// The clause a void row is named with, in a refusal and in the guidance alike.
+fn unusable_row(profile: &str, why: &str) -> String {
+    format!("[client_pairs] '{profile}' is unusable ({why})")
+}
+
+/// The clause an unreadable section is named with, in a refusal and in the
+/// guidance alike.
+fn unreadable_section(global: &Path, why: &str) -> String {
+    format!(
+        "[client_pairs] in {} cannot be read ({why})",
+        global.display()
+    )
 }
 
 impl ApprovedPairs {
@@ -133,6 +148,59 @@ impl ApprovedPairs {
                 approved: clients.clone(),
             },
         }
+    }
+
+    /// The list as guidance for an agent that must pick a pair, `None` when the
+    /// list says nothing (no section, or one with no row).
+    ///
+    /// It prints what [`judge`](Self::judge) accepts and names what it cannot
+    /// read in the refusal's own words, row by row: a usable row lists each of
+    /// its pairs as `profile@client`, a void row lists nothing and says why, and
+    /// a section that cannot be read lists no pair at all. Every name printed
+    /// passed the grammar check, so the text carries nothing a hand-edited
+    /// file could inject beyond a clipped, escaped echo.
+    #[must_use]
+    pub fn guidance(&self, global: &Path) -> Option<String> {
+        if let Some(why) = &self.unreadable {
+            return Some(format!(
+                "No profile@client pair is approved: {}.",
+                unreadable_section(global, why)
+            ));
+        }
+        let mut lines: Vec<String> = Vec::new();
+        let mut void: Vec<String> = Vec::new();
+        for (profile, row) in &self.rows {
+            match row {
+                Row::Usable(clients) => {
+                    let pairs: Vec<String> = clients
+                        .iter()
+                        .map(|label| format!("{profile}@{label}"))
+                        .collect();
+                    lines.push(format!("- {}", pairs.join(", ")));
+                }
+                Row::Void(why) => void.push(format!(
+                    "- {}: no pair is approved for it.",
+                    unusable_row(profile, why)
+                )),
+            }
+        }
+        if lines.is_empty() && void.is_empty() {
+            return None;
+        }
+        let header = if lines.is_empty() {
+            format!(
+                "No profile@client pair is approved by [client_pairs] in {}:",
+                global.display()
+            )
+        } else {
+            format!(
+                "Approved profile@client pairs for `spawn --using` and `reseat --using`, from [client_pairs] in {} (no other pair is accepted):",
+                global.display()
+            )
+        };
+        lines.insert(0, header);
+        lines.extend(void);
+        Some(lines.join("\n"))
     }
 }
 
@@ -364,6 +432,84 @@ mod tests {
             .expect("void refuses");
         assert!(line.contains("[client_pairs] 'opus' is unusable"), "{line}");
         assert!(line.len() < 200, "the echo is clipped: {line}");
+    }
+
+    const GLOBAL: &str = "/h/.ae/config";
+    const HEADER: &str = "Approved profile@client pairs for `spawn --using` and `reseat --using`, from [client_pairs] in /h/.ae/config (no other pair is accepted):";
+
+    #[test]
+    fn the_guidance_lists_each_usable_row_as_whole_pairs_in_file_order() {
+        let text = pairs("opus = cc-mic, cc-p, cc-mic\nfable = cc-p\n")
+            .guidance(Path::new(GLOBAL))
+            .expect("two rows say something");
+        assert_eq!(
+            text,
+            format!("{HEADER}\n- opus@cc-mic, opus@cc-p\n- fable@cc-p")
+        );
+    }
+
+    #[test]
+    fn the_guidance_names_a_void_row_in_the_refusals_words_and_lists_the_rest() {
+        let text = pairs("opus = cc-mic,,cc-p\nfable = cc-p\n")
+            .guidance(Path::new(GLOBAL))
+            .expect("one usable and one void row say something");
+        assert_eq!(
+            text,
+            format!(
+                "{HEADER}\n- fable@cc-p\n- [client_pairs] 'opus' is unusable (the list has an empty entry): no pair is approved for it."
+            )
+        );
+        let refusal = pairs("opus = cc-mic,,cc-p\n")
+            .judge("opus", "cc-mic")
+            .refusal("opus", Path::new(GLOBAL))
+            .expect("void refuses");
+        assert!(
+            refusal.contains("[client_pairs] 'opus' is unusable (the list has an empty entry)"),
+            "the guidance and the refusal drifted apart: {refusal}"
+        );
+    }
+
+    #[test]
+    fn the_guidance_of_only_void_rows_has_no_approved_heading() {
+        let text = pairs("opus = cc-mic\nopus = cc-p\n")
+            .guidance(Path::new(GLOBAL))
+            .expect("a void row says something");
+        assert_eq!(
+            text,
+            "No profile@client pair is approved by [client_pairs] in /h/.ae/config:\n- [client_pairs] 'opus' is unusable ('opus' is keyed more than once): no pair is approved for it."
+        );
+    }
+
+    #[test]
+    fn the_guidance_of_an_unreadable_section_lists_no_pair() {
+        let list = parse_in(
+            Path::new("config"),
+            "[prompt]\ninstructions = \"\"\"\nnever closed\n[client_pairs]\nopus = cc-mic\n",
+        );
+        let text = list
+            .guidance(Path::new(GLOBAL))
+            .expect("an unreadable section says why");
+        let Verdict::Unreadable(why) = list.judge("opus", "cc-mic") else {
+            panic!("the section must be unreadable");
+        };
+        assert!(!why.is_empty(), "the reason is empty");
+        assert_eq!(
+            text,
+            format!(
+                "No profile@client pair is approved: [client_pairs] in /h/.ae/config cannot be read ({why})."
+            )
+        );
+    }
+
+    #[test]
+    fn the_guidance_of_no_section_or_an_empty_one_is_nothing() {
+        let global = Path::new(GLOBAL);
+        assert_eq!(ApprovedPairs::default().guidance(global), None);
+        assert_eq!(pairs("").guidance(global), None);
+        let other = parse_in(Path::new("config"), "[profiles]\nopus = \"claude\"\n");
+        assert_eq!(other.guidance(global), None);
+        // An inert key (no profile can carry it) says nothing either.
+        assert_eq!(pairs("a@b = cc-mic\n").guidance(global), None);
     }
 
     #[test]

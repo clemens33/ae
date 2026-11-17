@@ -215,7 +215,7 @@ ${sessions_dir}/spawn <name> --using <profile> --dir <absolute path> [--] [promp
 Always give spawned agents a descriptive role NAME — it is their identity, addressed as `send <name>` (e.g. `spawn reviewer --using <review-profile>`, `spawn pair-programmer --using <build-profile>`).
 
 Available profiles: ${available_aliases} (from ~/.ae/config [profiles])
-
+${approved_pairs}
 ## Relaunch
 
 Bring a seat whose tool EXITED back in its own pane — same slot, same name, same
@@ -617,6 +617,30 @@ fn profile_inventory(entries: &[(String, String)]) -> String {
     names.join(", ")
 }
 
+/// The Spawn section's approved `profile@client` pairs: an empty string when
+/// the list says nothing, else a blank line, the guidance and its own newline.
+///
+/// The list is the spawn gate's own (`pairs::parse_in`) over the session's
+/// RECORDED global config, the `config` row `spawn` reads: never a layered file
+/// of `config_files`, whose first entry is a project overlay when no global is
+/// recorded. A session that records none says nothing. A recorded file that
+/// cannot be read is named, because the gate refuses every pair for it too.
+fn approved_pairs_block(meta_bytes: &[u8]) -> String {
+    let recorded = row(meta_bytes, "config");
+    if recorded.is_empty() {
+        return String::new();
+    }
+    let global = Path::new(&recorded);
+    let guidance = match crate::config::read_selected(global) {
+        Ok(text) => crate::pairs::parse_in(global, &text).guidance(global),
+        Err(_) => Some(format!(
+            "No profile@client pair is approved: the global config {} cannot be read.",
+            global.display()
+        )),
+    };
+    guidance.map_or_else(String::new, |text| format!("\n{text}\n"))
+}
+
 /// The `## Parent archive` section, or the empty string when this session
 /// continues nothing.
 fn parent_block(meta_bytes: &[u8]) -> String {
@@ -766,6 +790,7 @@ pub fn manifest_document(
             ("agent_rows", agent_rows.as_str()),
             ("sessions_dir", dir_display.as_str()),
             ("available_aliases", profile_inventory(&entries).as_str()),
+            ("approved_pairs", approved_pairs_block(&meta_bytes).as_str()),
         ],
     );
     // Appended AFTER the fill: operator text is never scanned for markers.
@@ -3701,5 +3726,167 @@ mod tests {
             STATE_GUIDANCE.contains("so the human answers by number"),
             "{STATE_GUIDANCE}"
         );
+    }
+
+    /// A session whose meta records `recorded` as its global config (empty for
+    /// none), rendered over `files` — the layering every caller hands over.
+    fn manifest_recording(dir: &Path, recorded: &str, files: &[&Path]) -> String {
+        std::fs::write(dir.join("meta"), format!("mode=local\nconfig={recorded}\n")).unwrap();
+        let files: Vec<PathBuf> = files.iter().map(|file| (*file).to_path_buf()).collect();
+        manifest_document(dir, "s", "/w", "/o", "local", "%0", &files)
+    }
+
+    /// The Spawn section's profile guidance: from the profile inventory line up
+    /// to the next section.
+    fn spawn_profiles(document: &str) -> &str {
+        let from = document
+            .find("Available profiles:")
+            .expect("the Spawn section names the profiles");
+        let to = document
+            .find("## Relaunch")
+            .expect("Relaunch follows Spawn");
+        &document[from..to]
+    }
+
+    /// The guidance prints the approved pairs the spawn gate would accept, read
+    /// through the gate's own reader: two profiles, both clients of the first.
+    #[test]
+    fn the_spawn_guidance_lists_every_approved_pair() {
+        let dir = scratch("pairs-listed");
+        let global = write(
+            &dir,
+            "global",
+            "[profiles]\nopus55x = \"claude\"\nfable5x = \"claude\"\n\
+             [client_pairs]\nopus55x = cc-mic, cc-p\nfable5x = cc-p\nscout5x = cc-p\n",
+        );
+        let document = manifest_recording(&dir, &global.display().to_string(), &[&global]);
+        let guidance = spawn_profiles(&document);
+        // `scout5x` has no `[profiles]` row: the list prints what the gate's
+        // POLICY step accepts, and existence is a later step, so it is listed.
+        for pair in [
+            "opus55x@cc-mic",
+            "opus55x@cc-p",
+            "fable5x@cc-p",
+            "scout5x@cc-p",
+        ] {
+            assert!(guidance.contains(pair), "{pair} is not listed: {guidance}");
+        }
+        assert!(
+            !guidance.contains("fable5x@cc-mic"),
+            "an unapproved pair is listed: {guidance}"
+        );
+        assert!(!document.contains("${"), "a marker survived: {document}");
+    }
+
+    /// Only the GLOBAL config approves: a pair a project overlay writes is not
+    /// listed, whether the overlay layers over a global file or stands alone
+    /// (a layering that holds one file must not mistake it for the global).
+    #[test]
+    fn a_project_overlay_pair_is_never_listed() {
+        let dir = scratch("pairs-overlay");
+        let global = write(&dir, "global", "[client_pairs]\nopus55x = cc-mic\n");
+        let local = write(
+            &dir,
+            "local",
+            "[client_pairs]\nopus55x = cc-p\nother = cc-p\n",
+        );
+        let layered = manifest_recording(
+            &dir,
+            &global.display().to_string(),
+            &[global.as_path(), local.as_path()],
+        );
+        let guidance = spawn_profiles(&layered);
+        assert!(guidance.contains("opus55x@cc-mic"), "{guidance}");
+        assert!(
+            !guidance.contains("cc-p"),
+            "an overlay pair leaked: {guidance}"
+        );
+        assert!(
+            !guidance.contains("other@"),
+            "an overlay profile leaked: {guidance}"
+        );
+
+        let alone = manifest_recording(&dir, "", &[local.as_path()]);
+        assert!(
+            !spawn_profiles(&alone).contains('@'),
+            "a lone overlay was taken for the global config: {}",
+            spawn_profiles(&alone)
+        );
+    }
+
+    /// Fail closed, row by row, with the gate's words: an entry ae cannot read
+    /// in full lists nothing for its profile and names why, the other rows
+    /// still list, and a section or a file that cannot be read lists no pair.
+    #[test]
+    fn a_malformed_entry_lists_nothing_and_names_why() {
+        let dir = scratch("pairs-malformed");
+        let global = write(
+            &dir,
+            "global",
+            "[client_pairs]\nopus55x = cc-mic,,cc-p\nfable5x = cc-p\n",
+        );
+        let recorded = global.display().to_string();
+        let guidance = spawn_profiles(&manifest_recording(&dir, &recorded, &[&global])).to_owned();
+        assert!(guidance.contains("fable5x@cc-p"), "{guidance}");
+        assert!(
+            !guidance.contains("opus55x@"),
+            "a void row lists a pair: {guidance}"
+        );
+        assert!(
+            guidance.contains("[client_pairs] 'opus55x' is unusable (the list has an empty entry)"),
+            "the void row is not named with the gate's words: {guidance}"
+        );
+
+        // With no usable row there is no approved heading, only the refusal.
+        let all_void = write(&dir, "all-void", "[client_pairs]\nopus55x = cc-mic,,cc-p\n");
+        let recorded = all_void.display().to_string();
+        let guidance =
+            spawn_profiles(&manifest_recording(&dir, &recorded, &[&all_void])).to_owned();
+        assert!(
+            guidance.contains(&format!(
+                "No profile@client pair is approved by [client_pairs] in {recorded}:"
+            )),
+            "{guidance}"
+        );
+        assert!(!guidance.contains("Approved profile@client"), "{guidance}");
+        assert!(!guidance.contains("opus55x@"), "{guidance}");
+
+        let torn = write(
+            &dir,
+            "torn",
+            "[prompt]\ninstructions = \"\"\"\nnever closed\n[client_pairs]\nopus55x = cc-mic\n",
+        );
+        let recorded = torn.display().to_string();
+        let guidance = spawn_profiles(&manifest_recording(&dir, &recorded, &[&torn])).to_owned();
+        assert!(!guidance.contains("opus55x@"), "{guidance}");
+        assert!(
+            guidance.contains(&format!("[client_pairs] in {recorded} cannot be read")),
+            "an unreadable section is not named: {guidance}"
+        );
+
+        let gone = dir.join("absent");
+        let recorded = gone.display().to_string();
+        let guidance = spawn_profiles(&manifest_recording(&dir, &recorded, &[])).to_owned();
+        assert!(
+            guidance.contains(&format!("the global config {recorded} cannot be read")),
+            "an unreadable file is not named: {guidance}"
+        );
+    }
+
+    /// No section adds nothing: no heading, no line, not one byte beside the
+    /// render of a session that records no config at all.
+    #[test]
+    fn no_client_pairs_section_adds_nothing() {
+        let dir = scratch("pairs-absent");
+        let global = write(&dir, "global", "[profiles]\nopus55x = \"claude\"\n");
+        let bare = write(&dir, "bare", "[client_pairs]\n[workspace]\nmain = lead\n");
+        let unrecorded = manifest_recording(&dir, "", &[&global]);
+        for file in [&global, &bare] {
+            let recorded = file.display().to_string();
+            let document = manifest_recording(&dir, &recorded, &[&global]);
+            assert_eq!(document, unrecorded, "{recorded} added to the manifest");
+        }
+        assert!(!unrecorded.contains("client_pairs"), "{unrecorded}");
+        assert!(!unrecorded.contains("profile@client"), "{unrecorded}");
     }
 }
