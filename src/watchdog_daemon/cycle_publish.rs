@@ -4,10 +4,9 @@
 use super::flush_cycle;
 use super::{
     CYCLE_LOOK_OPTIONS, Carry, Cycle, CycleLookRead, Look, Mark, MotionState, MotionVerdict,
-    NON_AGENT_PANES, OptionScope, PaneMark, Published, PublishedOrchestratorStrip, StagedFleet,
-    Timestamp, adoption_writes, entry_mut, enumerate_adoption, menu_open_expired,
-    orchestrator_id_for, overlay_current_rank, procs, theme, tmux, transport, watch_segment,
-    window_agents_line,
+    NON_AGENT_PANES, OptionScope, PaneMark, Published, StagedFleet, Timestamp, adoption_writes,
+    entry_mut, enumerate_adoption, menu_open_expired, overlay_current_rank, procs, theme, tmux,
+    transport, watch_segment, window_agents_line,
 };
 
 impl Cycle<'_> {
@@ -236,7 +235,6 @@ impl Cycle<'_> {
         {
             carry.adoption = next;
         }
-        let orchestrator_id = orchestrator_id_for(&sessions, self.session);
         let mut next = carry.motion.clone();
         next.replace_fleet(&sessions, &carry.adoption.known, self.session);
         // ONCE per verdict cycle, from the content this cycle read: a config
@@ -244,52 +242,6 @@ impl Cycle<'_> {
         next.set_fleet_order(&self.fleet_order);
         let mut writes = Vec::new();
         next.push_fleet_write(&mut writes, look, None);
-        if let Some(target) = next.fleet_target.clone() {
-            let orchestrator = next
-                .fleet
-                .iter()
-                .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
-                .cloned();
-            let strip_changed = next.push_orchestrator_strip_write(
-                &mut writes,
-                look,
-                &target,
-                orchestrator.as_ref(),
-                None,
-            );
-            if strip_changed
-                && matches!(
-                    &next.published_orchestrator_strip,
-                    PublishedOrchestratorStrip::Unset
-                )
-                && !transport::clear_option(
-                    self.server,
-                    OptionScope::Session,
-                    &target,
-                    theme::ORCHESTRATOR_STRIP_OPTION,
-                )
-            {
-                // The fleet strip is independent and still gets published;
-                // restore the cache so the failed unset is retried next cycle.
-                next.published_orchestrator_strip
-                    .clone_from(&carry.motion.published_orchestrator_strip);
-            }
-            let id_changed = next.push_orchestrator_id_write(&mut writes, &target, orchestrator_id);
-            if id_changed
-                && orchestrator_id.is_none()
-                && !transport::clear_option(
-                    self.server,
-                    OptionScope::Session,
-                    &target,
-                    theme::ORCHESTRATOR_ID_OPTION,
-                )
-            {
-                // The fleet strip is independent and still gets published;
-                // restore the cache so the failed unset is retried next cycle.
-                next.published_orchestrator_id
-                    .clone_from(&carry.motion.published_orchestrator_id);
-            }
-        }
         // The adopted strips ride the SAME batch: one tmux process carries
         // this session's own line and every line it is filling for a peer.
         let mut adoption = carry.adoption.clone();

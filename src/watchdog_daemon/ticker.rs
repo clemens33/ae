@@ -26,30 +26,6 @@ pub(super) struct MotionVerdict {
     pub(super) verdict: SeatVerdict,
 }
 
-/// The orchestrator target publication state, including not-yet-published.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) enum PublishedOrchestrator {
-    /// No fleet observation has been published since this daemon attached.
-    #[default]
-    Unknown,
-    /// The observed fleet has no orchestrator target.
-    Unset,
-    /// The observed fleet's orchestrator session id.
-    Target(String),
-}
-
-/// The orchestrator strip publication state, including not-yet-published.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) enum PublishedOrchestratorStrip {
-    /// No fleet observation has been published since this daemon attached.
-    #[default]
-    Unknown,
-    /// The observed fleet has no orchestrator segment.
-    Unset,
-    /// The rendered orchestrator segment.
-    Value(String),
-}
-
 /// The ticker's carry: the most recent cycle verdicts and working frame.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct MotionState {
@@ -63,10 +39,6 @@ pub(super) struct MotionState {
     /// The cycle refreshes this once per cycle; BOTH writers read it from here.
     pub(super) fleet_order: theme::FleetOrder,
     pub(super) published_fleet: Option<String>,
-    /// The last orchestrator target publication, including a successful unset.
-    pub(super) published_orchestrator_id: PublishedOrchestrator,
-    /// The last orchestrator segment publication, including a successful unset.
-    pub(super) published_orchestrator_strip: PublishedOrchestratorStrip,
     pub(super) spin: u64,
 }
 
@@ -146,62 +118,6 @@ impl MotionState {
         self.published_fleet = Some(strip);
     }
 
-    /// Add the orchestrator target only when it changed. A missing target is
-    /// still recorded so the caller can unset it once, rather than spawning a
-    /// tmux process on every motion tick.
-    pub(super) fn push_orchestrator_id_write(
-        &mut self,
-        writes: &mut Vec<tmux::OptionWrite>,
-        target: &str,
-        desired: Option<&str>,
-    ) -> bool {
-        let desired = desired.map_or(PublishedOrchestrator::Unset, |id| {
-            PublishedOrchestrator::Target(id.to_owned())
-        });
-        if self.published_orchestrator_id == desired {
-            return false;
-        }
-        if let PublishedOrchestrator::Target(id) = &desired {
-            writes.push(tmux::OptionWrite::new(
-                OptionScope::Session,
-                target,
-                theme::ORCHESTRATOR_ID_OPTION,
-                id,
-            ));
-        }
-        self.published_orchestrator_id = desired;
-        true
-    }
-
-    /// Add the orchestrator segment only when its rendered text changed. A
-    /// missing orchestrator is recorded so the caller can unset stale output
-    /// once rather than spawning a tmux process on every motion tick.
-    pub(super) fn push_orchestrator_strip_write(
-        &mut self,
-        writes: &mut Vec<tmux::OptionWrite>,
-        look: &Look,
-        target: &str,
-        row: Option<&theme::FleetRow>,
-        working_frame: Option<&theme::WorkingFrame>,
-    ) -> bool {
-        let desired = row.map_or(PublishedOrchestratorStrip::Unset, |row| {
-            PublishedOrchestratorStrip::Value(theme::orchestrator_strip(look, row, working_frame))
-        });
-        if self.published_orchestrator_strip == desired {
-            return false;
-        }
-        if let PublishedOrchestratorStrip::Value(value) = &desired {
-            writes.push(tmux::OptionWrite::new(
-                OptionScope::Session,
-                target,
-                theme::ORCHESTRATOR_STRIP_OPTION,
-                value,
-            ));
-        }
-        self.published_orchestrator_strip = desired;
-        true
-    }
-
     /// The cached verdicts whose pane is a live agent drawing the working mark.
     /// Field by field, so a caller may advance the spin while it holds them.
     pub(super) fn working<'a>(
@@ -222,9 +138,14 @@ impl MotionState {
             .collect()
     }
 
-    /// Whether the fleet strip carries a working row, which pulses too.
+    /// Whether the fleet strip carries a working row, which pulses too. The
+    /// orchestrator is no row of any strip (human ruling 1a, 2026-11-17), so
+    /// its work moves nothing a client sees and wakes no ticker.
     fn fleet_working(&self) -> bool {
-        self.fleet.iter().any(|row| row.mark == Mark::Working)
+        self.fleet
+            .iter()
+            .filter(|row| row.name != crate::orchestrator::ORCHESTRATOR_SESSION)
+            .any(|row| row.mark == Mark::Working)
     }
 
     /// Whether [`MotionState::step`] draws a frame from this observation: a
@@ -288,45 +209,18 @@ impl MotionState {
             ));
         }
         self.push_fleet_write(&mut writes, look, fleet_working.then_some(&frame));
-        if let Some(target) = self.fleet_target.clone() {
-            let orchestrator = self
-                .fleet
-                .iter()
-                .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
-                .cloned();
-            if let Some(row) = orchestrator.as_ref() {
-                let _ = self.push_orchestrator_strip_write(
-                    &mut writes,
-                    look,
-                    &target,
-                    Some(row),
-                    fleet_working.then_some(&frame),
-                );
-            }
-        }
         writes
     }
 
-    /// The static half of `step` for `motion = off`: fleet and orchestrator
-    /// publications without animation frames. Same attached gate and
-    /// write-on-change caching as `step`; F6's unset lands here too.
+    /// The static half of `step` for `motion = off`: the fleet publication
+    /// without animation frames. Same attached gate and write-on-change
+    /// caching as `step`.
     pub(super) fn step_static(&mut self, look: &Look) -> Vec<tmux::OptionWrite> {
         if !self.panes.iter().any(|pane| pane.session_attached > 0) {
             return Vec::new();
         }
         let mut writes = Vec::new();
         self.push_fleet_write(&mut writes, look, None);
-        if let Some(target) = self.fleet_target.clone() {
-            let orchestrator = self
-                .fleet
-                .iter()
-                .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
-                .cloned();
-            if let Some(row) = orchestrator.as_ref() {
-                let _ =
-                    self.push_orchestrator_strip_write(&mut writes, look, &target, Some(row), None);
-            }
-        }
         writes
     }
 }

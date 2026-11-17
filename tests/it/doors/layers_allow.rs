@@ -266,7 +266,7 @@ pub(super) const DEBT: &[Row] = &[
     ("src/telegram/bridge.rs", "crate::watchdog_daemon::in_lead_pair", 1),
     ("src/telegram_lifecycle.rs", "crate::cli::TELEGRAM_RUN", 1),
     ("src/theme.rs", "crate::orchestrator::ORCHESTRATOR_SESSION", 1),
-    ("src/theme.rs", "crate::orchestrator::terminal_cells", 2),
+    ("src/theme.rs", "crate::orchestrator::terminal_cells", 1),
     ("src/tmux/fleet.rs", "crate::session_launch::name::is_session_name", 4),
     ("src/tmux/menu.rs", "crate::cli::CONSOLE_TOGGLE", 1),
     ("src/tmux/menu.rs", "crate::cli::ORCHESTRATOR_JUMP", 1),

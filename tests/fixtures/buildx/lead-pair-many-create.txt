@@ -25,12 +25,12 @@
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	set-titles	on
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	set-titles-string	#{?#{@ae_attn_glyph},#{@ae_attn_glyph} ,}ae
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	status-format[0]	#[align=left]#[nobold fg=#808080 bg=#313335]#{W:#{?#{@ae_window_plumbing},,#[range=window|#{window_index} fg=#808080 bg=#313335 nobold]#[push-default] #{window_index}:#{?#{@ae_window_agents},#{@ae_window_agents},#{window_name}}#{?window_zoomed_flag,Z,} #[pop-default]#[norange nobold fg=#808080 bg=#313335]},#{?#{@ae_window_plumbing},,#[range=window|#{window_index} fg=#A9B7C6 bg=#214283 bold]#[push-default] #{window_index}:#{?#{@ae_window_agents},#{@ae_window_agents},#{window_name}}#{?window_zoomed_flag,Z,} #[pop-default]#[norange nobold fg=#808080 bg=#313335]}}#[align=right nobold fg=#808080 bg=#313335] #{@ae_branch_status}#{@ae_goal_status}#{?#{e|>=:#{client_width},100}, #{@ae_paths},} #{@ae_watchdog_status} 
--u	-S	<scratch>/sock	set-option	-t	=bxTrace:	status-format[1]	#[align=left fg=#808080 bg=#313335]#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ≡#[norange] #{?#{@ae_orchestrator_strip},#{@ae_orchestrator_strip},}#{@ae_fleet_strip}#[align=right fg=#808080 bg=#313335]#[range=user|ae-settings]#{?@ae_settings_open,#[bg=#214283 fg=#A9B7C6],} ⚙ #[norange]
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	status-format[1]	#[align=left fg=#808080 bg=#313335]#[range=user|ae]#{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],} ≡#[norange] #{@ae_fleet_strip}#[align=right fg=#808080 bg=#313335]#[range=user|ae-settings]#{?@ae_settings_open,#[bg=#214283 fg=#A9B7C6],} ⚙ #[norange]
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_palette	darcula
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_icons	on
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_look	on
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_motion	on
--u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_look_stamp	22:darcula:on:on
+-u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_look_stamp	23:darcula:on:on
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_paths	…/ln.buildx-full/project
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_attn_glyph	◌
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_attn_rank	3
@@ -124,7 +124,7 @@
 -u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	popup-style	bg=#3C3F41,fg=#A9B7C6
 -u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	popup-border-style	fg=#555555
 -u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	popup-border-lines	rounded
--u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	@ae_theme	22:darcula:on:on
+-u	-S	<scratch>/sock	set-window-option	-t	=bxTrace:ae-monitor	@ae_theme	23:darcula:on:on
 -u	-S	<scratch>/sock	select-pane	-t	%<5>	-d
 -u	-S	<scratch>/sock	set-option	-t	=bxTrace:	@ae_watchdog_status	#[fg=#808080]◌ watchdog off
 -u	-S	<scratch>/sock	list-panes	-s	-t	=bxTrace	-F	#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_reader_src} | #{@ae_console} | #{pane_dead} | #{window_index} | #{pane_index} | #{@ae_agent}
@@ -140,7 +140,7 @@
 -u	-S	<scratch>/sock	set-window-option	-t	@<1>	popup-style	bg=#3C3F41,fg=#A9B7C6
 -u	-S	<scratch>/sock	set-window-option	-t	@<1>	popup-border-style	fg=#555555
 -u	-S	<scratch>/sock	set-window-option	-t	@<1>	popup-border-lines	rounded
--u	-S	<scratch>/sock	set-window-option	-t	@<1>	@ae_theme	22:darcula:on:on
+-u	-S	<scratch>/sock	set-window-option	-t	@<1>	@ae_theme	23:darcula:on:on
 -u	-S	<scratch>/sock	set-window-option	-t	@<2>	pane-border-status	top
 -u	-S	<scratch>/sock	set-window-option	-t	@<2>	pane-border-format	 #{@ae_agent_label}#{?#{@ae_pane_state}, · #{@ae_pane_state},} 
 -u	-S	<scratch>/sock	set-window-option	-t	@<2>	pane-border-lines	heavy
@@ -153,7 +153,7 @@
 -u	-S	<scratch>/sock	set-window-option	-t	@<2>	popup-style	bg=#3C3F41,fg=#A9B7C6
 -u	-S	<scratch>/sock	set-window-option	-t	@<2>	popup-border-style	fg=#555555
 -u	-S	<scratch>/sock	set-window-option	-t	@<2>	popup-border-lines	rounded
--u	-S	<scratch>/sock	set-window-option	-t	@<2>	@ae_theme	22:darcula:on:on
+-u	-S	<scratch>/sock	set-window-option	-t	@<2>	@ae_theme	23:darcula:on:on
 -u	-S	<scratch>/sock	set-window-option	-t	@<3>	pane-border-status	top
 -u	-S	<scratch>/sock	set-window-option	-t	@<3>	pane-border-format	 #{@ae_agent_label}#{?#{@ae_pane_state}, · #{@ae_pane_state},} 
 -u	-S	<scratch>/sock	set-window-option	-t	@<3>	pane-border-lines	heavy
@@ -166,5 +166,5 @@
 -u	-S	<scratch>/sock	set-window-option	-t	@<3>	popup-style	bg=#3C3F41,fg=#A9B7C6
 -u	-S	<scratch>/sock	set-window-option	-t	@<3>	popup-border-style	fg=#555555
 -u	-S	<scratch>/sock	set-window-option	-t	@<3>	popup-border-lines	rounded
--u	-S	<scratch>/sock	set-window-option	-t	@<3>	@ae_theme	22:darcula:on:on
+-u	-S	<scratch>/sock	set-window-option	-t	@<3>	@ae_theme	23:darcula:on:on
 -u	-S	<scratch>/sock	select-pane	-t	%<1>

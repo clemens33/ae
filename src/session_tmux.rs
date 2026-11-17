@@ -1505,12 +1505,6 @@ mod tests {
                 "#{?#{==:#{mouse_status_range},ae-settings},run-shell -b \"'/opt/ae' 'orchestrator' '--settings' '--client' #{q:client_name}\",#{?#{||:#{==:#{mouse_status_range},ae},#{==:#{mouse_status_range},ae-more}},run-shell -b \"'/opt/ae' 'orchestrator' '--popup' '--client' #{q:client_name}\",#{?#{==:#{mouse_status_range},window},select-window -t #{window_id},#{?#{==:#{mouse_status_range},session},switch-client -c #{q:client_name} -t #{session_id},}}}}"
             ]
         );
-        assert!(
-            !bindings[0]
-                .as_args()
-                .iter()
-                .any(|word| word.contains("@ae_orchestrator_id"))
-        );
         assert_eq!(
             &bindings[1].as_args()[..10],
             [

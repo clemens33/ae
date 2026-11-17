@@ -169,11 +169,12 @@ fn marker_release_stays_conditional_on_the_owning_token() {
 }
 
 /// Theme ruling: the transient view owns a minimal pure format helper in
-/// theme.rs and ships `FORMAT_VERSION` 22 with it; canonical real-session
-/// layout unchanged. This pins the ruled value; any further move is deliberate.
+/// theme.rs; canonical real-session layout unchanged. The pin follows
+/// `FORMAT_VERSION`, moved from 22 to 23 by human ruling 1a (2026-11-17: the
+/// orchestrator button left line one); any further move is deliberate.
 #[test]
-fn transient_view_format_ships_format_version_22() {
-    assert_eq!(crate::theme::FORMAT_VERSION, "22");
+fn transient_view_format_ships_format_version_23() {
+    assert_eq!(crate::theme::FORMAT_VERSION, "23");
 }
 
 /// Inside /open moves the proven viewer client into the group: one ordered

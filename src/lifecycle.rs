@@ -1176,8 +1176,8 @@ pub(super) fn handoff_clients_before_kill(server: &ServerId, name: &str) -> Opti
 /// on an ae-owned server ([`ServerId::Selected`]), is the first OTHER live
 /// session of the one fleet listing that keeps rankless rows, by the same
 /// order comparator and then creation id, with the orchestrator sunk to last:
-/// it is a control seat, not a work session — the strip draws it beside the
-/// menu button rather than as a row for the same reason. On the ambient
+/// it is a control seat, not a work session — no strip draws a row or a button
+/// for it for the same reason (human ruling 1a). On the ambient
 /// server ae never hands a client to a session it cannot call its own, and a
 /// dying session with no company detaches.
 fn handoff_destination(

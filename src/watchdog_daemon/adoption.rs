@@ -383,19 +383,3 @@ pub(super) fn overlay_current_rank(
         row.rank = Some(rank.rank().to_string());
     }
 }
-
-/// The fleet target the orchestrator segment may jump to: absent for this session
-/// when it is itself the orchestrator, or when the fleet has none. The exact
-/// canonical seat name is intentional: a renamed seat loses the click target.
-pub(super) fn orchestrator_id_for<'a>(
-    sessions: &'a [tmux::FleetListingRow],
-    session: &str,
-) -> Option<&'a str> {
-    if session == crate::orchestrator::ORCHESTRATOR_SESSION {
-        return None;
-    }
-    sessions
-        .iter()
-        .find(|entry| entry.name == crate::orchestrator::ORCHESTRATOR_SESSION)
-        .map(|entry| entry.id.as_str())
-}

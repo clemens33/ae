@@ -615,11 +615,12 @@ pub const FLEET_STRIP_OPTION: &str = "@ae_fleet_strip";
 /// state, not a look fact, and therefore never participates in the look stamp.
 pub const AGENTS_OPTION: &str = "@ae_agents";
 
-/// SESSION — the orchestrator's fleet segment, ranges included.
-///
-/// Published separately because the orchestrator sits immediately after the
-/// menu glyph on line two instead of in the fleet list.
-pub const ORCHESTRATOR_STRIP_OPTION: &str = "@ae_orchestrator_strip";
+/// SESSION — RETIRED by human ruling 1a (2026-11-17): the orchestrator button
+/// that sat after the menu glyph on line two is gone, and no format reads this
+/// option any more. Only the watchdog's retraction names it, so a session an
+/// older core dressed gets the stale value unset; delete the constant once no
+/// such session can still be running.
+pub const RETIRED_ORCHESTRATOR_STRIP_OPTION: &str = "@ae_orchestrator_strip";
 
 /// SESSION — `on`/`off`, whether ae draws this session at all.
 pub const LOOK_OPTION: &str = "@ae_look";
@@ -659,13 +660,11 @@ pub const SESSION_ID_OPTION: &str = "@ae_session_uuid";
 /// exact client session; its status-range glyph deliberately does not render it.
 pub const VERSION_OPTION: &str = "@ae_version";
 
-/// SESSION — the `$<n>` id of the fleet's orchestrator for custom consumers.
-///
-/// Published by the WATCHDOG from this server's fleet listing. The
-/// orchestrator's own session and a fleet with no orchestrator leave it unset,
-/// because there is no remote orchestrator to name. The built-in menu range
-/// opens the fleet picker and no longer consumes this compatibility fact.
-pub const ORCHESTRATOR_ID_OPTION: &str = "@ae_orchestrator_id";
+/// SESSION — RETIRED with the orchestrator button (human ruling 1a,
+/// 2026-11-17). The watchdog no longer publishes the orchestrator's `$<n>` id,
+/// and nothing in `src` ever read it. Only the retraction names it, for the
+/// same reason as [`RETIRED_ORCHESTRATOR_STRIP_OPTION`].
+pub const RETIRED_ORCHESTRATOR_ID_OPTION: &str = "@ae_orchestrator_id";
 
 /// SESSION — the look the LAYOUT was written for.
 ///
@@ -748,7 +747,7 @@ pub const SETTINGS_OPEN_OPTION: &str = "@ae_settings_open";
 /// changes shape: the version leads both stamps, so a session or window carrying
 /// an older one is rewritten by the next watchdog cycle rather than left on the
 /// layout an older core wrote.
-pub const FORMAT_VERSION: &str = "22";
+pub const FORMAT_VERSION: &str = "23";
 
 /// What [`WINDOW_STAMP_OPTION`] is set to: the LOOK the window was dressed in,
 /// formats version first.
@@ -917,20 +916,16 @@ pub fn status_line_zero(palette: &Palette) -> String {
 // status-format[1] — the fleet strip
 // ---------------------------------------------------------------------------
 
-/// `status-format[1]`: a quiet menu glyph, an optional one-cell orchestrator
-/// button, then every ae session on this server; the final settings range
-/// stays on the right.
+/// `status-format[1]`: a quiet menu glyph, then every ae session on this
+/// server except the orchestrator; the final settings range stays on the right.
 ///
-/// When no orchestrator is published the conditional renders empty and the
-/// line is byte-identical to the menu-plus-fleet line: `{version} `, then the
-/// fleet strip, then the right side.
+/// The orchestrator has no button here (human ruling 1a, 2026-11-17): the line
+/// is `{version} `, the fleet strip, then the right side, and nothing between.
 #[must_use]
 pub fn status_line_one(look: &Look) -> String {
     let palette = &look.palette;
-    // The conditional splits on format-text commas, so a comma-free option
-    // value is safe; this follows the same contract as @ae_fleet_strip.
     format!(
-        "#[align=left fg={dim} bg={base}]{version} #{{?#{{{ORCHESTRATOR_STRIP_OPTION}}},#{{{ORCHESTRATOR_STRIP_OPTION}}},}}#{{{FLEET_STRIP_OPTION}}}\
+        "#[align=left fg={dim} bg={base}]{version} #{{{FLEET_STRIP_OPTION}}}\
          #[align=right fg={dim} bg={base}]{settings}",
         dim = palette.dim,
         base = palette.base,
@@ -989,7 +984,9 @@ impl FleetRow {
             .unwrap_or(u64::MAX)
     }
 
-    /// Whether this row is the fleet's fixed orchestrator anchor.
+    /// Whether this row is the orchestrator: the control seat. No strip draws it
+    /// (human ruling 1a, 2026-11-17) and the shared order keeps it first, which
+    /// only the client handoff reads.
     fn pinned(&self) -> bool {
         self.name == crate::orchestrator::ORCHESTRATOR_SESSION
     }
@@ -1031,8 +1028,9 @@ impl FleetOrder {
 
 /// The ONE tail every fleet reader sorts on: the human's order, then the order
 /// tmux created the sessions in, then the name. Callers differ only in what they
-/// put IN FRONT of it — the strip pins the orchestrator, the picker ranks
-/// attention — so this is the shared rule and the only place it can drift from.
+/// put IN FRONT of it — the shared order pins the orchestrator, the picker
+/// ranks attention — so this is the shared rule and the only place it can
+/// drift from.
 #[must_use]
 pub fn fleet_tail_cmp(
     order: &FleetOrder,
@@ -1053,9 +1051,9 @@ pub(crate) fn ordered_fleet_rows<'a>(
 ) -> Vec<&'a FleetRow> {
     let mut ordered: Vec<&FleetRow> = rows.iter().collect();
     ordered.sort_by(|left, right| {
-        // The orchestrator is the fleet's fixed point of reference: keep it
-        // first regardless of attention OR of the human's list, and never let
-        // overflow shed it.
+        // The orchestrator is the control seat: keep it first regardless of
+        // attention OR of the human's list. The strip draws no orchestrator row
+        // (`fleet_strip` drops it), so only the client handoff walks this place.
         let left_pinned = left.pinned();
         let right_pinned = right.pinned();
         right_pinned.cmp(&left_pinned).then_with(|| {
@@ -1074,7 +1072,9 @@ pub(crate) fn ordered_fleet_rows<'a>(
 /// A missing or sole row has no destination. This is pure so lifecycle code
 /// and the strip share one ordering rule without a tmux read in the decision —
 /// including the human's own [`FleetOrder`], so a handoff lands where the strip
-/// says the next session is.
+/// says the next session is. The one exception is the orchestrator: it keeps
+/// its first place here though no strip draws it, so a wrap from the last
+/// session lands on it (human ruling 1a changed the strip, not the handoff).
 #[must_use]
 pub fn next_fleet_session(rows: &[FleetRow], dying: &str, order: &FleetOrder) -> Option<String> {
     let ordered = ordered_fleet_rows(rows, order);
@@ -1121,7 +1121,7 @@ pub fn fleet_strip(
     // wants nothing is the one the reader loses least by not seeing, and the
     // rows that remain keep their order. The current session is never shed —
     // a strip that cannot show you where you are is not a map. The
-    // orchestrator is rendered beside the menu button instead.
+    // orchestrator is not a row of it, and not counted in the `+N`.
     let hidden = ordered.len().saturating_sub(STRIP_ROWS);
     if hidden > 0 {
         let mut shed: Vec<usize> = (0..ordered.len())
@@ -1181,50 +1181,6 @@ pub fn fleet_strip(
         let _ = write!(strip, "#[range=user|ae-more]+{hidden} #[norange]");
     }
     strip
-}
-
-/// The orchestrator button shown immediately after the menu glyph on line two:
-/// one blank, one stable one-cell glyph, one blank — all inside the session
-/// range, so both blanks are clickable padding.
-///
-/// The GLYPH never changes with the mark: a button that changes shape stops
-/// reading as a button, and a shape-changing icon would collide with the fleet
-/// strip's vocabulary sitting right beside it. The verdict rides the
-/// foreground colour instead, with the same accent selection a fleet row uses,
-/// including the working frame's motion colour; the current row keeps its
-/// selected ground.
-#[must_use]
-pub fn orchestrator_strip(
-    look: &Look,
-    row: &FleetRow,
-    working_frame: Option<&WorkingFrame>,
-) -> String {
-    let palette = &look.palette;
-    let glyph = if look.icons { "◆" } else { "o" };
-    debug_assert_eq!(crate::orchestrator::terminal_cells(glyph), 1);
-    let accent = if row.mark == Mark::Working {
-        working_frame.map_or(palette.accent(row.mark), |frame| frame.fg.as_str())
-    } else if row.mark == Mark::Idle {
-        // Dim is Idle's alone: Done keeps its done accent, because with a
-        // stable glyph the foreground colour is the only verdict signal.
-        palette.dim
-    } else {
-        palette.accent(row.mark)
-    };
-    let ground = if row.current {
-        palette.selected
-    } else {
-        palette.base
-    };
-    format!(
-        "#[range=session|{id} fg={accent} bg={ground}] {glyph} #[norange nobold fg={dim} bg={base}]",
-        id = row.id,
-        accent = accent,
-        ground = ground,
-        glyph = glyph,
-        base = palette.base,
-        dim = palette.dim,
-    )
 }
 
 /// How many sessions the fleet strip draws before it starts counting instead: twelve.
@@ -1644,9 +1600,9 @@ mod tests {
     include!("../tests/spec/bgmark_theme.rs");
     use super::{
         FleetRow, ICONS_OPTION, Look, Mark, PALETTE_OPTION, Palette, WINDOW_STAMP_OPTION,
-        attention_style, fleet_strip, icons_wanted, mark_style, orchestrator_strip,
-        pane_border_format, pane_state, session_options, short_path, status_line_one,
-        status_line_zero, window_options, working_frame,
+        attention_style, fleet_strip, icons_wanted, mark_style, pane_border_format, pane_state,
+        session_options, short_path, status_line_one, status_line_zero, window_options,
+        working_frame,
     };
     use crate::attention::Reason;
 
@@ -1772,8 +1728,8 @@ mod tests {
     /// Every palette a session can be drawn in.
     const PALETTES: [Palette; 3] = [Palette::DARCULA, Palette::NEUTRAL, Palette::WARM];
 
-    /// Line two leads with the quiet picker button, then the fleet strip. Its
-    /// range stays present when no orchestrator target is published.
+    /// Line two leads with the quiet picker button, then the fleet strip and
+    /// nothing in between: the orchestrator has no button on it.
     #[test]
     fn line_one_leads_with_the_menu_button_then_the_fleet_strip() {
         for palette in PALETTES {
@@ -1785,12 +1741,10 @@ mod tests {
             assert_eq!(
                 line,
                 format!(
-                    "#[align=left fg={} bg={}]{} #{{?#{{{}}},#{{{}}},}}#{{{}}}#[align=right fg={} bg={}]{}",
+                    "#[align=left fg={} bg={}]{} #{{{}}}#[align=right fg={} bg={}]{}",
                     palette.dim,
                     palette.base,
                     super::version_segment(&look),
-                    super::ORCHESTRATOR_STRIP_OPTION,
-                    super::ORCHESTRATOR_STRIP_OPTION,
                     super::FLEET_STRIP_OPTION,
                     palette.dim,
                     palette.base,
@@ -1813,44 +1767,92 @@ mod tests {
         }
     }
 
-    /// The optional orchestrator button sits between the menu glyph and the
-    /// fleet strip, and nowhere else: the right side keeps only settings. An
-    /// unset orchestrator renders nothing — no padding, no shifted fleet.
+    /// HUMAN RULING 1a (2026-11-17): the orchestrator has no button on line
+    /// one. The menu glyph, one blank and the fleet strip come in that order,
+    /// no option of the orchestrator is read, and the right side keeps only
+    /// settings. The line is the one a fleet without an orchestrator always drew.
     #[test]
-    fn line_one_places_optional_orchestrator_between_menu_and_fleet_strip() {
-        let line = status_line_one(&Look::DEFAULT);
-        let marker = format!(
-            "#{{?#{{{}}},#{{{}}},}}",
-            super::ORCHESTRATOR_STRIP_OPTION,
-            super::ORCHESTRATOR_STRIP_OPTION,
+    fn line_one_has_no_orchestrator_button() {
+        for palette in PALETTES {
+            let look = Look {
+                palette,
+                ..Look::DEFAULT
+            };
+            let line = status_line_one(&look);
+            assert!(
+                !line.contains("orchestrator"),
+                "line one reads no orchestrator option: {line}"
+            );
+            assert!(
+                line.contains(&format!(
+                    "#[norange] #{{{}}}#[align=right",
+                    super::FLEET_STRIP_OPTION
+                )),
+                "menu, one blank, the fleet strip, then the right side: {line}"
+            );
+        }
+    }
+
+    /// The fleet strip draws no orchestrator row, current or not, and the
+    /// strip of the orchestrator's own session lists the OTHER sessions.
+    #[test]
+    fn no_strip_draws_the_orchestrator_and_its_own_strip_lists_the_others() {
+        let row = |name: &str, id: &str, current: bool| FleetRow {
+            name: name.to_owned(),
+            id: id.to_owned(),
+            mark: Mark::Working,
+            current,
+        };
+        let own = fleet_strip(
+            &Look::DEFAULT,
+            &[
+                row("alpha", "$1", false),
+                row("orchestrator", "$2", true),
+                row("beta", "$3", false),
+            ],
+            None,
+            &super::FleetOrder::EMPTY,
         );
-        assert!(line.contains(&marker), "{line}");
-        assert!(
-            marker.ends_with(",}"),
-            "an unset orchestrator renders nothing, not padding: {marker}"
-        );
-        assert!(
-            line.find("#[range=user|ae]").unwrap_or(usize::MAX)
-                < line.find(&marker).unwrap_or(usize::MAX)
-                && line.find(&marker).unwrap_or(usize::MAX)
-                    < line.find(super::FLEET_STRIP_OPTION).unwrap_or(usize::MAX)
-                && line.find(super::FLEET_STRIP_OPTION).unwrap_or(usize::MAX)
-                    < line.find("#[align=right").unwrap_or(usize::MAX),
-            "menu, orchestrator and fleet must keep their left-to-right order: {line}"
-        );
-        let right = line
-            .split_once("#[align=right")
-            .map_or("", |(_, right)| right);
-        assert!(
-            !right.contains(super::ORCHESTRATOR_STRIP_OPTION),
-            "the right side keeps only settings: {line}"
-        );
-        // The single literal space between the menu button and the
-        // conditional is the third cell; no other padding may sit there.
-        assert!(
-            line.contains("#[norange] #{?"),
-            "menu, one blank, then the conditional: {line}"
-        );
+        assert!(!own.contains("orchestrator"), "{own}");
+        assert!(!own.contains("range=session|$2"), "{own}");
+        assert!(own.contains("alpha") && own.contains("beta"), "{own}");
+        assert!(own.find("alpha") < own.find("beta"), "{own}");
+    }
+
+    /// Eight marks, eight accents, on every palette: the colour is what tells
+    /// the marks apart once the glyph is one cell wide. The pulse of a working
+    /// mark never lands on a static accent either.
+    #[test]
+    fn every_mark_has_its_own_accent_on_every_palette() {
+        for palette in PALETTES {
+            let accents: Vec<&str> = Mark::BY_URGENCY
+                .iter()
+                .map(|mark| palette.accent(*mark))
+                .collect();
+            assert_eq!(accents.len(), 8, "{}", palette.name);
+            for (left, accent) in accents.iter().enumerate() {
+                for other in accents.iter().skip(left + 1) {
+                    assert!(
+                        !accent.eq_ignore_ascii_case(other),
+                        "two marks share one accent on {}: {accents:?}",
+                        palette.name,
+                    );
+                }
+            }
+            let statics: Vec<String> = Mark::BY_URGENCY
+                .iter()
+                .filter(|mark| **mark != Mark::Working)
+                .map(|mark| palette.accent(*mark).to_owned())
+                .collect();
+            for tick in 0..20 {
+                let pulsed = super::working_frame(tick, &palette, true).fg;
+                assert!(
+                    !statics.contains(&pulsed),
+                    "working pulse tick {tick} grazes a static accent on {}: {pulsed}",
+                    palette.name,
+                );
+            }
+        }
     }
 
     #[test]
@@ -1927,16 +1929,6 @@ mod tests {
                 }],
                 None,
                 &super::FleetOrder::EMPTY,
-            ),
-            orchestrator_strip(
-                &Look::DEFAULT,
-                &FleetRow {
-                    name: "orchestrator".to_owned(),
-                    id: "$7".to_owned(),
-                    mark: Mark::NeedsYou,
-                    current: false,
-                },
-                None,
             ),
             pane_state(&Palette::NEUTRAL, Mark::Stale, "◌", "stale"),
         ];
@@ -2146,8 +2138,8 @@ mod tests {
 
     /// PIN: the human's `fleet_order` decides the strip, and everything they
     /// did not name falls in behind it in creation order. The orchestrator is
-    /// still pinned first — it is the fleet's fixed point of reference, so
-    /// naming it buys nothing and forgetting it costs nothing.
+    /// still pinned first in the shared order, so naming it buys nothing and
+    /// forgetting it costs nothing.
     #[test]
     fn the_fleet_strip_puts_the_named_sessions_first_in_the_order_the_human_named_them() {
         let row = |name: &str, id: &str| FleetRow {
@@ -2412,19 +2404,6 @@ mod tests {
         assert!(plain(&rows).contains("first ✓ second"), "{}", plain(&rows));
     }
 
-    #[test]
-    fn orchestrator_selection_preserves_row_width() {
-        let row = |current| FleetRow {
-            name: "orchestrator".to_owned(),
-            id: "$12".to_owned(),
-            mark: Mark::Working,
-            current,
-        };
-        let plain =
-            |current| strip_tmux_styles(&orchestrator_strip(&Look::DEFAULT, &row(current), None));
-        assert_eq!(plain(true), plain(false));
-    }
-
     /// Overflow sheds the CALMEST rows and keeps the order of the rest; the
     /// current session survives wherever it was created.
     #[test]
@@ -2529,186 +2508,13 @@ mod tests {
         assert_eq!(strip.matches("range=user|ae-more").count(), 1, "{strip}");
     }
 
-    /// The orchestrator is a one-cell button after the menu glyph: a STABLE
-    /// `◆`/`o` whose verdict rides the foreground colour — never the fleet
-    /// strip's shape vocabulary, never the word `orchestrator`.
-    #[test]
-    fn the_orchestrator_is_rendered_separately_from_the_fleet_strip() {
-        let row = |name: &str, mark| FleetRow {
-            name: name.to_owned(),
-            id: format!("${}", name.len()),
-            mark,
-            current: false,
-        };
-        let strip = fleet_strip(
-            &Look::DEFAULT,
-            &[row("orchestrator", Mark::Working)],
-            Some(&super::WorkingFrame {
-                glyph: "⠼",
-                fg: "#ABCDEF".to_owned(),
-            }),
-            &super::FleetOrder::EMPTY,
-        );
-        assert!(
-            strip.is_empty(),
-            "orchestrator is not in fleet list: {strip}"
-        );
-        let mut current_row = row("orchestrator", Mark::Working);
-        current_row.current = true;
-        let frame = super::WorkingFrame {
-            glyph: "⠼",
-            fg: "#ABCDEF".to_owned(),
-        };
-        let current_fleet = fleet_strip(
-            &Look::DEFAULT,
-            &[current_row.clone()],
-            Some(&frame),
-            &super::FleetOrder::EMPTY,
-        );
-        assert!(
-            current_fleet.is_empty(),
-            "current orchestrator stays out of fleet list: {current_fleet}"
-        );
-        let segment = orchestrator_strip(&Look::DEFAULT, &current_row, Some(&frame));
-        assert!(
-            segment.contains("#[range=session|$12")
-                && !segment.contains("⠼")
-                && segment.contains("◆")
-                && segment.contains("#ABCDEF")
-                && segment.contains("bg=#214283")
-                && !segment.contains("orchestrator"),
-            "working orchestrator keeps range, motion colour and selected ground, not the frame glyph or the word: {segment}"
-        );
-        assert_eq!(strip_tmux_styles(&segment), " ◆ ");
-
-        for mark in [Mark::Dead, Mark::NeedsYou, Mark::Stale] {
-            let attention =
-                orchestrator_strip(&Look::DEFAULT, &row("orchestrator", mark), Some(&frame));
-            assert_eq!(
-                strip_tmux_styles(&attention),
-                " ◆ ",
-                "the button never takes the mark's shape: {attention}"
-            );
-            assert!(
-                attention.contains(Look::DEFAULT.palette.accent(mark)),
-                "the verdict rides the foreground colour: {attention}"
-            );
-            assert!(
-                !attention.contains("orchestrator"),
-                "no text label: {attention}"
-            );
-        }
-
-        let idle = orchestrator_strip(
-            &Look::DEFAULT,
-            &row("orchestrator", Mark::Idle),
-            Some(&frame),
-        );
-        assert_eq!(strip_tmux_styles(&idle), " ◆ ", "{idle}");
-        assert!(idle.contains("fg=#808080"), "dim idle button: {idle}");
-        let done = orchestrator_strip(
-            &Look::DEFAULT,
-            &row("orchestrator", Mark::Done),
-            Some(&frame),
-        );
-        assert_eq!(strip_tmux_styles(&done), " ◆ ", "{done}");
-        let done_accent = Look::DEFAULT.palette.accent(Mark::Done);
-        assert_ne!(done_accent, Look::DEFAULT.palette.dim);
-        assert!(
-            done.contains(&format!("fg={done_accent}")),
-            "done keeps its done accent, never idle's dim: {done}"
-        );
-
-        let ascii = orchestrator_strip(
-            &Look {
-                icons: false,
-                ..Look::DEFAULT
-            },
-            &row("orchestrator", Mark::Idle),
-            None,
-        );
-        assert_eq!(strip_tmux_styles(&ascii), " o ", "{ascii}");
-        assert!(!ascii.contains("orchestrator"), "ASCII button: {ascii}");
-
-        assert_eq!(crate::orchestrator::terminal_cells("◆"), 1);
-        assert_eq!(crate::orchestrator::terminal_cells(" ◆ "), 3);
-        assert_eq!(crate::orchestrator::terminal_cells("o"), 1);
-        assert_eq!(crate::orchestrator::terminal_cells(" o "), 3);
-        assert!(
-            !segment.contains('\u{fe0f}'),
-            "no variation selector: {segment}"
-        );
-    }
-
-    /// With a stable glyph the foreground colour is the ONLY verdict signal,
-    /// so all seven verdicts must differ by colour on every palette — including
-    /// Done versus Idle, which the old calm pin rendered identically dim.
-    #[test]
-    fn orchestrator_verdicts_differ_by_colour_on_every_palette() {
-        let button_fg = |strip: &str| {
-            strip
-                .split_once(" fg=")
-                .map_or("", |(_, rest)| rest.split(' ').next().unwrap_or(""))
-                .to_owned()
-        };
-        let marks = [
-            Mark::Dead,
-            Mark::NeedsYou,
-            Mark::Working,
-            Mark::WaitingAgent,
-            Mark::Done,
-            Mark::Stale,
-            Mark::Idle,
-        ];
-        for palette in PALETTES {
-            let look = Look {
-                palette,
-                ..Look::DEFAULT
-            };
-            let row = |mark| FleetRow {
-                name: "orchestrator".to_owned(),
-                id: "$7".to_owned(),
-                mark,
-                current: false,
-            };
-            let fgs: Vec<String> = marks
-                .iter()
-                .map(|mark| button_fg(&orchestrator_strip(&look, &row(*mark), None)))
-                .collect();
-            for (left, right) in fgs.iter().enumerate() {
-                for other in fgs.iter().skip(left + 1) {
-                    assert_ne!(
-                        right, other,
-                        "two verdicts share one colour on {}: {fgs:?}",
-                        palette.name,
-                    );
-                }
-            }
-            let statics: Vec<String> = marks
-                .iter()
-                .filter(|mark| **mark != Mark::Working)
-                .map(|mark| palette.accent(*mark).to_owned())
-                .collect();
-            for tick in 0..20 {
-                let pulsed = super::working_frame(tick, &palette, true).fg;
-                assert!(
-                    !statics.contains(&pulsed),
-                    "working pulse tick {tick} grazes a static verdict on {}: {pulsed}",
-                    palette.name,
-                );
-            }
-        }
-    }
-
     /// CLASS INVARIANT: every foreground the look draws on a ground it owns
     /// clears its WCAG 2.1 contrast bar — 3.0:1 for a mark cell (SC 1.4.11) and
     /// 4.5:1 for text (SC 1.4.3). A ratio implies inequality, so this subsumes
     /// the old "a foreground never equals its ground" guards.
     ///
-    /// The orchestrator button and the current-session fleet cell are why it
-    /// exists: the button's stable glyph carries its verdict in the foreground
-    /// colour alone, so a pair that grazes its ground is a verdict that
-    /// disappeared.
+    /// The current-session fleet cell is why it exists: a pair that grazes its
+    /// ground is a verdict that disappeared.
     ///
     /// The working pulse is measured as a CLASS — one reading per ground, at
     /// its PEAK frame (tick 10, where `working_frame` is bright). The dim
@@ -2805,7 +2611,7 @@ mod tests {
         let strip = fleet_strip(&Look::DEFAULT, &rows, None, &super::FleetOrder::EMPTY);
         assert!(
             !strip.contains("orchestrator"),
-            "orchestrator belongs beside the menu button: {strip}"
+            "the orchestrator is no row of the strip: {strip}"
         );
         assert!(
             strip.contains("+2"),
@@ -2816,7 +2622,7 @@ mod tests {
     #[test]
     fn terminal_titles_are_part_of_the_drawn_layout() {
         let options = super::layout_options(&Look::DEFAULT);
-        assert_eq!(super::FORMAT_VERSION, "22");
+        assert_eq!(super::FORMAT_VERSION, "23");
         assert_eq!(
             options
                 .iter()

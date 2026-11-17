@@ -41,12 +41,12 @@ use acts::{AutoAct, AutoSeat, armed_reading, auto_acts_with, reads_reset, waitin
 mod adoption;
 use adoption::{
     ADOPTION_TICK, Adoption, adoption_due, adoption_writes, enumerate_adoption, fleet_rows,
-    orchestrator_id_for, overlay_current_rank,
+    overlay_current_rank,
 };
 mod ticker;
 use ticker::{
-    MotionState, MotionVerdict, Pace, PaneMark, PublishedOrchestratorStrip, STEP_BACKSTOP,
-    StepPace, menu_open_expired, tick_pane_duties, wait_between_cycles, wait_between_cycles_with,
+    MotionState, MotionVerdict, Pace, PaneMark, STEP_BACKSTOP, StepPace, menu_open_expired,
+    tick_pane_duties, wait_between_cycles, wait_between_cycles_with,
 };
 mod quota_carry;
 pub(crate) use quota_carry::in_lead_pair;
@@ -1893,6 +1893,25 @@ pub fn continuation(meta_error: Option<io::ErrorKind>, session: &StopProbe) -> C
     }
 }
 
+/// EVERY session-scoped value this daemon publishes, the three attention
+/// options included: only a live daemon can vouch for any of them, and every
+/// OTHER session on the server reads the rank and the strip. The two RETIRED
+/// orchestrator options stay named: a session an older core dressed still
+/// carries them, and the retraction is what unsets them (human ruling 1a,
+/// 2026-11-17).
+const RETRACTED_SESSION_OPTIONS: [&str; 10] = [
+    tmux::WATCHDOG_STATUS_OPTION,
+    theme::ATTENTION_GLYPH_OPTION,
+    theme::ATTENTION_RANK_OPTION,
+    theme::ATTENTION_STYLE_OPTION,
+    theme::AGENTS_OPTION,
+    theme::FLEET_STRIP_OPTION,
+    theme::RETIRED_ORCHESTRATOR_STRIP_OPTION,
+    theme::RETIRED_ORCHESTRATOR_ID_OPTION,
+    theme::GOAL_OPTION,
+    theme::VERSION_OPTION,
+];
+
 /// Remove everything this daemon published, and report whether it all came off.
 pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str) -> bool {
     let Some(session_id) = transport::observe_session_id(server, session) else {
@@ -1901,24 +1920,11 @@ pub(crate) fn clear_published(server: &crate::inventory::ServerId, session: &str
     // `&=`, NEVER `&&` and never an early return: every option must still be
     // attempted after one of them fails.
     let mut ok = true;
-    // EVERY session-scoped value this daemon publishes, the three attention
-    // options included: only a live daemon can vouch for any of them, and every
-    // OTHER session on the server reads the rank and the strip. A caller whose
-    // session is still RUNNING puts the launch seed back over the three,
-    // immediately after the retraction — see `seed_unwatched` below for why an
-    // unwatched session says Stale rather than nothing.
-    for name in [
-        tmux::WATCHDOG_STATUS_OPTION,
-        theme::ATTENTION_GLYPH_OPTION,
-        theme::ATTENTION_RANK_OPTION,
-        theme::ATTENTION_STYLE_OPTION,
-        theme::AGENTS_OPTION,
-        theme::FLEET_STRIP_OPTION,
-        theme::ORCHESTRATOR_STRIP_OPTION,
-        theme::ORCHESTRATOR_ID_OPTION,
-        theme::GOAL_OPTION,
-        theme::VERSION_OPTION,
-    ] {
+    // A caller whose session is still RUNNING puts the launch seed back over
+    // the three attention options, immediately after the retraction — see
+    // `seed_unwatched` below for why an unwatched session says Stale rather
+    // than nothing.
+    for name in RETRACTED_SESSION_OPTIONS {
         ok &= transport::clear_option(server, OptionScope::Session, &session_id, name);
     }
     // The branch pair is published by THIS daemon too, so it is retracted with

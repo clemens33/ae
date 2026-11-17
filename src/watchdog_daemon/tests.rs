@@ -3882,54 +3882,6 @@ fn motion_off_never_ticks_faster_than_the_observation_cadence() {
     );
 }
 
-#[test]
-fn current_orchestrator_publishes_its_segment_and_keeps_it_on_ticker() {
-    let session = |name: &str, id: &str, rank: &str| listed(name, id, rank);
-    let mut state = MotionState::default();
-    state.replace_observation(
-        vec![motion("%1", "lead")],
-        &[
-            session("worker", "$4", "1"),
-            session("orchestrator", "$7", "0"),
-        ],
-        &[],
-        "orchestrator",
-    );
-
-    let first = crate::tmux::set_options_args(&ServerId::Ambient, &state.step(&Look::DEFAULT));
-    assert!(
-        first
-            .iter()
-            .any(|word| word == crate::theme::ORCHESTRATOR_STRIP_OPTION),
-        "orchestrator option is published: {first:?}"
-    );
-    assert!(
-        first
-            .iter()
-            .any(|word| { word.contains("bg=#214283") && word.contains("range=session|$7") }),
-        "current orchestrator segment is published: {first:?}"
-    );
-    assert!(
-        first
-            .iter()
-            .any(|word| word == crate::theme::FLEET_STRIP_OPTION),
-        "fleet strip still publishes separately: {first:?}"
-    );
-    assert!(
-        !state
-            .published_fleet
-            .as_deref()
-            .is_some_and(|strip| strip.contains("orchestrator")),
-        "fleet strip excludes pinned orchestrator: {:?}",
-        state.published_fleet
-    );
-    let second = state.step(&Look::DEFAULT);
-    assert!(
-        second.is_empty(),
-        "unchanged current segment stays cached: {second:?}"
-    );
-}
-
 /// PIN: the ticker DRAWS the strip at motion cadence and reads no config to
 /// do it — it reuses the order the verdict cycle stored. Without that its
 /// frames would publish the unordered strip over the ordered one and the
@@ -3962,134 +3914,92 @@ fn the_ticker_keeps_the_order_the_verdict_cycle_stored() {
     );
 }
 
+/// HUMAN RULING 1a (2026-11-17): the orchestrator has no button, so what it is
+/// doing moves nothing a client can see. A fleet whose ONLY working row is the
+/// orchestrator must not wake the ticker: no 200 ms frames, no spin.
 #[test]
-fn verdict_cycle_current_orchestrator_publishes_segment_and_excludes_fleet_row() {
-    let sessions = [
-        listed("worker", "$4", "1"),
-        listed("orchestrator", "$7", "0"),
-    ];
+fn a_lone_working_orchestrator_animates_nothing() {
+    let observe = |state: &mut MotionState, rows: &[crate::tmux::FleetListingRow]| {
+        state.replace_observation(vec![motion("%1", "lead")], rows, &[], "worker");
+    };
     let mut state = MotionState::default();
-    state.replace_fleet(&sessions, &[], "orchestrator");
-    let mut writes = Vec::new();
-    state.push_fleet_write(&mut writes, &Look::DEFAULT, None);
-    let row = state
-        .fleet
-        .iter()
-        .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
-        .cloned();
-    assert!(state.push_orchestrator_strip_write(
-        &mut writes,
-        &Look::DEFAULT,
-        "$7",
-        row.as_ref(),
-        None,
-    ));
-    let args = crate::tmux::set_options_args(&ServerId::Ambient, &writes);
-    assert!(
-        args.iter()
-            .any(|word| word == crate::theme::ORCHESTRATOR_STRIP_OPTION)
+    observe(
+        &mut state,
+        &[
+            listed("worker", "$4", "0"),
+            listed("orchestrator", "$7", "2"),
+        ],
     );
-    assert!(
-        args.iter()
-            .any(|word| { word.contains("bg=#214283") && word.contains("range=session|$7") })
+    assert_eq!(
+        motion_cadence(&state),
+        Duration::from_millis(500),
+        "a working orchestrator is no reason for a 5 fps ticker"
     );
+    let first = state.step(&Look::DEFAULT);
+    assert_eq!(state.spin, 0, "the spin does not advance for it");
+    let args = crate::tmux::set_options_args(&ServerId::Ambient, &first);
     assert!(
-        !state
-            .published_fleet
-            .as_deref()
-            .is_some_and(|strip| strip.contains("orchestrator"))
+        !args.iter().any(|word| word.contains("range=session|$7")),
+        "no strip carries the orchestrator: {args:?}"
     );
-    assert!(!matches!(
-        state.published_orchestrator_strip,
-        super::PublishedOrchestratorStrip::Unset
-    ));
+
+    // CONTROL: a working ORDINARY session still pulses the strip.
+    let mut busy = MotionState::default();
+    observe(
+        &mut busy,
+        &[
+            listed("worker", "$4", "0"),
+            listed("builder", "$5", "2"),
+            listed("orchestrator", "$7", "0"),
+        ],
+    );
+    assert_eq!(motion_cadence(&busy), Duration::from_millis(200));
+    let _ = busy.step(&Look::DEFAULT);
+    assert_ne!(busy.spin, 0, "a working builder row moves the spin");
 }
 
+/// HUMAN RULING 1a: neither the ticker nor the static observer ever publishes
+/// an orchestrator option again, whatever the fleet looks like and whichever
+/// session draws it — the orchestrator's own included.
 #[test]
-fn orchestrator_id_targets_other_sessions_only() {
+fn no_ticker_publishes_an_orchestrator_option() {
     let fleet = [
         listed("worker", "$4", "2"),
-        listed("orchestrator", "$7", "1"),
+        listed("orchestrator", "$7", "2"),
     ];
-    assert_eq!(super::orchestrator_id_for(&fleet, "worker"), Some("$7"));
-    assert_eq!(
-        super::orchestrator_id_for(&fleet, "orchestrator"),
-        None,
-        "the orchestrator has nowhere else to jump"
-    );
-    assert_eq!(
-        super::orchestrator_id_for(&fleet[..1], "worker"),
-        None,
-        "a fleet without an orchestrator leaves the option unset"
-    );
+    for current in ["worker", "orchestrator"] {
+        let mut animated = MotionState::default();
+        animated.replace_observation(vec![motion("%1", "lead")], &fleet, &[], current);
+        let mut still = animated.clone();
+        for (name, writes) in [
+            ("step", animated.step(&Look::DEFAULT)),
+            ("step_static", still.step_static(&Look::DEFAULT)),
+        ] {
+            let args = crate::tmux::set_options_args(&ServerId::Ambient, &writes);
+            assert!(
+                args.iter()
+                    .any(|word| word == crate::theme::FLEET_STRIP_OPTION),
+                "{name} on {current}: the fleet strip still publishes: {args:?}"
+            );
+            assert!(
+                !args.iter().any(|word| word.starts_with("@ae_orchestrator")),
+                "{name} on {current}: no orchestrator option: {args:?}"
+            );
+        }
+    }
 }
 
+/// UPGRADE CONDITION (lead, 2026-11-17): sessions that ran an older core still
+/// carry both retired options, so the watchdog's retraction keeps unsetting
+/// them until a later cleanup removes the names.
 #[test]
-fn an_unchanged_orchestrator_target_never_writes_or_clears_again() {
-    let mut state = MotionState::default();
-    let mut writes = Vec::new();
-    assert!(state.push_orchestrator_id_write(&mut writes, "$4", Some("$7")));
-    assert_eq!(writes.len(), 1);
-    assert!(!state.push_orchestrator_id_write(&mut writes, "$4", Some("$7")));
-    assert_eq!(writes.len(), 1, "unchanged target is a no-op");
-
-    let mut transitions = MotionState::default();
-    let mut writes = Vec::new();
-    assert!(transitions.push_orchestrator_id_write(&mut writes, "$4", Some("$7")));
-    writes.clear();
-    assert!(transitions.push_orchestrator_id_write(&mut writes, "$4", None));
-    assert_eq!(writes.len(), 0, "an unset target has no set write");
-    assert!(!transitions.push_orchestrator_id_write(&mut writes, "$4", None));
-    assert_eq!(writes.len(), 0, "an unset target has no set write");
-    assert!(transitions.push_orchestrator_id_write(&mut writes, "$4", Some("$9")));
-    assert_eq!(writes.len(), 1, "a new target gets one set write");
-}
-
-#[test]
-fn orchestrator_strip_publishes_only_when_present() {
-    let session = |name: &str, id: &str, rank: &str| listed(name, id, rank);
-    let mut with = MotionState::default();
-    with.replace_fleet(
-        &[
-            session("worker", "$4", "2"),
-            session("orchestrator", "$7", "3"),
-        ],
-        &[],
-        "worker",
-    );
-    let mut writes = Vec::new();
-    let row = with
-        .fleet
-        .iter()
-        .find(|row| row.name == crate::orchestrator::ORCHESTRATOR_SESSION)
-        .cloned();
-    assert!(with.push_orchestrator_strip_write(
-        &mut writes,
-        &Look::DEFAULT,
-        "$4",
-        row.as_ref(),
-        None,
-    ));
-    let args = crate::tmux::set_options_args(&ServerId::Ambient, &writes);
-    assert!(
-        args.iter()
-            .any(|word| word == crate::theme::ORCHESTRATOR_STRIP_OPTION)
-    );
-    assert_eq!(
-        with.published_orchestrator_strip,
-        super::PublishedOrchestratorStrip::Value(crate::theme::orchestrator_strip(
-            &Look::DEFAULT,
-            row.as_ref().expect("orchestrator row is in the fleet"),
-            None,
-        )),
-        "the published value is the theme's segment for the found row",
-    );
-
-    let mut without = MotionState::default();
-    without.replace_fleet(&[session("worker", "$4", "2")], &[], "worker");
-    let mut writes = Vec::new();
-    assert!(without.push_orchestrator_strip_write(&mut writes, &Look::DEFAULT, "$4", None, None,));
-    assert!(writes.is_empty(), "caller performs the one required unset");
+fn the_retraction_still_unsets_the_two_retired_orchestrator_options() {
+    for name in ["@ae_orchestrator_strip", "@ae_orchestrator_id"] {
+        assert!(
+            super::RETRACTED_SESSION_OPTIONS.contains(&name),
+            "{name} must stay in the retraction list"
+        );
+    }
 }
 
 // -----------------------------------------------------------------------

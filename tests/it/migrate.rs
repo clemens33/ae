@@ -1161,7 +1161,6 @@ fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
     assert!(
         down.contains("#{||:#{==:#{mouse_status_range},ae}")
             && down.contains("#{==:#{mouse_status_range},ae-more}")
-            && !down.contains("@ae_orchestrator_id")
             && down.contains("mouse_status_range},window")
             && down.contains("mouse_status_range},session")
             && down.contains("select-window -t #{window_id}")
@@ -1819,7 +1818,7 @@ fn a_running_sessions_daemons_are_restarted_on_the_new_core() {
     clippy::too_many_lines,
     reason = "one real running-session migration from planted old layout through watchdog rewrite"
 )]
-fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range() {
+fn upgrading_a_running_session_rewrites_the_menu_range_and_draws_no_orchestrator_button() {
     let scratch = tmux_scratch("running-look");
     if !tmux_present(&scratch) {
         let _ = remove(&scratch);
@@ -1857,31 +1856,13 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
             "plant {name}"
         );
     }
-    let (_, orchestrator) = tmux(
-        &socket,
-        &scratch,
-        &[
-            "show-option",
-            "-v",
-            "-t",
-            session,
-            ae::theme::ORCHESTRATOR_ID_OPTION,
-        ],
-    );
-    assert!(
-        orchestrator.trim().is_empty(),
-        "no orchestrator: {orchestrator}"
-    );
-
     let actual_core = Path::new(env!("CARGO_BIN_EXE_ae"));
     let notes = ae::migrate::onto(&root, actual_core, ae::VERSION).expect("the sweep");
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut line = String::new();
     let mut stamp = String::new();
     let fleet_prefix = format!(
-        "#[align=left fg=#808080 bg=#313335]#[range=user|ae]#{{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],}} ≡#[norange] #{{?#{{{}}},#{{{}}},}}#{{{}}}",
-        ae::theme::ORCHESTRATOR_STRIP_OPTION,
-        ae::theme::ORCHESTRATOR_STRIP_OPTION,
+        "#[align=left fg=#808080 bg=#313335]#[range=user|ae]#{{?@ae_menu_open,#[bg=#214283 fg=#A9B7C6],}} ≡#[norange] #{{{}}}",
         ae::theme::FLEET_STRIP_OPTION,
     );
     let migrated = |line: &str, stamp: &str| {
@@ -1893,8 +1874,8 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
                         "#[range=user|ae-settings]#{?@ae_settings_open,#[bg=#214283 fg=#A9B7C6],} ⚙ #[norange]\n",
                     )
                     && !right.contains(ae::theme::VERSION_OPTION)
-                    && !right.contains(ae::theme::ORCHESTRATOR_STRIP_OPTION)
-                    && stamp.trim() == "22:darcula:on:on"
+                    && !line.contains("orchestrator")
+                    && stamp.trim() == "23:darcula:on:on"
             })
     };
     while Instant::now() < deadline {
@@ -1927,7 +1908,7 @@ fn upgrading_a_running_session_without_an_orchestrator_rewrites_the_menu_range()
     );
     assert_eq!(
         stamp.trim(),
-        "22:darcula:on:on",
+        "23:darcula:on:on",
         "the new format stamp did not land"
     );
     assert_ae_status_bindings(&socket, &scratch);

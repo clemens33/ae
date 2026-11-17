@@ -232,8 +232,8 @@ The selected window uses the palette's selection ground and ink. The right
 side carries the branch, goal, shortened path and watch segment. The session
 name is shown once in the fleet strip below.
 
-`status-format[1]` — the bottom-left menu glyph comes first, then the optional
-orchestrator button, then the **fleet strip**: every non-orchestrator ae
+`status-format[1]` — the bottom-left menu glyph comes first, then the
+**fleet strip**: every non-orchestrator ae
 session in the order it was created,
 each drawn as its live glyph, one blank, then its name. A session keeps its
 place while its attention changes, so a click never moves the thing that was
@@ -241,13 +241,10 @@ clicked; the current session uses the palette's selection ground, ink and
 weight, never extra leading or trailing blanks, so selection never changes row
 width. One published rank is shared: waiting-agent ties with working at 2, so
 another session's strip shows a waiting-agent session as working while its own
-border, list line and picker rows show `◔`. The orchestrator button is the ONE place the seat
-is drawn — exactly three cells (one blank, the stable `◆` glyph, one blank;
-`o` with icons off) inside a tmux `range=session` target for the
-canonical `orchestrator` session, with the verdict in the foreground colour.
-When no orchestrator is published the line is byte-identical to the
-menu-plus-fleet line. When current, selection colours mark it in
-place; it never jumps into the fleet strip. Each strip entry is a tmux
+border, list line and picker rows show `◔`. The orchestrator is drawn nowhere
+on the strip line: no row and no button (human ruling 1a, 2026-11-17), as the
+`ae app` session list never lists it. Its own session's strip lists the other
+sessions, and `prefix O` jumps to the control seat. Each strip entry is a tmux
 `range=session` region, so
 ae's root left-click binding sends it through tmux's default
 `switch-client -t #{session_id}` action. Window ranges use
@@ -332,8 +329,7 @@ pane still belongs to the chosen session; the session's own focus hook, which
 tmux runs after that select, has the last word and lands the client on the
 live chat, else the lead. An agent row's select waits in `run-shell -C` until
 that hook has run, so the client rests on that agent's pane, again only while
-it still belongs to the chosen session. The orchestrator's own segment
-remains its separate session range.
+it still belongs to the chosen session.
 
 Before drawing, the picker fits its title and rows to the captured client in
 terminal cells. It draws the current session's roster or collapses every agent
@@ -401,14 +397,14 @@ lines; `[workspace] theme = off` leaves the user's title settings untouched.
 | `@ae_palette`, `@ae_icons`, `@ae_look`, `@ae_motion` | session | launch, rename |
 | `@ae_look_stamp`, `@ae_paths` | session | launch, rename, watchdog |
 | `@ae_attn_glyph`, `@ae_attn_rank`, `@ae_attn_style` | session | launch seeds them once, watchdog owns them after |
-| `@ae_fleet_strip`, `@ae_orchestrator_strip`, `@ae_watchdog_status` | session | watchdog |
+| `@ae_fleet_strip`, `@ae_watchdog_status` | session | watchdog |
 | `@ae_agents` | session | watchdog |
 | `@ae_goal_status` | session | watchdog |
 | `@ae_version` | session | watchdog (the core it runs on, `ae <version>`; the exact client session's settings-menu title) |
 | `@ae_menu_open` | session | picker sets/refreshes it; settings open, picker rows and watchdog clear it |
 | `@ae_settings_open` | session | settings sets/refreshes it; picker open, settings rows and watchdog clear it |
 | `@ae_main_pane` | session | launch, resume, upgrade (after membership proof) |
-| `@ae_orchestrator_id` | session | watchdog (the local fleet's orchestrator target) |
+| `@ae_orchestrator_strip`, `@ae_orchestrator_id` | session | RETIRED, no writer since FORMAT_VERSION 23; the watchdog retraction still unsets them on sessions an older core dressed |
 | `@ae_branch_status`, `@ae_branch_name` | session | watchdog |
 | `@ae_window_agents` | window | watchdog |
 | `@ae_window_plumbing` | monitor window | launch, watchdog lifecycle |
