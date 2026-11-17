@@ -422,19 +422,52 @@ fn same_client(asked: Option<&str>, recorded: &crate::meta::RecordedClient) -> b
 }
 
 /// The command the seat's recorded profile resolves to NOW, exactly as `_run`
-/// resolves it — a recorded client override included — or `None`.
+/// resolves it — a recorded client override included — or `None`, a refused
+/// labeled seat included ([`source_command`]).
 fn recorded_command(dir: &Path, bytes: &[u8], seated: &crate::meta::RosterEntry) -> Option<String> {
-    let cfg = identity_config(dir, bytes).ok()?;
-    crate::run::read_seat_command(
+    source_command(dir, bytes, seated).ok().flatten()
+}
+
+/// [`recorded_command`] with the refusal kept: a LABELED spawned seat is judged
+/// by the one gate every start of it takes
+/// ([`crate::session_launch::labeled_spawned_command`], the global config
+/// alone), and its refusal is the `Err`. The move's admission refuses on it
+/// BEFORE anything is stopped, because the dead proof after the stop reads the
+/// seat through the same gate and must never be the first to refuse.
+///
+/// # Errors
+///
+/// The labeled-seat refusal clause, for the caller's `Error: … Nothing was
+/// reseated.` frame.
+fn source_command(
+    dir: &Path,
+    bytes: &[u8],
+    seated: &crate::meta::RosterEntry,
+) -> Result<Option<String>, String> {
+    if crate::session_launch::is_labeled_spawned(seated) {
+        return crate::session_launch::labeled_spawned_command(
+            bytes,
+            seated,
+            crate::doors::home().as_deref(),
+        )
+        .map(|command| Some(command.as_str().to_owned()));
+    }
+    let Ok(cfg) = identity_config(dir, bytes) else {
+        return Ok(None);
+    };
+    let Some(profile) = seated.profile.as_deref() else {
+        return Ok(None);
+    };
+    Ok(crate::run::read_seat_command(
         &cfg,
-        seated.profile.as_deref()?,
+        profile,
         &seated.name,
         &seated.slot,
         &seated.client,
         crate::doors::home().as_deref(),
     )
     .ok()
-    .map(|command| command.as_str().to_owned())
+    .map(|command| command.as_str().to_owned()))
 }
 
 /// The model and effort each profile sets, for the line naming a kept move.
@@ -1785,7 +1818,13 @@ fn admit<'w>(
             return Err(refused);
         }
     };
-    let from_command = recorded_command(&dir, &bytes, seated);
+    let from_command = match source_command(&dir, &bytes, seated) {
+        Ok(command) => command,
+        Err(why) => {
+            writeln!(err, "Error: {why}. Nothing was reseated.")?;
+            return Err(refused);
+        }
+    };
     // The moment of a human's choice: say once if the seat has no exit off
     // the account it moves to — a `profile@client` move's own, not the
     // profile's default. The watchdog's own move is no choice of anyone's.
@@ -2089,9 +2128,28 @@ fn stop_and_prove_dead(
     };
     let broke = past_the_stop(stopped);
     let Some(before) = crate::seat_relaunch::prove_dead(dir, target, RESEAT_VERB, err)? else {
+        if let Some(line) = stopped_unmoved(stopped, &seat.entry.name, target, &seat.from) {
+            writeln!(err, "{line}")?;
+        }
         return Err(Halt::End(broke));
     };
     Ok((before, broke))
+}
+
+/// PURE: the line a move owes when its stop ran and the dead proof then
+/// refused. The tool is gone from the pane, and nothing was published, so
+/// the seat still records `from` and a relaunch starts it where it stood. A
+/// seat that was already dead was not touched: its refusal says enough.
+fn stopped_unmoved(stopped: bool, session: &str, target: &Target, from: &str) -> Option<String> {
+    stopped.then(|| {
+        format!(
+            "'{agent}' was stopped in place (pane {pane}) and still records '{from}': nothing \
+             was moved. Repair what the line above names (for a labeled seat, the session's \
+             global [clients] row or the recorded store), then run: ae @{session} relaunch {agent}",
+            agent = target.agent,
+            pane = target.pane,
+        )
+    })
 }
 
 /// What became of the conversation, past the dead proof.
@@ -4128,6 +4186,33 @@ mod tests {
         use super::{CauseClass, Ended, past_the_stop};
         assert_eq!(past_the_stop(true), Ended::Failed);
         assert_eq!(past_the_stop(false), Ended::Refused(CauseClass::Other));
+    }
+
+    // Oracle: lead ruling ae-20261117T174812Z-5185c6d4 — a config edit between
+    // admit and the dead proof may refuse only after the stop; that refusal says
+    // the tool was stopped, the seat still records its old identity, and the
+    // remedy is the global config, then relaunch. An untouched seat gets no line.
+    #[test]
+    fn a_refusal_after_this_move_stopped_the_tool_names_the_stop_and_the_relaunch() {
+        let target = crate::seat_relaunch::Target {
+            agent: "helper".to_owned(),
+            slot: "spawned.0".to_owned(),
+            pane: "%3".to_owned(),
+            server: crate::inventory::ServerId::Ambient,
+        };
+        assert_eq!(
+            super::stopped_unmoved(true, "cfsession", &target, "p@carry").as_deref(),
+            Some(
+                "'helper' was stopped in place (pane %3) and still records 'p@carry': nothing \
+                 was moved. Repair what the line above names (for a labeled seat, the \
+                 session's global [clients] row or the recorded store), then run: ae \
+                 @cfsession relaunch helper"
+            )
+        );
+        assert_eq!(
+            super::stopped_unmoved(false, "cfsession", &target, "p@carry"),
+            None
+        );
     }
 
     // Oracle: docs/internals/reseat.md crash windows and the carry ladder — a

@@ -149,6 +149,8 @@ mod obsreask_spec;
 mod oc2b_spec;
 mod pairguard_after;
 mod pairguard_spec;
+mod pairpin_relaunch_spec;
+mod pairpin_reseat_guard_spec;
 mod parity;
 mod phase2;
 mod phase3;

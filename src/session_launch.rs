@@ -2838,77 +2838,163 @@ fn judge_spawned_labels(
     let labeled: Vec<&meta::RosterEntry> = parsed
         .roster()
         .iter()
-        .filter(|entry| entry.slot.starts_with("spawned."))
-        .filter(|entry| matches!(entry.client, crate::meta::RecordedClient::Label(_)))
+        .filter(|entry| is_labeled_spawned(entry))
         .collect();
     let Some(first) = labeled.first() else {
         return Ok(Vec::new());
     };
-    let global = crate::lifecycle::meta_value(&bytes, "config");
-    if global.is_empty() {
-        return Err(SeatOverrideRefusal::Failed(unavailable_authority_refusal(
-            session,
-            first,
-            "the session records no global config",
-        )));
-    }
-    let cfg = config::read_identity(Some(Path::new(&global)), None).map_err(|why| {
-        SeatOverrideRefusal::Failed(unavailable_authority_refusal(
-            session,
-            first,
-            &format!("its global config {global} cannot be used ({why})"),
-        ))
+    let cfg = global_authority(&bytes).map_err(|why| {
+        SeatOverrideRefusal::Failed(unavailable_authority_refusal(session, first, &why))
     })?;
-    let profiles: Vec<&str> = cfg.profiles.iter().map(|(name, _)| name.as_str()).collect();
-    let clients: Vec<&str> = cfg.clients.iter().map(|(name, _)| name.as_str()).collect();
-    let (known_profiles, known_clients) = (known_list(&profiles), known_list(&clients));
+    let known = known_names(&cfg);
     let mut judged = Vec::with_capacity(labeled.len());
     for entry in labeled {
-        let RecordedSelection::Label(label) =
-            recorded_selection(session, &cfg, entry).map_err(SeatOverrideRefusal::Failed)?
-        else {
-            continue;
-        };
-        let profile = entry.profile.as_deref().unwrap_or_default();
-        let command = if cfg.profile(profile).is_none() {
-            None
-        } else {
-            let (command, lexed) = resolve_client_override(
-                &cfg,
-                &entry.name,
-                profile,
-                &label,
-                home,
-                &known_profiles,
-                &known_clients,
-            )?;
-            refuse_recorded_client_conflict(
-                session,
-                &entry.name,
-                profile,
-                Some(&label),
-                entry,
-                &cfg,
-                &command,
-                lexed.tool(),
-                home,
-            )?;
-            let recorded = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
-            if recorded != lexed.tool() {
-                return Err(SeatOverrideRefusal::Usage(cross_tool_refusal(
-                    &entry.name,
-                    recorded,
-                    lexed.tool(),
-                )));
-            }
-            Some(command)
-        };
-        judged.push(JudgedSpawned {
-            identity: Spawned::of(entry, Some(label)).identity(),
-            command,
-        });
+        if let Some(seat) = judge_spawned_label(session, &cfg, entry, home, &known)? {
+            judged.push(seat);
+        }
     }
     Ok(judged)
+}
+
+/// Whether `entry` is a LABELED spawned seat: a `spawned.<n>` row that records
+/// a well-formed `client.<slot>` label. The one predicate every start of such
+/// a seat asks — the resume, a relaunch, a snapshot-less `_run` and a reseat's
+/// admission of it — before it judges the pair on the global config alone.
+pub(crate) fn is_labeled_spawned(entry: &meta::RosterEntry) -> bool {
+    entry.slot.starts_with("spawned.")
+        && matches!(entry.client, crate::meta::RecordedClient::Label(_))
+}
+
+/// The session's recorded GLOBAL identity, read from the meta `bytes` alone: the
+/// only config a labeled spawned seat's pair was approved by, never an overlay.
+///
+/// # Errors
+///
+/// Why there is none to judge in: no `config` row, or a file that cannot be used.
+fn global_authority(bytes: &[u8]) -> Result<IdentityConfig, String> {
+    let global = crate::lifecycle::meta_value(bytes, "config");
+    if global.is_empty() {
+        return Err("the session records no global config".to_owned());
+    }
+    config::read_identity(Some(Path::new(&global)), None)
+        .map_err(|why| format!("its global config {global} cannot be used ({why})"))
+}
+
+/// The known profile and client names of `cfg`, as the adapter gate words them.
+fn known_names(cfg: &IdentityConfig) -> (String, String) {
+    let profiles: Vec<&str> = cfg.profiles.iter().map(|(name, _)| name.as_str()).collect();
+    let clients: Vec<&str> = cfg.clients.iter().map(|(name, _)| name.as_str()).collect();
+    (known_list(&profiles), known_list(&clients))
+}
+
+/// Judge ONE labeled spawned seat against `cfg`, the session's recorded GLOBAL
+/// identity: the recorded client must still be a global `[clients]` row (else
+/// the removed-client refusal, ahead of any missing profile); a profile the
+/// global config lacks judges `command: None`; any other pair passes the
+/// launch's adapter gate, the recorded store re-take and the recorded harness.
+/// `None` for a seat that records no label.
+fn judge_spawned_label(
+    session: &str,
+    cfg: &IdentityConfig,
+    entry: &meta::RosterEntry,
+    home: Option<&Path>,
+    (known_profiles, known_clients): &(String, String),
+) -> Result<Option<JudgedSpawned>, SeatOverrideRefusal> {
+    let RecordedSelection::Label(label) =
+        recorded_selection(session, cfg, entry).map_err(SeatOverrideRefusal::Failed)?
+    else {
+        return Ok(None);
+    };
+    let profile = entry.profile.as_deref().unwrap_or_default();
+    let command = if cfg.profile(profile).is_none() {
+        None
+    } else {
+        let (command, lexed) = resolve_client_override(
+            cfg,
+            &entry.name,
+            profile,
+            &label,
+            home,
+            known_profiles,
+            known_clients,
+        )?;
+        refuse_recorded_client_conflict(
+            session,
+            &entry.name,
+            profile,
+            Some(&label),
+            entry,
+            cfg,
+            &command,
+            lexed.tool(),
+            home,
+        )?;
+        let recorded = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or_default());
+        if recorded != lexed.tool() {
+            return Err(SeatOverrideRefusal::Usage(cross_tool_refusal(
+                &entry.name,
+                recorded,
+                lexed.tool(),
+            )));
+        }
+        Some(command)
+    };
+    Ok(Some(JudgedSpawned {
+        identity: Spawned::of(entry, Some(label)).identity(),
+        command,
+    }))
+}
+
+/// The command a LABELED spawned seat ([`is_labeled_spawned`]) may run when it
+/// starts outside a resume — a relaunch, a `_run` with no command snapshot — and
+/// the command a reseat's admission judges its source by: the resume's own
+/// judgement ([`judge_spawned_label`]) on the session's recorded GLOBAL config
+/// alone, never a project overlay. A profile that config lacks refuses here,
+/// because only a resume can keep a seat unstarted.
+///
+/// # Errors
+///
+/// One clause (no `Error:` lead, no final period, for the caller's own frame)
+/// naming the seat, its client, the judge's reason and both remedies.
+pub(crate) fn labeled_spawned_command(
+    bytes: &[u8],
+    entry: &meta::RosterEntry,
+    home: Option<&Path>,
+) -> Result<config::ResolvedCommand, String> {
+    let session = crate::lifecycle::meta_value(bytes, "session");
+    let label = match &entry.client {
+        crate::meta::RecordedClient::Label(label) => label.as_str(),
+        _ => "",
+    };
+    let refuse = |why: &str| {
+        let why = why.trim();
+        let why = why
+            .strip_prefix("Error: ")
+            .unwrap_or(why)
+            .trim_end_matches('.');
+        format!(
+            "seat '{}' ({}) records client '{label}', which the session's global config no longer \
+             runs: {why} — restore the global [clients] row or the recorded store, or retire the \
+             seat and spawn it again",
+            entry.name, entry.slot
+        )
+    };
+    let refusal = |why: SeatOverrideRefusal| match why {
+        SeatOverrideRefusal::Usage(line) | SeatOverrideRefusal::Failed(line) => refuse(&line),
+    };
+    let cfg = global_authority(bytes).map_err(|why| refuse(&why))?;
+    match judge_spawned_label(&session, &cfg, entry, home, &known_names(&cfg)) {
+        Ok(Some(JudgedSpawned {
+            command: Some(command),
+            ..
+        })) => Ok(command),
+        Ok(Some(JudgedSpawned { command: None, .. })) => Err(refuse(&format!(
+            "its global config defines no profile '{}'",
+            entry.profile.as_deref().unwrap_or_default()
+        ))),
+        Ok(None) => Err(refuse("it records no client label")),
+        Err(why) => Err(refusal(why)),
+    }
 }
 
 /// The command a restored spawned seat runs. A labeled seat runs ONLY what its

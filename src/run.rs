@@ -2241,17 +2241,14 @@ pub(crate) fn read_seat(
         return Err(format!("no seat '{slot}' in {}", dir.display()));
     }
     let roster_entry = parsed_meta.roster().iter().find(|entry| entry.slot == slot);
-    let config_home = roster_entry
-        .as_ref()
-        .map(|entry| entry.config_home.clone())
-        .unwrap_or_default();
-    let config_home_base = roster_entry
-        .as_ref()
-        .map(|entry| entry.config_home_base.clone())
-        .unwrap_or_default();
-    let recorded_client = roster_entry
-        .as_ref()
-        .map(|entry| entry.client.clone())
+    let (config_home, config_home_base, recorded_client) = roster_entry
+        .map(|entry| {
+            (
+                entry.config_home.clone(),
+                entry.config_home_base.clone(),
+                entry.client.clone(),
+            )
+        })
         .unwrap_or_default();
     let profile = value(&format!("profile.{slot}"));
     if profile.is_empty() {
@@ -2274,14 +2271,23 @@ pub(crate) fn read_seat(
         (!global.is_empty()).then(|| Path::new(&global)),
         local.as_deref(),
     );
-    let (identity_global, identity_local) = identity_config_pair(dir, local.as_deref(), &global);
+    // A LABELED spawned seat is judged on the global config alone: no overlay is
+    // read for it, here or by the follow and effort-twin lookups of this pair.
+    let labeled = roster_entry.filter(|entry| crate::session_launch::is_labeled_spawned(entry));
+    let (identity_global, identity_local) = if labeled.is_some() {
+        ((!global.is_empty()).then(|| PathBuf::from(&global)), None)
+    } else {
+        identity_config_pair(dir, local.as_deref(), &global)
+    };
+    let home = crate::doors::home();
     let command = if let Some(command) = command_snapshot {
         crate::config::IdentityConfig::resolved_snapshot(command)
+    } else if let Some(entry) = labeled {
+        crate::session_launch::labeled_spawned_command(&bytes, entry, home.as_deref())?
     } else {
         let cfg =
             crate::config::read_identity(identity_global.as_deref(), identity_local.as_deref())
                 .map_err(|why| why.to_string())?;
-        let home = crate::doors::home();
         read_seat_command(
             &cfg,
             &profile,
@@ -2359,6 +2365,9 @@ fn working_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod autochoice_spec;
+
+#[cfg(test)]
+mod labeled_tests;
 
 #[cfg(test)]
 mod tests {
