@@ -164,7 +164,7 @@ pub(super) fn auto_acts_with(
             match flying {
                 Some(open) => (open.trigger == Trigger::Return).then_some(open),
                 None if pressed => None,
-                None => match return_route(seat, home(seat), back) {
+                None => match return_route(seat, home(seat), back, (events, session)) {
                     Homeward::Act(act) => {
                         acts.push(act);
                         continue;
@@ -182,13 +182,15 @@ pub(super) fn auto_acts_with(
                     acts.push(act);
                     continue;
                 }
-                Headroom::Decide(None) if !pressed => match return_route(seat, home(seat), back) {
-                    Homeward::Act(act) => {
-                        acts.push(act);
-                        continue;
+                Headroom::Decide(None) if !pressed => {
+                    match return_route(seat, home(seat), back, (events, session)) {
+                        Homeward::Act(act) => {
+                            acts.push(act);
+                            continue;
+                        }
+                        Homeward::Decide(found) => found,
                     }
-                    Homeward::Decide(found) => found,
-                },
+                }
                 Headroom::Decide(found) => found,
             }
         };
@@ -331,11 +333,12 @@ enum Homeward {
 /// chain whose origin proves room opens one where none is — or, past
 /// [`crate::autoreseat::MAX_RETURNS`], holds once instead — and an open one is
 /// decided only while that proof stands. Anything less is silent, except a
-/// root the pair gate refuses, which is decided once so its refusal is said.
+/// root the pair gate refuses, which is decided until its refusal is said.
 fn return_route(
     seat: &AutoSeat,
     read: Option<&crate::autoreseat::leg::HomeRead>,
     back: Option<crate::autoreseat::Episode>,
+    (events, session): (&[Event], &str),
 ) -> Homeward {
     let Some(read) = read else {
         return Homeward::Decide(None);
@@ -343,9 +346,10 @@ fn return_route(
     let home = &read.home;
     let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
     // A root that carried a client the pair gate refuses goes to the trigger
-    // ONCE: its plan closes the return `refused` with the gate's reason, and a
-    // refused round is never tried again, so the seat holds on its substitute
-    // with one record until a human moves it or the chain ends (#296).
+    // until the episode holds its ONE refusal of that root, whatever other
+    // rounds failed or were refused before (their cooldowns still apply);
+    // then the seat holds on its substitute until a human moves it or the
+    // chain ends (#296).
     if read.refusal.is_some() {
         return match back {
             None => Homeward::Act(AutoAct::OpenReturn {
@@ -353,8 +357,17 @@ fn return_route(
                 agent,
                 cause: crate::autoreseat::refused_return_words(&home.origin),
             }),
-            Some(open) if open.rounds == 0 => Homeward::Decide(Some(open)),
-            Some(_) => Homeward::Decide(None),
+            Some(open)
+                if crate::autoreseat::leg::root_refusal_told(
+                    events,
+                    (session, &seat.slot, &seat.agent),
+                    open.key,
+                    &home.origin,
+                ) =>
+            {
+                Homeward::Decide(None)
+            }
+            Some(open) => Homeward::Decide(Some(open)),
         };
     }
     match (back, home.ready.as_ref()) {

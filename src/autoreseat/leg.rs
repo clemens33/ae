@@ -152,27 +152,39 @@ pub(crate) fn tagged(summary: &str, cause: &str) -> String {
 /// episode's opener quoted after it like every record. It is the third rule
 /// beside [`bounded`]'s two: KEPT WHOLE up to `REASON_MAX`, its cut marked
 /// `…`, because it is the human's only clue why the seat did not go home (lead
-/// ruling ae-20261117T175826Z-d479b819). Every other record keeps
-/// [`SUMMARY_CHARS`]; the same one-line cleaning applies to all.
+/// ruling ae-20261117T175826Z-d479b819). The opener is quoted in at most
+/// [`SUMMARY_CHARS`], its own cut marked, so the reason always keeps the rest.
+/// Every other record keeps [`SUMMARY_CHARS`]; the same one-line cleaning
+/// applies to all.
 pub(crate) fn refused_return(origin: &str, why: &str, cause: &str) -> String {
     let tag = if cause.is_empty() {
         String::new()
     } else {
-        let clean = crate::state::summary_of(&crate::seatpack::neutralise(cause));
-        format!(" ({clean})")
+        let quoted = clipped(&crate::seatpack::neutralise(cause), SUMMARY_CHARS - 3);
+        format!(" ({quoted})")
     };
-    let head = crate::seatpack::neutralise(
-        &CauseClass::Other.lead(&format!("return to {origin} refused: {why}")),
-    );
     let room = crate::state::REASON_MAX.saturating_sub(tag.chars().count());
-    // `summary_of` maps one char to one and stops at `REASON_MAX`, so the
-    // whole head's count says whether a cut is due and must be marked.
-    let line = crate::state::summary_of(&head);
-    if head.chars().count() <= room {
-        return format!("{line}{tag}");
+    format!("{}{tag}", clipped(&refused_return_head(origin, why), room))
+}
+
+/// `other: return to <origin> refused: <why>`, neutralised and uncut.
+fn refused_return_head(origin: &str, why: &str) -> String {
+    crate::seatpack::neutralise(
+        &CauseClass::Other.lead(&format!("return to {origin} refused: {why}")),
+    )
+}
+
+/// The neutralised `clean` as one line of at most `room` chars (`room` at most
+/// `REASON_MAX`), its cut marked `…`. `summary_of` maps one char to one and
+/// stops at `REASON_MAX`, so the uncut count says whether a cut is due.
+fn clipped(clean: &str, room: usize) -> String {
+    let line = crate::state::summary_of(clean);
+    if clean.chars().count() <= room {
+        return line;
     }
-    let cut: String = line.chars().take(room.saturating_sub(1)).collect();
-    format!("{cut}…{tag}")
+    let mut cut: String = line.chars().take(room.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
 }
 
 /// The hold a headroom attempt is closed with once the threshold that applies
@@ -2025,19 +2037,24 @@ pub(crate) fn plan_return(
 }
 
 /// Decide the trigger for a return whose root carried a client the pair gate
-/// refuses (`why`, the gate's words): the seat is eligible and the episode due
-/// by [`plan_return`]'s own rule, and then it closes `refused` with the gate's
+/// refuses (`why`, the gate's words): the seat is eligible, the refusal not
+/// yet said for this episode (`told`, [`root_refusal_told`]), and the episode
+/// due by [`plan_return`]'s own rule; then it closes `refused` with the gate's
 /// reason kept whole ([`refused_return`]), before anything is chosen or
-/// stopped (#296 follow-up 4).
+/// stopped (#296 follow-up 4). A refusal said once is never said again, even
+/// after a cooldown passes.
 pub(crate) fn plan_refused_return(
     settings: &Settings,
     (seat, sight): (&Seat<'_>, &Sight),
     open: &super::Episode,
-    (origin, why): (&str, &str),
+    (origin, why, told): (&str, &str, bool),
     now: Timestamp,
 ) -> Plan {
     if let Some(declined) = return_ineligible(settings, seat) {
         return declined;
+    }
+    if told {
+        return Plan::Decline(format!("the refusal of {origin} was already said"));
     }
     if let Some(declined) = return_undue(settings, sight, open, now) {
         return declined;
@@ -2140,6 +2157,39 @@ fn pair_told(
                 && crate::watchdog::event_is_addressed_to(event, session, slot, agent)
         })
 }
+
+/// Whether the watchdog already closed this seat's return episode `key` with
+/// the refusal of its root `origin` ([`refused_return`]'s record): a refused
+/// root is said ONCE per return episode, by the daemon and the trigger alike,
+/// whatever other rounds of the episode failed or were refused (#296
+/// follow-up 4). The record is matched by its head, never cut since the head
+/// keeps at least `REASON_MAX` − [`SUMMARY_CHARS`] chars.
+pub(crate) fn root_refusal_told(
+    events: &[crate::events::Event],
+    (session, slot, agent): (&str, &str, &str),
+    key: Timestamp,
+    origin: &str,
+) -> bool {
+    let key = key.to_string();
+    let head: String = crate::state::summary_of(&refused_return_head(origin, ""))
+        .chars()
+        .take(ROOT_REFUSAL_MATCH)
+        .collect();
+    events.iter().any(|event| {
+        event.actor == WATCHDOG_ACTOR
+            && event.action == REFUSED_ACTION
+            && event.reference.as_deref() == Some(key.as_str())
+            && event
+                .summary
+                .as_deref()
+                .is_some_and(|said| said.starts_with(&head))
+            && crate::watchdog::event_is_addressed_to(event, session, slot, agent)
+    })
+}
+
+/// How much of a root refusal's head [`root_refusal_told`] compares: below
+/// the room [`refused_return`] always leaves it, so the cut never decides.
+const ROOT_REFUSAL_MATCH: usize = 300;
 
 fn unusable(skipped: &[(String, Skip)]) -> String {
     let named: Vec<String> = skipped
@@ -2609,13 +2659,28 @@ pub(crate) fn trigger(
             )
         };
         // A root that carried a client the pair gate refuses closes the
-        // return `refused` once, its one read here and the leg's under the
-        // seat's lock alike (#296).
+        // return `refused` ONCE per episode, its one read here and the leg's
+        // under the seat's lock alike; a refusal already said is never said
+        // again, the daemon's own rule (#296).
         match &found {
             Some(HomeRead {
                 home,
                 refusal: Some(why),
-            }) => plan_refused_return(&settings, (&seat, &sight), open, (&home.origin, why), now),
+            }) => {
+                let told = root_refusal_told(
+                    &events,
+                    (own_session, slot, &row.name),
+                    open.key,
+                    &home.origin,
+                );
+                plan_refused_return(
+                    &settings,
+                    (&seat, &sight),
+                    open,
+                    (&home.origin, why, told),
+                    now,
+                )
+            }
             _ => plan_return(
                 &settings,
                 (&seat, &sight),
@@ -4908,6 +4973,28 @@ mod tests {
         assert!(exact.ends_with("z…"), "a cut with no opener is marked too");
         let fits = refused_return("p@carry", "short", "");
         assert_eq!(fits, "other: return to p@carry refused: short");
+        // An overlong opener is quoted in at most `SUMMARY_CHARS`, its own cut
+        // marked, and never takes the reason's head: the whole line stays at
+        // most `REASON_MAX`, whatever the cause or the reason.
+        for (reason, cause) in [
+            ("short".to_owned(), "c".repeat(REASON_MAX)),
+            ("r".repeat(2 * REASON_MAX), "c".repeat(2 * REASON_MAX)),
+        ] {
+            let line = refused_return("p@carry", &reason, &cause);
+            assert!(
+                line.chars().count() <= REASON_MAX,
+                "{}",
+                line.chars().count()
+            );
+            assert!(
+                line.starts_with("other: return to p@carry refused: r")
+                    || line.starts_with("other: return to p@carry refused: short"),
+                "{line}"
+            );
+            let tag = line.rsplit_once(" (").map_or("", |(_, tag)| tag);
+            assert_eq!(tag.chars().count(), SUMMARY_CHARS - 2, "{tag}");
+            assert!(tag.ends_with("c…)"), "{tag}");
+        }
     }
 
     /// The planner's refused route (#296 follow-up 4): an eligible, due return
@@ -4952,30 +5039,94 @@ mod tests {
         let key = Timestamp::from_epoch(NOW - 600);
         let open = Episode::opened_by(key, Trigger::Return, "return to p@carry".to_owned());
         let why = "Error: --using 'p@carry' is not an approved pair";
-        let plan = |settings: &Settings| {
+        let plan = |settings: &Settings, told: bool| {
             plan_refused_return(
                 settings,
                 (&seat, &sight),
                 &open,
-                ("p@carry", why),
+                ("p@carry", why, told),
                 Timestamp::from_epoch(NOW),
             )
         };
         assert_eq!(
-            plan(&settings(Switch::On, 0)),
+            plan(&settings(Switch::On, 0), false),
             Plan::RefuseReturn {
                 key,
                 why: refused_return("p@carry", why, "return to p@carry"),
             }
         );
         assert!(
-            matches!(plan(&settings(Switch::On, 3600)), Plan::Decline(ref not) if not.starts_with("not due")),
+            matches!(plan(&settings(Switch::On, 0), true), Plan::Decline(ref not) if not.contains("already said")),
+            "a due trigger after the refusal was said, a passed cooldown included, says nothing again"
+        );
+        assert!(
+            matches!(plan(&settings(Switch::On, 3600), false), Plan::Decline(ref not) if not.starts_with("not due")),
             "a return inside its grace waits"
         );
         assert!(
-            matches!(plan(&settings(Switch::Off, 0)), Plan::Decline(ref not) if not.starts_with("not eligible")),
+            matches!(plan(&settings(Switch::Off, 0), false), Plan::Decline(ref not) if not.starts_with("not eligible")),
             "a seat auto reseat does not cover is left alone"
         );
+    }
+
+    /// A root's refusal is said once per return episode, and only its own
+    /// record counts: a failed or otherwise refused round of the episode, a
+    /// refusal under another key, of another root or for another seat is none
+    /// (#296 follow-up 4). An origin long enough to be cut still matches.
+    #[test]
+    fn a_root_refusal_counts_as_said_only_by_its_own_record() {
+        use crate::autoreseat::FAILED_ACTION;
+        let key = Timestamp::from_epoch(TOLD_AT);
+        let said = |slot: &str, action: &str, reference: &str, summary: &str| {
+            let argv = Argv {
+                session: "aedev".into(),
+                dir: PathBuf::from("/nonexistent"),
+                slot: slot.into(),
+                key,
+            };
+            let line = event_entry(&argv, "scout", key, action, reference, summary);
+            Event::parse_line(&line).expect("the leg writes a well-formed record")
+        };
+        let own = key.to_string();
+        let told = |event: Event, origin: &str| {
+            root_refusal_told(&[event], ("aedev", "spawned.1", "scout"), key, origin)
+        };
+        let why = "Error: --using 'p@carry' is not an approved pair";
+        let refusal = refused_return("p@carry", why, &"o".repeat(700));
+        assert!(told(
+            said("spawned.1", REFUSED_ACTION, &own, &refusal),
+            "p@carry"
+        ));
+        assert!(!told(
+            said("spawned.1", FAILED_ACTION, &own, "other: the move failed"),
+            "p@carry"
+        ));
+        assert!(!told(
+            said(
+                "spawned.1",
+                REFUSED_ACTION,
+                &own,
+                "no-candidate: refused: p@carry"
+            ),
+            "p@carry"
+        ));
+        assert!(!told(
+            said("spawned.1", REFUSED_ACTION, &own, &refusal),
+            "p@other"
+        ));
+        assert!(!told(
+            said("spawned.2", REFUSED_ACTION, &own, &refusal),
+            "p@carry"
+        ));
+        let earlier = Timestamp::from_epoch(TOLD_AT - 1).to_string();
+        assert!(!told(
+            said("spawned.1", REFUSED_ACTION, &earlier, &refusal),
+            "p@carry"
+        ));
+        let long = format!("p@{}", "c".repeat(700));
+        let cut = refused_return(&long, why, "cause");
+        assert!(cut.contains('…'), "{cut}");
+        assert!(told(said("spawned.1", REFUSED_ACTION, &own, &cut), &long));
     }
 
     const TOLD_AT: i64 = 1_793_000_000;

@@ -1173,17 +1173,22 @@ with nothing stopped.
 **A refused pair root.** When the pair gate refuses a root that carried a
 client (not approved, a client gone or on another adapter, an account the
 launcher cannot prove), `leg::home` returns that reason (`HomeRead::refusal`)
-and no proof is read. The daemon opens the return once
-(`return to <origin>: the pair gate refuses it`), decides it once, and the
+and no proof is read. The daemon opens the return
+(`return to <origin>: the pair gate refuses it`) and decides it, and the
 trigger (`leg::plan_refused_return`) or the leg under the seat's lock closes it
 ONE `auto-reseat-refused`: `other: return to <origin> refused: <the gate's
 reason> (<opener>)`, told as every ending, before anything is chosen, stopped,
 typed or started. That one record keeps the reason whole up to `REASON_MAX`
-(600), its cut marked `…`, one clean line (`leg::refused_return`, lead ruling
+(600), its cut marked `…`, one clean line, the opener quoted in at most 160
+with its own cut marked (`leg::refused_return`, lead ruling
 ae-20261117T175826Z-d479b819); every other leg record stays at
-`SUMMARY_CHARS` (160). A refused round is never decided again: the seat holds
-on its substitute, never on the default account, until a human moves it, a
-spawn, or the chain ends.
+`SUMMARY_CHARS` (160). The daemon and the trigger both read that record back
+(`leg::root_refusal_told`: the episode's key, the seat, the refused action and
+the record's head): until the episode holds it, an earlier round that failed or
+was refused for another reason is no bar beyond its cooldown; once it does,
+nothing decides the episode again, no cooldown and no give-up, and the seat
+holds on its substitute, never on the default account, until a human moves
+it, a spawn, or the chain ends.
 
 **The flap limit.** A seat goes home at most `MAX_RETURNS` (2) times in a rolling
 24 h, counted from return `done`s in the journal, so a restart forgets nothing.

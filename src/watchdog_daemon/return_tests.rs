@@ -318,16 +318,25 @@ fn an_open_return_moves_only_on_its_proof_and_a_spent_one_gives_up() {
 }
 
 /// A root the pair gate refuses (#296 follow-up 4) opens a return though its
-/// account proves nothing, is decided ONCE so the trigger can close it
-/// `refused` with the gate's reason, and once that round closed the seat holds
-/// on its substitute: no second attempt, no give-up, however long it waits.
+/// account proves nothing and is decided until the episode holds its ONE
+/// refusal of that root: a round that failed or was refused for another reason
+/// first (an approved root revoked later) still gets it once its cooldown
+/// passed; once said, the seat holds on its substitute, no retry, no give-up.
 #[test]
-fn a_refused_pair_root_is_decided_once_and_then_holds() {
-    use crate::autoreseat::{REFUSED_ACTION, RETRY_COOLDOWN_SECS};
+fn a_refused_pair_root_is_decided_until_its_refusal_is_said_and_then_holds() {
+    use crate::autoreseat::{FAILED_ACTION, REFUSED_ACTION, RETRY_COOLDOWN_SECS};
+    let gate = "Error: --using 'origin@carry' is not an approved pair";
     let refused = |ready: Option<Window>| {
         let mut read = home(ready);
-        read[0].1.refusal = Some("Error: --using 'p@carry' is not an approved pair".to_owned());
+        read[0].1.refusal = Some(gate.to_owned());
         read
+    };
+    let said = |at: i64, action: &str, key: Timestamp, summary: &str| {
+        Event::parse_line(&format!(
+            r#"{{"ts":"{}","actor":"watchdog","action":"{action}","target":"{AGENT}","target_slot":"{SLOT}","target_session":"{SESSION}","ref":"{key}","summary":"{summary}"}}"#,
+            Timestamp::from_epoch(at)
+        ))
+        .expect("a journal line")
     };
     let mapped = settings(Switch::On, &[("substitute", &["manual"])]);
     let idle = seat(Room::Unread);
@@ -342,27 +351,40 @@ fn a_refused_pair_root_is_decided_once_and_then_holds() {
             "a refused root opens its return whatever its account reads"
         );
     }
+    let trigger = [AutoAct::Trigger {
+        agent: AGENT.to_owned(),
+    }];
     let key = Timestamp::from_epoch(NOW - 20_000);
-    let reference = format!(r#","ref":"{key}""#);
-    let open = vec![record(key.epoch(), RETURN_ACTION, "")];
+    let mut journal = vec![record(key.epoch(), RETURN_ACTION, "")];
+    assert_eq!(acts(&mapped, &idle, &refused(None), &journal), trigger);
+    // An approved root's round failed, then its approval was revoked; later a
+    // round was refused for another reason. Neither is the root's refusal.
+    let mut at = key.epoch();
+    for (closing, why) in [
+        (FAILED_ACTION, "other: the tool did not start"),
+        (
+            REFUSED_ACTION,
+            "no-candidate: refused: origin is not usable",
+        ),
+    ] {
+        journal.push(said(at + 1, ATTEMPT_ACTION, key, "return to origin"));
+        journal.push(said(at + 2, closing, key, why));
+        at += 2 + RETRY_COOLDOWN_SECS;
+    }
+    assert!(NOW >= at, "the fixture waits past every cooldown");
     assert_eq!(
-        acts(&mapped, &idle, &refused(None), &open),
-        [AutoAct::Trigger {
-            agent: AGENT.to_owned()
-        }],
-        "the open return goes to the trigger, which closes it refused"
+        acts(&mapped, &idle, &refused(None), &journal),
+        trigger,
+        "another round's failure or refusal does not stand for the root's refusal"
     );
-    let mut closed = open;
-    closed.push(record(key.epoch() + 1, ATTEMPT_ACTION, &reference));
-    closed.push(record(key.epoch() + 2, REFUSED_ACTION, &reference));
-    assert!(
-        NOW >= key.epoch() + 2 + RETRY_COOLDOWN_SECS,
-        "the fixture waits past the cooldown"
-    );
+    let words = crate::autoreseat::refused_return_words("origin");
+    let refusal = crate::autoreseat::leg::refused_return("origin", gate, &words);
+    journal.push(said(at - 2, ATTEMPT_ACTION, key, "return to origin"));
+    journal.push(said(at - 1, REFUSED_ACTION, key, &refusal));
     for ready in [None, Some(ready())] {
         assert!(
-            acts(&mapped, &idle, &refused(ready), &closed).is_empty(),
-            "one refused record: the seat holds, nothing retries or gives up"
+            acts(&mapped, &idle, &refused(ready), &journal).is_empty(),
+            "said once: the seat holds, nothing retries or gives up"
         );
     }
 }
