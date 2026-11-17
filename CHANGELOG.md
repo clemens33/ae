@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.79] - 2026-11-17
+- Judge a labeled spawned seat on the global config at relaunch, snapshot-less _run and reseat admission
+- A chain root that carried a client returns through the pair gate as profile@client, and a root the gate refuses closes one refused record with the reason whole
+- A refused root is said once per return episode by its own record in the daemon and the trigger, and its quoted opener is bounded so the record stays within 600
+- The labeled pair judge moves into the services layer as run::pair_judge, so a snapshot-less _run judges a labeled seat without naming session_launch; the macOS subset covers the two pairpin specs that read the process table; the profile-lacking refusal names its recorded client
+- Account_source keeps the base shape of the quota source match, so the opencode arm still reads 'QuotaSource::GrokLog | QuotaSource::Unsupported => return None'
+
 ## [v2026.11.78] - 2026-11-17
 - The lead or a human clears a suspect lock; document stopping your own claimed run
 - Frozen acceptance spec and the config roster edit seam (stub)
