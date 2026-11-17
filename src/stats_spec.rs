@@ -282,6 +282,8 @@ fn balanced_rejects_each_wrong_table_and_each_part_above_its_whole() {
     let valid = Scoped {
         total: 2,
         legacy: 1,
+        brief_failed: 0,
+        start_failed: 0,
         model_known: 1,
         effort_known: 1,
         range: None,
@@ -789,6 +791,8 @@ fn missing_source_coverage_alone_is_partial_without_any_gap() {
     let mut scoped = Scoped {
         total: 0,
         legacy: 0,
+        brief_failed: 0,
+        start_failed: 0,
         model_known: 0,
         effort_known: 0,
         range: None,

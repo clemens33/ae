@@ -183,7 +183,7 @@ fn s5_missing_root_is_building_and_corrupt_unsupported_oversized_root_is_named()
         b"broken root\n".to_vec(),
         String::from_utf8(valid.clone())
             .expect("UTF8 root")
-            .replacen("\"stats_root\":1", "\"stats_root\":999", 1)
+            .replacen("\"stats_root\":2", "\"stats_root\":999", 1)
             .into_bytes(),
         vec![
             b'x';

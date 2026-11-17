@@ -326,6 +326,8 @@ pub(crate) struct StatsBody {
     pub(crate) filter: crate::tool_stats::Filter,
     /// The shown tool-statistics page as last answered; `None` draws `loading`.
     pub(crate) tools: Option<Box<crate::tool_stats::View>>,
+    /// Why this process's Statistics upkeep stopped: its numbers may be stale.
+    pub(crate) stopped: Option<String>,
 }
 
 /// The `[roster]` row the picker edits.
@@ -344,6 +346,16 @@ pub(crate) enum OrchestratorView {
     Ready(OrchestratorReady),
     /// The row cannot be edited, and why: nothing is offered.
     Unreadable(String),
+}
+
+/// What the App holds for the Statistics upkeep thread, across Settings opens.
+#[derive(Debug, Default)]
+pub(crate) struct UpkeepFlow {
+    /// The open generation whose `r` is owed to the upkeep, not yet handed.
+    pub(crate) reset: Option<u64>,
+    /// Why the upkeep stopped, kept for this process: no step follows a stop,
+    /// so every open of the tab says it until a reset swaps the store.
+    pub(crate) stopped: Option<String>,
 }
 
 /// Where the orchestrator profile pick stands in the App: one write at a time,

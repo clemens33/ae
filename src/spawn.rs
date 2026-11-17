@@ -617,6 +617,28 @@ fn run_spawn_inner(
             summary: &format!("brief not delivered: {}", refusal.reason),
             body_file: "",
         }));
+        // The outcome fact, stapled to this worker's birth. A lost fact is
+        // said and changes nothing else about this spawn.
+        let fact = crate::birth::fact_line(
+            now,
+            actor_of(caller),
+            &crate::birth::Seat {
+                name: &parsed.name,
+                slot,
+                session: &meta::session_id_in(dir),
+                birth: &staged.launch_id,
+            },
+            crate::birth::FactKind::BriefFailed,
+            None,
+        );
+        if let Err(why) = store::open(dir).append_event(&fact) {
+            let _ = writeln!(
+                err,
+                "ae: '{}' could not journal worker-fact {} ({why}); the seat is kept.",
+                parsed.name,
+                crate::birth::FactKind::BriefFailed.word()
+            );
+        }
         return Ok(EXIT_FAILED);
     }
     writeln!(out, "Spawned {} in pane {pane}", parsed.name)?;

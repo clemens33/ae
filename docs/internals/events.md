@@ -154,7 +154,7 @@ older core steps over the additive key as unknown data.
 | `memo` | `memo add` helper | Append to shared session memory. |
 | `spawn` | ae internal | A new agent joined the workspace. `summary` is its task text. A modern record carries `birth`, the link to its certificate. |
 | `worker-birth` | ae internal | The durable birth certificate of one committed new worker. No summary; see [Worker birth records](#worker-birth-records). |
-| `worker-fact` | reserved | A later fact about a birth. The wire is defined and read; no writer ships yet. |
+| `worker-fact` | ae internal | A later fact about a birth: `brief-failed` from `spawn` (actor the caller), `start-attempted` and `start-failed` from `_run` (actor `watchdog`). No summary; see [Worker birth records](#worker-birth-records). |
 | `retire` | ae internal | A spawned agent was removed. |
 | `focus` | `focus` helper | tmux focus switch (informational). |
 | `interrupt` | `interrupt` helper | Cancel signal sent. |
@@ -269,7 +269,7 @@ Every record ae appends ends in `"schema_version":1`. A record without it is **v
 
 Reason words are a closed v1 list, `birth::UNPROVED_WORDS`: `unsupported`, `not-simple`, `ambiguous-model`, `model-missing-value`, `ambiguous-effort`, `effort-missing-value`, `unknown-effort`, `env-effort`. A harness with no flag ae reads and a command that is no simple command are unproved, not absent. The words are fixed, so no value or command text reaches the wire.
 
-`worker-fact` shares the frozen identity members and adds `fact` (`brief-failed`, `start-attempted`, `start-failed`, `observed`), `start`, `observed_source`, `observed_model` and `observed_effort`. No writer ships yet.
+`worker-fact` shares the frozen identity members and adds `fact` (`brief-failed`, `start-attempted`, `start-failed`, `observed`), `start`, `observed_source`, `observed_model` and `observed_effort`. Three kinds have writers. A spawn whose brief is never delivered appends `brief-failed` after its `spawn-failed`. `_run` appends `start-attempted` right before it execs the tool of a worker's first start (`Create` on a `spawned.*` slot whose launch id is a birth id), and `start-failed` when that exec returns; both carry `start`, `<slot>:<launch_id>:<pid>`. A reseat's `Create` carries its new launch id, so its facts match no birth and stay inert. A failed append is said on stderr, naming the kind, and never stops the spawn or the start. `observed` has no writer yet.
 
 `birth_v` is the family's own version. `birth_v`, `birth`, `target_session_id`, `target` and `target_slot` are frozen across versions; additive optional members keep `birth_v=1`, unknown members are inert, and a change of meaning bumps it. `events::schema_version` is not consulted.
 

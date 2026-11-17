@@ -467,12 +467,20 @@ fn upkeep(
         probe.pass();
         let turn = step.beat(Instant::now());
         probe.record(&turn);
+        let stop_told = told;
         if let Some(line) = notice(
             turn.s5.as_ref().map(|s5| &s5.outcome),
             step.maintainer.stopped(),
             &mut told,
         ) {
-            let _ = notices.send(Wake::Notice(line));
+            // The stop is the one notice the app keeps: no step follows it,
+            // so the Statistics tab says so for as long as this process runs.
+            let wake = if told && !stop_told {
+                Wake::StatsStopped(line)
+            } else {
+                Wake::Notice(line)
+            };
+            let _ = notices.send(wake);
         }
         let wait = step.wait(Instant::now());
         probe.park(true);

@@ -3279,6 +3279,9 @@ fn claude_and_grok_contexts_are_byte_identical_with_a_meta_only_launch_id() {
 /// mint was, every occurrence.
 const MINT_PLACEHOLDER: &str = "00000000-0000-4000-8000-000000000000";
 
+#[path = "stats3_run_spec.rs"]
+mod stats3_run_spec;
+
 /// The single illustrative mint a fallback plan carries: exactly one
 /// `--session-id` pair, its value a lowercase uuid, and not the recorded id.
 fn illustrative_mint(plan: &str, recorded: &str) -> String {

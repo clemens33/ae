@@ -999,6 +999,17 @@ nor an absence; `unknown` is no trusted record. No current meta or profile fills
 a cell. A live journal's last record counts once its line ends; an archive's
 last line counts as it is.
 
+One line counts outcomes per spawn: `Brief undelivered: <a> · Start failed: <b>
+· Start unproved: <c>`. A spawn whose brief never landed appends a
+`brief-failed` fact; `_run` appends `start-attempted` right before it execs a
+new worker's tool and `start-failed` when that exec returns. A spawn counts as
+start failed when its last start fact is `start-failed`; every other spawn is
+start unproved, because an attempt never proves the tool ran. A brief failure is
+counted apart from the start. A spawn recorded before these facts existed has
+none, so it reads unproved, its observed identity stays unknown, and nothing is
+backfilled. A spawn whose sources conflict, or whose certificate is lost, counts
+no outcome.
+
 `Coverage: complete` means every source the store registered is up to date,
 every source was read and every record trusted. Otherwise the numbers as last
 published stay drawn under a `Partial` line: `Partial: <k> of <n> sources not
@@ -1027,7 +1038,17 @@ Settings open that asked draws the outcome. If the app finds a store file
 damaged, it flashes `Statistics: <file> was damaged (<reason>); rebuilding the
 store` and rebuilds the store once. Damage met again during that rebuild flashes
 `Statistics: the store was damaged again (<reason>); upkeep stopped`, and the
-upkeep stays stopped until `r` or the next `ae app` run.
+upkeep stays stopped until `r` or the next `ae app` run. While it is stopped, the
+tab keeps `Upkeep stopped: numbers may be stale; restart ae app.` and the reason
+above every number, on every open of Settings.
+
+The outcome line changed the shape of the store's root and session documents
+and of its view, so each carries a new version. The first `ae app` after the upgrade
+reads every older document as damaged, says so once, and rebuilds the store once
+from the journals; no count is lost or invented, because the journals hold every
+record. An `ae app` still running the older version reads the new documents as
+damaged in the same way, and once its upkeep stops it stays stopped until that
+app restarts.
 
 One row of three inner tabs, `Agents`, `Skills` and `Tools`, stands directly
 under the Settings tab row while Statistics is shown. It has one form at every

@@ -650,10 +650,8 @@ impl Fold {
         for ((session, birth), held) in &self.certificates {
             let label = held.label.as_deref();
             let (claim, split) = held.settle();
-            let diverged = self
-                .facts
-                .get(&(session.clone(), birth.clone()))
-                .is_some_and(|lists| !agree(lists));
+            let lists = self.facts.get(&(session.clone(), birth.clone()));
+            let diverged = lists.is_some_and(|lists| !agree(lists));
             for (flagged, reason) in [
                 (split || diverged, Reason::Conflict),
                 (held.damaged, Reason::Damaged),
@@ -668,7 +666,15 @@ impl Fold {
                     });
                 }
             }
-            spawns.push(Spawn::of(session.clone(), claim));
+            let mut spawn = Spawn::of(session.clone(), claim);
+            // A conflict of either kind proves no outcome: unproved, fail closed.
+            if !split
+                && !diverged
+                && let Some(longest) = lists.and_then(|lists| longest(lists))
+            {
+                spawn.outcome = Outcome::of(longest);
+            }
+            spawns.push(spawn);
         }
         for ((session, birth), label) in &self.links {
             if self
@@ -959,9 +965,45 @@ impl Pass {
 
 /// Whether every list is a subsequence of the longest: one journal, trimmed.
 fn agree<T: PartialEq>(lists: &[Vec<T>]) -> bool {
-    let longest = lists.iter().max_by_key(|list| list.len());
-    longest.is_none_or(|longest| lists.iter().all(|list| subsequence(list, longest)))
+    longest(lists).is_none_or(|longest| lists.iter().all(|list| subsequence(list, longest)))
 }
+
+/// The longest of `lists`: what a set of agreeing lists holds whole.
+fn longest<T>(lists: &[Vec<T>]) -> Option<&[T]> {
+    lists
+        .iter()
+        .max_by_key(|list| list.len())
+        .map(Vec::as_slice)
+}
+
+/// What a birth's facts prove of its brief and its start. Nothing proves a
+/// start ran: an attempt, and a birth with no start fact, stay unproved.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Outcome {
+    /// A `brief-failed` fact names this birth.
+    brief_failed: bool,
+    /// Its last start fact is `start-failed`: that exec returned.
+    start_failed: bool,
+}
+
+impl Outcome {
+    /// The outcome of one agreed fact list, in file order.
+    fn of(facts: &[Fact]) -> Self {
+        let mut kinds = facts.iter().map(|fact| fact.kind.as_str());
+        let last_start = kinds
+            .clone()
+            .rfind(|kind| *kind == START_ATTEMPTED || *kind == START_FAILED);
+        Self {
+            brief_failed: kinds.any(|kind| kind == BRIEF_FAILED),
+            start_failed: last_start == Some(START_FAILED),
+        }
+    }
+}
+
+/// The fact kinds an outcome reads.
+const BRIEF_FAILED: &str = "brief-failed";
+const START_ATTEMPTED: &str = "start-attempted";
+const START_FAILED: &str = "start-failed";
 
 /// Whether `short` is `long` with records dropped, order kept.
 fn subsequence<T: PartialEq>(short: &[T], long: &[T]) -> bool {
@@ -976,6 +1018,7 @@ struct Spawn {
     /// The model's and the effort's unproved word.
     words: [Option<String>; 2],
     legacy: bool,
+    outcome: Outcome,
 }
 
 impl Spawn {
@@ -986,6 +1029,7 @@ impl Spawn {
             cells: claim.map(|(cell, _)| cell),
             words,
             legacy: false,
+            outcome: Outcome::default(),
         }
     }
 
@@ -1042,6 +1086,8 @@ impl Ledger {
         Scoped {
             total: tally(&|_| true),
             legacy: tally(&|spawn| spawn.legacy),
+            brief_failed: tally(&|spawn| spawn.outcome.brief_failed),
+            start_failed: tally(&|spawn| spawn.outcome.start_failed),
             model_known: tally(&|spawn| spawn.proved(MODEL)),
             effort_known: tally(&|spawn| spawn.proved(EFFORT)),
             range: self.range(this),
@@ -1159,6 +1205,10 @@ pub struct Scoped {
     pub total: u64,
     /// The spawns with no certificate of any kind: a lower bound.
     pub legacy: u64,
+    /// Spawns whose brief a fact says never landed.
+    pub brief_failed: u64,
+    /// Spawns whose last start fact says the exec returned.
+    pub start_failed: u64,
     /// Spawns whose model flag is a value or proved absent.
     pub model_known: u64,
     /// The same for effort.
@@ -1182,9 +1232,18 @@ impl Scoped {
             .iter()
             .all(|table| table.iter().map(|row| row.count).sum::<u64>() == self.total)
             && self.legacy <= self.total
+            && self.brief_failed <= self.total
+            && self.start_failed <= self.total
             && self.model_known <= self.total
             && self.effort_known <= self.total
             && self.sources_read <= self.sources_total
+    }
+
+    /// Spawns no fact proves failed to start. Nothing yet proves a start ran,
+    /// so this is every spawn but the failed ones, legacy ones included.
+    #[must_use]
+    pub const fn start_unproved(&self) -> u64 {
+        self.total.saturating_sub(self.start_failed)
     }
 
     /// Whether some evidence was not read or cannot be trusted. A note is not:
@@ -1399,8 +1458,14 @@ impl Ledger {
             .filter(|spawn| mine(spawn.session.as_ref()))
         {
             bump(tally.joint.entry(spawn.cells.clone()).or_default(), 1);
-            if spawn.legacy {
-                bump(&mut tally.legacy, 1);
+            for (counted, held) in [
+                (spawn.legacy, &mut tally.legacy),
+                (spawn.outcome.brief_failed, &mut tally.brief_failed),
+                (spawn.outcome.start_failed, &mut tally.start_failed),
+            ] {
+                if counted {
+                    bump(held, 1);
+                }
             }
             for (model, word) in [(true, &spawn.words[0]), (false, &spawn.words[1])] {
                 if let Some(word) = word {
@@ -1445,6 +1510,8 @@ pub(crate) struct Tally {
     /// Spawns by their four cells.
     joint: BTreeMap<[Cell; 4], u64>,
     legacy: u64,
+    brief_failed: u64,
+    start_failed: u64,
     /// Spawns by an unproved flag's `(model?, word)`.
     unproved: BTreeMap<(bool, String), u64>,
     /// Coverage notes by `(reason, source)`.
@@ -1487,6 +1554,8 @@ impl Tally {
             bump(self.joint.entry(cells.clone()).or_default(), *count);
         }
         bump(&mut self.legacy, other.legacy);
+        bump(&mut self.brief_failed, other.brief_failed);
+        bump(&mut self.start_failed, other.start_failed);
         for (word, count) in &other.unproved {
             bump(self.unproved.entry(word.clone()).or_default(), *count);
         }
@@ -1513,6 +1582,8 @@ impl Tally {
             *held = held.checked_add(*count)?;
         }
         sum.legacy = sum.legacy.checked_add(other.legacy)?;
+        sum.brief_failed = sum.brief_failed.checked_add(other.brief_failed)?;
+        sum.start_failed = sum.start_failed.checked_add(other.start_failed)?;
         for (word, count) in &other.unproved {
             let held = sum.unproved.entry(word.clone()).or_default();
             *held = held.checked_add(*count)?;
@@ -1555,6 +1626,8 @@ impl Tally {
         let mut left = self.clone();
         take(&mut left.joint, &other.joint)?;
         left.legacy = left.legacy.checked_sub(other.legacy)?;
+        left.brief_failed = left.brief_failed.checked_sub(other.brief_failed)?;
+        left.start_failed = left.start_failed.checked_sub(other.start_failed)?;
         take(&mut left.unproved, &other.unproved)?;
         take(&mut left.notes, &other.notes)?;
         for (held, count) in left.excluded.iter_mut().zip(other.excluded) {
@@ -1571,6 +1644,8 @@ impl Tally {
     pub(crate) fn of_scoped(scoped: &Scoped) -> Option<Self> {
         let mut tally = Self {
             legacy: scoped.legacy,
+            brief_failed: scoped.brief_failed,
+            start_failed: scoped.start_failed,
             read: scoped.sources_read,
             sources: scoped.sources_total,
             range: scoped.range.clone(),
@@ -1639,6 +1714,8 @@ impl Tally {
         Scoped {
             total: sum(&|_| true),
             legacy: self.legacy,
+            brief_failed: self.brief_failed,
+            start_failed: self.start_failed,
             model_known: sum(&known(MODEL)),
             effort_known: sum(&known(EFFORT)),
             range: self.range.clone(),
@@ -1697,3 +1774,7 @@ impl Tally {
 #[cfg(test)]
 #[path = "stats_spec.rs"]
 mod spec;
+
+#[cfg(test)]
+#[path = "stats3_driver_tests.rs"]
+mod stats3_driver_tests;

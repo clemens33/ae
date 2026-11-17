@@ -3994,6 +3994,8 @@ mod seatjoin_spec;
 #[cfg(test)]
 mod skilltab_spec;
 #[cfg(test)]
+mod stats3_spec;
+#[cfg(test)]
 mod stats_spec;
 
 #[cfg(test)]

@@ -7,6 +7,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::birth::FactKind;
 use crate::conversation::{Probe, Start};
 use crate::launch;
 use crate::tool::{ContextChannel, ResumeForm, StoreProbe, ToolKind};
@@ -78,6 +79,36 @@ pub struct Plan {
     /// Set only for a worker whose context points at `workspace.md`: the target
     /// a real start makes true before the tool launches.
     reference: Option<SpawnReference>,
+    /// Set only for a worker's first start (`Create` on a `spawned.*` slot
+    /// whose launch id is a birth id): the birth its start facts staple to.
+    /// Never part of `render()`.
+    birth: Option<BirthStart>,
+}
+
+/// The roster slot prefix of a seat a spawn made.
+const SPAWNED: &str = "spawned.";
+
+/// Whose birth a worker's first start writes its start facts for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BirthStart {
+    agent: String,
+    session_id: String,
+    launch_id: String,
+}
+
+impl BirthStart {
+    /// The birth of `seat`'s start on `slot`, when this start is a worker's
+    /// Create and the seat's launch id can name a birth at all.
+    fn of(seat: &Seat, slot: &str, mode: Mode, session_id: String) -> Option<Self> {
+        (mode == Mode::Create
+            && slot.starts_with(SPAWNED)
+            && crate::archive::is_canonical_uuid(&seat.launch_id))
+        .then(|| Self {
+            agent: seat.agent.clone(),
+            session_id,
+            launch_id: seat.launch_id.clone(),
+        })
+    }
 }
 
 /// What a worker's spawn pointer needs of `workspace.md`: the session and the
@@ -527,16 +558,31 @@ pub fn run(
     }
     record_choice(dir, slot, &choice, err)?;
     record_launch(dir, slot, &plan, err)?;
-    let why = exec(&plan);
-    // Reached only because the exec did NOT happen, so this seat has not been
-    // launched after all: take the marker back rather than leave a seat that
-    // never started looking like one that did.
-    if plan.mode == Mode::Create {
-        let _ = std::fs::remove_file(&marker);
-    }
+    let why = exec_between_facts(dir, slot, &plan, &choice.0.start_key, &marker, err)?;
     writeln!(err, "ae: could not start {} ({why})", plan.argv[0])?;
     err.flush()?;
     Ok(EXIT_FAILED)
+}
+
+/// `run`'s exec, between a worker's two start facts: ATTEMPTED is the last thing
+/// before it, and only a later observation proves the tool ran. A return is
+/// the exec failing: the marker is taken back, so a seat that never started
+/// does not look like one that did, and the failure is journaled.
+fn exec_between_facts(
+    dir: &Path,
+    slot: &str,
+    plan: &Plan,
+    start: &str,
+    marker: &Path,
+    err: &mut impl Write,
+) -> std::io::Result<std::io::Error> {
+    record_start(dir, slot, plan, start, FactKind::StartAttempted, err)?;
+    let why = exec(plan);
+    if plan.mode == Mode::Create {
+        let _ = std::fs::remove_file(marker);
+    }
+    record_start(dir, slot, plan, start, FactKind::StartFailed, err)?;
+    Ok(why)
 }
 
 /// Record what a resume FALLBACK decided; the seat's effort discard rides that
@@ -620,6 +666,47 @@ fn record_choice(
         writeln!(
             err,
             "ae: seat {slot}: could not journal the conversation decision ({why}) — launching anyway"
+        )?;
+        err.flush()?;
+    }
+    Ok(())
+}
+
+/// Journal one start fact of a worker's first start, as the watchdog, keyed by
+/// `start`; nothing for any other start. A failed append is said, naming the
+/// fact, and never blocks the start.
+fn record_start(
+    dir: &Path,
+    slot: &str,
+    plan: &Plan,
+    start: &str,
+    kind: FactKind,
+    err: &mut impl Write,
+) -> std::io::Result<()> {
+    let Some(birth) = &plan.birth else {
+        return Ok(());
+    };
+    let line = crate::birth::fact_line(
+        crate::time::Timestamp::now(),
+        crate::watchdog::WATCHDOG_ACTOR,
+        &crate::birth::Seat {
+            name: &birth.agent,
+            slot,
+            session: &birth.session_id,
+            birth: &birth.launch_id,
+        },
+        kind,
+        Some(start),
+    );
+    if let Err(why) = crate::store::open(dir).append_event(&line) {
+        let then = match kind {
+            FactKind::StartFailed => "the failed start is said below",
+            FactKind::StartAttempted | FactKind::BriefFailed => "launching anyway",
+        };
+        writeln!(
+            err,
+            "ae: seat {slot}: could not journal worker-fact {} ({why}) — {then}",
+            kind.word()
         )?;
         err.flush()?;
     }
@@ -803,6 +890,7 @@ fn build_with_snapshot(
         launch,
         refusal,
         reference,
+        birth: BirthStart::of(&seat, slot, mode, meta_session_id(dir)),
     };
     Ok((plan, choice))
 }
@@ -3004,6 +3092,7 @@ mod tests {
             launch: None,
             refusal: None,
             reference: None,
+            birth: None,
         };
         let line = plan.render();
         assert!(!line.contains('\n'), "{line}");
@@ -3158,6 +3247,7 @@ mod tests {
             launch: None,
             refusal: None,
             reference: None,
+            birth: None,
         };
         assert!(
             plan.render().contains(r#""env_clear":true"#),
@@ -3207,6 +3297,7 @@ mod tests {
             }),
             refusal: None,
             reference: None,
+            birth: None,
         };
         // A guard that no longer holds is the failure: said, journaled ONCE,
         // and Ok, so `run` goes on to exec the plan it built.

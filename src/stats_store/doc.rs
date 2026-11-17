@@ -17,8 +17,13 @@ use crate::archive::is_canonical_uuid;
 use crate::json::Value;
 use crate::stats::{Fold, Scoped, SourceGap, Tally};
 
-/// The format of every document this core writes.
+/// The format of the intent and evidence documents this core writes.
 const FORMAT: i64 = 1;
+
+/// The format of the session and root documents, which embed a scope: 2 adds
+/// the brief and start outcome counts, so a format-1 one reads as damaged and
+/// the store is rebuilt once from the journals.
+const SCOPE_FORMAT: i64 = 2;
 
 /// The bytes of a journal a source's witness hashes, ending at its cursor.
 pub(super) const WITNESS: u64 = 4096;
@@ -633,7 +638,7 @@ pub(super) fn render_session(view: &SessionView) -> String {
     line(
         &mut out,
         &[
-            ("stats_session", Value::Num(FORMAT)),
+            ("stats_session", Value::Num(SCOPE_FORMAT)),
             ("epoch", count(view.epoch)),
             ("gen", count(view.generation)),
             ("group", key_value(&view.key)),
@@ -673,7 +678,7 @@ pub(super) fn parse_session(input: &str) -> Result<SessionView, Error> {
     let records = records(input)?;
     let (head, body) = records.split_first().ok_or(Error::Damaged("empty"))?;
     expect_keys(head, &["stats_session", "epoch", "gen", "group"])?;
-    if field(head, "stats_session")? != &Value::Num(FORMAT) {
+    if field(head, "stats_session")? != &Value::Num(SCOPE_FORMAT) {
         return Err(Error::Damaged("version"));
     }
     let (tally, rest) = scope_of(body, "tally")?;
@@ -848,7 +853,7 @@ pub(super) fn render_root(root: &Root) -> String {
     line(
         &mut out,
         &[
-            ("stats_root", Value::Num(FORMAT)),
+            ("stats_root", Value::Num(SCOPE_FORMAT)),
             ("epoch", count(root.epoch)),
             ("gen", count(root.generation)),
         ],
@@ -899,7 +904,7 @@ pub(super) fn parse_root(input: &str) -> Result<Root, Error> {
     let records = records(input)?;
     let (head, body) = records.split_first().ok_or(Error::Damaged("empty"))?;
     expect_keys(head, &["stats_root", "epoch", "gen"])?;
-    if field(head, "stats_root")? != &Value::Num(FORMAT) {
+    if field(head, "stats_root")? != &Value::Num(SCOPE_FORMAT) {
         return Err(Error::Damaged("version"));
     }
     let (all, rest) = scope_of(body, "all")?;

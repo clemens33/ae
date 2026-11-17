@@ -458,6 +458,11 @@ pub(super) fn drain(
                 redraw = true;
                 continue;
             }
+            Wake::StatsStopped(line) => {
+                app.stats_upkeep_stopped(line);
+                redraw = true;
+                continue;
+            }
             Wake::StatsReset {
                 generation,
                 outcome,

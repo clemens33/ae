@@ -269,8 +269,9 @@ mod s4_transaction;
 
 /// The evidence format this core reads and writes.
 const VERSION: i64 = 1;
-/// The view format this core reads and writes.
-const VIEW_VERSION: i64 = 1;
+/// The view format this core reads and writes. 2 adds the brief and start
+/// outcome counts; a format-1 view reads as damaged and is rebuilt once.
+const VIEW_VERSION: i64 = 2;
 /// The longest line read, inclusive; a longer one is a `LineLimit` gap.
 const LINE_LIMIT: usize = 4 * 1024 * 1024;
 /// The bytes of a `YYYY-MM-DD` date.
@@ -1418,6 +1419,8 @@ fn render_scope(out: &mut String, scope: &str, scoped: &Scoped) {
             ("scope", Value::str(scope)),
             ("total", count(scoped.total)),
             ("legacy", count(scoped.legacy)),
+            ("brief_failed", count(scoped.brief_failed)),
+            ("start_failed", count(scoped.start_failed)),
             ("model_known", count(scoped.model_known)),
             ("effort_known", count(scoped.effort_known)),
             ("from", optional(from)),
@@ -1608,6 +1611,8 @@ fn parse_head(fields: &[(String, Value)]) -> Result<Scoped, Error> {
             "scope",
             "total",
             "legacy",
+            "brief_failed",
+            "start_failed",
             "model_known",
             "effort_known",
             "from",
@@ -1627,6 +1632,8 @@ fn parse_head(fields: &[(String, Value)]) -> Result<Scoped, Error> {
     Ok(Scoped {
         total: number(field(fields, "total")?)?,
         legacy: number(field(fields, "legacy")?)?,
+        brief_failed: number(field(fields, "brief_failed")?)?,
+        start_failed: number(field(fields, "start_failed")?)?,
         model_known: number(field(fields, "model_known")?)?,
         effort_known: number(field(fields, "effort_known")?)?,
         range,
@@ -1721,6 +1728,8 @@ fn check(scoped: &Scoped) -> Result<(), Error> {
         && expected.joint == scoped.joint;
     let counters_match = scoped.total == total
         && scoped.legacy <= unknown
+        && scoped.brief_failed <= total.saturating_sub(scoped.legacy)
+        && scoped.start_failed <= total.saturating_sub(scoped.legacy)
         && scoped.model_known == expected.model_known
         && scoped.effort_known == expected.effort_known
         && scoped.sources_read <= scoped.sources_total
@@ -1757,14 +1766,31 @@ fn check(scoped: &Scoped) -> Result<(), Error> {
     Ok(())
 }
 
+/// Whether the outcomes all has beyond this fit the modern births all has
+/// beyond this: legacy spawns carry no outcome.
+fn outside(this: &Scoped, all: &Scoped, count: impl Fn(&Scoped) -> u64) -> bool {
+    let modern = |scope: &Scoped| scope.total.checked_sub(scope.legacy);
+    let births = modern(all)
+        .zip(modern(this))
+        .and_then(|(all, this)| all.checked_sub(this));
+    let outcomes = count(all).checked_sub(count(this));
+    births
+        .zip(outcomes)
+        .is_some_and(|(births, outcomes)| outcomes <= births)
+}
+
 /// Whether one session's scope fits inside the all-sessions scope.
 fn within(this: &Scoped, all: &Scoped) -> Result<(), Error> {
     let counters = this.total <= all.total
         && this.legacy <= all.legacy
+        && this.brief_failed <= all.brief_failed
+        && this.start_failed <= all.start_failed
         && this.model_known <= all.model_known
         && this.effort_known <= all.effort_known
         && this.sources_read <= all.sources_read
-        && this.sources_total <= all.sources_total;
+        && this.sources_total <= all.sources_total
+        && outside(this, all, |scope| scope.brief_failed)
+        && outside(this, all, |scope| scope.start_failed);
     let rows = this.joint.iter().all(|row| {
         all.joint
             .iter()
@@ -1800,5 +1826,9 @@ mod s5_requirements;
 mod s5_retained;
 #[cfg(test)]
 mod s5_store;
+#[cfg(test)]
+mod stats3_driver_tests;
+#[cfg(test)]
+mod stats3_upgrade_spec;
 #[cfg(test)]
 mod statsplan_spec;

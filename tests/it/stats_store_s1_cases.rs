@@ -349,6 +349,8 @@ pub fn hand_view() -> View {
     let scoped = Scoped {
         total: 2,
         legacy: 1,
+        brief_failed: 0,
+        start_failed: 0,
         model_known: 1,
         effort_known: 1,
         range: Some(("2026-10-01".to_owned(), "2026-10-01".to_owned())),

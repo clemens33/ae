@@ -478,6 +478,58 @@ pub(crate) fn certificate_line(
     line
 }
 
+/// A fact a core writes today. `observed` has no writer yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FactKind {
+    /// The spawn kept its seat but its brief never landed.
+    BriefFailed,
+    /// `_run` is about to exec the tool of a new worker's first start.
+    StartAttempted,
+    /// That exec returned: the tool never ran.
+    StartFailed,
+}
+
+impl FactKind {
+    /// The kind's word in the closed v1 vocabulary.
+    pub(crate) const fn word(self) -> &'static str {
+        match self {
+            Self::BriefFailed => FACT_KINDS[0],
+            Self::StartAttempted => FACT_KINDS[1],
+            Self::StartFailed => FACT_KINDS[2],
+        }
+    }
+}
+
+/// One fact line, LF included: the certificate's identity members, the kind,
+/// and for a start fact its `<slot>:<launch_id>:<pid>` key. Nothing of a task.
+pub(crate) fn fact_line(
+    ts: Timestamp,
+    actor: &str,
+    seat: &Seat<'_>,
+    kind: FactKind,
+    start: Option<&str>,
+) -> String {
+    let mut members = vec![
+        ("ts", Value::Str(ts.to_string())),
+        ("actor", Value::str(actor)),
+        ("action", Value::str(FACT)),
+        ("target", Value::str(seat.name)),
+        ("target_slot", Value::str(seat.slot)),
+    ];
+    if !seat.session.is_empty() {
+        members.push(("target_session_id", Value::str(seat.session)));
+    }
+    members.push((FAMILY_VERSION, Value::Num(i64::from(VERSION))));
+    members.push((ID, Value::str(seat.birth)));
+    members.push(("fact", Value::str(kind.word())));
+    if let Some(start) = start {
+        members.push(("start", Value::str(start)));
+    }
+    let mut line = Value::obj(members).render();
+    line.push('\n');
+    line
+}
+
 /// The family's wire reaches readers that predate it. A summary-less record must
 /// stay inert in each: an omitted row or an action and identity label, never a
 /// panic, an error, a body load, or any configured selection.

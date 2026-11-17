@@ -63,6 +63,10 @@ impl App {
             live_seats,
             ..settings::SettingsBodies::default()
         };
+        self.settings_bodies
+            .stats
+            .stopped
+            .clone_from(&self.stats_upkeep.stopped);
         self.quota_failed = false;
         if let Some(ask) = &self.ask {
             let _ = ask.send(Request::Settings {
@@ -134,6 +138,14 @@ impl App {
         stats.store = store;
     }
 
+    /// The Statistics upkeep stopped: flash `line` once, and keep it for every
+    /// open of the tab until this process ends.
+    pub(super) fn stats_upkeep_stopped(&mut self, line: String) {
+        self.flash = Some((line.clone(), std::time::Instant::now()));
+        self.settings_bodies.stats.stopped = Some(line.clone());
+        self.stats_upkeep.stopped = Some(line);
+    }
+
     /// `r` on the Statistics tab: a reset owed to the upkeep, for this open.
     pub(super) fn ask_reset(&mut self) {
         // The store reset belongs to the Spawns page alone.
@@ -144,14 +156,14 @@ impl App {
             .filter(|open| open.tab == model::SettingsTab::Statistics)
             .map(|open| open.generation);
         if let Some(generation) = shown {
-            self.stats_reset = Some(generation);
+            self.stats_upkeep.reset = Some(generation);
             self.settings_bodies.stats.store.reset = Some(settings::ResetLine::Requested);
         }
     }
 
     /// The reset owed to the upkeep, handed over once.
     pub(super) const fn take_reset(&mut self) -> Option<u64> {
-        self.stats_reset.take()
+        self.stats_upkeep.reset.take()
     }
 
     /// No upkeep thread took the reset of `generation`: it waits for one.
@@ -171,6 +183,11 @@ impl App {
     ) {
         use crate::stats_store::disk::Reset;
         use settings::{ResetLine, ScopeLine};
+        // A reset that swapped the store runs a fresh upkeep: a stop is over.
+        if matches!(outcome, Ok(Reset::Rebuilt { .. } | Reset::Empty)) {
+            self.stats_upkeep.stopped = None;
+            self.settings_bodies.stats.stopped = None;
+        }
         if !self.model.settings_generation(generation) {
             return;
         }

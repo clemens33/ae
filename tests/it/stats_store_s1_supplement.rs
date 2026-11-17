@@ -31,7 +31,7 @@ fn a_valid_render_under_another_version_is_refused() {
     );
     let view = render_view(&store.view(Some(S)));
     assert!(parse_view(&view).is_ok(), "the unaltered view parses");
-    for version in ["0", "2", "-1", "\"1\""] {
+    for version in ["0", "3", "-1", "\"1\""] {
         let other = evidence.replacen(
             "{\"stats_store\":1,",
             &format!("{{\"stats_store\":{version},"),
@@ -40,7 +40,7 @@ fn a_valid_render_under_another_version_is_refused() {
         assert_ne!(other, evidence, "the version member was rewritten");
         assert!(Store::parse(&other).is_err(), "evidence version {version}");
         let other = view.replacen(
-            "{\"stats_view\":1}",
+            "{\"stats_view\":2}",
             &format!("{{\"stats_view\":{version}}}"),
             1,
         );

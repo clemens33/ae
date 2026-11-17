@@ -100,10 +100,31 @@ fn committed(rig: &Rig, name: &str, profile: &str) -> Value {
             "no command/config path"
         );
     }
-    assert!(
-        records(rig, "worker-fact").is_empty(),
-        "fact writers belong to later slices"
-    );
+    let read_facts = || {
+        rig.events()
+            .lines()
+            .filter_map(|line| {
+                let event = ae::events::Event::parse_line(line).expect("actual journal event");
+                match ae::birth::decode(&event) {
+                    Some(Ok(ae::birth::Record::Fact(fact)))
+                        if fact.birth == text(&birth, "birth").expect("birth id") =>
+                    {
+                        Some(fact.kind)
+                    }
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut facts = read_facts();
+    for _ in 0..200 {
+        if !facts.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        facts = read_facts();
+    }
+    assert_eq!(facts, ["start-attempted"]);
     birth
 }
 
@@ -187,7 +208,18 @@ fn a_committed_worker_with_an_undelivered_brief_still_has_one_birth() {
         text(&records(&rig, "spawn")[0], "birth"),
         text(&births[0], "birth")
     );
-    assert!(records(&rig, "worker-fact").is_empty());
+    let facts: Vec<_> = rig
+        .events()
+        .lines()
+        .filter_map(|line| {
+            let event = ae::events::Event::parse_line(line).expect("actual journal event");
+            match ae::birth::decode(&event) {
+                Some(Ok(ae::birth::Record::Fact(fact))) => Some(fact.kind),
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(facts, ["start-attempted", "brief-failed"]);
     assert!(!format!("{:?}", births[0]).contains(CANARY));
 }
 
@@ -216,10 +248,18 @@ fn a_dispatched_spawn_whose_harness_exec_fails_still_has_one_birth() {
         "birth measures commitment, not model execution"
     );
     assert_eq!(records(&rig, "spawn").len(), 1);
-    assert!(
-        records(&rig, "worker-fact").is_empty(),
-        "outcome writers arrive later"
-    );
+    let facts: Vec<_> = rig
+        .events()
+        .lines()
+        .filter_map(|line| {
+            let event = ae::events::Event::parse_line(line).expect("actual journal event");
+            match ae::birth::decode(&event) {
+                Some(Ok(ae::birth::Record::Fact(fact))) => Some(fact.kind),
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(facts, ["start-attempted", "start-failed", "brief-failed"]);
 }
 
 #[test]

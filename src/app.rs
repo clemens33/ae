@@ -144,6 +144,10 @@ mod skilltab_spec;
 #[cfg(test)]
 mod stablesplit_spec;
 #[cfg(test)]
+mod stats3_driver_tests;
+#[cfg(test)]
+mod stats3_stopped_spec;
+#[cfg(test)]
 mod stats_spec;
 #[cfg(test)]
 mod tools_keys_tests;
@@ -404,8 +408,8 @@ struct App {
     /// The tool-statistics page the reader was last told is shown: its open
     /// generation and its ask.
     tools_asked: Option<(u64, crate::tool_stats::Ask)>,
-    /// The open generation whose `r` is owed to the upkeep, not yet handed.
-    stats_reset: Option<u64>,
+    /// The Statistics upkeep: a reset owed to it, and why it stopped.
+    stats_upkeep: settings::UpkeepFlow,
     /// The orchestrator profile pick: owed to the writer, in flight, revealed.
     orchestrator: settings::OrchestratorFlow,
     /// The open peek panel's captures, and the generation the next open mints.
@@ -572,7 +576,7 @@ impl App {
             settings_generation: 0,
             stats_shown: None,
             tools_asked: None,
-            stats_reset: None,
+            stats_upkeep: settings::UpkeepFlow::default(),
             orchestrator: settings::OrchestratorFlow::default(),
             peek: PeekPane::default(),
             peek_generation: 0,

@@ -173,6 +173,9 @@ pub(super) enum Wake {
     Answer(Box<Answer>),
     /// One line for the flash, from the Statistics store's upkeep thread.
     Notice(String),
+    /// The upkeep thread stopped, said once: the flash, and a line the
+    /// Statistics tab keeps for the rest of this process.
+    StatsStopped(String),
     /// What became of the reset the Statistics tab of `generation` asked for.
     StatsReset {
         generation: u64,

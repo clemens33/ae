@@ -406,7 +406,10 @@ impl Rig {
     /// That makes spawn reach its real, bounded brief-readiness failure after
     /// the pane and seat exist.
     fn make_claude_input_busy(&self) {
-        let body = FAKE_CLAUDE.replacen("draw(\"\");", "draw(\"busy\");", 1);
+        let body = FAKE_CLAUDE
+            .replace("__RECEIVED__", &self.received.display().to_string())
+            .replace("__LAUNCHED__", &self.launched.display().to_string())
+            .replacen("draw(\"\");", "draw(\"busy\");", 1);
         assert!(
             std::fs::write(self.scratch.join("claude"), body).is_ok(),
             "the busy fake agent"
@@ -2270,5 +2273,7 @@ fn a_retire_whose_kill_pane_fails_keeps_its_seat() {
 
 #[path = "s4_spawn.rs"]
 mod s4_spawn;
+#[path = "stats3_spawn_spec.rs"]
+mod stats3_spawn_spec;
 #[path = "worker_birth_lifecycle_spec.rs"]
 mod worker_birth_lifecycle_spec;

@@ -1,0 +1,9 @@
+{"stats_root":1,"epoch":0,"gen":1}
+{"scope":"all","total":2,"legacy":0,"model_known":2,"effort_known":2,"from":"2026-10-01","to":"2026-10-01","sources_read":1,"sources_total":1}
+{"scope":"all","table":"harness","cells":["=claude"],"count":2}
+{"scope":"all","table":"client","cells":["direct"],"count":2}
+{"scope":"all","table":"model_effort","cells":["=sonnet","=high"],"count":2}
+{"scope":"all","table":"joint","cells":["=claude","direct","=sonnet","=high"],"count":2}
+{"scope":"covering","total":0,"legacy":0,"model_known":0,"effort_known":0,"from":null,"to":null,"sources_read":0,"sources_total":0}
+{"group":"11111111-1111-4111-8111-111111111111","gen":1,"sources":1,"pending":0,"from":"2026-10-01","to":"2026-10-01","ids":["live/old"]}
+{"end":8}

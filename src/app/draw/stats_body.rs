@@ -16,17 +16,19 @@ const EVIDENCE: &str = "Evidence: configured launch selection, resolved at spawn
 const NONE_SET: &str = "none set is no flag, not no model.";
 const DIRECT: &str = "direct has no [clients] label: a route, not an account.";
 const RETENTION: &str = "Counts retained records in this state root, from a store kept up to date as workers spawn. A purge removes its archive's counts at once; a deleted session or archive drops out at the next update.";
+/// What a stopped upkeep means for every number below it, and the remedy.
+const STOPPED: &str = "Upkeep stopped: numbers may be stale; restart ae app.";
+/// What the outcome counts can and cannot say.
+const OUTCOMES: &str = "Unproved: the last start fact is an attempt, or there is none; an attempt never proves the tool ran. A spawn recorded before start facts were journaled has none, so its observed identity stays unknown; nothing is backfilled.";
 /// A scope with no published numbers yet.
 const BUILDING: &str = "Statistics are being built: no source read yet";
 const ALL_TITLE: &str = "All retained  ·  m: This session  ·  r: rebuild";
 const THIS_TITLE: &str = "This session  ·  m: All retained  ·  r: rebuild";
 
-/// The rows of `body` at `width`: a reset's line first, then the scope's
-/// numbers, or the state that stands in for them.
+/// The rows of `body` at `width`: a stopped upkeep's line on either page,
+/// then a reset's line, then the scope's numbers, or the state that stands in
+/// for them.
 pub(super) fn rows(body: &StatsBody, paint: Paint, width: u16) -> Vec<(String, Style)> {
-    if body.page != StatsPage::Spawns {
-        return super::tool_body::rows(body, paint, width);
-    }
     let dim = paint.fg(|p| p.dim);
     let mut page = Page {
         rows: Vec::new(),
@@ -34,6 +36,14 @@ pub(super) fn rows(body: &StatsBody, paint: Paint, width: u16) -> Vec<(String, S
         dim,
         room: width.saturating_sub(LEFT),
     };
+    if let Some(stopped) = &body.stopped {
+        page.sentence(STOPPED, page.text);
+        page.sentence(stopped, dim);
+    }
+    if body.page != StatsPage::Spawns {
+        page.rows.extend(super::tool_body::rows(body, paint, width));
+        return page.rows;
+    }
     if let Some(reset) = &body.store.reset {
         page.sentence(&reset_line(reset), page.text);
     }
@@ -136,6 +146,16 @@ impl Page {
             ),
             text,
         );
+        self.sentence(
+            &format!(
+                "Brief undelivered: {} · Start failed: {} · Start unproved: {}",
+                scoped.brief_failed,
+                scoped.start_failed,
+                scoped.start_unproved()
+            ),
+            text,
+        );
+        self.sentence(OUTCOMES, dim);
         if let ScopeLine::Partial {
             pending,
             listed,
