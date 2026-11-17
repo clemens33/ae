@@ -4,6 +4,7 @@ include!("../../tests/spec/bgmark_cycle.rs");
 include!("../../tests/spec/deadnotify.rs");
 include!("../../tests/spec/alertlatch.rs");
 include!("../../tests/spec/alertlatch_slots.rs");
+include!("../../tests/spec/alertlatch_rename.rs");
 include!("../../tests/spec/deadnotify_impl.rs");
 include!("../../tests/spec/seatinc.rs");
 #[test]
