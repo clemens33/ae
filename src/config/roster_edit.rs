@@ -689,6 +689,42 @@ mod tests {
     }
 
     #[test]
+    fn a_quoted_value_with_text_is_replaced_between_its_quotes_and_nothing_else_moves() {
+        let text = CONFIG.replace("orchestrator = old", "orchestrator = \"old\"");
+        for profile in ["x", "newer_profile"] {
+            let edit = set_roster_row(&text, "orchestrator", profile).expect("quoted value");
+            assert_eq!(
+                edit.text,
+                CONFIG.replace(
+                    "orchestrator = old",
+                    &format!("orchestrator = \"{profile}\"")
+                ),
+                "{profile}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_blanks_around_the_equals_sign_stay_byte_for_byte_whatever_their_shape() {
+        for (before, after) in [
+            ("orchestrator=old", "orchestrator=new"),
+            ("orchestrator =old", "orchestrator =new"),
+            ("orchestrator= old", "orchestrator= new"),
+            ("orchestrator  =   old", "orchestrator  =   new"),
+            ("orchestrator\t=\told", "orchestrator\t=\tnew"),
+        ] {
+            let text = CONFIG.replace("orchestrator = old", before);
+            let edit = set_roster_row(&text, "orchestrator", "new")
+                .unwrap_or_else(|why| panic!("{before:?}: {why:?}"));
+            assert_eq!(
+                edit.text,
+                CONFIG.replace("orchestrator = old", after),
+                "{before:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_lone_quote_is_a_literal_the_reader_would_bind_and_so_is_refused() {
         let text = CONFIG.replace("orchestrator = old", "orchestrator = \"");
         assert!(matches!(
