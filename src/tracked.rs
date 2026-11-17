@@ -5060,6 +5060,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test writes and reads its isolated event ledger"
+    )]
     fn a_malformed_expected_slot_is_unproven_never_a_replaced_seat() {
         // Requirement (#218 2b/2c): an expectation that cannot be read is refused
         // as "could not be proven", with nothing typed and one refused record as
