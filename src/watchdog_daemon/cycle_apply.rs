@@ -1081,9 +1081,9 @@ impl Cycle<'_> {
                 }
                 continue;
             }
-            // The GLYPH debounce is keyed by SLOT while the ALERT is keyed by
-            // the display ref: two registrations can share a ref, but never a
-            // slot.
+            // The GLYPH debounce and the ALERT are both keyed by SLOT: the alert
+            // routes by slot and session, and only an older keyless alert falls
+            // back to the display name.
             let state = entry_mut(missing, &entry.slot);
             state.streak = state.streak.saturating_add(1);
             // One human alert per death episode, whichever leg it showed
