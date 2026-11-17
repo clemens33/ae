@@ -39,6 +39,7 @@ mod o8_overlay_spec;
 mod o8_transition_spec;
 mod o8_units;
 mod o8_uuid_spec;
+mod o8look_units;
 mod s2_exec_spec;
 
 pub(in crate::app) const ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";

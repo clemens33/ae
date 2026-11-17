@@ -8,7 +8,7 @@ use super::*;
 const OID: &str = "0199c0de-2222-4890-abcd-ef0123456789";
 
 /// Open the panel side by side (or `full`) on a proven orchestrator.
-fn opened(app: &mut App, full: bool) {
+pub(super) fn opened(app: &mut App, full: bool) {
     app.orch.proof = loader::Proof::Proven(OID.to_owned());
     app.open_panel(full);
     assert!(app.panel_focused(), "the panel opens with the keys");
@@ -21,7 +21,7 @@ fn press(app: &mut App, bytes: &[u8]) {
     );
 }
 
-fn at(width: u16, height: u16, app: &mut App) -> Buffer {
+pub(super) fn at(width: u16, height: u16, app: &mut App) -> Buffer {
     let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
     app.frame(&mut buf);
     buf
@@ -147,7 +147,7 @@ fn assert_fills_to_the_margin(rows: &[(String, u16)], draft: &str, end: u16) {
 }
 
 /// The side panel's border column in `buf`.
-fn border_of(buf: &Buffer) -> u16 {
+pub(super) fn border_of(buf: &Buffer) -> u16 {
     (0..buf.area.width)
         .rev()
         .find(|x| (2..buf.area.height - 5).all(|y| buf[(*x, y)].symbol() == "│"))
@@ -175,7 +175,7 @@ fn a_main_draft_beside_a_side_panel_wraps_inside_its_column() {
 
 /// `api` home and a running orchestrator under `root`, proven as the
 /// fixture's incarnation, with the panel open on it and the keys given.
-fn orchestrated(root: &Root, full: bool) -> (App, Reader) {
+pub(super) fn orchestrated(root: &Root, full: bool) -> (App, Reader) {
     let (mut app, reader) = housed(root);
     let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
     session(
@@ -500,7 +500,7 @@ fn an_open_panel_draws_at_exactly_the_size_floor() {
 }
 
 /// The first column of `word` on row `y` of `buf`, searched from `from`.
-fn cell_of(buf: &Buffer, word: &str, y: u16, from: u16) -> Option<u16> {
+pub(super) fn cell_of(buf: &Buffer, word: &str, y: u16, from: u16) -> Option<u16> {
     let wide = u16::try_from(word.chars().count()).ok()?;
     (from..buf.area.width.saturating_sub(wide)).find(|&x| {
         word.chars()
