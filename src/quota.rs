@@ -2027,25 +2027,26 @@ fn account_source(
 ) -> Option<PathBuf> {
     use crate::meta::{RecordedConfigHome, RecordedConfigHomeBase};
 
-    match tool.adapter().quota.source {
+    let source = match tool.adapter().quota.source {
         QuotaSource::ClaudeCache => match (home, base) {
             (RecordedConfigHome::Path(home), RecordedConfigHomeBase::Missing) => {
-                Some(home.join(".claude.json"))
+                home.join(".claude.json")
             }
             (RecordedConfigHome::Implicit(_), RecordedConfigHomeBase::Path(base)) => {
-                Some(base.join(".claude.json"))
+                base.join(".claude.json")
             }
-            _ => None,
+            _ => return None,
         },
         QuotaSource::CodexRollouts => match (home, base) {
             (RecordedConfigHome::Path(home), RecordedConfigHomeBase::Missing)
             | (RecordedConfigHome::Implicit(home), RecordedConfigHomeBase::Path(_)) => {
-                Some(home.join("sessions"))
+                home.join("sessions")
             }
-            _ => None,
+            _ => return None,
         },
-        QuotaSource::GrokLog | QuotaSource::Unsupported => None,
-    }
+        QuotaSource::GrokLog | QuotaSource::Unsupported => return None,
+    };
+    Some(source)
 }
 
 /// [`recorded_identity`]'s classification alone: the tool and its source
