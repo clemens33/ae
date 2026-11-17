@@ -729,6 +729,48 @@ mod tests {
     }
 
     #[test]
+    fn a_replaced_config_keeps_its_exact_mode_bits() {
+        for mode in [0o600_u32, 0o640, 0o644, 0o664] {
+            let dir = scratch(&format!("mode-{mode:o}"));
+            let path = dir.join("config");
+            std::fs::write(&path, CONFIG).expect("config");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("mode");
+            let seen = read_config_seen(&path).expect("seen");
+            apply_roster_row(&path, &seen, "orchestrator", "new", 1_700_000_000)
+                .expect("a plain edit applies");
+            let kept = crate::store::node_meta(&path).expect("meta").mode() & 0o7777;
+            assert_eq!(kept, mode, "mode {mode:o} is what the file had");
+        }
+    }
+
+    #[test]
+    fn a_link_and_a_directory_are_refused_by_what_they_are() {
+        let dir = scratch("kinds");
+        let path = dir.join("config");
+        std::fs::write(&path, CONFIG).expect("config");
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&path, &link).expect("link");
+        assert!(
+            matches!(read_config_seen(&link), Err(ApplyRefusal::Symlink(_))),
+            "a symlink is a symlink, not just not regular"
+        );
+        assert!(
+            matches!(read_config_seen(&dir), Err(ApplyRefusal::NotRegular(_))),
+            "a directory is not regular"
+        );
+        assert!(read_config_seen(&path).is_ok(), "the file itself is read");
+    }
+
+    #[test]
+    fn the_seen_text_is_exactly_what_the_file_held() {
+        let dir = scratch("seen");
+        let path = dir.join("config");
+        std::fs::write(&path, CONFIG).expect("config");
+        let seen = read_config_seen(&path).expect("seen");
+        assert_eq!(seen.text(), CONFIG);
+    }
+
+    #[test]
     fn a_lone_quote_is_a_literal_the_reader_would_bind_and_so_is_refused() {
         let text = CONFIG.replace("orchestrator = old", "orchestrator = \"");
         assert!(matches!(
