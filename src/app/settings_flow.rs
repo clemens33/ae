@@ -648,7 +648,7 @@ mod review_tests {
     use ratatui_core::buffer::Buffer;
     use ratatui_core::layout::Rect;
 
-    use crate::app::loader::Wake;
+    use crate::app::loader::{Answer, Wake};
     use crate::app::settings::{OrchestratorView, resolve_orchestrator};
     use crate::app::tests::Root;
     use crate::app::{App, drain, take_keys};
@@ -843,6 +843,46 @@ mod review_tests {
         }
         assert!(seen.contains("config.1234567890.bak"), "{seen}");
         assert!(seen.contains("edit the file by hand"), "{seen}");
+    }
+
+    #[test]
+    fn the_reader_answer_is_drawn_for_the_open_it_was_read_for_and_for_no_other() {
+        let (root, mut app) = fixture("orchprof-rev-answer", 3);
+        let generation = app.model.settings().expect("open").generation;
+        let ready = resolve_orchestrator(None, &root.0.join("config"), Some(&root.0));
+        app.settings_bodies.orchestrator = OrchestratorView::Loading;
+        app.answer(Answer::OrchestratorProfile {
+            generation: generation + 1,
+            view: ready.clone(),
+        });
+        let shown = frame(&mut app, 220, 60);
+        assert!(
+            shown.contains("orchestrator: loading"),
+            "an answer for another open is dropped: {shown}"
+        );
+        app.answer(Answer::OrchestratorProfile {
+            generation,
+            view: ready,
+        });
+        let shown = frame(&mut app, 220, 60);
+        assert!(
+            shown.contains("orchestrator = p00"),
+            "the answer for this open is drawn: {shown}"
+        );
+    }
+
+    #[test]
+    fn o_with_the_picker_open_changes_nothing_and_does_not_reset_the_highlight() {
+        let (_root, mut app) = fixture("orchprof-rev-reopen-key", 3);
+        text(&mut app, "o");
+        text(&mut app, "j");
+        assert!(frame(&mut app, 220, 60).contains("> p01"));
+        text(&mut app, "o");
+        let shown = frame(&mut app, 220, 60);
+        assert!(
+            shown.contains("> p01") && !shown.contains("> p00"),
+            "a second o is the picker's and moves nothing: {shown}"
+        );
     }
 
     #[test]
