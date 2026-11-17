@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.75] - 2026-11-17
+- Frozen acceptance for watchdog and auto-reseat incarnation proof (#218 2c)
+- Watchdog and auto-reseat deliveries prove the decided incarnation (#218 2c)
+- A malformed expected slot is unproven, never a replaced seat
+- The cycle snapshot lists every launch row once
+- The malformed-slot test reads its isolated ledger under the test allow
+
 ## [v2026.11.74] - 2026-11-17
 - Answer the overnight mutation survivors with tests
 - End a quote-escape character literal at its own closing quote
