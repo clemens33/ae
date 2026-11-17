@@ -1,0 +1,7 @@
+{"ts":"2026-11-17T21:00:00Z","actor":"worker","action":"wait-held","target":"lead","summary":"waiting-agent held: unchanged"}
+{"ts":"2026-11-17T21:00:01Z","actor":"watchdog","action":"wait-held","target":"lead","summary":"waiting-agent held: someday"}
+{"ts":"2026-11-17T21:00:02Z","actor":"watchdog","action":"wait-held","target":"lead","summary":"waiting-agent held: target"}
+{"ts":"2026-11-17T21:00:03Z","actor":"watchdog","action":"wait-held","target":"lead","summary":"waiting-agent held: target on @other"}
+{"ts":"2026-11-17T21:00:04Z","actor":"watchdog","action":"wait-held","target":"lead","summary":"blocked held: target on worker"}
+{"ts":"2026-11-17T21:00:05Z","actor":"watchdog","action":"wait-held","target":"lead","summary":"waiting-agent held: target on worker held: target on worker"}
+{"ts":"2026-11-17T21:00:06Z","actor":"watchdog","action":"wait-held","target":"lead","summary":"waiting-agent held: unchanged "}

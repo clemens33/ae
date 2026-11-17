@@ -236,7 +236,27 @@ impl Cycle<'_> {
                     err,
                 )
             }
-            Effect::WaitHeld { .. } => Ok(()),
+            Effect::WaitHeld { reason, on: target } => {
+                // Journal only, keyed to the launch witness as a challenge
+                // is; the wait fold reads it back through
+                // `Event::wait_held` (#225).
+                let held = match on.seen.quiet {
+                    Some(QuietKind::Blocked) => crate::watchdog::WaitState::Blocked,
+                    _ => crate::watchdog::WaitState::WaitingAgent,
+                };
+                let summary = crate::watchdog::wait_held_summary(held, *reason, target.as_deref());
+                Journal {
+                    meta_dir: self.meta_dir,
+                    session: self.session,
+                }
+                .record_referring(
+                    crate::watchdog::WAIT_HELD_ACTION,
+                    agent,
+                    launch_id_for(&self.launch_ids, on.slot).unwrap_or_default(),
+                    &summary,
+                    err,
+                )
+            }
             Effect::TargetMoved { moved, age_secs } => {
                 let target =
                     crate::session::declaration_of(on.events, self.session, on.slot, agent)

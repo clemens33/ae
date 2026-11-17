@@ -380,8 +380,10 @@ impl TargetMotion {
     /// The newest motion epoch: a live job counts as `now`.
     #[must_use]
     pub fn newest(&self, now: i64) -> Option<i64> {
-        let _ = now;
-        None
+        [self.journal, self.pane, self.job.then_some(now)]
+            .into_iter()
+            .flatten()
+            .max()
     }
 }
 
@@ -406,12 +408,12 @@ pub fn target_motion(
     pane: Option<i64>,
     job: bool,
 ) -> TargetMotion {
-    let _ = (events, session, slot, agent);
-    TargetMotion {
-        journal: None,
-        pane,
-        job,
-    }
+    let journal = events
+        .iter()
+        .rev()
+        .find(|event| crate::watchdog::event_is_actor(event, session, slot, agent))
+        .map(|event| event.ts.epoch());
+    TargetMotion { journal, pane, job }
 }
 
 /// Whether a target hold holds the due `waiting-agent` challenge this cycle
@@ -425,8 +427,14 @@ pub fn target_held(
     now: i64,
     cadence: u64,
 ) -> bool {
-    let _ = (progress, target, now, cadence);
-    false
+    let due = matches!(
+        progress,
+        WaitProgress::ChallengeDue { wait_age_secs, .. }
+            if wait_age_secs < crate::watchdog::wait_hold_cap(cadence)
+    );
+    due && target
+        .and_then(|target| target.motion.newest(now))
+        .is_some_and(|at| age_secs(now, at) < crate::watchdog::quiet_ceiling(cadence))
 }
 
 /// The pane frame of one proof (#225): when it settled and whether it moved.
@@ -2431,6 +2439,30 @@ impl Cycle<'_> {
             .collect();
         let wait_facts = crate::wait_on::Facts::read(&events, self.session, &held);
         let wait_links = crate::wait_on::Facts::links(&wait_facts);
+        // ONE snapshot of every seat's pane and job motion before any pane is
+        // accounted (#225): the carried motion of the same incarnation and
+        // its task lease, so the accounting order cannot change a hold.
+        let motions: Vec<(String, String, Option<i64>, bool)> = observed
+            .iter()
+            .filter_map(|pane| {
+                let agent = pane.agent.as_deref().filter(|name| !name.is_empty())?;
+                let slot = pane.slot.clone().unwrap_or_default();
+                let identity = quiet_hash(&format!("{slot}\n{agent}"));
+                let carried = carry
+                    .panes
+                    .iter()
+                    .find(|(id, state)| *id == pane.pane_id && state.identity == Some(identity))
+                    .map(|(_, state)| state);
+                let running = pane
+                    .pane_pid
+                    .zip(self.agent_bin(&slot))
+                    .and_then(|(pid, bin)| procs::task_running(stat_table.as_deref(), pid, &bin));
+                let lease = task_lease(carried.and_then(|state| state.task_since), running, now);
+                let job = task_deferred(lease, running, now, &self.knobs);
+                let pane_motion = carried.and_then(|state| state.last_hash_change);
+                Some((agent.to_owned(), slot, pane_motion, job))
+            })
+            .collect();
 
         // ONE client read per cycle; a failed read changes no pane's memory.
         let clients = transport::observe_clients(self.server);
@@ -2535,7 +2567,7 @@ impl Cycle<'_> {
                 progress: wait_progress,
                 quiet: wait_proof,
                 rung: wait_rung,
-                held: _,
+                held: wait_witness,
             } = wait_state.map_or(
                 crate::watchdog::WaitReading {
                     progress: WaitProgress::None,
@@ -2578,8 +2610,24 @@ impl Cycle<'_> {
                 )
                 .map(Timestamp::epoch),
                 death: deadnotice::death_episode(&events, key, (&slot, agent)),
-                wait_target: None,
-                wait_witness: None,
+                // The direct same-session target a `waiting-agent` may be
+                // held on, with its three motion halves (#225).
+                wait_target: (wait_state == Some(WaitState::WaitingAgent))
+                    .then(|| crate::wait_on::held_on(&wait_links, agent))
+                    .flatten()
+                    .and_then(|name| motions.iter().find(|(seat, ..)| seat == name))
+                    .map(|(name, target_slot, pane_motion, job)| WaitTarget {
+                        agent: name.clone(),
+                        motion: target_motion(
+                            &events,
+                            self.session,
+                            target_slot,
+                            name,
+                            *pane_motion,
+                            *job,
+                        ),
+                    }),
+                wait_witness,
             };
             let alerts =
                 crate::session::alerts_since_in(&events, self.session, &slot, agent, self.started);
@@ -3068,6 +3116,8 @@ mod sleepgap_cycle_spec;
 mod sleepgap_refresh_spec;
 #[cfg(test)]
 mod sleepgap_spec;
+#[cfg(test)]
+mod waithold_cycle_spec;
 
 #[cfg(test)]
 mod tests;

@@ -1716,8 +1716,11 @@ pub struct HoldWitness {
 /// [`crate::events::Event::wait_held`] is the one reader.
 #[must_use]
 pub fn wait_held_summary(state: WaitState, reason: HoldReason, on: Option<&str>) -> String {
-    let _ = (state, reason, on);
-    String::new()
+    let head = format!("{} held: {}", state.as_str(), reason.word());
+    match (reason, on) {
+        (HoldReason::Target, Some(agent)) => format!("{head} on {agent}"),
+        _ => head,
+    }
 }
 
 /// Which proof challenge a watchdog record carries.
@@ -2185,6 +2188,15 @@ fn wait_step(
         }
     } else if watchdog && event.action == NUDGE_ACTION {
         Step::Skip
+    } else if watchdog && event.action == WAIT_HELD_ACTION {
+        // Telemetry of this launch's hold of this state, read only through
+        // the typed reader: never a proof, attempt, news or reset (#225).
+        let ours = event.wait_held().is_some_and(|(held, _, _)| held == state);
+        if ours && launch_matches(event, launch) {
+            Step::Held
+        } else {
+            Step::Skip
+        }
     } else if own && event.declared_state() == Some(state.as_str()) {
         Step::Proof
     } else if is_challenge(event) || ends_quiet(state.as_str(), event, own, own_requests) {
@@ -2678,6 +2690,32 @@ pub struct WaitReading {
     pub held: Option<HoldWitness>,
 }
 
+/// The hold witness after one step of the wait fold (#225). A `wait-held`
+/// record opens it with the strongest reason since the proof. The next
+/// challenge record of this wait, an attempt included, closes it and keeps
+/// the reason as the episode's witness. A reset, a proof or an inbound
+/// `retire` of the seat (its incarnation ends) clears it.
+fn witness_step(
+    held: Option<HoldWitness>,
+    step: Step,
+    event: &Event,
+    own: bool,
+) -> Option<HoldWitness> {
+    match step {
+        Step::Held => event.wait_held().map_or(held, |(_, reason, _)| {
+            let reason = held.map_or(reason, |known| known.reason.max(reason));
+            Some(HoldWitness { reason, open: true })
+        }),
+        Step::Attempt | Step::Delivered => held.map(|witness| HoldWitness {
+            open: false,
+            ..witness
+        }),
+        Step::Reset | Step::Proof => None,
+        Step::News if !own && event.action == "retire" => None,
+        Step::Skip | Step::Info | Step::News => held,
+    }
+}
+
 /// The ONE wait fold: [`wait_progress`] and [`wait_progress_proof`] are its
 /// projections. Ages are awake seconds: the journal's `host-suspended`
 /// records ([`Suspensions`]) do not count toward the challenge cadence.
@@ -2709,6 +2747,7 @@ pub fn wait_reading(
     let mut episode: Option<WaitEpisode<'_>> = None;
     let mut quiet = ProofQuiet::default();
     let mut own_requests: Vec<&str> = Vec::new();
+    let mut held: Option<HoldWitness> = None;
     for event in events {
         let own = event_is_actor(event, session, slot, agent);
         let addressed = event_is_addressed_to(event, session, slot, agent);
@@ -2720,7 +2759,9 @@ pub fn wait_reading(
         {
             own_requests.push(id);
         }
-        match wait_step(event, own, launch, state, &own_requests) {
+        let step = wait_step(event, own, launch, state, &own_requests);
+        held = witness_step(held, step, event, own);
+        match step {
             Step::Skip | Step::Held => {}
             Step::Info => quiet.inform(event.ts),
             Step::Reset => {
@@ -2785,7 +2826,7 @@ pub fn wait_reading(
         progress,
         quiet,
         rung,
-        held: None,
+        held,
     }
 }
 
@@ -2798,8 +2839,7 @@ pub const WAIT_RUNG_CAP: u8 = 3;
 /// target's motion.
 #[must_use]
 pub fn wait_hold_cap(cadence: u64) -> u64 {
-    let _ = cadence;
-    0
+    wait_rung_spacing(cadence, WAIT_RUNG_CAP)
 }
 
 /// The rung a `waiting-agent` ceiling is read on (#225): [`WAIT_RUNG_CAP`]
@@ -2815,8 +2855,21 @@ pub fn promoted_rung(
     on_working: bool,
     cadence: u64,
 ) -> u8 {
-    let _ = (progress, witness, on_working, cadence);
-    rung
+    let open_target = witness
+        == Some(HoldWitness {
+            reason: HoldReason::Target,
+            open: true,
+        });
+    let fresh = matches!(
+        progress,
+        WaitProgress::ChallengeDue { wait_age_secs, .. }
+            if wait_age_secs < wait_hold_cap(cadence)
+    );
+    if open_target && on_working && fresh {
+        WAIT_RUNG_CAP
+    } else {
+        rung
+    }
 }
 
 /// A rung's cadence multiple: `min(2^rung, 8)`.

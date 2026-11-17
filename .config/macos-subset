@@ -41,6 +41,7 @@ module scratch  # Recipe
 module seat_relaunch  # ProcessTable
 module spawn  # ProcessTable
 module telegram  # Fsync
+module waithold_spec  # ProcessTable
 module waiton_moved_spec  # ProcessTable
 module waiton_spec  # ProcessTable
 module watchdog_glue  # TmuxClient

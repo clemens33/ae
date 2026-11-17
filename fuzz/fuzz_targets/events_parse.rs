@@ -64,6 +64,14 @@ fuzz_target!(|data: &[u8]| {
     {
         assert_eq!(events[at].reference.as_ref(), Some(id));
     }
+    // `wait-held` (#225): whatever the one typed reader admits spells its
+    // summary back through the one writer, exactly.
+    for event in &events {
+        if let Some((state, reason, on)) = event.wait_held() {
+            let spelled = ae::watchdog::wait_held_summary(state, reason, on);
+            assert_eq!(event.summary.as_deref(), Some(spelled.as_str()));
+        }
+    }
     // `_run`'s conversation choices: a decoded record spells its own `ref`
     // back. The currency fold takes its seat, baseline, live start and
     // completeness from the hostile rows too: any ref's first token, or none.

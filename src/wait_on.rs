@@ -263,8 +263,21 @@ pub fn ends_elsewhere(links: &[Link<'_>], seat: &str) -> bool {
 /// waiting seat never buys a hold.
 #[must_use]
 pub fn held_on<'a>(links: &[Link<'a>], seat: &str) -> Option<&'a str> {
-    let _ = (links, seat);
-    None
+    let target = links
+        .iter()
+        .find(|link| link.name == seat && link.waiting)?
+        .on?;
+    if target.session_elsewhere().is_some() {
+        return None;
+    }
+    let Kind::Seat(next) = target.kind() else {
+        return None;
+    };
+    links
+        .iter()
+        .find(|link| link.name == next.as_str() && link.name != seat)
+        .filter(|link| link.working)
+        .map(|link| link.name)
 }
 
 /// One live seat's wait facts, owned, read from the journal the way its

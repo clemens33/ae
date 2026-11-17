@@ -1153,7 +1153,20 @@ fn agent_entries(
                     state,
                 ))
             });
-            let wait_rung = wait_reading.map_or(0, |reading| reading.rung);
+            // The ceiling's rung: the daemon's open, fresh target hold
+            // promotes it while the direct target still works; nothing here
+            // judges motion, so without that record it is the seat's own
+            // rung, and this surface may show blocked earlier, never later
+            // (#225).
+            let wait_rung = wait_reading.map_or(0, |reading| {
+                crate::watchdog::promoted_rung(
+                    reading.progress,
+                    reading.rung,
+                    reading.held,
+                    crate::wait_on::held_on(&links, &slot.name).is_some(),
+                    idle_nudge_secs.unwrap_or(0),
+                )
+            });
             let declared_current = declaration.is_some_and(|(_, current)| current);
             let elsewhere = crate::wait_on::ends_elsewhere(&links, &slot.name);
             let runtime_agent = runtime.agent(&slot.slot);

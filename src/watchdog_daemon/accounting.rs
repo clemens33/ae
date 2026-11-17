@@ -8,7 +8,7 @@ use super::{
     Path, QuietKind, SeatVerdict, SweepEffect, SystemTime, Throttle, Timestamp, UNIX_EPOCH,
     UNKNOWN_ALERT_CYCLES, Verdict, WaitEnded, WaitProgress, WaitState, classify_dead,
     descendancy_of, done_held_due, launch_grace, procs, proof_frame_step, stale_composite,
-    sweep_step, task_deferred, task_lease, transport, wait_held,
+    sweep_step, target_held, task_deferred, task_lease, transport, wait_held,
 };
 
 /// The result of accounting for one pane in one cycle.
@@ -593,8 +593,9 @@ fn book_waiting_agent_escalation(
     effects: &mut Vec<Effect>,
     seen: &Observation,
     knobs: &Knobs,
+    rung: u8,
 ) -> Option<Verdict> {
-    if !waiting_agent_escalates(seen, knobs) {
+    if !waiting_agent_escalates(seen, knobs, rung) {
         return None;
     }
     // An ACTIVE wait episode owns the next delivery: challenge, not nudge. A
@@ -631,16 +632,101 @@ fn book_target_moved(
     bounded(found.attempts, seen, knobs, told, age)
 }
 
-/// Whether this cycle's quiet `waiting-agent` is past its ceiling — the one
-/// answer the escalated verdict and the challenge text both read.
-pub(super) fn waiting_agent_escalates(seen: &Observation, knobs: &Knobs) -> bool {
+/// Whether this cycle's quiet `waiting-agent` is past its ceiling on `rung`
+/// ([`book_wait_hold`]'s promoted rung) — the one answer the escalated
+/// verdict and the challenge text both read.
+pub(super) fn waiting_agent_escalates(seen: &Observation, knobs: &Knobs, rung: u8) -> bool {
     seen.quiet == Some(QuietKind::WaitingAgent)
         && !seen.wait_ends_elsewhere
         && crate::watchdog::waiting_agent_escalated_at(
             seen.declared_age_secs,
             knobs.idle_nudge_secs,
-            seen.wait_rung,
+            rung,
         )
+}
+
+/// One cycle's holds of a due wait challenge (#225).
+pub(super) struct WaitHold {
+    /// The due challenge waits this cycle.
+    pub(super) held: bool,
+    /// The rung the `waiting-agent` ceiling is read on this cycle.
+    pub(super) rung: u8,
+    /// The `wait-held` record this cycle owes, when its reason is stronger
+    /// than the episode's witness.
+    pub(super) record: Option<Effect>,
+}
+
+/// The two holds of a due wait (#225): the unchanged-proof hold
+/// ([`wait_held`]) and, for `waiting-agent` only, the target hold
+/// ([`target_held`]) on a direct same-session target that works and moves.
+///
+/// Two rules make every end of a target hold journal a challenge in the same
+/// cycle, the record that closes it for `ae list`: no target hold on a spent
+/// delivery budget, and once an episode is target-held the unchanged hold no
+/// longer applies and a closed target hold never reopens. The promotion to
+/// the top rung reads the journaled witness, or this cycle's own record.
+pub(super) fn book_wait_hold(
+    seen: &Observation,
+    activity: &Activity,
+    (proof, frame): (crate::watchdog::ProofQuiet, FrameVerdict),
+    knobs: &Knobs,
+    wait_state: Option<WaitState>,
+) -> WaitHold {
+    use crate::watchdog::{HoldReason, HoldWitness};
+    let cadence = knobs.idle_nudge_secs;
+    let witness = activity.wait_witness;
+    let target_seen = witness.is_some_and(|known| known.reason == HoldReason::Target);
+    let spent = matches!(
+        seen.wait_progress,
+        WaitProgress::ChallengeDue { attempts, .. } if attempts >= knobs.undelivered_max
+    );
+    let target = wait_state == Some(WaitState::WaitingAgent)
+        && !spent
+        && witness.is_none_or(|known| known.reason != HoldReason::Target || known.open)
+        && target_held(
+            seen.wait_progress,
+            activity.wait_target.as_ref(),
+            seen.now_epoch,
+            cadence,
+        );
+    let unchanged = !target_seen && wait_held(seen.wait_progress, proof, frame, cadence);
+    let reason = if target {
+        Some(HoldReason::Target)
+    } else if unchanged {
+        Some(HoldReason::Unchanged)
+    } else {
+        None
+    };
+    let owed = reason.filter(|reason| {
+        wait_state.is_some() && witness.is_none_or(|known| *reason > known.reason)
+    });
+    let record = owed.map(|reason| Effect::WaitHeld {
+        reason,
+        on: activity
+            .wait_target
+            .as_ref()
+            .filter(|_| reason == HoldReason::Target)
+            .map(|held| held.agent.clone()),
+    });
+    let judged = if owed == Some(HoldReason::Target) {
+        Some(HoldWitness {
+            reason: HoldReason::Target,
+            open: true,
+        })
+    } else {
+        witness
+    };
+    WaitHold {
+        held: target || unchanged,
+        rung: crate::watchdog::promoted_rung(
+            seen.wait_progress,
+            seen.wait_rung,
+            judged,
+            target,
+            cadence,
+        ),
+        record,
+    }
 }
 
 /// The orchestrator main's sweep branch, or `None` when this pane is not it.
@@ -1037,14 +1123,10 @@ fn account_ordinary(
         .any(|effect| matches!(effect, Effect::TargetMoved { .. }));
     let alerted = !moves.is_empty() && !pasting;
     effects.extend(moves);
-    let held = wait_held(
-        seen.wait_progress,
-        quiet_proof,
-        frame,
-        knobs.idle_nudge_secs,
-    );
+    let hold = book_wait_hold(seen, activity, (quiet_proof, frame), knobs, wait_state);
+    effects.extend(hold.record);
     if !pasting
-        && !held
+        && !hold.held
         && let (
             Some(wait_state),
             WaitProgress::ChallengeDue {
@@ -1060,7 +1142,7 @@ fn account_ordinary(
             required,
             wait_age_secs,
             state: wait_state,
-            escalated: waiting_agent_escalates(seen, knobs),
+            escalated: waiting_agent_escalates(seen, knobs, hold.rung),
         };
         let mut waits = bounded(attempts, seen, knobs, challenge, wait_age_secs);
         if alerted {
@@ -1097,7 +1179,7 @@ fn account_ordinary(
             };
         }
         if let Some(verdict) =
-            book_waiting_agent_escalation(prior, &mut next, &mut effects, seen, knobs)
+            book_waiting_agent_escalation(prior, &mut next, &mut effects, seen, knobs, hold.rung)
         {
             return Accounting {
                 next,

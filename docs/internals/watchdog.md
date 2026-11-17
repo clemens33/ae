@@ -427,7 +427,43 @@ challenged again once `(OWN_WORK_AGE_CAP − 1)` cadences have passed since its 
   paste) instead; `done_progress` credits it only for the same launch, with an episode, no
   outstanding challenge, at least one credit and exactly one remaining. Anything else is ignored.
   It paints nothing, so it is no delivery for `last_watchdog_delivery`; an older core skips it.
-- `ae list` needs no change: its cells already read a due challenge as unconfirmed.
+- **Target hold** — a due `waiting-agent` challenge is also HELD while its seat's direct `--on` target
+  works and moves (#225). `wait_on::held_on` names the target: the seat's current typed
+  `waiting-agent` names a live seat of this session (bare or `<session>:<agent>`) that holds
+  `working`; `@session`, `<other>:<agent>`, an untyped wait, an absent seat and a target in any other
+  state never qualify, so a chain through a waiting seat surfaces as before. The target's motion is
+  what the watchdog already trusts for it (`watchdog_daemon::target_motion`): its own newest record,
+  its pane's carried motion (`PaneState::last_hash_change`, a Busy frame or a changed hash) and a live
+  own task within its lease, read for every seat BEFORE any pane is accounted. The hold
+  (`watchdog_daemon::target_held`) lasts while the newest motion is younger than `quiet_ceiling` and
+  the wait is younger than `watchdog::wait_hold_cap` = the top rung's spacing, 8 cadences (2400 s at
+  the default), measured from the proof and never renewed by the target's motion. It never starts
+  once the episode's failed attempts reached `undelivered_max`; once an episode is target-held the
+  unchanged hold no longer applies; a target hold that a challenge closed never reopens in that
+  episode. So every end of a target hold pastes the challenge in the same cycle.
+- **`wait-held`** — each hold is journaled once per reason and proof episode, never per cycle
+  (actor `watchdog`, target the seat, ref the launch witness, summary `<state> held: unchanged` or
+  `waiting-agent held: target on <agent>`, written by `watchdog::wait_held_summary` and read only
+  through `Event::wait_held`, fuzzed in `events_parse`). An episode first held unchanged records once
+  more when its target hold starts. The wait fold reads it as `WaitReading::held`, a `HoldWitness`:
+  the strongest reason since the proof, and whether no `wait-challenge` record of this wait (an
+  `[unconfirmed]` attempt included) follows the newest one. A newer own declaration, a reset or an
+  inbound `retire` of the seat clears it. It is never a proof, attempt, news, transition or painting
+  delivery.
+- **Top rung while target-held** — while the daemon's target hold is open the `waiting-agent`
+  ceiling is read on rung 3 (9 cadences, 2700 s), so a target-held seat does not read `blocked`
+  before the hold ends. The promotion therefore delays the `waiting-agent` escalation while the
+  hold stands, and it leaves the timing of the harness-idle nudge unchanged. Any end of the hold,
+  the cap included, restores the seat's own rung. A wait past that rung's ceiling then reads
+  `blocked` in the same cycle that pastes the challenge, so the cap gives no extra cadence before
+  `blocked`. `watchdog::promoted_rung` is the ONE rule: an open
+  `target` witness, a direct target that still works and a due wait younger than the cap. The
+  daemon also requires this cycle's fresh motion and counts the record it writes this cycle; `ae
+  list` (`session.rs`) judges no motion and reads only the journaled witness, so it uses the seat's
+  own rung without that record and shows `blocked` earlier, never later. Named differences: `ae
+  list` lags the daemon by one cycle; the wake settle drops a release paste for at most two cycles;
+  with no live watchdog `ae list` keeps an open promotion at most until the cap.
+- `ae list` needs no other change: its cells already read a due challenge as unconfirmed.
 
 ## Quiet states and how they're invalidated
 

@@ -159,6 +159,7 @@ pub enum RefMeaning<'a> {
     CapturedSessionId(&'a str),
     /// `done-challenge` — the seat incarnation challenged.
     /// `wait-challenge` — the seat incarnation challenged.
+    /// `wait-held` — the seat incarnation whose due wait challenge is held.
     LaunchId(&'a str),
     /// `state` — the declared work state (`working` / `waiting-user` /
     /// `waiting-agent` / `blocked` / `done`). The reader does not gate the
@@ -541,7 +542,7 @@ impl Event {
             "ask" | "review" | "reply" | "cancel" | "accept" => RefMeaning::RequestId(value),
             "memo" => RefMeaning::MemoTopic(value),
             "recover" => RefMeaning::CapturedSessionId(value),
-            "done-challenge" | "wait-challenge" => RefMeaning::LaunchId(value),
+            "done-challenge" | "wait-challenge" | "wait-held" => RefMeaning::LaunchId(value),
             "state" => RefMeaning::DeclaredState(value),
             _ => RefMeaning::Undefined,
         }
@@ -569,7 +570,27 @@ impl Event {
         crate::watchdog::HoldReason,
         Option<&str>,
     )> {
-        None
+        use crate::watchdog::{HoldReason, WaitState};
+        if self.actor != crate::watchdog::WATCHDOG_ACTOR
+            || self.action != crate::watchdog::WAIT_HELD_ACTION
+        {
+            return None;
+        }
+        let (word, rest) = self.summary.as_deref()?.split_once(" held: ")?;
+        let state = [WaitState::WaitingAgent, WaitState::Blocked]
+            .into_iter()
+            .find(|state| state.as_str() == word)?;
+        if rest == HoldReason::Unchanged.word() {
+            return Some((state, HoldReason::Unchanged, None));
+        }
+        let agent = rest
+            .strip_prefix(HoldReason::Target.word())?
+            .strip_prefix(" on ")?;
+        (state == WaitState::WaitingAgent && crate::config::is_agent_name(agent)).then_some((
+            state,
+            HoldReason::Target,
+            Some(agent),
+        ))
     }
 
     /// How to name this event's actor, preferring the routing key.
@@ -1369,6 +1390,7 @@ mod tests {
             ("recover", RefMeaning::CapturedSessionId("r-1")),
             ("done-challenge", RefMeaning::LaunchId("r-1")),
             ("wait-challenge", RefMeaning::LaunchId("r-1")),
+            ("wait-held", RefMeaning::LaunchId("r-1")),
             // `state` carries the declared work state.
             ("state", RefMeaning::DeclaredState("r-1")),
             // "Other actions — USUALLY absent"; a value that turns up anyway
