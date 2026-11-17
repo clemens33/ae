@@ -42,6 +42,7 @@
 use std::io::Write;
 
 use super::{Acting, Cycle, Event, QuotaDelivery, read_events};
+use crate::events::SessionKey;
 use crate::meta::RosterEntry;
 use crate::procs::Descendancy;
 
@@ -239,7 +240,7 @@ struct Episode {
 /// for a keyless legacy record, and never a record that speaks for the
 /// daemon), or a retraction, return, spawn, reseat or start addressed to it.
 /// The notice and the alert record are never closers.
-fn episode(events: &[Event], session: &str, (slot, agent): (&str, &str)) -> Episode {
+fn episode(events: &[Event], session: SessionKey<'_>, (slot, agent): (&str, &str)) -> Episode {
     let mut seen = Episode::default();
     for event in events {
         if event.action == ACTION {
@@ -251,7 +252,7 @@ fn episode(events: &[Event], session: &str, (slot, agent): (&str, &str)) -> Epis
                 alerted: None,
             };
         } else if seen.alerted.is_none()
-            && crate::watchdog::event_is_addressed_to(event, session, slot, agent)
+            && crate::watchdog::event_is_addressed_to_in(event, session, slot, agent)
         {
             seen.alerted = Death::of_alert(event);
         }
@@ -263,9 +264,9 @@ fn episode(events: &[Event], session: &str, (slot, agent): (&str, &str)) -> Epis
 /// record (`conversation-*`, damaged or not) addressed to the seat is a new
 /// incarnation starting, so it ends the episode too: a session resume or a
 /// re-run in place writes no other record the seat's death could end at.
-fn closes(event: &Event, session: &str, slot: &str, agent: &str) -> bool {
-    crate::watchdog::event_is_actor(event, session, slot, agent)
-        || (crate::watchdog::event_is_addressed_to(event, session, slot, agent)
+fn closes(event: &Event, session: SessionKey<'_>, slot: &str, agent: &str) -> bool {
+    crate::watchdog::event_is_actor_in(event, session, slot, agent)
+        || (crate::watchdog::event_is_addressed_to_in(event, session, slot, agent)
             && (matches!(
                 event.action.as_str(),
                 "dead-cleared" | BACK_ACTION | "spawn" | crate::reseat::RESEAT_ACTION
@@ -286,7 +287,11 @@ pub(super) fn routes_to_slot(action: &str, summary: &str) -> bool {
 /// The journal half of the human's dead latch for the seat: whether a dead
 /// alert already stands in its current episode, and on which leg it was
 /// raised. `events` must hold the records this cycle already wrote.
-pub(super) fn death_episode(events: &[Event], session: &str, seat: (&str, &str)) -> DeathEpisode {
+pub(super) fn death_episode(
+    events: &[Event],
+    session: SessionKey<'_>,
+    seat: (&str, &str),
+) -> DeathEpisode {
     episode(events, session, seat)
         .alerted
         .map_or(DeathEpisode::Closed, DeathEpisode::Open)
@@ -388,7 +393,8 @@ impl Cycle<'_> {
         };
         let back = lives && !reading.was_latched && notified(events, on.agent);
         let episode = if reading.latched || standing.notice != Notice::Idle || back {
-            episode(events, self.session, seat)
+            let id = crate::meta::session_id_in(self.meta_dir);
+            episode(events, SessionKey::new(self.session, &id), seat)
         } else {
             Episode::default()
         };
@@ -426,7 +432,8 @@ impl Cycle<'_> {
         err: &mut impl Write,
     ) -> crate::error::Result<()> {
         let seat = (entry.slot.as_str(), entry.name.as_str());
-        let episode = episode(events, self.session, seat);
+        let id = crate::meta::session_id_in(self.meta_dir);
+        let episode = episode(events, SessionKey::new(self.session, &id), seat);
         *standing = standing.at(episode.key).armed(episode.key);
         if standing.notice == Notice::Settled {
             return Ok(());

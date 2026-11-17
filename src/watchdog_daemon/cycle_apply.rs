@@ -1040,8 +1040,8 @@ impl Cycle<'_> {
     }
 
     /// Append one watchdog event for the seat at `slot`, routed by slot and
-    /// session: the dead latch's own records, so two seats sharing one
-    /// display name keep separate death episodes.
+    /// session: the dead latch's own records, so a display name that another
+    /// slot takes over later (a rename) never inherits this seat's death.
     pub(super) fn emit_at(
         &self,
         action: &str,
@@ -1072,6 +1072,7 @@ impl Cycle<'_> {
         // Read only when a seat is missing, and again after an alert this
         // sweep wrote, so every later fold holds it.
         let mut journal: Option<Vec<Event>> = None;
+        let mut session_id: Option<String> = None;
         for entry in &self.roster {
             let reference = entry.reference();
             if live.contains(&reference) {
@@ -1090,9 +1091,12 @@ impl Cycle<'_> {
             // never repeats it, and a closer since then makes a new death.
             let alerted = {
                 let events = journal.get_or_insert_with(|| read_events(self.meta_dir));
+                let id =
+                    session_id.get_or_insert_with(|| crate::meta::session_id_in(self.meta_dir));
+                let key = crate::events::SessionKey::new(self.session, id);
                 let seat = (entry.slot.as_str(), entry.name.as_str());
                 matches!(
-                    deadnotice::death_episode(events, self.session, seat),
+                    deadnotice::death_episode(events, key, seat),
                     DeathEpisode::Open(_)
                 )
             };

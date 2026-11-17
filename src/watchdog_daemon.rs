@@ -1662,9 +1662,10 @@ impl Journal<'_> {
     }
 
     /// Append one watchdog event addressed to one SEAT: `target` is its display
-    /// name, and a non-empty `slot` routes the record by slot and this session
-    /// too, so two seats sharing one display name never read each other's
-    /// record. An empty `slot` writes the keyless line every other record uses.
+    /// name, and a non-empty `slot` routes the record by slot and this session,
+    /// so a display name that another slot takes over later never reads this
+    /// seat's record. An empty `slot` writes the keyless line every other
+    /// record uses.
     fn record_routed(
         &self,
         action: &str,
@@ -1687,7 +1688,9 @@ impl Journal<'_> {
     /// is the one caller that sees a failed append. Every other caller keeps
     /// the swallow above. The ONE owner of the watchdog's event-line shape.
     /// A non-empty `slot` fills the routing key (`target_slot` and
-    /// `target_session`): half a key addresses nobody, so both go together.
+    /// `target_session`, and `target_session_id` when the meta names a usable
+    /// one, so the record still matches after a session rename): half a key
+    /// addresses nobody, so they go together.
     fn append_referring(
         &self,
         action: &str,
@@ -1695,7 +1698,14 @@ impl Journal<'_> {
         reference: &str,
         summary: &str,
     ) -> Result<(), store::Error> {
-        let target_session = if slot.is_empty() { "" } else { self.session };
+        let session_id;
+        let (target_session, target_session_id) = if slot.is_empty() {
+            ("", "")
+        } else {
+            session_id = crate::meta::session_id_in(self.meta_dir);
+            let key = crate::events::SessionKey::new(self.session, &session_id);
+            (self.session, key.id.unwrap_or(""))
+        };
         let line = tracked::event_line(&EventFields {
             ts: Timestamp::now(),
             actor: ACTOR,
@@ -1707,7 +1717,7 @@ impl Journal<'_> {
             target_slot: slot,
             target_session,
             actor_session_id: "",
-            target_session_id: "",
+            target_session_id,
             target_server: "",
             target_pane: "",
             target_session_uuid: "",
@@ -2484,7 +2494,7 @@ impl Cycle<'_> {
                     agent,
                 )
                 .map(Timestamp::epoch),
-                death: deadnotice::death_episode(&events, self.session, (&slot, agent)),
+                death: deadnotice::death_episode(&events, key, (&slot, agent)),
             };
             let alerts =
                 crate::session::alerts_since_in(&events, self.session, &slot, agent, self.started);

@@ -37,7 +37,7 @@ fn own(actor: &str, action: &str, slot: &str) -> Event {
 }
 
 fn told(events: &[Event], seat: (&str, &str)) -> bool {
-    episode(events, SESSION, seat).told
+    episode(events, crate::events::SessionKey::named(SESSION), seat).told
 }
 
 fn notice(about: &str) -> Event {
@@ -177,8 +177,8 @@ fn a_legacy_seat_named_watchdog_reads_no_keyless_record_as_its_own_life() {
     ] {
         let events = [notice("watchdog"), later];
         assert_eq!(
-            episode(&events, SESSION, seat),
-            episode(&told_by, SESSION, seat),
+            episode(&events, crate::events::SessionKey::named(SESSION), seat),
+            episode(&told_by, crate::events::SessionKey::named(SESSION), seat),
             "a keyless record under a reserved name moves neither key nor told"
         );
     }
@@ -191,7 +191,10 @@ fn a_legacy_seat_named_watchdog_reads_no_keyless_record_as_its_own_life() {
     ] {
         let events = [notice("watchdog"), closer];
         assert!(!told(&events, seat));
-        assert_eq!(episode(&events, SESSION, seat).key, 1);
+        assert_eq!(
+            episode(&events, crate::events::SessionKey::named(SESSION), seat).key,
+            1
+        );
     }
 }
 
@@ -315,7 +318,8 @@ fn a_closer_since_the_standing_was_armed_starts_a_new_episode_and_an_old_one_nev
 
 #[test]
 fn the_key_counts_every_closer_the_seat_has_and_nothing_else() {
-    let key = |events: &[Event]| episode(events, SESSION, SEAT).key;
+    let key =
+        |events: &[Event]| episode(events, crate::events::SessionKey::named(SESSION), SEAT).key;
     assert_eq!(key(&[]), 0);
     // Not closers: the notice itself, a human alert about the seat, an ask to
     // it, and another seat's records.
@@ -353,7 +357,11 @@ fn a_notice_belongs_to_the_episode_it_follows() {
         event("parent", "ask", "worker", ""),
     ];
     assert_eq!(
-        episode(&notice_after, SESSION, SEAT),
+        episode(
+            &notice_after,
+            crate::events::SessionKey::named(SESSION),
+            SEAT
+        ),
         super::Episode {
             key: 1,
             told: true,
@@ -365,7 +373,7 @@ fn a_notice_belongs_to_the_episode_it_follows() {
         event("watchdog", "dead-cleared", "worker", ""),
     ];
     assert_eq!(
-        episode(&closed, SESSION, SEAT),
+        episode(&closed, crate::events::SessionKey::named(SESSION), SEAT),
         super::Episode {
             key: 1,
             told: false,
