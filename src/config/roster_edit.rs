@@ -466,6 +466,10 @@ fn replace_step(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test code reads and inspects its own scratch files"
+)]
 mod tests {
     use super::*;
 
