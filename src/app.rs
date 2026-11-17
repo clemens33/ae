@@ -667,7 +667,7 @@ impl App {
                 }
             }
             Answer::OrchestratorProfile { generation, view } => {
-                self.orchestrator_resolved(generation, view)
+                self.orchestrator_resolved(generation, view);
             }
             Answer::Stats { generation, glance } => self.stats_landed(generation, &glance),
             Answer::Tools { generation, view } => self.tools_landed(generation, view),
