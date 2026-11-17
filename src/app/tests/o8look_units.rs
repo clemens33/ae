@@ -31,10 +31,10 @@ fn worn(buf: &Buffer, x: u16, y: u16) -> (Color, Color, Modifier) {
 /// A standalone `ae app`: no home session, `look` and the viewer's zone read
 /// for the selected `api`, the panel open on a running orchestrator. The
 /// orchestrator has no look entry of its own, as in a live fleet.
-fn standing(root: &Root, full: bool, look: Look) -> (App, Reader) {
+fn standing(root: &Root, full: bool, look: &Look) -> (App, Reader) {
     let (mut app, reader) = orchestrated(root, full);
     app.home = None;
-    let read = (Some(look), Some("+0200".to_owned()));
+    let read = (Some(*look), Some("+0200".to_owned()));
     app.looks.insert("api".to_owned(), read);
     assert_eq!(app.model.selected(), Some("api"));
     (app, reader)
@@ -55,7 +55,7 @@ fn the_side_panels_border_wears_the_sidebar_rules_ink() {
     for look in looks() {
         let name = look.palette.name;
         let root = Root::new(&format!("o8look-border-{name}"));
-        let (mut app, _reader) = standing(&root, false, look);
+        let (mut app, _reader) = standing(&root, false, &look);
         let buf = frame(WIDTH, HEIGHT, &mut app);
         let (rule, border) = (rule_of(&buf), border_of(&buf));
         assert!(rule < border, "{name}: the rule stands left of the border");
@@ -85,7 +85,7 @@ fn a_grabbed_panel_border_wears_the_ink_a_grabbed_sidebar_rule_does() {
         let name = look.palette.name;
         let grab = |edge: Edge, tag: &str| {
             let root = Root::new(&format!("o8look-grab-{tag}-{name}"));
-            let (mut app, _reader) = standing(&root, false, look);
+            let (mut app, _reader) = standing(&root, false, &look);
             let idle = frame(WIDTH, HEIGHT, &mut app);
             app.model.grab(Drag {
                 edge,
@@ -113,7 +113,7 @@ fn the_panel_header_wears_the_main_columns_name_ink() {
         let name = look.palette.name;
         let shot = |keys_on_panel: bool| {
             let root = Root::new(&format!("o8look-head-{keys_on_panel}-{name}"));
-            let (mut app, _reader) = standing(&root, false, look);
+            let (mut app, _reader) = standing(&root, false, &look);
             app.focus_column(keys_on_panel);
             frame(WIDTH, HEIGHT, &mut app)
         };
@@ -146,7 +146,7 @@ fn the_panel_leaves_no_cell_in_the_terminals_default_colours() {
     for look in looks() {
         let name = look.palette.name;
         let root = Root::new(&format!("o8look-bare-{name}"));
-        let (mut app, _reader) = standing(&root, false, look);
+        let (mut app, _reader) = standing(&root, false, &look);
         let buf = frame(WIDTH, HEIGHT, &mut app);
         let (rule, border) = (rule_of(&buf), border_of(&buf));
         let bare = |from: u16, to: u16| {
@@ -172,7 +172,7 @@ fn the_panel_leaves_no_cell_in_the_terminals_default_colours() {
 #[test]
 fn the_panel_clock_reads_in_the_main_columns_zone() {
     let root = Root::new("o8look-zone");
-    let (mut app, _reader) = standing(&root, false, Look::DEFAULT);
+    let (mut app, _reader) = standing(&root, false, &Look::DEFAULT);
     app.answer(view(ORCH, ID, 100, "PANELWORDS"));
     app.answer(view("api", ID, 100, "MAINWORDS"));
     let buf = frame(WIDTH, HEIGHT, &mut app);
@@ -201,7 +201,7 @@ fn a_full_panel_leaves_the_sidebar_as_it_is_drawn_beside_a_side_panel() {
         let name = look.palette.name;
         let drawn = |full: bool| {
             let root = Root::new(&format!("o8look-full-{full}-{name}"));
-            let (mut app, _reader) = standing(&root, full, look);
+            let (mut app, _reader) = standing(&root, full, &look);
             frame(WIDTH, HEIGHT, &mut app)
         };
         let (side, full) = (drawn(false), drawn(true));
@@ -243,7 +243,7 @@ fn a_full_panel_wears_the_ground_of_the_sidebar_rule() {
         let name = look.palette.name;
         let drawn = |full: bool| {
             let root = Root::new(&format!("o8look-fullink-{full}-{name}"));
-            let (mut app, _reader) = standing(&root, full, look);
+            let (mut app, _reader) = standing(&root, full, &look);
             frame(WIDTH, HEIGHT, &mut app)
         };
         let (side, full) = (drawn(false), drawn(true));
