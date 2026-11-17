@@ -306,3 +306,87 @@ fn a_press_on_the_sidebar_rule_under_a_full_panel_grabs_it_and_keeps_the_panel_f
         "full, with the keys on the panel"
     );
 }
+
+/// An undrawn look (`theme = off`) paints no colour in either column: the
+/// panel's border is as plain as the sidebar's rule, idle and grabbed.
+#[test]
+fn an_undrawn_look_leaves_the_panel_border_as_plain_as_the_sidebar_rule() {
+    let look = Look {
+        drawn: false,
+        ..Look::DEFAULT
+    };
+    let shot = |edge: Option<Edge>, tag: &str| {
+        let root = Root::new(&format!("o8look-undrawn-{tag}"));
+        let (mut app, _reader) = standing(&root, false, &look);
+        if let Some(edge) = edge {
+            app.model.grab(Drag {
+                edge,
+                from: 0,
+                at: 0,
+            });
+        }
+        frame(WIDTH, HEIGHT, &mut app)
+    };
+    let (idle, sidebar, panel) = (
+        shot(None, "idle"),
+        shot(Some(Edge::Sidebar), "sidebar"),
+        shot(Some(Edge::Panel), "panel"),
+    );
+    let (rule, border) = (rule_of(&idle), border_of(&idle));
+    for y in 2..HEIGHT - 5 {
+        assert_eq!(
+            worn(&idle, border, y),
+            worn(&idle, rule, y),
+            "idle, row {y}"
+        );
+        assert_eq!(
+            worn(&panel, border, y),
+            worn(&sidebar, rule, y),
+            "grabbed, row {y}"
+        );
+    }
+}
+
+/// A wheel notch over the sidebar's list under a full panel scrolls the list
+/// and leaves the panel full: the notch is the sidebar's, not the panel's.
+#[test]
+fn a_wheel_notch_over_the_sidebar_list_under_a_full_panel_scrolls_the_list() {
+    let mut app = app(None);
+    app.fleet = Fleet {
+        rows: (0..30)
+            .map(|at| row(&format!("n{at:02}"), at + 1, false))
+            .collect(),
+        home: None,
+    };
+    app.model = Model::new(&app.fleet);
+    opened(&mut app, true);
+    let buf = frame(WIDTH, HEIGHT, &mut app);
+    let rule = rule_without_panel();
+    // The first card of the list: its number and the row it stands on.
+    let first = |buf: &Buffer| -> Option<(u16, u8)> {
+        (1..HEIGHT).find_map(|y| {
+            let line: String = (0..rule).map(|x| buf[(x, y)].symbol()).collect();
+            let number = line
+                .split_whitespace()
+                .find_map(|word| word.strip_prefix('n')?.parse().ok())?;
+            Some((y, number))
+        })
+    };
+    let (y, top) = first(&buf).expect("a card in the sidebar list");
+    let notch = Mouse {
+        kind: MouseKind::WheelDown,
+        column: 2,
+        row: y,
+    };
+    assert!(app.mouse(notch), "the notch scrolls the list");
+    let after = frame(WIDTH, HEIGHT, &mut app);
+    assert_eq!(
+        first(&after).map(|card| card.1),
+        Some(top + 1),
+        "by one session"
+    );
+    assert!(
+        app.orch.panel.as_ref().is_some_and(|panel| panel.full),
+        "still full"
+    );
+}
