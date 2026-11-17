@@ -18,6 +18,12 @@ use std::fmt;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
+mod roster_edit;
+pub use roster_edit::{
+    Applied, ApplyRefusal, ConfigSeen, RosterEdit, RosterEditRefusal, apply_roster_row,
+    read_config_seen, set_roster_row,
+};
+
 const CONFIG_MAX_BYTES: u64 = 1024 * 1024;
 
 /// Read one selected INI file through the shared bounded config door.

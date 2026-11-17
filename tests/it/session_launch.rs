@@ -30,6 +30,9 @@ mod renamerecover_crash_spec;
 #[path = "presetreseat_resume_spec.rs"]
 mod presetreseat_resume_spec;
 
+#[path = "orchprof_spec.rs"]
+mod orchprof_spec;
+
 /// A TUI-shaped fake agent: it records its argv, then sits there drawing the
 /// ornament the input sensor reads.
 const FAKE_AGENT: &str = r#"#!/usr/bin/perl
