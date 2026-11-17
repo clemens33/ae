@@ -337,8 +337,9 @@ pub fn read_config_seen(path: &Path) -> Result<ConfigSeen, ApplyRefusal> {
 /// equal `seen`'s; the rewrite places exactly; a same-profile pick stops here,
 /// writing nothing; otherwise one `<file>.<now_epoch>.bak` of the old bytes
 /// (never overwriting a backup of the same second), then a temp file that
-/// takes the original mode, whose owner must be the original's, whose source
-/// bytes are compared once more, and which replaces the file by rename.
+/// takes the original mode, whose owner and group must be the original's (ae
+/// never calls `chown`, so a file it cannot copy them from is refused), whose
+/// source bytes are compared once more, and which replaces the file by rename.
 ///
 /// # Errors
 ///
@@ -426,6 +427,14 @@ fn publish_backup(backup: &Path, bytes: &[u8]) -> io::Result<()> {
     })
 }
 
+/// Whether a staged copy took the same owner and group as the file it would
+/// replace, each as `(uid, gid)`. The copy is made by the current user, so it
+/// takes that user and that user's group; ae never calls `chown`, so a file
+/// with another owner or a non-default group is refused and left to the human.
+const fn owner_and_group_kept(original: (u32, u32), staged: (u32, u32)) -> bool {
+    original.0 == staged.0 && original.1 == staged.1
+}
+
 /// The last step of a replace, run with the staged temp: the file at `to` is
 /// still a regular file and no link, the temp is owned by the file's owner and
 /// takes the file's mode, the bytes on disk are still `seen`, and then the
@@ -444,9 +453,12 @@ fn replace_step(
     let original = regular(to).map_err(|why| publish(why.to_string()))?;
     let staged = crate::store::node_meta(temp)
         .map_err(|why| publish(format!("could not inspect the staged copy: {why}")))?;
-    if staged.uid() != original.uid() {
+    if !owner_and_group_kept(
+        (original.uid(), original.gid()),
+        (staged.uid(), staged.gid()),
+    ) {
         return Err(publish(format!(
-            "{} is not owned by the current user",
+            "{} has an owner or group that a replacement copy cannot keep (ae never changes either); edit the file by hand",
             to.display()
         )));
     }
@@ -554,6 +566,17 @@ mod tests {
         );
         assert_eq!(names(&dir), ["config", "config.9.bak"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_replacement_copy_must_keep_both_the_owner_and_the_group() {
+        assert!(owner_and_group_kept((501, 20), (501, 20)));
+        assert!(!owner_and_group_kept((501, 20), (502, 20)), "another owner");
+        assert!(
+            !owner_and_group_kept((501, 20), (501, 80)),
+            "a non-default group"
+        );
+        assert!(!owner_and_group_kept((501, 20), (0, 0)), "both differ");
     }
 
     #[test]
