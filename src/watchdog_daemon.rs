@@ -70,6 +70,8 @@ use accounting::{
     capture_pane, epoch_second, held_seats, last_done_event_at, last_working_declaration_at,
     naming, observed_option, restore_idle, slot_latched, sweep_effects, system_time_from_epoch,
 };
+mod deadnotice;
+use deadnotice::{Reading, Standing};
 mod cycle_apply;
 mod cycle_observe;
 mod cycle_publish;
@@ -1661,6 +1663,11 @@ struct Carry {
     panes: Vec<(String, PaneState)>,
     /// The missing-pane debounce, keyed by roster slot.
     missing: Vec<(String, MissingState)>,
+    /// Where each seat's spawner notice stands (#211), keyed by roster slot:
+    /// ONE standing per seat, whichever way it dies (dropped to its shell, or
+    /// its pane gone) and however the two alternate. Memory only; the journal
+    /// holds what was delivered.
+    notices: Vec<(String, Standing)>,
     /// The faster publisher that runs between verdict cycles.
     motion: MotionState,
     /// Session-local quota transitions, pending per-recipient deliveries, and
@@ -1768,6 +1775,7 @@ impl Carry {
         Self {
             panes: Vec::new(),
             missing: Vec::new(),
+            notices: Vec::new(),
             motion: MotionState::default(),
             quota: QuotaCarry::default(),
             adoption: Adoption::default(),
@@ -2532,8 +2540,25 @@ impl Cycle<'_> {
                 &activity,
                 settling,
             );
+            let was_latched = carried.dead_latched;
+            let reading = Reading {
+                was_latched,
+                latched: booked.next.dead_latched,
+                cleared: booked.effects.iter().any(|effect| {
+                    matches!(
+                        effect,
+                        Effect::Emit {
+                            action: "dead-cleared",
+                            ..
+                        }
+                    )
+                }),
+                command: pane.current_command.as_str(),
+            };
             *carried = booked.next;
             self.apply_booked(&booked.effects, &acting, carried, &mut quota_refresh, err)?;
+            let standing = entry_mut(&mut carry.notices, &slot);
+            self.notice_step(&acting, &reading, (settling, standing), err)?;
             if crate::effort::leg::eligible(&slot) && !self.meta_agent {
                 effort_seats.push(crate::effort::leg::Sight {
                     slot: slot.clone(),
@@ -2750,7 +2775,7 @@ impl Cycle<'_> {
             .iter()
             .map(|entry| slot_mark(entry, by_slot, &carry.missing))
             .collect();
-        self.sweep_missing(live, &mut carry.missing, err)?;
+        self.sweep_missing(live, carry, err)?;
         // The client is RECORDED, so every seat has it — including one whose
         // pane is gone. One config read per cycle serves all seats; `None`
         // falls every seat back to its binary name, never a guess.

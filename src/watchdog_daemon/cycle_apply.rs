@@ -1,14 +1,14 @@
 //! The cycle's applying steps: what the daemon does with a pane's booked effects, the auto reseat, the trust answers and the notices.
 
 use super::{
-    ACTOR, AUTO_PLACEHOLDER, Acting, AutoAct, AutoSeat, Cycle, DoneProgress, Effect, Event,
-    HarnessState, Journal, MissingState, OVERDUE_SUMMARY, Observation, PaneState, QuietKind,
-    QuietQuery, QuietResolution, QuotaCarry, RETRY_PLACEHOLDER, SeatVerdict, SweepAlert, Timestamp,
-    UNIX_EPOCH, Verdict, WaitCheck, WaitEnded, Write, age_secs, announced, auto_acts_with,
-    declared_clause, done_challenge_text, entry_mut, epoch_second, latest_relevant_event,
-    launch_id_for, limit_wake_text, naming, nudge_words, quiet_reason, read_events, record_nudge,
-    record_sweep, slot_latched, stale_display, store, sweep_effects, system_time_from_epoch,
-    target_moved_text, tmux, tracked, transport, wait_challenge_text,
+    ACTOR, AUTO_PLACEHOLDER, Acting, AutoAct, AutoSeat, Carry, Cycle, DoneProgress, Effect, Event,
+    HarnessState, Journal, OVERDUE_SUMMARY, Observation, PaneState, QuietKind, QuietQuery,
+    QuietResolution, QuotaCarry, RETRY_PLACEHOLDER, SeatVerdict, SweepAlert, Timestamp, UNIX_EPOCH,
+    Verdict, WaitCheck, WaitEnded, Write, age_secs, announced, auto_acts_with, declared_clause,
+    done_challenge_text, entry_mut, epoch_second, latest_relevant_event, launch_id_for,
+    limit_wake_text, naming, nudge_words, quiet_reason, read_events, record_nudge, record_sweep,
+    slot_latched, stale_display, store, sweep_effects, system_time_from_epoch, target_moved_text,
+    tmux, tracked, transport, wait_challenge_text,
 };
 
 impl Cycle<'_> {
@@ -986,13 +986,21 @@ impl Cycle<'_> {
         .record(action, agent, summary, err)
     }
 
-    /// Roster agents with no live pane.
+    /// Roster agents with no live pane. The carry holds each seat's one
+    /// spawner-notice standing (#211), shared with the per-pane step, and the
+    /// wake settle that holds the paste.
     pub(super) fn sweep_missing(
         &self,
         live: &[String],
-        missing: &mut Vec<(String, MissingState)>,
+        carry: &mut Carry,
         err: &mut impl Write,
     ) -> crate::error::Result<()> {
+        let settling = carry.settle > 0;
+        let Carry {
+            missing, notices, ..
+        } = carry;
+        // Read once, and only when a seat is missing and the paste is not held.
+        let mut journal: Option<Vec<Event>> = None;
         for entry in &self.roster {
             let reference = entry.reference();
             if live.contains(&reference) {
@@ -1015,6 +1023,12 @@ impl Cycle<'_> {
                     err,
                 )?;
                 self.notify(&reference, "pane is MISSING");
+            }
+            // The spawner's notice is a paste: the wake settle holds it, and
+            // the standing keeps it owed for the first free cycle (#238).
+            if !settling {
+                let events = journal.get_or_insert_with(|| read_events(self.meta_dir));
+                self.tell_missing(entry, entry_mut(notices, &entry.slot), events, err)?;
             }
         }
         Ok(())

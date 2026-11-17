@@ -1573,8 +1573,11 @@ pub fn event_is_actor(event: &Event, session: &str, slot: &str, agent: &str) -> 
 #[must_use]
 pub fn event_is_actor_in(event: &Event, session: SessionKey<'_>, slot: &str, agent: &str) -> bool {
     match event.actor_identity() {
-        // No routing key at all: the display name is all there is.
-        Identity::Display(name) => name == agent,
+        // No routing key at all: the display name is all there is, unless it
+        // is one ae owns (`ae`, `human`, `watchdog`). Spawn refuses those
+        // names, so a keyless record under one is the daemon's or a sender
+        // speaking for it, whatever its action, never a seat's own activity.
+        Identity::Display(name) => name == agent && !crate::config::is_reserved_actor(name),
         identity @ (Identity::Routed { .. } | Identity::Stable { .. }) => {
             identity.matches(session.seat(slot))
         }
@@ -6009,11 +6012,58 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
                 true,
             ));
         }
-        // Every record the watchdog writes about the seat that is no footprint.
-        for action in [
+        rows.extend(watchdog_records_without_footprint());
+        rows.extend(console_asks_elsewhere());
+        rows
+    }
+
+    #[test]
+    fn a_keyless_record_under_a_name_ae_owns_is_no_seats_activity() {
+        // The shared routing rule: a routing key decides; a keyless record is
+        // judged by its display name, except a name ae reserves. Spawn refuses
+        // `ae`, `human` and `watchdog` since 2026-10-24, so only a seat from
+        // before that could carry one, and the daemon and its senders write
+        // keyless records under them with any action, today's and tomorrow's.
+        let line = |actor: &str, action: &str, keys: &str| {
+            event(&format!(
+                r#"{{"ts":"2026-11-15T00:00:00Z","actor":"{actor}","action":"{action}"{keys}}}"#
+            ))
+        };
+        let keyed = r#","actor_slot":"spawned.0","actor_session":"s""#;
+        let own =
+            |event: &Event, slot: &str, agent: &str| super::event_is_actor(event, "s", slot, agent);
+        for actor in ["watchdog", "ae", "human"] {
+            for action in [
+                "state",
+                "dead-notice",
+                "nudge",
+                "delivery-abandoned",
+                "next",
+            ] {
+                assert!(
+                    !own(&line(actor, action, ""), "spawned.0", actor),
+                    "{actor} {action}"
+                );
+            }
+            // A pane's routing key still decides, whatever the name.
+            assert!(own(&line(actor, "state", keyed), "spawned.0", actor));
+        }
+        // Every other name keeps the legacy fallback, and another seat's slot
+        // is still not this one.
+        assert!(own(&line("worker", "state", ""), "spawned.0", "worker"));
+        assert!(!own(&line("worker", "state", ""), "spawned.1", "parent"));
+        assert!(own(&line("worker", "nudge", keyed), "spawned.0", "worker"));
+    }
+
+    /// T1's rows for every record the watchdog writes about the seat that is
+    /// no footprint.
+    fn watchdog_records_without_footprint() -> Vec<(String, [bool; 4], bool)> {
+        [
             "alert",
             "alert-cleared",
             "dead-cleared",
+            "dead-notice",
+            "pane-back",
             "human-prompt",
             "human-prompt-cleared",
             "limit",
@@ -6025,11 +6075,10 @@ credits or try again at Sep 26th, 2026 10:11 AM.";
             crate::quota::action::ADVISORY_DROPPED,
             crate::quota::action::CHECKPOINT,
             crate::quota::action::CHECKPOINT_DROPPED,
-        ] {
-            rows.push((after_declaration("watchdog", action, ""), [false; 4], true));
-        }
-        rows.extend(console_asks_elsewhere());
-        rows
+        ]
+        .into_iter()
+        .map(|action| (after_declaration("watchdog", action, ""), [false; 4], true))
+        .collect()
     }
 
     /// T1's rows for a console ask to ANOTHER seat: no news to this one,

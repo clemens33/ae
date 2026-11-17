@@ -467,18 +467,24 @@ fn retryable_delivery(delivery: &Result<deliver::Delivered, deliver::Failure>) -
     )
 }
 
-/// The marker the watchdog's quota pass keys its ONE retry on.
+/// The marker the watchdog's retries key on.
 ///
-/// Both watchdog-owned quota notices carry it: the advisory, and the checkpoint
-/// ask a seat gets when its scope enters the Low band. Nothing else does — an
-/// ordinary send is the caller's to repeat, and a notice ae cannot prove was
-/// refused BEFORE submit is never retried, because the paste may have landed.
+/// Three watchdog-owned notices carry it: the quota advisory, the checkpoint
+/// ask a seat gets when its scope enters the Low band, and the `dead-notice`
+/// that tells a spawner its worker died (#211, at most three tries). Nothing
+/// else does — an ordinary send is the caller's to repeat, and a notice ae
+/// cannot prove was refused BEFORE submit is never retried, because the paste
+/// may have landed.
 fn write_retryable_marker(
     action: &str,
     delivery: &Result<deliver::Delivered, deliver::Failure>,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    if matches!(action, "quota-advisory" | "quota-checkpoint") && retryable_delivery(delivery) {
+    if matches!(
+        action,
+        "quota-advisory" | "quota-checkpoint" | "dead-notice"
+    ) && retryable_delivery(delivery)
+    {
         writeln!(out, "{RETRYABLE_MARKER}")?;
     }
     Ok(())
@@ -879,7 +885,7 @@ mod tests {
             "an ambiguous paste is never retried, ask or advisory"
         );
 
-        // The predicate names exactly two actions. A neighbour that merely
+        // The predicate names exactly three actions. A neighbour that merely
         // starts the same way is not one of them.
         let refused: Result<crate::deliver::Delivered, crate::deliver::Failure> =
             Err(crate::deliver::Failure::Abandoned {
@@ -889,8 +895,47 @@ mod tests {
             .expect("an unrelated action stays silent");
         assert!(
             out.is_empty(),
-            "only the two notice actions carry the marker"
+            "only the three notice actions carry the marker"
         );
+    }
+
+    #[test]
+    fn the_dead_notice_retries_on_the_same_proven_refusals_as_the_quota_notices() {
+        // #211: the spawner's notice shares the quota notices' one retry rule,
+        // because it shares their delivery path and failure vocabulary.
+        for failure in [
+            crate::deliver::Failure::DeadPane,
+            crate::deliver::Failure::Lock,
+            crate::deliver::Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied,
+            },
+        ] {
+            let delivery: Result<crate::deliver::Delivered, crate::deliver::Failure> = Err(failure);
+            let mut out = Vec::new();
+            write_retryable_marker("dead-notice", &delivery, &mut out).expect("the marker writes");
+            assert_eq!(
+                out,
+                format!("{RETRYABLE_MARKER}\n").as_bytes(),
+                "a proven pre-submit refusal of the notice is retryable"
+            );
+        }
+
+        let paste: Result<crate::deliver::Delivered, crate::deliver::Failure> =
+            Err(crate::deliver::Failure::Paste {
+                body_file: "/m/body".to_owned(),
+            });
+        let mut out = Vec::new();
+        write_retryable_marker("dead-notice", &paste, &mut out).expect("the marker check writes");
+        assert!(out.is_empty(), "an ambiguous paste is never retried");
+
+        // The watchdog's other dead-seat record is no notice and stays silent.
+        let refused: Result<crate::deliver::Delivered, crate::deliver::Failure> =
+            Err(crate::deliver::Failure::Abandoned {
+                held: DeferHeld::ComposerOccupied,
+            });
+        write_retryable_marker("dead-cleared", &refused, &mut out)
+            .expect("an unrelated action stays silent");
+        assert!(out.is_empty(), "only the three notice actions carry it");
     }
 
     #[test]
