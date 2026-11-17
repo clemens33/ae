@@ -3709,10 +3709,11 @@ const READER_KEYS: [(&str, &str); 9] = [
     ("wheel", "scroll 3 rows per notch"),
     ("any other", "swallowed; nothing is typed or written"),
 ];
-const SETTINGS_KEYS: [(&str, &str); 12] = [
+const SETTINGS_KEYS: [(&str, &str); 13] = [
     ("Tab 1-7", "show that tab"),
     ("Left/Right", "Statistics: previous or next inner tab"),
     ("m", "Statistics: all retained or this session"),
+    ("o", "Config: pick the orchestrator profile; j/k Enter Esc"),
     ("j/k Up/Down", "scroll a line"),
     ("PgUp/PgDn", "scroll a page"),
     ("?", "show these keys"),

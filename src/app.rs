@@ -666,7 +666,7 @@ impl App {
                     self.settings_bodies.live_seats = Some(seats);
                 }
             }
-            Answer::Orchestrator { generation, view } => {
+            Answer::OrchestratorProfile { generation, view } => {
                 self.orchestrator_resolved(generation, view)
             }
             Answer::Stats { generation, glance } => self.stats_landed(generation, &glance),

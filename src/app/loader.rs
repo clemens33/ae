@@ -219,7 +219,7 @@ pub(super) enum Answer {
     },
     /// The orchestrator profile row and the profiles a launch accepts, read
     /// once per open of the overlay with its config.
-    Orchestrator {
+    OrchestratorProfile {
         generation: u64,
         view: super::settings::OrchestratorView,
     },
@@ -1630,7 +1630,7 @@ impl Reader {
         let paths = &self.settings_paths;
         let meta_dir =
             crate::console::locate(&self.root, crate::orchestrator::ORCHESTRATOR_SESSION);
-        Answer::Orchestrator {
+        Answer::OrchestratorProfile {
             generation,
             view: super::settings::resolve_orchestrator(
                 meta_dir.as_deref(),

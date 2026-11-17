@@ -915,7 +915,7 @@ hint instead of the file. Dragging over a link selects and copies the visible te
 
 ## Settings
 
-`,` opens the read-only Settings overlay over the whole pane, as does the
+`,` opens the Settings overlay (read-only but for the orchestrator profile row of the Config tab) over the whole pane, as does the
 gear (`*` with `icons = off`) at the hint row's right end — the gear also
 while writing, where `,` stays draft text; `Esc`, `q` or `,` closes it, `^C`
 quits. While open the overlay owns every key and click: `Tab`, `1`-`7` and a
@@ -939,7 +939,19 @@ alone when neither exists,
 with and where each came from — `launch` (pinned in its meta), `session` (its
 origin overlay), `global` (the meta-recorded file, the current global only
 when that row is empty) or `default` — with `global only` on the keys that
-read the current global alone; About names the versions, the state root, the
+read the current global alone. Above them the tab shows the orchestrator row:
+`[roster] orchestrator` of the current global (`global`), the profile the saved
+orchestrator session recorded (`recorded orchestrator`, or `(no session)`), and
+that a pick applies at the next fresh start (after `ae end`) while Pause/Resume
+keeps the recorded profile. `o` opens a picker over the `[profiles]` a launch
+accepts, in config order, on the configured one; `j` / `k` move, `Enter` writes
+the pick into that one row and `Esc` cancels. The write changes only that value:
+every other byte stays, the old file is kept as `<config>.<epoch>.bak`, and ae
+refuses, with the reason drawn under the row, a file that changed since it was
+shown, a symlink, a copy it could not give the file's owner, group and mode, or
+an edit past the 1 MiB config limit; a row ae cannot place exactly (absent,
+repeated, a quoted value with a trailing comment) says why and offers no picker;
+About names the versions, the state root, the
 config file, the recorded server and the repo links; Instructions shows what ae
 tells the agents of the SELECTED session (the one selected when Settings opened),
 from its records alone, so a stopped session shows too: the custom `[prompt]
