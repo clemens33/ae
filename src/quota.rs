@@ -2001,34 +2001,61 @@ pub(crate) fn recorded_identity(entry: &crate::meta::RosterEntry) -> Option<Reco
     })
 }
 
+/// The canonical quota identity of an account a move has PROVEN but not yet
+/// recorded: `tool` and the `config_home` and `config_home_base` rows the move
+/// would publish, joined to the observation exactly as [`recorded_identity`]
+/// joins a recorded seat. No conversation is asked for: the account is judged,
+/// not a seat on it.
+pub(crate) fn account_identity(
+    tool: ToolKind,
+    home: &crate::meta::RecordedConfigHome,
+    base: &crate::meta::RecordedConfigHomeBase,
+) -> Option<RecordedIdentity> {
+    Some(RecordedIdentity {
+        tool,
+        source: canonical_source(account_source(tool, home, base)?).ok()?,
+    })
+}
+
+/// Where `tool` reads its quota for the store `home` + `base` names, before
+/// canonicalization; `None` for a tool with no source or rows that do not
+/// form one explicit or one implicit store.
+fn account_source(
+    tool: ToolKind,
+    home: &crate::meta::RecordedConfigHome,
+    base: &crate::meta::RecordedConfigHomeBase,
+) -> Option<PathBuf> {
+    use crate::meta::{RecordedConfigHome, RecordedConfigHomeBase};
+
+    match tool.adapter().quota.source {
+        QuotaSource::ClaudeCache => match (home, base) {
+            (RecordedConfigHome::Path(home), RecordedConfigHomeBase::Missing) => {
+                Some(home.join(".claude.json"))
+            }
+            (RecordedConfigHome::Implicit(_), RecordedConfigHomeBase::Path(base)) => {
+                Some(base.join(".claude.json"))
+            }
+            _ => None,
+        },
+        QuotaSource::CodexRollouts => match (home, base) {
+            (RecordedConfigHome::Path(home), RecordedConfigHomeBase::Missing)
+            | (RecordedConfigHome::Implicit(home), RecordedConfigHomeBase::Path(_)) => {
+                Some(home.join("sessions"))
+            }
+            _ => None,
+        },
+        QuotaSource::GrokLog | QuotaSource::Unsupported => None,
+    }
+}
+
 /// [`recorded_identity`]'s classification alone: the tool and its source
 /// path as the meta recorded it, before canonicalization. The tool
 /// statistics reader resolves stores lexically from it (#288 lead ruling
 /// ae-20261108T144928Z-d9d1c43b); every other caller keeps the canonical
 /// identity.
 pub(crate) fn recorded_source(entry: &crate::meta::RosterEntry) -> Option<(ToolKind, PathBuf)> {
-    use crate::meta::{RecordedConfigHome, RecordedConfigHomeBase};
-
     let tool = ToolKind::from_binary_name(entry.binary.as_deref()?);
-    let source = match tool.adapter().quota.source {
-        QuotaSource::ClaudeCache => match (&entry.config_home, &entry.config_home_base) {
-            (RecordedConfigHome::Path(home), RecordedConfigHomeBase::Missing) => {
-                home.join(".claude.json")
-            }
-            (RecordedConfigHome::Implicit(_), RecordedConfigHomeBase::Path(base)) => {
-                base.join(".claude.json")
-            }
-            _ => return None,
-        },
-        QuotaSource::CodexRollouts => match (&entry.config_home, &entry.config_home_base) {
-            (RecordedConfigHome::Path(home), RecordedConfigHomeBase::Missing)
-            | (RecordedConfigHome::Implicit(home), RecordedConfigHomeBase::Path(_)) => {
-                home.join("sessions")
-            }
-            _ => return None,
-        },
-        QuotaSource::GrokLog | QuotaSource::Unsupported => return None,
-    };
+    let source = account_source(tool, &entry.config_home, &entry.config_home_base)?;
     // A Codex seat without a recorded conversation is not a proven identity;
     // the id itself is not part of the identity, because the window it would
     // name belongs to the config home rather than to one conversation.
@@ -8845,6 +8872,54 @@ mod tests {
         assert_eq!(
             scope.account, None,
             "no plan and no account fact is silence"
+        );
+    }
+
+    /// A pair's account is the store its client resolves to: the identity a
+    /// seat recorded on that store joins, before any conversation exists
+    /// (#296 follow-up 4).
+    #[test]
+    fn an_account_identity_is_what_a_seat_recorded_on_that_store_joins() {
+        use crate::meta::{
+            RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RecordedWorkDir,
+            RosterEntry,
+        };
+        struct Root(std::path::PathBuf);
+        impl Drop for Root {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = Root(std::env::temp_dir().join(format!("ae-account-id-{}", std::process::id())));
+        let store = root.0.join("store-b");
+        assert!(std::fs::create_dir_all(&store).is_ok(), "a store");
+        let home = RecordedConfigHome::Path(store);
+        let base = RecordedConfigHomeBase::Missing;
+        let seat = |binary: &str, conversation: Option<&str>| RosterEntry {
+            slot: "spawned.1".to_owned(),
+            name: "one".to_owned(),
+            profile: Some("p".to_owned()),
+            client: RecordedClient::Label("carry".to_owned()),
+            harness_session: conversation.map(str::to_owned),
+            config_home: home.clone(),
+            config_home_base: base.clone(),
+            binary: Some(binary.to_owned()),
+            work_dir: RecordedWorkDir::Missing,
+        };
+        let claude = super::account_identity(ToolKind::Claude, &home, &base);
+        assert!(claude.is_some(), "a Claude store is an account");
+        assert_eq!(claude, super::recorded_identity(&seat("claude", None)));
+        let codex = super::account_identity(ToolKind::Codex, &home, &base);
+        assert!(codex.is_some(), "a Codex account needs no conversation");
+        assert_eq!(
+            codex,
+            super::recorded_identity(&seat("codex", Some("018f1f70-7b2c-7000-8000-000000000001")))
+        );
+        assert_ne!(claude, codex, "one store, two tools, two accounts");
+        assert_eq!(
+            super::account_identity(ToolKind::Claude, &RecordedConfigHome::Missing, &base),
+            None,
+            "rows that name no store are no account"
         );
     }
 }

@@ -911,7 +911,11 @@ The records are `auto-reseat` (the attempt, quoting from and to),
 `auto-reseat-refused` and `auto-reseat-failed` (no attempt this round; a limit
 episode tries again after its cooldown until its third), and `auto-reseat-notice` (one per delivery). A move interrupted
 between the stop and the tool starting is finished the same way a manual one
-is: `relaunch <agent>` — the failed notice says so by name.
+is: `relaunch <agent>` — the failed notice says so by name. A record's summary
+is one clean line of at most `SUMMARY_CHARS` (160, `leg::bounded`), with two
+rules kept whole up to `REASON_MAX` (600): a summary naming an `ae reseat …
+--stop-unknown` command, dropped whole past it, and a refused return's one
+record (below), cut and marked `…` past it (`leg::refused_return`).
 
 Every hold, refusal and failure summary, and the notice that quotes it, LEADS
 with a cause class — `<class>: <message>` — so a clip of a long message (a path,
@@ -1110,7 +1114,8 @@ same trigger, leg, records and endings, as a third kind of episode: RETURN.
 from its newest `spawn`. A watchdog `reseat` that moved the seat
 (`reseat::moved_seat`), closed by a LATER watchdog `auto-reseat-done` of a
 limit or headroom attempt, is one hop; the first hop's `done` names the ORIGIN
-(its `ref`, the profile left) and its `ts` is `away_at`, and later hops keep
+(its `ref`: the profile left, or `profile@client` when the seat that left
+recorded a well-formed client, `leg::left_ref`) and its `ts` is `away_at`, and later hops keep
 both. Any `reseat` journaled by anyone but the watchdog — a move, a stop, or one
 that only says the seat already uses that profile — ends the chain, and so does
 a `spawn` or a return's own `done`. A `done` with no moved `reseat` before it
@@ -1123,11 +1128,17 @@ through TODAY's config: a profile gone from it leaves the seat where it is, and 
 profile whose command was edited since the move binds the seat to the account
 and model that command names now. The chain is read from the journal alone, so a
 seat moved automatically before this release, with its history intact, can
-return too.
+return too. A root that carried a client is served only by its profile on that
+recorded client (`leg::serves_origin`; a bare root by its profile alone, as
+before) and resolves through the ONE pair gate `ae reseat --using
+profile@client` takes (`reseat::resolution` → `resolve_pair`): never the bare
+profile's default account. An older ae that reads such a root resolves it as a
+profile name, fails, and holds silently; no reader parses the `ref` otherwise.
 
 **The proof.** `leg::home` reads the origin's accounts from the one held quota
 observation (`leg::origin_samples`): every row of every group naming the origin
-profile, each rollout, rows scoped to another model family than the origin's pin
+profile (a pair root: every group of the tool and canonical source its client's
+store resolves to, `quota::account_identity`), each rollout, rows scoped to another model family than the origin's pin
 left out, and rows ae cannot judge KEPT. `autoreseat::return_ready` then needs,
 for every window of those accounts present NOW, its NEWEST reading to be judged,
 fresh, observed strictly after `away_at`, and strictly below the band; a tie at
@@ -1158,6 +1169,21 @@ Under the lifecycle lock `reseat::prepare` re-checks that the chain's newest mov
 and the locked row's profile are still what the return was chosen from
 (`leg::return_changed`); anything else holds as `return-changed` (transient)
 with nothing stopped.
+
+**A refused pair root.** When the pair gate refuses a root that carried a
+client (not approved, a client gone or on another adapter, an account the
+launcher cannot prove), `leg::home` returns that reason (`HomeRead::refusal`)
+and no proof is read. The daemon opens the return once
+(`return to <origin>: the pair gate refuses it`), decides it once, and the
+trigger (`leg::plan_refused_return`) or the leg under the seat's lock closes it
+ONE `auto-reseat-refused`: `other: return to <origin> refused: <the gate's
+reason> (<opener>)`, told as every ending, before anything is chosen, stopped,
+typed or started. That one record keeps the reason whole up to `REASON_MAX`
+(600), its cut marked `…`, one clean line (`leg::refused_return`, lead ruling
+ae-20261117T175826Z-d479b819); every other leg record stays at
+`SUMMARY_CHARS` (160). A refused round is never decided again: the seat holds
+on its substitute, never on the default account, until a human moves it, a
+spawn, or the chain ends.
 
 **The flap limit.** A seat goes home at most `MAX_RETURNS` (2) times in a rolling
 24 h, counted from return `done`s in the journal, so a restart forgets nothing.

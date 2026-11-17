@@ -2,7 +2,7 @@
 //! auto reseat step opens, decides or leaves alone.
 
 use super::{AutoAct, AutoSeat, auto_acts_with};
-use crate::autoreseat::leg::Home;
+use crate::autoreseat::leg::{Home, HomeRead};
 use crate::autoreseat::{
     ATTEMPT_ACTION, Frame, Pane, RETURN_ACTION, Room, Settings, StartRead, Switch, Window,
 };
@@ -73,14 +73,17 @@ fn ready() -> Window {
     }
 }
 
-fn home(ready: Option<Window>) -> Vec<(String, Home)> {
+fn home(ready: Option<Window>) -> Vec<(String, HomeRead)> {
     vec![(
         SLOT.to_owned(),
-        Home {
-            origin: "origin".to_owned(),
-            newest: Timestamp::from_epoch(NOW - 600),
-            ready,
-            flapped: false,
+        HomeRead {
+            home: Home {
+                origin: "origin".to_owned(),
+                newest: Timestamp::from_epoch(NOW - 600),
+                ready,
+                flapped: false,
+            },
+            refusal: None,
         },
     )]
 }
@@ -96,7 +99,7 @@ fn record(at: i64, action: &str, rest: &str) -> Event {
 fn acts(
     settings: &Settings,
     seat: &AutoSeat,
-    homes: &[(String, Home)],
+    homes: &[(String, HomeRead)],
     events: &[Event],
 ) -> Vec<AutoAct> {
     auto_acts_with(
@@ -265,7 +268,7 @@ fn a_standing_headroom_episode_holds_a_mapped_seats_return() {
 #[test]
 fn a_flapped_seat_is_held_not_returned() {
     let mut flapped = home(Some(ready()));
-    flapped[0].1.flapped = true;
+    flapped[0].1.home.flapped = true;
     assert_eq!(
         acts(
             &settings(Switch::On, &[]),
@@ -312,4 +315,54 @@ fn an_open_return_moves_only_on_its_proof_and_a_spent_one_gives_up() {
             profile: "substitute".to_owned(),
         }]
     );
+}
+
+/// A root the pair gate refuses (#296 follow-up 4) opens a return though its
+/// account proves nothing, is decided ONCE so the trigger can close it
+/// `refused` with the gate's reason, and once that round closed the seat holds
+/// on its substitute: no second attempt, no give-up, however long it waits.
+#[test]
+fn a_refused_pair_root_is_decided_once_and_then_holds() {
+    use crate::autoreseat::{REFUSED_ACTION, RETRY_COOLDOWN_SECS};
+    let refused = |ready: Option<Window>| {
+        let mut read = home(ready);
+        read[0].1.refusal = Some("Error: --using 'p@carry' is not an approved pair".to_owned());
+        read
+    };
+    let mapped = settings(Switch::On, &[("substitute", &["manual"])]);
+    let idle = seat(Room::Unread);
+    for ready in [None, Some(ready())] {
+        assert_eq!(
+            acts(&mapped, &idle, &refused(ready), &[]),
+            [AutoAct::OpenReturn {
+                slot: SLOT.to_owned(),
+                agent: AGENT.to_owned(),
+                cause: crate::autoreseat::refused_return_words("origin"),
+            }],
+            "a refused root opens its return whatever its account reads"
+        );
+    }
+    let key = Timestamp::from_epoch(NOW - 20_000);
+    let reference = format!(r#","ref":"{key}""#);
+    let open = vec![record(key.epoch(), RETURN_ACTION, "")];
+    assert_eq!(
+        acts(&mapped, &idle, &refused(None), &open),
+        [AutoAct::Trigger {
+            agent: AGENT.to_owned()
+        }],
+        "the open return goes to the trigger, which closes it refused"
+    );
+    let mut closed = open;
+    closed.push(record(key.epoch() + 1, ATTEMPT_ACTION, &reference));
+    closed.push(record(key.epoch() + 2, REFUSED_ACTION, &reference));
+    assert!(
+        NOW >= key.epoch() + 2 + RETRY_COOLDOWN_SECS,
+        "the fixture waits past the cooldown"
+    );
+    for ready in [None, Some(ready())] {
+        assert!(
+            acts(&mapped, &idle, &refused(ready), &closed).is_empty(),
+            "one refused record: the seat holds, nothing retries or gives up"
+        );
+    }
 }

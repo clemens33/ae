@@ -4,7 +4,7 @@ use std::sync::{Once, OnceLock};
 
 use ae::autoreseat::{
     ATTEMPT_ACTION, DONE_ACTION, Episode, FAILED_ACTION, HEADROOM_ACTION, HELD_ACTION, MAX_ROUNDS,
-    Outcome, REARMED_ACTION, REFUSED_ACTION, RETRY_COOLDOWN_SECS, Trigger, episode,
+    Outcome, REARMED_ACTION, REFUSED_ACTION, RETRY_COOLDOWN_SECS, Trigger, chain, episode,
     headroom_episode, keyed,
 };
 use ae::events::{Event, RoutingMember};
@@ -412,6 +412,29 @@ fn lifecycle() {
     });
 }
 
+// The chain a return goes home along is read from the same records: a fold
+// of them alone, and its origin is the ref of a watchdog done in them, spelled
+// exactly as journaled, a `profile@client` pair or anything else (#296
+// follow-up 4). Whether that root still passes the pair gate is judged by the
+// return, never by this fold.
+fn chain_sound(events: &[Event]) {
+    let found = chain(events, SESSION, SLOT, AGENT);
+    assert_eq!(
+        chain(events, SESSION, SLOT, AGENT),
+        found,
+        "a chain is a function of its records"
+    );
+    if let Some(found) = found {
+        assert!(
+            events.iter().any(|e| e.actor == WATCHDOG
+                && e.action == DONE_ACTION
+                && e.ts == found.away_at
+                && e.reference.as_deref() == Some(found.origin.as_str())),
+            "the origin is a watchdog done's ref: {found:?}"
+        );
+    }
+}
+
 // A hostile journal folded into its auto-reseat episodes through the public
 // wrappers. Each line is one `events.jsonl` record; a line the journal parser
 // refuses is skipped, because the strict damaged-journal ledger is the
@@ -431,6 +454,7 @@ fuzz_target!(|data: &[u8]| {
         sound(found, &events);
     }
     selection(&events, &base);
+    chain_sound(&events);
     let at = events.iter().map(|e| e.ts.epoch()).max().unwrap_or(0);
     let live: Vec<String> = [&base.0, &base.1]
         .into_iter()

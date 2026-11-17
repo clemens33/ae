@@ -151,6 +151,7 @@ mod pairguard_after;
 mod pairguard_spec;
 mod pairpin_relaunch_spec;
 mod pairpin_reseat_guard_spec;
+mod pairpin_return_spec;
 mod parity;
 mod phase2;
 mod phase3;

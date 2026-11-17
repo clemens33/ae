@@ -2363,7 +2363,7 @@ impl Cycle<'_> {
         // Every seat whose limit latch stands after its accounting.
         let mut auto_seats: Vec<AutoSeat> = Vec::new();
         // The return each seat on an automatic chain may make (#305), by slot.
-        let mut homes: Vec<(String, crate::autoreseat::leg::Home)> = Vec::new();
+        let mut homes: Vec<(String, crate::autoreseat::leg::HomeRead)> = Vec::new();
         // The lead-pair seats the effort step judges.
         let mut effort_seats: Vec<crate::effort::leg::Sight> = Vec::new();
         // ONE stamp read per cycle; every pane shares the session's grace.

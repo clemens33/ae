@@ -716,6 +716,22 @@ pub(crate) struct Account {
     base: Option<String>,
 }
 
+impl Account {
+    /// The account as the quota observation keys it, read from the two rows
+    /// a move to it records ([`crate::quota::account_identity`]).
+    fn identity(&self, tool: ToolKind) -> Option<crate::quota::RecordedIdentity> {
+        let base = self.base.as_deref().map_or(
+            crate::meta::RecordedConfigHomeBase::Missing,
+            crate::meta::RecordedConfigHomeBase::parse,
+        );
+        crate::quota::account_identity(
+            tool,
+            &crate::meta::RecordedConfigHome::parse(&self.row),
+            &base,
+        )
+    }
+}
+
 /// Resolve the account a profile's command would give its tool.
 ///
 /// The lookup is CONTROLLED, not ambient — `HOME` is the launch home and every
@@ -1545,11 +1561,15 @@ pub(crate) fn run_as_watchdog(
         Some(hook) => (StopPolicy::QuietStart, hook),
         None => (StopPolicy::Proven, &mut open),
     };
+    // A chain root that carried a client returns as that pair, through the
+    // gate `reseat --using profile@client` takes (#296 follow-up 4).
+    let (profile, client) = crate::session_launch::split_profile_client(profile)
+        .unwrap_or_else(|| (profile.to_owned(), None));
     let parsed = Parsed {
         session: session.to_owned(),
         agent: agent.to_owned(),
-        profile: profile.to_owned(),
-        client: None,
+        profile,
+        client,
         stop,
         automatic: true,
         long_limit,
@@ -1572,18 +1592,45 @@ pub(crate) struct Resolved {
     pub(crate) pin: Option<String>,
     /// The tool whose pin rule reads `pin`.
     pub(crate) tool: ToolKind,
+    /// A `profile@client` pair's proven account as the quota observation
+    /// keys it, which its readings are matched by; `None` for a bare profile,
+    /// whose readings are matched by its name.
+    pub(crate) identity: Option<crate::quota::RecordedIdentity>,
 }
 
-/// Profile `profile` for the seat whose session dir is `dir`, resolved exactly
-/// as a reseat to it would resolve it, or `None` when it does not resolve.
-pub(crate) fn resolved(dir: &Path, profile: &str) -> Option<Resolved> {
+/// `name` for the seat whose session dir is `dir`, resolved exactly as a
+/// reseat to it would resolve it, or `None` when it does not resolve.
+pub(crate) fn resolved(dir: &Path, name: &str) -> Option<Resolved> {
+    resolution(dir, name, "").ok()
+}
+
+/// `name` — a bare profile, or a `profile@client` pair through the one pair
+/// gate a `reseat --using profile@client` takes ([`resolve_pair`]: approval,
+/// definitions, the same-known-adapter gate, the store proof and the account)
+/// — resolved for the seat `agent` of the session whose dir is `dir`, or the
+/// refusal that move would print.
+pub(crate) fn resolution(dir: &Path, name: &str, agent: &str) -> Result<Resolved, String> {
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
-    resolve_profile(dir, &bytes, profile, "")
-        .ok()
-        .map(|moving| Resolved {
-            pin: moving.pin,
-            tool: moving.tool,
-        })
+    let moving = match crate::session_launch::split_profile_client(name) {
+        Some((profile, Some(label))) => resolve_pair(&bytes, &profile, &label, agent)?,
+        Some((profile, None)) => resolve_profile(dir, &bytes, &profile, agent)?,
+        None => {
+            return Err(format!(
+                "Error: '{name}' is neither a profile nor one profile@client pair. Nothing was \
+                 reseated."
+            ));
+        }
+    };
+    let identity = moving
+        .pair
+        .as_ref()
+        .and(moving.account.as_ref())
+        .and_then(|account| account.identity(moving.tool));
+    Ok(Resolved {
+        pin: moving.pin,
+        tool: moving.tool,
+        identity,
+    })
 }
 
 /// The move itself, from a parsed argv and the caller rule's verdict. Every
@@ -2020,11 +2067,14 @@ fn prepare(
             .iter()
             .find(|row| row.slot == target.slot && row.name == target.agent)
             .and_then(|row| recorded_command(&seat.dir, locked, row));
+        // The destination as the chain spells it (`seat.to`): a return to a
+        // root that carried a client is exempt as that pair, never as its
+        // bare profile.
         if let Some(why) = crate::autoreseat::leg::floor_changed(
             &global,
             (&seat.dir, locked),
             (&ask.parsed.session, &target.slot, &target.agent),
-            (source.as_deref(), &ask.parsed.profile, &destination),
+            (source.as_deref(), &seat.to, &destination),
             ask.parsed.expect.is_some(),
         ) {
             writeln!(err, "Error: {why}")?;

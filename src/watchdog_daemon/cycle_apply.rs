@@ -454,7 +454,7 @@ impl Cycle<'_> {
     pub(super) fn auto_reseat(
         &self,
         named: &mut Vec<(String, Timestamp, crate::autoreseat::HoldReason)>,
-        seats: (&[AutoSeat], &[(String, crate::autoreseat::leg::Home)]),
+        seats: (&[AutoSeat], &[(String, crate::autoreseat::leg::HomeRead)]),
         events: &[Event],
         now: i64,
         err: &mut impl Write,
@@ -801,7 +801,7 @@ impl Cycle<'_> {
         quota: &QuotaCarry,
         unlatched: bool,
         now: i64,
-    ) -> Option<crate::autoreseat::leg::Home> {
+    ) -> Option<crate::autoreseat::leg::HomeRead> {
         if self.auto.switch == crate::autoreseat::Switch::Off || !unlatched {
             return None;
         }

@@ -147,6 +147,34 @@ pub(crate) fn tagged(summary: &str, cause: &str) -> String {
     format!("{head}{tag}")
 }
 
+/// The ONE record a return whose root no longer passes the pair gate closes
+/// with: `other: return to <origin> refused: <the gate's reason>`, the
+/// episode's opener quoted after it like every record. It is the third rule
+/// beside [`bounded`]'s two: KEPT WHOLE up to `REASON_MAX`, its cut marked
+/// `…`, because it is the human's only clue why the seat did not go home (lead
+/// ruling ae-20261117T175826Z-d479b819). Every other record keeps
+/// [`SUMMARY_CHARS`]; the same one-line cleaning applies to all.
+pub(crate) fn refused_return(origin: &str, why: &str, cause: &str) -> String {
+    let tag = if cause.is_empty() {
+        String::new()
+    } else {
+        let clean = crate::state::summary_of(&crate::seatpack::neutralise(cause));
+        format!(" ({clean})")
+    };
+    let head = crate::seatpack::neutralise(
+        &CauseClass::Other.lead(&format!("return to {origin} refused: {why}")),
+    );
+    let room = crate::state::REASON_MAX.saturating_sub(tag.chars().count());
+    // `summary_of` maps one char to one and stops at `REASON_MAX`, so the
+    // whole head's count says whether a cut is due and must be marked.
+    let line = crate::state::summary_of(&head);
+    if head.chars().count() <= room {
+        return format!("{line}{tag}");
+    }
+    let cut: String = line.chars().take(room.saturating_sub(1)).collect();
+    format!("{cut}…{tag}")
+}
+
 /// The hold a headroom attempt is closed with once the threshold that applies
 /// to its seat, the config row `key`, is off.
 fn headroom_off(key: &str) -> String {
@@ -625,9 +653,10 @@ pub(crate) fn candidates(
             let pin = resolved.as_ref().and_then(|found| found.pin.as_deref());
             // Every reading of the candidate's account, rollouts together: one
             // that does not bind its model family is no reading of it.
+            let identity = resolved.as_ref().and_then(|found| found.identity.as_ref());
             let accounts: Vec<(&crate::quota::Group, &std::path::PathBuf)> = groups
                 .iter()
-                .filter(|group| group.profiles.iter().any(|named| named == profile))
+                .filter(|group| reads_account(group, profile, identity))
                 .filter_map(|group| group.source.as_ref().map(|source| (group, source)))
                 .collect();
             Candidate {
@@ -918,20 +947,20 @@ pub(crate) fn own_reset(
 }
 
 /// Every reading of the account `origin` names, as a return judges it: each
-/// row of each group that names the profile and carries a source, every
-/// rollout together, keyed by `(tool, source, window)`. A row scoped to
+/// row of each group that reads it ([`reads_account`]) and carries a source,
+/// every rollout together, keyed by `(tool, source, window)`. A row scoped to
 /// another model family than `pin` is no reading of it; a row ae cannot judge
 /// is KEPT, as [`super::Sample::Unjudged`], so it still denies the proof.
 pub(crate) fn origin_samples(
     quota: Option<&crate::quota::Observation>,
-    origin: &str,
+    (origin, identity): (&str, Option<&crate::quota::RecordedIdentity>),
     pin: Option<&str>,
     now: i64,
 ) -> Vec<(OriginKey, super::Sample)> {
     let groups = quota.map_or(&[][..], |seen| seen.groups.as_slice());
     groups
         .iter()
-        .filter(|group| group.profiles.iter().any(|named| named == origin))
+        .filter(|group| reads_account(group, origin, identity))
         .filter_map(|group| group.source.as_ref().map(|source| (group, source)))
         .flat_map(|(group, source)| {
             group
@@ -952,15 +981,32 @@ pub(crate) fn origin_samples(
         .collect()
 }
 
+/// Whether `group` is a reading of the destination `name`: a bare profile's
+/// by the profile names the group lists; a `profile@client` pair's by the
+/// account the pair gate proved (`identity`, the tool and source the
+/// observation keys), since no group lists a pair as a name.
+fn reads_account(
+    group: &crate::quota::Group,
+    name: &str,
+    identity: Option<&crate::quota::RecordedIdentity>,
+) -> bool {
+    identity.map_or_else(
+        || group.profiles.iter().any(|named| named == name),
+        |found| group.tool == found.tool && group.source.as_ref() == Some(&found.source),
+    )
+}
+
 /// A window of an origin account: its tool, its source and the window.
 pub(crate) type AccountKey = (crate::tool::ToolKind, PathBuf);
 /// [`AccountKey`] and the window's identity inside it.
 pub(crate) type OriginKey = (crate::tool::ToolKind, PathBuf, crate::quota::WindowKey);
 
 /// What a return may do for one seat now: the seat stands on an automatic
-/// chain whose origin is not its current profile and still resolves.
+/// chain whose origin is not what it runs, and the origin still resolves.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Home {
+    /// The chain's root as its first `done` spelled it: a bare profile, or
+    /// `profile@client` when the seat that left it recorded a client.
     pub origin: String,
     /// The chain's newest move: what the lifecycle gate checks it still is.
     pub newest: Timestamp,
@@ -970,10 +1016,25 @@ pub(crate) struct Home {
     pub flapped: bool,
 }
 
+/// [`home`]'s answer: the return the seat may make and, for a root that
+/// carried a client, the pair gate's refusal of it. A refused return closes
+/// ONCE `refused` with that reason, and the seat holds on its substitute,
+/// never falling back to the bare profile's default account (#296).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HomeRead {
+    pub home: Home,
+    /// The pair gate's refusal, the gate's own words; `None` for a root it
+    /// passes and for every bare root.
+    pub refusal: Option<String>,
+}
+
 /// The return the seat at `row` may make, from the records and one quota
 /// read: `None` with no chain, a chain whose origin the seat already serves,
-/// or an origin that no longer resolves. An origin account with a usable spend
-/// cap, or one another seat of the session is latched on, proves no room.
+/// or a bare origin that no longer resolves. A root that carried a client
+/// resolves through the pair gate `reseat --using profile@client` takes, and
+/// its refusal is the [`HomeRead::refusal`] the return closes with. An origin
+/// account with a usable spend cap, or one another seat of the session is
+/// latched on, proves no room.
 pub(crate) fn home(
     dir: &Path,
     events: &[crate::events::Event],
@@ -984,28 +1045,77 @@ pub(crate) fn home(
         &[crate::quota::RecordedIdentity],
     ),
     now: i64,
-) -> Option<Home> {
+) -> Option<HomeRead> {
     let chain = super::chain(events, session, &row.slot, &row.name)?;
-    if row.profile.as_deref() == Some(chain.origin.as_str()) {
+    if serves_origin(row, &chain.origin) {
         return None;
     }
-    let resolved = crate::reseat::resolved(dir, &chain.origin)?;
-    let samples = origin_samples(quota, &chain.origin, resolved.pin.as_deref(), now);
+    let since = now.saturating_sub(super::RETURN_WINDOW_SECS);
+    let flapped =
+        super::returns_since(events, session, &row.slot, &row.name, since) >= super::MAX_RETURNS;
+    let resolved = match crate::reseat::resolution(dir, &chain.origin, &row.name) {
+        Ok(found) => found,
+        Err(why) if chain.origin.contains('@') => {
+            return Some(HomeRead {
+                home: Home {
+                    origin: chain.origin,
+                    newest: chain.newest,
+                    ready: None,
+                    flapped,
+                },
+                refusal: Some(why),
+            });
+        }
+        Err(_) => return None,
+    };
+    let samples = origin_samples(
+        quota,
+        (&chain.origin, resolved.identity.as_ref()),
+        resolved.pin.as_deref(),
+        now,
+    );
     let accounts: Vec<AccountKey> = samples
         .iter()
         .map(|((tool, source, _), _)| (*tool, source.clone()))
         .collect();
     let band = super::return_band(settings.headroom_at);
-    let since = now.saturating_sub(super::RETURN_WINDOW_SECS);
-    Some(Home {
-        ready: (!origin_blocked(quota, &accounts, latched, now))
-            .then(|| super::return_ready(&samples, chain.away_at.epoch(), band))
-            .flatten(),
-        flapped: super::returns_since(events, session, &row.slot, &row.name, since)
-            >= super::MAX_RETURNS,
-        origin: chain.origin,
-        newest: chain.newest,
+    Some(HomeRead {
+        home: Home {
+            ready: (!origin_blocked(quota, &accounts, latched, now))
+                .then(|| super::return_ready(&samples, chain.away_at.epoch(), band))
+                .flatten(),
+            flapped,
+            origin: chain.origin,
+            newest: chain.newest,
+        },
+        refusal: None,
     })
+}
+
+/// Whether the seat at `row` already runs the chain root `origin`: a bare
+/// root by its profile alone, as before; a root that carried a client by that
+/// profile on that recorded client.
+fn serves_origin(row: &crate::meta::RosterEntry, origin: &str) -> bool {
+    match crate::session_launch::split_profile_client(origin) {
+        Some((profile, Some(label))) => {
+            row.profile.as_deref() == Some(profile.as_str())
+                && row.client == crate::meta::RecordedClient::Label(label)
+        }
+        _ => row.profile.as_deref() == Some(origin),
+    }
+}
+
+/// The `ref` a move's `done` names the seat it LEFT by: `profile@client` when
+/// the seat records a well-formed client, its bare profile otherwise (#296
+/// follow-up 4). Whether that pair still passes the gate is judged once, by
+/// the return, never here.
+pub(crate) fn left_ref(profile: &str, client: &crate::meta::RecordedClient) -> String {
+    match client {
+        crate::meta::RecordedClient::Label(label) => format!("{profile}@{label}"),
+        crate::meta::RecordedClient::Missing | crate::meta::RecordedClient::Invalid => {
+            profile.to_owned()
+        }
+    }
 }
 
 /// Whether one of the origin's `accounts` proves no room whatever its windows
@@ -1241,7 +1351,9 @@ fn skip_word(skip: Skip) -> std::borrow::Cow<'static, str> {
 }
 
 /// `text` as one control-free line of at most [`SUMMARY_CHARS`], or through a named
-/// `ae reseat` command kept WHOLE up to `REASON_MAX`, else dropped whole.
+/// `ae reseat` command kept WHOLE up to `REASON_MAX`, else dropped whole. The
+/// third rule is not here: a refused return's record is bounded whole by
+/// [`refused_return`] and written by [`close_refused_return`] alone.
 fn bounded(text: &str) -> String {
     let clean = crate::seatpack::neutralise(text);
     let keep = match (clean.find("ae reseat "), clean.find(STOP_UNKNOWN)) {
@@ -1449,10 +1561,23 @@ pub(crate) fn run(
         _ if homeward => match &home_now {
             None => Err((CauseClass::Other, CauseClass::Other.lead(RETURN_OFF_CHAIN))),
             Some(_) if early => Err((CauseClass::Other, CauseClass::Other.lead(RETURN_EARLY))),
-            Some(back) if back.ready.is_none() => {
+            // A root the pair gate refuses closes the attempt `refused` ONCE,
+            // the gate's reason kept whole, before anything is chosen or
+            // stopped: never a hold, never the bare profile's account (#296).
+            Some(HomeRead {
+                home,
+                refusal: Some(why),
+            }) => {
+                let summary = refused_return(&home.origin, why, &cause);
+                let code = close_refused_return(&argv, &agent, now, &summary, err)?;
+                let ending = super::Ending::Refused(CauseClass::Other, &summary);
+                tell(&argv, now, told, &notice(ending));
+                return Ok(code);
+            }
+            Some(back) if back.home.ready.is_none() => {
                 Err((CauseClass::Other, CauseClass::Other.lead(RETURN_GONE)))
             }
-            Some(back) => Ok(vec![(back.origin.clone(), Provenance::Declared)]),
+            Some(back) => Ok(vec![(back.home.origin.clone(), Provenance::Declared)]),
         },
         declared => {
             let list = listed(dir, &bytes, seat, declared.unwrap_or_default());
@@ -1518,7 +1643,7 @@ pub(crate) fn run(
     };
     let route = match &home_now {
         Some(back) if homeward => super::Route::Return {
-            origin: &back.origin,
+            origin: &back.home.origin,
         },
         _ => super::Route::Move {
             seat_profile: &profile,
@@ -1581,7 +1706,7 @@ pub(crate) fn run(
     // What a return checks again under the lifecycle lock (#305).
     let expect = home_now.as_ref().map(|back| Expect {
         profile: profile.clone(),
-        newest: back.newest,
+        newest: back.home.newest,
     });
     let (ended, tasks, minted) = crate::reseat::run_as_watchdog(
         root,
@@ -1597,10 +1722,12 @@ pub(crate) fn run(
         &mut said,
     )?;
     err.write_all(&said)?;
+    // The seat this move LEFT, spelled with the client it recorded: the ref a
+    // chain's first `done` gives its root (#296 follow-up 4).
     let (action, reference, summary) = outcome(
         ended,
         &key,
-        &profile,
+        &left_ref(&profile, &seat.client),
         &named(&pick),
         &String::from_utf8_lossy(&said),
     );
@@ -1718,6 +1845,10 @@ pub(crate) enum Plan {
         note: String,
         cause: String,
     },
+    /// Close the return episode keyed `key` `refused`: its root carried a
+    /// client the pair gate refuses now. `why` is [`refused_return`]'s whole
+    /// summary, the one record kept past [`SUMMARY_CHARS`].
+    RefuseReturn { key: Timestamp, why: String },
 }
 
 /// Decide the trigger from the records and one fresh sight, by the daemon's
@@ -1852,16 +1983,14 @@ pub(crate) fn plan_return(
     pair: Option<&super::PairGuard>,
     now: Timestamp,
 ) -> Plan {
-    match super::eligible(settings, seat) {
-        Ok(_) | Err(Ineligible::Unmapped) => {}
-        Err(why) => return Plan::Decline(format!("not eligible ({why:?})")),
+    if let Some(declined) = return_ineligible(settings, seat) {
+        return declined;
     }
     let Some(home) = home.filter(|found| found.ready.is_some()) else {
         return Plan::Decline("the origin account does not prove room".to_owned());
     };
-    let decision = super::decide(Some(open), settings.grace_secs, &sight.pane, now.epoch());
-    if decision != super::Decision::Attempt {
-        return Plan::Decline(format!("not due ({decision:?})"));
+    if let Some(declined) = return_undue(settings, sight, open, now) {
+        return declined;
     }
     let route = super::Route::Return {
         origin: &home.origin,
@@ -1893,6 +2022,50 @@ pub(crate) fn plan_return(
         ),
         cause: cause.to_owned(),
     }
+}
+
+/// Decide the trigger for a return whose root carried a client the pair gate
+/// refuses (`why`, the gate's words): the seat is eligible and the episode due
+/// by [`plan_return`]'s own rule, and then it closes `refused` with the gate's
+/// reason kept whole ([`refused_return`]), before anything is chosen or
+/// stopped (#296 follow-up 4).
+pub(crate) fn plan_refused_return(
+    settings: &Settings,
+    (seat, sight): (&Seat<'_>, &Sight),
+    open: &super::Episode,
+    (origin, why): (&str, &str),
+    now: Timestamp,
+) -> Plan {
+    if let Some(declined) = return_ineligible(settings, seat) {
+        return declined;
+    }
+    if let Some(declined) = return_undue(settings, sight, open, now) {
+        return declined;
+    }
+    Plan::RefuseReturn {
+        key: open.key,
+        why: refused_return(origin, why, open.cause()),
+    }
+}
+
+/// A return's eligibility: a seat no rule admits declines; a row naming
+/// nothing is no bar, since the origin is the return's candidate.
+fn return_ineligible(settings: &Settings, seat: &Seat<'_>) -> Option<Plan> {
+    match super::eligible(settings, seat) {
+        Ok(_) | Err(Ineligible::Unmapped) => None,
+        Err(why) => Some(Plan::Decline(format!("not eligible ({why:?})"))),
+    }
+}
+
+/// A return's due rule: the plain grace and an idle frame.
+fn return_undue(
+    settings: &Settings,
+    sight: &Sight,
+    open: &super::Episode,
+    now: Timestamp,
+) -> Option<Plan> {
+    let decision = super::decide(Some(open), settings.grace_secs, &sight.pane, now.epoch());
+    (decision != super::Decision::Attempt).then(|| Plan::Decline(format!("not due ({decision:?})")))
 }
 
 /// What a headroom attempt's summary adds after `from <a> to <b>`: its trigger,
@@ -2435,15 +2608,24 @@ pub(crate) fn trigger(
                 now.epoch(),
             )
         };
-        plan_return(
-            &settings,
-            (&seat, &sight),
-            open,
-            found.as_ref(),
-            judge,
-            pair.as_ref(),
-            now,
-        )
+        // A root that carried a client the pair gate refuses closes the
+        // return `refused` once, its one read here and the leg's under the
+        // seat's lock alike (#296).
+        match &found {
+            Some(HomeRead {
+                home,
+                refusal: Some(why),
+            }) => plan_refused_return(&settings, (&seat, &sight), open, (&home.origin, why), now),
+            _ => plan_return(
+                &settings,
+                (&seat, &sight),
+                open,
+                found.as_ref().map(|read| &read.home),
+                judge,
+                pair.as_ref(),
+                now,
+            ),
+        }
     } else {
         plan_paired(
             &settings,
@@ -2495,6 +2677,13 @@ pub(crate) fn trigger(
                 let ending = super::Ending::Refused(class, &why);
                 said(&argv, now, &super::notice(own_session, &row.name, &ending));
             }
+            Ok(code)
+        }
+        Plan::RefuseReturn { key, why } => {
+            let argv = argv(key);
+            let code = close_refused_return(&argv, &row.name, now, &why, err)?;
+            let ending = super::Ending::Refused(CauseClass::Other, &why);
+            said(&argv, now, &super::notice(own_session, &row.name, &ending));
             Ok(code)
         }
         Plan::Attempt {
@@ -2555,6 +2744,41 @@ fn journal_line(
     reference: &str,
     summary: &str,
 ) -> String {
+    event_entry(argv, agent, now, action, reference, &bounded(summary))
+}
+
+/// Close a return's attempt `refused` with `summary`, which
+/// [`refused_return`] has already bounded whole, and say so: the one record
+/// kept past [`SUMMARY_CHARS`].
+fn close_refused_return(
+    argv: &Argv,
+    agent: &str,
+    now: Timestamp,
+    summary: &str,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let line = event_entry(
+        argv,
+        agent,
+        now,
+        REFUSED_ACTION,
+        &argv.key.to_string(),
+        summary,
+    );
+    let _ = crate::store::open(&argv.dir).append_event(&line);
+    writeln!(err, "ae: auto reseat: {summary}")?;
+    Ok(EXIT_FAILED)
+}
+
+/// The watchdog's event line for the seat `argv` names, its summary as given.
+fn event_entry(
+    argv: &Argv,
+    agent: &str,
+    now: Timestamp,
+    action: &str,
+    reference: &str,
+    summary: &str,
+) -> String {
     crate::tracked::event_line(&EventFields {
         ts: now,
         actor: WATCHDOG_ACTOR,
@@ -2574,7 +2798,7 @@ fn journal_line(
         caller_pane: "",
         caller_session_uuid: "",
         identity_gap: "",
-        summary: &bounded(summary),
+        summary,
         body_file: "",
     })
 }
@@ -3299,6 +3523,7 @@ mod tests {
             (profile != "ghost").then_some(Resolved {
                 pin: None,
                 tool: crate::tool::ToolKind::Claude,
+                identity: None,
             })
         };
         let choice = choose(
@@ -3393,7 +3618,7 @@ mod tests {
             ),
             account(&["other"], "/c", plain(), vec![row(None, "99", 60, 3600)]),
         ]);
-        let samples = origin_samples(Some(&quota), "origin", Some("opus"), NOW);
+        let samples = origin_samples(Some(&quota), ("origin", None), Some("opus"), NOW);
         let sources: Vec<&Path> = samples
             .iter()
             .map(|((_, source, _), _)| source.as_path())
@@ -3415,7 +3640,7 @@ mod tests {
                 == 2,
             "both rollouts of the account stay"
         );
-        assert!(origin_samples(None, "origin", None, NOW).is_empty());
+        assert!(origin_samples(None, ("origin", None), None, NOW).is_empty());
     }
 
     /// Under the lifecycle lock a return stands only while the locked row still
@@ -3579,6 +3804,7 @@ mod tests {
                     .find(|(named, _)| *named == profile)
                     .map(|(_, pin)| (*pin).to_owned()),
                 tool: crate::tool::ToolKind::Claude,
+                identity: None,
             })
         };
         choose(
@@ -3991,6 +4217,7 @@ mod tests {
                 Some(Resolved {
                     pin: None,
                     tool: crate::tool::ToolKind::Claude,
+                    identity: None,
                 })
             };
             let judged = candidates(
@@ -4107,6 +4334,7 @@ mod tests {
                     Some(Resolved {
                         pin: None,
                         tool: crate::tool::ToolKind::Claude,
+                        identity: None,
                     })
                 },
                 left,
@@ -4260,6 +4488,7 @@ mod tests {
                     Some(Resolved {
                         pin: None,
                         tool: crate::tool::ToolKind::Claude,
+                        identity: None,
                     })
                 },
                 left,
@@ -4528,6 +4757,225 @@ mod tests {
             assert!(read("main", seat).is_none(), "{seat:?}");
         }
         assert!(read("spawned.1", ("lead", "source", Some("one"))).is_none());
+    }
+
+    /// The `done` of a move names the seat it left as `profile@client` only
+    /// when that seat records a well-formed client (#296 follow-up 4).
+    #[test]
+    fn the_left_ref_carries_a_recorded_client_and_nothing_else() {
+        use crate::meta::RecordedClient;
+        let carry = RecordedClient::Label("carry".to_owned());
+        assert_eq!(left_ref("p", &carry), "p@carry");
+        assert_eq!(left_ref("p", &RecordedClient::Missing), "p");
+        assert_eq!(left_ref("p", &RecordedClient::Invalid), "p");
+    }
+
+    /// A pair root is served by its profile on its recorded client only; a
+    /// bare root by its profile alone, as before; a malformed root by nothing.
+    #[test]
+    fn a_pair_root_is_served_only_by_its_profile_on_its_client() {
+        use crate::meta::{
+            RecordedClient, RecordedConfigHome, RecordedConfigHomeBase, RecordedWorkDir,
+            RosterEntry,
+        };
+        let row = |profile: &str, client: RecordedClient| RosterEntry {
+            slot: "spawned.1".to_owned(),
+            name: "one".to_owned(),
+            profile: Some(profile.to_owned()),
+            client,
+            harness_session: None,
+            config_home: RecordedConfigHome::Missing,
+            config_home_base: RecordedConfigHomeBase::Missing,
+            binary: None,
+            work_dir: RecordedWorkDir::Missing,
+        };
+        let carry = || RecordedClient::Label("carry".to_owned());
+        assert!(serves_origin(&row("p", carry()), "p@carry"));
+        assert!(!serves_origin(
+            &row("p", RecordedClient::Missing),
+            "p@carry"
+        ));
+        assert!(!serves_origin(
+            &row("p", RecordedClient::Invalid),
+            "p@carry"
+        ));
+        let other = RecordedClient::Label("other".to_owned());
+        assert!(!serves_origin(&row("p", other), "p@carry"));
+        assert!(!serves_origin(&row("q", carry()), "p@carry"));
+        assert!(serves_origin(&row("p", carry()), "p"));
+        assert!(serves_origin(&row("p", RecordedClient::Missing), "p"));
+        assert!(!serves_origin(&row("q", RecordedClient::Missing), "p"));
+        for malformed in ["p@", "@carry", "p@carry@x"] {
+            assert!(!serves_origin(&row("p", carry()), malformed), "{malformed}");
+        }
+    }
+
+    /// A pair root reads its own account, by the tool and source its pair
+    /// launches on, never the default account its profile's name groups; a
+    /// bare root reads by name, as before.
+    #[test]
+    fn a_pair_root_reads_its_account_by_identity_and_a_bare_root_by_name() {
+        use crate::quota::RecordedIdentity;
+        use crate::tool::ToolKind;
+        let quota = observed(vec![
+            account(&["p"], "/default", plain(), vec![row(None, "10", 60, 3600)]),
+            account(
+                &["other"],
+                "/carry",
+                plain(),
+                vec![row(None, "40", 60, 3600)],
+            ),
+        ]);
+        let sources = |origin: &str, identity: Option<&RecordedIdentity>| -> Vec<PathBuf> {
+            origin_samples(Some(&quota), (origin, identity), None, NOW)
+                .into_iter()
+                .map(|((_, source, _), _)| source)
+                .collect()
+        };
+        let on = |tool| RecordedIdentity {
+            tool,
+            source: PathBuf::from("/carry"),
+        };
+        assert_eq!(
+            sources("p@carry", Some(&on(ToolKind::Claude))),
+            [PathBuf::from("/carry")]
+        );
+        assert_eq!(sources("p", None), [PathBuf::from("/default")]);
+        assert!(
+            sources("p@carry", Some(&on(ToolKind::Codex))).is_empty(),
+            "the same source on another tool is another account"
+        );
+        assert!(
+            sources("p@carry", None).is_empty(),
+            "a pair root never reads an account by a profile name"
+        );
+    }
+
+    /// Lead ruling ae-20261117T175826Z-d479b819: the ONE refused-return record
+    /// keeps the pair gate's reason whole up to `REASON_MAX`, its cut marked,
+    /// on one clean line; every other leg record stays at `SUMMARY_CHARS`.
+    #[test]
+    fn a_refused_return_keeps_the_gate_reason_whole_and_every_other_record_stays_bounded() {
+        use crate::state::REASON_MAX;
+        let root = Root(std::env::temp_dir().join(format!("ae-leg-whole-{}", std::process::id())));
+        let dir = root.0.join("aedev");
+        assert!(std::fs::create_dir_all(&dir).is_ok(), "a session dir");
+        let argv = Argv {
+            session: "aedev".to_owned(),
+            dir: dir.clone(),
+            slot: "spawned.1".to_owned(),
+            key: Timestamp::parse(KEY).expect("the key parses"),
+        };
+        let now = Timestamp::from_epoch(argv.key.epoch() + 60);
+        let why = format!(
+            "Error: cannot launch seat 'one' as 'p@carry': {}\nthe account is unknown",
+            "x".repeat(200)
+        );
+        let opener = "return to p@carry: the pair gate refuses it";
+        let whole = refused_return("p@carry", &why, opener);
+        let ordinary = tagged(&why, opener);
+        let mut sink = Vec::new();
+        assert!(close_refused_return(&argv, "one", now, &whole, &mut sink).is_ok());
+        assert!(close(&argv, "one", now, (REFUSED_ACTION, &ordinary), &mut sink).is_ok());
+        let summaries: Vec<String> = crate::watchdog_daemon::read_events(&dir)
+            .into_iter()
+            .map(|event| event.summary.unwrap_or_default())
+            .collect();
+        assert_eq!(summaries.len(), 2, "{summaries:?}");
+        let kept = &summaries[0];
+        assert!(
+            kept.starts_with("other: return to p@carry refused: Error: cannot launch seat"),
+            "{kept}"
+        );
+        assert!(
+            kept.ends_with("the account is unknown (return to p@carry: the pair gate refuses it)"),
+            "the reason whole, then its opener: {kept}"
+        );
+        assert!(kept.chars().count() > SUMMARY_CHARS, "{kept}");
+        assert!(!kept.contains('\n'), "one line: {kept}");
+        assert!(
+            summaries[1].chars().count() <= SUMMARY_CHARS,
+            "an ordinary record keeps its bound: {}",
+            summaries[1]
+        );
+        assert!(!summaries[1].contains("unknown"), "{}", summaries[1]);
+        // Past `REASON_MAX` the reason is cut, the cut marked, the opener kept.
+        let long = refused_return("p@carry", &"y".repeat(2 * REASON_MAX), "cause");
+        assert_eq!(long.chars().count(), REASON_MAX, "{long}");
+        assert!(long.ends_with("y… (cause)"), "{long}");
+        let exact = refused_return("p@carry", &"z".repeat(2 * REASON_MAX), "");
+        assert_eq!(exact.chars().count(), REASON_MAX);
+        assert!(exact.ends_with("z…"), "a cut with no opener is marked too");
+        let fits = refused_return("p@carry", "short", "");
+        assert_eq!(fits, "other: return to p@carry refused: short");
+    }
+
+    /// The planner's refused route (#296 follow-up 4): an eligible, due return
+    /// whose root the pair gate refuses plans ONE refusal with the reason whole;
+    /// a return not due and a seat not eligible decline exactly as a return
+    /// does, and nothing is ever chosen.
+    #[test]
+    fn a_refused_root_plans_its_refusal_only_when_the_return_is_due() {
+        use crate::autoreseat::{
+            Episode, FloorSetting, Frame, Lead, Pane, Seat, Settings, Switch, Trigger,
+        };
+        let settings = |switch, grace_secs| Settings {
+            switch,
+            sessions: None,
+            grace_secs,
+            map: Vec::new(),
+            headroom_at: Some(95),
+            headroom_note: None,
+            lead: Lead::default(),
+            floor: FloorSetting::None,
+            floor_note: None,
+            tiers: Vec::new(),
+            lead_seat: false,
+            notes: Vec::new(),
+        };
+        let seat = Seat {
+            session: "aedev",
+            slot: "spawned.1",
+            agent: "one",
+            profile: "substitute",
+            orchestrator: false,
+        };
+        let sight = Sight {
+            pane: Pane {
+                frame: Frame::Clear,
+                human_prompt: false,
+                client_input: None,
+            },
+            limited: false,
+            near: false,
+        };
+        let key = Timestamp::from_epoch(NOW - 600);
+        let open = Episode::opened_by(key, Trigger::Return, "return to p@carry".to_owned());
+        let why = "Error: --using 'p@carry' is not an approved pair";
+        let plan = |settings: &Settings| {
+            plan_refused_return(
+                settings,
+                (&seat, &sight),
+                &open,
+                ("p@carry", why),
+                Timestamp::from_epoch(NOW),
+            )
+        };
+        assert_eq!(
+            plan(&settings(Switch::On, 0)),
+            Plan::RefuseReturn {
+                key,
+                why: refused_return("p@carry", why, "return to p@carry"),
+            }
+        );
+        assert!(
+            matches!(plan(&settings(Switch::On, 3600)), Plan::Decline(ref not) if not.starts_with("not due")),
+            "a return inside its grace waits"
+        );
+        assert!(
+            matches!(plan(&settings(Switch::Off, 0)), Plan::Decline(ref not) if not.starts_with("not eligible")),
+            "a seat auto reseat does not cover is left alone"
+        );
     }
 
     const TOLD_AT: i64 = 1_793_000_000;

@@ -110,7 +110,7 @@ pub(super) enum AutoAct {
 #[allow(clippy::too_many_lines, reason = "one ordered decision per seat")]
 pub(super) fn auto_acts_with(
     settings: &crate::autoreseat::Settings,
-    (seats, homes): (&[AutoSeat], &[(String, crate::autoreseat::leg::Home)]),
+    (seats, homes): (&[AutoSeat], &[(String, crate::autoreseat::leg::HomeRead)]),
     events: &[Event],
     (session, orchestrator, lead_pair): (&str, bool, bool),
     now: i64,
@@ -330,16 +330,33 @@ enum Homeward {
 /// The return path of one seat, given its return episode `back` (#305): a
 /// chain whose origin proves room opens one where none is — or, past
 /// [`crate::autoreseat::MAX_RETURNS`], holds once instead — and an open one is
-/// decided only while that proof stands. Anything less is silent.
+/// decided only while that proof stands. Anything less is silent, except a
+/// root the pair gate refuses, which is decided once so its refusal is said.
 fn return_route(
     seat: &AutoSeat,
-    home: Option<&crate::autoreseat::leg::Home>,
+    read: Option<&crate::autoreseat::leg::HomeRead>,
     back: Option<crate::autoreseat::Episode>,
 ) -> Homeward {
-    let Some(home) = home else {
+    let Some(read) = read else {
         return Homeward::Decide(None);
     };
+    let home = &read.home;
     let (slot, agent) = (seat.slot.clone(), seat.agent.clone());
+    // A root that carried a client the pair gate refuses goes to the trigger
+    // ONCE: its plan closes the return `refused` with the gate's reason, and a
+    // refused round is never tried again, so the seat holds on its substitute
+    // with one record until a human moves it or the chain ends (#296).
+    if read.refusal.is_some() {
+        return match back {
+            None => Homeward::Act(AutoAct::OpenReturn {
+                slot,
+                agent,
+                cause: crate::autoreseat::refused_return_words(&home.origin),
+            }),
+            Some(open) if open.rounds == 0 => Homeward::Decide(Some(open)),
+            Some(_) => Homeward::Decide(None),
+        };
+    }
     match (back, home.ready.as_ref()) {
         (None, Some(_)) if home.flapped => Homeward::Act(AutoAct::Flapped {
             slot,

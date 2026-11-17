@@ -3021,6 +3021,13 @@ pub fn return_words(origin: &str, window: &Window) -> String {
     )
 }
 
+/// The cause a return opens with when its root carried a client the pair gate
+/// now refuses: the episode exists only to close `refused` once (#296).
+#[must_use]
+pub fn refused_return_words(origin: &str) -> String {
+    format!("return to {origin}: the pair gate refuses it")
+}
+
 /// The hold a seat past [`MAX_RETURNS`] gets once per chain: no return opens,
 /// and the step is the human's.
 #[must_use]
