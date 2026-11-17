@@ -3,12 +3,12 @@
 use super::{
     ACTOR, AUTO_PLACEHOLDER, Acting, AutoAct, AutoSeat, Carry, Cycle, DoneProgress, Effect, Event,
     HarnessState, Journal, OVERDUE_SUMMARY, Observation, PaneState, QuietKind, QuietQuery,
-    QuietResolution, QuotaCarry, RETRY_PLACEHOLDER, SeatVerdict, SweepAlert, Timestamp, UNIX_EPOCH,
-    Verdict, WaitCheck, WaitEnded, Write, age_secs, announced, auto_acts_with, declared_clause,
-    done_challenge_text, entry_mut, epoch_second, latest_relevant_event, launch_id_for,
-    limit_wake_text, naming, nudge_words, quiet_reason, read_events, record_nudge, record_sweep,
-    slot_latched, stale_display, store, sweep_effects, system_time_from_epoch, target_moved_text,
-    tmux, tracked, transport, wait_challenge_text,
+    QuietResolution, QuotaCarry, RETRY_PLACEHOLDER, SeatLaunch, SeatVerdict, SweepAlert, Timestamp,
+    UNIX_EPOCH, Verdict, WaitCheck, WaitEnded, Write, age_secs, announced, auto_acts_with,
+    declared_clause, done_challenge_text, entry_mut, epoch_second, latest_relevant_event,
+    launch_id_for, limit_wake_text, naming, nudge_words, quiet_reason, read_events, record_nudge,
+    record_sweep, slot_latched, stale_display, store, sweep_effects, system_time_from_epoch,
+    target_moved_text, tmux, tracked, transport, wait_challenge_text,
 };
 
 impl Cycle<'_> {
@@ -139,7 +139,9 @@ impl Cycle<'_> {
                     declared_clause(on.events, self.session, on.slot, agent).as_deref(),
                     on.seen.ended_wait,
                 );
-                let code = self.deliver(agent, &text, "nudge", &summary, None).code;
+                let code = self
+                    .deliver(agent, &text, "nudge", &summary, None, Some(on.slot))
+                    .code;
                 self.reachable_again(on, "nudge", code, err)?;
                 let delivered = code == Some(0);
                 for effect in record_nudge(state, delivered, &self.knobs, &display) {
@@ -161,6 +163,7 @@ impl Cycle<'_> {
                         crate::watchdog::LIMIT_WAKE_ACTION,
                         &summary,
                         Some(&reference),
+                        Some(on.slot),
                     )
                     .code;
                 self.reachable_again(on, crate::watchdog::LIMIT_WAKE_ACTION, code, err)?;
@@ -194,7 +197,14 @@ impl Cycle<'_> {
                 );
                 let launch = launch_id_for(&self.launch_ids, on.slot);
                 let code = self
-                    .deliver(agent, &text, "done-challenge", &summary, launch)
+                    .deliver(
+                        agent,
+                        &text,
+                        "done-challenge",
+                        &summary,
+                        launch,
+                        Some(on.slot),
+                    )
                     .code;
                 self.reachable_again(on, "done-challenge", code, err)
             }
@@ -236,7 +246,7 @@ impl Cycle<'_> {
                 let action = crate::watchdog::TARGET_MOVED_ACTION;
                 let number = moved.ordinal.to_string();
                 let code = self
-                    .deliver(agent, &text, action, &summary, Some(&number))
+                    .deliver(agent, &text, action, &summary, Some(&number), Some(on.slot))
                     .code;
                 self.reachable_again(on, action, code, err)
             }
@@ -277,7 +287,14 @@ impl Cycle<'_> {
                     *required,
                 );
                 let code = self
-                    .deliver(agent, &text, "wait-challenge", &summary, launch)
+                    .deliver(
+                        agent,
+                        &text,
+                        "wait-challenge",
+                        &summary,
+                        launch,
+                        Some(on.slot),
+                    )
                     .code;
                 self.reachable_again(on, "wait-challenge", code, err)
             }
@@ -345,6 +362,7 @@ impl Cycle<'_> {
                 crate::watchdog::SWEEP_NUDGE_ACTION,
                 "fleet overview changed",
                 None,
+                Some(on.slot),
             )
             .code
             == Some(0);
@@ -381,6 +399,12 @@ impl Cycle<'_> {
     /// route through it rather than each spawning for itself: a second delivery
     /// site is a second thing to audit, and a unit guard in this file holds the
     /// count at one.
+    ///
+    /// `seat` is the slot the delivery was decided for: the helper then proves
+    /// the incarnation this cycle's snapshot read there (#218 2c), and a row
+    /// that snapshot could not prove is refused here, before anything runs.
+    /// `None` is a leg that binds its own incarnation (the brief retry) or
+    /// types nothing (the auto reseat trigger).
     pub(super) fn deliver(
         &self,
         agent: &str,
@@ -388,6 +412,7 @@ impl Cycle<'_> {
         action: &str,
         summary: &str,
         reference: Option<&str>,
+        seat: Option<&str>,
     ) -> transport::Delivery {
         let mut vars = vec![
             ("AE_SENDER_OVERRIDE", ACTOR),
@@ -395,6 +420,26 @@ impl Cycle<'_> {
             ("_AE_EVENT_SUMMARY", summary),
         ];
         vars.extend(reference.map(|value| ("_AE_EVENT_REF", value)));
+        if let Some(slot) = seat {
+            let row = match self.launch_ids.iter().find(|(at, _)| at == slot) {
+                None => tracked::LaunchRow::Legacy,
+                Some((_, SeatLaunch::Id(id))) => tracked::LaunchRow::Token(id),
+                Some((_, SeatLaunch::Unproven(why))) => tracked::LaunchRow::Damaged(why),
+            };
+            match tracked::expected_members(slot, row) {
+                Ok(members) => vars.extend(members),
+                Err(why) => {
+                    let seat = (agent, slot);
+                    let mut err = std::io::stderr();
+                    let _ =
+                        tracked::refuse_unproven_seat(self.meta_dir, ACTOR, seat, why, &mut err);
+                    return transport::Delivery {
+                        code: Some(1),
+                        stdout: String::new(),
+                    };
+                }
+            }
+        }
         transport::deliver(self.helper.path(), agent, text, false, &vars)
     }
 
@@ -416,7 +461,7 @@ impl Cycle<'_> {
                 continue;
             };
             let attempt = crate::autoreseat::ATTEMPT_ACTION;
-            let delivery = self.deliver(agent, AUTO_PLACEHOLDER, attempt, "", None);
+            let delivery = self.deliver(agent, AUTO_PLACEHOLDER, attempt, "", None, None);
             if delivery.code != Some(0) {
                 writeln!(
                     err,
@@ -858,6 +903,7 @@ impl Cycle<'_> {
             crate::brief_retry::RETRY_ACTION,
             "",
             None,
+            None,
         );
         if delivery.code != Some(0) {
             // Every outcome the helper acts on, it has already recorded and
@@ -890,7 +936,9 @@ impl Cycle<'_> {
             let seat = crate::session_notice::Seat::read(&meta, &bytes, &entry.slot, self.session);
             if live && crate::session_notice::due(events, &seat, now, bound).is_some() {
                 let action = crate::session_notice::TRIGGER_ACTION;
-                let _ = self.deliver(&entry.name, action, action, &interval.to_string(), None);
+                let interval = interval.to_string();
+                let seat = Some(entry.slot.as_str());
+                let _ = self.deliver(&entry.name, action, action, &interval, None, seat);
             }
         }
     }

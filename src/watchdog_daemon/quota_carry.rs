@@ -325,7 +325,7 @@ pub(super) fn live_model(
     recipient: &QuotaRecipient,
     panes: &[crate::tmux::WatchPane],
     carried: &[(String, PaneState)],
-    launch_ids: &[(String, String)],
+    launch_ids: &[(String, super::SeatLaunch)],
 ) -> Option<String> {
     let launch = launch_id_for(launch_ids, &recipient.slot)?;
     let generation = quiet_hash(&format!("{}\n{}", recipient.slot, recipient.agent));

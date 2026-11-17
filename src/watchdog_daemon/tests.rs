@@ -3,6 +3,7 @@ include!("../../tests/spec/bgmark_daemon.rs");
 include!("../../tests/spec/bgmark_cycle.rs");
 include!("../../tests/spec/deadnotify.rs");
 include!("../../tests/spec/deadnotify_impl.rs");
+include!("../../tests/spec/seatinc.rs");
 #[test]
 fn history_state_is_known_at_900_seconds_and_unknown_at_901() {
     assert_eq!(super::history_clock(Some(100), 1000), Some(100));
@@ -1994,7 +1995,7 @@ fn a_cancelled_checkpoint_retry_is_journaled_as_a_checkpoint_drop() {
 fn the_live_model_is_the_seats_own_launch_bound_hold_and_nothing_else() {
     let recipient = quota_recipient("main", "lead");
     let panes = [ask_pane(Some("main"), "lead", "node")];
-    let launch = [("main".to_owned(), "L1".to_owned())];
+    let launch = [("main".to_owned(), "L1".into())];
     let held = |launch: &str, age: u32, seat: &str| {
         let mut state = PaneState {
             identity: Some(crate::watchdog::quiet_hash(seat)),
@@ -10159,7 +10160,7 @@ fn identity_cycle<'a>(
         auto: crate::autoreseat::settings(None),
         auto_trust: crate::config::AutoTrust::Off,
         meta_agent: false,
-        launch_ids: vec![("main".to_owned(), launch.to_owned())],
+        launch_ids: vec![("main".to_owned(), launch.into())],
         started: None,
         settled: None,
     }
@@ -10485,8 +10486,8 @@ fn the_session_mark_takes_the_most_actionable_seat_in_either_order() {
 #[test]
 fn a_launch_id_lookup_uses_the_requested_seat_only() {
     let ids = [
-        ("main".to_owned(), "L1".to_owned()),
-        ("worker.1".to_owned(), "L2".to_owned()),
+        ("main".to_owned(), "L1".into()),
+        ("worker.1".to_owned(), "L2".into()),
     ];
     assert_eq!(launch_id_for(&ids, "worker.1"), Some("L2"));
     assert_eq!(launch_id_for(&ids, "absent"), None);

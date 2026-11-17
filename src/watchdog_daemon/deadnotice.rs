@@ -157,17 +157,27 @@ fn text(worker: &str, death: Death) -> String {
 /// The roster member to tell: the actor of the newest `spawn` addressed to the
 /// seat, when it still holds a seat of its own. A human, a console, a retired
 /// or unknown spawner and the seat itself are nobody.
+#[cfg(test)]
 fn recipient<'a>(
     events: &'a [Event],
     roster: &'a [RosterEntry],
     session: &str,
-    (slot, agent): (&str, &str),
+    seat: (&str, &str),
 ) -> Option<&'a str> {
+    recipient_seat(events, roster, session, seat).map(|entry| entry.name.as_str())
+}
+
+/// [`recipient`]'s roster row: its slot names the seat the notice is decided for.
+fn recipient_seat<'a>(
+    events: &'a [Event],
+    roster: &'a [RosterEntry],
+    session: &str,
+    (slot, agent): (&str, &str),
+) -> Option<&'a RosterEntry> {
     let by = crate::autoreseat::spawner(events, session, slot, agent)?;
     roster
         .iter()
         .find(|entry| entry.name == by && entry.slot != slot)
-        .map(|entry| entry.name.as_str())
 }
 
 /// One seat's death episode as the journal holds it.
@@ -365,14 +375,15 @@ impl Cycle<'_> {
         (death, tried): (Death, u8),
         err: &mut impl Write,
     ) -> crate::error::Result<Notice> {
-        let Some(to) = recipient(events, &self.roster, self.session, seat) else {
+        let Some(to) = recipient_seat(events, &self.roster, self.session, seat) else {
             return Ok(Notice::Settled);
         };
         if told {
             return Ok(Notice::Settled);
         }
         let line = text(seat.1, death);
-        let delivery = self.deliver(to, &line, ACTION, &line, Some(seat.1));
+        let (to, at) = (to.name.as_str(), to.slot.as_str());
+        let delivery = self.deliver(to, &line, ACTION, &line, Some(seat.1), Some(at));
         let (next, lost) = after(super::quota_delivery(&delivery), tried);
         if let Some(why) = lost {
             writeln!(

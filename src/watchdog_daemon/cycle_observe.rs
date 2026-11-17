@@ -122,6 +122,7 @@ impl Cycle<'_> {
                         crate::quota::action::ADVISORY,
                         &text,
                         None,
+                        Some(&pending.recipient.slot),
                     );
                     if let Some(QuotaAction::Dropped { recipient, summary }) = carry
                         .record_delivery(&pending, quota_delivery(&delivery), self.meta_dir, now)
@@ -146,6 +147,7 @@ impl Cycle<'_> {
                         crate::quota::action::CHECKPOINT,
                         &text,
                         receipt.as_deref(),
+                        Some(&ask.recipient.slot),
                     );
                     if let Some(QuotaAction::Dropped { recipient, summary }) = carry
                         .record_ask_delivery(&ask, quota_delivery(&delivery), self.meta_dir, now)
@@ -485,7 +487,7 @@ impl Cycle<'_> {
         if entry.profile.is_none() {
             return;
         }
-        let Some((_, launch_id)) = self.launch_ids.iter().find(|(seat, _)| seat == slot) else {
+        let Some(launch_id) = launch_id_for(&self.launch_ids, slot) else {
             return;
         };
         let _ = crate::model_drift::observe(
@@ -537,11 +539,7 @@ impl Cycle<'_> {
             carried.held_identity = None;
             return SeatIdentity::default();
         }
-        let launch = self
-            .launch_ids
-            .iter()
-            .find(|(seat, _)| seat == seen.slot)
-            .map(|(_, launch)| launch.clone());
+        let launch = launch_id_for(&self.launch_ids, seen.slot).map(str::to_owned);
         let observed = crate::harness_state::observed_identity(seen.capture, seen.tool);
         if let Some(model) = observed.model {
             let identity = SeatIdentity {

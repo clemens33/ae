@@ -397,7 +397,9 @@ fn idle(server: &crate::inventory::ServerId, pane: &str, dir: &Path, slot: &str)
 }
 
 /// The leg: tell `target` what is due, if anything. `interval` is the
-/// daemon's cycle in seconds (`_AE_EVENT_SUMMARY`), the in-flight bound's unit.
+/// daemon's cycle in seconds (`_AE_EVENT_SUMMARY`), the in-flight bound's unit;
+/// `expect` is the seat the watchdog decided for, from the helper's private
+/// expected-seat members.
 ///
 /// # Errors
 ///
@@ -407,6 +409,7 @@ pub fn run(
     target: &str,
     own_session: &str,
     interval: Option<&str>,
+    expect: crate::tracked::Expectation<'_>,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     use crate::state::EXIT_FAILED;
@@ -457,9 +460,15 @@ pub fn run(
         defer: DEFER,
         composed: crate::tool::Composed::NONE,
     };
-    // Bound to the seat this run JUDGED: a successor is never told its notice.
+    // Bound to the seat this run JUDGED, which must be the seat the watchdog
+    // decided for: a successor is never told its notice.
     let launch = Some(judged.launch_id.as_str()).filter(|id| *id != "-");
     let judged = (resolved.slot.as_str(), launch.unwrap_or_default());
+    let seat = (target, resolved.slot.as_str());
+    let actor = crate::watchdog::WATCHDOG_ACTOR;
+    if !crate::tracked::expected_is_judged(dir, actor, seat, judged, expect, err)? {
+        return Ok(EXIT_FAILED);
+    }
     let Some(guard) = crate::tracked::admit_leg(&request, judged, err)? else {
         return Ok(EXIT_FAILED);
     };
@@ -1259,7 +1268,7 @@ mod tests {
             };
             crate::tracked::set_test_resolve(resolved, crate::inventory::ServerId::Ambient);
             let mut err = Vec::new();
-            let exit = super::run(&dir, "lead", "s", Some(interval), &mut err).unwrap();
+            let exit = super::run(&dir, "lead", "s", Some(interval), Ok(None), &mut err).unwrap();
             let events = crate::watchdog_daemon::read_events(&dir);
             let gave_up = events
                 .iter()

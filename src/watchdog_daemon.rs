@@ -1083,10 +1083,58 @@ fn session_mark(by_pane: &[PaneMark], roster: &[Mark]) -> Mark {
     )
 }
 
-fn launch_id_for<'a>(ids: &'a [(String, String)], slot: &str) -> Option<&'a str> {
+fn launch_id_for<'a>(ids: &'a [(String, SeatLaunch)], slot: &str) -> Option<&'a str> {
     ids.iter()
         .find(|(seat, _)| seat.as_str() == slot)
-        .map(|(_, id)| id.as_str())
+        .and_then(|(_, launch)| match launch {
+            SeatLaunch::Id(id) => Some(id.as_str()),
+            SeatLaunch::Unproven(_) => None,
+        })
+}
+
+/// One `launch_id.<slot>` row of the cycle's meta snapshot: the incarnation every
+/// delivery this cycle decides for that seat must still find (#218 2c).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SeatLaunch {
+    /// Exactly one usable token.
+    Id(String),
+    /// Empty, duplicate or non-UTF-8: why no incarnation was proven.
+    Unproven(&'static str),
+}
+
+impl From<&str> for SeatLaunch {
+    fn from(id: &str) -> Self {
+        Self::Id(id.to_owned())
+    }
+}
+
+/// EVERY `launch_id.<slot>` row in `bytes`, in first-seen order, classified by the
+/// seat proof's own reader. A slot it does not list had positively no row.
+fn seat_launches(bytes: &[u8]) -> Vec<(String, SeatLaunch)> {
+    let mut found: Vec<(String, SeatLaunch)> = Vec::new();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        let Some((key, _)) = line.strip_prefix(b"launch_id.").and_then(|rest| {
+            rest.iter()
+                .position(|byte| *byte == b'=')
+                .map(|at| rest.split_at(at))
+        }) else {
+            continue;
+        };
+        let Ok(slot) = std::str::from_utf8(key) else {
+            continue;
+        };
+        if found.iter().any(|(seen, _)| seen == slot) {
+            continue;
+        }
+        let launch = match tracked::launch_row(bytes, slot) {
+            tracked::LaunchRow::Token(id) => SeatLaunch::Id(id.to_owned()),
+            tracked::LaunchRow::Damaged(why) => SeatLaunch::Unproven(why),
+            // Unreachable: the row was just seen.
+            tracked::LaunchRow::Legacy => continue,
+        };
+        found.push((slot.to_owned(), launch));
+    }
+    found
 }
 
 /// Run the watchdog for one session until its session or its state goes away.
@@ -1471,17 +1519,7 @@ fn watch(
                             meta.launch_settled_epoch(),
                             Timestamp::now().epoch(),
                         ),
-                        launch_ids: meta
-                            .roster()
-                            .iter()
-                            .filter_map(|entry| {
-                                let key = format!("launch_id.{}", entry.slot);
-                                let value = crate::meta::sole_value(bytes, &key)
-                                    .map(String::from_utf8_lossy)?;
-                                (!value.is_empty())
-                                    .then(|| (entry.slot.clone(), value.into_owned()))
-                            })
-                            .collect(),
+                        launch_ids: seat_launches(bytes),
                     };
                     run_cycle(&cycle, &mut carry, meta, deferred, journal, err)?;
                 }
@@ -2080,8 +2118,9 @@ struct Cycle<'a> {
     meta_agent: bool,
     /// Each seat's recorded `launch_id.<slot>` — the compare-and-swap guard an
     /// observed-model write publishes under, so a re-created slot cannot
-    /// inherit the old seat's observation.
-    launch_ids: Vec<(String, String)>,
+    /// inherit the old seat's observation, and the incarnation every delivery
+    /// this cycle decides must still find. A slot it does not list had no row.
+    launch_ids: Vec<(String, SeatLaunch)>,
     /// The session's start, as `ae list` reads it: alerts older are not news.
     started: Option<i64>,
     /// When the resume this meta records settled.

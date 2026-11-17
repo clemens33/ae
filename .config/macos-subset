@@ -236,6 +236,7 @@ helper tests/it/renametell_routing_spec.rs::Rig::new = renametell_routing_spec::
 helper tests/it/renametell_routing_spec.rs::Rig::run = renametell_routing_spec::mixed_legacy_and_stable_ids_keep_the_same_name_compatibility_rule
 helper tests/it/renametell_routing_spec.rs::Rig::tmux = renametell_routing_spec::mixed_legacy_and_stable_ids_keep_the_same_name_compatibility_rule
 helper tests/it/renametell_routing_spec.rs::Rig::world218_capture = seatproof_spec::paneless_refusals_are_audited_in_the_helper_session
+helper tests/it/reseat_carry.rs::automatic_carry = reseat_carry::automatic_carried_reseat_gets_one_authorized_continuation_and_keeps_its_conversation
 helper tests/it/reseat_headroom_spec.rs::core = reseat_headroom_spec::phase2_siblings_keep_declaration_order_after_model_value_normalization
 helper tests/it/reseat_headroom_spec.rs::isolate = reseat_headroom_spec::phase2_siblings_keep_declaration_order_after_model_value_normalization
 helper tests/it/reseat_headroom_spec.rs::sweeps_stepped = reseat_headroom_spec::a_high_unrelated_account_does_not_move_a_seat_on_its_own_low_scope

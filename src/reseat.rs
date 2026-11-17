@@ -145,8 +145,20 @@ struct Parsed {
     /// A return's move: what the seat must still be under the lifecycle lock
     /// for it to go home (#305); `None` for every other move.
     expect: Option<crate::autoreseat::leg::Expect>,
-    /// The titles of the background tasks the stop ended, for the caller.
-    ended: std::cell::RefCell<Vec<String>>,
+    /// What the move reports to its caller beside its ending: the background
+    /// tasks the stop ended, and the launch token a finished move minted.
+    ended: std::cell::RefCell<Reported>,
+}
+
+/// [`Parsed::ended`]: what a watchdog caller reads back after the move.
+#[derive(Debug, Default)]
+struct Reported {
+    /// The titles of the background tasks the stop ended.
+    tasks: Vec<String>,
+    /// `launch_id.<slot>` of the incarnation a move that ended
+    /// [`Ended::Moved`] started, as it read back right after publishing it;
+    /// the incarnation its continuation turn is decided for (#218 2c).
+    minted: Option<String>,
 }
 
 /// A limit episode's automatic move, as its stop reads it to end a seat's
@@ -1361,7 +1373,7 @@ fn stop_running_tool(
         return Ok(Stop::Failed);
     }
     // The tool is gone, and its background tasks with it.
-    parsed.ended.replace(ended);
+    parsed.ended.borrow_mut().tasks = ended;
     let respawned_at = std::time::Instant::now();
     let tick = || {
         std::thread::sleep(STOP_POLL);
@@ -1472,7 +1484,8 @@ pub(crate) fn run(
 /// No caller rule: the leg that asks is ae's own, run from the watchdog. A
 /// limit episode's move names its episode in `long_limit`, and only such a move
 /// may end the seat's background tasks; their titles come back beside the
-/// ending, empty when it ended none.
+/// ending, empty when it ended none, and then the launch token a move that
+/// ended [`Ended::Moved`] minted (`None` for every other ending).
 ///
 /// # Errors
 ///
@@ -1493,7 +1506,7 @@ pub(crate) fn run_as_watchdog(
     expect: Option<crate::autoreseat::leg::Expect>,
     out: &mut impl Write,
     err: &mut impl Write,
-) -> io::Result<(Ended, Vec<String>)> {
+) -> io::Result<(Ended, Vec<String>, Option<String>)> {
     let mut open = || true;
     let (stop, hook): (_, &mut dyn FnMut() -> bool) = match urgent {
         Some(hook) => (StopPolicy::QuietStart, hook),
@@ -1515,7 +1528,8 @@ pub(crate) fn run_as_watchdog(
         display: crate::watchdog::WATCHDOG_ACTOR.to_owned(),
     };
     let ended = run_parsed(root, world, &parsed, Ok(caller), now, hook, out, err)?;
-    Ok((ended, parsed.ended.take()))
+    let reported = parsed.ended.take();
+    Ok((ended, reported.tasks, reported.minted))
 }
 
 /// A profile as a reseat to it would launch it.
@@ -2712,6 +2726,7 @@ fn finish(
         return Ok(Ended::Failed);
     }
     writeln!(out, "{line}")?;
+    parsed.ended.borrow_mut().minted = Some(proven.seat.launch_id.clone());
     Ok(Ended::Moved {
         fate: at.carry.fate(),
     })

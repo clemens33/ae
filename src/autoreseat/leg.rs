@@ -1413,6 +1413,7 @@ pub(crate) fn run(
         meta.roster(),
         lead_pair,
         super::spawner(&events, &argv.session, &argv.slot, &agent),
+        bytes.as_slice(),
     );
     let notice = |ending| super::notice(&argv.session, &agent, &ending);
     // An observed-choice hold is told once per key, however often it is tried.
@@ -1582,7 +1583,7 @@ pub(crate) fn run(
         profile: profile.clone(),
         newest: back.newest,
     });
-    let (ended, tasks) = crate::reseat::run_as_watchdog(
+    let (ended, tasks, minted) = crate::reseat::run_as_watchdog(
         root,
         Some(&world),
         &argv.session,
@@ -1639,7 +1640,9 @@ pub(crate) fn run(
                 .is_ok_and(|wdir| crate::git::work_tree_dirty(wdir.as_bytes()));
             // AFTER the move's own record: the episode is closed before the
             // seat is handed anything, so nothing retries or repeats the turn.
-            let nudge = (fate != super::Fate::Seeded).then(|| nudge(&argv, &agent, fate));
+            // Decided for the incarnation the move itself minted (#218 2c).
+            let minted = minted.as_deref();
+            let nudge = (fate != super::Fate::Seeded).then(|| nudge(&argv, &agent, fate, minted));
             let to = named(&pick);
             let moved = super::Move {
                 from: &profile,
@@ -2037,12 +2040,17 @@ fn continuation(fate: super::Fate) -> (String, String) {
 /// Hand `agent` its [`continuation`] turn through the session's own `send`
 /// helper, and read back how it went: submitted only on the helper's exit 0 AND
 /// its own unmarked record past the journal as it read before the send.
-fn nudge(argv: &Argv, agent: &str, fate: super::Fate) -> super::Nudge {
+/// `minted` is the launch token the move itself minted, the incarnation the
+/// turn is for (#218 2c). A move always mints one, so an absent or empty token
+/// is damage: refused, never sent as a legacy seat.
+fn nudge(argv: &Argv, agent: &str, fate: super::Fate, minted: Option<&str>) -> super::Nudge {
     let (text, summary) = continuation(fate);
     let before = crate::watchdog_daemon::read_events(&argv.dir).len();
-    let send = argv.dir.join("send");
-    let env = notice_env(&summary);
-    if crate::transport::deliver(&send, agent, &text, false, &env).code != Some(0) {
+    let row = minted.filter(|token| !token.is_empty()).map_or(
+        crate::tracked::LaunchRow::Damaged("the move recorded no launch token"),
+        crate::tracked::LaunchRow::Token,
+    );
+    if send_row(argv, (agent, &argv.slot), row, &text, &summary) != Some(0) {
         return super::Nudge::Refused;
     }
     let events = crate::watchdog_daemon::read_events(&argv.dir);
@@ -2063,20 +2071,77 @@ fn nudge(argv: &Argv, agent: &str, fate: super::Fate) -> super::Nudge {
     }
 }
 
-/// Who is told: the roster, whether it is a lead pair, and the seat's spawner.
-type Told<'a> = (&'a [crate::meta::RosterEntry], bool, Option<&'a str>);
+/// Who is told: the roster, whether it is a lead pair, the seat's spawner, and
+/// the raw meta snapshot that roster was read from, whose launch rows name the
+/// incarnation each recipient is told as (#218 2c).
+type Told<'a> = (
+    &'a [crate::meta::RosterEntry],
+    bool,
+    Option<&'a str>,
+    &'a [u8],
+);
 
 /// Tell how the attempt under `argv` ended: the chat line, then the lead pair
 /// and the seat's spawner, each through the session's own send helper. A
-/// recipient that is busy or gone is the helper's to refuse; the outcome is
-/// already durable.
+/// recipient that is busy, gone or replaced since `told` was read is the
+/// helper's to refuse; the outcome is already durable.
 fn tell(argv: &Argv, now: Timestamp, told: Told<'_>, text: &str) {
-    let (roster, lead_pair, spawner) = told;
+    let (roster, lead_pair, spawner, bytes) = told;
     said(argv, now, text);
-    let send = argv.dir.join("send");
     for recipient in super::recipients(roster, lead_pair, &argv.slot, spawner) {
-        let _ = crate::transport::deliver(&send, &recipient, text, false, &notice_env(text));
+        // The roster row `recipients` named, found by the rule it found it.
+        let slot = roster
+            .iter()
+            .find(|entry| entry.name == recipient)
+            .map(|entry| entry.slot.as_str());
+        let _ = send_bound(argv, (&recipient, slot), bytes, text, text);
     }
+}
+
+/// Deliver `text` to `agent` through the session's own send helper, bound to
+/// the incarnation `bytes`, the deciding meta snapshot, holds at `slot`. A row
+/// that snapshot cannot prove, or no slot at all, is refused here with one
+/// `refused` record and nothing run. The exit code; `Some(1)` for that refusal.
+fn send_bound(
+    argv: &Argv,
+    (agent, slot): (&str, Option<&str>),
+    bytes: &[u8],
+    text: &str,
+    summary: &str,
+) -> Option<i32> {
+    let row = slot.map_or(
+        crate::tracked::LaunchRow::Damaged("it is not in the deciding roster"),
+        |slot| crate::tracked::launch_row(bytes, slot),
+    );
+    send_row(argv, (agent, slot.unwrap_or_default()), row, text, summary)
+}
+
+/// [`send_bound`] for the incarnation `row` names at `slot`.
+fn send_row(
+    argv: &Argv,
+    (agent, slot): (&str, &str),
+    row: crate::tracked::LaunchRow<'_>,
+    text: &str,
+    summary: &str,
+) -> Option<i32> {
+    let members = match crate::tracked::expected_members(slot, row) {
+        Ok(members) => members,
+        Err(why) => {
+            let seat = (agent, slot);
+            let mut err = io::stderr();
+            let _ = crate::tracked::refuse_unproven_seat(
+                &argv.dir,
+                WATCHDOG_ACTOR,
+                seat,
+                why,
+                &mut err,
+            );
+            return Some(1);
+        }
+    };
+    let mut env = notice_env(summary).to_vec();
+    env.extend(members);
+    crate::transport::deliver(&argv.dir.join("send"), agent, text, false, &env).code
 }
 
 /// Tell, as an ending is told, that the seat at `slot` sits on its limit with no
@@ -2130,6 +2195,7 @@ fn tell_ending(
         meta.roster(),
         crate::lifecycle::meta_value(&bytes, "layout") == "lead-pair",
         super::spawner(&events, session, slot, agent),
+        bytes.as_slice(),
     );
     let text = super::notice(session, agent, ending);
     tell(&argv, now, told, &text);
@@ -3029,6 +3095,10 @@ mod leadfloor2_unpinned_spec;
 #[cfg(test)]
 #[path = "leadfloor2_late_origin_spec.rs"]
 mod leadfloor2_late_origin_spec;
+
+#[cfg(test)]
+#[path = "seatinc_spec.rs"]
+mod seatinc_spec;
 
 #[cfg(test)]
 mod tests {

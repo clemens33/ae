@@ -349,7 +349,8 @@ pub fn run(
     // is due and the text from the journal and the meta.
     if env.action.as_deref() == Some(crate::session_notice::TRIGGER_ACTION) {
         let interval = env.summary.as_deref();
-        return crate::session_notice::run(dir, &parsed.target, own_session, interval, err);
+        let expect = expectation(env);
+        return crate::session_notice::run(dir, &parsed.target, own_session, interval, expect, err);
     }
     if tracked::is_blank(&parsed.message) {
         write!(err, "{}", tracked::refusal(ACTION))?;

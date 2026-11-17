@@ -1503,18 +1503,69 @@ fn current_seat(
         (Some(holder), _) if holder != name.as_bytes() => return Err(says("was replaced")),
         _ => {}
     }
-    let launch = match row(&format!("launch_id.{slot}")) {
-        (None, false) => "",
-        (Some(token), _) if !token.is_empty() => {
-            std::str::from_utf8(token).map_err(|_| unproven("damaged launch row"))?
-        }
-        _ => return Err(unproven("damaged or duplicate launch rows")),
+    let launch = match launch_row(bytes, slot) {
+        LaunchRow::Legacy => "",
+        LaunchRow::Token(token) => token,
+        LaunchRow::Damaged(why) => return Err(unproven(why)),
     };
     Ok(Some(Seat {
         slot: slot.to_owned(),
         name: name.to_owned(),
         launch: launch.to_owned(),
     }))
+}
+
+/// One snapshot's `launch_id.<slot>` row, as the seat proof reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaunchRow<'a> {
+    /// Positively absent: a legacy seat with no launch token.
+    Legacy,
+    /// Exactly one nonempty UTF-8 token.
+    Token(&'a str),
+    /// Empty, duplicate or non-UTF-8: no incarnation can be proven.
+    Damaged(&'static str),
+}
+
+/// THE reader of a seat's incarnation row, for the 2b proof and for every
+/// snapshot a later delivery must match (#218 2c).
+pub(crate) fn launch_row<'a>(bytes: &'a [u8], slot: &str) -> LaunchRow<'a> {
+    let key = format!("launch_id.{slot}");
+    match (
+        meta::sole_value(bytes, &key),
+        meta::first_value(bytes, &key).is_some(),
+    ) {
+        (None, false) => LaunchRow::Legacy,
+        (Some(token), _) if !token.is_empty() => std::str::from_utf8(token)
+            .map_or(LaunchRow::Damaged("damaged launch row"), LaunchRow::Token),
+        _ => LaunchRow::Damaged("damaged or duplicate launch rows"),
+    }
+}
+
+/// The `send` helper's private expected-seat members for the seat at `slot` whose
+/// incarnation row a decision read as `row` (#218 2c): a token, or `LEGACY=1` for a
+/// positively absent row. `Err` is a damaged row: the caller refuses, never sends.
+pub(crate) fn expected_members<'a>(
+    slot: &'a str,
+    row: LaunchRow<'a>,
+) -> Result<[(&'static str, &'a str); 2], &'static str> {
+    match row {
+        LaunchRow::Token(token) => Ok([("_AE_EXPECT_SLOT", slot), ("_AE_EXPECT_LAUNCH", token)]),
+        LaunchRow::Legacy => Ok([("_AE_EXPECT_SLOT", slot), ("_AE_EXPECT_LEGACY", "1")]),
+        LaunchRow::Damaged(why) => Err(why),
+    }
+}
+
+/// Refuse, before anything is typed, a delivery whose deciding snapshot could not
+/// prove the seat's incarnation: one `refused` record as `actor`, one line.
+pub(crate) fn refuse_unproven_seat(
+    dir: &Path,
+    actor: &str,
+    (agent, slot): (&str, &str),
+    why: &str,
+    err: &mut impl Write,
+) -> io::Result<()> {
+    let reason = Refusal::Seat(format!("seat {agent} ({slot}) could not be proven: {why}"));
+    refuse_as(dir, actor, &reason, Stage::BeforeInput, err)
 }
 
 /// A snapshot's `session_id` AS WRITTEN: the one row's raw bytes, and whether any row exists.
@@ -1787,9 +1838,37 @@ pub(crate) fn refuse_as(
     writeln!(err, "{reason}")
 }
 
+/// Whether a leg a decision handed its seat to may go on (#218 2c): `expect` is
+/// that decision's seat, checked against the seat the leg `judged` before the
+/// leg's own [`admit_leg`]. A different seat, or an unusable expectation, writes
+/// one refusal as `actor` (nothing typed) and answers `false`; `Ok(None)` is `true`.
+pub(crate) fn expected_is_judged(
+    dir: &Path,
+    actor: &str,
+    (agent, slot): (&str, &str),
+    judged: (&str, &str),
+    expect: Expectation<'_>,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    let refusal = match expect {
+        Ok(None) => return Ok(true),
+        Ok(Some(want)) if is_slot(want.0) && want == judged => return Ok(true),
+        Ok(Some((slot, launch))) if is_slot(slot) => Seat {
+            slot: slot.to_owned(),
+            name: agent.to_owned(),
+            launch: launch.to_owned(),
+        }
+        .replaced(),
+        unusable => {
+            let why = unusable.err().unwrap_or("its expected slot is malformed");
+            Refusal::Seat(format!("seat {agent} ({slot}) could not be proven: {why}"))
+        }
+    };
+    refuse_as(dir, actor, &refusal, Stage::BeforeInput, err)?;
+    Ok(false)
+}
+
 /// Admit ae's own leg against the seat it captured: `None` once its refusal is written.
-/// Residual (F, slice 2c): the watchdog and auto-reseat `send` helper paths
-/// still prove only the CURRENT seat; their expected-seat channel is 2c.
 pub(crate) fn admit_leg<'a>(
     request: &crate::deliver::Request<'a>,
     (slot, launch): (&'a str, &'a str),
