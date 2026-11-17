@@ -1,0 +1,11 @@
+new
+[profiles]
+old = sleep 600
+new = sleep 601
+[prompt]
+instructions = """
+[roster]
+orchestrator = old
+"""
+[roster]
+orchestrator = old # real

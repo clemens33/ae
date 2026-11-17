@@ -1,0 +1,6 @@
+new
+[profiles]
+old = sleep 600
+new = sleep 601
+[workspace]
+orchestrator = true

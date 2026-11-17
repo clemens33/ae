@@ -106,6 +106,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "config_roster_edit"
+path = "fuzz_targets/config_roster_edit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "quota_claude_cache"
 path = "fuzz_targets/quota_claude_cache.rs"
 test = false
