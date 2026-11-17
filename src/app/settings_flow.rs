@@ -895,3 +895,72 @@ mod review_tests {
         );
     }
 }
+
+/// The Config tab keeps its effective-value rows where they always were: the
+/// body starts at `session:`, and the orchestrator block follows them. Existing
+/// acceptance reads the top of the tab as its scroll oracle.
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::expect_used,
+    reason = "tests own scratch config files and UI channels"
+)]
+mod placement_tests {
+    use std::fs;
+    use std::time::Instant;
+
+    use ratatui_core::buffer::Buffer;
+    use ratatui_core::layout::Rect;
+
+    use crate::app::settings::resolve_orchestrator;
+    use crate::app::tests::Root;
+    use crate::app::{App, take_keys};
+    use crate::console::input::Key;
+
+    fn text(app: &mut App, line: &str) {
+        let key = Key::Text(line.as_bytes().to_vec());
+        assert!(take_keys(app, vec![(key, Instant::now())]).is_some());
+    }
+
+    fn rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        app.frame(&mut buf);
+        (0..height)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn the_config_tab_starts_at_its_session_row_and_ends_with_the_orchestrator_block() {
+        let root = Root::new("orchprof-place");
+        let path = root.0.join("config");
+        fs::write(
+            &path,
+            "[profiles]\na = /bin/echo a\nb = /bin/echo b\n[roster]\norchestrator = a\n",
+        )
+        .expect("config");
+        let mut app = App::new(None, None, None, None);
+        app.fleeted = true;
+        text(&mut app, ",2");
+        app.settings_bodies.config = crate::app::settings::resolve_config(None, &path);
+        app.settings_bodies.orchestrator = resolve_orchestrator(None, &path, Some(&root.0));
+        let shown = rows(&mut app, 150, 40);
+        let body = &shown[3..];
+        assert!(
+            body[0].contains("session:"),
+            "the tab starts at its top: {shown:#?}"
+        );
+        let workers = body
+            .iter()
+            .position(|row| row.contains("workers = "))
+            .expect("a workers row");
+        let orchestrator = body
+            .iter()
+            .position(|row| row.contains("orchestrator = a"))
+            .expect("the orchestrator row");
+        assert!(
+            workers < orchestrator,
+            "the orchestrator block follows the effective values: {shown:#?}"
+        );
+    }
+}
