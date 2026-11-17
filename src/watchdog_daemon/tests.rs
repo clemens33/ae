@@ -10484,6 +10484,39 @@ fn the_session_mark_takes_the_most_actionable_seat_in_either_order() {
 }
 
 #[test]
+fn the_cycle_snapshot_lists_every_launch_row_once_including_seats_off_the_roster() {
+    // Requirement (#218 2c): a slot the snapshot omits is read as positively
+    // rowless (LEGACY), so every launch row present must be listed, each slot
+    // once; a duplicate or empty row is unproven, never legacy or a token.
+    let bytes = b"session=work\nlaunch_id.main=L-main\nmain=lead\n\
+launch_id.spawned.0=L-scout\nlaunch_id.ghost.4=L-ghost\n\
+launch_id.dup.2=first\nlaunch_id.dup.2=second\nlaunch_id.empty.3=\n";
+    let found = super::seat_launches(bytes);
+    let slots: Vec<&str> = found.iter().map(|(slot, _)| slot.as_str()).collect();
+    assert_eq!(
+        slots,
+        ["main", "spawned.0", "ghost.4", "dup.2", "empty.3"],
+        "{found:?}"
+    );
+    for (slot, token) in [
+        ("main", "L-main"),
+        ("spawned.0", "L-scout"),
+        ("ghost.4", "L-ghost"),
+    ] {
+        assert_eq!(super::launch_id_for(&found, slot), Some(token), "{found:?}");
+    }
+    for slot in ["dup.2", "empty.3"] {
+        assert!(
+            found
+                .iter()
+                .any(|(seen, launch)| seen == slot
+                    && matches!(launch, super::SeatLaunch::Unproven(_))),
+            "{slot}: {found:?}"
+        );
+    }
+}
+
+#[test]
 fn a_launch_id_lookup_uses_the_requested_seat_only() {
     let ids = [
         ("main".to_owned(), "L1".into()),
