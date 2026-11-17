@@ -485,9 +485,9 @@ fn rust_char(bytes: &[u8], at: usize, runs: &mut Vec<Run>) -> usize {
     let after = at + 1;
     let literal = match bytes.get(after) {
         Some(b'\\') => bytes
-            .get(after + 1..(after + 12).min(bytes.len()))
+            .get(after + 2..(after + 12).min(bytes.len())) // past the escaped char
             .and_then(|rest| rest.iter().position(|byte| *byte == b'\''))
-            .map(|found| after + 1 + found + 1),
+            .map(|found| after + 2 + found + 1),
         Some(first) if *first != b'\'' => {
             let width = match first {
                 0xF0..=0xFF => 4,
@@ -1962,6 +1962,27 @@ mod tests {
             last_is_comment(&above(LOOKBACK_BYTES - "/* open".len() + 1)),
             Some(false)
         );
+    }
+
+    #[test]
+    fn a_character_literal_of_a_quote_escape_ends_at_its_own_closing_quote() {
+        // The Rust reference (character literals): `\'` and `\"` are quote
+        // escapes, so each of these is one literal of four bytes. The quote
+        // after the backslash is the escaped character, not the closing one.
+        for literal in ["'\\''", "'\\\"'"] {
+            assert_eq!(
+                marked(Lang::Rust, &format!("let q = {literal};")),
+                [run(Token::Keyword, "let"), run(Token::Str, literal)],
+                "{literal}"
+            );
+            assert_eq!(
+                marked(Lang::Rust, &format!("{literal} + 1")),
+                [run(Token::Str, literal), run(Token::Number, "1")],
+                "{literal}"
+            );
+        }
+        // No closing quote follows: the quote is plain, as a lifetime's is.
+        assert_eq!(marked(Lang::Rust, "x = '\\'a"), []);
     }
 
     #[test]
