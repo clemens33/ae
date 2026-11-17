@@ -88,10 +88,26 @@ in-memory selection, then its stored model variant when the session's agent is a
 current agent. The saved preference is shared by the OpenCode sessions that use the same preference store, and OpenCode's
 `/variants` command writes it; ae never does.
 
+ae reads that preference, read only, and says when it differs. The file is
+`$XDG_STATE_HOME/opencode/model.json` (`$HOME/.local/state/opencode/model.json` when the variable is
+unset or empty), judged under the environment the launch gives the tool: the profile's own `env`
+prefix (`env -i`, `env -u`, `NAME=value`) decides both variables as it does at the start. When the
+profile's `#<variant>` names a variant other than the saved one for the same `provider/model`, the
+literal `default` included, the start prints one line on the pane's stderr naming the model, the
+variant asked, the saved one and the file, and says OpenCode will use the saved one. ae still passes
+the request unchanged and starts the seat: it never blocks, writes, moves or locks `model.json`, and
+never moves `XDG_STATE_HOME`. To make the request win, select the variant once in OpenCode's
+`/variants`, or clear that model's key from the file. Two limits: an exact resume of a stored session
+says nothing, because the stored session selection outranks the saved preference, and OpenCode may
+still drop a variant its catalog does not list. A missing file or a missing key is not a shadow; a
+file ae cannot read as the expected JSON (a symlink, over 256 KiB, damaged) leaves the question
+unknown and the start silent. Tracked in [#310](https://github.com/clemens33/ae/issues/310).
+
 A recorded session id that ae can use resumes with `--session <id>` and the same inline layer, and
 ae never learns whether OpenCode still has that session; an absent or unusable id starts fresh, and so
 does a changed model. `ae doctor` names what the current profile requests on its `agent:<profile>` row
-and says the effective variant cannot be verified; see [ae doctor](../reference/commands.md#ae-doctor).
+and says the effective variant cannot be verified, and its `variant:<profile>` row says whether a saved
+preference shadows it; see [ae doctor](../reference/commands.md#ae-doctor).
 
 ### Multiple identities of one CLI
 

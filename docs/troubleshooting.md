@@ -25,6 +25,13 @@ here, none confirmed by `ae doctor`:
 - The model's catalog may not offer the variant; OpenCode then drops it without saying so.
 - The label in the seat is not readable, so the variant is not displayed.
 
+`ae doctor` prints a `variant:<alias>` row for the alias and a seat start prints one stderr line when
+OpenCode's saved per-model preference (`model.json`) differs from the profile's `#…`: it names the
+model, the variant asked and the saved one, and says OpenCode will use the saved one. To make the
+profile's request win, select the variant once in OpenCode's `/variants`, or clear that model's key
+from `model.json`. An exact resume of a stored session never gets the line, because the stored session
+selection outranks the saved preference. Tracked in [#310](https://github.com/clemens33/ae/issues/310).
+
 OpenCode's own `/variants` command picks a variant for a session, and it writes OpenCode's shared
 per-model preference, which can change later selections of that model in other sessions. ae never
 writes that preference for you. Details: [OpenCode model variants](getting-started/config.md#opencode-model-variants).

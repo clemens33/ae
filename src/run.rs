@@ -65,6 +65,9 @@ pub struct Plan {
     fresh: Option<FreshRecord>,
     /// The effort record a real run drops before the exec; `--print` never.
     effort: Option<EffortStep>,
+    /// What a start says about a saved `OpenCode` variant that shadows the
+    /// profile's explicit one (#310).
+    variant_notice: Option<String>,
     /// What a resume says about an effort move it replays.
     effort_notice: Option<String>,
     /// This start's launch baseline; `None` for a tool whose model ae does not
@@ -163,6 +166,18 @@ struct FreshRecord {
 }
 
 impl Plan {
+    /// What a start says before the exec about a recorded model, an effort move
+    /// and a saved `OpenCode` variant, in that order.
+    fn start_notices(&self) -> impl Iterator<Item = &String> {
+        [
+            &self.model_notice,
+            &self.effort_notice,
+            &self.variant_notice,
+        ]
+        .into_iter()
+        .flatten()
+    }
+
     /// The one JSON line `--print` emits.
     #[must_use]
     pub fn render(&self) -> String {
@@ -449,10 +464,7 @@ pub fn run(
         writeln!(err, "{notice}")?;
         err.flush()?;
     }
-    for notice in [&plan.model_notice, &plan.effort_notice]
-        .into_iter()
-        .flatten()
-    {
+    for notice in plan.start_notices() {
         writeln!(err, "{notice}")?;
         err.flush()?;
     }
@@ -757,20 +769,9 @@ fn build_with_snapshot(
         )
     });
     let exact = matches!(probe, Some(Probe::Found | Probe::Unprobed));
+    let variant_notice = variant_notice_for(slot, &seat, exact);
     let (effort, effort_notice) = effort_on_resume(dir, slot, &mut seat, exact)?;
-    let launch = seat
-        .tool
-        .adapter()
-        .model
-        .observes()
-        .then(|| LaunchBaseline {
-            session: seat.session.clone(),
-            agent: seat.agent.clone(),
-            tool: seat.recorded_tool,
-            launch_id: seat.launch_id.clone(),
-            model: crate::launch_cmd::model_flag_value(seat.command.as_str(), seat.tool),
-            effort: crate::launch_cmd::effort_flag(seat.command.as_str(), seat.tool).ok(),
-        });
+    let launch = launch_baseline(&seat);
     let ctx = told_context(dir, slot, &seat, probe, ctx);
     let composed = compose(dir, slot, &seat, &ctx, mode, exact)?;
     let choice = choice(&seat, slot, probe, composed.fresh.as_ref());
@@ -798,11 +799,39 @@ fn build_with_snapshot(
         fresh: composed.fresh,
         effort,
         effort_notice,
+        variant_notice,
         launch,
         refusal,
         reference,
     };
     Ok((plan, choice))
+}
+
+/// What this start says about a saved `OpenCode` variant that shadows the
+/// profile's explicit one (#310). An exact resume keeps the stored session
+/// selection, which outranks the saved preference, so only a start that is not
+/// one is told.
+fn variant_notice_for(slot: &str, seat: &Seat, exact: bool) -> Option<String> {
+    if exact {
+        return None;
+    }
+    crate::opencode_variant::notice(slot, &crate::opencode_variant::check(seat.command.as_str()))
+}
+
+/// This start's launch baseline; `None` for a tool whose model ae does not observe.
+fn launch_baseline(seat: &Seat) -> Option<LaunchBaseline> {
+    seat.tool
+        .adapter()
+        .model
+        .observes()
+        .then(|| LaunchBaseline {
+            session: seat.session.clone(),
+            agent: seat.agent.clone(),
+            tool: seat.recorded_tool,
+            launch_id: seat.launch_id.clone(),
+            model: crate::launch_cmd::model_flag_value(seat.command.as_str(), seat.tool),
+            effort: crate::launch_cmd::effort_flag(seat.command.as_str(), seat.tool).ok(),
+        })
 }
 
 /// A worker's context holds a POINTER to the spend policy in `workspace.md`, so
@@ -1915,13 +1944,13 @@ pub fn resume_forms(cmd: &str, tool: ToolKind, session_id: &str, fresh: &str) ->
 
 /// An `env` prefix, split into what it clears, removes and assigns.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct EnvPrefix {
+pub(crate) struct EnvPrefix {
     /// `env -i`: start from an empty environment.
-    clear: bool,
+    pub(crate) clear: bool,
     /// Names `env -u` removes.
-    unset: Vec<String>,
+    pub(crate) unset: Vec<String>,
     /// `NAME=value` assignments, in order.
-    assign: Vec<(String, String)>,
+    pub(crate) assign: Vec<(String, String)>,
 }
 
 /// Peel the environment prefix off a split command line.
@@ -1931,7 +1960,7 @@ struct EnvPrefix {
 /// A command line that is nothing but an environment prefix — there is no
 /// binary to exec, and guessing one is how a mis-shaped command reaches a live
 /// pane.
-fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), String> {
+pub(crate) fn peel_env(words: Vec<crate::words::Word>) -> Result<(EnvPrefix, Vec<String>), String> {
     let mut prefix = EnvPrefix::default();
     let mut rest = words.into_iter().peekable();
     // A shell's own prefix: assignments up to the command word, decided AS
@@ -2346,7 +2375,7 @@ fn read_prompt(dir: &Path, slot: &str) -> Option<String> {
 }
 
 /// One environment variable of the process this run inherits.
-fn env_lookup(name: &str) -> Option<String> {
+pub(crate) fn env_lookup(name: &str) -> Option<String> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the pane's own environment is what `bash -lc` expanded a profile command against"
@@ -2971,6 +3000,7 @@ mod tests {
             fresh: None,
             effort: None,
             effort_notice: None,
+            variant_notice: None,
             launch: None,
             refusal: None,
             reference: None,
@@ -3124,6 +3154,7 @@ mod tests {
             fresh: None,
             effort: None,
             effort_notice: None,
+            variant_notice: None,
             launch: None,
             refusal: None,
             reference: None,
@@ -3165,6 +3196,7 @@ mod tests {
             fresh: None,
             effort: None,
             effort_notice: None,
+            variant_notice: None,
             launch: Some(LaunchBaseline {
                 session: "s".to_owned(),
                 agent: "lead".to_owned(),

@@ -1563,6 +1563,7 @@ pub fn run(
     let facts = gather(root, args.global.as_deref(), local.as_deref());
     let mut document = report(&facts);
     effort_floor_rows(&global, local.as_deref(), &mut document);
+    variant_rows(&facts.profiles, &mut document);
     append_autoupgrade_status(crate::shape::current(), &mut document);
     report_pending_renames(root, &mut document);
     if let Some(target) = &args.refresh {
@@ -1604,6 +1605,24 @@ fn report_pending_renames(root: &Path, document: &mut Report) {
                 damaged.why
             ),
         );
+    }
+}
+
+/// The `variant:<profile>` rows: one per `OpenCode` profile whose model word
+/// asks for a variant, saying whether a saved `model.json` preference shadows
+/// it (#310). It judges the command a launch would run, under this shell's
+/// environment, and never writes `model.json`.
+fn variant_rows(profiles: &[ProfileFacts], document: &mut Report) {
+    for profile in profiles {
+        if profile.resolution_error.is_some() {
+            continue;
+        }
+        let verdict = crate::opencode_variant::check(&profile.command);
+        let Some(row) = crate::opencode_variant::row_text(&verdict) else {
+            continue;
+        };
+        let level = if row.warn { Level::Warn } else { Level::Ok };
+        document.push(level, &format!("variant:{}", profile.profile), &row.detail);
     }
 }
 

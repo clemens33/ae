@@ -1137,6 +1137,15 @@ parse what follows the `#`. It states what the configuration `ae doctor` reads n
 selected, so the row stays `OK` and the `Summary:` counts and the exit code do not change. On an `OK` row, a command
 the launch translation refuses, a model without a `#` and every other tool print the executable
 alone. See [OpenCode model variants](../getting-started/config.md#opencode-model-variants).
+Each such profile also gets one `variant:<profile>` row (#310) from a read-only look at OpenCode's
+`model.json`, under the environment `ae doctor` runs in and the profile's own `env` prefix. It is `OK`
+when no saved variant overrides the request or the saved one is the same, `WARN` when a saved variant
+for the same `provider/model` differs (the literal `default` included), naming the model, the variant
+asked, the saved one and the file, and `OK` with a detail that starts `unknown:` when ae cannot judge
+(no absolute state directory, a model word that is not `provider/model#variant`, a symlink or
+unreadable file, one over 256 KiB, or JSON of another shape). A missing file and a missing key read as
+not shadowed, never as unknown. The row never changes the exit code. A profile whose command the
+launch translation refuses, a model without a `#` and every other tool get no `variant:` row.
 A `local-config` row appears when `--local`, or a `.ae/config` in the directory `ae doctor` runs
 from, layers a second file over the global config; it carries that file's path. No such file, no row,
 and a file the reader could not read is the `config` row's failure, never a `local-config` claim.

@@ -489,3 +489,10 @@ path = "fuzz_targets/worktree_porcelain.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "opencode_variant"
+path = "fuzz_targets/opencode_variant.rs"
+test = false
+doc = false
+bench = false

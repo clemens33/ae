@@ -163,6 +163,7 @@ pub(super) const MODULE_LAYERS: [(usize, &[&str]); 7] = [
             "init",
             "compact",
             "carry",
+            "opencode_variant",
         ],
     ),
     (

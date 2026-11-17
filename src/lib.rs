@@ -65,6 +65,7 @@ pub mod monitor;
 pub mod muse_usage;
 pub mod netprobe;
 pub mod next;
+pub mod opencode_variant;
 pub mod orchestrator;
 pub mod overview;
 pub mod pairs;
