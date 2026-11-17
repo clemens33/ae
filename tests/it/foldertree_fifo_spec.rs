@@ -12,6 +12,7 @@ fn a_folder_fifo_is_listed_without_opening_and_escape_remains_responsive() {
     crate::cli::mkfifo(&folder.join("NAMED_FIFO_ENTRY"));
     std::fs::write(folder.join("REGULAR_ENTRY.txt"), b"not opened").expect("owned file");
     let app = rig.open();
+    rig.wait_screen(&app, "turn drawn", |s| s.contains("preview ~/tree"));
     rig.raw(&app, "]");
     rig.wait_screen(&app, "marked folder link", |screen| {
         super::has_marked_body(screen, "preview ~/tree")
