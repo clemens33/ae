@@ -487,8 +487,9 @@ pub(crate) enum RowTone {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct OrchestratorBlock {
     pub(crate) rows: Vec<(RowTone, String)>,
-    /// The index in `rows` of the highlighted choice.
-    pub(crate) selected: Option<usize>,
+    /// While the picker is open: the index in `rows` of its heading and of the
+    /// highlighted choice.
+    pub(crate) picker: Option<(usize, usize)>,
 }
 
 /// Lay out the orchestrator block for a body `room` cells wide: the configured
@@ -497,7 +498,7 @@ pub(crate) struct OrchestratorBlock {
 /// continuation row hanging two cells; nothing is cut, the panel scrolls.
 pub(crate) fn orchestrator_block(bodies: &SettingsBodies, room: usize) -> OrchestratorBlock {
     let mut block = OrchestratorBlock::default();
-    let mut put = |block: &mut OrchestratorBlock, tone: RowTone, text: &str| {
+    let put = |block: &mut OrchestratorBlock, tone: RowTone, text: &str| {
         let text = crate::board::terminal_text(text);
         if text.is_empty() {
             block.rows.push((tone, String::new()));
@@ -560,6 +561,7 @@ pub(crate) fn orchestrator_block(bodies: &SettingsBodies, room: usize) -> Orches
     }
     if let Some(at) = bodies.orchestrator_picker {
         let at = at.min(ready.choices.len().saturating_sub(1));
+        let top = block.rows.len();
         put(&mut block, RowTone::Head, "Orchestrator profile");
         for (index, choice) in ready.choices.iter().enumerate() {
             let marker = if index == at { ">" } else { " " };
@@ -569,7 +571,7 @@ pub(crate) fn orchestrator_block(bodies: &SettingsBodies, room: usize) -> Orches
                 ""
             };
             if index == at {
-                block.selected = Some(block.rows.len());
+                block.picker = Some((top, block.rows.len()));
             }
             let tone = if index == at {
                 RowTone::Head

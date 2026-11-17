@@ -204,8 +204,8 @@ pub(crate) struct Layout {
     /// Set by the frame for one draw: keep the Config tab's highlighted
     /// picker row on screen, moving the scroll the least it takes.
     pub settings_reveal: bool,
-    /// The body row that request resolved to, while the picker is open.
-    settings_keep: Option<usize>,
+    /// The picker's heading row and highlighted row that request resolved to.
+    settings_keep: Option<(usize, usize)>,
     /// The first body row the open panel drew: the scroll the frame keeps.
     pub settings_start: usize,
     /// The session list's cells, the first session it drew, and the
@@ -2679,8 +2679,7 @@ pub(crate) fn paint_settings(
     let width = buf.area.width;
     layout.settings_keep = (layout.settings_reveal && tab == SettingsTab::Config)
         .then(|| {
-            settings::orchestrator_block(bodies, usize::from(width.saturating_sub(LEFT)) + 1)
-                .selected
+            settings::orchestrator_block(bodies, usize::from(width.saturating_sub(LEFT)) + 1).picker
         })
         .flatten();
     let selected = match tab {
@@ -2867,11 +2866,12 @@ fn panel(buf: &mut Buffer, layout: &mut Layout, paint: Paint, panel: &Panel<'_>)
         Scroll::Top(offset) => {
             let max = panel.body.len().saturating_sub(visible);
             let mut start = offset.min(max);
-            // A row the panel was told to keep on screen moves the window the
-            // least it takes: up to the row, or down to end on it.
-            if let Some(row) = layout.settings_keep {
-                if row < start {
-                    start = row;
+            // The highlighted row stays on screen, moving the window the least
+            // it takes. The picker's heading stays with it while both fit.
+            if let Some((top, row)) = layout.settings_keep {
+                let lo = if row + 1 - top <= visible { top } else { row };
+                if lo < start {
+                    start = lo;
                 } else if row >= start + visible {
                     start = (row + 1).saturating_sub(visible);
                 }
