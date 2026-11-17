@@ -640,6 +640,7 @@ fn settings_act_model(app: &mut App, key: model::Key) -> bool {
     reason = "tests own scratch config files and UI channels"
 )]
 mod review_tests {
+    use std::fmt::Write as _;
     use std::fs;
     use std::sync::mpsc;
     use std::time::Instant;
@@ -684,10 +685,11 @@ mod review_tests {
     /// An app on the Config tab over `count` profiles `p00..`, p00 configured.
     fn fixture(tag: &str, count: usize) -> (Root, App) {
         let root = Root::new(tag);
-        let profiles: String = (0..count)
-            .map(|at| format!("p{at:02} = /bin/echo {at}\n"))
-            .collect();
-        let config = format!("[profiles]\n{profiles}[roster]\norchestrator = p00\n");
+        let mut config = String::from("[profiles]\n");
+        for at in 0..count {
+            let _ = writeln!(config, "p{at:02} = /bin/echo {at}");
+        }
+        config.push_str("[roster]\norchestrator = p00\n");
         fs::write(root.0.join("config"), config).expect("config");
         let mut app = App::new(None, None, None, None);
         app.fleeted = true;
