@@ -2349,3 +2349,41 @@ fn a_chunked_wait_keeps_the_whole_launch_budget_for_either_input_model() {
         assert_eq!(chunks * sleeps, super::LAUNCH_READY_POLLS, "{tool:?}");
     }
 }
+
+#[test]
+fn an_unattended_expectation_has_no_client_to_prove() {
+    // An unattended start captured no clicker: the narrow attachment proof
+    // refuses it, so a failure report never reaches a client that is not there.
+    for state in [
+        ExpectedState::AbsentCanonical,
+        ExpectedState::StoppedSession,
+    ] {
+        let expected = ExpectedLaunch::unattended(state, 4);
+        assert_eq!(
+            expected.check_attachment(),
+            Err("an unattended start has no client".to_owned())
+        );
+    }
+}
+
+#[test]
+fn a_clicker_whose_server_no_longer_answers_is_refused() {
+    // The captured server's socket does not exist: nothing answers there, so
+    // the clicker cannot be proven and no message may be sent to it.
+    let server = ServerId::Selected(crate::meta::Selector::Socket(std::path::PathBuf::from(
+        "/nonexistent-ae-socket-dir/server",
+    )));
+    let expected = ExpectedLaunch::new(
+        ExpectedState::AbsentCanonical,
+        server,
+        "1".to_owned(),
+        "2".to_owned(),
+        "/dev/ttys004".to_owned(),
+        "3".to_owned(),
+        4,
+    );
+    assert_eq!(
+        expected.check_attachment(),
+        Err("the invoking tmux server no longer answers".to_owned())
+    );
+}

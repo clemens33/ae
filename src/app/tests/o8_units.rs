@@ -258,3 +258,58 @@ fn a_held_panel_border_is_marked_until_let_go() {
     let _ = app.mouse(press(MouseKind::Release));
     assert_eq!(style(&mut app, at), resting, "letting go unmarks it");
 }
+
+/// The panel column's lane, read through the panel without a frame: whether
+/// it still waits for a read, and how many turns it holds.
+fn panel_lane(app: &mut App) -> (bool, usize) {
+    app.in_panel(|app| (app.loading, app.lane.items.len()))
+        .expect("an open panel")
+}
+
+/// A panel open on the proven incarnation `OID`, with the seat's directory and
+/// id known to the app, as a fleet read leaves them.
+fn bound_panel() -> App {
+    let (mut app, _asks) = ready(loader::Proof::Proven(OID.to_owned()));
+    app.dirs.insert(ORCH.to_owned(), PathBuf::from(ORCH));
+    app.ids.insert(ORCH.to_owned(), OID.to_owned());
+    app.open_panel(false);
+    assert_eq!(pin(&app).as_deref(), Some(OID), "the panel binds the proof");
+    assert_eq!(
+        panel_lane(&mut app),
+        (true, 0),
+        "before its first read the panel waits"
+    );
+    app
+}
+
+#[test]
+fn a_read_of_the_pinned_orchestrator_lane_reaches_the_open_panel_at_once() {
+    let mut app = bound_panel();
+    app.answer(view(ORCH, OID, 1, "PINNED_TURN"));
+    assert_eq!(
+        panel_lane(&mut app),
+        (false, 1),
+        "the pinned incarnation's read shows in the panel without another event"
+    );
+}
+
+#[test]
+fn a_listed_namesake_read_leaves_the_open_panel_on_its_pinned_lane() {
+    let mut app = bound_panel();
+    app.answer(view(ORCH, OID, 1, "PINNED_TURN"));
+    assert_eq!(panel_lane(&mut app), (false, 1), "the pinned read shows");
+    // Another incarnation holds the name and is listed: an ordinary row.
+    app.fleet.rows.push(row(ORCH, 3, false));
+    app.ids.insert(ORCH.to_owned(), NEW.to_owned());
+    app.answer(view(ORCH, NEW, 2, "NAMESAKE_TURN"));
+    assert_eq!(
+        app.shown.get(ORCH).map(|shown| shown.id.as_str()),
+        Some(NEW),
+        "the namesake's read is kept as an ordinary row's"
+    );
+    assert_eq!(
+        panel_lane(&mut app),
+        (false, 1),
+        "an ordinary row's read never refreshes the panel, which keeps its pinned lane"
+    );
+}

@@ -732,6 +732,37 @@ fn a_fallen_back_panel_names_the_width_side_needs() {
     assert!(below.contains("side needs"), "{}: {below}", need - 1);
 }
 
+/// Beside the sidebar the width a fallen-back panel names counts the sidebar
+/// and its rule. Under 140 columns the sidebar is 34 wide and its rule stands
+/// in column 34, so the chat column starts at 35, and the main column and the
+/// side panel keep 40 cells each: the panel needs 35 + 2 * 40 = 115 columns.
+/// The previous test never reaches this: at 60 columns no sidebar stands.
+#[test]
+fn a_fallen_back_panel_beside_the_sidebar_counts_the_sidebar_and_its_rule() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    let head = |app: &mut App, width: u16| -> String {
+        let shown = text(&at(width, 20, app));
+        shown.lines().next().unwrap_or_default().to_owned()
+    };
+    let narrow = head(&mut app, 100);
+    assert!(
+        narrow.contains("side needs 115 columns"),
+        "100 columns hold the sidebar and 65 chat columns: {narrow}"
+    );
+    let below = head(&mut app, 114);
+    assert!(
+        below.contains("side needs 115 columns"),
+        "one column short of the need still falls back: {below}"
+    );
+    let at_need = head(&mut app, 115);
+    assert!(
+        at_need.contains("F full") && !at_need.contains("side needs"),
+        "at the need the side panel stands: {at_need}"
+    );
+}
+
 /// A press on the side panel's gear opens the settings and leaves the keys
 /// where they are: the gear acts on the app, not on the panel.
 #[test]
