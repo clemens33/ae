@@ -177,6 +177,10 @@ fn a_labeled_spawned_seat_whose_profile_the_global_config_lacks_refuses() {
     .expect("drop the global profile");
     let why = command(&fx, "spawned.0").expect_err("only a resume keeps a seat unstarted");
     assert!(why.contains("no profile 'p'"), "{why}");
+    assert!(
+        why.contains("'carry'"),
+        "the refusal names the recorded client even where its reason does not: {why}"
+    );
 }
 
 #[test]

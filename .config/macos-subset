@@ -30,6 +30,8 @@ module menu  # OsConditional,TmuxClient
 module o4jump_spec  # TmuxClient
 module o6list_live_spec  # ProcessTable
 module o6list_spec  # ProcessTable
+module pairpin_reseat_guard_spec  # ProcessTable
+module pairpin_return_spec  # ProcessTable
 module parity  # ProcessTable
 module pipequiet_spec  # OsConditional
 module presetspawn_spec  # ProcessTable

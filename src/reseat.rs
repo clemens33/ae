@@ -430,7 +430,7 @@ fn recorded_command(dir: &Path, bytes: &[u8], seated: &crate::meta::RosterEntry)
 
 /// [`recorded_command`] with the refusal kept: a LABELED spawned seat is judged
 /// by the one gate every start of it takes
-/// ([`crate::session_launch::labeled_spawned_command`], the global config
+/// ([`crate::run::pair_judge::labeled_spawned_command`], the global config
 /// alone), and its refusal is the `Err`. The move's admission refuses on it
 /// BEFORE anything is stopped, because the dead proof after the stop reads the
 /// seat through the same gate and must never be the first to refuse.
@@ -444,8 +444,8 @@ fn source_command(
     bytes: &[u8],
     seated: &crate::meta::RosterEntry,
 ) -> Result<Option<String>, String> {
-    if crate::session_launch::is_labeled_spawned(seated) {
-        return crate::session_launch::labeled_spawned_command(
+    if crate::run::pair_judge::is_labeled_spawned(seated) {
+        return crate::run::pair_judge::labeled_spawned_command(
             bytes,
             seated,
             crate::doors::home().as_deref(),
@@ -737,7 +737,7 @@ impl Account {
 /// The lookup is CONTROLLED, not ambient — `HOME` is the launch home and every
 /// other variable is unset — because this runs in the CALLER's process and the
 /// caller's environment is not the pane's. It is the reading
-/// `session_launch::refuse_store_conflict` takes for exactly the same reason,
+/// `run::pair_judge::refuse_store_conflict` takes for exactly the same reason,
 /// and it maps to a recorded row by `run::config_home_identity`'s rule for a
 /// seat with nothing recorded yet.
 ///

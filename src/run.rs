@@ -11,6 +11,8 @@ use crate::conversation::{Probe, Start};
 use crate::launch;
 use crate::tool::{ContextChannel, ResumeForm, StoreProbe, ToolKind};
 
+pub(crate) mod pair_judge;
+
 /// Which form of the tool command a run builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -2273,7 +2275,7 @@ pub(crate) fn read_seat(
     );
     // A LABELED spawned seat is judged on the global config alone: no overlay is
     // read for it, here or by the follow and effort-twin lookups of this pair.
-    let labeled = roster_entry.filter(|entry| crate::session_launch::is_labeled_spawned(entry));
+    let labeled = roster_entry.filter(|entry| pair_judge::is_labeled_spawned(entry));
     let (identity_global, identity_local) = if labeled.is_some() {
         ((!global.is_empty()).then(|| PathBuf::from(&global)), None)
     } else {
@@ -2283,7 +2285,7 @@ pub(crate) fn read_seat(
     let command = if let Some(command) = command_snapshot {
         crate::config::IdentityConfig::resolved_snapshot(command)
     } else if let Some(entry) = labeled {
-        crate::session_launch::labeled_spawned_command(&bytes, entry, home.as_deref())?
+        pair_judge::labeled_spawned_command(&bytes, entry, home.as_deref())?
     } else {
         let cfg =
             crate::config::read_identity(identity_global.as_deref(), identity_local.as_deref())
