@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.84] - 2026-11-18
+- A standalone pipe inside parentheses no longer cuts a decision card, so the choices an agent writes inside each decision stay in its option; parentheses that never close keep the cut at every pipe
+
 ## [v2026.11.83] - 2026-11-18
 - The Statistics tab counts spawn outcomes, a brief undelivered, a start failed and a start unproved, from worker-fact records that spawn and _run journal; the store formats bump and rebuild once, and a stopped upkeep stays said with its remedy
 - The macOS subset pins tests/it/run.rs::Rig::new, which the stats3 run spec in its own file now shares across files, to that spec's create-fact test
