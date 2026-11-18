@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.82] - 2026-11-18
+- Seam stubs and the frozen acceptance (RED)
+- A due waiting-agent challenge is held while its direct same-session --on target holds working with fresh motion, at most the top-rung spacing from the proof; the daemon journals one wait-held per reason and episode and reads the waiting-agent ceiling on the top rung while the hold stands, and ae list reads the same open witness
+
 ## [v2026.11.81] - 2026-11-18
 - Opencode variant: ae warns when OpenCode's saved model.json variant shadows a profile's explicit one (#310)
 - Opencode variant: the mutation survivors of the reader get acceptance tests (#310)
