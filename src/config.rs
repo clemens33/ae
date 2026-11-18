@@ -1734,36 +1734,20 @@ fn resolve_seat(
     }))
 }
 
-/// Resolve the workspace seats into a [`LaunchPlan`], validating both
-/// directions: every seat name is in the grammar, bound once in `[roster]`,
-/// bound to a defined and lexable profile, and named for one seat only; and
-/// every `[roster]` row names a defined profile (a row bound to no seat is
-/// legal — it is what `use <name>` selects).
-///
-/// # Errors
-///
-/// Every [`Violation`] found, in the order the config states things — never
-/// just the first.
-pub fn launch_plan(
-    cfg: &IdentityConfig,
-    main_override: Option<&str>,
-    home: Option<&Path>,
-) -> Result<LaunchPlan, Vec<Violation>> {
+/// The seats `[workspace]` states, as `(seat label, name)` in config order, and the
+/// violations in stating them: no main, or an empty worker entry.
+fn stated_seats(
+    main_seat: &str,
+    main: Option<&str>,
+    workers: Option<&str>,
+) -> (Vec<(String, String)>, Vec<Violation>) {
     let mut violations = Vec::new();
-    let mut named: Vec<(String, String)> = Vec::new(); // (seat label, name)
-    let main_seat = if main_override.is_some() {
-        "use"
-    } else {
-        "workspace.main"
-    };
-    match main_override
-        .map(str::trim)
-        .or(cfg.main.as_deref().map(str::trim))
-    {
+    let mut named: Vec<(String, String)> = Vec::new();
+    match main.map(str::trim) {
         Some(name) if !name.is_empty() => named.push((main_seat.to_owned(), name.to_owned())),
         _ => violations.push(Violation::MainMissing),
     }
-    if let Some(workers) = cfg.workers.as_deref() {
+    if let Some(workers) = workers {
         for (index, entry) in workers.split(',').enumerate() {
             let name = entry.trim();
             if name.is_empty() {
@@ -1780,6 +1764,69 @@ pub fn launch_plan(
             named.push(("workspace.workers".to_owned(), name.to_owned()));
         }
     }
+    (named, violations)
+}
+
+/// What is wrong with a seat's NAME alone: outside the grammar, or one a seat already
+/// listed in `seen` holds.
+fn name_defect(seat: &str, name: &str, seen: &[&str]) -> Option<Violation> {
+    if !is_agent_name(name) {
+        return Some(Violation::BadName {
+            seat: seat.to_owned(),
+            name: name.to_owned(),
+        });
+    }
+    seen.contains(&name).then(|| Violation::NameTwice {
+        seat: seat.to_owned(),
+        name: name.to_owned(),
+    })
+}
+
+/// The violations a fresh launch finds in the seat NAMES `[workspace]` states, whatever
+/// `[profiles]` and `[roster]` say: no main, an empty worker entry, a name outside the
+/// grammar, a name two seats share. [`launch_plan`] raises the same ones from the same
+/// code, in the same order, so a caller that must refuse what a launch would refuse before
+/// it has launched can print them with [`render_violations`].
+#[must_use]
+pub fn roster_name_violations(main: Option<&str>, workers: Option<&str>) -> Vec<Violation> {
+    let (named, mut violations) = stated_seats("workspace.main", main, workers);
+    let mut seen: Vec<&str> = Vec::new();
+    for (seat, name) in &named {
+        match name_defect(seat, name, &seen) {
+            Some(violation) => violations.push(violation),
+            None => seen.push(name),
+        }
+    }
+    violations
+}
+
+/// Resolve the workspace seats into a [`LaunchPlan`], validating both
+/// directions: every seat name is in the grammar, bound once in `[roster]`,
+/// bound to a defined and lexable profile, and named for one seat only; and
+/// every `[roster]` row names a defined profile (a row bound to no seat is
+/// legal — it is what `use <name>` selects).
+///
+/// # Errors
+///
+/// Every [`Violation`] found, in the order the config states things — never
+/// just the first.
+pub fn launch_plan(
+    cfg: &IdentityConfig,
+    main_override: Option<&str>,
+    home: Option<&Path>,
+) -> Result<LaunchPlan, Vec<Violation>> {
+    let main_seat = if main_override.is_some() {
+        "use"
+    } else {
+        "workspace.main"
+    };
+    let (named, mut violations) = stated_seats(
+        main_seat,
+        main_override
+            .map(str::trim)
+            .or(cfg.main.as_deref().map(str::trim)),
+        cfg.workers.as_deref(),
+    );
     // Validate EVERY roster profile binding independently, in config order,
     // BEFORE resolving seats — so an unseated row with a missing profile is still
     // reported (colead IMPORTANT-4), and a seat's profile is reported exactly once.
@@ -1795,18 +1842,8 @@ pub fn launch_plan(
     let mut seen: Vec<&str> = Vec::new();
     let mut worker_index = 0usize;
     for (seat, name) in &named {
-        if !is_agent_name(name) {
-            violations.push(Violation::BadName {
-                seat: seat.clone(),
-                name: name.clone(),
-            });
-            continue;
-        }
-        if seen.contains(&name.as_str()) {
-            violations.push(Violation::NameTwice {
-                seat: seat.clone(),
-                name: name.clone(),
-            });
+        if let Some(violation) = name_defect(seat, name, &seen) {
+            violations.push(violation);
             continue;
         }
         seen.push(name);
@@ -4340,5 +4377,107 @@ mod tests {
         assert!(resolve_quota_aware(Some("on"), Some("off")));
         assert!(!resolve_quota_aware(Some(""), Some("off")));
         assert!(resolve_quota_aware(Some(""), None));
+    }
+
+    fn bad_name(seat: &str, name: &str) -> Violation {
+        Violation::BadName {
+            seat: seat.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn roster_name_violations_are_what_a_launch_finds_in_the_stated_names() {
+        use super::roster_name_violations as found;
+        // Outside the grammar, with the seat label a launch prints; main first, then the
+        // workers in config order.
+        assert_eq!(
+            found(Some("cl:"), None),
+            [bad_name("workspace.main", "cl:")]
+        );
+        assert_eq!(
+            found(Some("cl"), Some("oc:, cl:x")),
+            [
+                bad_name("workspace.workers", "oc:"),
+                bad_name("workspace.workers", "cl:x")
+            ]
+        );
+        assert_eq!(
+            found(Some("a b"), Some("ok,-x")),
+            [
+                bad_name("workspace.main", "a b"),
+                bad_name("workspace.workers", "-x")
+            ]
+        );
+        assert_eq!(
+            found(Some("cl"), Some("a\u{1f}b")),
+            [bad_name("workspace.workers", "a\u{1f}b")],
+            "a name carrying the compact tuple separator is no name"
+        );
+        let longest = "x".repeat(64);
+        assert!(found(Some(&longest), None).is_empty());
+        assert_eq!(
+            found(Some(&format!("{longest}x")), None).len(),
+            1,
+            "capped at 64"
+        );
+        // No main, or a blank one.
+        for main in [None, Some(""), Some("  ")] {
+            assert_eq!(found(main, None), [Violation::MainMissing], "{main:?}");
+        }
+        // An empty worker entry is a violation at its 1-based position; a list that is
+        // empty or blank as a whole is no workers.
+        assert_eq!(
+            found(Some("lead"), Some("a,,b")),
+            [Violation::EmptyWorker { position: 2 }]
+        );
+        assert_eq!(
+            found(Some("lead"), Some("a,b,")),
+            [Violation::EmptyWorker { position: 3 }]
+        );
+        assert!(found(Some("lead"), Some("")).is_empty());
+        assert!(found(Some("lead"), Some("  ")).is_empty());
+        // A name two seats hold.
+        assert_eq!(
+            found(Some("lead"), Some("a, lead")),
+            [Violation::NameTwice {
+                seat: "workspace.workers".to_owned(),
+                name: "lead".to_owned()
+            }]
+        );
+        assert!(found(Some("lead"), Some("a, b_2 ,C-3")).is_empty());
+    }
+
+    /// `launch_plan` and `roster_name_violations` share the code that finds these, so on a
+    /// config that binds every seat the two agree to the last violation and its order.
+    #[test]
+    fn launch_plan_finds_the_same_name_violations_as_roster_name_violations() {
+        for (main, workers) in [
+            (Some("cl:"), None),
+            (Some("lead"), Some("oc:, a:x")),
+            (Some("lead"), Some("a,,b")),
+            (Some("lead"), Some("a,b,")),
+            (Some("  "), Some("a")),
+            (None, Some("a")),
+            (Some("lead"), Some("a, lead")),
+            (Some("a b"), Some("-x, a, a")),
+        ] {
+            use std::fmt::Write as _;
+            let mut text = String::from(
+                "[profiles]\ncc = \"claude\"\n[roster]\nlead = cc\na = cc\nb = cc\n[workspace]\n",
+            );
+            if let Some(main) = main {
+                writeln!(text, "main = \"{main}\"").unwrap();
+            }
+            if let Some(workers) = workers {
+                writeln!(text, "workers = \"{workers}\"").unwrap();
+            }
+            let (_file, cfg) = v2(&text);
+            assert_eq!(
+                launch_plan(&cfg, None, None).unwrap_err(),
+                super::roster_name_violations(cfg.main.as_deref(), cfg.workers.as_deref()),
+                "{main:?} {workers:?}"
+            );
+        }
     }
 }

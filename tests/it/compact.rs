@@ -303,6 +303,91 @@ fn a_managed_mode_is_refused_clearly() {
     assert!(stdout(&out).is_empty(), "no tuple on refusal");
 }
 
+/// A roster a fresh launch refuses never freezes (#77): a name outside the grammar, an empty
+/// worker entry, no (or a blank) main, a name two seats hold. The freeze runs with the source
+/// intact, so the refusal is free: nothing is stopped, archived or torn down for a child that
+/// could never start. The expected text is NOT taken from the code under test: it is what
+/// `ae _launch-plan` — the fresh launch's own plan step — prints for the very same config.
+/// The config binds every name in `[roster]`, so the only violations a launch finds are the
+/// name ones this test is about.
+#[test]
+fn a_roster_a_fresh_launch_refuses_is_refused_at_the_freeze_with_the_launch_refusal() {
+    const ROSTER: &str = "[profiles]\nfake = \"sh\"\n\n[roster]\ncl = fake\na = fake\nb = fake\n\n";
+    for (tag, workspace, refused) in [
+        (
+            "main",
+            "[workspace]\nmain = cl:\n",
+            &["invalid agent name 'cl:'"][..],
+        ),
+        (
+            "workers",
+            "[workspace]\nmain = cl\nworkers = oc:, cl:x\n",
+            &["invalid agent name 'oc:'", "invalid agent name 'cl:x'"][..],
+        ),
+        (
+            "emptyworker",
+            "[workspace]\nmain = cl\nworkers = a,,b\n",
+            &["empty entry at position 2"][..],
+        ),
+        (
+            "blankmain",
+            "[workspace]\nmain = \" \"\nworkers = a\n",
+            &["workspace.main is not set"][..],
+        ),
+        (
+            "nomain",
+            "[workspace]\nworkers = a\n",
+            &["workspace.main is not set"][..],
+        ),
+        (
+            "twice",
+            "[workspace]\nmain = cl\nworkers = a, cl\n",
+            &["'cl' is named more than once"][..],
+        ),
+    ] {
+        let s = Scratch::new(&format!("badroster-{tag}"));
+        let dir = local_session(&s, "sess", "local", &format!("{ROSTER}{workspace}"));
+        let config = s.0.join("config");
+        let launch = core(
+            s.0.as_path(),
+            &["_launch-plan", "--global", &config.to_string_lossy()],
+        );
+        assert_ne!(
+            launch.status.code(),
+            Some(0),
+            "{tag}: the reference refusal: a fresh launch refuses this config"
+        );
+        assert!(
+            stderr(&launch).starts_with("Error: the workspace roster is not launchable:"),
+            "{tag}: the reference is the roster refusal: {}",
+            stderr(&launch)
+        );
+
+        let out = freeze(s.0.as_path(), &dir, false);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{tag}: freeze must refuse: {}",
+            stderr(&out)
+        );
+        assert!(stdout(&out).is_empty(), "{tag}: no tuple on refusal");
+        assert_eq!(
+            stderr(&out),
+            stderr(&launch),
+            "{tag}: the same refusal a fresh launch gives"
+        );
+        for text in refused {
+            assert!(
+                stderr(&out).contains(text),
+                "{tag}: says {text}: {}",
+                stderr(&out)
+            );
+        }
+        // The session is exactly as it was.
+        assert!(dir.join("meta").exists(), "{tag}: the source is intact");
+    }
+}
+
 /// Seed a LEGACY handover ask (slotless pre-rename `ae:compact:` actor → main)
 /// into `<dir>/events.jsonl`, with a stored body carrying memo baseline 0.
 fn seed_handover(dir: &Path) -> String {

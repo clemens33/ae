@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::archive::{ConfigNode, classify_config_node};
-use crate::config::{Workspace, read_workspace};
+use crate::config::{Workspace, read_workspace, render_violations, roster_name_violations};
 use crate::inventory::ServerId;
 use crate::state::EXIT_FAILED;
 use crate::store;
@@ -152,15 +152,19 @@ pub(crate) fn freeze(
         return Ok(EXIT_FAILED);
     };
 
-    // The roster the fresh session is PROMISED to start. main is required.
-    let Some(roster_main) = workspace.main.as_deref().filter(|m| !m.is_empty()) else {
-        writeln!(
-            err,
-            "reboot: the recorded config names no [workspace] main — the fresh session would have no agent."
-        )?;
+    // The roster the fresh session is PROMISED to start. One a fresh launch refuses (no main,
+    // an empty worker entry, a name outside the grammar or held by two seats) is refused HERE,
+    // with the launch's own text, while the source is still intact.
+    let violations =
+        roster_name_violations(workspace.main.as_deref(), workspace.workers.as_deref());
+    if !violations.is_empty() {
+        write!(err, "{}", render_violations(&violations))?;
         return Ok(EXIT_FAILED);
-    };
-    let roster = roster_string(roster_main, workspace.workers.as_deref());
+    }
+    let roster = roster_string(
+        workspace.main.as_deref().unwrap_or_default(),
+        workspace.workers.as_deref(),
+    );
 
     let Some(root) = crate::doors::state_root(crate::shape::current()) else {
         writeln!(err, "reboot: cannot resolve the ae state root.")?;
@@ -1107,7 +1111,11 @@ mod tests {
         let dir = session(&s, "", Some("[agents]\ncl = claude\n"));
         let (code, _out, err) = run(&dir, false);
         assert_eq!(code, 1);
-        assert!(err.contains("names no [workspace] main"), "{err}");
+        assert_eq!(
+            err,
+            "Error: the workspace roster is not launchable:\n  - workspace.main is not set — name the standing main seat.\n",
+            "the launch's own refusal"
+        );
     }
 
     #[test]
@@ -1158,9 +1166,12 @@ mod tests {
     fn a_field_carrying_the_separator_byte_is_refused() {
         // A resolved value with a 0x1f would forge extra tuple fields; the
         // framing guard refuses rather than emit a tuple that does not
-        // round-trip.
+        // round-trip. The recorded config path carries it here: a roster name
+        // with the byte never gets this far, the launch grammar refuses it first.
         let s = Scratch::new("framing");
-        let dir = session(&s, "", Some("[workspace]\nmain = cl\nworkers = a\u{1f}b\n"));
+        let config = s.0.join("config\u{1f}x");
+        std::fs::write(&config, "[workspace]\nmain = cl\n").unwrap();
+        let dir = session(&s, &format!("config={}\n", config.display()), None);
         let (code, out, err) = run(&dir, false);
         assert_eq!(code, 1, "{err}");
         assert!(

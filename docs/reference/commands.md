@@ -2788,6 +2788,12 @@ belongs. Managed-mode continuity is tracked separately.
   after your answer, so a replacement session is never *messaged*, and once again under the
   lifecycle lock, so a replacement is never *stopped*. A mismatch names the field that
   moved.
+- A **`[workspace]` roster a fresh launch refuses**: no or a blank `main`, an empty entry in
+  `workers`, a name outside `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (an `alias:name` such as `cl:`
+  included) or a name two seats hold. The freeze refuses at the start with the launch's own
+  roster refusal, while the session is still whole: nothing is stopped or archived for a child
+  that could never start. Whether `[roster]` binds each name to a profile is the launch's to
+  judge, not the freeze's.
 - A **timed-out handover**. Nothing is stopped and nothing is archived; the request stays
   open, so re-running keeps waiting on the same one rather than sending a second.
 
