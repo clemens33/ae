@@ -52,6 +52,9 @@ pub(super) fn meta_document(
             .then(|| crate::git::head(path_bytes(&shape.work_dir)))
             .filter(|head| head != "-")
     });
+    // A goal the child already holds wins; only a child with none takes the archive's.
+    let inherited_goal = parent
+        .and_then(|proof| crate::archive::from::source_goal(&env.home.join("archive"), &proof.id));
     let (parent_id, handover, pending) = match parent {
         Some(proof) => (
             Some(proof.id.clone()),
@@ -119,7 +122,7 @@ pub(super) fn meta_document(
             "watchdog",
             preserved("watchdog").or_else(|| preserved("loop")),
         ),
-        ("goal", preserved("goal")),
+        ("goal", preserved("goal").or(inherited_goal)),
         ("git_base_commit", git_base),
         ("session_id_origin", preserved("session_id_origin")),
     ] {
@@ -378,4 +381,30 @@ pub fn publish_meta_and_seed_uuid(
         return Ok(SeedOutcome::Unobserved);
     };
     Ok(seed_session_uuid(server, expected_identity, &uuid))
+}
+
+/// Say that the child `child` took its goal from archive `archive_id`, when it did and the
+/// archive was made from a session of another name. A child under the same name is the same
+/// session carried on (a reboot's child), and its goal is not news. Best effort: the session
+/// is half built here, so a stderr that cannot be written must not fail the launch.
+///
+/// No `goal` event is journalled for the seed. `session_notice::due` reads a seat with no
+/// `launch_time` (a tool that stamps none) as older than every goal record, so the event
+/// would be told to that seat as a change of goal.
+pub(super) fn announce_inherited_goal(
+    dir: &Path,
+    archive_root: &Path,
+    archive_id: &str,
+    child: &str,
+    err: &mut impl std::io::Write,
+) {
+    if meta_value(dir, "goal").is_none_or(|goal| goal.is_empty())
+        || crate::archive::from::source_session(archive_root, archive_id) == child
+    {
+        return;
+    }
+    let _ = writeln!(
+        err,
+        "goal inherited from archive {archive_id}; use goal --clear to drop"
+    );
 }

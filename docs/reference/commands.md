@@ -2693,6 +2693,13 @@ is derived from the archive root and the id, so moving `AE_HOME` cannot rot it. 
 parent archive is deleted later, a resume warns and continues: the lineage fact is still
 true, and `workspace.md` says the digest is no longer available.
 
+A child that starts `--from` an archive also takes the archive's `source_goal` as its own
+`goal=`, so the goal survives the continuation. A goal the child already holds wins, and an
+archive with no goal seeds none. Under the archive's own name (the reboot child) the child takes
+the goal without a word. Under a new name the launch says
+`goal inherited from archive <uuid>; use goal --clear to drop`. The seed writes no `goal` event,
+so no seat is told it as a change of goal.
+
 ## `ae compact [name]`
 
 Compact every fixed seat of a session in place, in roster order, without stopping

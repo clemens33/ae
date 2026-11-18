@@ -86,11 +86,11 @@ pub(crate) use ready::{
 #[cfg(test)]
 use ready::{Readiness, ReadyRead, Start, await_start, pane_start, settle};
 use ready::{chunk_polls, start_agent};
-use record::meta_document;
 pub use record::{
     ProvenIdentity, SeedOutcome, pane_proven_identity, publish_meta_and_seed_uuid,
     seed_session_uuid,
 };
+use record::{announce_inherited_goal, meta_document};
 use stamp::{
     apply_layout, assert_status_bindings, open_first_chat, stamp_pane, stamp_session, stamp_windows,
 };
@@ -1303,6 +1303,9 @@ fn build(
         &live_session_id,
     ) {
         return rollback_launch(shape, &dir, &server, &line, err);
+    }
+    if let Some(proof) = parent {
+        announce_inherited_goal(&dir, &env.home.join("archive"), &proof.id, &shape.name, err);
     }
     if let Err(line) = write_assets(at, env, shape, &main_pane) {
         return rollback_launch(shape, &dir, &server, &line, err);

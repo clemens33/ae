@@ -175,7 +175,10 @@ because a guessed base is indistinguishable downstream from a true one.
 **Explicit lineage.** `ae <new> --from <uuid>` records `parent_archive_id` plus the
 parent's handover and pending counts in the new session's meta, injects a
 read-the-digest-first instruction into the *main* agent's system prompt, and adds a
-`## Parent archive` pointer to `workspace.md` for every agent. No archive content is
+`## Parent archive` pointer to `workspace.md` for every agent. The new
+session's meta also takes the archive's `source_goal` as its own `goal=`, unless it already
+holds one, and journals no `goal` event for it (a seat whose tool stamps no `launch_time` would be
+told that event as a change). No archive content is
 injected anywhere, no lineage is ever inferred from a matching name, and the parent's
 path is derived from root + id rather than stored.
 

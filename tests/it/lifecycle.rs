@@ -2196,6 +2196,50 @@ fn compact_relaunches_the_child_in_process() {
     );
 }
 
+/// The child compact starts under the same name takes the SOURCE session's goal (#72): the
+/// archive carries it as `source_goal` and the digest prints it, so ae transports the fact
+/// instead of making the successor re-derive it. Under the same name it is the same session
+/// carried on, so the launch says nothing about it (only `--from` into a new name does) and
+/// journals no `goal` event: a seat whose tool stamps no `launch_time` would be told such an
+/// event as a change of goal.
+#[test]
+fn compact_hands_the_child_the_source_goal() {
+    const GOAL: &str = "ship the compact goal fix";
+    let rig = Rig::new("goal");
+    std::fs::write(
+        rig.home.join("config"),
+        "[profiles]\nfake = \"sh\"\n\n[roster]\nfake = fake\n\n[workspace]\nmain = fake\nlayout = vertical\nwatchdog = false\n",
+    )
+    .expect("a v2 config");
+    let meta = std::fs::read_to_string(rig.dir.join("meta")).expect("the source meta");
+    std::fs::write(rig.dir.join("meta"), format!("{meta}goal={GOAL}\n"))
+        .expect("the source meta with a goal");
+
+    let (code, out, err) = rig.run(&["_compact", "-f", "--digest-only", &rig.name]);
+    assert_eq!(code, Some(0), "stdout: {out}\nstderr: {err}");
+    assert!(
+        rig.session_is_live(),
+        "the relaunched child is running: {err}"
+    );
+
+    let meta = std::fs::read_to_string(rig.dir.join("meta")).unwrap_or_default();
+    let goals: Vec<&str> = meta.lines().filter(|l| l.starts_with("goal=")).collect();
+    assert_eq!(
+        goals,
+        [format!("goal={GOAL}")],
+        "the child starts with the source's goal:\n{meta}"
+    );
+    assert!(
+        !err.contains("goal inherited"),
+        "a child under the source's own name says nothing about its goal:\n{err}"
+    );
+    let events = std::fs::read_to_string(rig.dir.join("events.jsonl")).unwrap_or_default();
+    assert!(
+        !events.contains("\"action\":\"goal\""),
+        "the seed journals no goal event:\n{events}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // the AMBIENT server, isolated
 // ---------------------------------------------------------------------------

@@ -9613,3 +9613,80 @@ mod launchsplit_lock_spec;
 
 #[path = "launchsplit_repair_spec.rs"]
 mod launchsplit_repair_spec;
+
+/// `--from` into a NEW name takes the archive's goal as the child's own `goal=` and says so
+/// (#72). The archive is a REAL one the publisher wrote from a session that held a goal. The
+/// seed journals no `goal` event: `session_notice::due` reads a seat with no `launch_time`
+/// (a tool that stamps none) as older than any goal record, so such an event would be told
+/// to the seat as a change.
+#[test]
+fn from_into_a_new_name_takes_the_archives_goal_and_says_so() {
+    const AID: &str = "e795c9e9-1111-2222-3333-444455556677";
+    const GOAL: &str = "ship the --from goal fix";
+    if skip() {
+        return;
+    }
+    let rig = Rig::new("fromgoal", &["claude"], None);
+    let source = rig.home.join("sessions").join("fromold");
+    assert!(
+        std::fs::create_dir_all(source.join("messages")).is_ok()
+            && std::fs::create_dir_all(rig.home.join("archive")).is_ok(),
+        "a source session and an archive root"
+    );
+    assert!(
+        std::fs::write(
+            source.join("meta"),
+            format!(
+                "session=fromold\nsession_id={AID}\nsession_id_origin=session\nmode=worktree\n\
+                 origin=/some/origin\nlayout=vertical\nae_version=0.2.13\nparent_archive_id=-\n\
+                 goal={GOAL}\nagent.main=cl:lead:sid-xyz\nagent_bin.main=claude\n"
+            ),
+        )
+        .is_ok(),
+        "the source meta"
+    );
+    assert!(
+        std::fs::write(
+            source.join("memo.tsv"),
+            "ts1\tcl:lead\thandover\tpicking up\n"
+        )
+        .is_ok(),
+        "a memo"
+    );
+    assert!(
+        std::fs::write(source.join("events.jsonl"), "").is_ok(),
+        "an events file"
+    );
+    let published = ae()
+        .arg("_archive-publish")
+        .arg(&source)
+        .args(["not-managed", "-", "-", "-", "2026-08-28T10:00:00Z"])
+        .output()
+        .unwrap_or_else(|why| panic!("the publisher should run: {why}"));
+    assert_eq!(
+        published.status.code(),
+        Some(0),
+        "setup publish: {}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+
+    let (code, stdout, stderr) = rig.launch(&["--local", "fromchild", "--from", AID]);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "goal inherited from archive {AID}; use goal --clear to drop"
+        )),
+        "the launch says where the goal came from:\n{stderr}"
+    );
+    let meta = rig.meta("fromchild");
+    assert!(
+        meta.lines().any(|line| line == format!("goal={GOAL}")),
+        "the child holds the archive's goal:\n{meta}"
+    );
+    let events =
+        std::fs::read_to_string(rig.dir("fromchild").join("events.jsonl")).unwrap_or_default();
+    assert!(
+        !events.contains("\"action\":\"goal\""),
+        "the seed journals no goal event:\n{events}"
+    );
+}

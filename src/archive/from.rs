@@ -114,6 +114,27 @@ pub(crate) fn run(
     Ok(0)
 }
 
+/// The goal archive `aid` recorded as `source_goal`, as one printable line, or `None` when it
+/// records none or none that shows. A child started `--from` the archive inherits it.
+///
+/// Call it AFTER [`run`] proved the archive. A meta that cannot be read is no goal, not an
+/// error: the lineage does not depend on the goal. It is a second read, not a field of the
+/// preflight's `aid\thandover\tpending` line, so that line (which a reboot hands from its
+/// archive step to the child's launch and compares) stays as it is.
+pub(crate) fn source_goal(root: &Path, aid: &str) -> Option<String> {
+    let bytes = read_file(&root.join(aid).join(super::store::META)).ok()?;
+    let goal = crate::goal::printable(&meta_get(&bytes, "source_goal"));
+    (!goal.trim().is_empty()).then_some(goal)
+}
+
+/// The name of the session archive `aid` was made from, empty when it records none or its
+/// meta cannot be read. Call it after [`run`], like [`source_goal`].
+pub(crate) fn source_session(root: &Path, aid: &str) -> String {
+    read_file(&root.join(aid).join(super::store::META))
+        .map(|bytes| meta_get(&bytes, "source_session"))
+        .unwrap_or_default()
+}
+
 /// A non-empty run of ASCII digits — the shape a count must have to be trusted.
 fn is_count(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())

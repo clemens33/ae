@@ -2387,3 +2387,152 @@ fn a_clicker_whose_server_no_longer_answers_is_refused() {
         Err("the invoking tmux server no longer answers".to_owned())
     );
 }
+
+/// `--from` and compact seed the child's `goal=` from the archive's `source_goal` (#72).
+mod inherited_goal_spec {
+    use super::super::{FromProof, announce_inherited_goal, meta_document};
+    use super::resume_parts;
+
+    const AID: &str = "44444444-4444-4444-4444-444444444444";
+
+    /// A fresh launch of session `s` that inherits archive `AID`, whose meta is `archive_meta`
+    /// and whose child dir holds `child_meta` already (empty: nothing). Answers the document.
+    fn from_document(archive_meta: &str, child_meta: &str) -> String {
+        let (root, dir, env, mut shape, launching, watchdog) = resume_parts(child_meta);
+        shape.resuming = false;
+        if child_meta.is_empty() {
+            std::fs::remove_file(dir.join("meta")).unwrap();
+        }
+        let archive = env.home.join("archive").join(AID);
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::write(archive.join("meta"), archive_meta).unwrap();
+        let proof = FromProof {
+            id: AID.to_owned(),
+            handover: "1".to_owned(),
+            pending: "0".to_owned(),
+        };
+        let document = meta_document(&env, &shape, &launching, watchdog, Some(&proof))
+            .expect("a --from document");
+        drop(root);
+        document
+    }
+
+    fn goal_rows(document: &str) -> Vec<&str> {
+        document
+            .lines()
+            .filter(|line| line.starts_with("goal="))
+            .collect()
+    }
+
+    #[test]
+    fn a_from_child_starts_with_the_source_goal_verbatim() {
+        let document = from_document(
+            "archive_version=1\nsource_session=s\nsource_goal=ship a=b and c\nhandover_count=1\n",
+            "",
+        );
+        assert_eq!(goal_rows(&document), ["goal=ship a=b and c"], "{document}");
+        assert!(
+            document.contains(&format!("parent_archive_id={AID}\n")),
+            "lineage is still recorded: {document}"
+        );
+    }
+
+    #[test]
+    fn an_empty_or_absent_source_goal_seeds_nothing() {
+        for archive_meta in [
+            "archive_version=1\nsource_goal=\n",
+            "archive_version=1\nsource_goal=\x07\x1b\n",
+            "archive_version=1\nsource_goal=\t \n",
+            "archive_version=1\n",
+        ] {
+            let document = from_document(archive_meta, "");
+            assert!(
+                goal_rows(&document).is_empty(),
+                "{archive_meta:?} seeds nothing: {document}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_source_goal_is_seeded_as_one_printable_line() {
+        let document = from_document(
+            "archive_version=1\nsource_goal=ship\x07 it\t\x1bnow\r\n",
+            "",
+        );
+        assert_eq!(goal_rows(&document), ["goal=ship it now"], "{document:?}");
+    }
+
+    #[test]
+    fn a_goal_the_child_already_holds_is_not_replaced_by_the_archives() {
+        let document = from_document(
+            "archive_version=1\nsource_goal=from the archive\n",
+            "session=s\ngoal=set for the child\n",
+        );
+        assert_eq!(
+            goal_rows(&document),
+            ["goal=set for the child"],
+            "{document}"
+        );
+    }
+
+    /// What `announce_inherited_goal` writes for a child named `child` whose meta is
+    /// `child_meta`, inheriting an archive made from the session `source_session`, and
+    /// whether the child then holds an event journal.
+    fn announced(child_meta: &str, source_session: &str, child: &str) -> (String, bool) {
+        let (_root, dir, env, ..) = resume_parts(child_meta);
+        let archive = env.home.join("archive").join(AID);
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::write(
+            archive.join("meta"),
+            format!("archive_version=1\nsource_session={source_session}\n"),
+        )
+        .unwrap();
+        let mut err = Vec::new();
+        announce_inherited_goal(&dir, &env.home.join("archive"), AID, child, &mut err);
+        (
+            String::from_utf8(err).unwrap(),
+            dir.join("events.jsonl").exists(),
+        )
+    }
+
+    #[test]
+    fn a_child_under_another_name_is_told_where_its_goal_came_from_and_journals_nothing() {
+        let (said, journalled) = announced("session=s\ngoal=ship it\n", "old", "s");
+        assert_eq!(
+            said,
+            format!("goal inherited from archive {AID}; use goal --clear to drop\n")
+        );
+        assert!(
+            !journalled,
+            "the seed writes no goal event: a seat whose tool stamps no launch_time would be told it as a change"
+        );
+    }
+
+    #[test]
+    fn a_child_under_the_archives_own_name_takes_its_goal_without_a_word() {
+        let (said, journalled) = announced("session=s\ngoal=ship it\n", "s", "s");
+        assert_eq!(said, "");
+        assert!(!journalled);
+    }
+
+    #[test]
+    fn a_child_with_no_goal_says_nothing() {
+        for meta in ["session=s\n", "session=s\ngoal=\n"] {
+            let (said, journalled) = announced(meta, "old", "s");
+            assert_eq!(said, "", "{meta:?}");
+            assert!(!journalled, "{meta:?}");
+        }
+    }
+
+    #[test]
+    fn a_launch_with_no_parent_seeds_no_goal() {
+        let (_root, dir, env, mut shape, launching, watchdog) = resume_parts("");
+        shape.resuming = false;
+        std::fs::remove_file(dir.join("meta")).unwrap();
+        let archive = env.home.join("archive").join(AID);
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::write(archive.join("meta"), "source_goal=unrelated\n").unwrap();
+        let document = meta_document(&env, &shape, &launching, watchdog, None).expect("a document");
+        assert!(goal_rows(&document).is_empty(), "{document}");
+    }
+}
