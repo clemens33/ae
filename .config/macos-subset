@@ -254,6 +254,7 @@ helper tests/it/restore_spec.rs::Fleet::command = restore_spec::a_beat_moved_out
 helper tests/it/restore_spec.rs::Fleet::missing = restore_spec::a_beat_moved_outside_the_carried_window_is_rechecked_under_the_lifecycle_lock
 helper tests/it/restore_spec.rs::Fleet::names = restore_spec::a_beat_moved_outside_the_carried_window_is_rechecked_under_the_lifecycle_lock
 helper tests/it/restore_spec.rs::Fleet::new = restore_spec::a_beat_moved_outside_the_carried_window_is_rechecked_under_the_lifecycle_lock
+helper tests/it/run.rs::Rig::new = run::stats3_run_spec::stats3_create_fact_exists_when_the_real_fixture_exec_begins_in_both_run_forms
 helper tests/it/seat_relaunch.rs::Rig::capture = autoreseat::a_forged_trigger_moves_nothing_the_watchdog_would_not
 helper tests/it/seat_relaunch.rs::Rig::drop = autoreseat::a_forged_trigger_moves_nothing_the_watchdog_would_not
 helper tests/it/seat_relaunch.rs::Rig::kill_tools = reseat::a_pane_stamped_for_another_slot_is_refused_before_the_lock
