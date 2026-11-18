@@ -331,6 +331,7 @@ fn process_case(recipe: &str, phase: &str, action: &str) {
         .env("HOME", &*f.old.base)
         .env("TMPDIR", &*f.old.base)
         .env("AE_TEST_TMPDIR", &*f.old.base)
+        .env("AE_LANE_MIN_FREE_GIB", "0")
         .env("GIT_CONFIG_GLOBAL", f.old.base.join("gitconfig"))
         .env("AE_PHASE_TARGET", phase)
         .env("AE_PHASE_MODE", "hold");

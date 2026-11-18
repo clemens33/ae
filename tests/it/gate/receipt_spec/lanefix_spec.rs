@@ -281,6 +281,7 @@ fn case(mode: &str) -> Case {
         .arg("claim-observer")
         .arg(mode)
         .env_cleared()
+        .env("AE_LANE_MIN_FREE_GIB", "0")
         .env(
             "PATH",
             format!(

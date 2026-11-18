@@ -72,7 +72,7 @@ just format           # shfmt -w
 just test             # compile every fuzz target + unit + integration
 just test             # the whole test surface (= just rust-check)
 just pre              # ADVISORY: fmt + clippy + unit + guard tests, NOT the gate
-just lane-lock status # the gate lane lock: claim <name> [secs] | release <name> | status
+just lane-lock status # the gate lane lock: claim <name> [secs] | release <name> | cancel-wait <name> | status
 just check            # shellcheck + shfmt over install, the one bash file
 just install          # checkout-mode immutable versioned install
 just rust-setup       # install pinned Rust toolchain and dev tools
@@ -135,7 +135,7 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 | `just test` / `just rust-check` | **the whole gate**: `rust-fmt-check` + `rust-lint` + `rust-fuzz-check` + `rust-test`. The hp runs it for every release ([Release proof](#release-proof)) |
 | `just test-affected [base=<ref>] [print=yes]` | **the merge gate** (M1, one hop): `rust-fmt-check` + `rust-lint` + `rust-fuzz-check`, then every unit test, the `doors`, `floor` and `gate` guard modules and the integration modules the change reaches, through the lane's filtered arm, plus the doctests when a `src/` file changed and `just check` when `install` changed. The whole lane when the selector cannot place the change. A clean committed tree that does not move, no receipt. `print=yes` measures the working tree, prints the selection and runs nothing (see [The merge gate](#the-merge-gate)) |
 | `just pre` | **ADVISORY, NOT the gate**, never cited as it: `rust-fmt-check` + `rust-lint` + the unit tests + the `doors`, `floor` and `gate` guard modules of `tests/it`, through the lane's filtered arm. No doctests, no fuzz compile, no retries; `just test` stays exact |
-| `just lane-lock claim <name> [secs]` / `release <name>` / `status` | the gate lane lock, one gate per machine: the MAIN checkout's `.local/locks/gate` directory (resolved from a linked worktree), whose `owner` line the recipe creates EXCLUSIVELY: that create is the claim, because `mkdir` is not atomic on every host (Ubuntu 26.04's uutils reports success for a directory that exists) and there the hand protocol has no owner proof; the `next` queue file. Same on-disk protocol as the hand one. `release` refuses any other owner; it never steals or clears a stale lock, it reports one (`status` exit 1 while held) |
+| `just lane-lock claim <name> [secs]` / `release <name>` / `cancel-wait <name>` / `status` | the gate lane lock, one gate per machine: the MAIN checkout's `.local/locks/gate` directory (resolved from a linked worktree), whose `owner` line the recipe creates EXCLUSIVELY: that create is the claim, because `mkdir` is not atomic on every host (Ubuntu 26.04's uutils reports success for a directory that exists) and there the hand protocol has no owner proof; the `next` queue file. Same on-disk protocol as the hand one. `release` refuses any other owner; it never steals or clears a stale lock, it reports one (`status` exit 1 while held). `claim` refuses, taking no lock, when a volume it is about to fill has less than `AE_LANE_MIN_FREE_GIB` free (see The lane lock). `cancel-wait <name>` stops a claim that is still waiting, never a holder (see The lane lock) |
 | `just check` | the bash lane: shellcheck + shfmt over `install` |
 | `just rust-fmt` / `rust-fmt-check` | `cargo fmt` + `taplo fmt` |
 | `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint`, cargo at nice 10 with `CARGO_BUILD_JOBS` from the one sizing helper below |
@@ -147,7 +147,7 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 | `just rust-build-release` / `bundles` | native release binary at `target/release/ae` (host only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` from one two-target cargo build (native binary under `target/aarch64-apple-darwin/release/`; needs the musl cross toolchain) |
 | `just rust-stress <filterset> [count=10] [secs=900]` | the BOUNDED repeat run: nextest `--stress-count` over ONE named filterset (a module or a test, never the suite), through the isolated lane. Refuses to start above load1 14 or when load1 cannot be read (status 1), refuses an empty or `all()` filter, a count or bound that is not a plain integer, or a host without `timeout`/`gtimeout` (status 2); threads are the lane's sizing (below), cargo runs at nice 10 under `timeout -k 5 <secs>` (status 124 when the bound ends it) and the lane reaps what it started. It judges the run's own JUnit report, not nextest's exit status alone: status 100 when any iteration failed, status 1 when one did not run or the report is missing (nextest 0.9.143 exits 0 when only the last iteration passed). Never in the gate, CI or mutants. See Stress runs |
 | `just rust-prune` / `rust-prune apply=yes` | THIS checkout's stale `ae` build output: the report is the default and removes nothing, `apply=yes` runs six fixed `cargo clean -p ae` cleans, each proved by a `--dry-run` path check first. Refuses a redirected target dir, a non-root cwd, a linked tree, a process using the checkout or a dry run it cannot prove (a stdout line that is not an absolute path inside its tree, no single valid `Summary`). Own tree only, never during a gate (`docs/development.md`) |
-| `just test-macos` / `test-macos print=yes` | the Mac boundary subset: every unit test plus the integration modules and exact tests `.config/macos-subset` names, through the lane's filtered arm (no doctests, no receipt). `print=yes` prints the filterset and the selected tests and runs nothing. A malformed manifest refuses. The `gate::macos_subset` guard keeps the manifest complete (see [Release proof](#release-proof)) |
+| `just test-macos` / `test-macos print=yes` | the Mac boundary subset: every unit test plus the integration modules and exact tests `.config/macos-subset` names, through the lane's filtered arm (no doctests, no receipt), plus the `gate::macos_subset` guard itself whatever the manifest says. `print=yes` prints the filterset and the selected tests and runs nothing. A malformed manifest refuses. The `gate::macos_subset` guard keeps the manifest complete (see [Release proof](#release-proof)) |
 | `just release-proof [expect=<head>:<tree>]` | the release's tests: the hp's whole green gate-receipt for this clean HEAD, read over ssh and checked strictly, then `just test-macos`. Any doubt is one `release-proof: refused:` line. Needs `AE_RELEASE_HP` and `AE_RELEASE_HP_ROOT` (see [Release proof](#release-proof)) |
 | `just release` | the whole release, locally: check, `release-proof`, rust-deny and an identity recheck before the bump. Pre-flight refuses before any state is written, a missing hp destination included |
 | `just rust-linux` / `rust-linux-26` / `rust-linux-smoke` | ON DEMAND, never reached by `just test`, `just pre` or `just release`: the gate on real Linux, native arm64, in a local container (read-only checkout, `ae-linux-arm64-*` cache volumes, non-root, the mounted source checked against the host's HEAD, tree and dirty count) / the same on Ubuntu 26.04, own `ae-linux26-arm64-*` volumes; `rust-linux-26` (bus `stall`, the default since that arm went green, #267) adds a stalling session bus proved before the build, `rust-linux-26 off` is the validated-host arm / the x86_64 musl release bundle from `./dist` executed in an amd64 container. arm64 only: the x86_64 proof of Ubuntu 26.04 is a human run on x86_64 hardware |
@@ -192,6 +192,53 @@ someone else and re-claimed could remove that still-empty new directory. The han
 retires once the recipe is the only spelling. Nothing here steals or
 clears a lock: one that looks abandoned (`status` says `suspect`) is reported, and the holder,
 the lead or a human clears it by hand.
+
+**The disk floor (`AE_LANE_MIN_FREE_GIB`).** A full disk once stopped a release after its claim
+and left a suspect lock, so `just release` and `just lane-lock claim` refuse before any effect
+when a volume they are about to fill is short of space: `release` before anything else (before
+its claim, fetch, `gh` calls and bump), `claim` before it creates the lock directory and again
+before each attempt of a waiting claim. A refusal takes no lock and says
+`<recipe>: refused: <mount point> has <X.Y> GiB free, below the <N> GiB floor
+(AE_LANE_MIN_FREE_GIB); checked for <path>`, exit 1. Volumes checked, each once: the checkout's
+toplevel, for a claim also the shared `.local/locks` of the MAIN checkout (a linked worktree can sit
+on another mount than the checkout whose `gate/owner` the claim writes), and the `target_directory`
+and `build_directory` that `cargo metadata --no-deps --locked` reports, which follow
+`CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` and the `build.target-dir` and `build.build-dir`
+config keys as cargo does (the lane's own `/tmp` scratch is not checked). Both directory fields are
+read as the top-level keys of cargo's one JSON object, never by a text search: a field of the same
+name inside a package or the `metadata` tables, which cargo prints after its own, never counts. The
+pinned toolchain's cargo emits both, so a missing one refuses.
+The floor is `AE_LANE_MIN_FREE_GIB` whole GiB, default 20. `0` turns the check off before any
+`df` or cargo call, for the synthetic fixtures of `tests/it/gate` and for a human who accepts
+the risk; an agent does not set it without a ruling. A value that is not whole GiB refuses with
+exit 2. Anything the check cannot read (cargo metadata fails, a path with a backslash, a `df`
+line without its numbers) refuses too. A path that does not exist yet is measured through its
+nearest existing ancestor and is not created. `lane-lock release`, `status` and `cancel-wait`
+never check the disk, so a full disk never stops a holder from giving its lock back.
+
+**Cancel a waiting claim (`just lane-lock cancel-wait <name>`).** A claim that waits is the recipe
+shell itself, and stopping it by a process list or a signal needs a pid set. The recipe keeps no
+such set: a waiting claim registers a private incarnation directory
+`<main checkout>/.local/locks/waiting/w.XXXXXX` (`mktemp`, so no later claim can recreate that
+path) with one state file, `waiting`, `acquiring` or `cancelled`, of one line
+`<name> <pid> <identity> <host>`. The claim leaves `waiting` by `mv waiting acquiring` before
+each attempt after the first, and `cancel-wait` leaves it by `mv waiting cancelled`: one rename
+path, so exactly one of them wins. After a cancel wins, that claim can never acquire, even if the
+gate is free by then; a claim that has begun to acquire can no longer be cancelled. The claim
+sleeps in whole seconds and looks for `cancelled` after each, so a cancel ends it within about a
+second, while the attempt and the printed `waiting` line keep their 30 s poll. Either rename moves
+nothing unless its source is a plain file and its destination does not exist in any form. A claim
+that cannot publish its record, or publish it again after an attempt, stops with a refusal rather
+than wait where nothing can cancel it; the `waiting` directory must be a plain directory, not a
+link, for the claim to register under it and for `cancel-wait` to read it. `cancel-wait` validates before it moves anything: the
+incarnation holds exactly one entry, a plain state file whose whole content is exactly one well
+formed line; exactly one live record names `<name>`; the gate holder is another name; its state is
+`waiting`; its host is this machine's; and its pid is alive with the recorded start identity. Any
+doubt refuses (exit 1) and leaves everything alone. A record whose process is provably gone, in any
+state, is stale: `cancel-wait` removes it, never counts it, and exits 1 if nothing live was left to
+cancel. It never signals anything. Concurrent claims of one name may coexist, since the owner line
+still decides acquisition, and `cancel-wait` then refuses and moves nothing. A SIGKILLed claim
+leaves such a stale directory; a record removed by hand cancels its claim at its next check.
 
 **The gate process registry (#340).** A lane lock is released only after every process a gate
 started under that claim has ended. Otherwise the lock stays held with a suspect note. Three parts
@@ -361,6 +408,21 @@ A test killed outright is reaped when its lane exits, unless an orphaned child s
 root 30 s later: then the lane fails and keeps itself, and the next lane retries the reap.
 A root the sweep cannot delete because a child is still writing into it is named (`note:
 kept …`) and left for the next lane: that transient race never turns an all-green lane red.
+A lane start and a lane exit also sweep the dead owners' unregistered roots (`ae-it-<pid>`,
+`ae-it-shadow-<pid>`, `ae-it-tmux-<pid>`, plain directories of this uid whose pid is gone, as
+`owner_is_dead` decides): a test killed between a `chmod` and its restore leaves directories at
+0555, so such a root is repaired (`find -type d`, no link followed) before it is removed, and
+the lane no longer names the same root at every start. The sweep is bounded and never fails the
+lane: a 20 s budget that starts on entry and is checked before every entry (live roots and foreign
+names included), at most 512 entries examined and 64 roots acted on per call, each external step
+under `timeout` or `gtimeout` (without either it does not run and says so at the first dead root,
+and runs no external probe), and one `note: stale scratch sweep stopped …` line when it stops early
+or a step times out. The timeout state belongs to the sweep and is reset when it ends, so the
+registry reap after it is never affected. Each root is judged and acted on alone, never from a
+list gathered earlier: its owner, inode and age are proved before its socket scan, again after the
+scan and before each socket is touched, and again before its repair and its removal. A pid that
+came back or a path that was replaced while the sweep worked is left alone, and a probe that fails
+or times out proves nothing.
 `cli::no_test_file_rolls_its_own_scratch_root` refuses a root built by hand. Parallelism is
 config: a bare `cargo nextest run` with no `NEXTEST_TEST_THREADS` exported runs at most four
 tests (`.config/nextest.toml`; the isolated lane sizes itself below and reaches its lane ceiling only on a
@@ -630,7 +692,12 @@ table, real tmux clients, justfile recipes, fsync, the clipboard, archive tools)
 that misses a marker site, a member of the nextest `tmux-clients` group or a shared boundary helper
 (each helper needs its own pinned test, one that provably calls it: a same-named method on another
 type does not count). `just test-macos print=yes` prints the filterset and the
-selected tests and runs nothing.
+selected tests and runs nothing. The lane adds the `gate::macos_subset` guard to the rendered
+filterset itself, so a valid sparse manifest that drops `module gate` still runs its own guard.
+`just pre` and `just test-affected` select it through the `gate` module. A scoped run of your own
+(`just _tmux-isolated test -E <filterset>`) selects only what you name: after you add an
+integration module, a test or a boundary site, append `| test(/^gate::macos_subset/)` to it, so a
+manifest gap fails in seconds and not at the final gate.
 
 **The identity.** The checkout must be clean (no staged, unstaged or untracked change) and keep the
 same HEAD and tree while the hp is asked, while the subset runs and through `just rust-deny`; the

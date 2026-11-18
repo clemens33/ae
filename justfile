@@ -128,13 +128,17 @@ test-macos *args:
     done
     {{ SUBSET }}
     subset_render .config/macos-subset || { echo "test-macos: refused: $subset_why" >&2; exit 1; }
+    # The guard that keeps the manifest complete runs in this lane whatever the manifest says: a valid
+    # sparse manifest that drops `module gate` must not drop the guard from its own lane. The
+    # manifest's filterset is OR terms only, so one more term needs no parentheses.
+    subset_run="$subset_filterset | (binary_id(ae::it) & test(/^gate::macos_subset/))"
     if [[ "$print" == yes ]]; then
-        printf '%s\n' "$subset_filterset"
-        cargo nextest list --locked --all-features --message-format oneline -E "$subset_filterset"
+        printf '%s\n' "$subset_run"
+        cargo nextest list --locked --all-features --message-format oneline -E "$subset_run"
         exit 0
     fi
-    echo "test-macos: $subset_filterset" >&2
-    nest just _tmux-isolated test -E "$subset_filterset"
+    echo "test-macos: $subset_run" >&2
+    nest just _tmux-isolated test -E "$subset_run"
 
 # THE NESTED STEP (#340). just passes a TERM only to the recipe shell it started, and a shell that a
 # signal ends leaves its foreground child running: a nested just, or the supervisor in `detached`,
@@ -185,6 +189,112 @@ NEST := '''
         printf -v "$nest_var" '%s' "$(<"$nest_out")"
         rm -f "$nest_out"
         return "$nest_status"
+    }
+'''
+
+# THE DISK FLOOR of `release` and `lane-lock claim`. A full disk (errno 28 in target/debug/deps)
+# once stopped a release after its claim and left a suspect lock, so both refuse BEFORE any
+# effect when a volume they are about to fill is short of space. `disk_floor <recipe> [path]`
+# checks the volume of the checkout's toplevel, of the optional extra path (a claim passes the
+# shared `.local/locks` of the MAIN checkout, which a linked worktree may not share a mount with)
+# and of the cargo `target_directory` and `build_directory` that `cargo metadata --no-deps
+# --locked` reports (so CARGO_TARGET_DIR, CARGO_BUILD_TARGET_DIR and the `build.target-dir` and
+# `build.build-dir` config keys count, as they do for cargo), each volume once. Both directory
+# fields are read STRUCTURALLY, as the top-level keys of the one JSON object: a string of the same
+# name inside a package or the `metadata` tables never counts, and cargo emits those after its own
+# directories. The pinned toolchain's cargo emits both fields, so a missing one refuses. The floor
+# is AE_LANE_MIN_FREE_GIB whole GiB, default 20; 0 turns the check off before any df or cargo
+# call; anything else but whole GiB refuses with exit 2. A refusal exits 1 and names the volume,
+# its free space and the floor. Anything it cannot read refuses too (fail closed): cargo
+# metadata, a path with a backslash, a df line it cannot parse. df is parsed by the first `size
+# used available capacity` run, so a filesystem or mount point with spaces parses; a path that
+# does not exist yet is probed through its nearest existing ancestor and never created. Bash 3.2
+# safe.
+DISKFREE := '''
+    disk_floor() {
+        local who="$1" floor="${AE_LANE_MIN_FREE_GIB:-20}" top meta fields key path probe row avail mount say dup i
+        local -a paths mounts=()
+        shift
+        if [[ ! "$floor" =~ ^(0|[1-9][0-9]{0,5})$ ]]; then
+            echo "$who: refused: AE_LANE_MIN_FREE_GIB is whole GiB without a leading zero (0 turns the floor off), got '$floor'" >&2
+            exit 2
+        fi
+        ((floor > 0)) || return 0
+        top="$(git rev-parse --show-toplevel 2>/dev/null)" && top="$(cd -P "$top" && pwd -P)" || {
+            echo "$who: refused: not inside a git checkout, so the volume to check is unknown" >&2
+            exit 1
+        }
+        meta="$(cargo metadata --no-deps --locked --offline --format-version 1 --manifest-path "$top/Cargo.toml" 2>/dev/null)" || {
+            echo "$who: refused: cargo metadata failed, so the build volume is unknown (AE_LANE_MIN_FREE_GIB=0 turns the floor off)" >&2
+            exit 1
+        }
+        # The top-level string fields of the one JSON object: depth 1, a key then a string value.
+        fields="$(printf '%s\n' "$meta" | awk '
+            {
+                n = length($0)
+                for (i = 1; i <= n; i++) {
+                    c = substr($0, i, 1)
+                    if (instr) {
+                        if (esc) { buf = buf c; esc = 0 }
+                        else if (c == "\\") { buf = buf c; esc = 1 }
+                        else if (c == "\"") {
+                            instr = 0
+                            if (depth == 1) {
+                                if (st == 0) { key = buf; st = 1 }
+                                else if (st == 2) { val[key] = buf; st = 0 }
+                            }
+                        } else buf = buf c
+                        continue
+                    }
+                    if (c == "\"") { instr = 1; buf = ""; continue }
+                    if (c == "{" || c == "[") { if (depth == 1 && st == 2) st = 3; depth++; continue }
+                    if (c == "}" || c == "]") { depth--; if (depth == 1 && st == 3) st = 0; continue }
+                    if (c == ":" && depth == 1 && st == 1) { st = 2; continue }
+                    if (c == "," && depth == 1 && st == 2) { st = 0; continue }
+                }
+            }
+            END {
+                if (depth == 0 && !instr && ("target_directory" in val) && ("build_directory" in val)) {
+                    print "target_directory\t" val["target_directory"]
+                    print "build_directory\t" val["build_directory"]
+                }
+            }')" || fields=""
+        paths=("$top" "$@")
+        for key in target_directory build_directory; do
+            path="$(printf '%s\n' "$fields" | awk -F '\t' -v k="$key" '$1 == k { print substr($0, length(k) + 2); exit }')"
+            if [[ -z "$path" ]]; then
+                echo "$who: refused: cargo metadata names no top-level $key, so the build volume is unknown" >&2
+                exit 1
+            fi
+            if [[ "$path" != /* || "$path" == *\\* ]]; then
+                echo "$who: refused: cargo's $key is not a plain absolute path: $path" >&2
+                exit 1
+            fi
+            paths+=("$path")
+        done
+        for path in "${paths[@]}"; do
+            probe="$path"
+            while [[ -n "$probe" && ! -e "$probe" ]]; do probe="${probe%/*}"; done
+            [[ -n "$probe" ]] || probe=/
+            row="$(LC_ALL=C df -Pk "$probe" 2>/dev/null | awk 'NR == 2 { if (match($0, /[0-9]+ +[0-9]+ +[0-9]+ +([0-9]+%|-) +/)) { split(substr($0, RSTART, RLENGTH), f, / +/); print f[3] "\t" substr($0, RSTART + RLENGTH) } }')" || row=""
+            avail="${row%%$'\t'*}"
+            mount="${row#*$'\t'}"
+            if [[ -z "$row" || ! "$avail" =~ ^[0-9]+$ || -z "$mount" ]]; then
+                echo "$who: refused: df could not read the volume of $path (probed $probe)" >&2
+                exit 1
+            fi
+            dup=0
+            for ((i = 0; i < ${#mounts[@]}; i++)); do
+                [[ "${mounts[i]}" != "$mount" ]] || dup=1
+            done
+            ((dup == 0)) || continue
+            mounts+=("$mount")
+            if ((avail < floor * 1048576)); then
+                say="$((avail / 1048576)).$((avail % 1048576 * 10 / 1048576))"
+                echo "$who: refused: $mount has $say GiB free, below the $floor GiB floor (AE_LANE_MIN_FREE_GIB); checked for $path" >&2
+                exit 1
+            fi
+        done
     }
 '''
 
@@ -843,7 +953,35 @@ test-affected *args:
 #                           but `owner`). It never removes a lock it cannot prove is yours.
 #                           It works inside the directory it checked, so a release that stalls
 #                           cannot remove the lock of whoever claims after it.
+# cancel-wait <name>        stop a claim of that name that is still WAITING and that this
+#                           machine's `claim` recorded when it began to wait. Never a holder, never
+#                           a pid set, never a signal: see CANCEL-WAIT below. Exit 0 cancelled, 1 refused.
 # status                    who holds it and how long; exit 0 free, 1 held.
+#
+# A `claim` and the `release` RECIPE (`just release`, not the `release` verb here, which never checks
+# the disk, so a full disk cannot stop a holder giving its lock back) refuse, before any effect, when
+# the checkout's, the shared lock directory's or cargo's volume is short of AE_LANE_MIN_FREE_GIB
+# (default 20): a claim refused so takes no lock (DISKFREE).
+#
+# CANCEL-WAIT (ae-feedback 65). A waiting claim registers an incarnation directory
+# `<main checkout>/.local/locks/waiting/w.XXXXXX` (mktemp: a path no later claim can recreate)
+# holding exactly one state file, `waiting`, `acquiring` or `cancelled`, of one line
+# `<name> <pid> <identity> <host>` (pid of the recipe shell, its `ps -o lstart=` letters and digits,
+# `hostname`). The claim leaves WAITING with `mv waiting acquiring` before every attempt after the
+# first; `cancel-wait` leaves it with `mv waiting cancelled`. One rename path, so exactly one
+# of them wins: after a cancel wins, that claim can never reach `acquiring`, and a claim that has
+# reached it can no longer be cancelled. Either rename refuses, moving nothing, when its source is
+# not a plain file or its destination exists in any form. The claim sleeps in whole seconds and looks
+# for `cancelled` after each, so a cancel ends it within about a second while the attempt, and the
+# printed `waiting` line, keep the 30 s poll. A claim that cannot publish its record, or publish it
+# again after an attempt, stops with a refusal rather than wait where nothing can cancel it.
+# `cancel-wait` validates the one record naming <name> BEFORE it moves anything: the incarnation
+# holds exactly one plain state file of exactly one well formed line, this host recorded it, its
+# pid is alive with the recorded identity, the gate holder is another name, the state is `waiting`.
+# Any doubt refuses and leaves it alone. A record whose process is provably gone, in any state, is
+# stale: `cancel-wait` removes it and never counts it. Concurrent claims of the same name may
+# coexist (the owner line still decides acquisition); `cancel-wait` refuses when more than one live
+# record names it. A SIGKILLed claim leaves such a stale directory.
 #
 # NEVER AUTO-STEAL, NEVER AUTO-BREAK. A lock whose holder is gone is REPORTED
 # ("suspect") and left standing: a human or the lead clears it, by hand, after
@@ -851,20 +989,21 @@ test-affected *args:
 # cannot prove a holder dead, so nothing here acts on it. The queue check and the
 # claim are two steps, as they were by hand: `next` is a courtesy, the owner create is the lock.
 
-# Claim, release or inspect the gate lane lock: claim NAME [WAIT-SECS] | release NAME | status
+# Claim, release or inspect the gate lane lock: claim NAME [WAIT-SECS] | release NAME | cancel-wait NAME | status
 [no-exit-message]
 lane-lock verb name="" wait="0":
     #!/usr/bin/env bash
     set -euo pipefail
+    {{ DISKFREE }}
     verb="$1"
     name="${2:-}"
     wait="${3:-0}"
     poll=30
     suspect_secs=3600
-    usage() { echo "usage: just lane-lock claim <name> [wait-secs] | release <name> | status" >&2; exit 2; }
+    usage() { echo "usage: just lane-lock claim <name> [wait-secs] | release <name> | cancel-wait <name> | status" >&2; exit 2; }
     refuse() { echo "lane-lock: refused: $*" >&2; exit 1; }
     case "$verb" in
-        claim | release) [[ -n "$name" ]] || usage ;;
+        claim | release | cancel-wait) [[ -n "$name" ]] || usage ;;
         status) ;;
         *) usage ;;
     esac
@@ -946,6 +1085,124 @@ lane-lock verb name="" wait="0":
             echo "held by $h_line (age unknown)"
         fi
     }
+    waiting="$locks/waiting"
+    # A process's start identity: its `ps -o lstart=` start time, keeping the ASCII letters and digits
+    # (the same reading `_tmux-isolated` and tests/it/parity.rs make).
+    proc_identity() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | LC_ALL=C tr -cd 'A-Za-z0-9'; }
+    # claimant_state PID IDENTITY: alive when the pid is the recorded process, gone when no such
+    # process exists or the pid now has another identity, unsure when it exists but cannot be read.
+    claimant_state() {
+        local pid="$1" ident="$2" error current
+        if error="$(LC_ALL=C kill -0 "$pid" 2>&1)" || [[ "$error" != *"No such process"* ]]; then
+            current="$(proc_identity "$pid" || true)"
+            if [[ -z "$current" ]]; then echo unsure; elif [[ "$current" == "$ident" ]]; then echo alive; else echo gone; fi
+        else
+            echo gone
+        fi
+    }
+    # The incarnation of a claim that is waiting (see CANCEL-WAIT above): its directory, empty until
+    # the claim first waits, and the state this claim last published in it, `waiting` or `acquiring`.
+    inc=""
+    inc_state=""
+    inc_remove() {
+        [[ -n "${1:-}" ]] || return 0
+        rm -f "$1/waiting" "$1/acquiring" "$1/cancelled" "$1/.new" 2>/dev/null || true
+        rmdir "$1" 2>/dev/null || true
+    }
+    # state_move DIR FROM TO: the one rename of the protocol, on a state file of DIR. It moves nothing
+    # unless FROM is a plain file and TO does not exist in any form (a directory named TO would
+    # otherwise take the file in), so a conflicting state refuses, never half-moves.
+    state_move() {
+        [[ -f "$1/$2" && ! -L "$1/$2" && ! -e "$1/$3" && ! -L "$1/$3" ]] || return 1
+        mv "$1/$2" "$1/$3" 2>/dev/null
+    }
+    # Enter or re-enter WAITING. The first time the claim creates its incarnation (state file written
+    # whole, then renamed into place); after an attempt that did not win, `acquiring` goes back to
+    # `waiting`. A claim that cannot publish that state does not wait: it stops, since nothing could
+    # cancel it while it sleeps and then takes the lock.
+    wait_register() {
+        local ident host
+        if [[ -n "$inc" ]]; then
+            state_move "$inc" acquiring waiting || refuse "this claim could not publish its waiting record again under $inc; it stops rather than wait where nothing can cancel it"
+            inc_state=waiting
+            return 0
+        fi
+        ident="$(proc_identity $$ || true)"
+        host="$(hostname 2>/dev/null || true)"
+        if [[ -n "$ident" && "$host" =~ ^[A-Za-z0-9._-]+$ ]] &&
+            mkdir -p "$waiting" 2>/dev/null &&
+            [[ -d "$waiting" && ! -L "$waiting" ]] &&
+            inc="$(mktemp -d "$waiting/w.XXXXXX" 2>/dev/null)" &&
+            printf '%s %s %s %s\n' "$name" "$$" "$ident" "$host" >"$inc/.new" 2>/dev/null &&
+            mv "$inc/.new" "$inc/waiting" 2>/dev/null; then
+            inc_state=waiting
+            return 0
+        fi
+        inc_remove "$inc"
+        inc=""
+        refuse "this claim could not register under $waiting (its process identity or the host name cannot be read, or the directory cannot be written); it stops rather than wait where nothing can cancel it"
+    }
+    # WAITING to ACQUIRING before an attempt. A failed rename means the record was taken (a cancel won)
+    # or is gone or conflicts: either way no attempt is made.
+    wait_leave() {
+        [[ -n "$inc" && "$inc_state" == waiting ]] || return 0
+        if ! state_move "$inc" waiting acquiring; then
+            if [[ -f "$inc/cancelled" && ! -L "$inc/cancelled" ]]; then
+                echo "lane-lock: cancelled: the waiting claim of $name was cancelled; nothing was claimed" >&2
+                exit 1
+            fi
+            refuse "the waiting record of this claim is gone or conflicts under $inc; nothing was claimed"
+        fi
+        inc_state=acquiring
+    }
+    # Sleep whole seconds, looking for a cancel after each.
+    nap() {
+        local left="$1"
+        while ((left > 0)); do
+            sleep 1
+            left=$((left - 1))
+            if [[ -n "$inc" && -f "$inc/cancelled" && ! -L "$inc/cancelled" ]]; then
+                echo "lane-lock: cancelled: the waiting claim of $name was cancelled; nothing was claimed" >&2
+                exit 1
+            fi
+        done
+    }
+    # read_record DIR: DIR must be a plain directory holding exactly one entry, a plain file named
+    # `waiting`, `acquiring` or `cancelled`, whose whole content is exactly one line
+    # `<name> <pid> <identity> <host>`. Returns 0 with r_state, r_name, r_pid, r_ident and r_host set;
+    # otherwise 1 with the reason in r_why. Nothing is moved or removed.
+    read_record() {
+        local dir="$1" entry count=0 line
+        local re='^([A-Za-z0-9][A-Za-z0-9_.-]{0,63}) ([0-9]+) ([A-Za-z0-9]+) ([A-Za-z0-9._-]+)$'
+        r_why=""
+        r_state=""
+        r_name=""
+        r_pid=""
+        r_ident=""
+        r_host=""
+        [[ -d "$dir" && ! -L "$dir" ]] || { r_why="it is not a plain directory"; return 1; }
+        for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+            [[ -e "$entry" || -L "$entry" ]] || continue
+            count=$((count + 1))
+            r_state="${entry##*/}"
+        done
+        ((count == 1)) || { r_why="it holds $count entries, not exactly one state file"; return 1; }
+        case "$r_state" in
+            waiting | acquiring | cancelled) ;;
+            *) r_why="its one entry is not a state file"; return 1 ;;
+        esac
+        [[ -f "$dir/$r_state" && ! -L "$dir/$r_state" ]] || { r_why="its state is not a plain file"; return 1; }
+        line="$(cat "$dir/$r_state" 2>/dev/null)" || { r_why="its state cannot be read"; return 1; }
+        if [[ "$line" == *$'\n'* ]] || ! printf '%s\n' "$line" | cmp -s - "$dir/$r_state"; then
+            r_why="its state is not exactly one line"
+            return 1
+        fi
+        [[ "$line" =~ $re ]] || { r_why="its line is not well formed"; return 1; }
+        r_name="${BASH_REMATCH[1]}"
+        r_pid="${BASH_REMATCH[2]}"
+        r_ident="${BASH_REMATCH[3]}"
+        r_host="${BASH_REMATCH[4]}"
+    }
     case "$verb" in
         status)
             if [[ ! -e "$gate" && ! -L "$gate" ]]; then
@@ -1018,11 +1275,98 @@ lane-lock verb name="" wait="0":
             rmdir "$gate" || refuse "the owner line is removed, but $gate could not be removed"
             echo "lane-lock: released by $name"
             ;;
+        cancel-wait)
+            # Validate first, move second (CANCEL-WAIT above). No signal is sent and no process table is read.
+            here="$(hostname 2>/dev/null || true)"
+            found=0
+            pruned=0
+            rec=""
+            if [[ -d "$waiting" && ! -L "$waiting" ]]; then
+                for dir in "$waiting"/w.??????; do
+                    [[ -d "$dir" && ! -L "$dir" ]] || continue
+                    # A directory belongs to <name> when a state file of it opens with that name.
+                    named=0
+                    for state in waiting acquiring cancelled; do
+                        [[ -f "$dir/$state" && ! -L "$dir/$state" ]] || continue
+                        line="$(head -n 1 "$dir/$state" 2>/dev/null || true)"
+                        [[ "${line%% *}" != "$name" ]] || named=1
+                    done
+                    ((named)) || continue
+                    # A well formed record of this host whose process is provably gone is stale in any
+                    # state: it is removed and never counted, so it cannot make a live claim ambiguous.
+                    if read_record "$dir" && [[ "$r_host" == "$here" && "$(claimant_state "$r_pid" "$r_ident")" == gone ]]; then
+                        inc_remove "$dir"
+                        pruned=$((pruned + 1))
+                        continue
+                    fi
+                    found=$((found + 1))
+                    rec="$dir"
+                done
+            fi
+            if ((found == 0)); then
+                if ((pruned > 0)); then
+                    echo "lane-lock: the claim of $name is gone ($pruned stale record(s) removed); nothing was cancelled" >&2
+                    exit 1
+                fi
+                refuse "no claim named $name is waiting"
+            fi
+            ((found == 1)) || refuse "$found claims named $name are waiting; cancel-wait cannot tell which one to stop, and moved nothing"
+            read_record "$rec" || refuse "the record of $name in $rec cannot be used ($r_why); left alone"
+            [[ "$r_name" == "$name" ]] || refuse "the record in $rec names $r_name, not $name; left alone"
+            [[ "$r_host" == "$here" ]] || refuse "the claim of $name was recorded on host $r_host, not on this machine ($here); left alone"
+            case "$(claimant_state "$r_pid" "$r_ident")" in
+                alive) ;;
+                gone)
+                    inc_remove "$rec"
+                    echo "lane-lock: the claim of $name (pid $r_pid) is gone; its stale record is removed, nothing was cancelled" >&2
+                    exit 1
+                    ;;
+                *) refuse "pid $r_pid of the claim of $name cannot be read, so it is not provably that claim; left alone" ;;
+            esac
+            read_holder
+            [[ "$h_name" != "$name" ]] || refuse "$name holds the gate; cancel-wait never touches a holder"
+            case "$r_state" in
+                acquiring) refuse "the claim of $name (pid $r_pid) is acquiring now and cannot be cancelled; nothing moved" ;;
+                cancelled) refuse "the claim of $name (pid $r_pid) is already cancelled and ending; nothing moved" ;;
+            esac
+            # THE DECISION: one rename. It succeeds only while the claim is still WAITING.
+            state_move "$rec" waiting cancelled || refuse "the claim of $name is no longer waiting, or its state conflicts (it began to acquire, or ended); nothing was cancelled"
+            tries=10
+            while [[ -d "$rec" ]] && ((tries-- > 0)); do
+                if [[ "$(claimant_state "$r_pid" "$r_ident")" == gone ]]; then
+                    inc_remove "$rec"
+                    break
+                fi
+                sleep 1
+            done
+            if [[ -d "$rec" ]]; then
+                echo "lane-lock: cancel decided for $name, but pid $r_pid has not ended after 10 s; it cannot take the lock" >&2
+                exit 1
+            fi
+            echo "lane-lock: cancelled the waiting claim of $name (pid $r_pid); it will not claim"
+            ;;
         claim)
+            disk_floor lane-lock "$locks"
             mkdir -p "$locks"
             start="$(date +%s)"
             vanished=0
+            attempt=0
+            # The incarnation of a waiting claim goes with the claim, on every way out; TERM, INT and HUP
+            # are exits so that it does (SIGKILL leaves a stale one, which cancel-wait consumes).
+            claim_cleanup() {
+                local status=$?
+                inc_remove "$inc"
+                exit "$status"
+            }
+            trap claim_cleanup EXIT
+            trap 'exit 143' TERM
+            trap 'exit 130' INT
+            trap 'exit 129' HUP
             while :; do
+                if ((attempt++ > 0)); then
+                    disk_floor lane-lock "$locks"
+                    wait_leave
+                fi
                 if [[ ! -s "$next_file" || "$(cat "$next_file")" == "$name" ]]; then
                     # A standing gate is held and is not asked about: a `mkdir` that is not atomic reports
                     # success for it. Two claimants can still both pass this look and both `mkdir`; the
@@ -1058,8 +1402,9 @@ lane-lock verb name="" wait="0":
                     echo "lane-lock: not claimed: $why" >&2
                     exit 1
                 fi
+                wait_register
                 echo "lane-lock: waiting, ${left}s left: $why" >&2
-                if (( left < poll )); then sleep "$left"; else sleep "$poll"; fi
+                if (( left < poll )); then nap "$left"; else nap "$poll"; fi
             done
             ;;
     esac
@@ -1439,6 +1784,12 @@ release:
     set -euo pipefail
     {{ NEST }}
     {{ DETACHED }}
+    {{ DISKFREE }}
+
+    # THE DISK FLOOR comes first, before anything is claimed, fetched or written: a release that
+    # runs out of disk mid-way stops after its claim and leaves a suspect lane lock. It refuses when
+    # the checkout's or cargo's volume has less than AE_LANE_MIN_FREE_GIB (default 20) free.
+    disk_floor release
 
     # Pre-flight: clean working tree (staged, unstaged, AND untracked)
     if ! git diff --quiet HEAD || [ -n "$(git ls-files --others --exclude-standard)" ]; then
@@ -3259,22 +3610,67 @@ _tmux-isolated lane *args:
         fi
         return 0
     }
+    # THE BOUND of the stale-scratch sweep (`reap_dead_scratch`). `bound_run <command...>` runs a
+    # command as it stands, except while the sweep has set `bound_tool` (timeout or gtimeout): then
+    # it runs under `<tool> -k 1 <secs>`, <secs> the least of 10 and what is left of the sweep's
+    # `sweep_deadline` (a SECONDS value), and a timeout (124, or 137 after the kill) sets
+    # `bound_hit`. Outside the sweep `bound_tool` is empty, so every other caller runs unchanged.
+    bound_tool=""
+    bound_hit=0
+    sweep_deadline=0
+    bound_run() {
+        local secs status=0
+        if [[ -z "$bound_tool" ]]; then
+            "$@"
+            return
+        fi
+        secs=$((sweep_deadline - SECONDS))
+        if ((secs > 10)); then secs=10; fi
+        if ((secs < 1)); then
+            bound_hit=1
+            return 124
+        fi
+        "$bound_tool" -k 1 "$secs" "$@" || status=$?
+        bound_note "$status"
+        return "$status"
+    }
+    # bound_note STATUS: while the sweep holds `bound_tool`, a timeout status (124, or 137 after the
+    # kill) sets `bound_hit`; with no `bound_tool` it does nothing, so the flag never outlives the
+    # sweep or reaches the unbounded callers. A command run inside a command substitution loses the
+    # flag with its subshell, so its caller notes the status.
+    bound_note() { if [[ -n "$bound_tool" ]]; then case "$1" in 124 | 137) bound_hit=1 ;; esac; fi; }
     # A socket whose server is already gone counts as reaped. An installed-shape
     # test server refuses kill-server (src/session_tmux.rs): its guard is dropped
     # first, on this explicit socket, and the kill's exit status is never taken
     # as proof: the server must stop answering.
     reap_sockets() {
-        local root="$1" socket error failed=0 tries
-        find "$root" -type s -print >/dev/null 2>&1 || return 1
+        local root="$1" socket sockets error failed=0 tries status=0
+        shift
+        sockets="$(bound_run find "$root" -type s -print 2>/dev/null)" || status=$?
+        bound_note "$status"
+        ((status == 0)) || return 1
+        # The optional rest of the arguments is a guard command, run after the scan and immediately
+        # before EACH effect on a socket, set-option and kill-server alike (either can take the
+        # bound's seconds): the sweep passes its proof that the root is still the same dead owner's,
+        # so a root replaced while the scan or the set-option ran never has its sockets touched.
+        if (($# > 0)) && ! "$@"; then return 1; fi
         while IFS= read -r socket; do
-            env -u TMUX -u TMUX_PANE tmux -S "$socket" set-option -su command-alias >/dev/null 2>&1 || true
-            error="$(tmux -S "$socket" kill-server 2>&1)" || [[ "$error" == *"no server running"* ]] || failed=1
+            [[ -n "$socket" ]] || continue
+            ((bound_hit == 0)) || return 1
+            if (($# > 0)) && ! "$@"; then return 1; fi
+            bound_run env -u TMUX -u TMUX_PANE tmux -S "$socket" set-option -su command-alias >/dev/null 2>&1 || true
+            ((bound_hit == 0)) || return 1
+            if (($# > 0)) && ! "$@"; then return 1; fi
+            status=0
+            error="$(bound_run tmux -S "$socket" kill-server 2>&1)" || status=$?
+            bound_note "$status"
+            if ((status != 0)) && [[ "$error" != *"no server running"* ]]; then failed=1; fi
             tries=20
-            while env -u TMUX -u TMUX_PANE tmux -S "$socket" list-sessions >/dev/null 2>&1; do
+            while bound_run env -u TMUX -u TMUX_PANE tmux -S "$socket" list-sessions >/dev/null 2>&1; do
                 ((--tries)) || { failed=1; break; }
                 sleep 0.1
             done
-        done < <(find "$root" -type s -print 2>/dev/null)
+        done <<<"$sockets"
         return "$failed"
     }
     # The ONE deletion rule, as tests/it/scratch.rs::owned_root: a registered
@@ -3334,7 +3730,7 @@ _tmux-isolated lane *args:
     # bound may fail the lane: a root still there after 30 s is a leak of THIS
     # lane, not a race.
     keep_or_remove() {
-        rm -rf "$1" 2>/dev/null || echo "note: kept $1: could not be deleted (a writer may still hold it); the next lane start retries" >&2
+        bound_run rm -rf "$1" 2>/dev/null || echo "note: kept $1: could not be deleted (a writer may still hold it); the next lane start retries" >&2
     }
     reap_stale_lanes() {
         local root stale name owner
@@ -3352,23 +3748,104 @@ _tmux-isolated lane *args:
             [[ "$legacy" != "$base" ]] || break
         done
     }
-    # A dead test's root no lane registered, and only when older than this
-    # lane: a reused pid's fresh root is never taken.
+    # A dead test's root no lane registered: `ae-it-<pid>`, and the runner's own
+    # `ae-it-shadow-<pid>` and `ae-it-tmux-<pid>`, each a plain directory (never a link) of this
+    # uid, and only when older than this lane and its pid is gone by `owner_is_dead`
+    # (no recorded identity: a pid that still answers keeps its root): a reused pid's fresh
+    # root is never taken. A test killed between a chmod and its restore leaves directories at
+    # 0555 that `rm -rf` cannot empty, and the old sweep named such a root again at every lane
+    # start; so a root is repaired first as `reap_registry` does (`find -type d`, never a link).
+    # THE SWEEP IS BOUNDED, never a failure of the lane: the `sweep_secs` budget starts on entry and
+    # is checked before every entry, live roots and foreign names included; at most `sweep_scan`
+    # entries are examined and `sweep_max` roots acted on per call. Every external step runs under
+    # `bound_run`, whose timeout status survives a command substitution through `bound_note`; what a
+    # call leaves stays for the next lane start, and a stop says so in one note. The timeout state is
+    # the sweep's own: it is reset when the sweep ends, so the unbounded reaps after it never see it.
+    # A root is judged and acted on one at a time, never from a list gathered earlier: `sweep_proof`
+    # is taken again, with the inode it first named, after the socket scan and before each socket
+    # effect, the repair and the removal, so a pid that came back or a path that was replaced while
+    # the sweep worked is left alone. A probe that fails or times out proves nothing and stops the
+    # sweep. Without a timeout tool (timeout, or gtimeout from brew coreutils) it cannot be bounded:
+    # at the first dead root it says so and runs no external probe.
+    sweep_max=64
+    sweep_scan=512
+    sweep_secs=20
+    # sweep_proof DIR OWNER INODE FRESHNESS: DIR is still a plain directory of this uid with that
+    # inode, its owner is gone, and (FRESHNESS = fresh) it is older than this lane. The freshness
+    # is read once: the sweep's own work changes the directory afterwards.
+    sweep_proof() {
+        local dir="$1" owner="$2" ino="$3" check="$4" now fresh status=0
+        [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+        now="$(bound_run ls -di "$dir" 2>/dev/null)" || status=$?
+        bound_note "$status"
+        ((status == 0)) || return 1
+        [[ "${now%% *}" == "$ino" ]] || return 1
+        if [[ "$check" == fresh ]]; then
+            fresh="$(bound_run find "$dir" -prune -newer "$test_tmux_tmp" 2>/dev/null)" || status=$?
+            bound_note "$status"
+            ((status == 0)) || return 1
+            [[ -z "$fresh" ]] || return 1
+        fi
+        owner_is_dead "$owner"
+    }
+    # sweep_one DIR OWNER: returns 0 when the root was dealt with or left alone, 1 to stop the sweep.
+    sweep_one() {
+        local dir="$1" owner="$2" ino status=0
+        ino="$(bound_run ls -di "$dir" 2>/dev/null)" || status=$?
+        bound_note "$status"
+        if ((bound_hit)); then return 1; fi
+        ((status == 0)) || return 0
+        ino="${ino%% *}"
+        sweep_proof "$dir" "$owner" "$ino" fresh || { if ((bound_hit)); then return 1; fi; return 0; }
+        if ! reap_sockets "$dir" sweep_proof "$dir" "$owner" "$ino" kept; then
+            if ((bound_hit)); then return 1; fi
+            return 0
+        fi
+        if ((bound_hit)); then return 1; fi
+        sweep_proof "$dir" "$owner" "$ino" kept || { if ((bound_hit)); then return 1; fi; return 0; }
+        bound_run find "$dir" -type d -exec chmod u+rwx {} \; >/dev/null 2>&1 || true
+        if ((bound_hit)); then return 1; fi
+        if sweep_proof "$dir" "$owner" "$ino" kept; then keep_or_remove "$dir"; fi
+        if ((bound_hit)); then return 1; fi
+        return 0
+    }
     reap_dead_scratch() {
-        local dir owner
+        local dir name owner timer scanned=0 acted=0 why=""
+        timer="$(command -v timeout || command -v gtimeout || true)"
+        sweep_deadline=$((SECONDS + sweep_secs))
+        bound_tool="$timer"
+        bound_hit=0
         for dir in "$base"/ae-it-*; do
-            [[ -d "$dir" && ! -L "$dir" ]] || continue
-            owner="${dir##*/ae-it-}"
+            if ((scanned >= sweep_scan)); then why="$sweep_scan entries examined"; break; fi
+            if ((SECONDS >= sweep_deadline)); then why="the ${sweep_secs} s budget"; break; fi
+            scanned=$((scanned + 1))
+            [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || continue
+            name="${dir##*/ae-it-}"
+            case "$name" in
+                shadow-*) owner="${name#shadow-}" ;;
+                tmux-*) owner="${name#tmux-}" ;;
+                *) owner="$name" ;;
+            esac
             [[ "$owner" =~ ^[0-9]+$ ]] || continue
-            [[ -z "$(find "$dir" -prune -newer "$test_tmux_tmp")" ]] || continue
             owner_is_dead "$owner" || continue
-            if reap_sockets "$dir"; then keep_or_remove "$dir"; fi
+            if [[ -z "$timer" ]]; then
+                echo "note: stale scratch sweep skipped: no timeout tool (timeout, or gtimeout from brew coreutils) to bound it; the next lane start retries" >&2
+                break
+            fi
+            if ((acted >= sweep_max)); then why="$sweep_max roots"; break; fi
+            acted=$((acted + 1))
+            sweep_one "$dir" "$owner" || { why="the ${sweep_secs} s budget or a step timeout"; break; }
         done
+        # The timeout state belongs to the sweep: the unbounded callers after it never see it.
+        bound_tool=""
+        bound_hit=0
+        [[ -z "$why" ]] || echo "note: stale scratch sweep stopped at $why; the next lane start continues" >&2
     }
     reap_stale_lanes
     test_tmux_tmp="$(mktemp -d "$base/ae-rust-test.$$.XXXXXX")"
     cleanup() {
         local status=$? tries=30 live=30 leaked=0
+        bound_tool=""
         [[ -z "${watcher:-}" ]] || kill "$watcher" 2>/dev/null || true
         # Explicit socket, never a short -L: outside this directory that name is the live fleet server.
         # An installed-shape test server refuses kill-server: drop its guard first, then prove

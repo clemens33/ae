@@ -42,6 +42,7 @@ mod receipt_spec;
 mod affected;
 mod bashfloor;
 mod gatereap_lost;
+mod lanesafe_spec;
 mod macos_subset;
 #[allow(
     clippy::expect_used,
@@ -1544,12 +1545,25 @@ fn a_cleanup_race_never_fails_an_all_green_lane() {
     }
     let _guard = Unwritable(vec![dead.clone(), stale.clone()]);
     let cargo = base.join("bin").join("cargo");
+    let rm = base.join("bin").join("rm");
     std::fs::create_dir_all(base.join("bin")).expect("the fake cargo's dir");
     std::fs::write(&cargo, "#!/bin/sh\nexit 0\n").expect("the fake cargo");
+    std::fs::write(
+        &rm,
+        r#"#!/bin/sh
+for arg do
+    if [ "$arg" = "$AE_GATE_CLEANUP_RACE" ]; then exit 1; fi
+done
+PATH=${PATH#*:} exec rm "$@"
+"#,
+    )
+    .expect("a simulated deletion failure after permission repair");
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755))
-            .expect("an executable fake cargo");
+        for tool in [&cargo, &rm] {
+            std::fs::set_permissions(tool, std::fs::Permissions::from_mode(0o755))
+                .expect("an executable fixture tool");
+        }
     }
     let path = std::env::var("PATH").unwrap_or_default();
     let swept = raw::run(
@@ -1559,7 +1573,8 @@ fn a_cleanup_race_never_fails_an_all_green_lane() {
             .env("PATH", format!("{}:{path}", base.join("bin").display()))
             .env("HOME", &*base)
             .env("TMPDIR", &*base)
-            .env("AE_TEST_TMPDIR", &*base),
+            .env("AE_TEST_TMPDIR", &*base)
+            .env("AE_GATE_CLEANUP_RACE", &dead),
         &root(),
         &base.join("race-out"),
         &base.join("race-err"),
@@ -9637,7 +9652,8 @@ fn run_in_env(
 ) -> (i32, String, String) {
     let mut invocation = Invocation::new(program)
         .env("HOME", scratch)
-        .env("GIT_CONFIG_GLOBAL", scratch.join("gitconfig"));
+        .env("GIT_CONFIG_GLOBAL", scratch.join("gitconfig"))
+        .env("AE_LANE_MIN_FREE_GIB", "0");
     for (key, value) in env {
         invocation = invocation.env(key, value);
     }

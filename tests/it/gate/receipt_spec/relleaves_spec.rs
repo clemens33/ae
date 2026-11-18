@@ -678,6 +678,7 @@ fn interrupted_step_case(kind: &str) {
         .arg("-c")
         .arg(format!("{SAFE_CLEANUP}\n{OBSERVER}"))
         .env_cleared()
+        .env("AE_LANE_MIN_FREE_GIB", "0")
         .env(
             "PATH",
             format!(
