@@ -697,19 +697,19 @@ fn item<'a>(text: &'a str, header: &str) -> &'a str {
 
 #[test]
 fn no_decision_path_reads_quota_history() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let read = |file: &str| std::fs::read_to_string(src.join(file)).expect("source");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |file: &str| std::fs::read_to_string(root.join(file)).expect("source");
     let reads = ["read_fleet", "HistoryCache", "view_held_cached"];
     for file in [
-        "watchdog_daemon.rs",
-        "autoreseat.rs",
-        "autoreseat/leg.rs",
-        "effort.rs",
-        "effort/leg.rs",
-        "doctor.rs",
+        "src/watchdog_daemon.rs",
+        "src/autoreseat.rs",
+        "src/autoreseat/leg.rs",
+        "src/effort.rs",
+        "src/effort/leg.rs",
+        "src/doctor.rs",
     ] {
         let text = match file {
-            "watchdog_daemon.rs" => {
+            "src/watchdog_daemon.rs" => {
                 crate::support::source_view::module_family("src/watchdog_daemon.rs", false)
             }
             _ => read(file),
@@ -718,7 +718,7 @@ fn no_decision_path_reads_quota_history() {
             assert!(!text.contains(word), "{file} reaches {word}");
         }
     }
-    let quota = read("quota.rs");
+    let quota = read("src/quota.rs");
     for header in [
         "pub(crate) fn observe(",
         "pub(crate) fn observe_full(",

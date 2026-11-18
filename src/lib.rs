@@ -86,7 +86,7 @@ pub mod restore;
 pub mod roster;
 pub mod run;
 pub mod sanitize;
-pub(crate) mod seat_relaunch;
+mod seat_relaunch;
 pub mod seatcompact;
 mod seatcompact_run;
 pub mod seatpack;

@@ -1182,9 +1182,8 @@ fn deny_entries(config: &str) -> Vec<(String, Option<String>)> {
     entries
 }
 
-/// What a reason names that must exist: the `src/` files it cites, and the
-/// `module::function` doors it cites, each as the function's declaration.
-fn door_claims(reason: &str) -> (Vec<String>, Vec<(String, String)>) {
+/// What a reason cites, as written: the `src/*.rs` words, and the `module::function` words.
+fn citations(reason: &str) -> (Vec<String>, Vec<String>) {
     let words = reason.split(|c: char| !(c.is_alphanumeric() || "_:/.".contains(c)));
     let mut files = Vec::new();
     let mut doors = Vec::new();
@@ -1192,11 +1191,57 @@ fn door_claims(reason: &str) -> (Vec<String>, Vec<(String, String)>) {
         let word = word.trim_matches(|c| c == ':' || c == '.');
         if word.starts_with("src/") && Path::new(word).extension().is_some_and(|ext| ext == "rs") {
             files.push(word.to_owned());
-        } else if let Some((module, function)) = word.split_once("::") {
-            doors.push((format!("src/{module}.rs"), function.to_owned()));
+        } else if word.contains("::") {
+            doors.push(word.to_owned());
         }
     }
     (files, doors)
+}
+
+/// What a reason cites, resolved: the cited `src/` files, and each door as `(file, function)`.
+type Claims = (Vec<String>, Vec<(String, String)>);
+
+/// What a reason names that must exist, checked against `files` (`(path, raw text)`): every
+/// cited `src/` file exists, and every `module::function` door resolves through the ungated
+/// registrations from src/lib.rs (a root alias such as `pub use l0_base::json;` included) to
+/// one file whose production view declares the function at its top level. The doors come back
+/// as `(file, function)`. `Err` names the first citation that does not hold: an unresolved,
+/// ambiguous or test-only token is never a dropped claim.
+fn door_claims_in(reason: &str, files: &[(String, String)]) -> Result<Claims, String> {
+    let (cited, words) = citations(reason);
+    for file in &cited {
+        if !files.iter().any(|(name, _)| name == file) {
+            return Err(format!("the reason cites {file}, which does not exist"));
+        }
+    }
+    let mut doors = Vec::new();
+    for word in &words {
+        let segments: Vec<&str> = word.split("::").collect();
+        let Some((function, module)) = segments
+            .split_last()
+            .filter(|(_, module)| !module.is_empty() && segments.iter().all(|s| !s.is_empty()))
+        else {
+            return Err(format!(
+                "the reason cites `{word}`, which is no `module::function` path"
+            ));
+        };
+        let file = layers::module_file(files, module)
+            .map_err(|why| format!("the reason cites `{word}`: {why}"))?;
+        let text = files
+            .iter()
+            .find(|(name, _)| *name == file)
+            .map_or("", |(_, text)| text.as_str());
+        let declared = layers::declares_function(&file, text, function)
+            .map_err(|why| format!("the reason cites `{word}`: {why}"))?;
+        if !declared {
+            return Err(format!(
+                "the reason cites `{word}`, but {file} declares no production function \
+                 `{function}` at its top level"
+            ));
+        }
+        doors.push((file, (*function).to_owned()));
+    }
+    Ok((cited, doors))
 }
 
 #[test]
@@ -1220,30 +1265,14 @@ fn every_denied_entry_names_the_door_to_use_instead() {
             (20..=100).contains(&reason.len()),
             "`{path}` reason must be 20..=100 chars, one line: {reason:?}"
         );
-        let (files, doors) = door_claims(reason);
+        // A reason that names a door that moved is worse than none.
+        let (files, doors) = door_claims_in(reason, source_view::tree())
+            .unwrap_or_else(|why| panic!("`{path}`: {why}"));
         assert!(
             !files.is_empty() || !doors.is_empty(),
             "`{path}` reason names no door (a `src/<file>.rs` or `module::function`): {reason:?}"
         );
-        // A reason that names a door that moved is worse than none.
-        for file in &files {
-            assert!(
-                source_view::tree().iter().any(|(name, _)| name == file),
-                "`{path}` reason cites {file}, which does not exist"
-            );
-        }
-        for (file, function) in &doors {
-            cited += 1;
-            let text = source_view::tree()
-                .iter()
-                .find(|(name, _)| name == file)
-                .map_or("", |(_, text)| text.as_str());
-            assert!(
-                text.contains(&format!("fn {function}("))
-                    || text.contains(&format!("fn {function}<")),
-                "`{path}` reason cites {file}::{function}, which is not a function there"
-            );
-        }
+        cited += doors.len();
     }
     assert!(
         cited > 0,
@@ -1270,12 +1299,102 @@ fn the_deny_list_reader_sees_a_bare_path_and_a_reasonless_table() {
         deny_entries("disallowed-types = [\"std::process::Command\"]\n"),
         vec![("std::process::Command".to_owned(), None)]
     );
-    let (files, doors) = door_claims("run via src/transport.rs run_* leg; store::read_capped (x)");
+    // The real tree, so a move rewrites the cited paths and the tree alike.
+    let (files, doors) = door_claims_in(
+        "run via src/transport.rs run_* leg; store::read_capped (x)",
+        source_view::tree(),
+    )
+    .unwrap_or_else(|why| panic!("{why}"));
     assert_eq!(files, vec!["src/transport.rs".to_owned()]);
     assert_eq!(
         doors,
         vec![("src/store.rs".to_owned(), "read_capped".to_owned())]
     );
+}
+
+#[test]
+fn p0_review_a_door_citation_never_resolves_to_test_only_code() {
+    // Review r1 (layout-nav): a gated nested module and a gated function in a production file
+    // are no doors. Paths are assembled from pieces.
+    let tree: Vec<(String, String)> = [
+        ("lib", "pub mod store;\n"),
+        (
+            "store",
+            "#[cfg(test)]\nmod fallback;\n#[cfg(test)]\nfn helper() {}\npub fn read_capped() {}\n",
+        ),
+        ("store/fallback", "pub fn invoke() {}\n"),
+    ]
+    .into_iter()
+    .map(|(module, text)| (format!("{}/{module}.rs", "src"), text.to_owned()))
+    .collect();
+    for (word, reason) in [
+        ("store::fallback::invoke", "use store::fallback::invoke"),
+        ("store::helper", "use store::helper"),
+    ] {
+        let refused = door_claims_in(reason, &tree);
+        assert!(
+            refused.as_ref().is_err_and(|why| why.contains(word)),
+            "{word} names test-only code, yet: {refused:?}"
+        );
+    }
+    let (_, doors) =
+        door_claims_in("use store::read_capped", &tree).unwrap_or_else(|why| panic!("{why}"));
+    assert_eq!(doors, vec![(tree[1].0.clone(), "read_capped".to_owned())]);
+}
+
+#[test]
+fn p0_review_a_door_citation_never_resolves_through_a_test_only_root_alias() {
+    // Review r2 (layout-nav): the root alias is the only gated item. The name `test_store`
+    // exists only in test builds, so a citation through it names no production door.
+    let tree: Vec<(String, String)> = [
+        (
+            "lib",
+            "pub mod store;\n#[cfg(test)]\npub use store as test_store;\n",
+        ),
+        ("store", "pub fn read_capped() {}\n"),
+    ]
+    .into_iter()
+    .map(|(module, text)| (format!("{}/{module}.rs", "src"), text.to_owned()))
+    .collect();
+    let refused = door_claims_in("use test_store::read_capped", &tree);
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|why| why.contains("test_store")),
+        "test_store exists only in test builds, yet: {refused:?}"
+    );
+    // Control: the same tree, cited through the production name.
+    let (_, doors) =
+        door_claims_in("use store::read_capped", &tree).unwrap_or_else(|why| panic!("{why}"));
+    assert_eq!(doors, vec![(tree[1].0.clone(), "read_capped".to_owned())]);
+}
+
+#[test]
+fn p0_review_a_door_citation_resolves_through_a_qualified_or_raw_root_alias() {
+    // Review r3 (layout-nav): `self::`, `crate::` and raw identifiers in a same-name root
+    // alias name the same module as the plain spelling, so the citation resolves.
+    for alias in [
+        "pub use self::l5_ui::console;",
+        "pub use crate::l5_ui::console;",
+        "pub use r#l5_ui::r#console;",
+    ] {
+        let lib = format!("mod l5_ui;\n{alias}\n");
+        let tree: Vec<(String, String)> = [
+            ("lib", lib.as_str()),
+            ("l5_ui", "pub mod console;\n"),
+            ("l5_ui/console", "pub fn shown() {}\n"),
+        ]
+        .into_iter()
+        .map(|(module, text)| (format!("{}/{module}.rs", "src"), text.to_owned()))
+        .collect();
+        let (_, doors) = door_claims_in("use console::shown", &tree)
+            .unwrap_or_else(|why| panic!("{alias}: {why}"));
+        assert_eq!(
+            doors,
+            vec![(tree[2].0.clone(), "shown".to_owned())],
+            "{alias}"
+        );
+    }
 }
 
 // Contract/reference owners, index, and startup budget share this door's reads.
@@ -1293,3 +1412,80 @@ mod layers_spec;
 // The layer map in the contract reference lists the table's modules, layer by layer.
 #[path = "doors/layers_map.rs"]
 mod layers_map;
+// The frozen P0 folder and ownership cases call the entry point the real-tree guard uses.
+#[path = "doors/layers_folder_spec.rs"]
+mod layers_folder_spec;
+
+// Frozen P0 cases. Install this block in tests/it/doors.rs.
+#[cfg(test)]
+mod p0_door_claims_spec {
+    use super::door_claims_in;
+
+    fn source(module: &str) -> String {
+        const SOURCE: &str = "src";
+        format!("{SOURCE}/{module}.rs")
+    }
+
+    fn fixture() -> Vec<(String, String)> {
+        [
+            ("lib", "pub mod run; pub mod app;"),
+            ("run", "pub fn invoke() {}"),
+            ("app", "pub mod run;"),
+            ("app/run", "pub fn invoke() {}"),
+        ]
+        .into_iter()
+        .map(|(module, text)| (source(module), text.to_owned()))
+        .collect()
+    }
+
+    #[test]
+    fn p0_control_a_valid_citation_cannot_hide_an_unresolved_one() {
+        // This control also passes on the P0 parent.
+        let got = door_claims_in("use run::invoke or missing::absent", &fixture());
+        let Err(finding) = got else {
+            panic!("the unresolved citation was ignored: {got:?}");
+        };
+        assert!(
+            finding.contains("missing") && finding.contains("absent"),
+            "the finding must identify the unresolved citation: {finding}"
+        );
+    }
+
+    #[test]
+    fn p0_uses_the_complete_registered_module_path_when_basenames_collide() {
+        let got = door_claims_in("use run::invoke or app::run::invoke", &fixture())
+            .unwrap_or_else(|reason| panic!("both registered citations must resolve: {reason}"));
+        assert_eq!(
+            got,
+            (
+                Vec::new(),
+                vec![
+                    (source("run"), "invoke".to_owned()),
+                    (source("app/run"), "invoke".to_owned()),
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn p0_resolves_a_door_citation_through_a_foldered_root_alias() {
+        let files: Vec<_> = [
+            ("lib", "mod l0_base; pub use l0_base::json;"),
+            ("l0_base", "pub mod json;"),
+            ("l0_base/json", "pub fn parse() {}"),
+        ]
+        .into_iter()
+        .map(|(module, text)| (source(module), text.to_owned()))
+        .collect();
+
+        let got = door_claims_in("use json::parse for source", &files)
+            .unwrap_or_else(|reason| panic!("the root alias must resolve to the door: {reason}"));
+        assert_eq!(
+            got,
+            (
+                Vec::new(),
+                vec![(source("l0_base/json"), "parse".to_owned())]
+            )
+        );
+    }
+}

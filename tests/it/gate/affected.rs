@@ -131,6 +131,17 @@ const BUILD_INPUTS: [&str; 4] = [
     "rust-toolchain.toml",
 ];
 const LIB_ROOT: &str = "src/lib.rs";
+/// The layer modules src/lib.rs may register: each `src/l<N>_<word>.rs` holds the module
+/// declarations of its layer.
+const LAYER_MODULES: [&str; 7] = [
+    "l0_base",
+    "l1_platform",
+    "l2_model",
+    "l3_services",
+    "l4_orchestration",
+    "l5_ui",
+    "l6_shell",
+];
 const BIN_ROOT: &str = "src/main.rs";
 const IT_ROOT: &str = "tests/it/main.rs";
 const MAC_MANIFEST: &str = ".config/macos-subset";
@@ -562,6 +573,8 @@ struct Run<'a> {
     lexed: BTreeMap<&'a str, Lexed<'a>>,
     /// Every integration file: its owners and the module paths its text references.
     refs: Option<Refs>,
+    /// The root module aliases of src/lib.rs (`pub use l0_base::json;`), from `tree`.
+    aliases: Vec<(String, Vec<String>)>,
     reasons: BTreeSet<Reason>,
     owners: BTreeSet<String>,
     /// (owner, file, rule, target) to the first line that gave it.
@@ -588,6 +601,7 @@ impl<'a> Run<'a> {
                 .map(|(path, text)| (path.as_str(), modtree::lex(text)))
                 .collect(),
             refs: None,
+            aliases: Vec::new(),
             reasons: BTreeSet::new(),
             owners: BTreeSet::new(),
             why: BTreeMap::new(),
@@ -713,6 +727,7 @@ impl<'a> Run<'a> {
             }
         }
         self.tree = Some(tree);
+        self.aliases = self.root_aliases();
         for change in &input.changes {
             if change.status == Status::Deleted || !is_rust(&change.path) {
                 continue;
@@ -739,14 +754,17 @@ impl<'a> Run<'a> {
         {
             self.whole("macro", path);
         }
-        if path == LIB_ROOT || path == IT_ROOT {
+        // A layer file holds module declarations as src/lib.rs does, so it takes the same
+        // rule, keyed on its own layer module.
+        let layer = self.layer_root(path);
+        if path == LIB_ROOT || path == IT_ROOT || layer.is_some() {
             self.placed.insert(path.to_owned());
-            let krate = if path == LIB_ROOT {
-                Crate::Lib
-            } else {
+            let krate = if path == IT_ROOT {
                 Crate::It
+            } else {
+                Crate::Lib
             };
-            let root = [String::new()];
+            let root = [layer.unwrap_or_default()];
             let cheap = matches!(change.status, Status::Modified | Status::TypeChanged)
                 && removed.is_empty()
                 && added
@@ -939,7 +957,9 @@ impl<'a> Run<'a> {
     }
 
     /// The `ae::…` paths that name library module `module`: the module itself, and every name
-    /// `src/lib.rs` or its parent module re-exports from it with a plain `pub use`.
+    /// `src/lib.rs` or its parent module re-exports from it with a plain `pub use`. A re-export
+    /// source resolves through the root module aliases, and every path under an alias's module
+    /// is also named through the alias (`ae::l5_ui::app::X` is `ae::app::X`).
     fn targets(&self, module: &str) -> Vec<(Vec<String>, &'static str)> {
         let segments: Vec<String> = module.split("::").map(str::to_owned).collect();
         let mut found = vec![(ae_path(&[], &segments), "namespace")];
@@ -963,7 +983,19 @@ impl<'a> Run<'a> {
                         continue;
                     }
                     for (path, alias, glob) in leaves {
-                        if !resolve_lib(&scope_segments, &path).starts_with(&segments) {
+                        let source = self.normalized(resolve_lib(&scope_segments, &path));
+                        if !source.starts_with(&segments) {
+                            continue;
+                        }
+                        // A root module alias names the module itself: the expansion below
+                        // carries every target under it, each with its own rule.
+                        if scope.is_empty()
+                            && !glob
+                            && self
+                                .aliases
+                                .iter()
+                                .any(|(name, aliased)| *name == alias && *aliased == source)
+                        {
                             continue;
                         }
                         let exported = if glob { Vec::new() } else { vec![alias] };
@@ -972,7 +1004,84 @@ impl<'a> Run<'a> {
                 }
             }
         }
-        found
+        let mut expanded = found.clone();
+        for (target, rule) in &found {
+            let inner = target.get(1..).unwrap_or_default();
+            for (name, aliased) in &self.aliases {
+                if let Some(rest) = inner.strip_prefix(aliased.as_slice()) {
+                    let spelled = ae_path(std::slice::from_ref(name), rest);
+                    if !expanded.contains(&(spelled.clone(), *rule)) {
+                        expanded.push((spelled, *rule));
+                    }
+                }
+            }
+        }
+        expanded
+    }
+
+    /// The root module aliases of src/lib.rs: each top-level `pub use` or `pub(crate) use`
+    /// leaf whose path is a direct child of a registered layer module (`pub use l0_base::json;`),
+    /// as the name it binds and the module's segments. Any other root re-export, such as a flat
+    /// `pub use app::draw;`, stays an ordinary re-export. A flat tree has none.
+    fn root_aliases(&self) -> Vec<(String, Vec<String>)> {
+        let (Some(lexed), Some(tree)) = (self.lexed.get(LIB_ROOT), self.tree.as_ref()) else {
+            return Vec::new();
+        };
+        let spans = lexed.inline_modules();
+        let mut aliases = Vec::new();
+        for (at, _, leaves) in uses(lexed) {
+            let public = at > 0 && lexed.is_ident(at - 1, "pub");
+            let crate_visible = at >= 4
+                && lexed.is_ident(at - 4, "pub")
+                && lexed.is_punct(at - 3, b'(')
+                && lexed.is_ident(at - 2, "crate")
+                && lexed.is_punct(at - 1, b')');
+            if !(public || crate_visible) || !Lexed::inline_path(&spans, at).is_empty() {
+                continue;
+            }
+            for (path, alias, glob) in leaves {
+                let source = resolve_lib(&[], &path);
+                let declared = ModPath {
+                    krate: Crate::Lib,
+                    path: source.join("::"),
+                };
+                if !glob
+                    && source.len() == 2
+                    && LAYER_MODULES.contains(&source[0].as_str())
+                    && tree.modules.contains(&declared)
+                {
+                    aliases.push((alias, source));
+                }
+            }
+        }
+        aliases
+    }
+
+    /// A crate-absolute path whose first segment is a root module alias, rewritten to start
+    /// at the module the alias names; any other path as it is.
+    fn normalized(&self, path: Vec<String>) -> Vec<String> {
+        if let Some(first) = path.first()
+            && let Some((_, aliased)) = self.aliases.iter().find(|(name, _)| name == first)
+        {
+            return aliased
+                .iter()
+                .cloned()
+                .chain(path.into_iter().skip(1))
+                .collect();
+        }
+        path
+    }
+
+    /// The layer module whose file `file` is: src/lib.rs registers the layer module and that
+    /// registration reaches this file.
+    fn layer_root(&self, file: &str) -> Option<String> {
+        self.tree
+            .as_ref()?
+            .owners
+            .get(file)?
+            .iter()
+            .find(|owner| owner.krate == Crate::Lib && LAYER_MODULES.contains(&owner.path.as_str()))
+            .map(|owner| owner.path.clone())
     }
 
     /// A changed path no rule placed runs the whole suite, unless it is exempt.
@@ -1559,6 +1668,10 @@ pub(crate) fn render(selection: &Selection) -> String {
 #[cfg(test)]
 #[path = "affected/affected_spec.rs"]
 mod affected_spec;
+
+#[cfg(test)]
+#[path = "affected/p0_review_spec.rs"]
+mod p0_review_spec;
 
 #[cfg(test)]
 mod respond {

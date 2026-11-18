@@ -120,6 +120,218 @@ fn whole(selection: &Selection, reason: &str) {
     );
 }
 
+// Frozen P0 cases from plan-r5. The keys describe a fixture tree assembled in
+// memory, so they are built here without naming repository data dependencies.
+fn p0_source(module: &str) -> String {
+    const SOURCE: &str = "src";
+    format!("{SOURCE}/{module}.rs")
+}
+
+fn p0_layer_alias_fixture() -> Input {
+    let mut input = fixture();
+    put(
+        &mut input,
+        &p0_source("lib"),
+        "
+        pub mod changed;
+        pub mod indirect;
+        mod l0_base;
+        mod l3_services;
+        mod l5_ui;
+        pub use crate::l0_base::{error, json};
+        pub(crate) use l3_services::fleet_read;
+        pub use l5_ui::app;
+        pub use error::{Error, Result};
+        pub use fleet_read::current_world;
+        ",
+    );
+    for (module, source) in [
+        ("l0_base", "pub mod error; pub mod json;"),
+        (
+            "l0_base/error",
+            "pub struct Error; pub type Result<T> = std::result::Result<T, Error>;",
+        ),
+        ("l0_base/json", "pub struct Json;"),
+        ("l3_services", "pub(crate) mod fleet_read;"),
+        ("l3_services/fleet_read", "pub fn current_world() {}"),
+        ("l5_ui", "pub mod app;"),
+        (
+            "l5_ui/app",
+            "pub mod draw; pub use draw::X; pub fn other() {}",
+        ),
+        ("l5_ui/app/draw", "pub struct X;"),
+    ] {
+        put(&mut input, &p0_source(module), source);
+    }
+    for (owner, source) in [
+        (
+            "p0_root_item",
+            "#[test] fn consumer() { let _ = ae::Error; }",
+        ),
+        (
+            "p0_private_item",
+            "#[test] fn consumer() { ae::current_world(); }",
+        ),
+        (
+            "p0_nested_namespace",
+            "#[test] fn consumer() { let _ = ae::app::draw::X; }",
+        ),
+        (
+            "p0_parent_item",
+            "#[test] fn consumer() { let _ = ae::app::X; }",
+        ),
+        (
+            "p0_app_other",
+            "#[test] fn consumer() { ae::app::other(); }",
+        ),
+    ] {
+        add_it(&mut input, owner, source);
+    }
+    input
+}
+
+fn p0_edit(input: &mut Input, module: &str) {
+    let path = p0_source(module);
+    let source = input.new[&path].clone();
+    only_edit(
+        input,
+        &path,
+        &source,
+        &format!("{source}\nconst CHANGED: u8 = 1;"),
+    );
+}
+
+fn p0_selection(selection: &Selection, fixtures: &[&str]) {
+    subset(selection);
+    let expected: BTreeSet<String> = ["doors", "floor", "gate"]
+        .into_iter()
+        .chain(fixtures.iter().copied())
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(selection.owners, expected);
+}
+
+#[test]
+fn p0_a_root_item_reexport_resolves_through_a_grouped_module_alias() {
+    let mut input = p0_layer_alias_fixture();
+    p0_edit(&mut input, "l0_base/error");
+
+    p0_selection(&select(&input), &["p0_root_item"]);
+}
+
+#[test]
+fn p0_a_public_item_reexport_resolves_through_a_crate_visible_module_alias() {
+    let mut input = p0_layer_alias_fixture();
+    p0_edit(&mut input, "l3_services/fleet_read");
+
+    p0_selection(&select(&input), &["p0_private_item"]);
+}
+
+#[test]
+fn p0_a_nested_module_keeps_direct_and_parent_reexport_consumers() {
+    let mut input = p0_layer_alias_fixture();
+    p0_edit(&mut input, "l5_ui/app/draw");
+
+    // The separate owner naming app::other must stay out of the subset.
+    p0_selection(&select(&input), &["p0_nested_namespace", "p0_parent_item"]);
+}
+
+#[test]
+fn p0_control_data_readers_keep_the_basename_and_full_path_rules() {
+    // This control also passes on the P0 parent.
+    let mut input = fixture();
+    put(
+        &mut input,
+        &p0_source("lib"),
+        "pub mod changed; pub mod indirect; mod l0_base;",
+    );
+    put(&mut input, &p0_source("l0_base"), "pub mod x;");
+    put(&mut input, &p0_source("l0_base/x"), "pub fn target() {}");
+    for (owner, source) in [
+        (
+            "p0_e2",
+            r#"#[test] fn reader() { let _ = root().join("src").join("l0_base").join("x.rs"); }"#,
+        ),
+        (
+            "p0_full",
+            r#"#[test] fn reader() { let _ = root().join("src/l0_base/x.rs"); }"#,
+        ),
+        (
+            "p0_short",
+            r#"#[test] fn reader() { let _ = root().join("src").join("l0_base/x.rs"); }"#,
+        ),
+    ] {
+        add_it(&mut input, owner, source);
+    }
+    p0_edit(&mut input, "l0_base/x");
+
+    let got = select(&input);
+    p0_selection(&got, &["p0_e2", "p0_full"]);
+    let target = p0_source("l0_base/x");
+    for (owner, rule) in [("p0_e2", "basename"), ("p0_full", "literal")] {
+        assert!(
+            got.why
+                .iter()
+                .any(|pick| pick.owner == owner && pick.rule == rule && pick.target == target),
+            "{owner} must be selected because it names the changed file as {rule}"
+        );
+    }
+}
+
+#[test]
+fn p0_a_visibility_edit_in_a_registered_layer_file_runs_the_whole_suite() {
+    let mut input = p0_layer_alias_fixture();
+    let layer = p0_source("l3_services");
+    only_edit(
+        &mut input,
+        &layer,
+        "pub(crate) mod fleet_read;",
+        "pub mod fleet_read;",
+    );
+
+    let got = select(&input);
+    whole(&got, "crate-root");
+    assert!(
+        got.reasons
+            .iter()
+            .any(|reason| reason.id == "crate-root" && reason.detail == layer),
+        "the whole verdict must name the edited layer file"
+    );
+}
+
+#[test]
+fn p0_control_a_layer_file_can_register_only_a_newly_added_module_in_subset_mode() {
+    // This control also passes on the P0 parent.
+    let mut input = p0_layer_alias_fixture();
+    let layer = p0_source("l3_services");
+    let added = p0_source("l3_services/p0_fresh");
+    only_edit(
+        &mut input,
+        &layer,
+        "pub(crate) mod fleet_read;",
+        "pub(crate) mod fleet_read; pub(crate) mod p0_fresh;",
+    );
+    put(&mut input, &added, "pub(crate) fn fresh() {}");
+    input.changes.push(Change {
+        status: Status::Added,
+        path: added.clone(),
+    });
+    add_it(
+        &mut input,
+        "p0_fresh_reader",
+        &format!(r#"#[test] fn reader() {{ let _ = std::fs::read("{added}"); }}"#),
+    );
+
+    let got = select(&input);
+    p0_selection(&got, &["p0_fresh_reader"]);
+    assert!(
+        got.why.iter().any(|pick| {
+            pick.owner == "p0_fresh_reader" && pick.rule == "literal" && pick.target == added
+        }),
+        "the subset must include the reader of the added file"
+    );
+}
+
 #[test]
 fn direct_source_selects_only_direct_consumers_units_and_guards() {
     let got = select(&fixture());
