@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.85] - 2026-11-18
+- The Agents body folds the spawned seats under one Spawned (N) line that Z or a click toggles; the folded line keeps the hidden seats' marks and counts in the session tally grammar, and a hidden seat is out of reach of n/p, o, v and clicks, while a fold clears a cursor or closes a peek on one
+- The spawned group reads a roster only from the incarnation the fleet names now, so a replaced home session keeps no group from its old roster; edge specs pin the folded tally cut cell by cell, the click area of the group line and a stopped session's stale seat facts
+- The edge spec pins the typed wait word on the seat rows that moved into one per-seat function, so a seat that declared a target names it in the fixed seats and the spawned group and no other seat does
+- The edge spec pins the declaration row under a declared seat in the fixed seats and the spawned group, and no row under a seat that declared nothing
+
 ## [v2026.11.84] - 2026-11-18
 - A standalone pipe inside parentheses no longer cuts a decision card, so the choices an agent writes inside each decision stay in its option; parentheses that never close keep the cut at every pipe
 
