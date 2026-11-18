@@ -2653,8 +2653,8 @@ const BROWSE_KEYS: [(&str, &str); 21] = [
     ("1-9", "select the Nth session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
-    ("oo", "open seat; twice in 2 s"),
-    ("O F", "orchestrator panel; F: side or full"),
+    ("oo", "open seat; panel: orchestrator pane; twice in 2 s"),
+    ("O F", "orchestrator panel; F: side or full; click pane"),
     ("m", "session menu; right-click a card too"),
     ("s", "start / stop the selected session"),
     ("z", "show / hide stopped sessions"),
@@ -7509,6 +7509,25 @@ mod tests {
                 "{words:?}: {section:?}"
             );
         }
+    }
+
+    /// The help names the orchestrator panel's pane controls: `oo` while the
+    /// panel holds the keys, and the click on the header's `pane`.
+    #[test]
+    fn the_keys_tab_names_the_orchestrator_panels_pane_controls() {
+        let rows: Vec<String> = keys_body(Paint::of(None))
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
+        let row = |start: &str, words: &[&str]| {
+            assert!(
+                rows.iter()
+                    .any(|r| r.starts_with(start) && words.iter().all(|w| r.contains(w))),
+                "{start}: {words:?} in {rows:?}"
+            );
+        };
+        row("oo", &["open seat", "panel", "orchestrator pane"]);
+        row("O F", &["orchestrator panel", "click pane"]);
     }
 
     /// With a seat viewed the keys row says `viewing` and `Esc chat`,

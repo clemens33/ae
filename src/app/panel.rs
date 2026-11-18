@@ -583,9 +583,8 @@ impl App {
 
     /// Who takes browse byte `byte` while the panel holds the keys: the
     /// list's own keys stay the main column's beside a side panel and do
-    /// nothing over a full one, a seat view or pane does nothing, `o` opens
-    /// the orchestrator's pane and `v` does nothing, and the rest is the
-    /// panel's chat.
+    /// nothing over a full one, `v` (the seat view) does nothing, `o` is the
+    /// panel's pane key, and the rest is the panel's chat.
     pub(super) fn panel_byte(&self, byte: u8) -> PanelByte {
         let full = self.orch.panel.as_ref().is_some_and(|panel| {
             let columns = model::Columns {
@@ -621,9 +620,9 @@ impl App {
     /// `o` while the panel holds the keys: the first press arms on the pane
     /// target the last panel frame drew and moves nothing, the second within
     /// the window opens THAT target, whatever the panel drew since. A panel
-    /// bound to no running orchestrator refuses at once with its own reason
-    /// and arms nothing: it never starts or resumes the seat. Whether the
-    /// frame is due.
+    /// bound to no running orchestrator refuses at once and arms nothing,
+    /// and so does a second press that finds it so ([`App::pane_refusal`]):
+    /// the key never starts or resumes the seat. Whether the frame is due.
     pub(super) fn pane_key(&mut self, origin: Instant) -> bool {
         self.in_panel(|app| app.pane_press(origin)).is_some()
     }
@@ -639,8 +638,8 @@ impl App {
         {
             return self.pane_open(&drawn);
         }
-        if let Some(why) = self.panel_line() {
-            return self.pane_said(Refusal::NoSeat(why).line(ORCH));
+        if let Some(why) = self.pane_refusal() {
+            return self.pane_said(why.line(ORCH));
         }
         let drawn = pane_drawn(self.layout.pane.clone().unwrap_or_default());
         match drawn.seat() {
@@ -662,12 +661,33 @@ impl App {
         self.in_panel(|app| app.pane_open(&drawn)).is_some()
     }
 
+    /// Why the panel cannot open a pane now, or `None` while it is bound to
+    /// the running orchestrator. The seat proof knows seats, not the panel's
+    /// standing: a role census that failed leaves the pinned incarnation's
+    /// seat facts valid. A known replaced or stopped incarnation takes the
+    /// seat-open refusals' words; any other cause, its own line.
+    fn pane_refusal(&self) -> Option<Refusal> {
+        let why = self.panel_line()?;
+        let Some(pin) = self.orch.panel.as_ref().and_then(Panel::pin) else {
+            return Some(Refusal::NoSeat(why));
+        };
+        Some(match &self.orch.proof {
+            loader::Proof::Gap(_) => Refusal::NoSeat(why),
+            loader::Proof::Proven(uuid) if uuid != pin => Refusal::SessionReplaced,
+            loader::Proof::Proven(_) | loader::Proof::Absent => Refusal::Stopped(ORCH.to_owned()),
+        })
+    }
+
     /// Open the orchestrator's pane as the chat's `/open` does, on the
     /// incarnation and seat `drawn` holds: the proof is made now, against that
-    /// incarnation, never a fresh lookup by name.
+    /// incarnation, never a fresh lookup by name, and only for a panel still
+    /// bound to the running orchestrator ([`App::pane_refusal`]).
     fn pane_open(&mut self, drawn: &Drawn) {
         let label = drawn.focused.as_deref().unwrap_or(ORCH);
-        let line = self.open(ORCH, &drawn.uuid, drawn.seat(), label);
+        let line = match self.pane_refusal() {
+            Some(why) => why.line(label),
+            None => self.open(ORCH, &drawn.uuid, drawn.seat(), label),
+        };
         self.pane_said(line);
     }
 

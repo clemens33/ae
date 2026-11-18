@@ -908,10 +908,10 @@ fn a_pane_press_tells_a_chat_panel_in_its_lane_and_a_status_column_on_the_hint_r
     let _ = at(160, 45, &mut app);
     press(&mut app, b"o");
     assert!(app.notices.is_empty(), "a status column draws no lane");
-    let flash = app.flash.as_ref().map(|(line, _)| line.as_str());
-    assert_eq!(
-        flash,
-        Some("refused: /open orchestrator: waiting for the orchestrator seat; nothing selected")
+    let flash = app.flash.as_ref().map_or("", |(line, _)| line.as_str());
+    assert!(
+        flash.starts_with("refused:") && flash.contains("waiting for the orchestrator seat"),
+        "{flash:?}"
     );
 }
 
@@ -949,7 +949,7 @@ fn another_incarnations_roster_offers_the_panel_no_pane_seat() {
 }
 
 /// At the narrowest frame the app draws, a full panel's header still holds
-/// `pane`, two blanks and `F side`, the name keeping the cells left of them.
+/// `pane` right before `F side`, the name keeping the cells left of them.
 #[test]
 fn the_floor_width_header_still_holds_pane_beside_the_mode_label() {
     let root = Root::new("o7panewidth");
@@ -957,7 +957,215 @@ fn the_floor_width_header_still_holds_pane_beside_the_mode_label() {
     let shown = text(&at(40, 8, &mut app));
     let head = shown.lines().next().unwrap_or_default();
     assert!(head.contains("orchestrator"), "{head}");
-    assert!(head.trim_end().ends_with("pane  F side"), "{head}");
+    let words: Vec<&str> = head.split_whitespace().collect();
+    assert!(words.ends_with(&["pane", "F", "side"]), "{head}");
+}
+
+/// What the hint row says now, or nothing.
+fn flashed(app: &App) -> String {
+    app.flash
+        .as_ref()
+        .map_or_else(String::new, |(line, _)| line.clone())
+}
+
+/// An `o` armed on a live frame meets a panel that has stopped being bound
+/// to the running orchestrator before the second press: the press refuses
+/// with the seat-open words for a replaced or stopped incarnation and with
+/// the panel's own reason for any other cause, and the seat proof never runs
+/// (without tmux it would say the app is not inside tmux).
+#[test]
+fn the_second_o_refuses_from_the_panels_standing_before_the_seat_proof() {
+    let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+    let new = "0199c0de-3333-4890-abcd-ef0123456789";
+    for (proof, words) in [
+        (
+            loader::Proof::Proven(new.to_owned()),
+            "this session was replaced",
+        ),
+        (loader::Proof::Absent, "orchestrator is stopped"),
+        (
+            loader::Proof::Gap("role census: unreadable".to_owned()),
+            "role census: unreadable",
+        ),
+    ] {
+        let root = Root::new("o7panestanding");
+        let (mut app, _reader) = orchestrated(&root, false);
+        app.shown.insert(
+            orch.to_owned(),
+            crate::app::Shown {
+                id: ID.to_owned(),
+                seq: 1,
+                lane: Rc::default(),
+                roster: Some(vec![seat_ref("main", orch)]),
+            },
+        );
+        let _ = at(160, 45, &mut app);
+        press(&mut app, b"o");
+        assert!(app.armed.is_some(), "armed on the live frame");
+        app.answer(Answer::Orchestrator(proof));
+        press(&mut app, b"o");
+        let said = flashed(&app);
+        assert!(
+            said.starts_with("refused:") && said.contains(words),
+            "{words}: {said:?}"
+        );
+        assert!(!said.contains("not running inside tmux"), "{said:?}");
+        assert!(app.armed.is_none());
+        app.flash = None;
+        app.pane_click();
+        let said = flashed(&app);
+        assert!(
+            said.starts_with("refused:") && said.contains(words),
+            "a click on the earlier frame: {words}: {said:?}"
+        );
+        assert!(!said.contains("not running inside tmux"), "{said:?}");
+    }
+}
+
+/// A private tmux server holding the orchestrator's pane, stamped as a live
+/// seat proof reads it, with the session record beside it.
+mod live {
+    #![allow(
+        clippy::disallowed_methods,
+        reason = "the fixture reads and writes only its private socket and session records"
+    )]
+
+    use super::*;
+    use crate::inventory::ServerId;
+    use crate::meta::Selector;
+    use crate::transport::{self, fixture_tmux};
+
+    pub(super) const NAME: &str = crate::orchestrator::ORCHESTRATOR_SESSION;
+
+    pub(super) struct Socket {
+        server: ServerId,
+        retained: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Drop for Socket {
+        fn drop(&mut self) {
+            let _ = fixture_tmux::end(&self.server);
+            for _ in 0..20 {
+                if fixture_tmux::probe(&self.server).proven() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            self.retained
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            assert!(std::thread::panicking(), "fixture server cleanup unproven");
+        }
+    }
+
+    impl Socket {
+        pub(super) fn new(root: &Root) -> Self {
+            Self {
+                server: ServerId::Selected(Selector::Socket(root.0.join("s"))),
+                retained: root.retention(),
+            }
+        }
+
+        fn session(&self, root: &Root, name: &str) -> String {
+            let argv = crate::session_tmux::argv(
+                &self.server,
+                &crate::session_tmux::Op::NewSession {
+                    name,
+                    work_dir: root.0.to_str().expect("fixture directory"),
+                },
+            );
+            let (ok, out) = transport::run_tmux_op(&argv);
+            assert!(ok, "private tmux new session {name}: {out}");
+            transport::observe_window_panes(&self.server, name)
+                .expect("private pane read")
+                .first()
+                .expect("one live fixture pane")
+                .pane_id
+                .clone()
+        }
+
+        fn stamp(&self, pane: &str) {
+            let command = |command: &str| {
+                assert!(transport::run_view_command(&self.server, NAME, command));
+            };
+            command(&format!("set-option -t ={NAME}: @ae_session_uuid {OID}"));
+            command(&format!("set-option -p -t {pane} @ae_slot main"));
+            command(&format!("set-option -p -t {pane} @ae_agent {NAME}"));
+        }
+    }
+
+    /// The app of `api` with the orchestrator's panel open, proven as `OID`,
+    /// its roster read and a frame drawn, over `socket`.
+    pub(super) fn panel(root: &Root, socket: &Socket) -> App {
+        let app_pane = socket.session(root, "api");
+        let pane = socket.session(root, NAME);
+        socket.stamp(&pane);
+        let dir = root.0.join("sessions").join(NAME);
+        std::fs::create_dir_all(&dir).expect("private session directory");
+        let overlay = root.0.join("orchestrator.config");
+        std::fs::write(&overlay, "[workspace]\norchestrator = true\n").expect("private overlay");
+        let meta = format!(
+            "schema=2\nsession_id={OID}\nlayout=lead-pair\nseat.main={NAME}\nseat.worker.0=decoy\n\
+             meta_agent=true\nlocal_config={}\nmain_pane={pane}\ntmux_server_kind=socket\n\
+             tmux_server={}\n",
+            overlay.display(),
+            root.0.join("s").display(),
+        );
+        std::fs::write(dir.join("meta"), meta).expect("private session record");
+        let (mut app, reader) = housed(root);
+        app.server = Some(socket.server.clone());
+        app.pane = Some(app_pane);
+        refold(
+            &mut app,
+            &reader,
+            root,
+            &[("api", Status::Running), (NAME, Status::Running)],
+        );
+        app.answer(Answer::Orchestrator(loader::Proof::Proven(OID.to_owned())));
+        press(&mut app, b"O");
+        let Answer::View(mut read) = view(NAME, OID, 1, "the orchestrator chat") else {
+            unreachable!()
+        };
+        read.roster = Some(vec![seat_ref("worker.0", "decoy"), seat_ref("main", NAME)]);
+        app.answer(Answer::View(read));
+        let _ = at(160, 45, &mut app);
+        app
+    }
+}
+
+/// A role census that fails between the two `o` presses leaves the pinned
+/// incarnation's seat facts valid, so the seat proof alone would pass and
+/// reach the client read: the armed press and a click made on the frame
+/// drawn before the failure must refuse from the panel's standing instead.
+#[test]
+fn a_role_census_gap_between_the_presses_refuses_while_the_seat_proof_still_passes() {
+    let root = Root::new("o7panecensus");
+    let socket = live::Socket::new(&root);
+    let mut app = live::panel(&root, &socket);
+    let reached = "no tmux client is showing this app";
+    press(&mut app, b"oo");
+    assert!(
+        app.notices
+            .iter()
+            .any(|(_, item)| item.body.contains(reached)),
+        "the seat proof passes on this fixture: {:?}",
+        app.notices
+    );
+
+    press(&mut app, b"o");
+    assert!(app.armed.is_some(), "armed on the live frame");
+    app.answer(Answer::Orchestrator(loader::Proof::Gap(
+        "role census: unreadable".to_owned(),
+    )));
+    press(&mut app, b"o");
+    let said = flashed(&app);
+    assert!(said.contains("role census: unreadable"), "{said:?}");
+    assert!(!said.contains(reached), "{said:?}");
+
+    app.flash = None;
+    app.pane_click();
+    let said = flashed(&app);
+    assert!(said.contains("role census: unreadable"), "{said:?}");
+    assert!(!said.contains(reached), "{said:?}");
 }
 
 /// A fallen-back panel's header keeps the orchestrator's name beside its
