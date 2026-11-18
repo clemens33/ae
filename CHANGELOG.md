@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.83] - 2026-11-18
+- The Statistics tab counts spawn outcomes, a brief undelivered, a start failed and a start unproved, from worker-fact records that spawn and _run journal; the store formats bump and rebuild once, and a stopped upkeep stays said with its remedy
+- The macOS subset pins tests/it/run.rs::Rig::new, which the stats3 run spec in its own file now shares across files, to that spec's create-fact test
+
 ## [v2026.11.82] - 2026-11-18
 - Seam stubs and the frozen acceptance (RED)
 - A due waiting-agent challenge is held while its direct same-session --on target holds working with fresh motion, at most the top-rung spacing from the proof; the daemon journals one wait-held per reason and episode and reads the waiting-agent ceiling on the top rung while the hold stands, and ae list reads the same open witness
