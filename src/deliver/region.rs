@@ -2268,6 +2268,31 @@ mod tests {
     }
 
     #[test]
+    fn a_dialog_refusal_requires_both_edges_of_each_chrome_word() {
+        let frame = |dismiss, body| {
+            format!(
+                "     Commands                         {dismiss}\n     {body}\n  ┃\n  ┃\n  ┃  Build · m · max\n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n"
+            )
+        };
+        assert!(
+            !composed_ui(&frame("esc", "Search"), OPENCODE),
+            "a bounded dismiss word and body still refuse"
+        );
+        // Leave the other word and the empty composer intact in each case.
+        for (dismiss, body) in [
+            ("escape", "Search"),
+            ("desc", "Search"),
+            ("esc", "Searchable"),
+            ("esc", "WebSearch"),
+        ] {
+            assert!(
+                composed_ui(&frame(dismiss, body), OPENCODE),
+                "a longer word must leave the composer ready: {dismiss:?}, {body:?}"
+            );
+        }
+    }
+
+    #[test]
     fn an_unmeasured_dialog_is_refused_on_chrome_alone() {
         // A 150-wide clean box, modelling the wide case where a dialog never
         // touches the box; the picker title is one ae never measured.
