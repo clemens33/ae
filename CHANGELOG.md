@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.86] - 2026-11-18
+- The fresh-launch and reseat-seed specs bound the wait by the pane reads it spends, so a slow tmux no longer fails them
+- The orchestrator panel's header draws a pane word and its focused keys take oo, so a click or a second o opens the orchestrator's real pane on the incarnation and main seat the panel's last frame drew, with the seat-open proof, one client and a clean view; a status column draws no pane and refuses oo with its own line, and v stays inert
+- A pane press gates on the panel's standing before the seat proof, so an armed second o or a click on an earlier frame refuses with the seat-open wording for a replaced or stopped incarnation and with the panel's own reason for any other cause; the Keys legend names the panel's oo and the pane click
+- The layer ratchet reads layer folders and walks module owners from the crate roots, the merge-gate selector follows root module aliases, and door citations resolve through production module paths
+
 ## [v2026.11.85] - 2026-11-18
 - The Agents body folds the spawned seats under one Spawned (N) line that Z or a click toggles; the folded line keeps the hidden seats' marks and counts in the session tally grammar, and a hidden seat is out of reach of n/p, o, v and clicks, while a fold clears a cursor or closes a peek on one
 - The spawned group reads a roster only from the incarnation the fleet names now, so a replaced home session keeps no group from its old roster; edge specs pin the folded tally cut cell by cell, the click area of the group line and a stopped session's stale seat facts
