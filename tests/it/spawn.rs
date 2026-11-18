@@ -1705,6 +1705,62 @@ fn a_dead_agent_with_a_stale_composer_cannot_take_the_brief() {
     );
 }
 
+#[test]
+fn an_opencode_startup_modal_names_the_blocker_in_manual_advice_and_refusal() {
+    let rig = opencode_startup_rig("ocadvice");
+    let control = rig.enable_opencode_profile();
+    std::fs::write(&control.start_frame, OPENCODE_IDLE_SESSION).expect("ready frame");
+    std::fs::write(&control.next_frame, OPENCODE_HIGHLIGHTS_SESSION).expect("modal frame");
+    let record = ae::brief_retry::path(&rig.dir, "spawned.0");
+
+    let (code, stdout, stderr) = std::thread::scope(|scope| {
+        let mut locks = rig.hold_delivery_locks();
+        let spawning = scope.spawn(|| spawn_opencode(&rig, "ocadvice"));
+        rig.wait_for_stored_brief("spawned.0");
+        // The earlier slot cleanup is complete. Occupy the record before refusal.
+        std::fs::write(&record, b"occupied retry destination")
+            .expect("occupy the retry destination");
+        switch_opencode_screen(&control);
+        assert_opencode_screen(&rig, "ocadvice", "ok enter");
+        locks.clear();
+        spawning.join().expect("the spawn process")
+    });
+
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("already holds a record"), "{stderr}");
+    assert!(
+        opencode_input(&control).is_empty(),
+        "no input reached the pane"
+    );
+    assert!(
+        stderr.lines().any(|line| {
+            line.contains("then send to the existing agent")
+                && line.contains(HIGHLIGHTS_TITLE)
+                && line.to_ascii_lowercase().contains("close the dialog")
+        }),
+        "the qualified manual advice itself names the lock-time blocker: {stderr}"
+    );
+
+    let events = rig.events();
+    assert!(
+        events.lines().any(|line| {
+            line.contains("\"action\":\"spawn-failed\"")
+                && line.contains("brief not delivered: brief REFUSED")
+                && line.contains(HIGHLIGHTS_TITLE)
+                && line.contains("NOTHING was pasted")
+        }),
+        "the journal records the named pre-paste refusal: {events}"
+    );
+    assert!(
+        stderr.lines().any(|line| {
+            line.starts_with("ae: reason: brief REFUSED")
+                && line.contains(HIGHLIGHTS_TITLE)
+                && line.contains("NOTHING was pasted")
+        }),
+        "the spawn reason reports the named pre-paste refusal: {stderr}"
+    );
+}
+
 /// The SAME stale-composer trap, with the recorded binary gone: a shell
 /// foreground ae cannot attribute to any agent is UNPROVEN, and the under-lock
 /// Launch refuses it. Ordinary delivery keeps its fail-open; this path must

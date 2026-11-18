@@ -2167,6 +2167,71 @@ mod tests {
     }
 
     #[test]
+    fn an_opencode_highlights_footer_must_follow_its_header() {
+        let mut rows: Vec<_> = OPENCODE_HIGHLIGHTS_SESSION.lines().collect();
+        let header = rows
+            .iter()
+            .position(|row| row.contains("What's new in "))
+            .expect("the frame has a highlights header");
+        let footer = rows
+            .iter()
+            .position(|row| row.trim() == "ok enter")
+            .expect("the frame has a highlights footer");
+        // Exchange the footer with the blank transcript row above the title.
+        assert!(rows[header - 1].is_empty());
+        rows.swap(header - 1, footer);
+        let frame = format!("{}\n", rows.join("\n"));
+        assert!(
+            composed_ui(&frame, OPENCODE),
+            "a footer above the header must leave the empty composer ready"
+        );
+    }
+
+    #[test]
+    fn an_opencode_highlights_footer_right_label_must_align() {
+        // Shift the complete, padded label right by one cell.
+        let frame = OPENCODE_HIGHLIGHTS_SESSION.replacen("ok enter\n", " ok enter\n", 1);
+        assert_ne!(frame, OPENCODE_HIGHLIGHTS_SESSION);
+        assert!(
+            composed_ui(&frame, OPENCODE),
+            "a right label outside its column must leave the empty composer ready"
+        );
+    }
+
+    // Source-derived legacy footer. The home panel overlaps the composer,
+    // so these cases check the name the readiness consumer would report.
+    const OPENCODE_HIGHLIGHTS_HOME: &str =
+        include_str!("../../tests/fixtures/opencode-composer/opencode-highlights-home-80x24.txt");
+
+    #[test]
+    fn an_opencode_highlights_legacy_footer_scroll_label_must_align() {
+        let frame = OPENCODE_HIGHLIGHTS_HOME;
+        assert!(super::named_dialog(frame, OPENCODE).is_some());
+        // Move one space across the label, leaving the right label in place.
+        let shifted = frame.replacen("   scroll ↑/↓ ", "    scroll ↑/↓", 1);
+        assert_ne!(shifted, frame);
+        assert_eq!(
+            super::named_dialog(&shifted, OPENCODE),
+            None,
+            "the legacy scroll label must start in the header title column"
+        );
+    }
+
+    #[test]
+    fn an_opencode_highlights_legacy_footer_gap_must_be_blank() {
+        let frame = OPENCODE_HIGHLIGHTS_HOME;
+        assert!(super::named_dialog(frame, OPENCODE).is_some());
+        // Change one cell between the labels, preserving both columns.
+        let interrupted = frame.replacen("scroll ↑/↓  ", "scroll ↑/↓ x", 1);
+        assert_ne!(interrupted, frame);
+        assert_eq!(
+            super::named_dialog(&interrupted, OPENCODE),
+            None,
+            "prose between aligned legacy labels breaks the panel footer"
+        );
+    }
+
+    #[test]
     fn a_dialog_refusal_needs_the_header_and_the_body_together() {
         // One drawn, empty box; the dialog rows above it vary.
         let frame = |dialog: &str| {
