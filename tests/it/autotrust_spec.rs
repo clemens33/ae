@@ -266,6 +266,10 @@ fn write(path: impl AsRef<Path>, body: impl AsRef<[u8]>) {
 /// stood and an ordinary wait alike. A passing run spends none of it, and a
 /// slow machine must not be a new way to fail (#234).
 const WITNESS_WAIT: Duration = Duration::from_mins(1);
+/// The bound of a wait on a whole launch, whose length is its tmux calls times
+/// the host's tmux latency: a safety against a hang, never the measure of
+/// "bounded", which a test states as a count (#234).
+const LAUNCH_HANG: Duration = Duration::from_mins(10);
 
 fn wait_for(what: &str, ready: impl Fn() -> bool) {
     wait_within(what, WITNESS_WAIT, ready);
@@ -291,6 +295,25 @@ fn wait_for_submitted(path: &Path, sentinel: &str) -> String {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Install the [`TMUX`] wrapper as `<root>/bin/tmux` in front of `real_tmux`,
+/// for a launch whose `PATH` starts with `<root>/bin`. Its mode is the text of
+/// `<root>/wrapper`, read on every call.
+fn install_tmux_wrapper(root: &Path, session_dir: &Path, real_tmux: &str) {
+    let wrapper = TMUX
+        .replace("__ROOT__", &root.display().to_string())
+        .replace("__TMUX__", real_tmux)
+        .replace("__DIR__", &session_dir.display().to_string());
+    write(root.join("bin/tmux"), wrapper);
+    assert!(fs::set_permissions(root.join("bin/tmux"), fs::Permissions::from_mode(0o755)).is_ok());
+}
+
+/// The pane reads the wrapper counted in mode `count-captures`. A bound on
+/// polls is a bound on work: tmux latency stretches the time every poll takes
+/// and leaves the number of polls as it was (#234).
+fn pane_reads(root: &Path) -> usize {
+    text(root.join("captures")).lines().count()
 }
 
 struct Rig {
@@ -366,15 +389,7 @@ impl Rig {
             .trim()
             .to_owned();
         assert!(Path::new(&real_tmux).is_absolute(), "setup: real tmux path");
-        let wrapper = TMUX
-            .replace("__ROOT__", &rig.root.display().to_string())
-            .replace("__TMUX__", &real_tmux)
-            .replace("__DIR__", &rig.dir.display().to_string());
-        write(rig.root.join("bin/tmux"), wrapper);
-        assert!(
-            fs::set_permissions(rig.root.join("bin/tmux"), fs::Permissions::from_mode(0o755))
-                .is_ok()
-        );
+        install_tmux_wrapper(&rig.root, &rig.dir, &real_tmux);
         let command = format!(
             "exec {}/bin/{tool} {}/vendor.pl {}",
             rig.root.display(),
@@ -936,11 +951,33 @@ fn a_fresh_launch_answers_its_turnless_claude_seat_with_no_watchdog() {
             root.display()
         ),
     );
+    // The launch's pane reads are counted through the rig wrapper: the bound
+    // on the watch below is the work it spends, not the seconds a slow tmux
+    // makes that work take (#234).
+    let (which, which_err) = (root.join("which.out"), root.join("which.err"));
+    assert!(
+        raw::run(
+            &Invocation::new("which").arg("tmux"),
+            &root,
+            &which,
+            &which_err
+        )
+        .is_ok(),
+        "setup: which tmux"
+    );
+    let real_tmux = text(&which).trim().to_owned();
+    assert!(Path::new(&real_tmux).is_absolute(), "setup: real tmux path");
+    install_tmux_wrapper(&root, &home.join("sessions/lw"), &real_tmux);
+    write(root.join("wrapper"), "count-captures");
     let launch = Invocation::new(env!("CARGO_BIN_EXE_ae"))
         .env_cleared()
         .env(
             "PATH",
-            std::env::var("PATH").unwrap_or_else(|why| panic!("setup: PATH: {why}")),
+            format!(
+                "{}/bin:{}",
+                root.display(),
+                std::env::var("PATH").unwrap_or_else(|why| panic!("setup: PATH: {why}"))
+            ),
         )
         .env("HOME", &root)
         .env("AE_HOME", &home)
@@ -959,13 +996,22 @@ fn a_fresh_launch_answers_its_turnless_claude_seat_with_no_watchdog() {
         root.join("launch.out"),
         root.join("launch.err"),
     );
-    let started = Instant::now();
     let launched = std::thread::spawn(move || {
         raw::run(&launch, &cwd, &out, &err)
             .unwrap_or_else(|why| panic!("setup: launch: {why}"))
             .outcome()
     });
-    wait_for("fake vendor ready", || root.join("ready").is_file());
+    // The launch draws the fake vendor after a run of tmux calls, each as slow
+    // as the host's tmux. The wait is on that event, or on the launch ending
+    // without it; the bound is only against a hang.
+    wait_within("fake vendor ready", LAUNCH_HANG, || {
+        root.join("ready").is_file() || launched.is_finished()
+    });
+    assert!(
+        root.join("ready").is_file(),
+        "the launch ended before the fake vendor drew: {}",
+        text(root.join("launch.err"))
+    );
     let tmux = |args: &[&str]| {
         let mut call = Invocation::new("tmux").arg("-S").arg(&sock);
         for arg in args {
@@ -997,6 +1043,24 @@ fn a_fresh_launch_answers_its_turnless_claude_seat_with_no_watchdog() {
     let _ = fs::remove_file(root.join("repainted"));
     write(root.join("repaint"), &modal);
     wait_for("modal painted", || root.join("repainted").is_file());
+    // The requirement: the watch ends at the answered modal, not at its
+    // budget. The product spends that budget in reads of the pane, so the
+    // evidence is the count the wrapper saw, which a slower host does not
+    // raise: the fast path read the pane 11 times at 0 s and at 1 s of tmux
+    // lag, and a watch that ignores its ends passed 60 reads at both. A
+    // wall-clock bound fails the fast path under load, because every read
+    // then takes longer: the launch took 115 s at 1 s of lag (#234). The count
+    // is checked while the launch runs too, so a watch that never ends fails
+    // on its reads and does not hang the test.
+    let bounded = || {
+        let reads = pane_reads(&root);
+        assert!(reads < 60, "the watch is bounded: {reads} pane reads");
+    };
+    wait_within("the launch to end", LAUNCH_HANG, || {
+        bounded();
+        launched.is_finished()
+    });
+    bounded();
     let outcome = launched
         .join()
         .unwrap_or_else(|_| panic!("setup: launch thread"));
@@ -1004,11 +1068,6 @@ fn a_fresh_launch_answers_its_turnless_claude_seat_with_no_watchdog() {
         matches!(outcome, ExitOutcome::Code(0)),
         "launch: {}",
         text(root.join("launch.err"))
-    );
-    assert!(
-        started.elapsed() < Duration::from_secs(40),
-        "the watch is bounded: {:?}",
-        started.elapsed()
     );
     let events: Vec<Event> = text(home.join("sessions/lw/events.jsonl"))
         .lines()
@@ -1870,7 +1929,7 @@ fn v14_reseat_seed_wait_answers_without_a_watchdog_and_keeps_the_original_seed()
         )
     });
     fs::remove_file(child.join("ready")).expect("old child receipt");
-    let started = Instant::now();
+    write(rig.root.join("wrapper"), "count-captures");
     let (code, out, err) = rig.invoke(
         rig.environment()
             .arg("reseat")
@@ -1884,10 +1943,16 @@ fn v14_reseat_seed_wait_answers_without_a_watchdog_and_keeps_the_original_seed()
         code, 0,
         "seed wait answers with daemon absent: {out}\n{err}"
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(30),
-        "launch wait stays bounded"
-    );
+    // The requirement: the answer lands inside the launch wait, which ends at
+    // the delivered seed, not at its budget. The product spends that budget in
+    // reads of the pane, so the evidence is the count the wrapper saw, which a
+    // slower host does not raise: the fast path read the pane 14 times at 0 s
+    // and at 1 s of tmux lag, and a wait that spends the whole budget after the
+    // seed read it 104 times at both. A wall-clock bound fails the fast path
+    // under load, because every read then takes longer: the test took 180 s at
+    // 1 s of lag (#234).
+    let reads = pane_reads(&rig.root);
+    assert!(reads < 60, "launch wait stays bounded: {reads} pane reads");
     assert_eq!(rig.count("watchdog-start"), 0, "seed wait needs no daemon");
     assert!(child.join("ready").is_file(), "successor drew the modal");
     assert_eq!(rig.count("auto-trust"), 1, "one successor trust episode");
