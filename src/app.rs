@@ -132,6 +132,8 @@ mod run;
 #[cfg(test)]
 mod s5_app;
 #[cfg(test)]
+mod seatfold_edges_spec;
+#[cfg(test)]
 mod seatfold_spec;
 pub mod select;
 #[cfg(test)]

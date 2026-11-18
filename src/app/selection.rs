@@ -86,18 +86,20 @@ impl App {
     /// The selected running session's spawned seats the Agents body lists:
     /// the facts' seats whose roster slot, by its own read, is `spawned.<n>`.
     /// The slot decides, never the seat's name; a seat the roster does not
-    /// hold, or a session whose roster is not read yet, has none.
+    /// hold, a session whose roster is not read yet and a roster read from
+    /// another incarnation than the one the fleet names now (a home lane is
+    /// kept until its next read) have none.
     pub(super) fn spawned_names(&self) -> Vec<String> {
         let Some(name) = self.model.selected() else {
             return Vec::new();
         };
         let stopped = (self.entry(name)).is_some_and(|entry| entry.status == Status::Stopped);
-        let (Some(Facts::Seats { agents, .. }), Some(roster)) = (
-            self.facts.get(name),
-            self.shown
-                .get(name)
-                .and_then(|shown| shown.roster.as_deref()),
-        ) else {
+        let current = self.ids.get(name);
+        let roster = (self.shown.get(name))
+            .filter(|shown| current == Some(&shown.id))
+            .and_then(|shown| shown.roster.as_deref());
+        let (Some(Facts::Seats { agents, .. }), Some(roster)) = (self.facts.get(name), roster)
+        else {
             return Vec::new();
         };
         let spawned = |seat: &str| {
