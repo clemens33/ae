@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.87] - 2026-11-18
+- The two o8 menu specs press q again when the app refuses it as not yet on screen
+- The readiness gate names OpenCode's "What's new" release-highlights dialog at the spawn wait, the target-lock recheck and the same-seat retry, so ae pastes nothing while it is open, refuses the brief with the dialog named and, when the retry record cannot be published, tells the human to close the dialog before sending
+- The release-highlights specs pin the dialog name on the manual-send advice line and in the spawn refusal record, and the dialog recognizer refuses a footer above its header, a misaligned right label, a shifted scroll label and a non-blank gap between the legacy labels
+- The generic dialog spec requires both edges of each chrome word, so a dismiss or body word with a letter on one side leaves the empty composer ready
+- A release and a claim refuse on a full disk, a waiting claim can be cancelled, the Mac lane runs its manifest guard and the lane sweeps dead scratch roots safely
+- The AGENTS.md lane-lock row names cancel-wait and the AE_LANE_MIN_FREE_GIB floor
+- The AGENTS.md lane-lock row says that only claim also checks the shared lock volume
+
 ## [v2026.11.86] - 2026-11-18
 - The fresh-launch and reseat-seed specs bound the wait by the pane reads it spends, so a slow tmux no longer fails them
 - The orchestrator panel's header draws a pane word and its focused keys take oo, so a click or a second o opens the orchestrator's real pane on the incarnation and main seat the panel's last frame drew, with the seat-open proof, one client and a clean view; a status column draws no pane and refuses oo with its own line, and v stays inert
