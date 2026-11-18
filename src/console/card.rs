@@ -44,9 +44,9 @@ fn trim(text: &str) -> &str {
     text.trim_matches(is_gap)
 }
 
-/// The lines `reason` reads as. A reason with a standalone `|` is SHAPED: a
-/// question, then the options the pipes separate, then the prose after the
-/// last option. Any other reason is prose alone.
+/// The lines `reason` reads as. A reason with a standalone `|` outside
+/// parentheses is SHAPED: a question, then the options the pipes separate,
+/// then the prose after the last option. Any other reason is prose alone.
 #[must_use]
 pub fn layout(reason: &str) -> Vec<Part<'_>> {
     let pieces = pipes(reason);
@@ -85,19 +85,36 @@ pub fn layout(reason: &str) -> Vec<Part<'_>> {
     parts
 }
 
-/// `reason` cut at every standalone `|`: one with a gap or an end on both sides.
+/// `reason` cut at every standalone `|`: one with a gap or an end on both sides,
+/// and outside parentheses, where an option's own choices (`1 a | 2 b`) stay.
+/// A `)` with no `(` open lowers nothing, so a label `1)` leaves the depth at
+/// zero. When a `(` never closes the depth cannot be trusted, and the cut is
+/// at every standalone pipe.
 fn pipes(reason: &str) -> Vec<&str> {
-    let mut pieces = Vec::new();
-    let mut from = 0;
+    let mut standalone = Vec::new();
+    let mut depth = 0usize;
     let mut before: Option<char> = None;
     let mut chars = reason.char_indices().peekable();
     while let Some((at, ch)) = chars.next() {
         let after = chars.peek().map(|&(_, next)| next);
-        if ch == '|' && before.is_none_or(is_gap) && after.is_none_or(is_gap) {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            '|' if before.is_none_or(is_gap) && after.is_none_or(is_gap) => {
+                standalone.push((at, depth));
+            }
+            _ => {}
+        }
+        before = Some(ch);
+    }
+    let closed = depth == 0;
+    let mut pieces = Vec::new();
+    let mut from = 0;
+    for (at, inside) in standalone {
+        if inside == 0 || !closed {
             pieces.push(&reason[from..at]);
             from = at + 1;
         }
-        before = Some(ch);
     }
     pieces.push(&reason[from..]);
     pieces
@@ -437,5 +454,199 @@ mod tests {
                 (Role::Option { label: 3 }, "2. Horizontal"),
             ]
         );
+    }
+
+    const GAP: (Role, &str) = (Role::Gap, "");
+
+    fn text(text: &str) -> (Role, &str) {
+        (Role::Text, text)
+    }
+
+    /// An option that wears a three-byte label (`1. `, `a) `).
+    fn option(text: &str) -> (Role, &str) {
+        (Role::Option { label: 3 }, text)
+    }
+
+    /// Agents write the choices of each decision inside its parentheses with
+    /// ` | `; that pipe is part of the decision, not a cut between decisions.
+    #[test]
+    fn several_decisions_with_a_pipe_inside_each_parenthesis_lay_out_as_two_options() {
+        let reason = "Decide by number: 1. B4 merge PR 103 (1 yes: combined assistant slot \
+            with image build and gates, FREE, push, about 30 min | 2 hold; recommend 1, nav PASS) \
+            | 2. brief-level write denial for the B4 gate (1 accept | 2 re-review with a \
+            read-only seat; recommend 1). B2 head 6c1bed17c waits for B4 and its image. \
+            Memo ci-remote.";
+        assert_eq!(
+            texts(&layout(reason)),
+            [
+                text("Decide by number:"),
+                GAP,
+                option(
+                    "1. B4 merge PR 103 (1 yes: combined assistant slot with image build and \
+                    gates, FREE, push, about 30 min | 2 hold; recommend 1, nav PASS)"
+                ),
+                option(
+                    "2. brief-level write denial for the B4 gate (1 accept | 2 re-review with \
+                    a read-only seat; recommend 1)."
+                ),
+                GAP,
+                text("B2 head 6c1bed17c waits for B4 and its image."),
+                GAP,
+                (Role::Evidence, "Memo ci-remote."),
+            ]
+        );
+    }
+
+    #[test]
+    fn three_inner_options_inside_a_parenthesis_stay_in_their_decision() {
+        let reason = "Decide by number: 1. OpenCode upstream request (1 file it publicly, ae can \
+            then enforce variants later | 2 keep draft; recommend 1, upstream invited it; \
+            .local/ocvariant/findings.md) | 2. Code layout (1 one crate, src/ folders per layer \
+            | 2 Cargo workspace split | 3 continue #300 file splits; recommend 1, the measured \
+            6 s loop gives no crate case; issue #300, docs/history.md:1074).";
+        assert_eq!(
+            texts(&layout(reason)),
+            [
+                text("Decide by number:"),
+                GAP,
+                option(
+                    "1. OpenCode upstream request (1 file it publicly, ae can then enforce \
+                    variants later | 2 keep draft; recommend 1, upstream invited it; \
+                    .local/ocvariant/findings.md)"
+                ),
+                option(
+                    "2. Code layout (1 one crate, src/ folders per layer | 2 Cargo workspace \
+                    split | 3 continue #300 file splits; recommend 1, the measured 6 s loop \
+                    gives no crate case; issue #300, docs/history.md:1074)."
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pipe_inside_balanced_parentheses_of_one_decision_stays_in_its_option() {
+        assert_eq!(
+            texts(&layout("Which? 1. ship (fast | safe) | 2. hold")),
+            [
+                text("Which?"),
+                GAP,
+                option("1. ship (fast | safe)"),
+                option("2. hold"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pipe_inside_parentheses_alone_cuts_nothing() {
+        assert_eq!(
+            texts(&layout("Pick (a | b) now.")),
+            [text("Pick (a | b) now.")]
+        );
+    }
+
+    #[test]
+    fn a_pipe_inside_the_questions_parenthesis_stays_in_the_question() {
+        assert_eq!(
+            texts(&layout("Merge (PR 103 | PR 104)? 1. yes | 2. no")),
+            [
+                text("Merge (PR 103 | PR 104)?"),
+                GAP,
+                option("1. yes"),
+                option("2. no"),
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_parentheses_hold_every_inner_pipe() {
+        assert_eq!(
+            texts(&layout("Q: 1. A (x (y | z) | w) | 2. B")),
+            [
+                text("Q:"),
+                GAP,
+                option("1. A (x (y | z) | w)"),
+                option("2. B"),
+            ]
+        );
+    }
+
+    /// Parentheses that never close leave the reason cut at every standalone
+    /// pipe, as it was cut before pipes inside parentheses were kept whole.
+    #[test]
+    fn an_unclosed_parenthesis_falls_back_to_the_cut_at_every_pipe() {
+        assert_eq!(
+            texts(&layout("Which? 1. A (x | 2. B")),
+            [text("Which?"), GAP, option("1. A (x"), option("2. B")]
+        );
+        assert_eq!(
+            texts(&layout("Q: 1. A (x | y) | 2. B (z | 3. C")),
+            [
+                text("Q:"),
+                text("1."),
+                GAP,
+                (Role::Option { label: 0 }, "A (x"),
+                (Role::Option { label: 0 }, "y)"),
+                (Role::Option { label: 0 }, "2. B (z"),
+                (Role::Option { label: 0 }, "3. C"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_closing_bracket_label_stays_unaffected() {
+        assert_eq!(
+            texts(&layout("Pick: a) x | b) y")),
+            [text("Pick:"), GAP, option("a) x"), option("b) y")]
+        );
+        assert_eq!(
+            texts(&layout("Pick: 1) x | 2) y")),
+            [text("Pick:"), GAP, option("1) x"), option("2) y")]
+        );
+        assert_eq!(
+            texts(&layout("1) x | 2) y")),
+            [option("1) x"), option("2) y")]
+        );
+    }
+
+    /// A `)` with no `(` before it, such as the label `1)`, never lowers the
+    /// depth below zero: the pair that follows still holds its inner pipe.
+    #[test]
+    fn a_stray_closing_parenthesis_before_any_opening_one_lowers_no_depth() {
+        assert_eq!(
+            texts(&layout("Pick: 1) A (x | y) | 2) B")),
+            [text("Pick:"), GAP, option("1) A (x | y)"), option("2) B")]
+        );
+    }
+
+    #[test]
+    fn parentheses_keep_every_part_a_slice_of_the_reason_in_its_order() {
+        for reason in [
+            "Decide by number: 1. A (1 x | 2 y; recommend 1) | 2. B (1 p | 2 q | 3 r). Rest. Memo m.",
+            "Which? 1. ship (fast | safe) | 2. hold",
+            "Pick (a | b) now.",
+            "Q: 1. A (x (y | z) | w) | 2. B",
+            "Which? 1. A (x | 2. B",
+            "Q: 1. A (x | y) | 2. B (z | 3. C",
+            "Pick: 1) A (x | y) | 2) B",
+            "((((|))))",
+            ")|(",
+            "|(|",
+            "(|",
+            "|)",
+            "()|()",
+            "( | )",
+            "a ) | ( b",
+            "(a | b",
+            "a | b)",
+        ] {
+            let parts = layout(reason);
+            let mut at = 0;
+            for part in parts.iter().filter(|part| part.role != Role::Gap) {
+                let offset = part.text.as_ptr() as usize - reason.as_ptr() as usize;
+                assert!(offset >= at, "{reason:?}");
+                at = offset + part.text.len();
+                assert!(!part.text.is_empty(), "{reason:?}");
+            }
+        }
     }
 }
