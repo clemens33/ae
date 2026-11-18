@@ -67,6 +67,28 @@ fn send(rig: &Rig, pane: &str, text: &str) {
     assert!(ok, "private app input: {out}");
 }
 
+/// `key` reaches an open modal only when a frame showing it was written before the app read
+/// the key, and the app stamps that frame once its write returns, a moment after the screen
+/// already shows the modal. A key sent in that gap is refused with the hint row's "press
+/// again", which is the contract, so the key is pressed again on that refusal and on nothing
+/// else: a key that closed the modal is never sent twice.
+fn press(rig: &Rig, pane: &str, key: &str, why: &str, met: impl Fn(&str) -> bool) {
+    let last = std::cell::Cell::new(Instant::now());
+    send(rig, pane, key);
+    rig.wait(pane, why, |screen| {
+        if met(screen) {
+            return true;
+        }
+        if screen.contains("was not on screen yet - press again")
+            && last.get().elapsed() > Duration::from_millis(250)
+        {
+            send(rig, pane, key);
+            last.set(Instant::now());
+        }
+        false
+    });
+}
+
 fn open(rig: &Rig, tag: &str, gate_dir: Option<&Path>) -> (String, PathBuf) {
     let rc = rig.scratch.join(format!("rc-{tag}"));
     let line = command(&[], &rc, true);
@@ -433,10 +455,13 @@ fn an_ordinary_namesake_stays_listed_has_an_ordinary_menu_and_is_never_started()
     rig.wait(&pane, "namesake has ordinary session actions", |s| {
         s.contains("Activity") && s.contains("Memos")
     });
-    send(&rig, &pane, "q");
-    rig.wait(&pane, "the ordinary namesake menu closes before O", |s| {
-        lands(s, "orchestrator") && !s.contains("a  Activity")
-    });
+    press(
+        &rig,
+        &pane,
+        "q",
+        "the ordinary namesake menu closes before O",
+        |s| lands(s, "orchestrator") && !s.contains("a  Activity"),
+    );
     send(&rig, &pane, "O");
     let refused = rig.wait(&pane, "the panel names the collision reason", |s| {
         let p = panel_text(s);
@@ -591,10 +616,13 @@ fn guard_real_fixture_panel_borders_menu_keys_and_role_rename_are_reachable() {
     rig.wait(&pane, "2m opens an ordinary second-row menu", |s| {
         s.contains("Activity") && s.contains("Memos")
     });
-    send(&rig, &pane, "q");
-    rig.wait(&pane, "one q closes only the ordinary menu", |s| {
-        lands(s, "legacy") && !s.contains("a  Activity")
-    });
+    press(
+        &rig,
+        &pane,
+        "q",
+        "one q closes only the ordinary menu",
+        |s| lands(s, "legacy") && !s.contains("a  Activity"),
+    );
     assert!(!rc.exists(), "one menu q never quits the app");
     assert_eq!(rig.quit(&pane, &rc), "0");
     let renamed = rig.run(&["rename", "orchestrator", "router"], "guard-rename");
