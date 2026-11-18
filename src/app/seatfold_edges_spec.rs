@@ -320,3 +320,56 @@ fn a_typed_wait_names_its_target_on_its_own_seat_only() {
         assert!(row(other).contains("waiting on an agent"), "{}", row(other));
     }
 }
+
+/// A seat that declared its work keeps the declaration row under its name, in
+/// the fixed seats and in the spawned group, and a seat without one has none.
+/// The row says the seat's own declared reason, which each test seat spells
+/// out, and its age.
+#[test]
+fn a_declared_seat_keeps_its_declaration_row_under_its_name() {
+    let seats = [
+        ("main", "alpha", "working"),
+        ("worker.0", "bravo", "working"),
+        ("spawned.0", "scout", "working"),
+        ("spawned.1", "tango", "working"),
+    ];
+    let mut app = fixture(&seats, 80);
+    let declared = |name: &str| AgentEntry {
+        name: name.into(),
+        declaration: Some(Declaration::Made {
+            reason: "reading the plan".into(),
+            at: None,
+            on: None,
+            overdue: false,
+            missing: false,
+            moved: None,
+        }),
+        ..AgentEntry::default()
+    };
+    app.world.sessions[0].agents = vec![declared("alpha"), declared("scout")];
+    let shown = frame(&mut app);
+    let rows: Vec<String> = (0..shown.area.height)
+        .map(|y| line(&shown, y, 80))
+        .collect();
+    let below = |name: &str| {
+        let at = rows
+            .iter()
+            .position(|text| text.contains(name))
+            .unwrap_or_else(|| panic!("{name} is drawn: {rows:?}"));
+        rows[at + 1].clone()
+    };
+    for name in ["alpha", "scout"] {
+        assert!(
+            below(name).starts_with("reading the plan"),
+            "under {name}: {}",
+            below(name)
+        );
+    }
+    for name in ["bravo", "tango"] {
+        assert!(
+            !below(name).contains("reading the plan"),
+            "{name} declared nothing: {}",
+            below(name)
+        );
+    }
+}
