@@ -150,6 +150,8 @@ pub(crate) enum Hit {
     Newest,
     /// The hint row's orchestrator button: opens or hides the panel.
     Orchestrator,
+    /// The panel header's `pane` word: opens the orchestrator's pane.
+    PanelPane,
     /// The panel header's mode label: side or full.
     PanelMode,
 }
@@ -243,6 +245,11 @@ pub(crate) struct Layout {
     /// panel's own column records them as it draws, the main column's frame
     /// takes them over.
     pub(crate) panel: Option<Rect>,
+    /// What the panel's `pane` word opens, as the frame that drew it read it:
+    /// the incarnation the panel is bound to and the main seat that
+    /// incarnation's roster named then. Set by the app after the draw, only
+    /// for a panel bound to a running orchestrator.
+    pub(super) pane: Option<(String, Option<crate::console::needs::SeatRef>)>,
 }
 
 impl Layout {
@@ -2494,8 +2501,12 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, (left, end): (u16, u16), layout: 
     put(buf, dir_from, 0, &shown, room, paint.fg(|p| p.dim));
 }
 
+/// The word of the panel header's pane target, plain whatever the icons.
+const PANE_WORD: &str = "pane";
+
 /// The panel header's right end: the mode label, `F full` or `F side`, a
-/// click target, and before it why a side panel did not fit. The answer is
+/// click target, before it `pane` while the panel is bound to a running seat,
+/// and before that why a side panel did not fit. The answer is
 /// where the rest of the header ends; the main column's header keeps `end`.
 fn panel_head(
     ctx: &Ctx<'_, '_>,
@@ -2522,6 +2533,15 @@ fn panel_head(
     put(buf, from, 0, label, width, ctx.paint.fg(|p| p.title));
     layout.record(buf, Rect::new(from, 0, width, 1), Hit::PanelMode);
     let mut stop = from.saturating_sub(2);
+    // A panel bound to a running seat offers its pane; a status column draws
+    // no session and so no target.
+    let pane = cells(PANE_WORD.chars().count());
+    if ctx.screen.selected.is_some() && stop >= left + pane {
+        let at = stop - pane;
+        put(buf, at, 0, PANE_WORD, pane, ctx.paint.fg(|p| p.title));
+        layout.record(buf, Rect::new(at, 0, pane, 1), Hit::PanelPane);
+        stop = at.saturating_sub(2);
+    }
     if let Stand::Full { note: Some(note) } = stand {
         let need = cells(note.chars().count());
         if stop >= left + need {

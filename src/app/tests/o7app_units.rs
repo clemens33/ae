@@ -858,20 +858,106 @@ fn f_that_flips_the_panel_redraws() {
     }
 }
 
-/// `o` and `v` over the panel that holds the keys do nothing: the panel
-/// opens no session and arms no press.
+/// `v` over the panel that holds the keys does nothing: the panel peeks at
+/// no seat and arms no press. (`o` is the panel's pane key, pinned by
+/// `orchpane_spec`.)
 #[test]
-fn o_and_v_over_the_panel_are_inert() {
-    for byte in *b"ov" {
-        let mut app = app(None);
-        two(&mut app);
-        opened(&mut app, false);
-        let _ = framed(&mut app);
-        let redraw = take_keys(&mut app, vec![(Key::Text(vec![byte]), Instant::now())]);
-        assert_eq!(redraw, Some(false), "{} redraws nothing", char::from(byte));
-        assert!(app.armed.is_none(), "{} arms nothing", char::from(byte));
-        assert!(app.panel_focused());
-    }
+fn v_over_the_panel_is_inert() {
+    let mut app = app(None);
+    two(&mut app);
+    opened(&mut app, false);
+    let _ = framed(&mut app);
+    let redraw = take_keys(&mut app, vec![(Key::Text(b"v".to_vec()), Instant::now())]);
+    assert_eq!(redraw, Some(false), "v redraws nothing");
+    assert!(app.armed.is_none(), "v arms nothing");
+    assert!(app.panel_focused());
+}
+
+/// A pane press tells its outcome where the panel can show it: a chat panel
+/// in its lane, a status column, whose body draws no lane, on the hint row.
+#[test]
+fn a_pane_press_tells_a_chat_panel_in_its_lane_and_a_status_column_on_the_hint_row() {
+    let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+    let root = Root::new("o7paneliveline");
+    let (mut app, _reader) = orchestrated(&root, false);
+    app.shown.insert(
+        orch.to_owned(),
+        crate::app::Shown {
+            id: ID.to_owned(),
+            seq: 1,
+            lane: Rc::default(),
+            roster: Some(vec![seat_ref("main", orch)]),
+        },
+    );
+    let _ = at(160, 45, &mut app);
+    press(&mut app, b"oo");
+    assert!(app.flash.is_none(), "a chat panel says it in its lane");
+    let said: Vec<_> = (app.notices.iter())
+        .filter(|(of, _)| of == orch)
+        .map(|(_, item)| item.body.as_str())
+        .collect();
+    assert_eq!(
+        said,
+        ["refused: /open orchestrator: ae app is not running inside tmux; nothing selected"]
+    );
+
+    let root = Root::new("o7panelstatusline");
+    let (mut app, _reader) = housed(&root);
+    app.answer(Answer::Orchestrator(loader::Proof::Absent));
+    press(&mut app, b"O");
+    let _ = at(160, 45, &mut app);
+    press(&mut app, b"o");
+    assert!(app.notices.is_empty(), "a status column draws no lane");
+    let flash = app.flash.as_ref().map(|(line, _)| line.as_str());
+    assert_eq!(
+        flash,
+        Some("refused: /open orchestrator: waiting for the orchestrator seat; nothing selected")
+    );
+}
+
+/// The panel's pane seat comes only from the roster read of the incarnation
+/// the panel is bound to: another incarnation's roster under the same name
+/// offers no seat, so the press refuses at once and arms nothing.
+#[test]
+fn another_incarnations_roster_offers_the_panel_no_pane_seat() {
+    let orch = crate::orchestrator::ORCHESTRATOR_SESSION;
+    let root = Root::new("o7paneroster");
+    let (mut app, _reader) = orchestrated(&root, false);
+    app.shown.insert(
+        orch.to_owned(),
+        crate::app::Shown {
+            id: "0199c0de-9999-4890-abcd-ef0123456789".to_owned(),
+            seq: 1,
+            lane: Rc::default(),
+            roster: Some(vec![seat_ref("main", orch)]),
+        },
+    );
+    let _ = at(160, 45, &mut app);
+    press(&mut app, b"o");
+    assert!(
+        app.armed.is_none(),
+        "no seat of the bound incarnation to arm"
+    );
+    assert!(
+        (app.notices.iter()).any(|(of, item)| of == orch
+            && item
+                .body
+                .contains("no seat is shown to open in orchestrator")),
+        "{:?}",
+        app.notices
+    );
+}
+
+/// At the narrowest frame the app draws, a full panel's header still holds
+/// `pane`, two blanks and `F side`, the name keeping the cells left of them.
+#[test]
+fn the_floor_width_header_still_holds_pane_beside_the_mode_label() {
+    let root = Root::new("o7panewidth");
+    let (mut app, _reader) = orchestrated(&root, true);
+    let shown = text(&at(40, 8, &mut app));
+    let head = shown.lines().next().unwrap_or_default();
+    assert!(head.contains("orchestrator"), "{head}");
+    assert!(head.trim_end().ends_with("pane  F side"), "{head}");
 }
 
 /// A fallen-back panel's header keeps the orchestrator's name beside its

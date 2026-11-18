@@ -305,10 +305,13 @@ impl App {
                 self.open_settings();
                 return true;
             }
+            // `PanelPane` is the panel's own: its route takes the word before
+            // the chat's, so the chat never sees it.
             draw::Hit::SettingsTab(_)
             | draw::Hit::StatsTab(_)
             | draw::Hit::SettingsClose
-            | draw::Hit::PeekClose => {
+            | draw::Hit::PeekClose
+            | draw::Hit::PanelPane => {
                 return held;
             }
             draw::Hit::Item(_) | draw::Hit::Modal => return held,

@@ -518,7 +518,7 @@ impl App {
     /// Open `seat` of `session`, bound to the incarnation `uuid`: the chat's
     /// proof, then the one client that pressed the key handed to a clean view
     /// of the seat's pane. The line to tell, refused or opened.
-    fn open(
+    pub(super) fn open(
         &self,
         session: &str,
         uuid: &str,

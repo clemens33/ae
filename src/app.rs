@@ -269,6 +269,10 @@ enum Arm {
     Interrupt,
     /// `o` on the frame it saw: the second press opens that frame's seat.
     Open(Drawn),
+    /// `o` over the orchestrator panel, on the pane target its frame drew: the
+    /// second press opens that incarnation's main seat. A kind of its own, so
+    /// a press armed in the main column never completes in the panel.
+    Pane(Drawn),
 }
 
 impl Arm {
@@ -277,7 +281,9 @@ impl Arm {
         match self {
             Self::Quit => "q again to quit".to_owned(),
             Self::Interrupt => "^C again to quit · ^Y brings draft back".to_owned(),
-            Self::Open(d) => format!("o again to open {}", d.focused.as_deref().unwrap_or("")),
+            Self::Open(d) | Self::Pane(d) => {
+                format!("o again to open {}", d.focused.as_deref().unwrap_or(""))
+            }
         }
     }
 }

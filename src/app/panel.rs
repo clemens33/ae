@@ -2,8 +2,9 @@
 //! and its mouse live here; it is drawn and acted on through the chat column the main window uses.
 
 use super::{
-    App, Buffer, Drawn, HISTORY, Instant, Key, Lane, Merged, Mouse, MouseKind, ORCH, Position, Rc,
-    Size, Timestamp, View, apply, draw, fleet, loader, model, overview,
+    App, Arm, Armed, Buffer, Drawn, HISTORY, Instant, Key, Lane, Merged, Mouse, MouseKind, ORCH,
+    Position, QUIT_WINDOW, Rc, Refusal, SeatRef, Size, Timestamp, View, apply, draw, fleet, loader,
+    model, overview,
 };
 
 /// The open orchestrator panel: how it stands, what it is bound to, and its
@@ -122,6 +123,20 @@ pub(super) enum Opening {
     Handed(String),
 }
 
+/// The pane target a panel frame drew, as the frozen frame the seat keys act
+/// on: the orchestrator session, the incarnation and its one main seat.
+fn pane_drawn((uuid, seat): (String, Option<SeatRef>)) -> Drawn {
+    Drawn {
+        session: ORCH.to_owned(),
+        uuid,
+        focused: seat.as_ref().map(|seat| seat.name.clone()),
+        rows: seat
+            .map(|seat| (seat.name.clone(), Some(seat)))
+            .into_iter()
+            .collect(),
+    }
+}
+
 /// Why a running orchestrator is no incarnation the panel can bind.
 fn unproven(gap: &str) -> String {
     format!("orchestrator unproven: {gap}")
@@ -136,6 +151,8 @@ pub(super) enum PanelByte {
     Panel,
     /// It does nothing in the panel.
     Inert,
+    /// `o`: the panel's own pane key ([`App::pane_key`]).
+    Open,
 }
 
 impl App {
@@ -566,8 +583,9 @@ impl App {
 
     /// Who takes browse byte `byte` while the panel holds the keys: the
     /// list's own keys stay the main column's beside a side panel and do
-    /// nothing over a full one, a seat view or pane does nothing, and the
-    /// rest is the panel's chat.
+    /// nothing over a full one, a seat view or pane does nothing, `o` opens
+    /// the orchestrator's pane and `v` does nothing, and the rest is the
+    /// panel's chat.
     pub(super) fn panel_byte(&self, byte: u8) -> PanelByte {
         let full = self.orch.panel.as_ref().is_some_and(|panel| {
             let columns = model::Columns {
@@ -577,13 +595,92 @@ impl App {
             draw::panel_full(self.layout.area(), self.model.split(), columns)
         });
         match byte {
-            b'v' | b'o' => PanelByte::Inert,
+            b'v' => PanelByte::Inert,
+            b'o' => PanelByte::Open,
             b'1'..=b'9' | b'j' | b'k' if full => PanelByte::Inert,
             b'1'..=b'9' | b'j' | b'k' | b'q' | b',' | b'?' | b's' | b'z' | b'Z' | b'm' => {
                 PanelByte::Main
             }
             _ => PanelByte::Panel,
         }
+    }
+
+    /// What the panel's pane target opens: the incarnation the panel is bound
+    /// to and, when the roster read of that same incarnation holds one, its
+    /// main seat. `None` while the panel is bound to none.
+    fn pane_target(&self) -> Option<(String, Option<SeatRef>)> {
+        let pin = self.orch.panel.as_ref().and_then(Panel::pin)?;
+        let seat = (self.shown.get(ORCH))
+            .filter(|shown| shown.id == pin)
+            .and_then(|shown| shown.roster.as_deref())
+            .and_then(|roster| (roster.iter()).find(|seat| seat.slot == crate::watchdog::MAIN_SLOT))
+            .cloned();
+        Some((pin.to_owned(), seat))
+    }
+
+    /// `o` while the panel holds the keys: the first press arms on the pane
+    /// target the last panel frame drew and moves nothing, the second within
+    /// the window opens THAT target, whatever the panel drew since. A panel
+    /// bound to no running orchestrator refuses at once with its own reason
+    /// and arms nothing: it never starts or resumes the seat. Whether the
+    /// frame is due.
+    pub(super) fn pane_key(&mut self, origin: Instant) -> bool {
+        self.in_panel(|app| app.pane_press(origin)).is_some()
+    }
+
+    /// [`App::pane_key`] with the panel's column in the app's fields.
+    fn pane_press(&mut self, origin: Instant) {
+        let armed = (self.armed.take())
+            .filter(|armed| origin.saturating_duration_since(armed.at) <= QUIT_WINDOW);
+        if let Some(Armed {
+            what: Arm::Pane(drawn),
+            ..
+        }) = armed
+        {
+            return self.pane_open(&drawn);
+        }
+        if let Some(why) = self.panel_line() {
+            return self.pane_said(Refusal::NoSeat(why).line(ORCH));
+        }
+        let drawn = pane_drawn(self.layout.pane.clone().unwrap_or_default());
+        match drawn.seat() {
+            Ok(_) => {
+                self.armed = Some(Armed {
+                    at: origin,
+                    what: Arm::Pane(drawn),
+                });
+            }
+            Err(why) => self.pane_said(why.line(ORCH)),
+        }
+    }
+
+    /// A press on the panel header's `pane` word: it opens at once what the
+    /// frame that drew the word read, as the second `o` does.
+    pub(super) fn pane_click(&mut self) -> bool {
+        let target = (self.orch.panel.as_ref()).and_then(|panel| panel.column.layout.pane.clone());
+        let drawn = pane_drawn(target.unwrap_or_default());
+        self.in_panel(|app| app.pane_open(&drawn)).is_some()
+    }
+
+    /// Open the orchestrator's pane as the chat's `/open` does, on the
+    /// incarnation and seat `drawn` holds: the proof is made now, against that
+    /// incarnation, never a fresh lookup by name.
+    fn pane_open(&mut self, drawn: &Drawn) {
+        let label = drawn.focused.as_deref().unwrap_or(ORCH);
+        let line = self.open(ORCH, &drawn.uuid, drawn.seat(), label);
+        self.pane_said(line);
+    }
+
+    /// Tell the outcome of a pane press: in the panel's lane while the panel
+    /// is a chat, on the hint row while it is a status column, whose body
+    /// draws no lane.
+    fn pane_said(&mut self, line: String) {
+        if self.panel_line().is_some() {
+            self.flash = Some((line, Instant::now()));
+        } else {
+            self.notice(ORCH, line);
+        }
+        self.show();
     }
 
     /// A key the composer of the column that holds the keys takes.
@@ -656,6 +753,7 @@ impl App {
                 return true;
             }
             Some(draw::Hit::PanelMode) => return self.flip_panel(),
+            Some(draw::Hit::PanelPane) => return self.pane_click(),
             Some(draw::Hit::Settings) => {
                 self.open_settings();
                 return true;
@@ -725,6 +823,9 @@ impl App {
             };
             let drawn = draw::draw_panel(&screen, wait, buf);
             let replaced = std::mem::replace(&mut app.layout, drawn);
+            // Its `pane` word opens what this frame read, whatever a later
+            // read changes.
+            app.layout.pane = bound.then(|| app.pane_target()).flatten();
             app.history.push((Instant::now(), replaced));
             if app.history.len() > HISTORY {
                 app.lost = Some(app.history.remove(0).0);

@@ -365,6 +365,7 @@ pub(super) fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bo
         if app.panel_focused() {
             match app.panel_byte(byte) {
                 PanelByte::Inert => return Some(disarmed),
+                PanelByte::Open => return Some(app.pane_key(origin)),
                 PanelByte::Panel => {
                     let done = app.in_panel(|app| browse_byte(app, byte, origin));
                     if byte == b'r' && app.model.reader_open() {

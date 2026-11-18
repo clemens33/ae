@@ -238,7 +238,7 @@ Browsing:
 | `!` | the next session that needs you |
 | `O`, click `◆` | open the orchestrator panel beside the chat, or hide it ([Orchestrator panel](#orchestrator-panel)) |
 | `F`, click `F full` / `F side` | the open panel full screen over the chat column (the sidebar stays), or side by side again |
-| `oo` | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat |
+| `oo`, click `pane` in the panel header | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat. While the orchestrator panel holds the keys, `oo` and the click open the orchestrator's pane ([Orchestrator panel](#orchestrator-panel)) |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
 | Click a seat, or `v` on the highlighted seat | inside tmux: watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)); outside tmux a click works in the seat itself ([Working in a seat](#working-in-a-seat)) |
 | `n` / `p` | step the seat cursor (`▹`, `-` with `icons = off`) to the next / previous seat the body shows; with no cursor `n` lands on the first seat and `p` on the last, and both wrap |
@@ -371,7 +371,9 @@ then acts as it always does.
 
 `o` takes your tmux client to the highlighted seat's pane, in any session you
 selected, home or not; `/open <seat>` in the composer does the same for a named
-seat of the selected session. It makes the proof `ae chat`'s `/open` makes,
+seat of the selected session, and the orchestrator panel's `pane` word and `oo`
+do the same for the orchestrator ([Orchestrator panel](#orchestrator-panel)).
+It makes the proof `ae chat`'s `/open` makes,
 then moves one tmux client into a view of the seat: nothing is typed into the
 seat and no record is written.
 
@@ -467,8 +469,27 @@ focused column's name is in the title ink
 (`▸` before it with `theme = off`). Any change of focus ends writing as `Esc`
 does and keeps each draft. While the panel holds the keys, `Esc` (not writing)
 hides it, `1`-`9`, `j` / `k` and the arrows still step the list beside a side
-panel, `v` and `oo` do nothing, `r` opens the reader in the main column, and
-the rest acts on the panel's chat; `O` and `F` are plain text while writing.
+panel, `v` does nothing, `oo` opens the orchestrator's pane (below), `r` opens
+the reader in the main column, and the rest acts on the panel's chat; `O` and
+`F` are plain text while writing.
+
+The panel's pane. A panel bound to a running orchestrator draws the word
+`pane` in its header, left of `F full` / `F side` and plain with any
+`icons` setting. A click on it, or `oo` while the panel holds the keys, opens
+the orchestrator's real pane exactly as `oo` opens a seat ([Opening a
+seat](#opening-a-seat)): the same proof, the same single tmux client moved into
+a clean `_aeview-…` view, nothing typed and no record written. Use it for what
+only the harness's own screen has, such as its native voice input. The first
+`o` arms (`o again to open orchestrator`) and the second within 2 seconds
+opens; a click opens at once. Both act on what the panel's last frame
+drew: the incarnation the panel is bound to and the main seat that
+incarnation's roster named then, never a fresh lookup by name. An incarnation
+that was replaced or stopped since refuses with the seat-open wording (`this
+session was replaced`, `orchestrator is stopped`), and a roster that no longer
+seats the main seat there refuses too. A status column (`waiting for the
+orchestrator seat`, `orchestrator unproven: …`, `orchestrator stopped; O starts
+it`, `orchestrator replaced; O reopens`) draws no `pane`, and `oo` there
+refuses on the hint row with its line, never starting or resuming the seat.
 
 The panel opens on the orchestrator incarnation the last fleet read proved:
 its live `@ae_session_uuid`, its meta, the one `session_id` that meta records
