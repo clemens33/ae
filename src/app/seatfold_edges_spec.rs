@@ -1,6 +1,7 @@
 //! Edges of the spawned group that the frozen acceptance in `seatfold_spec`
 //! leaves open: how the folded tally gives way in a narrow sidebar, where a
-//! click on the group line lands, and a stopped session's stale seat facts.
+//! click on the group line lands, a stopped session's stale seat facts and the
+//! typed wait word that the seat rows carry over from the old per-seat loop.
 //! Oracles are the brief's grammar (the session tally's marks, letters and
 //! order; a tally that does not fit gives way like a session's) and arithmetic
 //! on the cells written out in each test, never the implementation's output.
@@ -18,7 +19,7 @@ use super::{App, take_keys};
 use crate::console::input::{Key, Mouse, MouseKind};
 use crate::console::lane::Lane;
 use crate::console::needs::SeatRef;
-use crate::digest::{SessionEntry, Status};
+use crate::digest::{AgentEntry, Declaration, SessionEntry, Status};
 use crate::listing::World;
 use crate::theme::{Look, Mark};
 use crate::time::Timestamp;
@@ -276,4 +277,46 @@ fn a_roster_read_from_a_replaced_incarnation_groups_nothing() {
         .find(|y| line(&fresh, *y, 44).contains("scout"))
         .expect("scout is drawn");
     assert!(scout < row, "scout is a fixed seat of the new incarnation");
+}
+
+/// A seat that waits on a typed target reads `waiting on <target>` in place of
+/// the generic wait word, in the fixed seats and in the spawned group alike,
+/// and only its own seat does: a second `waiting-agent` seat that declared no
+/// target keeps the generic word, whichever seat the digest lists first.
+#[test]
+fn a_typed_wait_names_its_target_on_its_own_seat_only() {
+    let seats = [
+        ("main", "alpha", "waiting-agent"),
+        ("worker.0", "bravo", "waiting-agent"),
+        ("spawned.0", "scout", "waiting-agent"),
+    ];
+    let mut app = fixture(&seats, 80);
+    app.world.sessions[0].agents = vec![AgentEntry {
+        name: "alpha".into(),
+        declaration: Some(Declaration::Made {
+            reason: String::new(),
+            at: None,
+            on: crate::wait_on::Target::parse("ghost", "api"),
+            overdue: false,
+            missing: false,
+            moved: None,
+        }),
+        ..AgentEntry::default()
+    }];
+    let shown = frame(&mut app);
+    let row = |name: &str| {
+        (0..shown.area.height)
+            .map(|y| line(&shown, y, 80))
+            .find(|text| text.contains(name))
+            .unwrap_or_else(|| panic!("{name} is drawn"))
+    };
+    assert!(
+        row("alpha").contains("waiting on ghost"),
+        "{}",
+        row("alpha")
+    );
+    for other in ["bravo", "scout"] {
+        assert!(!row(other).contains("ghost"), "{}", row(other));
+        assert!(row(other).contains("waiting on an agent"), "{}", row(other));
+    }
 }
