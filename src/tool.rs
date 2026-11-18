@@ -268,6 +268,90 @@ pub enum ComposerAnchor {
     RuledPrompt,
 }
 
+impl ComposerAnchor {
+    /// The modal dialogs this composer's UI draws that ae refuses AND names.
+    /// Keyed by the anchor because the heavy rail is opencode's own drawing,
+    /// and the named dialogs are drawn by the same UI.
+    #[must_use]
+    pub const fn named_dialogs(self) -> &'static [NamedDialog] {
+        match self {
+            Self::HeavyRail => &[OPENCODE_HIGHLIGHTS],
+            Self::RoundedBox | Self::RuledPrompt => &[],
+        }
+    }
+}
+
+/// A modal dialog ae recognizes by its drawn identity: it refuses readiness
+/// while the dialog is open and names it in the refusal. Unlike
+/// [`DialogSig`], this matches a TITLE, because a refusal can name only a
+/// dialog it can identify. The title alone is transcript text, so a footer
+/// row of the same panel, aligned to the header's columns, must corroborate
+/// it. A capture that quotes both rows with the panel's exact spacing reads
+/// as the dialog: that refusal is conservative and accepted.
+///
+/// Pub because [`ComposerAnchor::named_dialogs`] exposes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NamedDialog {
+    /// How a refusal names the dialog.
+    pub name: &'static str,
+    /// The literal the header row starts its title with.
+    pub title: &'static str,
+    /// The close label the header row draws after the title, right-aligned
+    /// to the panel's content edge.
+    pub close: &'static str,
+    /// The blank cells the panel draws between its content edge and its
+    /// border on the right. Every header and footer row ends its right label
+    /// with them, which prose quoting the rows does not.
+    pub pad: usize,
+    /// The footer rows the panel can draw below its header; one must match.
+    pub footers: &'static [DialogFooter],
+}
+
+/// One footer row of a [`NamedDialog`], placed by the header's columns.
+///
+/// Pub because [`NamedDialog`] exposes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DialogFooter {
+    /// The label starting at the title's column; empty when the footer draws
+    /// nothing on the left.
+    pub left: &'static str,
+    /// The label on the right, ending `right_inset` cells before the header's
+    /// close label ends.
+    pub right: &'static str,
+    /// How many cells the right label ends before the close label's end. The
+    /// right label draws them blank, and the panel's `pad` after them.
+    pub right_inset: usize,
+}
+
+/// opencode's release-highlights dialog, DERIVED from source, not measured
+/// on a live pane: v2.3.2 (`c0ad18b402eb2827fc1ee71c171b1177b3fc02d1`),
+/// `packages/tui/src/component/dialog-highlights.tsx` and
+/// `packages/tui/src/ui/dialog.tsx`. No incident frame was saved. The
+/// header draws `What's new in <version>` and the `esc` close label on one
+/// row. The legacy footer draws `scroll ↑/↓` at the title column and an `ok`
+/// button padded by 3 cells on the right. The new-design footer draws
+/// `ok enter` ending at the close label's column. The dialog layout's 3-cell
+/// inset is the blank padding after each row's right label. Startup opens it
+/// once per version, centered over the home prompt, and Enter closes it.
+const OPENCODE_HIGHLIGHTS: NamedDialog = NamedDialog {
+    name: "OpenCode's \"What's new\" release-highlights dialog",
+    title: "What's new in ",
+    close: "esc",
+    pad: 3,
+    footers: &[
+        DialogFooter {
+            left: "scroll ↑/↓",
+            right: "ok",
+            right_inset: 3,
+        },
+        DialogFooter {
+            left: "",
+            right: "ok enter",
+            right_inset: 0,
+        },
+    ],
+};
+
 /// The whole unmodelled composed signal: the markers AND the geometry that
 /// owns them. One value so the two can never be mismatched at a call site.
 ///
@@ -295,7 +379,8 @@ pub struct Composed {
 /// One tool's modal-dialog refusal signal: the chrome whose open state
 /// refuses readiness although the composer is drawn and empty. Titles are
 /// deliberately NOT matched: the dialog family is open (pickers exist
-/// unmeasured), so a title list would be one drift point per dialog.
+/// unmeasured), so a title list would be one drift point per dialog. A dialog
+/// with no Search body that ae must also NAME is a [`NamedDialog`] instead.
 ///
 /// Pub because [`Composed`] exposes it, and the public `wait_input_ready`
 /// probe takes that.
@@ -1402,7 +1487,9 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         // since taken a turn reads composed where main refused it for the
         // unrelated missing placeholder. All UI text of ONE observed
         // version, an inherited version-drift hazard: a renamed composer
-        // REFUSES visibly.
+        // REFUSES visibly. The v2.3.2 release-highlights dialog draws no
+        // Search row, so the chrome above cannot see it: the heavy-rail
+        // anchor's named dialog refuses it and names it.
         composed: Composed {
             anchor: ComposerAnchor::HeavyRail,
             markers: &["Ask anything…"],

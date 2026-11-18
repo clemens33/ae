@@ -282,6 +282,10 @@ pub enum Failure {
     NotComposed {
         /// The published recovery body, still readable.
         body_file: String,
+        /// The named dialog the refusing capture showed, if any: read from
+        /// the SAME capture as the verdict, so a caller's recovery can name
+        /// it without a second look.
+        blocker: Option<&'static str>,
     },
     /// The submit was never confirmed.
     Unconfirmed {
@@ -341,9 +345,10 @@ impl fmt::Debug for Failure {
                 .debug_struct("Paste")
                 .field("body_file", body_file)
                 .finish(),
-            Self::NotComposed { body_file } => formatter
+            Self::NotComposed { body_file, blocker } => formatter
                 .debug_struct("NotComposed")
                 .field("body_file", body_file)
+                .field("blocker", blocker)
                 .finish(),
             Self::Unconfirmed {
                 body_file, notice, ..
@@ -369,10 +374,20 @@ impl Failure {
             Self::DeadPane | Self::Storage | Self::Lock | Self::Abandoned { .. } => "",
             Self::NoticeRefused { body_file }
             | Self::Paste { body_file }
-            | Self::NotComposed { body_file }
+            | Self::NotComposed { body_file, .. }
             | Self::Unproven { body_file }
             | Self::Unconfirmed { body_file, .. }
             | Self::Refused { body_file, .. } => body_file,
+        }
+    }
+
+    /// The named dialog a lock-time [`Failure::NotComposed`] saw in the
+    /// capture that refused; `None` for every other failure.
+    #[must_use]
+    pub fn blocker(&self) -> Option<&'static str> {
+        match self {
+            Self::NotComposed { blocker, .. } => *blocker,
+            _ => None,
         }
     }
 }
@@ -1489,13 +1504,36 @@ fn unmodelled_ready(before: Option<&str>, after: Option<&str>, composed: Compose
 
 /// Re-read the pane's SCREEN once, under the target lock, and answer whether
 /// its composed box is still there. A failed capture and a marker-less screen
-/// answer false. This reads the screen ONLY: an agent that died leaves its
+/// answer `Err`. This reads the screen ONLY: an agent that died leaves its
 /// composer DRAWN above the returning shell prompt and still matches, so it
 /// is never the only guard — [`launch_recheck`] runs the pane-level liveness
 /// owner ([`pane_liveness_at`]) first, exactly as the pre-lock path does.
-fn reconfirm_composed(server: &ServerId, pane: &str, composed: Composed) -> bool {
+///
+/// `Err` carries the named dialog the SAME capture shows, if any, so the
+/// refusal's explanation can never come from a different frame than its
+/// verdict.
+fn reconfirm_composed(
+    server: &ServerId,
+    pane: &str,
+    composed: Composed,
+) -> Result<(), Option<&'static str>> {
+    let Some(capture) = transport::capture_screen(server, pane, Styling::Plain) else {
+        return Err(None);
+    };
+    if region::composed_ui(&capture, composed) {
+        Ok(())
+    } else {
+        Err(region::named_dialog(&capture, composed))
+    }
+}
+
+/// The named dialog `pane` shows open now, if any: ONE plain capture read
+/// by [`region::named_dialog`]. It explains a readiness refusal already
+/// decided; it decides nothing, and a failed capture names nothing.
+#[must_use]
+pub fn input_blocker(server: &ServerId, pane: &str, composed: Composed) -> Option<&'static str> {
     transport::capture_screen(server, pane, Styling::Plain)
-        .is_some_and(|capture| region::composed_ui(&capture, composed))
+        .and_then(|capture| region::named_dialog(&capture, composed))
 }
 
 /// The Send quiet gate: a busy target (or a human's attention on it)
@@ -1599,14 +1637,21 @@ fn launch_recheck(
             return Ok(Err(unproven_refusal(request, body_file, err)?));
         }
     }
-    if !reconfirm_composed(request.server, request.pane, request.composed) {
-        writeln!(
-            err,
-            "ae: brief for {} REFUSED — the pane left its composed input box while the target lock was held; NOTHING was pasted. Body preserved at {body_file}; re-send once the pane is composed.",
-            request.logged_target
-        )?;
+    if let Err(blocker) = reconfirm_composed(request.server, request.pane, request.composed) {
+        let target = request.logged_target;
+        match blocker {
+            Some(dialog) => writeln!(
+                err,
+                "ae: brief for {target} REFUSED — {dialog} was open in the pane at the target-lock recheck; NOTHING was pasted. Body preserved at {body_file}."
+            )?,
+            None => writeln!(
+                err,
+                "ae: brief for {target} REFUSED — the pane left its composed input box while the target lock was held; NOTHING was pasted. Body preserved at {body_file}; re-send once the pane is composed."
+            )?,
+        }
         return Ok(Err(Failure::NotComposed {
             body_file: body_file.to_owned(),
+            blocker,
         }));
     }
     Ok(Ok(()))

@@ -169,7 +169,10 @@ fn run_with_wait(
     };
     let name = seat.name.as_deref().unwrap_or(target);
     match decide(&record, &facts) {
-        Decision::Skip(why) => refuse(err, &format!("skipped for {name} — {why}")),
+        Decision::Skip(why) => refuse(
+            err,
+            &skip_clause(name, why, ready, &server, &resolved.pane, input.composed),
+        ),
         Decision::GiveUp(why) => {
             let witness = render(&record);
             give_up(dir, &record, name, why, witness.as_bytes(), now, err)?;
@@ -190,6 +193,29 @@ fn run_with_wait(
             out,
             err,
         ),
+    }
+}
+
+/// The clause of a decided skip. For an unready box, one more capture only
+/// says which named dialog, if any, the pane shows now.
+fn skip_clause(
+    name: &str,
+    why: &str,
+    ready: bool,
+    server: &crate::inventory::ServerId,
+    pane: &str,
+    composed: crate::tool::Composed,
+) -> String {
+    let shown = if ready {
+        None
+    } else {
+        crate::deliver::input_blocker(server, pane, composed)
+    };
+    match shown {
+        Some(dialog) => format!(
+            "skipped for {name} — {why}; {dialog} is open in the pane now; NOTHING was pasted"
+        ),
+        None => format!("skipped for {name} — {why}"),
     }
 }
 
@@ -619,7 +645,10 @@ mod tests {
             Failure::Abandoned {
                 held: DeferHeld::ComposerOccupied,
             },
-            Failure::NotComposed { body_file: file() },
+            Failure::NotComposed {
+                body_file: file(),
+                blocker: None,
+            },
         ] {
             assert_eq!(outcome_of(&failure), Outcome::Rearm, "{failure:?}");
         }

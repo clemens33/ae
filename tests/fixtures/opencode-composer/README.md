@@ -55,3 +55,19 @@ composer is up submits it (`esc interrupt` and the moving-dot indicator). The
 same paste at ~+1 s, while the frame was the blank boot frame, is what the
 pre-fix settle lost — spawnproof measured that 2/2 on `e737b6b3` and 2/2
 visible refusals on its parent.
+
+## Startup highlights replays
+
+These 80×24 fixtures combine tracked captures with source-derived overlays.
+The OpenCode v2.3.2 renderer is pinned to `c0ad18b402eb2827fc1ee71c171b1177b3fc02d1`.
+Its `packages/tui/src/component/dialog-highlights.tsx` and
+`packages/tui/src/ui/dialog.tsx` define the centered panel, title, close label
+and both footers. The component test checks the title, legacy scroll legend
+and closure after Enter. The highlight item text is illustrative. The
+at234-rev2 incident frame and v2.3.2 composer geometry remain unverified.
+
+| Fixture | Provenance and purpose |
+|---|---|
+| `opencode-highlights-home-80x24.txt` | OpenCode 2.2.1 `../opencode-v2/full-idle-80x24.txt` with its footer version changed and the v2.3.2 legacy panel over the composer. This is the named startup-refusal case. |
+| `opencode-highlights-session-80x24.txt` | OpenCode 1.18.31 `opencode-history-empty-80x24.txt` with the v2.3.2 experimental footer above an intact composer. This is a defensive transition after readiness. v2.3.2 opens startup highlights only on the home route. Its highlights command opens the same component, but this session geometry was not observed on v2.3.2. |
+| `opencode-highlights-quote-80x24.txt` | OpenCode 1.18.31 `opencode-history-empty-80x24.txt` with synthetic transcript text that quotes the exact header and mentions the footer words in prose. The ready composer must still receive the brief. |

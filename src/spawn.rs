@@ -1353,6 +1353,23 @@ fn stamp_pane(
 struct BriefRefusal {
     reason: String,
     recovery: BriefRecovery,
+    /// The named dialog the pane showed when the brief was refused, if one
+    /// was recognized. It qualifies any send advice: a send does not wait
+    /// for a composed box, so it would land in the dialog.
+    blocker: Option<&'static str>,
+}
+
+/// Why a brief whose readiness never settled was refused, naming the dialog
+/// the pane shows now, if any.
+fn unready_reason(blocker: Option<&str>) -> String {
+    match blocker {
+        Some(dialog) => format!(
+            "input never reached a confirmed-idle state; {dialog} is open in the pane now; NOTHING was pasted"
+        ),
+        None => {
+            "input never reached a confirmed-idle state (busy, modal, or unreadable)".to_owned()
+        }
+    }
 }
 
 /// What a failed brief's recovery is, per failure kind.
@@ -1445,12 +1462,15 @@ fn deliver_brief(
     let composed = kind.adapter().input.composed;
     // DO NOT paste into a state we could not confirm idle.
     if !brief_ready(dir, &facts.server, pane, slot, (model, composed), err) {
+        // The refusal is decided; one more capture only says what the pane
+        // shows now.
+        let blocker = deliver::input_blocker(&facts.server, pane, composed);
         return Ok(Some(BriefRefusal {
-            reason: "input never reached a confirmed-idle state (busy, modal, or unreadable)"
-                .to_owned(),
+            reason: unready_reason(blocker),
             // Readiness never ran, or ran and never settled: it proves nothing
             // about liveness, so the recovery comes from a fresh observation.
             recovery: unproved_recovery(facts, dir, pane, slot),
+            blocker,
         }));
     }
     let request = deliver::Request {
@@ -1479,10 +1499,21 @@ fn deliver_brief(
         Err(failure) => failure.body_file().to_owned(),
     };
     if let Err(failure) = outcome {
+        // The lock-time refusal carries the dialog its own capture showed.
+        let blocker = failure.blocker();
         let (reason, recovery) = match &failure {
             // A pre-paste refusal did not stage anything, so it must not
             // borrow the submit uncertainty wording.
-            deliver::Failure::NotComposed { .. } => (
+            deliver::Failure::NotComposed {
+                blocker: Some(dialog),
+                ..
+            } => (
+                format!(
+                    "brief REFUSED — {dialog} was open in the pane when delivery reached it; NOTHING was pasted. Body preserved at {body_file}"
+                ),
+                BriefRecovery::Resend,
+            ),
+            deliver::Failure::NotComposed { blocker: None, .. } => (
                 format!(
                     "brief REFUSED — the pane was not composed when delivery reached it; NOTHING was pasted. Body preserved at {body_file}"
                 ),
@@ -1518,7 +1549,11 @@ fn deliver_brief(
                 unproved_recovery(facts, dir, pane, slot),
             ),
         };
-        return Ok(Some(BriefRefusal { reason, recovery }));
+        return Ok(Some(BriefRefusal {
+            reason,
+            recovery,
+            blocker,
+        }));
     }
     // A booting TUI can swallow the post-paste Enter, leaving the brief staged
     // in the input box.
@@ -1544,6 +1579,7 @@ fn superseded(stage: deliver::Stage, body_file: &str) -> BriefRefusal {
             stage.clause()
         ),
         recovery: BriefRecovery::Superseded,
+        blocker: None,
     }
 }
 
@@ -1661,10 +1697,16 @@ fn report_undelivered(
             "ae: this brief will NOT be retried automatically ({why})."
         )?;
         if refusal.recovery == BriefRecovery::Resend {
-            writeln!(
-                err,
-                "ae: do NOT respawn (the pane is live) — send to the existing agent:"
-            )?;
+            match refusal.blocker {
+                Some(dialog) => writeln!(
+                    err,
+                    "ae: do NOT respawn (the pane is live), and do NOT send yet: {dialog} was open in the pane. Close the dialog in the pane, check that the input box is drawn and empty, then send to the existing agent:"
+                )?,
+                None => writeln!(
+                    err,
+                    "ae: do NOT respawn (the pane is live) — send to the existing agent:"
+                )?,
+            }
             if preserved {
                 writeln!(
                     err,

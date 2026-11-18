@@ -669,7 +669,10 @@ mod tests {
                 Some("notice not composed"),
             ),
             (
-                Failure::NotComposed { body_file: body() },
+                Failure::NotComposed {
+                    body_file: body(),
+                    blocker: None,
+                },
                 Some("input box left"),
             ),
             (

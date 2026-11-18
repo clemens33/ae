@@ -119,20 +119,27 @@ sub mark {
     open(my $fh, '>', $path) or die;
     close($fh);
 }
+sub draw_fixture {
+    my ($file) = @_;
+    open(my $frame, '<:raw', $file) or return 0;
+    local $/;
+    my $screen = <$frame>;
+    close($frame);
+    $screen =~ s/\r?\n\z//;
+    $screen =~ s/\r?\n/\r\n/g;
+    print "\e[H\e[2J", $screen;
+    return 1;
+}
 if (-e "__EXIT__") {
     exit 0;
 }
-draw_composed();
+mark("__RECEIVED__");
+draw_composed() unless draw_fixture("__START_FRAME__");
 mark("__COMPOSED__");
 my $switched = 0;
 while (1) {
     if (-e "__EXIT__") {
         exit 0;
-    }
-    if (!$switched && -e "__SWITCH__") {
-        draw_boot();
-        mark("__SWITCHED__");
-        $switched = 1;
     }
     my $ready = '';
     vec($ready, fileno(STDIN), 1) = 1;
@@ -143,11 +150,19 @@ while (1) {
         print $fh $chunk;
         close($fh);
     }
+    # A requested redraw is acknowledged after logging any queued input.
+    if (!$switched && -e "__SWITCH__") {
+        draw_boot() unless draw_fixture("__NEXT_FRAME__");
+        mark("__SWITCHED__");
+        $switched = 1;
+    }
 }
 "#;
 
 /// The files a test drives the opencode-shaped fake with.
 struct OcControl {
+    start_frame: PathBuf,
+    next_frame: PathBuf,
     composed: PathBuf,
     switched: PathBuf,
     switch: PathBuf,
@@ -169,6 +184,10 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str) -> Self {
+        Self::new_sized(tag, "400", "40")
+    }
+
+    fn new_sized(tag: &str, columns: &str, rows: &str) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let scratch = super::cli::OwnedScratch::root("sp", tag).keep();
         let session = format!("sp{tag}");
@@ -217,9 +236,9 @@ impl Rig {
                 "new-session",
                 "-d",
                 "-x",
-                "400",
+                columns,
                 "-y",
-                "40",
+                rows,
                 // The name at creation turns automatic-rename OFF for this
                 // window (tmux(1)), so `windows()` reads one name however the
                 // pane's foreground command changes: a window that started as
@@ -276,10 +295,20 @@ impl Rig {
 
     /// Run one core subcommand as the lead's pane.
     fn run(&self, sub: &str, tail: &[&str]) -> (Option<i32>, String, String) {
+        self.run_with_env(sub, tail, &[])
+    }
+
+    fn run_with_env(
+        &self,
+        sub: &str,
+        tail: &[&str],
+        vars: &[(&str, &str)],
+    ) -> (Option<i32>, String, String) {
         let out = ae()
             .env("TMUX", format!("{},0,0", self.sock.display()))
             .env("TMUX_PANE", &self.main_pane)
             .env_remove("AE_SENDER_OVERRIDE")
+            .envs(vars.iter().copied())
             .arg(sub)
             .arg(&self.dir)
             .args(tail)
@@ -423,6 +452,8 @@ impl Rig {
         use std::fmt::Write as _;
         use std::os::unix::fs::PermissionsExt;
         let control = OcControl {
+            start_frame: self.scratch.join("oc-start-frame"),
+            next_frame: self.scratch.join("oc-next-frame"),
             composed: self.scratch.join("oc-composed"),
             switched: self.scratch.join("oc-switched"),
             switch: self.scratch.join("oc-switch"),
@@ -431,6 +462,11 @@ impl Rig {
         };
         let bin = self.scratch.join("opencode");
         let body = FAKE_OPENCODE
+            .replace(
+                "__START_FRAME__",
+                &control.start_frame.display().to_string(),
+            )
+            .replace("__NEXT_FRAME__", &control.next_frame.display().to_string())
             .replace("__COMPOSED__", &control.composed.display().to_string())
             .replace("__SWITCHED__", &control.switched.display().to_string())
             .replace("__SWITCH__", &control.switch.display().to_string())
@@ -1257,6 +1293,244 @@ fn a_spawn_whose_identity_stamp_fails_removes_the_pane_it_created() {
     );
 }
 
+/// Replay content derived from `OpenCode` v2.3.2's centered release-highlights
+/// renderer (c0ad18b402eb2827fc1ee71c171b1177b3fc02d1). The overlay is
+/// synthetic over older measured composers. The home fixture models startup.
+/// The session fixture is a defensive transition after readiness. Its exact
+/// v2.3.2 geometry and the at234-rev2 incident frame were not observed.
+const OPENCODE_HIGHLIGHTS_HOME: &str =
+    include_str!("../fixtures/opencode-composer/opencode-highlights-home-80x24.txt");
+const OPENCODE_HIGHLIGHTS_SESSION: &str =
+    include_str!("../fixtures/opencode-composer/opencode-highlights-session-80x24.txt");
+const OPENCODE_HIGHLIGHTS_QUOTE: &str =
+    include_str!("../fixtures/opencode-composer/opencode-highlights-quote-80x24.txt");
+const OPENCODE_IDLE_HOME: &str = include_str!("../fixtures/opencode-v2/full-idle-80x24.txt");
+const OPENCODE_IDLE_SESSION: &str =
+    include_str!("../fixtures/opencode-composer/opencode-history-empty-80x24.txt");
+const OPENCODE_PALETTE: &str =
+    include_str!("../fixtures/opencode-composer/opencode-palette-80x24.txt");
+
+const HIGHLIGHTS_TITLE: &str = "What's new";
+const OPENCODE_MODAL_TASK: &str = "toolready brief receipt canary";
+
+fn opencode_startup_rig(tag: &str) -> Rig {
+    assert!(
+        tmux_present(&super::cli::OwnedScratch::root("sp", tag)),
+        "these startup tests need a real tmux"
+    );
+    let rig = Rig::new_sized(tag, "80", "24");
+    assert!(
+        rig.tmux(&["set-option", "-t", &rig.session, "default-size", "80x24"])
+            .0
+    );
+    rig
+}
+
+fn spawn_opencode(rig: &Rig, name: &str) -> (Option<i32>, String, String) {
+    rig.run(
+        ae::cli::SPAWN,
+        &[name, "--using", "ocfake", "--", OPENCODE_MODAL_TASK],
+    )
+}
+
+fn retry_opencode(rig: &Rig, name: &str) -> (Option<i32>, String, String) {
+    rig.run_with_env(
+        ae::cli::SEND,
+        &[name, ""],
+        &[("_AE_EVENT_ACTION", ae::brief_retry::RETRY_ACTION)],
+    )
+}
+
+fn assert_opencode_screen(rig: &Rig, name: &str, marker: &str) {
+    let panes = rig.panes();
+    let Some((pane, _, _)) = panes
+        .iter()
+        .find(|(_, slot, agent)| slot == "spawned.0" && agent == name)
+    else {
+        panic!("{name} has no spawned pane: {panes:?}");
+    };
+    let deadline = Instant::now() + SETUP_WAIT;
+    loop {
+        let (ok, screen) = rig.tmux(&["capture-pane", "-p", "-t", pane]);
+        if ok && screen.contains(marker) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the replay never drew {marker:?}: {screen}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn switch_opencode_screen(control: &OcControl) {
+    assert!(
+        std::fs::write(&control.switch, "").is_ok(),
+        "request the frame change"
+    );
+    wait_for_path(&control.switched, "the replacement OpenCode frame");
+}
+
+fn opencode_input(control: &OcControl) -> Vec<u8> {
+    std::fs::read(&control.received)
+        .unwrap_or_else(|error| panic!("the fake's input receipt: {error:?}"))
+}
+
+fn wait_for_opencode_brief(control: &OcControl) -> String {
+    let deadline = Instant::now() + SETUP_WAIT;
+    loop {
+        let received = String::from_utf8_lossy(&opencode_input(control)).into_owned();
+        if received.contains(OPENCODE_MODAL_TASK) {
+            return received;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the ready pane received: {received:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn an_opencode_startup_modal_is_named_and_blocks_retry_until_the_same_seat_is_ready() {
+    let rig = opencode_startup_rig("ocnew");
+    let control = rig.enable_opencode_profile();
+    std::fs::write(&control.start_frame, OPENCODE_HIGHLIGHTS_HOME).expect("startup frame");
+    std::fs::write(&control.next_frame, OPENCODE_IDLE_HOME).expect("ready frame");
+
+    let (code, stdout, stderr) = spawn_opencode(&rig, "ocnew");
+    wait_for_path(&control.composed, "the first OpenCode frame");
+    assert_opencode_screen(&rig, "ocnew", "scroll ↑/↓");
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("SPAWN INCOMPLETE"), "{stderr}");
+    assert!(
+        stderr.contains(HIGHLIGHTS_TITLE),
+        "name the startup blocker: {stderr}"
+    );
+    assert!(!stderr.contains("send to the existing agent"), "{stderr}");
+
+    let events = rig.events();
+    assert!(
+        events.lines().any(|line| {
+            line.contains("\"action\":\"spawn-failed\"") && line.contains(HIGHLIGHTS_TITLE)
+        }),
+        "the spawn failure record names the same blocker: {events}"
+    );
+    let saved = rig.dir.join("undelivered.ocnew.txt");
+    assert!(std::fs::read_to_string(&saved).is_ok_and(|body| body.contains(OPENCODE_MODAL_TASK)));
+    let record = ae::brief_retry::path(&rig.dir, "spawned.0");
+    let before = std::fs::read(&record).expect("spawn's durable retry record");
+    let launch = rig.launch_id("spawned.0");
+
+    let (code, stdout, stderr) = retry_opencode(&rig, "ocnew");
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stderr.contains(HIGHLIGHTS_TITLE),
+        "name the current blocker: {stderr}"
+    );
+    assert_eq!(std::fs::read(&record).expect("the unspent record"), before);
+    assert!(!stderr.contains("send to the existing agent"), "{stderr}");
+    switch_opencode_screen(&control);
+    assert!(
+        opencode_input(&control).is_empty(),
+        "the open modal received neither the brief nor any dismissal or submission keys"
+    );
+
+    let (code, stdout, stderr) = retry_opencode(&rig, "ocnew");
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    let received = wait_for_opencode_brief(&control);
+    assert_eq!(
+        received.matches(OPENCODE_MODAL_TASK).count(),
+        1,
+        "{received:?}"
+    );
+    assert_eq!(
+        rig.launch_id("spawned.0"),
+        launch,
+        "the original seat received the retry"
+    );
+    assert!(
+        !record.exists() && !saved.exists(),
+        "a successful retry clears recovery"
+    );
+    assert_eq!(
+        retry_opencode(&rig, "ocnew").0,
+        Some(1),
+        "no second retry is armed"
+    );
+}
+
+#[test]
+fn an_opencode_startup_modal_opening_after_readiness_still_blocks_the_brief() {
+    let rig = opencode_startup_rig("ocrace");
+    let control = rig.enable_opencode_profile();
+    std::fs::write(&control.start_frame, OPENCODE_IDLE_SESSION).expect("ready frame");
+    std::fs::write(&control.next_frame, OPENCODE_HIGHLIGHTS_SESSION).expect("modal frame");
+
+    let (code, stdout, stderr) = std::thread::scope(|scope| {
+        let mut locks = rig.hold_delivery_locks();
+        let spawning = scope.spawn(|| spawn_opencode(&rig, "ocrace"));
+        rig.wait_for_stored_brief("spawned.0");
+        switch_opencode_screen(&control);
+        assert_opencode_screen(&rig, "ocrace", "ok enter");
+        locks.clear();
+        spawning.join().expect("the spawn process")
+    });
+
+    assert_eq!(
+        code,
+        Some(1),
+        "modal opened after initial proof\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stderr.contains(HIGHLIGHTS_TITLE),
+        "name the late blocker: {stderr}"
+    );
+    assert!(
+        opencode_input(&control).is_empty(),
+        "no bytes may reach the newly open modal"
+    );
+}
+
+#[test]
+fn an_opencode_startup_modal_signature_does_not_block_ready_or_quoted_screens() {
+    for (name, frame, screen_marker) in [
+        ("ocready", OPENCODE_IDLE_HOME, "Ask anything"),
+        ("ocquote", OPENCODE_HIGHLIGHTS_QUOTE, HIGHLIGHTS_TITLE),
+    ] {
+        let rig = opencode_startup_rig(name);
+        let control = rig.enable_opencode_profile();
+        std::fs::write(&control.start_frame, frame).expect("the control frame");
+
+        let (code, stdout, stderr) = spawn_opencode(&rig, name);
+        wait_for_path(&control.composed, "the control frame");
+        assert_opencode_screen(&rig, name, screen_marker);
+        assert_eq!(code, Some(0), "{name}\nstdout: {stdout}\nstderr: {stderr}");
+        assert!(!stderr.contains(HIGHLIGHTS_TITLE), "{stderr}");
+        assert!(wait_for_opencode_brief(&control).contains(OPENCODE_MODAL_TASK));
+    }
+}
+
+#[test]
+fn an_opencode_startup_modal_signature_does_not_rename_the_commands_palette() {
+    let rig = opencode_startup_rig("ocpalette");
+    let control = rig.enable_opencode_profile();
+    std::fs::write(&control.start_frame, OPENCODE_PALETTE).expect("the measured palette frame");
+
+    let (code, stdout, stderr) = spawn_opencode(&rig, "ocpalette");
+    wait_for_path(&control.composed, "the Commands palette");
+    assert_opencode_screen(&rig, "ocpalette", "Search");
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !stderr.contains(HIGHLIGHTS_TITLE),
+        "this is a different modal: {stderr}"
+    );
+    assert!(
+        opencode_input(&control).is_empty(),
+        "the existing palette guard still refuses"
+    );
+}
+
 /// The readiness proof is taken BEFORE the target lock, and the wait for that
 /// lock can be the whole timeout. A pane that leaves its composed box in that
 /// window must REFUSE the brief: an unmodelled paste has no submit proof, so
@@ -1305,6 +1579,64 @@ fn a_pane_that_leaves_its_composed_box_under_the_lock_refuses_the_brief() {
     assert!(
         events.contains("brief not delivered: brief REFUSED"),
         "{events}"
+    );
+}
+
+#[test]
+fn an_opencode_startup_modal_qualifies_manual_send_when_retry_record_is_refused() {
+    let rig = opencode_startup_rig("ocretryhold");
+    let control = rig.enable_opencode_profile();
+    std::fs::write(&control.start_frame, OPENCODE_IDLE_SESSION).expect("ready frame");
+    std::fs::write(&control.next_frame, OPENCODE_HIGHLIGHTS_SESSION).expect("modal frame");
+    let record = ae::brief_retry::path(&rig.dir, "spawned.0");
+    let occupied = b"occupied retry destination";
+
+    let (code, stdout, stderr) = std::thread::scope(|scope| {
+        let mut locks = rig.hold_delivery_locks();
+        let spawning = scope.spawn(|| spawn_opencode(&rig, "ocretryhold"));
+        rig.wait_for_stored_brief("spawned.0");
+        // Spawn clears the previous occupant before reaching the body store.
+        // Occupy the retry destination while delivery still waits for its lock.
+        std::fs::write(&record, occupied).expect("occupy the retry destination");
+        switch_opencode_screen(&control);
+        assert_opencode_screen(&rig, "ocretryhold", "ok enter");
+        locks.clear();
+        spawning.join().expect("the spawn process")
+    });
+
+    assert_eq!(code, Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains(HIGHLIGHTS_TITLE), "{stderr}");
+    assert!(
+        stderr.contains("will NOT be retried automatically")
+            && stderr.contains("already holds a record"),
+        "reach the record-publication failure: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read(&record)
+            .expect("the occupied record")
+            .as_slice(),
+        occupied
+    );
+    assert!(
+        opencode_input(&control).is_empty(),
+        "the modal may receive neither a brief nor dismissal keys"
+    );
+    let mut send_advice = stderr
+        .lines()
+        .filter(|line| line.contains("send to the existing agent"));
+    let advice = send_advice.next().expect("manual recovery advice");
+    assert!(
+        advice.to_ascii_lowercase().contains("close the dialog")
+            && advice.contains("then send to the existing agent")
+            && send_advice.next().is_none(),
+        "qualify the send with closing the named dialog first: {stderr}"
+    );
+    let events = rig.events();
+    assert!(
+        events.lines().any(|line| {
+            line.contains("\"action\":\"spawn-failed\"") && line.contains(HIGHLIGHTS_TITLE)
+        }),
+        "the spawn failure record names the lock-time blocker: {events}"
     );
 }
 

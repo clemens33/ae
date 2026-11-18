@@ -402,6 +402,44 @@ pub fn cell(ch: char) -> usize {
     }
 }
 
+pub(crate) fn terminal_cells(text: &str) -> usize {
+    text.chars().map(terminal_cell_width).sum()
+}
+
+/// The terminal widths relevant to picker text, following the usual wcwidth
+/// split: combining marks are zero, East Asian wide/fullwidth and emoji are
+/// two, and the remaining printable scalars are one.
+pub(crate) fn terminal_cell_width(character: char) -> usize {
+    let code = u32::from(character);
+    if character.is_control()
+        || (0x0300..=0x036f).contains(&code)
+        || (0x1ab0..=0x1aff).contains(&code)
+        || (0x1dc0..=0x1dff).contains(&code)
+        || (0x20d0..=0x20ff).contains(&code)
+        || (0xfe00..=0xfe0f).contains(&code)
+        || (0xfe20..=0xfe2f).contains(&code)
+        || (0xe0100..=0xe01ef).contains(&code)
+    {
+        0
+    } else if (0x1100..=0x115f).contains(&code)
+        || code == 0x2329
+        || code == 0x232a
+        || (0x2e80..=0xa4cf).contains(&code)
+        || (0xac00..=0xd7a3).contains(&code)
+        || (0xf900..=0xfaff).contains(&code)
+        || (0xfe10..=0xfe19).contains(&code)
+        || (0xfe30..=0xfe6f).contains(&code)
+        || (0xff00..=0xff60).contains(&code)
+        || (0xffe0..=0xffe6).contains(&code)
+        || (0x1f000..=0x1faff).contains(&code)
+        || (0x20000..=0x3fffd).contains(&code)
+    {
+        2
+    } else {
+        1
+    }
+}
+
 /// The head-keeping projection for one column: an over-budget value keeps its
 /// head and ends in `…`, so a clipped column still reads left to right.
 #[must_use]

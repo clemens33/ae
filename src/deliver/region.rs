@@ -9,7 +9,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::tool::{Composed, ComposerAnchor, DialogSig, InputModel};
+use crate::tool::{Composed, ComposerAnchor, DialogFooter, DialogSig, InputModel, NamedDialog};
 
 /// The foreground a captured run is painted in, when the capture names one.
 /// Only IDENTITY matters: a run is compared against the colour the box paints
@@ -622,18 +622,11 @@ pub fn composed_ui(capture: &str, spec: Composed) -> bool {
     if spec.is_empty() {
         return false;
     }
-    // A capture may be plain or SGR-styled: join each row's segments first, so
-    // the geometry and the markers are read from TEXT, never from the escape
-    // bytes a styled capture interleaves.
-    let segments = parse(capture);
-    let mut rows: Vec<String> = Vec::new();
-    for seg in &segments {
-        if rows.len() <= seg.line {
-            rows.resize(seg.line + 1, String::new());
-        }
-        if let Some(row) = rows.get_mut(seg.line) {
-            row.push_str(&seg.text);
-        }
+    let rows = text_rows(capture);
+    // A named dialog steals the keystrokes wherever it sits: over the box, or
+    // wholly above a box that still reads drawn and empty.
+    if named_dialog_in(&rows, spec).is_some() {
+        return false;
     }
     match spec.anchor {
         ComposerAnchor::HeavyRail => heavy_rail_composer(&rows, spec),
@@ -642,6 +635,153 @@ pub fn composed_ui(capture: &str, spec: Composed) -> bool {
         }
         ComposerAnchor::RuledPrompt => ruled_prompt(&rows, spec.markers),
     }
+}
+
+/// The capture's rows as TEXT. A capture may be plain or SGR-styled, so each
+/// row's segments are joined first and the geometry and the markers are never
+/// read from the escape bytes a styled capture interleaves.
+fn text_rows(capture: &str) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    for seg in &parse(capture) {
+        if rows.len() <= seg.line {
+            rows.resize(seg.line + 1, String::new());
+        }
+        if let Some(row) = rows.get_mut(seg.line) {
+            row.push_str(&seg.text);
+        }
+    }
+    rows
+}
+
+/// Which of the anchor's [`NamedDialog`]s, if any, `capture` shows open: the
+/// name a readiness refusal gives. The same rows answer [`composed_ui`], so a
+/// caller that holds one capture gets the verdict and its name from it.
+#[must_use]
+pub fn named_dialog(capture: &str, spec: Composed) -> Option<&'static str> {
+    named_dialog_in(&text_rows(capture), spec)
+}
+
+/// [`named_dialog`] over rows already read. An empty signal names nothing:
+/// it reads no composer, so it owns no dialog drawn over one.
+fn named_dialog_in(rows: &[String], spec: Composed) -> Option<&'static str> {
+    if spec.is_empty() {
+        return None;
+    }
+    spec.anchor
+        .named_dialogs()
+        .iter()
+        .find(|dialog| dialog_drawn(rows, dialog))
+        .map(|dialog| dialog.name)
+}
+
+/// Whether a header row of `dialog` sits above one of its footer rows, the
+/// footer placed by the header's own columns. A header alone is transcript
+/// text; the footer's alignment to the header is the panel's drawing.
+fn dialog_drawn(rows: &[String], dialog: &NamedDialog) -> bool {
+    rows.iter().enumerate().any(|(at, row)| {
+        header_columns(row, dialog).is_some_and(|(title, close_end)| {
+            rows.iter().skip(at + 1).any(|below| {
+                dialog
+                    .footers
+                    .iter()
+                    .any(|footer| footer_drawn(below, footer, dialog.pad, title, close_end))
+            })
+        })
+    })
+}
+
+/// The title's first cell and the first cell past the close label on a
+/// header row: the title, then at least two blank cells, then the close label
+/// as a bounded word, then the panel's blank padding. `None` when the row is
+/// no header of `dialog`.
+fn header_columns(row: &str, dialog: &NamedDialog) -> Option<(usize, usize)> {
+    let at = row.find(dialog.title)?;
+    let spaced = format!("  {}", dialog.close);
+    let mut start = at + dialog.title.len();
+    while let Some(relative) = row[start..].find(&spaced) {
+        let close = start + relative + 2;
+        let end = close + dialog.close.len();
+        if word_edge(row, close, end) && padded(row, end, dialog.pad) {
+            return Some((cell(row, at), cell(row, end)));
+        }
+        start = end;
+    }
+    None
+}
+
+/// Whether `row` draws `footer` for a header whose title starts at cell
+/// `title` and whose close label ends just before cell `close_end`: the right
+/// label ends exactly `right_inset` cells before the close label does and is
+/// followed by that many blank cells plus the panel's `pad`, blank cells sit
+/// before it, and a left label, if any, starts at the title's cell with only
+/// blank cells between it and the right label.
+fn footer_drawn(
+    row: &str,
+    footer: &DialogFooter,
+    pad: usize,
+    title: usize,
+    close_end: usize,
+) -> bool {
+    let Some(right_end) = close_end.checked_sub(footer.right_inset) else {
+        return false;
+    };
+    if footer.right.is_empty() {
+        return false;
+    }
+    let mut start = 0;
+    while let Some(relative) = row[start..].find(footer.right) {
+        let at = start + relative;
+        let end = at + footer.right.len();
+        start = end;
+        if !word_edge(row, at, end)
+            || cell(row, end) != right_end
+            || !padded(row, end, footer.right_inset + pad)
+        {
+            continue;
+        }
+        let before = &row[..at];
+        if footer.left.is_empty() {
+            if before.ends_with("  ") {
+                return true;
+            }
+            continue;
+        }
+        let Some(left) = before.rfind(footer.left) else {
+            continue;
+        };
+        let gap = &before[left + footer.left.len()..];
+        if cell(row, left) == title && gap.len() >= 2 && gap.chars().all(|ch| ch == ' ') {
+            return true;
+        }
+    }
+    false
+}
+
+/// The display cell a byte offset of `row` starts: the terminal width of
+/// everything before it. A capture writes one char for a wide glyph and omits
+/// its padding cell, so a char count drifts one cell per wide glyph.
+fn cell(row: &str, byte: usize) -> usize {
+    crate::event_text::terminal_cells(&row[..byte])
+}
+
+/// Whether the `count` cells after byte `end` of `row` are blank: padding the
+/// panel draws as spaces. A capture trims a row's trailing blanks, so a row
+/// that ends first reads blank too.
+fn padded(row: &str, end: usize, count: usize) -> bool {
+    row[end..].chars().take(count).all(|ch| ch == ' ')
+}
+
+/// Whether the bytes `start..end` of `row` are bounded: neither neighbour is
+/// alphanumeric.
+fn word_edge(row: &str, start: usize, end: usize) -> bool {
+    row[..start]
+        .chars()
+        .last()
+        .is_none_or(|ch| !ch.is_alphanumeric())
+        && row[end..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !ch.is_alphanumeric())
 }
 
 /// One rail-box composer geometry: the glyphs that draw its rails and edge.
@@ -892,11 +1032,7 @@ fn bounded_word(row: &str, word: &str) -> bool {
     let mut start = 0;
     while let Some(relative) = row[start..].find(word) {
         let at = start + relative;
-        let left = row[..at].chars().last();
-        let right = row[at + word.len()..].chars().next();
-        if left.is_none_or(|cell| !cell.is_alphanumeric())
-            && right.is_none_or(|cell| !cell.is_alphanumeric())
-        {
+        if word_edge(row, at, at + word.len()) {
             return true;
         }
         start = at + word.len();
@@ -1964,6 +2100,53 @@ mod tests {
             " ".repeat(9)
         );
         assert!(!composed_ui(&drafted, OPENCODE));
+    }
+
+    // Source-derived v2.3.2 dialog over a session composer. See the fixture README.
+    const OPENCODE_HIGHLIGHTS_SESSION: &str = include_str!(
+        "../../tests/fixtures/opencode-composer/opencode-highlights-session-80x24.txt"
+    );
+
+    #[test]
+    fn an_opencode_highlights_quotation_with_trailing_prose_is_not_a_modal() {
+        let ready = [
+            ("esc\n", "esc to close\n"),
+            ("ok enter\n", "ok enter to confirm\n"),
+        ]
+        .map(|(label, prose)| {
+            let quoted = OPENCODE_HIGHLIGHTS_SESSION.replacen(label, prose, 1);
+            assert_ne!(
+                quoted, OPENCODE_HIGHLIGHTS_SESSION,
+                "add prose after {label:?}"
+            );
+            composed_ui(&quoted, OPENCODE)
+        });
+        assert_eq!(
+            ready,
+            [true, true],
+            "prose after the header or footer takes the dialog's blank padding"
+        );
+    }
+
+    #[test]
+    fn an_opencode_highlights_dialog_keeps_alignment_with_a_double_width_backdrop_glyph() {
+        // Replace two ASCII cells with one double-width glyph before the title.
+        let frame = OPENCODE_HIGHLIGHTS_SESSION.replacen("Bu   What's", "界   What's", 1);
+        assert_ne!(
+            frame, OPENCODE_HIGHLIGHTS_SESSION,
+            "change the header backdrop"
+        );
+        assert!(
+            super::named_dialog(&frame, OPENCODE).is_some() && !composed_ui(&frame, OPENCODE),
+            "the modal still has the renderer's exact alignment: {frame}"
+        );
+    }
+
+    #[test]
+    fn an_opencode_highlights_dialog_is_only_named_for_a_composed_signal_that_owns_it() {
+        let frame = OPENCODE_HIGHLIGHTS_SESSION;
+        assert!(super::named_dialog(frame, OPENCODE).is_some());
+        assert_eq!(super::named_dialog(frame, Composed::NONE), None);
     }
 
     #[test]
