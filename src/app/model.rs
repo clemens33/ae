@@ -218,6 +218,14 @@ pub(crate) struct Stopped {
     pub(crate) hidden_needy: usize,
 }
 
+/// The selected session's spawned seats the Agents body groups under one
+/// line: their names, by roster slot, and whether the group is folded.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct Spawned {
+    pub(crate) names: Vec<String>,
+    pub(crate) folded: bool,
+}
+
 /// The browse state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Model {
@@ -245,6 +253,8 @@ pub struct Model {
     unread: BTreeSet<String>,
     /// The stopped group the sidebar draws; the App writes it each frame.
     stopped: Stopped,
+    /// The spawned group the Agents body draws; the App writes it each frame.
+    spawned: Spawned,
     /// The marked turn, by the fingerprint that names it across re-reads.
     turn: Option<u64>,
     /// How many times what the panels show has changed: a session, an overlay.
@@ -869,6 +879,16 @@ impl Model {
     /// The stopped group the sidebar draws.
     pub(crate) fn stopped(&self) -> Stopped {
         self.stopped
+    }
+
+    /// Replace the spawned group the Agents body draws.
+    pub(crate) fn set_spawned(&mut self, spawned: Spawned) {
+        self.spawned = spawned;
+    }
+
+    /// The spawned group the Agents body draws.
+    pub(crate) fn spawned(&self) -> &Spawned {
+        &self.spawned
     }
 
     /// Whether the sidebar marks `name` unread.

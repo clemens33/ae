@@ -169,9 +169,12 @@ impl App {
                     }
                     true
                 }
-                Some(draw::Hit::Session(_) | draw::Hit::Seat(_) | draw::Hit::Stopped) => {
-                    self.clicked(mouse, fresh)
-                }
+                Some(
+                    draw::Hit::Session(_)
+                    | draw::Hit::Seat(_)
+                    | draw::Hit::Stopped
+                    | draw::Hit::Spawned,
+                ) => self.clicked(mouse, fresh),
                 _ if self.layout.grab(mouse).is_some() => self.clicked(mouse, fresh),
                 _ => {
                     self.arm(mouse, None, fresh);
@@ -576,7 +579,9 @@ impl App {
         match byte {
             b'v' | b'o' => PanelByte::Inert,
             b'1'..=b'9' | b'j' | b'k' if full => PanelByte::Inert,
-            b'1'..=b'9' | b'j' | b'k' | b'q' | b',' | b'?' | b's' | b'z' | b'm' => PanelByte::Main,
+            b'1'..=b'9' | b'j' | b'k' | b'q' | b',' | b'?' | b's' | b'z' | b'Z' | b'm' => {
+                PanelByte::Main
+            }
             _ => PanelByte::Panel,
         }
     }

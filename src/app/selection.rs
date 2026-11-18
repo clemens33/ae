@@ -1,5 +1,6 @@
 //! The selection: which session, seat or item is selected and opened, the stopped fold, the parked panes and the handover view.
 
+use super::fleet::Facts;
 use super::{
     Answer, App, Arm, Buffer, Drawn, Instant, LANE_HOLD, Move, ORCH, QUIT_WINDOW, Rc, Reading,
     Refusal, Request, SeatRef, Shown, Stage, Status, Timestamp, handover, loader, model, open,
@@ -78,6 +79,78 @@ impl App {
                 self.close_reader();
             }
             self.show();
+        }
+        true
+    }
+
+    /// The selected running session's spawned seats the Agents body lists:
+    /// the facts' seats whose roster slot, by its own read, is `spawned.<n>`.
+    /// The slot decides, never the seat's name; a seat the roster does not
+    /// hold, or a session whose roster is not read yet, has none.
+    pub(super) fn spawned_names(&self) -> Vec<String> {
+        let Some(name) = self.model.selected() else {
+            return Vec::new();
+        };
+        let stopped = (self.entry(name)).is_some_and(|entry| entry.status == Status::Stopped);
+        let (Some(Facts::Seats { agents, .. }), Some(roster)) = (
+            self.facts.get(name),
+            self.shown
+                .get(name)
+                .and_then(|shown| shown.roster.as_deref()),
+        ) else {
+            return Vec::new();
+        };
+        let spawned = |seat: &str| {
+            roster.iter().any(|held| {
+                held.name == seat && crate::seatpack::slot_class(&held.slot) == "spawned"
+            })
+        };
+        agents
+            .iter()
+            .filter(|agent| !stopped && spawned(&agent.name))
+            .map(|agent| agent.name.clone())
+            .collect()
+    }
+
+    /// Hand the frame about to be drawn the spawned group it draws: the
+    /// selection's spawned seats and the window's one fold flag.
+    pub(super) fn sync_spawned(&mut self) {
+        let names = self.spawned_names();
+        let folded = self.spawned_folded;
+        self.model.set_spawned(model::Spawned { names, folded });
+    }
+
+    /// `Z`, or a press on the spawned group's line: fold the selected
+    /// session's spawned seats into the line, or draw them again. It acts on
+    /// the seats the facts list, drawn or not, and does nothing (the flag
+    /// stays) for a session with none. Folding takes the hidden seats out of
+    /// reach at once: a cursor on one clears, a peek of one closes back to the
+    /// chat, and the frozen frame loses their rows until the next frame is
+    /// drawn. Whether a frame is due.
+    pub(super) fn toggle_spawned(&mut self) -> bool {
+        let names = self.spawned_names();
+        if names.is_empty() {
+            return false;
+        }
+        self.spawned_folded = !self.spawned_folded;
+        if !self.spawned_folded {
+            return true;
+        }
+        let hidden = |seat: &str| names.iter().any(|name| name == seat);
+        if self.model.focus().is_some_and(hidden) {
+            self.model.set_focus(None);
+        }
+        if let Some(drawn) = self.drawn.as_mut() {
+            drawn.rows.retain(|(seat, _)| !hidden(seat));
+            if drawn.focused.as_deref().is_some_and(hidden) {
+                drawn.focused = drawn.rows.first().map(|(seat, _)| seat.clone());
+            }
+        }
+        let viewed = (self.peek.target.as_ref()).is_some_and(|(session, seat)| {
+            self.model.selected() == Some(session.as_str()) && hidden(seat)
+        });
+        if self.model.peek_open() && viewed {
+            self.close_peek();
         }
         true
     }

@@ -328,7 +328,7 @@ fn row(
 
 /// The seats' marks in urgency order, a blocked seat apart from the rest of
 /// its mark, non-zero only.
-fn tally(agents: &[PickerAgent]) -> Vec<(Mark, bool, usize)> {
+pub(super) fn tally(agents: &[PickerAgent]) -> Vec<(Mark, bool, usize)> {
     Mark::BY_URGENCY
         .into_iter()
         .flat_map(|mark| [(mark, false), (mark, true)])

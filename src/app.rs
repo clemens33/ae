@@ -131,6 +131,8 @@ pub(crate) mod route;
 mod run;
 #[cfg(test)]
 mod s5_app;
+#[cfg(test)]
+mod seatfold_spec;
 pub mod select;
 #[cfg(test)]
 mod select_spec;
@@ -314,7 +316,7 @@ struct Keep {
 /// Everything the app was answered, and the browse and compose state.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent facts of one loop, each read where it is set: loading, fleeted, touched, restored, early_named, again, stopped_open"
+    reason = "independent facts of one loop, each read where it is set: loading, fleeted, touched, restored, early_named, again, stopped_open, spawned_folded"
 )]
 struct App {
     home: Option<String>,
@@ -326,6 +328,10 @@ struct App {
     /// Whether the stopped group is open: this window's memory, closed at
     /// start, never persisted and never handed over.
     stopped_open: bool,
+    /// Whether the Agents body folds the selected session's spawned seats
+    /// into their one group line: this window's memory, open at start, never
+    /// persisted and never handed over, one flag for every session.
+    spawned_folded: bool,
     world: World,
     dirs: BTreeMap<String, PathBuf>,
     ids: BTreeMap<String, String>,
@@ -516,6 +522,10 @@ type Detach = Box<dyn Fn(&crate::lifecycle::DetachedArgv) -> bool>;
 impl App {
     /// An app that has read nothing yet: home is selected. Where it runs
     /// decides nothing: each window writes under its own entry.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one line per field of the App it builds"
+    )]
     fn new(
         home: Option<String>,
         server: Option<ServerId>,
@@ -533,6 +543,7 @@ impl App {
             fleet,
             hidden: Vec::new(),
             stopped_open: false,
+            spawned_folded: false,
             world: World::new(Timestamp::now(), Vec::new()),
             dirs: BTreeMap::new(),
             ids: BTreeMap::new(),

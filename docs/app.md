@@ -115,7 +115,23 @@ recorded config first.
   cuts the model on `…` only when the model alone is longer than the row (24
   cells at the narrowest sidebar). A click on either row is a click on that
   seat; `n` / `p` step seat by seat and the wheel scrolls rows. Short of room the name's tail
-  goes, last the state. A seat that waits on the human is told in the chat header (`⚠ <seat>:
+  goes, last the state. The fixed seats (`main`, `worker.N`) come first, in roster
+  order. A session with spawned seats (roster slot `spawned.N`) shows one dim group
+  line after them, `▾ Spawned (3)` (`v Spawned (3)` with `icons = off`), and the spawned
+  seats sit under it. `Z` or a click on the line folds them into it, `▸ Spawned (3)
+  ⚠1 ●2` (`>` with `icons = off`), and again shows them. The count is every spawned
+  seat of the roster, in any state. The roster slot makes a seat spawned, never its
+  name. The folded line carries the hidden seats' marks and counts in the session
+  tally's order and letters (`⚠B1` for a blocked seat), so a seat that needs you is
+  never out of sight; a line too narrow for them cuts them like a session row does.
+  The fold is this window's memory only: open at every start, never saved, one flag for
+  every session. A session with no spawned seat draws no line, and `Z` does nothing
+  there. A folded seat is out of reach: `n` / `p`, `o`, `v` and a click act only on
+  seats the body draws, and folding clears a seat cursor on a spawned seat and closes
+  the peek of one back to the chat, like `Esc`. The `Agents N` heading and the summary
+  count every seat, the `↑ a · ↓ b more rows` line and the wheel count the drawn rows,
+  and the chat header still names a seat that needs you, folded or not. An ask from a
+  seat the roster lacks stays after the seats, outside the group. A seat that waits on the human is told in the chat header (`⚠ <seat>:
   <reason> · <age>`: the viewed seat's ask, else the cursor seat's, else
   the first), not under the seat: the open request text stays in the header,
   while the seat's own declaration reason sits in its detail row. A reason from
@@ -236,6 +252,7 @@ Browsing:
 | Click a fold row, or `Enter` with a marked turn that has one | show that turn whole or fold it again ([Long turns](#long-turns)) |
 | Click session row | select that session |
 | Click the `Stopped (N)` line | open or close the stopped sessions |
+| Click the `Spawned (N)` line | fold or show the selected session's spawned seats |
 | Click a seat row | highlight that seat |
 | Wheel over chat or the Agents body | scroll three rows per notch, also while writing |
 | Wheel over the session list | scroll one session per notch, also while writing |
@@ -245,6 +262,7 @@ Browsing:
 | `Enter` or `i` | write the selected session, when no other app writes it |
 | `s` | start the selected session if it is stopped, else ask to stop it ([Session menu](#session-menu)) |
 | `z` | show or hide the stopped sessions (the `Stopped (N)` line) |
+| `Z` | fold or show the selected session's spawned seats (the `Spawned (N)` line); text while writing, and nothing while a seat's screen is viewed |
 | `,` | open Settings |
 | `?` | open Settings on its Keys tab, the list of every key |
 | Click the gear at the hint row's right end | open Settings, also while writing |

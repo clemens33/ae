@@ -33,6 +33,7 @@ use crate::event_text::clip_tail;
 use crate::quota::view::Tone;
 use crate::theme::{Look, Mark, Palette};
 use crate::time::Timestamp;
+use crate::tmux::PickerAgent;
 
 mod accounts_summary;
 mod stats_body;
@@ -122,6 +123,8 @@ pub(crate) enum Hit {
     Session(String),
     /// The stopped group's line: opens or closes the group.
     Stopped,
+    /// The spawned group's line in the Agents body: folds or shows the group.
+    Spawned,
     /// A drawn seat row: moves the highlight to that seat.
     Seat(String),
     Compose,
@@ -1304,6 +1307,9 @@ fn tab_body(
                 Hit::Seat(seat.to_owned()),
             );
         }
+        if row.toggle {
+            layout.record(buf, Rect::new(LEFT, y, end - LEFT, 1), Hit::Spawned);
+        }
         // A seat's glyph sits on its head row, or on its continuation when
         // that is the first row the body shows.
         let marked = !row.continued || step == 0;
@@ -1681,6 +1687,8 @@ struct Cells {
     /// A seat's second row: its label, under the name, when the head row
     /// could not hold it.
     continued: bool,
+    /// The spawned group's one line: a press on it folds or shows the group.
+    toggle: bool,
 }
 
 impl Cells {
@@ -1690,6 +1698,7 @@ impl Cells {
             right: None,
             seat: None,
             continued: false,
+            toggle: false,
         }
     }
 }
@@ -1720,9 +1729,18 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
             (gap("No seat facts: watchdog publishes none."), &[][..])
         }
     };
-    // The roster's names share one column, so the models line up under it.
-    let column = agents
+    // The roster's slots, read by the App, say which seats are spawned: the
+    // fixed seats keep their order, the spawned seats follow under one line.
+    let group = ctx.screen.model.spawned();
+    let (held, fixed): (Vec<&PickerAgent>, Vec<&PickerAgent>) = agents
         .iter()
+        .partition(|agent| group.names.contains(&agent.name));
+    let held_drawn: &[&PickerAgent] = if group.folded { &[] } else { &held };
+    // The names of the seats drawn share one column, so the models line up
+    // under it.
+    let column = fixed
+        .iter()
+        .chain(held_drawn)
         .map(|agent| drawn_cols(&agent.name))
         .max()
         .unwrap_or(0);
@@ -1730,33 +1748,17 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
     if let Some(words) = entry.wait_end_words().filter(|_| !agents.is_empty()) {
         rows.push(Cells::of(vec![Span::styled(fit(&words, "", room), dim)]));
     }
-    for agent in agents {
-        // The client label, then the model, each only when known: two seats
-        // on one model under different clients read apart.
-        let label = [agent.client.as_str(), agent.model.as_str()]
-            .into_iter()
-            .filter(|word| !word.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        // A typed wait names its target in place of the generic wait word;
-        // what the narrow row would cut rides its declaration row.
-        let typed = entry
-            .agents
-            .iter()
-            .find(|seat| seat.name == agent.name && agent.state == "waiting-agent")
-            .and_then(|seat| seat.typed_wait(ctx.screen.now))
-            .map(|(on, _, _, moved)| on.words(false, moved));
-        let seat = Seat {
-            name: &agent.name,
-            mark: agent.mark(),
-            state: typed
-                .as_deref()
-                .unwrap_or_else(|| crate::theme::seat_word(&agent.state)),
-            meta: [label.as_str(), agent.effort.as_str()],
-        };
-        rows.extend(seat_rows(ctx, &seat, column, room));
-        rows.extend(declaration_row(ctx, entry, &agent.name, room));
+    for agent in &fixed {
+        rows.extend(agent_block(ctx, entry, agent, column, room));
     }
+    if !held.is_empty() {
+        rows.push(spawned_line(ctx, &held, group.folded, room));
+    }
+    for agent in held_drawn {
+        rows.extend(agent_block(ctx, entry, agent, column, room));
+    }
+    // A seat the roster lacks has no row of its own, a hidden seat included:
+    // only a seat no fact lists is drawn from its ask.
     let listed = |ask: &&Open| agents.iter().any(|agent| agent.name == ask.seat);
     for ask in open.iter().filter(|ask| !listed(ask)) {
         let seat = Seat {
@@ -1777,6 +1779,106 @@ fn agent_rows(ctx: &Ctx<'_, '_>, entry: &SessionEntry, room: u16) -> Vec<Cells> 
         rows.push(Cells::of(vec![Span::styled(fit(&words, "", room), dim)]));
     }
     rows
+}
+
+/// One seat's rows in the Agents body: its label rows and its declaration row.
+fn agent_block(
+    ctx: &Ctx<'_, '_>,
+    entry: &SessionEntry,
+    agent: &PickerAgent,
+    column: u16,
+    room: u16,
+) -> Vec<Cells> {
+    // The client label, then the model, each only when known: two seats
+    // on one model under different clients read apart.
+    let label = [agent.client.as_str(), agent.model.as_str()]
+        .into_iter()
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    // A typed wait names its target in place of the generic wait word;
+    // what the narrow row would cut rides its declaration row.
+    let typed = entry
+        .agents
+        .iter()
+        .find(|seat| seat.name == agent.name && agent.state == "waiting-agent")
+        .and_then(|seat| seat.typed_wait(ctx.screen.now))
+        .map(|(on, _, _, moved)| on.words(false, moved));
+    let seat = Seat {
+        name: &agent.name,
+        mark: agent.mark(),
+        state: typed
+            .as_deref()
+            .unwrap_or_else(|| crate::theme::seat_word(&agent.state)),
+        meta: [label.as_str(), agent.effort.as_str()],
+    };
+    let mut rows = seat_rows(ctx, &seat, column, room);
+    rows.extend(declaration_row(ctx, entry, &agent.name, room));
+    rows
+}
+
+/// The spawned group's one line, dim, in the cells a session's mark and name
+/// use, like the Stopped line: `▾ Spawned (N)` open, `▸ Spawned (N)` folded
+/// (`v` and `>` with `icons = off`). Folded, it carries what the hidden seats
+/// would say, in the session tally's grammar and order — `▸ Spawned (5) ⚠1
+/// ●3` — so a seat that needs you is never out of sight; a tally that does
+/// not fit gives way like a session's, down to its most urgent count.
+fn spawned_line(ctx: &Ctx<'_, '_>, held: &[&PickerAgent], folded: bool, room: u16) -> Cells {
+    let (paint, dim) = (ctx.paint, ctx.paint.fg(|p| p.dim));
+    let glyph = match (folded, ctx.icons) {
+        (true, true) => "▸",
+        (false, true) => "▾",
+        (true, false) => ">",
+        (false, false) => "v",
+    };
+    let label = format!("Spawned ({})", held.len());
+    let used = 2 + drawn_cols(&label);
+    let mut spans = vec![
+        Span::styled(glyph, dim),
+        Span::raw(" "),
+        Span::styled(label, dim),
+    ];
+    if folded {
+        let hidden: Vec<PickerAgent> = held.iter().map(|agent| (*agent).clone()).collect();
+        let parts: Vec<(String, Style)> = super::fleet::tally(&hidden)
+            .into_iter()
+            .map(|(mark, blocked, count)| {
+                let letter = if blocked { "B" } else { "" };
+                (
+                    format!("{}{letter}{count}", mark.glyph(ctx.icons)),
+                    paint.mark(mark),
+                )
+            })
+            .collect();
+        let fits = |kept: usize, cut: bool| {
+            let width: usize = parts[..kept]
+                .iter()
+                .map(|(text, _)| 1 + usize::from(drawn_cols(text)))
+                .sum();
+            used + cells(width + 2 * usize::from(cut)) <= room
+        };
+        // The richest tally that fits, then each shorter one closed on `…`.
+        let choice = (1..=parts.len())
+            .rev()
+            .map(|kept| (kept, kept < parts.len()))
+            .find(|(kept, cut)| fits(*kept, *cut));
+        if let Some((kept, cut)) = choice {
+            for (text, style) in &parts[..kept] {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(text.clone(), *style));
+            }
+            if cut {
+                spans.push(Span::styled(" …", dim));
+            }
+        }
+    }
+    Cells {
+        left: Line::from(spans),
+        right: None,
+        seat: None,
+        continued: false,
+        toggle: true,
+    }
 }
 
 /// What one seat row says.
@@ -1861,6 +1963,7 @@ fn seat_row(ctx: &Ctx<'_, '_>, seat: &Seat<'_>, column: u16, room: u16) -> Vec<C
         right: state.then(|| Line::from(Span::styled(seat.state.to_owned(), paint.mark(mark)))),
         seat: Some(seat.name.to_owned()),
         continued: false,
+        toggle: false,
     }];
     if !both.is_empty() && !inline {
         let width = room.saturating_sub(lead);
@@ -1879,6 +1982,7 @@ fn seat_row(ctx: &Ctx<'_, '_>, seat: &Seat<'_>, column: u16, room: u16) -> Vec<C
             right: None,
             seat: Some(seat.name.to_owned()),
             continued: true,
+            toggle: false,
         });
     }
     rows
@@ -1929,6 +2033,7 @@ fn declaration_row(
         right: None,
         seat: Some(name.to_owned()),
         continued: true,
+        toggle: false,
     })
 }
 
@@ -2524,7 +2629,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 20] = [
+const BROWSE_KEYS: [(&str, &str); 21] = [
     ("1-9", "select the Nth session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
@@ -2533,6 +2638,7 @@ const BROWSE_KEYS: [(&str, &str); 20] = [
     ("m", "session menu; right-click a card too"),
     ("s", "start / stop the selected session"),
     ("z", "show / hide stopped sessions"),
+    ("Z", "show / hide the spawned seats"),
     ("v", "peek at the seat's screen"),
     ("r", "read the marked turn's first file link"),
     ("n/p", "step the seat cursor (▹ or -)"),

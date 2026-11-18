@@ -274,6 +274,7 @@ impl App {
                 act
             }
             draw::Hit::Stopped => return self.toggle_stopped() || held,
+            draw::Hit::Spawned => return self.toggle_spawned() || held,
             draw::Hit::Compose if !self.composing() => {
                 self.model
                     .key(model::Key::Compose, &self.fleet, self.can_compose())

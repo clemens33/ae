@@ -101,6 +101,7 @@ impl App {
         let unread = self.cue.frame(rows, Timestamp::now().epoch());
         self.model.set_unread(unread);
         self.model.set_stopped(self.stopped());
+        self.sync_spawned();
         let keys = self.keys();
         let (folds, open, sent) = self.fold_state();
         let name = self.model.selected();

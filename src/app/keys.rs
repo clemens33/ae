@@ -343,6 +343,7 @@ fn paste(app: &mut App, bytes: &[u8], origin: Instant) {
 /// One Text byte while browsing: `q` and `o` press their armed key, `,`
 /// opens the settings and `?` its keys, `m` the menu on the selection's card,
 /// `s` starts or stops the selection, `z` opens or closes the stopped group,
+/// `Z` folds or shows the selection's spawned seats,
 /// anything else decodes as it always has and ends the
 /// armed press. A byte of a read the menu spent does nothing. Browsing on
 /// entry; the caller routes the modes.
@@ -383,6 +384,7 @@ pub(super) fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bo
         }
         b's' => return Some(app.toggle(origin)),
         b'z' => return Some(app.toggle_stopped()),
+        b'Z' => return Some(app.toggle_spawned()),
         b'?' => {
             app.open_settings();
             app.model.show_settings_tab(model::SettingsTab::Keys);
