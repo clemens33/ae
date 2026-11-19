@@ -75,6 +75,56 @@ pub(crate) fn is_seat_overlay(path: &Path, home: &Path) -> bool {
     path == home.join(CONFIG_FILE)
 }
 
+/// The dispatcher proof, the one function every S1a gate asks: whether the
+/// pane `pane`, stamped as slot `slot` and agent `agent` of the session whose
+/// meta is `meta`, is the orchestrator seat's own main pane. The session
+/// records the one orchestrator role and, once, state root `root`'s seat
+/// overlay as its local config; the caller is its `main` slot, held by the
+/// recorded main agent, in the pane the meta records as `main_pane`; and the
+/// meta carries exactly one non-empty `launch_id.main`. A session that only
+/// claims the role, a worker slot, another agent in the main slot, a replaced
+/// pane and a seat without a launch id all fail it. `meta` must be valid
+/// UTF-8: a lossy reading would prove a different file. Whether the launch id
+/// is still the current one is the caller's to compare, by reading it again.
+///
+/// # Errors
+///
+/// What failed, as a clause for a refusal.
+pub(crate) fn dispatcher_proof(
+    meta: &[u8],
+    root: &Path,
+    slot: &str,
+    agent: &str,
+    pane: Option<&str>,
+) -> Result<(), &'static str> {
+    let Ok(text) = std::str::from_utf8(meta) else {
+        return Err("caller session meta is not valid UTF-8");
+    };
+    if crate::meta::meta_agent_role(meta) != crate::meta::MetaAgentRole::Role {
+        return Err("caller session is not an orchestrator");
+    }
+    if !crate::settings_menu::is_seat(meta, root) {
+        return Err("caller session claims the orchestrator role without the seat overlay");
+    }
+    if slot != "main" {
+        return Err("caller is not the orchestrator's main seat");
+    }
+    let recorded = crate::meta::sole_value(meta, "main_pane").filter(|pane| !pane.is_empty());
+    if recorded.is_none() || recorded != pane.map(str::as_bytes) {
+        return Err("caller pane is not the orchestrator's recorded main pane");
+    }
+    let parsed = crate::meta::Meta::parse(text);
+    let mut mains = parsed.roster().iter().filter(|entry| entry.slot == "main");
+    match (mains.next(), mains.next()) {
+        (Some(main), None) if main.name == agent => {}
+        _ => return Err("caller is not the agent the orchestrator records as main"),
+    }
+    if parsed.launch_id("main").is_none() {
+        return Err("the orchestrator's main seat records no usable launch id");
+    }
+    Ok(())
+}
+
 /// The code a refused orchestrator invocation takes.
 pub const EXIT_USAGE: u8 = 2;
 
@@ -1693,6 +1743,105 @@ mod tests {
 
     /// The clock every watchdog fact in this module's fixtures is stamped at.
     const NOW: i64 = 2_000;
+
+    #[test]
+    fn the_dispatcher_proof_needs_role_overlay_main_slot_pane_and_one_launch_id() {
+        use super::dispatcher_proof;
+        let root = std::path::Path::new("/state");
+        let seat = "meta_agent=true\nlocal_config=/state/orchestrator.config\nmain_pane=%7\nseat.main=boss\nprofile.main=p\nlaunch_id.main=tok\n";
+        let ok = |text: &str, slot, agent, pane| {
+            dispatcher_proof(text.as_bytes(), root, slot, agent, pane)
+        };
+        assert_eq!(ok(seat, "main", "boss", Some("%7")), Ok(()));
+        // Another agent in the main slot, a second main row and a lossy file
+        // all fail the same proof.
+        for (text, agent, why) in [
+            (seat.to_owned(), "worker", "records as main"),
+            (
+                format!("{seat}seat.main=other\n"),
+                "boss",
+                "records as main",
+            ),
+        ] {
+            let got = ok(&text, "main", agent, Some("%7"));
+            assert!(got.is_err_and(|got| got.contains(why)), "{text:?} {agent}");
+        }
+        let mut lossy = seat.as_bytes().to_vec();
+        lossy.extend_from_slice(b"goal=\xff\n");
+        let got = dispatcher_proof(&lossy, root, "main", "boss", Some("%7"));
+        assert!(got.is_err_and(|got| got.contains("UTF-8")));
+        // The role and the seat overlay, the main slot, the recorded pane and
+        // one launch id: each alone is missing in one of these.
+        for (changed, slot, pane, why) in [
+            (
+                seat.replace("meta_agent=true\n", ""),
+                "main",
+                "%7",
+                "is not an orchestrator",
+            ),
+            (
+                seat.replace("meta_agent=true\n", "meta_agent=true\nmeta_agent=true\n"),
+                "main",
+                "%7",
+                "is not an orchestrator",
+            ),
+            (
+                seat.replace("/state/", "/elsewhere/"),
+                "main",
+                "%7",
+                "without the seat overlay",
+            ),
+            (seat.to_owned(), "worker.0", "%7", "main seat"),
+            (seat.to_owned(), "", "%7", "main seat"),
+            (seat.to_owned(), "main", "%8", "recorded main pane"),
+            (
+                seat.replace("main_pane=%7\n", ""),
+                "main",
+                "%7",
+                "recorded main pane",
+            ),
+            (
+                seat.replace("main_pane=%7\n", "main_pane=\n"),
+                "main",
+                "",
+                "recorded main pane",
+            ),
+            (
+                seat.replace("main_pane=%7\n", "main_pane=%7\nmain_pane=%7\n"),
+                "main",
+                "%7",
+                "recorded main pane",
+            ),
+            (
+                seat.replace("launch_id.main=tok\n", ""),
+                "main",
+                "%7",
+                "launch id",
+            ),
+            (
+                seat.replace("launch_id.main=tok\n", "launch_id.main=\n"),
+                "main",
+                "%7",
+                "launch id",
+            ),
+            (
+                seat.replace(
+                    "launch_id.main=tok\n",
+                    "launch_id.main=a\nlaunch_id.main=b\n",
+                ),
+                "main",
+                "%7",
+                "launch id",
+            ),
+        ] {
+            let got = ok(&changed, slot, "boss", Some(pane));
+            assert!(
+                got.is_err_and(|got| got.contains(why)),
+                "{changed:?} {slot} {pane}: want {why}"
+            );
+        }
+        assert!(ok(seat, "main", "boss", None).is_err());
+    }
 
     fn session(name: &str, id: &str, rank: u8, main_pane: &str) -> PickerSession {
         PickerSession {

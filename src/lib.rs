@@ -628,6 +628,11 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         return Ok(entry::EXIT_USAGE);
     }
     let request = cli::Request::parse(args);
+    if let Some(what) = outbound_of(&request)
+        && let Some(code) = refuse_dispatcher(what, err)?
+    {
+        return Ok(code);
+    }
     // A live harness can retain a filesystem helper address from before a
     // rename. Resolve its directory before any helper derives the session
     // name, including the underscore entries that bypass shim translation.
@@ -1624,6 +1629,10 @@ fn run_entry(
     if argv.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION)
         && orchestrator::is_resume(&argv[1..])
     {
+        let launch = Outbound::Verb("launch", "does not start sessions; ask the human");
+        if let Some(code) = refuse_dispatcher(launch, err)? {
+            return Ok(code);
+        }
         return orchestrator::run_resume(preamble, &argv[1..], out, err);
     }
     let code = match entry::route(preamble, argv, doors::calling_pane_id().as_deref()) {
@@ -1665,6 +1674,10 @@ fn run_entry(
             entry::EXIT_USAGE
         }
         entry::Route::Launch(user) => {
+            let launch = Outbound::Verb("launch", "does not start sessions; ask the human");
+            if let Some(code) = refuse_dispatcher(launch, err)? {
+                return Ok(code);
+            }
             if user.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION) {
                 let Some(flags) = orchestrator::parse_launch_tail(&user[1..]) else {
                     return run_dispatch(&user, out, err);
@@ -3350,6 +3363,95 @@ pub(crate) fn observe_calling_pane() -> CallerRead<(tmux::ObservedViewer, invent
     })
 }
 
+/// What the orchestrator's agent pane is refused outbound, as one word for the
+/// refusal and the clause that says why: spawn, retire, a cross-session helper
+/// send, stop, end and rm, a rename, and every launch form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outbound {
+    /// A helper `--cross-session` send, ask, review or interrupt: ae carries
+    /// the orchestrator's cross-session words only through `relay`.
+    Cross(&'static str),
+    /// One of the orchestrator's refused verbs.
+    Verb(&'static str, &'static str),
+}
+
+/// The outbound class of `request`, or `None` for any word the dispatcher may
+/// run.
+fn outbound_of(request: &cli::Request) -> Option<Outbound> {
+    let cross = |word, tail: &[String]| {
+        (tail.first().map(String::as_str) == Some(tracked::CROSS_SESSION_FLAG))
+            .then_some(Outbound::Cross(word))
+    };
+    match request {
+        cli::Request::Send { tail, .. } => cross("send", tail),
+        cli::Request::Ask { tail, .. } => cross("ask", tail),
+        cli::Request::Review { tail, .. } => cross("review", tail),
+        cli::Request::Interrupt { tail, .. } => cross("interrupt", tail),
+        cli::Request::Launch { .. } => Some(Outbound::Verb(
+            "launch",
+            "does not start sessions; ask the human",
+        )),
+        cli::Request::Spawn { .. } => {
+            Some(Outbound::Verb("spawn", "does not add seats; ask the human"))
+        }
+        cli::Request::Retire { .. } => Some(Outbound::Verb(
+            "retire",
+            "does not retire seats; ask the human",
+        )),
+        cli::Request::Stop { .. } => Some(Outbound::Verb(
+            "stop",
+            "does not stop sessions; ask the human",
+        )),
+        cli::Request::End { .. } => Some(Outbound::Verb(
+            "end",
+            "does not end or remove sessions; ask the human",
+        )),
+        cli::Request::Rename { .. } => Some(Outbound::Verb(
+            "rename",
+            "does not rename sessions; give the human a proposal",
+        )),
+        _ => None,
+    }
+}
+
+/// Refuse `what` to the orchestrator's own agent pane, before any lock or
+/// write: the calling pane carries a slot of an ae session whose meta is the
+/// seat (the one role and the seat overlay). That is the proven dispatcher, and
+/// also a seat whose main pane or launch id no longer proves, which fails
+/// closed. A pane with no slot (the human's shell in the same window), a
+/// session that only claims the role, and an unobserved or foreign caller go
+/// on. `Some(code)` means the refusal is said and nothing was changed.
+fn refuse_dispatcher(what: Outbound, err: &mut impl Write) -> Result<Option<u8>> {
+    let (CallerRead::Read((viewer, server)), Some(root)) = (observe_calling_pane(), state_root())
+    else {
+        return Ok(None);
+    };
+    let (Some(session), Some(_slot)) = (viewer.session.as_deref(), viewer.slot.as_deref()) else {
+        return Ok(None);
+    };
+    if !session_launch::name::is_session_name(session) {
+        return Ok(None);
+    }
+    let seat = lifecycle::sessions_dir(&root).join(session);
+    let Ok((_, bytes)) = relay::physical_session(&seat, &viewer, &server) else {
+        return Ok(None);
+    };
+    if !settings_menu::is_seat(&bytes, &root) {
+        return Ok(None);
+    }
+    let said = match what {
+        Outbound::Cross(word) => format!(
+            "ae: {word} --cross-session REFUSED — the orchestrator is the human's dispatcher and carries cross-session words only through `relay`. Nothing was sent."
+        ),
+        Outbound::Verb(word, why) => format!(
+            "ae: {word} REFUSED — the orchestrator is the human's dispatcher and {why}. Nothing was changed."
+        ),
+    };
+    writeln!(err, "{said}")?;
+    err.flush()?;
+    Ok(Some(entry::EXIT_USAGE))
+}
+
 /// Refuse UNREAD before invoking any helper writer. The returned viewer IS
 /// the observation to use for the action; never re-read it into human later.
 fn writing_viewer(dir: &std::path::Path, err: &mut impl Write) -> Result<Option<requests::Viewer>> {
@@ -4097,6 +4199,45 @@ pub fn run_with(
 
 #[cfg(test)]
 mod tests {
+    /// What the orchestrator seat is refused outbound: a helper
+    /// `--cross-session` send, ask, review or interrupt, and five verbs.
+    #[test]
+    fn only_a_helper_cross_session_word_and_the_refused_verbs_are_outbound() {
+        use super::{Outbound, cli::Request, outbound_of};
+        let of = |argv: &[&str]| {
+            let words: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
+            outbound_of(&Request::parse(&words))
+        };
+        for (verb, word) in [
+            ("_send", "send"),
+            ("_ask", "ask"),
+            ("_review", "review"),
+            ("_interrupt", "interrupt"),
+        ] {
+            let argv = [verb, "/d", "--cross-session", "t:lead", "x"];
+            assert_eq!(of(&argv), Some(Outbound::Cross(word)), "{verb}");
+            // The flag counts only before the recipient, as the helpers read it.
+            assert_eq!(of(&[verb, "/d", "boss", "--cross-session"]), None);
+            assert_eq!(of(&[verb, "/d", "boss", "x"]), None);
+        }
+        for (argv, word) in [
+            (vec!["_spawn", "/d", "n", "--using", "p"], "spawn"),
+            (vec!["_retire", "/d", "n"], "retire"),
+            (vec!["_stop", "t"], "stop"),
+            (vec!["_end", "t"], "end"),
+            (vec!["rename", "a", "b"], "rename"),
+            // The served underscore entry of every launch form.
+            (vec!["_launch", "--no-attach"], "launch"),
+            (vec!["_launch", "new", "--local"], "launch"),
+        ] {
+            assert!(
+                matches!(of(&argv), Some(Outbound::Verb(said, _)) if said == word),
+                "{argv:?}"
+            );
+        }
+        assert_eq!(of(&["list"]), None);
+        assert_eq!(of(&["_relay", "/d", "t", "--task", "x"]), None);
+    }
 
     /// The seat-pane test of bare `ae`: only a described, unstamped pane whose
     /// session is recorded draws the app; every other reading keeps the list.

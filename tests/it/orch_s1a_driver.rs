@@ -158,3 +158,50 @@ fn a_bound_relay_whose_stored_outer_envelope_is_not_the_dispatchers_does_not_ver
     fs::write(&path, stored).expect("restore");
     assert_eq!(verify(&r, &id).0, Some(0));
 }
+
+fn snapshot(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    fn walk(dir: &Path, into: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(dir).expect("fixture directory") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                walk(&path, into);
+            } else if let Ok(bytes) = fs::read(&path) {
+                into.insert(path, bytes);
+            }
+        }
+    }
+    let mut files = std::collections::BTreeMap::new();
+    walk(dir, &mut files);
+    files
+}
+
+/// The served underscore entry of every launch form is a lower writer door:
+/// the dispatcher's pane is refused there too, and nothing under the state
+/// root or in tmux changes.
+#[test]
+fn the_served_launch_entry_is_refused_to_the_dispatcher_before_any_effect() {
+    let r = rig("s1alaunchentry");
+    let sessions = r.world.root.join("sessions");
+    for argv in [
+        vec![ae::cli::LAUNCH, "--no-attach"],
+        vec![ae::cli::LAUNCH, "fixture-new", "--local", "--no-attach"],
+    ] {
+        let before = snapshot(&sessions);
+        let out = r.world.run(Some(&r.caller.pane), &argv, &[]);
+        let said = words(&out);
+        assert_eq!(out.0, Some(2), "{argv:?}: {said}");
+        assert!(
+            said.contains("launch REFUSED") && said.contains("orchestrator"),
+            "{argv:?}: {said}"
+        );
+        assert_eq!(
+            snapshot(&sessions),
+            before,
+            "{argv:?}: changed session files"
+        );
+        assert!(
+            !r.world.tmux("has-session -t", &["fixture-new"]).0,
+            "{argv:?}: created a session"
+        );
+    }
+}

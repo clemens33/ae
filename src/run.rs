@@ -990,14 +990,14 @@ fn stamp_context(
         Err(why) => why.cause().to_string(),
     };
     if version.is_none() {
-        // A clear that did not happen leaves whatever the row said: if it
-        // still holds a stamp — or the meta cannot be read to say — a relay
-        // would reach a conversation this start gave no context turn. That
-        // start does not happen; an ordinary start that has no row nonfatally
-        // goes on.
+        // A clear that did not happen leaves whatever the row said. A row the
+        // relay gate would admit — or a meta that cannot be read to say — would
+        // let a relay reach a conversation this start gave no context turn:
+        // that start does not happen. A row the gate already refuses (absent,
+        // empty, damaged, older) holds every relay as it is, so the start
+        // goes on, as every start without a context channel does.
         let claim = crate::meta::read_bytes(dir).map_or(true, |bytes| {
-            crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes)).context_stamp(slot)
-                != crate::meta::ContextStamp::Absent
+            crate::relay::context_stamp(&bytes, slot).is_ok()
         });
         if claim {
             return Ok(Some(format!(
@@ -3455,7 +3455,6 @@ mod tests {
         reason = "the fixture builds and inspects a real session directory"
     )]
     fn a_stamp_that_cannot_be_cleared_stops_the_start_and_an_unstamped_seat_goes_on() {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = std::env::temp_dir().join(format!("ae-run-context-ro-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch");
@@ -3464,19 +3463,25 @@ mod tests {
             launch_id: "L1".to_owned(),
             proof,
         };
-        let lock = |mode| {
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).expect("mode");
-        };
+        // The meta lock is a directory, so opening it fails for any user: the
+        // clear cannot happen while the meta stays readable.
+        let held = crate::store::open(&dir).meta_lock();
+        std::fs::create_dir(&held).expect("a lock that cannot be opened");
+        // A row the relay gate admits stops the start; a row it already refuses
+        // (absent, empty, zero, bogus, doubled) holds every relay without help.
         for (rows, stops) in [
             ("context.main=1\n", true),
-            ("context.main=\n", true),
+            ("context.main=2\n", true),
+            ("context.main=\n", false),
+            ("context.main=0\n", false),
+            ("context.main=bogus\n", false),
+            ("context.main=1\ncontext.main=1\n", false),
+            ("context.main\n", false),
             ("", false),
         ] {
             std::fs::write(dir.join("meta"), format!("{base}{rows}")).expect("meta");
-            lock(0o555);
             let mut err = Vec::new();
             let refusal = stamp_context(&dir, "main", &start(ContextProof::Withheld), &mut err);
-            lock(0o755);
             let refusal = refusal.expect("said on err, never an io failure");
             let said = String::from_utf8(err).expect("utf-8");
             if stops {
@@ -3485,8 +3490,8 @@ mod tests {
                 assert!(why.contains("must not reach it"), "{why}");
                 assert_eq!(said, "", "the refusal is the start's own message");
             } else {
-                assert_eq!(refusal, None, "{said}");
-                assert!(said.contains("launching anyway"), "{said}");
+                assert_eq!(refusal, None, "{rows:?}: {said}");
+                assert!(said.contains("launching anyway"), "{rows:?}: {said}");
             }
             assert!(
                 std::fs::read_to_string(dir.join("meta"))
@@ -3497,15 +3502,22 @@ mod tests {
         // A start that DOES hand the context goes on when its write fails: the
         // gate keeps refusing the seat until a later start records it.
         std::fs::write(dir.join("meta"), base).expect("meta");
-        lock(0o555);
         let mut err = Vec::new();
         let refusal = stamp_context(&dir, "main", &start(ContextProof::Stamp(1)), &mut err);
-        lock(0o755);
         assert_eq!(refusal.expect("io"), None);
         assert!(
             String::from_utf8(err)
                 .expect("utf-8")
                 .contains("launching anyway")
+        );
+        // An unreadable meta stops a start that must clear.
+        std::fs::remove_file(dir.join("meta")).expect("remove");
+        std::fs::create_dir(dir.join("meta")).expect("a meta that cannot be read");
+        let mut err = Vec::new();
+        let refusal = stamp_context(&dir, "main", &start(ContextProof::Unstamped), &mut err);
+        assert!(
+            refusal.expect("io").is_some(),
+            "unreadable state fails closed"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

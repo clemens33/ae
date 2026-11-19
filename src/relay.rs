@@ -258,27 +258,51 @@ struct Caller {
     slot: String,
 }
 
-/// The caller and what its meta grants it: the role, the canonical
-/// `session_id` and the seat's `launch_id`, each empty when absent. Proved
-/// before the claim and proved equal again under the target's locks.
+/// The caller and what its meta grants it: whether it is the dispatcher
+/// ([`crate::orchestrator::dispatcher_proof`], with the pane it stands in), the
+/// canonical `session_id` and the seat's `launch_id`, each empty when absent.
+/// Proved before the claim and proved equal again under the target's locks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Grant {
     caller: Caller,
     session_id: String,
     launch: String,
-    role: meta::MetaAgentRole,
+    /// Why the caller is no dispatcher, when it is not.
+    dispatcher: Result<(), &'static str>,
 }
 
 impl Grant {
     fn of(dir: &Path, actual: Option<&(ObservedViewer, ServerId)>) -> Result<Self, &'static str> {
         let (caller, bytes) = caller(dir, actual.map(|(viewer, server)| (viewer, server)))?;
-        let session_id = archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id"));
-        let launch = tracked::launch_id_at(&caller.dir, &caller.slot, &session_id);
+        // One snapshot of the caller's meta says the id, the launch and the
+        // proof, so none of them can come from a different file than another.
+        let parsed = std::str::from_utf8(&bytes).map(meta::Meta::parse).ok();
+        let session_id = parsed
+            .as_ref()
+            .and_then(meta::Meta::session_id)
+            .map(archive::canonical_uuid)
+            .unwrap_or_default();
+        let launch = parsed
+            .as_ref()
+            .and_then(|parsed| parsed.launch_id(&caller.slot))
+            .unwrap_or_default()
+            .to_owned();
+        let root = caller.dir.parent().and_then(Path::parent);
+        let dispatcher = match root {
+            Some(root) => crate::orchestrator::dispatcher_proof(
+                &bytes,
+                root,
+                &caller.slot,
+                &caller.actor,
+                crate::doors::calling_pane_id().as_deref(),
+            ),
+            None => Err("the session root could not be resolved"),
+        };
         Ok(Self {
             caller,
             session_id,
             launch,
-            role: meta::meta_agent_role(&bytes),
+            dispatcher,
         })
     }
 }
@@ -678,8 +702,8 @@ fn prepare(
     now: Timestamp,
     entropy: u64,
 ) -> Result<Prepared, String> {
-    if grant.role != meta::MetaAgentRole::Role {
-        return Err("caller session is not an orchestrator".to_owned());
+    if let Err(why) = grant.dispatcher {
+        return Err(why.to_owned());
     }
     if grant.session_id.is_empty() {
         return Err("caller session records no usable session id".to_owned());
@@ -1018,8 +1042,8 @@ fn status(
 /// Every strict read of `relay --status`, in order: the role and the caller's
 /// own claim of `id`, without which nothing is said, then its target.
 fn read_status(grant: &Grant, id: &str) -> Result<Found, String> {
-    if grant.role != meta::MetaAgentRole::Role {
-        return Err("caller session is not an orchestrator".to_owned());
+    if let Err(why) = grant.dispatcher {
+        return Err(why.to_owned());
     }
     let caller = &grant.caller;
     let journal = store::read_source(&store::open(&caller.dir).events_path());

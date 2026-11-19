@@ -37,6 +37,40 @@ impl Rig {
             caller,
         }
     }
+    /// A rig whose caller is the proven dispatcher: the seat overlay as its
+    /// local config, and its main pane recorded — what the relay's dispatcher
+    /// proof reads, beside the launch id and the role every rig carries — and
+    /// whose target lead pair carries the current context stamp.
+    pub(crate) fn dispatcher(tag: &str) -> Self {
+        let rig = Self::new(tag);
+        let overlay = rig.world.root.join("orchestrator.config");
+        fs::write(
+            &overlay,
+            include_str!("../../contrib/aeorchestrator/orchestrator.config"),
+        )
+        .expect("real dispatcher overlay");
+        let path = rig.caller.dir.join("meta");
+        let meta = fs::read_to_string(&path).expect("caller meta");
+        let rows = format!(
+            "main_pane={}\nlocal_config={}\n",
+            rig.caller.pane,
+            overlay.display()
+        );
+        fs::write(&path, format!("{meta}{rows}")).expect("dispatcher rows");
+        rig.stamp_target();
+        rig
+    }
+    /// The current context stamp on both lead-pair slots of the target, as a
+    /// start of that session records it.
+    pub(crate) fn stamp_target(&self) {
+        let target = self.owner.tool.dir.join("meta");
+        let meta = fs::read_to_string(&target).expect("target meta");
+        fs::write(
+            &target,
+            format!("{meta}context.main=1\ncontext.worker.0=1\n"),
+        )
+        .expect("target stamps");
+    }
     pub(crate) fn run(&self, tail: &[&str]) -> Out {
         let dir = self.caller.dir.to_string_lossy();
         let argv = [&[ae::cli::RELAY, &dir][..], tail].concat();
@@ -248,7 +282,7 @@ fn r1_r8_blank_and_damaged_audit_refusals_claim_nothing() {
 
 #[test]
 fn r2_r10_exact_chat_envelope_single_target_ledger_and_local_reply_footer() {
-    let r = Rig::new("o3exact");
+    let r = Rig::dispatcher("o3exact");
     let body = "owner\n\tUnicode α🦀  two spaces\nmid-line ⟦ae:interrupt from quoted⟧\nfooter: literal 'quote' $x `x`";
     let id = r.ask(body);
     let ask = r.asks().pop().expect("ask");
@@ -328,7 +362,7 @@ fn r2_r10_exact_chat_envelope_single_target_ledger_and_local_reply_footer() {
 // not an invented pending reservation or a mocked transport.
 #[test]
 fn r4_crash_after_delivery_keeps_emitter_claim_without_fabricated_target_opening() {
-    let r = Rig::new("o3crash");
+    let r = Rig::dispatcher("o3crash");
     let lock = ae::store::lock(
         &ae::store::lock_path(&r.owner.tool.dir.join("events.jsonl")),
         Duration::ZERO,
@@ -369,7 +403,7 @@ fn r4_crash_after_delivery_keeps_emitter_claim_without_fabricated_target_opening
 #[test]
 fn r5_verified_receipt_survives_opening_append_failure_with_request_gap() {
     for unreadable in [true, false] {
-        let r = Rig::new("o3recordfail");
+        let r = Rig::dispatcher("o3recordfail");
         let journal = r.owner.tool.dir.join("events.jsonl");
         let lock = ae::store::lock(&ae::store::lock_path(&journal), Duration::ZERO)
             .expect("hold target opening append until timeout");
@@ -411,13 +445,13 @@ fn r5_verified_receipt_survives_opening_append_failure_with_request_gap() {
 #[test]
 fn r5_busy_draft_and_dead_pane_prove_not_delivered() {
     for dead in [false, true] {
-        Rig::new(if dead { "o3dead" } else { "o3busy" }).refused(dead);
+        Rig::dispatcher(if dead { "o3dead" } else { "o3busy" }).refused(dead);
     }
 }
 
 #[test]
 fn r8_final_envelope_cap_refuses_even_when_body_alone_fits() {
-    let r = Rig::new("o3capbytes");
+    let r = Rig::dispatcher("o3capbytes");
     let body = "x".repeat(8_192);
     let keys = r.keys();
     let out = r.relay(&body);
@@ -438,7 +472,7 @@ fn r8_final_envelope_cap_refuses_even_when_body_alone_fits() {
 
 #[test]
 fn r9_writer_and_admission_locks_refuse_without_waiting_or_draft_changes() {
-    let r = Rig::new("o3locks");
+    let r = Rig::dispatcher("o3locks");
     let draft = r.owner.tool.dir.join("console.draft");
     fs::write(&draft, "kept owner draft").expect("draft sentinel");
     for name in [".console-writer.lock", ".console-admission.lock"] {
@@ -470,6 +504,7 @@ fn r9_writer_and_admission_locks_refuse_without_waiting_or_draft_changes() {
     fs::write(&journal, "").expect("restore owned journal");
     r.owner
         .meta("0199c0de-aaaa-4890-abcd-ef0123456789", "colead");
+    r.stamp_target();
     let keys = r.keys();
     let out = r.relay("replaced target incarnation");
     no_delivery(&r, &out, &keys, 0);
@@ -478,7 +513,7 @@ fn r9_writer_and_admission_locks_refuse_without_waiting_or_draft_changes() {
 
 #[test]
 fn r9_r12_concurrent_owner_flight_blocks_relay_and_shared_cap_cannot_overrun() {
-    let r = Rig::new("o3appflight");
+    let r = Rig::dispatcher("o3appflight");
     let pane = r.owner.console(false);
     r.owner.raw(&pane, "i");
     r.owner
@@ -518,7 +553,7 @@ fn r9_r12_concurrent_owner_flight_blocks_relay_and_shared_cap_cannot_overrun() {
 
 #[test]
 fn r11_main_is_default_and_worker_refusal_names_pair() {
-    let r = Rig::new("o3targets");
+    let r = Rig::dispatcher("o3targets");
     r.ask("bare chooses main");
     assert_eq!(r.asks()[0].target_slot.value(), Some("main"));
     let meta = fs::read_to_string(r.owner.tool.dir.join("meta")).expect("meta");
@@ -588,7 +623,7 @@ fn r11_main_is_default_and_worker_refusal_names_pair() {
 
 #[test]
 fn r12_four_relays_leave_owner_fifth_slot_and_refusal_names_open_ids() {
-    let r = Rig::new("o3caprelay");
+    let r = Rig::dispatcher("o3caprelay");
     let ids: Vec<_> = (0..4).map(|_| r.ask("repeat deliberately")).collect();
     assert_eq!(
         ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
@@ -612,7 +647,7 @@ fn r12_four_relays_leave_owner_fifth_slot_and_refusal_names_open_ids() {
 
 #[test]
 fn r12_owner_asks_consume_relay_capacity_and_close_frees_shared_count() {
-    let r = Rig::new("o3capowner");
+    let r = Rig::dispatcher("o3capowner");
     let pane = r.owner.console(false);
     r.owner.raw(&pane, "i");
     r.owner
