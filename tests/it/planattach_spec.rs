@@ -46,6 +46,7 @@ fn render(result: Result<Plan, String>) -> String {
         attach,
         tmux,
         resume,
+        expect_uuid,
     } = plan;
     let mut out = vec!["ok".to_owned()];
     out.extend(mode.map(|value| format!("mode={value:?}")));
@@ -64,6 +65,7 @@ fn render(result: Result<Plan, String>) -> String {
     if resume {
         out.push("resume".to_owned());
     }
+    out.extend(expect_uuid.map(|value| format!("expect_uuid={value:?}")));
     out.join(" ")
 }
 

@@ -1910,7 +1910,7 @@ fn incarnation_guard(server: &ServerIdentity) -> String {
 /// stamp are all still the ones `stamp` proved.
 fn stamp_guard(stamp: &SessionStamp) -> String {
     format!(
-        "#{{&&:{server},#{{&&:#{{&&:#{{==:#{{session_id}},{id}}},#{{==:#{{session_created}},{created}}}}},#{{==:#{{{option}}},{uuid}}}}}}}}",
+        "#{{&&:{server},#{{&&:#{{&&:#{{==:#{{session_id}},{id}}},#{{==:#{{session_created}},{created}}}}},#{{==:#{{{option}}},{uuid}}}}}}}",
         server = incarnation_guard(&stamp.server),
         id = stamp.session.id,
         created = stamp.session.created,

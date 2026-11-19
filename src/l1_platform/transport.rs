@@ -2773,7 +2773,7 @@ pub fn orphan_views(server: &ServerId, uuid: &str) -> StopViews {
     let Some(before) = holding() else {
         return StopViews::Unreadable;
     };
-    match sweep_views(server, before, holding) {
+    match sweep_views(server, before, holding, None) {
         Some(left) if left.is_empty() => StopViews::Clear,
         Some(left) => StopViews::Held(left),
         None => StopViews::Unreadable,
