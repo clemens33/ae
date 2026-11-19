@@ -33,7 +33,11 @@
 //! kill is done. This process never holds the event lock and the meta lock
 //! together, so it keeps the meta-then-events order of every other writer.
 //! Both events carry the bound uuid as their target and the caller as ONE
-//! observation proved it, or the named gap when it did not.
+//! observation proved it, or the named gap when it did not. Their actor is
+//! `ae/orchestrator` for a pane the dispatcher gate's proof recognizes as the
+//! orchestrator seat, `human` for a caller outside tmux (the owner's own
+//! terminal, as that gate reads it), and the neutral `ae:stop` for every
+//! other pane, whose facts the correlation fields carry.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -48,8 +52,8 @@ use crate::inventory::ServerId;
 use crate::meta::{self, ServerSelector};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::store::{EventsHold, SourceRead};
-use crate::tmux::{SessionStamp, StopProbe};
-use crate::tracked::{EventFields, IdentityTriple};
+use crate::tmux::{ObservedViewer, SessionStamp, StopProbe};
+use crate::tracked::{CorrelationGap, EventFields, IdentityTriple};
 use crate::transport;
 
 /// The declarations a bound stop admits. A seat that never declared is
@@ -60,6 +64,13 @@ const IDLE_STATES: [&str; 2] = ["done", "waiting-user"];
 /// session but that session's recorded tmux server is not proved to be the
 /// caller's.
 const UNPROVED_SERVER: &str = "caller server unproved";
+
+/// The actor of a bound stop run outside tmux: the owner's own terminal.
+const HUMAN_ACTOR: &str = "human";
+
+/// The neutral actor of a bound stop run from a pane that is not the proved
+/// orchestrator seat: a pane proves where the command ran, not who typed it.
+const PANE_ACTOR: &str = "ae:stop";
 
 /// `_stop <name> --expect-uuid <uuid>`; `panes` is every `--pane` word of the
 /// tail, in order.
@@ -85,7 +96,7 @@ pub(super) fn run(
             return Ok(code);
         }
     };
-    if caller.session.as_deref() == Some(name) {
+    if caller.session() == Some(name) {
         writeln!(
             err,
             "Error: '{name}' is the session you are in; a bound stop never stops its caller's own session (that is ae stop --self). Nothing was stopped."
@@ -226,12 +237,27 @@ fn warn_model(err: &mut impl Write, name: &str, why: &str) -> io::Result<()> {
 }
 
 /// Who runs the bound stop, as `$TMUX` and `$TMUX_PANE` place it.
-struct Caller {
-    /// The session the caller's pane is in; `None` outside tmux.
-    session: Option<String>,
-    /// Whether that session's recorded tmux server is proved to be the
-    /// caller's.
-    proved: bool,
+enum Caller {
+    /// No tmux markers: a plain terminal, so no pane and no session.
+    Outside,
+    /// The ambient pane on the server `$TMUX` names, in `session`; `proved`
+    /// when that session's recorded tmux server is proved to be the caller's.
+    Pane {
+        server: ServerId,
+        pane: String,
+        session: String,
+        proved: bool,
+    },
+}
+
+impl Caller {
+    /// The session the caller's pane is in.
+    fn session(&self) -> Option<&str> {
+        match self {
+            Self::Outside => None,
+            Self::Pane { session, .. } => Some(session),
+        }
+    }
 }
 
 /// The session the caller runs in, read from `$TMUX_PANE` on the server
@@ -240,12 +266,7 @@ struct Caller {
 /// carries the exit code and the refusal.
 fn caller_session(root: &Path, panes: &[Option<String>]) -> Result<Caller, (u8, &'static str)> {
     let server = match crate::doors::caller_server_reading() {
-        CallerServer::Absent if panes.is_empty() => {
-            return Ok(Caller {
-                session: None,
-                proved: false,
-            });
-        }
+        CallerServer::Absent if panes.is_empty() => return Ok(Caller::Outside),
         CallerServer::Absent => {
             return Err((
                 EXIT_USAGE,
@@ -283,15 +304,19 @@ fn caller_session(root: &Path, panes: &[Option<String>]) -> Result<Caller, (u8, 
         }
     }
     match caller_resolution(root, Some(&server), &ambient) {
-        Ok(session) => Ok(Caller {
-            session: Some(session),
+        Ok(session) => Ok(Caller::Pane {
+            server,
+            pane: ambient,
+            session,
             proved: true,
         }),
         // An unproven owner still names its session: a target of that name
         // is refused as the caller's own rather than guessed apart.
         Err(CallerGap::NotAnAeSession(session) | CallerGap::ServerUnproved(session)) => {
-            Ok(Caller {
-                session: Some(session),
+            Ok(Caller::Pane {
+                server,
+                pane: ambient,
+                session,
                 proved: false,
             })
         }
@@ -308,6 +333,8 @@ fn caller_session(root: &Path, panes: &[Option<String>]) -> Result<Caller, (u8, 
 
 /// The caller as the bound events record it, under the existing keys.
 struct Provenance {
+    /// `actor`: see the module documentation.
+    actor: &'static str,
     /// `actor_session`: the caller's session, only when it is proved.
     session: String,
     /// The caller's server, pane and session uuid, only when proved.
@@ -317,32 +344,69 @@ struct Provenance {
     gap: &'static str,
 }
 
-/// ONE observation of the calling pane, correlated with its session's meta.
+impl Provenance {
+    /// A pane ae could not prove: the neutral actor and the named gap.
+    fn unproved(gap: &'static str) -> Self {
+        Self {
+            actor: PANE_ACTOR,
+            session: String::new(),
+            triple: None,
+            gap,
+        }
+    }
+}
+
+/// ONE observation of the calling pane, correlated with its session's meta,
+/// and the actor that observation supports.
 fn provenance(root: &Path, caller: &Caller) -> Provenance {
-    let Some(session) = caller.session.as_deref() else {
+    let Caller::Pane {
+        server,
+        pane,
+        session,
+        proved,
+    } = caller
+    else {
         return Provenance {
+            actor: HUMAN_ACTOR,
             session: String::new(),
             triple: None,
             gap: "",
         };
     };
-    match crate::tracked::observe_caller(&sessions_dir(root).join(session)) {
-        Ok(triple) if caller.proved => Provenance {
-            session: session.to_owned(),
-            triple: Some(triple),
-            gap: "",
-        },
-        Ok(_) => Provenance {
-            session: String::new(),
-            triple: None,
-            gap: UNPROVED_SERVER,
-        },
-        Err(gap) => Provenance {
-            session: String::new(),
-            triple: None,
-            gap: gap.name(),
-        },
+    let Some(viewer) = transport::observe_viewer(server, pane) else {
+        return Provenance::unproved(CorrelationGap::Unreadable.name());
+    };
+    let dir = sessions_dir(root).join(session);
+    let triple = match crate::tracked::triple_from_viewer(&viewer, pane, &dir) {
+        Ok(triple) => triple,
+        Err(gap) => return Provenance::unproved(gap.name()),
+    };
+    if !*proved {
+        return Provenance::unproved(UNPROVED_SERVER);
     }
+    let actor = if is_dispatcher(root, &viewer, server) {
+        crate::tracked::ORCHESTRATOR_DISPLAY
+    } else {
+        PANE_ACTOR
+    };
+    Provenance {
+        actor,
+        session: session.clone(),
+        triple: Some(triple),
+        gap: "",
+    }
+}
+
+/// Whether the observed calling pane is provably the orchestrator seat: the
+/// proof the dispatcher gate (`refuse_dispatcher_seen` in src/lib.rs) takes
+/// before it refuses a dispatcher, on the same observation.
+fn is_dispatcher(root: &Path, viewer: &ObservedViewer, server: &ServerId) -> bool {
+    let (Some(session), Some(_slot)) = (viewer.session.as_deref(), viewer.slot.as_deref()) else {
+        return false;
+    };
+    crate::session_launch::name::is_session_name(session)
+        && crate::relay::physical_session(&sessions_dir(root).join(session), viewer, server)
+            .is_ok_and(|(_, bytes)| meta::is_seat(&bytes, root))
 }
 
 /// The facts both bound events carry.
@@ -357,7 +421,7 @@ impl<'a> Bound<'a> {
         Self { name, uuid, caller }
     }
 
-    /// One lifecycle event of the human CLI actor about the bound target: the
+    /// One lifecycle event about the bound target: the caller's actor, the
     /// target's uuid in `target_session_id` and `target_session_uuid`, and the
     /// caller's proved facts or its named gap.
     fn event_line(&self, action: &str, summary: &str) -> String {
@@ -367,7 +431,7 @@ impl<'a> Bound<'a> {
             identity_gap: self.caller.gap,
             ..EventFields::new(
                 crate::time::Timestamp::now(),
-                "human",
+                self.caller.actor,
                 action,
                 self.name,
                 "",

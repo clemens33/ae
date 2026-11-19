@@ -117,15 +117,17 @@ pub(crate) fn kill_verified(
     session_id: &str,
     err: &mut impl Write,
 ) -> io::Result<bool> {
-    kill_verified_with(server, name, verb, session_id, None, err)
+    let retry = format!("ae {verb} {name}");
+    kill_verified_with(server, name, &retry, session_id, None, err)
 }
 
 /// [`kill_verified`], with every kill fenced to `fence` when the caller proved
-/// one: the server then kills only the incarnation that proof named.
+/// one: the server then kills only the incarnation that proof named. `retry`
+/// is the whole command a refusal tells the caller to run again.
 fn kill_verified_with(
     server: &ServerId,
     name: &str,
-    verb: &str,
+    retry: &str,
     session_id: &str,
     fence: Option<&crate::tmux::SessionStamp>,
     err: &mut impl Write,
@@ -146,11 +148,11 @@ fn kill_verified_with(
         probe = transport::verify_session_absent(server, name);
     }
     match probe {
-        StopProbe::Absent => views_refusal(name, verb, &views, err),
+        StopProbe::Absent => views_refusal(name, retry, &views, err),
         StopProbe::Present => {
             writeln!(
                 err,
-                "Error: could not kill session '{name}' — still alive; state preserved. Retry 'ae {verb} {name}'."
+                "Error: could not kill session '{name}' — still alive; state preserved. Retry '{retry}'."
             )?;
             Ok(false)
         }
@@ -166,10 +168,11 @@ fn kill_verified_with(
 
 /// Whether a session whose tmux session is gone left no pane view holding its
 /// windows — a view of it would keep its harnesses running — saying on `err`
-/// why not. State is preserved either way.
+/// why not, with the whole command `retry` to run again. State is preserved
+/// either way.
 fn views_refusal(
     name: &str,
-    verb: &str,
+    retry: &str,
     views: &transport::StopViews,
     err: &mut impl Write,
 ) -> io::Result<bool> {
@@ -178,7 +181,7 @@ fn views_refusal(
         transport::StopViews::Held(held) => {
             writeln!(
                 err,
-                "Error: session '{name}' is gone, but pane view session(s) {} still hold its windows, so its agents still run — state preserved. Retry 'ae {verb} {name}'.",
+                "Error: session '{name}' is gone, but pane view session(s) {} still hold its windows, so its agents still run — state preserved. Retry '{retry}'.",
                 held.join(", ")
             )?;
             Ok(false)
@@ -186,7 +189,7 @@ fn views_refusal(
         transport::StopViews::Unreadable => {
             writeln!(
                 err,
-                "Error: cannot verify that no pane view of '{name}' still holds its windows — state preserved. Retry 'ae {verb} {name}'."
+                "Error: cannot verify that no pane view of '{name}' still holds its windows — state preserved. Retry '{retry}'."
             )?;
             Ok(false)
         }
@@ -203,7 +206,7 @@ pub(crate) fn views_gone(
     err: &mut impl Write,
 ) -> io::Result<bool> {
     let views = transport::orphan_views(server, &meta::session_id_in(dir));
-    views_refusal(name, verb, &views, err)
+    views_refusal(name, &format!("ae {verb} {name}"), &views, err)
 }
 
 /// Every ae session the state root knows about, live or stopped — the union
@@ -1179,19 +1182,24 @@ fn handoff_clients(
         None
     };
     let next = handoff_destination(server, name, &order, &rows, listing.as_deref())?;
-    let clients = transport::observe_clients(server)?;
-    let attached = clients
-        .into_iter()
-        .filter(|client| client.session == name)
-        .collect::<Vec<_>>();
+    // A fenced handoff lists only the clients attached to the stamped `$<n>`,
+    // from the stamped incarnation, so no session-name field selects them.
+    let attached: Vec<String> = match fence {
+        None => transport::observe_clients(server)?
+            .into_iter()
+            .filter(|client| client.session == name)
+            .map(|client| client.name)
+            .collect(),
+        Some(stamp) => transport::observe_stamped_clients(server, stamp)?,
+    };
     if attached.is_empty() {
         return None;
     }
     let failed = attached
         .iter()
         .filter(|client| match fence {
-            None => !transport::switch_client(server, &client.name, &next),
-            Some(stamp) => !transport::switch_client_fenced(server, stamp, &client.name, &next),
+            None => !transport::switch_client(server, client, &next),
+            Some(stamp) => !transport::switch_client_fenced(server, stamp, client, &next),
         })
         .count();
     (failed > 0).then(|| {
@@ -2243,7 +2251,11 @@ fn kill_under_lock(
     if let Some(note) = handoff_clients(server, name, fence) {
         writeln!(err, "Warning: {note}")?;
     }
-    if !kill_verified_with(server, name, "stop", session_id, fence, err)? {
+    let retry = match fence {
+        None => format!("ae stop {name}"),
+        Some(stamp) => format!("ae stop {name} --expect-uuid {}", stamp.uuid),
+    };
+    if !kill_verified_with(server, name, &retry, session_id, fence, err)? {
         return Ok(StopOutcome::Failed);
     }
     writeln!(out, "Stopped {name}")?;

@@ -243,6 +243,21 @@ pub fn view_holder_listing_args(server: &ServerId) -> Vec<String> {
     args
 }
 
+/// [`VIEW_HOLDER_FORMAT`] with the two free-text fields framed: the server
+/// deletes every `|` and control byte from the session name and the
+/// [`VIEW_OF_OPTION`] value before printing, so no value can add a row or
+/// move a field.
+const VIEW_HOLDER_FRAMED_FORMAT: &str = "#{session_id} | #{s/#{l:[|[:cntrl:]]}//:session_name} | #{window_id} | #{s/#{l:[|[:cntrl:]]}//:@ae_view_of}";
+
+/// [`view_holder_listing_args`] in [`VIEW_HOLDER_FRAMED_FORMAT`], for a stop
+/// whose kills are fenced: [`interpret_view_holders`] reads its rows.
+#[must_use]
+pub fn view_holder_listing_framed_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-windows", "-a", "-F", VIEW_HOLDER_FRAMED_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
 /// One window a session holds: `(session id, session name, window id,
 /// @ae_view_of)`.
 pub type HolderRow = (String, String, String, String);

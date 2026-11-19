@@ -2112,8 +2112,8 @@ forms, which the seat runs itself: the [bound stop](#the-bound-stop-ae-stop-name
 `ae stop <name> --expect-uuid <uuid>` and the bound resume
 `ae <name> --resume --no-attach --expect-uuid <uuid>`. The bound resume resumes only the stopped
 session whose record names that uuid, in place on its recorded server, and never creates or
-reattaches. Both read the uuid from `ae list --all --json` right before the command, and both
-refuse the seat's own session. The served `_launch` entry and the seat's own launch, picker and
+reattaches. The seat reads the uuid from `ae list --all --json` right before either command and
+passes it; both refuse the seat's own session. The served `_launch` entry and the seat's own launch, picker and
 settings routes stay refused. The seat runs both bound forms at its own discretion: when the owner
 asks, to save compute while a session's work is parked, or to continue parked work it found in a
 stopped session. If ae refuses one, the seat reports the line; for a refused resume it gives the owner
@@ -2477,16 +2477,18 @@ from a `run-shell` job, pass `--pane=#{pane_id}`.
 ### The bound stop (`ae stop <name> --expect-uuid <uuid>`)
 
 The bound stop is the one stop the orchestrator seat may run, and any caller may use it. Its
-grammar is exact: one session name and one `--expect-uuid`, read from the `uuid` column of
-`ae list --all --json` right before the command. Any other flag, a second name, a repeated
+grammar is exact: one session name and one `--expect-uuid`. The caller passes the uuid; the seat
+reads it from the `uuid` column of `ae list --all --json` right before the command, and the stop
+never looks it up itself. Any other flag, a second name, a repeated
 `--expect-uuid` and the fleet word `all` refuse. It never stops the caller's own session: that
 is `ae stop --self`. The caller is read from `$TMUX_PANE` only. A `--pane` may repeat that pane
 once, and outside tmux any `--pane` refuses.
 
 Under the session's lifecycle lock, before it writes anything, the bound stop proves four
 facts. The name is a session directory, never a rename alias. Its meta names exactly that uuid.
-Its record names a positive tmux server. The live session of that name there carries that uuid as
-its `@ae_session_uuid` stamp, read together with its exact `$<n>` id. Then it takes the session's
+Its record names a positive tmux server. One read of exactly that session there returns one
+whole record: the server's pid and start time, the session's `$<n>` id and creation time, its name,
+and an `@ae_session_uuid` stamp equal to that uuid. Then it takes the session's
 journal lock and reads each seat's latest declaration from the current roster. Any seat that
 declares anything but `done` or `waiting-user` refuses, and so does a journal ae cannot read. A
 seat that never declared does not refuse. Each refusal is one line that names what ae found, for
@@ -2494,7 +2496,12 @@ example the uuid the name holds now, and nothing is written.
 
 When every proof holds, the stop request, the client handoff, the kill of exactly that `$<n>` id
 and the stop result happen while the journal lock is held, so no declaration lands between the
-read and the kill. The migration note and the seat-model observations follow the kill, still
+read and the kill. A stop request ae cannot record refuses before any of them. The tmux
+incarnation fence makes every handoff and kill one tmux command that the server runs only while
+its own pid and start time, and the session's id, creation time and uuid stamp, still match the
+proof. A pane view dies only while the server sees it as a view of that session. So a saved
+`$<n>` never reaches a session that a restarted server gave the same id. A failed kill tells the
+caller to retry the same bound command. The migration note and the seat-model observations follow the kill, still
 under the lifecycle lock. A session proven already stopped crosses the same declaration check,
 records `already stopped` and says `Session '<name>' is not running.` with exit 1.
 

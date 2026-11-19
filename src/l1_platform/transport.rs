@@ -2713,11 +2713,12 @@ fn stop_views_with(
         ViewRead::Gone => return StopViews::Clear,
         ViewRead::Unreadable => return StopViews::Unreadable,
     };
+    let listing = match fence {
+        None => tmux::view_holder_listing_args(server),
+        Some(_) => tmux::view_holder_listing_framed_args(server),
+    };
     let holding = || {
-        let rows = view_rows(
-            &tmux::view_holder_listing_args(server),
-            tmux::interpret_view_holders,
-        )?;
+        let rows = view_rows(&listing, tmux::interpret_view_holders)?;
         Some(tmux::views_holding(&windows, session_id, &rows))
     };
     let Some(before) = holding() else {
@@ -2826,6 +2827,21 @@ pub fn observe_view_place(server: &ServerId, target: &str) -> Option<(String, St
 #[must_use]
 pub fn switch_client(server: &ServerId, client: &str, session: &str) -> bool {
     addressable(server) && run(PROGRAM, &tmux::switch_client_args(server, client, session)).0
+}
+
+/// The clients attached to exactly the stamped session, listed by its `$<n>`
+/// on the stamped server incarnation, or `None` when that listing was not
+/// whole.
+#[must_use]
+pub fn observe_stamped_clients(
+    server: &ServerId,
+    stamp: &tmux::SessionStamp,
+) -> Option<Vec<String>> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::stamped_clients_args(server, stamp));
+    tmux::interpret_stamped_clients(succeeded, &stdout, stamp)
 }
 
 /// [`switch_client`] fenced to `stamp`: the server switches `client` only

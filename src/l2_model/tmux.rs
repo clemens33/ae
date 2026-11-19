@@ -60,11 +60,11 @@ pub use views::{
     interpret_view_place, interpret_view_uuids, interpret_window_snapshot, is_view_session,
     orphan_view_ids, pinned_pane_target, session_name_of_args, view_attach_args, view_census_args,
     view_client_place_args, view_command_args, view_destroy_args, view_group_args,
-    view_holder_listing_args, view_marker_args, view_member_name, view_membership_args,
-    view_of_args, view_of_value, view_place_args, view_release_command, view_restore_command,
-    view_return_bind_args, view_return_command, view_session_age_nanos, view_session_expired,
-    view_session_name, view_stale_clear_command, view_switch_args, view_uuid_listing_args,
-    view_window_snapshot_args, views_holding, with_view_uuid,
+    view_holder_listing_args, view_holder_listing_framed_args, view_marker_args, view_member_name,
+    view_membership_args, view_of_args, view_of_value, view_place_args, view_release_command,
+    view_restore_command, view_return_bind_args, view_return_command, view_session_age_nanos,
+    view_session_expired, view_session_name, view_stale_clear_command, view_switch_args,
+    view_uuid_listing_args, view_window_snapshot_args, views_holding, with_view_uuid,
 };
 mod fleet;
 #[cfg(test)]
@@ -1964,9 +1964,28 @@ pub fn fenced_kill_args(server: &ServerId, stamp: &SessionStamp) -> Option<Vec<S
     })
 }
 
-/// Kill the pane view `view` (a `$<n>` id) only on the server incarnation
-/// `stamp` was read from: inside one incarnation an id names one session for
-/// its whole life. `None` when `view` or the stamp is not tmux's own spelling.
+/// The guard that the session the command targets is a real pane view of the
+/// stamped session, on the stamped server incarnation: its OWN name, read by
+/// the server, starts with [`VIEW_SESSION_PREFIX`], and its own
+/// [`VIEW_OF_OPTION`] names the stamped `$<n>` or its [`VIEW_UUID_OPTION`]
+/// names the stamped uuid.
+fn view_guard(stamp: &SessionStamp) -> String {
+    format!(
+        "#{{&&:{server},#{{&&:#{{m:{prefix}*,#{{session_name}}}},#{{||:#{{==:#{{{of}}},{id}}},#{{==:#{{{uuid_option}}},{uuid}}}}}}}}}",
+        server = incarnation_guard(&stamp.server),
+        prefix = VIEW_SESSION_PREFIX,
+        of = VIEW_OF_OPTION,
+        id = stamp.session.id,
+        uuid_option = VIEW_UUID_OPTION,
+        uuid = stamp.uuid,
+    )
+}
+
+/// Kill the session `view` (a `$<n>` id) only while the server itself sees
+/// it as a pane view of the stamped session on the stamped incarnation
+/// ([`view_guard`]): a listing row that merely CLAIMS a view name or a held
+/// window kills nothing. `None` when `view` or the stamp is not tmux's own
+/// spelling.
 ///
 /// ```
 /// use ae::inventory::ServerId;
@@ -1975,7 +1994,10 @@ pub fn fenced_kill_args(server: &ServerId, stamp: &SessionStamp) -> Option<Vec<S
 /// let stamp = interpret_session_stamp(true, read, "demo").unwrap();
 /// let args = fenced_view_kill_args(&ServerId::Ambient, &stamp, "$9").unwrap();
 /// assert_eq!(&args[..4], ["if-shell", "-F", "-t", "$9"]);
-/// assert_eq!(args[4], "#{&&:#{==:#{pid},41},#{==:#{start_time},1789100000}}");
+/// assert_eq!(
+///     args[4],
+///     "#{&&:#{&&:#{==:#{pid},41},#{==:#{start_time},1789100000}},#{&&:#{m:_aeview-*,#{session_name}},#{||:#{==:#{@ae_view_of},$3},#{==:#{@ae_view_uuid},11111111-2222-4333-8444-555555555555}}}}"
+/// );
 /// assert_eq!(args[5], "kill-session -t $9");
 /// assert_eq!(fenced_view_kill_args(&ServerId::Ambient, &stamp, "_aeview-1"), None);
 /// ```
@@ -1989,7 +2011,7 @@ pub fn fenced_view_kill_args(
         fenced_args(
             server,
             view,
-            incarnation_guard(&stamp.server),
+            view_guard(stamp),
             format!("kill-session -t {view}"),
         )
     })
@@ -2026,6 +2048,65 @@ pub fn fenced_switch_client_args(
             format!("switch-client -c '{client}' -t '={next}'"),
         )
     })
+}
+
+/// `list-clients -t <$n>`: the clients attached to exactly that session, each
+/// with the server incarnation that answered. No session name rides in the
+/// row; the `-t` scope is the proof of attachment.
+pub const STAMPED_CLIENT_FORMAT: &str = "#{pid} | #{start_time} | #{client_name}";
+
+/// The arguments listing the clients attached to the stamped session alone.
+#[must_use]
+pub fn stamped_clients_args(server: &ServerId, stamp: &SessionStamp) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-clients", "-t"].map(ToOwned::to_owned));
+    args.push(stamp.session.id.clone());
+    args.extend(["-F", STAMPED_CLIENT_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// The client names [`stamped_clients_args`] printed, or `None` when the run
+/// failed or any row is not three fields from the stamped server incarnation
+/// naming a client that single quotes can carry: a listing ae cannot read
+/// whole hands no client over.
+///
+/// ```
+/// use ae::tmux::{interpret_session_stamp, interpret_stamped_clients};
+/// let read = "41 | 1789100000 | $3 | 1789100001 | demo | 11111111-2222-4333-8444-555555555555\n";
+/// let stamp = interpret_session_stamp(true, read, "demo").unwrap();
+/// let listing = "41 | 1789100000 | /dev/ttys001\n41 | 1789100000 | /dev/ttys002\n";
+/// assert_eq!(
+///     interpret_stamped_clients(true, listing, &stamp),
+///     Some(vec!["/dev/ttys001".to_owned(), "/dev/ttys002".to_owned()])
+/// );
+/// assert_eq!(interpret_stamped_clients(true, "", &stamp), Some(Vec::new()));
+/// assert_eq!(interpret_stamped_clients(true, "42 | 1789100000 | /dev/ttys001\n", &stamp), None);
+/// assert_eq!(interpret_stamped_clients(true, "41 | 1789100000 | it's\n", &stamp), None);
+/// assert_eq!(interpret_stamped_clients(false, listing, &stamp), None);
+/// ```
+#[must_use]
+pub fn interpret_stamped_clients(
+    succeeded: bool,
+    stdout: &str,
+    stamp: &SessionStamp,
+) -> Option<Vec<String>> {
+    if !succeeded {
+        return None;
+    }
+    stdout
+        .lines()
+        .map(|line| {
+            let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+            let [pid, start, client] = fields.as_slice() else {
+                return None;
+            };
+            let whole = *pid == stamp.server.pid
+                && *start == stamp.server.start
+                && !client.is_empty()
+                && !client.chars().any(|c| c == '\'' || c.is_control());
+            whole.then(|| (*client).to_owned())
+        })
+        .collect()
 }
 
 /// `#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_agent}` — the
