@@ -1,0 +1,144 @@
+//! S1a driver regressions the frozen acceptance module does not pin. Real
+//! binary and private tmux through the same rig as `orch_s1a_spec`; the stored
+//! relay copy is edited directly only to model a damaged or transferred record.
+
+#![allow(
+    clippy::disallowed_methods,
+    clippy::expect_used,
+    reason = "acceptance owns private files, panes and process invocations"
+)]
+
+use ae::telegram::{
+    Echoes,
+    bridge::SharedChat,
+    inbound::{Origin, Submit, Submitted},
+    routing::Target,
+};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use super::o2guard_p2_spec::uuid_of;
+use super::relay_chat_spec::{Out, Rig, events, receipt, words};
+
+const OWNER: &str = "I approve this exact fixture action for this session.";
+const TASK: &str = "Take the fixture action.";
+
+fn read(path: &Path) -> String {
+    fs::read_to_string(path).expect("fixture file")
+}
+
+fn append(dir: &Path, add: &str) {
+    let path = dir.join("meta");
+    fs::write(&path, format!("{}{add}", read(&path))).expect("fixture meta");
+}
+
+/// A dispatcher rig as the acceptance module builds it: the real overlay, the
+/// recorded main pane, and the target's current context stamp.
+fn rig(tag: &str) -> Rig {
+    let r = Rig::new(tag);
+    let overlay = r.world.root.join("orchestrator.config");
+    fs::write(
+        &overlay,
+        include_str!("../../contrib/aeorchestrator/orchestrator.config"),
+    )
+    .expect("real dispatcher overlay");
+    append(
+        &r.caller.dir,
+        &format!(
+            "main_pane={}\nlocal_config={}\n",
+            r.caller.pane,
+            overlay.display()
+        ),
+    );
+    append(&r.owner.tool.dir, "context.main=1\n");
+    r
+}
+
+/// The owner's Telegram ask in the dispatcher's own ledger, through the real
+/// shared submission.
+fn owner_ask(r: &Rig) -> String {
+    let chat = SharedChat {
+        root: r.world.root.clone(),
+        echoes: Echoes::default(),
+    };
+    let target = Target {
+        session: "orch".to_owned(),
+        dir: r.caller.dir.clone(),
+        session_id: uuid_of("orch"),
+        pair: vec!["boss".to_owned()],
+        seat: Some("boss".to_owned()),
+    };
+    let origin = Origin {
+        update_id: 91,
+        date: 1_795_000_000,
+        from_id: "42".to_owned(),
+    };
+    let result = chat.submit(&target, OWNER, &origin);
+    assert!(
+        matches!(
+            &result,
+            Submitted::Sent { .. } | Submitted::Unconfirmed { .. }
+        ),
+        "setup: real Telegram shared submission: {result:?}"
+    );
+    origin.request_id()
+}
+
+fn verify(r: &Rig, id: &str) -> Out {
+    r.world.run(
+        Some(&r.owner.tool.pane),
+        &[&format!("@{}", r.owner.home), "requests", "--verify", id],
+        &[],
+    )
+}
+
+#[test]
+fn a_bound_relay_whose_stored_outer_envelope_is_not_the_dispatchers_does_not_verify() {
+    let r = rig("s1adrvenv");
+    let input = owner_ask(&r);
+    let out = r.run(&[
+        r.owner.home.as_str(),
+        "--owner-input",
+        &input,
+        "--task",
+        TASK,
+    ]);
+    assert_eq!(out.0, Some(0), "relay delivery: {}", words(&out));
+    let id = out.1.lines().next().expect("receipt id").to_owned();
+    receipt(&out, &id, "sent", "pending");
+    let opening = events(&r.owner.tool.dir)
+        .into_iter()
+        .find(|event| event.reference.as_deref() == Some(id.as_str()) && event.action == "ask")
+        .expect("target-ledger opening");
+    let path = PathBuf::from(opening.body_file.as_ref().expect("stored relay"));
+    let stored = read(&path);
+
+    let proved = verify(&r, &id);
+    assert_eq!(
+        proved.0,
+        Some(0),
+        "the delivered frame verifies: {}",
+        words(&proved)
+    );
+
+    // The same inner proof under the chat's own envelope, as a recovery copy
+    // of an older core would carry it: the display reads it, verify must not.
+    let legacy = stored.replace("from ae/orchestrator", "from human:chat");
+    assert_ne!(legacy, stored, "the fixture must change the outer envelope");
+    fs::write(&path, &legacy).expect("legacy outer envelope");
+    let refused = verify(&r, &id);
+    assert_eq!(refused.0, Some(1), "{}", words(&refused));
+    assert_eq!(
+        refused.1.lines().next(),
+        Some("not owner ingress"),
+        "{}",
+        words(&refused)
+    );
+    assert!(
+        r.chat(&r.owner.home).contains(TASK),
+        "the chat still reads the legacy copy"
+    );
+
+    fs::write(&path, stored).expect("restore");
+    assert_eq!(verify(&r, &id).0, Some(0));
+}

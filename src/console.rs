@@ -751,16 +751,33 @@ pub(crate) fn lead_pair_at(dir: &Path) -> Result<bool, String> {
 /// for a dispatcher's relay, [`tracked::uncompose_relay`]'s answer is the whole
 /// text.
 pub(crate) fn body_for(dir: &Path, event: &Event) -> lane::Body {
-    read_body(dir, event, true)
+    read_body(dir, event, Envelope::Either)
 }
 
 /// [`body_for`] for an ask that must be the human's own: only the chat's
 /// envelope reads, so a relay's frame is never mistaken for owner words.
 pub(crate) fn ask_body(dir: &Path, event: &Event) -> lane::Body {
-    read_body(dir, event, false)
+    read_body(dir, event, Envelope::Human)
 }
 
-fn read_body(dir: &Path, event: &Event, relay: bool) -> lane::Body {
+/// [`body_for`] for a relay that must be the dispatcher's own: only the
+/// `ae/orchestrator` envelope reads, so no chat or recovery envelope stands in.
+pub(crate) fn relay_body(dir: &Path, event: &Event) -> lane::Body {
+    read_body(dir, event, Envelope::Dispatcher)
+}
+
+/// Which delivered envelope a stored ask body may be read out of.
+#[derive(Clone, Copy)]
+enum Envelope {
+    /// The chat's own.
+    Human,
+    /// The dispatcher's relay frame.
+    Dispatcher,
+    /// Either, for display and archives.
+    Either,
+}
+
+fn read_body(dir: &Path, event: &Event, envelope: Envelope) -> lane::Body {
     const CAP: u64 = reply::CONSOLE_BODY_CAP as u64;
     let Some(recorded) = event.body_file.as_deref().map(Path::new) else {
         return lane::Body::OldCore;
@@ -780,12 +797,16 @@ fn read_body(dir: &Path, event: &Event, relay: bool) -> lane::Body {
         Ok(SourceRead::Ready(bytes)) => match String::from_utf8(bytes) {
             Err(_) => lane::Body::NotUtf8,
             Ok(text) if action == reply::ACTION => lane::Body::Whole(text),
-            Ok(text) => tracked::uncompose_ask(&text, id)
-                .or_else(|| relay.then(|| tracked::uncompose_relay(&text, id)).flatten())
-                .map_or_else(
-                    || lane::Body::Refused("not the envelope ae delivers an ask in".to_owned()),
-                    |whole| lane::Body::Whole(whole.to_owned()),
-                ),
+            Ok(text) => match envelope {
+                Envelope::Human => tracked::uncompose_ask(&text, id),
+                Envelope::Dispatcher => tracked::uncompose_relay(&text, id),
+                Envelope::Either => tracked::uncompose_ask(&text, id)
+                    .or_else(|| tracked::uncompose_relay(&text, id)),
+            }
+            .map_or_else(
+                || lane::Body::Refused("not the envelope ae delivers an ask in".to_owned()),
+                |whole| lane::Body::Whole(whole.to_owned()),
+            ),
         },
         Ok(SourceRead::Absent) => lane::Body::Missing,
         Ok(SourceRead::Invalid(what)) => lane::Body::Refused(what),

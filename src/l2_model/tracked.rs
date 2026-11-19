@@ -488,8 +488,9 @@ pub fn uncompose_ask<'a>(framed: &'a str, id: &str) -> Option<&'a str> {
 
 /// The delivered text of a relay: `REQUEST <id> from ae/orchestrator:`, then
 /// the ae-rendered `sections` on the next line, then the REQUIRED footer. No
-/// chat style line: the recipient answers the dispatcher's session, not the
-/// human's chat.
+/// chat style line: the reply lands in the target's own ledger and the
+/// dispatcher reads it back through `relay --status`, so the human's chat
+/// style does not apply.
 #[must_use]
 pub(crate) fn compose_relay(req_id: &str, sections: &str, reply_cmd: &str) -> String {
     let mut text = format!(

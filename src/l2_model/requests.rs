@@ -240,7 +240,6 @@ pub struct Request {
 pub(crate) struct RelayFacts {
     pub(crate) origin: Option<String>,
     pub(crate) mode: Option<String>,
-    pub(crate) owner_input: Option<String>,
 }
 
 impl RelayFacts {
@@ -248,7 +247,6 @@ impl RelayFacts {
         event.map_or_else(Self::default, |event| Self {
             origin: event.relay_origin.clone(),
             mode: event.relay_mode.clone(),
-            owner_input: event.owner_input.clone(),
         })
     }
 }

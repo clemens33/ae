@@ -151,6 +151,7 @@ mod ocwarn_env_supplement;
 mod ocwarn_io_spec;
 mod ocwarn_mutation_spec;
 mod ocwarn_spec;
+mod orch_s1a_driver;
 mod orch_s1a_spec;
 mod pairguard_after;
 mod pairguard_spec;

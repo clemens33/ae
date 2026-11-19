@@ -121,7 +121,7 @@ fn prove(dir: &Path, id: &str) -> Result<Proof, String> {
     let Some(cited) = ask.owner_input.as_deref().filter(|cited| !cited.is_empty()) else {
         return Err(format!("{id} is a bound relay that cites no ask"));
     };
-    let (copy_id, copy_time, copy_words) = match console::body_for(dir, ask) {
+    let (copy_id, copy_time, copy_words) = match console::relay_body(dir, ask) {
         Body::Whole(sections) => owner_section(&sections)?,
         gap => {
             return Err(format!(
