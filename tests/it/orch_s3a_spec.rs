@@ -455,7 +455,7 @@ fn bound_stop_checks_the_latest_declaration_of_a_spawned_seat() {
     let caller = dispatcher(&rig);
     let uuid = create(&rig, TARGET);
     let dir = rig.dir(TARGET);
-    succeeds(&run(
+    let spawned = run(
         &rig,
         Some(&seat_pane(&rig, "lead")),
         &[
@@ -465,7 +465,13 @@ fn bound_stop_checks_the_latest_declaration_of_a_spawned_seat() {
             "--using",
             "idle",
         ],
-    ));
+    );
+    // Spawn keeps the seat when the inert sleeper cannot receive its brief.
+    assert_eq!(spawned.0, Some(1), "{spawned:?}");
+    assert!(
+        spawned.2.contains("SPAWN INCOMPLETE") && spawned.2.contains("builder"),
+        "{spawned:?}"
+    );
     declare(&rig, "builder", "working");
     let pane = Some(caller.pane.as_str());
     let argv = stop(TARGET, &uuid);
