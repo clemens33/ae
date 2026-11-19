@@ -64,6 +64,8 @@ impl Action {
 pub enum Refusal {
     /// The configured token file could not be validated.
     TokenUnreadable,
+    /// The Telegram configuration was invalid.
+    SettingsInvalid,
     /// The spawn itself failed.
     SpawnFailed,
 }
@@ -74,6 +76,7 @@ impl Refusal {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::TokenUnreadable => "token-unreadable",
+            Self::SettingsInvalid => "settings-invalid",
             Self::SpawnFailed => "spawn-failed",
         }
     }
@@ -83,6 +86,7 @@ impl Refusal {
     pub fn parse(word: &str) -> Option<&'static str> {
         match word {
             "token-unreadable" => Some("token-unreadable"),
+            "settings-invalid" => Some("settings-invalid"),
             "spawn-failed" => Some("spawn-failed"),
             "aewatch-live" => Some("aewatch-live"),
             "same-token-live" => Some("same-token-live"),
@@ -294,6 +298,9 @@ fn status(paths: &Paths, server: &ServerId, out: &mut impl Write) -> crate::erro
         Some(token_file) if !token_file.is_empty() => {
             match crate::telegram::load_settings(&paths.config, &paths.home) {
                 Ok(_) => writeln!(out, "  token:   OK ({token_file})")?,
+                Err(why @ crate::telegram::CredentialsError::Settings(_)) => {
+                    writeln!(out, "  config:  ERROR — {why}")?;
+                }
                 Err(why) => writeln!(out, "  token:   ERROR — {why}")?,
             }
         }
@@ -356,7 +363,12 @@ pub fn autostart(
         return Ok(false);
     }
     if let Err(why) = crate::telegram::load_settings(&paths.config, &paths.home) {
-        record_refusal(paths, Refusal::TokenUnreadable, session, session_dir);
+        let refusal = if matches!(why, crate::telegram::CredentialsError::Settings(_)) {
+            Refusal::SettingsInvalid
+        } else {
+            Refusal::TokenUnreadable
+        };
+        record_refusal(paths, refusal, session, session_dir);
         writeln!(err, "ae telegram: skipped autostart — {why}")?;
         return Ok(false);
     }
@@ -894,7 +906,11 @@ mod tests {
 
     #[test]
     fn the_recorded_categories_round_trip() {
-        for refusal in [Refusal::TokenUnreadable, Refusal::SpawnFailed] {
+        for refusal in [
+            Refusal::TokenUnreadable,
+            Refusal::SettingsInvalid,
+            Refusal::SpawnFailed,
+        ] {
             assert_eq!(Refusal::parse(refusal.as_str()), Some(refusal.as_str()));
         }
     }

@@ -51,7 +51,7 @@
 //! with `{"ok":false,"description":"chat not found"}`, and a bridge that reads
 //! only the status code marks that event delivered forever.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -66,6 +66,7 @@ use crate::json::{self, Value};
 pub mod bridge;
 pub mod inbound;
 pub mod routing;
+mod scope;
 
 // ─── the network boundary ────────────────────────────────────────────────
 
@@ -194,6 +195,8 @@ impl Credentials {
 pub enum CredentialsError {
     /// The config file could not be read.
     Config(PathBuf),
+    /// An invalid INI block or malformed outbound setting.
+    Settings(String),
     /// `[telegram] token_file` is missing or empty.
     NoTokenFile,
     /// `[telegram] chat_id` is missing or empty.
@@ -214,6 +217,7 @@ impl fmt::Display for CredentialsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(path) => write!(f, "telegram: unreadable config {}", path.display()),
+            Self::Settings(why) => write!(f, "telegram: {why}"),
             Self::NoTokenFile => f.write_str("telegram: [telegram] token_file is not set"),
             Self::NoChatId => f.write_str("telegram: [telegram] chat_id is not set"),
             Self::TokenUnreadable(path) => {
@@ -296,31 +300,28 @@ impl std::error::Error for CredentialsError {}
 ///
 /// # Errors
 ///
-/// [`CredentialsError`] for a config that cannot be read, either key missing,
-/// or a token file that is unreadable or empty. Absence is never treated as an
-/// empty value: a bridge that starts with no token would post nowhere and say
-/// nothing about it.
+/// [`CredentialsError`] for invalid settings, a config that cannot be read,
+/// missing credentials, or a token file that is unreadable or empty.
 pub fn load_credentials(config: &Path, home: &Path) -> Result<Credentials, CredentialsError> {
     load_settings(config, home).map(|settings| settings.credentials)
 }
 
-/// Everything the bridge reads out of an ae config: the outbound credentials,
-/// and the inbound allow-list.
+/// The bridge's credentials, inbound allow-list and outbound scope.
 #[derive(Debug, Clone)]
 pub struct Settings {
     /// The bot token and the chat the outbound half posts to.
     pub credentials: Credentials,
     /// **Inbound exists ONLY with a non-empty allow-list.**
     pub allowed_user_ids: Vec<String>,
+    outbound: scope::Scope,
 }
 
-/// Read `[telegram]` whole: `token_file`, `chat_id` and `allowed_user_ids`.
+/// Read the global `[telegram]` block.
 ///
 /// # Errors
 ///
-/// [`CredentialsError`], exactly as [`load_credentials`] — the allow-list has
-/// no failure of its own, because ABSENT is a legal, meaningful value for it
-/// (outbound-only bridge) rather than a missing requirement.
+/// [`CredentialsError`] for unusable credentials or invalid settings. The
+/// allow-list can be absent, making the bridge outbound-only.
 pub fn load_settings(config: &Path, home: &Path) -> Result<Settings, CredentialsError> {
     let text = match read_regular_file(config) {
         Ok((text, _)) => text,
@@ -331,37 +332,13 @@ pub fn load_settings(config: &Path, home: &Path) -> Result<Settings, Credentials
             return Err(CredentialsError::Config(config.to_owned()));
         }
     };
-    let mut token_file = None;
-    let mut chat_id = None;
-    let mut allowed = None;
-    let mut section = String::new();
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-            continue;
-        }
-        if let Some(name) = section_header(line) {
-            section = name;
-            continue;
-        }
-        if section != "telegram" {
-            continue;
-        }
-        let Some((key, value)) = setting(line) else {
-            continue;
-        };
-        match key.as_str() {
-            "token_file" => token_file = Some(value),
-            "chat_id" => chat_id = Some(value),
-            "allowed_user_ids" => allowed = Some(value),
-            _ => {}
-        }
-    }
-
-    let token_file = token_file
+    let parsed = parse_settings(config, &text)?;
+    let token_file = parsed
+        .token_file
         .filter(|v| !v.is_empty())
         .ok_or(CredentialsError::NoTokenFile)?;
-    let chat_id = chat_id
+    let chat_id = parsed
+        .chat_id
         .filter(|v| !v.is_empty())
         .ok_or(CredentialsError::NoChatId)?;
     let token_path = expand_home(&token_file, home);
@@ -384,8 +361,89 @@ pub fn load_settings(config: &Path, home: &Path) -> Result<Settings, Credentials
     }
     Ok(Settings {
         credentials: Credentials::new(Token::new(token), chat_id),
-        allowed_user_ids: allowed.as_deref().map(parse_id_list).unwrap_or_default(),
+        allowed_user_ids: parsed
+            .allowed
+            .as_deref()
+            .map(parse_id_list)
+            .unwrap_or_default(),
+        outbound: scope::Scope {
+            mode: parsed.mode.unwrap_or_default(),
+            also: parsed.also.unwrap_or_default(),
+        },
     })
+}
+
+#[derive(Default)]
+struct ParsedSettings {
+    token_file: Option<String>,
+    chat_id: Option<String>,
+    allowed: Option<String>,
+    mode: Option<scope::Mode>,
+    also: Option<Vec<scope::Selector>>,
+}
+
+/// Validate Telegram config text without opening its token file.
+///
+/// # Errors
+///
+/// A malformed or repeated outbound setting, or an invalid INI block.
+#[doc(hidden)]
+pub fn validate_settings_in(config: &Path, text: &str) -> Result<(), CredentialsError> {
+    parse_settings(config, text).map(drop)
+}
+
+fn parse_settings(config: &Path, text: &str) -> Result<ParsedSettings, CredentialsError> {
+    let mut settings = ParsedSettings::default();
+    let mut telegram = false;
+    for item in crate::config::config_lines(config, text) {
+        let item = item.map_err(|why| CredentialsError::Settings(why.to_string()))?;
+        let crate::config::ConfigLine::Plain(number, raw) = item else {
+            continue;
+        };
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some(name) = section_header(line) {
+            telegram = name == "telegram";
+            continue;
+        }
+        if !telegram {
+            continue;
+        }
+        let refusal = |why| {
+            CredentialsError::Settings(format!("{}:{number}: [telegram] {why}", config.display()))
+        };
+        let Some((key, value)) = setting(line) else {
+            if matches!(
+                line.split('#').next().unwrap_or("").trim(),
+                "scope" | "also"
+            ) {
+                return Err(refusal("scope and also require a key = value line"));
+            }
+            continue;
+        };
+        match key.as_str() {
+            "token_file" => settings.token_file = Some(value),
+            "chat_id" => settings.chat_id = Some(value),
+            "allowed_user_ids" => settings.allowed = Some(value),
+            "scope" if settings.mode.is_some() => return Err(refusal("duplicate scope key")),
+            "scope" => {
+                let mode = scope::Mode::parse(&value)
+                    .ok_or_else(|| refusal("scope must be orchestrator or all"))?;
+                settings.mode = Some(mode);
+            }
+            "also" if settings.also.is_some() => return Err(refusal("duplicate also key")),
+            "also" => {
+                let also = scope::Selector::list(&value).ok_or_else(|| {
+                    refusal("also must list exact session names or full UUIDs separated by commas")
+                })?;
+                settings.also = Some(also);
+            }
+            _ => {}
+        }
+    }
+    Ok(settings)
 }
 
 /// Split an `allowed_user_ids` value on commas AND spaces, discarding empties.
@@ -1113,9 +1171,17 @@ impl fmt::Display for PassFailure {
     }
 }
 
-/// The request ids of the asks this bridge carried into a shared chat itself,
-/// so the outbound pump does not echo the human's own phone turn back.
-pub type Echoes = Arc<Mutex<BTreeSet<String>>>;
+/// The asks this bridge carried, grouped by session id.
+pub type Echoes = Arc<Mutex<BTreeMap<String, BTreeSet<String>>>>;
+
+fn remember_ask(echoes: &Echoes, session_id: &str, id: String) {
+    if let Ok(mut carried) = echoes.lock() {
+        carried
+            .entry(session_id.to_ascii_lowercase())
+            .or_default()
+            .insert(id);
+    }
+}
 
 /// What one session's pump forwards: the shared chat's human-facing rows of a
 /// session whose lead pair is `pair`, written at or after `since`.
@@ -1137,6 +1203,8 @@ pub struct Outbound {
     log: PathBuf,
     cursor_path: PathBuf,
     label: String,
+    session_id: String,
+    replies_only: bool,
     scanned: Option<Cursor>,
     failures: u32,
     watch: Watch,
@@ -1174,6 +1242,8 @@ impl Outbound {
             log: meta.join(crate::store::EVENTS),
             cursor_path: meta.join(CURSOR_FILE),
             label: label.into(),
+            session_id: String::new(),
+            replies_only: false,
             scanned: None,
             failures: 0,
             watch,
@@ -1444,6 +1514,9 @@ impl Outbound {
             // is not an event at all.
             return Wanted::Skip;
         };
+        if self.replies_only && !self.carried_answer(&event) {
+            return Wanted::Skip;
+        }
         if event.ts.epoch() < self.watch.since {
             return Wanted::Stale;
         }
@@ -1458,10 +1531,18 @@ impl Outbound {
             return Wanted::Skip;
         }
         let dir = self.log.parent().unwrap_or_else(|| Path::new("."));
-        let Some((speaker, body)) = human_facing(&event, &self.watch, dir) else {
+        let Some((speaker, body)) = human_facing(&event, &self.watch, &self.session_id, dir) else {
             return Wanted::Skip;
         };
         Wanted::Send(self.render(speaker, &body))
+    }
+
+    fn carried_answer(&self, event: &crate::events::Event) -> bool {
+        event.action == crate::reply::ACTION
+            && event.target.as_deref() == Some(crate::tracked::CONSOLE_SINK)
+            && event.reference.as_deref().is_some_and(|id| {
+                carried_ask(&self.watch.echoes, &self.session_id, id).unwrap_or(false)
+            })
     }
 
     /// Remember `line` as accepted, forgetting the oldest past [`SENT_MEMORY`].
@@ -1484,6 +1565,14 @@ impl Outbound {
     }
 }
 
+/// An unreadable origin set neither proves a reply nor lets a phone ask echo.
+fn carried_ask(echoes: &Echoes, session_id: &str, id: &str) -> Option<bool> {
+    echoes
+        .lock()
+        .ok()
+        .map(|carried| carried.get(session_id).is_some_and(|ids| ids.contains(id)))
+}
+
 /// Whether `event` is a row the human reads in the shared chat, and as what:
 /// a lead-pair seat's or ae's own `say`, a chat ask this bridge did not carry
 /// itself, or an answer to the chat or to a bridge. Every other record — a
@@ -1492,6 +1581,7 @@ impl Outbound {
 fn human_facing<'a>(
     event: &'a crate::events::Event,
     watch: &Watch,
+    session_id: &str,
     dir: &Path,
 ) -> Option<(&'a str, String)> {
     let summary = || event.summary.clone().unwrap_or_default();
@@ -1504,10 +1594,7 @@ fn human_facing<'a>(
     }
     if action == crate::tracked::Kind::Ask.action() && event.actor == crate::tracked::CONSOLE_SINK {
         let id = event.reference.as_deref().unwrap_or("");
-        let echoed = watch
-            .echoes
-            .lock()
-            .map_or(true, |carried| carried.contains(id));
+        let echoed = carried_ask(&watch.echoes, session_id, id).unwrap_or(true);
         if echoed {
             return None;
         }
@@ -3248,7 +3335,7 @@ mod tests {
         super::Watch {
             pair: vec!["lead".to_owned(), "colead".to_owned()],
             since,
-            echoes: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            echoes: super::Echoes::default(),
         }
     }
 
@@ -3451,11 +3538,7 @@ mod tests {
             ],
         );
         let watch = nav_watch(i64::MIN);
-        watch
-            .echoes
-            .lock()
-            .unwrap()
-            .insert("tg-inbound-1".to_owned());
+        super::remember_ask(&watch.echoes, "", "tg-inbound-1".to_owned());
         let fake = Fake::one(Reply::ok());
         let mut outbound = Outbound::watching(temp.path(), "assistant", watch);
         assert_eq!(outbound.pump(&fake.api()).failure, None);
@@ -3548,11 +3631,7 @@ mod tests {
         );
         let fake = Fake::one(Reply::ok());
         let watch = nav_watch(i64::MIN);
-        watch
-            .echoes
-            .lock()
-            .unwrap()
-            .insert("tg-echo-only".to_owned());
+        super::remember_ask(&watch.echoes, "", "tg-echo-only".to_owned());
         let mut outbound = Outbound::watching(temp.path(), "aedev", watch);
         assert_eq!(outbound.pump(&fake.api()).failure, None);
         assert!(texts(&fake).is_empty());

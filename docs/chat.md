@@ -460,25 +460,27 @@ message to a selected session (`/use <session>`, `@session`, or a reply to a
 forwarded line) becomes a chat ask exactly as one typed here: the same
 admission, the same lead-pair router and the same cap of five open asks. A plain
 message with no selection is asked of the orchestrator seat the same way. It
-never takes an `ae app`'s writer lease. Back to the phone go each running
-session's human-facing chat rows, labelled `[session]`: asks typed here, the
-answers, and a lead-pair seat's or the watchdog's `say`. Worker traffic, states
-and tool output stay local, and a phone message is not echoed back.
+never takes an `ae app`'s writer lease. By default, the phone receives the
+proven orchestrator's chat, labelled `[session]`. Add sessions with
+`[telegram] also`, or set `scope = all` to receive every running session's
+chat. The bridge also uses the full scope when it cannot prove an orchestrator
+seat. A reply to an ask sent from the phone can return from any session
+while the bridge process remembers the ask. [Telegram scope settings](reference/telegram.md#setup)
 
 An orchestrator's raw relay answer line (`reply <nonce> from <seat>: …`, see
 [What it shows](#what-it-shows)) is not sent by default, under the same global
 `[workspace] relay_replies` that hides it in the chat; `on` sends it as before.
-Its receipt line (`routed to …`) and every other `ae:` row still go. The bridge
-reads the setting at each pass, and only for a session that records
+Its receipt line (`routed to …`) and other `ae:` rows follow the chat scope.
+The bridge applies the setting on each pass to sessions that record
 `meta_agent=true`. It decides when the bridge scans a line: a line skipped
 while hidden is past the cursor, so turning the setting on later does not
 send it, and a line already sent stays sent.
 
 Each bridge start fixes a cutoff ten minutes before it started. An older row is
-not sent, even behind a valid cursor: it stays in the session journal and its
-count goes to `~/.ae/telegram/backlog.log`. An older phone message is not acted
-on: it is kept in `~/.ae/telegram/stale-inbound.jsonl`. The chat hears one notice
-per direction, two at most. A phone message
+not sent, even behind a valid cursor. It stays in the session journal, and
+`~/.ae/telegram/backlog.log` counts rows within the current scope. The bridge
+keeps an older phone message in `~/.ae/telegram/stale-inbound.jsonl` without
+asking it. The chat hears one notice per direction, two at most. A phone message
 replayed after a crash finds its recorded ask by its update's id and is not
 asked again. Delivery is at least once, never exactly once. Three windows can
 repeat one message: a crash before the first outbound checkpoint can echo a

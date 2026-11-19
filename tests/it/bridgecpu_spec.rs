@@ -134,11 +134,12 @@ fn append(dir: &Path, text: &str) {
 
 /// No cutoff, no carried asks: every planted row is fresh.
 fn relay() -> Relay {
-    Relay {
-        since: i64::MIN,
-        echoes: crate::telegram::Echoes::default(),
-        config: std::path::PathBuf::new(),
-    }
+    Relay::new(
+        i64::MIN,
+        std::path::PathBuf::new(),
+        crate::telegram::scope::Scope::default(),
+        crate::settings_menu::role_holder,
+    )
 }
 
 /// What one production outbound pass did: the children it started, the

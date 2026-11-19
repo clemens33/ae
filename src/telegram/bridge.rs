@@ -145,9 +145,7 @@ impl Submit for SharedChat {
     fn submit(&self, target: &Target, text: &str, origin: &Origin) -> Submitted {
         // Remembered BEFORE the ask can reach the journal, so no pass of the
         // pump sees it first.
-        if let Ok(mut carried) = self.echoes.lock() {
-            carried.insert(origin.request_id());
-        }
+        super::remember_ask(&self.echoes, &target.session_id, origin.request_id());
         let ask = crate::console::term::External {
             dir: &target.dir,
             session: &target.session,
@@ -265,14 +263,12 @@ impl World for Machine {
 
 /// Outbound discovery needs identities, not the journal-derived `/list` ages.
 /// Liveness is shared per typed server within this pass, never across passes.
-struct ForwardingMachine {
-    roots: Roots,
-}
+struct ForwardingMachine(Machine);
 
 impl World for ForwardingMachine {
     fn running(&self) -> Vec<RunningSession> {
         // Use the same meta reader as Machine, including its symlink verdict.
-        let scan = inventory::durable_records_with(&self.roots, &mut |dir| {
+        let scan = inventory::durable_records_with(&self.0.roots, &mut |dir| {
             crate::session::RecordSnapshot::read_meta_only(dir)
         });
         let mut servers = BTreeMap::new();
@@ -295,9 +291,8 @@ impl World for ForwardingMachine {
             .collect()
     }
 
-    /// Outbound discovery never routes a plain message, so it holds no seat.
     fn seat(&self) -> Seat {
-        Seat::Vacant
+        self.0.seat()
     }
 }
 
@@ -371,6 +366,7 @@ pub fn run(
     let Settings {
         credentials,
         allowed_user_ids,
+        outbound,
     } = settings;
     let policy = Policy::new(credentials.chat_id(), allowed_user_ids);
     let api = Arc::new(Api::production(credentials));
@@ -378,11 +374,7 @@ pub fn run(
     let since = knobs.grace.map_or(i64::MIN, |grace| {
         start.saturating_sub(i64::try_from(grace.as_secs()).unwrap_or(i64::MAX))
     });
-    let relay = Relay {
-        since,
-        echoes: Echoes::default(),
-        config: paths.config.clone(),
-    };
+    let relay = Relay::new(since, paths.config.clone(), outbound, census);
     let (words, inbox_words) = std::sync::mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
 
@@ -405,7 +397,6 @@ pub fn run(
             policy,
             paths,
             knobs,
-            census,
             &relay,
             words,
             Arc::clone(&stop),
@@ -441,19 +432,28 @@ struct Relay {
     echoes: Echoes,
     /// The global config the passes read `relay_replies` from, afresh each pass.
     config: PathBuf,
+    outbound: super::scope::Scope,
+    census: Census,
+}
+
+impl Relay {
+    fn new(since: i64, config: PathBuf, outbound: super::scope::Scope, census: Census) -> Self {
+        Self {
+            since,
+            echoes: Echoes::default(),
+            config,
+            outbound,
+            census,
+        }
+    }
 }
 
 /// Spawn the inbound long poll.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each is a distinct thing the inbound thread owns: the client, the trust policy, the paths, the tunables, the role census, the relay state, the channel and the stop flag"
-)]
 fn spawn_inbound(
     api: Arc<Api>,
     policy: Policy,
     paths: &Paths,
     knobs: Knobs,
-    census: Census,
     relay: &Relay,
     words: Sender<Word>,
     stop: Arc<AtomicBool>,
@@ -467,7 +467,7 @@ fn spawn_inbound(
         paths.config.clone(),
         paths.ae_home.clone(),
     );
-    let machine = Machine::under(paths.roots()).with_census(census);
+    let machine = Machine::under(paths.roots()).with_census(relay.census);
     let chat_submit = SharedChat {
         root: paths.ae_home.clone(),
         echoes: Arc::clone(&relay.echoes),
@@ -520,9 +520,7 @@ fn pump(
     // Keyed by state directory, so each session's cursor and scan position
     // survive between passes.
     let mut bridges: BTreeMap<PathBuf, Outbound> = BTreeMap::new();
-    let machine = ForwardingMachine {
-        roots: paths.roots(),
-    };
+    let machine = ForwardingMachine(Machine::under(paths.roots()).with_census(relay.census));
     let mut told = false;
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -647,14 +645,13 @@ fn forward(
     // The raw relay answer echo is the orchestrator's alone: read the setting
     // once per pass, so a changed config is honoured without a restart.
     let replies = crate::config::global_relay_replies(Some(&relay.config));
-    // A session with no lead pair has no shared chat to relay.
-    let running: Vec<_> = (world.running().into_iter())
-        .filter(|session| !session.pair.is_empty())
-        .collect();
+    let running = world.running();
+    let admitted = relay.outbound.admitted(world, &running);
     // A session that stopped keeps its bridge, unpumped: what it sent stays
     // remembered when a resume replaces its ledger with a new inode.
     let mut held_back = 0;
-    for session in &running {
+    // A session with no lead pair has no shared chat to relay.
+    for session in running.iter().filter(|session| !session.pair.is_empty()) {
         let outbound = bridges.entry(session.dir.clone()).or_insert_with(|| {
             let watch = Watch {
                 pair: session.pair.clone(),
@@ -665,6 +662,11 @@ fn forward(
         });
         // The pair as this pass reads it: a reseat or a resume may change it.
         outbound.watch.pair.clone_from(&session.pair);
+        outbound.session_id.clone_from(&session.session_id);
+        outbound.session_id.make_ascii_lowercase();
+        outbound.replies_only = admitted
+            .as_ref()
+            .is_some_and(|dirs| !dirs.contains(&session.dir));
         outbound.relay_replies = if session.meta_agent {
             replies
         } else {
@@ -727,12 +729,30 @@ mod tests {
 
     /// A bridge relay with no cutoff and no carried asks.
     fn relay() -> super::Relay {
-        super::Relay {
-            since: i64::MIN,
-            echoes: super::Echoes::default(),
-            config: PathBuf::new(),
-        }
+        super::Relay::new(
+            i64::MIN,
+            PathBuf::new(),
+            crate::telegram::scope::Scope::default(),
+            super::unwired,
+        )
     }
+
+    fn relay_from_config(config: &std::path::Path, home: &std::path::Path) -> super::Relay {
+        let settings = crate::telegram::load_settings(config, home).unwrap();
+        super::Relay::new(
+            i64::MIN,
+            config.to_owned(),
+            settings.outbound,
+            super::unwired,
+        )
+    }
+
+    fn carry_for(relay: &super::Relay, session_id: &str, id: &str) {
+        crate::telegram::remember_ask(&relay.echoes, session_id, id.to_owned());
+    }
+
+    #[path = "tgorchonly_spec.rs"]
+    mod tgorchonly_spec;
 
     #[test]
     fn the_conventional_layout_derives_the_config_and_the_home_from_ae_home() {
@@ -778,7 +798,10 @@ mod tests {
             chat.submit(&target, "hello", &origin),
             Submitted::No(Refusal::Transient)
         );
-        assert!(chat.echoes.lock().unwrap().contains(&origin.request_id()));
+        assert_eq!(
+            crate::telegram::carried_ask(&chat.echoes, &target.session_id, &origin.request_id()),
+            Some(true)
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -892,9 +915,8 @@ mod tests {
         let fake = Fake::start(vec![Reply::ok()]);
         let api = fake.api();
         let relay = super::Relay {
-            since: i64::MIN,
-            echoes: super::Echoes::default(),
             config: config.clone(),
+            ..relay()
         };
         let mut bridges = std::collections::BTreeMap::new();
         let mut err = Vec::new();
@@ -1361,8 +1383,10 @@ mod tests {
             crate::telegram::inbound::Policy::new(CHAT, vec!["42".to_owned()]),
             &paths,
             Knobs::default(),
-            crate::settings_menu::role_holder,
-            &relay(),
+            &super::Relay {
+                census: crate::settings_menu::role_holder,
+                ..relay()
+            },
             words,
             Arc::clone(&stop),
         );
@@ -1421,8 +1445,10 @@ mod tests {
             crate::telegram::inbound::Policy::new(CHAT, vec!["42".to_owned()]),
             &paths,
             Knobs::default(),
-            crate::settings_menu::role_holder,
-            &relay(),
+            &super::Relay {
+                census: crate::settings_menu::role_holder,
+                ..relay()
+            },
             words,
             Arc::clone(&stop),
         );

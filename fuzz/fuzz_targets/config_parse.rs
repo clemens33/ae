@@ -8,7 +8,8 @@ use libfuzzer_sys::fuzz_target;
 // read the same global text, through their own entry (the lead floor and its
 // `[model_tiers]` rows too), and so does the strict effort switch. The
 // approved-pair list is hand-edited global text read through
-// `section_entries`, so its pure entry takes the same bytes.
+// `section_entries`, so its pure entry takes the same bytes. Telegram also
+// reads the global text before opening its token file.
 fuzz_target!(|data: &[u8]| {
     let text = String::from_utf8_lossy(data);
     let _ = std::hint::black_box(ae::config::parse_identity(&text));
@@ -52,4 +53,8 @@ fuzz_target!(|data: &[u8]| {
     ));
     let pairs = ae::pairs::parse_in(std::path::Path::new("config"), &text);
     let _ = std::hint::black_box(pairs.judge("opus55x", "cc-mic"));
+    let _ = std::hint::black_box(ae::telegram::validate_settings_in(
+        std::path::Path::new("config"),
+        &text,
+    ));
 });

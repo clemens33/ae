@@ -1,13 +1,14 @@
 # Telegram bridge
 
-> Machine-global daemon that bridges the shared chat of every running ae session on the host to one Telegram chat: it forwards the human-facing chat out, and (when `allowed_user_ids` is set) asks your phone messages in a session's shared chat. Single bot, single user, low traffic.
+> Machine-global daemon that connects ae shared chat to one Telegram chat. By default, the proven orchestrator's chat is the only session chat it forwards. When `allowed_user_ids` is set, the bridge routes phone messages into shared chat.
 
 ## What it does
 
 **Outbound (ae → chat):**
 
-- Reads `events.jsonl` of every **running** session that has a lead pair; a stopped session, or one with no lead pair, relays nothing, and a session that starts later joins on the next pass (about 2 s).
-- Forwards only the shared chat's human-facing rows, labelled `[session] <speaker>`: the asks typed in the [chat](../chat.md#telegram) or the `ae app`, the answers to them, and a lead-pair seat's or the watchdog's [`say`](helpers.md) line. An orchestrator's raw relay answer line (`reply <nonce> from <seat>: …`) is not sent unless the global `[workspace] relay_replies = on`; its receipt line and every other `ae:` row are sent, see [Telegram](../chat.md#telegram). Worker-to-worker traffic, states, alerts and tool output stay local, and your own phone message is not echoed back.
+- In the default `scope = orchestrator`, each pass checks the same role census as inbound routing. If the census proves a seat, the bridge forwards its chat by canonical session directory and includes any running session listed in `also`. A stopped but proven seat still sets the scope. Without a proven seat, or with `scope = all`, the bridge forwards every running session's chat. A session needs a lead pair to forward.
+- Forwarded rows carry the label `[session] <speaker>`. They include asks typed in chat or `ae app`, answers, and chat lines from the lead pair, watchdog or ae itself. The global `[workspace] relay_replies = on` adds the orchestrator's raw relay answer lines to its forwarded chat. [Chat forwarding](../chat.md#telegram)
+- A reply to an ask sent from Telegram can reach the phone from any session while this bridge process remembers the ask. Phone asks stay out of Telegram echoes while the bridge remembers them. After a bridge restart, a pending answer from a session outside the configured scope can stay in ae chat and the app.
 - Persists a per-session byte cursor, so a restart does not replay what was sent; see [Restarts](#lifecycle-and-auto-start) for the cutoff a start applies.
 - Runs as a background tmux session named `ae-telegram`.
 - **Reply to a forwarded message in Telegram** to ask the shared chat it came from — the two-way loop.
@@ -46,8 +47,11 @@ Optional keys:
 
 | Key | Default | Purpose |
 |---|---|---|
-| `include` / `exclude` | — | No longer read by the bridge: the outbound filter is the fixed human-facing set above. `ae telegram status` still prints an `include` it finds |
+| `scope` | `orchestrator` | `orchestrator` forwards the proven seat's chat and any `also` sessions. `all` forwards eligible chat from every running session. |
+| `also` | Empty | Comma-separated exact session names or full UUIDs. Names are case-sensitive and UUIDs are case-insensitive. Each entry must match one running session to add it. |
 | `allowed_user_ids` | *(from setup)* | Comma/space list of Telegram numeric user ids permitted to send **inbound commands**. Empty → inbound disabled (outbound-only). |
+
+Restart the bridge to apply `scope` or `also` changes. Invalid settings and repeated keys refuse startup with the file and line. Rows skipped by scope stay in the session journal and advance its outbound cursor.
 
 Set `enabled = false` (or remove the block) to disable autostart without uninstalling.
 
@@ -124,7 +128,7 @@ The daemon is **per-machine**, not per-session. A single instance serves every a
 | Watchdog | While any session's [watchdog](../internals/watchdog.md) is running, it best-effort revives the daemon every 120 seconds (fixed) if `enabled = true` and it died. Idempotent + respects the `enabled` flag, so a deliberate `ae telegram stop` is **not** undone. This is the closest thing to supervision without systemd — see below. |
 | Reboot | Daemon dies with tmux. Next `ae <name>` (or a running watchdog's supervision tick) triggers the autostart hook. What was written while it was down is subject to the start cutoff below. |
 
-**Each start fixes a cutoff ten minutes before it started**, and it does not move while that daemon runs. **Outbound:** a chat row older than the cutoff is not sent, even behind a valid cursor; it stays in the session's `events.jsonl`, its count goes to `~/.ae/telegram/backlog.log`, and the chat hears one notice. A recent row that failed to send is still owed and retried. **Inbound:** Telegram holds undelivered `getUpdates` for about 24 h; a phone message sent before the cutoff is not acted on but kept in `~/.ae/telegram/stale-inbound.jsonl`, and the chat hears one notice. So a start says at most two notices, one per direction, and floods nothing.
+**Each start fixes a cutoff ten minutes before startup.** Outbound chat older than the cutoff stays in the session journal. The bridge counts rows within the current scope in `~/.ae/telegram/backlog.log` and sends one notice. It retries recent rows that failed to send. The bridge keeps inbound phone messages older than the cutoff in `~/.ae/telegram/stale-inbound.jsonl` without asking them and sends one notice.
 
 **Watchdog supervision (best-effort).** The per-session watchdog re-runs the autostart check every ~120s (fixed; the internal `--tg-supervise-secs` flag changes it, `0` disables), so a crashed daemon is revived within a couple of minutes **as long as at least one session's watchdog is alive**. start / stop / supervise serialize on a control lock (`~/.ae/telegram/control.lock`) and the revive re-checks `enabled` under that lock, so a deliberate `ae telegram stop` is never undone by an in-flight tick, and concurrent watchdogs across sessions don't fight. The supervise call inherits the session's tmux server, so multi-server setups revive on the right server. This is not a hard supervisor: if every session is stopped (or `ae watchdog` is off everywhere), nothing watches the bridge.
 
@@ -145,7 +149,7 @@ There is **one** bridge implementation: the ae core binary, run in the
 | `~/.ae/telegram/current_target` | The `/use` selection: `<session>\t<seat>`, `*` for the chat's own router |
 | `~/.ae/telegram/stale-inbound.jsonl` | Phone messages a start held back as older than its cutoff, one JSON object each with their text (0600, never read back) |
 | `~/.ae/telegram/backlog.log` | One line per outbound pass that held rows back: time, session, count, cutoff; no text (0600) |
-| `~/.ae/telegram/autostart-refusal` | Last autostart refusal as a fixed category (`same-token-live`, `token-unreadable`, `probe-failed`, or `spawn-failed`) plus its UTC timestamp; retained after a later successful start |
+| `~/.ae/telegram/autostart-refusal` | Last autostart refusal as a fixed category, such as `settings-invalid`, `token-unreadable` or `spawn-failed`, with its UTC timestamp. The record remains after a successful start. |
 | `<session-meta>/telegram-outbound.cursor` | Per-session outbound forward cursor `(inode, byte_offset)`, written beside each session's `events.jsonl` so restarts don't replay what was sent; a clean pass checkpoints past rows it skipped. There is deliberately **no** single global outbound file — progress is per session |
 | `~/.ae/telegram/control.lock` | Serializes `start` / `stop` / `supervise` so concurrent watchdogs across sessions don't fight |
 | `~/.config/ae/telegram-bot.token` | The Bot API token (chmod 600, owner-only) |
