@@ -235,7 +235,9 @@ impl PlanParser<'_> {
         }
         let uuid = crate::archive::canonical_uuid(&value);
         if uuid.is_empty() {
-            return Err(format!("Error: --expect-uuid '{value}' is not a session uuid."));
+            return Err(format!(
+                "Error: --expect-uuid '{value}' is not a session uuid."
+            ));
         }
         self.plan.expect_uuid = Some(uuid);
         Ok(())

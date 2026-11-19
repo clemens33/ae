@@ -74,11 +74,10 @@ use plan::{EnvError, read_env};
 use preflight::check_resume_target;
 use preflight::{
     adopt_recorded_config, carries_own_proof, check_bound_resume, check_launch_kind, check_name,
-    check_resumed_roster,
-    check_seat_overrides, check_spawned_labels, check_stopped_near_miss, lex_spawned_seats,
-    lifecycle_busy, preflight_server, prepare_working_copy, prove_lineage, read_workspace_values,
-    resolve_seats, resolve_server, resolve_watchdog_cadences, restamp_running, restore_roster,
-    seed_orchestrator_seat,
+    check_resumed_roster, check_seat_overrides, check_spawned_labels, check_stopped_near_miss,
+    lex_spawned_seats, lifecycle_busy, preflight_server, prepare_working_copy, prove_lineage,
+    read_workspace_values, resolve_seats, resolve_server, resolve_watchdog_cadences,
+    restamp_running, restore_roster, seed_orchestrator_seat,
 };
 pub(crate) use ready::{
     OnHumanPrompt, TurnOutcome, deliver_launch_turn, launch_token, launch_turn_is_pasted,
@@ -516,6 +515,7 @@ pub fn relaunch(
         attach: None,
         tmux: false,
         resume: false,
+        expect_uuid: None,
     };
     launch(&env, &launch_plan, Some(plan.proof), None, None, out, err)
 }

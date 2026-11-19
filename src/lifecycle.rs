@@ -1361,30 +1361,28 @@ pub(super) fn emit_lifecycle_event(dir: &Path, name: &str, action: &str, summary
 
 /// One lifecycle event of the human actor about `name`, as a journal line.
 fn lifecycle_event_line(name: &str, action: &str, summary: &str) -> String {
-    crate::tracked::event_line(
-        &crate::tracked::EventFields {
-            ts: crate::time::Timestamp::now(),
-            actor: "human",
-            action,
-            target: name,
-            reference: "",
-            actor_slot: "",
-            actor_session: "",
-            target_slot: "",
-            target_session: "",
-            actor_session_id: "",
-            target_session_id: "",
-            target_server: "",
-            target_pane: "",
-            target_session_uuid: "",
-            caller_server: "",
-            caller_pane: "",
-            caller_session_uuid: "",
-            identity_gap: "",
-            summary,
-            body_file: "",
-        },
-    )
+    crate::tracked::event_line(&crate::tracked::EventFields {
+        ts: crate::time::Timestamp::now(),
+        actor: "human",
+        action,
+        target: name,
+        reference: "",
+        actor_slot: "",
+        actor_session: "",
+        target_slot: "",
+        target_session: "",
+        actor_session_id: "",
+        target_session_id: "",
+        target_server: "",
+        target_pane: "",
+        target_session_uuid: "",
+        caller_server: "",
+        caller_pane: "",
+        caller_session_uuid: "",
+        identity_gap: "",
+        summary,
+        body_file: "",
+    })
 }
 
 /// Append one stop event to the target's log, best-effort.
