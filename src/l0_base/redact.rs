@@ -857,6 +857,28 @@ mod tests {
     }
 
     #[test]
+    fn github_and_slack_heads_need_every_byte_of_their_prefix() {
+        let github_tail = "a".repeat(36);
+        for head in ["gxp_", "ghx_", "ghp-", "ghp ", "gHp_", "ghP_"] {
+            let input = format!("{head}{github_tail}");
+            assert_eq!(labels(&input), Vec::<&str>::new(), "{head}");
+        }
+        let slack_tail = "1".repeat(10);
+        for head in ["xoxz-", "xyyb-", "xxxb-", "xoxb_", "xoxb ", "xOxb-"] {
+            let input = format!("{head}{slack_tail}");
+            assert_eq!(labels(&input), Vec::<&str>::new(), "{head}");
+        }
+    }
+
+    #[test]
+    fn a_jwt_is_found_wherever_it_starts() {
+        for pad in [1, 2, 5, 10, 40] {
+            let input = format!("{}eyJ.d.e", " ".repeat(pad));
+            assert_eq!(redact_text(&input).1, [(Kind::Jwt, pad..pad + 7)], "{pad}");
+        }
+    }
+
+    #[test]
     fn bearer_stops_at_the_first_byte_outside_its_alphabet() {
         let input = format!("Bearer {}, next", "a".repeat(20));
         let (text, spans) = redact_text(&input);
