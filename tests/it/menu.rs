@@ -8973,7 +8973,12 @@ struct EndWorld {
 }
 
 impl EndWorld {
-    fn new(tag: &str, clicked: &'static str, viewed: &'static str, viewer: &'static str) -> Self {
+    fn new(
+        tag: &str,
+        clicked: &'static str,
+        viewed: &'static str,
+        client_pane: &'static str,
+    ) -> Self {
         let scratch = scratch(tag);
         if !tmux_present(&scratch) {
             let _ = fs::remove_dir_all(&scratch);
@@ -8993,10 +8998,12 @@ impl EndWorld {
         }
         let id = listing_id(&socket, &scratch, clicked);
         point_session_range_at(&socket, &scratch, viewed, &id);
-        let client = nested_client(&socket, &scratch, viewed, viewer);
+        let client = nested_client(&socket, &scratch, viewed, client_pane);
         let dir = root.join("sessions").join(clicked);
         let meta = ae::meta::Meta::parse(&fixture_text(&dir.join("meta")));
-        let uuid = meta.session_id().expect("the clicked session has a UUID");
+        let Some(uuid) = meta.session_id() else {
+            panic!("the clicked session has no UUID");
+        };
         let archive = root.join("archive").join(uuid);
         Self {
             scratch,
@@ -9004,7 +9011,7 @@ impl EndWorld {
             root,
             clicked,
             viewed,
-            viewer,
+            viewer: client_pane,
             client,
             dir,
             archive,
