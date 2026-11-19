@@ -1370,6 +1370,17 @@ pub fn observe_session_identity(server: &ServerId, name: &str) -> Option<tmux::S
     tmux::interpret_session_identity(succeeded, &stdout, name)
 }
 
+/// The id and the `@ae_session_uuid` stamp of the session named EXACTLY
+/// `name`, read in one listing, or `None`.
+#[must_use]
+pub fn observe_session_stamp(server: &ServerId, name: &str) -> Option<tmux::SessionStamp> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::session_stamps_args(server));
+    tmux::interpret_session_stamp(succeeded, &stdout, name)
+}
+
 /// `session`'s panes with the window each belongs to, for the per-window glyphs.
 #[must_use]
 pub fn observe_window_panes(server: &ServerId, session: &str) -> Option<Vec<tmux::WindowPane>> {

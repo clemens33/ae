@@ -673,6 +673,39 @@ pub struct SessionStore {
     dir: PathBuf,
 }
 
+/// The event container's lock, held by one owner until dropped
+/// ([`SessionStore::hold_events`]).
+pub struct EventsHold {
+    _held: File,
+    path: PathBuf,
+}
+
+impl EventsHold {
+    /// The event container's path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The container, read under this hold with [`read_source`]'s
+    /// classification.
+    #[must_use]
+    pub fn read(&self) -> SourceRead {
+        read_source(&self.path)
+    }
+
+    /// Append one event line under this hold, stamped as
+    /// [`SessionStore::append_event`] stamps it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Append`] when the append failed.
+    pub fn append_event(&self, line: &str) -> Result<(), Error> {
+        append(&self.path, stamp_event_records(line).as_bytes())
+            .map_err(|why| Error::Append(self.path.display().to_string(), why))
+    }
+}
+
 /// The store for the session whose meta directory is `dir`. No IO.
 #[must_use]
 pub fn open(dir: &Path) -> SessionStore {
@@ -1258,6 +1291,24 @@ impl SessionStore {
         decide: impl FnOnce(SourceRead) -> Result<String, R>,
     ) -> Result<Result<(), R>, Error> {
         self.decided(decide, true)
+    }
+
+    /// Take the event container's lock and keep it: an [`EventsHold`] reads
+    /// the container and appends to it under ONE hold, for an owner whose
+    /// decision must stay true through an effect between its appends (the
+    /// bound stop holds it from the declaration read through the kill).
+    /// Another `store::lock` of the same file in this process would wait on
+    /// this hold, so every read and append of the owner goes through it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Lock`] when the lock is not acquired within [`LOCK_WAIT`].
+    pub fn hold_events(&self) -> Result<EventsHold, Error> {
+        let path = self.events_path();
+        let lock_path = lock_path(&path);
+        let held = lock(&lock_path, LOCK_WAIT)
+            .map_err(|why| Error::Lock(lock_path.display().to_string(), why))?;
+        Ok(EventsHold { _held: held, path })
     }
 
     /// [`Self::append_event_decided`] without the schema stamp: a persisted

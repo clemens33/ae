@@ -160,6 +160,74 @@ pub(super) fn check_launch_kind(
     Ok(ControlFlow::Continue(preflight_meta_present))
 }
 
+/// The bound resume's proof, taken under the lifecycle lock before any write:
+/// `session` is a real session directory (never a rename alias), its raw meta
+/// names exactly `uuid` once, its record names a positive server, and the
+/// session is provably absent there. A running, unprovable or legacy record
+/// refuses with one line, and nothing was written.
+pub(super) fn check_bound_resume(
+    dir: &Path,
+    session: &str,
+    uuid: &str,
+    err: &mut impl Write,
+) -> crate::error::Result<ControlFlow<u8, ()>> {
+    let refusal = match bound_resume_refusal(dir, session, uuid) {
+        None => return Ok(ControlFlow::Continue(())),
+        Some(refusal) => refusal,
+    };
+    writeln!(err, "Error: {refusal}. Nothing was resumed.")?;
+    Ok(ControlFlow::Break(EXIT_FAILED))
+}
+
+/// [`check_bound_resume`]'s reading: `None` when every proof holds.
+fn bound_resume_refusal(dir: &Path, session: &str, uuid: &str) -> Option<String> {
+    match crate::teardown::classify_dir(dir) {
+        crate::teardown::DirKind::RealDir => {}
+        crate::teardown::DirKind::Symlink => {
+            return Some(format!(
+                "'{session}' is a rename alias, not a session; a bound resume names the session by its current name"
+            ));
+        }
+        crate::teardown::DirKind::Absent => {
+            return Some(format!("no session named '{session}' is recorded"));
+        }
+        crate::teardown::DirKind::NotDir | crate::teardown::DirKind::StatErr(_) => {
+            return Some(format!("'{session}' is not a readable session directory"));
+        }
+    }
+    let Ok(bytes) = meta::read_bytes(dir) else {
+        return Some(format!("ae cannot read the metadata of '{session}'"));
+    };
+    let recorded = meta::sole_value(&bytes, "session_id")
+        .map(|value| crate::archive::canonical_uuid(&String::from_utf8_lossy(value)))
+        .filter(|value| !value.is_empty());
+    let Some(recorded) = recorded else {
+        return Some(format!("'{session}' records no single session uuid"));
+    };
+    if recorded != uuid {
+        return Some(format!("'{session}' is session {recorded}, not {uuid}"));
+    }
+    let Some(server) =
+        RecordedServer::of(Meta::parse(&String::from_utf8_lossy(&bytes)).server_selector())
+    else {
+        return Some(format!("'{session}' {AMBIGUOUS_SERVER}"));
+    };
+    if server.legacy {
+        return Some(format!(
+            "'{session}' records no tmux server, so a bound resume cannot place it on its recorded server"
+        ));
+    }
+    match resume_absence(&server.server, session, dir).0 {
+        tmux::StopProbe::Absent => None,
+        tmux::StopProbe::Present => Some(format!(
+            "'{session}' is running; a bound resume only starts a stopped session"
+        )),
+        tmux::StopProbe::Unknown => Some(format!(
+            "ae cannot prove '{session}' is stopped on its recorded tmux server"
+        )),
+    }
+}
+
 /// Whether a launch brings its own proof of an existing record: the picker or
 /// menu's captured expectation, or a restore. Such a launch is not asked for a
 /// sign of intent (`--resume`) and a near-miss word does not refuse it.

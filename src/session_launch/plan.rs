@@ -64,6 +64,38 @@ pub struct Plan {
     /// one, and it is the explicit intent that lets a session named like an
     /// ae command resume (`ae sessions` alone never does, #284).
     pub resume: bool,
+    /// `--expect-uuid <uuid>`, canonical — the bound resume: it resumes only
+    /// the stopped session whose record names exactly this uuid.
+    pub expect_uuid: Option<String>,
+}
+
+/// The refusal of `--expect-uuid` beside any other launch flag.
+const BOUND_RESUME_GRAMMAR: &str = "Error: --expect-uuid binds one detached resume: ae <name> --resume --no-attach --expect-uuid <uuid>, with no other flag.";
+
+impl Plan {
+    /// Whether this plan is exactly the bound resume: a name, `--resume`,
+    /// `--no-attach` and `--expect-uuid`, and no other choice.
+    fn is_bound_shape(&self) -> bool {
+        self.expect_uuid.is_some()
+            && self.name.is_some()
+            && self.resume
+            && self.attach == Some(false)
+            && self.mode.is_none()
+            && self.main.is_none()
+            && self.from.is_none()
+            && self.workers.is_none()
+            && self.seat_profiles.is_empty()
+            && self.dir.is_none()
+            && !self.tmux
+    }
+}
+
+/// Whether `user` is EXACTLY `<name> --resume --no-attach --expect-uuid
+/// <uuid>`, each word once, in any order: the launch the entry admits for
+/// every caller, the orchestrator seat included.
+#[must_use]
+pub fn is_bound_resume(user: &[String]) -> bool {
+    user.len() == 5 && parse_plan(user).is_ok_and(|plan| plan.is_bound_shape())
 }
 
 /// Parse the user's launch argv.
@@ -107,6 +139,9 @@ impl PlanParser<'_> {
                 "Error: '--solo' starts the lead alone; drop --colead/--seat <worker>.".to_owned(),
             );
         }
+        if self.plan.expect_uuid.is_some() && !self.plan.is_bound_shape() {
+            return Err(BOUND_RESUME_GRAMMAR.to_owned());
+        }
         Ok(self.plan)
     }
 
@@ -143,6 +178,7 @@ impl PlanParser<'_> {
             _ if word == "--from" || word.starts_with("--from=") => {
                 self.archive(word.strip_prefix("--from="))?;
             }
+            "--expect-uuid" if !self.allow_attach => self.expect_uuid()?,
             _ if word.starts_with("--") => {
                 return Err(format!(
                     "Error: unknown flag '{word}'. Use --worktree, --copy, --local, --dir <path>, --no-attach, --tmux, --resume, --solo, --from <archive-uuid>, --seat <agent>=<profile>, --lead <profile>, or --colead <profile>."
@@ -186,6 +222,22 @@ impl PlanParser<'_> {
             return Err("Error: --dir requires a path.".to_owned());
         }
         self.plan.dir = Some(value);
+        Ok(())
+    }
+
+    fn expect_uuid(&mut self) -> Result<(), String> {
+        if self.plan.expect_uuid.is_some() {
+            return Err("Error: --expect-uuid may be given only once.".to_owned());
+        }
+        let value = self.value(None);
+        if value.is_empty() {
+            return Err("Error: --expect-uuid requires a session uuid.".to_owned());
+        }
+        let uuid = crate::archive::canonical_uuid(&value);
+        if uuid.is_empty() {
+            return Err(format!("Error: --expect-uuid '{value}' is not a session uuid."));
+        }
+        self.plan.expect_uuid = Some(uuid);
         Ok(())
     }
 

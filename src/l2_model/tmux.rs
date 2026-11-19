@@ -1798,6 +1798,66 @@ pub fn interpret_session_identity(
     matches.next().is_none().then_some(identity)
 }
 
+/// `#{session_id} | #{session_name} | #{@ae_session_uuid}` — a session's id
+/// and its ae identity stamp out of ONE listing, so the stamp read is the one
+/// the id carries. The option name is `theme::SESSION_ID_OPTION`.
+pub const SESSION_STAMP_FORMAT: &str = "#{session_id} | #{session_name} | #{@ae_session_uuid}";
+
+/// The arguments listing every session's id, name and identity stamp.
+#[must_use]
+pub fn session_stamps_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-sessions", "-F", SESSION_STAMP_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// One live session's id and its `@ae_session_uuid` stamp, as one listing
+/// reported them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStamp {
+    /// The `$<n>` id.
+    pub id: String,
+    /// The stamp, trimmed; empty when the option is unset.
+    pub uuid: String,
+}
+
+/// The id and stamp of the session named EXACTLY `name`, or `None`.
+///
+/// Exact for the reason [`interpret_session_id`] is: the id keys a kill. A
+/// failed run, a line with the wrong field count, an empty id and a
+/// duplicated name resolve to nothing rather than to a guess.
+///
+/// ```
+/// use ae::tmux::interpret_session_stamp;
+/// let listing = "$0 | other | \n$3 | demo | 11111111-2222-4333-8444-555555555555\n";
+/// let found = interpret_session_stamp(true, listing, "demo").unwrap();
+/// assert_eq!(found.id, "$3");
+/// assert_eq!(found.uuid, "11111111-2222-4333-8444-555555555555");
+/// assert_eq!(interpret_session_stamp(true, listing, "other").unwrap().uuid, "");
+/// assert_eq!(interpret_session_stamp(true, listing, "dem"), None);
+/// assert_eq!(interpret_session_stamp(true, "$3 | demo\n", "demo"), None);
+/// assert_eq!(interpret_session_stamp(true, "$3 | demo | a\n$4 | demo | a\n", "demo"), None);
+/// assert_eq!(interpret_session_stamp(false, listing, "demo"), None);
+/// ```
+#[must_use]
+pub fn interpret_session_stamp(succeeded: bool, stdout: &str, name: &str) -> Option<SessionStamp> {
+    if !succeeded {
+        return None;
+    }
+    let mut matches = stdout.lines().filter_map(|line| {
+        let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+        let [id, held, uuid] = fields.as_slice() else {
+            return None;
+        };
+        (*held == name && !id.is_empty()).then(|| SessionStamp {
+            id: (*id).to_owned(),
+            uuid: uuid.trim().to_owned(),
+        })
+    });
+    let stamp = matches.next()?;
+    matches.next().is_none().then_some(stamp)
+}
+
 /// `#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_agent}` — the
 /// window-grouping read.
 ///

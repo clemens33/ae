@@ -19,6 +19,7 @@
 //! 5. only then is the live state removed.
 
 pub(crate) mod aliases;
+mod bound;
 pub(crate) mod claims;
 pub(crate) mod compaction;
 pub(crate) mod end;
@@ -314,7 +315,11 @@ pub(crate) fn run_stop(
     // `--expect-*`: the identity a menu confirmation proved, which only the
     // detached supervisor re-proves under the target's lifecycle lock.
     let (expect, words) = match split_expectation(&words) {
-        Ok(split) => split,
+        Ok((Expectation::Bound(name, uuid), _)) => {
+            return bound::run(root, &name, &uuid, &pane_words(tail), out, err);
+        }
+        Ok((Expectation::Confirmed(expect), words)) => (Some(expect), words),
+        Ok((Expectation::None, words)) => (None, words),
         Err(reason) => {
             writeln!(err, "Error: {reason}")?;
             return Ok(EXIT_USAGE);
@@ -1351,7 +1356,12 @@ fn handoff_argv(name: &str) -> Option<DetachedArgv> {
 
 /// Append one line to the target's event log, best-effort.
 pub(super) fn emit_lifecycle_event(dir: &Path, name: &str, action: &str, summary: &str) {
-    let _ = crate::store::open(dir).append_event(&crate::tracked::event_line(
+    let _ = crate::store::open(dir).append_event(&lifecycle_event_line(name, action, summary));
+}
+
+/// One lifecycle event of the human actor about `name`, as a journal line.
+fn lifecycle_event_line(name: &str, action: &str, summary: &str) -> String {
+    crate::tracked::event_line(
         &crate::tracked::EventFields {
             ts: crate::time::Timestamp::now(),
             actor: "human",
@@ -1374,7 +1384,7 @@ pub(super) fn emit_lifecycle_event(dir: &Path, name: &str, action: &str, summary
             summary,
             body_file: "",
         },
-    ));
+    )
 }
 
 /// Append one stop event to the target's log, best-effort.
@@ -1519,6 +1529,21 @@ fn split_pane_flag(tail: &[String]) -> (String, Vec<String>) {
     (pane.unwrap_or_default(), words)
 }
 
+/// Every `--pane` word of a stop tail, in order: its value, or `None` for a
+/// trailing `--pane` with none. The bound stop counts them.
+fn pane_words(tail: &[String]) -> Vec<Option<String>> {
+    let mut panes = Vec::new();
+    let mut it = tail.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--pane" {
+            panes.push(it.next().cloned());
+        } else if let Some(value) = arg.strip_prefix("--pane=") {
+            panes.push(Some(value.to_owned()));
+        }
+    }
+    panes
+}
+
 /// Lift the `--expect-*` pairs out of a stop tail; the rest stays in order.
 ///
 /// All ten or none: a partial expectation is a caller that lost a field, and
@@ -1527,9 +1552,7 @@ fn split_pane_flag(tail: &[String]) -> (String, Vec<String>) {
     clippy::too_many_lines,
     reason = "one grammar: ten fields lifted, then each proven, in the order a caller reads them"
 )]
-fn split_expectation(
-    tail: &[String],
-) -> std::result::Result<(Option<StopExpectation>, Vec<String>), String> {
+fn split_expectation(tail: &[String]) -> std::result::Result<(Expectation, Vec<String>), String> {
     let mut session_id = None;
     let mut uuid = None;
     let mut server_pid = None;
@@ -1583,7 +1606,27 @@ fn split_expectation(
     .filter(|slot| slot.is_some())
     .count();
     if given == 0 {
-        return Ok((None, words));
+        return Ok((Expectation::None, words));
+    }
+    // `--expect-uuid` ALONE is the bound stop's word: one session name and
+    // nothing else. A tail that also names a session with any other word is
+    // that grammar's refusal; one with no name keeps the certificate's.
+    if given == 1
+        && let Some(uuid) = &uuid
+    {
+        let named = words.iter().any(|word| !word.starts_with('-'));
+        if let [name] = words.as_slice()
+            && named
+        {
+            let uuid = crate::archive::canonical_uuid(uuid);
+            if uuid.is_empty() {
+                return Err("--expect-uuid is not a session uuid.".to_owned());
+            }
+            return Ok((Expectation::Bound(name.clone(), uuid), Vec::new()));
+        }
+        if named {
+            return Err(BOUND_GRAMMAR.to_owned());
+        }
     }
     let (
         Some(session_id),
@@ -1652,7 +1695,7 @@ fn split_expectation(
         _ => return Err("--expect-meta-agent is not true or false.".to_owned()),
     };
     Ok((
-        Some(StopExpectation {
+        Expectation::Confirmed(StopExpectation {
             session_id,
             uuid,
             server_pid,
@@ -1665,6 +1708,28 @@ fn split_expectation(
         }),
         words,
     ))
+}
+
+/// What a `_stop` tail's `--expect-*` words ask for.
+enum Expectation {
+    /// No `--expect-*` word.
+    None,
+    /// All ten: the identity a menu confirmation proved.
+    Confirmed(StopExpectation),
+    /// `<name> --expect-uuid <uuid>` and nothing else: the bound stop, with
+    /// the session name and the canonical uuid.
+    Bound(String, String),
+}
+
+/// The refusal of a bound stop with any word beside its name.
+const BOUND_GRAMMAR: &str = "--expect-uuid alone binds one stop: ae stop <name> --expect-uuid <uuid>, with no other flag and one session name.";
+
+/// Whether a `_stop` tail is the bound stop, read by the one parser
+/// [`run_stop`] reads it with: the pane words lifted, then `--expect-uuid`
+/// with exactly one session name and no other word.
+pub(crate) fn is_bound_stop(tail: &[String]) -> bool {
+    let (_, words) = split_pane_flag(tail);
+    matches!(split_expectation(&words), Ok((Expectation::Bound(..), _)))
 }
 
 /// `_stop --supervise all`: the whole fleet, one session at a time, from a
@@ -1879,12 +1944,38 @@ fn observe_models_before_stop(
     server: &ServerId,
     name: &str,
 ) -> Result<Vec<String>, String> {
+    let (captures, mut uncovered) = capture_models(dir, server, name)?;
+    uncovered.extend(publish_models(dir, captures));
+    Ok(uncovered)
+}
+
+/// One seat's model evidence, read while its pane is alive: what
+/// [`publish_models`] needs once the pane may be gone.
+struct SeatCapture {
+    slot: String,
+    agent: String,
+    tool: crate::tool::ToolKind,
+    text: String,
+    launch_id: String,
+    pins: crate::model_drift::Pins,
+}
+
+/// Read every observable seat's pane text and launch guard. Writes nothing.
+/// The second list names each seat the cut cannot cover: a missing pane or a
+/// missing launch guard. A tool whose live model ae cannot observe is the
+/// expected case, so it is silent.
+fn capture_models(
+    dir: &Path,
+    server: &ServerId,
+    name: &str,
+) -> Result<(Vec<SeatCapture>, Vec<String>), String> {
     let bytes = meta::read_bytes(dir).map_err(|why| why.to_string())?;
     let parsed = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
     let panes = transport::observe_watch_panes(server, name)
         .ok_or_else(|| "pane enumeration failed".to_owned())?;
     let global = meta_value(&bytes, "config");
     let local = crate::config::local_overlay(dir, &meta_value(&bytes, "origin"));
+    let mut captures = Vec::new();
     let mut uncovered: Vec<String> = Vec::new();
     for entry in parsed.roster() {
         let tool =
@@ -1921,19 +2012,36 @@ fn observe_models_before_stop(
                     tool,
                 )
             });
-        let capture = transport::capture_pane(server, &pane.pane_id).unwrap_or_default();
+        captures.push(SeatCapture {
+            slot: entry.slot.clone(),
+            agent: entry.name.clone(),
+            tool,
+            text: transport::capture_pane(server, &pane.pane_id).unwrap_or_default(),
+            launch_id,
+            pins,
+        });
+    }
+    Ok((captures, uncovered))
+}
+
+/// Publish each capture through [`crate::model_drift::observe`], which
+/// re-reads the meta under its own lock and writes only when the captured
+/// launch id still guards the seat. One line per refused write.
+fn publish_models(dir: &Path, captures: Vec<SeatCapture>) -> Vec<String> {
+    let mut uncovered = Vec::new();
+    for capture in captures {
         if let Err(why) = crate::model_drift::observe(
             dir,
-            (&entry.slot, &entry.name),
-            tool,
-            &capture,
-            &launch_id,
-            &pins,
+            (&capture.slot, &capture.agent),
+            capture.tool,
+            &capture.text,
+            &capture.launch_id,
+            &capture.pins,
         ) {
-            uncovered.push(format!("seat {}: {why}", entry.slot));
+            uncovered.push(format!("seat {}: {why}", capture.slot));
         }
     }
-    Ok(uncovered)
+    uncovered
 }
 
 /// Print one warning for every seat the durable cut could not cover, and for

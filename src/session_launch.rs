@@ -68,12 +68,13 @@ pub(crate) use overrides::{approved_pair, split_profile_client};
 #[cfg(test)]
 use overrides::{recorded_solo_identity, resolve_spawn_pair, split_seat_override};
 pub(crate) use plan::parse_plan_with_attach;
-pub use plan::{Env, Mode, Plan, parse_plan};
+pub use plan::{Env, Mode, Plan, is_bound_resume, parse_plan};
 use plan::{EnvError, read_env};
 #[cfg(test)]
 use preflight::check_resume_target;
 use preflight::{
-    adopt_recorded_config, carries_own_proof, check_launch_kind, check_name, check_resumed_roster,
+    adopt_recorded_config, carries_own_proof, check_bound_resume, check_launch_kind, check_name,
+    check_resumed_roster,
     check_seat_overrides, check_spawned_labels, check_stopped_near_miss, lex_spawned_seats,
     lifecycle_busy, preflight_server, prepare_working_copy, prove_lineage, read_workspace_values,
     resolve_seats, resolve_server, resolve_watchdog_cadences, restamp_running, restore_roster,
@@ -336,6 +337,14 @@ pub fn run(
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
     run_with_expected(tail, None, None, out, err)
+}
+
+/// Whether a served `_launch` tail carries exactly the bound resume as its
+/// user words ([`is_bound_resume`]); a tail whose preamble does not parse is
+/// not one.
+#[must_use]
+pub fn serves_bound_resume(tail: &[String]) -> bool {
+    read_env(tail).is_ok_and(|(_, user)| is_bound_resume(&user))
 }
 
 /// Settings-only entry into the same launch owner with a locked expectation.
@@ -784,9 +793,12 @@ fn launch(
 
     let proposed_server = env.server();
     let expected_resume = expected_launch.is_some_and(ExpectedLaunch::is_resume);
+    // A bound resume is in place like the picker's: it resumes exactly the
+    // recorded session, on its recorded server.
+    let bound_uuid = plan.expect_uuid.as_deref();
     let placing = Placing {
         proposed: &proposed_server,
-        in_place: expected_resume || restore.is_some(),
+        in_place: expected_resume || restore.is_some() || bound_uuid.is_some(),
         restore,
     };
     let settings_start = expected_launch.is_some_and(ExpectedLaunch::is_start);
@@ -859,6 +871,7 @@ fn launch(
     // write; every expected fact is re-read while the lock is held.
     let mut lifecycle = if settings_start
         || expected_resume
+        || bound_uuid.is_some()
         || preflight_meta_present
         || crate::lifecycle::aliases::target(&dir).is_some()
     {
@@ -872,6 +885,12 @@ fn launch(
     } else {
         None
     };
+    // The bound resume's whole proof, under the lock and before the alias
+    // reclaim, the migration, the seed, a worktree or tmux: the record is this
+    // uuid's, has a server, and is provably stopped there.
+    if let Some(uuid) = bound_uuid {
+        step!(check_bound_resume(&dir, &session, uuid, err));
+    }
     if lifecycle.is_some() {
         step!(reclaim_launch_alias(&dir, err));
     }

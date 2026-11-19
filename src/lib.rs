@@ -633,6 +633,30 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     {
         return Ok(code);
     }
+    run_admitted(args, &request, out, err)
+}
+
+/// The served `_launch` of an admitted bound resume, in this process: the one
+/// `_launch` argv that does not cross the dispatcher gate, because the entry
+/// admitted its user words for every caller. Anything else here, including a
+/// request whose user words are not exactly the bound resume, goes through
+/// [`run_dispatch`] and its gate.
+fn run_bound_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
+    let request = cli::Request::parse(args);
+    let bound = matches!(&request, cli::Request::Launch { tail } if session_launch::serves_bound_resume(tail));
+    if !bound || speaks_as_reserved(args) {
+        return run_dispatch(args, out, err);
+    }
+    run_admitted(args, &request, out, err)
+}
+
+/// [`run_dispatch`] past its gate.
+fn run_admitted(
+    args: &[String],
+    request: &cli::Request,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
     // A live harness can retain a filesystem helper address from before a
     // rename. Resolve its directory before any helper derives the session
     // name, including the underscore entries that bypass shim translation.
@@ -651,25 +675,25 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     // session before it can say so, which is what frozen's parse-then-scan order
     // already guaranteed.
     let popup = matches!(
-        &request,
+        request,
         cli::Request::Orchestrator { tail }
             if orchestrator::parse(tail)
                 .is_ok_and(|args| args.popup || args.settings || args.quota_dialog)
     );
-    if schedules_automatic_upgrade(&request) {
+    if schedules_automatic_upgrade(request) {
         autoupgrade::schedule();
     }
     // The popup is deliberately dispatched BEFORE the world edge: its latency
     // contract is a handful of live tmux listings plus one META-ONLY durable
     // scan for the stopped rows — never the event journals, git probes or
     // per-session runtime observation behind `current_world`.
-    if popup && let cli::Request::Orchestrator { tail } = &request {
+    if popup && let cli::Request::Orchestrator { tail } = request {
         return run_orchestrator(tail, err);
     }
-    let wants_world = request_needs_world(&request);
+    let wants_world = request_needs_world(request);
     if wants_world && let Some(root) = state_root() {
         let mut read = fleet_read::world_read(&root, &mut session::RecordSnapshot::read);
-        if matches!(&request, cli::Request::List(_)) {
+        if matches!(request, cli::Request::List(_)) {
             enrich_list_facts(&read.snapshot, &mut read.world, &read.panes);
             enrich_list_seats(&read.snapshot, &mut read.world, &read.pids);
         }
@@ -1624,6 +1648,13 @@ fn run_entry(
     if argv.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION)
         && settings_menu::is_apply(&argv[1..])
     {
+        let settings = Outbound::Verb(
+            "settings",
+            "does not start, resume or stop its own seat; ask the human",
+        );
+        if let Some(code) = refuse_dispatcher(settings, err)? {
+            return Ok(code);
+        }
         return settings_menu::run_apply(preamble, &argv[1..], out, err);
     }
     if argv.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION)
@@ -1674,6 +1705,14 @@ fn run_entry(
             entry::EXIT_USAGE
         }
         entry::Route::Launch(user) => {
+            // The one launch the dispatcher may run: the bound resume of a
+            // stopped session other than the seat, which the launch owner
+            // proves under the target's lifecycle lock.
+            if user.first().map(String::as_str) != Some(orchestrator::ORCHESTRATOR_SESSION)
+                && session_launch::is_bound_resume(&user)
+            {
+                return run_launch_as(preamble, &user, false, None, Gate::Bound, out, err);
+            }
             let launch = Outbound::Verb("launch", "does not start sessions; ask the human");
             if let Some(code) = refuse_dispatcher(launch, err)? {
                 return Ok(code);
@@ -1992,6 +2031,33 @@ fn run_launch(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
+    run_launch_as(preamble, user, land, first_use, Gate::Dispatcher, out, err)
+}
+
+/// Which gate a launch's served `_launch` crosses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Gate {
+    /// [`run_dispatch`]'s: the orchestrator's agent pane is refused.
+    Dispatcher,
+    /// The bound resume the entry admitted for every caller:
+    /// [`run_bound_dispatch`].
+    Bound,
+}
+
+/// [`run_launch`], with the gate its served `_launch` crosses.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "run_launch's inputs plus the one gate word"
+)]
+fn run_launch_as(
+    preamble: &entry::Preamble,
+    user: &[String],
+    land: bool,
+    first_use: Option<&std::path::Path>,
+    gate: Gate,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
     let plan = match session_launch::parse_plan(user) {
         Ok(plan) => plan,
         Err(line) => {
@@ -2034,7 +2100,10 @@ fn run_launch(
     if land && named_lands(preamble, &plan) {
         return run_named_landing(preamble, &plan, hint, user, first_use, out, err);
     }
-    run_dispatch(&preamble.launch_argv(user), out, err)
+    match gate {
+        Gate::Dispatcher => run_dispatch(&preamble.launch_argv(user), out, err),
+        Gate::Bound => run_bound_dispatch(&preamble.launch_argv(user), out, err),
+    }
 }
 
 /// The argv of an app start ae makes itself, which says no hint.
@@ -3365,7 +3434,9 @@ pub(crate) fn observe_calling_pane() -> CallerRead<(tmux::ObservedViewer, invent
 
 /// What the orchestrator's agent pane is refused outbound, as one word for the
 /// refusal and the clause that says why: spawn, retire, a cross-session helper
-/// send, stop, end and rm, a rename, and every launch form.
+/// send, stop, end and rm, a rename, and every launch form. Two bound forms
+/// are admitted: `ae stop <name> --expect-uuid <uuid>` here, and
+/// `ae <name> --resume --no-attach --expect-uuid <uuid>` at the entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Outbound {
     /// A helper `--cross-session` send, ask, review or interrupt: ae carries
@@ -3398,10 +3469,24 @@ fn outbound_of(request: &cli::Request) -> Option<Outbound> {
             "retire",
             "does not retire seats; ask the human",
         )),
+        // The bound stop proves the caller, its target and every seat's
+        // declaration itself, under the target's lifecycle lock.
+        cli::Request::Stop { tail } if lifecycle::is_bound_stop(tail) => None,
         cli::Request::Stop { .. } => Some(Outbound::Verb(
             "stop",
             "does not stop sessions; ask the human",
         )),
+        // A resume word on the seat's own name is a launch of the seat.
+        cli::Request::Orchestrator { tail }
+            if tail
+                .iter()
+                .any(|word| word == "--resume" || word == "--expect-uuid") =>
+        {
+            Some(Outbound::Verb(
+                "launch",
+                "does not start sessions; ask the human",
+            ))
+        }
         cli::Request::End { .. } => Some(Outbound::Verb(
             "end",
             "does not end or remove sessions; ask the human",
