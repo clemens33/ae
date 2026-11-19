@@ -78,7 +78,8 @@ fn attention_draw_keeps_live_counts_and_next_need_cell_in_both_looks() {
             &Look::read(mode, "", mode, "off"),
         );
         // Ten rows publish no seats; seven need the human. At 160 columns
-        // the default 44-cell sidebar holds the short-label rung with both Working marks.
+        // the default 44-cell sidebar holds the full-word rung with both Working marks
+        // in its exact 40 cells (no arrow).
         let (work, bg, need) = if mode == "on" {
             ("●", "◉", "⚠")
         } else {
@@ -86,11 +87,15 @@ fn attention_draw_keeps_live_counts_and_next_need_cell_in_both_looks() {
         };
         assert_eq!(
             row(&buf, 0).chars().take(44).collect::<String>().trim(),
-            format!("Agt 0 · {work} {bg} Wrk 0 · {need} Need 7")
+            format!("Agents 0 · {work} {bg} Working 0 · {need} Needs you 7")
         );
         assert!(row(&buf, 1).chars().take(44).all(|ch| ch == ' '));
-        assert_eq!(buf[(40, 0)].symbol(), " ", "lone key marker removed");
-        assert_eq!(buf[(41, 0)].symbol(), " ");
+        assert_eq!(
+            buf[(41, 0)].symbol(),
+            "7",
+            "the count ends the line, no key marker"
+        );
+        assert_eq!(buf[(42, 0)].symbol(), " ");
     }
 }
 
@@ -99,8 +104,8 @@ fn attention_draw_hides_a_single_long_name_beside_next_need() {
     let mut fleet = fleet(&[0]);
     fleet.rows[0].name = "n".repeat(80);
     let buf = painted(&fleet, &Look::read("on", "", "off", "off"));
-    assert_eq!(buf[(40, 0)].symbol(), " ");
-    assert_eq!(buf[(41, 0)].symbol(), " ");
+    assert_eq!(buf[(41, 0)].symbol(), "1", "the count ends the line");
+    assert_eq!(buf[(42, 0)].symbol(), " ");
 }
 
 const UUID: &str = "0199c0de-cccc-4890-abcd-ef0123456789";
