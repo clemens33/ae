@@ -28,7 +28,8 @@ pub(super) fn at(width: u16, height: u16, app: &mut App) -> Buffer {
 }
 
 /// Beside a side panel that holds the keys, the list's own keys still move
-/// the main column's selection; over a full panel they do nothing.
+/// the main column's selection; over a full panel they select too and turn it
+/// side, so the selection shows.
 #[test]
 fn list_keys_beside_a_side_panel_move_the_main_selection() {
     let mut app = app(None);
@@ -49,21 +50,25 @@ fn list_keys_beside_a_side_panel_move_the_main_selection() {
     assert!(take_keys(&mut app, vec![(Key::Up, Instant::now())]).is_some());
     assert_eq!(app.model.selected(), Some("web"), "Up steps it back");
     assert!(app.panel_focused(), "the panel keeps the keys");
-    app.close_panel();
-    opened(&mut app, true);
-    let _ = framed(&mut app);
-    press(&mut app, b"j");
-    assert_eq!(
-        app.model.selected(),
-        Some("web"),
-        "j over a full panel is inert"
-    );
-    assert!(take_keys(&mut app, vec![(Key::Down, Instant::now())]).is_some());
-    assert_eq!(
-        app.model.selected(),
-        Some("web"),
-        "Down over a full panel is inert"
-    );
+    for (label, key) in [("j", Key::Text(b"j".to_vec())), ("Down", Key::Down)] {
+        app.close_panel();
+        app.model = Model::new(&app.fleet);
+        assert_eq!(app.model.selected(), Some("web"));
+        opened(&mut app, true);
+        let _ = framed(&mut app);
+        assert!(take_keys(&mut app, vec![(key, Instant::now())]).is_some());
+        assert_eq!(
+            app.model.selected(),
+            Some("ops"),
+            "{label} over a full panel"
+        );
+        let full = app.orch.panel.as_ref().is_some_and(|panel| panel.full);
+        assert!(!full, "{label} turned the panel side");
+        assert!(
+            !app.panel_focused(),
+            "{label} gave the main column the keys"
+        );
+    }
 }
 
 /// A mouse event on the panel owes a redraw exactly when it changes what is
