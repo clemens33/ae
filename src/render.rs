@@ -498,52 +498,6 @@ fn pane_server(meta_bytes: &[u8]) -> ServerId {
     }
 }
 
-/// The ASCII whitespace `[[:space:]]` names in the C locale — what the config
-/// parser trims from both ends of every line.
-fn is_ini_space(ch: char) -> bool {
-    matches!(ch, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
-}
-
-/// A `[section]` header line → its name.
-fn section_header(line: &str) -> Option<&str> {
-    let inner = line.strip_prefix('[')?.strip_suffix(']')?;
-    (!inner.is_empty()
-        && inner
-            .bytes()
-            .all(|b| b.is_ascii_alphabetic() || b == b'_' || b == b'-'))
-    .then_some(inner)
-}
-
-/// A `key = value` line → `(key, value)`, in two arms: a fully `"`-quoted value keeps its inner bytes verbatim
-/// (a `#` inside included); anything else is cut at its first `#` and then
-/// right-trimmed, and may legitimately end up EMPTY — `k = # note` prints
-/// `section.k=`.
-fn config_entry(line: &str) -> Option<(&str, String)> {
-    let mut chars = line.char_indices();
-    let (_, first) = chars.next()?;
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return None;
-    }
-    let mut end = line.len();
-    for (at, ch) in chars {
-        if !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
-            end = at;
-            break;
-        }
-    }
-    let key = &line[..end];
-    let rest = line[end..].trim_start_matches(' ');
-    let rest = rest.strip_prefix('=')?.trim_start_matches(' ');
-    if let Some(inner) = rest.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
-        return Some((key, inner.to_owned()));
-    }
-    if rest.is_empty() {
-        return None;
-    }
-    let cut = rest.split('#').next().unwrap_or(rest);
-    Some((key, cut.trim_end_matches(is_ini_space).to_owned()))
-}
-
 /// Every `<section>.<key>=<value>`, in file order across `files` — global first, then the local overlay.
 fn config_entries(files: &[PathBuf]) -> Vec<(String, String)> {
     let mut entries = Vec::new();
@@ -554,51 +508,13 @@ fn config_entries(files: &[PathBuf]) -> Vec<(String, String)> {
         )]
         let read = std::fs::read_to_string(file);
         let Ok(text) = read else { continue };
-        // The frozen reader drops a file's final line when it carries no closing
-        // newline — except a block closer, which the identity reader DOES see at
-        // EOF; dropping it would silently lose the whole instruction block.
-        let complete = if text.ends_with('\n') || final_line_closes_a_block(&text) {
-            text.as_str()
-        } else {
-            text.get(..text.rfind('\n').map_or(0, |at| at + 1))
-                .unwrap_or_default()
-        };
-        let mut section = String::new();
-        for item in crate::config::config_lines(file, complete) {
-            let Ok(item) = item else { break };
-            let entry = match item {
-                crate::config::ConfigLine::Instructions(value) => {
-                    ("prompt.instructions".to_owned(), value)
-                }
-                crate::config::ConfigLine::SpawnInstructions(value) => {
-                    ("prompt.spawn_instructions".to_owned(), value)
-                }
-                crate::config::ConfigLine::Plain(_, line) => {
-                    let line = line.trim_matches(is_ini_space);
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if let Some(name) = section_header(line) {
-                        name.clone_into(&mut section);
-                        continue;
-                    }
-                    let Some((key, value)) = config_entry(line) else {
-                        continue;
-                    };
-                    (format!("{section}.{key}"), value)
-                }
-            };
-            entries.push(entry);
-        }
+        entries.extend(
+            crate::config::text_entries(file, &text)
+                .into_iter()
+                .map(|entry| (entry.key, entry.value)),
+        );
     }
     entries
-}
-
-/// Whether the final line of `text` is a `"""` block closer.
-fn final_line_closes_a_block(text: &str) -> bool {
-    text.rsplit('\n')
-        .next()
-        .is_some_and(|line| line.trim_end() == "\"\"\"")
 }
 
 /// `get_config <key>` — LAST match wins, so the local overlay beats the global
@@ -1707,6 +1623,60 @@ mod tests {
         assert_eq!(win(&[]), None);
         let masked = context_document(&dir, "s", "/w", "main", &[global, local, empty]);
         assert!(!masked.contains("Workspace instructions"), "{masked}");
+    }
+
+    /// The seat prompt proof reads what the launch reads: for every text, the
+    /// config's `seat_prompt_is_current` answers exactly what the launch's
+    /// winning `prompt.instructions` row says about the marker.
+    #[test]
+    fn the_seat_prompt_proof_and_the_launch_reader_name_one_winner() {
+        let dir = scratch("proof");
+        std::fs::write(dir.join("meta"), "mode=local\n").unwrap();
+        let marker = crate::config::SEAT_PROMPT_MARKER;
+        let block = |body: &str| format!("instructions = \"\"\"\n{body}\n\"\"\"\n");
+        let battery = [
+            format!("[prompt]\n{}", block(marker)),
+            format!("[prompt]\n{}", block("old text")),
+            format!("[prompt]\n{}# {marker}\n", block("old text")),
+            format!(
+                "[prompt]\n{}[workspace]\nmain = {marker}\n",
+                block("old text")
+            ),
+            format!(
+                "[prompt]\n{}spawn_instructions = \"\"\"\n{marker}\n\"\"\"\n",
+                block("old text")
+            ),
+            format!("[prompt]\n{}instructions = old\n", block(marker)),
+            format!("[prompt]\ninstructions = old\n{}", block(marker)),
+            format!("[prompt]\ninstructions = {marker}\n"),
+            format!("[prompt]\ninstructions = \"{marker}\"\n"),
+            format!("[prompt]\ninstructions = \"\"\n{}", block(marker)),
+            format!("[prompt]\n{}instructions = \"\"\n", block(marker)),
+            format!("[prompt]\r\n{}", block(marker).replace('\n', "\r\n")),
+            format!("  [prompt]  \n   {}", block(marker)),
+            format!(
+                "[prompt]\ninstructions = old\n[workspace]\n\u{a0}[prompt]\ninstructions = {marker}\n"
+            ),
+            format!(
+                "[prompt]\ninstructions = {marker}\n[workspace]\n\u{a0}[prompt]\ninstructions = old\n"
+            ),
+            format!("[other]\n{}", block(marker)),
+            format!("[prompt]\n{}[other]\n{}", block("old text"), block(marker)),
+            format!("[prompt]\n{}[prompt]\n{}", block(marker), block("old text")),
+            format!("[prompt]\n{}instructions = tail", block(marker)),
+            format!("[prompt]\ninstructions = \"\"\"\n{marker}\n"),
+            String::new(),
+        ];
+        for (at, text) in battery.iter().enumerate() {
+            let file = write(&dir, &format!("battery{at}"), text);
+            let launch = prompt_instructions(std::slice::from_ref(&file))
+                .is_some_and(|(_, value)| value.contains(marker));
+            assert_eq!(
+                crate::config::seat_prompt_is_current(text),
+                launch,
+                "case {at}: {text:?}"
+            );
+        }
     }
 
     #[test]

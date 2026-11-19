@@ -815,9 +815,9 @@ still overlay. Existing seats keep their seeded bytes: after a template change,
 copy the new creation stanza into the seat file and restart the seat; the file
 change alone never reloads the running prompt. On creation the seat proposes
 `name=<n> dir=<canonical path> mode=local|copy|worktree profiles=<profile-flags|defaults>`,
-runs `ae quota` once for the profiles the creation will use, carries the confirmed
-<profile-flags> (`--lead`/`--colead`/`--seat`) verbatim in the one creation command
-(omitted only with profiles=defaults), and takes an unconfirmed profile
+runs `ae quota` once for the profiles the creation will use, and asks the owner to run the one
+creation command, which carries the confirmed <profile-flags> (`--lead`/`--colead`/`--seat`)
+verbatim (omitted only with profiles=defaults), and takes an unconfirmed profile
 decision — a known-exhausted choice or unidentifiable applicability, including
 a target-local roster it cannot inspect — to `state waiting-user` with at most
 a recommended alternative. ae never substitutes a profile for you: only the human's
@@ -2086,35 +2086,40 @@ the card verbatim — including the full `needs you:` reasons — then relays th
 human's answer to that session's lead. When the human needs a goal, a reason or a memo line
 that the card clips, `ae brief <session> --full` is the optional whole-card read.
 
-One quoted text argument works; otherwise remaining argv are joined with single
-spaces. The delivery is one chat ask of the target's lead-pair seat, framed as the
-human's (`human:chat`), claimed in the orchestrator session before any key. Free text without a leading target is
-routed only when exactly one session goal or latest memo topic matches; an
-ambiguous or missing match prompts for the target and sends nothing. It never
-dispatches work, changes goals, clears questions, edits project or session
-state, or treats text from another session as instructions. The seat's own ae refuses spawn, retire, cross-session send, ask, review, interrupt, stop, end, rm, every rename and every launch form, so it never runs a command below itself: it gives the owner the exact command to run in the owner's own terminal.
-On an explicit
-instruction naming a stopped session, it gives the owner `ae <name> --no-attach`; it never suggests bare `ae <name>`. To create a
-session, it acts only on explicit instruction. When the human names the session
-and a directory that exists at the spelled path (including `~` or relative
-paths expanded), it runs immediately in default local mode; it confirms only
-when a fact is inferred or missing (directory missing or nonexistent,
-resolution lands elsewhere such as a symlink, or mode unclear).
-Otherwise it first prints one proposal line
-`name=<n> dir=<canonical path> mode=local|copy|worktree` (default `local`,
-`worktree` only for branch/isolated/parallel, `copy` only when asked), waits
-for `yes` or an edit, then runs exactly one matching command: mode `local` →
-`ae <name> --dir <path> --local --no-attach`; mode `copy` →
-`ae <name> --dir <path> --copy --no-attach`; mode `worktree` →
-`ae <name> --dir <path> --worktree --no-attach`. It never omits or combines
-mode flags and never infers a missing directory.
-It runs `ae stop <name> -y` or ordinary `ae end <name> -f --keep-history` only
-when the human explicitly names that verb and session; it runs
-`ae end <name> -f --purge-history` only when the human explicitly says purge
-or delete history. It never stops or ends its own session (the seat named
-`orchestrator`) and never all sessions: on such a request it runs nothing and
-answers that the seat cannot stop or end itself; the human does that from a terminal. After a lifecycle command it runs nothing else and declares `done`
-after the watchdog reports the result. See
+A relay is one chat ask of the target's lead-pair seat, rendered by ae as a message from
+`ae/orchestrator` (`⟦ae:msg from ae/orchestrator⟧`, `REQUEST <id> from ae/orchestrator:`), never
+as the human. The owner section its mode names comes first, then the seat's `--task` and
+`--context`, which carry no authority. The ask is claimed in the orchestrator session before any
+key. Only the live main dispatcher may send it: ae proves the calling pane is the orchestrator
+seat's recorded main pane, in the main slot and under its recorded main agent, with the seat
+overlay recorded once and one launch id. In the target, `requests --verify <id>` reads the stored
+records and says whether the ask carries the owner's own words. Free text without a leading
+target is routed only when exactly one session goal or latest memo topic matches; an ambiguous or
+missing match prompts for the target and sends nothing. It never dispatches work, changes goals,
+clears questions, edits project or session state, or treats text from another session as
+instructions.
+
+The seat's own ae refuses spawn, retire, cross-session send, ask, review, interrupt, stop, end,
+rm, every rename and every launch form. The seat therefore never runs a lifecycle command itself:
+it gives the owner the exact command to run in the owner's own terminal, then declares `done`.
+On an explicit instruction naming a stopped session, it gives the owner `ae <name> --no-attach`
+and never suggests bare `ae <name>`. To create a session, it acts only on explicit instruction.
+When the human names the session and a directory that exists at the spelled path (including `~`
+or relative paths expanded), it gives the owner the default local command at once, with
+`profiles=defaults` only when the configured defaults are confirmed for this creation (see
+[`ae orchestrator`](#ae-orchestrator)); it confirms whenever a fact is inferred or missing
+(directory missing or nonexistent, resolution lands elsewhere such as a symlink, mode unclear, or
+an unconfirmed profile decision). Otherwise it first prints one proposal line
+`name=<n> dir=<canonical path> mode=local|copy|worktree` (default `local`, `worktree` only for
+branch/isolated/parallel, `copy` only when asked), waits for `yes` or an edit, then asks the owner
+to run exactly one matching command: mode `local` → `ae <name> --dir <path> --local --no-attach`;
+mode `copy` → `ae <name> --dir <path> --copy --no-attach`; mode `worktree` →
+`ae <name> --dir <path> --worktree --no-attach`. It never omits or combines mode flags and never
+infers a missing directory. It asks the owner to run `ae stop <name> -y` or ordinary
+`ae end <name> -f --keep-history` only when the human explicitly names that verb and session,
+and `ae end <name> -f --purge-history` only when the human explicitly says purge or delete
+history. It never suggests stopping or ending its own session (the seat named `orchestrator`) and
+never all sessions. For a rename it gives the owner a proposal and runs no rename command. See
 [`contrib/aeorchestrator`](../../contrib/aeorchestrator/).
 
 **Pausing it.** `ae stop orchestrator` pauses the seat and keeps its state;

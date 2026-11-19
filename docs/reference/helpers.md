@@ -89,7 +89,7 @@ When another agent hands you an exact `reply` or `send` command, run it
 | `reply <request-id> <message>` | Reply to a logged `ask` / `review` by request id. Verified against the request's stored **slot** (the routing key), not the display name; `--as <agent>` sets the displayed sender only and cannot bypass that check. |
 | `withdraw <request-id> <reason>` | Close an `ask` / `review` YOU sent that is still open: records one `cancel` and pastes nothing. Verified against the request's stored asker slot and session id. A blank reason is a usage error (exit 2); a request already closed exits 1. A cross-session request is copied into the other session's ledger too; when that copy fails the helper says what was recorded and exits 1, and running the same command again copies the original record. When the other ledger's newest opening of that id is a different request (or would not read the record), the copy is refused instead: nothing is written there, the record stands in your session, a retry changes nothing, and nothing more needs doing — read the message and move on. |
 | `accept <request-id> <note>` | Take on an `ask` / `review` sent TO you: records one `accept` and pastes nothing. The request stays open — your reply is still owed — but it no longer counts as `unanswered`. Verified as `reply` is; accepting again is exit 0 and writes nothing. |
-| `requests [mine\|inbox\|all] [--limit N]` | Inspect `pending` (`accepted` once its target accepted it), `replied`, `cancelled` or `retired` request state from `events.jsonl` without peeking panes; `retired` means either party's seat closed it without a reply. Shows every pending plus the newest 10 closed (`--limit N`, `0` = all); a footer names the hidden count and the full command. |
+| `requests [mine\|inbox\|all] [--limit N]` | Inspect `pending` (`accepted` once its target accepted it), `replied`, `cancelled` or `retired` request state from `events.jsonl` without peeking panes; `retired` means either party's seat closed it without a reply. Shows every pending plus the newest 10 closed (`--limit N`, `0` = all); a footer names the hidden count and the full command. `requests --verify <id>` reads one request this session holds, from stored records alone and without locking or writing, and prints `owner ingress` (exit 0, with origin, holding session, time, target and the words) or `not owner ingress` with its reason (exit 1): an ask this session's own chat opened for its own `session_id`, or a bound relay whose cited ask still sits in the dispatcher's ledger with the same words and time. An attested quote, an interim ruling, a changed copy and an imported ask are never owner ingress. |
 | `say <text>` | Push a free-text line to the human's Telegram chat (args or piped stdin). Emits a `chat` event the [Telegram bridge](telegram.md) forwards; a Telegram reply routes back to you. Pane output is not forwarded — this is how you answer the human on Telegram. |
 
 Messaging helpers record outcomes in the caller's `events.jsonl`; an unread
@@ -99,14 +99,18 @@ log gains only a delivered relay's chat ask.
 
 ### Relay into a chat
 
-`relay` is linked into every session directory but usable only from a pane in a
-session whose meta says exactly one `meta_agent=true`. It accepts only another
+`relay` is linked into every session directory but usable only from the orchestrator
+seat's own main pane: the caller's meta records the one `meta_agent=true` role and the
+state root's seat overlay, and the pane, slot and agent are the recorded main ones, with one
+launch id. It accepts only another
 session, or an exact lead-pair seat within it; a session-only target selects
 that session's main seat.
 
-The text becomes ONE chat ask of that seat, exactly as the session's own chat
-would send it: `⟦ae:msg from human:chat⟧`, a `REQUEST` the seat answers with
-its own `reply`, and `via orchestrator <name>` on the row in `ae chat` and
+The text becomes ONE chat ask of that seat, rendered by ae as
+`⟦ae:msg from ae/orchestrator⟧` with `REQUEST <id> from ae/orchestrator:`, a request the seat
+answers with its own `reply`, an owner section the mode names (`--owner-input` copies the stored
+words, `--quote` is an attestation, `--interim-ruling` a ruling), and `--task` and `--context`
+sections that grant no authority; `requests --verify <id>` in the target proves bound owner words, and `via orchestrator <name>` on the row in `ae chat` and
 `ae app`. Before any key, the caller journals a `relay-attempt` claim; then the
 target chat's writer lease and admission are taken without waiting, and the
 caller, the target incarnation and the lead pair are proved again. Relays leave

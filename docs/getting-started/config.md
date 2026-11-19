@@ -278,7 +278,9 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `chat`    | `off` launches without the [chat](../chat.md) as the session's first window; `app` runs [`ae app`](../app.md) in that window instead; any value other than `on` / `off` / `app` opens the chat and prints one note. The orchestrator's own session never gets one | `on` |
 
 Set `orchestrator = true` only in the dedicated overview seat. It authorizes
-`relay`, whose chat ask the target seat reads as the human's (`human:chat`).
+`relay`, whose chat ask the target seat reads as a message from `ae/orchestrator`, never as the
+human: ae renders it with the owner mode the seat names, and the target proves bound owner words
+with `requests --verify <id>`.
 
 `fleet_order` is how you choose where a session sits on the second status
 line, instead of taking the order tmux happened to create the sessions in —

@@ -66,38 +66,62 @@ const SEAT_TEMPLATE_S1A_PREDECESSOR: &str =
 pub(crate) const SEAT_PROMPT_MARKER: &str =
     "A reserved item requires bound owner words that approve the exact act for the target session.";
 
-/// The header line of the seat's prompt stanza.
-const PROMPT_HEADER: &str = "[prompt]\n";
+/// The name a seat config's refusals call it by.
+const SEAT_CONFIG_NAME: &str = "orchestrator.config";
 
-/// `config` cut after its `[prompt]` header line: the text through the header,
-/// and the stanza after it (to the end of the file). The header must start a
-/// line.
-fn prompt_split(config: &str) -> Option<(&str, &str)> {
-    let at = if config.starts_with(PROMPT_HEADER) {
-        0
-    } else {
-        config.find(&format!("\n{PROMPT_HEADER}"))? + 1
-    };
-    Some(config.split_at(at + PROMPT_HEADER.len()))
+/// Every `prompt.instructions` row of `text` in file order, with the bytes it
+/// covers: the rows a seat's launch reads, from the ONE walk
+/// ([`text_entries`]) every launch reader uses.
+fn prompt_rows(text: &str) -> Vec<TextEntry> {
+    text_entries(Path::new(SEAT_CONFIG_NAME), text)
+        .into_iter()
+        .filter(|entry| entry.key == "prompt.instructions")
+        .collect()
 }
 
-/// Whether the seat config `config` carries the current prompt: a stanza that
-/// teaches [`SEAT_PROMPT_MARKER`], whatever else the owner added to it.
+/// Whether the seat config `config` carries the current prompt: the
+/// `prompt.instructions` a launch reads from it, the LAST row, teaches
+/// [`SEAT_PROMPT_MARKER`], whatever else the owner added to it. A marker in a
+/// comment, in another key or in an overridden row proves nothing.
 #[must_use]
 pub(crate) fn seat_prompt_is_current(config: &str) -> bool {
-    prompt_split(config).is_some_and(|(_, stanza)| stanza.contains(SEAT_PROMPT_MARKER))
+    prompt_rows(config)
+        .pop()
+        .is_some_and(|row| row.value.contains(SEAT_PROMPT_MARKER))
 }
 
-/// The seat config an upgrade writes over `config`, when its `[prompt]` stanza
-/// is, byte for byte, the previous generated template's: everything before the
-/// stanza stays as it is, and the stanza becomes the current template's. Any
-/// other stanza, an owner's edit included, gives `None` and is left alone.
+/// The seat config an upgrade writes over `config`, when the prompt a launch
+/// reads from it is, byte for byte, the previous generated template's: only
+/// that block is replaced, with the current template's, and every other byte
+/// stays, later sections included. The block must end its section: any text
+/// after it before the next section header is an owner's edit of the prompt
+/// stanza, and any other prompt, an owner's edit included, gives `None` and is
+/// left alone.
 #[must_use]
 pub(crate) fn reseeded_seat_config(config: &str) -> Option<String> {
-    let (head, stanza) = prompt_split(config)?;
-    let (_, known) = prompt_split(SEAT_TEMPLATE_S1A_PREDECESSOR)?;
-    let (_, current) = prompt_split(SEAT_TEMPLATE)?;
-    (stanza == known && known != current).then(|| format!("{head}{current}"))
+    let winner = prompt_rows(config).pop()?;
+    let known = prompt_rows(SEAT_TEMPLATE_S1A_PREDECESSOR).pop()?;
+    let current = prompt_rows(SEAT_TEMPLATE).pop()?;
+    let old = SEAT_TEMPLATE_S1A_PREDECESSOR.get(known.span)?;
+    let new = SEAT_TEMPLATE.get(current.span)?;
+    if old == new || config.get(winner.span.clone())? != old {
+        return None;
+    }
+    let (head, rest) = (
+        config.get(..winner.span.start)?,
+        config.get(winner.span.end..)?,
+    );
+    for piece in rest.split_inclusive('\n') {
+        let line = piece.trim_matches(is_ini_space);
+        if line.is_empty() {
+            continue;
+        }
+        if section_header(line).is_some() {
+            break;
+        }
+        return None;
+    }
+    Some(format!("{head}{new}{rest}"))
 }
 
 /// The persisted path of a nonstandard per-session config overlay.
@@ -335,9 +359,20 @@ pub(crate) fn config_lines<'a>(
     file: &'a Path,
     text: &'a str,
 ) -> impl Iterator<Item = Result<ConfigLine<'a>, ConfigError>> + 'a {
+    config_spans(file, text).map(|item| item.map(|(line, _)| line))
+}
+
+/// [`config_lines`] with the bytes each logical line covers in `text`: the one
+/// line of a plain row, the opener through the closer of a `"""` block. The
+/// ranges are of the text as given, line terminators included.
+pub(crate) fn config_spans<'a>(
+    file: &'a Path,
+    text: &'a str,
+) -> impl Iterator<Item = Result<(ConfigLine<'a>, std::ops::Range<usize>), ConfigError>> + 'a {
     ConfigLines {
         file,
-        lines: text.lines(),
+        pieces: text.split_inclusive('\n'),
+        at: 0,
         line: 0,
         section: String::new(),
     }
@@ -345,24 +380,40 @@ pub(crate) fn config_lines<'a>(
 
 struct ConfigLines<'a> {
     file: &'a Path,
-    lines: std::str::Lines<'a>,
+    pieces: std::str::SplitInclusive<'a, char>,
+    /// The byte offset the next line starts at.
+    at: usize,
     line: usize,
     section: String,
 }
 
+impl<'a> ConfigLines<'a> {
+    /// The next line, as `str::lines` would cut it, and where it starts.
+    fn next_line(&mut self) -> Option<(&'a str, usize)> {
+        let piece = self.pieces.next()?;
+        let start = self.at;
+        self.at += piece.len();
+        let line = match piece.strip_suffix('\n') {
+            Some(line) => line.strip_suffix('\r').unwrap_or(line),
+            None => piece,
+        };
+        Some((line, start))
+    }
+}
+
 impl<'a> Iterator for ConfigLines<'a> {
-    type Item = Result<ConfigLine<'a>, ConfigError>;
+    type Item = Result<(ConfigLine<'a>, std::ops::Range<usize>), ConfigError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let raw = self.lines.next()?;
+        let (raw, start) = self.next_line()?;
         self.line += 1;
         let trimmed = raw.trim();
         if let Some(name) = section_header(trimmed) {
             self.section = name;
-            return Some(Ok(ConfigLine::Plain(self.line, raw)));
+            return Some(Ok((ConfigLine::Plain(self.line, raw), start..self.at)));
         }
         let Some(key) = block_opener(trimmed) else {
-            return Some(Ok(ConfigLine::Plain(self.line, raw)));
+            return Some(Ok((ConfigLine::Plain(self.line, raw), start..self.at)));
         };
         let finish: fn(String) -> ConfigLine<'a> = match (self.section.as_str(), key) {
             (BLOCK_SECTION, BLOCK_KEY) => ConfigLine::Instructions,
@@ -384,7 +435,7 @@ impl<'a> Iterator for ConfigLines<'a> {
         let mut value = String::new();
         let mut first = true;
         loop {
-            let Some(inner) = self.lines.next() else {
+            let Some((inner, _)) = self.next_line() else {
                 return Some(Err(ConfigError::UnterminatedInstructionBlock {
                     file: self.file.to_owned(),
                     line: opening,
@@ -392,7 +443,7 @@ impl<'a> Iterator for ConfigLines<'a> {
             };
             self.line += 1;
             if block_closer(inner) {
-                return Some(Ok(finish(value)));
+                return Some(Ok((finish(value), start..self.at)));
             }
             if !first {
                 value.push('\n');
@@ -401,6 +452,99 @@ impl<'a> Iterator for ConfigLines<'a> {
             first = false;
         }
     }
+}
+
+/// The ASCII whitespace `[[:space:]]` names in the C locale — what the config
+/// parser trims from both ends of every line.
+pub(crate) fn is_ini_space(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
+}
+
+/// A `key = value` line → `(key, value)`, in two arms: a fully `"`-quoted value keeps its inner bytes verbatim
+/// (a `#` inside included); anything else is cut at its first `#` and then
+/// right-trimmed, and may legitimately end up EMPTY — `k = # note` prints
+/// `section.k=`.
+pub(crate) fn config_entry(line: &str) -> Option<(&str, String)> {
+    let mut chars = line.char_indices();
+    let (_, first) = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    let mut end = line.len();
+    for (at, ch) in chars {
+        if !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+            end = at;
+            break;
+        }
+    }
+    let key = &line[..end];
+    let rest = line[end..].trim_start_matches(' ');
+    let rest = rest.strip_prefix('=')?.trim_start_matches(' ');
+    if let Some(inner) = rest.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        return Some((key, inner.to_owned()));
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    let cut = rest.split('#').next().unwrap_or(rest);
+    Some((key, cut.trim_end_matches(is_ini_space).to_owned()))
+}
+
+/// One `<section>.<key>` row of a config text as a launch reads it: the key,
+/// the value and the bytes of `text` it covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TextEntry {
+    pub(crate) key: String,
+    pub(crate) value: String,
+    pub(crate) span: std::ops::Range<usize>,
+}
+
+/// Whether the last line of `text` closes a `"""` block, newline or none.
+fn final_line_closes_a_block(text: &str) -> bool {
+    text.rsplit('\n').next().is_some_and(block_closer)
+}
+
+/// Every `<section>.<key>=<value>` of one config file's text, in file order:
+/// the ONE walk behind the profile inventory, the quota and context reads and
+/// the seat prompt proof. [`config_spans`] consumes the lines, so a `"""` body
+/// is never read as keys, sections or comments; a plain row's section is the
+/// last header seen by the ASCII-space trim of [`is_ini_space`], and a block is
+/// `prompt.instructions` or `prompt.spawn_instructions`. The frozen reader
+/// drops a final line with no closing newline, except a block closer, which
+/// the identity reader does see at EOF. A refused line ends the walk, with the
+/// rows before it kept.
+pub(crate) fn text_entries(file: &Path, text: &str) -> Vec<TextEntry> {
+    let complete = if text.ends_with('\n') || final_line_closes_a_block(text) {
+        text
+    } else {
+        text.get(..text.rfind('\n').map_or(0, |at| at + 1))
+            .unwrap_or_default()
+    };
+    let mut entries = Vec::new();
+    let mut section = String::new();
+    for item in config_spans(file, complete) {
+        let Ok((item, span)) = item else { break };
+        let (key, value) = match item {
+            ConfigLine::Instructions(value) => ("prompt.instructions".to_owned(), value),
+            ConfigLine::SpawnInstructions(value) => ("prompt.spawn_instructions".to_owned(), value),
+            ConfigLine::Plain(_, line) => {
+                let line = line.trim_matches(is_ini_space);
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(name) = section_header(line) {
+                    section = name;
+                    continue;
+                }
+                let Some((key, value)) = config_entry(line) else {
+                    continue;
+                };
+                (format!("{section}.{key}"), value)
+            }
+        };
+        entries.push(TextEntry { key, value, span });
+    }
+    entries
 }
 
 /// The agent-name grammar, spelled as a refusal prints it.
@@ -4529,5 +4673,150 @@ mod tests {
                 "{main:?} {workers:?}"
             );
         }
+    }
+    // ---- the seat prompt proof and its re-seed ------------------------------
+
+    /// The seat template's prompt block, replaced by `body`.
+    fn with_prompt(body: &str) -> String {
+        format!("[prompt]\ninstructions = \"\"\"\n{body}\n\"\"\"\n")
+    }
+
+    #[test]
+    fn a_marker_outside_the_effective_prompt_row_does_not_make_a_seat_prompt_current() {
+        let old = with_prompt("the old prompt");
+        assert!(!seat_prompt_is_current(&old));
+        assert!(seat_prompt_is_current(&with_prompt(SEAT_PROMPT_MARKER)));
+        for (tag, text) in [
+            ("comment", format!("{old}# {SEAT_PROMPT_MARKER}\n")),
+            (
+                "section",
+                format!("{old}[workspace]\nmain = {SEAT_PROMPT_MARKER}\n"),
+            ),
+            (
+                "spawn_instructions",
+                format!("{old}spawn_instructions = \"\"\"\n{SEAT_PROMPT_MARKER}\n\"\"\"\n"),
+            ),
+            (
+                "later row",
+                format!("{}instructions = old\n", with_prompt(SEAT_PROMPT_MARKER)),
+            ),
+        ] {
+            assert!(!seat_prompt_is_current(&text), "{tag}: {text:?}");
+        }
+        // An unterminated block or an opener on another key is no config a launch reads.
+        assert!(!seat_prompt_is_current(
+            "[prompt]\ninstructions = \"\"\"\nopen"
+        ));
+        assert!(!seat_prompt_is_current(&format!(
+            "[workspace]\nmain = \"\"\"\n{SEAT_PROMPT_MARKER}\n\"\"\"\n"
+        )));
+    }
+
+    #[test]
+    fn crlf_and_indentation_are_valid_in_a_current_seat_prompt() {
+        let crlf = with_prompt(SEAT_PROMPT_MARKER).replace('\n', "\r\n");
+        assert!(seat_prompt_is_current(&crlf));
+        assert!(seat_prompt_is_current(&format!(
+            "  [prompt]\n    instructions = \"\"\"\n{SEAT_PROMPT_MARKER}\n\"\"\"\n"
+        )));
+        assert!(seat_prompt_is_current(&format!(
+            "[prompt]\ninstructions = {SEAT_PROMPT_MARKER}\n"
+        )));
+    }
+
+    #[test]
+    fn the_seat_template_is_current_and_its_predecessor_is_not() {
+        assert!(seat_prompt_is_current(SEAT_TEMPLATE));
+        assert!(!seat_prompt_is_current(SEAT_TEMPLATE_S1A_PREDECESSOR));
+    }
+
+    #[test]
+    fn only_a_byte_known_old_prompt_block_is_replaced_and_every_other_byte_stays() {
+        let old = SEAT_TEMPLATE_S1A_PREDECESSOR;
+        let (head, known) = old.split_once("[prompt]\n").expect("old prompt");
+        let (_, new) = SEAT_TEMPLATE.split_once("[prompt]\n").expect("new prompt");
+        let prefixed = format!("# mine\n{head}[prompt]\n{known}");
+        assert_eq!(
+            reseeded_seat_config(&prefixed),
+            Some(format!("# mine\n{head}[prompt]\n{new}")),
+            "the known prompt becomes the current one"
+        );
+        // A later section survives untouched, a blank line before it too.
+        let later = format!("{prefixed}\n[workspace]\nmain = mine\n# end\n");
+        assert_eq!(
+            reseeded_seat_config(&later),
+            Some(format!(
+                "# mine\n{head}[prompt]\n{new}\n[workspace]\nmain = mine\n# end\n"
+            ))
+        );
+        // Anything else in the prompt section, before the next header, is an
+        // owner's edit of the stanza.
+        assert_eq!(reseeded_seat_config(&format!("{prefixed}# owner\n")), None);
+        assert_eq!(
+            reseeded_seat_config(&format!("{prefixed}instructions = mine\n")),
+            None
+        );
+        // An edited block, a later winner, a CRLF copy and the current template stay.
+        assert_eq!(
+            reseeded_seat_config(&prefixed.replace("router", "RouTer")),
+            None
+        );
+        assert_eq!(reseeded_seat_config(&prefixed.replace('\n', "\r\n")), None);
+        assert_eq!(reseeded_seat_config(SEAT_TEMPLATE), None);
+        assert_eq!(reseeded_seat_config(""), None);
+    }
+    #[test]
+    fn a_header_the_launch_does_not_see_does_not_open_a_prompt_section() {
+        // A non-breaking space before the second header: `trim()` strips it,
+        // the launch's ASCII-space trim does not, so the row below belongs to
+        // `[workspace]` and the old prompt stays the effective one.
+        let marker = SEAT_PROMPT_MARKER;
+        let hidden = format!(
+            "[prompt]\ninstructions = old\n[workspace]\n\u{a0}[prompt]\ninstructions = {marker}\n"
+        );
+        assert!(!seat_prompt_is_current(&hidden));
+        let shown = format!(
+            "[prompt]\ninstructions = old\n[workspace]\n[prompt]\ninstructions = {marker}\n"
+        );
+        assert!(seat_prompt_is_current(&shown));
+    }
+
+    #[test]
+    fn the_text_walk_reports_the_bytes_each_row_covers() {
+        let text = concat!(
+            "[workspace]\r\n",
+            "main = a\r\n",
+            "[prompt]\n",
+            "instructions = \"\"\"\n",
+            "one\n",
+            "two\n",
+            "\"\"\"\n",
+            "instructions = tail\n",
+            "dropped"
+        );
+        let entries = text_entries(Path::new("<config>"), text);
+        let rows: Vec<(&str, &str, &str)> = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.key.as_str(),
+                    entry.value.as_str(),
+                    text.get(entry.span.clone()).expect("a span of the text"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("workspace.main", "a", "main = a\r\n"),
+                (
+                    "prompt.instructions",
+                    "one\ntwo",
+                    "instructions = \"\"\"\none\ntwo\n\"\"\"\n"
+                ),
+                ("prompt.instructions", "tail", "instructions = tail\n"),
+            ],
+            "the final line with no newline is dropped, a block covers opener to closer"
+        );
     }
 }

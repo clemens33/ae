@@ -706,7 +706,7 @@ fn the_charter_pins_the_watchdog_overview_turn_and_retires_the_model_sweep() {
         template.contains(creation_reason),
         "shipped prompt pins the profiles field in the waiting-user reason"
     );
-    let creation_command = "yes runs ae <n> --dir <path> --<mode> <profile-flags> --no-attach";
+    let creation_command = "after yes, run ae <n> --dir <path> --<mode> <profile-flags> --no-attach in your own terminal";
     assert!(
         normalized.contains(creation_command),
         "charter pins the placeholder in the reason's command"

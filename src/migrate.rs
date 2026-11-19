@@ -831,6 +831,16 @@ fn moved_tail(moved: &[String], version: &str) -> String {
     )
 }
 
+/// The identity a moved session carries in the fleet's list: its name in the
+/// default root, `instance/name` in a named one, so equal names of two roots
+/// are two sessions.
+fn moved_name(scope: Scope, root: &Path, name: &str) -> String {
+    match (scope, root.file_name().and_then(std::ffi::OsStr::to_str)) {
+        (Scope::Named, Some(instance)) => format!("{instance}/{name}"),
+        _ => name.to_owned(),
+    }
+}
+
 /// The place a refusal names beside the session: nothing for the default
 /// root, the instance for a named one.
 fn place_of(scope: Scope, root: &Path) -> String {
@@ -1032,17 +1042,11 @@ fn onto_scoped(
     if *stops {
         return Err(why);
     }
-    let moved_here = |name: &String| {
-        moved.iter().any(|done| {
-            done == name
-                || done
-                    .strip_suffix(name.as_str())
-                    .is_some_and(|rest| rest.ends_with('/'))
-        })
-    };
+    // EXACT identities: a default `orchestrator` or `alpha/orchestrator` that
+    // moved never stands in for an unreached `beta/orchestrator`.
     let Some(stranded) = protected
         .iter()
-        .find(|name| **name == at || !moved_here(name))
+        .find(|name| **name == at || !moved.contains(&moved_name(scope, root, name)))
     else {
         return Err(why);
     };
@@ -1142,6 +1146,27 @@ fn sweep(
                 }
                 Stop::Hold(why) => format!("{why}{}", already(scope, repointed, version)),
             };
+        // THE RENAME CARRIER, asked again of THIS name alone and under the
+        // lifecycle lock both ends of a rename take: a rename that began after
+        // the census owns the name even though its meta did not change. An
+        // ordinary session keeps the skip; an orchestrator session cannot be
+        // skipped, so the publish stops with the moved list.
+        if let Some(note) = pending_rename_note(root, &name) {
+            if plan.protected {
+                return Err(halted(
+                    Stop::Fatal(format!(
+                        "session {name:?}{} is an orchestrator session and a pending rename now \
+                         owns it; repair or end it",
+                        place_of(scope, root)
+                    )),
+                    &repointed,
+                    moved,
+                    stops,
+                ));
+            }
+            notes.push(note);
+            continue;
+        }
         // A session the census did NOT plan to move, or one whose meta may
         // have changed, is asked again without the meta lock: a stopped skip
         // must never take it or gain helper links, and a session that has
@@ -1236,10 +1261,7 @@ fn sweep(
         // repointed — reporting it as untouched would send an operator looking
         // in the wrong place.
         repointed.push(name.clone());
-        moved.push(match place_of(scope, root).strip_prefix(" of instance ") {
-            Some(instance) => format!("{instance}/{name}"),
-            None => name.clone(),
-        });
+        moved.push(moved_name(scope, root, &name));
         crate::session_launch::assets::write_helpers(&dir, core).map_err(|why| {
             format!(
                 "session {name:?}: {why}. Its meta already names {version} while some of its \
@@ -1302,7 +1324,7 @@ fn reseed_seat_prompt(root: &Path) -> Option<String> {
             path.display()
         ));
     };
-    Some(match crate::store::publish_private(&path, new.as_bytes()) {
+    Some(match publish_reseed(&path, text.as_bytes(), &new) {
         Ok(()) => format!(
             "re-seeded the [prompt] of {} (it matched the previous template byte for byte); \
              restart the orchestrator seat to load it",
@@ -1313,6 +1335,24 @@ fn reseed_seat_prompt(root: &Path) -> Option<String> {
              restart the seat",
             path.display()
         ),
+    })
+}
+
+/// Publish the re-seeded seat config `new` over `path`, which was read as
+/// `seen`: the rename waits on a last look at the target, so an owner's edit,
+/// or a link that replaced the file, between the decision and the rename is
+/// never overwritten. The window from that look to the rename is the one any
+/// writer that does not cooperate leaves.
+fn publish_reseed(path: &Path, seen: &[u8], new: &str) -> std::io::Result<()> {
+    use crate::store::SourceRead;
+
+    crate::store::publish_private_with(path, new.as_bytes(), |temp, to| {
+        match crate::store::read_capped(to, SEAT_CONFIG_CAP) {
+            Ok(SourceRead::Ready(now)) if now == seen => std::fs::rename(temp, to),
+            _ => Err(std::io::Error::other(
+                "the seat config changed while it was being re-seeded",
+            )),
+        }
     })
 }
 
@@ -2456,7 +2496,9 @@ mod tests {
         std::fs::create_dir(root.join("sessions/a-ordinary/send")).expect("obstruction");
         let core = root.join("new-core");
         std::fs::write(&core, b"").expect("core");
-        let (mut moved, mut stops) = (Vec::new(), false);
+        // The same names moved in the default root and in another instance: only
+        // THIS root's exact identity counts, so neither stands in for the seat.
+        let (mut moved, mut stops) = (vec!["z-seat".to_owned(), "alpha/z-seat".to_owned()], false);
         let why = onto_scoped(
             root,
             &core,
@@ -2469,5 +2511,107 @@ mod tests {
         .expect_err("the ordinary failure aborts the sweep");
         assert!(stops, "a stranded seat stops the publish: {why}");
         assert!(why.contains("z-seat") && why.contains("NOT moved"), "{why}");
+    }
+    /// A damaged rename carrier of `old` → `new` under `root`, as a rename that
+    /// began after the census leaves it.
+    fn carrier(root: &Path, old: &str, new: &str) {
+        std::fs::write(
+            root.join("sessions")
+                .join(format!(".rename.{old}.{new}.intent")),
+            "broken\n",
+        )
+        .expect("carrier");
+    }
+
+    #[test]
+    fn a_rename_that_began_after_the_census_skips_an_ordinary_session_and_stops_for_a_seat() {
+        for (owned, seat) in [("a-ordinary", false), ("z-seat", true)] {
+            let scratch = Scratch::new(if seat {
+                "late-rename-seat"
+            } else {
+                "late-rename"
+            });
+            let root = &scratch.0;
+            planted(root, "a-ordinary", "", &CURRENT.to_string());
+            planted(root, "z-seat", "meta_agent=true\n", &CURRENT.to_string());
+            let NamedRoot::Ready(planned) = census_named(root).expect("both placeable") else {
+                panic!("a root with no doubt is ready");
+            };
+            // The census saw no carrier; one appears, with the metas unchanged.
+            carrier(root, owned, &format!("{owned}-new"));
+            let before = crate::meta::read_bytes(&root.join("sessions").join(owned)).expect("meta");
+            let core = root.join("new-core");
+            std::fs::write(&core, b"").expect("core");
+            let (mut moved, mut stops) = (Vec::new(), false);
+            let done = onto_scoped(
+                root,
+                &core,
+                "2099.1.1",
+                Scope::Named,
+                planned,
+                &mut moved,
+                &mut stops,
+            );
+            assert_eq!(
+                crate::meta::read_bytes(&root.join("sessions").join(owned)).expect("meta"),
+                before,
+                "{owned}: a session a rename owns was not touched"
+            );
+            if seat {
+                let why = done.expect_err("an orchestrator session cannot be skipped");
+                assert!(stops, "{why}");
+                assert!(
+                    why.contains("z-seat")
+                        && why.contains("pending rename")
+                        && why.contains("NOT moved"),
+                    "{why}"
+                );
+            } else {
+                let notes = done.expect("the ordinary session is skipped, the sweep goes on");
+                assert!(
+                    notes.iter().any(|note| note.contains("skipped a-ordinary")),
+                    "{notes:?}"
+                );
+                assert!(!stops && moved.len() == 1, "only the seat moved: {moved:?}");
+            }
+        }
+    }
+    #[test]
+    fn a_reseed_never_overwrites_a_seat_config_that_changed_or_became_a_link() {
+        let scratch = Scratch::new("reseed-recheck");
+        let dir = &scratch.0;
+        let path = dir.join("orchestrator.config");
+        std::fs::write(&path, "known\n").expect("seat config");
+        // The decision was made on other bytes: the owner edited it since.
+        assert!(publish_reseed(&path, b"older\n", "new\n").is_err());
+        assert_eq!(
+            crate::store::read_capped(&path, SEAT_CONFIG_CAP).ok(),
+            Some(crate::store::SourceRead::Ready(b"known\n".to_vec()))
+        );
+        // A link now stands in the file's place, with the bytes the decision saw.
+        let target = dir.join("dotfiles-copy");
+        std::fs::write(&target, "known\n").expect("target");
+        std::fs::remove_file(&path).expect("unlink");
+        std::os::unix::fs::symlink(&target, &path).expect("link");
+        assert!(publish_reseed(&path, b"known\n", "new\n").is_err());
+        assert!(
+            !matches!(
+                crate::store::read_capped(&path, SEAT_CONFIG_CAP),
+                Ok(crate::store::SourceRead::Ready(_))
+            ),
+            "the link was not replaced by a regular file"
+        );
+        assert_eq!(
+            crate::store::read_capped(&target, SEAT_CONFIG_CAP).ok(),
+            Some(crate::store::SourceRead::Ready(b"known\n".to_vec()))
+        );
+        // Unchanged, it is replaced.
+        std::fs::remove_file(&path).expect("unlink");
+        std::fs::write(&path, "known\n").expect("seat config");
+        assert!(publish_reseed(&path, b"known\n", "new\n").is_ok());
+        assert_eq!(
+            crate::store::read_capped(&path, SEAT_CONFIG_CAP).ok(),
+            Some(crate::store::SourceRead::Ready(b"new\n".to_vec()))
+        );
     }
 }
