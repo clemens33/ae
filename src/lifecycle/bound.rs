@@ -74,6 +74,10 @@ const PANE_ACTOR: &str = "ae:stop";
 
 /// `_stop <name> --expect-uuid <uuid>`; `panes` is every `--pane` word of the
 /// tail, in order.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the bound stop's one linear order: proof, capture, events hold, the held writes and kill, then the buffered publication; each refusal reads beside the step that raises it"
+)]
 pub(super) fn run(
     root: &Path,
     name: &str,

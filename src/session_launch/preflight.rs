@@ -171,9 +171,8 @@ pub(super) fn check_bound_resume(
     uuid: &str,
     err: &mut impl Write,
 ) -> crate::error::Result<ControlFlow<u8, ()>> {
-    let refusal = match bound_resume_refusal(dir, session, uuid) {
-        None => return Ok(ControlFlow::Continue(())),
-        Some(refusal) => refusal,
+    let Some(refusal) = bound_resume_refusal(dir, session, uuid) else {
+        return Ok(ControlFlow::Continue(()));
     };
     writeln!(err, "Error: {refusal}. Nothing was resumed.")?;
     Ok(ControlFlow::Break(EXIT_FAILED))
@@ -419,6 +418,10 @@ pub(super) fn lifecycle_busy(
 /// runs on (a legacy one adopted and backfilled first), and a stopped one with
 /// its destination proved free. `env` is pointed at that server. Without a
 /// record, a live tmux session of the name is not ours to build over.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one decision under the lifecycle lock: the origin check, then the running or stopped record's server, each refusal beside the check that raises it"
+)]
 pub(super) fn resolve_server(
     env: &mut Env,
     plan: &Plan,
