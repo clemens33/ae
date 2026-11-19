@@ -25,7 +25,20 @@ use std::path::Path;
 /// `#[cfg(test)]` marker onwards cut off.
 fn product(name: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(name);
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{name} must be readable"));
+    product_at(&path, name)
+}
+
+/// The product half of the crate root. `src/lib.rs` stays at the top of `src/`
+/// while the modules `product` reads may sit in a layer folder, so the crate
+/// root is read by its full path, never through `product`.
+fn crate_root_product() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+    product_at(&path, "src/lib.rs")
+}
+
+/// The product half of the file at `path`; `name` labels the panic.
+fn product_at(path: &Path, name: &str) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("{name} must be readable"));
     let code: String = text
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
@@ -650,10 +663,9 @@ fn the_shell_hands_the_strict_role_census_to_the_bridge_which_never_names_it() {
     // The orchestrator seat is `settings_menu::role_holder`, a layer-5 census; the bridge is layer 3
     // and takes it as a parameter. A bridge whose census nobody wired proves no seat, so the one
     // production call site is what makes the plain-text default work at all.
-    let squashed = |name: &str| product(name).split_whitespace().collect::<String>();
+    let root: String = crate_root_product().split_whitespace().collect();
     assert!(
-        squashed("lib.rs")
-            .contains("telegram::bridge::run(paths,*knobs,settings_menu::role_holder,err)"),
+        root.contains("telegram::bridge::run(paths,*knobs,settings_menu::role_holder,err)"),
         "src/lib.rs must hand settings_menu::role_holder to telegram::bridge::run"
     );
     for file in [
