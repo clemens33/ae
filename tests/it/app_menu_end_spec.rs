@@ -1026,43 +1026,6 @@ fn ending_the_apps_own_session_survives_its_pane_and_finishes_removal() {
 }
 
 #[test]
-fn effective_purge_question_names_no_archive_cancel_preserves_and_confirm_purges() {
-    let rig = Rig::new("purge");
-    rig.plant("alpha", UUID, true);
-    rig.plant("sibling", OTHER, true);
-    let policy = rig.root.join("purge-config");
-    fs::write(&policy, "[workspace]\npurge_agent_history = on\n").unwrap();
-    let path = rig.dir("alpha").join("meta");
-    let meta = fs::read_to_string(&path).unwrap();
-    fs::write(path, format!("{meta}config={}\n", policy.display())).unwrap();
-    let sibling = snapshot(&rig.dir("sibling"));
-    let pane = rig.app("alpha", false);
-    let question = rig.question(&pane, "alpha");
-    assert!(
-        question.contains("NO archive"),
-        "purge consequence must be explicit: {question}"
-    );
-    let before = snapshot(&rig.dir("alpha"));
-    rig.key(&pane, "Enter");
-    rig.wait(&pane, "purge Cancel is default", |s| !s.contains("[ End ]"));
-    assert_eq!(snapshot(&rig.dir("alpha")), before);
-    assert!(rig.live("alpha"));
-    assert!(!rig.archive().exists());
-    rig.question(&pane, "alpha");
-    rig.key(&pane, "y");
-    rig.wait(&pane, "purge result visible", |s| {
-        s.contains("Ended alpha") && !rig.dir("alpha").exists()
-    });
-    assert!(!rig.live("alpha"));
-    assert!(
-        !rig.archive().exists(),
-        "effective purge silently used Keep"
-    );
-    assert!(rig.live("sibling"));
-    assert_eq!(snapshot(&rig.dir("sibling")), sibling);
-}
-
-#[test]
 fn unavailable_corrupt_state_has_no_affirmable_end_and_preserves_the_tree() {
     let rig = Rig::new("unavailable");
     rig.plant("alpha", UUID, true);
@@ -1250,3 +1213,6 @@ fn git_mode_app_end_shows_the_push_then_commits_to_the_remote_and_archives() {
     assert!(rig.live("sibling"));
     assert_eq!(snapshot(&rig.dir("sibling")), sibling);
 }
+
+#[path = "endmenu_app_spec.rs"]
+mod endmenu_app_spec;

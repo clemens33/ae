@@ -38,17 +38,22 @@ fn every_modal_key_steps_as_the_keys_row_says() {
         vec![
             (typed(b"x"), Step::Kept),
             (typed(b"z"), Step::Kept),
-            (typed(b"j"), Step::Moved),
+            // The safe rows come first: a fresh menu focuses Activity.
             (Key::Enter, Step::Act(Item::Activity)),
+            (typed(b"j"), Step::Moved),
+            (Key::Enter, Step::Act(Item::Memos)),
             (typed(b"k"), Step::Moved),
-            (Key::Enter, stop),
+            (Key::Enter, Step::Act(Item::Activity)),
             (Key::Down, Step::Moved),
             (Key::Tab, Step::Moved),
-            (Key::Enter, Step::Act(Item::Memos)),
+            (Key::Enter, stop),
             (Key::Down, Step::Moved),
             (Key::Enter, Step::Act(Item::End)),
             (Key::Down, Step::Moved),
-            (Key::Enter, stop),
+            (Key::Enter, Step::Act(Item::Activity)),
+            (Key::Up, Step::Moved),
+            (Key::Enter, Step::Act(Item::End)),
+            (typed(b"e"), Step::Act(Item::End)),
             (typed(b"xs"), stop),
             (typed(b"s"), stop),
             (typed(b"a"), Step::Act(Item::Activity)),
@@ -69,7 +74,7 @@ fn every_modal_key_steps_as_the_keys_row_says() {
     let namesake = card(crate::orchestrator::ORCHESTRATOR_SESSION, Status::Running);
     assert_eq!(
         namesake.items(),
-        [Item::Stop, Item::Activity, Item::Memos, Item::End],
+        [Item::Activity, Item::Memos, Item::Stop, Item::End],
         "a listed orchestrator namesake has ordinary actions"
     );
     let mut named = Modal::Menu(Menu::new(namesake));
@@ -78,7 +83,7 @@ fn every_modal_key_steps_as_the_keys_row_says() {
         vec![
             (typed(b"s"), stop),
             (typed(b"j"), Step::Moved),
-            (Key::Enter, Step::Act(Item::Activity)),
+            (Key::Enter, Step::Act(Item::Memos)),
         ],
     );
     let question = Question::new(card("api", Status::Running), expectation(0));
@@ -107,6 +112,39 @@ fn every_modal_key_steps_as_the_keys_row_says() {
             (typed(b"yn"), Step::Affirm),
         ],
     );
+}
+
+#[test]
+fn the_card_puts_its_safe_rows_first_and_the_rule_above_the_destructive_ones() {
+    let running = card("api", Status::Running);
+    let stopped = card("api", Status::Stopped);
+    assert_eq!(
+        running.items(),
+        [Item::Activity, Item::Memos, Item::Stop, Item::End]
+    );
+    assert_eq!(
+        stopped.items(),
+        [Item::Start, Item::Activity, Item::Memos, Item::End]
+    );
+    assert_eq!(running.rule_at(), Some(2), "above Stop");
+    assert_eq!(stopped.rule_at(), Some(3), "above End: Start is safe");
+    assert_eq!(running.toggle_item(), Some(Item::Stop));
+    assert_eq!(stopped.toggle_item(), Some(Item::Start));
+    for item in running.items().iter().chain(stopped.items()) {
+        assert_eq!(
+            item.destructive(),
+            matches!(item, Item::Stop | Item::End),
+            "{item:?}"
+        );
+    }
+    // A fresh menu rests on its first row, which is a safe one on both cards.
+    for card in [running, stopped] {
+        let mut menu = Modal::Menu(Menu::new(card));
+        let Step::Act(first) = menu.key(&Key::Enter) else {
+            unreachable!("Enter acts on the focused row")
+        };
+        assert!(!first.destructive(), "{first:?}");
+    }
 }
 
 #[test]

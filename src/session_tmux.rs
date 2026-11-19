@@ -1840,7 +1840,7 @@ mod tests {
             &ServerId::Ambient,
             "/dev/ttys004",
             "%12",
-            &crate::session_menu::floor_menu(
+            &crate::session_menu::minimum_floor_menu(
                 "aedev",
                 Some(&crate::tmux::menu_run_shell_command(&["apply".to_owned()])),
             ),
@@ -1898,7 +1898,10 @@ mod tests {
             crate::session_menu::root_menu(
                 "aedev",
                 &[],
-                Some(&crate::tmux::menu_run_shell_command(&["apply".to_owned()])),
+                crate::session_menu::Destructive {
+                    stop: Some(&crate::tmux::menu_run_shell_command(&["apply".to_owned()])),
+                    end: None,
+                },
             )
             .items
             .iter()

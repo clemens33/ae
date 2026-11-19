@@ -1039,7 +1039,7 @@ Right-click a session range on the status line (`MouseDown3Status` on tmux 3.5+,
 read-only `_session-menu show` path: it reads every source first, then takes
 one final clicker proof (server identity plus client pid), and draws against
 the live dimensions that proof returned. No action in the menu writes session
-state except Stop, which asks first.
+state except Stop and End, which ask first.
 
 The root shows three blocks, then the actions:
 
@@ -1053,11 +1053,34 @@ The root shows three blocks, then the actions:
 - Three keyed rows between the states and Flip: `Activity…` (`a`), `Memos…`
   (`m`) and `Board…` (`b`), opening read-only dialogs (see below).
 
-`Flip` (`f`) returns to the previous session; `Stop session...` (`s`) starts
-the guarded stop chain. On a short client the root degrades in order — facts
-first, then the three dialog rows, then all but the first state — down to
-today's status-only menu and floor; it never refuses once the clicker is
-proven.
+`Flip` (`f`) returns to the previous session. A rule below it sets the
+destructive group apart: `Stop session...` (`s`) starts the guarded stop chain
+and `End session...` (`e`) the guarded end chain. On a short client the root
+degrades in order — facts first, then the three dialog rows, then all but the
+first state — down to the status-only menu and the action floor (`Flip`, the
+rule, `Stop session...` and `End session...`), which keep Stop and End together.
+Only a client too small for those four rows gets today's minimum menu, `Flip`
+and `Stop session...` alone: Stop stays and End and its rule give way. The root
+never refuses once the clicker is proven.
+
+The end chain is `show` → `confirm --action end` → `apply`, like Stop's. Its
+confirmation is Cancel first (focused), what ending does, and `End '<name>'
+now` (`E`) last. It names the session and says that it is removed from the
+session list, that its history is kept in the archive and that its agents'
+conversation files are kept, and it says when the end commits and pushes. It is
+drawn without `-M`, so it is keyboard-driven on every tmux version and tmux's
+own first choice, Cancel, is the real focus. `confirm` and `apply` both prove
+the session's recorded server is the one that was clicked, and `apply` proves
+again that the session, server process, `session_id` and what the confirmation
+said ending does (one closed word: `keep`, `keep+push`, `nothing` or
+`nothing+push`) are the ones captured; a mismatch is said on the clicking
+client and nothing is done. Then `apply` hands the end to the same detached
+owner `ae end` and the app's End use, which proves it all once more under the
+session's lock. This End keeps the session's history in the archive and its
+agents' conversation files, whatever `purge_agent_history` says for the session
+(it still removes the live session state, as `ae end` does after it archives);
+the `--purge-history` flag and the config key keep their meaning
+for `ae end` until `ae purge` (#249) replaces them.
 
 The `Activity` dialog lists the newest 30 records a human cares about, newest
 first: `state`, `done`, `goal`, `spawn`, `retire`, `relaunch`, `reseat`, `ask`,

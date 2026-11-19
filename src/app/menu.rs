@@ -84,13 +84,28 @@ impl Card {
         }
     }
 
-    /// What the menu offers, in its drawn order.
+    /// What the menu offers, in its drawn order: the safe rows first, then
+    /// the destructive ones.
     pub(super) fn items(&self) -> &'static [Item] {
         if self.stopped {
             &[Item::Start, Item::Activity, Item::Memos, Item::End]
         } else {
-            &[Item::Stop, Item::Activity, Item::Memos, Item::End]
+            &[Item::Activity, Item::Memos, Item::Stop, Item::End]
         }
+    }
+
+    /// The item `s` does: Start on a stopped card, Stop on a running one.
+    pub(super) fn toggle_item(&self) -> Option<Item> {
+        (self.items().iter().copied()).find(|item| matches!(item, Item::Start | Item::Stop))
+    }
+
+    /// The place of the first destructive item, which a rule is drawn above:
+    /// `None` when every item is destructive and nothing is above it.
+    pub(super) fn rule_at(&self) -> Option<usize> {
+        self.items()
+            .iter()
+            .position(|item| item.destructive())
+            .filter(|at| *at > 0)
     }
 
     /// Why nothing on this card may act; `None` when it may.
@@ -124,6 +139,12 @@ impl Item {
             Self::Memos => "Memos",
             Self::End => "End",
         }
+    }
+
+    /// The item stops or retires the session: it sits below a rule, apart from
+    /// the safe rows.
+    pub(super) fn destructive(self) -> bool {
+        matches!(self, Self::Stop | Self::End)
     }
 
     /// The dialog this item opens: `None` for the ones that act.
@@ -227,7 +248,7 @@ impl Menu {
         let items = self.card.items();
         let by = match (key, byte) {
             (Key::Text(_), b's') => {
-                return items.first().map_or(Step::Kept, |&item| self.act(item));
+                return (self.card.toggle_item()).map_or(Step::Kept, |item| self.act(item));
             }
             (Key::Text(_), b'a') => {
                 return (items.iter().find(|item| **item == Item::Activity))
@@ -550,9 +571,10 @@ fn paint_menu(
         .chain([width(&name) + 2])
         .max()
         .unwrap_or(0);
+    let rule = card.rule_at();
     let x = at.x + 1;
     let room = area.width.saturating_sub(x + 4);
-    let height = cells(items.len() + usize::from(why.is_some())) + 2;
+    let height = cells(items.len() + usize::from(rule.is_some()) + usize::from(why.is_some())) + 2;
     let y = if at.bottom() + height < area.height {
         Some(at.bottom())
     } else {
@@ -571,8 +593,21 @@ fn paint_menu(
         paint,
     );
     layout.overlay(buf, rect, Hit::Modal);
+    if let Some(above) = rule {
+        let across = "─".repeat(usize::from(inner + 2));
+        let line = format!("├{across}┤");
+        put(
+            buf,
+            x,
+            y + 1 + cells(above),
+            &line,
+            inner + 4,
+            paint.fg(|p| p.border),
+        );
+    }
     for (place, label) in labels.enumerate() {
-        let row = y + 1 + cells(place);
+        let below = rule.is_some_and(|above| place >= above);
+        let row = y + 1 + cells(place) + u16::from(below);
         let style = if place == menu.focus {
             paint.selected()
         } else if card.refusal().is_some() && items.get(place).is_some_and(|i| i.dialog().is_none())
@@ -585,7 +620,7 @@ fn paint_menu(
         layout.overlay(buf, Rect::new(x + 1, row, inner + 2, 1), Hit::Item(place));
     }
     if let Some(why) = why {
-        let row = y + 1 + cells(items.len());
+        let row = y + 1 + cells(items.len() + usize::from(rule.is_some()));
         let line = clip_head(&why, usize::from(inner));
         put(buf, x + 2, row, &line, inner, paint.fg(|p| p.dim));
     }

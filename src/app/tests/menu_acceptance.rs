@@ -465,6 +465,65 @@ fn fresh_left_press_on_stop_and_keys_help_use_the_same_action() {
     }));
 }
 
+#[test]
+fn a_rule_sets_stop_and_end_apart_and_a_press_below_it_acts_on_the_row_it_hit() {
+    let (_root, mut app, _reader) = fixture("menu-rule-mouse");
+    keyed(&mut app, b"m", Instant::now());
+    let screen = shown(&mut app, Instant::now());
+    let row_of = |word: &str| {
+        screen
+            .lines()
+            .position(|line| line.contains(word))
+            .unwrap_or_else(|| panic!("{word} is drawn:\n{screen}"))
+    };
+    let (memos, stop, end) = (row_of("o  Memos"), row_of("s  Stop"), row_of("e  End"));
+    let rule = screen
+        .lines()
+        .position(|line| line.contains('├') && line.contains('┤'))
+        .unwrap_or_else(|| panic!("a rule is drawn:\n{screen}"));
+    assert!(
+        memos < rule && rule < stop && stop + 1 == end,
+        "safe rows, one rule, then Stop and End together: {memos} {rule} {stop} {end}\n{screen}"
+    );
+    let column = screen
+        .lines()
+        .nth(end)
+        .and_then(|line| line.find("e  End").map(|byte| line[..byte].chars().count()))
+        .expect("drawn End item");
+    let click = Mouse {
+        kind: MouseKind::Click,
+        column: u16::try_from(column).expect("painted column"),
+        row: u16::try_from(end).expect("painted row"),
+    };
+    assert!(take_keys(&mut app, vec![(Key::Mouse(click), Instant::now())]).is_some());
+    assert!(
+        noticed(&app, "End api"),
+        "the press below the rule reached End, not the row it was drawn over: {:?}",
+        app.notices
+    );
+    assert!(!noticed(&app, "Stop api"), "{:?}", app.notices);
+}
+
+#[test]
+fn a_fresh_menu_focuses_a_safe_row_so_enter_never_asks_a_destructive_question() {
+    let (_root, mut app, _reader) = fixture("menu-first-focus");
+    keyed(&mut app, b"m", Instant::now());
+    let _ = shown(&mut app, Instant::now());
+    assert!(
+        take_keys(&mut app, vec![(Key::Enter, Instant::now())]).is_some(),
+        "the key is read"
+    );
+    assert!(
+        !matches!(
+            app.modal,
+            Some(crate::app::menu::Modal::Question(_) | crate::app::menu::Modal::End(_))
+        ) && !noticed(&app, "Stop api")
+            && !noticed(&app, "End api"),
+        "Enter on a fresh menu asks no Stop or End question: {:?}",
+        app.notices
+    );
+}
+
 fn captured_question(app: &mut App, deadline: i64) -> crate::lifecycle::StopExpectation {
     use crate::app::menu::{Choice, Modal, Question};
     if app.modal.is_none() {

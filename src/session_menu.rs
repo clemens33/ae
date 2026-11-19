@@ -11,10 +11,14 @@
 //!    own native draw instead.
 //! 2. `confirm` proves the captured facts still describe the live world, then
 //!    draws a second centred menu on the SAME client: Cancel first, the exact
-//!    consequence in the middle, the destructive row last.
+//!    consequence in the middle, the destructive row last. An `end` confirm
+//!    mints one closed consequence word from the frozen plan and carries it to
+//!    `apply` as `--consequence`.
 //! 3. `apply` re-proves everything, then hands the operation to the EXISTING
 //!    detached lifecycle owner, which proves it once more under that session's
-//!    lifecycle lock before anything is killed.
+//!    lifecycle lock before anything is killed. An `end` apply also refuses
+//!    when the word the live plan now spells differs from the one the human
+//!    read.
 //!
 //! No step invents identity. A menu row carries what the click saw; every
 //! later step either matches it against the live server or refuses on the
@@ -25,11 +29,20 @@ use std::path::Path;
 
 use crate::inventory::ServerId;
 
-/// The context menu's destructive action. `end` follows in its own phase.
+/// The context menu's recoverable destructive action: the agents stop, the
+/// session stays and resumes.
 pub const STOP: &str = "stop";
+
+/// The context menu's retiring action: the session leaves the session list and
+/// its history stays in the archive. It reaches the existing End owner.
+pub const END: &str = "end";
 
 /// The settings menu's recoverable orchestrator pause.
 pub const PAUSE_ORCHESTRATOR: &str = "pause-orchestrator";
+
+/// The exit status of an End step that refused. It is the value the CLI shell
+/// names `EXIT_FAILED`, spelled here because this layer may not name the shell.
+const END_REFUSED: u8 = 1;
 
 /// The chain's three steps, as the row or binding that queues each one spells
 /// them.
@@ -138,6 +151,9 @@ const ACTIVITY_KINDS: [&str; 15] = [
 /// drawn from a server-global binding that no session's look reaches.
 pub const STOP_ROW_LABEL: &str = "Stop session...";
 
+/// The context-menu row that starts the end chain, drawn like the Stop row.
+pub const END_ROW_LABEL: &str = "End session...";
+
 /// How long a built confirmation stays answerable, in seconds.
 ///
 /// The human is being asked a question about a live session; an answer given
@@ -147,7 +163,7 @@ pub const STOP_ROW_LABEL: &str = "Stop session...";
 pub const CONFIRM_WINDOW_SECS: i64 = 120;
 
 /// The usage line, for an argv this module cannot read.
-pub const USAGE: &str = "Usage: _session-menu <show|confirm|apply> --client <name> --client-pid <pid> --session <name> --session-id <$id> --pane <%id> --server-pid <pid> --server-start <epoch> [show takes only --activity, --memos or --board; confirm takes --action <stop|pause-orchestrator>; apply takes --action, --uuid <uuid> and --deadline <epoch>]";
+pub const USAGE: &str = "Usage: _session-menu <show|confirm|apply> --client <name> --client-pid <pid> --session <name> --session-id <$id> --pane <%id> --server-pid <pid> --server-start <epoch> [show takes only --activity, --memos or --board; confirm takes --action <stop|end|pause-orchestrator>; apply takes --action, --uuid <uuid>, --deadline <epoch> and, for end, --consequence <word>]";
 
 /// What one `show` draws: the root or one read-only dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,7 +182,7 @@ pub enum ShowView {
 /// later step that cannot match all three refuses rather than choosing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Captured {
-    /// The action word: ordinary Stop or orchestrator Pause.
+    /// The action word: ordinary Stop, End, or orchestrator Pause.
     pub action: String,
     /// The invoking client's tmux name, normally its tty path.
     pub client: String,
@@ -187,6 +203,11 @@ pub struct Captured {
     pub uuid: String,
     /// The epoch second after which the confirmation is stale.
     pub deadline: i64,
+    /// What the End confirmation said ending would do, as the closed word
+    /// [`crate::lifecycle::end::EndExpectation::consequence`] names: minted by
+    /// `confirm`, carried by `apply` for `end` alone, empty for every other
+    /// action.
+    pub consequence: String,
 }
 
 /// What a captured argv failed to be.
@@ -290,6 +311,7 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
     let mut server_start = None;
     let mut uuid = None;
     let mut deadline = None;
+    let mut consequence = None;
     let mut index = 0;
     while index < rest.len() {
         let flag = rest[index].as_str();
@@ -322,6 +344,7 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
             "--server-start" => &mut server_start,
             "--uuid" => &mut uuid,
             "--deadline" => &mut deadline,
+            "--consequence" => &mut consequence,
             other => {
                 return Err(Refusal::Usage(format!("unknown flag {other:?}. {USAGE}")));
             }
@@ -332,10 +355,10 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
     let missing = |flag: &str| Refusal::Usage(format!("{flag} is required. {USAGE}"));
     if action
         .as_deref()
-        .is_some_and(|action| action != STOP && action != PAUSE_ORCHESTRATOR)
+        .is_some_and(|action| ![STOP, END, PAUSE_ORCHESTRATOR].contains(&action))
     {
         return Err(Refusal::Field(format!(
-            "unsupported action {:?} — this menu offers {STOP:?} or {PAUSE_ORCHESTRATOR:?}",
+            "unsupported action {:?} — this menu offers {STOP:?}, {END:?} or {PAUSE_ORCHESTRATOR:?}",
             action.as_deref().unwrap_or_default()
         )));
     }
@@ -367,23 +390,29 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
     positive("--server-pid", &server_pid)?;
     let server_start = server_start.ok_or_else(|| missing("--server-start"))?;
     positive("--server-start", &server_start)?;
-    let (action, uuid, deadline) = match step {
+    let (action, uuid, deadline, consequence) = match step {
         Step::Show(_) => {
-            if action.is_some() || uuid.is_some() || deadline.is_some() {
+            if action.is_some() || uuid.is_some() || deadline.is_some() || consequence.is_some() {
                 return Err(Refusal::Usage(
-                    "show reads the captured facts alone; it takes no --action, --uuid or --deadline"
+                    "show reads the captured facts alone; it takes no --action, --uuid, --deadline or --consequence"
                         .to_owned(),
                 ));
             }
-            (String::new(), String::new(), 0)
+            (String::new(), String::new(), 0, String::new())
         }
         Step::Confirm => {
-            if uuid.is_some() || deadline.is_some() {
+            if uuid.is_some() || deadline.is_some() || consequence.is_some() {
                 return Err(Refusal::Usage(
-                    "confirm mints --uuid and --deadline; it does not take them".to_owned(),
+                    "confirm mints --uuid, --deadline and --consequence; it does not take them"
+                        .to_owned(),
                 ));
             }
-            (action.ok_or_else(|| missing("--action"))?, String::new(), 0)
+            (
+                action.ok_or_else(|| missing("--action"))?,
+                String::new(),
+                0,
+                String::new(),
+            )
         }
         Step::Apply => {
             let action = action.ok_or_else(|| missing("--action"))?;
@@ -393,7 +422,27 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
                 return Err(Refusal::Field(format!("{uuid:?} is not a session uuid")));
             }
             let deadline = deadline.ok_or_else(|| missing("--deadline"))?;
-            (action, canonical, positive("--deadline", &deadline)?)
+            let consequence = match (action == END, consequence) {
+                (true, Some(word)) if crate::lifecycle::end::consequence_is_valid(&word) => word,
+                (true, Some(word)) => {
+                    return Err(Refusal::Field(format!(
+                        "{word:?} is not a consequence word ae offers"
+                    )));
+                }
+                (true, None) => return Err(missing("--consequence")),
+                (false, None) => String::new(),
+                (false, Some(_)) => {
+                    return Err(Refusal::Usage(
+                        "only an end apply carries --consequence".to_owned(),
+                    ));
+                }
+            };
+            (
+                action,
+                canonical,
+                positive("--deadline", &deadline)?,
+                consequence,
+            )
         }
     };
     Ok((
@@ -409,16 +458,18 @@ pub fn parse(tail: &[String]) -> Result<(Step, Captured), Refusal> {
             server_start,
             uuid,
             deadline,
+            consequence,
         },
     ))
 }
 
 impl Captured {
     /// The argv the confirmation's destructive row runs, with the identity
-    /// this step proved and the deadline it stamped.
+    /// this step proved, the deadline it stamped and, for `end`, the
+    /// consequence it showed.
     #[must_use]
     pub fn apply_argv(&self, core: &Path, uuid: &str, deadline: i64) -> Vec<String> {
-        vec![
+        let mut argv = vec![
             core.display().to_string(),
             crate::cli::SESSION_MENU.to_owned(),
             APPLY.to_owned(),
@@ -442,7 +493,12 @@ impl Captured {
             uuid.to_owned(),
             "--deadline".to_owned(),
             deadline.to_string(),
-        ]
+        ];
+        if !self.consequence.is_empty() {
+            argv.push("--consequence".to_owned());
+            argv.push(self.consequence.clone());
+        }
+        argv
     }
 }
 
@@ -577,6 +633,39 @@ pub fn pause_confirmation(session: &str, apply: &str) -> crate::tmux::Menu {
                 action: crate::tmux::MenuAction::Run(apply.to_owned()),
             },
         ],
+    }
+}
+
+/// The rows of the end confirmation, Cancel first and destructive last: what
+/// ending does in `consequence`'s own words, then the one row that ends it.
+#[must_use]
+pub fn end_confirmation(session: &str, consequence: &[String], apply: &str) -> crate::tmux::Menu {
+    let disabled = |label: String| crate::tmux::MenuItem {
+        label,
+        key: String::new(),
+        action: crate::tmux::MenuAction::Disabled,
+    };
+    let mut items = vec![
+        crate::tmux::MenuItem {
+            label: "Cancel".to_owned(),
+            key: "c".to_owned(),
+            // Cancel QUEUES NOTHING, and it is the row tmux focuses first.
+            action: crate::tmux::MenuAction::Run(String::new()),
+        },
+        disabled(String::new()),
+    ];
+    items.extend(consequence.iter().cloned().map(disabled));
+    items.push(disabled(String::new()));
+    items.push(crate::tmux::MenuItem {
+        label: format!("End '{session}' now"),
+        // A key of its own, never the one Cancel, Flip, Stop or Pause answers to.
+        key: "E".to_owned(),
+        action: crate::tmux::MenuAction::Run(apply.to_owned()),
+    });
+    crate::tmux::Menu {
+        title: format!("End session '{session}'?"),
+        title_style: String::new(),
+        items,
     }
 }
 
@@ -1441,10 +1530,43 @@ fn root_stop_item(stop: &str) -> crate::tmux::MenuItem {
     }
 }
 
+fn root_end_item(end: &str) -> crate::tmux::MenuItem {
+    crate::tmux::MenuItem {
+        label: END_ROW_LABEL.to_owned(),
+        key: "e".to_owned(),
+        action: crate::tmux::MenuAction::Run(end.to_owned()),
+    }
+}
+
+/// The commands the root's destructive group runs: each `Some` becomes a row.
+/// A client with no launcher has neither, and the native draw keeps its Flip row
+/// alone.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Destructive<'a> {
+    pub stop: Option<&'a str>,
+    pub end: Option<&'a str>,
+}
+
+/// The destructive group: one rule, then Stop and End together, so the rows
+/// that stop or retire a session sit apart from every safe row above them.
+fn destructive_items(destructive: Destructive<'_>) -> Vec<crate::tmux::MenuItem> {
+    if destructive.stop.is_none() && destructive.end.is_none() {
+        return Vec::new();
+    }
+    let mut items = vec![root_separator()];
+    items.extend(destructive.stop.map(root_stop_item));
+    items.extend(destructive.end.map(root_end_item));
+    items
+}
+
 /// The full root: every status row, then the action floor.
 #[must_use]
-pub fn root_menu(session: &str, rows: &[RootRow], stop: Option<&str>) -> crate::tmux::Menu {
-    root_menu_full(session, &[], rows, None, None, None, stop)
+pub fn root_menu(
+    session: &str,
+    rows: &[RootRow],
+    destructive: Destructive<'_>,
+) -> crate::tmux::Menu {
+    root_menu_full(session, &[], rows, None, None, None, destructive)
 }
 
 /// The full root: facts, states, the three dialog rows, then the action floor.
@@ -1456,7 +1578,7 @@ pub fn root_menu_full(
     activity: Option<&str>,
     memos: Option<&str>,
     board: Option<&str>,
-    stop: Option<&str>,
+    destructive: Destructive<'_>,
 ) -> crate::tmux::Menu {
     let mut items: Vec<crate::tmux::MenuItem> = Vec::new();
     if !facts.is_empty() {
@@ -1486,9 +1608,7 @@ pub fn root_menu_full(
         items.push(root_separator());
     }
     items.push(root_flip_item());
-    if let Some(stop) = stop {
-        items.push(root_stop_item(stop));
-    }
+    items.extend(destructive_items(destructive));
     crate::tmux::Menu {
         title: session.to_owned(),
         title_style: String::new(),
@@ -1496,13 +1616,15 @@ pub fn root_menu_full(
     }
 }
 
-/// The degraded root: ONE status row and the action floor.
+/// The degraded root: ONE status row, Flip and the destructive group.
 #[must_use]
-pub fn status_only_menu(session: &str, row: &RootRow, stop: Option<&str>) -> crate::tmux::Menu {
+pub fn status_only_menu(
+    session: &str,
+    row: &RootRow,
+    destructive: Destructive<'_>,
+) -> crate::tmux::Menu {
     let mut items = vec![root_row_item(row), root_separator(), root_flip_item()];
-    if let Some(stop) = stop {
-        items.push(root_stop_item(stop));
-    }
+    items.extend(destructive_items(destructive));
     crate::tmux::Menu {
         title: session.to_owned(),
         title_style: String::new(),
@@ -1510,11 +1632,27 @@ pub fn status_only_menu(session: &str, row: &RootRow, stop: Option<&str>) -> cra
     }
 }
 
-/// Today's exact base menu: the title and the two actions, nothing else.
-/// Below this floor tmux trims the way it always has; the root never refuses
-/// once the clicker is proven.
+/// The action floor: Flip and the destructive group, no status row. It keeps
+/// Stop and End together below their rule on every client that has room for
+/// four rows.
 #[must_use]
-pub fn floor_menu(session: &str, stop: Option<&str>) -> crate::tmux::Menu {
+pub fn floor_menu(session: &str, destructive: Destructive<'_>) -> crate::tmux::Menu {
+    let mut items = vec![root_flip_item()];
+    items.extend(destructive_items(destructive));
+    crate::tmux::Menu {
+        title: session.to_owned(),
+        title_style: String::new(),
+        items,
+    }
+}
+
+/// Today's exact base menu: the title, Flip and Stop, nothing else. It is the
+/// last rung, drawn only on a client too small for [`floor_menu`]: End and its
+/// rule are the two rows that give way there, and Stop stays. Below it tmux
+/// trims the way it always has; the root never refuses once the clicker is
+/// proven.
+#[must_use]
+pub fn minimum_floor_menu(session: &str, stop: Option<&str>) -> crate::tmux::Menu {
     let mut items = vec![root_flip_item()];
     if let Some(stop) = stop {
         items.push(root_stop_item(stop));
@@ -1615,13 +1753,16 @@ pub fn select_aligned_dialog(
 }
 
 /// Reselect the root against the FINAL live client dimensions: full, then
-/// facts-dropped, then rows-dropped, then status-only, then today's floor.
-/// Facts go FIRST, then the three dialog rows. A build-dimension fit proves
-/// nothing about the client the draw reaches.
+/// facts-dropped, then rows-dropped, then status-only, then the action floor
+/// (Flip and the destructive group), then today's minimum floor (Flip and
+/// Stop). Every rung down to the action floor keeps Stop and End together below
+/// their rule; only a client too small for four rows loses End. Facts go FIRST,
+/// then the three dialog rows. A build-dimension fit proves nothing about the
+/// client the draw reaches.
 #[must_use]
 #[allow(
     clippy::too_many_arguments,
-    reason = "the root reselect signature: facts, rows, three dialog commands, stop, dims — threaded whole, never partial"
+    reason = "the root reselect signature: facts, rows, three dialog commands, the destructive group, dims — threaded whole, never partial"
 )]
 pub fn select_root(
     session: &str,
@@ -1630,14 +1771,14 @@ pub fn select_root(
     activity: Option<&str>,
     memos: Option<&str>,
     board: Option<&str>,
-    stop: Option<&str>,
+    destructive: Destructive<'_>,
     dims: (usize, usize),
 ) -> crate::tmux::Menu {
     for menu in [
-        root_menu_full(session, facts, rows, activity, memos, board, stop),
-        root_menu_full(session, &[], rows, activity, memos, board, stop),
+        root_menu_full(session, facts, rows, activity, memos, board, destructive),
+        root_menu_full(session, &[], rows, activity, memos, board, destructive),
         // Rows-dropped IS today's full root, byte for byte.
-        root_menu(session, rows, stop),
+        root_menu(session, rows, destructive),
     ] {
         let (columns, lines) = menu_budget(&menu);
         if dims.0 >= columns && dims.1 >= lines {
@@ -1645,13 +1786,22 @@ pub fn select_root(
         }
     }
     if let Some(first) = rows.first() {
-        let degraded = status_only_menu(session, first, stop);
+        let degraded = status_only_menu(session, first, destructive);
         let (columns, lines) = menu_budget(&degraded);
         if dims.0 >= columns && dims.1 >= lines {
             return degraded;
         }
     }
-    floor_menu(session, stop)
+    // The action floor keeps the whole destructive group. With no End to
+    // keep it would only add a rule to today's base menu, so it is skipped.
+    if destructive.end.is_some() {
+        let floor = floor_menu(session, destructive);
+        let (columns, lines) = menu_budget(&floor);
+        if dims.0 >= columns && dims.1 >= lines {
+            return floor;
+        }
+    }
+    minimum_floor_menu(session, destructive.stop)
 }
 
 /// One preview at its FINAL width: the first line plus the dropped-lines
@@ -1873,6 +2023,7 @@ struct ShowSources {
     dialog: Vec<CellRow>,
     board: BoardRows,
     stop: Option<String>,
+    end: Option<String>,
     activity: Option<String>,
     memos: Option<String>,
     board_cmd: Option<String>,
@@ -1944,6 +2095,7 @@ fn read_sources(
     );
     let row = |step: &[&str]| row_command(captured, &launcher, step);
     let stop = (!launcher.is_empty()).then(|| row(&[CONFIRM, "--action", STOP]));
+    let end = (!launcher.is_empty()).then(|| row(&[CONFIRM, "--action", END]));
     let activity = (!launcher.is_empty()).then(|| row(&[SHOW, "--activity"]));
     let memos = (!launcher.is_empty()).then(|| row(&[SHOW, "--memos"]));
     let board_cmd = (!launcher.is_empty()).then(|| row(&[SHOW, "--board"]));
@@ -1960,6 +2112,7 @@ fn read_sources(
         dialog,
         board,
         stop,
+        end,
         activity,
         memos,
         board_cmd,
@@ -1988,7 +2141,10 @@ fn run_show(root: &Path, captured: &Captured, view: ShowView, err: &mut impl Wri
             sources.activity.as_deref(),
             sources.memos.as_deref(),
             sources.board_cmd.as_deref(),
-            sources.stop.as_deref(),
+            Destructive {
+                stop: sources.stop.as_deref(),
+                end: sources.end.as_deref(),
+            },
             (width, height),
         ),
         ShowView::Activity => select_aligned_dialog(
@@ -2201,6 +2357,84 @@ fn prove_target(
     Some(uuid)
 }
 
+/// Say `text` on the clicking client and give no answer: the shape of every
+/// refusal that leaves nothing done.
+fn refused<T>(
+    clicker: &Clicker,
+    captured: &Captured,
+    text: &str,
+    err: &mut impl Write,
+) -> Option<T> {
+    report(Some(&clicker.server), captured, text, err);
+    None
+}
+
+/// What ending the clicked session would do, read from the world now: the
+/// session's recorded server must be the server that was clicked, and the
+/// End owner's own expectation is built against it with `deadline`. `None`
+/// after saying why on the client.
+fn prove_end(
+    root: &Path,
+    captured: &Captured,
+    clicker: &Clicker,
+    uuid: &str,
+    deadline: i64,
+    err: &mut impl Write,
+) -> Option<crate::lifecycle::end::EndExpectation> {
+    let session = &captured.session;
+    let Some(recorded) = crate::lifecycle::recorded_server(root, session) else {
+        return refused(
+            clicker,
+            captured,
+            &format!("'{session}' records no tmux server ae can prove; nothing was done."),
+            err,
+        );
+    };
+    if recorded != clicker.server
+        && !crate::fleet_read::SocketPaths::live().proven_same(&clicker.server, &recorded)
+    {
+        return refused(
+            clicker,
+            captured,
+            &format!("'{session}' is recorded on a different tmux server; nothing was done."),
+            err,
+        );
+    }
+    let expect = match crate::lifecycle::end::EndExpectation::unattended(
+        root, session, uuid, recorded, false, deadline,
+    ) {
+        Ok(expect) => expect,
+        Err(why) => {
+            return refused(
+                clicker,
+                captured,
+                &format!("'{session}' cannot be ended: {why}; nothing was done."),
+                err,
+            );
+        }
+    };
+    // The clicker proof matched the captured server process; the expectation
+    // read its own, so a restart between the two proofs must not rebind this
+    // End to the server that replaced the one the menu was opened on.
+    if !expect.is_on_server(&captured.server_pid, &captured.server_start) {
+        return refused(
+            clicker,
+            captured,
+            &format!("'{session}' is on a tmux server that restarted; nothing was done."),
+            err,
+        );
+    }
+    if expect.live_id() != Some(captured.session_id.as_str()) {
+        return refused(
+            clicker,
+            captured,
+            &format!("'{session}' is a different session now; nothing was done."),
+            err,
+        );
+    }
+    Some(expect)
+}
+
 /// `_session-menu confirm …` — prove the click, then ask the human.
 fn run_confirm(root: &Path, captured: &Captured, err: &mut impl Write) -> u8 {
     let Some(clicker) = prove_clicker(captured, err) else {
@@ -2219,22 +2453,37 @@ fn run_confirm(root: &Path, captured: &Captured, err: &mut impl Write) -> u8 {
         return crate::entry::EXIT_FAILED;
     };
     let deadline = crate::time::Timestamp::now().epoch() + CONFIRM_WINDOW_SECS;
-    let apply = crate::tmux::menu_run_shell_command(&captured.apply_argv(&core, &uuid, deadline));
-    let menu = if captured.action == PAUSE_ORCHESTRATOR {
-        pause_confirmation(&captured.session, &apply)
+    let ending = captured.action == END;
+    let menu = if ending {
+        let Some(expect) = prove_end(root, captured, &clicker, &uuid, deadline, err) else {
+            return END_REFUSED;
+        };
+        let sealed = Captured {
+            consequence: expect.consequence().to_owned(),
+            ..captured.clone()
+        };
+        let apply = crate::tmux::menu_run_shell_command(&sealed.apply_argv(&core, &uuid, deadline));
+        end_confirmation(&captured.session, &expect.lines(), &apply)
     } else {
-        stop_confirmation(&captured.session, &apply)
+        let apply =
+            crate::tmux::menu_run_shell_command(&captured.apply_argv(&core, &uuid, deadline));
+        if captured.action == PAUSE_ORCHESTRATOR {
+            pause_confirmation(&captured.session, &apply)
+        } else {
+            stop_confirmation(&captured.session, &apply)
+        }
     };
     // THE WHOLE QUESTION OR NONE OF IT. tmux would trim the consequence and
     // still draw a destructive row; a question a human cannot read in full is
     // not a question ae is willing to ask.
     let (columns, rows) = menu_budget(&menu);
     if clicker.client.width < columns || clicker.client.height < rows {
+        let verb = if ending { "ending" } else { "stopping" };
         report(
             Some(&clicker.server),
             captured,
             &format!(
-                "this terminal is {}x{}; saying what stopping '{}' does needs {columns}x{rows}.",
+                "this terminal is {}x{}; saying what {verb} '{}' does needs {columns}x{rows}.",
                 clicker.client.width, clicker.client.height, captured.session
             ),
             err,
@@ -2242,13 +2491,17 @@ fn run_confirm(root: &Path, captured: &Captured, err: &mut impl Write) -> u8 {
         return crate::entry::EXIT_FAILED;
     }
     // The same capability split the status bindings were installed under: a
-    // 3.4 menu is keyboard-driven, and passing `-M` to it fails the draw.
-    let menu_mouse = match crate::transport::probe_tmux_version(&clicker.server) {
-        crate::tmux::VersionProbe::Answered(found) => {
-            crate::tmux_floor::Probe::Server(found).menu_mouse()
-        }
-        crate::tmux::VersionProbe::NoServer | crate::tmux::VersionProbe::Unreachable => false,
-    };
+    // 3.4 menu is keyboard-driven, and passing `-M` to it fails the draw. The
+    // End question is keyboard-driven on every version: with `-M` tmux focuses
+    // no row, so Enter would answer nothing and Cancel would not be the
+    // default it is drawn as.
+    let menu_mouse = !ending
+        && match crate::transport::probe_tmux_version(&clicker.server) {
+            crate::tmux::VersionProbe::Answered(found) => {
+                crate::tmux_floor::Probe::Server(found).menu_mouse()
+            }
+            crate::tmux::VersionProbe::NoServer | crate::tmux::VersionProbe::Unreachable => false,
+        };
     if !crate::transport::display_menu_centred(
         &clicker.server,
         &captured.client,
@@ -2309,6 +2562,9 @@ fn run_apply(
     let Some(uuid) = prove_target(root, captured, &clicker, err) else {
         return Ok(crate::entry::EXIT_FAILED);
     };
+    if captured.action == END {
+        return apply_end(root, captured, &clicker, &uuid, out, err);
+    }
     let code = crate::lifecycle::stop_confirmed(
         root,
         &crate::lifecycle::StopExpectation {
@@ -2333,6 +2589,53 @@ fn run_apply(
             Some(&clicker.server),
             captured,
             &format!("could not start the stop of '{}'.", captured.session),
+            err,
+        );
+    }
+    Ok(code)
+}
+
+/// The End the human confirmed, handed to the existing End owner. What the
+/// confirmation showed was one consequence word; the expectation is built from
+/// the world again with the deadline `confirm` stamped, and it must still say
+/// that word. The detached owner then proves the rest again under the
+/// session's lifecycle lock before anything is written.
+fn apply_end(
+    root: &Path,
+    captured: &Captured,
+    clicker: &Clicker,
+    uuid: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let Some(expect) = prove_end(root, captured, clicker, uuid, captured.deadline, err) else {
+        return Ok(END_REFUSED);
+    };
+    if expect.consequence() != captured.consequence {
+        report(
+            Some(&clicker.server),
+            captured,
+            &format!(
+                "what ending '{}' does changed since the menu was opened; nothing was done.",
+                captured.session
+            ),
+            err,
+        );
+        return Ok(END_REFUSED);
+    }
+    let code = crate::lifecycle::end::end_confirmed_via(
+        root,
+        &expect,
+        &captured.session,
+        crate::transport::run_detached,
+        out,
+        err,
+    )?;
+    if code != 0 {
+        report(
+            Some(&clicker.server),
+            captured,
+            &format!("could not start the end of '{}'.", captured.session),
             err,
         );
     }
@@ -2369,6 +2672,14 @@ mod tests {
         PAUSE_ORCHESTRATOR, Refusal, RootRow, STOP, STOP_ROW_LABEL, Step, menu_budget, parse,
         pause_confirmation, stop_confirmation,
     };
+
+    /// The destructive group of a client that offers Stop and nothing else.
+    fn stop_only(command: &str) -> super::Destructive<'_> {
+        super::Destructive {
+            stop: Some(command),
+            end: None,
+        }
+    }
 
     fn argv(step: &str, extra: &[&str]) -> Vec<String> {
         let mut words = vec![
@@ -2492,17 +2803,22 @@ mod tests {
     }
 
     #[test]
-    fn an_action_this_phase_does_not_offer_is_refused_rather_than_guessed() {
-        let mut words = argv("confirm", &[]);
-        let at = words
-            .iter()
-            .position(|word| word == "--action")
-            .expect("the flag is in the fixture");
-        words[at + 1] = "end".to_owned();
-        assert!(matches!(
-            parse(&words).expect_err("end is not offered yet"),
-            Refusal::Field(_)
-        ));
+    fn an_action_the_menu_does_not_offer_is_refused_rather_than_guessed() {
+        for unoffered in ["purge", "kill", "End"] {
+            let mut words = argv("confirm", &[]);
+            let at = words
+                .iter()
+                .position(|word| word == "--action")
+                .expect("the flag is in the fixture");
+            words[at + 1] = unoffered.to_owned();
+            assert!(
+                matches!(
+                    parse(&words).expect_err("an action the menu does not offer"),
+                    Refusal::Field(_)
+                ),
+                "{unoffered}"
+            );
+        }
     }
 
     #[test]
@@ -2590,6 +2906,261 @@ mod tests {
     }
 
     #[test]
+    fn the_end_confirmation_puts_cancel_first_and_end_last_under_a_key_of_its_own() {
+        let said = vec![
+            "It is removed from the session list.".to_owned(),
+            "Its history is kept in the archive.".to_owned(),
+        ];
+        let menu = super::end_confirmation("aedev", &said, "run-shell -b 'apply'");
+        assert_eq!(menu.title, "End session 'aedev'?");
+        let first = menu.items.first().expect("a first row");
+        assert_eq!(first.label, "Cancel");
+        assert!(
+            matches!(&first.action, crate::tmux::MenuAction::Run(command) if command.is_empty()),
+            "cancel queues nothing"
+        );
+        let last = menu.items.last().expect("a last row");
+        assert_eq!(last.label, "End 'aedev' now");
+        assert_eq!(last.key, "E");
+        assert!(
+            matches!(&last.action, crate::tmux::MenuAction::Run(command) if command == "run-shell -b 'apply'")
+        );
+        for line in &said {
+            assert!(
+                menu.items.iter().any(|item| &item.label == line
+                    && matches!(item.action, crate::tmux::MenuAction::Disabled)),
+                "the consequence is on the menu as unchoosable text: {line}"
+            );
+        }
+        assert_eq!(
+            menu.items
+                .iter()
+                .filter(|item| matches!(item.action, crate::tmux::MenuAction::Run(_)))
+                .count(),
+            2,
+            "exactly two rows are choosable: cancel and the destructive one"
+        );
+        let stop = stop_confirmation("aedev", "run-shell -b 'apply'");
+        assert_ne!(
+            stop.items.last().map(|item| item.key.as_str()),
+            Some(last.key.as_str()),
+            "End and Stop never answer to one key"
+        );
+    }
+
+    #[test]
+    fn the_root_sets_stop_and_end_together_below_one_rule_after_every_safe_row() {
+        let rows = vec![RootRow::Declaration("s (3m)".to_owned())];
+        let (activity, memos, stop_cmd, end_cmd) = (
+            "run-shell -b 'a'",
+            "run-shell -b 'm'",
+            "run-shell -b 's'",
+            "run-shell -b 'e'",
+        );
+        let menu = super::root_menu_full(
+            "aedev",
+            &["f".to_owned()],
+            &rows,
+            Some(activity),
+            Some(memos),
+            None,
+            super::Destructive {
+                stop: Some(stop_cmd),
+                end: Some(end_cmd),
+            },
+        );
+        let at = |label: &str| menu.items.iter().position(|item| item.label == label);
+        let (flip, stop, end) = (
+            at(super::FLIP_ROW_LABEL).expect("Flip"),
+            at(STOP_ROW_LABEL).expect("Stop"),
+            at(super::END_ROW_LABEL).expect("End"),
+        );
+        assert_eq!(end, stop + 1, "End sits beside Stop");
+        assert_eq!(end, menu.items.len() - 1, "the group is last");
+        let rule = &menu.items[stop - 1];
+        assert!(
+            rule.label.is_empty() && matches!(rule.action, crate::tmux::MenuAction::Disabled),
+            "a rule separates the group: {rule:?}"
+        );
+        assert!(flip < stop - 1, "every safe row comes before the rule");
+        let end_row = &menu.items[end];
+        assert_eq!(end_row.key, "e");
+        assert!(matches!(&end_row.action, crate::tmux::MenuAction::Run(c) if c == end_cmd));
+        let stop_row = &menu.items[stop];
+        assert_eq!(stop_row.key, "s");
+
+        // Without a launcher there is no group at all, and no stray rule.
+        let none = super::root_menu_full(
+            "aedev",
+            &[],
+            &rows,
+            None,
+            None,
+            None,
+            super::Destructive::default(),
+        );
+        let last = none.items.last().expect("a row");
+        assert_eq!(last.label, super::FLIP_ROW_LABEL, "{:?}", none.items);
+    }
+
+    fn both<'a>() -> super::Destructive<'a> {
+        super::Destructive {
+            stop: Some("run-shell -b 's'"),
+            end: Some("run-shell -b 'e'"),
+        }
+    }
+
+    #[test]
+    fn every_rung_down_to_the_action_floor_keeps_stop_and_end_together_below_a_rule() {
+        let row = RootRow::Declaration("s (3m)".to_owned());
+        for (tag, menu) in [
+            ("floor", super::floor_menu("aedev", both())),
+            (
+                "status-only",
+                super::status_only_menu("aedev", &row, both()),
+            ),
+        ] {
+            let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
+            let count = labels.len();
+            assert_eq!(
+                &labels[count - 2..],
+                [STOP_ROW_LABEL, super::END_ROW_LABEL],
+                "{tag}"
+            );
+            let rule = &menu.items[count - 3];
+            assert!(
+                rule.label.is_empty() && matches!(rule.action, crate::tmux::MenuAction::Disabled),
+                "{tag}: a rule sets the group apart: {labels:?}"
+            );
+            assert!(labels.contains(&super::FLIP_ROW_LABEL), "{tag}: {labels:?}");
+        }
+    }
+
+    #[test]
+    fn the_ladder_drops_end_only_for_a_client_too_small_for_the_action_floor() {
+        let rows: Vec<RootRow> = ["s (3m)", "t (4s)", "u (5s)"]
+            .into_iter()
+            .map(|text| RootRow::Declaration(text.to_owned()))
+            .collect();
+        let pick = |height: usize| {
+            super::select_root("aedev", &[], &rows, None, None, None, both(), (200, height))
+        };
+        let labels = |menu: &crate::tmux::Menu| -> Vec<String> {
+            menu.items.iter().map(|item| item.label.clone()).collect()
+        };
+        let (_, status_rows) = menu_budget(&super::status_only_menu("aedev", &rows[0], both()));
+        let (_, floor_rows) = menu_budget(&super::floor_menu("aedev", both()));
+        let (_, minimum_rows) = menu_budget(&super::minimum_floor_menu("aedev", both().stop));
+        assert!(
+            minimum_rows < floor_rows && floor_rows < status_rows,
+            "the three rungs are told apart by height: {minimum_rows} {floor_rows} {status_rows}"
+        );
+        let status = labels(&pick(status_rows));
+        assert!(
+            status.iter().any(|label| label.contains("s (3m)")),
+            "{status:?}"
+        );
+        assert!(
+            status.iter().all(|label| !label.contains("t (4s)")),
+            "{status:?}"
+        );
+        assert!(
+            status.iter().any(|label| label == super::END_ROW_LABEL),
+            "{status:?}"
+        );
+        let floor = labels(&pick(floor_rows));
+        assert_eq!(
+            floor,
+            [
+                super::FLIP_ROW_LABEL,
+                "",
+                STOP_ROW_LABEL,
+                super::END_ROW_LABEL
+            ]
+            .map(str::to_owned),
+            "the action floor"
+        );
+        let minimum = labels(&pick(floor_rows - 1));
+        assert_eq!(
+            minimum,
+            [super::FLIP_ROW_LABEL, STOP_ROW_LABEL].map(str::to_owned),
+            "the one case that drops End and its rule keeps Flip and Stop"
+        );
+        let tiny = labels(&pick(2));
+        assert_eq!(tiny, minimum, "below every rung, today's trim behaviour");
+    }
+
+    #[test]
+    fn an_end_apply_carries_one_closed_consequence_word_and_nothing_else_may() {
+        let end_argv = |step: &str, extra: &[&str]| {
+            let mut words = argv(step, extra);
+            let at = words
+                .iter()
+                .position(|word| word == "--action")
+                .expect("the flag is in the fixture");
+            words[at + 1] = "end".to_owned();
+            words
+        };
+        let apply = [
+            "--uuid",
+            "1b4e28ba-2fa1-11d2-883f-0016d3cc4321",
+            "--deadline",
+            "1789109780",
+        ];
+        for word in ["keep", "keep+push", "nothing", "nothing+push"] {
+            let mut extra = apply.to_vec();
+            extra.extend(["--consequence", word]);
+            let (step, captured) = parse(&end_argv("apply", &extra)).expect(word);
+            assert_eq!(step, Step::Apply);
+            assert_eq!(captured.action, super::END);
+            assert_eq!(captured.consequence, word);
+            let again = captured.apply_argv(
+                std::path::Path::new("/core/ae"),
+                "1b4e28ba-2fa1-11d2-883f-0016d3cc4321",
+                1_789_109_780,
+            );
+            assert!(
+                again
+                    .windows(2)
+                    .any(|pair| pair[0] == "--consequence" && pair[1] == word),
+                "{word}: {again:?}"
+            );
+        }
+        for bad in ["purge", "", "KEEP", "keep+", "keep+purge", "delete"] {
+            let mut extra = apply.to_vec();
+            extra.extend(["--consequence", bad]);
+            assert!(
+                matches!(
+                    parse(&end_argv("apply", &extra)),
+                    Err(Refusal::Field(_) | Refusal::Usage(_))
+                ),
+                "{bad:?} is no consequence word"
+            );
+        }
+        assert!(
+            matches!(
+                parse(&end_argv("apply", &apply)),
+                Err(Refusal::Field(_) | Refusal::Usage(_))
+            ),
+            "an end apply without its consequence is refused"
+        );
+        let mut stop_extra = apply.to_vec();
+        stop_extra.extend(["--consequence", "keep"]);
+        assert!(
+            parse(&argv("apply", &stop_extra)).is_err(),
+            "only an end apply carries a consequence"
+        );
+        assert!(
+            parse(&end_argv("confirm", &["--consequence", "keep"])).is_err(),
+            "confirm mints the consequence; it does not take it"
+        );
+        assert!(
+            parse(&end_argv("confirm", &[])).is_ok(),
+            "confirm --action end is offered"
+        );
+    }
+
+    #[test]
     fn pause_is_state_preserving_and_names_only_the_exact_resume_route() {
         for (session, route) in [
             ("orchestrator", "ae orchestrator --no-attach"),
@@ -2637,7 +3208,7 @@ mod tests {
     /// the delegated draw.
     #[test]
     fn the_flip_row_is_the_exact_action_word() {
-        let menu = super::floor_menu("aedev", Some("run-shell -b 'stop'"));
+        let menu = super::minimum_floor_menu("aedev", Some("run-shell -b 'stop'"));
         let flip = menu.items.first().expect("the Flip row");
         assert_eq!(flip.label, super::FLIP_ROW_LABEL);
         assert_eq!(flip.key, super::FLIP_ROW_KEY);
@@ -2658,7 +3229,7 @@ mod tests {
         let captured = super::parse(&show_argv(&[])).expect("the show grammar").1;
         let launcher = vec!["/opt/ae".to_owned()];
         let stop = super::row_command(&captured, &launcher, &[super::CONFIRM, "--action", STOP]);
-        let menu = super::floor_menu("aedev", Some(&stop));
+        let menu = super::minimum_floor_menu("aedev", Some(&stop));
         let row = menu.items.last().expect("the Stop row");
         assert_eq!(row.label, STOP_ROW_LABEL);
         assert_eq!(row.key, "s");
@@ -2725,20 +3296,29 @@ mod tests {
             now,
         );
         let stop = "run-shell -b 'stop'";
-        let full = super::root_menu("aedev", &rows, Some(stop));
+        let full = super::root_menu("aedev", &rows, stop_only(stop));
         let (full_columns, full_rows) = menu_budget(&full);
         assert!(
             full_rows >= 5,
             "the full menu is taller than the floor: {full_rows}"
         );
-        let floor = super::floor_menu("aedev", Some(stop));
+        let floor = super::floor_menu("aedev", stop_only(stop));
         let (_, floor_rows) = menu_budget(&floor);
         assert!(floor_rows < full_rows);
 
         // Built for a 200x50 client, drawn for a live 80x8 one: the LIVE
         // dimensions decide, and the full three-declaration menu no longer
         // fits while the action floor must survive.
-        let live = super::select_root("aedev", &[], &rows, None, None, None, Some(stop), (80, 8));
+        let live = super::select_root(
+            "aedev",
+            &[],
+            &rows,
+            None,
+            None,
+            None,
+            stop_only(stop),
+            (80, 8),
+        );
         let (live_columns, live_rows) = menu_budget(&live);
         assert!(
             live_columns <= 80 && live_rows <= 8,
@@ -2761,7 +3341,16 @@ mod tests {
         );
 
         // Below every variant, today's trim behaviour: a menu is still drawn.
-        let tiny = super::select_root("aedev", &[], &rows, None, None, None, Some(stop), (4, 2));
+        let tiny = super::select_root(
+            "aedev",
+            &[],
+            &rows,
+            None,
+            None,
+            None,
+            stop_only(stop),
+            (4, 2),
+        );
         let labels: Vec<&str> = tiny.items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, vec![super::FLIP_ROW_LABEL, STOP_ROW_LABEL]);
         assert!(
@@ -2790,14 +3379,16 @@ mod tests {
                 Some(a),
                 Some(m),
                 None,
-                Some(s),
+                stop_only(s),
                 (w, h),
             )
         };
-        let full = super::root_menu_full("aedev", &facts, &rows, Some(a), Some(m), None, Some(s));
-        let bare = super::root_menu("aedev", &rows, Some(s));
-        let second = super::root_menu_full("aedev", &[], &rows, Some(a), Some(m), None, Some(s));
-        let status_only = super::status_only_menu("aedev", &rows[0], Some(s));
+        let full =
+            super::root_menu_full("aedev", &facts, &rows, Some(a), Some(m), None, stop_only(s));
+        let bare = super::root_menu("aedev", &rows, stop_only(s));
+        let second =
+            super::root_menu_full("aedev", &[], &rows, Some(a), Some(m), None, stop_only(s));
+        let status_only = super::status_only_menu("aedev", &rows[0], stop_only(s));
         let (_, full_rows) = menu_budget(&full);
         let (_, second_rows) = menu_budget(&second);
         let (_, bare_rows) = menu_budget(&bare);
@@ -2839,7 +3430,7 @@ mod tests {
                 },
             ],
         };
-        let floor = super::floor_menu("aedev", Some(stop));
+        let floor = super::minimum_floor_menu("aedev", Some(stop));
         assert_eq!(
             menu_budget(&floor),
             menu_budget(&todays),
@@ -2860,7 +3451,7 @@ mod tests {
                 None,
                 None,
                 None,
-                Some(stop),
+                stop_only(stop),
                 (width, height),
             );
             assert_eq!(menu.items.len(), floor.items.len(), "{width}x{height}");
@@ -2879,7 +3470,7 @@ mod tests {
             Some(a),
             Some(m),
             None,
-            Some(s),
+            stop_only(s),
         );
         let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(
@@ -2893,6 +3484,7 @@ mod tests {
                 "Memos…",
                 "",
                 super::FLIP_ROW_LABEL,
+                "",
                 STOP_ROW_LABEL
             ]
         );
@@ -2909,8 +3501,8 @@ mod tests {
         assert!(matches!(&row("Activity…").action, crate::tmux::MenuAction::Run(c) if c == a));
         assert!(matches!(&row("Memos…").action, crate::tmux::MenuAction::Run(c) if c == m));
         for menu in [
-            super::status_only_menu("aedev", &rows[0], Some(s)),
-            super::floor_menu("aedev", Some(s)),
+            super::status_only_menu("aedev", &rows[0], stop_only(s)),
+            super::floor_menu("aedev", stop_only(s)),
         ] {
             assert!(
                 menu.items
@@ -3115,7 +3707,7 @@ mod tests {
                 None,
                 None,
                 None,
-                Some("run-shell -b 'stop'"),
+                stop_only("run-shell -b 'stop'"),
                 (200, 60),
             );
             assert!(
@@ -3200,7 +3792,7 @@ mod tests {
             None,
             None,
             None,
-            Some("run-shell -b 'stop'"),
+            stop_only("run-shell -b 'stop'"),
             (200, 60),
         );
         let actions: Vec<&str> = menu
@@ -4906,7 +5498,7 @@ mod tests {
             Some(a),
             Some(m),
             Some(board_cmd),
-            Some(s),
+            stop_only(s),
         );
         let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(
@@ -4921,6 +5513,7 @@ mod tests {
                 "Board…",
                 "",
                 super::FLIP_ROW_LABEL,
+                "",
                 STOP_ROW_LABEL
             ]
         );
@@ -4938,7 +5531,7 @@ mod tests {
             Some(a),
             Some(m),
             None,
-            Some(s),
+            stop_only(s),
         );
         assert!(
             menu.items.iter().all(|item| item.label != "Board…"),

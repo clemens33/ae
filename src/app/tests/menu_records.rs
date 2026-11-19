@@ -65,7 +65,7 @@ fn every_listed_card_offers_read_only_items_including_an_orchestrator_namesake()
     let card = |name: &str, status| Card::new(name, ID, Some(ID), Some(status), None);
     assert_eq!(
         card("api", Status::Running).items(),
-        [Item::Stop, Item::Activity, Item::Memos, Item::End]
+        [Item::Activity, Item::Memos, Item::Stop, Item::End]
     );
     assert_eq!(
         card("api", Status::Stopped).items(),
@@ -76,7 +76,7 @@ fn every_listed_card_offers_read_only_items_including_an_orchestrator_namesake()
     let namesake = card(crate::orchestrator::ORCHESTRATOR_SESSION, Status::Running);
     assert_eq!(
         namesake.items(),
-        [Item::Stop, Item::Activity, Item::Memos, Item::End],
+        [Item::Activity, Item::Memos, Item::Stop, Item::End],
         "a listed orchestrator namesake has the ordinary running menu"
     );
     assert_eq!(Item::Activity.dialog(), Some(Dialog::Activity));
@@ -91,7 +91,7 @@ fn the_keys_choose_the_dialogs_and_a_waiting_menu_takes_no_second_item() {
     let mut menu = Modal::Menu(Menu::new(card));
     assert_eq!(menu.key(&typed(b"a")), Step::Act(Item::Activity));
     assert_eq!(menu.key(&typed(b"o")), Step::Act(Item::Memos));
-    assert_eq!(menu.key(&Key::Down), Step::Moved);
+    // A fresh menu rests on its first row, a read-only dialog.
     assert_eq!(menu.key(&Key::Enter), Step::Act(Item::Activity));
     assert_eq!(menu.key(&Key::Down), Step::Moved);
     assert_eq!(menu.key(&Key::Enter), Step::Act(Item::Memos));

@@ -26,13 +26,14 @@ impl App {
         true
     }
 
-    /// `s` on the selection: the menu's one item on the card the frame drew —
-    /// Start a stopped session, or ask the Stop question of a running one.
+    /// `s` on the selection: the menu's Start-or-Stop item on the card the
+    /// frame drew — Start a stopped session, or ask the Stop question of a
+    /// running one.
     pub(super) fn toggle(&mut self, origin: Instant) -> bool {
         let card = (self.model.selected()).and_then(|name| self.layout.cards.get(name));
         let opened = self.open_menu(card.cloned(), origin);
         if let Some(menu::Modal::Menu(menu)) = &self.modal
-            && let Some(&item) = menu.card.items().first()
+            && let Some(item) = menu.card.toggle_item()
         {
             self.act(item);
         }

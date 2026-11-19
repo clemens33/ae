@@ -7645,7 +7645,7 @@ fn a_resized_client_gets_the_live_degraded_root_not_a_build_dimension_one() {
         tmux(
             &socket,
             &scratch,
-            &["resize-window", "-t", viewer, "-x", "60", "-y", "8"]
+            &["resize-window", "-t", viewer, "-x", "60", "-y", "10"]
         )
         .0
     );
@@ -7665,7 +7665,7 @@ fn a_resized_client_gets_the_live_degraded_root_not_a_build_dimension_one() {
             )
             .1
         },
-        |seen| seen.trim() == "60x8",
+        |seen| seen.trim() == "60x10",
     );
 
     let menu = open_context_menu(&socket, &scratch, viewer, &client);
@@ -7684,6 +7684,10 @@ fn a_resized_client_gets_the_live_degraded_root_not_a_build_dimension_one() {
     assert_eq!(state_rows, 1, "status-only keeps exactly one row: {menu}");
     assert!(menu.contains("Flip lead/colead panes"), "{menu}");
     assert!(menu.contains("Stop session"), "{menu}");
+    assert!(
+        menu.contains("End session"),
+        "the degraded root keeps End beside Stop: {menu}"
+    );
 }
 
 /// The UUID write carries the FULL immutable identity and reproves it: a
@@ -7895,7 +7899,7 @@ fn a_resize_between_the_reads_and_the_final_proof_degrades_the_root() {
         tmux(
             &socket,
             &scratch,
-            &["resize-window", "-t", viewer, "-x", "60", "-y", "8"]
+            &["resize-window", "-t", viewer, "-x", "60", "-y", "10"]
         )
         .0
     );
@@ -7915,7 +7919,7 @@ fn a_resize_between_the_reads_and_the_final_proof_degrades_the_root() {
             )
             .1
         },
-        |seen| seen.trim() == "60x8",
+        |seen| seen.trim() == "60x10",
     );
     assert!(fs::write(&release, b"go").is_ok(), "release the shim");
     let menu = wait_for(
@@ -8951,3 +8955,6 @@ fn bang_popup_args_on_isolated_tmux_server_reports_missing_client_never_bad_flag
         output.stderr
     );
 }
+
+#[path = "endmenu_tmux_spec.rs"]
+mod endmenu_tmux_spec;

@@ -524,13 +524,16 @@ the seat runs.
 
 While browsing, `m` opens a menu on the selected session's card; a right press
 opens it on the card under the pointer, also while writing or held; the draft
-or the held reason is still there when it closes. It offers `Start` on a stopped
-session and `Stop…` (`Stop...` with `icons = off`) on a running one, then
-`Activity…`, `Memos…` and `End…` on either, and nothing on the orchestrator.
-`s`, `a`, `o` or `e` or a click acts, `Enter` chooses, and `Esc`, `^C`, `m`, a
-right press or a press outside close it. Opening it selects nothing. Browsing, `s` does the
-menu's first item at once on the selected session: it starts a stopped session,
-and on a running one asks the Stop question below.
+or the held reason is still there when it closes. The safe rows come first:
+`Start` on a stopped session, then `Activity…` and `Memos…` on either. A rule
+separates them from the destructive rows below it: `Stop…` (`Stop...` with
+`icons = off`) on a running session, and `End…` on either. The orchestrator has
+no menu. The first row is focused when the menu opens, so `Enter` right away
+never asks a destructive question. `s`, `a`, `o` or `e` or a click acts,
+`Enter` chooses, and `Esc`, `^C`, `m`, a right press or a press outside close
+it. Opening it makes no choice for you and selects no card. Browsing, `s` does the Start-or-Stop item at
+once on the selected session: it starts a stopped session, and on a running one
+asks the Stop question below.
 
 `Activity…` and `Memos…` open the same two read-only dialogs the tmux session
 menu draws, with the same rows: the newest 30 curated journal records
@@ -577,10 +580,14 @@ over, not that it finished.
 `End…` asks first, in the app's own modal, inside tmux or not, with nobody
 attached. An agent never answers it. The question is built from the record and
 from the server the record names, never from a client: the plan `ae end` would
-carry out (`Archives it, then deletes its state.`, or the purge, which names any
-archive of the session as deleted), what happens to its agents' conversation
-files, the commit and push of a git-mode session, and on the app's own session
-that this app closes. A record naming no tmux server refuses, as does one that
+carry out (`It is removed from the session list.` and `Its history is kept in
+the archive.`), what happens to its agents' conversation files (kept), the commit
+and push of a git-mode session, and on the app's own session that this app
+closes. A menu End keeps the session's history in the archive and its agents'
+conversation files, whatever the session's config default for
+`purge_agent_history` says, and the owner proves that plan again under the
+lock. It still removes the live session state after it archives, as `ae end`
+does. A record naming no tmux server refuses, as does one that
 no longer names the session the card drew or names a `mode` ae does not know. A server that does not answer
 refuses with `its tmux server did not answer; if it is stopped: ae end
 --assume-stopped <name>`, except on a stopped card whose server is proved gone

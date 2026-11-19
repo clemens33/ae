@@ -38,6 +38,11 @@ pub(crate) mod transaction;
 const END_REQUEST_ACTION: &str = "end-request";
 const END_RESULT_ACTION: &str = "end-result";
 
+/// Whether `word` is one [`EndExpectation::consequence`] can name.
+pub(crate) fn consequence_is_valid(word: &str) -> bool {
+    matches!(word, "keep" | "keep+push" | "nothing" | "nothing+push")
+}
+
 /// What `ae end` will do with a session's memory, in five answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Action {
@@ -354,6 +359,10 @@ impl EndExpectation {
     /// What `name`'s End… question freezes from one resolution of its plan
     /// and tmux reading, or why it may not be asked. `stopped` is what the
     /// card drew: only a stopped card may rest on the boot-time proof.
+    ///
+    /// A menu End keeps the history whatever the session's config default
+    /// says, because its question promises the archive: the plan is resolved
+    /// with an explicit keep, and carried and re-proven as an explicit one.
     pub(crate) fn unattended(
         root: &Path,
         name: &str,
@@ -363,7 +372,7 @@ impl EndExpectation {
         deadline: i64,
     ) -> Result<Self, String> {
         let dir = sessions_dir(root).join(name);
-        let plan = resolve_plan(root, name, None);
+        let plan = resolve_plan(root, name, Some(false));
         if plan.action == Action::Unavailable {
             return Err(format!("it cannot be archived: {}", plan.detail));
         }
@@ -394,7 +403,7 @@ impl EndExpectation {
             confirmed: ConfirmedPlan {
                 name: name.to_owned(),
                 plan,
-                from_default: true,
+                from_default: false,
                 tmux,
             },
             assume_stopped,
@@ -417,6 +426,16 @@ impl EndExpectation {
         self.deadline
     }
 
+    /// Whether the live target's server is the process that started at
+    /// `start` with id `pid`: a menu that captured those two facts proves the
+    /// expectation is about the server it was opened on, not one that
+    /// replaced it. False for a target with no live server.
+    pub(crate) fn is_on_server(&self, pid: &str, start: &str) -> bool {
+        self.identity
+            .as_ref()
+            .is_some_and(|found| found.pid == pid && found.start == start)
+    }
+
     /// The tmux session id the answer may kill, when one is live.
     pub(crate) fn live_id(&self) -> Option<&str> {
         match &self.confirmed.tmux {
@@ -425,17 +444,34 @@ impl EndExpectation {
         }
     }
 
+    /// What the question says ending does, as one word of the closed set
+    /// [`consequence_is_valid`] accepts: the plan's action and whether the end
+    /// commits and pushes. A process that cannot carry the whole expectation
+    /// carries this word, and refuses when the world now says another one.
+    pub(crate) fn consequence(&self) -> &'static str {
+        match (&self.confirmed.plan.action, self.pushes) {
+            (Action::Nothing, false) => "nothing",
+            (Action::Nothing, true) => "nothing+push",
+            (_, false) => "keep",
+            (_, true) => "keep+push",
+        }
+    }
+
     /// What ending it will do, as the question says it, from the frozen plan.
+    /// Each line fits the app question's 48 cells and the tmux menu's width
+    /// budget. A menu End resolves an explicit keep, so only a purge plan
+    /// built elsewhere says anything is deleted.
     pub(crate) fn lines(&self) -> Vec<String> {
         let plan = &self.confirmed.plan;
-        let mut lines = vec![
+        let mut lines = vec!["It is removed from the session list.".to_owned()];
+        lines.push(
             match plan.action {
-                Action::Purge => "NO archive, and any archive of it is DELETED.",
-                Action::Nothing => "Nothing to archive; its state is deleted.",
-                Action::Keep | Action::Unavailable => "Archives it, then deletes its state.",
+                Action::Purge => "Its history is DELETED, not archived.",
+                Action::Nothing => "It has no history to archive.",
+                Action::Keep | Action::Unavailable => "Its history is kept in the archive.",
             }
             .to_owned(),
-        ];
+        );
         lines.push(
             if plan.purge {
                 "Its agents' conversation files are DELETED."
@@ -852,16 +888,25 @@ fn targets_of(
     if args.target == "all" {
         return Ok(ControlFlow::Continue(all_sessions(root)));
     }
-    if !name_is_usable(root, &args.target) {
-        writeln!(err, "ae: '{}' is not a usable session name.", args.target)?;
+    Ok(match literal_target(root, &args.target, err)? {
+        ControlFlow::Continue(()) => ControlFlow::Continue(vec![args.target.clone()]),
+        ControlFlow::Break(code) => ControlFlow::Break(code),
+    })
+}
+
+/// `name` read as exactly one session, whatever it is called: it must be a
+/// usable name and have a state or worktree directory.
+fn literal_target(root: &Path, name: &str, err: &mut impl Write) -> io::Result<ControlFlow<u8>> {
+    if !name_is_usable(root, name) {
+        writeln!(err, "ae: '{name}' is not a usable session name.")?;
         return Ok(ControlFlow::Break(EXIT_FAILED));
     }
-    let dir = sessions_dir(root).join(&args.target);
-    if !dir_exists(&dir) && !dir_exists(&worktrees_dir(root).join(&args.target)) {
-        writeln!(err, "Session '{}' not found.", args.target)?;
+    let dir = sessions_dir(root).join(name);
+    if !dir_exists(&dir) && !dir_exists(&worktrees_dir(root).join(name)) {
+        writeln!(err, "Session '{name}' not found.")?;
         return Ok(ControlFlow::Break(EXIT_FAILED));
     }
-    Ok(ControlFlow::Continue(vec![args.target.clone()]))
+    Ok(ControlFlow::Continue(()))
 }
 
 /// A pending rename transaction owns its names until its proved retry
@@ -1366,16 +1411,9 @@ fn run_supervised(
         return run_expected(root, args, expect, out, err);
     }
     let notices = notices(root, args);
-    let mut tail = vec!["-f".to_owned(), args.target.clone()];
-    for confirmed in &args.confirmed {
-        push_confirmed(&mut tail, confirmed);
-    }
-    if args.assume_stopped {
-        tail.push("--assume-stopped".to_owned());
-    }
     let mut captured_out = Vec::new();
     let mut captured_err = Vec::new();
-    let code = match run(root, &tail, None, &mut captured_out, &mut captured_err) {
+    let code = match end_literal(root, args, &mut captured_out, &mut captured_err) {
         Ok(code) => code,
         Err(why) => return supervisor_io_failed(root, &notices, &why, err),
     };
@@ -1391,6 +1429,28 @@ fn run_supervised(
         out,
         err,
     )
+}
+
+/// The supervised end of the ONE literal session its carried plan names.
+/// `run` is not re-entered: it reads the operand `all` as the fleet and
+/// enumerates it again, so a session created after the confirmation would be
+/// ended with a plan nobody confirmed. The confirmed list is the whole list.
+fn end_literal(
+    root: &Path,
+    args: &Args,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let name = args.target.as_str();
+    if let ControlFlow::Break(code) = literal_target(root, name, err)? {
+        return Ok(code);
+    }
+    let targets = [name.to_owned()];
+    if let ControlFlow::Break(code) = rename_pending(root, &targets, err)? {
+        return Ok(code);
+    }
+    let frozen = [freeze_target(root, args, name)];
+    end_each(root, args, &frozen, out, err)
 }
 
 /// What a supervised end left behind, to report.
@@ -1516,7 +1576,7 @@ fn run_expected(
         name,
         id,
         END_REQUEST_ACTION,
-        "end requested from ae app",
+        "end requested from a confirmed menu",
     );
     let contract = (plan, &expect.confirmed.tmux);
     let (mut captured_out, mut captured_err) = (Vec::new(), Vec::new());
@@ -3246,9 +3306,10 @@ mod tests {
     use super::{
         Action, Answer, ConfirmedPlan, EndExpectation, ExpectWords, FrozenTarget, FrozenTmux, Git,
         Plan, Prompt, Pushed, Reproof, RunMode, Sweep, TmuxSight, Verdict, answer, archive_step,
-        carried_targets, contract_for, early_finish, end_prompt, end_purge, freeze_target, parse,
-        path_exists, prompt_route, purge_conversation_files, push_facts, refusal_before_stop,
-        reprove, sanitize_branch_name, server_from_words, supervisor_args, unrecorded_verdict,
+        carried_targets, consequence_is_valid, contract_for, early_finish, end_prompt, end_purge,
+        freeze_target, parse, path_exists, prompt_route, purge_conversation_files, push_facts,
+        refusal_before_stop, reprove, sanitize_branch_name, server_from_words, supervisor_args,
+        unrecorded_verdict,
     };
     use std::path::{Path, PathBuf};
 
@@ -3368,23 +3429,32 @@ mod tests {
             detail: String::new(),
             purge: false,
         };
-        let archive = "Archives it, then deletes its state.";
+        let archive = [
+            "It is removed from the session list.",
+            "Its history is kept in the archive.",
+        ];
         let kept = "Its agents' conversation files are kept.";
         let gone = "Its agents' conversation files are DELETED.";
         let table: [(Plan, bool, bool, Vec<&str>); 5] = [
-            (keep(), false, false, vec![archive, kept]),
+            (keep(), false, false, vec![archive[0], archive[1], kept]),
             (
                 keep(),
                 true,
                 false,
-                vec![archive, kept, "Commits and pushes its work first."],
+                vec![
+                    archive[0],
+                    archive[1],
+                    kept,
+                    "Commits and pushes its work first.",
+                ],
             ),
             (
                 keep(),
                 false,
                 true,
                 vec![
-                    archive,
+                    archive[0],
+                    archive[1],
                     kept,
                     "Server gone; proven stopped by the host reboot.",
                 ],
@@ -3393,19 +3463,27 @@ mod tests {
                 purge,
                 false,
                 false,
-                vec!["NO archive, and any archive of it is DELETED.", gone],
+                vec![archive[0], "Its history is DELETED, not archived.", gone],
             ),
             (
                 nothing,
                 false,
                 false,
-                vec!["Nothing to archive; its state is deleted.", kept],
+                vec![archive[0], "It has no history to archive.", kept],
             ),
         ];
         for (plan, pushes, assume_stopped, want) in table {
             let mut expect = expectation(plan, NOW);
             (expect.pushes, expect.assume_stopped) = (pushes, assume_stopped);
             assert_eq!(expect.lines(), want);
+            // tmux splits a command argument that ends in a semicolon, so a
+            // line that ends in one fails the whole menu draw with
+            // "ambiguous command".
+            assert!(
+                expect.lines().iter().all(|line| !line.ends_with(';')),
+                "{:?}",
+                expect.lines()
+            );
         }
     }
 
@@ -3444,6 +3522,50 @@ mod tests {
     }
 
     #[test]
+    fn a_menu_question_keeps_the_history_whatever_the_configured_default_is() {
+        for (tag, before, after) in [("off-on", "off", "on"), ("on-off", "on", "off")] {
+            let (root, dir) = planted(&format!("menu-keeps-{tag}"), None);
+            let socket = root.join("never.sock").display().to_string();
+            let policy = root.join("policy");
+            std::fs::write(
+                &policy,
+                format!("[workspace]\npurge_agent_history = {before}\n"),
+            )
+            .expect("a policy");
+            let meta = format!(
+                "session=alpha\nsession_id={UUID}\nmode=local\nstarted=1\n\
+                 tmux_server_kind=socket\ntmux_server={socket}\nconfig={}\n",
+                policy.display()
+            );
+            std::fs::write(dir.join("meta"), meta).expect("a meta");
+            std::fs::write(dir.join("memory.md"), "history\n").expect("a memory");
+            let server = server_from_words("socket", &socket).expect("a socket");
+            let expect = EndExpectation::unattended(&root, "alpha", UUID, server, true, NOW)
+                .expect("a menu question");
+            assert_eq!(expect.confirmed.plan.action, Action::Keep, "{tag}");
+            assert!(!expect.confirmed.plan.purge, "{tag}");
+            assert!(!expect.confirmed.from_default, "{tag}: carried as explicit");
+            assert!(
+                expect
+                    .lines()
+                    .iter()
+                    .any(|line| line == "Its history is kept in the archive."),
+                "{tag}: {:?}",
+                expect.lines()
+            );
+            (expect.check(&root, &dir, "alpha", NOW)).expect("nothing changed yet");
+            std::fs::write(
+                &policy,
+                format!("[workspace]\npurge_agent_history = {after}\n"),
+            )
+            .expect("a policy");
+            (expect.check(&root, &dir, "alpha", NOW))
+                .expect("the configured default does not move an explicit keep");
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
     fn a_question_on_the_default_is_refused_when_the_default_changed_under_it() {
         let (root, dir) = planted("default-moved", None);
         let socket = root.join("never.sock").display().to_string();
@@ -3457,13 +3579,54 @@ mod tests {
         std::fs::write(dir.join("meta"), meta).expect("a meta");
         std::fs::write(dir.join("memory.md"), "history\n").expect("a memory");
         let server = server_from_words("socket", &socket).expect("a socket");
-        let expect = EndExpectation::unattended(&root, "alpha", UUID, server, true, NOW)
-            .expect("a question on the default");
+        let mut expect = EndExpectation::unattended(&root, "alpha", UUID, server, true, NOW)
+            .expect("a menu question");
+        // The CLI's confirmed list carries a plan that rests on the default.
+        expect.confirmed.from_default = true;
         (expect.check(&root, &dir, "alpha", NOW)).expect("nothing changed yet");
         std::fs::write(&policy, "[workspace]\npurge_agent_history = on\n").expect("a policy");
         let refused = (expect.check(&root, &dir, "alpha", NOW)).expect_err("the default moved");
         assert!(refused.contains("changed"), "{refused}");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_consequence_word_is_a_closed_set_that_names_the_plan_and_the_push() {
+        let nothing = Plan {
+            action: Action::Nothing,
+            detail: String::new(),
+            purge: false,
+        };
+        for (plan, pushes, word) in [
+            (keep(), false, "keep"),
+            (keep(), true, "keep+push"),
+            (nothing.clone(), false, "nothing"),
+            (nothing, true, "nothing+push"),
+        ] {
+            let mut expect = expectation(plan, NOW);
+            expect.pushes = pushes;
+            assert_eq!(expect.consequence(), word);
+            assert!(consequence_is_valid(word), "{word}");
+        }
+        for bad in ["", "purge", "KEEP", "keep+", "keep+purge", "keep push"] {
+            assert!(!consequence_is_valid(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn an_expectation_is_on_the_server_only_when_both_captured_facts_match() {
+        let mut expect = expectation(keep(), NOW);
+        assert!(
+            !expect.is_on_server("911", "1789109660"),
+            "no observed server proves nothing"
+        );
+        expect.identity = Some(crate::tmux::ServerIdentity {
+            pid: "911".to_owned(),
+            start: "1789109660".to_owned(),
+        });
+        assert!(expect.is_on_server("911", "1789109660"));
+        assert!(!expect.is_on_server("912", "1789109660"), "another pid");
+        assert!(!expect.is_on_server("911", "1789109661"), "another start");
     }
 
     #[test]
