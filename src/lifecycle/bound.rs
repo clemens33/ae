@@ -266,6 +266,15 @@ impl Caller {
 /// carries the exit code and the refusal.
 fn caller_session(root: &Path, panes: &[Option<String>]) -> Result<Caller, (u8, &'static str)> {
     let server = match crate::doors::caller_server_reading() {
+        // Outside tmux only when BOTH markers are positively absent: a pane
+        // marker without its server is a failed observation, never the
+        // owner's terminal, whichever entry lifted it into `--pane`.
+        CallerServer::Absent if crate::doors::calling_pane_id().is_some() => {
+            return Err((
+                EXIT_FAILED,
+                "$TMUX_PANE is set but $TMUX is not, so ae cannot tell which session this caller is in.",
+            ));
+        }
         CallerServer::Absent if panes.is_empty() => return Ok(Caller::Outside),
         CallerServer::Absent => {
             return Err((

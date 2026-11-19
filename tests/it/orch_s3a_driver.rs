@@ -118,7 +118,13 @@ fn a_fenced_kill_spares_the_session_a_replacement_server_gave_the_same_id() {
         "the fixture must model a reused id"
     );
     assert_ne!(current.server, proved.server, "a replacement incarnation");
-    let _ = server.run(&fenced_kill_args(&server.id(), &proved).expect("a spelled fence"));
+    // Every session fact is the current one; only the server pair is the old
+    // proof's, so only the server check can spare the session.
+    let stale = SessionStamp {
+        server: proved.server.clone(),
+        ..current.clone()
+    };
+    let _ = server.run(&fenced_kill_args(&server.id(), &stale).expect("a spelled fence"));
     assert!(
         server.alive("other"),
         "a kill fenced to the old incarnation reached the replacement's session"
