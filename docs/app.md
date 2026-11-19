@@ -456,7 +456,12 @@ it waits on you, and `!` reaches it first in its ring of the needy, opening
 the panel when it is hidden.
 
 The panel is a second chat column on the orchestrator, drawn by the chat's
-own renderer with its own composer, scroll, marked turn and draft. Side by side
+own renderer with its own composer, scroll, marked turn and draft. It hides
+the raw relay answer line (`reply <nonce> from <seat>: …`) behind one coverage
+row, and draws the orchestrator's own words and the receipt of each relay; the
+answer stays whole in `relay --status <id>`. `[workspace] relay_replies = on` in
+the global config draws the line again, read with every lane read
+([Chat](chat.md#what-it-shows)). Side by side
 it takes the right half of the chat column, each half at least 40 cells, until
 you drag its left border; the width you dragged stays while the panel is hidden
 or full screen, and a restart carries it.

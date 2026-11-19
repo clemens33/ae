@@ -7,7 +7,7 @@
 **Outbound (ae → chat):**
 
 - Reads `events.jsonl` of every **running** session that has a lead pair; a stopped session, or one with no lead pair, relays nothing, and a session that starts later joins on the next pass (about 2 s).
-- Forwards only the shared chat's human-facing rows, labelled `[session] <speaker>`: the asks typed in the [chat](../chat.md#telegram) or the `ae app`, the answers to them, and a lead-pair seat's or the watchdog's [`say`](helpers.md) line. Worker-to-worker traffic, states, alerts and tool output stay local, and your own phone message is not echoed back.
+- Forwards only the shared chat's human-facing rows, labelled `[session] <speaker>`: the asks typed in the [chat](../chat.md#telegram) or the `ae app`, the answers to them, and a lead-pair seat's or the watchdog's [`say`](helpers.md) line. An orchestrator's raw relay answer line (`reply <nonce> from <seat>: …`) is not sent unless the global `[workspace] relay_replies = on`; its receipt line and every other `ae:` row are sent, see [Telegram](../chat.md#telegram). Worker-to-worker traffic, states, alerts and tool output stay local, and your own phone message is not echoed back.
 - Persists a per-session byte cursor, so a restart does not replay what was sent; see [Restarts](#lifecycle-and-auto-start) for the cutoff a start applies.
 - Runs as a background tmux session named `ae-telegram`.
 - **Reply to a forwarded message in Telegram** to ask the shared chat it came from — the two-way loop.

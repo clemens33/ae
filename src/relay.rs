@@ -557,6 +557,19 @@ fn echo_of<'a>(event: &'a Event, id: &str) -> Option<&'a str> {
     echo.then(|| event.summary.as_deref().unwrap_or(""))
 }
 
+/// Whether `event` is the raw answer echo `relay --status` journals for a
+/// relayed answer: this writer's `chat` row whose summary begins `reply <body
+/// nonce> `. The receipt echo and every other `ae:` row are not.
+#[must_use]
+pub(crate) fn is_reply_echo(event: &Event) -> bool {
+    event.action == "chat"
+        && event.actor == ECHO_ACTOR
+        && event
+            .summary
+            .as_deref()
+            .is_some_and(|summary| echoed_nonce(summary).is_some())
+}
+
 /// The body nonce a reply echo's summary names.
 fn echoed_nonce(summary: &str) -> Option<&str> {
     let nonce = summary.strip_prefix(REPLY_ECHO)?.split(' ').next()?;

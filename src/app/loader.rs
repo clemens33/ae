@@ -37,6 +37,7 @@ use crate::{theme, tmux, transport};
 
 #[cfg(test)]
 mod early_settings_spec;
+
 #[cfg(test)]
 mod end_reader_spec;
 mod ending;
@@ -48,6 +49,8 @@ mod peek_spec;
 mod read_spec;
 #[cfg(test)]
 mod records_spec;
+#[cfg(test)]
+mod relayquiet_spec;
 #[cfg(test)]
 mod s5_loader;
 #[cfg(test)]
@@ -1463,6 +1466,11 @@ impl Reader {
             .consoles
             .entry(name.to_owned())
             .or_insert_with(|| Console::open_standing(name.to_owned(), dir));
+        // Read afresh with every stage, so a changed `relay_replies` shows on
+        // the next read of the session's lane.
+        console.relay_replies(crate::config::global_relay_replies(Some(
+            &self.settings_paths.global,
+        )));
         let journals = &mut self.journals;
         let read = console.read_staged(reach, &mut |dir| journals.snapshot(dir));
         if read.is_ok() {

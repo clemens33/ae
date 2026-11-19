@@ -1146,6 +1146,12 @@ pub struct Outbound {
     sent: std::collections::VecDeque<u64>,
     /// Whether the last pass stopped at its window with more to read.
     behind: bool,
+    /// Whether an orchestrator's raw relay answer echo goes to the phone: drawn
+    /// (as before) until the pass that owns this bridge, which knows the session's
+    /// role and the setting, says otherwise. It is read at each line, never
+    /// remembered with the cursor, so a line skipped while hidden is not sent
+    /// later when the setting turns on.
+    pub(crate) relay_replies: crate::config::RelayReplies,
 }
 
 impl Outbound {
@@ -1173,6 +1179,7 @@ impl Outbound {
             watch,
             sent: std::collections::VecDeque::new(),
             behind: false,
+            relay_replies: crate::config::RelayReplies::Shown,
         }
     }
 
@@ -1441,6 +1448,13 @@ impl Outbound {
             return Wanted::Stale;
         }
         if self.sent.contains(&line_hash(line)) {
+            return Wanted::Skip;
+        }
+        // An orchestrator's raw relay answer echo stays off the phone unless
+        // `relay_replies = on`; its receipt echo and every other `ae:` row go.
+        if self.relay_replies == crate::config::RelayReplies::Hidden
+            && crate::relay::is_reply_echo(&event)
+        {
             return Wanted::Skip;
         }
         let dir = self.log.parent().unwrap_or_else(|| Path::new("."));

@@ -477,6 +477,7 @@ auto_trust = on           # answer a seat's own measured folder-trust modal once
 opencode_go_key_file = ~/.config/opencode/go-usage.key  # 0600 key file; ae quota shows opencode-go/* windows; global only
 copilot_token_file = ~/.credentials/copilot  # 0600 token file; display-only premium allowance; global only
 muse_quota = off           # on: ae quota asks Muse once per 30 min (a model call, ~32K input tokens) for its allowance; global only
+relay_replies = off        # on: the orchestrator chat and the phone also get the raw relay answer line (`reply <nonce> from <seat>: …`); global only
 palette = darcula          # darcula (default), a = neutral dark, b = warmer
 icons = on                 # off swaps the glyph set for its ASCII fallback
 theme = on                 # off keeps YOUR status line; ae still fills @ae_*

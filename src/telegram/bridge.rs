@@ -381,6 +381,7 @@ pub fn run(
     let relay = Relay {
         since,
         echoes: Echoes::default(),
+        config: paths.config.clone(),
     };
     let (words, inbox_words) = std::sync::mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
@@ -438,6 +439,8 @@ pub fn run(
 struct Relay {
     since: i64,
     echoes: Echoes,
+    /// The global config the passes read `relay_replies` from, afresh each pass.
+    config: PathBuf,
 }
 
 /// Spawn the inbound long poll.
@@ -641,6 +644,9 @@ fn forward(
     bridges: &mut BTreeMap<PathBuf, Outbound>,
     err: &mut impl Write,
 ) -> crate::error::Result<usize> {
+    // The raw relay answer echo is the orchestrator's alone: read the setting
+    // once per pass, so a changed config is honoured without a restart.
+    let replies = crate::config::global_relay_replies(Some(&relay.config));
     // A session with no lead pair has no shared chat to relay.
     let running: Vec<_> = (world.running().into_iter())
         .filter(|session| !session.pair.is_empty())
@@ -659,6 +665,11 @@ fn forward(
         });
         // The pair as this pass reads it: a reseat or a resume may change it.
         outbound.watch.pair.clone_from(&session.pair);
+        outbound.relay_replies = if session.meta_agent {
+            replies
+        } else {
+            crate::config::RelayReplies::Shown
+        };
         let pass = outbound.pump(api);
         if let Some(failure) = pass.failure {
             writeln!(err, "ae: telegram: {}: {failure}", session.name)?;
@@ -719,6 +730,7 @@ mod tests {
         super::Relay {
             since: i64::MIN,
             echoes: super::Echoes::default(),
+            config: PathBuf::new(),
         }
     }
 
@@ -767,6 +779,158 @@ mod tests {
             Submitted::No(Refusal::Transient)
         );
         assert!(chat.echoes.lock().unwrap().contains(&origin.request_id()));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn forward_keeps_a_raw_relay_answer_off_the_phone_of_an_orchestrator_by_default() {
+        // Production's gate, through `forward` itself: the orchestrator's
+        // journal carries the receipt echo, the raw answer echo and another
+        // ae row; the phone gets the receipt and the other ae row, not the
+        // answer. An ordinary session's journal with the same rows sends all
+        // three, so the hiding is the orchestrator's alone.
+        use crate::telegram::routing::RunningSession;
+        use crate::telegram::tests::{Fake, Reply};
+        let root = std::env::temp_dir().join(format!("ae-tg-quiet-{}", std::process::id()));
+        // Disposable: a recycled pid must not pick up an earlier run's journal or cursor.
+        std::fs::remove_dir_all(&root).ok();
+        for name in ["orch", "home"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+            let rows = [
+                ("ae:relay", "routed to home: ask (sent), request r-1"),
+                ("ae:relay", "reply fd5bf0 from lead: RAW-RELAY-ANSWER"),
+                ("ae:compact", "reboot: handover complete"),
+            ];
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(root.join(name).join(crate::store::EVENTS))
+                .unwrap();
+            for (actor, text) in rows {
+                let line = format!(
+                    r#"{{"ts":"2026-10-16T09:00:00Z","actor":"{actor}","action":"chat","ref":"ae-20261016T090000Z-0000abcd","summary":"{text}"}}"#
+                );
+                std::io::Write::write_all(&mut file, format!("{line}\n").as_bytes()).unwrap();
+            }
+        }
+        let session = |name: &str, meta_agent: bool| RunningSession {
+            name: name.to_owned(),
+            dir: root.join(name),
+            session_id: "abc123".to_owned(),
+            meta_agent,
+            main: Some("lead".to_owned()),
+            agents: vec!["lead".to_owned()],
+            pair: vec!["lead".to_owned()],
+            last_active: None,
+        };
+        let fake = Fake::start(vec![Reply::ok()]);
+        let api = fake.api();
+        let mut bridges = std::collections::BTreeMap::new();
+        let mut err = Vec::new();
+        let world = vec![session("orch", true), session("home", false)];
+        super::forward(&api, &world, &relay(), &root, &mut bridges, &mut err).unwrap();
+        let texts: Vec<String> = (fake.requests().iter())
+            .map(|seen| crate::json::parse(&seen.body).unwrap())
+            .map(|value| value.get_str("text").unwrap_or_default().to_owned())
+            .collect();
+        let of = |label: &str, needle: &str| {
+            texts
+                .iter()
+                .filter(|text| text.starts_with(label) && text.contains(needle))
+                .count()
+        };
+        assert_eq!(of("[orch] ", "routed to home"), 1, "{texts:?}");
+        assert_eq!(of("[orch] ", "reboot: handover"), 1, "{texts:?}");
+        assert_eq!(of("[orch] ", "RAW-RELAY-ANSWER"), 0, "{texts:?}");
+        for needle in ["routed to home", "reboot: handover", "RAW-RELAY-ANSWER"] {
+            assert_eq!(of("[home] ", needle), 1, "an ordinary session: {texts:?}");
+        }
+        assert_eq!(texts.len(), 5, "{texts:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn forward_follows_the_global_relay_replies_setting_each_pass_and_replays_nothing() {
+        // The setting is read at every pass from the global config: `on`
+        // forwards an orchestrator's raw answer echo as before the key
+        // existed, anything else keeps it off the phone. A line skipped while
+        // hidden is past the cursor, so turning the setting on later does not
+        // send it; a line sent while on stays sent when the setting turns off.
+        use crate::telegram::routing::RunningSession;
+        use crate::telegram::tests::{Fake, Reply};
+        let root = std::env::temp_dir().join(format!("ae-tg-quiet-on-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("orch")).unwrap();
+        let config = root.join("config");
+        let write_config = |value: Option<&str>| {
+            let text = value.map_or_else(String::new, |value| {
+                format!("[workspace]\nrelay_replies = {value}\n")
+            });
+            std::fs::write(&config, text).unwrap();
+        };
+        let say = |actor: &str, text: &str| {
+            let line = format!(
+                r#"{{"ts":"2026-10-16T09:00:00Z","actor":"{actor}","action":"chat","ref":"ae-20261016T090000Z-0000abcd","summary":"{text}"}}"#
+            );
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(root.join("orch").join(crate::store::EVENTS))
+                .unwrap();
+            std::io::Write::write_all(&mut file, format!("{line}\n").as_bytes()).unwrap();
+        };
+        let world = vec![RunningSession {
+            name: "orch".to_owned(),
+            dir: root.join("orch"),
+            session_id: "abc123".to_owned(),
+            meta_agent: true,
+            main: Some("lead".to_owned()),
+            agents: vec!["lead".to_owned()],
+            pair: vec!["lead".to_owned()],
+            last_active: None,
+        }];
+        let fake = Fake::start(vec![Reply::ok()]);
+        let api = fake.api();
+        let relay = super::Relay {
+            since: i64::MIN,
+            echoes: super::Echoes::default(),
+            config: config.clone(),
+        };
+        let mut bridges = std::collections::BTreeMap::new();
+        let mut err = Vec::new();
+        let mut pass =
+            |bridges: &mut std::collections::BTreeMap<PathBuf, crate::telegram::Outbound>| {
+                super::forward(&api, &world, &relay, &root, bridges, &mut err).unwrap();
+            };
+        let texts = || -> Vec<String> {
+            (fake.requests().iter())
+                .map(|seen| crate::json::parse(&seen.body).unwrap())
+                .map(|value| value.get_str("text").unwrap_or_default().to_owned())
+                .collect()
+        };
+        let count = |needle: &str| texts().iter().filter(|t| t.contains(needle)).count();
+
+        write_config(None);
+        say("ae:relay", "reply fd5bf0 from lead: HIDDEN-ECHO");
+        say("ae:relay", "routed to home: ask (sent), request r-1");
+        pass(&mut bridges);
+        assert_eq!((count("HIDDEN-ECHO"), count("routed to home")), (0, 1));
+
+        write_config(Some("on"));
+        pass(&mut bridges);
+        assert_eq!(count("HIDDEN-ECHO"), 0, "a skipped line is not replayed");
+        say("ae:relay", "reply 0a1b2c from lead: SHOWN-ECHO");
+        say("ae:compact", "reboot: handover complete");
+        pass(&mut bridges);
+        assert_eq!((count("SHOWN-ECHO"), count("reboot: handover")), (1, 1));
+        assert_eq!(count("routed to home"), 1, "nothing sent twice");
+
+        write_config(Some("off"));
+        say("ae:relay", "reply 0d0d0d from lead: OFF-AGAIN-ECHO");
+        say("ae:compact", "reboot: second");
+        pass(&mut bridges);
+        assert_eq!((count("OFF-AGAIN-ECHO"), count("reboot: second")), (0, 1));
+        assert_eq!(count("SHOWN-ECHO"), 1, "a sent line stays sent");
         std::fs::remove_dir_all(&root).ok();
     }
 

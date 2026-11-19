@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::board::{self, Role};
+use crate::config::RelayReplies;
 use crate::events::{Event, RoutingMember};
 use crate::watchdog::{self, HUMAN_BRIDGE_ACTORS, WATCHDOG_ACTOR};
 use crate::{reply, reseat, send, tracked};
@@ -230,14 +231,28 @@ fn bridge(name: &str) -> bool {
         .any(|prefix| name.starts_with(prefix))
 }
 
-/// Fold one session's lead-pair facts into the lane.
+/// Whose chat a lane is, for the two journal shapes only an orchestrator's own
+/// chat holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chat {
+    /// An ordinary session's: every journal row is drawn as it is written.
+    Ordinary,
+    /// An orchestrator's: a seat's own `say` row, written with its slot and no
+    /// session key ([`says_as`]), is that seat's; and the raw relay answer echo
+    /// is drawn only under [`RelayReplies::Shown`].
+    Orchestrator(RelayReplies),
+}
+
+/// Fold one session's lead-pair facts into the lane, as an ordinary chat
+/// ([`Chat::Ordinary`]); an orchestrator's chat goes through [`fold_via`].
 ///
 /// The journal half is the human-facing record: a chat-bridge thread in FULL
 /// (whichever seat it names), `say` lines from the lead pair and ae's own
 /// notices, and a worker's `say` only COUNTED — never shown, never silent.
-/// Cards and prompts belong to the lead pair alone. A prompt shows only while
-/// its verdict stands; a declaration shows as the standing card while it
-/// stands, and after it as a past card at its own journal position.
+/// Cards and prompts belong to the lead pair alone.
+/// A prompt shows only while its verdict stands; a declaration shows as the
+/// standing card while it stands, and after it as a past card at its own
+/// journal position.
 #[must_use]
 pub fn fold(
     session: &str,
@@ -255,11 +270,24 @@ pub fn fold(
         skipped,
         body,
         &Via::of_grammar,
+        Chat::Ordinary,
     )
 }
 
-/// [`fold`], with each relayed ask's origin resolved by `via`.
+/// The one coverage row that names the raw relay answer echoes a lane hid. It
+/// carries no count: a followed chat prints a coverage row once, so a row that
+/// changed with every echo would print again with every echo.
+pub(crate) const RELAY_HIDDEN: &str =
+    "relay — answer echoes hidden (relay --status <id>, or relay_replies = on)";
+
+/// [`fold`], with each relayed ask's origin resolved by `via`, for the chat `chat`.
+/// An orchestrator's chat hides the raw relay answer echo unless its setting is
+/// [`RelayReplies::Shown`], and counts the hidden ones in one stable coverage row.
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the lane's facts and the two readers a view supplies, plus the one switch"
+)]
 pub fn fold_via(
     session: &str,
     seats: &[Seat],
@@ -268,8 +296,9 @@ pub fn fold_via(
     skipped: usize,
     body: &dyn Fn(&Event) -> Body,
     via: &dyn Fn(&str) -> Via,
+    chat: Chat,
 ) -> Lane {
-    let (mut items, other_say) = journal_items(session, seats, events);
+    let (mut items, other_say, echoes) = journal_items(session, seats, events, chat);
     items.extend(standing_items(session, seats, events));
     let mut body_gaps = Vec::new();
     let console = console_items(session, seats, events, body, via, &mut body_gaps);
@@ -311,6 +340,9 @@ pub fn fold_via(
         if count > 0 {
             coverage.push(format!("{who} — {count} {noun}{plural} {tail}"));
         }
+    }
+    if echoes > 0 {
+        coverage.push(RELAY_HIDDEN.to_owned());
     }
     coverage.extend(body_gaps);
     Lane { items, coverage }
@@ -733,10 +765,32 @@ pub fn open_asks<'a>(events: &'a [Event], session: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// Whether `event` is `seat`'s own `say` as `say` writes it: a `chat` row whose
+/// actor is the seat's name, whose `actor_slot` is the seat's slot, and which
+/// carries no `actor_session` and no `actor_session_id` (`chat_line`, the one
+/// writer). The lane's own matcher rejects that half key, so a real `say` of an
+/// orchestrator's seat would count as another seat's; only an orchestrator's
+/// chat reads it so.
+fn says_as(event: &Event, seat: &Seat) -> bool {
+    event.actor == seat.name
+        && event.actor_slot.value() == Some(seat.slot.as_str())
+        && event.actor_session == RoutingMember::Absent
+        && event.actor_session_id == RoutingMember::Absent
+}
+
 /// The chat-bridge thread and the `say` lines, plus how many worker `say`
-/// lines were left out.
-fn journal_items(session: &str, seats: &[Seat], events: &[Event]) -> (Vec<Item>, usize) {
-    let (mut items, mut other_say) = (Vec::new(), 0);
+/// lines and how many raw relay answer echoes were left out.
+fn journal_items(
+    session: &str,
+    seats: &[Seat],
+    events: &[Event],
+    chat: Chat,
+) -> (Vec<Item>, usize, usize) {
+    let (hide, orchestrator) = match chat {
+        Chat::Ordinary => (false, false),
+        Chat::Orchestrator(relay) => (relay == RelayReplies::Hidden, true),
+    };
+    let (mut items, mut other_say, mut echoes) = (Vec::new(), 0, 0);
     let mut past = past_runs(session, seats, events).into_iter().peekable();
     for (at, event) in events.iter().enumerate() {
         // A declaration that stopped standing draws where the journal put it,
@@ -744,6 +798,14 @@ fn journal_items(session: &str, seats: &[Seat], events: &[Event]) -> (Vec<Item>,
         while let Some((_, seat, text)) = past.next_if(|(first, ..)| *first == at) {
             items.push(item(Kind::PastCard { seat }, micros(event), text));
         }
+        // The raw answer echo of a relayed ask: the journal keeps its excerpt,
+        // `relay --status` prints the whole answer; the lane draws the echo only
+        // when asked to.
+        if hide && crate::relay::is_reply_echo(event) {
+            echoes += 1;
+            continue;
+        }
+
         let (actor, action) = (event.actor.clone(), event.action.as_str());
         let to = event.target.clone().unwrap_or_default();
         let asks = [
@@ -756,9 +818,10 @@ fn journal_items(session: &str, seats: &[Seat], events: &[Event]) -> (Vec<Item>,
         } else if action == reply::ACTION && bridge(&to) {
             Kind::Reply { from: actor, to }
         } else if action == "chat" {
-            let seat = seats
-                .iter()
-                .find(|seat| watchdog::event_is_actor(event, session, &seat.slot, &seat.name));
+            let seat = seats.iter().find(|seat| {
+                watchdog::event_is_actor(event, session, &seat.slot, &seat.name)
+                    || (orchestrator && says_as(event, seat))
+            });
             if let Some(seat) = seat {
                 Kind::Said {
                     who: seat.name.clone(),
@@ -793,7 +856,7 @@ fn journal_items(session: &str, seats: &[Seat], events: &[Event]) -> (Vec<Item>,
             event.summary.as_deref().unwrap_or(""),
         ));
     }
-    (items, other_say)
+    (items, other_say, echoes)
 }
 
 /// Whether `reply` comes from the complete identity `ask` reached: no spawned
@@ -953,8 +1016,9 @@ mod consoleitems_spec;
 
 #[cfg(test)]
 mod tests {
-    use super::{Body, Kind, Lane, Seat, fold};
+    use super::{Body, Chat, Kind, Lane, Seat, Via, fold, fold_via};
     use crate::board::{Coverage, Observation, Role, Row};
+    use crate::config::RelayReplies;
     use crate::console::view::{Printed, tag};
     use crate::events::Event;
     use crate::tool::ToolKind;
@@ -998,11 +1062,25 @@ mod tests {
 
     /// Each item as `kind body`, in lane order.
     fn shown(events: &[Event], rows: Vec<Row>) -> Vec<String> {
+        shown_as(events, rows, Chat::Ordinary)
+    }
+
+    /// [`shown`] for the chat `chat`.
+    fn shown_as(events: &[Event], rows: Vec<Row>, chat: Chat) -> Vec<String> {
         let observation = Observation {
             rows,
             ..Observation::default()
         };
-        let lane = fold(S, &pair(), events, &observation, 0, &|_| Body::OldCore);
+        let lane = fold_via(
+            S,
+            &pair(),
+            events,
+            &observation,
+            0,
+            &|_| Body::OldCore,
+            &Via::of_grammar,
+            chat,
+        );
         lane.items
             .iter()
             .map(|item| {
@@ -1089,6 +1167,133 @@ mod tests {
                 "said ae: moved lead to another profile"
             ]
         );
+    }
+
+    #[test]
+    fn an_orchestrator_chat_hides_a_relay_answer_echo_and_counts_it_in_one_row() {
+        let events = [
+            ev(
+                T0,
+                "ae:relay",
+                "chat",
+                "",
+                "routed to home: ask (sent), request r-1",
+            ),
+            ev(
+                T0,
+                "ae:relay",
+                "chat",
+                "",
+                "reply fd5bf0 from lead: Found one: ECHO-ONE",
+            ),
+            ev(T1, "colead", "chat", "", "orchestrator says"),
+            ev(
+                T1,
+                "ae:relay",
+                "chat",
+                "",
+                "reply 0a1b2c from lead: ECHO-TWO",
+            ),
+            // Not an answer echo: another writer, or a summary with no nonce.
+            ev(
+                T2,
+                "watchdog",
+                "chat",
+                "",
+                "reply fd5bf0 from lead: a watchdog's words",
+            ),
+            ev(
+                T2,
+                "ae:relay",
+                "chat",
+                "",
+                "reply not-a-nonce from lead: odd",
+            ),
+        ];
+        let observation = Observation::default();
+        let hidden = Chat::Orchestrator(RelayReplies::Hidden);
+        let via = |events: &[Event], chat: Chat| {
+            fold_via(
+                S,
+                &pair(),
+                events,
+                &observation,
+                0,
+                &|_| Body::OldCore,
+                &Via::of_grammar,
+                chat,
+            )
+        };
+        // One stable row whatever the count: a followed chat prints a row once,
+        // so a row that named a count would print again with every echo.
+        let note = "relay — answer echoes hidden (relay --status <id>, or relay_replies = on)";
+        assert_eq!(via(&events, hidden).coverage, [note]);
+        let first = via(&events[..2], hidden);
+        assert_eq!(first.coverage, [note], "one echo hidden: the same row");
+        // `fold` is the ordinary chat's: the echoes stay, with no coverage row.
+        let plain = fold(S, &pair(), &events, &observation, 0, &|_| Body::OldCore);
+        assert!(plain.coverage.is_empty(), "{:?}", plain.coverage);
+        assert!(
+            plain
+                .items
+                .iter()
+                .any(|item| item.body.contains("ECHO-ONE"))
+        );
+        // Drawn as written under the setting `on`, and in an ordinary chat.
+        for chat in [Chat::Orchestrator(RelayReplies::Shown), Chat::Ordinary] {
+            let all = shown_as(&events, Vec::new(), chat);
+            assert!(all.iter().any(|row| row.contains("ECHO-ONE")), "{chat:?}");
+            assert!(all.iter().any(|row| row.contains("ECHO-TWO")), "{chat:?}");
+            assert!(via(&events, chat).coverage.is_empty(), "{chat:?}");
+        }
+        assert_eq!(
+            shown_as(&events, Vec::new(), hidden),
+            [
+                "said ae: routed to home: ask (sent), request r-1",
+                "said colead: orchestrator says",
+                "said ae: reply fd5bf0 from lead: a watchdog's words",
+                "said ae: reply not-a-nonce from lead: odd",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_orchestrators_real_say_is_its_seats_and_an_ordinary_chat_keeps_the_old_rule() {
+        // The one writer's shape: the actor's name and slot, no session key.
+        let said = |actor: &str, slot: &str, text: &str| {
+            let line = crate::chat_line(crate::time::Timestamp::now(), actor, slot, text);
+            Event::parse_line(&line).unwrap()
+        };
+        let events = [
+            said("lead", "main", "main says"),
+            said("colead", "worker.0", "colead says"),
+            // Another seat's name on the main slot, a worker, a stranger.
+            said("colead", "main", "wrong slot"),
+            said("scout", "worker.1", "a worker says"),
+        ];
+        let observation = Observation::default();
+        let bodies = |chat: Chat| -> (Vec<String>, Vec<String>) {
+            let lane = fold_via(
+                S,
+                &pair(),
+                &events,
+                &observation,
+                0,
+                &|_| Body::OldCore,
+                &Via::of_grammar,
+                chat,
+            );
+            let bodies = lane.items.into_iter().map(|item| item.body).collect();
+            (bodies, lane.coverage)
+        };
+        for relay in [RelayReplies::Hidden, RelayReplies::Shown] {
+            let (shown, coverage) = bodies(Chat::Orchestrator(relay));
+            assert_eq!(shown, ["main says", "colead says"], "{relay:?}");
+            assert_eq!(coverage, ["say — 2 lines from other seats not shown"]);
+        }
+        let (shown, coverage) = bodies(Chat::Ordinary);
+        assert!(shown.is_empty(), "{shown:?}");
+        assert_eq!(coverage, ["say — 4 lines from other seats not shown"]);
     }
 
     #[test]

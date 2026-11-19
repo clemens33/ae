@@ -137,6 +137,7 @@ fn relay() -> Relay {
     Relay {
         since: i64::MIN,
         echoes: crate::telegram::Echoes::default(),
+        config: std::path::PathBuf::new(),
     }
 }
 

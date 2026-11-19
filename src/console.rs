@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::board::{self, Generations, Inputs, Replies, Row, follow::Follow, terminal_text};
+use crate::config::RelayReplies;
 use crate::events::{Event, Held};
 use crate::store::{self, Oversized, SourceRead};
 use crate::{
@@ -34,7 +35,7 @@ pub mod view;
 pub(crate) mod wrap;
 
 /// The usage text.
-pub const USAGE: &str = "Usage: ae chat [session] [--follow] [--all]\n\n  session   the session to read (default: the session this pane belongs to)\n  --follow  keep printing what is new every 5 s until interrupted (Ctrl-C to stop)\n  --all     show every assistant reply of the lead pair (default: only the replies to lines you typed in its pane)\n";
+pub const USAGE: &str = "Usage: ae chat [session] [--follow] [--all]\n\n  session   the session to read (default: the session this pane belongs to)\n  --follow  keep printing what is new every 5 s until interrupted (Ctrl-C to stop)\n  --all     show every assistant reply of the lead pair (default: only the replies to lines you typed in its pane) and, in an orchestrator chat, the raw relay answer lines (default: hidden, unless relay_replies = on)\n";
 
 /// A parsed `ae chat` argv.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -87,6 +88,9 @@ pub(crate) struct Console {
     dir: PathBuf,
     uuid: String,
     replies: Replies,
+    /// Whether the lane draws the raw relay answer echo: hidden unless asked,
+    /// and only ever hidden in an orchestrator session's own chat.
+    relay: RelayReplies,
     home: Option<PathBuf>,
     printed: view::Printed,
     rows: Vec<Row>,
@@ -178,6 +182,7 @@ impl Console {
             name,
             dir,
             replies: Replies::ToHuman,
+            relay: RelayReplies::Hidden,
             home: doors::home(),
             printed: view::Printed::default(),
             rows: Vec::new(),
@@ -190,6 +195,12 @@ impl Console {
             staged: Staged::default(),
             proof: None,
         }
+    }
+
+    /// This console's ruling on the raw relay answer echo: the global
+    /// `relay_replies`, which a view reads where it opens its consoles.
+    pub(crate) fn relay_replies(&mut self, setting: RelayReplies) {
+        self.relay = setting;
     }
 
     /// [`Console::open`] for a view that redraws its lane on every read.
@@ -277,9 +288,10 @@ impl Console {
         }
     }
 
-    /// [`Console::seats`], whether any of them records a predecessor, and the
-    /// meta they were read from.
-    fn lead_pair(&self) -> Result<(Vec<Seat>, bool, meta::Meta), String> {
+    /// [`Console::seats`], whether any of them records a predecessor, the meta
+    /// they were read from, and whether those same bytes record the orchestrator
+    /// role.
+    fn lead_pair(&self) -> Result<(Vec<Seat>, bool, meta::Meta, bool), String> {
         let bytes =
             meta::read_bytes(&self.dir).map_err(|err| format!("meta unreadable ({err})"))?;
         let uuid = archive::canonical_uuid(&lifecycle::meta_value(&bytes, "session_id"));
@@ -303,7 +315,8 @@ impl Console {
             name: entry.name.clone(),
             profile: entry.profile.clone(),
         };
-        Ok((kept.map(seat).collect(), priors, meta))
+        let orchestrator = meta::meta_agent_role(&bytes) == meta::MetaAgentRole::Role;
+        Ok((kept.map(seat).collect(), priors, meta, orchestrator))
     }
 
     /// One pass: [`Console::read`], then the text this console has not
@@ -397,7 +410,7 @@ impl Console {
         reach: Option<Reach>,
         records: &mut dyn FnMut(&Path) -> session::RecordSnapshot,
     ) -> Result<Read, String> {
-        let (seats, priors, meta) = self.lead_pair()?;
+        let (seats, priors, meta, orchestrator) = self.lead_pair()?;
         let slots: Vec<&str> = seats.iter().map(|seat| seat.slot.as_str()).collect();
         let keep = |entry: &meta::RosterEntry| slots.contains(&entry.slot.as_str());
         let sessions = [usage::SessionInput {
@@ -468,6 +481,11 @@ impl Console {
             let known = origins.entry(origin.to_owned());
             known.or_insert_with(|| self.origin(origin)).clone()
         };
+        let chat = if orchestrator {
+            lane::Chat::Orchestrator(self.relay)
+        } else {
+            lane::Chat::Ordinary
+        };
         let mut lane = lane::fold_via(
             &self.name,
             &seats,
@@ -476,6 +494,7 @@ impl Console {
             skipped,
             &body,
             &via,
+            chat,
         );
         let journal_read = read_gap.is_none();
         let settled = journal_read && self.staged.stage == Stage::Every;
@@ -1141,8 +1160,11 @@ pub fn run(
         return Ok(crate::EXIT_UNAVAILABLE);
     };
     let mut console = Console::open(name, dir);
+    let global = doors::config_file(crate::shape::current(), &root);
+    console.relay_replies(crate::config::global_relay_replies(Some(&global)));
     if args.all {
         console.replies = Replies::All;
+        console.relay_replies(RelayReplies::Shown);
     }
     let declared = doors::declared_server(crate::shape::current());
     console.proof = doors::launch_target(declared.as_ref());

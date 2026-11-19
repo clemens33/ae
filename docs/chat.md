@@ -50,7 +50,22 @@ the window on demand. See [Keys](#keys).
   labels, and a move whose start failed before any record, finished by
   `relaunch`, does not.
 - **`say` lines** as `said <seat>` (or `ae` for ae's own notices); a worker's
-  is counted in a coverage row, never shown.
+  is counted in a coverage row, never shown. An orchestrator's chat also reads
+  a `say` written with the seat's slot and no session key, which is how `say`
+  writes it, as that seat's own; another session's chat keeps the stricter
+  rule.
+- **Relay answers** (an orchestrator's chat only). `relay --status <id>`
+  journals the receipt of a relay (`routed to <session>: …`, drawn as `said
+  ae`) and, for each answer it reads back, a raw line `reply <nonce> from
+  <seat>: <excerpt>`. The raw line is hidden by default: the orchestrator's
+  own summary says the same. One coverage row, `relay — answer echoes hidden
+  (…)`, says so. It names no count, so a followed chat prints it once. The
+  answer stays whole in `relay --status <id>` and the journal keeps the line.
+  `[workspace] relay_replies = on` in the global config draws the line again,
+  and `ae chat --all` does so for one run. `ae chat` reads the setting when it
+  starts; `ae app` reads it with every lane read. Only a session that records
+  `meta_agent=true` hides the line: another session's chat draws every such
+  row as before. The [Telegram bridge](#telegram) follows the same setting.
 - **Decision cards**: a lead-pair seat's CURRENT `waiting-user` declaration as
   `DECISION <seat>`, the watchdog's `human-prompt` as `NEEDS YOU <seat>`.
   In chat and `ae app` a card's reason is laid out for reading, every word kept
@@ -86,7 +101,8 @@ the window on demand. See [Keys](#keys).
 - **Coverage rows** for anything it cannot read: a torn or absent transcript,
   an unsupported harness, an unreadable journal, skipped journal lines.
 - `--all` shows every assistant reply of the lead pair, answers to agents
-  included, and reads OpenCode and Antigravity replies too.
+  included, and reads OpenCode and Antigravity replies too. In an
+  orchestrator's chat it also draws the raw relay answer lines (above).
 - **Needs you**, after the lane: see [below](#needs-you).
 
 ## Long turns
@@ -448,6 +464,15 @@ never takes an `ae app`'s writer lease. Back to the phone go each running
 session's human-facing chat rows, labelled `[session]`: asks typed here, the
 answers, and a lead-pair seat's or the watchdog's `say`. Worker traffic, states
 and tool output stay local, and a phone message is not echoed back.
+
+An orchestrator's raw relay answer line (`reply <nonce> from <seat>: …`, see
+[What it shows](#what-it-shows)) is not sent by default, under the same global
+`[workspace] relay_replies` that hides it in the chat; `on` sends it as before.
+Its receipt line (`routed to …`) and every other `ae:` row still go. The bridge
+reads the setting at each pass, and only for a session that records
+`meta_agent=true`. It decides when the bridge scans a line: a line skipped
+while hidden is past the cursor, so turning the setting on later does not
+send it, and a line already sent stays sent.
 
 Each bridge start fixes a cutoff ten minutes before it started. An older row is
 not sent, even behind a valid cursor: it stays in the session journal and its

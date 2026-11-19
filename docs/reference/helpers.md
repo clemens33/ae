@@ -126,6 +126,9 @@ replacement refused, `request:` there and each admitted answer whole. Exit 0 is
 a whole read; exit 1 names a gap in it now: a damaged claim or opening, a
 target gone or ambiguous, an answer body that is not whole. It writes nothing in
 the target and adds only a missing receipt or reply echo to the caller's chat.
+The orchestrator's chat hides that raw reply echo by default
+(`[workspace] relay_replies`, `ae chat --all`; see
+[the chat](../chat.md#what-it-shows)): the answer stays whole in this command.
 
 Every turn ae itself injects carries a machine-readable marker on its **first
 line**, rendered by one owner (`src/l0_base/provenance.rs`); a marker pasted inside

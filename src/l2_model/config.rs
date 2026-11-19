@@ -2311,6 +2311,32 @@ impl AutoTrust {
     }
 }
 
+/// The global `[workspace] relay_replies` ruling: whether an orchestrator's
+/// chat draws, and the phone bridge forwards, the raw `reply <nonce> from
+/// <seat>: …` line `relay --status` journals for each relayed answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RelayReplies {
+    /// Quiet, the default: only the orchestrator's own words and the receipt.
+    #[default]
+    Hidden,
+    /// Exactly `on`: the raw line, as before the key existed.
+    Shown,
+}
+
+/// GLOBAL ONLY, so a project `.ae/config` never votes. Exactly `on` shows the
+/// raw line; an absent file, an absent key, `off`, any other value and every
+/// reader error hide it.
+#[must_use]
+pub fn global_relay_replies(global: Option<&Path>) -> RelayReplies {
+    let Some(file) = global else {
+        return RelayReplies::Hidden;
+    };
+    match read_global_workspace_key(file, "relay_replies") {
+        Ok(Some(value)) if value.trim() == "on" => RelayReplies::Shown,
+        _ => RelayReplies::Hidden,
+    }
+}
+
 /// GLOBAL ONLY, through the same reader as `restore`, so a project
 /// `.ae/config` never votes. Absent and exact `on` answer, exact `off` does
 /// not; any other value and every reader error answers nothing and is named.
@@ -2807,6 +2833,42 @@ mod tests {
         );
         assert!(key.is_err(), "{key:?}");
         assert_eq!(absent, Ok(None));
+    }
+
+    /// PIN: the raw relay answer line is hidden unless the global config says
+    /// exactly `on`; a missing file, a missing key, `off`, any other value, an
+    /// unreadable file and no file at all hide it.
+    #[test]
+    fn relay_replies_shows_only_on_an_exact_on_in_the_global_workspace() {
+        let dir =
+            std::env::temp_dir().join(format!("ae-config-relay-replies-{}", std::process::id()));
+        assert!(std::fs::create_dir_all(&dir).is_ok());
+        let file = dir.join("config");
+        let read = |text: &str| {
+            assert!(std::fs::write(&file, text).is_ok());
+            global_relay_replies(Some(&file))
+        };
+        let on = read("[workspace]\nrelay_replies = on\n");
+        let spaced = read("[workspace]\n  relay_replies =  on  \n");
+        let wrong_section = read("[other]\nrelay_replies = on\n");
+        let last_wins = read("[workspace]\nrelay_replies = on\nrelay_replies = off\n");
+        let others: Vec<_> = ["off", "ON", "true", "1", "maybe", ""]
+            .iter()
+            .map(|value| read(&format!("[workspace]\nrelay_replies = {value}\n")))
+            .collect();
+        let no_key = read("[workspace]\nchat = on\n");
+        let missing = global_relay_replies(Some(&dir.join("absent")));
+        let unreadable = global_relay_replies(Some(&dir));
+        let no_file = global_relay_replies(None);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!((on, spaced), (RelayReplies::Shown, RelayReplies::Shown));
+        assert_eq!(wrong_section, RelayReplies::Hidden);
+        assert_eq!(last_wins, RelayReplies::Hidden, "the last line wins");
+        assert!(others.iter().all(|value| *value == RelayReplies::Hidden));
+        assert_eq!(
+            [no_key, missing, unreadable, no_file],
+            [RelayReplies::Hidden; 4]
+        );
     }
 
     /// PIN: a typo costs the human their entry, never their status line. An
