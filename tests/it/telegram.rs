@@ -225,16 +225,30 @@ fn the_destination_is_a_constant_and_the_test_seam_is_compiled_out() {
         1,
         "more than one production URL literal"
     );
-    // The credentials reader knows two keys.
-    let keys: Vec<&str> = telegram
-        .lines()
-        .filter(|line| line.contains("=> token_file = ") || line.contains("=> chat_id = "))
-        .collect();
-    assert_eq!(
-        keys.len(),
-        2,
-        "the config keys the bridge reads changed: {keys:?}"
-    );
+    // Each credential has one assignment, in its own settings parser arm.
+    let parser = telegram
+        .split_once("\nfn parse_settings(")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .expect("parse_settings must exist")
+        .0;
+    for key in ["token_file", "chat_id"] {
+        assert_eq!(
+            telegram.matches(&format!(".{key} = ")).count(),
+            1,
+            "expected one production assignment to the {key} field"
+        );
+        assert_eq!(
+            parser
+                .matches(&format!("\"{key}\" => settings.{key} = "))
+                .count(),
+            1,
+            "expected the {key} assignment in its parse_settings arm"
+        );
+        assert!(
+            !telegram.contains(&format!("=> {key} = ")),
+            "a direct config assignment to {key} appeared outside the settings field"
+        );
+    }
     for destination_key in ["base_url", "api_url", "api_root", "endpoint", "host ="] {
         assert!(
             !telegram.contains(destination_key),
