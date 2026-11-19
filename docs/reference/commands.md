@@ -15,6 +15,10 @@ ae <name> [--local|--copy|--worktree] [--dir <path>] [--no-attach] [--tmux]
                        exact attach command and exits; --tmux keeps the tmux view
 ae <name> --resume     Resume an existing session and never create one. A stopped session
                        named like an ae command (sessions, lists) resumes only with it
+ae <name> --resume --no-attach --expect-uuid <uuid>
+                       Bound resume: resume only the stopped session whose record names
+                       this uuid, in place on its recorded server; never create, never
+                       reattach. The one launch the orchestrator seat may run
 ae <name> --solo       lead only, no colead
 ae <name> use <alias>  Start session with a specific agent as main
 ae <name> --seat <agent>=<profile> [...]
@@ -78,6 +82,9 @@ ae watchdog <start|stop|status> [name]
 ae telegram <setup|start|stop|status>
                        Machine-global Telegram bridge — see Telegram bridge reference
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
+ae stop <name> --expect-uuid <uuid>
+                       Bound stop: stop only if the name is the session with this uuid
+                       and no seat declares working, waiting-agent or blocked
 ae archive preview [name]
                        Print the digest an end would archive. Read-only: writes nothing,
                        emits no event, does not stop the session
@@ -2099,11 +2106,19 @@ missing match prompts for the target and sends nothing. It never dispatches work
 clears questions, edits project or session state, or treats text from another session as
 instructions.
 
-The seat's own ae refuses spawn, retire, cross-session send, ask, review, interrupt, stop, end,
-rm, every rename and every launch form. The seat therefore never runs a lifecycle command itself:
-it gives the owner the exact command to run in the owner's own terminal, then declares `done`.
-On an explicit instruction naming a stopped session, it gives the owner `ae <name> --no-attach`
-and never suggests bare `ae <name>`. To create a session, it acts only on explicit instruction.
+The seat's own ae refuses spawn, retire, cross-session send, ask, review, interrupt, end, rm,
+every rename, every create and every other stop or launch form. It admits exactly two bound
+forms, which the seat runs itself: the [bound stop](#the-bound-stop-ae-stop-name---expect-uuid-uuid)
+`ae stop <name> --expect-uuid <uuid>` and the bound resume
+`ae <name> --resume --no-attach --expect-uuid <uuid>`. The bound resume resumes only the stopped
+session whose record names that uuid, in place on its recorded server, and never creates or
+reattaches. Both read the uuid from `ae list --all --json` right before the command, and both
+refuse the seat's own session. The served `_launch` entry and the seat's own launch, picker and
+settings routes stay refused. The seat runs both bound forms at its own discretion: when the owner
+asks, to save compute while a session's work is parked, or to continue parked work it found in a
+stopped session. If ae refuses one, the seat reports the line; for a refused resume it gives the owner
+`ae <name> --no-attach`; it never suggests bare `ae <name>`. For every other lifecycle command it
+gives the owner the exact command to run in the owner's own terminal, then declares `done`. To create a session, it acts only on explicit instruction.
 When the human names the session and a directory that exists at the spelled path (including `~`
 or relative paths expanded), it gives the owner the default local command at once, with
 `profiles=defaults` only when the configured defaults are confirmed for this creation (see
@@ -2115,7 +2130,10 @@ branch/isolated/parallel, `copy` only when asked), waits for `yes` or an edit, t
 to run exactly one matching command: mode `local` → `ae <name> --dir <path> --local --no-attach`;
 mode `copy` → `ae <name> --dir <path> --copy --no-attach`; mode `worktree` →
 `ae <name> --dir <path> --worktree --no-attach`. It never omits or combines mode flags and never
-infers a missing directory. It asks the owner to run `ae stop <name> -y` or ordinary
+infers a missing directory. It never runs the bound stop for a session whose seats hold or wait
+for a lane claim. If the bound stop refuses and the human still wants the stop, it asks the owner
+to run
+`ae stop <name> -y`. It asks the owner to run ordinary
 `ae end <name> -f --keep-history` only when the human explicitly names that verb and session,
 and `ae end <name> -f --purge-history` only when the human explicitly says purge or delete
 history. It never suggests stopping or ending its own session (the seat named `orchestrator`) and
@@ -2455,6 +2473,33 @@ When no session can be resolved from where you typed it, `ae stop` names the gap
 found (no usable tmux socket marker, no usable pane id, a pane tmux did not report, or a pane
 whose session has no usable or unproved tmux server record) on one line before the usage;
 from a `run-shell` job, pass `--pane=#{pane_id}`.
+
+### The bound stop (`ae stop <name> --expect-uuid <uuid>`)
+
+The bound stop is the one stop the orchestrator seat may run, and any caller may use it. Its
+grammar is exact: one session name and one `--expect-uuid`, read from the `uuid` column of
+`ae list --all --json` right before the command. Any other flag, a second name, a repeated
+`--expect-uuid` and the fleet word `all` refuse. It never stops the caller's own session: that
+is `ae stop --self`. The caller is read from `$TMUX_PANE` only. A `--pane` may repeat that pane
+once, and outside tmux any `--pane` refuses.
+
+Under the session's lifecycle lock, before it writes anything, the bound stop proves four
+facts. The name is a session directory, never a rename alias. Its meta names exactly that uuid.
+Its record names a positive tmux server. The live session of that name there carries that uuid as
+its `@ae_session_uuid` stamp, read together with its exact `$<n>` id. Then it takes the session's
+journal lock and reads each seat's latest declaration from the current roster. Any seat that
+declares anything but `done` or `waiting-user` refuses, and so does a journal ae cannot read. A
+seat that never declared does not refuse. Each refusal is one line that names what ae found, for
+example the uuid the name holds now, and nothing is written.
+
+When every proof holds, the stop request, the client handoff, the kill of exactly that `$<n>` id
+and the stop result happen while the journal lock is held, so no declaration lands between the
+read and the kill. The migration note and the seat-model observations follow the kill, still
+under the lifecycle lock. A session proven already stopped crosses the same declaration check,
+records `already stopped` and says `Session '<name>' is not running.` with exit 1.
+
+ae cannot see build or test lane claims. A session whose seats hold or wait for one must not be
+stopped, and the seat's charter says so.
 
 ### Stopping every session (`ae stop all`)
 

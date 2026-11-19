@@ -117,7 +117,23 @@ pub(crate) fn kill_verified(
     session_id: &str,
     err: &mut impl Write,
 ) -> io::Result<bool> {
-    let views = transport::stop_views(server, session_id);
+    kill_verified_with(server, name, verb, session_id, None, err)
+}
+
+/// [`kill_verified`], with every kill fenced to `fence` when the caller proved
+/// one: the server then kills only the incarnation that proof named.
+fn kill_verified_with(
+    server: &ServerId,
+    name: &str,
+    verb: &str,
+    session_id: &str,
+    fence: Option<&crate::tmux::SessionStamp>,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    let views = match fence {
+        None => transport::stop_views(server, session_id),
+        Some(stamp) => transport::stop_views_fenced(server, stamp),
+    };
     let mut probe = transport::verify_session_absent(server, name);
     if probe == StopProbe::Unknown {
         // The kill may have removed the last session, so the server can be
@@ -1130,6 +1146,16 @@ pub(super) fn announce_to_clients(server: &ServerId, text: &str) {
 /// rankless rows still names a destination on an ae-owned server, so a viewer
 /// is detached only when its session is the last one there.
 pub(super) fn handoff_clients_before_kill(server: &ServerId, name: &str) -> Option<String> {
+    handoff_clients(server, name, None)
+}
+
+/// [`handoff_clients_before_kill`], with every switch fenced to `fence` when
+/// the caller proved one.
+fn handoff_clients(
+    server: &ServerId,
+    name: &str,
+    fence: Option<&crate::tmux::SessionStamp>,
+) -> Option<String> {
     let order = crate::fleet_order();
     let sessions = transport::observe_fleet_sessions(server).unwrap_or_default();
     let rows: Vec<crate::theme::FleetRow> = sessions
@@ -1163,7 +1189,10 @@ pub(super) fn handoff_clients_before_kill(server: &ServerId, name: &str) -> Opti
     }
     let failed = attached
         .iter()
-        .filter(|client| !transport::switch_client(server, &client.name, &next))
+        .filter(|client| match fence {
+            None => !transport::switch_client(server, &client.name, &next),
+            Some(stamp) => !transport::switch_client_fenced(server, stamp, &client.name, &next),
+        })
         .count();
     (failed > 0).then(|| {
         format!(
@@ -2172,7 +2201,7 @@ fn stop_one(
     // the stop proceeds.
     warn_uncovered_models(name, observe_models_before_stop(&dir, &server, name), err)?;
     if expect.is_none() {
-        return kill_under_lock(&server, name, &session_id, out, err);
+        return kill_under_lock(&server, name, &session_id, None, out, err);
     }
     // The confirmed path keeps its own streams so it can write the durable
     // result BEFORE `_guard` drops: the request line, the kill and the result
@@ -2183,6 +2212,7 @@ fn stop_one(
         &server,
         name,
         &session_id,
+        None,
         &mut confirmed_out,
         &mut confirmed_err,
     )?;
@@ -2200,18 +2230,20 @@ fn stop_one(
 }
 
 /// Hand the clients over and kill one exactly-identified session. The caller
-/// holds the lifecycle lock and has already decided which id may die.
+/// holds the lifecycle lock and has already decided which id may die; with a
+/// `fence`, every handoff and kill is also fenced to that proved incarnation.
 fn kill_under_lock(
     server: &ServerId,
     name: &str,
     session_id: &str,
+    fence: Option<&crate::tmux::SessionStamp>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<StopOutcome> {
-    if let Some(note) = handoff_clients_before_kill(server, name) {
+    if let Some(note) = handoff_clients(server, name, fence) {
         writeln!(err, "Warning: {note}")?;
     }
-    if !kill_verified(server, name, "stop", session_id, err)? {
+    if !kill_verified_with(server, name, "stop", session_id, fence, err)? {
         return Ok(StopOutcome::Failed);
     }
     writeln!(out, "Stopped {name}")?;

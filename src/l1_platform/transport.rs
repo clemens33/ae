@@ -1370,14 +1370,15 @@ pub fn observe_session_identity(server: &ServerId, name: &str) -> Option<tmux::S
     tmux::interpret_session_identity(succeeded, &stdout, name)
 }
 
-/// The id and the `@ae_session_uuid` stamp of the session named EXACTLY
-/// `name`, read in one listing, or `None`.
+/// The session named EXACTLY `name`, read alone: the server incarnation, its
+/// own incarnation and its `@ae_session_uuid` stamp out of ONE read, or
+/// `None` when the read failed or was not one whole record.
 #[must_use]
 pub fn observe_session_stamp(server: &ServerId, name: &str) -> Option<tmux::SessionStamp> {
     if !addressable(server) {
         return None;
     }
-    let (succeeded, stdout) = run(PROGRAM, &tmux::session_stamps_args(server));
+    let (succeeded, stdout) = run(PROGRAM, &tmux::session_stamp_args(server, name));
     tmux::interpret_session_stamp(succeeded, &stdout, name)
 }
 
@@ -2648,17 +2649,25 @@ fn view_rows<T>(
 }
 
 /// Kill the views among `holders`, then read again with `holding`: the views
-/// still holding, or `None` when a read failed.
+/// still holding, or `None` when a read failed. With a `fence`, each kill is
+/// fenced to the server incarnation the stop proved.
 fn sweep_views(
     server: &ServerId,
     holders: Vec<String>,
     holding: impl Fn() -> Option<Vec<String>>,
+    fence: Option<&tmux::SessionStamp>,
 ) -> Option<Vec<String>> {
     if holders.is_empty() {
         return Some(holders);
     }
     for view in &holders {
-        let _ = run(PROGRAM, &tmux::kill_session_args(server, view));
+        let args = match fence {
+            None => Some(tmux::kill_session_args(server, view)),
+            Some(stamp) => tmux::fenced_view_kill_args(server, stamp, view),
+        };
+        if let Some(args) = args {
+            let _ = run(PROGRAM, &args);
+        }
     }
     holding()
 }
@@ -2671,6 +2680,24 @@ fn sweep_views(
 /// alive too.
 #[must_use]
 pub fn stop_views(server: &ServerId, session_id: &str) -> StopViews {
+    stop_views_with(server, session_id, None)
+}
+
+/// [`stop_views`] for a stop that proved `stamp`: every view kill is fenced
+/// to that server incarnation, and the real kill to that incarnation, that
+/// session incarnation and that ae stamp, each checked by the server in the
+/// same command that kills. A saved `$<n>` therefore never reaches a session
+/// a replacement server gave the same id.
+#[must_use]
+pub fn stop_views_fenced(server: &ServerId, stamp: &tmux::SessionStamp) -> StopViews {
+    stop_views_with(server, &stamp.session.id, Some(stamp))
+}
+
+fn stop_views_with(
+    server: &ServerId,
+    session_id: &str,
+    fence: Option<&tmux::SessionStamp>,
+) -> StopViews {
     /// How many times a view still holding the dead session's windows is
     /// killed again before the stop reports it.
     const ROUNDS: usize = 3;
@@ -2696,12 +2723,18 @@ pub fn stop_views(server: &ServerId, session_id: &str) -> StopViews {
     let Some(before) = holding() else {
         return StopViews::Unreadable;
     };
-    match sweep_views(server, before, holding) {
+    match sweep_views(server, before, holding, fence) {
         Some(left) if left.is_empty() => {}
         Some(left) => return StopViews::Held(left),
         None => return StopViews::Unreadable,
     }
-    let _ = run(PROGRAM, &tmux::kill_session_args(server, session_id));
+    let kill = match fence {
+        None => Some(tmux::kill_session_args(server, session_id)),
+        Some(stamp) => tmux::fenced_kill_args(server, stamp),
+    };
+    if let Some(kill) = kill {
+        let _ = run(PROGRAM, &kill);
+    }
     let Some(mut left) = holding() else {
         return StopViews::Unreadable;
     };
@@ -2709,7 +2742,7 @@ pub fn stop_views(server: &ServerId, session_id: &str) -> StopViews {
         if left.is_empty() {
             return StopViews::Clear;
         }
-        left = match sweep_views(server, left, holding) {
+        left = match sweep_views(server, left, holding, fence) {
             Some(left) => left,
             None => return StopViews::Unreadable,
         };
@@ -2793,6 +2826,21 @@ pub fn observe_view_place(server: &ServerId, target: &str) -> Option<(String, St
 #[must_use]
 pub fn switch_client(server: &ServerId, client: &str, session: &str) -> bool {
     addressable(server) && run(PROGRAM, &tmux::switch_client_args(server, client, session)).0
+}
+
+/// [`switch_client`] fenced to `stamp`: the server switches `client` only
+/// while the stamped session is still the incarnation a stop proved. A name
+/// ae cannot quote switches nothing and reports a failure.
+#[must_use]
+pub fn switch_client_fenced(
+    server: &ServerId,
+    stamp: &tmux::SessionStamp,
+    client: &str,
+    session: &str,
+) -> bool {
+    addressable(server)
+        && tmux::fenced_switch_client_args(server, stamp, client, session)
+            .is_some_and(|args| run(PROGRAM, &args).0)
 }
 
 /// Run `argv` as one background tmux `run-shell` job on `server`, as a picker

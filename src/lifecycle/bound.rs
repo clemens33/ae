@@ -9,17 +9,22 @@
 //!    and the fleet word `all` are refused;
 //! 2. under the lifecycle lock, with no write: the name is a real session
 //!    directory (never a rename alias), its meta names exactly that uuid, its
-//!    record names a positive server, and the live session of that name on it
-//!    carries that uuid as its `@ae_session_uuid` stamp, read with its `$<n>`
-//!    id in one listing;
+//!    record names a positive server, and ONE isolated read of the live
+//!    session of that name proves the server incarnation, the session
+//!    incarnation and its `@ae_session_uuid` stamp together;
 //! 3. still without a write, each seat's pane text and launch guard are read;
 //! 4. the event container's lock is taken and held: the roster is read again
-//!    from the current meta, and any seat whose latest declaration is not
-//!    `done` or `waiting-user` refuses, as does a journal ae cannot read;
-//! 5. still holding it: the stop request, the client handoff, the kill of
-//!    exactly that `$<n>` id and the stop result;
+//!    from the current meta, a roster ae doubts or cannot read refuses, and
+//!    any seat whose latest declaration is not `done` or `waiting-user`
+//!    refuses, as does a journal ae cannot read;
+//! 5. still holding it: the stop request (a failed append refuses), the
+//!    client handoff, the kill and the stop result. The tmux server checks
+//!    every handoff and kill against the incarnation step 2 proved, in the
+//!    same command that acts, so a saved `$<n>` never reaches a session a
+//!    replacement server gave the same id;
 //! 6. after the release, still under the lifecycle lock: the migration note
-//!    and the model publication from step 3.
+//!    and the model publication from step 3, all written to the caller only
+//!    after they completed.
 //!
 //! A target proven already stopped crosses the same guard in step 4 before
 //! its receipt is appended through the held lock. A refusal before step 5
@@ -27,26 +32,34 @@
 //! read in step 4 and is judged there, or waits on the held lock until the
 //! kill is done. This process never holds the event lock and the meta lock
 //! together, so it keeps the meta-then-events order of every other writer.
+//! Both events carry the bound uuid as their target and the caller as ONE
+//! observation proved it, or the named gap when it did not.
 
 use std::io::{self, Write};
 use std::path::Path;
 
 use super::{
     ALREADY_STOPPED_SUMMARY, CallerGap, STOP_REQUEST_ACTION, STOP_RESULT_ACTION, StopOutcome,
-    caller_resolution, capture_models, kill_under_lock, lifecycle_event_line, lock, name_is_usable,
-    publish_models, server_of, sessions_dir, stop_summary,
+    caller_resolution, capture_models, kill_under_lock, lock, name_is_usable, publish_models,
+    server_of, sessions_dir, stop_summary,
 };
 use crate::doors::CallerServer;
 use crate::inventory::ServerId;
 use crate::meta::{self, ServerSelector};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
-use crate::store::SourceRead;
-use crate::tmux::StopProbe;
+use crate::store::{EventsHold, SourceRead};
+use crate::tmux::{SessionStamp, StopProbe};
+use crate::tracked::{EventFields, IdentityTriple};
 use crate::transport;
 
 /// The declarations a bound stop admits. A seat that never declared is
 /// admitted too; every other value, a future one included, refuses.
 const IDLE_STATES: [&str; 2] = ["done", "waiting-user"];
+
+/// The gap a bound event names when the caller's pane correlates with its
+/// session but that session's recorded tmux server is not proved to be the
+/// caller's.
+const UNPROVED_SERVER: &str = "caller server unproved";
 
 /// `_stop <name> --expect-uuid <uuid>`; `panes` is every `--pane` word of the
 /// tail, in order.
@@ -65,14 +78,14 @@ pub(super) fn run(
         )?;
         return Ok(EXIT_USAGE);
     }
-    let own = match caller_session(root, panes) {
-        Ok(own) => own,
+    let caller = match caller_session(root, panes) {
+        Ok(caller) => caller,
         Err((code, line)) => {
             writeln!(err, "Error: {line} Nothing was stopped.")?;
             return Ok(code);
         }
     };
-    if own.as_deref() == Some(name) {
+    if caller.session.as_deref() == Some(name) {
         writeln!(
             err,
             "Error: '{name}' is the session you are in; a bound stop never stops its caller's own session (that is ae stop --self). Nothing was stopped."
@@ -91,14 +104,18 @@ pub(super) fn run(
         return Ok(EXIT_FAILED);
     };
     let dir = sessions_dir(root).join(name);
-    let (server, id) = match prove(&dir, name, uuid) {
-        Proof::Proven { server, id } => (server, id),
-        Proof::Absent => return already_stopped(&dir, name, err),
+    let (server, stamp) = match prove(&dir, name, uuid) {
+        Proof::Proven { server, stamp } => (server, stamp),
+        Proof::Absent => {
+            let bound = Bound::new(name, uuid, provenance(root, &caller));
+            return already_stopped(&dir, &bound, err);
+        }
         Proof::Refused(line) => {
             writeln!(err, "Error: {line}. Nothing was stopped.")?;
             return Ok(EXIT_FAILED);
         }
     };
+    let bound = Bound::new(name, uuid, provenance(root, &caller));
     let mut held_err = Vec::new();
     let captured = match capture_models(&dir, &server, name) {
         Ok((captures, gaps)) => {
@@ -123,36 +140,59 @@ pub(super) fn run(
         writeln!(err, "Error: {line}. Nothing was stopped.")?;
         return Ok(EXIT_FAILED);
     }
-    let _ = hold.append_event(&lifecycle_event_line(
-        name,
-        STOP_REQUEST_ACTION,
-        &format!("stop requested, bound to session {uuid} ({id})"),
-    ));
+    let requested = format!(
+        "stop requested, bound to session {uuid} ({})",
+        stamp.session.id
+    );
+    if let Err(why) = hold.append_event(&bound.event_line(STOP_REQUEST_ACTION, &requested)) {
+        writeln!(
+            err,
+            "Error: ae could not record the stop request ({why}). Nothing was stopped."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
     let mut held_out = Vec::new();
-    let outcome = kill_under_lock(&server, name, &id, &mut held_out, &mut held_err)?;
-    let _ = hold.append_event(&lifecycle_event_line(
+    let outcome = kill_under_lock(
+        &server,
         name,
-        STOP_RESULT_ACTION,
-        &stop_summary(&outcome, &held_err),
-    ));
+        &stamp.session.id,
+        Some(&stamp),
+        &mut held_out,
+        &mut held_err,
+    )?;
+    let result = stop_summary(&outcome, &held_err);
+    if let Err(why) = hold.append_event(&bound.event_line(STOP_RESULT_ACTION, &result)) {
+        let found = match &outcome {
+            StopOutcome::Stopped => "was stopped",
+            StopOutcome::AlreadyStopped => "is not running",
+            StopOutcome::Failed | StopOutcome::Refused(_) => "was not stopped",
+        };
+        writeln!(
+            held_err,
+            "Warning: '{name}' {found}, but ae could not record the stop result ({why})."
+        )?;
+    }
     drop(hold);
+    // The rest completes before anything reaches the caller, so a closed
+    // stream cannot skip the migration note or the model publication.
+    if let Some(note) = crate::migrate::session_noted(&dir, name) {
+        writeln!(held_err, "{note}")?;
+    }
+    for gap in publish_models(&dir, captured) {
+        warn_model(&mut held_err, name, &gap)?;
+    }
     let code = u8::from(!matches!(outcome, StopOutcome::Stopped));
     let output = crate::error::with_status(code, out.write_all(&held_out));
     err.write_all(&held_err)?;
     output?;
-    if let Some(note) = crate::migrate::session_noted(&dir, name) {
-        writeln!(err, "{note}")?;
-    }
-    for gap in publish_models(&dir, captured) {
-        warn_model(err, name, &gap)?;
-    }
     Ok(code)
 }
 
 /// A proven, already stopped target: the same declaration guard as a kill,
 /// then the durable receipt through the held lock. A seat a plain stop left
 /// working, or a journal ae cannot read, refuses and writes nothing.
-fn already_stopped(dir: &Path, name: &str, err: &mut impl Write) -> io::Result<u8> {
+fn already_stopped(dir: &Path, bound: &Bound<'_>, err: &mut impl Write) -> io::Result<u8> {
+    let name = bound.name;
     let hold = match crate::store::open(dir).hold_events() {
         Ok(hold) => hold,
         Err(why) => {
@@ -164,13 +204,16 @@ fn already_stopped(dir: &Path, name: &str, err: &mut impl Write) -> io::Result<u
         writeln!(err, "Error: {line}. Nothing was stopped.")?;
         return Ok(EXIT_FAILED);
     }
-    let _ = hold.append_event(&lifecycle_event_line(
-        name,
-        STOP_RESULT_ACTION,
-        ALREADY_STOPPED_SUMMARY,
-    ));
+    let recorded =
+        hold.append_event(&bound.event_line(STOP_RESULT_ACTION, ALREADY_STOPPED_SUMMARY));
     drop(hold);
     writeln!(err, "Session '{name}' is not running.")?;
+    if let Err(why) = recorded {
+        writeln!(
+            err,
+            "Warning: '{name}' is not running, but ae could not record the stop result ({why})."
+        )?;
+    }
     Ok(EXIT_FAILED)
 }
 
@@ -182,17 +225,27 @@ fn warn_model(err: &mut impl Write, name: &str, why: &str) -> io::Result<()> {
     )
 }
 
+/// Who runs the bound stop, as `$TMUX` and `$TMUX_PANE` place it.
+struct Caller {
+    /// The session the caller's pane is in; `None` outside tmux.
+    session: Option<String>,
+    /// Whether that session's recorded tmux server is proved to be the
+    /// caller's.
+    proved: bool,
+}
+
 /// The session the caller runs in, read from `$TMUX_PANE` on the server
 /// `$TMUX` names and never from a `--pane` word: a `--pane` may only repeat
-/// that ambient pane, once. `None` is a caller outside tmux, or one whose pane
-/// is in a session ae does not record. `Err` carries the exit code and the
-/// refusal.
-fn caller_session(
-    root: &Path,
-    panes: &[Option<String>],
-) -> Result<Option<String>, (u8, &'static str)> {
+/// that ambient pane, once. A caller outside tmux has no session. `Err`
+/// carries the exit code and the refusal.
+fn caller_session(root: &Path, panes: &[Option<String>]) -> Result<Caller, (u8, &'static str)> {
     let server = match crate::doors::caller_server_reading() {
-        CallerServer::Absent if panes.is_empty() => return Ok(None),
+        CallerServer::Absent if panes.is_empty() => {
+            return Ok(Caller {
+                session: None,
+                proved: false,
+            });
+        }
         CallerServer::Absent => {
             return Err((
                 EXIT_USAGE,
@@ -230,11 +283,17 @@ fn caller_session(
         }
     }
     match caller_resolution(root, Some(&server), &ambient) {
-        Ok(session)
-        | Err(CallerGap::NotAnAeSession(session) | CallerGap::ServerUnproved(session)) => {
-            // An unproven owner still names its session: a target of that
-            // name is refused as the caller's own rather than guessed apart.
-            Ok(Some(session))
+        Ok(session) => Ok(Caller {
+            session: Some(session),
+            proved: true,
+        }),
+        // An unproven owner still names its session: a target of that name
+        // is refused as the caller's own rather than guessed apart.
+        Err(CallerGap::NotAnAeSession(session) | CallerGap::ServerUnproved(session)) => {
+            Ok(Caller {
+                session: Some(session),
+                proved: false,
+            })
         }
         Err(CallerGap::PaneUnreadable) => Err((
             EXIT_FAILED,
@@ -247,10 +306,90 @@ fn caller_session(
     }
 }
 
+/// The caller as the bound events record it, under the existing keys.
+struct Provenance {
+    /// `actor_session`: the caller's session, only when it is proved.
+    session: String,
+    /// The caller's server, pane and session uuid, only when proved.
+    triple: Option<IdentityTriple>,
+    /// `identity_gap`: why a caller in tmux is not proved; empty when it is,
+    /// and empty outside tmux, where no session identity exists.
+    gap: &'static str,
+}
+
+/// ONE observation of the calling pane, correlated with its session's meta.
+fn provenance(root: &Path, caller: &Caller) -> Provenance {
+    let Some(session) = caller.session.as_deref() else {
+        return Provenance {
+            session: String::new(),
+            triple: None,
+            gap: "",
+        };
+    };
+    match crate::tracked::observe_caller(&sessions_dir(root).join(session)) {
+        Ok(triple) if caller.proved => Provenance {
+            session: session.to_owned(),
+            triple: Some(triple),
+            gap: "",
+        },
+        Ok(_) => Provenance {
+            session: String::new(),
+            triple: None,
+            gap: UNPROVED_SERVER,
+        },
+        Err(gap) => Provenance {
+            session: String::new(),
+            triple: None,
+            gap: gap.name(),
+        },
+    }
+}
+
+/// The facts both bound events carry.
+struct Bound<'a> {
+    name: &'a str,
+    uuid: &'a str,
+    caller: Provenance,
+}
+
+impl<'a> Bound<'a> {
+    fn new(name: &'a str, uuid: &'a str, caller: Provenance) -> Self {
+        Self { name, uuid, caller }
+    }
+
+    /// One lifecycle event of the human CLI actor about the bound target: the
+    /// target's uuid in `target_session_id` and `target_session_uuid`, and the
+    /// caller's proved facts or its named gap.
+    fn event_line(&self, action: &str, summary: &str) -> String {
+        let fields = EventFields {
+            target_session_id: self.uuid,
+            target_session_uuid: self.uuid,
+            identity_gap: self.caller.gap,
+            ..EventFields::new(
+                crate::time::Timestamp::now(),
+                "human",
+                action,
+                self.name,
+                "",
+                "",
+                &self.caller.session,
+                "",
+                "",
+                summary,
+                "",
+            )
+        };
+        crate::tracked::event_line(&fields.with_caller(self.caller.triple.as_ref()))
+    }
+}
+
 /// What proving the bound identity under the lifecycle lock found.
 enum Proof {
-    /// The live session to kill: its server and its exact `$<n>` id.
-    Proven { server: ServerId, id: String },
+    /// The live session to kill: its server and its whole proved identity.
+    Proven {
+        server: ServerId,
+        stamp: SessionStamp,
+    },
     /// The recorded session is this uuid and provably not running.
     Absent,
     /// The refusal, one clause; nothing may be written.
@@ -258,7 +397,7 @@ enum Proof {
 }
 
 /// Prove `name` is the session `uuid`, reading only: the raw directory, the
-/// raw meta, the recorded server, and the live id with its stamp.
+/// raw meta, the recorded server, and ONE isolated read of the live session.
 fn prove(dir: &Path, name: &str, uuid: &str) -> Proof {
     match crate::teardown::classify_dir(dir) {
         crate::teardown::DirKind::RealDir => {}
@@ -292,7 +431,7 @@ fn prove(dir: &Path, name: &str, uuid: &str) -> Proof {
         ));
     };
     let server = ServerId::Selected(selector);
-    let Some(live) = transport::observe_session_stamp(&server, name) else {
+    let Some(stamp) = transport::observe_session_stamp(&server, name) else {
         return match transport::verify_session_absent(&server, name) {
             StopProbe::Absent => Proof::Absent,
             StopProbe::Present | StopProbe::Unknown => Proof::Refused(format!(
@@ -300,38 +439,56 @@ fn prove(dir: &Path, name: &str, uuid: &str) -> Proof {
             )),
         };
     };
-    let stamp = crate::archive::canonical_uuid(&live.uuid);
-    if stamp.is_empty() {
+    if stamp.uuid.is_empty() {
         return Proof::Refused(format!(
             "tmux session '{name}' ({}) carries no ae session uuid, so ae cannot prove it is session {uuid}",
-            live.id
+            stamp.session.id
         ));
     }
-    if stamp != uuid {
+    if stamp.uuid != uuid {
         return Proof::Refused(format!(
-            "tmux session '{name}' ({}) is session {stamp}, not {uuid}",
-            live.id
+            "tmux session '{name}' ({}) is session {}, not {uuid}",
+            stamp.session.id,
+            stamp.uuid.escape_debug()
         ));
     }
-    Proof::Proven {
-        server,
-        id: live.id,
-    }
+    Proof::Proven { server, stamp }
 }
 
-/// Under the held event lock: every seat of the CURRENT roster has no
-/// declaration or a latest one ae admits. `Err` names each other seat with its
-/// state, or the journal ae could not read.
-fn seats_idle(dir: &Path, name: &str, hold: &crate::store::EventsHold) -> Result<(), String> {
+/// Under the held event lock: the CURRENT roster is whole and every seat of
+/// it has no declaration or a latest one ae admits. `Err` names a doubtful or
+/// unreadable roster, each other seat with its state, or the journal ae could
+/// not read.
+fn seats_idle(dir: &Path, name: &str, hold: &EventsHold) -> Result<(), String> {
     let Ok(bytes) = meta::read_bytes(dir) else {
         return Err(format!("ae cannot read the roster of '{name}'"));
     };
-    let parsed = meta::Meta::parse(&String::from_utf8_lossy(&bytes));
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Err(format!(
+            "the metadata of '{name}' is not UTF-8, so ae cannot read its roster"
+        ));
+    };
+    let parsed = meta::Meta::parse(&text);
+    if let Some(anomaly) = parsed
+        .anomalies()
+        .iter()
+        .find(|anomaly| crate::roster::roster_doubting(anomaly))
+    {
+        return Err(format!(
+            "'{name}' has doubtful roster metadata ({}); run 'ae doctor' first",
+            anomaly.to_string().escape_debug()
+        ));
+    }
     let actors: Vec<String> = parsed
         .roster()
         .iter()
         .map(meta::RosterEntry::reference)
         .collect();
+    if actors.is_empty() {
+        return Err(format!(
+            "'{name}' records no seats, so ae cannot read their states"
+        ));
+    }
     let container = match hold.read() {
         SourceRead::Absent => Vec::new(),
         SourceRead::Ready(bytes) => bytes,
@@ -350,9 +507,13 @@ fn seats_idle(dir: &Path, name: &str, hold: &crate::store::EventsHold) -> Result
     };
     let busy: Vec<String> = crate::state::latest_for_all(&container, &actors)
         .into_iter()
-        .filter_map(|(actor, latest)| {
-            let value = String::from_utf8_lossy(&latest.value).into_owned();
-            (!IDLE_STATES.contains(&value.as_str())).then(|| format!("{actor} is {value}"))
+        .filter(|(_, latest)| !is_idle(&latest.value))
+        .map(|(actor, latest)| {
+            format!(
+                "{} is {}",
+                actor.escape_debug(),
+                String::from_utf8_lossy(&latest.value).escape_debug()
+            )
         })
         .collect();
     if busy.is_empty() {
@@ -364,10 +525,16 @@ fn seats_idle(dir: &Path, name: &str, hold: &crate::store::EventsHold) -> Result
     ))
 }
 
+/// Whether a raw declared value is one a bound stop admits, compared byte for
+/// byte with nothing normalized.
+fn is_idle(value: &[u8]) -> bool {
+    IDLE_STATES.iter().any(|idle| idle.as_bytes() == value)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_stamp_listing_reads_the_session_uuid_option() {
+    fn the_stamp_read_ends_with_the_session_uuid_option() {
         assert!(
             crate::tmux::SESSION_STAMP_FORMAT
                 .ends_with(&format!("#{{{}}}", crate::theme::SESSION_ID_OPTION))
@@ -378,8 +545,17 @@ mod tests {
     fn only_done_and_waiting_user_are_idle() {
         let idle: Vec<&str> = crate::state::VALUES
             .into_iter()
-            .filter(|value| super::IDLE_STATES.contains(value))
+            .filter(|value| super::is_idle(value.as_bytes()))
             .collect();
         assert_eq!(idle, ["waiting-user", "done"]);
+    }
+
+    #[test]
+    fn an_idle_value_is_compared_raw() {
+        assert!(super::is_idle(b"done"));
+        assert!(!super::is_idle(b"done "));
+        assert!(!super::is_idle(b"Done"));
+        assert!(!super::is_idle(b"done\xff"));
+        assert!(!super::is_idle(b""));
     }
 }

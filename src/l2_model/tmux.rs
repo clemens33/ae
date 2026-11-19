@@ -1798,64 +1798,234 @@ pub fn interpret_session_identity(
     matches.next().is_none().then_some(identity)
 }
 
-/// `#{session_id} | #{session_name} | #{@ae_session_uuid}` — a session's id
-/// and its ae identity stamp out of ONE listing, so the stamp read is the one
-/// the id carries. The option name is `theme::SESSION_ID_OPTION`.
-pub const SESSION_STAMP_FORMAT: &str = "#{session_id} | #{session_name} | #{@ae_session_uuid}";
+/// A session's whole identity out of ONE isolated read: the server
+/// incarnation (`#{pid}`, `#{start_time}`), the session incarnation
+/// (`#{session_id}`, `#{session_created}`), its name, and its ae stamp, the
+/// option `theme::SESSION_ID_OPTION`. The stamp comes last, and the read
+/// names one session, so no other session's option bytes reach the output.
+pub const SESSION_STAMP_FORMAT: &str = "#{pid} | #{start_time} | #{session_id} | #{session_created} | #{session_name} | #{@ae_session_uuid}";
 
-/// The arguments listing every session's id, name and identity stamp.
+/// The arguments reading the session named EXACTLY `name`, and no other:
+/// `display-message -p -t =<name>: <SESSION_STAMP_FORMAT>`.
 #[must_use]
-pub fn session_stamps_args(server: &ServerId) -> Vec<String> {
+pub fn session_stamp_args(server: &ServerId, name: &str) -> Vec<String> {
     let mut args = server_args(server);
-    args.extend(["list-sessions", "-F", SESSION_STAMP_FORMAT].map(ToOwned::to_owned));
+    args.extend(["display-message", "-p", "-t"].map(ToOwned::to_owned));
+    args.push(format!("{}:", session_target(name)));
+    args.push(SESSION_STAMP_FORMAT.to_owned());
     args
 }
 
-/// One live session's id and its `@ae_session_uuid` stamp, as one listing
-/// reported them.
+/// One live session as ONE isolated read proved it: the identity every
+/// mutation of a bound stop is fenced to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionStamp {
-    /// The `$<n>` id.
-    pub id: String,
-    /// The stamp, trimmed; empty when the option is unset.
+    /// The server incarnation the read answered from.
+    pub server: ServerIdentity,
+    /// The session incarnation: its `$<n>` id and creation instant.
+    pub session: SessionIdentity,
+    /// The `@ae_session_uuid` stamp exactly as tmux printed it; empty when
+    /// the option is unset.
     pub uuid: String,
 }
 
-/// The id and stamp of the session named EXACTLY `name`, or `None`.
+/// The stamp [`session_stamp_args`] printed for `name`, or `None`.
 ///
-/// Exact for the reason [`interpret_session_id`] is: the id keys a kill. A
-/// failed run, a line with the wrong field count, an empty id and a
-/// duplicated name resolve to nothing rather than to a guess.
+/// The output keys a kill, so it must be ONE complete record: a successful
+/// run, exactly one line ended by a newline, exactly six fields, a decimal
+/// server pair and creation instant, a canonical `$<n>` id and exactly the
+/// name asked for. A stamp holding a newline or a separator therefore
+/// resolves to nothing.
 ///
 /// ```
 /// use ae::tmux::interpret_session_stamp;
-/// let listing = "$0 | other | \n$3 | demo | 11111111-2222-4333-8444-555555555555\n";
-/// let found = interpret_session_stamp(true, listing, "demo").unwrap();
-/// assert_eq!(found.id, "$3");
+/// let read = "41 | 1789100000 | $3 | 1789100001 | demo | 11111111-2222-4333-8444-555555555555\n";
+/// let found = interpret_session_stamp(true, read, "demo").unwrap();
+/// assert_eq!((found.server.pid.as_str(), found.server.start.as_str()), ("41", "1789100000"));
+/// assert_eq!((found.session.id.as_str(), found.session.created.as_str()), ("$3", "1789100001"));
 /// assert_eq!(found.uuid, "11111111-2222-4333-8444-555555555555");
-/// assert_eq!(interpret_session_stamp(true, listing, "other").unwrap().uuid, "");
-/// assert_eq!(interpret_session_stamp(true, listing, "dem"), None);
-/// assert_eq!(interpret_session_stamp(true, "$3 | demo\n", "demo"), None);
-/// assert_eq!(interpret_session_stamp(true, "$3 | demo | a\n$4 | demo | a\n", "demo"), None);
-/// assert_eq!(interpret_session_stamp(false, listing, "demo"), None);
+/// let unset = "41 | 1789100000 | $3 | 1789100001 | demo | \n";
+/// assert_eq!(interpret_session_stamp(true, unset, "demo").unwrap().uuid, "");
+/// assert_eq!(interpret_session_stamp(true, read, "dem"), None);
+/// assert_eq!(interpret_session_stamp(false, read, "demo"), None);
+/// assert_eq!(interpret_session_stamp(true, read.trim_end(), "demo"), None);
+/// let injected = "41 | 1789100000 | $3 | 1789100001 | demo | x\n41 | 1789100000 | $4 | 1789100001 | demo | y\n";
+/// assert_eq!(interpret_session_stamp(true, injected, "demo"), None);
+/// let id = "41 | 1789100000 | 3 | 1789100001 | demo | \n";
+/// assert_eq!(interpret_session_stamp(true, id, "demo"), None);
 /// ```
 #[must_use]
 pub fn interpret_session_stamp(succeeded: bool, stdout: &str, name: &str) -> Option<SessionStamp> {
     if !succeeded {
         return None;
     }
-    let mut matches = stdout.lines().filter_map(|line| {
-        let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
-        let [id, held, uuid] = fields.as_slice() else {
-            return None;
-        };
-        (*held == name && !id.is_empty()).then(|| SessionStamp {
+    let line = stdout
+        .strip_suffix('\n')
+        .filter(|line| !line.contains('\n'))?;
+    let fields: Vec<&str> = line.split(FIELD_SEPARATOR).collect();
+    let [pid, start, id, created, held, uuid] = fields.as_slice() else {
+        return None;
+    };
+    let whole = is_decimal(pid)
+        && is_decimal(start)
+        && session_id_is_valid(id)
+        && is_decimal(created)
+        && *held == name;
+    whole.then(|| SessionStamp {
+        server: ServerIdentity {
+            pid: (*pid).to_owned(),
+            start: (*start).to_owned(),
+        },
+        session: SessionIdentity {
             id: (*id).to_owned(),
-            uuid: uuid.trim().to_owned(),
-        })
-    });
-    let stamp = matches.next()?;
-    matches.next().is_none().then_some(stamp)
+            created: (*created).to_owned(),
+        },
+        uuid: (*uuid).to_owned(),
+    })
+}
+
+/// Whether every component of `stamp` is tmux's or ae's own spelling — decimal
+/// epochs and pid, a `$<n>` id, a canonical uuid — so a guard built from it
+/// needs no quoting.
+fn fence_spelled(stamp: &SessionStamp) -> bool {
+    is_decimal(&stamp.server.pid)
+        && is_decimal(&stamp.server.start)
+        && session_id_is_valid(&stamp.session.id)
+        && is_decimal(&stamp.session.created)
+        && !stamp.uuid.is_empty()
+        && crate::archive::canonical_uuid(&stamp.uuid) == stamp.uuid
+}
+
+/// The guard that the server is still the incarnation `server` names.
+/// Conjunctions stay binary and nested: tmux 3.4 reads only two operands.
+fn incarnation_guard(server: &ServerIdentity) -> String {
+    format!(
+        "#{{&&:#{{==:#{{pid}},{pid}}},#{{==:#{{start_time}},{start}}}}}",
+        pid = server.pid,
+        start = server.start,
+    )
+}
+
+/// The guard that the server, the target session's incarnation and its ae
+/// stamp are all still the ones `stamp` proved.
+fn stamp_guard(stamp: &SessionStamp) -> String {
+    format!(
+        "#{{&&:{server},#{{&&:#{{&&:#{{==:#{{session_id}},{id}}},#{{==:#{{session_created}},{created}}}}},#{{==:#{{{option}}},{uuid}}}}}}}}",
+        server = incarnation_guard(&stamp.server),
+        id = stamp.session.id,
+        created = stamp.session.created,
+        option = crate::theme::SESSION_ID_OPTION,
+        uuid = stamp.uuid,
+    )
+}
+
+/// `if-shell -F -t <target> <guard> <command>`: ONE server-side operation, as
+/// [`guarded_session_option_args`] explains. A target that no longer exists
+/// fails the command, and a false guard runs nothing.
+fn fenced_args(server: &ServerId, target: &str, guard: String, command: String) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["if-shell", "-F", "-t"].map(ToOwned::to_owned));
+    args.push(target.to_owned());
+    args.push(guard);
+    args.push(command);
+    args
+}
+
+/// Kill the stamped session only while the server, the session incarnation
+/// and its ae stamp are still the ones the read proved. `None` when a
+/// component is not tmux's or ae's own spelling.
+///
+/// ```
+/// use ae::inventory::ServerId;
+/// use ae::tmux::{SessionStamp, fenced_kill_args, interpret_session_stamp};
+/// let read = "41 | 1789100000 | $3 | 1789100001 | demo | 11111111-2222-4333-8444-555555555555\n";
+/// let stamp = interpret_session_stamp(true, read, "demo").unwrap();
+/// let args = fenced_kill_args(&ServerId::Ambient, &stamp).unwrap();
+/// assert_eq!(&args[..4], ["if-shell", "-F", "-t", "$3"]);
+/// // The EXACT guard: nested binary conjunctions, as tmux 3.4 needs.
+/// assert_eq!(
+///     args[4],
+///     "#{&&:#{&&:#{==:#{pid},41},#{==:#{start_time},1789100000}},#{&&:#{&&:#{==:#{session_id},$3},#{==:#{session_created},1789100001}},#{==:#{@ae_session_uuid},11111111-2222-4333-8444-555555555555}}}"
+/// );
+/// assert_eq!(args[5], "kill-session -t $3");
+/// assert_eq!(args.len(), 6);
+/// let unset = SessionStamp { uuid: String::new(), ..stamp };
+/// assert_eq!(fenced_kill_args(&ServerId::Ambient, &unset), None);
+/// ```
+#[must_use]
+pub fn fenced_kill_args(server: &ServerId, stamp: &SessionStamp) -> Option<Vec<String>> {
+    fence_spelled(stamp).then(|| {
+        fenced_args(
+            server,
+            &stamp.session.id,
+            stamp_guard(stamp),
+            format!("kill-session -t {}", stamp.session.id),
+        )
+    })
+}
+
+/// Kill the pane view `view` (a `$<n>` id) only on the server incarnation
+/// `stamp` was read from: inside one incarnation an id names one session for
+/// its whole life. `None` when `view` or the stamp is not tmux's own spelling.
+///
+/// ```
+/// use ae::inventory::ServerId;
+/// use ae::tmux::{fenced_view_kill_args, interpret_session_stamp};
+/// let read = "41 | 1789100000 | $3 | 1789100001 | demo | 11111111-2222-4333-8444-555555555555\n";
+/// let stamp = interpret_session_stamp(true, read, "demo").unwrap();
+/// let args = fenced_view_kill_args(&ServerId::Ambient, &stamp, "$9").unwrap();
+/// assert_eq!(&args[..4], ["if-shell", "-F", "-t", "$9"]);
+/// assert_eq!(args[4], "#{&&:#{==:#{pid},41},#{==:#{start_time},1789100000}}");
+/// assert_eq!(args[5], "kill-session -t $9");
+/// assert_eq!(fenced_view_kill_args(&ServerId::Ambient, &stamp, "_aeview-1"), None);
+/// ```
+#[must_use]
+pub fn fenced_view_kill_args(
+    server: &ServerId,
+    stamp: &SessionStamp,
+    view: &str,
+) -> Option<Vec<String>> {
+    (fence_spelled(stamp) && session_id_is_valid(view)).then(|| {
+        fenced_args(
+            server,
+            view,
+            incarnation_guard(&stamp.server),
+            format!("kill-session -t {view}"),
+        )
+    })
+}
+
+/// Hand `client` to the session named exactly `next`, only while the stamped
+/// session is still the one the read proved. `None` when a client or session
+/// name would need more than single quotes, or the stamp is not tmux's own
+/// spelling.
+///
+/// ```
+/// use ae::inventory::ServerId;
+/// use ae::tmux::{fenced_switch_client_args, interpret_session_stamp};
+/// let read = "41 | 1789100000 | $3 | 1789100001 | demo | 11111111-2222-4333-8444-555555555555\n";
+/// let stamp = interpret_session_stamp(true, read, "demo").unwrap();
+/// let args = fenced_switch_client_args(&ServerId::Ambient, &stamp, "/dev/ttys001", "next").unwrap();
+/// assert_eq!(&args[..4], ["if-shell", "-F", "-t", "$3"]);
+/// assert_eq!(args[5], "switch-client -c '/dev/ttys001' -t '=next'");
+/// assert_eq!(fenced_switch_client_args(&ServerId::Ambient, &stamp, "/dev/it's", "next"), None);
+/// ```
+#[must_use]
+pub fn fenced_switch_client_args(
+    server: &ServerId,
+    stamp: &SessionStamp,
+    client: &str,
+    next: &str,
+) -> Option<Vec<String>> {
+    let plain = |word: &str| !word.is_empty() && !word.chars().any(|c| c == '\'' || c.is_control());
+    (fence_spelled(stamp) && plain(client) && plain(next)).then(|| {
+        fenced_args(
+            server,
+            &stamp.session.id,
+            stamp_guard(stamp),
+            format!("switch-client -c '{client}' -t '={next}'"),
+        )
+    })
 }
 
 /// `#{pane_id} | #{window_id} | #{@ae_theme} | #{@ae_agent}` — the
