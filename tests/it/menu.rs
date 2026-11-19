@@ -8956,6 +8956,106 @@ fn bang_popup_args_on_isolated_tmux_server_reports_missing_client_never_bad_flag
     );
 }
 
+/// #248: one real tmux server with two ae sessions and a nested client that
+/// views the one that is NOT clicked, so every End step has to carry the
+/// clicked session. The server is gone when the world drops.
+struct EndWorld {
+    scratch: PathBuf,
+    socket: PathBuf,
+    root: PathBuf,
+    clicked: &'static str,
+    viewed: &'static str,
+    viewer: &'static str,
+    client: String,
+    dir: PathBuf,
+    archive: PathBuf,
+    _cleanup: Cleanup,
+}
+
+impl EndWorld {
+    fn new(tag: &str, clicked: &'static str, viewed: &'static str, viewer: &'static str) -> Self {
+        let scratch = scratch(tag);
+        if !tmux_present(&scratch) {
+            let _ = fs::remove_dir_all(&scratch);
+            panic!("tmux is not runnable here, so the End menu chain cannot be proven");
+        }
+        let socket = scratch.join("s");
+        let cleanup = Cleanup {
+            socket: socket.clone(),
+            scratch: scratch.clone(),
+        };
+        let root = scratch.join("state");
+        let project = scratch.join("project");
+        let config = scratch.join("config");
+        write_state_fixture_config(&project, &config);
+        for session in [clicked, viewed] {
+            launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+        }
+        let id = listing_id(&socket, &scratch, clicked);
+        point_session_range_at(&socket, &scratch, viewed, &id);
+        let client = nested_client(&socket, &scratch, viewed, viewer);
+        let dir = root.join("sessions").join(clicked);
+        let meta = ae::meta::Meta::parse(&fixture_text(&dir.join("meta")));
+        let uuid = meta.session_id().expect("the clicked session has a UUID");
+        let archive = root.join("archive").join(uuid);
+        Self {
+            scratch,
+            socket,
+            root,
+            clicked,
+            viewed,
+            viewer,
+            client,
+            dir,
+            archive,
+            _cleanup: cleanup,
+        }
+    }
+
+    fn capture(&self) -> String {
+        tmux(
+            &self.socket,
+            &self.scratch,
+            &["capture-pane", "-p", "-t", self.viewer],
+        )
+        .1
+    }
+
+    fn key(&self, key: &str) {
+        let sent = tmux(
+            &self.socket,
+            &self.scratch,
+            &["send-keys", "-t", self.viewer, key],
+        );
+        assert!(sent.0, "key {key} on {}: {}", self.viewer, sent.1);
+    }
+
+    /// A right-click on the clicked session, then `e`: the End question.
+    fn question(&self) -> String {
+        let menu = open_context_menu(&self.socket, &self.scratch, self.viewer, &self.client);
+        assert!(menu.contains("End session"), "{menu}");
+        self.key("e");
+        let clicked = self.clicked;
+        wait_for(
+            "the End question on the clicking client",
+            || self.capture(),
+            |seen| seen.contains("Cancel") && seen.contains(&format!("End '{clicked}' now")),
+        )
+    }
+
+    /// Wait until the End owner has archived and unregistered the session.
+    fn wait_ended(&self) -> String {
+        let ended = wait_for(
+            "the End owner archives and unregisters the clicked session",
+            || format!("{}\n{}", events_of(&self.archive), self.capture()),
+            |seen| seen.contains("end-request") && !state_kept(&self.dir),
+        );
+        assert!(session_gone(&self.socket, &self.scratch, self.clicked));
+        assert!(state_kept(&self.root.join("sessions").join(self.viewed)));
+        ended
+    }
+}
+
 /// #248: the End menu takes the clicked server under another spelling of the
 /// same socket. The session records its tmux server as a symlink to the
 /// socket the client clicked on, so the two selectors differ in spelling and
@@ -8964,61 +9064,48 @@ fn bang_popup_args_on_isolated_tmux_server_reports_missing_client_never_bad_flag
 /// recorded-server check from one that refuses whenever the proof says "same".
 #[test]
 fn an_end_menu_accepts_another_spelling_of_the_clicked_server() {
-    let scratch = scratch("end-spelling");
-    if !tmux_present(&scratch) {
-        let _ = fs::remove_dir_all(&scratch);
-        panic!("tmux is not runnable here, so the End menu chain cannot be proven");
-    }
-    let socket = scratch.join("s");
-    let _cleanup = Cleanup {
-        socket: socket.clone(),
-        scratch: scratch.clone(),
-    };
-    let root = scratch.join("state");
-    let project = scratch.join("project");
-    let config = scratch.join("config");
-    write_state_fixture_config(&project, &config);
-    let (clicked, viewed, viewer) = ("spell-clicked", "spell-viewed", "spell-viewer");
-    for session in [clicked, viewed] {
-        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
-    }
-    let id = listing_id(&socket, &scratch, clicked);
-    point_session_range_at(&socket, &scratch, viewed, &id);
-    let client = nested_client(&socket, &scratch, viewed, viewer);
-    let dir = root.join("sessions").join(clicked);
-    let meta = ae::meta::Meta::parse(&fixture_text(&dir.join("meta")));
-    let uuid = meta.session_id().expect("the clicked session has a UUID");
-    let archive = root.join("archive").join(uuid);
-
-    let alias = scratch.join("alias");
-    std::os::unix::fs::symlink(&socket, &alias).expect("a second spelling of the socket");
-    assert_ne!(alias, socket);
-    assert!(ae::meta::rewrite(&dir, "tmux_server", alias.to_str()).is_ok());
-
-    let root_menu = open_context_menu(&socket, &scratch, viewer, &client);
-    assert!(root_menu.contains("End session"), "{root_menu}");
-    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "e"]).0);
-    let question = wait_for(
-        "the End question on the clicking client",
-        || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1,
-        |seen| seen.contains("Cancel") && seen.contains(&format!("End '{clicked}' now")),
+    let world = EndWorld::new(
+        "end-spelling",
+        "spell-clicked",
+        "spell-viewed",
+        "spell-viewer",
     );
+    let alias = world.scratch.join("alias");
+    std::os::unix::fs::symlink(&world.socket, &alias).expect("a second spelling of the socket");
+    assert_ne!(alias, world.socket);
+    assert!(ae::meta::rewrite(&world.dir, "tmux_server", alias.to_str()).is_ok());
+
+    let question = world.question();
     assert!(!question.contains("different tmux server"), "{question}");
-    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "E"]).0);
-    let ended = wait_for(
-        "the End owner archives the session whose server is recorded as a symlink",
-        || {
-            format!(
-                "{}\n{}",
-                events_of(&archive),
-                tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1
-            )
-        },
-        |seen| seen.contains("end-request") && !state_kept(&dir),
-    );
+    world.key("E");
+    let ended = world.wait_ended();
     assert!(!ended.contains("different tmux server"), "{ended}");
-    assert!(session_gone(&socket, &scratch, clicked));
-    assert!(state_kept(&root.join("sessions").join(viewed)));
+}
+
+/// #248: an End that started says nothing about a start that failed. The
+/// client records every byte it draws, so a message that has since expired
+/// is still in the record, and a confirmed End on a healthy server must leave
+/// no "could not start" line there.
+#[test]
+fn a_confirmed_end_that_started_draws_no_could_not_start_message() {
+    let world = EndWorld::new("end-quiet", "quiet-clicked", "quiet-viewed", "quiet-viewer");
+    let record = record_client(&world.socket, &world.scratch, world.viewer);
+    world.question();
+    world.key("E");
+    world.wait_ended();
+    // The apply step reports a failed start right after it hands the end to the
+    // detached owner, so a wrong report is on the client within moments of it.
+    std::thread::sleep(Duration::from_secs(2));
+    // An empty needle is in any record, so this reads everything drawn so far.
+    let drawn = wait_drawn(&record, 0, "");
+    assert!(
+        drawn.contains("quiet-clicked"),
+        "the record must hold the End question, or it proves nothing: {drawn:?}"
+    );
+    assert!(
+        !drawn.contains("could not start"),
+        "a started End was reported as not started; the client drew: {drawn:?}"
+    );
 }
 
 #[path = "endmenu_tmux_spec.rs"]
