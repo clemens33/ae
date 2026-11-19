@@ -468,6 +468,10 @@ pub struct SessionEntry {
     pub name: String,
     /// Running or stopped.
     pub status: Status,
+    /// The session's own uuid: the meta's one canonical `session_id`, lower-case.
+    /// `None` when the meta is unreadable or names no usable one (no row, a
+    /// malformed row, or two rows).
+    pub session_uuid: Option<String>,
     /// The copy mode the session was started in.
     pub mode: Option<String>,
     /// Where the session came from.
@@ -530,6 +534,7 @@ impl SessionEntry {
         Self {
             name: name.into(),
             status,
+            session_uuid: None,
             mode: None,
             origin: None,
             work_dir: None,
@@ -658,6 +663,14 @@ impl SessionEntry {
         let mut fields = vec![
             ("name".to_owned(), Value::str(&self.name)),
             ("status".to_owned(), Value::str(self.status.as_str())),
+            // Always present, and the one place this document says `unknown`
+            // rather than omitting a member: a reader that needs the session's
+            // identity asks for it by this key, and an absent key would not
+            // tell it whether the uuid was unreadable or the producer old.
+            (
+                "uuid".to_owned(),
+                Value::str(self.session_uuid.as_deref().unwrap_or("unknown")),
+            ),
         ];
         // Source knowledge, never aggregate loss, selects presence.
         push_known_str(
@@ -996,6 +1009,7 @@ mod tests {
     /// the model.
     fn documented_example() -> Digest {
         let mut session = SessionEntry::new("my-feature", Status::Running);
+        session.session_uuid = Some("5b1c7a0e-2d4f-4c3a-9e8b-1f6d0a3b7c92".to_owned());
         session.mode = Some("local".to_owned());
         session.origin = Some("/…".to_owned());
         session.work_dir = Some("/…".to_owned());
@@ -1037,6 +1051,7 @@ mod tests {
         let expected = concat!(
             r#"{"schema_version":2,"generated_at":"2026-05-29T14:00:00Z","sessions":[{"#,
             r#""name":"my-feature","status":"running","#,
+            r#""uuid":"5b1c7a0e-2d4f-4c3a-9e8b-1f6d0a3b7c92","#,
             r#""mode":"local","origin":"/…","work_dir":"/…","#,
             r#""goal":"ship the login flow","goal_set_epoch":1779990000,"#,
             r#""branch":"feature/login","last_active_epoch":1780000000,"#,
@@ -1183,6 +1198,8 @@ mod tests {
         let expected = json::Value::obj([
             ("name", json::Value::str("x")),
             ("status", json::Value::str("stopped")),
+            // Identity survives a damaged record as the word, not as an absent member.
+            ("uuid", json::Value::str("unknown")),
             ("needs_attention", json::Value::Bool(false)),
             ("agents", json::Value::Arr(vec![])),
             ("degraded", json::Value::Bool(true)),
@@ -1318,6 +1335,7 @@ mod tests {
             BTreeSet::from([
                 "name",
                 "status",
+                "uuid",
                 "mode",
                 "origin",
                 "work_dir",
@@ -1332,6 +1350,14 @@ mod tests {
                 "coverage",
             ]),
             "every documented member of a READ entry is present: {value}"
+        );
+        // The uuid is the one member that says `unknown` rather than null or absent.
+        assert_eq!(value.get_str("uuid"), Some("unknown"));
+        let mut known = SessionEntry::new("known", Status::Stopped);
+        known.session_uuid = Some("5b1c7a0e-2d4f-4c3a-9e8b-1f6d0a3b7c92".to_owned());
+        assert_eq!(
+            known.to_json().get_str("uuid"),
+            Some("5b1c7a0e-2d4f-4c3a-9e8b-1f6d0a3b7c92")
         );
         // ...and each empty one carries its legitimate empty VALUE, never absence.
         for key in [

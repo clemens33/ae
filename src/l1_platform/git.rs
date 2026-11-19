@@ -6,7 +6,8 @@
 //! `ae end` path's commit and push, the watchdog's branch-and-dirty segment,
 //! `ae brief`'s dirty marker — which is the watchdog's [`work_tree_dirty`], read
 //! a second time rather than spelled a second way, so the `*` on a card and the
-//! `*` on a status line can never disagree — the stopped rename's worktree
+//! `*` on a status line can never disagree; `ae brief --full` reads it under
+//! `--no-optional-locks` ([`work_tree_dirty_read_only`]) — the stopped rename's worktree
 //! registration and admin dir, and the worktree cleanup facts that
 //! `ae worktree gc` and the retire guard share ([`crate::worktrees`]).
 //!
@@ -48,6 +49,10 @@ enum Query<'a> {
     ShortHead,
     /// `status --porcelain --untracked-files=no` — the dirty marker.
     PorcelainStatus,
+    /// The same status behind git's `--no-optional-locks`: git neither locks nor
+    /// rewrites the index to refresh its stat cache. Asked by the read-only
+    /// `ae brief --full`, whose contract is that it writes nothing.
+    PorcelainStatusReadOnly,
     /// `worktree list --porcelain` — the managed-worktree registration the
     /// stopped rename proves ownership and destination absence against.
     WorktreeList,
@@ -180,6 +185,13 @@ fn argv(wdir: &OsStr, query: &Query) -> GitArgv {
             args.push("HEAD".into());
         }
         Query::PorcelainStatus => {
+            args.push("status".into());
+            args.push("--porcelain".into());
+            args.push("--untracked-files=no".into());
+        }
+        Query::PorcelainStatusReadOnly => {
+            // A GLOBAL option: it precedes the subcommand.
+            args.push("--no-optional-locks".into());
             args.push("status".into());
             args.push("--porcelain".into());
             args.push("--untracked-files=no".into());
@@ -980,11 +992,23 @@ pub(crate) fn latest_tag(wdir: &[u8]) -> Option<String> {
 /// Whether the work tree at `wdir` has TRACKED modifications — the `*` the
 /// watchdog appends to the displayed branch.
 pub(crate) fn work_tree_dirty(wdir: &[u8]) -> bool {
+    dirty_by(wdir, &Query::PorcelainStatus)
+}
+
+/// [`work_tree_dirty`] under git's `--no-optional-locks`: the same answer, and
+/// git never takes the index lock or writes the index back, so a caller whose
+/// contract is "reads, writes nothing" (`ae brief --full`) can ask it.
+pub(crate) fn work_tree_dirty_read_only(wdir: &[u8]) -> bool {
+    dirty_by(wdir, &Query::PorcelainStatusReadOnly)
+}
+
+/// Whether `query`'s status output names any tracked change.
+fn dirty_by(wdir: &[u8], query: &Query) -> bool {
     if wdir.is_empty() {
         return false;
     }
     let wdir = OsStr::from_bytes(wdir);
-    let (succeeded, out) = crate::transport::run_git(&argv(wdir, &Query::PorcelainStatus));
+    let (succeeded, out) = crate::transport::run_git(&argv(wdir, query));
     succeeded && out.lines().any(|line| !line.is_empty())
 }
 
@@ -1226,6 +1250,32 @@ mod tests {
         assert!(!is_count("-1")); // sign
         assert!(!is_count("1 2")); // space
         assert!(!is_count("fatal")); // an error word
+    }
+
+    #[test]
+    fn the_read_only_dirty_probe_adds_one_global_option_and_the_default_probe_is_unchanged() {
+        let w = OsString::from("/w d");
+        assert_eq!(
+            strs(&argv(&w, &Query::PorcelainStatus)),
+            [
+                "-C",
+                "/w d",
+                "status",
+                "--porcelain",
+                "--untracked-files=no"
+            ]
+        );
+        assert_eq!(
+            strs(&argv(&w, &Query::PorcelainStatusReadOnly)),
+            [
+                "-C",
+                "/w d",
+                "--no-optional-locks",
+                "status",
+                "--porcelain",
+                "--untracked-files=no"
+            ]
+        );
     }
 
     #[test]

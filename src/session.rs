@@ -904,6 +904,7 @@ pub fn entry_from(
         entry.origin = meta.origin().map(ToOwned::to_owned);
         entry.work_dir = meta.work_dir().map(ToOwned::to_owned);
         entry.goal = meta.goal().map(ToOwned::to_owned);
+        entry.session_uuid = meta.session_id().map(ToOwned::to_owned);
         entry.ae_version = meta.ae_version().map(ToOwned::to_owned);
         entry.behind = is_behind(meta);
         entry.created_epoch = meta.created_epoch().or(snapshot.legacy_created_epoch);

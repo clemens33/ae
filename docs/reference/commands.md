@@ -27,9 +27,10 @@ ae upgrade             Install the latest tagged immutable release; no extra arg
                        unpinned exits already-current when latest is not newer
 ae next [--attach]     Name the top running session needing attention (read-only;
                        alias: ae jump). --attach jumps to it. Non-zero when none.
-ae brief [name] [--all] [--since <dur>] [--seat <agent>]
+ae brief [name] [--all] [--since <dur>] [--full] [--seat <agent>]
                        Card a session: goal, the latest note per memo topic, each agent's
                        declared state, and who is waiting on you. Read-only.
+                       --full cuts nothing and adds a uuid line and each waiting seat's declaration view token.
                        --seat prints ONE seat's seed pack instead of the cards
 ae quota [--json]      Show bounded local quota snapshots for every configured account;
                        --json prints the same rows as one JSON document
@@ -455,6 +456,7 @@ script or agent; no `jq` is required to produce it. The filters
   "sessions": [
     {
       "name": "my-feature", "status": "running",
+      "uuid": "5b1c7a0e-2d4f-4c3a-9e8b-1f6d0a3b7c92",
       "mode": "local", "origin": "/…", "work_dir": "/…",
       "goal": "ship the login flow", "goal_set_epoch": 1779990000,
       "branch": "feature/login", "last_active_epoch": 1780000000,
@@ -473,7 +475,12 @@ script or agent; no `jq` is required to produce it. The filters
 }
 ```
 
-`attention` is the session's single most-actionable reason (see the reason
+`uuid` is the session's own identity: the one canonical `session_id` in its meta,
+lower-case, on every row, running or stopped. It is the string `unknown` when the meta is
+unreadable or names none, a malformed one or two. It is never `null` or absent, so a reader can
+tell an unreadable identity from a producer that predates the member. It is not an agent's
+`session_id`, which is the seat's harness conversation id, shortened. `attention` is the
+session's single most-actionable reason (see the reason
 table above); each agent's `reason` is its own contribution. `task` is
 the words of the agent's newest `state` declaration, whole and cleaned like the table's
 cell (control characters out, multibyte text intact, no clip and no age): the agent's
@@ -535,6 +542,7 @@ ae brief              # the session this pane is in, else the whole fleet
 ae brief aedev        # one session by name, running or not
 ae brief --all        # every running session, most actionable first
 ae brief --all --since 4h    # ... dropping topic records older than four hours
+ae brief aedev --full        # nothing clipped, plus the uuid and each waiting seat's view token
 ae brief aedev --seat lead   # ONE seat's seed pack, for a successor on another tool
 ```
 
@@ -562,6 +570,99 @@ aedev · running · attn:waiting-user · ae 2026.9.5 · created 2d ago · starte
 | `topics:` | the **latest** record per `memo` topic, newest topic first — see the topic convention below |
 | `agents:` | one line per roster agent: its declared state, how long ago it declared, and the reason it gave |
 | `needs you:` | one row per roster agent — main, colead, workers and spawned seats alike — whose attention reason needs you (`waiting-user`, `blocked` with an escalated `waiting-agent`, `limit`, `throttled`, `dead`): the agent, the reason, its age and the declared reason (or `no reason given`), each full reason wrapped across as many bounded lines as needed. `stale` and unanswered asks/reviews stay out; the header carries the `unanswered:<n>` count. An empty section reads `none recorded` |
+
+### `--full` — nothing clipped, and the declaration view tokens
+
+The default card clips a goal, a memo line and an agent reason to fit half a terminal. `--full`
+prints the same card for a reader that is not an eye, such as the orchestrator seat, with
+nothing cut:
+
+```bash
+ae brief aedev --full      # one session, running or stopped
+ae brief --all --full      # every running session, most actionable first
+```
+
+- **Whole.** The goal, each topic record, each agent reason and each `needs you:` reason print
+  whole, each on ONE line. Nothing is clipped, wrapped or ended with an ellipsis. Every dynamic
+  string, the header included, is cleaned the way the card cleans a need: each control character
+  and each run of whitespace becomes one space. The default card is byte-identical to what it
+  was.
+- **A `uuid:` line**, second in the card: `  uuid: <session uuid>`. It is the session's own
+  identity, the meta's one `session_id`, lower-case, taken from the same read of the session
+  that supplied the header, the goal and the roster. It prints on every `--full` card, whether
+  or not a seat is waiting. It reads `unknown` when the meta names no usable one: no
+  row, a malformed row or two rows. It is not a seat's harness conversation id, which
+  `ae list --json` shows shortened as `agents[].session_id`.
+- **Labelled, never dropped.** A source ae cannot read says so: `topics: unreadable (<why>)` and
+  `declarations: unreadable (<why>)`, where `<why>` is `a directory`, another non-regular node, or
+  the operating system's own words. The two sources are judged one at a time. A source that is
+  absent is a complete read of nothing, so it reads `none recorded` and `none waiting`. A
+  degraded record reads `unknown`. The default card folds a directory at `memo.tsv` into an empty
+  section. `--full` does not.
+- **One read of the seats, joined to one session.** Every seat fact on a `--full` card (state,
+  reason, age, `needs you:` row, declaration row) is the one the header and the `agents:` line were
+  built from. A later change to the journal cannot lend a seat another reason or a newer state.
+  The memo, the journal's readability and the roster slots and launch ids behind a view token are
+  read afterwards, and they join the card only while the meta still names the session the card was
+  built from. When it does not, the memo reads
+  `topics: unavailable (session record changed since it was read)` and every view reads
+  `unavailable (session record changed since it was read)`.
+- **A stopped session reads too.** `--full` asks tmux nothing the default card does not.
+- **Read-only, and quieter than the default.** `--full` writes nothing and takes no lock of its
+  own. Unlike the default `ae brief` it does not schedule the background upgrade check. The dirty
+  marker (`*`) asks git `--no-optional-locks status --porcelain --untracked-files=no`, so git does
+  not refresh and rewrite the work tree's index to answer it; the default card keeps the plain
+  `status`, whose answer is the same.
+- **`--seat` refuses it**, in either order: a seed pack is not a card.
+
+#### `declarations:`
+
+After `needs you:`, one row per roster seat whose **latest** declaration is `waiting-user` or
+`blocked`: the owner, the state and the declaration's **view token**. The state is the one the
+`agents:` line shows, and the declaration is the one whose reason that line shows. A seat that
+has declared anything else has no row. When the world read the event journal only in part, the
+states themselves are not established, so the section says
+`declarations: unavailable (the event journal was read only in part)` and names no seat.
+
+```text
+  declarations:
+    lead          waiting-user  view1/5b1c7a0e-2d4f-4c3a-9e8b-1f6d0a3b7c92/main/b6c84952-bbce-43dc-b00f-3bbf392e0ad2/2026-11-19T08:55:00Z/3f9a61c07be24d18
+    scribe        blocked       unavailable (no launch_id recorded for slot spawned.0)
+```
+
+The token is ONE line and one whitespace-free word, so it passes as one argument:
+
+```text
+token   = "view1" "/" session "/" slot "/" launch "/" ts "/" digest
+session = the meta's session_id, a lower-case UUID
+slot    = main | worker.<n> | spawned.<n>: the seat's roster slot
+launch  = the slot's launch_id.<slot> row at the moment of the read, [A-Za-z0-9._-]
+ts      = the declaration's second, rendered in UTC as YYYY-MM-DDTHH:MM:SSZ
+digest  = the first 16 lowercase hex characters of SHA-256 over the seat's current roster
+          reference (the actor name of the `agents:` line), the action word "state", the
+          declared state, the reason and ts, each followed by one NUL byte
+```
+
+The token is a **display-only view**, not an authority binding:
+
+- It changes when the seat declares a different state or reason. That is the only distinctness
+  it promises. A `state` event records the actor, the state, the reason and a timestamp in
+  whole seconds, and **no event id and no launch id**. Two identical declarations made in the
+  same second therefore share a token.
+- `launch` is the slot's launch id as the meta names it when ae reads, not the launch the
+  declaration was made under. A seat that relaunched shows another `launch` for the same
+  declaration.
+- It proves nothing about who declared, which incarnation declared, or who may act on it.
+  Anything that binds a ruling to a declaration must write its own launch-bound declaration id,
+  and must refuse a view token.
+
+A row reads `unavailable (<why>)` instead of a token when ae cannot form one: `no session_id
+recorded` (the session's own read names none, a malformed one or two),
+`session record changed since it was read` (the meta, read again for the slots and launch ids,
+no longer names the session the card was built from),
+`no roster slot recorded for <name>`,
+`no launch_id recorded for slot <slot>` (the row is absent or not a plain word) or
+`declaration time unreadable`. The seat is still listed, and the other seats keep theirs.
 
 ### `--seat` — the seed pack
 
@@ -637,7 +738,8 @@ system prompt as rule 6.
 
 `--since <dur>` takes `90` (seconds), `45s`, `30m`, `2h`, `3d` or `1w`, and drops topic
 records older than that; a record whose timestamp does not parse is kept rather than
-silently dropped. `--all` and a session name are mutually exclusive.
+silently dropped. `--all` and a session name are mutually exclusive. `--full` takes
+no value, may stand beside `--all`, a name or `--since`, and is refused beside `--seat`.
 
 Exit **2** for a usage error, **1** for a name no session carries. An empty fleet is a fact
 rather than a failure: `ae brief --all` says so on stderr and exits **0**.
@@ -1979,7 +2081,8 @@ question it may run `ae brief --all` once. It relays only explicit human
 instructions through its `relay <session[:agent]> <text…>` helper.
 When the human asks about one session, it runs `ae brief <session>` and presents
 the card verbatim — including the full `needs you:` reasons — then relays the
-human's answer to that session's lead.
+human's answer to that session's lead. When the human needs a goal, a reason or a memo line
+that the card clips, `ae brief <session> --full` is the optional whole-card read.
 
 One quoted text argument works; otherwise remaining argv are joined with single
 spaces. The delivery is one chat ask of the target's lead-pair seat, framed as the

@@ -39,26 +39,40 @@
 //! The module splits at the same seam the rest of the crate does: [`Card`] and
 //! [`render`] are pure and carry every formatting decision, and [`card_for`] is
 //! the one place that reads a session directory.
+//!
+//! ## `--full`
+//!
+//! [`full_card_for`] and [`render_full`] are the same card with nothing clipped.
+//! They add the session's own uuid, label a memo or journal that could not be
+//! read (the default card folds both into an empty section), and print one
+//! DISPLAY-ONLY view token ([`view_token`]) for each seat whose latest
+//! declaration is `waiting-user` or `blocked`. The default card is untouched:
+//! its output is pinned byte for byte.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::attention::Reason;
 use crate::digest::{SessionEntry, Status};
 use crate::events::SessionKey;
+use crate::meta::Meta;
 use crate::requests::{self, Status as RequestStatus};
 use crate::state;
+use crate::store::SourceRead;
 use crate::time::Timestamp;
 
 /// What `ae brief` prints when its argv does not parse.
-pub const USAGE: &str = "Usage: ae brief [session] [--all] [--since <duration>] [--seat <agent>]\n\n  \
+pub const USAGE: &str = "Usage: ae brief [session] [--all] [--since <duration>] [--full] [--seat <agent>]\n\n  \
                          session          the session to card; default is the caller's own,\n                   \
                          and --all when ae cannot name one\n  \
                          --all            every running session, most attention first\n  \
                          --since <dur>    drop topic records older than <dur> (90s, 30m, 2h, 3d)\n  \
+                         --full           the same cards with nothing clipped, a uuid line and a view\n                   \
+                         token for each seat waiting on you; read-only\n  \
                          --seat <agent>   print that ONE seat's seed pack instead of the cards:\n                   \
                          what a successor continuing it on another tool needs.\n                   \
                          Needs exactly one session, by name or the caller's own,\n                   \
-                         and takes neither --all nor --since\n";
+                         and takes none of --all, --since or --full\n";
 
 /// The width a card is written to fit — a terminal half, not a full one, so two
 /// cards sit side by side in a split.
@@ -99,6 +113,9 @@ pub struct Args {
     pub since_secs: Option<i64>,
     /// `--seat` — the one seat to seed-pack instead of carding the session.
     pub seat: Option<String>,
+    /// `--full` — the same cards with nothing clipped, plus the session uuid and a
+    /// view token per waiting seat.
+    pub full: bool,
 }
 
 /// The argv did not parse; the offending token, when there is one.
@@ -125,11 +142,11 @@ impl Usage {
 /// assert_eq!(parse(&[]), Ok(Args::default()));
 /// assert_eq!(
 ///     parse(&words(&["--all", "--since", "2h"])),
-///     Ok(Args { target: Target::All, since_secs: Some(7_200), seat: None })
+///     Ok(Args { target: Target::All, since_secs: Some(7_200), seat: None, full: false })
 /// );
 /// assert_eq!(
 ///     parse(&words(&["aedev"])),
-///     Ok(Args { target: Target::Named("aedev".to_owned()), since_secs: None, seat: None })
+///     Ok(Args { target: Target::Named("aedev".to_owned()), since_secs: None, seat: None, full: false })
 /// );
 /// assert!(parse(&words(&["--frobnicate"])).is_err());
 /// // A seed pack is one seat of one session, so the fleet and window flags are
@@ -138,12 +155,19 @@ impl Usage {
 /// assert!(parse(&words(&["--all", "--seat", "lead"])).is_err());
 /// assert!(parse(&words(&["--seat", "lead", "--since", "2h"])).is_err());
 /// assert!(parse(&words(&["--since", "2h", "--seat", "lead"])).is_err());
+///
+/// // `--full` reads the same cards whole, so it stands beside the fleet, a name and `--since`,
+/// // and a seed pack refuses it, in either order.
+/// assert!(parse(&words(&["aedev", "--full", "--since", "2h"])).is_ok_and(|args| args.full));
+/// assert!(parse(&words(&["--full", "--seat", "lead"])).is_err());
+/// assert!(parse(&words(&["--seat", "lead", "--full"])).is_err());
 /// ```
 ///
 /// # Errors
 ///
 /// [`Usage`] for an unknown flag, a second session name, `--since` without a
-/// readable duration, or `--all` alongside a name.
+/// readable duration, `--all` alongside a name, or `--seat` beside `--all`,
+/// `--since` or `--full`.
 pub fn parse(tail: &[String]) -> Result<Args, Usage> {
     let mut args = Args::default();
     let mut index = 0;
@@ -156,6 +180,13 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
                     return Err(Usage(Some(token.clone())));
                 }
                 args.target = Target::All;
+            }
+            "--full" => {
+                // A seed pack is not a card, so there is nothing for `--full` to uncut.
+                if args.seat.is_some() {
+                    return Err(Usage(Some(token.clone())));
+                }
+                args.full = true;
             }
             "--since" => {
                 // `--since` DROPS old topic records, and the pack's parking note
@@ -170,7 +201,11 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
             }
             "--seat" => {
                 let value = tail.get(index + 1).ok_or(Usage(Some(token.clone())))?;
-                if args.target == Target::All || args.since_secs.is_some() || args.seat.is_some() {
+                if args.target == Target::All
+                    || args.since_secs.is_some()
+                    || args.full
+                    || args.seat.is_some()
+                {
                     return Err(Usage(Some(token.clone())));
                 }
                 args.seat = Some(value.clone());
@@ -401,7 +436,7 @@ pub const NOTHING: &str = "ae brief: no session to brief\n";
 
 /// Append one card.
 fn push_card(out: &mut String, card: &Card) {
-    push_header(out, card);
+    push_header(out, card, str::to_owned);
     out.push_str("  goal: ");
     out.push_str(&clip(
         card.goal.as_deref().filter(|goal| !goal.is_empty()),
@@ -462,8 +497,11 @@ fn push_card(out: &mut String, card: &Card) {
 
 /// `<name> · <status> · attn:<reason> · ae <ver> · <branch><dirty> · <path>` —
 /// a segment ae does not know is left out rather than printed empty.
-fn push_header(out: &mut String, card: &Card) {
-    let mut segments: Vec<String> = vec![card.name.clone(), card.status.to_owned()];
+///
+/// `tidy` is applied to every dynamic segment: the default card passes the
+/// identity, `--full` passes [`clean_text`].
+fn push_header(out: &mut String, card: &Card, tidy: fn(&str) -> String) {
+    let mut segments: Vec<String> = vec![tidy(&card.name), card.status.to_owned()];
     if let Some(reason) = card.attention {
         segments.push(format!("attn:{}", reason.as_str()));
     }
@@ -473,7 +511,7 @@ fn push_header(out: &mut String, card: &Card) {
         segments.push(format!("unanswered:{count}"));
     }
     if let Some(version) = card.ae_version.as_deref().filter(|v| !v.is_empty()) {
-        segments.push(format!("ae {version}"));
+        segments.push(format!("ae {}", tidy(version)));
     }
     segments.push(crate::listing::lifecycle_ages(
         card.as_of,
@@ -482,10 +520,14 @@ fn push_header(out: &mut String, card: &Card) {
         card.active_epoch,
     ));
     if let Some(branch) = card.branch.as_deref().filter(|b| !b.is_empty()) {
-        segments.push(format!("{branch}{}", if card.dirty { "*" } else { "" }));
+        segments.push(format!(
+            "{}{}",
+            tidy(branch),
+            if card.dirty { "*" } else { "" }
+        ));
     }
     if let Some(dir) = card.work_dir.as_deref().filter(|d| !d.is_empty()) {
-        segments.push(dir.to_owned());
+        segments.push(tidy(dir));
     }
     // LAST, so it reads as a caveat on everything before it.
     if card.degraded {
@@ -495,8 +537,9 @@ fn push_header(out: &mut String, card: &Card) {
     out.push('\n');
 }
 
-/// One `needs you:` entry.
-fn push_need(out: &mut String, need: &Need) {
+/// The three padded columns of a `needs you:` entry, its free text and the words
+/// that stand in for an empty one. `tidy` is applied to every dynamic field.
+fn need_columns(need: &Need, tidy: fn(&str) -> String) -> (String, String, &'static str) {
     let mut prefix = " ".repeat(NEED_INDENT);
     let (detail, fallback) = match need {
         Need::Seat {
@@ -505,7 +548,7 @@ fn push_need(out: &mut String, need: &Need) {
             age_secs,
             detail,
         } => {
-            push_padded(&mut prefix, owner, 14);
+            push_padded(&mut prefix, &tidy(owner), 14);
             push_padded(&mut prefix, reason.as_str(), 14);
             push_padded(&mut prefix, &age(*age_secs), 6);
             (detail.as_str(), "no reason given")
@@ -520,15 +563,25 @@ fn push_need(out: &mut String, need: &Need) {
         } => {
             // The SAME three columns a declared need uses, so the section reads
             // as one grid rather than as two tables that happen to be adjacent.
-            push_padded(&mut prefix, kind, 14);
-            push_padded(&mut prefix, &format!("{from} → {to}"), 14);
+            push_padded(&mut prefix, &tidy(kind), 14);
+            push_padded(&mut prefix, &format!("{} → {}", tidy(from), tidy(to)), 14);
             push_padded(&mut prefix, &age(Some(*age_secs)), 6);
             (question.as_str(), "no text recorded")
         }
     };
-    let detail = if detail.is_empty() { fallback } else { detail };
+    (prefix, tidy(detail), fallback)
+}
+
+/// One `needs you:` entry.
+fn push_need(out: &mut String, need: &Need) {
+    let (prefix, detail, fallback) = need_columns(need, str::to_owned);
+    let detail = if detail.is_empty() {
+        fallback.to_owned()
+    } else {
+        detail
+    };
     let first_width = WIDTH.saturating_sub(prefix.chars().count()).max(1);
-    let mut lines = wrap_text(detail, first_width, WIDTH - NEED_INDENT, MAX_NEED_LINES);
+    let mut lines = wrap_text(&detail, first_width, WIDTH - NEED_INDENT, MAX_NEED_LINES);
     if lines.is_empty() {
         lines.push(fallback.to_owned());
     }
@@ -687,6 +740,51 @@ pub fn card_for(
     // quiet read, and rendering an unreadable memory as an empty one is the
     // one thing `store.rs` says a human read must not do.
     let memo = store.memo_bytes();
+    let needs = needs(
+        &agents,
+        &container,
+        SessionKey::new(&entry.name, &crate::meta::session_id_in(dir)),
+        now,
+    );
+    build_card(
+        entry,
+        home,
+        dirty,
+        now,
+        since_secs,
+        Sources {
+            agents,
+            needs,
+            memo: memo.as_deref().unwrap_or_default(),
+            memo_unreadable: memo.is_err(),
+        },
+    )
+}
+
+/// What one card is built from: the agent lines, the needs and the memo bytes,
+/// so the default path and `--full` derive them differently and build the card
+/// identically.
+struct Sources<'a> {
+    /// One line per roster agent.
+    agents: Vec<AgentLine>,
+    /// Declared-state and open-request facts.
+    needs: Vec<Need>,
+    /// The memo container's bytes.
+    memo: &'a [u8],
+    /// Whether a memo file that EXISTS could not be read.
+    memo_unreadable: bool,
+}
+
+/// The card for `entry` out of `sources`: every field of [`Card`], whichever
+/// reader produced them.
+fn build_card(
+    entry: &SessionEntry,
+    home: Option<&Path>,
+    dirty: bool,
+    now: Timestamp,
+    since_secs: Option<i64>,
+    sources: Sources<'_>,
+) -> Card {
     Card {
         name: entry.name.clone(),
         status: entry.status.as_str(),
@@ -704,15 +802,10 @@ pub fn card_for(
         dirty,
         work_dir: entry.work_dir.as_deref().map(|path| short_path(path, home)),
         goal: entry.goal.clone(),
-        topics: topic_lines(memo.as_deref().unwrap_or_default(), now, since_secs),
-        memo_unreadable: memo.is_err(),
-        needs: needs(
-            &agents,
-            &container,
-            SessionKey::new(&entry.name, &crate::meta::session_id_in(dir)),
-            now,
-        ),
-        agents,
+        topics: topic_lines(sources.memo, now, since_secs),
+        memo_unreadable: sources.memo_unreadable,
+        needs: sources.needs,
+        agents: sources.agents,
         degraded: entry.degraded,
     }
 }
@@ -881,18 +974,7 @@ fn needs(
     session: SessionKey<'_>,
     now: Timestamp,
 ) -> Vec<Need> {
-    let mut needs: Vec<Need> = agents
-        .iter()
-        .filter_map(|agent| {
-            let reason = agent.attention.filter(|reason| reason.needs_you())?;
-            Some(Need::Seat {
-                owner: agent.name.clone(),
-                reason,
-                age_secs: agent.age_secs,
-                detail: agent.reason.clone(),
-            })
-        })
-        .collect();
+    let mut needs = seat_needs(agents);
     for request in requests::states_in(container, session) {
         if request.status != RequestStatus::Pending {
             continue;
@@ -911,6 +993,64 @@ fn needs(
     needs
 }
 
+/// The seats among `agents` whose attention reason [`Reason::needs_you`] claims
+/// the human: [`needs`] without the open requests, which are never a claim on
+/// the human and so never print.
+fn seat_needs(agents: &[AgentLine]) -> Vec<Need> {
+    agents
+        .iter()
+        .filter_map(|agent| {
+            let reason = agent.attention.filter(|reason| reason.needs_you())?;
+            Some(Need::Seat {
+                owner: agent.name.clone(),
+                reason,
+                age_secs: agent.age_secs,
+                detail: agent.reason.clone(),
+            })
+        })
+        .collect()
+}
+
+/// One line per agent, in roster order, from the WORLD alone.
+///
+/// The state is the world's, as in [`agent_lines`]; the reason and the age are
+/// the words of the seat's typed [`crate::digest::Declaration`], the event the
+/// state cell itself reads, so no later read of the journal can lend a seat a
+/// reason or a newer state the world never saw. Only a seat whose state is
+/// exact carries them.
+fn agent_lines_from_world(entry: &SessionEntry, now: Timestamp) -> Vec<AgentLine> {
+    let exact = entry.agent_state_is_exact();
+    entry
+        .agents
+        .iter()
+        .map(|agent| {
+            let state = match (exact, agent.state.as_deref()) {
+                (true, Some(state)) => state.to_owned(),
+                (true, None) => "-".to_owned(),
+                (false, _) => "unknown".to_owned(),
+            };
+            let declared = match (&agent.declaration, exact) {
+                (Some(crate::digest::Declaration::Made { reason, at, .. }), true) => {
+                    Some((reason, *at))
+                }
+                _ => None,
+            };
+            AgentLine {
+                name: agent.name.clone(),
+                profile: agent.alias.clone(),
+                state,
+                age_secs: declared
+                    .and_then(|(_, at)| at)
+                    .map(|at| Timestamp::from_epoch(at).seconds_until(now)),
+                reason: declared
+                    .map(|(reason, _)| reason.clone())
+                    .unwrap_or_default(),
+                attention: entry.attention_is_exact().then_some(agent.reason).flatten(),
+            }
+        })
+        .collect()
+}
+
 /// The cards for `entries`, most actionable first, ties broken by name.
 ///
 /// Sorting lives here rather than at the call site because "most attention
@@ -918,13 +1058,16 @@ fn needs(
 /// to disagree with it.
 #[must_use]
 pub fn ordered(mut cards: Vec<Card>) -> Vec<Card> {
-    cards.sort_by(|left, right| {
-        right
-            .urgency()
-            .cmp(&left.urgency())
-            .then_with(|| left.name.as_bytes().cmp(right.name.as_bytes()))
-    });
+    cards.sort_by(by_urgency);
     cards
+}
+
+/// Most actionable first, ties broken by name: the one order of `--all`.
+fn by_urgency(left: &Card, right: &Card) -> std::cmp::Ordering {
+    right
+        .urgency()
+        .cmp(&left.urgency())
+        .then_with(|| left.name.as_bytes().cmp(right.name.as_bytes()))
 }
 
 /// Whether this entry's work tree is worth asking git about — a stopped or
@@ -934,6 +1077,400 @@ pub fn wants_git(entry: &SessionEntry) -> bool {
     entry.status != Status::Stopped
         && !entry.degraded
         && entry.work_dir.as_deref().is_some_and(|dir| !dir.is_empty())
+}
+
+// ── `--full`: the card with nothing clipped ─────────────────────────────────
+
+/// What the word `unknown` stands for in the uuid line: no usable `session_id`.
+const UNKNOWN: &str = "unknown";
+
+/// Why the session's detail could not be joined to the card, in the words both
+/// the `topics:` line and a view row use.
+const CHANGED: &str = "session record changed since it was read";
+
+/// One session's card as `--full` reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FullCard {
+    /// The card: the world's agents and needs, the memo's topics.
+    pub card: Card,
+    /// The session's own uuid, lower-case, or `unknown` when the meta names no
+    /// usable one (no row, a malformed row, or two rows). It is the uuid of the
+    /// SAME read of the session that supplied the header, the goal and the
+    /// roster ([`SessionEntry::session_uuid`]), never a second read by path.
+    pub uuid: String,
+    /// What the `topics:` line says instead of records when the memo cannot be
+    /// shown: `unreadable (<why>)` for a memo that exists and cannot be read,
+    /// `unavailable (...)` for one that may belong to a replaced session. `None`
+    /// for a readable or an absent file; an absent file reads nothing at all.
+    pub topics_note: Option<String>,
+    /// The waiting seats' declarations.
+    pub declarations: Declarations,
+}
+
+/// The declarations section of a [`FullCard`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Declarations {
+    /// The event journal exists and could not be read: why. Never an empty list.
+    Unreadable(String),
+    /// The world read the journal only in part, so it could not establish the
+    /// seats' states and no declaration is named. Never an empty list.
+    Partial,
+    /// One row per seat whose declared state is `waiting-user` or `blocked`, in
+    /// roster order; empty when no seat is waiting.
+    Seats(Vec<Declaration>),
+}
+
+/// One waiting seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Declaration {
+    /// The seat's name.
+    pub owner: String,
+    /// Its latest declared state: `waiting-user` or `blocked`.
+    pub state: String,
+    /// The [`view_token`] of that declaration, or why ae could not form one.
+    pub view: Result<String, String>,
+}
+
+/// The two declared states that claim the human.
+const WAITING_STATES: [&str; 2] = ["waiting-user", "blocked"];
+
+/// Build `entry`'s card for `--full` from the world's entry and the session
+/// store at `dir`.
+///
+/// **Everything about the seats comes from the WORLD**, the read that built
+/// `entry`: the agent states, the reasons and ages (the typed
+/// [`crate::digest::Declaration`] of the event the state cell reads), the
+/// needs, the declarations and the view tokens' reason, time and digest. A later
+/// read of the journal can therefore neither lend a seat a reason nor supply a
+/// newer state the header never saw, and a record the world distrusted is never
+/// presented as a readable one.
+///
+/// What the world does not carry is read from `dir`: the memo, a classification
+/// of the journal for the `unreadable (<why>)` label, and the roster slots and
+/// launch ids a view token names. That detail is joined to the card only while
+/// the meta at `dir` still names the session the world read, checked before the
+/// reads and again after them. On a mismatch the memo and the journal label are
+/// withheld and every view reads `unavailable (session record changed since it
+/// was read)`.
+#[must_use]
+pub fn full_card_for(
+    entry: &SessionEntry,
+    dir: &Path,
+    home: Option<&Path>,
+    dirty: bool,
+    now: Timestamp,
+    since_secs: Option<i64>,
+) -> FullCard {
+    let store = crate::store::open(dir);
+    let world_uuid = entry.session_uuid.as_deref();
+    let meta_bytes = crate::meta::read_bytes(dir).unwrap_or_default();
+    let meta = std::str::from_utf8(&meta_bytes).ok().map(Meta::parse);
+    let mut joined = meta.as_ref().and_then(Meta::session_id) == world_uuid;
+    let mut journal_why = None;
+    let mut memo = Vec::new();
+    let mut topics_note = None;
+    if joined {
+        journal_why = whole(store.events_source()).1;
+        let (bytes, why) = whole(store.memo_source());
+        memo = bytes;
+        topics_note = why.map(|why| format!("unreadable ({why})"));
+        // The record may have been replaced while the memo was read: look again.
+        let again = crate::meta::session_id_in(dir);
+        joined = Some(again.as_str()).filter(|id| !id.is_empty()) == world_uuid;
+    }
+    if !joined {
+        journal_why = None;
+        memo = Vec::new();
+        topics_note = Some(format!("unavailable ({CHANGED})"));
+    }
+    let agents = agent_lines_from_world(entry, now);
+    let needs = seat_needs(&agents);
+    let card = build_card(
+        entry,
+        home,
+        dirty,
+        now,
+        since_secs,
+        Sources {
+            agents,
+            needs,
+            memo: &memo,
+            memo_unreadable: topics_note.is_some(),
+        },
+    );
+    let declarations = match journal_why {
+        Some(why) => Declarations::Unreadable(why),
+        // The world read the journal only in part: it could not say what any
+        // seat declared, so no seat is named off a journal it distrusts.
+        None if !entry.agent_state_is_exact() => Declarations::Partial,
+        None => Declarations::Seats(declarations(entry, meta.as_ref().filter(|_| joined))),
+    };
+    FullCard {
+        card,
+        uuid: world_uuid.unwrap_or(UNKNOWN).to_owned(),
+        topics_note,
+        declarations,
+    }
+}
+
+/// A classified source as its bytes plus the reason it could not be read.
+/// Absent is a complete read of nothing, so it carries no reason.
+fn whole(read: SourceRead) -> (Vec<u8>, Option<String>) {
+    match read {
+        SourceRead::Ready(bytes) => (bytes, None),
+        SourceRead::Absent => (Vec::new(), None),
+        SourceRead::Invalid(why) | SourceRead::Unreadable(why) => (Vec::new(), Some(why)),
+    }
+}
+
+/// The seats whose declared state is `waiting-user` or `blocked`, in roster
+/// order. The state and the declaration are the world's own: the state cell and
+/// the typed [`crate::digest::Declaration`] of the event it reads. `meta` is the
+/// joined meta, `None` once the session record is known to have changed.
+fn declarations(entry: &SessionEntry, meta: Option<&Meta>) -> Vec<Declaration> {
+    entry
+        .agents
+        .iter()
+        .filter_map(|agent| {
+            let state = WAITING_STATES
+                .into_iter()
+                .find(|word| agent.state.as_deref() == Some(*word))?;
+            let view = match &agent.declaration {
+                Some(crate::digest::Declaration::Made { reason, at, .. }) => view_for(
+                    entry.session_uuid.as_deref(),
+                    meta,
+                    &agent.name,
+                    &agent.reference,
+                    (state, reason),
+                    *at,
+                ),
+                _ => Err("no declaration recorded".to_owned()),
+            };
+            Some(Declaration {
+                owner: agent.name.clone(),
+                state: state.to_owned(),
+                view,
+            })
+        })
+        .collect()
+}
+
+/// A word that can sit between two `/` of a view token: ASCII letters, digits,
+/// `.`, `_` and `-`.
+fn is_plain(word: &str) -> bool {
+    !word.is_empty()
+        && word
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// The view token of a declaration, or why none can be formed. `declared` is its
+/// state and reason, `at` its second. The checks run in the order the token
+/// reads: session, slot, launch id, then the declaration time.
+///
+/// `world_uuid` is the `session_id` of the world's entry; `meta` is a later
+/// read of the same path, trusted for the roster and launch ids only while it
+/// still names that session.
+fn view_for(
+    world_uuid: Option<&str>,
+    meta: Option<&Meta>,
+    name: &str,
+    actor: &str,
+    declared: (&str, &str),
+    at: Option<i64>,
+) -> Result<String, String> {
+    let uuid = world_uuid.ok_or_else(|| "no session_id recorded".to_owned())?;
+    if meta.and_then(Meta::session_id) != Some(uuid) {
+        return Err(CHANGED.to_owned());
+    }
+    let slot = meta
+        .and_then(|meta| meta.roster().iter().find(|seat| seat.name == name))
+        .map(|seat| seat.slot.as_str())
+        .filter(|slot| requests::is_slot(slot))
+        .ok_or_else(|| format!("no roster slot recorded for {name}"))?;
+    let launch = meta
+        .and_then(|meta| meta.launch_id(slot))
+        .filter(|launch| is_plain(launch))
+        .ok_or_else(|| format!("no launch_id recorded for slot {slot}"))?;
+    let at = at.ok_or_else(|| "declaration time unreadable".to_owned())?;
+    let latest = state::Latest {
+        value: declared.0.as_bytes().to_vec(),
+        reason: declared.1.as_bytes().to_vec(),
+        ts: Timestamp::from_epoch(at).to_string().into_bytes(),
+    };
+    Ok(view_token(uuid, slot, launch, actor, &latest))
+}
+
+/// The DISPLAY-ONLY view token of one declaration:
+///
+/// `view1/<session uuid>/<slot>/<launch id>/<ts>/<digest>`
+///
+/// `<digest>` is the first 16 hex characters of the SHA-256 over the seat's
+/// current roster reference (`actor`, the name the `agents:` line carries), the
+/// action word `state`, the declared state, the reason and `ts`, each followed
+/// by one NUL byte. `ts` is the declaration's second rendered in UTC as
+/// `YYYY-MM-DDTHH:MM:SSZ`. The token changes when the seat declares a different
+/// state or reason.
+///
+/// It is a view, not an authority binding. A `state` event carries no launch id
+/// and no event id, so `<launch id>` is the slot's CURRENT launch id as the meta
+/// names it when ae reads, and two identical declarations made in one second
+/// share a token. Nothing may take a token as proof of who declared or when
+/// the declaring seat launched.
+///
+/// ```
+/// use ae::brief::view_token;
+/// use ae::state::Latest;
+///
+/// let latest = Latest {
+///     value: b"waiting-user".to_vec(),
+///     reason: b"pick one".to_vec(),
+///     ts: b"2026-11-19T09:00:00Z".to_vec(),
+/// };
+/// let token = view_token("5b1c7a0e-2d4f-4c3a-9e8b-1f6d0a3b7c92", "main", "tok-1", "lead", &latest);
+/// assert!(token.starts_with(
+///     "view1/5b1c7a0e-2d4f-4c3a-9e8b-1f6d0a3b7c92/main/tok-1/2026-11-19T09:00:00Z/"
+/// ));
+/// let other = Latest { reason: b"pick two".to_vec(), ..latest };
+/// assert_ne!(token, view_token("5b1c7a0e-2d4f-4c3a-9e8b-1f6d0a3b7c92", "main", "tok-1", "lead", &other));
+/// ```
+#[must_use]
+pub fn view_token(
+    session_uuid: &str,
+    slot: &str,
+    launch_id: &str,
+    actor: &str,
+    latest: &state::Latest,
+) -> String {
+    let mut input = Vec::new();
+    let mut part = |bytes: &[u8]| {
+        input.extend_from_slice(bytes);
+        input.push(0);
+    };
+    part(actor.as_bytes());
+    part(b"state");
+    part(&latest.value);
+    part(&latest.reason);
+    part(&latest.ts);
+    let digest: String = crate::install::sha256_hex(&input)
+        .chars()
+        .take(16)
+        .collect();
+    format!(
+        "view1/{session_uuid}/{slot}/{launch_id}/{}/{digest}",
+        String::from_utf8_lossy(&latest.ts)
+    )
+}
+
+/// `--full` cards, most actionable first, ties broken by name: [`ordered`]'s order.
+#[must_use]
+pub fn ordered_full(mut cards: Vec<FullCard>) -> Vec<FullCard> {
+    cards.sort_by(|left, right| by_urgency(&left.card, &right.card));
+    cards
+}
+
+/// The whole output for `cards`, in the order given, one blank line between.
+#[must_use]
+pub fn render_full(cards: &[FullCard]) -> String {
+    let mut out = String::new();
+    for (index, full) in cards.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        push_full_card(&mut out, full);
+    }
+    out
+}
+
+/// Append one `--full` card: the default card's sections with no clip, every
+/// dynamic field through [`clean_text`], and the two sections only `--full` has.
+fn push_full_card(out: &mut String, full: &FullCard) {
+    let card = &full.card;
+    push_header(out, card, clean_text);
+    out.push_str("  uuid: ");
+    out.push_str(&clean_text(&full.uuid));
+    out.push('\n');
+
+    let goal = card.goal.as_deref().map(clean_text).unwrap_or_default();
+    out.push_str("  goal: ");
+    out.push_str(if goal.is_empty() { "none" } else { &goal });
+    out.push('\n');
+
+    out.push_str("  topics:");
+    if let Some(note) = &full.topics_note {
+        let _ = write!(out, " {}", clean_text(note));
+    } else if card.topics.is_empty() {
+        out.push_str(card.empty_section());
+    }
+    out.push('\n');
+    for topic in &card.topics {
+        out.push_str("    ");
+        push_padded(out, &clean_text(&topic.topic), 12);
+        push_padded(out, &age(topic.age_secs), 6);
+        push_padded(out, &clean_text(&topic.author), 14);
+        out.push_str(&clean_text(&topic.text));
+        out.push('\n');
+    }
+
+    out.push_str("  agents:");
+    if card.agents.is_empty() {
+        out.push_str(card.empty_section());
+    }
+    out.push('\n');
+    for agent in &card.agents {
+        out.push_str("    ");
+        push_padded(out, &clean_text(&agent.name), 14);
+        push_padded(out, &clean_text(&agent.profile), 14);
+        push_padded(out, &clean_text(&agent.state), 14);
+        push_padded(out, &age(agent.age_secs), 6);
+        let reason = clean_text(&agent.reason);
+        if !reason.is_empty() {
+            out.push('"');
+            out.push_str(&reason);
+            out.push('"');
+        }
+        // A line whose last column is empty must not carry the padding of one.
+        trim_line_end(out);
+        out.push('\n');
+    }
+
+    out.push_str("  needs you:");
+    if card.human_needs().next().is_none() {
+        out.push_str(card.empty_section());
+    }
+    out.push('\n');
+    for need in card.human_needs() {
+        let (prefix, detail, fallback) = need_columns(need, clean_text);
+        out.push_str(&prefix);
+        out.push_str(if detail.is_empty() { fallback } else { &detail });
+        out.push('\n');
+    }
+
+    out.push_str("  declarations:");
+    match &full.declarations {
+        Declarations::Unreadable(why) => {
+            let _ = writeln!(out, " unreadable ({})", clean_text(why));
+        }
+        Declarations::Partial => {
+            out.push_str(" unavailable (the event journal was read only in part)\n");
+        }
+        Declarations::Seats(seats) if seats.is_empty() => out.push_str(" none waiting\n"),
+        Declarations::Seats(seats) => {
+            out.push('\n');
+            for seat in seats {
+                out.push_str("    ");
+                push_padded(out, &clean_text(&seat.owner), 14);
+                push_padded(out, &clean_text(&seat.state), 14);
+                match &seat.view {
+                    Ok(token) => out.push_str(&clean_text(token)),
+                    Err(why) => {
+                        let _ = write!(out, "unavailable ({})", clean_text(why));
+                    }
+                }
+                out.push('\n');
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -980,10 +1517,17 @@ mod tests {
             Ok(Args {
                 target: Target::Named("aedev".to_owned()),
                 since_secs: None,
-                seat: None
+                seat: None,
+                full: false,
             })
         );
         assert!(parse(&words(&["--frobnicate"])).is_err());
+        assert!(parse(&words(&["--full"])).is_ok_and(|args| args.full));
+        // `--full` and `--seat` contradict each other, in either order, and `--full` stands
+        // beside the fleet, a name and `--since`.
+        assert!(parse(&words(&["--full", "--seat", "lead"])).is_err());
+        assert!(parse(&words(&["--seat", "lead", "--full"])).is_err());
+        assert!(parse(&words(&["--all", "--since", "2h", "--full"])).is_ok_and(|args| args.full));
         // Two names, or a name plus --all, is a contradiction rather than a
         // silent last-wins.
         assert!(parse(&words(&["one", "two"])).is_err());
@@ -1554,5 +2098,397 @@ mod tests {
         );
         assert_eq!(short_path("/srv/ae", Some(home)), "/srv/ae");
         assert_eq!(short_path("/Users/x/ae", None), "/Users/x/ae");
+    }
+    // ── `--full` ────────────────────────────────────────────────────────────
+
+    use super::{
+        Declaration, Declarations, FullCard, ordered_full, render_full, view_for, view_token, whole,
+    };
+    use crate::digest::{AgentEntry, SessionEntry, Status};
+    use crate::meta::Meta;
+    use crate::state::Latest;
+    use crate::store::SourceRead;
+
+    const UUID: &str = "5b1c7a0e-2d4f-4c3a-9e8b-1f6d0a3b7c92";
+
+    fn latest(value: &str, reason: &str, ts: &str) -> Latest {
+        Latest {
+            value: value.as_bytes().to_vec(),
+            reason: reason.as_bytes().to_vec(),
+            ts: ts.as_bytes().to_vec(),
+        }
+    }
+
+    fn meta(rows: &str) -> Meta {
+        Meta::parse(rows)
+    }
+
+    #[test]
+    fn the_view_digest_is_the_sha256_of_five_nul_ended_parts() {
+        // The expected digest comes from `shasum -a 256` over
+        // `lead\0state\0waiting-user\0pick one\02026-11-19T09:00:00Z\0`, not from this code.
+        let base = latest("waiting-user", "pick one", "2026-11-19T09:00:00Z");
+        assert_eq!(
+            view_token(UUID, "main", "tok-1", "lead", &base),
+            format!("view1/{UUID}/main/tok-1/2026-11-19T09:00:00Z/80463c55cc58ab69")
+        );
+        // Each hashed part moves the token; the unhashed identity parts only show.
+        let token = |slot: &str, actor: &str, latest: &Latest| {
+            view_token(UUID, slot, "tok-1", actor, latest)
+        };
+        let reference = token("main", "lead", &base);
+        for other in [
+            token("main", "scribe", &base),
+            token(
+                "main",
+                "lead",
+                &latest("blocked", "pick one", "2026-11-19T09:00:00Z"),
+            ),
+            token(
+                "main",
+                "lead",
+                &latest("waiting-user", "pick two", "2026-11-19T09:00:00Z"),
+            ),
+            token(
+                "main",
+                "lead",
+                &latest("waiting-user", "pick one", "2026-11-19T09:00:01Z"),
+            ),
+        ] {
+            assert_ne!(reference, other);
+        }
+        assert_ne!(reference, token("worker.0", "lead", &base));
+    }
+
+    const AT: i64 = 1_795_078_800; // 2026-11-19T09:00:00Z
+
+    #[test]
+    fn a_view_names_the_first_part_ae_cannot_supply_in_the_order_the_token_reads() {
+        let declared = ("blocked", "stuck");
+        let complete = format!("session_id={UUID}\nseat.main=lead\nlaunch_id.main=tok-1\n");
+        let ok = |meta: &Meta| view_for(Some(UUID), Some(meta), "lead", "lead", declared, Some(AT));
+        assert_eq!(
+            ok(&meta(&complete)),
+            Ok(view_token(
+                UUID,
+                "main",
+                "tok-1",
+                "lead",
+                &latest("blocked", "stuck", "2026-11-19T09:00:00Z")
+            ))
+        );
+
+        let why = |rows: &str, name: &str, at: Option<i64>| {
+            view_for(Some(UUID), Some(&meta(rows)), name, name, declared, at).expect_err("no view")
+        };
+        // The world's entry names no uuid: no session_id, whatever a later read says.
+        assert_eq!(
+            view_for(
+                None,
+                Some(&meta(&complete)),
+                "lead",
+                "lead",
+                declared,
+                Some(AT)
+            ),
+            Err("no session_id recorded".to_owned())
+        );
+        // A session replaced since the world was read lends nothing to the old card: no
+        // meta now, no uuid now, another uuid now, a malformed one and two rows.
+        let replaced = "session record changed since it was read".to_owned();
+        assert_eq!(
+            view_for(Some(UUID), None, "lead", "lead", declared, Some(AT)),
+            Err(replaced.clone())
+        );
+        for rows in [
+            "seat.main=lead\nlaunch_id.main=tok-1\n".to_owned(),
+            "session_id=11111111-2222-4333-8444-555555555555\nseat.main=lead\nlaunch_id.main=tok-1\n"
+                .to_owned(),
+            "session_id=nope\nseat.main=lead\nlaunch_id.main=tok-1\n".to_owned(),
+            format!("session_id={UUID}\nsession_id={UUID}\nseat.main=lead\nlaunch_id.main=tok-1\n"),
+        ] {
+            assert_eq!(why(&rows, "lead", Some(AT)), replaced, "{rows}");
+        }
+        // The uuid is checked before the slot, the slot before the launch id.
+        assert_eq!(
+            why(
+                &format!("session_id={UUID}\nlaunch_id.main=tok-1\n"),
+                "lead",
+                Some(AT)
+            ),
+            "no roster slot recorded for lead"
+        );
+        assert_eq!(
+            why(
+                &format!("session_id={UUID}\nseat.main=lead\n"),
+                "lead",
+                Some(AT)
+            ),
+            "no launch_id recorded for slot main"
+        );
+        // A launch id that is not a plain word cannot sit between two slashes.
+        for launch in ["a b", "a/b", "tok\u{1b}1"] {
+            let rows = format!("session_id={UUID}\nseat.main=lead\nlaunch_id.main={launch}\n");
+            assert_eq!(
+                why(&rows, "lead", Some(AT)),
+                "no launch_id recorded for slot main",
+                "{launch:?}"
+            );
+        }
+        // A declaration the world dated not at all has no time to name.
+        assert_eq!(why(&complete, "lead", None), "declaration time unreadable");
+    }
+
+    #[test]
+    fn a_source_is_whole_unreadable_or_a_complete_read_of_nothing() {
+        assert_eq!(
+            whole(SourceRead::Ready(b"x".to_vec())),
+            (b"x".to_vec(), None)
+        );
+        assert_eq!(whole(SourceRead::Absent), (Vec::new(), None));
+        assert_eq!(
+            whole(SourceRead::Invalid("a directory".to_owned())),
+            (Vec::new(), Some("a directory".to_owned()))
+        );
+        assert_eq!(
+            whole(SourceRead::Unreadable("denied".to_owned())),
+            (Vec::new(), Some("denied".to_owned()))
+        );
+    }
+
+    fn seat(reference: &str, name: &str, state: Option<&str>) -> AgentEntry {
+        AgentEntry {
+            reference: reference.to_owned(),
+            name: name.to_owned(),
+            state: state.map(str::to_owned),
+            ..AgentEntry::default()
+        }
+    }
+
+    fn made(reason: &str, at: Option<i64>) -> crate::digest::Declaration {
+        crate::digest::Declaration::Made {
+            reason: reason.to_owned(),
+            at,
+            on: None,
+            overdue: false,
+            missing: false,
+            moved: None,
+        }
+    }
+
+    #[test]
+    fn only_a_seat_the_world_calls_waiting_or_blocked_makes_a_row_off_the_worlds_own_declaration() {
+        let mut entry = SessionEntry::new("s", Status::Running);
+        entry.session_uuid = Some(UUID.to_owned());
+        // The world's states and declarations, as the agent lines print them.
+        let rows = [
+            ("lead", Some("waiting-user"), Some(made("choose", Some(AT)))),
+            ("scribe", Some("blocked"), Some(made("no claim", None))),
+            ("colead", Some("working"), Some(made("reviewing", Some(AT)))),
+            ("quiet", None, None),
+            ("odd", Some("blocked"), None),
+        ];
+        entry.agents = rows
+            .iter()
+            .map(|(name, state, declaration)| AgentEntry {
+                declaration: declaration.clone(),
+                ..seat(name, name, *state)
+            })
+            .collect();
+        let found = super::declarations(&entry, None);
+        // Roster order. No row for a seat the world calls working or with no state.
+        assert_eq!(
+            found
+                .iter()
+                .map(|row| (row.owner.as_str(), row.state.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("lead", "waiting-user"),
+                ("scribe", "blocked"),
+                ("odd", "blocked")
+            ]
+        );
+        // Without the joined meta the views say why they cannot be formed.
+        let changed = Err("session record changed since it was read".to_owned());
+        assert_eq!(found[0].view, changed);
+        assert_eq!(found[1].view, changed);
+        // A state with no declaration behind it is a row that says so, never a drop.
+        assert_eq!(found[2].view, Err("no declaration recorded".to_owned()));
+    }
+
+    #[test]
+    fn the_world_alone_supplies_each_agent_line_its_state_reason_and_age() {
+        let mut entry = SessionEntry::new("s", Status::Running);
+        entry.agents = vec![
+            AgentEntry {
+                declaration: Some(made("pick one", Some(AT - 125))),
+                ..seat("lead", "lead", Some("waiting-user"))
+            },
+            AgentEntry {
+                declaration: Some(crate::digest::Declaration::Absent),
+                ..seat("quiet", "quiet", None)
+            },
+        ];
+        let now = Timestamp::from_epoch(AT);
+        let lines = super::agent_lines_from_world(&entry, now);
+        assert_eq!(
+            (
+                lines[0].state.as_str(),
+                lines[0].reason.as_str(),
+                lines[0].age_secs
+            ),
+            ("waiting-user", "pick one", Some(125))
+        );
+        assert_eq!(
+            (
+                lines[1].state.as_str(),
+                lines[1].reason.as_str(),
+                lines[1].age_secs
+            ),
+            ("-", "", None)
+        );
+        // A world that read the journal only in part says `unknown` and quotes nothing.
+        let mut partial = SessionEntry::degraded("s", Status::Running);
+        partial.agents = entry.agents.clone();
+        let lines = super::agent_lines_from_world(&partial, now);
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.state == "unknown" && line.reason.is_empty())
+        );
+    }
+
+    #[test]
+    fn a_journal_the_world_read_only_in_part_names_no_declaration() {
+        let partial = full("part", UUID, Declarations::Partial);
+        let rendered = render_full(&[partial]);
+        assert!(
+            rendered.ends_with(
+                "\n  declarations: unavailable (the event journal was read only in part)\n"
+            ),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("view1/") && !rendered.contains("none waiting"),
+            "{rendered}"
+        );
+    }
+
+    fn full(name: &str, uuid: &str, declarations: Declarations) -> FullCard {
+        FullCard {
+            card: card(name),
+            uuid: uuid.to_owned(),
+            topics_note: None,
+            declarations,
+        }
+    }
+
+    #[test]
+    fn a_full_card_prints_the_uuid_each_label_and_each_row_on_one_line() {
+        let mut waiting = full(
+            "alpha",
+            UUID,
+            Declarations::Seats(vec![
+                Declaration {
+                    owner: "lead".to_owned(),
+                    state: "waiting-user".to_owned(),
+                    view: Ok("view1/x/main/tok-1/2026-11-19T09:00:00Z/0123456789abcdef".to_owned()),
+                },
+                Declaration {
+                    owner: "scribe".to_owned(),
+                    state: "blocked".to_owned(),
+                    view: Err("no launch_id recorded for slot spawned.0".to_owned()),
+                },
+            ]),
+        );
+        waiting.card.goal = Some("a  goal\twith\u{1b}[0m runs".to_owned());
+        let rendered = render_full(&[waiting]);
+        assert_eq!(
+            rendered,
+            format!(
+                "alpha · running · ae 2026.9.5 · created - · started - · active - · main · ~/projects/ae\n\
+                 \x20 uuid: {UUID}\n\
+                 \x20 goal: a goal with [0m runs\n\
+                 \x20 topics: none recorded\n\
+                 \x20 agents: none recorded\n\
+                 \x20 needs you: none recorded\n\
+                 \x20 declarations:\n\
+                 \x20   lead          waiting-user  view1/x/main/tok-1/2026-11-19T09:00:00Z/0123456789abcdef\n\
+                 \x20   scribe        blocked       unavailable (no launch_id recorded for slot spawned.0)\n"
+            )
+        );
+
+        // Each label stands alone, and an unknown uuid is the word.
+        let mut labelled = full(
+            "beta",
+            "unknown",
+            Declarations::Unreadable("a directory".to_owned()),
+        );
+        labelled.topics_note = Some("unreadable (a\u{1b}fifo)".to_owned());
+        let rendered = render_full(&[labelled]);
+        assert!(rendered.contains("\n  uuid: unknown\n"), "{rendered}");
+        assert!(
+            rendered.contains("\n  topics: unreadable (a fifo)\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.ends_with("\n  declarations: unreadable (a directory)\n"),
+            "{rendered}"
+        );
+
+        let quiet = full("gamma", UUID, Declarations::Seats(Vec::new()));
+        assert!(render_full(&[quiet]).ends_with("\n  declarations: none waiting\n"));
+    }
+
+    #[test]
+    fn full_cards_sort_like_default_cards_and_sit_one_blank_line_apart() {
+        let mut urgent = full("zulu", UUID, Declarations::Seats(Vec::new()));
+        urgent.card.needs = vec![Need::Seat {
+            owner: "lead".to_owned(),
+            reason: Reason::WaitingUser,
+            age_secs: Some(5),
+            detail: "decide".to_owned(),
+        }];
+        let calm_a = full("alpha", UUID, Declarations::Seats(Vec::new()));
+        let calm_b = full("bravo", UUID, Declarations::Seats(Vec::new()));
+        let sorted = ordered_full(vec![calm_b, urgent, calm_a]);
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|full| full.card.name.as_str())
+                .collect::<Vec<_>>(),
+            ["zulu", "alpha", "bravo"]
+        );
+        let rendered = render_full(&sorted);
+        assert_eq!(rendered.matches("\n\n").count(), 2, "{rendered}");
+        assert!(
+            rendered.contains("  needs you:\n    lead          waiting-user  5s    decide\n"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn full_never_wraps_or_clips_a_need_the_default_card_wraps() {
+        let reason = "word ".repeat(80);
+        let mut wide = full("wide", UUID, Declarations::Seats(Vec::new()));
+        wide.card.needs = vec![Need::Seat {
+            owner: "lead".to_owned(),
+            reason: Reason::Blocked,
+            age_secs: None,
+            detail: reason.clone(),
+        }];
+        let rendered = render_full(&[wide.clone()]);
+        let row = rendered
+            .lines()
+            .find(|line| line.starts_with("    lead"))
+            .expect("the need row");
+        assert!(row.ends_with(reason.trim()), "{row}");
+        assert!(!row.contains('…'));
+        // The very same card, rendered by the default path, wraps it.
+        assert!(
+            !render(&[wide.card])
+                .lines()
+                .any(|line| line.ends_with(reason.trim()))
+        );
     }
 }

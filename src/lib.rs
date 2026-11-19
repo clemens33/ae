@@ -792,7 +792,8 @@ fn request_needs_world(request: &cli::Request) -> bool {
 fn schedules_automatic_upgrade(request: &cli::Request) -> bool {
     match request {
         cli::Request::List(_) => true,
-        cli::Request::Brief { tail } => brief::parse(tail).is_ok(),
+        // `--full` is the read-only reading: it never schedules the upgrade check.
+        cli::Request::Brief { tail } => brief::parse(tail).is_ok_and(|args| !args.full),
         cli::Request::Board { tail } => board::parse(tail).is_ok(),
         cli::Request::Orchestrator { tail } => orchestrator::parse(tail)
             .is_ok_and(|args| args.popup || args.settings || args.quota_dialog),
@@ -2483,7 +2484,7 @@ fn run_state(
 }
 
 /// The `next`/`jump` arm — frozen `cmd_next`, over the world `list` renders.
-/// `ae brief [session] [--all] [--since <dur>]` — the cards, most actionable
+/// `ae brief [session] [--all] [--since <dur>] [--full]` — the cards, most actionable
 /// first.
 ///
 /// The impure half of the command, and deliberately thin: it resolves WHICH
@@ -2491,7 +2492,9 @@ fn run_state(
 /// every read of a session directory. The one thing asked of the outside world
 /// beyond that is git's opinion of each live work tree, through the same
 /// [`git::work_tree_dirty`] the watchdog's branch marker uses — so a dirty card
-/// and a dirty status line can never disagree.
+/// and a dirty status line can never disagree. `--full` asks the same question
+/// through [`git::work_tree_dirty_read_only`], which adds git's
+/// `--no-optional-locks` so that read never refreshes or rewrites the index.
 fn run_brief(
     tail: &[String],
     world: Option<&listing::World>,
@@ -2569,28 +2572,64 @@ fn run_brief(
         write!(err, "{}", brief::NOTHING)?;
         return Ok(0);
     }
-    let cards = brief::ordered(
-        selected
+    let rendered = brief_cards(
+        &args,
+        &selected,
+        sessions.sessions(),
+        home.as_deref(),
+        world.now,
+    );
+    write!(out, "{rendered}")?;
+    Ok(0)
+}
+
+/// The cards of `selected`, rendered: the default card, or `--full`'s with nothing
+/// clipped. The one place the two paths split, so each reads a session directory
+/// through its own function and neither borrows the other's result.
+fn brief_cards(
+    args: &brief::Args,
+    selected: &[&digest::SessionEntry],
+    sessions: &std::path::Path,
+    home: Option<&std::path::Path>,
+    now: time::Timestamp,
+) -> String {
+    let dirty = |entry: &digest::SessionEntry, probe: fn(&[u8]) -> bool| {
+        brief::wants_git(entry)
+            && entry
+                .work_dir
+                .as_deref()
+                .is_some_and(|dir| probe(dir.as_bytes()))
+    };
+    if args.full {
+        let cards = selected
             .iter()
             .map(|entry| {
-                let dirty = brief::wants_git(entry)
-                    && entry
-                        .work_dir
-                        .as_deref()
-                        .is_some_and(|dir| git::work_tree_dirty(dir.as_bytes()));
-                brief::card_for(
+                brief::full_card_for(
                     entry,
-                    &sessions.sessions().join(&entry.name),
-                    home.as_deref(),
-                    dirty,
-                    world.now,
+                    &sessions.join(&entry.name),
+                    home,
+                    dirty(entry, git::work_tree_dirty_read_only),
+                    now,
                     args.since_secs,
                 )
             })
-            .collect(),
-    );
-    write!(out, "{}", brief::render(&cards))?;
-    Ok(0)
+            .collect();
+        return brief::render_full(&brief::ordered_full(cards));
+    }
+    let cards = selected
+        .iter()
+        .map(|entry| {
+            brief::card_for(
+                entry,
+                &sessions.join(&entry.name),
+                home,
+                dirty(entry, git::work_tree_dirty),
+                now,
+                args.since_secs,
+            )
+        })
+        .collect();
+    brief::render(&brief::ordered(cards))
 }
 
 /// `ae brief <session> --seat <agent>` — ONE seat's seed pack, on stdout.
@@ -4350,6 +4389,10 @@ mod tests {
         let refused_or_unrelated = [
             argv(&["list", "unexpected"]),
             argv(&["brief", "--since", "bad"]),
+            // `--full` is a read-only contract: it never schedules the upgrade check.
+            argv(&["brief", "--full"]),
+            argv(&["brief", "--all", "--full"]),
+            argv(&["brief", "aedev", "--since", "4h", "--full"]),
             argv(&["orchestrator", "--unknown"]),
             argv(&["next"]),
             argv(&["quota"]),
