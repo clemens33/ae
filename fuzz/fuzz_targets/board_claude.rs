@@ -93,9 +93,7 @@ fuzz_target!(|data: &[u8]| {
     let not_json = complete
         .iter()
         .filter(|line| line.len() <= LINE_CAP)
-        .filter(|line| {
-            !std::str::from_utf8(line).is_ok_and(|text| ae::json::parse(text).is_ok())
-        })
+        .filter(|line| !std::str::from_utf8(line).is_ok_and(|text| ae::json::parse(text).is_ok()))
         .count();
     let reported = coverage
         .iter()
