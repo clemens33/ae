@@ -21,10 +21,11 @@ const SAY: &str = "RQUIET-ORCH-SAY";
 const HIDDEN: &str = "relay — answer echoes hidden";
 const SHAPED: &str = "RQUIET-SAME-SHAPE";
 
-/// A relayed ask the target answered, with the answer read once through
+/// A relayed ask the target answered, from the proven dispatcher the relay now
+/// requires, with the answer read once through
 /// `relay --status` so the reply echo is in the orchestrator's journal.
 fn answered(tag: &str) -> (Rig, String) {
-    let r = Rig::new(tag);
+    let r = Rig::dispatcher(tag);
     let id = r.ask("please answer here");
     r.reply(&id, &format!("{MARK} the short answer"));
     let out = r.run(&["--status", &id]);
