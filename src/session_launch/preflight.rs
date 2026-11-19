@@ -480,7 +480,11 @@ pub(super) fn resolve_server(
     // that appears since is refused here, before any adoption, seed,
     // migration or restamp could act on it.
     if plan.expect_uuid.is_some() && matches!(placed, Placement::Running) {
-        writeln!(err, "Error: {}. Nothing was resumed.", bound_running(session))?;
+        writeln!(
+            err,
+            "Error: {}. Nothing was resumed.",
+            bound_running(session)
+        )?;
         return Ok(ControlFlow::Break(EXIT_FAILED));
     }
     match placed {

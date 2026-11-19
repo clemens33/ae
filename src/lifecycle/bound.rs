@@ -33,8 +33,8 @@ use std::path::Path;
 
 use super::{
     ALREADY_STOPPED_SUMMARY, CallerGap, STOP_REQUEST_ACTION, STOP_RESULT_ACTION, StopOutcome,
-    caller_resolution, capture_models, kill_under_lock, lifecycle_event_line, lock,
-    name_is_usable, publish_models, server_of, sessions_dir, stop_summary,
+    caller_resolution, capture_models, kill_under_lock, lifecycle_event_line, lock, name_is_usable,
+    publish_models, server_of, sessions_dir, stop_summary,
 };
 use crate::doors::CallerServer;
 use crate::inventory::ServerId;
