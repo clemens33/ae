@@ -52,13 +52,13 @@ pub(crate) fn read_selected(file: &Path) -> Result<String, ConfigError> {
 
 /// The seat template ae seeds at `<state home>/orchestrator.config`.
 pub(crate) const SEAT_TEMPLATE: &str =
-    include_str!("../contrib/aeorchestrator/orchestrator.config");
+    include_str!("../../contrib/aeorchestrator/orchestrator.config");
 
 /// The seat template the release before the bound owner words seeded, byte for
 /// byte: the one generated template whose `[prompt]` an upgrade may replace.
 /// It is the very file the acceptance fixtures pin, so the two cannot drift.
 const SEAT_TEMPLATE_S1A_PREDECESSOR: &str =
-    include_str!("../tests/fixtures/orchestrator/s1a-previous.config");
+    include_str!("../../tests/fixtures/orchestrator/s1a-previous.config");
 
 /// The sentence a current seat prompt carries and a stale one cannot: the
 /// bound-owner-words rule for reserved items. A prompt without it also teaches
@@ -102,6 +102,17 @@ pub(crate) fn reseeded_seat_config(config: &str) -> Option<String> {
     let winner = prompt_rows(config).pop()?;
     let known = prompt_rows(SEAT_TEMPLATE_S1A_PREDECESSOR).pop()?;
     let current = prompt_rows(SEAT_TEMPLATE).pop()?;
+    let known_stanza = SEAT_TEMPLATE_S1A_PREDECESSOR
+        .get(prompt_stanza(SEAT_TEMPLATE_S1A_PREDECESSOR, &known.span)?)?;
+    let stanza = config.get(prompt_stanza(config, &winner.span)?)?;
+    // The stanza, from the line after its `[prompt]` header to the next section
+    // header, is the generated one: a comment before the block, an earlier row
+    // or any text after it is an owner's edit of it. A blank line that
+    // separates it from the next section is not.
+    let bare = |text: &str| text.trim_end_matches(is_ini_space).to_owned();
+    if bare(stanza) != bare(known_stanza) {
+        return None;
+    }
     let old = SEAT_TEMPLATE_S1A_PREDECESSOR.get(known.span)?;
     let new = SEAT_TEMPLATE.get(current.span)?;
     if old == new || config.get(winner.span.clone())? != old {
@@ -111,17 +122,35 @@ pub(crate) fn reseeded_seat_config(config: &str) -> Option<String> {
         config.get(..winner.span.start)?,
         config.get(winner.span.end..)?,
     );
-    for piece in rest.split_inclusive('\n') {
-        let line = piece.trim_matches(is_ini_space);
-        if line.is_empty() {
+    Some(format!("{head}{new}{rest}"))
+}
+
+/// The bytes of the `[prompt]` stanza the row at `row` sits in: from the line
+/// after its header to the next genuine section header, or to the end of the
+/// text. Sections are the ones [`text_entries`] reads, so a header-looking line
+/// inside a `"""` block, or one the launch does not see, opens nothing; `None`
+/// when the row is not under a `[prompt]` header.
+fn prompt_stanza(text: &str, row: &std::ops::Range<usize>) -> Option<std::ops::Range<usize>> {
+    let mut start = None;
+    let mut found = None;
+    for item in config_spans(Path::new(SEAT_CONFIG_NAME), text) {
+        let Ok((item, span)) = item else { break };
+        let header = match &item {
+            ConfigLine::Plain(_, raw) => section_header(raw.trim_matches(is_ini_space)),
+            _ => None,
+        };
+        if let Some(name) = header {
+            if let Some(begin) = found {
+                return Some(begin..span.start);
+            }
+            start = (name == BLOCK_SECTION).then_some(span.end);
             continue;
         }
-        if section_header(line).is_some() {
-            break;
+        if span == *row {
+            found = Some(start?);
         }
-        return None;
     }
-    Some(format!("{head}{new}{rest}"))
+    found.map(|begin| begin..text.len())
 }
 
 /// The persisted path of a nonstandard per-session config overlay.
@@ -4750,7 +4779,22 @@ mod tests {
             ))
         );
         // Anything else in the prompt section, before the next header, is an
-        // owner's edit of the stanza.
+        // owner's edit of the stanza: after the block, and before it too.
+        assert_eq!(
+            reseeded_seat_config(&format!("# mine\n{head}[prompt]\n# note\n{known}")),
+            None,
+            "a comment before the block"
+        );
+        assert_eq!(
+            reseeded_seat_config(&format!("{head}[prompt]\ninstructions = early\n{known}")),
+            None,
+            "an earlier row"
+        );
+        assert_eq!(
+            reseeded_seat_config(&format!("{head}[prompt]\n\n{known}")),
+            None,
+            "a blank line before the block is a change of the stanza"
+        );
         assert_eq!(reseeded_seat_config(&format!("{prefixed}# owner\n")), None);
         assert_eq!(
             reseeded_seat_config(&format!("{prefixed}instructions = mine\n")),
