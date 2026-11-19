@@ -42,7 +42,7 @@ impl Selector {
     fn parse(item: &str) -> Option<Self> {
         let uuid = crate::archive::canonical_uuid(item);
         if uuid.is_empty() {
-            crate::lifecycle::name_is_valid(item).then(|| Self::Name(item.to_owned()))
+            crate::config::is_session_name(item).then(|| Self::Name(item.to_owned()))
         } else {
             Some(Self::Id(uuid))
         }
