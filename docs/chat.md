@@ -440,7 +440,8 @@ line is visible in `ps` while it runs.
 The Telegram bridge (`ae telegram`) is one more writer of this chat. A phone
 message to a selected session (`/use <session>`, `@session`, or a reply to a
 forwarded line) becomes a chat ask exactly as one typed here: the same
-admission, the same lead-pair router and the same cap of five open asks. It
+admission, the same lead-pair router and the same cap of five open asks. A plain
+message with no selection is asked of the orchestrator seat the same way. It
 never takes an `ae app`'s writer lease. Back to the phone go each running
 session's human-facing chat rows, labelled `[session]`: asks typed here, the
 answers, and a lead-pair seat's or the watchdog's `say`. Worker traffic, states

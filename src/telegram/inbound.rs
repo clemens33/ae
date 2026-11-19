@@ -151,7 +151,9 @@ pub struct Message {
     pub chat_type: String,
     /// `text`, or empty when there is none (a photo, a sticker, a join event).
     pub text: String,
-    /// `reply_to_message.text`, when this is a reply.
+    /// The text of the message this one replies to, when it is a reply. A reply to a message
+    /// without text (a photo, a sticker) is `Some("")`: the reply is still there, and nothing
+    /// can route it.
     pub reply_to: Option<String>,
     /// `date`, epoch seconds, or `0` when it is absent or not a number.
     pub date: i64,
@@ -195,16 +197,30 @@ impl Message {
                 .unwrap_or_default()
                 .to_owned(),
             text: value.get_str("text").unwrap_or_default().to_owned(),
-            reply_to: value
-                .get("reply_to_message")
-                .and_then(|replied| replied.get_str("text"))
-                .map(ToOwned::to_owned),
+            reply_to: reply_text(value),
             date: match value.get("date") {
                 Some(Value::Num(date)) => *date,
                 _ => 0,
             },
         })
     }
+}
+
+/// The text of the message `message` replies to, `Some("")` when it replies to one that carries
+/// none, and `None` when it is no reply. A reply to a message of ANOTHER chat (`external_reply`)
+/// is a reply too, but its text is never read: only a message this chat forwarded can name a
+/// session, so such a reply is one nothing can route. An explicit `null` is no reply.
+fn reply_text(message: &Value) -> Option<String> {
+    if let Some(replied) = message
+        .get("reply_to_message")
+        .filter(|replied| !matches!(replied, Value::Null))
+    {
+        return Some(replied.get_str("text").unwrap_or_default().to_owned());
+    }
+    message
+        .get("external_reply")
+        .filter(|replied| !matches!(replied, Value::Null))
+        .map(|_| String::new())
 }
 
 /// A JSON NUMBER as the text it was written as.
@@ -593,6 +609,7 @@ impl Inbox {
             },
             &sessions,
             &sticky,
+            &world.seat(),
             now,
         );
         let origin = Origin {
@@ -635,6 +652,19 @@ impl Inbox {
                 chat.say(&text);
                 Handled::Routed
             }
+            // The operator must be TOLD, and the update stays owed until the platform accepted
+            // the notice: a notice that is lost with the offset advanced is a silent drop.
+            Route::Refused { notice, text } => {
+                if chat.say_confirmed(&notice) == Accepted::Yes {
+                    Handled::Routed
+                } else {
+                    Handled::Owed(Owing {
+                        target: "the notice that no orchestrator could take it".to_owned(),
+                        text,
+                        refusal: Refusal::Transient,
+                    })
+                }
+            }
             Route::Use { session, agent } => {
                 if durable_write(
                     &self.sticky_path(),
@@ -667,7 +697,7 @@ impl Inbox {
                         refusal: Refusal::Transient,
                     });
                 }
-                chat.say("Selection cleared — plain messages are not sent until /use <session>.");
+                chat.say("Selection cleared — plain messages ask the orchestrator again.");
                 Handled::Routed
             }
             Route::Chat { target, text, .. } => {
@@ -787,11 +817,19 @@ impl World for Vec<RunningSession> {
     fn running(&self) -> Vec<RunningSession> {
         self.clone()
     }
+
+    fn seat(&self) -> routing::Seat {
+        routing::Seat::Vacant
+    }
 }
 
 #[cfg(test)]
 #[path = "../../tests/it/tgquota_spec.rs"]
 mod tgquota_spec;
+
+#[cfg(test)]
+#[path = "../../tests/it/tgdefault_spec.rs"]
+mod tgdefault_spec;
 
 #[cfg(test)]
 mod tests {
@@ -2009,11 +2047,14 @@ mod tests {
         assert_eq!(
             recorder.delivered.lock().unwrap().len(),
             1,
-            "with nothing selected a plain message asks no chat"
+            "with no seat to default to a plain message asks no chat"
         );
         let said = recorder.said.lock().unwrap().clone();
         assert!(
-            said.last().unwrap().contains("No session selected"),
+            said.last()
+                .unwrap()
+                .to_lowercase()
+                .contains("no orchestrator seat is recorded"),
             "{said:?}"
         );
         std::fs::remove_dir_all(&dir).ok();

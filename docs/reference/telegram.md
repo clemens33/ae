@@ -63,13 +63,14 @@ Inbound is active **only when `allowed_user_ids` is non-empty** (`ae telegram se
 
 Anything else is silently dropped. Commands are never accepted from groups or any other chat, even from an allow-listed user.
 
-Every message is asked in **one session's shared chat** — admitted, capped at five open asks and routed between the lead pair exactly as a line typed in the [chat](../chat.md#telegram). Plain text is never guessed onto a session, not even when only one is running:
+Every message is asked in **one session's shared chat** — admitted, capped at five open asks and routed between the lead pair exactly as a line typed in the [chat](../chat.md#telegram). Plain text with no selection goes to the orchestrator seat and to no other session, not even when only one is running:
 
-1. **Reply-to-routing.** **Reply** (Telegram swipe-reply) to any message the bridge forwarded and your message is asked in the chat of that message's session (of the seat that spoke it, when it is a lead-pair seat). It wins over the selection below.
+1. **Reply-to-routing.** **Reply** (Telegram swipe-reply) to any message the bridge forwarded and your message is asked in the chat of that message's session (of the seat that spoke it, when it is a lead-pair seat). It wins over `@session` and the selection below. A reply the bridge cannot route — one whose quoted message carries no recognizable session label, such as a photo, a sticker or a message from another chat — is answered `Couldn't tell which session that was a reply to` and never becomes a default ask.
 2. **Compact prefix — `@session <msg>` or `@session:seat <msg>`.** Asks that session's chat once, without changing the selection.
-3. **Selection — `/use <session> [seat]`.** Plain messages (no slash, no `@`) then go to that session's chat; `/use` shows the selection; `/use clear` drops it. With nothing selected, a plain message is answered `No session selected — nothing was sent` and goes nowhere. A selection whose session stopped, or whose seat is no longer in the lead pair, is refused rather than redirected.
+3. **Selection — `/use <session> [seat]`.** Plain messages (no slash, no `@`) then go to that session's chat; `/use` shows the selection; `/use clear` drops it, and plain messages ask the orchestrator again. A selection whose session stopped, or whose seat is no longer in the lead pair, is refused rather than redirected. An unreadable selection is refused too, and the answer names `/use clear`.
+4. **Default — the orchestrator seat.** With nothing selected, a plain message is asked in the orchestrator seat's chat, exactly as a plain message to a selected session: the same admission, the same cap of five open asks and the same reply threading back here. The seat is the session the role census proves, the one the settings menu's orchestrator control uses: `meta_agent=true` together with the seat overlay. It is found by its canonical state directory, never by its name, so a renamed seat works, while a workspace that carries only the role bit and a worktree session that shares the seat's name do not. When the seat cannot take the message, nothing is sent and the chat gets one line that names the cause and the alternatives `@session` and `/use`. The causes are: no seat recorded, a role claim that cannot be proven (damaged, duplicate, or without the seat overlay), the seat not running, and the seat having no lead pair. The daemon never redirects the message to another session.
 
-**Precedence** (per message, after trimming): starts with `/` → **always a command** (even sent as a reply); else a reply → that message's session; else `@…` → that session; else plain text → the `/use` selection, else the answer above.
+**Precedence** (per message, after trimming): starts with `/` → **always a command** (even sent as a reply); else a reply → that message's session, or the refusal above; else `@…` → that session; else plain text → the `/use` selection, else the orchestrator seat, else the refusal of rung 4. Who is authorized does not change: the allow-list and the private-chat rule above apply to every rung.
 
 **Grammar (explicit commands):**
 
@@ -77,9 +78,10 @@ Every message is asked in **one session's shared chat** — admitted, capped at 
 /help                                       show this list
 /list                                       running sessions: name, session_id[:8], last activity
 /quota                                      cached quota by account, with resets and freshness
+<msg…>                                     (no slash, no @) ask the selected session, else the orchestrator
 /use <name|id-prefix> [seat]                select a session for plain messages
 /use                                        show the selection
-/use clear                                  drop the selection
+/use clear                                  drop the selection (plain messages ask the orchestrator again)
 /session <name|id-prefix> ask  <seat> <msg…>    ask that session's chat, for that seat
 /session <name|id-prefix> send <seat> <msg…>    the same ask (the old spelling still works)
 @session[:seat] <msg…>                      ask that session's chat once
@@ -93,11 +95,11 @@ Every message is asked in **one session's shared chat** — admitted, capped at 
 
 `/quota` answers from locally held evidence, with effective usage, each window's reset and observation age, and stale or limit notes. It never refreshes vendor quota or calls a model. agy says `not checked`: asking it runs the agy CLI, which this view never does. Long replies end with the number of scopes not shown in full.
 
-**Replay safety.** The daemon advances its `getUpdates` offset (persisted in `~/.ae/telegram/tg_offset`) only *after* an update is durably handled. Each ask's request id is derived from its Telegram update, so an update replayed after a crash finds its recorded ask and is not asked again. An authorized target that stays undeliverable gets a bounded give-up: after a bounded number of retries the daemon sends the text back to the chat and, *only once Telegram accepts that notice*, advances — so one dead pane can't stall the queue, and nothing is dropped without a delivered notice. Delivery is at least once, never exactly once; the windows that can repeat one message are listed in [the chat's Telegram section](../chat.md#telegram).
+**Replay safety.** The daemon advances its `getUpdates` offset (persisted in `~/.ae/telegram/tg_offset`) only *after* an update is durably handled. Each ask's request id is derived from its Telegram update, so an update replayed after a crash finds its recorded ask and is not asked again. An authorized target that stays undeliverable gets a bounded give-up: after a bounded number of retries the daemon sends the text back to the chat and, *only once Telegram accepts that notice*, advances — so one dead pane can't stall the queue, and nothing is dropped without a delivered notice. The refusal of an unavailable orchestrator default is held the same way: it is sent confirmed, and the offset advances only once Telegram accepted it. Delivery is at least once, never exactly once; the windows that can repeat one message are listed in [the chat's Telegram section](../chat.md#telegram).
 
 ## Talking to the orchestrator
 
-The [orchestrator seat](commands.md#ae-orchestrator) is a session like any other here: `/use orchestrator` and your plain messages are asked in its chat (`objective: …`, `status`, `what next`, … are plain messages). Its `say` reports reach you as `[orchestrator] …`. Nothing is routed to it by default.
+The [orchestrator seat](commands.md#ae-orchestrator) is where plain messages go by default: with no `/use` selection, your plain messages are asked in its chat (`objective: …`, `status`, `what next`, … are plain messages). `/use <session>` selects another session, `/use clear` returns to the seat, and `@session <msg>` asks any session once. Its `say` reports reach you as `[orchestrator] …`. When the seat is stopped or cannot be proven, you get the one-line refusal of [rung 4](#inbound-commands-chat--ae), never a redirect.
 
 ## Commands
 

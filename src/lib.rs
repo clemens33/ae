@@ -4013,7 +4013,9 @@ pub fn run_with(
             knobs,
             step: Some(channel),
         } => watchdog_daemon::run_stepped(dir, *knobs, channel, out, err)?,
-        cli::Request::TelegramRun { paths, knobs } => telegram::bridge::run(paths, *knobs, err)?,
+        cli::Request::TelegramRun { paths, knobs } => {
+            telegram::bridge::run(paths, *knobs, settings_menu::role_holder, err)?
+        }
         cli::Request::NetProbe { host, port } => netprobe::run(host, *port, out, err)?,
         cli::Request::CompactMemoBaseline { dir } => compact::memo_baseline_step(dir, out)?,
         cli::Request::CompactFindOutstanding { dir } => compact::find_outstanding_step(dir, out)?,

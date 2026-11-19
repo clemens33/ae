@@ -644,3 +644,27 @@ fn a_caller_that_names_no_server_still_gets_the_ambient_one() {
     );
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn the_shell_hands_the_strict_role_census_to_the_bridge_which_never_names_it() {
+    // The orchestrator seat is `settings_menu::role_holder`, a layer-5 census; the bridge is layer 3
+    // and takes it as a parameter. A bridge whose census nobody wired proves no seat, so the one
+    // production call site is what makes the plain-text default work at all.
+    let squashed = |name: &str| product(name).split_whitespace().collect::<String>();
+    assert!(
+        squashed("lib.rs")
+            .contains("telegram::bridge::run(paths,*knobs,settings_menu::role_holder,err)"),
+        "src/lib.rs must hand settings_menu::role_holder to telegram::bridge::run"
+    );
+    for file in [
+        "telegram.rs",
+        "telegram/bridge.rs",
+        "telegram/inbound.rs",
+        "telegram/routing.rs",
+    ] {
+        assert!(
+            !product(file).contains("settings_menu"),
+            "{file} must take the census as a parameter, never name the layer above it"
+        );
+    }
+}

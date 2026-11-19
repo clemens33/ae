@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
 use super::inbound::{self, Accepted, Chat, Inbox, Origin, Policy, Refusal, Submit, Submitted};
-use super::routing::{RunningSession, Target, World};
+use super::routing::{RunningSession, Seat, Target, World};
 use super::{Api, Echoes, Outbound, Settings, Watch};
 use crate::console::submit::Outcome;
 use crate::inventory::{self, Roots, ServerId};
@@ -176,17 +176,46 @@ impl Submit for SharedChat {
     }
 }
 
+/// The orchestrator role census: a state root in, the seat's session name out.
+/// `None` when no session records the role, `Err` when the census cannot prove
+/// one holder. The shell hands in `settings_menu::role_holder`, which lives
+/// above this layer.
+pub type Census = fn(&Path) -> Result<Option<String>, String>;
+
+/// The census of a machine nobody wired one into: it proves nothing.
+fn unwired(_root: &Path) -> Result<Option<String>, String> {
+    Err("the orchestrator role census is not wired".to_owned())
+}
+
 /// The [`World`] routing resolves against: this machine's running sessions.
 #[derive(Debug, Clone)]
 pub struct Machine {
     roots: Roots,
+    ae_home: PathBuf,
+    census: Census,
 }
 
 impl Machine {
-    /// Scan the sessions under `roots`.
+    /// Scan the sessions under `roots`. The orchestrator seat is unproven until
+    /// [`Machine::with_census`] wires a census in.
     #[must_use]
     pub fn under(roots: Roots) -> Self {
-        Self { roots }
+        let ae_home = roots
+            .sessions()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        Self {
+            roots,
+            ae_home,
+            census: unwired,
+        }
+    }
+
+    /// The same machine, with `census` proving its orchestrator seat.
+    #[must_use]
+    pub fn with_census(self, census: Census) -> Self {
+        Self { census, ..self }
     }
 }
 
@@ -218,6 +247,19 @@ impl World for Machine {
                 ))
             })
             .collect()
+    }
+
+    /// The seat the census proves, bound to its CANONICAL directory under the sessions root:
+    /// the census reads that root only, and a worktree-nested record can carry the same name.
+    fn seat(&self) -> Seat {
+        match (self.census)(&self.ae_home) {
+            Ok(Some(name)) => Seat::Held {
+                dir: self.roots.sessions().join(&name),
+                name,
+            },
+            Ok(None) => Seat::Vacant,
+            Err(why) => Seat::Unproven(why),
+        }
     }
 }
 
@@ -251,6 +293,11 @@ impl World for ForwardingMachine {
                 Some(session_facts(&record.name, &record.path, &bytes, None))
             })
             .collect()
+    }
+
+    /// Outbound discovery never routes a plain message, so it holds no seat.
+    fn seat(&self) -> Seat {
+        Seat::Vacant
     }
 }
 
@@ -297,7 +344,12 @@ fn lead_pair(bytes: &[u8], meta: &Meta) -> Vec<String> {
 /// failure degrades within its own cycle and is reported rather than fatal —
 /// a bridge that exits because one poll failed is a bridge that stops relaying
 /// the first time a laptop's wifi drops.
-pub fn run(paths: &Paths, knobs: Knobs, err: &mut impl Write) -> crate::error::Result<u8> {
+pub fn run(
+    paths: &Paths,
+    knobs: Knobs,
+    census: Census,
+    err: &mut impl Write,
+) -> crate::error::Result<u8> {
     let settings = match super::load_settings(&paths.config, &paths.home) {
         Ok(settings) => settings,
         Err(why) => {
@@ -352,6 +404,7 @@ pub fn run(paths: &Paths, knobs: Knobs, err: &mut impl Write) -> crate::error::R
             policy,
             paths,
             knobs,
+            census,
             &relay,
             words,
             Arc::clone(&stop),
@@ -388,11 +441,16 @@ struct Relay {
 }
 
 /// Spawn the inbound long poll.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct thing the inbound thread owns: the client, the trust policy, the paths, the tunables, the role census, the relay state, the channel and the stop flag"
+)]
 fn spawn_inbound(
     api: Arc<Api>,
     policy: Policy,
     paths: &Paths,
     knobs: Knobs,
+    census: Census,
     relay: &Relay,
     words: Sender<Word>,
     stop: Arc<AtomicBool>,
@@ -406,7 +464,7 @@ fn spawn_inbound(
         paths.config.clone(),
         paths.ae_home.clone(),
     );
-    let machine = Machine::under(paths.roots());
+    let machine = Machine::under(paths.roots()).with_census(census);
     let chat_submit = SharedChat {
         root: paths.ae_home.clone(),
         echoes: Arc::clone(&relay.echoes),
@@ -648,8 +706,9 @@ mod tests {
                   code may reach"
     )]
 
-    use super::{Accepted, Knobs, Paths, Refusal, Word};
+    use super::{Accepted, Knobs, Machine, Paths, Refusal, Roots, RunningSession, Seat, Word};
     use crate::telegram::inbound::Chat as _;
+    use crate::telegram::routing::World as _;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
@@ -1138,18 +1197,25 @@ mod tests {
             crate::telegram::inbound::Policy::new(CHAT, vec!["42".to_owned()]),
             &paths,
             Knobs::default(),
+            crate::settings_menu::role_holder,
             &relay(),
             words,
             Arc::clone(&stop),
         );
 
-        // This temp root holds no sessions, so the message has nowhere to go
-        // and the operator is told so — which is still a ROUTED update.
+        // This temp root holds no sessions and records no orchestrator seat, so
+        // the message has nowhere to go and the operator is told so, CONFIRMED
+        // — which is still a ROUTED update once the platform accepts the notice.
         let word = inbox.recv_timeout(Duration::from_secs(10)).unwrap();
+        let Word::SayAndConfirm(text, answer) = word else {
+            panic!("the unavailable-default notice must be sent confirmed: {word:?}");
+        };
         assert!(
-            matches!(&word, Word::Say(text) if text.contains("No session selected")),
-            "{word:?}"
+            text.to_lowercase()
+                .contains("no orchestrator seat is recorded"),
+            "{text}"
         );
+        answer.send(Accepted::Yes).unwrap();
 
         stop.store(true, Ordering::Relaxed);
         poller.join().expect("the poller must stop on the flag");
@@ -1158,6 +1224,235 @@ mod tests {
             31,
             "the offset was not durable when the thread returned"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_default_notice_telegram_refuses_leaves_the_offset_unmoved() {
+        // The thread, the socket and the real census: the operator was NOT told, so the
+        // update is not checkpointed and stays owed.
+        use crate::telegram::inbound::load_offset;
+        use crate::telegram::tests::{CHAT, Fake, Reply};
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc::channel;
+
+        let root =
+            std::env::temp_dir().join(format!("ae-tg-bridge-refused-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = Paths::under(&root);
+        std::fs::create_dir_all(paths.state()).unwrap();
+        let update = format!(
+            r#"{{"ok":true,"result":[{{"update_id":31,"message":{{"text":"hello",
+               "from":{{"id":42}},"chat":{{"id":{CHAT},"type":"private"}}}}}}]}}"#
+        );
+        let fake = Fake::start(vec![
+            Reply::json(200, &update),
+            Reply::json(200, &update),
+            Reply::json(200, &update),
+        ]);
+        let (words, inbox) = channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let poller = super::spawn_inbound(
+            Arc::new(fake.api()),
+            crate::telegram::inbound::Policy::new(CHAT, vec!["42".to_owned()]),
+            &paths,
+            Knobs::default(),
+            crate::settings_menu::role_holder,
+            &relay(),
+            words,
+            Arc::clone(&stop),
+        );
+        let word = inbox.recv_timeout(Duration::from_secs(10)).unwrap();
+        let Word::SayAndConfirm(_, answer) = word else {
+            panic!("the unavailable-default notice must be sent confirmed: {word:?}");
+        };
+        answer.send(Accepted::No).unwrap();
+        stop.store(true, Ordering::Relaxed);
+        poller.join().expect("the poller must stop on the flag");
+        assert_eq!(
+            load_offset(&paths.state().join(crate::telegram::inbound::OFFSET_FILE)).unwrap(),
+            0,
+            "an unheard notice must not checkpoint the update"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // ─── the orchestrator seat: the strict role census, through the machine ───
+
+    /// The meta of a proven seat: the role AND the seat overlay of its state root.
+    const PROVEN: &str = "meta_agent=true\nlocal_config={ROOT}/orchestrator.config\n";
+
+    /// A state root holding these sessions, each `(name, its meta text)`; `{ROOT}` in a meta
+    /// text is the root itself.
+    fn seat_root(tag: &str, sessions: &[(&str, &str)]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("ae-tg-seat-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("sessions")).unwrap();
+        for (name, meta) in sessions {
+            let dir = root.join("sessions").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let meta = meta.replace("{ROOT}", &root.display().to_string());
+            std::fs::write(dir.join("meta"), format!("session={name}\n{meta}")).unwrap();
+        }
+        root
+    }
+
+    /// A running record whose state directory is `dir`; its name is the directory's leaf.
+    fn running_at(dir: PathBuf, role_bit: bool) -> RunningSession {
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        RunningSession {
+            session_id: format!("{}-0123456789abcdef", dir.display()),
+            name,
+            dir,
+            meta_agent: role_bit,
+            main: Some("claude:lead".to_owned()),
+            agents: vec!["claude:lead".to_owned(), "codex:colead".to_owned()],
+            pair: vec!["lead".to_owned(), "colead".to_owned()],
+            last_active: Some(0),
+        }
+    }
+
+    /// The seat a census over `root` proves for `name`: its canonical directory.
+    fn held(root: &std::path::Path, name: &str) -> Seat {
+        Seat::Held {
+            name: name.to_owned(),
+            dir: root.join("sessions").join(name),
+        }
+    }
+
+    fn wired(root: &std::path::Path) -> Machine {
+        Machine::under(Roots::under(root)).with_census(crate::settings_menu::role_holder)
+    }
+
+    /// Where an unselected plain message goes, given the machine's census and `running` sessions.
+    fn default_route(
+        machine: &Machine,
+        running: &[RunningSession],
+    ) -> crate::telegram::routing::Route {
+        crate::telegram::routing::decide(
+            crate::telegram::routing::Inbound {
+                text: "status please",
+                reply_to: None,
+            },
+            running,
+            &crate::telegram::routing::Sticky::Unset,
+            &machine.seat(),
+            0,
+        )
+    }
+
+    #[test]
+    fn a_renamed_proven_seat_is_the_default_and_a_session_named_orchestrator_is_not() {
+        let root = seat_root("renamed", &[("boss", PROVEN), ("orchestrator", "")]);
+        let machine = wired(&root);
+        assert_eq!(machine.seat(), held(&root, "boss"));
+        let route = default_route(
+            &machine,
+            &[
+                running_at(root.join("sessions/orchestrator"), false),
+                running_at(root.join("sessions/boss"), true),
+            ],
+        );
+        let crate::telegram::routing::Route::Chat { target, chosen, .. } = route else {
+            panic!("the proven seat takes the default ask: {route:?}");
+        };
+        assert_eq!(target.session, "boss");
+        assert_eq!(chosen, crate::telegram::routing::Chosen::Default);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_workspace_with_only_the_role_bit_is_no_seat_and_the_default_refuses() {
+        let root = seat_root("rolebit", &[("ws", "meta_agent=true\n")]);
+        let machine = wired(&root);
+        let Seat::Unproven(why) = machine.seat() else {
+            panic!("a role bit without the seat overlay proves nothing");
+        };
+        assert!(why.contains("without the seat overlay"), "{why}");
+        // The workspace IS running and carries the bit; it still gets nothing.
+        let route = default_route(&machine, &[running_at(root.join("sessions/ws"), true)]);
+        assert!(
+            matches!(&route, crate::telegram::routing::Route::Refused { notice, .. }
+                if notice.contains("without the seat overlay")),
+            "{route:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_stopped_proven_seat_is_not_replaced_by_an_unrelated_running_workspace() {
+        let root = seat_root("stopped", &[("boss", PROVEN), ("ws", "")]);
+        let machine = wired(&root);
+        assert_eq!(machine.seat(), held(&root, "boss"));
+        // Only the workspace runs: the seat is stopped.
+        let route = default_route(&machine, &[running_at(root.join("sessions/ws"), false)]);
+        assert!(
+            matches!(&route, crate::telegram::routing::Route::Refused { notice, .. }
+                if notice.contains("boss") && notice.contains("is not running")),
+            "{route:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_live_nested_namesake_never_stands_in_for_a_stopped_canonical_seat() {
+        // `role_holder` proves a name under `<AE_HOME>/sessions` only; the running listing also
+        // holds worktree-nested records, and one of them can carry the seat's name.
+        let root = seat_root("nested", &[("boss", PROVEN)]);
+        let machine = wired(&root);
+        let namesake = root.join("worktrees/wt/.ae/boss");
+        // The canonical seat is stopped: the live namesake gets nothing.
+        let route = default_route(&machine, &[running_at(namesake.clone(), false)]);
+        assert!(
+            matches!(&route, crate::telegram::routing::Route::Refused { notice, .. }
+                if notice.contains("boss") && notice.contains("is not running")),
+            "{route:?}"
+        );
+        // Both run: the canonical directory is the seat, and the namesake is no ambiguity.
+        let route = default_route(
+            &machine,
+            &[
+                running_at(namesake, false),
+                running_at(root.join("sessions/boss"), true),
+            ],
+        );
+        let crate::telegram::routing::Route::Chat { target, .. } = route else {
+            panic!("the canonical seat runs and takes the default ask: {route:?}");
+        };
+        assert_eq!(target.dir, root.join("sessions/boss"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn duplicate_damaged_absent_and_unwired_censuses_never_name_a_seat() {
+        let root = seat_root("dup", &[("a", PROVEN), ("b", PROVEN)]);
+        let Seat::Unproven(why) = wired(&root).seat() else {
+            panic!("two claims prove nothing");
+        };
+        assert!(why.contains("multiple sessions claim"), "{why}");
+        std::fs::remove_dir_all(&root).ok();
+
+        let root = seat_root("damaged", &[("a", "meta_agent=true\nmeta_agent=false\n")]);
+        let Seat::Unproven(why) = wired(&root).seat() else {
+            panic!("a damaged claim proves nothing");
+        };
+        assert!(why.contains("damaged"), "{why}");
+        std::fs::remove_dir_all(&root).ok();
+
+        // No role anywhere, and no sessions directory at all.
+        let root = seat_root("plain", &[("work", "")]);
+        assert_eq!(wired(&root).seat(), Seat::Vacant);
+        std::fs::remove_dir_all(&root).ok();
+        let bare = std::env::temp_dir().join(format!("ae-tg-seat-bare-{}", std::process::id()));
+        std::fs::remove_dir_all(&bare).ok();
+        assert_eq!(wired(&bare).seat(), Seat::Vacant);
+
+        // A machine nobody wired a census into proves nothing.
+        let root = seat_root("unwired", &[("boss", PROVEN)]);
+        let Seat::Unproven(why) = Machine::under(Roots::under(&root)).seat() else {
+            panic!("an unwired census must fail closed");
+        };
+        assert!(why.contains("not wired"), "{why}");
         std::fs::remove_dir_all(&root).ok();
     }
 
