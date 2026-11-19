@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.92] - 2026-11-19
+- The model layer (archive, birth, config, conversation, digest, effort_journal, events, filters, goal, harness_state, inventory, launch_cmd, liveness, memo, meta, model_drift, pairs, requests, roster, session_tmux, state, store, theme, tmux, tool, tracked, wait_on, watchdog) moves into src/l2_model; src/lib.rs re-exports each by name, and the sources, tests, docs, justfile and CI comments that name their paths follow
+
 ## [v2026.11.91] - 2026-11-19
 - The ten doc-comment paths that the P3-P6 layout moves rewrite stand in backticks, so a rewritten layer path such as src/l2_model/watchdog.rs never trips clippy doc_markdown
 - The app header's Working count includes seats running background work and shows the working and background marks; the picker's per-session working count counts them too
