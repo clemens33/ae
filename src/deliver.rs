@@ -15,6 +15,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::harness_state::{CODEX_SERVICE_WAIT_REASON, codex_service_wait};
 use crate::inventory::ServerId;
 use crate::tmux::{Key, Styling};
 use crate::tool::{Composed, InputModel, ToolKind};
@@ -903,9 +904,13 @@ pub enum DeferHeld {
     UnreadableAndViewed,
     /// A measured prompt only the HUMAN may answer is drawn on the pane.
     HumanPrompt,
+    /// Codex is waiting for the service, with no composer to receive input.
+    CodexServiceWait,
     /// A message interrupt's Escape was SENT, then a measured human-only prompt
     /// was found: the message was withheld.
     EscapedPrompt,
+    /// A message interrupt found the service wait after sending Escape.
+    EscapedServiceWait,
     /// A message interrupt's Escape was SENT, then the pane could not be read:
     /// the message was withheld.
     EscapedUnreadable,
@@ -934,9 +939,12 @@ impl DeferHeld {
             | Self::ComposerUnreadable
             | Self::OccupiedAndViewed
             | Self::UnreadableAndViewed => true,
-            Self::Viewed | Self::HumanPrompt | Self::EscapedPrompt | Self::EscapedUnreadable => {
-                false
-            }
+            Self::Viewed
+            | Self::HumanPrompt
+            | Self::CodexServiceWait
+            | Self::EscapedPrompt
+            | Self::EscapedServiceWait
+            | Self::EscapedUnreadable => false,
         }
     }
 
@@ -948,7 +956,9 @@ impl DeferHeld {
             Self::ComposerOccupied
             | Self::ComposerUnreadable
             | Self::HumanPrompt
+            | Self::CodexServiceWait
             | Self::EscapedPrompt
+            | Self::EscapedServiceWait
             | Self::EscapedUnreadable => false,
         }
     }
@@ -965,6 +975,7 @@ impl DeferHeld {
                 "composer unreadable and human input or attention on the pane"
             }
             Self::HumanPrompt | Self::EscapedPrompt => "human-only prompt on the pane",
+            Self::CodexServiceWait | Self::EscapedServiceWait => CODEX_SERVICE_WAIT_REASON,
         }
     }
 
@@ -973,7 +984,9 @@ impl DeferHeld {
     #[must_use]
     pub const fn head(self) -> &'static str {
         match self {
-            Self::EscapedPrompt | Self::EscapedUnreadable => "Escape sent, message withheld",
+            Self::EscapedPrompt | Self::EscapedServiceWait | Self::EscapedUnreadable => {
+                "Escape sent, message withheld"
+            }
             _ => "target stayed busy",
         }
     }
@@ -1018,6 +1031,9 @@ impl Snapshot {
         let mut halves = Vec::new();
         if let Some(prompt) = &self.prompt {
             halves.push(prompt_clause(prompt));
+        }
+        if self.held == DeferHeld::CodexServiceWait {
+            halves.push(self.held.halves().to_owned());
         }
         if self.held.composer_held() {
             halves.push(match self.reading {
@@ -1115,7 +1131,7 @@ fn wait_for_quiet_paced(
 /// One quiet-gate snapshot: the composer's occupancy plus the attention half,
 /// answered together so a both-halves state is one observation rather than
 /// two reads that can disagree. `None` is quiet. A drawn human-only prompt
-/// ([`prompt_hold`]) holds before either half. An unmodelled tool has no
+/// or service wait ([`prompt_hold`]) holds before either half. An unmodelled tool has no
 /// grammar to read, so its composer half never holds — exactly as
 /// [`input_busy`] answers for it — unless the capture its prompt row needs
 /// failed, which is unreadable.
@@ -1126,12 +1142,17 @@ fn quiet_held(
     tool: Option<ToolKind>,
 ) -> Option<Snapshot> {
     let (capture, read) = prompt_hold(server, pane, model, tool);
-    if let PromptRead::Drawn(prompt) = read {
+    let panel_hold = match read {
+        PromptRead::Drawn(prompt) => Some((DeferHeld::HumanPrompt, Some(prompt))),
+        PromptRead::CodexServiceWait => Some((DeferHeld::CodexServiceWait, None)),
+        _ => None,
+    };
+    if let Some((held, prompt)) = panel_hold {
         return Some(Snapshot {
-            held: DeferHeld::HumanPrompt,
+            held,
             reading: None,
             viewed_ago: None,
-            prompt: Some(prompt),
+            prompt,
         });
     }
     let reading = match capture {
@@ -1160,6 +1181,8 @@ fn prompt_row(tool: Option<ToolKind>) -> bool {
 pub(crate) enum PromptRead {
     /// One of the tool's measured human-only prompts is drawn.
     Drawn(HumanPrompt),
+    /// The Codex service is still processing its turn.
+    CodexServiceWait,
     /// The tool's measured rows were read and none is drawn.
     NoKnownPrompt,
     /// No measured row: ae cannot see this tool's prompts, and refuses nothing.
@@ -1168,11 +1191,11 @@ pub(crate) enum PromptRead {
     Unreadable,
 }
 
-/// The ONE delivery-side read for a human-only prompt: one capture — the
+/// The ONE delivery-side read for a prompt or service wait: one capture — the
 /// `Escapes` capture a modelled `model`'s composer read also takes, a `Plain`
 /// one only for a measured row otherwise (a shape about to send keys reads no
 /// composer and passes `InputModel::Unmodelled`) — handed back with the
-/// verdict of the watchdog's ONE detector over its printable rows.
+/// verdict of the shared frame model over its printable rows.
 pub(crate) fn prompt_hold(
     server: &ServerId,
     pane: &str,
@@ -1189,8 +1212,13 @@ pub(crate) fn prompt_hold(
     let read = if !prompt_row(tool) {
         PromptRead::Unmodelled
     } else if let (Some(kind), Some(screen)) = (tool, capture.as_deref()) {
-        crate::watchdog::human_prompt_class(&region::plain_text(screen), kind.as_str())
-            .map_or(PromptRead::NoKnownPrompt, PromptRead::Drawn)
+        let plain = region::plain_text(screen);
+        if kind.input_model() == InputModel::StyleDelimited && codex_service_wait(&plain) {
+            PromptRead::CodexServiceWait
+        } else {
+            crate::watchdog::human_prompt_class(&plain, kind.as_str())
+                .map_or(PromptRead::NoKnownPrompt, PromptRead::Drawn)
+        }
     } else {
         PromptRead::Unreadable
     };
@@ -1203,8 +1231,8 @@ fn prompt_clause(prompt: &HumanPrompt) -> String {
     format!("{}: {question}", DeferHeld::HumanPrompt.halves())
 }
 
-/// Refuse on what the read saw, before any further key: a drawn prompt ae
-/// never answers, or a pane it could not read, so cannot rule one out.
+/// Refuse on what the read saw, before any further key: a drawn prompt,
+/// a service wait, or an unreadable capture.
 /// `escaped`: a message interrupt's Escape was already sent. `None` lets the
 /// keys go; `Some` is the hold a [`Failure::Abandoned`] carries.
 pub(crate) fn prompt_refusal(
@@ -1219,6 +1247,11 @@ pub(crate) fn prompt_refusal(
             prompt_clause(prompt),
             "answer it in the pane",
         ),
+        PromptRead::CodexServiceWait => (
+            DeferHeld::CodexServiceWait,
+            CODEX_SERVICE_WAIT_REASON.to_owned(),
+            "wait for Codex to continue",
+        ),
         PromptRead::Unreadable => (
             DeferHeld::ComposerUnreadable,
             "composer unreadable: no capture".to_owned(),
@@ -1228,6 +1261,7 @@ pub(crate) fn prompt_refusal(
     };
     let held = match (escaped, held) {
         (true, DeferHeld::HumanPrompt) => DeferHeld::EscapedPrompt,
+        (true, DeferHeld::CodexServiceWait) => DeferHeld::EscapedServiceWait,
         (true, _) => DeferHeld::EscapedUnreadable,
         (false, held) => held,
     };

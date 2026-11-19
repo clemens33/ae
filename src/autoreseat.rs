@@ -2401,8 +2401,7 @@ pub fn quiet_pair(first: Option<&str>, second: Option<&str>, agent_bin: &str) ->
     };
     let tool = crate::tool::ToolKind::from_binary_name(agent_bin);
     first == second
-        && crate::harness_state::read_frame(first, tool)
-            .is_some_and(|frame| frame.state != HarnessState::Busy)
+        && crate::harness_state::read_frame(first, tool).is_some_and(|frame| !frame.state.is_busy())
         && !crate::harness_state::has_human_draft(first, tool)
         && crate::watchdog::human_prompt_class(first, agent_bin).is_none()
 }
@@ -2424,7 +2423,7 @@ pub fn urgent_frame(frame: Frame, quiet: bool) -> Frame {
 pub fn frame_of(read: bool, state: HarnessState, draft: bool) -> Frame {
     if !read {
         Frame::Unread
-    } else if state == HarnessState::Busy {
+    } else if state.is_busy() {
         Frame::Busy
     } else if draft {
         Frame::Draft

@@ -3508,3 +3508,135 @@ fn a_failed_proof_leaves_a_partial_pointer_untouched() {
 fn a_failed_proof_leaves_a_wrap_it_cannot_rejoin_untouched() {
     untouched_case("noticewrap", "unwrapped", "LONG BODY");
 }
+
+#[test]
+fn interrupt_during_the_codex_service_wait_sends_no_keys() {
+    for (tag, frame) in VENDORWAIT_STYLED {
+        for args in [&["tui"][..], &["tui", "hold this message"]] {
+            let rig = Rig::with_frame(&format!("{tag}-int-{}", args.len()), "codex", frame);
+            let (code, stderr) = rig.run(ae::cli::INTERRUPT, args, &[]);
+            let reason = "target stayed busy (codex service wait)";
+            assert_eq!(code, Some(1), "{tag}: {stderr}");
+            assert!(stderr.contains(reason), "{tag}: {stderr}");
+            assert!(rig.wire().is_empty(), "{tag}: no Escape or paste");
+            assert_eq!(rig.enter_count(), 0, "{tag}: no Enter");
+            let events = rig.events();
+            assert!(
+                events.contains("\"action\":\"delivery-abandoned\""),
+                "{tag}: {events}"
+            );
+            assert!(events.contains(reason), "{tag}: {events}");
+        }
+    }
+}
+
+#[test]
+fn a_codex_service_wait_after_interrupt_escape_receives_no_later_key() {
+    let clear = include_str!("../fixtures/codex-composer/codex-idle-0.155.1-200x40.esc");
+    let rig = Rig::with_frame("vw-after-escape", "codex", clear);
+    rig.arm_frame("onescape", VENDORWAIT_STYLED[0].1);
+    let (code, stderr) = rig.run(ae::cli::INTERRUPT, &["tui", "hold this message"], &[]);
+    let reason = "Escape sent, message withheld (codex service wait)";
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains(reason), "{stderr}");
+    assert_eq!(rig.transitions(), "onescape\n", "only the first Escape");
+    assert_eq!(
+        rig.wire(),
+        b"\x1b",
+        "no paste or key after the menu appears"
+    );
+    assert_eq!(rig.enter_count(), 0, "no Enter");
+    let events = rig.events();
+    assert!(
+        events.contains("\"action\":\"delivery-abandoned\""),
+        "{events}"
+    );
+    assert!(events.contains(reason), "{events}");
+}
+
+// FROZEN SPEC (vendorwait; issue #126, ae-feedback 64): a send during Codex's
+// service-wait menu is refused BY NAME, and no byte reaches the menu. Append
+// byte-identically to `tests/it/deliver.rs`. The styled frames are
+// reconstructed from the vendor's snapshots (see `tests/it/vendorwait_spec.rs`).
+const VENDORWAIT_STYLED: [(&str, &str); 3] = [
+    (
+        "vw-170",
+        include_str!("../fixtures/codex-composer/codex-service-wait-0.170.0-80w.esc"),
+    ),
+    (
+        "vw-152",
+        include_str!("../fixtures/codex-composer/codex-service-wait-0.152.1-80w.esc"),
+    ),
+    (
+        "vw-noretry",
+        include_str!("../fixtures/codex-composer/codex-service-wait-noretry-0.170.0-80w.esc"),
+    ),
+];
+
+/// RED on main (`composer occupied: 57 content cells on 3 rows`).
+#[test]
+fn a_send_during_the_codex_service_wait_is_refused_by_name_and_pastes_nothing() {
+    for (tag, frame) in VENDORWAIT_STYLED {
+        let rig = Rig::with_frame(tag, "codex", frame);
+        let before = rig.events();
+        let (code, stderr) = rig.run(
+            ae::cli::SEND,
+            &["tui", "held during the wait"],
+            &[("AE_SEND_DEFER_SEC", "1")],
+        );
+        assert_eq!(code, Some(1), "{tag}: {stderr}");
+        assert!(
+            stderr
+                .starts_with("ae: send to tui ABANDONED — target stayed busy (codex service wait"),
+            "{tag}: the refusal names the vendor wait: {stderr}"
+        );
+        for wrong in [
+            "composer occupied",
+            "content cell",
+            "human-only prompt",
+            "answer it",
+            "Escape sent",
+        ] {
+            assert!(!stderr.contains(wrong), "{tag}: {wrong:?} in {stderr}");
+        }
+        let events = rig.events();
+        let delta = events.strip_prefix(&before).expect("append-only ledger");
+        assert!(
+            delta.contains("\"action\":\"delivery-abandoned\"")
+                && delta.contains("target stayed busy (codex service wait"),
+            "{tag}: {delta}"
+        );
+        assert!(!delta.contains("\"action\":\"send\""), "{tag}: {delta}");
+        assert!(
+            rig.wire().is_empty(),
+            "{tag}: no paste and no key (Enter, Escape, digit or arrow) reached the menu"
+        );
+        assert_eq!(rig.enter_count(), 0, "{tag}");
+        let (_, screen) = rig.tmux(&["capture-pane", "-p", "-t", &rig.pane]);
+        assert!(
+            screen.contains("Dismiss and keep waiting"),
+            "{tag}: the menu still stands: {screen}"
+        );
+    }
+}
+
+/// RED on main (the selected option row reads as a staged paste): the submit
+/// check never reads the menu as `StillStaged`, the one verdict that sends
+/// another Enter, and never claims a submission it cannot see either.
+#[test]
+fn submit_verification_never_reads_the_codex_service_wait_as_a_staged_paste() {
+    for (tag, frame) in VENDORWAIT_STYLED {
+        let rig = Rig::with_frame(&format!("{tag}-staged"), "codex", frame);
+        let server = rig.server();
+        assert!(
+            deliver::input_busy(&server, &rig.pane, InputModel::StyleDelimited),
+            "{tag}: the menu is never safe to paste into"
+        );
+        let verdict = deliver::still_staged(&server, &rig.pane, InputModel::StyleDelimited);
+        assert!(
+            matches!(verdict, deliver::SubmitState::Unknown(_)),
+            "{tag}: {verdict:?}"
+        );
+        assert!(rig.wire().is_empty(), "{tag}: reading sends nothing");
+    }
+}

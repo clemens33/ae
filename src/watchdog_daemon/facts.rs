@@ -198,7 +198,8 @@ pub(super) fn fact_at(
         names.push(&entry.name);
         let found = by_slot.iter().find(|seen| seen.slot == entry.slot);
         let (state, pane) = found.map_or(("dead", ""), |seen| {
-            (seen.verdict.reason(), seen.pane.as_str())
+            // The roster parser accepts the base verdict's fixed vocabulary.
+            (seen.verdict.verdict.reason(), seen.pane.as_str())
         });
         if !pane.is_empty() && !tmux::pane_id_is_valid(pane) {
             return None;

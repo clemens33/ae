@@ -329,7 +329,7 @@ Checkout runs may override the destination with the typed `AE_TMUX_SERVER_KIND` 
 ## `ae list`
 
 Tabular view of ae sessions with per-agent health, declared state, current
-`observed:<busy|input ready|unknown>` harness frame, and a session-level
+`observed:<busy|busy (codex service wait)|input ready|unknown>` harness frame, and a session-level
 `attn:<reason>` marker when a session needs attention. `observed` is distinct
 from the agent's own declaration: it reports only what the watchdog positively
 recognized in the current terminal frame.

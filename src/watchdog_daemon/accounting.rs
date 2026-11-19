@@ -536,7 +536,7 @@ fn book_limit_wake(
         || seen.limit_woke_journal == Some(reset.at)
         || next.limit_armed == Some(reset.at);
     let ready = seen.capture_ok
-        && seen.harness.frame != HarnessState::Busy
+        && !seen.harness.frame.is_busy()
         && !seen.harness.human_draft
         && seen.human_prompt.is_none()
         && seen.auto_in_flight.is_none();
@@ -998,7 +998,7 @@ fn account_ordinary(
                 .max(activity.painting);
             let sample = FrameSample {
                 capture_ok: seen.capture_ok,
-                busy: seen.harness.frame == HarnessState::Busy,
+                busy: seen.harness.frame.is_busy(),
                 hash: seen.hash,
             };
             let (carried, verdict) = proof_frame_step(
@@ -1295,7 +1295,7 @@ fn account_harness(
         });
     }
     match seen.harness.frame {
-        HarnessState::Busy => {
+        HarnessState::Busy | HarnessState::CodexServiceWait => {
             next.prev_hash = Some(seen.hash);
             next.last_hash_change = Some(seen.now_epoch);
             next.idle_since_epoch = None;
@@ -1451,8 +1451,8 @@ pub(super) fn restore_idle(state: &mut PaneState, raw: &str, identity: u64) {
 /// Publish the current frame and, for idle, enough episode state to survive a
 /// daemon restart without inventing a second observation call.
 pub(super) fn observed_option(frame: HarnessState, state: &PaneState) -> String {
-    if frame == HarnessState::Busy {
-        return frame.as_str().to_owned();
+    if frame.is_busy() {
+        return frame.option_word().to_owned();
     }
     match (state.idle_since_epoch, state.identity) {
         (Some(since_epoch), Some(identity)) => crate::harness_state::encode_carry(

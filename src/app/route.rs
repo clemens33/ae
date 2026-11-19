@@ -9,7 +9,6 @@
 use crate::attention::Reason;
 use crate::console::lane::{Item, Kind};
 use crate::digest::AgentEntry;
-use crate::harness_state::HarnessState;
 
 /// What one seat can take now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +31,7 @@ pub(crate) fn take(agent: Option<&AgentEntry>) -> Take {
         (_, Some(Reason::Limit)) => Take::No("out of quota"),
         (_, Some(Reason::Blocked)) => Take::No("blocked"),
         (_, Some(Reason::Throttled)) => Take::No("in error"),
-        _ if agent.observed == HarnessState::Busy => Take::Busy,
+        _ if agent.observed.is_busy() => Take::Busy,
         _ => Take::Yes,
     }
 }

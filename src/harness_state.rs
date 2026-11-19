@@ -16,6 +16,8 @@ use crate::tool::{IdentitySpec, InputModel, ToolKind};
 pub enum HarnessState {
     /// The harness is executing a turn.
     Busy,
+    /// Codex is waiting for the service to continue its current turn.
+    CodexServiceWait,
     /// The harness is waiting at its empty input box.
     Idle,
     /// The frame is unsupported, incomplete, transitional, or otherwise ambiguous.
@@ -34,13 +36,26 @@ pub struct HarnessIdentity {
 }
 
 impl HarnessState {
-    /// The stable low-cardinality spelling published to tmux and `ae list`.
+    /// The stable low-cardinality spelling of the execution state.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Busy => "busy",
+            Self::Busy | Self::CodexServiceWait => "busy",
             Self::Idle => "idle",
             Self::Unknown => "unknown",
+        }
+    }
+
+    /// Both ordinary work and a Codex service wait keep the turn in progress.
+    pub(crate) const fn is_busy(self) -> bool {
+        matches!(self, Self::Busy | Self::CodexServiceWait)
+    }
+
+    /// The observed pane option also carries the source of a named Busy state.
+    pub(crate) const fn option_word(self) -> &'static str {
+        match self {
+            Self::CodexServiceWait => CODEX_SERVICE_WAIT_OPTION,
+            _ => self.as_str(),
         }
     }
 
@@ -53,11 +68,16 @@ impl HarnessState {
     pub const fn human(self) -> &'static str {
         match self {
             Self::Busy => "busy",
+            Self::CodexServiceWait => "busy (codex service wait)",
             Self::Idle => "input ready",
             Self::Unknown => "unknown",
         }
     }
 }
+
+const CODEX_SERVICE_WAIT_OPTION: &str = "codex-service-wait";
+
+pub(crate) const CODEX_SERVICE_WAIT_REASON: &str = "codex service wait";
 
 /// The idle episode carried in the watchdog-owned observed pane option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +101,7 @@ pub struct IdleCarry {
 pub fn observed_from_option(value: &str) -> HarnessState {
     match value {
         "busy" => HarnessState::Busy,
+        CODEX_SERVICE_WAIT_OPTION => HarnessState::CodexServiceWait,
         "unknown" => HarnessState::Unknown,
         "idle" => HarnessState::Idle,
         value => decode_carry(value).map_or(HarnessState::Unknown, |(frame, _)| frame),
@@ -99,7 +120,9 @@ pub(crate) fn encode_carry(frame: HarnessState, carry: IdleCarry) -> String {
     let frame = match frame {
         HarnessState::Idle => "idle",
         HarnessState::Unknown => "unknown",
-        HarnessState::Busy => return HarnessState::Busy.as_str().to_owned(),
+        HarnessState::Busy | HarnessState::CodexServiceWait => {
+            return frame.option_word().to_owned();
+        }
     };
     format!(
         "{frame}:{}:{}:{}:{}:{}",
@@ -315,6 +338,12 @@ fn last_ink(rows: &[Cow<'_, str>]) -> Option<usize> {
 }
 
 fn read_codex(capture: &str) -> Option<FrameReading> {
+    if codex_service_wait(capture) {
+        return Some(FrameReading {
+            state: HarnessState::CodexServiceWait,
+            current: None,
+        });
+    }
     let frame = codex_frame(capture)?;
     let above = frame.above.as_deref();
     if !codex_placeholder(&frame.prompt)
@@ -332,6 +361,79 @@ fn read_codex(capture: &str) -> Option<FrameReading> {
         state,
         current: frame.above,
     })
+}
+
+/// Codex's self-continuing service wait replaces the composer. The vendor's
+/// numbered options sit between a known heading and the exact footer at the
+/// bottom of the screen. A menu quoted above a live composer cannot match.
+/// The two headings and optional Retry come from the 0.152.1 and 0.170.0
+/// rendered snapshots under `tests/fixtures/harness-state/`.
+pub(crate) fn codex_service_wait(capture: &str) -> bool {
+    const FOOTER: &str = "No action is required. Codex will keep waiting, and this menu will close when the response is ready.";
+    let capture = capture.trim_end();
+    if !capture.ends_with("ready.") {
+        return false;
+    }
+    // The ten rows of the wide menu can wrap further on a narrow pane.
+    let mut rows = capture
+        .lines()
+        .rev()
+        .take(24)
+        .map(str::trim)
+        .filter(|row| !row.is_empty());
+    if !codex_wrapped_text(&mut rows, FOOTER) {
+        return false;
+    }
+
+    let mut selected = false;
+    let mut choices = rows.by_ref().map(|row| {
+        if let Some(choice) = row.strip_prefix('›') {
+            selected = true;
+            choice.trim_start()
+        } else {
+            row
+        }
+    });
+    let retry = match choices.next() {
+        Some("3. Learn more")
+            if choices.next() == Some("2. Dismiss and keep waiting")
+                && choices.next() == Some("1. Retry with a faster model") =>
+        {
+            true
+        }
+        Some("2. Learn more") if choices.next() == Some("1. Dismiss and keep waiting") => false,
+        _ => return false,
+    };
+    let has_title = |title, retry_copy| {
+        let mut rows = rows.clone();
+        (!retry || codex_wrapped_text(&mut rows, retry_copy))
+            && codex_wrapped_text(&mut rows, title)
+    };
+    selected
+        && (has_title(
+            "Giving this request a little extra thought",
+            "If you'd rather not wait, retry with a faster model. It may be less capable of handling complex requests.",
+        ) || has_title(
+            "Our systems are thinking a bit more about this request before responding.",
+            "Hang tight or retry with a faster model for a quicker response, though it may be less capable of handling complex requests.",
+        ))
+}
+
+/// Consume one vendor paragraph from the bottom up, across word wraps.
+fn codex_wrapped_text<'a>(rows: &mut impl Iterator<Item = &'a str>, mut text: &str) -> bool {
+    for row in rows {
+        if text == row {
+            return true;
+        }
+        let Some(rest) = text
+            .strip_suffix(row)
+            .and_then(|prefix| prefix.strip_suffix(' '))
+        else {
+            return false;
+        };
+        text = rest;
+    }
+    false
 }
 
 /// The codex composer's placeholder, which it draws only while the box is empty.
@@ -940,6 +1042,34 @@ mod tests {
     fn a_live_codex_working_frame_is_busy() {
         let capture = include_str!("../tests/fixtures/harness-state/codex-busy-280x40.txt");
         assert_eq!(classify(capture, ToolKind::Codex), HarnessState::Busy);
+    }
+
+    #[test]
+    fn codex_service_wait_requires_the_live_selection_and_vendor_copy() {
+        let menu =
+            include_str!("../tests/fixtures/harness-state/codex-service-wait-0.170.0-80w.txt");
+        assert_eq!(
+            classify(menu, ToolKind::Codex),
+            HarnessState::CodexServiceWait
+        );
+        for (evidence, replacement) in [
+            ("› 1.", "  1."),
+            (
+                "Giving this request a little extra thought",
+                "A different picker",
+            ),
+            ("If you'd rather not wait,", "If you want another action,"),
+            ("3. Learn more", "2. Learn more"),
+            ("2. Dismiss and keep waiting", "2. Learn more"),
+        ] {
+            assert!(menu.contains(evidence), "fixture evidence: {evidence}");
+            let capture = menu.replace(evidence, replacement);
+            assert_eq!(
+                classify(&capture, ToolKind::Codex),
+                HarnessState::Unknown,
+                "{capture}"
+            );
+        }
     }
 
     #[test]

@@ -359,7 +359,12 @@ The classifier reads only the same current 40-row `capture-pane` result the
 watchdog already takes. It never opens a harness transcript or conversation
 store. Claude Code and Codex have positive frame grammars; unsupported,
 partial, modal, or ambiguous frames are `Unknown` and retain the legacy
-hash/event heuristic.
+hash/event heuristic. Codex's service-wait menu is a positive Busy frame.
+Codex closes it when the response is ready. The pane border says
+`codex service wait`, and `ae list` says `busy (codex service wait)`. A send
+defers while the menu is open and names the wait if the deadline expires.
+An interrupt that sees the menu refuses before sending Escape. If the menu
+appears after a message interrupt sends Escape, ae withholds the message.
 
 In source order:
 

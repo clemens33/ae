@@ -12111,3 +12111,154 @@ mod frame_sequences {
         assert_eq!(verdict, FrameVerdict::Settling);
     }
 }
+
+#[test]
+fn vendorwait_the_pane_border_keeps_the_reason_and_the_roster_keeps_working() {
+    let (prior, seen) = vendorwait_still(VENDORWAIT_FRAMES[0].1);
+    let booked = account(&prior, &seen, &Knobs::default());
+    let verdict = super::SeatVerdict {
+        verdict: booked.verdict,
+        frame: seen.harness.frame,
+        task: false,
+    };
+    let pane = PaneMark {
+        pane: "%1".to_owned(),
+        verdict,
+        observed: observed_option(seen.harness.frame, &booked.next),
+    };
+    let writes = Cycle::pane_state_writes("%1", Some(&pane), &Look::DEFAULT);
+    let args = crate::tmux::set_options_args(&ServerId::Ambient, &writes);
+    assert_eq!(args[4], crate::theme::PANE_STATE_OPTION);
+    assert!(args[5].ends_with("codex service wait"), "{}", args[5]);
+
+    let mut ticker = MotionState {
+        verdicts: vec![MotionVerdict {
+            pane: "%1".to_owned(),
+            window: "@7".to_owned(),
+            verdict,
+        }],
+        panes: vec![motion("%1", "lead")],
+        ..MotionState::default()
+    };
+    let args = crate::tmux::set_options_args(&ServerId::Ambient, &ticker.step(&Look::DEFAULT));
+    assert_eq!(args[4], crate::theme::PANE_STATE_OPTION);
+    assert!(args[5].ends_with("codex service wait"), "{}", args[5]);
+
+    let agent = AgentObservation {
+        verdict,
+        ..live_seat("main", "%1", Verdict::Active)
+    };
+    let fact = agents_fact(
+        &[entry("main", "sol62x", "vendorwait")],
+        &[agent],
+        &[("main", "codex".to_owned())],
+        2_000,
+        60,
+    )
+    .expect("a roster fact");
+    let parsed = crate::tmux::parse_picker_agents(&fact, 2_000).expect("the roster can read it");
+    assert_eq!(parsed[0].state, "working");
+}
+
+// FROZEN SPEC (vendorwait; issue #126, ae-feedback 64): the watchdog reads
+// Codex's self-continuing service wait as a WORKING seat, names it on the
+// observed option `ae list` prints, keeps `working` in the `@ae_agents`
+// roster fact, and never nudges or names it needs-you. Append
+// byte-identically to `src/watchdog_daemon/tests.rs`.
+const VENDORWAIT_FRAMES: [(&str, &str); 4] = [
+    (
+        "0.170.0 at 80 columns",
+        include_str!("../../tests/fixtures/harness-state/codex-service-wait-0.170.0-80w.txt"),
+    ),
+    (
+        "0.152.1 at 80 columns",
+        include_str!("../../tests/fixtures/harness-state/codex-service-wait-0.152.1-80w.txt"),
+    ),
+    (
+        "0.170.0 without the retry option",
+        include_str!(
+            "../../tests/fixtures/harness-state/codex-service-wait-noretry-0.170.0-80w.txt"
+        ),
+    ),
+    (
+        "0.170.0 at 200 columns",
+        include_str!("../../tests/fixtures/harness-state/codex-service-wait-0.170.0-200w.txt"),
+    ),
+];
+
+/// The watchdog's own observation of `frame` on a seat whose pane has not
+/// moved and whose agent has not written for 10 000 s, with one idle episode
+/// already open and nudged once.
+fn vendorwait_still(frame: &str) -> (PaneState, Observation) {
+    let mut observed = seen();
+    let tool = crate::tool::ToolKind::Codex;
+    observed.harness.frame = crate::harness_state::classify(frame, tool);
+    observed.harness.human_draft = crate::harness_state::has_human_draft(frame, tool);
+    observed.human_prompt = crate::watchdog::human_prompt_class(frame, "codex");
+    observed.outstanding_alert = None;
+    observed.last_actor_event_age_secs = 10_000;
+    let prior = PaneState {
+        identity: Some(observed.identity),
+        prev_hash: Some(observed.hash),
+        last_hash_change: Some(observed.now_epoch - 10_000),
+        idle_since_epoch: Some(observed.now_epoch - 600),
+        nudge_count: 1,
+        ..PaneState::default()
+    };
+    (prior, observed)
+}
+
+/// RED on main (the frame reads `unknown`, so the still pane is judged by
+/// motion and actor age).
+#[test]
+fn vendorwait_the_service_wait_is_working_named_and_never_nudged() {
+    let knobs = Knobs::default();
+    for (name, frame) in VENDORWAIT_FRAMES {
+        let (prior, observed) = vendorwait_still(frame);
+        let first = account(&prior, &observed, &knobs);
+        let second = account(&first.next, &observed, &knobs);
+        for booked in [&first, &second] {
+            assert_eq!(booked.verdict, Verdict::Active, "{name}");
+            assert_ne!(booked.verdict.mark(), Mark::NeedsYou, "{name}");
+            assert!(!booked.effects.contains(&Effect::Nudge), "{name}");
+            assert_eq!(booked.next.idle_since_epoch, None, "{name}");
+            assert_eq!(booked.next.nudge_count, 0, "{name}");
+        }
+        let raw = observed_option(observed.harness.frame, &second.next);
+        let carried = crate::harness_state::observed_from_option(&raw);
+        assert_eq!(
+            (carried.as_str(), carried.human()),
+            ("busy", "busy (codex service wait)"),
+            "{name}: the option `ae list` reads back ({raw:?})"
+        );
+        let roster = [entry("main", "sol62x", "vendorwait")];
+        let fact = agents_fact(
+            &roster,
+            &[live_seat("main", "%3", second.verdict)],
+            &[("main", "codex".to_owned())],
+            2_000,
+            60,
+        )
+        .expect("a fact");
+        let parsed = crate::tmux::parse_picker_agents(&fact, 2_000).expect("its own reader");
+        assert_eq!(parsed.len(), 1, "{name}: {fact}");
+        assert_eq!(parsed[0].state, "working", "{name}: {fact}");
+    }
+}
+
+/// GREEN on main, a control: codex's plain Working frame keeps its plain
+/// words on the same path.
+#[test]
+fn vendorwait_the_plain_codex_busy_frame_keeps_its_words() {
+    let (prior, observed) = vendorwait_still(include_str!(
+        "../../tests/fixtures/harness-state/codex-busy-280x40.txt"
+    ));
+    let booked = account(&prior, &observed, &Knobs::default());
+    assert_eq!(booked.verdict, Verdict::Active);
+    let raw = observed_option(observed.harness.frame, &booked.next);
+    assert_eq!(raw, "busy");
+    assert_eq!(
+        crate::harness_state::observed_from_option(&raw).human(),
+        "busy"
+    );
+}

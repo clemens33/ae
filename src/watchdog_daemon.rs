@@ -786,11 +786,12 @@ pub enum Verdict {
 /// A cycle verdict with the seat tool's proven job beside it: the ONE carrier
 /// every published mark reads — pane border, window entry, ticker, session and
 /// slot rollups, the roster fact — so no surface can draw the bare verdict and
-/// disagree with another. The word stays the verdict's, which keeps the
-/// declaration readable beside the [`Mark::Background`] glyph.
+/// disagree with another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SeatVerdict {
     verdict: Verdict,
+    /// The frame read this cycle lets the pane border name a Codex service wait.
+    frame: HarnessState,
     /// [`crate::procs::task_running`] proved a live job of the seat's tool this
     /// cycle. An unknown reading is `false`: a display claim needs proof.
     task: bool,
@@ -804,7 +805,12 @@ impl SeatVerdict {
 
     /// The word the pane border prints after the glyph.
     const fn reason(self) -> &'static str {
-        self.verdict.reason()
+        match (self.verdict, self.frame) {
+            (Verdict::Active, HarnessState::CodexServiceWait) => {
+                crate::harness_state::CODEX_SERVICE_WAIT_REASON
+            }
+            _ => self.verdict.reason(),
+        }
     }
 }
 
@@ -812,6 +818,7 @@ impl From<Verdict> for SeatVerdict {
     fn from(verdict: Verdict) -> Self {
         Self {
             verdict,
+            frame: HarnessState::Unknown,
             task: false,
         }
     }
@@ -2872,15 +2879,18 @@ impl Cycle<'_> {
             // The seat tool's job, as this cycle proved it: what every
             // published mark composes with (`SeatVerdict`).
             let task = activity.task_running == Some(true);
+            let frame = seen.harness.frame;
             by_slot.push((
                 slot.clone(),
                 SeatVerdict {
                     verdict: booked.verdict,
+                    frame,
                     task,
                 },
             ));
             let shown = SeatVerdict {
                 verdict: shown,
+                frame,
                 task,
             };
             by_agent.push(AgentObservation {

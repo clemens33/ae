@@ -6,7 +6,10 @@ mod bgmark_acceptance {
     use crate::watchdog_daemon::{SeatVerdict, mark_with_task};
 
     fn seat(verdict: Verdict, task: bool) -> SeatVerdict {
-        SeatVerdict { verdict, task }
+        SeatVerdict {
+            task,
+            ..verdict.into()
+        }
     }
 
     #[test]

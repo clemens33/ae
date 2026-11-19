@@ -1291,13 +1291,13 @@ fn stop_running_tool(
         )
     };
     let (first, first_limited, first_capture) = frame(target, tool, &agent_bin);
-    if first == HarnessState::Busy {
+    if first.is_busy() {
         busy(err)?;
         return Ok(Stop::Refused(CauseClass::Busy));
     }
     std::thread::sleep(FRAME_GAP);
     let (second, second_limited, second_capture) = frame(target, tool, &agent_bin);
-    if second == HarnessState::Busy {
+    if second.is_busy() {
         busy(err)?;
         return Ok(Stop::Refused(CauseClass::Busy));
     }

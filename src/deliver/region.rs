@@ -135,8 +135,12 @@ pub fn parse(region: &str) -> Vec<Segment> {
 /// blanks trimmed — what `capture-pane -p` prints, read off the SAME capture.
 #[must_use]
 pub(crate) fn plain_text(region: &str) -> String {
+    plain_rows(&parse(region))
+}
+
+fn plain_rows(segments: &[Segment]) -> String {
     let mut rows: Vec<String> = Vec::new();
-    for segment in parse(region) {
+    for segment in segments {
         if rows.len() <= segment.line {
             rows.resize(segment.line + 1, String::new());
         }
@@ -397,6 +401,9 @@ impl Gathered {
 fn gather(segments: &[Segment], model: InputModel) -> Option<Gathered> {
     match model {
         InputModel::StyleDelimited => {
+            if crate::harness_state::codex_service_wait(&plain_rows(segments)) {
+                return None;
+            }
             // The live prompt is the bottom-most row whose first non-blank cell
             // is `›` in BOLD-and-NOT-DIM state; a submitted transcript echo is
             // the same ornament bold AND dim.
