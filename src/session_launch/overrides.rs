@@ -138,7 +138,7 @@ pub(super) fn launch_identity(
     let orchestrator_seat = env
         .local
         .as_deref()
-        .is_some_and(|local| crate::orchestrator::is_seat_overlay(local, &env.home));
+        .is_some_and(|local| crate::meta::is_seat_overlay(local, &env.home));
     let local = if orchestrator_seat {
         None
     } else {

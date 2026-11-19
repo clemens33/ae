@@ -31,8 +31,12 @@
 //!   operation continues, because a session that cannot be migrated is exactly
 //!   the one an operator needs to be able to tear down;
 //! * `ae upgrade` / `ae _install` ([`crate::install::publish`]) — the whole
-//!   sweep below. A refusal on a running session aborts before the command link
-//!   is repointed; a stopped unplaceable session is reported and skipped.
+//!   sweep below, behind ONE census of every root ([`plan_fleet`]) that stops
+//!   the upgrade before anything moves when a session's meta is present and
+//!   unreadable or a session claiming the orchestrator role cannot be relinked,
+//!   running or not. A refusal on a running session aborts before the command
+//!   link is repointed; a stopped unplaceable ordinary session is reported and
+//!   skipped.
 //!   Named instance roots under `<root>/instances` follow the default one,
 //!   stricter (`onto_fleet`): a root in any doubt is skipped untouched, one that
 //!   fails part-way is reported, and either freezes the version sweep.
@@ -485,11 +489,6 @@ fn skipped_refusal(name: &str, refusal: &Refusal) -> String {
     }
 }
 
-/// The note for a stopped session whose meta could not be read.
-fn skipped_unreadable(name: &str, why: &std::io::Error) -> String {
-    format!("skipped {name}: meta unreadable ({why}), not running — end it (ae end {name})")
-}
-
 /// Session names a pending rename transaction owns: both endpoints of every
 /// pending carrier, plus attributable damaged carriers. Unattributable
 /// (digest-shape) damage names no session to skip, so the sweep refuses
@@ -585,7 +584,406 @@ fn unreadable_refusal(name: &str, why: &std::io::Error) -> String {
 /// The first non-skippable session that could not be migrated, named — nothing
 /// after it is attempted.
 pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, String> {
-    onto_scoped(root, core, version, Scope::Default)
+    let planned = census_default(root)?;
+    let (mut moved, mut stops) = (Vec::new(), false);
+    onto_scoped(
+        root,
+        core,
+        version,
+        Scope::Default,
+        planned,
+        &mut moved,
+        &mut stops,
+    )
+}
+
+/// [`onto`] over the default root of a [`FleetPlan`]: its sessions and their
+/// verdicts are the census the plan already made.
+///
+/// # Errors
+///
+/// As [`onto`].
+fn onto_planned(plan: &mut FleetPlan, core: &Path, version: &str) -> Result<Vec<String>, String> {
+    let FleetPlan {
+        default: (root, planned),
+        moved,
+        ..
+    } = plan;
+    let mut stops = false;
+    onto_scoped(
+        root,
+        core,
+        version,
+        Scope::Default,
+        std::mem::take(planned),
+        moved,
+        &mut stops,
+    )
+}
+
+// ─── the fleet admission plan ────────────────────────────────────────────
+
+/// What the census judged of one session, for the apply to act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Judged {
+    /// No meta file: not a session, skipped.
+    NoMeta,
+    /// A pending rename owns the name: skipped untouched, noted.
+    Renaming,
+    /// A STOPPED ordinary session the chain cannot place: skipped, noted.
+    Skip(String),
+    /// The chain can place it: step, repoint, relink.
+    Move,
+}
+
+/// One session of the one census: what was read of it and what was decided.
+/// The apply moves nothing without asking it again, on the bytes it reads
+/// under the session's locks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Planned {
+    name: String,
+    /// SHA-256 of the meta bytes the census read; `None` when it read none.
+    digest: Option<String>,
+    /// Whether it records the orchestrator role (`meta_agent`, byte-exact or
+    /// damaged) as planned: a session of the protected cohort.
+    protected: bool,
+    /// Whether it is the seat of its root, which the apply re-seeds.
+    seat: bool,
+    judged: Judged,
+}
+
+/// A named root as the census left it.
+#[derive(Debug)]
+enum NamedRoot {
+    /// A doubt about the root or an ordinary session in it holds the root
+    /// untouched; the publish goes on and the version sweep removes nothing.
+    Held(String),
+    /// Every session read and judged.
+    Ready(Vec<Planned>),
+}
+
+/// Why a judgement stops the sweep.
+#[derive(Debug)]
+enum Stop {
+    /// The publish itself stops: a present meta that cannot be read, or a
+    /// session of the protected cohort that cannot be relinked, in any root.
+    Fatal(String),
+    /// A named root's own ordinary failure: the root is held.
+    Hold(String),
+}
+
+/// What the upgrade sweeps, decided ONCE and before anything moves: every
+/// session of the default root and of every named root, read a single time,
+/// each with its verdict. The sweeps walk THESE verdicts, so the admission
+/// and the repoint never disagree about which sessions exist, and a protected
+/// session's refusal in any root stops the whole publish before the first
+/// repoint.
+#[derive(Debug)]
+pub(crate) struct FleetPlan {
+    /// The default root and its sessions.
+    default: (PathBuf, Vec<Planned>),
+    /// Each named root proved a real directory: its instance name, the root
+    /// and its census.
+    named: Vec<(String, PathBuf, NamedRoot)>,
+    /// The named entries that could not be proved, as [`fleet`] found them.
+    doubts: Vec<(String, String)>,
+    /// Every session moved so far, across the roots, for the refusal that
+    /// must name them.
+    moved: Vec<String>,
+}
+
+/// The one census of the whole fleet under `base`, judged.
+///
+/// A session whose meta is PRESENT but cannot be read, is not UTF-8 or has a
+/// malformed line, or one that records the orchestrator role (a `meta_agent`
+/// claim, damaged or not) and cannot be placed or relinked, stops the
+/// upgrade, in any root, running or not: the seat it may be is the one session
+/// whose helpers must move with the command. That holds behind earlier
+/// ordinary damage too: a named root's first doubt never ends its scan. A
+/// missing meta, and a stopped ordinary session the chain cannot place, keep
+/// the sweep's own skips.
+///
+/// # Errors
+///
+/// The first session that stops the upgrade, named with the remedy, and that
+/// nothing was repointed.
+pub(crate) fn plan_fleet(base: &Path) -> Result<FleetPlan, String> {
+    let planned = census_default(base)?;
+    let Fleet { named, doubts } = fleet(base);
+    let mut roots = Vec::with_capacity(named.len());
+    for (name, root) in named {
+        let census = census_named(&root)?;
+        roots.push((name, root, census));
+    }
+    Ok(FleetPlan {
+        default: (base.to_owned(), planned),
+        named: roots,
+        doubts,
+        moved: Vec::new(),
+    })
+}
+
+/// The default root's sessions, read once and judged.
+fn census_default(root: &Path) -> Result<Vec<Planned>, String> {
+    let pending = pending_rename_names(root)?;
+    let names = taken(root).map_err(|why| census_failed(Scope::Default, root, &why))?;
+    let mut planned = Vec::with_capacity(names.len());
+    for name in names {
+        let dir = crate::lifecycle::sessions_dir(root).join(&name);
+        let read = crate::meta::read_bytes(&dir);
+        let renaming = pending.contains(&name);
+        match judge(Scope::Default, root, &name, renaming, &read) {
+            Ok(session) => planned.push(session),
+            Err(Stop::Fatal(why) | Stop::Hold(why)) => return Err(unmoved(&why)),
+        }
+    }
+    Ok(planned)
+}
+
+/// A named root's sessions, read once and judged, with the proof
+/// `strict_proof` makes of a root: a doubt about the root or an ordinary
+/// session HOLDS it, and the scan goes on to the end so no held root hides a
+/// protected session.
+fn census_named(root: &Path) -> Result<NamedRoot, String> {
+    if let Some(why) = named_root_doubt(root) {
+        return Ok(NamedRoot::Held(why));
+    }
+    let sessions = crate::lifecycle::sessions_dir(root);
+    if lstat(&sessions).is_err_and(|why| why.kind() == std::io::ErrorKind::NotFound) {
+        // No sessions directory: nothing to move and nothing pinned.
+        return Ok(NamedRoot::Ready(Vec::new()));
+    }
+    if let Some(why) = not_real_dir(&sessions) {
+        return Ok(NamedRoot::Held(why));
+    }
+    let mut hold = None;
+    if !crate::rename::pending_intents(root).is_empty()
+        || !crate::rename::pending_damaged(root).is_empty()
+    {
+        hold = Some("a rename is in progress".to_owned());
+    }
+    let pending = pending_rename_names(root).unwrap_or_default();
+    let entries = match listing(&sessions) {
+        Ok(entries) => entries,
+        Err(why) => {
+            let why = format!("{} could not be listed ({why})", sessions.display());
+            return Ok(NamedRoot::Held(why));
+        }
+    };
+    let mut planned = Vec::new();
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // A dot entry can never be a session.
+        if name.starts_with('.') {
+            continue;
+        }
+        let dir = entry.path();
+        if let Some(why) = not_real_dir(&dir).or_else(|| meta_node(&dir).err()) {
+            hold.get_or_insert(format!("session {name:?}: {why}"));
+            continue;
+        }
+        let read = crate::meta::read_bytes(&dir);
+        match judge(Scope::Named, root, &name, pending.contains(&name), &read) {
+            Ok(session) => planned.push(session),
+            Err(Stop::Fatal(why)) => return Err(unmoved(&why)),
+            Err(Stop::Hold(why)) => {
+                hold.get_or_insert(why);
+            }
+        }
+    }
+    let Some(why) = hold else {
+        return Ok(NamedRoot::Ready(planned));
+    };
+    // A HOLD LEAVES THE WHOLE ROOT ON THE OLD CORE, and the command moves
+    // without it: a planned session of the protected cohort in it would keep
+    // helpers the new core refuses. That is a refusal of the publish, not a
+    // note. An ordinary root with no such session keeps its hold.
+    if let Some(seat) = planned.iter().find(|session| session.protected) {
+        return Err(unmoved(&format!(
+            "session {:?}{} was planned as an orchestrator session, but {why} would hold its \
+             root on the old core; repair or end it",
+            seat.name,
+            place_of(Scope::Named, root)
+        )));
+    }
+    Ok(NamedRoot::Held(why))
+}
+
+/// The sentence that closes a refusal made before anything moved.
+const NOT_MOVED: &str = " Nothing was repointed and the ae command was not moved.";
+
+/// A refusal made before anything moved, as one sentence.
+fn unmoved(why: &str) -> String {
+    format!("{}.{NOT_MOVED}", why.trim_end_matches('.'))
+}
+
+/// The sentence a refusal made after some sessions moved owes the operator:
+/// which of them moved, across every root, while the command stayed.
+fn moved_tail(moved: &[String], version: &str) -> String {
+    if moved.is_empty() {
+        return NOT_MOVED.to_owned();
+    }
+    format!(
+        " The ae command was NOT moved, but {} session(s) already name {version}: {}. \
+         Repair or end the session named above, then re-run the upgrade.",
+        moved.len(),
+        moved.join(", ")
+    )
+}
+
+/// The place a refusal names beside the session: nothing for the default
+/// root, the instance for a named one.
+fn place_of(scope: Scope, root: &Path) -> String {
+    match (scope, root.file_name().and_then(std::ffi::OsStr::to_str)) {
+        (Scope::Named, Some(instance)) => format!(" of instance {instance}"),
+        _ => String::new(),
+    }
+}
+
+/// The census's and the apply's one judgement of a session, asked of the bytes
+/// each of them read.
+///
+/// A meta that is not there is no session. One that is there and cannot be
+/// read whole, or a protected-cohort session the chain cannot place, stops the
+/// publish ([`admission`]). Past that, an ordinary session is moved when the
+/// chain places it, and otherwise skipped when it is stopped in the default
+/// root, refused when it is running there, and a reason to hold a named root.
+fn judge(
+    scope: Scope,
+    root: &Path,
+    name: &str,
+    renaming: bool,
+    read: &std::io::Result<Vec<u8>>,
+) -> Result<Planned, Stop> {
+    let dir = crate::lifecycle::sessions_dir(root).join(name);
+    if let Some(why) = admission(&dir, name, &place_of(scope, root), read, renaming) {
+        return Err(Stop::Fatal(why));
+    }
+    let planned = |digest, protected, seat, judged| Planned {
+        name: name.to_owned(),
+        digest,
+        protected,
+        seat,
+        judged,
+    };
+    let Ok(bytes) = read else {
+        return Ok(planned(None, false, false, Judged::NoMeta));
+    };
+    let digest = Some(crate::install::sha256_hex(bytes));
+    let protected = crate::meta::meta_agent_role(bytes) != crate::meta::MetaAgentRole::Absent;
+    let seat = crate::meta::is_seat(bytes, root);
+    if renaming {
+        return Ok(planned(digest, protected, seat, Judged::Renaming));
+    }
+    let text = String::from_utf8_lossy(bytes);
+    match migrate(&text) {
+        Ok(_) => Ok(planned(digest, protected, seat, Judged::Move)),
+        Err(refusal) if scope.skips() && !unplaceable_is_running(&text, name) => Ok(planned(
+            digest,
+            protected,
+            seat,
+            Judged::Skip(skipped_refusal(name, &refusal)),
+        )),
+        Err(refusal) if scope.skips() => Err(Stop::Fatal(refusal.line(name))),
+        Err(refusal) => Err(Stop::Hold(refusal.line(name))),
+    }
+}
+
+/// [`judge`] again at apply, on the bytes read under the session's locks. A
+/// planned move or missing meta whose digest is unchanged keeps its verdict;
+/// anything else is judged anew, because a skipped session may have started
+/// since. A session of the protected cohort whose meta changed at all is a
+/// late refusal, even when the new bytes have dropped the role or can be
+/// placed: the plan that admitted it no longer describes it.
+fn recheck(
+    scope: Scope,
+    root: &Path,
+    planned: &Planned,
+    read: &std::io::Result<Vec<u8>>,
+) -> Result<Planned, Stop> {
+    // UNCHANGED means the same bytes, or a meta that is still not there. A meta
+    // that now fails to read for any other reason is a change: two absent
+    // digests are NOT equal, or a planned `NoMeta` would hide a present
+    // unreadable meta behind its own skip.
+    let unchanged = match (&planned.digest, read) {
+        (Some(planned), Ok(bytes)) => *planned == crate::install::sha256_hex(bytes),
+        (None, Err(why)) => why.kind() == std::io::ErrorKind::NotFound,
+        _ => false,
+    };
+    if unchanged && matches!(planned.judged, Judged::Move | Judged::NoMeta) {
+        return Ok(planned.clone());
+    }
+    if !unchanged && planned.protected {
+        return Err(Stop::Fatal(format!(
+            "session {:?}{} was an orchestrator session (meta_agent) when this upgrade planned \
+             it and its meta changed since; repair or end it",
+            planned.name,
+            place_of(scope, root)
+        )));
+    }
+    judge(scope, root, &planned.name, false, read)
+}
+
+/// Why the session `name` stops the upgrade, or `None`. One verdict, asked by
+/// the census and again under the session's lifecycle lock at apply, on the
+/// bytes each of them read.
+///
+/// A meta that is not there is not a session. One that is there and cannot be
+/// read whole is in doubt about the role it may carry, so it stops the
+/// upgrade; so does a session claiming the role (`meta_agent`, byte-exact or
+/// damaged) that the chain cannot place, or that a pending rename holds out of
+/// the sweep.
+fn admission(
+    dir: &Path,
+    name: &str,
+    place: &str,
+    read: &std::io::Result<Vec<u8>>,
+    held_by_rename: bool,
+) -> Option<String> {
+    let path = crate::store::open(dir).meta_path();
+    let bytes = match read {
+        Ok(bytes) => bytes,
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(why) => {
+            return Some(format!(
+                "session {name:?}{place}: meta could not be read: {why} ({}); repair or end it",
+                path.display()
+            ));
+        }
+    };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Some(format!(
+            "session {name:?}{place}: meta is not valid UTF-8 ({}); repair or end it",
+            path.display()
+        ));
+    };
+    let parsed = crate::meta::Meta::parse(text);
+    let malformed = parsed.anomalies().iter().find_map(|anomaly| match anomaly {
+        crate::meta::Anomaly::MalformedLine { line } => Some(*line),
+        _ => None,
+    });
+    if let Some(line) = malformed {
+        return Some(format!(
+            "session {name:?}{place}: meta has a malformed line {line} ({}); repair or end it",
+            path.display()
+        ));
+    }
+    if crate::meta::meta_agent_role(bytes) == crate::meta::MetaAgentRole::Absent {
+        return None;
+    }
+    if held_by_rename {
+        return Some(format!(
+            "session {name:?}{place} records the orchestrator role (meta_agent) and a rename \
+             of it is pending, so this upgrade would skip it: finish that rename, or repair or end it"
+        ));
+    }
+    migrate(text).err().map(|refusal| {
+        format!(
+            "session {name:?}{place} records the orchestrator role (meta_agent) and this upgrade \
+             cannot relink it: {}; repair or end it",
+            refusal.line(name).trim_end_matches('.')
+        )
+    })
 }
 
 /// Which root a sweep runs over, because the two answer damage differently.
@@ -607,26 +1005,78 @@ impl Scope {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the two-pass publish sweep reads as one order: placement proof, then locked repoint with its skips"
-)]
+/// One root's sweep. A failure of a NAMED root holds that root and the
+/// publish goes on, unless the failure strands a session of the protected
+/// cohort on the old core: one that failed itself, or one the abort kept the
+/// sweep from reaching. Then the whole publish stops, before the command
+/// moves, and names every session that already moved.
 fn onto_scoped(
     root: &Path,
     core: &Path,
     version: &str,
     scope: Scope,
+    planned: Vec<Planned>,
+    moved: &mut Vec<String>,
+    stops: &mut bool,
 ) -> Result<Vec<String>, String> {
-    // PASS ONE, READ-ONLY: every session is asked whether the chain can place
-    // it, and NOTHING is written until they all can. Without this the sweep
-    // could repoint the first sessions and then refuse on the fourth, leaving
-    // them pointing into a version directory the publish is about to roll back
-    // — which is the one outcome "aborts before the repoint" must not mean.
-    //
-    // A pending rename transaction owns its names until its proved retry
-    // converges: those sessions skip both passes untouched (reported below
-    // like any unplaceable session). An unattributable damaged carrier names
-    // no session to skip, so the sweep refuses rather than migrating blind.
+    let protected: Vec<String> = planned
+        .iter()
+        .filter(|session| session.protected)
+        .map(|session| session.name.clone())
+        .collect();
+    let mut at = String::new();
+    let result = sweep(root, core, version, scope, planned, moved, stops, &mut at);
+    let Err(why) = result else {
+        return result;
+    };
+    if *stops {
+        return Err(why);
+    }
+    let moved_here = |name: &String| {
+        moved.iter().any(|done| {
+            done == name
+                || done
+                    .strip_suffix(name.as_str())
+                    .is_some_and(|rest| rest.ends_with('/'))
+        })
+    };
+    let Some(stranded) = protected
+        .iter()
+        .find(|name| **name == at || !moved_here(name))
+    else {
+        return Err(why);
+    };
+    *stops = true;
+    Err(format!(
+        "{why} The orchestrator session {stranded:?}{} was not relinked, so the upgrade stops \
+         here.{}",
+        place_of(scope, root),
+        moved_tail(moved, version)
+    ))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the publish sweep reads as one order: the planned verdict, the locked recheck, then one published meta with its skips"
+)]
+fn sweep(
+    root: &Path,
+    core: &Path,
+    version: &str,
+    scope: Scope,
+    planned: Vec<Planned>,
+    moved: &mut Vec<String>,
+    stops: &mut bool,
+    at: &mut String,
+) -> Result<Vec<String>, String> {
+    // NOTHING HERE IS A SECOND CENSUS. The census ([`plan_fleet`]) read every
+    // session of every root once and refused, before anything moved, whatever
+    // could not be moved: a pending rename owns its names, a stopped
+    // unplaceable session is skipped, a meta that cannot be read or a
+    // protected session that cannot be relinked refuses the publish. This
+    // sweep acts on those verdicts and asks each session ONE question again,
+    // under its own locks and on the bytes it reads there.
     //
     // A named root proves its whole ancestry FIRST, because every read below
     // goes through it: a root that vanished, or a link that replaced a part of
@@ -636,38 +1086,12 @@ fn onto_scoped(
     {
         return Err(format!("{why}.{}", already(scope, &[], version)));
     }
-    let pending = pending_rename_names(root)?;
-    let census = taken(root).map_err(|why| census_failed(scope, root, &why))?;
-    for name in &census {
-        if pending.iter().any(|held| held == name) {
-            continue;
-        }
-        let dir = crate::lifecycle::sessions_dir(root).join(name);
-        let text = match crate::meta::read_bytes(&dir) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            // A directory with NO meta is not a session and pass two skips it.
-            // An unreadable meta is skippable only when neither bash-era server
-            // has the exact session; a live one refuses here, while refusing is
-            // still free.
-            Err(why) if why.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) if scope.skips() && !running_on_legacy_server(name) => continue,
-            Err(why) => return Err(unreadable_refusal(name, &why)),
-        };
-        match migrate(&text) {
-            Ok(_) => {}
-            Err(_) if scope.skips() && !unplaceable_is_running(&text, name) => {}
-            Err(refusal) => return Err(refusal.line(name)),
-        }
-    }
-
     let mut notes = Vec::new();
     let mut bridges: Vec<ServerId> = Vec::new();
-    // WHAT PASS TWO HAS ALREADY DONE, so a failure inside it can say so. Pass
-    // one removes the common reason to fail here, but it cannot make this pass
-    // atomic: a lock can time out, a meta can stop being readable, a helper
-    // destination can refuse to be replaced. An abort after any of those owes
-    // the operator the sessions that DID move rather than a claim that none
-    // did.
+    // WHAT THE SWEEP HAS ALREADY DONE, so a failure inside it can say so: a
+    // lock can time out, a meta can stop being readable, a helper destination
+    // can refuse to be replaced. An abort after any of those owes the
+    // operator the sessions that DID move rather than a claim that none did.
     let mut repointed: Vec<String> = Vec::new();
     // Stamps are COUNTED, not listed: on the release that adds the chain every
     // session on the machine takes one, and 28 identical lines say less than
@@ -675,10 +1099,15 @@ fn onto_scoped(
     let mut stamped = 0_usize;
     // One counted group per source version, in first-seen order.
     let mut stepped: Vec<(u32, usize)> = Vec::new();
-    for name in census {
-        // Pending rename names skip untouched (reported, like any
-        // unplaceable session) before any lock, read, or write.
-        if let Some(note) = pending_rename_note(root, &name) {
+    for plan in planned {
+        let name = plan.name.clone();
+        at.clone_from(&name);
+        // A pending rename's names skip untouched (reported, like any
+        // unplaceable session) before any lock, read, or write. A rename that
+        // converged since is judged anew below.
+        if plan.judged == Judged::Renaming
+            && let Some(note) = pending_rename_note(root, &name)
+        {
             notes.push(note);
             continue;
         }
@@ -701,58 +1130,76 @@ fn onto_scoped(
         // the chain swapped for a link since would otherwise be written through.
         reproved(scope, root, &dir, &name)
             .map_err(|why| format!("{why}{}", already(scope, &repointed, version)))?;
-        // Re-read both facts under the lifecycle lock. A stopped session from
-        // pass one may have started before this pass; that one must now abort,
-        // while a session that is still stopped must never take the meta lock
-        // or gain helper links.
-        match crate::meta::read_bytes(&dir) {
-            Ok(bytes) => {
-                let text = String::from_utf8_lossy(&bytes);
-                if let Err(refusal) = migrate(&text) {
-                    if !scope.skips() || unplaceable_is_running(&text, &name) {
-                        return Err(format!(
-                            "{}{}",
-                            refusal.line(&name),
-                            already(scope, &repointed, version)
-                        ));
-                    }
-                    notes.push(skipped_refusal(&name, &refusal));
-                    continue;
+        let halted =
+            |stop: Stop, repointed: &[String], moved: &[String], stops: &mut bool| match stop {
+                Stop::Fatal(why) => {
+                    *stops = true;
+                    format!(
+                        "{}.{}",
+                        why.trim_end_matches('.'),
+                        moved_tail(moved, version)
+                    )
                 }
-            }
-            Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
-            Err(why) if scope.skips() && !running_on_legacy_server(&name) => {
-                notes.push(skipped_unreadable(&name, &why));
-                continue;
-            }
-            Err(why) => {
-                return Err(format!(
-                    "{}{}",
-                    unreadable_refusal(&name, &why),
-                    already(scope, &repointed, version)
-                ));
+                Stop::Hold(why) => format!("{why}{}", already(scope, repointed, version)),
+            };
+        // A session the census did NOT plan to move, or one whose meta may
+        // have changed, is asked again without the meta lock: a stopped skip
+        // must never take it or gain helper links, and a session that has
+        // started since must now abort. Only a planned move goes straight on.
+        if plan.judged != Judged::Move {
+            let read = crate::meta::read_bytes(&dir);
+            match recheck(scope, root, &plan, &read) {
+                Err(stop) => return Err(halted(stop, &repointed, moved, stops)),
+                Ok(now) => match now.judged {
+                    Judged::NoMeta => {
+                        notes.push(format!("skipped {name}: no meta"));
+                        continue;
+                    }
+                    Judged::Skip(note) => {
+                        notes.push(note);
+                        continue;
+                    }
+                    Judged::Renaming => continue,
+                    Judged::Move => {}
+                },
             }
         }
-        match session(&dir) {
-            Ok(None) => {}
-            Ok(Some(Stepped::Stamped)) => stamped += 1,
-            // COUNTED, not listed. The release that adds a step meets every
-            // session on the machine at once — 28 of 28 on the one this was
-            // written for — and an operator wants one line with a number, not
-            // one line per session. The count is per SOURCE version, because
-            // two sessions stepped from different shapes did not have the same
-            // thing done to them.
-            Ok(Some(Stepped::From(from))) => match stepped.iter_mut().find(|(at, _)| *at == from) {
-                Some((_, count)) => *count += 1,
-                None => stepped.push((from, 1_usize)),
-            },
-            // A directory under `sessions` with no meta is not a session: there
-            // is nothing to step, nothing to repoint and no reason to fail an
-            // upgrade over it.
-            Err(Refusal::Missing) => {
+        // ONE meta lock, held from the deciding read through the one publish:
+        // a writer that takes only `meta.lock` cannot change the bytes this
+        // decision was made on. The recheck here is the authoritative one.
+        let held_meta = crate::meta::lock(&dir).map_err(|why| {
+            format!(
+                "session {name:?}: meta.lock: {why}.{}",
+                already(scope, &repointed, version)
+            )
+        })?;
+        let read = crate::meta::read_bytes(&dir);
+        let now = match recheck(scope, root, &plan, &read) {
+            Ok(now) => now,
+            Err(stop) => return Err(halted(stop, &repointed, moved, stops)),
+        };
+        match now.judged {
+            Judged::Move => {}
+            Judged::NoMeta => {
                 notes.push(format!("skipped {name}: no meta"));
                 continue;
             }
+            Judged::Skip(note) => {
+                notes.push(note);
+                continue;
+            }
+            Judged::Renaming => continue,
+        }
+        let Ok(bytes) = read else {
+            return Err(format!(
+                "session {name:?}: its meta vanished under its lock.{}",
+                already(scope, &repointed, version)
+            ));
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let (what, migrated) = match migrate(&text) {
+            Ok(None) => (None, text.into_owned()),
+            Ok(Some(done)) => (Some(done.what), done.text),
             Err(refusal) => {
                 return Err(format!(
                     "{}{}",
@@ -760,18 +1207,39 @@ fn onto_scoped(
                     already(scope, &repointed, version)
                 ));
             }
-        }
-        repoint(&dir, core, version).map_err(|why| {
+        };
+        let published = with_core_rows(&migrated, core, version);
+        crate::meta::publish_locked(&dir, &published).map_err(|why| {
             format!(
-                "session {name:?}: {why}.{}",
+                "session {name:?}: meta could not be written ({}).{}",
+                why.cause(),
                 already(scope, &repointed, version)
             )
         })?;
+        drop(held_meta);
+        match what {
+            None => {}
+            Some(Stepped::Stamped) => stamped += 1,
+            // COUNTED, not listed. The release that adds a step meets every
+            // session on the machine at once — 28 of 28 on the one this was
+            // written for — and an operator wants one line with a number, not
+            // one line per session. The count is per SOURCE version, because
+            // two sessions stepped from different shapes did not have the same
+            // thing done to them.
+            Some(Stepped::From(from)) => match stepped.iter_mut().find(|(at, _)| *at == from) {
+                Some((_, count)) => *count += 1,
+                None => stepped.push((from, 1_usize)),
+            },
+        }
         // RECORDED HERE, not after the helpers. The meta already names the new
         // core at this point, so a helper failure below leaves this session
         // repointed — reporting it as untouched would send an operator looking
         // in the wrong place.
         repointed.push(name.clone());
+        moved.push(match place_of(scope, root).strip_prefix(" of instance ") {
+            Some(instance) => format!("{instance}/{name}"),
+            None => name.clone(),
+        });
         crate::session_launch::assets::write_helpers(&dir, core).map_err(|why| {
             format!(
                 "session {name:?}: {why}. Its meta already names {version} while some of its \
@@ -779,6 +1247,9 @@ fn onto_scoped(
                 already(scope, &repointed, version)
             )
         })?;
+        if now.seat {
+            notes.extend(reseed_seat_prompt(root));
+        }
         notes.extend(restart_daemons(root, &dir, &name, core, &mut bridges));
     }
     if stamped > 0 {
@@ -797,6 +1268,52 @@ fn onto_scoped(
         );
     }
     Ok(notes)
+}
+
+/// The most a seat config may weigh for the re-seed to read it.
+const SEAT_CONFIG_CAP: u64 = 1024 * 1024;
+
+/// Bring the seat file of `root` to the current prompt when it still carries,
+/// byte for byte, the prompt of the template ae seeded before: the stanza is
+/// replaced and every other byte of the file stays. A prompt that is current
+/// already, or that anyone has edited, is left alone, and a changed or
+/// edited-and-stale one is reported with the step that fixes it. Only a
+/// regular file is rewritten: a link (a dotfile manager's) is never replaced.
+fn reseed_seat_prompt(root: &Path) -> Option<String> {
+    use crate::store::SourceRead;
+
+    let path = root.join(crate::meta::SEAT_CONFIG_FILE);
+    let read = crate::store::read_capped(&path, SEAT_CONFIG_CAP);
+    let Ok(SourceRead::Ready(bytes)) = read else {
+        return Some(format!(
+            "left {} alone: it is not a regular file this upgrade can read; copy the current \
+             [prompt] stanza of the seat template into it and restart the seat",
+            path.display()
+        ));
+    };
+    let text = String::from_utf8(bytes).ok()?;
+    if crate::config::seat_prompt_is_current(&text) {
+        return None;
+    }
+    let Some(new) = crate::config::reseeded_seat_config(&text) else {
+        return Some(format!(
+            "left {} alone: its [prompt] is not a template ae wrote; copy the current [prompt] \
+             stanza into it, keeping your edits, and restart the seat",
+            path.display()
+        ));
+    };
+    Some(match crate::store::publish_private(&path, new.as_bytes()) {
+        Ok(()) => format!(
+            "re-seeded the [prompt] of {} (it matched the previous template byte for byte); \
+             restart the orchestrator seat to load it",
+            path.display()
+        ),
+        Err(why) => format!(
+            "could not re-seed the [prompt] of {} ({why}); copy the current stanza into it and \
+             restart the seat",
+            path.display()
+        ),
+    })
 }
 
 /// The abort for a sessions root that could not be enumerated.
@@ -836,17 +1353,16 @@ fn already(scope: Scope, repointed: &[String], version: &str) -> String {
     )
 }
 
-/// Rewrite the core rows of one session's meta, as ONE document.
+/// `text` with the core rows of one session's meta naming `core`, as ONE
+/// document.
 ///
-/// Under a single hold of the meta lock, published once. Four separate
-/// [`crate::meta::rewrite`] calls would each take the lock, read, write and
-/// rename on their own, so a process that died between them would leave a meta
-/// naming the new core at one row and the old core at another — a session that
-/// disagrees with itself about which binary it runs.
-fn repoint(dir: &Path, core: &Path, version: &str) -> Result<(), String> {
-    let _held = crate::meta::lock(dir).map_err(|why| format!("meta.lock: {why}"))?;
-    let mut text = crate::meta::read_base(&dir.join(crate::meta::FILE))
-        .map_err(|why| format!("meta could not be read: {why}"))?;
+/// Published once, with the meta lock held by the caller, together with
+/// whatever the chain wrote. Separate [`crate::meta::rewrite`] calls would each
+/// take the lock, read, write and rename on their own, so a process that died
+/// between them would leave a meta naming the new core at one row and the old
+/// core at another — a session that disagrees with itself about which binary
+/// it runs.
+fn with_core_rows(text: &str, core: &Path, version: &str) -> String {
     let core_text = core.display().to_string();
     let mut rows: Vec<(&str, &str)> = vec![
         (CORE_ROWS[0], core_text.as_str()),
@@ -861,11 +1377,11 @@ fn repoint(dir: &Path, core: &Path, version: &str) -> Result<(), String> {
     {
         rows.push((LEGACY_PATH_ROW, core_text.as_str()));
     }
+    let mut text = text.to_owned();
     for (key, value) in rows {
         text = crate::meta::rewritten(&text, key, Some(value));
     }
-    crate::meta::publish_locked(dir, &text)
-        .map_err(|why| format!("meta could not be written ({})", why.cause()))
+    text
 }
 
 /// Restart the daemons of a RUNNING session, on the new core.
@@ -1253,40 +1769,71 @@ fn strict_proof(root: &Path) -> Result<Option<Vec<String>>, String> {
     Ok(Some(versions))
 }
 
-/// Bring every named instance root under `base` onto `core`, AFTER the default
-/// root and in name order. A root in doubt is skipped untouched and one that
-/// fails part-way is reported; neither stops the publish, and both are HELD —
-/// returned beside the notes — so the version sweep removes nothing.
-pub(crate) fn onto_fleet(base: &Path, core: &Path, version: &str) -> (Vec<String>, Vec<String>) {
-    let fleet = fleet(base);
+/// Bring the default root of a [`FleetPlan`], then every named instance root,
+/// onto `core`, in name order. A named root in doubt is skipped untouched and
+/// one that fails part-way is reported; neither stops the publish, and both are
+/// HELD — returned beside the notes — so the version sweep removes nothing,
+/// unless the hold would strand a session of the protected cohort.
+///
+/// # Errors
+///
+/// The default root's refusal, or a protected session's, with nothing relinked
+/// and the ae command not moved.
+pub(crate) fn onto_fleet(
+    mut plan: FleetPlan,
+    core: &Path,
+    version: &str,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    // The default root goes first, so its refusal stays exactly what it was
+    // and nothing of a named root moves behind a refusal there.
+    let mut notes = onto_planned(&mut plan, core, version)?;
+    let FleetPlan {
+        named,
+        doubts,
+        mut moved,
+        ..
+    } = plan;
     let repair = format!("repair it, then run AE_VERSION={version} ae upgrade");
-    let mut notes = Vec::new();
     let mut held = Vec::new();
-    for (label, why) in fleet.doubts {
+    for (label, why) in doubts {
         notes.push(format!("skipped {label}: {why} — {repair}"));
         held.push(label);
     }
-    for (name, root) in fleet.named {
+    for (name, root, census) in named {
         let label = format!("instance {name}");
-        match strict_proof(&root) {
-            Err(why) => {
+        let planned = match census {
+            NamedRoot::Held(why) => {
                 notes.push(format!("skipped {label}: {why} — {repair}"));
                 held.push(label);
                 continue;
             }
             // No sessions directory: nothing to move and nothing pinned.
-            Ok(None) => continue,
-            Ok(Some(_)) => {}
-        }
-        match onto_scoped(&root, core, version, Scope::Named) {
+            NamedRoot::Ready(planned) if planned.is_empty() => continue,
+            NamedRoot::Ready(planned) => planned,
+        };
+        let mut stops = false;
+        match onto_scoped(
+            &root,
+            core,
+            version,
+            Scope::Named,
+            planned,
+            &mut moved,
+            &mut stops,
+        ) {
             Ok(done) => notes.extend(done.into_iter().map(|note| format!("{label}: {note}"))),
+            // A protected session, or a meta that stopped being readable, found
+            // at apply stops the publish before the command is relinked,
+            // exactly as it would have at the census. Any other failure holds
+            // only this root.
+            Err(why) if stops => return Err(format!("{label}: {why}")),
             Err(why) => {
                 notes.push(format!("{label}: {why}"));
                 held.push(label);
             }
         }
     }
-    (notes, held)
+    Ok((notes, held))
 }
 
 // ─── the version-directory sweep ─────────────────────────────────────────
@@ -1745,5 +2292,182 @@ mod tests {
             migrated.text
         );
         assert_eq!(migrate(&migrated.text), Ok(None));
+    }
+    /// A placeable (or, with a high `version`, unplaceable) session meta under
+    /// `root`, with a server row that points at a socket nothing listens on, so
+    /// no probe can reach a real tmux server.
+    fn planted(root: &Path, name: &str, role: &str, version: &str) {
+        let dir = root.join("sessions").join(name);
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let socket = root.join("no-such-socket");
+        let text = format!(
+            "meta_version={version}\nschema=2\nmode=local\nsession={name}\n\
+             session_id=0199c0de-aaaa-4890-abcd-ef0123456789\nwork_dir=/w\nseat.main=boss\n\
+             profile.main=cl\ntmux_server_kind=socket\ntmux_server={}\n{role}",
+            socket.display()
+        );
+        std::fs::write(dir.join("meta"), text).expect("meta");
+    }
+
+    #[test]
+    fn the_recheck_keeps_an_unchanged_move_and_asks_again_of_anything_else() {
+        let scratch = Scratch::new("recheck");
+        let root = &scratch.0;
+        let dir = root.join("sessions/a-ok");
+        planted(root, "a-ok", "", &CURRENT.to_string());
+        let read = crate::meta::read_bytes(&dir);
+        let planned = judge(Scope::Default, root, "a-ok", false, &read).expect("placeable");
+        assert_eq!(planned.judged, Judged::Move);
+        assert!(!planned.protected && !planned.seat);
+        assert_eq!(
+            recheck(Scope::Default, root, &planned, &read).expect("unchanged"),
+            planned
+        );
+        // An ordinary change is judged anew: unplaceable and stopped, it is
+        // skipped, not refused.
+        planted(root, "a-ok", "", &u32::MAX.to_string());
+        let changed = crate::meta::read_bytes(&dir);
+        let again = recheck(Scope::Default, root, &planned, &changed).expect("judged again");
+        assert!(matches!(again.judged, Judged::Skip(_)), "{again:?}");
+        // A session of the protected cohort whose meta changed at all is a
+        // late refusal, even when the new bytes drop the role and place.
+        planted(root, "p", "meta_agent=true\n", &CURRENT.to_string());
+        let seat = root.join("sessions/p");
+        let read = crate::meta::read_bytes(&seat);
+        let protected = judge(Scope::Default, root, "p", false, &read).expect("placeable");
+        assert!(protected.protected);
+        planted(root, "p", "", &CURRENT.to_string());
+        let dropped = crate::meta::read_bytes(&seat);
+        assert!(
+            matches!(
+                recheck(Scope::Default, root, &protected, &dropped),
+                Err(Stop::Fatal(why)) if why.contains("meta_agent") && why.contains("changed since")
+            ),
+            "a protected session's change is a late refusal"
+        );
+    }
+
+    #[test]
+    fn a_protected_session_that_changed_after_the_plan_stops_the_publish_naming_what_moved() {
+        let scratch = Scratch::new("late-protected");
+        let root = &scratch.0;
+        planted(root, "a-ok", "", &CURRENT.to_string());
+        planted(root, "z-seat", "meta_agent=true\n", &CURRENT.to_string());
+        let plan = plan_fleet(root).expect("both sessions are placeable");
+        // After the plan, the seat's meta changes and no longer claims the role.
+        let seat = root.join("sessions/z-seat/meta");
+        let changed = String::from_utf8_lossy(
+            &crate::meta::read_bytes(&root.join("sessions/z-seat")).expect("meta"),
+        )
+        .replace("meta_agent=true\n", "");
+        std::fs::write(&seat, &changed).expect("changed after the plan");
+        let core = root.join("new-core");
+        std::fs::write(&core, b"").expect("core");
+        let why =
+            onto_fleet(plan, &core, "2099.1.1").expect_err("the late change stops the publish");
+        assert!(
+            why.contains("z-seat")
+                && why.contains("meta_agent")
+                && why.contains("repair or end it"),
+            "{why}"
+        );
+        assert!(why.contains("NOT moved") && why.contains("a-ok"), "{why}");
+        assert_eq!(
+            String::from_utf8_lossy(
+                &crate::meta::read_bytes(&root.join("sessions/z-seat")).expect("meta")
+            ),
+            changed,
+            "the changed session was not touched"
+        );
+    }
+
+    #[test]
+    fn a_held_named_root_still_refuses_a_protected_session_behind_ordinary_damage() {
+        let scratch = Scratch::new("held-protected");
+        let root = &scratch.0;
+        let ahead = u32::MAX.to_string();
+        planted(root, "a-damaged", "", &ahead);
+        let held = census_named(root).expect("ordinary damage holds the root");
+        assert!(
+            matches!(held, NamedRoot::Held(ref why) if why.contains("a-damaged")),
+            "{held:?}"
+        );
+        planted(root, "z-seat", "meta_agent=true\n", &ahead);
+        let why = census_named(root).expect_err("the protected session stops the publish");
+        assert!(
+            why.contains("z-seat")
+                && why.contains("repair or end it")
+                && why.contains("meta_agent"),
+            "{why}"
+        );
+    }
+    #[test]
+    fn a_planned_missing_meta_that_became_unreadable_is_not_skipped() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = Scratch::new("nometa-denied");
+        let root = &scratch.0;
+        let dir = root.join("sessions/demo");
+        let read = crate::meta::read_bytes(&dir);
+        let planned =
+            judge(Scope::Default, root, "demo", false, &read).expect("no meta is skipped");
+        assert_eq!(planned.judged, Judged::NoMeta);
+        // A directory at the meta path cannot be read, whoever asks.
+        std::fs::create_dir(dir.join("meta")).expect("a present, unreadable meta");
+        let now = crate::meta::read_bytes(&dir);
+        assert!(
+            matches!(
+                recheck(Scope::Default, root, &planned, &now),
+                Err(Stop::Fatal(why)) if why.contains("meta could not be read")
+            ),
+            "a present unreadable meta hides behind a planned NoMeta"
+        );
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
+    }
+
+    #[test]
+    fn a_hold_that_strands_a_planned_seat_refuses_and_one_that_does_not_holds() {
+        let scratch = Scratch::new("strand");
+        let root = &scratch.0;
+        planted(root, "a-damaged", "", &u32::MAX.to_string());
+        planted(root, "z-seat", "meta_agent=true\n", &CURRENT.to_string());
+        let why = census_named(root).expect_err("the hold would strand the seat");
+        assert!(
+            why.contains("z-seat") && why.contains("repair or end it") && why.contains("old core"),
+            "{why}"
+        );
+        std::fs::remove_dir_all(root.join("sessions/z-seat")).expect("seat gone");
+        assert!(matches!(
+            census_named(root).expect("an ordinary hold"),
+            NamedRoot::Held(_)
+        ));
+    }
+
+    #[test]
+    fn a_failure_that_keeps_a_named_sweep_from_a_planned_seat_stops_the_publish() {
+        let scratch = Scratch::new("late-strand");
+        let root = &scratch.0;
+        planted(root, "a-ordinary", "", &CURRENT.to_string());
+        planted(root, "z-seat", "meta_agent=true\n", &CURRENT.to_string());
+        let NamedRoot::Ready(planned) = census_named(root).expect("both placeable") else {
+            panic!("a root with no doubt is ready");
+        };
+        // A helper path that is a directory refuses the helper relink of the
+        // ordinary session, so the sweep aborts before it reaches the seat.
+        std::fs::create_dir(root.join("sessions/a-ordinary/send")).expect("obstruction");
+        let core = root.join("new-core");
+        std::fs::write(&core, b"").expect("core");
+        let (mut moved, mut stops) = (Vec::new(), false);
+        let why = onto_scoped(
+            root,
+            &core,
+            "2099.1.1",
+            Scope::Named,
+            planned,
+            &mut moved,
+            &mut stops,
+        )
+        .expect_err("the ordinary failure aborts the sweep");
+        assert!(stops, "a stranded seat stops the publish: {why}");
+        assert!(why.contains("z-seat") && why.contains("NOT moved"), "{why}");
     }
 }

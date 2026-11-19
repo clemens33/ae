@@ -76,25 +76,14 @@ pub(crate) struct Snapshot<'a> {
     pub(crate) deadline: i64,
 }
 
-/// The seat proof: `meta` records the one orchestrator role claim and, once,
-/// state root `root`'s seat overlay as its local config. The role census and
-/// the app's proof of the seat decide by this one predicate.
-pub(crate) fn is_seat(meta: &[u8], root: &Path) -> bool {
-    crate::meta::meta_agent_role(meta) == MetaAgentRole::Role
-        && crate::meta::sole_value(meta, crate::config::LOCAL_CONFIG_KEY).is_some_and(|value| {
-            let value = String::from_utf8_lossy(value);
-            crate::orchestrator::is_seat_overlay(Path::new(value.as_ref()), root)
-        })
-}
-
 /// The role census of state root `root`: a role claim without the seat
-/// overlay ([`is_seat`]) is no seat, and starts or resumes nothing.
+/// overlay ([`crate::meta::is_seat`]) is no seat, and starts or resumes nothing.
 fn select_role(records: &[RoleRecord], root: &Path) -> RoleSelection {
     let mut role = None;
     for record in records {
         match crate::meta::meta_agent_role(&record.meta) {
             MetaAgentRole::Absent => {}
-            MetaAgentRole::Role if !is_seat(&record.meta, root) => {
+            MetaAgentRole::Role if !crate::meta::is_seat(&record.meta, root) => {
                 return RoleSelection::Unavailable(format!(
                     "session '{}' claims the orchestrator role without the seat overlay",
                     record.name
@@ -1273,7 +1262,7 @@ mod tests {
 
     const UUID: &str = "33333333-3333-4333-8333-333333333333";
     /// A state root and its seat overlay row: a role claim is the seat only
-    /// with both ([`super::is_seat`]).
+    /// with both ([`crate::meta::is_seat`]).
     const ROOT: &str = "/r";
     const SEAT: &str = "local_config=/r/orchestrator.config\n";
 

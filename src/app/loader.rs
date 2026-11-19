@@ -323,8 +323,7 @@ fn orchestrator_proof(read: &FleetRead, root: &Path, holder: Result<Option<&str>
     };
     // The census proved the holder; its meta proves the seat again as it
     // reads now, by the census's own predicate.
-    let seat =
-        crate::meta::read_bytes(dir).is_ok_and(|meta| crate::settings_menu::is_seat(&meta, root));
+    let seat = crate::meta::read_bytes(dir).is_ok_and(|meta| crate::meta::is_seat(&meta, root));
     if !seat {
         return Proof::Gap("meta: local_config is not the seat overlay".to_owned());
     }

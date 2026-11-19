@@ -77,7 +77,7 @@ ae brief [name] [--all]        # why a session needs you: goal, latest note per 
 ae orchestrator                # start or reattach the local orchestrator seat
 ```
 
-The orchestrator is one optional overview seat for the whole fleet: the watchdog pastes a changed `NEEDS YOU` / `WORKING` / `QUIET` view into it, and it relays only explicit human instructions ([details](docs/reference/commands.md#ae-orchestrator)). On an ae-owned server, `prefix a` opens the fleet picker.
+The orchestrator is one optional overview seat for the whole fleet: the watchdog pastes a changed `NEEDS YOU` / `WORKING` / `QUIET` view into it, and it relays only explicit owner instructions, each with its owner mode and a task, and never launches or stops a session itself ([details](docs/reference/commands.md#ae-orchestrator)). On an ae-owned server, `prefix a` opens the fleet picker.
 
 **Finish up, and continue where a finished session left off:**
 ```bash

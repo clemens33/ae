@@ -50,6 +50,56 @@ pub(crate) fn read_selected(file: &Path) -> Result<String, ConfigError> {
     String::from_utf8(bytes).map_err(|_| ConfigError::Unreadable(file.to_owned()))
 }
 
+/// The seat template ae seeds at `<state home>/orchestrator.config`.
+pub(crate) const SEAT_TEMPLATE: &str =
+    include_str!("../contrib/aeorchestrator/orchestrator.config");
+
+/// The seat template the release before the bound owner words seeded, byte for
+/// byte: the one generated template whose `[prompt]` an upgrade may replace.
+/// It is the very file the acceptance fixtures pin, so the two cannot drift.
+const SEAT_TEMPLATE_S1A_PREDECESSOR: &str =
+    include_str!("../tests/fixtures/orchestrator/s1a-previous.config");
+
+/// The sentence a current seat prompt carries and a stale one cannot: the
+/// bound-owner-words rule for reserved items. A prompt without it also teaches
+/// a relay form the core refuses.
+pub(crate) const SEAT_PROMPT_MARKER: &str =
+    "A reserved item requires bound owner words that approve the exact act for the target session.";
+
+/// The header line of the seat's prompt stanza.
+const PROMPT_HEADER: &str = "[prompt]\n";
+
+/// `config` cut after its `[prompt]` header line: the text through the header,
+/// and the stanza after it (to the end of the file). The header must start a
+/// line.
+fn prompt_split(config: &str) -> Option<(&str, &str)> {
+    let at = if config.starts_with(PROMPT_HEADER) {
+        0
+    } else {
+        config.find(&format!("\n{PROMPT_HEADER}"))? + 1
+    };
+    Some(config.split_at(at + PROMPT_HEADER.len()))
+}
+
+/// Whether the seat config `config` carries the current prompt: a stanza that
+/// teaches [`SEAT_PROMPT_MARKER`], whatever else the owner added to it.
+#[must_use]
+pub(crate) fn seat_prompt_is_current(config: &str) -> bool {
+    prompt_split(config).is_some_and(|(_, stanza)| stanza.contains(SEAT_PROMPT_MARKER))
+}
+
+/// The seat config an upgrade writes over `config`, when its `[prompt]` stanza
+/// is, byte for byte, the previous generated template's: everything before the
+/// stanza stays as it is, and the stanza becomes the current template's. Any
+/// other stanza, an owner's edit included, gives `None` and is left alone.
+#[must_use]
+pub(crate) fn reseeded_seat_config(config: &str) -> Option<String> {
+    let (head, stanza) = prompt_split(config)?;
+    let (_, known) = prompt_split(SEAT_TEMPLATE_S1A_PREDECESSOR)?;
+    let (_, current) = prompt_split(SEAT_TEMPLATE)?;
+    (stanza == known && known != current).then(|| format!("{head}{current}"))
+}
+
 /// The persisted path of a nonstandard per-session config overlay.
 pub(crate) const LOCAL_CONFIG_KEY: &str = "local_config";
 

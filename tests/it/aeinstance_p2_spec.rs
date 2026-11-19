@@ -268,10 +268,36 @@ fn damage(tag: &str) {
     if let Some(path) = &denied {
         fs::set_permissions(path, fs::Permissions::from_mode(0o000)).expect("deny fixture read");
     }
+    // A present meta that cannot be read may carry the orchestrator role, so it
+    // stops the whole upgrade before anything moves; every other named-root
+    // damage here holds only its root. Root reads a mode 000 file, so there is
+    // nothing to deny it.
+    let refused = tag == "meta-denied";
+    if refused
+        && fs::metadata(&witness).is_ok_and(|info| std::os::unix::fs::MetadataExt::uid(&info) == 0)
+    {
+        return;
+    }
     let (code, out, err) = rig.install(&rig.bundle(NEW));
     if let Some(path) = &denied {
         let mode = if tag == "meta-denied" { 0o644 } else { 0o755 };
         fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("restore fixture read");
+    }
+    if refused {
+        let said = format!("{out}{err}");
+        assert_ne!(code, Some(0), "published past an unreadable meta: {said}");
+        assert!(
+            said.contains("omega")
+                && said.contains("meta could not be read")
+                && said.contains("repair or end it"),
+            "the refusal names the session and the remedy: {said}"
+        );
+        assert_eq!(object(&witness), before, "the refused upgrade wrote {tag}");
+        assert!(
+            present(&orphan),
+            "a refused upgrade removed a version: {said}"
+        );
+        return;
     }
     assert_eq!(
         code,

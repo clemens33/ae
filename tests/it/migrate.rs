@@ -1230,7 +1230,7 @@ fn assert_ae_status_bindings(socket: &Path, scratch: &Path) {
 }
 
 #[test]
-fn an_unreadable_stopped_meta_is_reported_and_skipped() {
+fn an_unreadable_stopped_meta_stops_the_upgrade_before_anything_moves() {
     let rig = Rig::new("skip-unreadable-meta");
     let held = rig.plant_version("2026.1.1");
     let dir = rig.unreadable_meta_session("unreadable");
@@ -1244,15 +1244,15 @@ fn an_unreadable_stopped_meta_is_reported_and_skipped() {
     let (code, stdout, stderr) =
         rig.install_with_tmux_tmpdir(&rig.bundle("2026.9.9"), Some(&tmux_tmpdir));
     let _ = remove(&tmux_tmpdir);
-    assert_eq!(code, Some(0), "the publish failed: {stdout}{stderr}");
+    // A meta that is there and cannot be read may carry the orchestrator role: it
+    // stops the upgrade, running or not, before the command or any session moves.
+    let said = format!("{stdout}{stderr}");
+    assert_ne!(code, Some(0), "published past an unreadable meta: {said}");
     assert!(
-        stdout.contains("ae: skipped unreadable: meta unreadable (")
-            && stdout.contains("), not running"),
-        "the unreadable meta was not reported: {stdout}"
-    );
-    assert!(
-        stdout.contains("WARNING: no version was removed"),
-        "the unsafe prune was not reported: {stdout}"
+        said.contains("session \"unreadable\"")
+            && said.contains("meta could not be read")
+            && said.contains("repair or end it"),
+        "the refusal names the session and the remedy: {said}"
     );
     assert_eq!(
         snapshot(&dir),
@@ -1260,8 +1260,8 @@ fn an_unreadable_stopped_meta_is_reported_and_skipped() {
         "the unreadable stopped session changed"
     );
     assert!(
-        fs::read_link(rig.link()).is_ok_and(|target| target.ends_with("2026.9.9/ae-core")),
-        "the command link did not move"
+        !fs::read_link(rig.link()).is_ok_and(|target| target.ends_with("2026.9.9/ae-core")),
+        "the command link moved"
     );
     assert!(present(&held), "the unreadable session's core was pruned");
     assert!(

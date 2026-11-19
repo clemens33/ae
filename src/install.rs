@@ -687,6 +687,12 @@ fn publish_with_mode(
         }
     }
 
+    // ONE census of every root, admitted BEFORE this attempt writes a journal
+    // or touches a directory, a session or the command link: a meta that cannot
+    // be read, or an orchestrator session this upgrade cannot relink, stops it
+    // here, with nothing to roll back — and no replay to relink the old link.
+    let plan = crate::migrate::plan_fleet(&paths.home)?;
+
     let (link_had, link_old) = current_link(&paths.link);
     let mut journal = Journal {
         pid: std::process::id(),
@@ -701,7 +707,8 @@ fn publish_with_mode(
     write_new(&path, &journal.render())
         .map_err(|why| format!("could not write install journal: {why}"))?;
 
-    match publish_steps(bundle, paths, &mut journal) {
+    let fleet = |core: &Path, version: &str| crate::migrate::onto_fleet(plan, core, version);
+    match publish_steps(bundle, paths, &mut journal, fleet) {
         Ok((mut published, held)) => {
             // THE COMMIT. Everything above is reversible by [`replay`], and the
             // journal's `link_old` names the version directory it would relink
@@ -778,6 +785,7 @@ fn publish_steps(
     bundle: &Bundle,
     paths: &Paths,
     journal: &mut Journal,
+    fleet: impl FnOnce(&Path, &str) -> Result<(Vec<String>, Vec<String>), String>,
 ) -> Result<(Published, Vec<String>), String> {
     let versions = paths.versions();
     mkdir_recorded(&versions, journal, paths)?;
@@ -790,13 +798,12 @@ fn publish_steps(
     // fails here while `~/.local/bin/ae` still names the core that built it; a
     // stopped one is reported and skipped untouched.
     let core = version_dir.join(crate::shape::CORE);
-    let mut notes = crate::migrate::onto(&paths.home, &core, &bundle.version)?;
     // THEN every named instance root, which shares this store and this link.
-    // The default root went first so its refusal stays exactly what it was; a
+    // The default root goes first so its refusal stays exactly what it was; a
     // named root in doubt or failing part-way is reported and HELD, never a
-    // reason to leave the default on the old core.
-    let (named, held) = crate::migrate::onto_fleet(&paths.home, &core, &bundle.version);
-    notes.extend(named);
+    // reason to leave the default on the old core — unless the hold strands an
+    // orchestrator session, which stops the publish here, before the relink.
+    let (notes, held) = fleet(&core, &bundle.version)?;
 
     let parent = paths
         .link

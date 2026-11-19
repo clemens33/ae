@@ -25,6 +25,7 @@ pub mod lane;
 pub mod link;
 pub mod needs;
 pub mod open;
+pub mod relay_verify;
 pub mod shell;
 pub mod submit;
 pub(crate) mod term;

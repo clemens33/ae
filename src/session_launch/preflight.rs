@@ -536,7 +536,7 @@ pub(super) fn adopt_recorded_config(
     let orchestrator_seat = env
         .local
         .as_deref()
-        .is_some_and(|local| crate::orchestrator::is_seat_overlay(local, &env.home));
+        .is_some_and(|local| crate::meta::is_seat_overlay(local, &env.home));
     if orchestrator_seat && !overridden {
         let (_, has_profiles, has_roster) =
             config::read_workspace_keys_with_identity_sections(None, env.local.as_deref(), &[]);

@@ -32,10 +32,25 @@ once per server. Agent panes are never touched — they run the agent tool, not 
 lines survive too: on an installed machine a seat's pane line names the command
 link, so a re-run after the prune lands on the new core.
 
-Nothing is written until every session has been asked. A stopped session the chain cannot place
-has no live helpers to protect, so the publish reports it and skips its directory untouched. An
-unplaceable running session still aborts the publish by name with the old link intact. An abort
-later than that names the sessions that did move rather than claiming none did.
+Nothing is written until every session has been asked, and ONE census of every root answers it:
+the default root and each named instance root are read once, and the sweeps act on those
+verdicts. A stopped ordinary session the chain cannot place has no live helpers to protect, so
+the publish reports it and skips its directory untouched. An unplaceable running session still
+aborts the publish by name with the old link intact.
+
+The orchestrator seat is the one session whose helpers must move with the command, so it is
+never skipped. A session whose meta is present but cannot be read, is not UTF-8 or has a
+malformed line, and a session that records the orchestrator role (`meta_agent`, damaged or not)
+and cannot be placed or relinked, stop the whole upgrade in any root, running or not, before the
+first repoint and before the command link moves. The refusal names the session and says to
+repair or end it. A named root that a doubt about an ordinary session holds stays held, unless
+the hold would strand a planned orchestrator session: then the publish refuses. A change to a
+planned orchestrator session's meta between the census and its repoint is a late refusal naming
+the sessions that already moved. The same locked step re-seeds the seat's own
+`orchestrator.config` prompt, only when its `[prompt]` stanza is byte-equal to the one the
+previous release shipped; an owner-edited prompt stays exactly as it is.
+
+An abort later than that names the sessions that did move rather than claiming none did.
 
 `ae upgrade` hands the publish to the DOWNLOADED core, as the `install` bootstrap already
 does. The steps for versions N..M belong to the core being installed; a publish run in-process

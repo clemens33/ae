@@ -50,10 +50,7 @@ use crate::{archive, lifecycle};
 pub const USAGE: &str = "Usage: relay <session[:agent]> (--owner-input <ask-id> | --quote <words> [--said <time>] | --interim-ruling) --task <text> [--context <text>]\n       relay --status <request-id>\n";
 
 /// The header line of the TASK section every relayed turn carries.
-const TASK_HEAD: &str = "TASK (orchestrator's statement; no human authority):";
-
-mod verify;
-pub use verify::run as verify;
+pub(crate) const TASK_HEAD: &str = "TASK (orchestrator's statement; no human authority):";
 
 /// The flag that reads a relay back instead of sending one.
 const STATUS_FLAG: &str = "--status";
@@ -258,8 +255,27 @@ struct Caller {
     slot: String,
 }
 
+/// Why the seat file of state root `root` teaches a relay form this core
+/// refuses, or `None`: its `[prompt]` carries no [`SEAT_PROMPT_MARKER`]. A seat
+/// file that cannot be read gives no such evidence, and the running seat
+/// carries the prompt it launched with. The refusal is made before anything is
+/// claimed, and names the copy step.
+///
+/// [`SEAT_PROMPT_MARKER`]: crate::config::SEAT_PROMPT_MARKER
+fn stale_prompt(root: &Path) -> Option<String> {
+    let path = root.join(meta::SEAT_CONFIG_FILE);
+    let text = crate::config::read_selected(&path).ok()?;
+    (!crate::config::seat_prompt_is_current(&text)).then(|| {
+        format!(
+            "the seat prompt in {} predates the bound owner words: copy the current [prompt] \
+             stanza of the seat template into that file, keeping your edits, and restart the seat",
+            path.display()
+        )
+    })
+}
+
 /// The caller and what its meta grants it: whether it is the dispatcher
-/// ([`crate::orchestrator::dispatcher_proof`], with the pane it stands in), the
+/// ([`crate::meta::dispatcher_proof`], with the pane it stands in), the
 /// canonical `session_id` and the seat's `launch_id`, each empty when absent.
 /// Proved before the claim and proved equal again under the target's locks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,7 +305,7 @@ impl Grant {
             .to_owned();
         let root = caller.dir.parent().and_then(Path::parent);
         let dispatcher = match root {
-            Some(root) => crate::orchestrator::dispatcher_proof(
+            Some(root) => crate::meta::dispatcher_proof(
                 &bytes,
                 root,
                 &caller.slot,
@@ -550,11 +566,11 @@ fn echoed_nonce(summary: &str) -> Option<&str> {
 /// The human-opened ask a bound relay cites, read whole from the dispatcher's
 /// own ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct OwnerAsk {
+pub(crate) struct OwnerAsk {
     /// When the owner said it: the ask's own timestamp.
-    said: Timestamp,
+    pub(crate) said: Timestamp,
     /// The words, byte for byte as the chat stored them.
-    text: String,
+    pub(crate) text: String,
 }
 
 /// The one human-opened ask `id` of the session at `dir` whose `session_id` is
@@ -568,7 +584,12 @@ struct OwnerAsk {
 /// # Errors
 ///
 /// Why the id is no owner input of that session.
-fn source_ask(dir: &Path, events: &[Event], id: &str, uuid: &str) -> Result<OwnerAsk, String> {
+pub(crate) fn source_ask(
+    dir: &Path,
+    events: &[Event],
+    id: &str,
+    uuid: &str,
+) -> Result<OwnerAsk, String> {
     let mut openings = events.iter().filter(|event| {
         event.action == Kind::Ask.action() && event.reference.as_deref() == Some(id)
     });
@@ -612,7 +633,7 @@ fn owner_ask(grant: &Grant, id: &str) -> Result<OwnerAsk, String> {
 /// `text` as its logical lines, each with the separator that ends it (`\n`,
 /// `\r\n` or a lone `\r`; the last line's is empty). Joining every line and its
 /// separator gives `text` back byte for byte.
-fn logical_lines(text: &str) -> Vec<(&str, &str)> {
+pub(crate) fn logical_lines(text: &str) -> Vec<(&str, &str)> {
     let bytes = text.as_bytes();
     let mut lines = Vec::new();
     let (mut start, mut at) = (0, 0);
@@ -647,7 +668,7 @@ fn quoted(text: &str) -> String {
 
 /// Every section of the relayed turn, rendered by ae alone: the owner section
 /// its mode names, TASK, and CONTEXT when the orchestrator gave notes.
-fn sections(parsed: &Parsed, owner: Option<&OwnerAsk>) -> String {
+pub(crate) fn sections(parsed: &Parsed, owner: Option<&OwnerAsk>) -> String {
     let said =
         |time: Option<Timestamp>| time.map_or_else(|| "unknown".to_owned(), |t| t.to_string());
     let head = match (&parsed.owner, owner) {
@@ -704,6 +725,11 @@ fn prepare(
 ) -> Result<Prepared, String> {
     if let Err(why) = grant.dispatcher {
         return Err(why.to_owned());
+    }
+    if let Some(root) = grant.caller.dir.parent().and_then(Path::parent)
+        && let Some(why) = stale_prompt(root)
+    {
+        return Err(why);
     }
     if grant.session_id.is_empty() {
         return Err("caller session records no usable session id".to_owned());

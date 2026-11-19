@@ -585,7 +585,7 @@ pub(crate) fn identity_config(
     let orchestrator_seat = local.as_deref().is_some_and(|path| {
         dir.parent()
             .and_then(Path::parent)
-            .is_some_and(|home| crate::orchestrator::is_seat_overlay(path, home))
+            .is_some_and(|home| crate::meta::is_seat_overlay(path, home))
     });
     crate::config::read_identity(
         (!global.is_empty()).then(|| Path::new(&global)),

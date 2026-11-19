@@ -3422,8 +3422,30 @@ fn outbound_of(request: &cli::Request) -> Option<Outbound> {
 /// session that only claims the role, and an unobserved or foreign caller go
 /// on. `Some(code)` means the refusal is said and nothing was changed.
 fn refuse_dispatcher(what: Outbound, err: &mut impl Write) -> Result<Option<u8>> {
-    let (CallerRead::Read((viewer, server)), Some(root)) = (observe_calling_pane(), state_root())
-    else {
+    refuse_dispatcher_seen(what, observe_calling_pane(), state_root(), err)
+}
+
+/// [`refuse_dispatcher`] on an observation already taken. OUTSIDE (no tmux
+/// markers: a binding, a popup, a plain shell) goes on, as does a positively
+/// observed pane that is no seat's. An UNREAD pane is no observation at all:
+/// it takes the typed refusal [`CallerRead::require`] says, before any writer
+/// below runs, so a failed read can never pass as the human.
+fn refuse_dispatcher_seen(
+    what: Outbound,
+    seen: CallerRead<(tmux::ObservedViewer, inventory::ServerId)>,
+    root: Option<std::path::PathBuf>,
+    err: &mut impl Write,
+) -> Result<Option<u8>> {
+    let (viewer, server) = match seen.require() {
+        Ok(Some(seen)) => seen,
+        Ok(None) => return Ok(None),
+        Err(why) => {
+            writeln!(err, "{why}")?;
+            err.flush()?;
+            return Ok(Some(entry::EXIT_USAGE));
+        }
+    };
+    let Some(root) = root else {
         return Ok(None);
     };
     let (Some(session), Some(_slot)) = (viewer.session.as_deref(), viewer.slot.as_deref()) else {
@@ -3436,7 +3458,7 @@ fn refuse_dispatcher(what: Outbound, err: &mut impl Write) -> Result<Option<u8>>
     let Ok((_, bytes)) = relay::physical_session(&seat, &viewer, &server) else {
         return Ok(None);
     };
-    if !settings_menu::is_seat(&bytes, &root) {
+    if !meta::is_seat(&bytes, &root) {
         return Ok(None);
     }
     let said = match what {
@@ -3971,7 +3993,7 @@ pub fn run_with(
             err.write_all(&rendered.stderr)?;
             rendered.code
         }
-        cli::Request::RequestsVerify { dir, id } => relay::verify(dir, id, out)?,
+        cli::Request::RequestsVerify { dir, id } => console::relay_verify::run(dir, id, out)?,
         // NEVER RETURNS.
         cli::Request::EventsTail { dir } => match events_tail::follow(dir, out)? {},
         cli::Request::LaunchPlan { tail } => identity::launch_plan(tail, out, err)?,
@@ -4237,6 +4259,41 @@ mod tests {
         }
         assert_eq!(of(&["list"]), None);
         assert_eq!(of(&["_relay", "/d", "t", "--task", "x"]), None);
+    }
+
+    /// A failed read of the calling pane is no observation: the outbound gate
+    /// refuses it with the typed message and exit code before any writer below
+    /// runs, while OUTSIDE and a positively observed pane with no seat go on.
+    #[test]
+    fn the_outbound_gate_refuses_an_unread_pane_and_admits_outside_and_a_vacant_one() {
+        use super::{CallerRead, Outbound, refuse_dispatcher_seen};
+        let what = Outbound::Verb("stop", "does not stop sessions; ask the human");
+        let root = Some(std::path::PathBuf::from("/state"));
+        let run = |seen| {
+            let mut said = Vec::new();
+            let code = refuse_dispatcher_seen(what, seen, root.clone(), &mut said);
+            (code.expect("the gate writes to a vector"), said)
+        };
+        let (code, said) = run(CallerRead::Unread);
+        assert_eq!(code, Some(crate::entry::EXIT_USAGE));
+        assert!(
+            String::from_utf8_lossy(&said).contains("could not detect current agent identity"),
+            "{}",
+            String::from_utf8_lossy(&said)
+        );
+        let (code, said) = run(CallerRead::Outside);
+        assert_eq!((code, said.is_empty()), (None, true));
+        for viewer in [
+            crate::tmux::ObservedViewer::default(),
+            crate::tmux::ObservedViewer {
+                session: Some("host".to_owned()),
+                ..crate::tmux::ObservedViewer::default()
+            },
+        ] {
+            let seen = CallerRead::Read((viewer, crate::inventory::ServerId::Ambient));
+            let (code, said) = run(seen);
+            assert_eq!((code, said.is_empty()), (None, true));
+        }
     }
 
     /// The seat-pane test of bare `ae`: only a described, unstamped pane whose

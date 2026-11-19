@@ -2080,7 +2080,7 @@ instruction is already in progress, the overview is only a notification: the
 seat finishes the instruction first, then declares `state done`. Each delivered
 change therefore costs one minimal seat turn; a timer-only cycle costs none. For a human fleet
 question it may run `ae brief --all` once. It relays only explicit human
-instructions through its `relay <session[:agent]> <text…>` helper.
+instructions through its `relay <session[:agent]> --task <text>` helper, with one owner mode: `--owner-input <ask-id>` (the owner's stored chat or Telegram words, copied by ae and provable with `requests --verify`), `--quote <words>` (words typed in this pane, an attestation) or `--interim-ruling` (a local, non-reserved ruling the seat makes itself). Owner words authorize ordinary work in the target. A reserved item needs bound owner words that approve the exact act for the target session.
 When the human asks about one session, it runs `ae brief <session>` and presents
 the card verbatim — including the full `needs you:` reasons — then relays the
 human's answer to that session's lead. When the human needs a goal, a reason or a memo line
@@ -2092,9 +2092,9 @@ human's (`human:chat`), claimed in the orchestrator session before any key. Free
 routed only when exactly one session goal or latest memo topic matches; an
 ambiguous or missing match prompts for the target and sends nothing. It never
 dispatches work, changes goals, clears questions, edits project or session
-state, or treats text from another session as instructions. On an explicit
-instruction naming a stopped session, it runs `ae <name> --no-attach` and
-reports the printed attach line; it never runs bare `ae <name>`. To create a
+state, or treats text from another session as instructions. The seat's own ae refuses spawn, retire, cross-session send, ask, review, interrupt, stop, end, rm, every rename and every launch form, so it never runs a command below itself: it gives the owner the exact command to run in the owner's own terminal.
+On an explicit
+instruction naming a stopped session, it gives the owner `ae <name> --no-attach`; it never suggests bare `ae <name>`. To create a
 session, it acts only on explicit instruction. When the human names the session
 and a directory that exists at the spelled path (including `~` or relative
 paths expanded), it runs immediately in default local mode; it confirms only

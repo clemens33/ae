@@ -19,9 +19,9 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use super::{ATTEMPT, TASK_HEAD, claimed, logical_lines, opening, source_ask};
-use crate::console::{self, lane::Body};
+use super::lane::Body;
 use crate::events::Event;
+use crate::relay::{ATTEMPT, TASK_HEAD, claimed, logical_lines, opening, source_ask};
 use crate::state::EXIT_FAILED;
 use crate::tracked::{self, Kind};
 use crate::{archive, lifecycle, meta, store};
@@ -65,7 +65,7 @@ pub fn run(dir: &Path, id: &str, out: &mut impl Write) -> io::Result<u8> {
 
 /// The journal of the session at `dir`, read strictly and without a lock.
 fn journal(dir: &Path) -> Result<Vec<Event>, String> {
-    console::snapshot(store::read_source(&store::open(dir).events_path()))
+    super::snapshot(store::read_source(&store::open(dir).events_path()))
 }
 
 /// The one ask opening of `id` among `events`.
@@ -121,12 +121,12 @@ fn prove(dir: &Path, id: &str) -> Result<Proof, String> {
     let Some(cited) = ask.owner_input.as_deref().filter(|cited| !cited.is_empty()) else {
         return Err(format!("{id} is a bound relay that cites no ask"));
     };
-    let (copy_id, copy_time, copy_words) = match console::relay_body(dir, ask) {
+    let (copy_id, copy_time, copy_words) = match super::relay_body(dir, ask) {
         Body::Whole(sections) => owner_section(&sections)?,
         gap => {
             return Err(format!(
                 "the relay cannot be read whole ({})",
-                console::lane::body_gap(&gap).unwrap_or_default()
+                super::lane::body_gap(&gap).unwrap_or_default()
             ));
         }
     };
