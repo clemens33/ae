@@ -5,6 +5,7 @@ pub mod error;
 pub mod event_text;
 pub mod json;
 pub mod provenance;
+pub mod redact;
 pub mod sanitize;
 pub mod time;
 pub mod token;

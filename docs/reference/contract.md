@@ -108,7 +108,7 @@ A file may name its own layer and the layers below it. A `crate::` path that nam
 
 - **0 base** — pure values, parsers and vocabularies, the ground every other layer stands on.
   Modules: `json`, `time`, `token`, `event_text`, `attention`, `provenance`, `error`, `words`,
-  `sanitize`.
+  `sanitize`, `redact`.
 - **1 platform doors** — the operating-system boundary: the entry's ambient facts, the one
   child-process exec, the process table, git, the tmux version floor, the network probe. Modules:
   `doors`, `transport`, `procs`, `git`, `shape`, `instance`, `tmux_floor`, `netprobe`.

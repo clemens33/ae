@@ -96,6 +96,7 @@ pub(super) const MODULE_LAYERS: [(usize, &[&str]); 7] = [
             "error",
             "words",
             "sanitize",
+            "redact",
         ],
     ),
     (

@@ -1,0 +1,8 @@
+before
+-----BEGIN PRIVATE KEY-----
+ZHVtbXkta2V5
+-----END PRIVATE KEY-----
+after
+-----BEGIN OPENSSH PRIVATE KEY-----
+ZHVtbXk=
+-----END OPENSSH PRIVATE KEY-----

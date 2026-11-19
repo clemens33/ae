@@ -176,6 +176,7 @@ mod quota_pace_history_spec;
 mod quota_view_spec;
 mod reader;
 mod recovery_ladder_spec;
+mod redact_spec;
 mod refusal_rig;
 mod regsid_spec;
 mod relay_chat_spec;

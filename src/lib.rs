@@ -90,6 +90,7 @@ pub use l0_base::error;
 pub use l0_base::event_text;
 pub use l0_base::json;
 pub use l0_base::provenance;
+pub use l0_base::redact;
 pub use l0_base::sanitize;
 pub use l0_base::time;
 pub use l0_base::token;
