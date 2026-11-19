@@ -890,15 +890,22 @@ fn a_pane_press_tells_a_chat_panel_in_its_lane_and_a_status_column_on_the_hint_r
         },
     );
     let _ = at(160, 45, &mut app);
+    // Outside tmux a press that can be answered without a read hands the
+    // terminal over and says nothing; one the app refuses on its own records
+    // is told: here the orchestrator has no record directory to read.
+    app.dirs.remove(orch);
     press(&mut app, b"oo");
     assert!(app.flash.is_none(), "a chat panel says it in its lane");
+    assert!(app.pane_view.is_none(), "nothing is handed over");
     let said: Vec<_> = (app.notices.iter())
         .filter(|(of, _)| of == orch)
         .map(|(_, item)| item.body.as_str())
         .collect();
     assert_eq!(
         said,
-        ["refused: /open orchestrator: ae app is not running inside tmux; nothing selected"]
+        [
+            "refused: /open orchestrator: orchestrator has no record directory ae can read; nothing selected"
+        ]
     );
 
     let root = Root::new("o7panelstatusline");

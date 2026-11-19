@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 use super::tty::Tty;
 use crate::console::Console;
 use crate::console::needs::SeatRef;
+use crate::console::open::Refusal;
 use crate::console::term::{self, Pause};
 use crate::{tmux, transport};
 
@@ -241,10 +242,78 @@ impl Drop for Handed<'_> {
     }
 }
 
+/// What asked for a pane view, and so which words a refusal says it in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Verb {
+    /// A click on a seat outside tmux: `refused: view <seat>: <why>`.
+    #[default]
+    View,
+    /// `/open`, `o` / `oo` and the orchestrator's `pane` word outside tmux:
+    /// the chat's own refusal lines, `refused: /open <seat>: <why>`.
+    Open,
+}
+
+impl Verb {
+    /// The word a refusal names the ask by.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::View => "view",
+            Self::Open => "/open",
+        }
+    }
+}
+
+/// The longest reason of tmux's own words a failed attach shows on the hint row.
+const REASON_CAP: usize = 100;
+
+/// How the attach tmux was started as ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Ended {
+    /// tmux ended the way a detach or a return key ends it.
+    Returned,
+    /// tmux did not attach, or died while attached: why, in words for the hint row.
+    Failed(String),
+}
+
+/// What an attach that ran says of itself: `None` when tmux did not start.
+/// Only what tmux said or exited with is reported, never a guess at a cause:
+/// a failure with no words is the exit code, nothing more.
+fn classify(end: Option<&transport::ViewEnd>) -> Ended {
+    let Some(end) = end else {
+        return Ended::Failed("tmux did not start".to_owned());
+    };
+    match end.code {
+        Some(0) => Ended::Returned,
+        None => Ended::Failed("tmux was stopped by a signal".to_owned()),
+        Some(code) => Ended::Failed(match said(&end.stderr) {
+            Some(line) => format!("tmux: {line}"),
+            None => format!("tmux ended with {code}"),
+        }),
+    }
+}
+
+/// The first non-blank line tmux wrote, its control bytes shown as `�` and cut
+/// at [`REASON_CAP`] characters (`…` ends a cut one); `None` when it wrote none.
+fn said(stderr: &str) -> Option<String> {
+    let line = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let mut chars = line
+        .chars()
+        .map(|ch| if ch.is_control() { '\u{FFFD}' } else { ch });
+    let head: String = chars.by_ref().take(REASON_CAP).collect();
+    Some(if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    })
+}
+
 /// Show `ask`'s pane, interactive, until the human returns: the line the hint
-/// row says afterwards, refused or closed.
-pub(super) fn run(tty: &Tty, pause: &Pause, ask: &Ask) -> String {
-    match view(tty, pause, ask) {
+/// row says afterwards, refused or closed. `verb` names the ask in a refusal.
+pub(super) fn run(tty: &Tty, pause: &Pause, ask: &Ask, verb: Verb) -> String {
+    match view(tty, pause, ask, verb) {
         Ok(line) | Err(line) => line,
     }
 }
@@ -298,9 +367,16 @@ fn lock(dir: &std::path::Path, session: &str) -> Result<std::fs::File, String> {
     })
 }
 
-fn view(tty: &Tty, pause: &Pause, ask: &Ask) -> Result<String, String> {
+fn view(tty: &Tty, pause: &Pause, ask: &Ask, verb: Verb) -> Result<String, String> {
     let label = &ask.label;
-    let refused = |why: &str| format!("refused: view {label}: {why}");
+    let word = verb.word();
+    let refused = |why: &str| format!("refused: {word} {label}: {why}");
+    // A proof's refusal in the asker's own words: `/open` says it as the chat
+    // does, and the seat click as it always has.
+    let proof = |why: &Refusal| match verb {
+        Verb::Open => why.line(label),
+        Verb::View => refused(&why.why()),
+    };
     let session = &ask.session;
     let _lock = lock(&ask.dir, session).map_err(|why| refused(&why))?;
     let Some(server) = crate::session_launch::recorded_server_resolved(&ask.dir) else {
@@ -309,9 +385,13 @@ fn view(tty: &Tty, pause: &Pause, ask: &Ask) -> Result<String, String> {
         )));
     };
     owned(&server, session).map_err(|why| refused(&why))?;
+    // Before anything is created or handed over: tmux's own words have nowhere
+    // to go without it, and they never go onto the app's terminal.
+    let Some(reason) = transport::reason_file() else {
+        return Err(refused("ae cannot make a scratch file for tmux's words"));
+    };
     let console = Console::bound(session.clone(), ask.dir.clone(), ask.uuid.clone());
-    let target =
-        term::prove_open(&server, &console, &ask.seat).map_err(|why| refused(&why.why()))?;
+    let target = term::prove_open(&server, &console, &ask.seat).map_err(|why| proof(&why))?;
     let id = &target.session_id;
     let unread = |what: &str| refused(&format!("tmux did not answer for {what}"));
     free(&server, id, session).map_err(|why| refused(&why))?;
@@ -339,8 +419,25 @@ fn view(tty: &Tty, pause: &Pause, ask: &Ask) -> Result<String, String> {
     let Some(handed) = Handed::take(tty, pause) else {
         return Err(refused("the app's input did not pause"));
     };
+    // The proof again, as near the attach as the view allows: the view's
+    // landing checks only that the pane is still in the session, so a pane
+    // restamped for another seat since the first proof would still show. The
+    // proof reads the session by name on whatever server it is handed, so the
+    // record is read again first: it must still name the server prepared on.
+    if crate::session_launch::recorded_server_resolved(&ask.dir).as_ref() != Some(&server) {
+        let moved = format!("{session}'s recorded tmux server changed after the proof");
+        return Err(proof(&Refusal::NoSeat(moved)));
+    }
+    match term::prove_open(&server, &console, &ask.seat) {
+        Ok(again) if again == target => {}
+        Ok(_) => {
+            let changed = Refusal::NoSeat("its pane changed after the proof".to_owned());
+            return Err(proof(&changed));
+        }
+        Err(why) => return Err(proof(&why)),
+    }
     let watch = Watch::start(&server, id, &owned.view);
-    let code = transport::view_pane(&server, id, &owned.view, &target.pane, &token);
+    let end = transport::view_pane(&server, id, &owned.view, &target.pane, &token, &reason);
     let ended = watch.finish();
     drop(owned);
     let release = tmux::view_release_command(id, &token);
@@ -353,12 +450,11 @@ fn view(tty: &Tty, pause: &Pause, ask: &Ask) -> Result<String, String> {
     handed
         .finish()
         .map_err(|why| format!("back from {label}, but the terminal: {why}"))?;
-    Ok(match code {
-        _ if ended => format!("back from {label}: {session} ended while viewed"),
-        Some(0) => format!("back from {label}"),
-        Some(code) => format!("back from {label}: tmux ended with {code}"),
-        None => format!("back from {label}: tmux did not start, or was stopped by a signal"),
-    })
+    match (ended, classify(end.as_ref())) {
+        (true, _) => Ok(format!("back from {label}: {session} ended while viewed")),
+        (false, Ended::Returned) => Ok(format!("back from {label}")),
+        (false, Ended::Failed(why)) => Err(refused(&why)),
+    }
 }
 
 /// The one client that pressed `/open` inside tmux, and the app pane it showed.
@@ -470,7 +566,7 @@ mod nativeclean_spec;
 
 #[cfg(test)]
 mod tests {
-    use super::{Marker, owned, verdict};
+    use super::{Ended, Marker, Verb, classify, owned, said, verdict};
 
     #[test]
     fn a_marker_names_a_view_only_while_its_client_is_attached() {
@@ -496,5 +592,69 @@ mod tests {
         );
         let ae = ServerId::Selected(crate::meta::Selector::Name("ae".to_owned()));
         assert_eq!(owned(&ae, "pvdemo"), Ok(()));
+    }
+
+    fn end(code: Option<i32>, stderr: &str) -> crate::transport::ViewEnd {
+        crate::transport::ViewEnd {
+            code,
+            stderr: stderr.to_owned(),
+        }
+    }
+
+    /// An attach that ran is judged by its exit and by what tmux said, never by
+    /// a guess at a cause: an exit of zero is a return whatever it printed, a
+    /// failure names tmux's first words, and a failure that said nothing is the
+    /// code alone.
+    #[test]
+    fn an_attach_is_judged_by_its_exit_and_the_first_words_tmux_said() {
+        let failed = |why: &str| Ended::Failed(why.to_owned());
+        assert_eq!(classify(None), failed("tmux did not start"));
+        assert_eq!(
+            classify(Some(&end(None, ""))),
+            failed("tmux was stopped by a signal")
+        );
+        assert_eq!(
+            classify(Some(&end(Some(0), "a warning\n"))),
+            Ended::Returned
+        );
+        assert_eq!(
+            classify(Some(&end(
+                Some(73),
+                "\n  no server running on /tmp/x  \nlater\n"
+            ))),
+            failed("tmux: no server running on /tmp/x")
+        );
+        assert_eq!(
+            classify(Some(&end(Some(1), " \n\t\n"))),
+            failed("tmux ended with 1")
+        );
+        assert_eq!(
+            classify(Some(&end(Some(2), ""))),
+            failed("tmux ended with 2")
+        );
+    }
+
+    /// What tmux said is one line for the hint row: hostile bytes shown as
+    /// `�`, and at most the cap's characters, an ellipsis ending a cut one.
+    #[test]
+    fn what_tmux_said_is_one_clean_line_cut_at_the_cap() {
+        assert_eq!(said(""), None);
+        assert_eq!(said("  \n\n"), None);
+        assert_eq!(
+            said("a\u{1b}[2Jb\tc\n").as_deref(),
+            Some("a\u{fffd}[2Jb\u{fffd}c")
+        );
+        let exact = "x".repeat(super::REASON_CAP);
+        assert_eq!(said(&exact), Some(exact.clone()));
+        let over = format!("{exact}y");
+        assert_eq!(said(&over), Some(format!("{exact}…")));
+    }
+
+    /// The words a refusal names its ask by: `/open` and the click differ.
+    #[test]
+    fn a_refusal_names_its_ask_by_its_verb() {
+        assert_eq!(Verb::View.word(), "view");
+        assert_eq!(Verb::Open.word(), "/open");
+        assert_eq!(Verb::default(), Verb::View);
     }
 }

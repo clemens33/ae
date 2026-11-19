@@ -680,9 +680,10 @@ fn an_unproven_ask_is_refused_and_writes_nothing() {
 }
 
 /// `/open` in an app with no tmux identity (no `$TMUX`, no `$TMUX_PANE`)
-/// names that and moves nothing, once the home roster is read.
+/// says nothing and queues the hand-over of its terminal to that seat's pane
+/// for the loop, once the home roster is read: nothing is typed or refused.
 #[test]
-fn open_outside_tmux_is_refused_by_name() {
+fn open_outside_tmux_queues_the_terminal_hand_over() {
     let root = Root::new("open");
     let (mut app, _reader) = housed(&root);
     app.fleet = one_row(Some("api"));
@@ -699,10 +700,25 @@ fn open_outside_tmux_is_refused_by_name() {
     for key in [Key::Text(b"/open lead".to_vec()), Key::Enter] {
         assert_eq!(app.compose(key, typed), Some(()));
     }
-    let notice = &app.notices.last().expect("the refusal is said").1.body;
+    assert!(
+        app.notices.is_empty(),
+        "nothing is said yet: {:?}",
+        app.notices
+    );
+    let ask = (app.pane_view.take()).expect("the terminal is handed to the seat's pane");
     assert_eq!(
-        notice,
-        "refused: /open lead: ae app is not running inside tmux; nothing selected"
+        (ask.session.as_str(), ask.uuid.as_str(), ask.label.as_str()),
+        ("api", ID, "lead")
+    );
+    assert_eq!(
+        (ask.seat.slot.as_str(), ask.seat.name.as_str()),
+        ("main", "lead")
+    );
+    assert_eq!(ask.dir, root.0.join("sessions").join("api"));
+    assert_eq!(
+        app.pane_verb,
+        super::paneview::Verb::Open,
+        "its refusals say /open"
     );
 }
 
@@ -824,7 +840,8 @@ fn a_frame_freezes_the_drawn_seats_with_the_roster_it_drew_from() {
 }
 
 /// `o` acts only on the frame the human saw: none, or one of another
-/// session, is refused by name; outside tmux it is refused before any read.
+/// session, is refused by name; outside tmux a frame that drew a seat queues
+/// the hand-over to that seat.
 #[test]
 fn open_acts_only_on_the_frame_that_was_drawn() {
     let root = Root::new("frozen-open");
@@ -844,12 +861,15 @@ fn open_acts_only_on_the_frame_that_was_drawn() {
         said(&app),
         "refused: /open api: the view changed; nothing selected"
     );
-    app.drawn = Some(drawn_rows(&["lead"], "lead"));
+    app.notices.clear();
+    app.drawn = Some(super::Drawn {
+        rows: vec![("lead".to_owned(), Some(seat_ref("main", "lead")))],
+        ..drawn_rows(&[], "lead")
+    });
     app.open_focused();
-    assert_eq!(
-        said(&app),
-        "refused: /open lead: ae app is not running inside tmux; nothing selected"
-    );
+    assert!(app.notices.is_empty(), "queued, so nothing is said yet");
+    let ask = (app.pane_view.take()).expect("the drawn seat is handed the terminal");
+    assert_eq!(ask.label, "lead");
 }
 
 // ---- mutation pins (pins-plan.md). Oracles: the fixture root's own
@@ -1497,16 +1517,25 @@ fn an_armed_open_keeps_the_seat_it_saw() {
     assert_eq!(said(&app), None, "the first press opens nothing");
     app.drawn = Some(frame("colead"));
     app.open_key(t0 + Duration::from_millis(500));
-    let opened = "refused: /open lead: ae app is not running inside tmux; nothing selected";
-    assert_eq!(said(&app).as_deref(), Some(opened), "the captured seat");
+    assert_eq!(said(&app), None, "a queued hand-over says nothing yet");
+    let queued = |app: &mut App| app.pane_view.take().map(|ask| ask.label);
+    assert_eq!(
+        queued(&mut app).as_deref(),
+        Some("lead"),
+        "the captured seat"
+    );
     app.open_key(t0 + Duration::from_secs(9));
     assert_eq!(app.note().as_deref(), Some("o again to open colead"));
     // I1: a refresh that drew no seat still completes the stored arm.
     app.notices.clear();
     app.drawn = None;
     app.open_key(t0 + Duration::from_millis(9500));
-    let colead = "refused: /open colead: ae app is not running inside tmux; nothing selected";
-    assert_eq!(said(&app).as_deref(), Some(colead), "the stored seat");
+    assert_eq!(said(&app), None, "a queued hand-over says nothing yet");
+    assert_eq!(
+        queued(&mut app).as_deref(),
+        Some("colead"),
+        "the stored seat"
+    );
     app.drawn = Some(frame("colead"));
     app.open_key(t0 + Duration::from_secs(9));
     let moved = Fleet {

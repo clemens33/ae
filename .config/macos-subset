@@ -13,6 +13,7 @@ unit
 
 # Integration modules with a boundary site (the classes the guard reports).
 module app_open_live_spec::menu_live  # ProcessTable,TmuxClient
+module app_open_live_spec::outside  # TmuxClient
 module app_resize_spec  # TmuxClient
 module appfanout_spec  # ProcessTable
 module autochoice_spec  # TmuxClient
@@ -61,9 +62,13 @@ helper tests/it/app_open_live_spec.rs::Rig::agents = app_open_live_spec::typing:
 helper tests/it/app_open_live_spec.rs::Rig::app = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question
 helper tests/it/app_open_live_spec.rs::Rig::at = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question
 helper tests/it/app_open_live_spec.rs::Rig::attach = app_open_live_spec::typing::armed_open_does_not_turn_a_later_q_into_quit
+helper tests/it/app_open_live_spec.rs::Rig::compose_open = app_open_live_spec::outside::outside_attach_failure_restores_raw_screen_and_mouse_with_one_reason
+helper tests/it/app_open_live_spec.rs::Rig::composer = app_open_live_spec::outside::outside_attach_failure_restores_raw_screen_and_mouse_with_one_reason
 helper tests/it/app_open_live_spec.rs::Rig::focused = app_open_live_spec::typing::armed_open_does_not_turn_a_later_q_into_quit
 helper tests/it/app_open_live_spec.rs::Rig::foreign = app_open_live_spec::menu_live::home_stop_finishes_after_app_dies_and_leaves_no_supervisor
+helper tests/it/app_open_live_spec.rs::Rig::key = app_open_live_spec::outside::outside_attach_failure_restores_raw_screen_and_mouse_with_one_reason
 helper tests/it/app_open_live_spec.rs::Rig::new = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question
+helper tests/it/app_open_live_spec.rs::Rig::notice = app_open_live_spec::outside::outside_attach_failure_restores_raw_screen_and_mouse_with_one_reason
 helper tests/it/app_open_live_spec.rs::Rig::opened = app_open_live_spec::agents_need_for_spawned_seat_has_the_same_open_action
 helper tests/it/app_open_live_spec.rs::Rig::pane = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question
 helper tests/it/app_open_live_spec.rs::Rig::publish = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question
@@ -71,6 +76,7 @@ helper tests/it/app_open_live_spec.rs::Rig::raw = app_open_live_spec::menu_live:
 helper tests/it/app_open_live_spec.rs::Rig::screen = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question
 helper tests/it/app_open_live_spec.rs::Rig::session = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question
 helper tests/it/app_open_live_spec.rs::Rig::stamp = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question
+helper tests/it/app_open_live_spec.rs::Rig::submit_open = app_open_live_spec::outside::outside_attach_failure_restores_raw_screen_and_mouse_with_one_reason
 helper tests/it/app_open_live_spec.rs::Rig::tmux = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question
 helper tests/it/app_open_live_spec.rs::Rig::viewed = app_open_live_spec::typing::armed_open_does_not_turn_a_later_q_into_quit
 helper tests/it/app_open_live_spec.rs::Rig::wait_screen = app_open_live_spec::menu_live::replacement_client_cannot_answer_old_question

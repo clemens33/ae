@@ -134,7 +134,8 @@ pub fn run(
         }
         if let Some(ask) = app.pane_view.take() {
             app.deferred.clear();
-            let line = paneview::run(&tty, &pause, &ask);
+            let verb = std::mem::take(&mut app.pane_verb);
+            let line = paneview::run(&tty, &pause, &ask, verb);
             app.flash = Some((line, Instant::now()));
             app.resumed_at = Some(Instant::now());
             // A key half decoded before the hand-over is the pane's, not ours.

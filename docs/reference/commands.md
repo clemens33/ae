@@ -49,8 +49,10 @@ ae chat [session] [--follow] [--all]
                        chat asks and replies, live decision cards, and every
                        seat that needs you; /open <seat> selects its pane
 ae app [session]       The fleet as a terminal UI: sessions in a sidebar, the selected
-                       one's Agents, and its chat; typing asks at home. Plain ae opens
-                       it; a hand-typed ae app prints a one-line hint saying so
+                       one's Agents, and its chat; typing asks at home; /open <seat>
+                       opens a seat's pane, outside tmux by handing this terminal
+                       to it. Plain ae opens it; a hand-typed ae app prints a
+                       one-line hint saying so
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup

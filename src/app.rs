@@ -407,6 +407,9 @@ struct App {
     /// A seat the human asked to see interactive, outside tmux: the loop
     /// hands the terminal over once this frame is out.
     pane_view: Option<paneview::Ask>,
+    /// What asked for the queued pane view: the words its refusals say. Set
+    /// only with `pane_view`, by [`App::queue_pane_view`].
+    pane_verb: paneview::Verb,
     /// When a pane view gave the terminal back: reads from before are dropped.
     resumed_at: Option<Instant>,
     /// The settings overlay's bodies, cold until its answers land.
@@ -588,6 +591,7 @@ impl App {
             focused: None,
             deferred: Vec::new(),
             pane_view: None,
+            pane_verb: paneview::Verb::default(),
             resumed_at: None,
             settings_bodies: settings::SettingsBodies::default(),
             quota_at: None,

@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 #[path = "app_menu_live_spec.rs"]
 mod menu_live;
+#[path = "app_open_outside_spec.rs"]
+mod outside;
 #[path = "app_typing_open_spec.rs"]
 mod typing;
 
@@ -186,10 +188,6 @@ impl Rig {
     }
 
     fn app(&self, launch: &Path) -> String {
-        self.app_with_caller(launch, true)
-    }
-
-    fn app_with_caller(&self, launch: &Path, inside_tmux: bool) -> String {
         let root = self.scratch.path().display().to_string();
         let config = self.scratch.join("config").display().to_string();
         let gate = self.gates.display().to_string();
@@ -210,9 +208,6 @@ impl Rig {
             "-u",
             "CODEX_HOME",
         ];
-        if !inside_tmux {
-            command.extend(["-u", "TMUX", "-u", "TMUX_PANE"]);
-        }
         let home_env = format!("HOME={root}");
         let ae_env = format!("AE_HOME={root}");
         let config_env = format!("CONFIG_FILE={config}");
@@ -641,20 +636,6 @@ fn no_app_viewer_refuses_instead_of_moving_a_bystander() {
             .trim(),
         app
     );
-}
-
-#[test]
-fn terminal_without_tmux_identity_refuses_by_name_and_moves_nothing() {
-    let rig = Rig::new("outside");
-    let app = rig.app_with_caller(&rig.socket, false);
-    let viewer = rig.attach(HOME);
-    let before = rig.viewed(&viewer);
-    rig.compose_open(&app, "scout");
-    rig.notice(
-        &app,
-        "refused: /open scout: ae app is not running inside tmux",
-    );
-    rig.unchanged(&[(&viewer, before)]);
 }
 
 #[test]

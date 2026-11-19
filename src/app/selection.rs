@@ -461,12 +461,15 @@ impl App {
 
     /// `/open <seat>` typed in the composer: a seat of the session this app
     /// writes, as the incarnation its entry proved names it.
-    pub(super) fn open_written(&self, seat: &SeatRef) -> String {
+    pub(super) fn open_written(&mut self, seat: &SeatRef) -> Option<String> {
         let Some(writer) = &self.writer else {
-            return "refused: not writing".to_owned();
+            return Some("refused: not writing".to_owned());
         };
-        let console = &writer.console;
-        self.open(console.name(), console.uuid(), Ok(seat), &seat.name)
+        let (name, uuid) = (
+            writer.console.name().to_owned(),
+            writer.console.uuid().to_owned(),
+        );
+        self.open(&name, &uuid, Ok(seat), &seat.name)
     }
 
     /// `o`: the first press arms on the seat the frame highlights and moves
@@ -509,16 +512,68 @@ impl App {
                 let label = drawn.focused.as_deref().unwrap_or(&session);
                 self.open(&session, &drawn.uuid, drawn.seat(), label)
             }
-            _ => Refusal::NoSeat("the view changed".to_owned()).line(&session),
+            _ => Some(Refusal::NoSeat("the view changed".to_owned()).line(&session)),
         };
-        self.notice(&session, line);
+        if let Some(line) = line {
+            self.notice(&session, line);
+        }
         self.show();
     }
 
-    /// Open `seat` of `session`, bound to the incarnation `uuid`: the chat's
-    /// proof, then the one client that pressed the key handed to a clean view
-    /// of the seat's pane. The line to tell, refused or opened.
+    /// Open `seat` of `session`, bound to the incarnation `uuid`. Inside tmux:
+    /// the chat's proof, then the one client that pressed the key handed to a
+    /// clean view of the seat's pane, and the line to tell, refused or opened.
+    /// Outside tmux: this terminal is handed to the seat's pane once the frame
+    /// is out ([`App::open_outside`]), and there is nothing to tell yet.
     pub(super) fn open(
+        &mut self,
+        session: &str,
+        uuid: &str,
+        seat: Result<&SeatRef, Refusal>,
+        label: &str,
+    ) -> Option<String> {
+        if self.server.is_some() {
+            return Some(self.open_in_tmux(session, uuid, seat, label));
+        }
+        self.open_outside(session, uuid, seat, label)
+    }
+
+    /// Outside tmux there is no client to move, so the app's own terminal goes
+    /// to the seat's pane the way a click does ([`paneview`]), with the draft
+    /// and the lane left as they are. What needs no read is refused now, in the
+    /// chat's words; the pane view proves the pane on the session's recorded
+    /// server, under its lock and right before it attaches.
+    fn open_outside(
+        &mut self,
+        session: &str,
+        uuid: &str,
+        seat: Result<&SeatRef, Refusal>,
+        label: &str,
+    ) -> Option<String> {
+        if (self.entry(session)).is_some_and(|entry| entry.status == Status::Stopped) {
+            return Some(Refusal::Stopped(session.to_owned()).line(label));
+        }
+        let Some(dir) = self.dirs.get(session).cloned() else {
+            let why = format!("{session} has no record directory ae can read");
+            return Some(Refusal::NoSeat(why).line(label));
+        };
+        let seat = match seat {
+            Ok(seat) => seat.clone(),
+            Err(why) => return Some(why.line(label)),
+        };
+        let ask = paneview::Ask {
+            session: session.to_owned(),
+            uuid: uuid.to_owned(),
+            dir,
+            seat,
+            label: label.to_owned(),
+        };
+        self.queue_pane_view(ask, paneview::Verb::Open);
+        None
+    }
+
+    /// [`App::open`] inside tmux, where the app's own server and pane are known.
+    fn open_in_tmux(
         &self,
         session: &str,
         uuid: &str,

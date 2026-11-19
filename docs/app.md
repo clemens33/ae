@@ -375,7 +375,10 @@ seat of the selected session, and the orchestrator panel's `pane` word and `oo`
 do the same for the orchestrator ([Orchestrator panel](#orchestrator-panel)).
 It makes the proof `ae chat`'s `/open` makes,
 then moves one tmux client into a view of the seat: nothing is typed into the
-seat and no record is written.
+seat and no record is written. An app that runs outside tmux has no client to
+move: `/open`, `o` / `oo` and the panel's `pane` word hand this terminal to the
+seat's pane instead, as a click on a seat does there ([Working in a
+seat](#working-in-a-seat)).
 
 The highlight is the seat cursor: one `▹` (`-` with `icons = off`) in the first
 column of the seat's row, never a state colour. No seat carries it at first;
@@ -408,8 +411,8 @@ keeps its session, its window and its status line, the seat's session included.
   showing this app were active in the same second`) and move nothing, whether
   the seat is in the app's own session or another. A control-mode client never
   records input, so two of them always tie.
-- No client shows the app (`no tmux client is showing this app`), or the app
-  runs outside tmux (`ae app is not running inside tmux`): refused.
+- No client shows the app (`no tmux client is showing this app`): refused. An
+  app outside tmux needs no client: see [Working in a seat](#working-in-a-seat).
 - One app views a session at a time (`another ae app is viewing <session>`),
   and a session on your own tmux rather than an ae-owned server is refused
   (`pane view needs an ae-owned tmux server; <session> runs on your own tmux`).
@@ -478,8 +481,11 @@ The panel's pane. A panel bound to a running orchestrator draws the word
 `icons` setting. A click on it, or `oo` while the panel holds the keys, opens
 the orchestrator's real pane exactly as `oo` opens a seat ([Opening a
 seat](#opening-a-seat)): the same proof, the same single tmux client moved into
-a clean `_aeview-…` view, nothing typed and no record written. Use it for what
-only the harness's own screen has, such as its native voice input. The first
+a clean `_aeview-…` view, nothing typed and no record written; outside tmux the
+app's terminal goes to the orchestrator's pane on the server its record names,
+and the panel's draft and scroll are as they were on return ([Working in a
+seat](#working-in-a-seat)). Use it for what only the harness's own screen has,
+such as its native voice input. The first
 `o` arms (`o again to open orchestrator`) and the second within 2 seconds
 opens; a click opens at once. Both act on what the panel's last frame
 drew: the incarnation the panel is bound to and the main seat that
@@ -603,23 +609,45 @@ that does not fit the window closes, and the hint row says so.
 
 ## Working in a seat
 
-Outside tmux, a click on a seat hands the app's terminal to that seat's pane:
-the app steps aside and tmux attaches this terminal to the seat's session with
-the seat's pane selected, so you type into the seat, colours and resize
-included, and `^C` reaches the seat's tool. The status line names the way
+Outside tmux, a click on a seat, `/open <seat>`, `o` / `oo` on the highlighted
+seat and the orchestrator panel's `pane` word hand the app's terminal to that
+seat's pane: the app steps aside and tmux attaches this terminal to the seat's
+session with the seat's pane selected, so you type into the seat, colours and
+resize included, and `^C` reaches the seat's tool. The status line names the way
 back: `F12` or `C-]` returns to `ae app` (`prefix d` works too), and the app
-redraws where it was. `v` outside tmux still refuses (`refused: peek …`);
-inside tmux a click keeps opening the read-only peek below.
+redraws where it was, with its draft, its scroll and its selection as they
+were. `v` outside tmux still refuses (`refused: peek …`); inside tmux a click
+keeps opening the read-only peek below and `/open` moves your tmux client
+([Opening a seat](#opening-a-seat)).
 
-The seat is proved as `oo` proves it, and only one app views a session at a
-time: a second one is refused before it attaches (`refused: view <seat>:
-another ae app is viewing <session>`). The return keys act only for the
-terminal the app handed over; anyone else's `F12` or `C-]` reaches their pane
-as before. If the seat's pane cannot be selected once attached, the terminal
-detaches straight back. On return the session's window and pane are put back
-as they were, but only when nobody moved them meanwhile. A refusal says why on
-the hint row (`refused: view <seat>: <why>`), and the return says
-`back from <seat>`.
+The seat is proved as `oo` proves it, on the server the session's record names,
+and only one app views a session at a time: a second one is refused before it
+attaches (`refused: view <seat>: another ae app is viewing <session>`). The
+proof runs again after the app's input is parked and right before tmux
+attaches, and a pane that no longer proves refuses in the first proof's words
+(`its pane carries another agent`), one that proves as another pane or
+incarnation with `its pane changed after the proof`, and a session record that
+now names another tmux server with `<session>'s recorded tmux server changed
+after the proof`. The return
+keys act only for the terminal the app handed over; anyone else's `F12` or
+`C-]` reaches their pane as before. If the seat's pane cannot be selected once
+attached, the terminal detaches straight back. On return the session's window
+and pane are put back as they were, but only when nobody moved them meanwhile.
+
+A refusal says why on the hint row: `refused: view <seat>: <why>` for a click,
+and the chat's own line for `/open`, `o` and `pane` (`refused: /open <seat>:
+<why>; nothing selected` for a failed proof or a stopped session, as inside
+tmux). A session on your own tmux rather than an ae-owned server is refused
+there too (`pane view needs an ae-owned tmux server; <session> runs on your own
+tmux`). When tmux cannot attach, the app comes straight back with the reason
+tmux gave: the first line tmux wrote on stderr, cut at 100 characters
+(`refused: /open <seat>: tmux: no server running on …`), or only the exit code
+when it wrote nothing (`tmux ended with 1`); `tmux did not start` and `tmux was
+stopped by a signal` are said as they are. tmux's words go into a scratch file,
+never onto the terminal; when ae cannot make one the view is refused before the
+terminal moves (`ae cannot make a scratch file for tmux's words`). The terminal is always back in the
+app's raw mode, screen and mouse reporting before that line shows, and the
+return of a view that ran says `back from <seat>`.
 
 ## Peeking at an agent
 

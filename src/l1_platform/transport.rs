@@ -424,6 +424,25 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
             stderr: Vec::new(),
         });
     }
+    if let Streams::TerminalReason { file, cap } = streams {
+        let handle = file.try_clone().ok()?;
+        command.stderr(std::process::Stdio::from(handle));
+        command.env_remove("TMUX").env_remove("TMUX_PANE");
+        let status = command.status().ok()?;
+        // The child wrote through a dup of this handle, so the offset is
+        // shared and sits at the end: rewind, then read AT MOST `cap` bytes.
+        let mut cursor = file;
+        let mut bytes = Vec::new();
+        if std::io::Seek::seek(&mut cursor, std::io::SeekFrom::Start(0)).is_ok() {
+            let mut limited = std::io::Read::take(cursor, cap);
+            let _ = std::io::Read::read_to_end(&mut limited, &mut bytes);
+        }
+        return Some(std::process::Output {
+            status,
+            stdout: Vec::new(),
+            stderr: bytes,
+        });
+    }
     if let Streams::CapturedToFile { file, cap } = streams {
         // A body and a stdout file cannot both own the child's streams.
         if feed.is_some() {
@@ -641,9 +660,10 @@ pub(crate) fn run_clipboard_image() -> Result<Vec<u8>, String> {
 const CLIPBOARD_SCRIPT: &str = "on run argv\ntry\nset imageData to the clipboard as «class PNGf»\non error\nreturn\nend try\nset imageFile to open for access POSIX file (item 1 of argv) with write permission\ntry\nset eof imageFile to 0\nwrite imageData to imageFile\nclose access imageFile\non error\nclose access imageFile\nerror number -1\nend try\nend run";
 
 /// Whether a leg starts `program` as a UTF-8 tmux client: every tmux leg ae
-/// reads, never `Terminal`, whose client draws on the human's own terminal.
+/// reads, never `Terminal` or `TerminalReason`, whose client draws on the
+/// human's own terminal.
 fn declares_utf8(program: &str, streams: Streams<'_>) -> bool {
-    program == PROGRAM && !matches!(streams, Streams::Terminal)
+    program == PROGRAM && !matches!(streams, Streams::Terminal | Streams::TerminalReason { .. })
 }
 
 /// How the door wires a child's streams — and therefore what it can report.
@@ -656,6 +676,13 @@ enum Streams<'a> {
     InheritStderr,
     /// Every stream is ae's own.
     Terminal,
+    /// A client on the human's own terminal that is never nested in the
+    /// caller's tmux: stdin and stdout are ae's own, `TMUX` and `TMUX_PANE`
+    /// are not passed on, and stderr goes into this scratch handle — its owner
+    /// created it exclusively at 0600 — and is read back after the child
+    /// exits, at most `cap` bytes. A file, never a pipe, so a descendant that
+    /// outlives the client cannot hold the read open.
+    TerminalReason { file: &'a std::fs::File, cap: u64 },
     /// Started and NOT waited for.
     Detached,
     /// [`Streams::Detached`], started in this directory and in a process group
@@ -2433,10 +2460,35 @@ pub fn attach(server: &ServerId) -> u8 {
     }
 }
 
+/// How a pane view's attach ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewEnd {
+    /// What tmux exited with; `None` when a signal ended it.
+    pub code: Option<i32>,
+    /// What tmux said on stderr, at most [`VIEW_REASON_CAP`] bytes; empty when
+    /// it said nothing.
+    pub stderr: String,
+}
+
+/// The most stderr a pane view's attach is read for.
+const VIEW_REASON_CAP: u64 = 4096;
+
+/// The scratch file a pane view's attach writes its stderr to: made BEFORE the
+/// terminal is handed over, so a temp directory that cannot hold one refuses
+/// the view while the app still owns the screen. Removed when dropped.
+pub struct ReasonFile(CaptureScratch);
+
+/// A scratch file for one attach, or `None` when none can be made.
+#[must_use]
+pub fn reason_file() -> Option<ReasonFile> {
+    CaptureScratch::tagged("view").map(ReasonFile)
+}
+
 /// Hand this terminal to a tmux client attached to the view session `view`
 /// on `pane` of the proven `session_id`, marked as the view `token` owns, and
-/// report what tmux exited with once the human returns: `None` when it did
-/// not run, or a signal ended it.
+/// report how tmux ended once the human returns: `None` when it did not run.
+/// The client never inherits `TMUX` or `TMUX_PANE`, and what it writes on
+/// stderr goes into `reason`, never onto the terminal.
 #[must_use]
 pub fn view_pane(
     server: &ServerId,
@@ -2444,14 +2496,21 @@ pub fn view_pane(
     view: &str,
     pane: &str,
     token: &str,
-) -> Option<i32> {
+    reason: &ReasonFile,
+) -> Option<ViewEnd> {
     if !addressable(server) {
         return None;
     }
     let args = tmux::view_attach_args(server, session_id, view, pane, token);
-    spawn(PROGRAM, &args, &[], Streams::Terminal, None)?
-        .status
-        .code()
+    let streams = Streams::TerminalReason {
+        file: reason.0.file(),
+        cap: VIEW_REASON_CAP,
+    };
+    let output = spawn(PROGRAM, &args, &[], streams, None)?;
+    Some(ViewEnd {
+        code: output.status.code(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 /// Assert the pane view's return keys on `server`; whether tmux took both.
@@ -3524,9 +3583,13 @@ mod tests {
                 cap: 0,
             },
             Streams::Terminal,
+            Streams::TerminalReason {
+                file: scratch.file(),
+                cap: 0,
+            },
         ];
         for leg in legs {
-            let read_by_ae = !matches!(leg, Streams::Terminal);
+            let read_by_ae = !matches!(leg, Streams::Terminal | Streams::TerminalReason { .. });
             assert_eq!(declares_utf8(PROGRAM, leg), read_by_ae, "tmux on {leg:?}");
             for other in ["git", "ps", "sysctl", "nohup", "opencode", "/s/demo/send"] {
                 assert!(!declares_utf8(other, leg), "{other} on {leg:?}");
@@ -3556,6 +3619,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let stdout = output.expect("the fake tmux ran").stdout;
         assert_eq!(String::from_utf8_lossy(&stdout), "-u\nlist-sessions\n");
+    }
+
+    /// The attach leg of a pane view: tmux's stderr comes back from a scratch
+    /// file, cut at `cap`, with the exit code; no `-u` goes in front of the
+    /// words, and neither `TMUX` nor `TMUX_PANE` reaches the child. A fake
+    /// `tmux` first on the child's PATH reports what it received.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants and removes its own fake tmux"
+    )]
+    fn a_terminal_reason_leg_returns_stderr_and_the_code_and_drops_the_tmux_markers() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("ae-transport-reason-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the scratch dir");
+        let fake = dir.join(PROGRAM);
+        let body = "#!/bin/sh\nprintf '<%s>:<%s>:%s\\n' \"${TMUX+x}\" \"${TMUX_PANE+x}\" \"$1\" >&2\n\
+                    printf 'second line\\n' >&2\nexit 73\n";
+        std::fs::write(&fake, body).expect("the fake tmux");
+        let mode = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&fake, mode).expect("the fake tmux is executable");
+        let path = dir.display().to_string();
+        let envs = [
+            ("PATH", path.as_str()),
+            ("TMUX", "/tmp/not-ours,1,0"),
+            ("TMUX_PANE", "%9"),
+        ];
+        let scratch = CaptureScratch::tagged("reason-test").expect("a scratch file");
+        let leg = |cap| Streams::TerminalReason {
+            file: scratch.file(),
+            cap,
+        };
+        let whole = spawn(PROGRAM, &["attach-session"], &envs, leg(4096), None);
+        let cut = spawn(PROGRAM, &["attach-session"], &envs, leg(4), None);
+        let _ = std::fs::remove_dir_all(&dir);
+        let whole = whole.expect("the fake tmux ran");
+        assert_eq!(whole.status.code(), Some(73), "the exit code comes back");
+        assert_eq!(
+            String::from_utf8_lossy(&whole.stderr),
+            "<>:<>:attach-session\nsecond line\n",
+            "no -u, no TMUX, no TMUX_PANE, and every stderr line"
+        );
+        assert!(whole.stdout.is_empty(), "stdout stays the terminal's");
+        let cut = cut.expect("the fake tmux ran again");
+        assert_eq!(
+            String::from_utf8_lossy(&cut.stderr),
+            "<>:<",
+            "at most cap bytes, from the start of the file"
+        );
     }
 
     /// The scrub list is the literal `git rev-parse --local-env-vars` set —

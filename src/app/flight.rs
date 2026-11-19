@@ -299,7 +299,10 @@ impl App {
                     continue;
                 }
                 Effect::Close(id) => self.close(id.as_deref()),
-                Effect::Open(seat) => self.open_written(&seat),
+                Effect::Open(seat) => match self.open_written(&seat) {
+                    Some(line) => line,
+                    None => continue,
+                },
                 Effect::Shell { raw, line } => {
                     let lost = Cell::default();
                     match self.owns(&lost) {

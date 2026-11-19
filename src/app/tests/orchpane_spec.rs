@@ -17,13 +17,17 @@ const ORCH: &str = "orchestrator";
 const OLD: &str = "0199c0de-2222-4890-abcd-ef0123456789";
 const NEW: &str = "0199c0de-3333-4890-abcd-ef0123456789";
 const ARM: &str = "o again to open orchestrator";
-const OUTSIDE: &str =
-    "refused: /open orchestrator: ae app is not running inside tmux; nothing selected";
 const NO_VIEWER: &str =
     "refused: /open orchestrator: no tmux client is showing this app; nothing selected";
 const REPLACED: &str = "refused: /open orchestrator: this session was replaced; nothing selected";
 const ROSTER_CHANGED: &str =
     "refused: /open orchestrator: the roster no longer seats it in that slot; nothing selected";
+
+/// Whether the orchestrator's pane was asked the terminal of an app outside
+/// tmux: the loop's queued ask, which the pane view proves and attaches.
+fn handed(app: &mut App) -> bool {
+    (app.pane_view.take()).is_some_and(|ask| ask.session == ORCH && ask.label == ORCH)
+}
 
 fn press(app: &mut App, key: Key, when: Instant) {
     assert!(
@@ -62,7 +66,7 @@ fn main_roster(app: &mut App, uuid: &str, seq: u64, name: &str) {
 }
 
 #[test]
-fn the_panel_header_pane_click_uses_the_seat_open_refusal() {
+fn the_panel_header_pane_click_hands_the_terminal_over_outside_tmux() {
     for (full, icons) in [(false, false), (true, false), (false, true)] {
         let root = Root::new("orchpane-click");
         let (mut app, _reader) = orchestrated(&root, full);
@@ -99,7 +103,8 @@ fn the_panel_header_pane_click_uses_the_seat_open_refusal() {
         // The mouse still reaches the panel while the main column has keys.
         app.focus_column(false);
         press(&mut app, Key::Mouse(target), Instant::now());
-        assert!(lines(&app).iter().any(|line| line == OUTSIDE));
+        assert!(handed(&mut app), "the press queues the orchestrator's pane");
+        assert!(!lines(&app).iter().any(|line| line.starts_with("refused:")));
         assert_eq!(app.model.selected(), Some("api"));
         let after = frame(160, 45, &mut app);
         let shown = text(&after);
@@ -122,7 +127,10 @@ fn a_focused_panel_opens_only_after_the_second_o_within_two_seconds() {
     assert_eq!(app.note().as_deref(), Some(ARM), "a late press rearms");
     assert!(!lines(&app).iter().any(|line| line.starts_with("refused:")));
     keys(&mut app, b"o", late + Duration::from_millis(1_999));
-    assert!(lines(&app).iter().any(|line| line == OUTSIDE));
+    assert!(
+        handed(&mut app),
+        "the second o queues the orchestrator's pane"
+    );
     assert_ne!(app.note().as_deref(), Some(ARM));
 }
 

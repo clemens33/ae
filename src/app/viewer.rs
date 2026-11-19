@@ -244,13 +244,22 @@ impl App {
         if self.model.reader_open() {
             self.close_reader();
         }
-        self.pane_view = Some(paneview::Ask {
+        let ask = paneview::Ask {
             session,
             uuid: drawn.uuid.clone(),
             dir,
             seat,
             label,
-        });
+        };
+        self.queue_pane_view(ask, paneview::Verb::View);
+    }
+
+    /// Queue `ask` for the loop to hand the terminal over once the frame is
+    /// out, its refusals worded by `verb`. The one place that sets both, so a
+    /// queued ask never carries another ask's words.
+    pub(super) fn queue_pane_view(&mut self, ask: paneview::Ask, verb: paneview::Verb) {
+        self.pane_view = Some(ask);
+        self.pane_verb = verb;
     }
 
     /// What `session`'s drawn seat asks the reader to capture, or why the

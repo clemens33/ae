@@ -40,7 +40,9 @@ pub enum Refusal {
     Dead,
     /// The server does not list the pane in the session.
     NotMember,
-    /// `ae app` runs outside tmux, so no client shows it.
+    /// `ae app` knows no tmux server or pane of its own, so what needs one of
+    /// its clients cannot start; `/open` outside tmux hands the terminal over
+    /// instead and never says this.
     NoTmux,
     /// No tmux client has the app's pane as its active pane.
     NoViewer,

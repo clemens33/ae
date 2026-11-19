@@ -685,10 +685,13 @@ impl App {
     fn pane_open(&mut self, drawn: &Drawn) {
         let label = drawn.focused.as_deref().unwrap_or(ORCH);
         let line = match self.pane_refusal() {
-            Some(why) => why.line(label),
+            Some(why) => Some(why.line(label)),
             None => self.open(ORCH, &drawn.uuid, drawn.seat(), label),
         };
-        self.pane_said(line);
+        match line {
+            Some(line) => self.pane_said(line),
+            None => self.show(),
+        }
     }
 
     /// Tell the outcome of a pane press: in the panel's lane while the panel
