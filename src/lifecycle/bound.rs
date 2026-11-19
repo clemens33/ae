@@ -21,7 +21,9 @@
 //! 6. after the release, still under the lifecycle lock: the migration note
 //!    and the model publication from step 3.
 //!
-//! A refusal before step 5 writes nothing. A declaration either precedes the
+//! A target proven already stopped crosses the same guard in step 4 before
+//! its receipt is appended through the held lock. A refusal before step 5
+//! writes nothing. A declaration either precedes the
 //! read in step 4 and is judged there, or waits on the held lock until the
 //! kill is done. This process never holds the event lock and the meta lock
 //! together, so it keeps the meta-then-events order of every other writer.
@@ -31,8 +33,8 @@ use std::path::Path;
 
 use super::{
     ALREADY_STOPPED_SUMMARY, CallerGap, STOP_REQUEST_ACTION, STOP_RESULT_ACTION, StopOutcome,
-    caller_resolution, capture_models, emit_stop_event, kill_under_lock, lifecycle_event_line,
-    lock, name_is_usable, publish_models, server_of, sessions_dir, stop_summary,
+    caller_resolution, capture_models, kill_under_lock, lifecycle_event_line, lock,
+    name_is_usable, publish_models, server_of, sessions_dir, stop_summary,
 };
 use crate::doors::CallerServer;
 use crate::inventory::ServerId;
@@ -91,13 +93,7 @@ pub(super) fn run(
     let dir = sessions_dir(root).join(name);
     let (server, id) = match prove(&dir, name, uuid) {
         Proof::Proven { server, id } => (server, id),
-        Proof::Absent => {
-            // Proven this uuid's directory and proven gone: the durable
-            // result belongs in it, as for a confirmed stop.
-            emit_stop_event(&dir, name, STOP_RESULT_ACTION, ALREADY_STOPPED_SUMMARY);
-            writeln!(err, "Session '{name}' is not running.")?;
-            return Ok(EXIT_FAILED);
-        }
+        Proof::Absent => return already_stopped(&dir, name, err),
         Proof::Refused(line) => {
             writeln!(err, "Error: {line}. Nothing was stopped.")?;
             return Ok(EXIT_FAILED);
@@ -151,6 +147,31 @@ pub(super) fn run(
         warn_model(err, name, &gap)?;
     }
     Ok(code)
+}
+
+/// A proven, already stopped target: the same declaration guard as a kill,
+/// then the durable receipt through the held lock. A seat a plain stop left
+/// working, or a journal ae cannot read, refuses and writes nothing.
+fn already_stopped(dir: &Path, name: &str, err: &mut impl Write) -> io::Result<u8> {
+    let hold = match crate::store::open(dir).hold_events() {
+        Ok(hold) => hold,
+        Err(why) => {
+            writeln!(err, "Error: {why}. Nothing was stopped.")?;
+            return Ok(EXIT_FAILED);
+        }
+    };
+    if let Err(line) = seats_idle(dir, name, &hold) {
+        writeln!(err, "Error: {line}. Nothing was stopped.")?;
+        return Ok(EXIT_FAILED);
+    }
+    let _ = hold.append_event(&lifecycle_event_line(
+        name,
+        STOP_RESULT_ACTION,
+        ALREADY_STOPPED_SUMMARY,
+    ));
+    drop(hold);
+    writeln!(err, "Session '{name}' is not running.")?;
+    Ok(EXIT_FAILED)
 }
 
 /// The one warning shape of a model observation the stop could not make.

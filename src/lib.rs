@@ -1708,9 +1708,7 @@ fn run_entry(
             // The one launch the dispatcher may run: the bound resume of a
             // stopped session other than the seat, which the launch owner
             // proves under the target's lifecycle lock.
-            if user.first().map(String::as_str) != Some(orchestrator::ORCHESTRATOR_SESSION)
-                && session_launch::is_bound_resume(&user)
-            {
+            if session_launch::is_bound_resume(&user) {
                 return run_launch_as(preamble, &user, false, None, Gate::Bound, out, err);
             }
             let launch = Outbound::Verb("launch", "does not start sessions; ask the human");

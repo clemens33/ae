@@ -91,11 +91,17 @@ impl Plan {
 }
 
 /// Whether `user` is EXACTLY `<name> --resume --no-attach --expect-uuid
-/// <uuid>`, each word once, in any order: the launch the entry admits for
-/// every caller, the orchestrator seat included.
+/// <uuid>`, each word once, in any order, for a session other than the
+/// orchestrator seat: the launch the entry admits for every caller, the seat
+/// included. The seat's own name is judged on the parsed name, so no word
+/// order reaches the seat's special launch through it.
 #[must_use]
 pub fn is_bound_resume(user: &[String]) -> bool {
-    user.len() == 5 && parse_plan(user).is_ok_and(|plan| plan.is_bound_shape())
+    user.len() == 5
+        && parse_plan(user).is_ok_and(|plan| {
+            plan.is_bound_shape()
+                && plan.name.as_deref() != Some(crate::orchestrator::ORCHESTRATOR_SESSION)
+        })
 }
 
 /// Parse the user's launch argv.

@@ -219,13 +219,16 @@ fn bound_resume_refusal(dir: &Path, session: &str, uuid: &str) -> Option<String>
     }
     match resume_absence(&server.server, session, dir).0 {
         tmux::StopProbe::Absent => None,
-        tmux::StopProbe::Present => Some(format!(
-            "'{session}' is running; a bound resume only starts a stopped session"
-        )),
+        tmux::StopProbe::Present => Some(bound_running(session)),
         tmux::StopProbe::Unknown => Some(format!(
             "ae cannot prove '{session}' is stopped on its recorded tmux server"
         )),
     }
+}
+
+/// The bound resume's refusal of a running target.
+fn bound_running(session: &str) -> String {
+    format!("'{session}' is running; a bound resume only starts a stopped session")
 }
 
 /// Whether a launch brings its own proof of an existing record: the picker or
@@ -472,7 +475,15 @@ pub(super) fn resolve_server(
         return Ok(ControlFlow::Break(EXIT_FAILED));
     };
     let (probe, why) = resume_absence(&recorded.server, session, dir);
-    match placement(&probe, placing.in_place, recorded.legacy) {
+    let placed = placement(&probe, placing.in_place, recorded.legacy);
+    // The bound resume proved its target stopped under this lock; a session
+    // that appears since is refused here, before any adoption, seed,
+    // migration or restamp could act on it.
+    if plan.expect_uuid.is_some() && matches!(placed, Placement::Running) {
+        writeln!(err, "Error: {}. Nothing was resumed.", bound_running(session))?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    match placed {
         Placement::Running if recorded.legacy => {
             let backfilled = match adopt_legacy_session(
                 &recorded.server,
