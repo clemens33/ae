@@ -1,3 +1,5 @@
+//! Review guards for panel handover freshness, identity, and scroll bounds.
+
 use super::*;
 use crate::app::{handover, panel::Opening};
 
@@ -18,8 +20,14 @@ fn kept(root: &Root) -> (Reader, handover::Handover) {
     (reader, written)
 }
 
-fn staged(root: &Root, home: Option<&str>) -> (App, i64) {
-    let (reader, carried) = kept(root);
+fn staged(root: &Root, home: Option<&str>, scroll_pages: usize) -> (App, i64) {
+    let (reader, mut carried) = kept(root);
+    carried
+        .view
+        .orchestrator
+        .as_mut()
+        .expect("open panel")
+        .pages = scroll_pages;
     let mut app = app(home);
     let at = carried.at;
     app.answer(Answer::Handover {
@@ -34,7 +42,7 @@ fn staged(root: &Root, home: Option<&str>) -> (App, i64) {
 #[test]
 fn a_fresh_view_expires_while_waiting_for_orchestrator_proof() {
     let root = Root::new("f12-late-proof");
-    let (mut app, at) = staged(&root, Some("api"));
+    let (mut app, at) = staged(&root, Some("api"), 0);
     app.proved(
         loader::Proof::Proven(OID.to_owned()),
         at + handover::MAX_AGE_SECS + 1,
@@ -48,7 +56,7 @@ fn a_fresh_view_expires_while_waiting_for_orchestrator_proof() {
 #[test]
 fn a_key_before_the_proof_cancels_the_carried_opening() {
     let root = Root::new("f12-key-before-proof");
-    let (mut app, at) = staged(&root, Some("api"));
+    let (mut app, at) = staged(&root, Some("api"), 0);
     assert!(take_keys(&mut app, vec![(Key::Escape, Instant::now())]).is_some());
     app.proved(loader::Proof::Proven(OID.to_owned()), at);
     assert!(app.orch.panel.is_none(), "an arrival cannot overtake a key");
@@ -57,7 +65,7 @@ fn a_key_before_the_proof_cancels_the_carried_opening() {
 #[test]
 fn the_orchestrator_home_opens_full_when_its_carried_incarnation_is_gone() {
     let root = Root::new("f12-orch-home");
-    let (mut app, at) = staged(&root, Some(ORCH));
+    let (mut app, at) = staged(&root, Some(ORCH), 0);
     app.proved(loader::Proof::Proven(REPLACEMENT.to_owned()), at);
     let home = app.orch.panel.as_ref().expect("the usual home opens");
     assert!(home.full && app.panel_focused());
@@ -85,4 +93,22 @@ fn a_v2_option_does_not_open_a_legacy_handed_panel_on_a_non_row() {
         app.orch.panel.is_none(),
         "the role holder is not an adoptable row"
     );
+}
+
+#[test]
+fn the_carried_scroll_is_bounded_after_the_panel_load_finishes() {
+    let root = Root::new("f12-scroll-bound");
+    // This proof has no readable transcript, so there is no scrollable
+    // content once the panel draws its completed view.
+    let (mut app, at) = staged(&root, Some("api"), 2);
+    app.proved(loader::Proof::Proven(OID.to_owned()), at);
+    let pages = |app: &App| {
+        app.handover("%1", crate::VERSION, at)
+            .and_then(|handover| handover.view.orchestrator)
+            .expect("open panel")
+            .pages
+    };
+    assert_eq!(pages(&app), 2, "the restored position awaits its frame");
+    let _ = framed(&mut app);
+    assert_eq!(pages(&app), 0, "the completed view bounds the scroll");
 }
