@@ -1132,17 +1132,17 @@ fn app_draw_home_160x43() {
     assert_eq!(cell_at(&buf, 44, 42).symbol(), "│", "hint stays in chat");
     // Fleet summary; the lone `!` key marker is gone.
     assert!(
-        row_text(&buf, 0).contains("Agents"),
+        row_text(&buf, 0).contains("Agt"),
         "names the live-agent total"
     );
     assert_eq!(cell_at(&buf, 2, 0).fg, hex(palette.dim));
     // Counts keep regular text ink; dim labels sit on the sidebar ground.
     assert!(
-        row_text(&buf, 0).contains("Agents ") && row_text(&buf, 0).contains(" · ● Working "),
+        row_text(&buf, 0).contains("Agt ") && row_text(&buf, 0).contains(" · ● ◉ Wrk "),
         "agents and working are named"
     );
     assert!(
-        row_text(&buf, 0).contains(" · ⚠ Needs you 1"),
+        row_text(&buf, 0).contains(" · ⚠ Need 1"),
         "working and needs-you are named"
     );
     for y in [0, 1] {
