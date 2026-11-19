@@ -658,20 +658,12 @@ fn sections(parsed: &Parsed, owner: Option<&OwnerAsk>) -> String {
 /// # Errors
 ///
 /// The refusal, naming the seat and the remedy.
-fn context_stamp(meta: &[u8], slot: &str) -> Result<(), String> {
-    let row = meta::sole_value(meta, &format!("context.{slot}"));
-    let Some(row) = row else {
-        return Err(format!(
-            "target seat {slot} carries no context stamp; relaunch the target seat"
-        ));
-    };
-    let version = std::str::from_utf8(row)
-        .ok()
-        .and_then(|text| text.parse::<u32>().ok());
-    match version {
-        Some(version) if version >= crate::render::CONTEXT_VERSION => Ok(()),
+pub(crate) fn context_stamp(meta: &[u8], slot: &str) -> Result<(), String> {
+    let parsed = meta::Meta::parse(&String::from_utf8_lossy(meta));
+    match parsed.context_stamp(slot) {
+        meta::ContextStamp::Valid(version) if version >= crate::render::CONTEXT_VERSION => Ok(()),
         _ => Err(format!(
-            "target seat {slot} carries an unusable or older context stamp; relaunch the target seat"
+            "target seat {slot} carries no current context stamp; relaunch the target seat with a fresh conversation"
         )),
     }
 }

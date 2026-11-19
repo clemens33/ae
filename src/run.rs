@@ -83,12 +83,10 @@ pub struct Plan {
     /// whose launch id is a birth id): the birth its start facts staple to.
     /// Never part of `render()`.
     birth: Option<BirthStart>,
-    /// The context version this start delivers to a lead-pair seat: a real
-    /// start records it as `context.<slot>` before the exec, and a relay
-    /// refuses a seat whose row is missing or not a positive number. `None`
-    /// for any other seat, and for an exact resume that keeps its old
-    /// conversation without a new context turn. Never part of `render()`.
-    context_stamp: Option<u32>,
+    /// What this start proves of the relay context turn it hands a lead-pair
+    /// seat: a real start records it as `context.<slot>` before the exec.
+    /// Never part of `render()`.
+    context_stamp: ContextStart,
 }
 
 /// The roster slot prefix of a seat a spawn made.
@@ -898,21 +896,38 @@ fn build_with_snapshot(
         refusal,
         reference,
         birth: BirthStart::of(&seat, slot, mode, meta_session_id(dir)),
-        context_stamp: context_stamp_for(dir, slot, seat.tool, exact),
+        context_stamp: context_start(dir, slot, seat.tool, exact),
     };
     Ok((plan, choice))
 }
 
-/// The context version a start of lead-pair slot `slot` delivers: the seat
-/// gets the relay-aware context turn on every start that sends one, a fresh
-/// conversation or a resume that keeps the turn ([`resume_keeps_context`]).
-/// Any other seat, and a resume that keeps its old conversation without one,
-/// gets none: its row stays as it was.
-fn context_stamp_for(dir: &Path, slot: &str, tool: ToolKind, exact: bool) -> Option<u32> {
-    let bytes = crate::meta::read_bytes(dir).ok()?;
-    (crate::render::seat_role(&bytes, slot) == crate::render::SeatRole::Lead
-        && resume_keeps_context(tool, exact))
-    .then_some(crate::render::CONTEXT_VERSION)
+/// What a start of one seat proves of the relay context turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextStart {
+    /// Not a lead-pair seat, or a tool with no context channel: no claim.
+    Unstamped,
+    /// A lead-pair seat whose exact resume carries no new context turn: the
+    /// retained conversation is not proven to have it, so no stamp is
+    /// recorded and the start says how to get one.
+    Withheld,
+    /// The start sends the context turn; record this version.
+    Stamp(u32),
+}
+
+/// The proof a start of slot `slot` gives. A stamp says the seat's running
+/// conversation was handed the relay context: only a lead-pair seat whose tool
+/// has a context channel, on a start that sends the turn (a fresh conversation
+/// or a resume that keeps it, [`resume_keeps_context`]), earns one.
+fn context_start(dir: &Path, slot: &str, tool: ToolKind, exact: bool) -> ContextStart {
+    let lead = crate::meta::read_bytes(dir)
+        .is_ok_and(|bytes| crate::render::seat_role(&bytes, slot) == crate::render::SeatRole::Lead);
+    if !lead || matches!(tool.adapter().launch.context, ContextChannel::None) {
+        ContextStart::Unstamped
+    } else if resume_keeps_context(tool, exact) {
+        ContextStart::Stamp(crate::render::CONTEXT_VERSION)
+    } else {
+        ContextStart::Withheld
+    }
 }
 
 /// The relay gate reads `context.<slot>`: written before the exec, so a seat
@@ -924,8 +939,17 @@ fn record_context_stamp(
     plan: &Plan,
     err: &mut impl Write,
 ) -> std::io::Result<()> {
-    let Some(version) = plan.context_stamp else {
-        return Ok(());
+    let version = match plan.context_stamp {
+        ContextStart::Unstamped => return Ok(()),
+        ContextStart::Withheld => {
+            writeln!(
+                err,
+                "ae: seat {slot}: this resume carries no new context turn, so no relay stamp is recorded; relaunch the seat with a fresh conversation to accept orchestrator relays"
+            )?;
+            err.flush()?;
+            return Ok(());
+        }
+        ContextStart::Stamp(version) => version,
     };
     if let Err(why) = crate::meta::record_context(dir, slot, version) {
         writeln!(
@@ -3136,7 +3160,7 @@ mod tests {
             refusal: None,
             reference: None,
             birth: None,
-            context_stamp: None,
+            context_stamp: ContextStart::Unstamped,
         };
         let line = plan.render();
         assert!(!line.contains('\n'), "{line}");
@@ -3292,7 +3316,7 @@ mod tests {
             refusal: None,
             reference: None,
             birth: None,
-            context_stamp: None,
+            context_stamp: ContextStart::Unstamped,
         };
         assert!(
             plan.render().contains(r#""env_clear":true"#),
@@ -3343,7 +3367,7 @@ mod tests {
             refusal: None,
             reference: None,
             birth: None,
-            context_stamp: None,
+            context_stamp: ContextStart::Unstamped,
         };
         // A guard that no longer holds is the failure: said, journaled ONCE,
         // and Ok, so `run` goes on to exec the plan it built.

@@ -131,6 +131,19 @@ const STARTED_KEY: &str = "started";
 pub(crate) const LAUNCH_SETTLED_KEY: &str = "launch_settled";
 const LAUNCH_TIME_PREFIX: &str = "launch_time.";
 const LAUNCH_ID_PREFIX: &str = "launch_id.";
+/// `context.<slot>` — the context version a start handed that seat.
+const CONTEXT_PREFIX: &str = "context.";
+
+/// A seat's `context.<slot>` row as [`Meta::context_stamp`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextStamp {
+    /// The seat has no such row, or is no roster slot.
+    Absent,
+    /// The one row is a positive number: the context version of the start.
+    Valid(u32),
+    /// The row is repeated, empty, zero, not a plain number or past `u32`.
+    Invalid,
+}
 
 /// One agent, as the roster records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -468,6 +481,9 @@ pub struct Meta {
     /// Per-seat legacy launch times, retained for the started fallback.
     launch_times: Vec<(String, String)>,
     launch_ids: Vec<(String, String)>,
+    /// `context.<slot>` rows, RAW; a repeated key leaves an empty value, which
+    /// [`Meta::context_stamp`] reads as invalid.
+    context_stamps: Vec<(String, String)>,
     /// `observed_model.<slot>` rows, kept RAW until the accessor validates.
     observed_models: Vec<(String, String)>,
     /// `observed_model_pin.<slot>` rows, same rule.
@@ -662,6 +678,12 @@ impl Meta {
                     self.launch_times.retain(|(recorded, _)| recorded != key);
                 } else if key.strip_prefix(LAUNCH_ID_PREFIX).is_some() {
                     self.launch_ids.retain(|(recorded, _)| recorded != key);
+                } else if key
+                    .strip_prefix(CONTEXT_PREFIX)
+                    .is_some_and(|slot| !slot.is_empty())
+                {
+                    self.context_stamps.retain(|(recorded, _)| recorded != key);
+                    self.context_stamps.push((key.to_owned(), String::new()));
                 } else if key.strip_prefix(OBSERVED_MODEL_PREFIX).is_some() {
                     self.observed_models.retain(|(recorded, _)| recorded != key);
                 } else if key.strip_prefix(OBSERVED_MODEL_PIN_PREFIX).is_some() {
@@ -746,6 +768,11 @@ impl Meta {
                     .is_some_and(|slot| !slot.is_empty())
                 {
                     self.launch_ids.push((key.to_owned(), value.to_owned()));
+                } else if key
+                    .strip_prefix(CONTEXT_PREFIX)
+                    .is_some_and(|slot| !slot.is_empty())
+                {
+                    self.context_stamps.push((key.to_owned(), value.to_owned()));
                 } else if key
                     .strip_prefix(OBSERVED_MODEL_PREFIX)
                     .is_some_and(|slot| !slot.is_empty())
@@ -1197,6 +1224,27 @@ impl Meta {
     #[must_use]
     pub fn launch_id(&self, slot: &str) -> Option<&str> {
         observed_row(&self.launch_ids, LAUNCH_ID_PREFIX, slot)
+    }
+
+    /// What `context.<slot>` says of the seat in `slot`: the context version its
+    /// last start handed it. Only a roster slot has one, and only one row that
+    /// is a single positive `u32` counts; anything else is [`ContextStamp::Invalid`]
+    /// and no row is [`ContextStamp::Absent`].
+    #[must_use]
+    pub fn context_stamp(&self, slot: &str) -> ContextStamp {
+        if !self.roster.iter().any(|entry| entry.slot == slot) {
+            return ContextStamp::Absent;
+        }
+        let key = format!("{CONTEXT_PREFIX}{slot}");
+        let Some((_, value)) = self.context_stamps.iter().find(|(row, _)| *row == key) else {
+            return ContextStamp::Absent;
+        };
+        match value.parse::<u32>() {
+            Ok(version) if version >= 1 && value.bytes().all(|b| b.is_ascii_digit()) => {
+                ContextStamp::Valid(version)
+            }
+            _ => ContextStamp::Invalid,
+        }
     }
 
     /// The profile's own model flag value, recorded beside the observation.
@@ -3964,6 +4012,54 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn a_context_stamp_is_one_positive_number_on_a_roster_slot() {
+        use super::ContextStamp;
+        let roster = "seat.main=lead\nprofile.main=p\nseat.worker.0=co\nprofile.worker.0=p\n";
+        let stamp =
+            |rows: &str, slot: &str| Meta::parse(&format!("{roster}{rows}")).context_stamp(slot);
+        assert_eq!(stamp("context.main=1\n", "main"), ContextStamp::Valid(1));
+        assert_eq!(stamp("context.main=2\n", "main"), ContextStamp::Valid(2));
+        assert_eq!(stamp("", "main"), ContextStamp::Absent);
+        assert_eq!(stamp("context.main=1\n", "worker.0"), ContextStamp::Absent);
+        for bad in [
+            "0",
+            "",
+            "bogus",
+            "+1",
+            "-1",
+            "1 ",
+            "4294967296",
+            "0x1",
+            "01.0",
+        ] {
+            assert_eq!(
+                stamp(&format!("context.main={bad}\n"), "main"),
+                ContextStamp::Invalid,
+                "{bad:?}"
+            );
+        }
+        // A repeated key says nothing, whatever the repeats agree on.
+        assert_eq!(
+            stamp("context.main=1\ncontext.main=1\n", "main"),
+            ContextStamp::Invalid
+        );
+        assert_eq!(
+            stamp("context.main=1\ncontext.main=1\ncontext.main=1\n", "main"),
+            ContextStamp::Invalid
+        );
+        // A row for no roster slot reads as nothing, and the row is no anomaly.
+        assert_eq!(stamp("context.ghost=1\n", "ghost"), ContextStamp::Absent);
+        assert!(
+            !Meta::parse(&format!("{roster}context.main=1\n"))
+                .anomalies()
+                .iter()
+                .any(
+                    |a| matches!(a, Anomaly::UnknownKey { key, .. } if key.starts_with("context."))
+                )
+        );
+    }
+
     #[test]
     fn both_session_id_readers_take_the_row_the_same_way() {
         let dir = std::env::temp_dir().join(format!("ae-meta-sid-{}", std::process::id()));

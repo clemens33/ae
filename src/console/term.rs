@@ -794,10 +794,12 @@ pub(crate) fn admit_relay(
             return Err("the target session's tmux stamp is not the claimed one".to_owned());
         }
         still(pair, console.seats())?;
-        if !pair.iter().any(|lead| lead.name == seat) {
+        let Some(lead) = pair.iter().find(|lead| lead.name == seat) else {
             return Err(format!("{seat} is no longer a lead-pair seat"));
-        }
-        Ok(())
+        };
+        // The stamp is the seat's own: a start that lost it between the proof
+        // and this lock leaves the same uuid and roster behind.
+        crate::relay::context_stamp(&bytes, &lead.slot)
     };
     submit::admit_relay(
         &mut console.held.borrow_mut(),

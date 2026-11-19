@@ -122,9 +122,23 @@ fn a_bound_relay_whose_stored_outer_envelope_is_not_the_dispatchers_does_not_ver
     );
 
     // The same inner proof under the chat's own envelope, as a recovery copy
-    // of an older core would carry it: the display reads it, verify must not.
-    let legacy = stored.replace("from ae/orchestrator", "from human:chat");
+    // of an older core would carry it: both sender markers, and the REQUEST
+    // delimiter the legacy parser needs (colon and space, not colon and LF).
+    // The display reads it whole; verify must not.
+    let modern = format!("⟦ae:msg from ae/orchestrator⟧\nREQUEST {id} from ae/orchestrator:\n");
+    let chat_head = format!("⟦ae:msg from human:chat⟧\nREQUEST {id} from human:chat: ");
+    let legacy = stored.replacen(&modern, &chat_head, 1);
     assert_ne!(legacy, stored, "the fixture must change the outer envelope");
+    let inner = ae::tracked::uncompose_relay(&stored, &id).expect("the delivered relay frame");
+    assert_eq!(
+        ae::tracked::uncompose_ask(&legacy, &id),
+        Some(inner),
+        "the legacy decoder returns the identical inner bytes"
+    );
+    assert!(
+        ae::tracked::uncompose_relay(&legacy, &id).is_none(),
+        "the relay decoder refuses the chat's envelope"
+    );
     fs::write(&path, &legacy).expect("legacy outer envelope");
     let refused = verify(&r, &id);
     assert_eq!(refused.0, Some(1), "{}", words(&refused));
@@ -134,9 +148,11 @@ fn a_bound_relay_whose_stored_outer_envelope_is_not_the_dispatchers_does_not_ver
         "{}",
         words(&refused)
     );
+    // The owner's quoted words are in the stored body only, never in the
+    // one-line summary the chat falls back to: reading them is reading it whole.
     assert!(
-        r.chat(&r.owner.home).contains(TASK),
-        "the chat still reads the legacy copy"
+        r.chat(&r.owner.home).contains(OWNER),
+        "the chat reads the whole legacy copy"
     );
 
     fs::write(&path, stored).expect("restore");

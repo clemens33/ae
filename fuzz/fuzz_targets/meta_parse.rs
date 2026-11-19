@@ -32,6 +32,9 @@ fuzz_target!(|data: &[u8]| {
         let _ = std::hint::black_box(parsed.observed_record(slot));
         let _ = std::hint::black_box(parsed.launch_baseline(slot));
         let _ = std::hint::black_box(parsed.launch_id(slot));
+        // The relay's compatibility gate reads this one row per roster slot:
+        // repeated, empty, zero, signed, overflowing and unknown-slot rows.
+        let _ = std::hint::black_box(parsed.context_stamp(slot));
         let _ = std::hint::black_box(parsed.effort(slot));
         let _ = std::hint::black_box(parsed.done_confirmations_pin());
         let raw = parsed.harness_session_prior(slot);
