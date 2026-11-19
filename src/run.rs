@@ -582,8 +582,10 @@ fn exec_between_facts(
     err: &mut impl Write,
 ) -> std::io::Result<std::io::Error> {
     record_start(dir, slot, plan, start, FactKind::StartAttempted, err)?;
-    stamp_context(dir, slot, &plan.context_stamp, err)?;
-    let why = exec(plan);
+    let why = match stamp_context(dir, slot, &plan.context_stamp, err)? {
+        Some(refusal) => std::io::Error::other(refusal),
+        None => exec(plan),
+    };
     if plan.mode == Mode::Create {
         let _ = std::fs::remove_file(marker);
     }
@@ -972,26 +974,43 @@ fn stamp_context(
     slot: &str,
     start: &ContextStart,
     err: &mut impl Write,
-) -> std::io::Result<()> {
+) -> std::io::Result<Option<String>> {
     let version = match start.proof {
         ContextProof::Stamp(version) => Some(version),
         ContextProof::Unstamped | ContextProof::Withheld => None,
     };
     if start.launch_id.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let said = match crate::meta::set_context(dir, slot, &start.launch_id, version) {
-        Ok(true) => return Ok(()),
+        Ok(true) => return Ok(None),
         // Clearing a row of a seat this launch no longer owns is nobody's news.
-        Ok(false) if version.is_none() => return Ok(()),
+        Ok(false) if version.is_none() => return Ok(None),
         Ok(false) => "this launch no longer owns the seat".to_owned(),
         Err(why) => why.cause().to_string(),
     };
+    if version.is_none() {
+        // A clear that did not happen leaves whatever the row said: if it
+        // still holds a stamp — or the meta cannot be read to say — a relay
+        // would reach a conversation this start gave no context turn. That
+        // start does not happen; an ordinary start that has no row nonfatally
+        // goes on.
+        let claim = crate::meta::read_bytes(dir).map_or(true, |bytes| {
+            crate::meta::Meta::parse(&String::from_utf8_lossy(&bytes)).context_stamp(slot)
+                != crate::meta::ContextStamp::Absent
+        });
+        if claim {
+            return Ok(Some(format!(
+                "could not clear context.{slot} ({said}); this start sends no context turn, so a relay must not reach it on the old stamp"
+            )));
+        }
+    }
     writeln!(
         err,
         "ae: could not update context.{slot} ({said}) — launching anyway; a relay to this seat refuses until a later start records it"
     )?;
-    err.flush()
+    err.flush()?;
+    Ok(None)
 }
 
 /// What this start says about a saved `OpenCode` variant that shadows the
@@ -3389,7 +3408,9 @@ mod tests {
         };
         let go = |start: ContextStart| {
             let mut err = Vec::new();
-            stamp_context(&dir, "main", &start, &mut err).expect("never in the start's way");
+            let refused =
+                stamp_context(&dir, "main", &start, &mut err).expect("never in the start's way");
+            assert_eq!(refused, None, "a healthy meta never refuses a start");
             String::from_utf8(err).expect("utf-8")
         };
 
@@ -3425,6 +3446,67 @@ mod tests {
         meta("context.main=1\n");
         assert_eq!(go(start("", ContextProof::Unstamped)), "");
         assert_eq!(rows(), ["context.main=1"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture builds and inspects a real session directory"
+    )]
+    fn a_stamp_that_cannot_be_cleared_stops_the_start_and_an_unstamped_seat_goes_on() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("ae-run-context-ro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let base = "schema=2\nsession_id=11111111-1111-4111-8111-111111111111\nseat.main=lead\nprofile.main=base\nagent_bin.main=claude\nlaunch_id.main=L1\n";
+        let start = |proof| ContextStart {
+            launch_id: "L1".to_owned(),
+            proof,
+        };
+        let lock = |mode| {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).expect("mode");
+        };
+        for (rows, stops) in [
+            ("context.main=1\n", true),
+            ("context.main=\n", true),
+            ("", false),
+        ] {
+            std::fs::write(dir.join("meta"), format!("{base}{rows}")).expect("meta");
+            lock(0o555);
+            let mut err = Vec::new();
+            let refusal = stamp_context(&dir, "main", &start(ContextProof::Withheld), &mut err);
+            lock(0o755);
+            let refusal = refusal.expect("said on err, never an io failure");
+            let said = String::from_utf8(err).expect("utf-8");
+            if stops {
+                let why = refusal.unwrap_or_else(|| panic!("{rows:?} went on: {said}"));
+                assert!(why.contains("could not clear context.main"), "{why}");
+                assert!(why.contains("must not reach it"), "{why}");
+                assert_eq!(said, "", "the refusal is the start's own message");
+            } else {
+                assert_eq!(refusal, None, "{said}");
+                assert!(said.contains("launching anyway"), "{said}");
+            }
+            assert!(
+                std::fs::read_to_string(dir.join("meta"))
+                    .expect("meta")
+                    .starts_with(base)
+            );
+        }
+        // A start that DOES hand the context goes on when its write fails: the
+        // gate keeps refusing the seat until a later start records it.
+        std::fs::write(dir.join("meta"), base).expect("meta");
+        lock(0o555);
+        let mut err = Vec::new();
+        let refusal = stamp_context(&dir, "main", &start(ContextProof::Stamp(1)), &mut err);
+        lock(0o755);
+        assert_eq!(refusal.expect("io"), None);
+        assert!(
+            String::from_utf8(err)
+                .expect("utf-8")
+                .contains("launching anyway")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
