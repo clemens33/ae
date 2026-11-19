@@ -623,6 +623,56 @@ mod tests {
         assert_eq!(idle, ["waiting-user", "done"]);
     }
 
+    /// D4 and the provenance ruling: both bound receipts name the target by
+    /// the bound uuid under the existing target keys, and an unproved caller
+    /// names its gap; a proved caller carries no gap.
+    #[test]
+    fn a_bound_receipt_names_the_bound_uuid_and_the_caller_gap() {
+        const UUID: &str = "11111111-2222-4333-8444-555555555555";
+        let field = |line: &str, key: &str| {
+            crate::json::parse(line.trim_end())
+                .ok()
+                .and_then(|value| value.get_str(key).map(ToOwned::to_owned))
+        };
+        let unproved = super::Bound::new(
+            "target",
+            UUID,
+            super::Provenance::unproved(super::UNPROVED_SERVER),
+        )
+        .event_line("stop-request", "bound stop");
+        assert_eq!(field(&unproved, "target_session_id").as_deref(), Some(UUID));
+        assert_eq!(
+            field(&unproved, "target_session_uuid").as_deref(),
+            Some(UUID)
+        );
+        assert_eq!(
+            field(&unproved, "identity_gap").as_deref(),
+            Some(super::UNPROVED_SERVER)
+        );
+        assert_eq!(
+            field(&unproved, "actor").as_deref(),
+            Some(super::PANE_ACTOR)
+        );
+        let proved = super::Bound::new(
+            "target",
+            UUID,
+            super::Provenance {
+                actor: super::PANE_ACTOR,
+                session: "caller".to_owned(),
+                triple: Some(crate::tracked::IdentityTriple {
+                    server: "/private/srv".to_owned(),
+                    pane: "%3".to_owned(),
+                    session_uuid: "11111111-2222-4333-8444-666666666666".to_owned(),
+                }),
+                gap: "",
+            },
+        )
+        .event_line("stop-result", "bound stop");
+        assert_eq!(field(&proved, "target_session_uuid").as_deref(), Some(UUID));
+        assert_eq!(field(&proved, "identity_gap"), None);
+        assert_eq!(field(&proved, "actor_session").as_deref(), Some("caller"));
+    }
+
     #[test]
     fn an_idle_value_is_compared_raw() {
         assert!(super::is_idle(b"done"));
