@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.93] - 2026-11-19
+- Telegram guards: the crate root is read by its full path, so the guard that src/lib.rs hands the role census to the bridge keeps reading src/lib.rs when the telegram modules move into a layer folder
+- Preserve the orchestrator panel across app restarts
+- Test the restored panel scroll bound
+- The secret-shape redactor for ae distill (S0), pure and layer 0
+- Tests for the github and slack prefix heads and a jwt found at any offset
+- Drop the guided compaction dispatch and read the Claude turns the board missed
+- Docs, fuzz: the board's S1 reads and the board_claude oracles
+- Format the board_claude not-JSON filter
+- Tests for the sidebar drag and the routes to a session under a full orchestrator panel
+- A full orchestrator panel keeps the sidebar rule draggable, and every route to a session turns it side
+
 ## [v2026.11.92] - 2026-11-19
 - The model layer (archive, birth, config, conversation, digest, effort_journal, events, filters, goal, harness_state, inventory, launch_cmd, liveness, memo, meta, model_drift, pairs, requests, roster, session_tmux, state, store, theme, tmux, tool, tracked, wait_on, watchdog) moves into src/l2_model; src/lib.rs re-exports each by name, and the sources, tests, docs, justfile and CI comments that name their paths follow
 
