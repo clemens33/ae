@@ -3442,7 +3442,7 @@ fn refuse_dispatcher_seen(
         Err(why) => {
             writeln!(err, "{why}")?;
             err.flush()?;
-            return Ok(Some(entry::EXIT_USAGE));
+            return Ok(Some(entry::EXIT_FAILED));
         }
     };
     let Some(root) = root else {
@@ -4275,7 +4275,7 @@ mod tests {
             (code.expect("the gate writes to a vector"), said)
         };
         let (code, said) = run(CallerRead::Unread);
-        assert_eq!(code, Some(crate::entry::EXIT_USAGE));
+        assert_eq!(code, Some(crate::entry::EXIT_FAILED));
         assert!(
             String::from_utf8_lossy(&said).contains("could not detect current agent identity"),
             "{}",

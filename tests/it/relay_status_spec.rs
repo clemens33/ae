@@ -61,7 +61,7 @@ fn has(out: &Out, expected: &[&str]) {
 
 #[test]
 fn r4_claim_only_crash_gap_is_uncertain_without_invented_pending_or_resend() {
-    let r = Rig::new("o3sclaim");
+    let r = Rig::dispatcher("o3sclaim");
     let id = r.ask("delivered before opening was recorded");
     let emitter: Vec<_> = rows(&r.caller.dir)
         .into_iter()
@@ -83,7 +83,7 @@ fn r4_claim_only_crash_gap_is_uncertain_without_invented_pending_or_resend() {
 
 #[test]
 fn r4_missing_result_remains_uncertain_even_with_a_reply() {
-    let r = Rig::new("o3smissing");
+    let r = Rig::dispatcher("o3smissing");
     let id = r.ask("receipt lost after claim");
     r.reply(&id, "reply does not prove submit verification");
     let emitter: Vec<_> = rows(&r.caller.dir)
@@ -106,7 +106,7 @@ fn r4_missing_result_remains_uncertain_even_with_a_reply() {
 
 #[test]
 fn r5_not_delivered_receipt_status_is_a_successful_read() {
-    let r = Rig::new("o3srefused");
+    let r = Rig::dispatcher("o3srefused");
     let id = r.refused(false);
     let out = read_only(&r, &id);
     assert_eq!(out.0, Some(0));
@@ -115,7 +115,7 @@ fn r5_not_delivered_receipt_status_is_a_successful_read() {
 
 #[test]
 fn r6_r7_local_reply_full_body_and_followups_echo_once_each() {
-    let r = Rig::new("o3sreply");
+    let r = Rig::dispatcher("o3sreply");
     let id = r.ask("please answer here");
     let answer = "reply α line\n".repeat(300) + "FULL-BODY-END";
     r.reply(&id, &answer);
@@ -148,7 +148,7 @@ fn r6_r7_local_reply_full_body_and_followups_echo_once_each() {
 
 #[test]
 fn r6_local_close_and_orchestrator_restart_use_one_target_lifetime() {
-    let r = Rig::new("o3slife");
+    let r = Rig::dispatcher("o3slife");
     let id = r.ask("take this on");
     ae::console::submit::close_owned(&r.owner.tool.dir, &r.owner.home, Some(&id), || Ok(()))
         .expect("owner local close");
@@ -161,7 +161,7 @@ fn r6_local_close_and_orchestrator_restart_use_one_target_lifetime() {
 
 #[test]
 fn r8_foreign_origin_torn_target_and_damaged_result_are_visible_gaps() {
-    let r = Rig::new("o3sgaps");
+    let r = Rig::dispatcher("o3sgaps");
     let id = r.ask("strict evidence only");
     receipt(&read_only(&r, &id), &id, "sent", "pending");
     let original = rows(&r.owner.tool.dir);
@@ -212,7 +212,7 @@ fn r8_foreign_origin_torn_target_and_damaged_result_are_visible_gaps() {
 
 #[test]
 fn r3_r11_status_selects_id_not_equal_body_and_never_redispatches() {
-    let r = Rig::new("o3sids");
+    let r = Rig::dispatcher("o3sids");
     let a = r.ask("identical text");
     let b = r.ask("identical text");
     r.reply(&a, "answer-a-only");
@@ -232,7 +232,7 @@ fn r3_r11_status_selects_id_not_equal_body_and_never_redispatches() {
 
 #[test]
 fn r11_replacement_target_refuses_even_when_old_name_still_exists() {
-    let r = Rig::new("o3sreplace");
+    let r = Rig::dispatcher("o3sreplace");
     let id = r.ask("bound to old target UUID");
     r.owner
         .meta("0199c0de-aaaa-4890-abcd-ef0123456789", "colead");
@@ -246,7 +246,7 @@ fn r11_replacement_target_refuses_even_when_old_name_still_exists() {
 
 #[test]
 fn r13_bad_origin_grammar_keeps_ask_cap_and_shows_a_badge_gap() {
-    let r = Rig::new("o3sorigin");
+    let r = Rig::dispatcher("o3sorigin");
     let id = r.ask("still pending with damaged origin");
     let mut target = rows(&r.owner.tool.dir);
     let ask = target
@@ -268,7 +268,7 @@ fn r13_bad_origin_grammar_keeps_ask_cap_and_shows_a_badge_gap() {
 
 #[test]
 fn r11_same_origin_uuid_owns_the_audit_after_orchestrator_rename() {
-    let mut r = Rig::new("o3srename");
+    let mut r = Rig::dispatcher("o3srename");
     let id = r.ask("origin and target stable identity");
     assert!(r.world.tmux("rename-session -t", &["=orch", "renamed"]).0);
     let renamed = r.caller.dir.with_file_name("renamed");
@@ -289,7 +289,7 @@ fn r11_same_origin_uuid_owns_the_audit_after_orchestrator_rename() {
 
 #[test]
 fn r11_target_uuid_follows_rename_despite_reused_name() {
-    let mut r = Rig::new("o3sfollow");
+    let mut r = Rig::dispatcher("o3sfollow");
     let id = r.ask("follow the UUID holding this ask");
     r.reply(&id, "answer remains with renamed UUID");
     let old = r.owner.home.clone();
@@ -316,7 +316,7 @@ fn r11_target_uuid_follows_rename_despite_reused_name() {
 
 #[test]
 fn r7_missing_reply_body_is_a_gap_without_a_reply_echo() {
-    let r = Rig::new("o3sbodygap");
+    let r = Rig::dispatcher("o3sbodygap");
     let id = r.ask("whole admitted answer required");
     r.reply(&id, "body about to become unreadable");
     let target = rows(&r.owner.tool.dir);
