@@ -322,8 +322,8 @@ fn command(args: &[&str], rc: &Path, outside: bool) -> String {
 
 /// Every pane is 160 columns: its default 44-cell sidebar holds the word rung,
 /// or the short one once a count is a lower bound (`0+?`), and on either rung
-/// the Working and Needs you labels each follow their mark (`●` `⚠`, or `*` `!`
-/// with icons off). Positive and negative app checks share this predicate, so
+/// the Working label follows its two marks (`● ◉`, or `* &` with icons off)
+/// and the Needs you label its one (`⚠`, or `!`). Positive and negative app checks share this predicate, so
 /// both discriminate the current frame rather than relying on a removed summary
 /// glyph.
 fn app_frame(screen: &str) -> bool {
@@ -331,11 +331,15 @@ fn app_frame(screen: &str) -> bool {
         let marked = |glyphs: [&str; 2], label: &str| {
             (glyphs.iter()).any(|glyph| row.contains(&format!(" · {glyph} {label} ")))
         };
-        let words = row.starts_with("  Agents ")
-            && marked(["●", "*"], "Working")
-            && marked(["⚠", "!"], "Needs you");
-        let short =
-            row.starts_with("  Agt ") && marked(["●", "*"], "Wrk") && marked(["⚠", "!"], "Need");
+        // Working wears its two marks (working, background), Needs you its one.
+        let working = |label: &str| {
+            [("●", "◉"), ("*", "&")]
+                .iter()
+                .any(|(work, background)| row.contains(&format!(" · {work} {background} {label} ")))
+        };
+        let words =
+            row.starts_with("  Agents ") && working("Working") && marked(["⚠", "!"], "Needs you");
+        let short = row.starts_with("  Agt ") && working("Wrk") && marked(["⚠", "!"], "Need");
         (words || short) && row.contains('│')
     })
 }

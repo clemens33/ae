@@ -146,7 +146,7 @@ fn quote(text: &str) -> String {
 
 /// The loaded sidebar row proves a fleet read; the initial summary alone cannot.
 fn painted(screen: &str, name: &str) -> bool {
-    screen.contains("Agents ")
+    (screen.contains("Agents ") || screen.contains("Agt "))
         && screen.lines().skip(2).any(|row| {
             row.chars().skip(4).collect::<String>().starts_with(name) && row.contains('│')
         })
