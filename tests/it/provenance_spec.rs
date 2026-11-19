@@ -635,7 +635,7 @@ fn a_vacant_named_pane_keeps_its_watchdog_verb() {
 }
 
 // Pins base, and the residual ruled out of scope. Routing appends `--pane` from `$TMUX_PANE`
-// (src/entry.rs), so this is what a true no-`--pane` caller looks like: `TMUX` alone, a tmux
+// (src/l6_shell/entry.rs), so this is what a true no-`--pane` caller looks like: `TMUX` alone, a tmux
 // binding. No read happens, so none failed, and both verbs keep `human`. Kills: a gate on
 // `caller_server` alone; a new caller read at this surface.
 #[test]

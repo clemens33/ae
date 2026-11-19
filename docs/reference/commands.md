@@ -1741,7 +1741,7 @@ phase, never a silent subset.
 
 The first line is always the scope statement: each seat shows its current
 conversation plus its recorded predecessors (up to 4, newest first). Turns ae
-itself injected (the four `src/provenance.rs` markers, the Codex passive launch
+itself injected (the four `src/l0_base/provenance.rs` markers, the Codex passive launch
 turn) are hidden and counted per seat in one `hidden: <session:seat> — <n>
 ae-injected turns` line, or `{"kind":"hidden",…}` in JSON; there is no flag to
 show them back.

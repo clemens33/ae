@@ -535,7 +535,7 @@ fn the_board_respells_no_provenance_marker() {
     let source = include_str!("../../src/board.rs");
     assert!(
         !source.contains("⟦ae:"),
-        "the marker spellings live in src/provenance.rs alone"
+        "the marker spellings live in src/l0_base/provenance.rs alone"
     );
 }
 

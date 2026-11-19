@@ -1,5 +1,5 @@
 //! cliparse supplement: the unknown-flag-then-extra shapes the frozen
-//! `cliparse_spec` left unpinned (mutation survivor `src/cli.rs:1299:40`,
+//! `cliparse_spec` left unpinned (mutation survivor `src/l6_shell/cli.rs:1299:40`,
 //! `parse_compact_revalidate`'s `--keep-history` guard forced true).
 //!
 //! Each helper whose grammar names "the first unexpected token" has a guarded

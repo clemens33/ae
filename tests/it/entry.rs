@@ -16,7 +16,7 @@
 //! a full launch with an agent in it. What is
 //! pinned here instead is the half that can be: the router appends `--pane` for
 //! `stop` and `watchdog` and only when the caller named none
-//! (`src/entry.rs`'s `the_pane_is_appended_only_when_the_caller_named_none`),
+//! (`src/l6_shell/entry.rs`'s `the_pane_is_appended_only_when_the_caller_named_none`),
 //! and the read itself is one documented door in `src/doors.rs`.
 
 #![allow(
@@ -678,7 +678,7 @@ fn a_word_the_route_answers_is_refused_as_a_session_name() {
     assert!(!rig.sessions().exists(), "a refused name built state");
     // The canonical orchestrator is the one routed word a session IS named,
     // and `a_bare_orchestrator_word_launches_the_canonical_seat` below drives
-    // that launch end to end; the exemption itself is pinned in `src/entry.rs`.
+    // that launch end to end; the exemption itself is pinned in `src/l6_shell/entry.rs`.
 }
 
 /// The refusal a near-miss word is given, spelled from the ruling.
@@ -986,6 +986,7 @@ fn the_refused_name_set_is_every_word_the_route_answers() {
     let source = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
+            .join("l6_shell")
             .join("entry.rs"),
     )
     .expect("the router's own source");

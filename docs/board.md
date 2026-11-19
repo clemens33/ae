@@ -77,7 +77,7 @@ whole body.
 
 Turns ae itself injected never print as the human's. A row whose body's FIRST
 line is one of the four provenance markers (`msg`, `ctx`, `brief`, `interrupt` —
-the spellings and their recognizer live in `src/provenance.rs`) is hidden, and so
+the spellings and their recognizer live in `src/l0_base/provenance.rs`) is hidden, and so
 is the Codex passive launch turn (`src/launch.rs::initial_prompt_for`, whose
 marker line that harness does not persist). A Claude row whose whole body is a
 harness-wrapped ae turn (exact same-id `<pasted_content>` tags, marker on the

@@ -1485,17 +1485,17 @@ fn a_raw_identifier_names_the_same_module_as_its_plain_spelling() {
     };
     // `r#time` is the module `time`: sideways from a layer 0 file and downward from the CLI
     // shell, so neither is a finding.
-    assert!(found("src/json.rs", "use crate::r#time;", &[]).is_empty());
-    assert!(found("src/cli.rs", "use crate::r#time::Stamp;", &[]).is_empty());
+    assert!(found("src/l0_base/json.rs", "use crate::r#time;", &[]).is_empty());
+    assert!(found("src/l6_shell/cli.rs", "use crate::r#time::Stamp;", &[]).is_empty());
     // `r#cli` is the module `cli`: upward from layer 0, and the pin keys on the spelling as
     // written, so the plain spelling's row does not admit it and its own row does.
-    let up = found("src/json.rs", "use crate::r#cli::Request;", &[]);
+    let up = found("src/l0_base/json.rs", "use crate::r#cli::Request;", &[]);
     assert_eq!(up.len(), 1, "{up:?}");
     assert!(up[0].contains("`crate::r#cli::Request`"), "{up:?}");
-    let plain = [("src/json.rs", "crate::cli::Request", 1)];
-    assert!(!found("src/json.rs", "use crate::r#cli::Request;", &plain).is_empty());
-    let raw = [("src/json.rs", "crate::r#cli::Request", 1)];
-    assert!(found("src/json.rs", "use crate::r#cli::Request;", &raw).is_empty());
+    let plain = [("src/l0_base/json.rs", "crate::cli::Request", 1)];
+    assert!(!found("src/l0_base/json.rs", "use crate::r#cli::Request;", &plain).is_empty());
+    let raw = [("src/l0_base/json.rs", "crate::r#cli::Request", 1)];
+    assert!(found("src/l0_base/json.rs", "use crate::r#cli::Request;", &raw).is_empty());
     // A raw root item is still a root item: layer 6.
-    assert!(!found("src/json.rs", "fn live() { crate::r#type(); }", &[]).is_empty());
+    assert!(!found("src/l0_base/json.rs", "fn live() { crate::r#type(); }", &[]).is_empty());
 }

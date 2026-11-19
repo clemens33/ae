@@ -2510,7 +2510,7 @@ mod tests {
             Request::CompactWait {
                 dir: "/s/d".into(),
                 reference: "r1".to_owned(),
-                timeout_secs: super::super::compact::DEFAULT_HANDOVER_SECS,
+                timeout_secs: super::super::super::compact::DEFAULT_HANDOVER_SECS,
             }
         );
         assert_eq!(

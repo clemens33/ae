@@ -20,8 +20,8 @@ fn product_source() -> String {
     let product = source_view::product()
         .files
         .iter()
-        .find(|file| file.path == "src/sanitize.rs")
-        .unwrap_or_else(|| panic!("src/sanitize.rs must be a product file"))
+        .find(|file| file.path == "src/l0_base/sanitize.rs")
+        .unwrap_or_else(|| panic!("src/l0_base/sanitize.rs must be a product file"))
         .text
         .clone();
     assert!(
@@ -118,7 +118,7 @@ fn no_rendered_site_prints_a_record_field_unprojected() {
     ] {
         assert!(
             !product.contains(forbidden),
-            "src/sanitize.rs product half must not contain {forbidden}"
+            "src/l0_base/sanitize.rs product half must not contain {forbidden}"
         );
     }
     let mut formats = 0;
