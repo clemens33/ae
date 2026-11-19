@@ -14,7 +14,7 @@
 //! above the first drawn row, a fence starts afresh and ends with its fence.
 //!
 //! Colour is TEXT here, so every drawn colour is a palette role the text bar
-//! (4.5:1, `src/theme.rs` tests) already pins on its real ground: the reader's
+//! (4.5:1, `src/l2_model/theme.rs` tests) already pins on its real ground: the reader's
 //! `ink` for a file, the `panel` of a fence. No new colour; a role that cannot
 //! clear it on a ground wears the text colour and a modifier instead
 //! ([`style`]).

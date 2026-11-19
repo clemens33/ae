@@ -137,7 +137,7 @@ fn real_regular_preferences_within_the_promised_cap_are_checked() {
 fn malformed_model_words_are_unknown_before_reading_native_preferences() {
     // OpenCode v2.3.0 ConfigModel.Selection Short grammar:
     // ^[^/#]+/[^#]+(?:#[^#]+)?$ (model.ts:9-11,20).
-    // https://github.com/anomalyco/opencode/blob/v2.3.0/packages/schema/src/config/model.ts#L9-L20
+    // https://github.com/anomalyco/opencode/blob/v2.3.0/packages/schema/src/l2_model/config/model.ts#L9-L20
     // The accepted plan makes a # word outside this grammar unknown, not clear
     // or shadowed. Only external I/O is injected here.
     for model in ["/m#v", "a#b/m#v", "p/#v", "p/m#", "p/m#a#b"] {

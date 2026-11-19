@@ -5,8 +5,9 @@ use crate::watchdog::{Throttle, limit_notice, throttle_class};
 const ROW: &str = "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 162h20m6s.";
 const TEXT: &str = "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 162h20m6s.";
 const ERROR: &str = "Error ID: 00000000-0000-0000-0000-000000000000-000";
-const EMPTY: &str = include_str!("../../tests/fixtures/agy-composer/agy-composed-frame-80x24.txt");
-const WIDE: &str = include_str!("../../tests/fixtures/agy-composer/agy-composed-frame.txt");
+const EMPTY: &str =
+    include_str!("../../../tests/fixtures/agy-composer/agy-composed-frame-80x24.txt");
+const WIDE: &str = include_str!("../../../tests/fixtures/agy-composer/agy-composed-frame.txt");
 
 /// Keep the measured composer and put the reported limit block immediately
 /// above its upper rule. This changes no frozen fixture bytes on disk.

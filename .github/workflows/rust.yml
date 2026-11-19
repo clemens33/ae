@@ -556,7 +556,7 @@ jobs:
       # a mutant caught on macOS is not evidence about Linux. Per push it is BOUNDED
       # to the mutants that touch the pushed range (cargo-mutants' incremental mode,
       # --in-diff): the first full run in CI was cancelled by the 45-minute budget while
-      # still in src/archive.rs, and the step then sat BEFORE the musl steps, so an
+      # still in src/l2_model/archive.rs, and the step then sat BEFORE the musl steps, so an
       # unbounded run starved the evidence after it — hence its place at the end now.
       # The full lane stays available as
       # a manual dispatch with mutants=true under the 6-hour budget. This workflow lives

@@ -373,7 +373,7 @@ fn sole_flag_value_reads_model_without_changing_the_opencode_adapter() {
         "ambiguous"
     );
     assert_eq!(sole_flag_value("opencode --model", GO_FLAGS), None);
-    let tool_src = product_src("src/tool.rs");
+    let tool_src = product_src("src/l2_model/tool.rs");
     let block = tool_src
         .split("const OPENCODE:")
         .nth(1)

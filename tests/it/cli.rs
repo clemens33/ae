@@ -3188,7 +3188,7 @@ fn a_delivered_ask_or_review_prints_the_id_requests_lists_as_pending() {
 /// rule depends on the tracked writer recording BOTH halves of its target's
 /// routing key. A fixture that builds the event itself cannot notice the writer
 /// dropping one, so it would pin nothing. Drop `target_session` in
-/// `src/tracked.rs` and the retire below stops closing this request.
+/// `src/l2_model/tracked.rs` and the retire below stops closing this request.
 #[test]
 fn a_retired_seat_closes_the_request_the_real_ask_writer_recorded() {
     let fx = Tracked::new("zomb");

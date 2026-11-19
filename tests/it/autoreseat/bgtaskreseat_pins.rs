@@ -51,7 +51,7 @@ fn bgtask_pin_non_muse_seat_with_a_muse_shaped_long_limit_frame_is_not_stopped()
     assert!(summary.starts_with("unknown-frame:"), "{summary}");
 }
 
-/// mutant `src/watchdog.rs:948:49` (`&&` -> `||`): the vendor's wrapped 429
+/// mutant `src/l2_model/watchdog.rs:948:49` (`&&` -> `||`): the vendor's wrapped 429
 /// block ends at the first BLANK row, and a row of only spaces is blank — a
 /// terminal draws it as nothing (tmux keeps trailing cells it painted). The
 /// reset it states is still proven; joining the blank row into the sentence

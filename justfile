@@ -3640,7 +3640,7 @@ _tmux-isolated lane *args:
     # flag with its subshell, so its caller notes the status.
     bound_note() { if [[ -n "$bound_tool" ]]; then case "$1" in 124 | 137) bound_hit=1 ;; esac; fi; }
     # A socket whose server is already gone counts as reaped. An installed-shape
-    # test server refuses kill-server (src/session_tmux.rs): its guard is dropped
+    # test server refuses kill-server (src/l2_model/session_tmux.rs): its guard is dropped
     # first, on this explicit socket, and the kill's exit status is never taken
     # as proof: the server must stop answering.
     reap_sockets() {

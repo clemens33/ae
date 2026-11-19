@@ -249,7 +249,7 @@ impl SimpleCommand {
 /// the text scraped from a live pane is a LEGAL VALUE for it — whether an
 /// observation may be replayed is the adapter's own capability
 /// ([`crate::tool::ModelSpec`]). The grammar itself lives in the adapter rows
-/// (`src/tool.rs`).
+/// (`src/l2_model/tool.rs`).
 fn model_flag_names(tool: ToolKind) -> &'static [&'static str] {
     tool.adapter().model.flags()
 }

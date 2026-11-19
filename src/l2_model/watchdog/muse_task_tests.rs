@@ -4,12 +4,13 @@
 //! each row that must refuse.
 use super::{muse_background_tasks, muse_limit_reset, muse_task_title};
 
-const PLAIN: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-plain.txt");
-const WATCHING: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-watching.txt");
+const PLAIN: &str = include_str!("../../../tests/fixtures/harness-state/muse-limit-plain.txt");
+const WATCHING: &str =
+    include_str!("../../../tests/fixtures/harness-state/muse-limit-watching.txt");
 /// A measured muse pane whose own 429 row muse wrapped over three rows at 80
 /// columns, above an idle composer.
 const IDLE_429: &str =
-    include_str!("../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+    include_str!("../../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
 
 const TITLE: &str = "background evidence watch";
 const TASK: &str = "└ ◇ background evidence watch  watching";

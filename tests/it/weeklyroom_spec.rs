@@ -8,7 +8,7 @@
 //! vendor-limit path is unchanged.
 //!
 //! All quota stores, tools and tmux servers belong to the existing private Rig;
-//! every config fixture parses through the real `src/config.rs` parser in the
+//! every config fixture parses through the real `src/l2_model/config.rs` parser in the
 //! real watchdog. RED tests fail on base at the asserted line; GUARD tests pin
 //! unchanged behavior and pass on base and after.
 

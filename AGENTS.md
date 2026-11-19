@@ -8,13 +8,13 @@ Module map: [Structure](docs/reference/contract.md#structure), layer map: [Layer
 | gating or reviewing | run [The protocol](docs/gatekeeping.md#the-protocol) and [the second protocol](docs/gatekeeping.md#the-second-protocol--reviewing-a-claim-a-criterion-or-a-body-of-evidence); read an entry from [Which entry do I need?](docs/gatekeeping.md#which-entry-do-i-need) when its symptom matches |
 | coordination design | [docs/design-patterns.md](docs/design-patterns.md) |
 | src/l6_shell/shim.rs, helper commands | [Session helpers](docs/reference/contract.md#session-helpers) |
-| src/tool.rs, adapters, src/run.rs, src/launch.rs | [Agent tool capabilities](docs/reference/contract.md#agent-tool-capabilities) |
+| src/l2_model/tool.rs, adapters, src/run.rs, src/launch.rs | [Agent tool capabilities](docs/reference/contract.md#agent-tool-capabilities) |
 | src/l1_platform/doors.rs, src/l1_platform/transport.rs, environment reads | [Environment doors](docs/reference/contract.md#environment-doors) |
-| src/theme.rs, status formats, tmux hooks and binds | [docs/internals/theme.md](docs/internals/theme.md) |
+| src/l2_model/theme.rs, status formats, tmux hooks and binds | [docs/internals/theme.md](docs/internals/theme.md) |
 | src/upgrade.rs, `ae upgrade` | [docs/upgrade.md](docs/upgrade.md) |
 | shell commands on macOS or Linux | [GNU vs BSD](docs/reference/contract.md#gnu-vs-bsd--check-the-command-you-are-about-to-type) |
 | any src/ module; find its named owner before editing | [Key invariants](docs/reference/contract.md#key-invariants) |
-| src/config.rs, src/meta.rs, config grammar | [Config](docs/reference/contract.md#config) |
+| src/l2_model/config.rs, src/l2_model/meta.rs, config grammar | [Config](docs/reference/contract.md#config) |
 
 Automation features are allowed again, but the focus stays on code quality, architecture and guardrails: a new one must earn its place by daily use.
 
@@ -67,7 +67,7 @@ Other rules of the loop:
   `TMUX_TMPDIR="$probe" AE_HOME="$probe/state" CONFIG_FILE="$probe/config" env -u TMUX -u TMUX_PANE target/debug/ae …`.
   `TMUX_TMPDIR` must exist: otherwise tmux silently falls back to the real socket dir (tmux 3.7b).
 - A session's look is session-scoped, and it has four writers with one job each.
-  `src/theme.rs` owns the palettes and every format. A LAUNCH writes the layout, the look facts
+  `src/l2_model/theme.rs` owns the palettes and every format. A LAUNCH writes the layout, the look facts
   and the attention SEED, and stamps each WINDOW. A RENAME rewrites the layout and the facts and
   leaves every verdict alone. The WATCHDOG owns the verdicts, refreshing them every cycle, and
   rewrites or unsets the layout only when `@ae_look_stamp` says the look has changed under it.

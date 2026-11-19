@@ -49,7 +49,7 @@ const REQUIRED_KEYS: [&str; 14] = [
     "time",
 ];
 
-/// The seven harnesses, in `src/tool.rs::ToolKind` order: the adapter row and
+/// The seven harnesses, in `src/l2_model/tool.rs::ToolKind` order: the adapter row and
 /// the binary that answers `--version`.
 const HARNESS_NAMES: [&str; 7] =
     ["claude", "codex", "gemini", "agy", "grok", "muse", "opencode"];

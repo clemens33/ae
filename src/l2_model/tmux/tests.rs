@@ -1,5 +1,5 @@
 // Frozen bgmark acceptance (.local/bgmark/freeze.tsv), installed byte-identically.
-include!("../../tests/spec/bgmark_old_reader.rs");
+include!("../../../tests/spec/bgmark_old_reader.rs");
 use super::{
     CLIENT_FORMAT, Key, ObservedClient, ObservedPaneProbe, PANE_PROBE_FORMAT, Styling,
     capture_screen_args, confirm_before_args, display_client_message_args, hotkey_picker_shell,
@@ -2168,11 +2168,11 @@ fn every_daemon_verdict_word_has_a_picker_mark() {
 
 #[test]
 fn picker_agents_fuzz_seeds_reach_their_named_parser_paths() {
-    let valid = include_str!("../../fuzz/seeds/picker_agents/valid");
-    let empty_pane = include_str!("../../fuzz/seeds/picker_agents/empty-pane");
-    let duplicate = include_str!("../../fuzz/seeds/picker_agents/duplicate");
-    let style_byte = include_str!("../../fuzz/seeds/picker_agents/style-byte");
-    let limit = include_str!("../../fuzz/seeds/picker_agents/limit");
+    let valid = include_str!("../../../fuzz/seeds/picker_agents/valid");
+    let empty_pane = include_str!("../../../fuzz/seeds/picker_agents/empty-pane");
+    let duplicate = include_str!("../../../fuzz/seeds/picker_agents/duplicate");
+    let style_byte = include_str!("../../../fuzz/seeds/picker_agents/style-byte");
+    let limit = include_str!("../../../fuzz/seeds/picker_agents/limit");
     for seed in [valid, empty_pane, duplicate, style_byte, limit] {
         assert!(
             seed.bytes().all(|byte| (b' '..=b'~').contains(&byte)),
@@ -2200,13 +2200,13 @@ fn picker_agents_fuzz_seeds_reach_their_named_parser_paths() {
 /// that its new fields cannot crash the parser.
 #[test]
 fn v2_picker_agents_fuzz_seeds_reach_their_named_parser_paths() {
-    let valid = include_str!("../../fuzz/seeds/picker_agents/v2-valid");
-    let unobserved = include_str!("../../fuzz/seeds/picker_agents/v2-unobserved");
-    let over_cap = include_str!("../../fuzz/seeds/picker_agents/v2-over-cap-model");
-    let separator = include_str!("../../fuzz/seeds/picker_agents/v2-separator-in-model");
-    let limit = include_str!("../../fuzz/seeds/picker_agents/v2-limit");
-    let label = include_str!("../../fuzz/seeds/picker_agents/v2-label");
-    let bad_label = include_str!("../../fuzz/seeds/picker_agents/v2-bad-label");
+    let valid = include_str!("../../../fuzz/seeds/picker_agents/v2-valid");
+    let unobserved = include_str!("../../../fuzz/seeds/picker_agents/v2-unobserved");
+    let over_cap = include_str!("../../../fuzz/seeds/picker_agents/v2-over-cap-model");
+    let separator = include_str!("../../../fuzz/seeds/picker_agents/v2-separator-in-model");
+    let limit = include_str!("../../../fuzz/seeds/picker_agents/v2-limit");
+    let label = include_str!("../../../fuzz/seeds/picker_agents/v2-label");
+    let bad_label = include_str!("../../../fuzz/seeds/picker_agents/v2-bad-label");
     for seed in [
         valid, unobserved, over_cap, separator, limit, label, bad_label,
     ] {

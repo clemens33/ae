@@ -1,0 +1,30 @@
+//! Layer 2 (state and model): its modules, which src/lib.rs re-exports by name.
+
+pub mod archive;
+pub mod birth;
+pub mod config;
+pub mod conversation;
+pub mod digest;
+pub mod effort_journal;
+pub mod events;
+pub mod filters;
+pub mod goal;
+pub mod harness_state;
+pub mod inventory;
+pub mod launch_cmd;
+pub mod liveness;
+pub mod memo;
+pub mod meta;
+pub mod model_drift;
+pub mod pairs;
+pub mod requests;
+pub mod roster;
+pub(crate) mod session_tmux;
+pub mod state;
+pub mod store;
+pub mod theme;
+pub mod tmux;
+pub mod tool;
+pub mod tracked;
+pub mod wait_on;
+pub mod watchdog;

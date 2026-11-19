@@ -5,7 +5,7 @@
 //! proves the bytes are gone AND no claim is left behind, and every refusal path
 //! proves the archive is STILL THERE afterwards — purge never `rm -rf`s a tree it
 //! cannot prove is provably this session's. Each archive is a REAL one the
-//! publisher wrote and the shared validator (`src/archive/store.rs`) accepts; a
+//! publisher wrote and the shared validator (`src/l2_model/archive/store.rs`) accepts; a
 //! hand-built stub would only prove purge deletes whatever sits at the path.
 
 #![allow(

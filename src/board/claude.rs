@@ -62,7 +62,7 @@ pub fn read(bytes: &[u8], actor: &str, file: &str, source: ToolKind) -> (Vec<Row
 /// Read one streamed Claude transcript: the door's lines in, human rows out.
 ///
 /// The caller supplies `source`: the reader translates bytes, it never decides
-/// which tool it reads — production tool literals live in `src/tool.rs` alone
+/// which tool it reads — production tool literals live in `src/l2_model/tool.rs` alone
 /// (`per_tool_branches_live_only_in_the_adapter_rows`), and the locating glue
 /// already classifies the seat before it calls here.
 #[must_use]

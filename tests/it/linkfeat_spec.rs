@@ -219,7 +219,7 @@ fn the_docs_name_ghostty_hyperlinks_on_ae_servers_only() {
         agents.contains("the user's tmux is untouched"),
         "ae's own server is still the boundary"
     );
-    let theme = read("src/theme.rs");
+    let theme = read("src/l2_model/theme.rs");
     assert!(theme.contains(ENTRY), "theme.rs names the Ghostty entry");
     assert!(
         !theme.contains("is never touched"),

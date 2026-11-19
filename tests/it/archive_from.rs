@@ -5,7 +5,7 @@
 //! archive and hands back exactly the tuple the caller consumes — `aid\thandover\t
 //! pending`, no trailing newline — or refuses with a named `Error:` and rc 1. It
 //! shares ONE validator/root/claim implementation with publish and purge
-//! (`src/archive/store.rs`), so these opposed controls also guard that the shared
+//! (`src/l2_model/archive/store.rs`), so these opposed controls also guard that the shared
 //! trust rules refuse what they must. Every case runs against a REAL archive the
 //! publisher itself wrote: a hand-built tree would only prove the preflight
 //! accepts whatever sits at the path — which is the behaviour that would be wrong.

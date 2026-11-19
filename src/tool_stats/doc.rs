@@ -1497,7 +1497,7 @@ pub fn parse_assoc(bytes: &[u8]) -> Result<Assoc, DocError> {
 fn source_key(value: &Value) -> Parsed<String> {
     let name = text(value)?;
     // Whole prefixes: the bare word of a session file is spelled in
-    // src/store.rs alone (tests/it doors).
+    // src/l2_model/store.rs alone (tests/it doors).
     let valid = if let Some(hex) = name
         .strip_prefix("meta:")
         .or_else(|| name.strip_prefix("journal:"))

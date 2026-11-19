@@ -5,7 +5,7 @@ every window entry, a title on every pane border, and a style for the menu the p
 **session-scoped**. A tmux server can hold ae sessions and your own side by
 side, and yours keeps your theme.
 
-`src/theme.rs` is pure — colours, glyphs and format strings in, format strings
+`src/l2_model/theme.rs` is pure — colours, glyphs and format strings in, format strings
 out. Who writes them and when is the launch's and the watchdog's business.
 
 ## Three rules
@@ -207,7 +207,7 @@ are the news.
 ## Colour is never the only signal
 
 Every foreground the look draws on a ground it owns clears its WCAG 2.1 contrast
-bar: 3.0:1 for a mark cell and 4.5:1 for text. The owner is `src/theme.rs`'s
+bar: 3.0:1 for a mark cell and 4.5:1 for text. The owner is `src/l2_model/theme.rs`'s
 `every_drawn_pair_clears_its_wcag_contrast_bar`, which measures every mark
 accent on both the bar's ground and the selection ground at two decimals, and
 measures the working pulse as a class at its peak frame: its dim trough is the

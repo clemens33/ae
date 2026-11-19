@@ -1597,7 +1597,7 @@ pub fn window_options(look: &Look) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     // Frozen bgmark acceptance (.local/bgmark/freeze.tsv), installed byte-identically.
-    include!("../tests/spec/bgmark_theme.rs");
+    include!("../../tests/spec/bgmark_theme.rs");
     use super::{
         FleetRow, ICONS_OPTION, Look, Mark, PALETTE_OPTION, Palette, WINDOW_STAMP_OPTION,
         attention_style, fleet_strip, icons_wanted, mark_style, pane_border_format, pane_state,

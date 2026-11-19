@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn a_return_to_both_pins_retires_the_record_on_the_next_observation() {
-        let live = include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt");
+        let live = include_str!("../../tests/fixtures/harness-state/claude-idle-167x40.txt");
         let dir = std::env::temp_dir().join(format!("ae-drift-heal-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch");

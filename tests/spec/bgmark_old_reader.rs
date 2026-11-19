@@ -1,4 +1,4 @@
-// Frozen pre-v3 reader from 6b9a7642 src/tmux.rs. Only module imports adapt.
+// Frozen pre-v3 reader from 6b9a7642 src/l2_model/tmux.rs. Only module imports adapt.
 #[allow(dead_code, reason = "frozen pre-v3 compatibility reference")]
 mod bgmark_old_reader {
     use crate::theme::Mark;

@@ -1128,7 +1128,7 @@ Review invocations run **read-only** — a `--full-auto` reviewer is a tree muta
 
 - ae's Rust core owns runtime behavior; the only Bash file is the policy-frozen `install`
   bootstrap.
-- Config is INI-style, parsed by the core (`src/config.rs`). Don't add TOML/YAML/JSON parsing.
+- Config is INI-style, parsed by the core (`src/l2_model/config.rs`). Don't add TOML/YAML/JSON parsing.
 - The installed runtime is an immutable matched set; checkout development additionally needs rustup and just. (Docs tooling remains optional.)
 - Session state lives in `~/.ae/sessions/`. Working directories stay clean.
 - No AI tool attribution in commits.

@@ -1140,7 +1140,7 @@ mod o4jump_bind_spec;
 mod killlock_unit;
 
 #[cfg(test)]
-#[path = "../tests/it/aeinstance_p1_launcher.rs"]
+#[path = "../../tests/it/aeinstance_p1_launcher.rs"]
 mod aeinstance_p1_launcher;
 
 #[cfg(test)]

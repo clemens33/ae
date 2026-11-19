@@ -370,7 +370,7 @@ fn nothing_in_the_human_prompt_path_can_reach_a_pane() {
     fn source(file: &str) -> String {
         std::fs::read_to_string(file).unwrap_or_else(|why| panic!("{file}: {why}"))
     }
-    let detector = source("src/watchdog.rs");
+    let detector = source("src/l2_model/watchdog.rs");
     let daemon = family();
     let region = |text: &str, from: &str, to: &str| {
         let start = text

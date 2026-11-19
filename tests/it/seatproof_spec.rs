@@ -698,7 +698,7 @@ fn live_reseated_legacy_and_unstamped_raw_targets_keep_receiving_new_messages() 
 }
 #[test]
 fn admission_does_not_reread_identity_rows_outside_its_snapshot() {
-    let source = include_str!("../../src/tracked.rs");
+    let source = include_str!("../../src/l2_model/tracked.rs");
     let marker = "pub(crate) fn admit_agent_address";
     let body = source.split(marker).nth(1).expect("admission");
     let body = body.split("\nimpl").next().expect("body");
@@ -728,7 +728,7 @@ fn an_unstamped_raw_pane_with_unreadable_physical_identity_is_refused() {
     w.refuse(&output, "could not be proven");
     w.untouched(&before);
 }
-// The six tests below pin the admission rules `src/tracked.rs::current_seat` proves
+// The six tests below pin the admission rules `src/l2_model/tracked.rs::current_seat` proves
 // from the seat-binding contract (docs/reference/contract.md, "A peer delivery
 // reaches only the seat it was ADDRESSED to"): a stamp that is unreadable or
 // incomplete, a roster holder other than the stamped agent, and a damaged launch

@@ -376,15 +376,15 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
         sorted(holders("classify_absence(")),
         sorted(vec![
             // The listing, through its fleet discovery's `all_predate`.
-            "src/inventory.rs".to_owned(),
+            "src/l2_model/inventory.rs".to_owned(),
             // The ONE boot-proof gate `end` and `rename` share.
             "src/lifecycle/end.rs".to_owned(),
             // The resume, at `resume_absence`.
             "src/session_launch.rs".to_owned(),
             // Its own definition.
-            "src/tmux.rs".to_owned(),
+            "src/l2_model/tmux.rs".to_owned(),
             // Its unit table, in the module's test file.
-            "src/tmux/tests.rs".to_owned(),
+            "src/l2_model/tmux/tests.rs".to_owned(),
         ]),
         "the boot-time verdict gained (or lost) a caller"
     );
@@ -855,7 +855,7 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
     }
 }
 
-/// DEBT, not design: production tool decisions outside `src/tool.rs` that this
+/// DEBT, not design: production tool decisions outside `src/l2_model/tool.rs` that this
 /// guard first saw once its cut reached past `quota.rs:45`. A row is keyed by
 /// file, needle and EXACT count, never a file skip: an extra branch fails, and
 /// so does a removed branch whose row stays. Slice `toolrows` moves each
@@ -926,14 +926,14 @@ fn per_tool_branches_live_only_in_the_adapter_rows() {
     let halves = product_halves();
     let adapter = halves
         .iter()
-        .find(|(name, _)| name == "src/tool.rs")
+        .find(|(name, _)| name == "src/l2_model/tool.rs")
         .map_or_else(
             || panic!("the adapter source was not scanned"),
             |(_, code)| code,
         );
     assert!(
         tool_variant_tokens(adapter).next().is_some(),
-        "src/tool.rs has no ToolKind variant tokens in its production view; \
+        "src/l2_model/tool.rs has no ToolKind variant tokens in its production view; \
          verify the view and adapter spelling"
     );
     let needles: BTreeSet<_> = halves
@@ -950,7 +950,7 @@ fn per_tool_branches_live_only_in_the_adapter_rows() {
     }
     for needle in needles {
         for (name, code) in &halves {
-            if name == "src/tool.rs" {
+            if name == "src/l2_model/tool.rs" {
                 continue;
             }
             let owed = TOOL_BRANCH_DEBT
@@ -963,7 +963,7 @@ fn per_tool_branches_live_only_in_the_adapter_rows() {
                     .count(),
                 owed,
                 "{name} branches on {needle} other than its {owed} debt row(s); \
-                 production tool decisions belong in src/tool.rs"
+                 production tool decisions belong in src/l2_model/tool.rs"
             );
         }
     }
@@ -973,17 +973,17 @@ fn per_tool_branches_live_only_in_the_adapter_rows() {
 fn a_live_session_file_is_named_in_exactly_one_place() {
     // A second spelling of `events.jsonl` or `memo.tsv` is how a reader and a
     // writer end up on two different files, and a hand-appended `.lock` is how
-    // one mutual exclusion becomes two. `src/store.rs` owns both names and
+    // one mutual exclusion becomes two. `src/l2_model/store.rs` owns both names and
     // derives every lock from them, so a production line anywhere else that
     // writes one out is the drift this guard exists to catch. The literals are
     // unterminated on purpose: `"events.jsonl.lock"` is caught by the same
     // check as `"events.jsonl"`. Fixtures are not production — the scan is
     // shown each file with its `#[cfg(test)]` items blanked.
     for (name, code) in product_halves() {
-        // `src/archive/store.rs` names an ARCHIVE's members. They coincide with
+        // `src/l2_model/archive/store.rs` names an ARCHIVE's members. They coincide with
         // the live names today and are deliberately independent: an archive is
         // immutable, so renaming a live file must not rename what is published.
-        if name == "src/store.rs" || name == "src/archive/store.rs" {
+        if name == "src/l2_model/store.rs" || name == "src/l2_model/archive/store.rs" {
             continue;
         }
         // The file and its lock, exactly. A DERIVED sibling built from the
@@ -998,7 +998,7 @@ fn a_live_session_file_is_named_in_exactly_one_place() {
         ] {
             assert!(
                 !code.contains(literal),
-                "{name} spells {literal} itself; a live session file is named in src/store.rs"
+                "{name} spells {literal} itself; a live session file is named in src/l2_model/store.rs"
             );
         }
         // `meta` is checked as a RAW string rather than in one path-building
@@ -1011,8 +1011,8 @@ fn a_live_session_file_is_named_in_exactly_one_place() {
         let allowed = usize::from(name == "src/session_launch/preflight.rs");
         assert_eq!(
             occurrences, allowed,
-            "{name} spells \"meta\" {occurrences} time(s); the file is named in src/store.rs \
-             and an archive's copy of it in src/archive/store.rs"
+            "{name} spells \"meta\" {occurrences} time(s); the file is named in src/l2_model/store.rs \
+             and an archive's copy of it in src/l2_model/archive/store.rs"
         );
     }
 }
@@ -1037,7 +1037,7 @@ fn known_session_file_mutations_stay_with_the_store() {
         );
     }
     for (name, code) in product_halves() {
-        if name == "src/store.rs" || name == "src/archive/store.rs" {
+        if name == "src/l2_model/store.rs" || name == "src/l2_model/archive/store.rs" {
             continue;
         }
         assert!(
@@ -1335,7 +1335,7 @@ fn the_deny_list_reader_sees_a_bare_path_and_a_reasonless_table() {
     assert_eq!(files, vec!["src/l1_platform/transport.rs".to_owned()]);
     assert_eq!(
         doors,
-        vec![("src/store.rs".to_owned(), "read_capped".to_owned())]
+        vec![("src/l2_model/store.rs".to_owned(), "read_capped".to_owned())]
     );
 }
 

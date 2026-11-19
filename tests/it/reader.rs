@@ -5,7 +5,7 @@
 //! stays with the source while the wheel scrolls the reader, and proves the
 //! toggle, the retarget and the source-death close. The wheel fixtures install
 //! the no-select command the launch asserts; its byte-exact argv is pinned
-//! beside the code in `src/session_tmux.rs`, so a drift in that pin is where
+//! beside the code in `src/l2_model/session_tmux.rs`, so a drift in that pin is where
 //! the spelling breaks first.
 
 use std::fs;
@@ -223,7 +223,7 @@ fn stage_client(socket: &Path, dir: &Path) -> (String, String) {
 }
 
 /// Install the no-select mode-table wheel map the launch asserts. Same command
-/// the unit pin in `src/session_tmux.rs` fixes.
+/// the unit pin in `src/l2_model/session_tmux.rs` fixes.
 fn install_wheel_map(socket: &Path, dir: &Path) {
     for (table, key, direction) in [
         ("copy-mode", "WheelUpPane", "scroll-up"),

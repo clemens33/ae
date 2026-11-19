@@ -4964,7 +4964,7 @@ mod tests {
     }
 
     const LIMITED_CLAUDE: &str =
-        include_str!("../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
+        include_str!("../../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
 
     /// The cell ends at its first blank or non-indented row, so a work row
     /// drawn right under it with no blank between is READ, not swallowed or

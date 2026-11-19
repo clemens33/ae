@@ -1588,7 +1588,7 @@ mod tests {
         // `is_agent_name`, so judging a reference instead would empty a roster
         // whose references carry one. Authorship judges the REFERENCE, because
         // a memo record stores whatever string stamped it. Today
-        // `RosterEntry::reference` (src/meta.rs:223) returns the bare name and
+        // `RosterEntry::reference` (src/l2_model/meta.rs:223) returns the bare name and
         // both strings agree; this pins that the pack still reads the right
         // field of each when they do not.
         let inputs = Inputs {

@@ -463,7 +463,7 @@ pub(crate) mod capture {
         // `src/l1_platform/transport.rs`, THE PRODUCT'S — ae cannot answer a liveness
         // question without running tmux. That third one is not reachable from
         // here: `transport::run` is private and the public transport only ever
-        // spawns tmux with an argument list `src/tmux.rs` derived.
+        // spawns tmux with an argument list `src/l2_model/tmux.rs` derived.
         //
         // `clippy.toml` denies the type everywhere else, which resolves TYPES
         // rather than text and so holds against UFCS, aliases and re-imports

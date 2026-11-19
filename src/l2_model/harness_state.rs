@@ -1040,14 +1040,14 @@ mod tests {
 
     #[test]
     fn a_live_codex_working_frame_is_busy() {
-        let capture = include_str!("../tests/fixtures/harness-state/codex-busy-280x40.txt");
+        let capture = include_str!("../../tests/fixtures/harness-state/codex-busy-280x40.txt");
         assert_eq!(classify(capture, ToolKind::Codex), HarnessState::Busy);
     }
 
     #[test]
     fn codex_service_wait_requires_the_live_selection_and_vendor_copy() {
         let menu =
-            include_str!("../tests/fixtures/harness-state/codex-service-wait-0.170.0-80w.txt");
+            include_str!("../../tests/fixtures/harness-state/codex-service-wait-0.170.0-80w.txt");
         assert_eq!(
             classify(menu, ToolKind::Codex),
             HarnessState::CodexServiceWait
@@ -1074,25 +1074,25 @@ mod tests {
 
     #[test]
     fn a_live_codex_empty_input_frame_is_idle() {
-        let capture = include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt");
+        let capture = include_str!("../../tests/fixtures/harness-state/codex-idle-112x40.txt");
         assert_eq!(classify(capture, ToolKind::Codex), HarnessState::Idle);
     }
 
     #[test]
     fn a_live_claude_spinner_frame_is_busy() {
-        let capture = include_str!("../tests/fixtures/harness-state/claude-busy-280x40.txt");
+        let capture = include_str!("../../tests/fixtures/harness-state/claude-busy-280x40.txt");
         assert_eq!(classify(capture, ToolKind::Claude), HarnessState::Busy);
     }
 
     #[test]
     fn a_live_claude_done_frame_is_idle() {
-        let capture = include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt");
+        let capture = include_str!("../../tests/fixtures/harness-state/claude-idle-167x40.txt");
         assert_eq!(classify(capture, ToolKind::Claude), HarnessState::Idle);
     }
 
     #[test]
     fn a_second_live_claude_spinner_grammar_is_busy() {
-        let capture = include_str!("../tests/fixtures/harness-state/claude-busy-167x40.txt");
+        let capture = include_str!("../../tests/fixtures/harness-state/claude-busy-167x40.txt");
         assert_eq!(classify(capture, ToolKind::Claude), HarnessState::Busy);
     }
 
@@ -1104,7 +1104,7 @@ mod tests {
     #[test]
     fn a_live_claude_busy_frame_with_an_nbsp_tip_is_busy() {
         let capture =
-            include_str!("../tests/fixtures/harness-state/claude-busy-nbsp-tip-101x41.txt");
+            include_str!("../../tests/fixtures/harness-state/claude-busy-nbsp-tip-101x41.txt");
         assert_eq!(classify(capture, ToolKind::Claude), HarnessState::Busy);
     }
 
@@ -1143,12 +1143,12 @@ mod tests {
     #[test]
     fn a_resumed_live_claude_done_frame_is_idle() {
         let capture =
-            include_str!("../tests/fixtures/harness-state/claude-resumed-idle-149x37.txt");
+            include_str!("../../tests/fixtures/harness-state/claude-resumed-idle-149x37.txt");
         assert_eq!(classify(capture, ToolKind::Claude), HarnessState::Idle);
     }
 
     const COMPACTED: &str =
-        include_str!("../tests/fixtures/harness-state/claude-compacted-2.1.280.txt");
+        include_str!("../../tests/fixtures/harness-state/claude-compacted-2.1.280.txt");
     const ROW: &str = "⎿  Compacted (ctrl+o to see full summary)";
 
     /// `frame` with its one exact `needle` replaced once.
@@ -1210,19 +1210,19 @@ mod tests {
                 ROW,
             ),
             (
-                include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/claude-idle-167x40.txt"),
                 ToolKind::Claude,
                 HarnessState::Idle,
                 "✻ Crunched for 16s · done 4:01 PM",
             ),
             (
-                include_str!("../tests/fixtures/harness-state/claude-busy-167x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/claude-busy-167x40.txt"),
                 ToolKind::Claude,
                 HarnessState::Busy,
                 "✻ Enchanting… (1m 2s · ↓ 2.9k tokens · still thinking with xhigh effort)",
             ),
             (
-                include_str!("../tests/fixtures/harness-state/codex-busy-280x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/codex-busy-280x40.txt"),
                 ToolKind::Codex,
                 HarnessState::Busy,
                 "• Working (5m 03s • esc to interrupt)",
@@ -1242,7 +1242,7 @@ mod tests {
 
     #[test]
     fn a_frame_no_grammar_recognizes_reads_as_none() {
-        let muse = include_str!("../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+        let muse = include_str!("../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
         for (capture, tool) in [
             (muse, ToolKind::Muse),
             (muse, ToolKind::OpenCode),
@@ -1265,7 +1265,7 @@ mod tests {
     #[test]
     fn a_compacting_frame_is_not_idle() {
         let capture = bypass(include_str!(
-            "../tests/fixtures/harness-state/claude-compacting-2.1.280.txt"
+            "../../tests/fixtures/harness-state/claude-compacting-2.1.280.txt"
         ));
         assert!(gate(&capture), "premise: a valid input frame");
         assert_eq!(classify(&capture, ToolKind::Claude), HarnessState::Unknown);
@@ -1274,8 +1274,8 @@ mod tests {
     #[test]
     fn a_dispatch_left_in_or_queued_above_the_box_is_not_idle() {
         for landed in [
-            include_str!("../tests/fixtures/claude-composer/claude-compact-staged-2.1.280.txt"),
-            include_str!("../tests/fixtures/claude-composer/claude-compact-queued-2.1.280.txt"),
+            include_str!("../../tests/fixtures/claude-composer/claude-compact-staged-2.1.280.txt"),
+            include_str!("../../tests/fixtures/claude-composer/claude-compact-queued-2.1.280.txt"),
         ] {
             let frame = bypass(landed);
             let row = frame
@@ -1325,7 +1325,7 @@ mod tests {
     fn a_measured_opus_5_5_1m_frame_reads_its_model_and_effort() {
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/harness-state/claude-opus55-1m-2.1.280.txt"),
+                include_str!("../../tests/fixtures/harness-state/claude-opus55-1m-2.1.280.txt"),
                 ToolKind::Claude
             ),
             HarnessIdentity {
@@ -1355,7 +1355,7 @@ mod tests {
 
     #[test]
     fn witness_a_clipped_prompt_only_frames_are_unknown() {
-        let live = include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt");
+        let live = include_str!("../../tests/fixtures/harness-state/claude-idle-167x40.txt");
         assert_eq!(classify(live, ToolKind::Claude), HarnessState::Idle);
 
         assert_eq!(
@@ -1376,19 +1376,20 @@ mod tests {
     #[test]
     fn an_old_quoted_busy_line_does_not_override_the_current_codex_idle_frame() {
         let capture =
-            include_str!("../tests/fixtures/harness-state/codex-idle-old-busy-280x40.txt");
+            include_str!("../../tests/fixtures/harness-state/codex-idle-old-busy-280x40.txt");
         assert_eq!(classify(capture, ToolKind::Codex), HarnessState::Idle);
     }
 
     #[test]
     fn a_short_live_codex_idle_frame_is_idle() {
-        let capture = include_str!("../tests/fixtures/harness-state/codex-idle-112x20.txt");
+        let capture = include_str!("../../tests/fixtures/harness-state/codex-idle-112x20.txt");
         assert_eq!(classify(capture, ToolKind::Codex), HarnessState::Idle);
     }
 
     #[test]
     fn a_narrow_wrapped_live_codex_idle_frame_is_idle() {
-        let capture = include_str!("../tests/fixtures/harness-state/codex-idle-wrapped-112x40.txt");
+        let capture =
+            include_str!("../../tests/fixtures/harness-state/codex-idle-wrapped-112x40.txt");
         assert_eq!(classify(capture, ToolKind::Codex), HarnessState::Idle);
     }
 
@@ -1396,7 +1397,7 @@ mod tests {
     fn current_identity_reads_real_claude_and_codex_footer_anchors() {
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/harness-state/claude-busy-280x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/claude-busy-280x40.txt"),
                 ToolKind::Claude
             ),
             HarnessIdentity {
@@ -1406,7 +1407,7 @@ mod tests {
         );
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/codex-idle-112x40.txt"),
                 ToolKind::Codex
             ),
             HarnessIdentity {
@@ -1416,7 +1417,7 @@ mod tests {
         );
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/claude-opus-1m.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/claude-opus-1m.txt"),
                 ToolKind::Claude
             ),
             HarnessIdentity {
@@ -1427,9 +1428,9 @@ mod tests {
     }
 
     const WORKING_HINT: &str =
-        include_str!("../tests/fixtures/harness-state/codex-working-hint-0.159.2-215w.txt");
+        include_str!("../../tests/fixtures/harness-state/codex-working-hint-0.159.2-215w.txt");
     const IDLE_HINT: &str =
-        include_str!("../tests/fixtures/harness-state/codex-idle-hint-0.159.2.txt");
+        include_str!("../../tests/fixtures/harness-state/codex-idle-hint-0.159.2.txt");
 
     fn without_hint(capture: &str) -> String {
         let rows: Vec<&str> = capture
@@ -1505,15 +1506,15 @@ mod tests {
     #[test]
     fn no_earlier_codex_fixture_draws_the_hint_or_tip_row() {
         for capture in [
-            include_str!("../tests/fixtures/harness-state/codex-busy-280x40.txt"),
-            include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt"),
-            include_str!("../tests/fixtures/harness-state/codex-idle-112x20.txt"),
-            include_str!("../tests/fixtures/harness-state/codex-idle-wrapped-112x40.txt"),
-            include_str!("../tests/fixtures/harness-state/codex-idle-old-busy-280x40.txt"),
-            include_str!("../tests/fixtures/harness-state/codex-modal-112x40.txt"),
-            include_str!("../tests/fixtures/harness-state/codex-starfield-216x6.txt"),
-            include_str!("../tests/fixtures/harness-state/codex-idle-0.155.1-200x40.txt"),
-            include_str!("../tests/fixtures/harness-state/codex-idle-0.156.1-200x40.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-busy-280x40.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-idle-112x40.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-idle-112x20.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-idle-wrapped-112x40.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-idle-old-busy-280x40.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-modal-112x40.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-starfield-216x6.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-idle-0.155.1-200x40.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-idle-0.156.1-200x40.txt"),
         ] {
             assert!(!capture.contains(CODEX_HINT_ROW) && !capture.contains(CODEX_TIP_ROW));
         }
@@ -1523,7 +1524,7 @@ mod tests {
     fn current_identity_keeps_unknown_fields_independent() {
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/codex-unknown-model.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/codex-unknown-model.txt"),
                 ToolKind::Codex
             ),
             HarnessIdentity {
@@ -1533,7 +1534,7 @@ mod tests {
         );
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/claude-unknown-model.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/claude-unknown-model.txt"),
                 ToolKind::Claude
             ),
             HarnessIdentity {
@@ -1544,7 +1545,7 @@ mod tests {
         assert_eq!(
             current_identity(
                 include_str!(
-                    "../tests/fixtures/runtime-identity/codex-known-model-unknown-effort.txt"
+                    "../../tests/fixtures/runtime-identity/codex-known-model-unknown-effort.txt"
                 ),
                 ToolKind::Codex
             ),
@@ -1556,7 +1557,7 @@ mod tests {
         assert_eq!(
             current_identity(
                 include_str!(
-                    "../tests/fixtures/runtime-identity/claude-known-model-unknown-effort.txt"
+                    "../../tests/fixtures/runtime-identity/claude-known-model-unknown-effort.txt"
                 ),
                 ToolKind::Claude
             ),
@@ -1573,7 +1574,7 @@ mod tests {
     fn current_identity_rejects_modal_and_clipped_frames() {
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/harness-state/codex-modal-112x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/codex-modal-112x40.txt"),
                 ToolKind::Codex
             ),
             HarnessIdentity::default()
@@ -1584,14 +1585,14 @@ mod tests {
         );
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/codex-hostile-footer.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/codex-hostile-footer.txt"),
                 ToolKind::Codex
             ),
             HarnessIdentity::default()
         );
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/codex-control-token.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/codex-control-token.txt"),
                 ToolKind::Codex
             ),
             HarnessIdentity {
@@ -1600,7 +1601,7 @@ mod tests {
             }
         );
         let two_lines_above =
-            include_str!("../tests/fixtures/runtime-identity/codex-modal-two-lines-above.txt");
+            include_str!("../../tests/fixtures/runtime-identity/codex-modal-two-lines-above.txt");
         assert_eq!(
             classify(two_lines_above, ToolKind::Codex),
             HarnessState::Idle
@@ -1702,7 +1703,7 @@ mod tests {
     fn current_identity_tracks_changed_effort_and_ignores_historical_footer() {
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/codex-sol-medium.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/codex-sol-medium.txt"),
                 ToolKind::Codex
             ),
             HarnessIdentity {
@@ -1712,7 +1713,7 @@ mod tests {
         );
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/codex-historical-conflict.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/codex-historical-conflict.txt"),
                 ToolKind::Codex
             ),
             HarnessIdentity {
@@ -1733,7 +1734,7 @@ mod tests {
         );
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/codex-idle-112x40.txt"),
                 ToolKind::Grok
             ),
             HarnessIdentity::default()
@@ -1748,7 +1749,7 @@ mod tests {
         };
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt"),
                 ToolKind::Muse
             ),
             expected
@@ -1756,7 +1757,7 @@ mod tests {
         // A staged turn keeps the same footer, with a hint after the mode.
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/muse-occupied-plain-80x24.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/muse-occupied-plain-80x24.txt"),
                 ToolKind::Muse
             ),
             expected
@@ -1767,7 +1768,7 @@ mod tests {
     fn a_muse_footer_without_its_composer_rule_is_unobserved() {
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/muse-transcript-only.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/muse-transcript-only.txt"),
                 ToolKind::Muse
             ),
             HarnessIdentity::default()
@@ -1791,7 +1792,7 @@ mod tests {
         assert_eq!(
             current_identity(
                 include_str!(
-                    "../tests/fixtures/runtime-identity/opencode-composed-plain-80x24.txt"
+                    "../../tests/fixtures/runtime-identity/opencode-composed-plain-80x24.txt"
                 ),
                 ToolKind::OpenCode
             ),
@@ -1805,11 +1806,12 @@ mod tests {
     #[test]
     fn an_opencode_seat_with_history_observes_its_model_at_both_widths() {
         const HISTORY_EMPTY: &str =
-            include_str!("../tests/fixtures/opencode-composer/opencode-history-empty-80x24.txt");
-        const HISTORY_EMPTY_WIDE: &str =
-            include_str!("../tests/fixtures/opencode-composer/opencode-history-empty-200x50.txt");
+            include_str!("../../tests/fixtures/opencode-composer/opencode-history-empty-80x24.txt");
+        const HISTORY_EMPTY_WIDE: &str = include_str!(
+            "../../tests/fixtures/opencode-composer/opencode-history-empty-200x50.txt"
+        );
         const HISTORY_DRAFT: &str =
-            include_str!("../tests/fixtures/opencode-composer/opencode-history-draft-80x24.txt");
+            include_str!("../../tests/fixtures/opencode-composer/opencode-history-draft-80x24.txt");
         let observed = HarnessIdentity {
             model: Some("DeepSeek V4.1 Flash OpenRouter".to_owned()),
             effort: Some("max".to_owned()),
@@ -1850,7 +1852,7 @@ mod tests {
     fn an_opencode_status_row_without_the_composer_edge_is_unobserved() {
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/opencode-transcript-only.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/opencode-transcript-only.txt"),
                 ToolKind::OpenCode
             ),
             HarnessIdentity::default()
@@ -1877,14 +1879,14 @@ mod tests {
         };
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/grok-composer/grok-composed-frame-80x24.txt"),
+                include_str!("../../tests/fixtures/grok-composer/grok-composed-frame-80x24.txt"),
                 ToolKind::Grok
             ),
             expected
         );
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/grok-composer/grok-composed-frame.txt"),
+                include_str!("../../tests/fixtures/grok-composer/grok-composed-frame.txt"),
                 ToolKind::Grok
             ),
             expected
@@ -1895,7 +1897,7 @@ mod tests {
     fn a_grok_border_echo_above_the_live_frame_is_unobserved() {
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/runtime-identity/grok-transcript-only.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/grok-transcript-only.txt"),
                 ToolKind::Grok
             ),
             HarnessIdentity::default()
@@ -1906,7 +1908,7 @@ mod tests {
     fn a_blank_grok_frame_is_unobserved() {
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/grok-composer/grok-boot-frame.txt"),
+                include_str!("../../tests/fixtures/grok-composer/grok-boot-frame.txt"),
                 ToolKind::Grok
             ),
             HarnessIdentity::default()
@@ -1925,14 +1927,14 @@ mod tests {
         };
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/agy-composer/agy-composed-frame.txt"),
+                include_str!("../../tests/fixtures/agy-composer/agy-composed-frame.txt"),
                 ToolKind::Agy
             ),
             expected
         );
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/agy-composer/agy-draft-frame-80x24.txt"),
+                include_str!("../../tests/fixtures/agy-composer/agy-draft-frame-80x24.txt"),
                 ToolKind::Agy
             ),
             expected
@@ -1945,7 +1947,7 @@ mod tests {
         // rule proximity is the anchor, so the modal is unobserved.
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/agy-composer/agy-trust-modal-frame.txt"),
+                include_str!("../../tests/fixtures/agy-composer/agy-trust-modal-frame.txt"),
                 ToolKind::Agy
             ),
             HarnessIdentity::default()
@@ -1954,7 +1956,7 @@ mod tests {
 
     #[test]
     fn an_agy_label_echo_without_a_live_footer_is_unobserved() {
-        let echoed = include_str!("../tests/fixtures/runtime-identity/agy-transcript-only.txt");
+        let echoed = include_str!("../../tests/fixtures/runtime-identity/agy-transcript-only.txt");
         assert_eq!(
             current_identity(echoed, ToolKind::Agy),
             HarnessIdentity::default()
@@ -1988,7 +1990,7 @@ mod tests {
     fn a_boot_agy_frame_is_unobserved() {
         assert_eq!(
             current_identity(
-                include_str!("../tests/fixtures/agy-composer/agy-boot-frame.txt"),
+                include_str!("../../tests/fixtures/agy-composer/agy-boot-frame.txt"),
                 ToolKind::Agy
             ),
             HarnessIdentity::default()
@@ -1997,13 +1999,13 @@ mod tests {
 
     #[test]
     fn a_modal_over_an_input_box_is_unknown() {
-        let capture = include_str!("../tests/fixtures/harness-state/codex-modal-112x40.txt");
+        let capture = include_str!("../../tests/fixtures/harness-state/codex-modal-112x40.txt");
         assert_eq!(classify(capture, ToolKind::Codex), HarnessState::Unknown);
     }
 
     #[test]
     fn unsupported_harnesses_are_unknown_even_with_a_familiar_prompt() {
-        let capture = include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt");
+        let capture = include_str!("../../tests/fixtures/harness-state/codex-idle-112x40.txt");
         assert_eq!(classify(capture, ToolKind::Grok), HarnessState::Unknown);
     }
 
@@ -2017,7 +2019,7 @@ mod tests {
         );
         assert!(has_human_draft(&claude, ToolKind::Claude));
         assert!(!has_human_draft(
-            include_str!("../tests/fixtures/harness-state/codex-busy-280x40.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-busy-280x40.txt"),
             ToolKind::Codex
         ));
         assert!(!has_human_draft("❯ draft", ToolKind::Grok));
@@ -2025,7 +2027,7 @@ mod tests {
 
     /// Codex's idle starfield, as measured (provenance beside the fixture).
     const CODEX_STARFIELD: &str =
-        include_str!("../tests/fixtures/harness-state/codex-starfield-216x6.txt");
+        include_str!("../../tests/fixtures/harness-state/codex-starfield-216x6.txt");
 
     #[test]
     fn a_codex_starfield_is_furniture_to_the_frame_grammar() {
@@ -2084,8 +2086,8 @@ mod tests {
     #[test]
     fn codex_0_156_capitalises_its_footer_model_and_still_classifies() {
         for capture in [
-            include_str!("../tests/fixtures/harness-state/codex-idle-0.155.1-200x40.txt"),
-            include_str!("../tests/fixtures/harness-state/codex-idle-0.156.1-200x40.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-idle-0.155.1-200x40.txt"),
+            include_str!("../../tests/fixtures/harness-state/codex-idle-0.156.1-200x40.txt"),
         ] {
             assert_eq!(classify(capture, ToolKind::Codex), HarnessState::Idle);
             let busy = capture.replace("  12:50", "• Working (3s • esc to interrupt)");
@@ -2136,11 +2138,11 @@ mod tests {
         }
         for (capture, drawn) in [
             (
-                include_str!("../tests/fixtures/harness-state/codex-idle-0.155.1-200x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/codex-idle-0.155.1-200x40.txt"),
                 "gpt-6-astra",
             ),
             (
-                include_str!("../tests/fixtures/harness-state/codex-idle-0.156.1-200x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/codex-idle-0.156.1-200x40.txt"),
                 "GPT-6-Astra",
             ),
         ] {
@@ -2229,15 +2231,15 @@ mod tests {
         for (name, seed) in [
             (
                 "current-idle",
-                include_str!("../fuzz/seeds/harness_observed/current-idle"),
+                include_str!("../../fuzz/seeds/harness_observed/current-idle"),
             ),
             (
                 "current-unknown",
-                include_str!("../fuzz/seeds/harness_observed/current-unknown"),
+                include_str!("../../fuzz/seeds/harness_observed/current-unknown"),
             ),
             (
                 "legacy-idle",
-                include_str!("../fuzz/seeds/harness_observed/legacy-idle"),
+                include_str!("../../fuzz/seeds/harness_observed/legacy-idle"),
             ),
         ] {
             assert!(decode_idle(seed).is_some(), "{name}: {seed:?}");
@@ -2256,7 +2258,7 @@ mod tests {
     #[test]
     fn a_quoted_frame_without_the_tools_composer_is_not_observed() {
         const DRAFT: &str = " half a thought";
-        let muse = include_str!("../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+        let muse = include_str!("../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
         // Drop the composer row and the rule that opens it; the closing rule
         // and the footer under it — the whole of what `RuleFooter` reads —
         // stay exactly where the capture put them.
@@ -2265,7 +2267,7 @@ mod tests {
             .filter(|line| !line.trim_start().starts_with('\u{276f}'))
             .collect::<Vec<_>>()
             .join("\n");
-        let grok = include_str!("../tests/fixtures/grok-composer/grok-composed-frame-80x24.txt");
+        let grok = include_str!("../../tests/fixtures/grok-composer/grok-composed-frame-80x24.txt");
         // Grok's border IS its identity row, so the composer cannot be taken
         // away without taking the model with it. A DRAFT is the honest second
         // case: the box and the label both survive one, and `composed_ui`
@@ -2293,7 +2295,7 @@ mod tests {
             ("grok", drafted_grok.as_str(), ToolKind::Grok),
             (
                 "agy",
-                include_str!("../tests/fixtures/agy-composer/agy-draft-frame-80x24.txt"),
+                include_str!("../../tests/fixtures/agy-composer/agy-draft-frame-80x24.txt"),
                 ToolKind::Agy,
             ),
         ] {
@@ -2317,39 +2319,39 @@ mod tests {
         for (name, capture, tool) in [
             (
                 "claude",
-                include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/claude-idle-167x40.txt"),
                 ToolKind::Claude,
             ),
             (
                 "codex",
-                include_str!("../tests/fixtures/harness-state/codex-idle-112x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/codex-idle-112x40.txt"),
                 ToolKind::Codex,
             ),
             (
                 "muse",
-                include_str!("../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt"),
                 ToolKind::Muse,
             ),
             (
                 "muse-occupied",
-                include_str!("../tests/fixtures/runtime-identity/muse-occupied-plain-80x24.txt"),
+                include_str!("../../tests/fixtures/runtime-identity/muse-occupied-plain-80x24.txt"),
                 ToolKind::Muse,
             ),
             (
                 "opencode",
                 include_str!(
-                    "../tests/fixtures/runtime-identity/opencode-composed-plain-80x24.txt"
+                    "../../tests/fixtures/runtime-identity/opencode-composed-plain-80x24.txt"
                 ),
                 ToolKind::OpenCode,
             ),
             (
                 "grok",
-                include_str!("../tests/fixtures/grok-composer/grok-composed-frame-80x24.txt"),
+                include_str!("../../tests/fixtures/grok-composer/grok-composed-frame-80x24.txt"),
                 ToolKind::Grok,
             ),
             (
                 "agy",
-                include_str!("../tests/fixtures/agy-composer/agy-composed-frame.txt"),
+                include_str!("../../tests/fixtures/agy-composer/agy-composed-frame.txt"),
                 ToolKind::Agy,
             ),
         ] {
@@ -2362,7 +2364,7 @@ mod tests {
         // An unmodelled tool proves nothing either way, gated or not.
         assert_eq!(
             observed_identity(
-                include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt"),
+                include_str!("../../tests/fixtures/harness-state/claude-idle-167x40.txt"),
                 ToolKind::Gemini
             ),
             HarnessIdentity::default()

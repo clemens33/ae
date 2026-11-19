@@ -207,7 +207,7 @@ the session doing the enumerating. Stating the interaction is the fix.
 ## The absence proof, and who is allowed to weaken it (2026-09-11)
 
 The contract above is about `stop`. The same question — *is that session gone?* — is asked
-by a resume, by the fleet listing and by `reboot`, and the answer is `src/tmux.rs`'s
+by a resume, by the fleet listing and by `reboot`, and the answer is `src/l2_model/tmux.rs`'s
 `StopProbe`. It has one strict reading and one widened one, and which one a caller gets is
 the whole design.
 

@@ -2,7 +2,7 @@
 
 The verb is `src/seatcompact_run.rs::run`; the pure half is
 `src/seatcompact.rs` (vocabulary, gates, audit shapes, report). The compaction
-capability is the `compact` row on `ToolAdapter` (`src/tool.rs`), matched by
+capability is the `compact` row on `ToolAdapter` (`src/l2_model/tool.rs`), matched by
 the call site — never the tool.
 
 ## Vocabulary

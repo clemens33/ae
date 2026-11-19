@@ -4,10 +4,11 @@
 //! boundaries the spec reaches only through the stop leg.
 use super::{LimitStanding, limit_standing};
 
-const PLAIN: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-plain.txt");
-const WATCHING: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-watching.txt");
+const PLAIN: &str = include_str!("../../../tests/fixtures/harness-state/muse-limit-plain.txt");
+const WATCHING: &str =
+    include_str!("../../../tests/fixtures/harness-state/muse-limit-watching.txt");
 const IDLE_429: &str =
-    include_str!("../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+    include_str!("../../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
 
 const VOICE: &str = "── Voice input";
 const FOOTER: &str = "  muse-wonder-full-1.0 · max · ~/project · YOLO";

@@ -1391,7 +1391,7 @@ fn digest_hex(domain: &[u8], bytes: &[u8]) -> String {
 /// share one, an archive is its own.
 fn group_of(key: &str) -> String {
     // Whole prefixes: the bare word of a session file is spelled in
-    // src/store.rs alone (tests/it doors).
+    // src/l2_model/store.rs alone (tests/it doors).
     key.strip_prefix("meta:")
         .or_else(|| key.strip_prefix("journal:"))
         .unwrap_or(key)

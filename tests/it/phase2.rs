@@ -1,8 +1,8 @@
 //! Phase 2 end to end: phase-1 facts in, classified liveness and a
 //! schema-version-2 digest out.
 //!
-//! Each test names the criterion it answers. The unit-level halves live beside their code in `src/liveness.rs`
-//! and `src/tmux.rs`; what is here is what needs a real filesystem, a real tmux,
+//! Each test names the criterion it answers. The unit-level halves live beside their code in `src/l2_model/liveness.rs`
+//! and `src/l2_model/tmux.rs`; what is here is what needs a real filesystem, a real tmux,
 //! or the whole pipeline at once.
 
 #![allow(
@@ -1258,7 +1258,9 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     // for a whole review cycle.
     let modules = product_source();
     assert!(
-        modules.iter().any(|(name, _)| name == "src/liveness.rs")
+        modules
+            .iter()
+            .any(|(name, _)| name == "src/l2_model/liveness.rs")
             && modules.iter().any(|(name, _)| name == "src/listing.rs"),
         "the scan reached the phase-2 modules"
     );
@@ -1285,7 +1287,7 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
         sorted(sites(concat!("RecordSnapshot", "::read("))),
         sorted(vec![
             ("src/console.rs".to_owned(), 1),
-            ("src/inventory.rs".to_owned(), 1),
+            ("src/l2_model/inventory.rs".to_owned(), 1),
             ("src/lib.rs".to_owned(), 1),
             ("src/session.rs".to_owned(), 1),
         ]),
