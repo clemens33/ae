@@ -1,7 +1,7 @@
 //! Frozen acceptance cases: appread L2, loader side — the one-shot read
 //! job. Independent navigator appread-nav (Meta Muse Wonder Full 1.0
 //! contributor), frozen against driver appread's plan-r3. Driver installs
-//! byte-identically, wired from src/app/loader.rs via
+//! byte-identically, wired from `src/app/loader.rs` via
 //! `#[cfg(test)] mod read_spec;`, beside `peek_spec`. The link side is
 //! `src/console/appread_link_spec.rs`, the app side
 //! `src/app/appread_spec.rs`.

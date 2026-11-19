@@ -1,5 +1,5 @@
 //! Frozen issue 314 acceptance tests, authored independently before the fix.
-//! Install as `src/app/early_settings_spec.rs` and wire from src/app.rs under cfg(test).
+//! Install as `src/app/early_settings_spec.rs` and wire from `src/app.rs` under cfg(test).
 #![allow(clippy::expect_used, reason = "bounded acceptance fixtures")]
 
 use std::time::Instant;

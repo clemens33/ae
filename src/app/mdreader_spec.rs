@@ -4,7 +4,7 @@
 //! mdreader's plan r2 (lead ACK e6ff0e3a) and nav pins (1)-(5). Oracle: issue
 //! #251 body, its review-amendments and owner-decision comments, and brief
 //! rulings R1-R6 — never the code. Driver installs byte-identically, wired from
-//! src/app.rs via `#[cfg(test)] #[path = "app/mdreader_spec.rs"] mod
+//! `src/app.rs` via `#[cfg(test)] #[path = "app/mdreader_spec.rs"] mod
 //! mdreader_spec;`. The browse decode table row for `m` is the companion
 //! amendment to `tests/it/app_spec.rs`.
 //!

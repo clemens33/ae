@@ -4,7 +4,7 @@
 //! Independent navigator mdreader-nav (Anthropic / Claude Opus 5.5), frozen
 //! against driver mdreader's plan r3 (.local/mdreader/plan-p2.md sha aa803416,
 //! lead ACK bbb467aa). Oracle: issue #251, the brief's P2 words and that ACK
-//! — never the code. Driver installs byte-identically, wired from src/app.rs
+//! — never the code. Driver installs byte-identically, wired from `src/app.rs`
 //! via `#[cfg(test)] #[path = "app/navigate_spec.rs"] mod navigate_spec;`.
 //!
 //! Surface: none new. Every case drives the App the way the terminal does

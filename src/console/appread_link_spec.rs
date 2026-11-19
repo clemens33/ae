@@ -3,7 +3,7 @@
 //! construction. Independent navigator appread-nav (Meta Muse Wonder Full
 //! 1.0 contributor), frozen against driver appread's plan-r3 (lead ruling:
 //! a shared walk, no percent-decoder; nav critique A1-A10 adopted). Driver
-//! installs byte-identically, wired from src/console.rs via
+//! installs byte-identically, wired from `src/console.rs` via
 //! `#[cfg(test)] #[path = "console/appread_link_spec.rs"] mod
 //! appread_link_spec;`. The app side is `src/app/appread_spec.rs`, the
 //! loader side `src/app/loader/read_spec.rs`.

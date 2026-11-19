@@ -1,7 +1,7 @@
 //! Frozen acceptance cases: applink L1, chat side — the link scanner and the
 //! dressed chat. Independent navigator applink-nav (Z.AI GLM 5.3 Flash),
 //! frozen against driver applink's plan r2 and lead's spec-r1 review. Driver
-//! installs byte-identically, wired from src/console.rs via
+//! installs byte-identically, wired from `src/console.rs` via
 //! `#[cfg(test)] #[path = "applink_chat_spec.rs"] mod applink_chat_spec;`.
 //!
 //! Level 1 NOW: a web URL or a repo-style path in a lane body becomes a real

@@ -2,7 +2,7 @@
 //! the file door, the browse model, the draw and the App glue that joins
 //! them. Independent navigator appread-nav (Meta Muse Wonder Full 1.0
 //! contributor), frozen against driver appread's plan-r3. Driver installs
-//! byte-identically, wired from src/app.rs via `#[cfg(test)]
+//! byte-identically, wired from `src/app.rs` via `#[cfg(test)]
 //! #[path = "app/appread_spec.rs"] mod appread_spec;`. The link side is
 //! `src/console/appread_link_spec.rs`, the loader side
 //! `src/app/loader/read_spec.rs`. Spec-r3 adds the seat-click close pin

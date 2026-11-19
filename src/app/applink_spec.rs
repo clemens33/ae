@@ -2,7 +2,7 @@
 //! backend's OSC 8, app.rs's draw flow and the production base seam. Independent
 //! navigator applink-nav (Z.AI GLM 5.3 Flash), frozen against driver applink's
 //! plan r2 and lead's spec-r1 review. Driver installs byte-identically, wired
-//! from src/app.rs via `#[cfg(test)] #[path = "app/applink_spec.rs"] mod
+//! from `src/app.rs` via `#[cfg(test)] #[path = "app/applink_spec.rs"] mod
 //! applink_spec;`. The scanner and the chat live beside their owners in
 //! `src/console/applink_chat_spec.rs`.
 //!
