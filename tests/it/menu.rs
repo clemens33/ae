@@ -8956,5 +8956,70 @@ fn bang_popup_args_on_isolated_tmux_server_reports_missing_client_never_bad_flag
     );
 }
 
+/// #248: the End menu takes the clicked server under another spelling of the
+/// same socket. The session records its tmux server as a symlink to the
+/// socket the client clicked on, so the two selectors differ in spelling and
+/// name one server: End must still archive and unregister it. An equal
+/// spelling passes without the proof, so only a second spelling tells the
+/// recorded-server check from one that refuses whenever the proof says "same".
+#[test]
+fn an_end_menu_accepts_another_spelling_of_the_clicked_server() {
+    let scratch = scratch("end-spelling");
+    if !tmux_present(&scratch) {
+        let _ = fs::remove_dir_all(&scratch);
+        panic!("tmux is not runnable here, so the End menu chain cannot be proven");
+    }
+    let socket = scratch.join("s");
+    let _cleanup = Cleanup {
+        socket: socket.clone(),
+        scratch: scratch.clone(),
+    };
+    let root = scratch.join("state");
+    let project = scratch.join("project");
+    let config = scratch.join("config");
+    write_state_fixture_config(&project, &config);
+    let (clicked, viewed, viewer) = ("spell-clicked", "spell-viewed", "spell-viewer");
+    for session in [clicked, viewed] {
+        launch_ae_session(&socket, &scratch, &root, &project, &config, session);
+    }
+    let id = listing_id(&socket, &scratch, clicked);
+    point_session_range_at(&socket, &scratch, viewed, &id);
+    let client = nested_client(&socket, &scratch, viewed, viewer);
+    let dir = root.join("sessions").join(clicked);
+    let meta = ae::meta::Meta::parse(&fixture_text(&dir.join("meta")));
+    let uuid = meta.session_id().expect("the clicked session has a UUID");
+    let archive = root.join("archive").join(uuid);
+
+    let alias = scratch.join("alias");
+    std::os::unix::fs::symlink(&socket, &alias).expect("a second spelling of the socket");
+    assert_ne!(alias, socket);
+    assert!(ae::meta::rewrite(&dir, "tmux_server", alias.to_str()).is_ok());
+
+    let root_menu = open_context_menu(&socket, &scratch, viewer, &client);
+    assert!(root_menu.contains("End session"), "{root_menu}");
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "e"]).0);
+    let question = wait_for(
+        "the End question on the clicking client",
+        || tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1,
+        |seen| seen.contains("Cancel") && seen.contains(&format!("End '{clicked}' now")),
+    );
+    assert!(!question.contains("different tmux server"), "{question}");
+    assert!(tmux(&socket, &scratch, &["send-keys", "-t", viewer, "E"]).0);
+    let ended = wait_for(
+        "the End owner archives the session whose server is recorded as a symlink",
+        || {
+            format!(
+                "{}\n{}",
+                events_of(&archive),
+                tmux(&socket, &scratch, &["capture-pane", "-p", "-t", viewer]).1
+            )
+        },
+        |seen| seen.contains("end-request") && !state_kept(&dir),
+    );
+    assert!(!ended.contains("different tmux server"), "{ended}");
+    assert!(session_gone(&socket, &scratch, clicked));
+    assert!(state_kept(&root.join("sessions").join(viewed)));
+}
+
 #[path = "endmenu_tmux_spec.rs"]
 mod endmenu_tmux_spec;
