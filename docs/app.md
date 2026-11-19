@@ -579,9 +579,10 @@ over, not that it finished.
 
 `End…` asks first, in the app's own modal, inside tmux or not, with nobody
 attached. An agent never answers it. The question is built from the record and
-from the server the record names, never from a client: the plan `ae end` would
-carry out (`It is removed from the session list.` and `Its history is kept in
-the archive.`), what happens to its agents' conversation files (kept), the commit
+from the server the record names, never from a client: the menu's archive plan
+(`It is removed from the session list.` and `Its history is kept in the
+archive.`; a session with no history says `It has no history to archive.`),
+what happens to its agents' conversation files (kept), the commit
 and push of a git-mode session, and on the app's own session that this app
 closes. A menu End keeps the session's history in the archive and its agents'
 conversation files, whatever the session's config default for
