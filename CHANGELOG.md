@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.94] - 2026-11-19
+- Orch S1a: frozen acceptance spec (red until the slice lands): relay sections, owner-input binding, verify, stamp gate, dispatcher refusals, upgrade gate
+- Orch S1a: install frozen acceptance spec v5 (integration file lint-clean; no assertion changed)
+- Orch S1a B1+B2: the relay renders its sections as ae/orchestrator under three owner modes, binds owner words to a stored ask, and requests --verify proves them
+- Orch S1a B1: a dispatcher relay row shows as ae/orchestrator in the chat view; an owner ask and a legacy relay keep their old tag
+- Orch S1a B1+B2 review fixes: bound verify reads only the ae/orchestrator outer envelope of the stored relay; drop the unused owner_input copy in RelayFacts; correct the relay footer comment
+- Orch S1a B3: context.<slot> stamp written before each lead-pair seat start, relay refuses a target without a current stamp, recipient context text for the relay frame and rule 8c
+- Orch S1a B3 review fixes: context.<slot> grammar in the shared meta reader with fuzz seeds, the stamp rechecked under the relay's delivery locks, stamps only where the adapter has a context channel, a stated remedy on a resume that carries no context turn, and a legacy-envelope driver test with a valid REQUEST delimiter
+- Orch S1a B3: the context stamp is written next to the exec for a start that hands the context, cleared by a start that hands none, rolled back when the exec returns, and guarded by the start's launch id; a bare context.<slot> row spoils the slot's stamp in either order
+- Orch S1a: install frozen acceptance spec v7 (v6 plus one lint-only binding rename in the integration file; no assertion changed)
+- Orch S1a B3: a start that sends no context turn does not happen when its stale context stamp cannot be cleared
+- Orch S1a B4: the dispatcher proof (role, seat overlay, main slot and agent, recorded main pane, one launch id from one meta snapshot) gates relay and relay --status; the orchestrator seat's agent panes are refused spawn, retire, helper cross-session send/ask/review/interrupt, stop, end, rm, rename and every launch form before any effect; the old relay harness gets a dispatcher rig
+- Orchestrator S1a: one fleet census gates the upgrade, the seat prompt re-seeds from its known predecessor, and the dispatcher proof and relay verify move to their owning layers
+- Orchestrator S1a: the seat prompt proof reads the launch grammar and replaces only the known block, the upgrade checks exact moved identities and a late rename carrier, and the seat docs hand lifecycle commands to the owner
+- Orchestrator S1a: the seat prompt re-seed compares the whole [prompt] stanza against the known one, and the config include paths follow the model layer move
+- Macos subset: the migrate helper pin names the renamed unreadable-meta test
+- Console p3 spec: the route oracle pins the chat and Telegram first-line rule, the older-relay ordinary-only rule and the paste rule as the recipient context now words them
+- The leadership context goldens and the orchestrator seed pin carry the approved recipient text and the wrapped prohibition
+- An unread calling pane refuses a dispatcher write with exit 1 as before, and the relay status specs run as the dispatcher
+- Orch S3a: install the frozen acceptance spec (test c17880c9f, registration cd36cac15) byte-identically
+- Orch S3a: install the frozen spec revision feef49f33 byte-identically (the spawned seat keeps its live pane when the inert sleeper cannot take its brief)
+- Orch S3a wip: bound stop and bound resume, dispatcher admission
+- Orch S3a wip: rustfmt and the relaunch plan literal
+- Orch S3a wip: an already-stopped bound stop crosses the declaration guard, the seat is excluded by its parsed name, a later Running placement refuses; charter bound forms
+- Orch S3a wip: rustfmt
+- Orch S3a: fence the bound stop's handoff and kills to the proved tmux incarnation; read the target alone; doubt the roster; record receipts and caller provenance; restore the A2 discretion in the charter
+- Orch S3a: fence pane-view kills to a server-side view of the target, frame the holder listing, scope the client handoff by the proved id, attribute the actor on the dispatcher proof, retry with the bound syntax; native fence driver tests
+- Orch S3a: a pane marker without its server refuses the bound stop; the replacement-server fence cell differs from the live session only in the server pair
+- Orch S3a: close the stamp guard literal, pass no fence on the orphan sweep, render the plan's expect_uuid in the planattach pin, order the driver module
+- Orch S3a driver: start the replacement server with a bounded retry while the killed one exits
+- Orch S3a: a unit test pins the bound receipt's target uuid keys and the caller gap
+- Orch S3a: keep the S1a prohibition and its line break on their own continuation lines after the bound lifecycle permission
+- Orch S3a: name why the bound stop and the locked server decision stay one function each, and read the bound resume refusal with let-else
+- Macos subset: the relay chat rig's dispatcher constructor names its selected caller
+
 ## [v2026.11.93] - 2026-11-19
 - Telegram guards: the crate root is read by its full path, so the guard that src/lib.rs hands the role census to the bridge keeps reading src/lib.rs when the telegram modules move into a layer folder
 - Preserve the orchestrator panel across app restarts
