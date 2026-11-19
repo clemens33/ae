@@ -703,7 +703,7 @@ impl App {
             // namesake row's: the seat's proof opens its panel, and the role
             // holder is no row, so only a namesake row takes the view.
             Answer::Handover { view, at } => {
-                if view.session == ORCH && !self.touched {
+                if view.session == ORCH && view.orchestrator.is_none() && !self.touched {
                     self.orch.opening = Opening::Handed(view.id.clone());
                 }
                 self.keep = (!self.touched).then_some(Keep { view, at });
@@ -719,7 +719,7 @@ impl App {
             Answer::Pressure { name, id, pressure } => {
                 self.pressures.insert(name, (id, pressure));
             }
-            Answer::Orchestrator(proof) => self.proved(proof),
+            Answer::Orchestrator(proof) => self.proved(proof, Timestamp::now().epoch()),
             Answer::Seat { generation, said } => self.seated(generation, said),
         }
     }

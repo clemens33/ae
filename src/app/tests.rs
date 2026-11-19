@@ -34,6 +34,8 @@ use crate::render::Audience;
 use crate::theme::Mark;
 use crate::time::Timestamp;
 use crate::tmux;
+mod f12panel_guards;
+mod f12panel_spec;
 mod flight;
 mod menu_acceptance;
 mod menu_records;
@@ -5878,6 +5880,7 @@ fn handed(pages: usize, rows: usize) -> Answer {
         list_top: None,
         body_top: 0,
         panel: None,
+        orchestrator: None,
     };
     let at = Timestamp::now().epoch();
     Answer::Handover { view, at }

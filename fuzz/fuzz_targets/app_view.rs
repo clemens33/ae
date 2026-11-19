@@ -16,7 +16,9 @@ fuzz_target!(|data: &[u8]| {
         // what was written reads back as the same value.
         let empty_panel =
             text.split('|').count() == 15 && text.strip_suffix('|') == Some(written.as_str());
-        assert!(written == text || text.split('|').nth(6) == Some("overview") || empty_panel);
+        let legacy =
+            text.starts_with("v1|") && (text.split('|').nth(6) == Some("overview") || empty_panel);
+        assert!(written == text || legacy);
         assert_eq!(ae::app::handover::parse(&written), Some(handover.clone()));
         let _ = std::hint::black_box(handover.admits("%7", "2026.10.99", 1_760_259_000));
     }

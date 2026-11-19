@@ -1,6 +1,7 @@
 //! The orchestrator panel: a second chat column on the orchestrator, which is no row of the list. Its state, its keys
 //! and its mouse live here; it is drawn and acted on through the chat column the main window uses.
 
+use super::handover::{self, OrchestratorView, PanelMode};
 use super::{
     App, Arm, Armed, Buffer, Drawn, HISTORY, Instant, Key, Lane, Merged, Mouse, MouseKind, ORCH,
     Position, QUIT_WINDOW, Rc, Refusal, SeatRef, Size, Timestamp, View, apply, draw, fleet, loader,
@@ -29,6 +30,20 @@ impl Panel {
             Bind::Live(uuid) => Some(uuid),
             Bind::Awaiting { .. } | Bind::Line(_) => None,
         }
+    }
+
+    pub(super) fn handover(&self) -> Option<OrchestratorView> {
+        let mode = match (self.full, self.focused) {
+            (true, _) => PanelMode::Full,
+            (false, true) => PanelMode::Side,
+            (false, false) => PanelMode::SideMain,
+        };
+        Some(OrchestratorView {
+            id: self.pin()?.to_owned(),
+            mode,
+            pages: self.column.chat.pages,
+            rows: self.column.chat.rows,
+        })
     }
 }
 
@@ -64,6 +79,7 @@ pub(super) struct Column {
     lane: Rc<Lane>,
     merged: Option<Merged>,
     loading: bool,
+    restored: bool,
     overview: overview::Overview,
     pair: Vec<String>,
     read_only: String,
@@ -88,7 +104,7 @@ pub(super) struct Orch {
     pub(super) active: bool,
     /// The panel the reader was last told of.
     pub(super) told: Option<String>,
-    /// Whether the next proof opens the panel full.
+    /// What the next proof opens.
     pub(super) opening: Opening,
     /// The generation of the last seat ask an opening made.
     asked: u64,
@@ -112,7 +128,7 @@ impl Orch {
     }
 }
 
-/// Whether the next proof of the orchestrator opens its panel full.
+/// What the next proof of the orchestrator opens.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) enum Opening {
     #[default]
@@ -121,6 +137,8 @@ pub(super) enum Opening {
     Home,
     /// A handed-over view of the orchestrator, bound to this uuid.
     Handed(String),
+    /// A carried panel, its timestamp, and whether the app is homed here.
+    Restore(OrchestratorView, i64, bool),
 }
 
 /// The pane target a panel frame drew, as the frozen frame the seat keys act
@@ -261,6 +279,7 @@ impl App {
         std::mem::swap(&mut self.lane, &mut column.lane);
         std::mem::swap(&mut self.merged, &mut column.merged);
         std::mem::swap(&mut self.loading, &mut column.loading);
+        std::mem::swap(&mut self.restored, &mut column.restored);
         std::mem::swap(&mut self.overview, &mut column.overview);
         std::mem::swap(&mut self.pair, &mut column.pair);
         std::mem::swap(&mut self.read_only, &mut column.read_only);
@@ -728,8 +747,8 @@ impl App {
     /// The fold of one proof of the orchestrator: an awaiting panel binds the
     /// first proven incarnation; an open panel that lost its incarnation ends
     /// its own entry, never HELD and never the main column's; a home or
-    /// handed-over view of a running orchestrator opens the panel full.
-    pub(super) fn proved(&mut self, proof: loader::Proof) {
+    /// handed-over view opens the panel.
+    pub(super) fn proved(&mut self, proof: loader::Proof, now: i64) {
         self.orch.proof = proof;
         if let Some(panel) = self.orch.panel.as_mut()
             && matches!(panel.bind, Bind::Awaiting { .. })
@@ -738,14 +757,30 @@ impl App {
             panel.bind = Bind::Live(uuid.clone());
         }
         let opening = std::mem::take(&mut self.orch.opening);
+        let homed = matches!(opening, Opening::Home | Opening::Restore(_, _, true));
+        let current = self.orch.panel.as_ref();
         // A home that runs no seat opens nothing: O asks for it.
-        let opens = match (&opening, &self.orch.proof) {
-            (Opening::Home, proof) => *proof != loader::Proof::Absent,
-            (Opening::Handed(id), loader::Proof::Proven(uuid)) => id == uuid,
-            _ => false,
-        };
-        if opens {
-            self.open_panel(true);
+        match (opening, &self.orch.proof) {
+            (Opening::Restore(view, at, _), loader::Proof::Proven(uuid))
+                if view.id == *uuid
+                    && !self.touched
+                    && handover::fresh(at, now)
+                    && current.is_none_or(|panel| panel.pin() == Some(uuid)) =>
+            {
+                self.open_panel(view.mode == PanelMode::Full);
+                if let Some(panel) = self.orch.panel.as_mut() {
+                    panel.full = view.mode == PanelMode::Full;
+                    panel.focused = view.mode != PanelMode::SideMain;
+                    panel.column.chat.pages = view.pages;
+                    panel.column.chat.rows = view.rows;
+                    panel.column.restored = true;
+                }
+            }
+            (_, proof) if homed && *proof != loader::Proof::Absent => self.open_panel(true),
+            (Opening::Handed(id), loader::Proof::Proven(uuid)) if id == *uuid => {
+                self.open_panel(true);
+            }
+            _ => {}
         }
         if self.orch.panel.is_some() {
             self.end_inert_panel_entry();
@@ -853,7 +888,8 @@ impl App {
             if app.history.len() > HISTORY {
                 app.lost = Some(app.history.remove(0).0);
             }
-            if app.deferred.is_empty() {
+            app.restored &= app.loading;
+            if app.deferred.is_empty() && !app.restored {
                 app.model
                     .clamp_scroll(app.layout.max_scroll, app.layout.page_rows);
             }

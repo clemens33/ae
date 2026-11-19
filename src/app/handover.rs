@@ -16,6 +16,10 @@
 //! text that [`Handover::render`] could have written, except that the
 //! `overview` view token an older core wrote reads as `agents`, the one view,
 //! and an empty trailing `panel` field reads as the line without it.
+//!
+//! An open panel on a proved seat uses `v2`: the same fields, the width
+//! field (possibly empty), and `|mode,uuid,pages,rows`. This version has
+//! one spelling and requires the panel tuple.
 
 use crate::archive::is_canonical_uuid;
 use crate::config::is_agent_name;
@@ -56,6 +60,53 @@ pub struct View {
     /// The side panel's width as dragged, its border column included; the
     /// layout clamps it, never this preference.
     pub panel: Option<u16>,
+    /// An open orchestrator panel, independent of the main view.
+    pub orchestrator: Option<OrchestratorView>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelMode {
+    Side,
+    SideMain,
+    Full,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrchestratorView {
+    pub id: String,
+    pub mode: PanelMode,
+    pub pages: usize,
+    pub rows: usize,
+}
+
+impl OrchestratorView {
+    fn render(&self) -> String {
+        let mode = match self.mode {
+            PanelMode::Side => "side",
+            PanelMode::SideMain => "side-main",
+            PanelMode::Full => "full",
+        };
+        let pages = self.pages.min(PAGES_MAX);
+        let rows = self.rows.min(ROWS_MAX);
+        format!("{mode},{},{pages},{rows}", self.id)
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        let (mode, rest) = text.split_once(',')?;
+        let (id, rest) = rest.split_once(',')?;
+        let (pages, rows) = rest.split_once(',')?;
+        Some(Self {
+            mode: match mode {
+                "side" => PanelMode::Side,
+                "side-main" => PanelMode::SideMain,
+                "full" => PanelMode::Full,
+                _ => return None,
+            },
+            id: is_canonical_uuid(id).then(|| id.to_owned())?,
+            pages: size(pages, PAGES_MAX)?,
+            rows: size(rows, ROWS_MAX)?,
+        })
+    }
 }
 
 /// A [`View`] bound to the pane and version it is for, and to the instant it
@@ -82,8 +133,13 @@ impl Handover {
     pub fn render(&self) -> String {
         let view = &self.view;
         let small = |n: Option<u16>| n.map(|n| n.to_string()).unwrap_or_default();
+        let tag = if view.orchestrator.is_some() {
+            "v2"
+        } else {
+            "v1"
+        };
         let fields = [
-            "v1".to_owned(),
+            tag.to_owned(),
             self.pane.clone(),
             self.version.clone(),
             self.at.to_string(),
@@ -99,9 +155,10 @@ impl Handover {
             view.body_top.min(PAGES_MAX).to_string(),
         ];
         let line = fields.join("|");
-        match view.panel {
-            Some(width) => format!("{line}|{width}"),
-            None => line,
+        match (&view.orchestrator, view.panel) {
+            (Some(orch), width) => format!("{line}|{}|{}", small(width), orch.render()),
+            (None, Some(width)) => format!("{line}|{width}"),
+            (None, None) => line,
         }
     }
 
@@ -146,6 +203,20 @@ pub fn decide(
     }
 }
 
+fn number(text: &str, max: u64) -> Option<u64> {
+    let lead = text.bytes().next()?;
+    let canonical = lead.is_ascii_digit() && (lead != b'0' || text.len() == 1);
+    let digits = text.len() <= 12 && text.bytes().all(|b| b.is_ascii_digit());
+    if !(canonical && digits) {
+        return None;
+    }
+    text.parse::<u64>().ok().filter(|n| *n <= max)
+}
+
+fn size(text: &str, max: usize) -> Option<usize> {
+    usize::try_from(number(text, max as u64)?).ok()
+}
+
 /// The handover `text` spells, or `None` unless it is exactly canonical.
 #[must_use]
 pub fn parse(text: &str) -> Option<Handover> {
@@ -153,12 +224,16 @@ pub fn parse(text: &str) -> Option<Handover> {
         return None;
     }
     let parts: Vec<&str> = text.split('|').collect();
-    let (parts, panel) = match parts.as_slice() {
-        [fields @ .., panel] if fields.len() == 14 => (fields, Some(*panel)),
-        fields => (fields, None),
+    let (parts, panel, orchestrator) = match (parts.first().copied()?, parts.as_slice()) {
+        ("v1", fields) if fields.len() == 14 => (fields, "", None),
+        ("v1", [fields @ .., panel]) if fields.len() == 14 => (fields, *panel, None),
+        ("v2", [fields @ .., panel, orch]) if fields.len() == 14 => {
+            (fields, *panel, Some(OrchestratorView::parse(orch)?))
+        }
+        _ => return None,
     };
     let [
-        tag,
+        _,
         pane,
         version,
         at,
@@ -176,15 +251,6 @@ pub fn parse(text: &str) -> Option<Handover> {
     else {
         return None;
     };
-    let number = |text: &str, max: u64| -> Option<u64> {
-        let lead = text.bytes().next()?;
-        let canonical = lead.is_ascii_digit() && (lead != b'0' || text.len() == 1);
-        let digits = text.len() <= 12 && text.bytes().all(|b| b.is_ascii_digit());
-        if !(canonical && digits) {
-            return None;
-        }
-        text.parse::<u64>().ok().filter(|n| *n <= max)
-    };
     let optional = |text: &str, max: u64| match text {
         "" => Some(None),
         _ => number(text, max).map(Some),
@@ -195,8 +261,7 @@ pub fn parse(text: &str) -> Option<Handover> {
             .transpose()
             .ok()
     };
-    let size = |text: &str, max: usize| usize::try_from(number(text, max as u64)?).ok();
-    if !matches!(*tab, "overview" | "agents") {
+    if !(*tab == "agents" || *tab == "overview" && orchestrator.is_none()) {
         return None;
     }
     let focus = match *focus {
@@ -216,10 +281,8 @@ pub fn parse(text: &str) -> Option<Handover> {
         rows: size(rows, ROWS_MAX)?,
         list_top,
         body_top: size(body_top, PAGES_MAX)?,
-        panel: match panel {
-            Some(panel) => small(panel)?,
-            None => None,
-        },
+        panel: small(panel)?,
+        orchestrator,
     };
     let digits = pane.strip_prefix('%')?;
     let pane =
@@ -229,7 +292,7 @@ pub fn parse(text: &str) -> Option<Handover> {
         && version.bytes().all(|b| b.is_ascii_digit() || b == b'.'))
     .then(|| (*version).to_owned())?;
     let at = number(at, AT_MAX).filter(|at| *at >= 1)?;
-    (*tag == "v1").then_some(Handover {
+    Some(Handover {
         pane,
         version,
         at: i64::try_from(at).ok()?,
@@ -242,6 +305,48 @@ mod tests {
     use super::*;
 
     const WIRE: &str = "v1|%7|2026.10.99|1760259000|web|6f1c2b7e-0d3a-4c58-9a2e-5b1d7c9e0a11|agents|colead|31|9|2|0|1|4";
+    const ORCH_ID: &str = "0199c0de-bbbb-4890-abcd-ef0123456789";
+
+    #[test]
+    fn v2_round_trips_both_width_forms_and_clamps_panel_scroll() {
+        let base = WIRE.replacen("v1|", "v2|", 1);
+        for width in ["", "56"] {
+            let text = format!("{base}|{width}|side,{ORCH_ID},1000000,65535");
+            let mut handover = parse(&text).expect("both v2 width forms are canonical");
+            assert_eq!(handover.render(), text);
+            let panel = handover.view.orchestrator.as_mut().expect("open panel");
+            (panel.pages, panel.rows) = (usize::MAX, usize::MAX);
+            assert_eq!(
+                handover.render(),
+                text,
+                "the writer caps both scroll values"
+            );
+        }
+    }
+
+    #[test]
+    fn v2_requires_the_exact_open_panel_grammar() {
+        let base = WIRE.replacen("v1|", "v2|", 1);
+        let tuple = format!("full,{ORCH_ID},0,0");
+        let canonical = format!("{base}||{tuple}");
+        assert!(parse(&canonical).is_some());
+        for bad in [
+            base.clone(),
+            format!("{base}|56"),
+            format!("{base}||"),
+            format!("{WIRE}||{tuple}"),
+            canonical.replace("|agents|", "|overview|"),
+            format!("{base}||full,{ORCH_ID},0"),
+            format!("{base}||{tuple},0"),
+            canonical.replace("full,", "unknown,"),
+            canonical.replace(ORCH_ID, &ORCH_ID.to_ascii_uppercase()),
+            canonical.replace(ORCH_ID, &ORCH_ID[..35]),
+            format!("{base}||full,{ORCH_ID},1000001,0"),
+            format!("{base}||full,{ORCH_ID},0,65536"),
+        ] {
+            assert!(parse(&bad).is_none(), "refuse {bad:?}");
+        }
+    }
 
     #[test]
     fn what_parses_renders_back_to_the_same_text() {

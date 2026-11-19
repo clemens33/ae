@@ -1,6 +1,7 @@
 //! The selection: which session, seat or item is selected and opened, the stopped fold, the parked panes and the handover view.
 
 use super::fleet::Facts;
+use super::panel::{Opening, Panel};
 use super::{
     Answer, App, Arm, Buffer, Drawn, Instant, LANE_HOLD, Move, ORCH, QUIT_WINDOW, Rc, Reading,
     Refusal, Request, SeatRef, Shown, Stage, Status, Timestamp, handover, loader, model, open,
@@ -173,6 +174,10 @@ impl App {
             handover::Verdict::Apply => {
                 self.model.adopt(&self.fleet, &keep.view);
                 self.restored = true;
+                if let Some(panel) = keep.view.orchestrator {
+                    let homed = self.orch.opening == Opening::Home;
+                    self.orch.opening = Opening::Restore(panel, keep.at, homed);
+                }
             }
             handover::Verdict::Defer => self.keep = Some(keep),
             handover::Verdict::Discard => {}
@@ -180,7 +185,7 @@ impl App {
     }
 
     /// What this app hands to the one that replaces it in `pane`, at `now`:
-    /// the view of its selection, bound to the uuid the last read recorded.
+    /// the view of its selection and panel, each bound to its recorded uuid.
     pub(super) fn handover(
         &self,
         pane: &str,
@@ -188,7 +193,8 @@ impl App {
         now: i64,
     ) -> Option<handover::Handover> {
         let name = self.model.selected()?;
-        let view = self.model.view(self.ids.get(name)?)?;
+        let mut view = self.model.view(self.ids.get(name)?)?;
+        view.orchestrator = self.orch.panel.as_ref().and_then(Panel::handover);
         Some(handover::Handover {
             pane: pane.to_owned(),
             version: version.to_owned(),

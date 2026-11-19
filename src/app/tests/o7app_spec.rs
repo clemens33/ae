@@ -898,6 +898,7 @@ fn p3_an_orchestrator_home_or_handover_opens_full_without_an_ordinary_row() {
                     list_top: None,
                     body_top: 0,
                     panel: None,
+                    orchestrator: None,
                 },
                 at: Timestamp::now().epoch(),
             });

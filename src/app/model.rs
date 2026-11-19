@@ -271,8 +271,8 @@ pub struct Model {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct Chat {
     selected: Option<String>,
-    pages: usize,
-    rows: usize,
+    pub(super) pages: usize,
+    pub(super) rows: usize,
     focus: Option<String>,
     turn: Option<u64>,
 }
@@ -674,6 +674,7 @@ impl Model {
             list_top: self.list_top,
             body_top: self.body_top,
             panel: self.split.panel,
+            orchestrator: None,
         })
     }
 
@@ -1629,6 +1630,7 @@ mod tests {
             list_top: None,
             body_top: 0,
             panel: None,
+            orchestrator: None,
         };
         model.adopt(&both, &view);
         assert_eq!(model.epoch(), before + 1);

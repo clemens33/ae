@@ -1323,6 +1323,13 @@ seat, drafts and marked turns never carry: they hold a restart back. A core with
 one is refused and cleared by the next app that reads it or dies with the
 tmux server.
 
+A live orchestrator panel carries its side or full mode, focus, and scroll
+with the selected session's view. The new app opens the panel when the
+orchestrator proof confirms the same incarnation within the same 60 s.
+The panel needs a selected session whose view the new app can adopt.
+An older core that receives the open-panel format on respawn starts with
+its default view.
+
 An app that execs carries the same line as an internal argument,
 `--app-view <view>`, after your operands — not in the usage text, never typed
 by hand — bound to its own process id instead of a pane, since exec keeps

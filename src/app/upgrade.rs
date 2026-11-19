@@ -364,6 +364,7 @@ mod tests {
             list_top: None,
             body_top: 4,
             panel: None,
+            orchestrator: None,
         };
         let text = |pane: &str, version: &str, at: i64| {
             let (pane, version) = (pane.to_owned(), version.to_owned());
