@@ -1339,7 +1339,7 @@ fn agents_suffix(agents: Option<&[crate::tmux::PickerAgent]>) -> String {
         |agents| {
             let working = agents
                 .iter()
-                .filter(|agent| agent.mark() == Mark::Working)
+                .filter(|agent| matches!(agent.mark(), Mark::Working | Mark::Background))
                 .count();
             format!(" · {} agents, {working} working", agents.len())
         },
@@ -2978,6 +2978,25 @@ mod tests {
         assert!(
             roomy.items[2].label.contains("2 agents, 1 working"),
             "waiting-agent is not counted as working: {}",
+            roomy.items[2].label
+        );
+    }
+
+    /// A quiet seat with a proven job is background work and counts as
+    /// working, as in the app header; a quiet seat without one does not.
+    #[test]
+    fn the_picker_working_count_includes_background_seats() {
+        let mut other = session("other", "$2", 0, "");
+        other.agents = "v3;2000;60;lead:p:working:%10:::::;a:p:idle:%11:::::1;b:p:done:%12:::::1;c:p:idle:%13:::::"
+            .to_owned();
+        let sessions = [
+            with_agents(session("current", "$1", 0, ""), 2_000, 1),
+            other,
+        ];
+        let roomy = bounded_menu(&sessions, 10);
+        assert!(
+            roomy.items[2].label.contains("4 agents, 3 working"),
+            "{}",
             roomy.items[2].label
         );
     }

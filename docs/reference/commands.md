@@ -889,8 +889,10 @@ reader without changing its raw option, so delimiters and control bytes cannot
 split the record. The current session is followed by an indented
 `mark name profile state` row for every recorded agent it has; no other
 session's roster is ever expanded. A session whose roster stays collapsed
-summarizes it as `· N agents, M working`, counting only working-mark seats —
-a waiting-agent seat is quiet, not working, and draws its own `◔` mark.
+summarizes it as `· N agents, M working`, counting the working-mark seats and
+the seats whose proven background job draws the `◉` mark — a quiet seat
+without a job, such as a waiting-agent seat that draws its own `◔` mark, is
+not working.
 
 **Stopped sessions follow the running ones**, most recently live first and then
 by name, drawn with the `stopped` state word and the same bounded name, branch

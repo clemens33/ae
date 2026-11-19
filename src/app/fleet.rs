@@ -388,7 +388,8 @@ pub(crate) fn micros_age(micros: Option<i64>, now: Timestamp) -> Option<i64> {
 
 /// The whole fleet in numbers for the header; `agents` are the live seats of the
 /// running sessions, a stopped session's saved seats and a dead seat not among
-/// them; `unknown` makes `agents` and `working` lower bounds (a running session
+/// them; `working` counts the seats that work and those that run background work
+/// (`Mark::Working` and `Mark::Background`); `unknown` makes `agents` and `working` lower bounds (a running session
 /// published no seat facts).
 #[derive(Debug, Default)]
 pub(super) struct Summary {
@@ -409,9 +410,9 @@ pub(super) fn summary(fleet: &Fleet) -> Summary {
                 .filter(|(mark, _, _)| *mark != Mark::Dead)
                 .for_each(|(mark, _, count)| {
                     sum.agents = sum.agents.saturating_add(*count);
-                    sum.working = sum
-                        .working
-                        .saturating_add(count * usize::from(*mark == Mark::Working));
+                    sum.working = sum.working.saturating_add(
+                        count * usize::from(matches!(mark, Mark::Working | Mark::Background)),
+                    );
                 }),
             Counts::Unknown => sum.unknown = true,
             Counts::Stopped => {}

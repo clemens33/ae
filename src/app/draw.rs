@@ -1362,11 +1362,13 @@ fn summary_head(ctx: &Ctx<'_, '_>, buf: &mut Buffer, rule: u16, arrows: &str) {
 }
 
 /// The sidebar's top line: the agents of the running sessions, how many work
-/// and how many sessions need the human — `Agents 32 · ● Working 10 · ⚠ Needs
-/// you 1`. It tries four rungs and keeps the first that fits `room`: the words,
-/// short labels (`Agt 32 · ● Wrk 10 · ⚠ Need 1`), an icon and a count each (`◈
-/// 32 ● 10 ⚠ 1`), the needs-you count alone. Working and Needs you wear the mark
-/// their rows wear before the label, Agents none. A count is never cut and a
+/// and how many sessions need the human — `Agents 32 · ● ◉ Working 10 · ⚠ Needs
+/// you 1`. Working counts the seats that work and those that run background
+/// work. It tries four rungs and keeps the first that fits `room`: the words,
+/// short labels (`Agt 32 · ● ◉ Wrk 10 · ⚠ Need 1`), an icon and a count each (`◈
+/// 32 ● ◉ 10 ⚠ 1`), the needs-you count alone. Working wears both marks its
+/// rows wear (working and background), Needs you its one, before the label,
+/// Agents none. A count is never cut and a
 /// lower bound keeps its `+?`. Counts use regular text ink and the labels and
 /// separators dim ink; the needs-you count wears `tone`, and a mark the accent
 /// it always did.
@@ -1381,10 +1383,16 @@ fn summary_band(ctx: &Ctx<'_, '_>, fleet: &Fleet, room: u16, tone: Style) -> Lin
     ];
     let (text, dim) = (paint.fg(|p| p.text), paint.fg(|p| p.dim));
     let inks = [text, text, tone];
-    let marks = [
-        (if ctx.icons { "◈" } else { "@" }, text),
-        (Mark::Working.glyph(ctx.icons), paint.mark(Mark::Working)),
-        (Mark::NeedsYou.glyph(ctx.icons), tone),
+    let marks: [Vec<(&'static str, Style)>; 3] = [
+        vec![(if ctx.icons { "◈" } else { "@" }, text)],
+        vec![
+            (Mark::Working.glyph(ctx.icons), paint.mark(Mark::Working)),
+            (
+                Mark::Background.glyph(ctx.icons),
+                paint.mark(Mark::Background),
+            ),
+        ],
+        vec![(Mark::NeedsYou.glyph(ctx.icons), tone)],
     ];
     let words = |labels: [&'static str; 3]| {
         let mut spans = Vec::new();
@@ -1392,8 +1400,10 @@ fn summary_band(ctx: &Ctx<'_, '_>, fleet: &Fleet, room: u16, tone: Style) -> Lin
             spans.extend((!spans.is_empty()).then(|| Span::styled(" · ", dim)));
             // Agents wears no mark; Working and Needs you wear their rows'.
             if at > 0 {
-                spans.push(Span::styled(marks[at].0, marks[at].1));
-                spans.push(Span::styled(" ", dim));
+                for (glyph, ink) in &marks[at] {
+                    spans.push(Span::styled(*glyph, *ink));
+                    spans.push(Span::styled(" ", dim));
+                }
             }
             spans.push(Span::styled(label, dim));
             spans.push(Span::styled(format!(" {number}"), inks[at]));
@@ -1404,7 +1414,10 @@ fn summary_band(ctx: &Ctx<'_, '_>, fleet: &Fleet, room: u16, tone: Style) -> Lin
         let mut spans = Vec::new();
         for &at in keep {
             spans.extend((!spans.is_empty()).then(|| Span::styled(" ", dim)));
-            spans.push(Span::styled(marks[at].0.to_owned(), marks[at].1));
+            for (n, (glyph, ink)) in marks[at].iter().enumerate() {
+                spans.extend((n > 0).then(|| Span::styled(" ", dim)));
+                spans.push(Span::styled(*glyph, *ink));
+            }
             spans.push(Span::styled(format!(" {}", numbers[at]), inks[at]));
         }
         Line::from(spans)
@@ -5244,9 +5257,8 @@ mod tests {
         }
         shot.model = Model::new(&shot.fleet);
         for (width, expected) in [
-            (90, "Agt 18 · ● Wrk 18 · ⚠ Need 0"),
-            (120, "Agt 18 · ● Wrk 18 · ⚠ Need 0"),
-            (200, "Agents 18 · ● Working 18 · ⚠ Needs you 0"),
+            (90, "Agt 18 · ● ◉ Wrk 18 · ⚠ Need 0"),
+            (120, "Agt 18 · ● ◉ Wrk 18 · ⚠ Need 0"),
         ] {
             let (buf, layout) = declutter_frame(&shot, width, true);
             assert_eq!(declutter_line(&buf, &layout, 0).trim(), expected);
@@ -5264,22 +5276,27 @@ mod tests {
         let (buf, layout) = declutter_frame(&shot, 160, true);
         assert_eq!(
             declutter_line(&buf, &layout, 0).trim(),
-            "Agents 1 · ● Working 0 · ⚠ Needs you 1"
+            "Agents 1 · ● ◉ Working 0 · ⚠ Needs you 1"
         );
         assert!(declutter_line(&buf, &layout, 1).trim().is_empty());
     }
 
-    /// Working and Needs you wear the marks their rows wear, before the label
-    /// (`●` and `⚠`, `*` and `!` with icons off) in the mark's accent and the
+    /// Working wears the two marks its rows wear and Needs you its one, before the
+    /// label (`● ◉` and `⚠`, `* &` and `!` with icons off) in the mark's accent and the
     /// line's own tone; Agents wears none. A width that holds only the icons
     /// draws them with the same cells and ink.
     #[test]
     fn the_summary_words_wear_the_marks_their_rows_wear() {
         let palette = crate::theme::Palette::DARCULA;
         let working = super::colour(palette.accent(Mark::Working));
+        let background = super::colour(palette.accent(Mark::Background));
         for needy in [false, true] {
             for icons in [true, false] {
-                let (work, need) = if icons { ("●", "⚠") } else { ("*", "!") };
+                let (work, bg, need) = if icons {
+                    ("●", "◉", "⚠")
+                } else {
+                    ("*", "&", "!")
+                };
                 let ink = super::colour(if needy {
                     palette.needs_you
                 } else {
@@ -5291,15 +5308,12 @@ mod tests {
                 }
                 shot.fleet.rows[0].needy = needy;
                 shot.model = Model::new(&shot.fleet);
-                let rungs = [
-                    (200, "Agents 18 · ", "Working", "Needs you"),
-                    (90, "Agt 18 · ", "Wrk", "Need"),
-                ];
+                let rungs = [(90, "Agt 18 · ", "Wrk", "Need")];
                 for (width, head, working_word, needs_word) in rungs {
                     let (buf, layout) = declutter_frame(&shot, width, icons);
                     let text = declutter_line(&buf, &layout, 0);
                     let want = format!(
-                        "{head}{work} {working_word} 18 · {need} {needs_word} {}",
+                        "{head}{work} {bg} {working_word} 18 · {need} {needs_word} {}",
                         u8::from(needy)
                     );
                     assert_eq!(text.trim(), want, "{width}/{icons}/{needy}");
@@ -5309,6 +5323,7 @@ mod tests {
                             .expect("the mark is drawn")
                     };
                     assert_eq!(buf[(at(work), 0)].fg, working, "{width}/{icons}");
+                    assert_eq!(buf[(at(bg), 0)].fg, background, "{width}/{icons}/bg");
                     assert_eq!(buf[(at(need), 0)].fg, ink, "{width}/{icons}/{needy}");
                 }
             }
@@ -5318,9 +5333,44 @@ mod tests {
         shot.model = Model::new(&shot.fleet);
         let (buf, layout) = declutter_frame(&shot, 90, true);
         let text = declutter_line(&buf, &layout, 0);
-        assert_eq!(text.trim(), "◈ 123456789 ● 123456789 ⚠ 0");
+        assert_eq!(text.trim(), "◈ 123456789 ● ◉ 123456789 ⚠ 0");
         let mark = (0..layout.list.width).find(|x| buf[(*x, 0)].symbol() == "●");
         assert_eq!(mark.map(|x| buf[(x, 0)].fg), Some(working), "icons rung");
+    }
+
+    /// Working counts a seat that runs background work with the seats that
+    /// work: one working and one background seat make Working 2, a fleet of
+    /// background seats only counts them, and both marks lead the label.
+    #[test]
+    fn the_working_count_includes_background_seats() {
+        let mut shot = sessions(1);
+        shot.fleet.rows[0].counts = Counts::Marks(vec![
+            (Mark::Working, false, 1),
+            (Mark::Background, false, 1),
+        ]);
+        shot.model = Model::new(&shot.fleet);
+        assert_eq!(super::summary(&shot.fleet).working, 2);
+        let (buf, layout) = declutter_frame(&shot, 200, true);
+        assert_eq!(
+            declutter_line(&buf, &layout, 0).trim(),
+            "Agents 2 · ● ◉ Working 2 · ⚠ Needs you 0"
+        );
+        let (buf, layout) = declutter_frame(&shot, 200, false);
+        assert_eq!(
+            declutter_line(&buf, &layout, 0).trim(),
+            "Agents 2 · * & Working 2 · ! Needs you 0"
+        );
+        let mut shot = sessions(2);
+        for row in &mut shot.fleet.rows {
+            row.counts = Counts::Marks(vec![(Mark::Background, false, 3)]);
+        }
+        shot.model = Model::new(&shot.fleet);
+        assert_eq!(super::summary(&shot.fleet).working, 6);
+        let (buf, layout) = declutter_frame(&shot, 90, true);
+        assert_eq!(
+            declutter_line(&buf, &layout, 0).trim(),
+            "Agt 6 · ● ◉ Wrk 6 · ⚠ Need 0"
+        );
     }
 
     /// Narrow summaries keep complete digits by dropping labels first; icons
@@ -5334,8 +5384,8 @@ mod tests {
         shot.fleet.rows[0].counts = Counts::Marks(vec![(Mark::Working, false, 123_456_789)]);
         shot.model = Model::new(&shot.fleet);
         for (icons, expected) in [
-            (true, "◈ 123456805 ● 123456805 ⚠ 0"),
-            (false, "@ 123456805 * 123456805 ! 0"),
+            (true, "◈ 123456805 ● ◉ 123456805 ⚠ 0"),
+            (false, "@ 123456805 * & 123456805 ! 0"),
         ] {
             let (buf, layout) = declutter_frame(&shot, 90, icons);
             assert_eq!(declutter_line(&buf, &layout, 0).trim(), expected);
@@ -5379,7 +5429,7 @@ mod tests {
         let mut shot = sessions(30);
         shot.fleet.rows[0].needy = true;
         // Both needy sessions are in view and each tallies one working agent: an
-        // arrow or a third digit would cost the cells the full rung, with its
+        // arrow or a third digit would cost the cells the short rung, with its
         // marks, fills.
         shot.fleet.rows[1].needy = true;
         for row in &mut shot.fleet.rows {
@@ -5394,7 +5444,7 @@ mod tests {
             let text = super::colour(palette.text);
             let dim = super::colour(palette.dim);
             assert_eq!(buf[(2, 0)].fg, dim, "{name}: Agents label");
-            assert_eq!(buf[(9, 0)].fg, text, "{name}: agent count");
+            assert_eq!(buf[(6, 0)].fg, text, "{name}: agent count");
             for y in [0, 1] {
                 for x in 0..44 {
                     assert!(
@@ -5412,12 +5462,12 @@ mod tests {
                 .expect("Needs you label");
             assert_eq!(buf[(label, 0)].fg, dim, "{name}: Needs you label");
             assert_eq!(
-                buf[(label + 10, 0)].symbol(),
+                buf[(label + 5, 0)].symbol(),
                 "2",
                 "{name}: two needy sessions"
             );
             assert_eq!(
-                buf[(label + 10, 0)].fg,
+                buf[(label + 5, 0)].fg,
                 super::colour(palette.needs_you),
                 "{name}: needs-you count"
             );
@@ -5431,7 +5481,7 @@ mod tests {
                     assert!(
                         matches!(cell.symbol(), "↑" | "↓")
                             || (y == 0 && matches!(cell.symbol(), "●" | "⚠"))
-                            || (y == 0 && x == label + 10 && cell.symbol() == "2"),
+                            || (y == 0 && x == label + 5 && cell.symbol() == "2"),
                         "{name} ({x},{y}): {:?} wears {:?}",
                         cell.symbol(),
                         cell.fg
@@ -6043,14 +6093,14 @@ mod tests {
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
         assert_eq!(buf[(41, 0)].symbol(), " ", "no key marker at end-1");
-        // The full rung with its marks spans cols 2-40, so the count ends the line.
+        // The short rung with its marks spans cols 2-30, so the count ends the line.
         assert_eq!(
-            buf[(40, 0)].symbol(),
+            buf[(30, 0)].symbol(),
             "2",
             "the count ends the line: {:?}",
             line(&buf, 0).concat()
         );
-        // (c) several long names fill the room to col 41 and leave the end cells blank.
+        // (c) the short rung of three needy sessions ends at col 31 and leaves the end cells blank.
         let mut shot = Shot::new();
         shot.fleet.rows = vec![
             row("a", 1, false),
@@ -6061,12 +6111,12 @@ mod tests {
         shot.model = Model::new(&shot.fleet);
         let buf = shot.draw(160, 43, READ_ONLY);
         assert_eq!(
-            buf[(41, 0)].symbol(),
+            buf[(31, 0)].symbol(),
             "3",
             "the count ends the line: {:?}",
             line(&buf, 0).concat()
         );
-        assert_eq!(buf[(42, 0)].symbol(), " ", "the end cells stay blank");
+        assert_eq!(buf[(32, 0)].symbol(), " ", "the end cells stay blank");
         // (d) only needy rows outside the view contribute to the suffix.
         let mut shot = Shot::new();
         shot.fleet.rows = (1..=30)
@@ -7347,7 +7397,10 @@ mod tests {
         });
         let _ = shot.model.drag_to(5);
         let _ = shot.model.let_go();
-        for (icons, bare) in [(true, "◈ 17+? ● 12+? ⚠ 3"), (false, "@ 17+? * 12+? ! 3")] {
+        for (icons, bare) in [
+            (true, "◈ 17+? ● ◉ 12+? ⚠ 3"),
+            (false, "@ 17+? * & 12+? ! 3"),
+        ] {
             let (buf, layout) = declutter_frame(&shot, 100, icons);
             assert_eq!(
                 declutter_line(&buf, &layout, 0)
@@ -7355,7 +7408,7 @@ mod tests {
                     .strip_suffix('↓')
                     .map(str::trim_end),
                 Some(bare),
-                "the short rung with its marks takes 32 cells, the line beside one arrow 28"
+                "the short rung with its marks takes 34 cells, the line beside one arrow 28"
             );
             assert!(declutter_line(&buf, &layout, 1).trim().is_empty());
             shot.key(crate::app::model::Key::NextNeed);
@@ -7374,8 +7427,8 @@ mod tests {
         shot.fleet.rows.truncate(1);
         shot.model = Model::new(&shot.fleet);
         for (counts, expected) in [
-            (Counts::Marks(Vec::new()), "Agt 0 · * Wrk 0 · ! Need 0"),
-            (Counts::Unknown, "Agt 0+? · * Wrk 0+? · ! Need 0"),
+            (Counts::Marks(Vec::new()), "Agt 0 · * & Wrk 0 · ! Need 0"),
+            (Counts::Unknown, "@ 0+? * & 0+? ! 0"),
         ] {
             shot.fleet.rows[0].counts = counts;
             let (buf, layout) = declutter_frame(&shot, 100, false);
@@ -7421,7 +7474,7 @@ mod tests {
                 .trim_end()
                 .strip_suffix('↓')
                 .map(str::trim),
-            Some("@ 1150+? * 1000+? ! 100"),
+            Some("@ 1150+? * & 1000+? ! 100"),
             "the right-aligned arrow reserves room in the one-line ladder"
         );
     }
