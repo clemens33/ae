@@ -80,6 +80,15 @@ fn gate_sites() -> Vec<(String, usize)> {
     sites
 }
 
+/// `items` in sorted order, duplicates kept. An inventory assertion compares both sides
+/// through it, so it pins the members and their count and not the order a path rename
+/// leaves in a literal list.
+fn sorted<T: Ord>(items: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut items: Vec<T> = items.into_iter().collect();
+    items.sort();
+    items
+}
+
 /// Exactly two commands REFUSE on the floor: the picker tmux draws, and the
 /// launch that would create a session ae then has to draw into.
 ///
@@ -89,8 +98,8 @@ fn gate_sites() -> Vec<(String, usize)> {
 #[test]
 fn the_floor_is_asked_at_exactly_the_two_sites_that_create_or_draw() {
     assert_eq!(
-        gate_sites(),
-        vec![
+        sorted(gate_sites()),
+        sorted(vec![
             // `ae orchestrator --popup`'s own `clears_floor`, and nothing else:
             // the public launch path decides NOTHING about the floor, so a
             // launch has exactly one gate and every write sits below it.
@@ -99,7 +108,7 @@ fn the_floor_is_asked_at_exactly_the_two_sites_that_create_or_draw() {
             // `_launch`'s call to it ahead of the first-run config seed and the
             // migration chain — which the `compact` relaunch goes through too.
             ("src/session_launch.rs".to_owned(), 3),
-        ],
+        ]),
         "a new floor gate is a ruling, not a diff — see AGENTS.md"
     );
 }
@@ -426,13 +435,13 @@ fn no_tmux_format_literal_in_src_carries_a_control_character() {
 
     let extracted = extracted_test_modules(source_view::product());
     assert_eq!(
-        extracted,
-        [
+        sorted(extracted.iter().copied()),
+        sorted([
             "src/app/tests.rs",
             "src/session_launch/tests.rs",
             "src/tmux/tests.rs",
             "src/watchdog_daemon/tests.rs"
-        ],
+        ]),
         "the extracted test modules the scan leaves out changed: review the new one"
     );
     let (mut hits, mut offenders) = (0, Vec::new());

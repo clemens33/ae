@@ -53,6 +53,15 @@ fn src_holders(needle: &str) -> Vec<String> {
     found
 }
 
+/// `items` in sorted order, duplicates kept. An inventory assertion compares both sides
+/// through it, so it pins the members and their count and not the order a path rename
+/// leaves in a literal list.
+fn sorted<T: Ord>(items: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut items: Vec<T> = items.into_iter().collect();
+    items.sort();
+    items
+}
+
 /// One file of the shared tree, whole.
 fn tree_text(path: &str) -> &'static str {
     source_view::tree()
@@ -158,8 +167,8 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
     // Asked of the compiler, so no `allow` of any shape can hide a site from it:
     // these ARE the places this crate can start a child process.
     assert_eq!(
-        sites,
-        vec![
+        sorted(sites),
+        sorted(vec![
             "src/install.rs".to_owned(),
             "src/run.rs".to_owned(),
             "src/transport.rs".to_owned(),
@@ -170,7 +179,7 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
             "tests/it/migrate.rs".to_owned(),
             "tests/it/parity.rs".to_owned(),
             "tests/it/shape.rs".to_owned(),
-        ],
+        ]),
         "the set of places this crate can start a child process changed"
     );
 }
@@ -187,8 +196,8 @@ fn run_git_has_exactly_one_product_caller() {
         "the scan found no `run_git` anywhere in src/; it did not run"
     );
     assert_eq!(
-        holders,
-        vec!["src/git.rs".to_owned(), "src/transport.rs".to_owned()],
+        sorted(holders),
+        sorted(vec!["src/git.rs".to_owned(), "src/transport.rs".to_owned()]),
         "the git process leg gained (or lost) a product holder"
     );
 }
@@ -205,8 +214,11 @@ fn run_ps_has_exactly_one_product_caller() {
         "the scan found no `run_ps` anywhere in src/; it did not run"
     );
     assert_eq!(
-        holders,
-        vec!["src/procs.rs".to_owned(), "src/transport.rs".to_owned()],
+        sorted(holders),
+        sorted(vec![
+            "src/procs.rs".to_owned(),
+            "src/transport.rs".to_owned()
+        ]),
         "the ps process leg gained (or lost) a product holder"
     );
 }
@@ -252,8 +264,11 @@ fn run_sysctl_has_exactly_one_product_caller() {
         "the scan found no `run_sysctl` anywhere in src/; it did not run"
     );
     assert_eq!(
-        holders,
-        vec!["src/doors.rs".to_owned(), "src/transport.rs".to_owned()],
+        sorted(holders),
+        sorted(vec![
+            "src/doors.rs".to_owned(),
+            "src/transport.rs".to_owned()
+        ]),
         "the sysctl process leg gained (or lost) a product holder"
     );
 }
@@ -265,8 +280,8 @@ fn run_agy_quota_has_exactly_one_product_caller_and_no_pipe() {
     let holders = src_holders("run_agy_quota");
     // A scan that found nothing fails here too: the expected list is not empty.
     assert_eq!(
-        holders,
-        ["src/quota.rs", "src/transport.rs"],
+        sorted(holders),
+        sorted(["src/quota.rs", "src/transport.rs"]),
         "the agy process leg gained (or lost) a product holder"
     );
     let code = structural("src/transport.rs", tree_text("src/transport.rs"));
@@ -290,8 +305,8 @@ fn run_clipboard_image_has_exactly_one_product_caller() {
     // Control FIRST: a scan that matched nothing would pass this vacuously.
     assert!(!holders.is_empty(), "empty scan did not run");
     assert_eq!(
-        holders,
-        ["src/clipboard.rs", "src/transport.rs"],
+        sorted(holders),
+        sorted(["src/clipboard.rs", "src/transport.rs"]),
         "the clipboard process leg gained (or lost) a product holder"
     );
 }
@@ -349,8 +364,8 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
     }
 
     assert_eq!(
-        holders("classify_absence("),
-        vec![
+        sorted(holders("classify_absence(")),
+        sorted(vec![
             // The listing, through its fleet discovery's `all_predate`.
             "src/inventory.rs".to_owned(),
             // The ONE boot-proof gate `end` and `rename` share.
@@ -361,22 +376,22 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
             "src/tmux.rs".to_owned(),
             // Its unit table, in the module's test file.
             "src/tmux/tests.rs".to_owned(),
-        ],
+        ]),
         "the boot-time verdict gained (or lost) a caller"
     );
     assert_eq!(
-        holders("probe_absence("),
-        vec![
+        sorted(holders("probe_absence(")),
+        sorted(vec![
             // The shared gate.
             "src/lifecycle/end.rs".to_owned(),
             "src/session_launch.rs".to_owned(),
             "src/transport.rs".to_owned(),
-        ],
+        ]),
         "the raw absence probe gained (or lost) a caller"
     );
     assert_eq!(
-        holders("boot_time("),
-        vec![
+        sorted(holders("boot_time(")),
+        sorted(vec![
             // The doctor's own absence reading.
             "src/doctor.rs".to_owned(),
             // Its definition and its platform table.
@@ -386,18 +401,18 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
             // The shared gate.
             "src/lifecycle/end.rs".to_owned(),
             "src/session_launch.rs".to_owned(),
-        ],
+        ]),
         "the boot time gained (or lost) a reader"
     );
     assert_eq!(
-        holders("boot_proved_stopped("),
-        vec![
+        sorted(holders("boot_proved_stopped(")),
+        sorted(vec![
             // One definition: called by the Positive arm, stopped-card question
             // capture and guarded execution's under-lock reproof.
             "src/lifecycle/end.rs".to_owned(),
             // The rename preflight and its retry.
             "src/rename.rs".to_owned(),
-        ],
+        ]),
         "the shared boot-proof gate gained (or lost) a caller"
     );
 
@@ -548,8 +563,8 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // A further entry is red. A relaxation this counter CANNOT see is not —
     // that is what the semantic guard above is for.
     assert_eq!(
-        inventory,
-        vec![
+        sorted(inventory),
+        sorted(vec![
             ("src/install.rs".to_owned(), 1),
             ("src/run.rs".to_owned(), 1),
             ("src/transport.rs".to_owned(), 1),
@@ -560,7 +575,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
             ("tests/it/migrate.rs".to_owned(), 1),
             ("tests/it/parity.rs".to_owned(), 1),
             ("tests/it/shape.rs".to_owned(), 2),
-        ],
+        ]),
         "the enumerated lint relaxations changed"
     );
 
@@ -1088,13 +1103,16 @@ fn open_popup_and_run_shell_line_have_only_their_named_product_caller_and_pure_s
             &["src/console/term.rs", "src/transport.rs"][..],
         ),
     ] {
-        let mut callers: Vec<&str> = halves
+        let callers: Vec<&str> = halves
             .iter()
             .filter(|(_, code)| code.contains(leg))
             .map(|(name, _)| name.as_str())
             .collect();
-        callers.sort_unstable();
-        assert_eq!(callers, expected, "{leg} product callers");
+        assert_eq!(
+            sorted(callers),
+            sorted(expected.iter().copied()),
+            "{leg} product callers"
+        );
     }
     let shell = halves
         .iter()

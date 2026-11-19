@@ -1763,6 +1763,15 @@ fn world_reading_sites() -> Vec<(String, usize)> {
         .unwrap_or_else(|why| panic!("{why}"))
 }
 
+/// `items` in sorted order, duplicates kept. An inventory assertion compares both sides
+/// through it, so it pins the members and their count and not the order a path rename
+/// leaves in a literal list.
+fn sorted<T: Ord>(items: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut items: Vec<T> = items.into_iter().collect();
+    items.sort();
+    items
+}
+
 #[test]
 fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones() {
     // A TRIPWIRE OVER ENTRY POINTS, AND ITS LIMIT IS THE TEST. `clippy.toml`
@@ -1793,8 +1802,8 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
     product.dedup();
 
     assert_eq!(
-        product,
-        probe_spec::expected_production_files(),
+        sorted(product),
+        sorted(probe_spec::expected_production_files()),
         "the set of places product code can reach the twelve named entry points changed"
     );
 }

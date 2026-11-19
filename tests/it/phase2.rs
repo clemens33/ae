@@ -1238,6 +1238,15 @@ fn sites(needle: &str) -> Vec<(String, usize)> {
         .collect()
 }
 
+/// `items` in sorted order, duplicates kept. An inventory assertion compares both sides
+/// through it, so it pins the members and their count and not the order a path rename
+/// leaves in a literal list.
+fn sorted<T: Ord>(items: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut items: Vec<T> = items.into_iter().collect();
+    items.sort();
+    items
+}
+
 #[test]
 fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     // A TRIPWIRE, AND ITS LIMIT IS PART OF THE TEST. This scans for three
@@ -1260,12 +1269,12 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
         "the meta is opened in exactly one place"
     );
     assert_eq!(
-        sites(concat!("SessionRead", "::open(")),
-        vec![
+        sorted(sites(concat!("SessionRead", "::open("))),
+        sorted(vec![
             ("src/rename.rs".to_owned(), 2),
             ("src/restore.rs".to_owned(), 1),
             ("src/session.rs".to_owned(), 1),
-        ],
+        ]),
         "and so is the event stream — plus the stopped rename's two ledger \
          reads (its own source log and one peer-log probe), which go through \
          the same reader rather than around it: refusing a rename over a \
@@ -1273,13 +1282,13 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
          the restore guard's one fresh ledger read under the lifecycle lock"
     );
     assert_eq!(
-        sites(concat!("RecordSnapshot", "::read(")),
-        vec![
+        sorted(sites(concat!("RecordSnapshot", "::read("))),
+        sorted(vec![
             ("src/console.rs".to_owned(), 1),
             ("src/inventory.rs".to_owned(), 1),
             ("src/lib.rs".to_owned(), 1),
             ("src/session.rs".to_owned(), 1),
-        ],
+        ]),
         "the one reader is called from discovery, from the convenience wrapper \
          that exists for callers who genuinely want a fresh read, from the \
          seed pack, which needs roster slots the listing digest never carries, \
