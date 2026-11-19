@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.91] - 2026-11-19
+- The ten doc-comment paths that the P3-P6 layout moves rewrite stand in backticks, so a rewritten layer path such as src/l2_model/watchdog.rs never trips clippy doc_markdown
+- The app header's Working count includes seats running background work and shows the working and background marks; the picker's per-session working count counts them too
+- The app header's integration tests expect the short labels with both Working marks
+- The seven-needy and long-name header tests expect the full-word rung, which fits exactly 40 cells with both Working marks
+- A Telegram plain message with no /use selection asks the orchestrator seat the role census proves, an unavailable seat is refused with its cause and confirmed before the offset moves, and a swipe-reply nothing can route never becomes a default ask
+- Tgdefault lint: the spec binding set is renamed current so clippy::similar_names no longer fires against seat, no assertion changes
+- /open, o/oo and the orchestrator pane button hand the terminal over outside tmux
+- Pin the final proof against a seat that moves after the view is created
+- End… sits beside Stop… in the app card menu and the tmux session menu, apart from the safe rows by one rule; the menu End keeps the history in the archive whatever purge_agent_history says, re-proves the clicked server and session at confirm and apply, and a supervised end no longer re-enumerates a literal all
+- The app End question names the menu's archive plan explicitly
+- A pin that the End menu accepts another spelling of the clicked server: a session that records its tmux server as a symlink to the clicked socket still ends, which the recorded-server check refuses when its && becomes ||
+- A pin that a confirmed End which started draws no could-not-start message on the clicking client, and the End pins share one EndWorld fixture
+- Brief --full: every clipped field whole, the session uuid and display-only declaration views
+- Endmenu lint: the End fixture's client pane parameter no longer reads like the viewed session, and a clicked session without a UUID panics with a plain let-else instead of expect
+- The entry tests' app-frame predicate accepts the Working label with both its marks, and two paint waits accept the short summary label
+
 ## [v2026.11.90] - 2026-11-19
 - The platform layer (doors, git, instance, netprobe, procs, shape, tmux_floor, transport) moves into src/l1_platform; src/lib.rs re-exports each by name, and the tests, docs, clippy.toml and CI comments that name their paths follow
 
