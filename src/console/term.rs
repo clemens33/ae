@@ -650,8 +650,8 @@ pub(crate) struct Carry {
     id: String,
     now: time::Timestamp,
     entropy: u64,
-    /// The relaying orchestrator's session id, recorded on the opening.
-    origin: Option<String>,
+    /// The relay this ask carries, recorded on the opening.
+    relay: Option<tracked::RelayStamp>,
 }
 
 impl Carry {
@@ -680,21 +680,22 @@ impl Carry {
             id: tracked::request_id(tracked::Kind::Ask.id_prefix(), now, entropy),
             now,
             entropy,
-            origin: None,
+            relay: None,
         }
     }
 
     /// The ask an orchestrator relays to `seat`, under the request id it
-    /// claimed; its opening records `origin` as `relay_origin`.
+    /// claimed; `body` is the ae-rendered sections, and the opening records
+    /// `relay`.
     pub(crate) fn relayed(
         console: &Console,
         seat: &str,
         body: String,
         minted: (time::Timestamp, u64),
-        origin: String,
+        relay: tracked::RelayStamp,
     ) -> Self {
         Self {
-            origin: Some(origin),
+            relay: Some(relay),
             ..Self::minted(console, seat, body, minted)
         }
     }
@@ -733,7 +734,7 @@ impl Carry {
         let (tail, mut said) = ([self.seat, self.body], Vec::new());
         let mut receipt = None;
         let extra = tracked::Extra {
-            origin: self.origin.as_deref(),
+            relay: self.relay.as_ref(),
             receipt: Some(&mut receipt),
         };
         let run = tracked::run_with(

@@ -622,7 +622,7 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     if speaks_as_reserved(args) {
         writeln!(
             err,
-            "ae: AE_SENDER_OVERRIDE REFUSED — it names the console or the human sender, and no helper speaks as either: only the console's own input does."
+            "ae: AE_SENDER_OVERRIDE REFUSED — it names the console, the human or the orchestrator sender, and no helper speaks as any of them: only the console's own input and ae's own relay frame do."
         )?;
         err.flush()?;
         return Ok(entry::EXIT_USAGE);
@@ -3151,9 +3151,10 @@ fn run_tracked(
 }
 
 /// Whether `args` run a session helper while `AE_SENDER_OVERRIDE` names the
-/// console or the human sender — refused at this one ingress, for every
-/// helper, before anything is parsed or read, because the console's actor is
-/// built only by its own submit and the human's display only by that actor.
+/// console, the human or the orchestrator sender — refused at this one
+/// ingress, for every helper, before anything is parsed or read, because the
+/// console's actor is built only by its own submit, the human's display only
+/// by that actor, and the orchestrator's only by ae's own relay frame.
 fn speaks_as_reserved(args: &[String]) -> bool {
     let helper = args
         .first()
@@ -3162,6 +3163,7 @@ fn speaks_as_reserved(args: &[String]) -> bool {
         && sender_override().is_some_and(|display| {
             display.starts_with(tracked::CONSOLE_NAMESPACE)
                 || display.starts_with(tracked::HUMAN_NAMESPACE)
+                || display.starts_with(tracked::ORCHESTRATOR_NAMESPACE)
         })
 }
 
@@ -3867,6 +3869,7 @@ pub fn run_with(
             err.write_all(&rendered.stderr)?;
             rendered.code
         }
+        cli::Request::RequestsVerify { dir, id } => relay::verify(dir, id, out)?,
         // NEVER RETURNS.
         cli::Request::EventsTail { dir } => match events_tail::follow(dir, out)? {},
         cli::Request::LaunchPlan { tail } => identity::launch_plan(tail, out, err)?,

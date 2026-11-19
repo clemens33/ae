@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use super::card::{self, Part, Role};
 use super::fold;
 use super::input::{Effect, Size};
-use super::lane::{Item, Kind, Lane, OLD_CORE_GAP, Seat};
+use super::lane::{Item, Kind, Lane, OLD_CORE_GAP, Seat, Via};
 use super::link;
 use super::needs::{Cause, Row, Section, Source, Verdict};
 use super::wrap::{clip, wrap, wrap_in};
@@ -652,7 +652,11 @@ pub(super) fn tag(kind: &Kind) -> String {
             via,
             ..
         } => {
-            let mut tag = format!("you → {to}");
+            let sender = match via {
+                Some(Via::Dispatcher(_)) => crate::tracked::ORCHESTRATOR_DISPLAY,
+                _ => "you",
+            };
+            let mut tag = format!("{sender} → {to}");
             if let Some(via) = via {
                 let _ = write!(tag, " · {}", via.badge());
             }

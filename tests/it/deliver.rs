@@ -972,7 +972,13 @@ impl RelayCaller {
             .env("TMUX_PANE", &self.pane)
             .arg(ae::cli::RELAY)
             .arg(helper_dir)
-            .args([target, text])
+            .args([
+                target,
+                "--quote",
+                text,
+                "--task",
+                "Carry out the owner's request.",
+            ])
             .output()
             .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
         (

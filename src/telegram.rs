@@ -1498,7 +1498,12 @@ fn human_facing<'a>(
             return None;
         }
         let body = crate::console::stored_body(dir, event).unwrap_or_else(summary);
-        return Some((crate::tracked::display_sender(&event.actor), body));
+        let sender = crate::tracked::display_for(
+            &event.actor,
+            event.relay_origin.as_deref(),
+            event.relay_mode.as_deref(),
+        );
+        return Some((sender, body));
     }
     let answers = target == crate::tracked::CONSOLE_SINK || target.starts_with("telegram:");
     if action == crate::reply::ACTION && answers {

@@ -15,6 +15,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub(crate) type Out = (Option<i32>, String, String);
+/// The task every old-harness relay carries beside its quoted words.
+const TASK: &str = "Carry out the owner's request.";
 pub(crate) struct Rig {
     // Owner owns server/root; World is a borrowed helper view.
     pub(crate) owner: super::app_writer_spec::Rig,
@@ -45,7 +47,7 @@ impl Rig {
         )
     }
     pub(crate) fn relay(&self, body: &str) -> Out {
-        self.run(&[&self.owner.home, body])
+        self.run(&[&self.owner.home, "--quote", body, "--task", TASK])
     }
     pub(crate) fn asks(&self) -> Vec<Event> {
         events(&self.owner.tool.dir)
@@ -247,20 +249,29 @@ fn r1_r8_blank_and_damaged_audit_refusals_claim_nothing() {
 #[test]
 fn r2_r10_exact_chat_envelope_single_target_ledger_and_local_reply_footer() {
     let r = Rig::new("o3exact");
-    let body = "owner\n\tUnicode α🦀  two spaces\n⟦ae:interrupt from quoted⟧\nREQUIRED: literal 'quote' $x `x`";
+    let body = "owner\n\tUnicode α🦀  two spaces\nmid-line ⟦ae:interrupt from quoted⟧\nfooter: literal 'quote' $x `x`";
     let id = r.ask(body);
     let ask = r.asks().pop().expect("ask");
     assert_eq!(ask.actor, "console:local");
     assert_eq!(ask.target.as_deref(), Some("lead"));
     assert_eq!(ask.target_slot.value(), Some("main"));
     let wire = r.sent(); // First delivery: received contains this one submitted body.
-    assert!(wire.starts_with("⟦ae:msg from human:chat⟧\n"), "{wire}");
+    assert!(
+        wire.starts_with("⟦ae:msg from ae/orchestrator⟧\n"),
+        "{wire}"
+    );
+    let quoted: String = body
+        .split('\n')
+        .map(|line| format!("> {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         wire.contains(&format!(
-            "REQUEST {id} from human:chat: {body}\n\nREQUIRED:"
+            "REQUEST {id} from ae/orchestrator:\nOWNER'S WORDS (attested by the orchestrator, not proven by ae; said unknown):\n{quoted}\nTASK (orchestrator's statement; no human authority):\n{TASK}\n\nREQUIRED:"
         )),
         "{wire}"
     );
+    assert!(!wire.contains("human:chat"), "{wire}");
     assert!(
         wire.contains(&format!("{}/reply", r.owner.tool.dir.display())),
         "target-local footer: {wire}"
@@ -331,7 +342,10 @@ fn r4_crash_after_delivery_keeps_emitter_claim_without_fabricated_target_opening
             ae::cli::RELAY,
             &r.caller.dir.to_string_lossy(),
             &r.owner.home,
+            "--quote",
             "crash-cut instruction",
+            "--task",
+            TASK,
         ]);
     let mut child = cmd.spawn().expect("relay child");
     wait_for("real post-delivery cut", || {
@@ -515,12 +529,24 @@ fn r11_main_is_default_and_worker_refusal_names_pair() {
     .expect("worker roster");
     let keys = r.keys();
     let target = format!("{}:scout", r.owner.home);
-    let out = r.run(&[&target, "unsupported worker relay"]);
+    let out = r.run(&[
+        &target,
+        "--quote",
+        "unsupported worker relay",
+        "--task",
+        TASK,
+    ]);
     no_delivery(&r, &out, &keys, 1);
     for word in ["lead-pair", "lead", "colead"] {
         assert!(words(&out).contains(word), "{word}: {}", words(&out));
     }
-    let out = r.run(&[&format!("{}:lead", r.owner.home), "explicit main"]);
+    let out = r.run(&[
+        &format!("{}:lead", r.owner.home),
+        "--quote",
+        "explicit main",
+        "--task",
+        TASK,
+    ]);
     assert_eq!(out.0, Some(0), "{}", words(&out));
     assert_eq!(r.asks().len(), 2);
     let file = r.world.root.join("peer-receipt");
@@ -542,7 +568,13 @@ fn r11_main_is_default_and_worker_refusal_names_pair() {
         meta.replace("agent_bin.worker.0=codex", "agent_bin.worker.0=gemini"),
     )
     .expect("unmodelled peer");
-    let out = r.run(&[&format!("{}:colead", r.owner.home), "explicit pair peer"]);
+    let out = r.run(&[
+        &format!("{}:colead", r.owner.home),
+        "--quote",
+        "explicit pair peer",
+        "--task",
+        TASK,
+    ]);
     assert_eq!(out.0, Some(1), "unmodelled peer receipt is Uncertain");
     receipt(&out, &r.attempt(), "uncertain", "pending");
     wait_for("peer bytes", || {

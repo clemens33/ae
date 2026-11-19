@@ -230,6 +230,27 @@ pub struct Request {
     /// [`Status::Cancelled`] row — what a cross-session withdrawal copies into
     /// the other participant's ledger.
     pub(crate) withdrawal: Option<Vec<u8>>,
+    /// The opening's relay keys, read only from a line that parsed as a ledger
+    /// event; empty otherwise.
+    pub(crate) relay: RelayFacts,
+}
+
+/// The relay keys of an opening, as written.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RelayFacts {
+    pub(crate) origin: Option<String>,
+    pub(crate) mode: Option<String>,
+    pub(crate) owner_input: Option<String>,
+}
+
+impl RelayFacts {
+    fn of(event: Option<&Event>) -> Self {
+        event.map_or_else(Self::default, |event| Self {
+            origin: event.relay_origin.clone(),
+            mode: event.relay_mode.clone(),
+            owner_input: event.owner_input.clone(),
+        })
+    }
 }
 
 /// A target's `accept` of a pending request.
@@ -390,10 +411,28 @@ impl Request {
             self.status_cell().as_bytes(),
             &self.kind,
             &self.id,
-            displayed(&self.from),
+            &self.sender_cell(),
             displayed(&self.to),
             &clip_summary(&self.summary),
         );
+    }
+}
+
+impl Request {
+    /// The sender cell as an agent reads it: a dispatcher's relay opening is
+    /// `ae/orchestrator`, everything else the ONE display mapping.
+    fn sender_cell(&self) -> Vec<u8> {
+        let stored = std::str::from_utf8(&self.from).ok();
+        match stored {
+            Some(text) => crate::tracked::display_for(
+                text,
+                self.relay.origin.as_deref(),
+                self.relay.mode.as_deref(),
+            )
+            .as_bytes()
+            .to_vec(),
+            None => self.from.clone(),
+        }
     }
 }
 
@@ -701,6 +740,7 @@ pub(crate) fn states_in(container: &[u8], session: SessionKey<'_>) -> Vec<Reques
                 .filter(|_| status == Status::Pending)
                 .and_then(|candidates| first_acceptance(&opening, opened_at, candidates));
             Some(Request {
+                relay: opening.relay,
                 status,
                 kind: opening.kind,
                 id: reference,
@@ -952,6 +992,7 @@ struct Opening {
     /// record. Opaque compatibility rows remain pending when no owner can see
     /// them, rather than being fabricated as retire-closed.
     ledger_valid: bool,
+    relay: RelayFacts,
 }
 
 /// A candidate `reply`, `cancel` or `accept`.
@@ -993,6 +1034,7 @@ impl Opening {
             recorded: event.as_ref().and_then(RecordedTarget::from_event),
             summary: fold_newlines(extract(line, "summary")),
             ledger_valid: event.is_some(),
+            relay: RelayFacts::of(event.as_ref()),
         }
     }
 

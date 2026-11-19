@@ -128,14 +128,25 @@ or `not-delivered`, judged by its reader. A wrong type or duplicate key
 invalidates the record; an older core steps over the additive key.
 
 `relay_origin` is the emitting orchestrator session's `session_id`, as written,
-on a `console:local` ask. It is audit data, never authority: the open-ask count,
-the cap and `/close` ignore it. `ae chat` and `ae app` badge the ask
+on a `console:local` ask. On its own it is audit data: the open-ask count, the
+cap and `/close` ignore it. `ae chat` and `ae app` badge the ask
 `via orchestrator <name>`, the name read at render time from the session whose
 meta `session_id` equals it; no such session, or more than one, reads
 `(name unavailable)`, and a value that is not a canonical UUID, the empty string
 included, reads `(origin unreadable)`. The UUID itself is never shown. Presence
 is kept as written; a wrong type or duplicate key invalidates the record, and an
 older core steps over the additive key as unknown data.
+
+`relay_mode` is how the relay's opening named its owner section: `bound`,
+`attested` or `interim`, as written. A reader of this core shows the sender of
+a row that has both `relay_origin` and `relay_mode`, whatever the mode word, as
+`ae/orchestrator` and never as the human; a row with `relay_origin` alone is a
+legacy relay and keeps its old display. Only `bound` can verify
+(`requests --verify`); an unknown word never does. `owner_input` is the id of
+the human-opened ask a `bound` relay copied its quoted words from, and the
+`relay-attempt` claim carries both keys. Presence is kept as written; a wrong
+type or duplicate key invalidates the record, and an older core steps over both
+additive keys as unknown data.
 
 ## Actions
 
@@ -144,7 +155,7 @@ older core steps over the additive key as unknown data.
 | `send` | `send` helper | One-way message between agents (or from human / watchdog). |
 | `relay` | `relay` helper | A relay refused before its claim, in the caller ledger: target + full text, no `ref`. |
 | `relay-attempt` | `relay` helper | Caller ledger: the claim, durable before any target key; `ref` = the target ask's id, `body_file` the exact text. |
-| `relay-result` | `relay` helper | Caller ledger: the claim's `outcome`; the target journal holds the `console:local` ask with `relay_origin`. |
+| `relay-result` | `relay` helper | Caller ledger: the claim's `outcome`; the target journal holds the `console:local` ask with `relay_origin` and `relay_mode`. |
 | `ask` | `ask` helper; `ae chat` input as `console:local` (stored; agents see it rendered as `human:chat`) | Tracked request expecting a reply. Carries `ref`. |
 | `review` | `review` helper | Like `ask`, with the critical-review prompt template. Carries `ref`. |
 | `reply` | `reply` helper | Reply to an `ask` / `review`. Same `ref`. |

@@ -747,9 +747,20 @@ pub(crate) fn lead_pair_at(dir: &Path) -> Result<bool, String> {
 /// name the writer gives this request, and the read takes that name from `dir`
 /// itself, never the recorded directory, so no record can point the console
 /// elsewhere. The file is read at most [`reply::CONSOLE_BODY_CAP`] bytes, and
-/// an ask's is the delivered envelope, so only [`tracked::uncompose_ask`]'s
-/// answer is the whole text.
+/// an ask's is the delivered envelope, so only [`tracked::uncompose_ask`]'s or,
+/// for a dispatcher's relay, [`tracked::uncompose_relay`]'s answer is the whole
+/// text.
 pub(crate) fn body_for(dir: &Path, event: &Event) -> lane::Body {
+    read_body(dir, event, true)
+}
+
+/// [`body_for`] for an ask that must be the human's own: only the chat's
+/// envelope reads, so a relay's frame is never mistaken for owner words.
+pub(crate) fn ask_body(dir: &Path, event: &Event) -> lane::Body {
+    read_body(dir, event, false)
+}
+
+fn read_body(dir: &Path, event: &Event, relay: bool) -> lane::Body {
     const CAP: u64 = reply::CONSOLE_BODY_CAP as u64;
     let Some(recorded) = event.body_file.as_deref().map(Path::new) else {
         return lane::Body::OldCore;
@@ -769,10 +780,12 @@ pub(crate) fn body_for(dir: &Path, event: &Event) -> lane::Body {
         Ok(SourceRead::Ready(bytes)) => match String::from_utf8(bytes) {
             Err(_) => lane::Body::NotUtf8,
             Ok(text) if action == reply::ACTION => lane::Body::Whole(text),
-            Ok(text) => tracked::uncompose_ask(&text, id).map_or_else(
-                || lane::Body::Refused("not the envelope ae delivers an ask in".to_owned()),
-                |whole| lane::Body::Whole(whole.to_owned()),
-            ),
+            Ok(text) => tracked::uncompose_ask(&text, id)
+                .or_else(|| relay.then(|| tracked::uncompose_relay(&text, id)).flatten())
+                .map_or_else(
+                    || lane::Body::Refused("not the envelope ae delivers an ask in".to_owned()),
+                    |whole| lane::Body::Whole(whole.to_owned()),
+                ),
         },
         Ok(SourceRead::Absent) => lane::Body::Missing,
         Ok(SourceRead::Invalid(what)) => lane::Body::Refused(what),

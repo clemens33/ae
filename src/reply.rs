@@ -806,6 +806,7 @@ mod tests {
             summary: Vec::new(),
             accepted: None,
             withdrawal: None,
+            relay: crate::requests::RelayFacts::default(),
         }
     }
 

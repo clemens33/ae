@@ -95,6 +95,10 @@ pub enum Kind {
 /// only, never authority, and never the origin's UUID itself.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Via {
+    /// A relay of this core's own frame, the dispatcher's words rather than the
+    /// human's: its row wears the dispatcher's name over what the origin
+    /// resolved to.
+    Dispatcher(Box<Via>),
     /// The one session whose meta `session_id` is the origin, by its name now.
     Named(String),
     /// A canonical origin that no single session records now.
@@ -118,6 +122,7 @@ impl Via {
     #[must_use]
     pub fn badge(&self) -> String {
         match self {
+            Self::Dispatcher(origin) => origin.badge(),
             Self::Named(name) => format!("via orchestrator {name}"),
             Self::Unavailable => "via orchestrator (name unavailable)".to_owned(),
             Self::Unreadable => "via orchestrator (origin unreadable)".to_owned(),
@@ -514,7 +519,16 @@ fn ask_row<'a>(
         id: key.to_owned(),
         uncertain: super::submit::uncertain(ask),
         gap,
-        via: ask.relay_origin.as_deref().map(via),
+        via: ask.relay_origin.as_deref().map(|origin| {
+            let resolved = via(origin);
+            let shown =
+                crate::tracked::display_for(&ask.actor, Some(origin), ask.relay_mode.as_deref());
+            if shown == crate::tracked::ORCHESTRATOR_DISPLAY {
+                Via::Dispatcher(Box::new(resolved))
+            } else {
+                resolved
+            }
+        }),
     };
     // The stored body keeps each attachment's path; the row shows its label.
     (kind, crate::token::collapse(&text))

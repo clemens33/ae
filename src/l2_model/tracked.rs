@@ -228,6 +228,36 @@ pub fn display_sender(stored: &str) -> &str {
     }
 }
 
+/// How a dispatcher's relayed opening reads wherever an agent or the human
+/// sees its sender: the first-line marker, the `REQUEST` line, the `requests`
+/// table, a chat row. Stored records keep [`CONSOLE_SINK`] and the relay keys.
+pub const ORCHESTRATOR_DISPLAY: &str = "ae/orchestrator";
+
+/// The namespace no `AE_SENDER_OVERRIDE` may name: [`ORCHESTRATOR_DISPLAY`]
+/// belongs to ae's own relay frame alone. Agent names cannot contain a slash,
+/// so no real seat collides.
+pub(crate) const ORCHESTRATOR_NAMESPACE: &str = "ae/";
+
+/// [`display_sender`] for an opening that may be a relay: a console ask whose
+/// record carries both a `relay_origin` and a `relay_mode`, each non-empty,
+/// reads as [`ORCHESTRATOR_DISPLAY`], whatever mode word a later core wrote.
+/// An older relay (an origin and no mode) and a mode with no origin keep the
+/// ordinary mapping, so a record can never claim the dispatcher's name without
+/// naming the dispatcher.
+#[must_use]
+pub fn display_for<'a>(
+    stored: &'a str,
+    relay_origin: Option<&str>,
+    relay_mode: Option<&str>,
+) -> &'a str {
+    let named = |value: Option<&str>| value.is_some_and(|text| !text.is_empty());
+    if stored == CONSOLE_SINK && named(relay_origin) && named(relay_mode) {
+        ORCHESTRATOR_DISPLAY
+    } else {
+        display_sender(stored)
+    }
+}
+
 /// The namespace no `send`, `ask` or `review` may address, and no
 /// `AE_SENDER_OVERRIDE` may name.
 pub(crate) const CONSOLE_NAMESPACE: &str = "console:";
@@ -454,6 +484,37 @@ pub fn uncompose_ask<'a>(framed: &'a str, id: &str) -> Option<&'a str> {
                 || style.is_some_and(|line| ACCEPTED_CHAT_REPLY_STYLES.contains(&line));
             (ended && !command.contains('\n')).then(|| &rest[..at])
         })
+}
+
+/// The delivered text of a relay: `REQUEST <id> from ae/orchestrator:`, then
+/// the ae-rendered `sections` on the next line, then the REQUIRED footer. No
+/// chat style line: the recipient answers the dispatcher's session, not the
+/// human's chat.
+#[must_use]
+pub(crate) fn compose_relay(req_id: &str, sections: &str, reply_cmd: &str) -> String {
+    let mut text = format!(
+        "{} {req_id} from {ORCHESTRATOR_DISPLAY}:\n{sections}",
+        Kind::Ask.header()
+    );
+    text.push_str(REQUIRED_HEAD);
+    text.push_str(reply_cmd);
+    text.push_str(NO_PEEK_LINE);
+    text
+}
+
+/// The sections of relay `id` in its stored body: what [`compose_relay`] and
+/// the peer marker wrote taken off, by the same whole-envelope rule as
+/// [`uncompose_ask`]. Anything else is `None`.
+#[must_use]
+pub fn uncompose_relay<'a>(framed: &'a str, id: &str) -> Option<&'a str> {
+    let head = crate::provenance::first_line(
+        &crate::provenance::peer(ORCHESTRATOR_DISPLAY),
+        &format!("{} {id} from {ORCHESTRATOR_DISPLAY}:\n", Kind::Ask.header()),
+    );
+    let rest = framed.strip_prefix(head.as_str())?;
+    let at = rest.rfind(REQUIRED_HEAD)?;
+    let (command, after) = rest[at + REQUIRED_HEAD.len()..].split_once(NO_PEEK_LINE)?;
+    (after.is_empty() && !command.contains('\n')).then(|| &rest[..at])
 }
 
 // ---- resolution -----------------------------------------------------------
@@ -2737,13 +2798,63 @@ impl Receipt {
     }
 }
 
+/// What marks an opening as a dispatcher's relay: the keys it records beside
+/// the actor `console:local`, and the frame its text takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RelayStamp {
+    /// The relaying orchestrator's canonical session id: `relay_origin`.
+    pub(crate) origin: String,
+    /// `bound`, `attested` or `interim`: `relay_mode`.
+    pub(crate) mode: &'static str,
+    /// The ask id a bound relay copied: `owner_input`.
+    pub(crate) owner_input: Option<String>,
+}
+
+impl RelayStamp {
+    /// The opening's relay keys, in the order they are recorded.
+    fn keys(&self) -> Vec<(&'static str, &str)> {
+        let mut keys = vec![
+            ("relay_origin", self.origin.as_str()),
+            ("relay_mode", self.mode),
+        ];
+        if let Some(input) = self.owner_input.as_deref() {
+            keys.push(("owner_input", input));
+        }
+        keys
+    }
+}
+
+/// The DISPLAY sender and the delivered text of an ask: a relay is framed by
+/// [`compose_relay`] under the dispatcher's name, everything else by
+/// [`compose`] under [`display_sender`] of its stored sender.
+fn framed_ask<'a>(
+    kind: Kind,
+    relay: Option<&RelayStamp>,
+    sender: &'a Sender,
+    req_id: &str,
+    parsed: &Parsed,
+    reply_cmd: &str,
+) -> (&'a str, String) {
+    if relay.is_some() {
+        return (
+            ORCHESTRATOR_DISPLAY,
+            compose_relay(req_id, &parsed.body, reply_cmd),
+        );
+    }
+    let rendered = display_sender(&sender.display);
+    (
+        rendered,
+        compose(kind, req_id, rendered, &parsed.body, reply_cmd),
+    )
+}
+
 /// What a relay adds to [`run`]: the origin its opening records and the slot
 /// its receipt lands in. Left `None`, the slot means the delivery never began.
 #[derive(Default)]
 pub(crate) struct Extra<'a> {
-    /// The relaying orchestrator's canonical session id, recorded on the
-    /// opening as `relay_origin`.
-    pub(crate) origin: Option<&'a str>,
+    /// The relay this ask carries: its sections frame the message, and its
+    /// keys are recorded on the opening.
+    pub(crate) relay: Option<&'a RelayStamp>,
     /// Set to [`Receipt::Uncertain`] as the delivery begins, then to what its
     /// typed result says; an I/O error in between keeps it uncertain.
     pub(crate) receipt: Option<&'a mut Option<Receipt>>,
@@ -2807,8 +2918,7 @@ pub(crate) fn run_with(
     // Rendered, not stored: the composed line and the envelope name the DISPLAY
     // sender, so a console ask reads as the human's; the event below keeps the
     // stored form.
-    let rendered = display_sender(&sender.display);
-    let message = compose(kind, &req_id, rendered, &parsed.body, &reply_cmd);
+    let (rendered, message) = framed_ask(kind, extra.relay, sender, &req_id, &parsed, &reply_cmd);
     // The action and ref name the recovery file the body store writes; the
     // envelope names the same verified DISPLAY sender the composed message
     // does, so a request cannot be framed as coming from someone else.
@@ -2868,14 +2978,14 @@ pub(crate) fn run_with(
         caller: caller_session,
         target: &resolved.session,
     });
-    let relay_origin = extra.origin.map(|origin| ("relay_origin", origin));
+    let relay_keys = extra.relay.map(RelayStamp::keys).unwrap_or_default();
     let code = record_tracked_delivery_with_launches(
         dir,
         &fields,
         delivery,
         cross,
         Some((&actor_launch, &target_launch)),
-        relay_origin.as_slice(),
+        relay_keys.as_slice(),
         err,
     )?;
     opened(out, &req_id, code)

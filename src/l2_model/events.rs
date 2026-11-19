@@ -49,9 +49,17 @@ pub struct Event {
     pub summary: Option<String>,
     /// Why submit could not be verified; presence, even empty, preserves doubt.
     pub unverifiable: Option<String>,
-    /// The emitting orchestrator session's `session_id`, as written: audit
-    /// only, never authority. Presence, even empty, is kept as written.
+    /// The emitting orchestrator session's `session_id`, as written. Alone it
+    /// is audit data; with `relay_mode` it names the opening an orchestrator
+    /// relayed, and `owner_input` binds it to an ask the human opened. Presence,
+    /// even empty, is kept as written.
     pub relay_origin: Option<String>,
+    /// The ask id of the human-opened ask a bound relay copied, as written.
+    pub owner_input: Option<String>,
+    /// How a relay's opening named its owner section: `bound`, `attested` or
+    /// `interim`, as written; a later core may write another word. Presence,
+    /// even empty, is kept as written.
+    pub relay_mode: Option<String>,
     /// A relay result's transport outcome, as written; its grammar is the
     /// consumer's. Presence, even empty, is kept as written.
     pub outcome: Option<String>,
@@ -492,6 +500,16 @@ impl Event {
                 Some(Value::Str(origin)) => Some(origin.clone()),
                 Some(_) => return Err(EventError::WrongType("relay_origin")),
             },
+            owner_input: match value.get("owner_input") {
+                None => None,
+                Some(Value::Str(id)) => Some(id.clone()),
+                Some(_) => return Err(EventError::WrongType("owner_input")),
+            },
+            relay_mode: match value.get("relay_mode") {
+                None => None,
+                Some(Value::Str(mode)) => Some(mode.clone()),
+                Some(_) => return Err(EventError::WrongType("relay_mode")),
+            },
             outcome: match value.get("outcome") {
                 None => None,
                 Some(Value::Str(outcome)) => Some(outcome.clone()),
@@ -774,7 +792,7 @@ pub fn schema_version(record: &Value) -> SchemaVersion {
 }
 
 /// Every key this schema defines.
-const KNOWN_KEYS: [&str; 26] = [
+const KNOWN_KEYS: [&str; 28] = [
     "ts",
     "actor",
     "action",
@@ -783,6 +801,8 @@ const KNOWN_KEYS: [&str; 26] = [
     "summary",
     "unverifiable",
     "relay_origin",
+    "owner_input",
+    "relay_mode",
     "outcome",
     "actor_slot",
     "actor_session",
@@ -1744,7 +1764,7 @@ mod tests {
 
     /// The documented key names, written out here
     /// INDEPENDENTLY of the production list.
-    const DOCUMENTED_EVENT_KEYS: [&str; 26] = [
+    const DOCUMENTED_EVENT_KEYS: [&str; 28] = [
         "ts",
         "actor",
         "action",
@@ -1753,6 +1773,8 @@ mod tests {
         "summary",
         "unverifiable",
         "relay_origin",
+        "owner_input",
+        "relay_mode",
         "outcome",
         "actor_slot",
         "actor_session",

@@ -103,7 +103,7 @@ pub const ACCEPT: &str = "_accept";
 pub const SEND: &str = "_send";
 
 /// The orchestrator's privileged bare-text surface —
-/// `_relay <meta-dir> <session[:agent]> <text…>`.
+/// `_relay <meta-dir> <session[:agent]> <flags…>`.
 pub const RELAY: &str = "_relay";
 
 /// The `interrupt` helper's surface —
@@ -371,6 +371,14 @@ pub enum Request {
         /// The caller's `--limit`: `None` is the default, `Some(0)` every row.
         limit: Option<usize>,
     },
+    /// `_requests <meta-dir> --verify <request-id>` — whether the request, as
+    /// this session holds it, carries the human's own words.
+    RequestsVerify {
+        /// The session meta directory the helper derives from `$0`.
+        dir: PathBuf,
+        /// The request id, as typed.
+        id: String,
+    },
     /// `_events-tail <meta-dir>` — the `events-tail` helper surface.
     State {
         /// The session meta directory.
@@ -442,7 +450,7 @@ pub enum Request {
         /// Everything after it, as typed.
         tail: Vec<String>,
     },
-    /// `_relay <meta-dir> <session[:agent]> <text…>` — validated by
+    /// `_relay <meta-dir> <session[:agent]> <flags…>` — validated by
     /// [`crate::relay::parse`], then authorised against the caller pane.
     Relay {
         /// The helper directory; the caller's observed session selects the
@@ -1427,6 +1435,20 @@ impl Request {
         let [dir, rest @ ..] = tail else {
             return Self::MissingOperand(REQUESTS);
         };
+        if let [flag, id] = rest
+            && flag == "--verify"
+        {
+            return Self::RequestsVerify {
+                dir: dir.into(),
+                id: id.clone(),
+            };
+        }
+        if rest.first().is_some_and(|flag| flag == "--verify") {
+            return match rest {
+                [_, _, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(REQUESTS),
+            };
+        }
         let mut limit: Option<usize> = None;
         let mut operands: Vec<&String> = Vec::new();
         let mut words = rest.iter();
@@ -1513,6 +1535,7 @@ impl Request {
             | Self::UsageHourly { .. }
             | Self::LaunchCandidate(_)
             | Self::Requests { .. }
+            | Self::RequestsVerify { .. }
             | Self::Say { .. }
             | Self::Peek { .. }
             | Self::Agents { .. }
@@ -1594,6 +1617,7 @@ impl Request {
             | Self::CaptureSid { dir, .. }
             | Self::RegisterSid { dir, .. }
             | Self::Requests { dir, .. }
+            | Self::RequestsVerify { dir, .. }
             | Self::State { dir, .. }
             | Self::Goal { dir, .. }
             | Self::Memo { dir, .. }

@@ -55,7 +55,7 @@ pub const HELPERS: [Helper; 27] = [
     },
     Helper {
         name: "relay",
-        usage: "Usage: relay <session[:agent]> <text…>\n       relay --status <request-id>\nRelay an explicit human instruction from an orchestrator session as a chat ask, or read one back.\n",
+        usage: "Usage: relay <session[:agent]> (--owner-input <ask-id> | --quote <words> [--said <time>] | --interim-ruling) --task <text> [--context <text>]\n       relay --status <request-id>\nRelay the owner's words, bound to an ask in this session or attested, or an interim ruling, with a task, from an orchestrator session as one tracked ask, or read one back.\n",
         entry: crate::cli::RELAY,
         prefix: &[],
     },
@@ -91,7 +91,7 @@ pub const HELPERS: [Helper; 27] = [
     },
     Helper {
         name: "requests",
-        usage: "Usage: requests [mine|inbox|all] [--limit N]\nInspect tracked request state.\n",
+        usage: "Usage: requests [mine|inbox|all] [--limit N]\n       requests --verify <request-id>\nInspect tracked request state, or prove that a request carries the human's own words.\n",
         entry: crate::cli::REQUESTS,
         prefix: &[],
     },
