@@ -1569,6 +1569,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    include!("telegram/orch_s1a_spec.rs");
+
     /// A token that is obviously fake and obviously searchable.
     pub(super) const FAKE_TOKEN: &str = "123456789:AAqRSTUVwxyzTOKENnotarealoneKKKK7";
     pub(super) const CHAT: &str = "-1001234567890";
