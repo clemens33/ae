@@ -1,0 +1,7 @@
+{
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"first"}}
+ÿ
+{bad JSON
+{"type":"system"}
+
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"second"}}

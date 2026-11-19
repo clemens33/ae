@@ -278,7 +278,8 @@ pub fn fold_via(
         let kind = match row.role {
             Role::Human => Kind::Pane { seat, generation },
             Role::Assistant => Kind::Assistant { seat, generation },
-            Role::Boundary => continue,
+            // Neither reaches a caller: the central filter consumes both.
+            Role::Boundary | Role::Dispatch => continue,
         };
         items.push(item(kind, row.ts, &row.body));
     }

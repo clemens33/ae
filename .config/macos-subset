@@ -136,6 +136,7 @@ helper tests/it/autotrust_spec.rs::Rig::until_within = autotrust_spec::v14_repea
 helper tests/it/autotrust_spec.rs::Rig::wait_five_cycles = autotrust_spec::unreach_restart_a4::unreach_restart_clears_a_removed_panel_even_when_failure_outranks_its_naming
 helper tests/it/autotrust_spec.rs::Rig::watchdog = autotrust_spec::v14_repeated_declines_name_once_without_keys_or_reservation
 helper tests/it/board.rs::rig = board::json_empty_board_is_scope_alone
+helper tests/it/board_distill_spec.rs::Fixture::new = board::distill_spec::malformed_complete_lines_count_without_losing_adjacent_valid_records
 helper tests/it/cli.rs::OwnedScratch::drop = cli::a_panicking_test_leaves_no_scratch_and_no_tmux_server
 helper tests/it/cli.rs::OwnedScratch::root = cli::a_fifo_lock_path_refuses_before_the_open_and_never_blocks
 helper tests/it/cli.rs::Runner::spawn = compact::compact_tripwire_fires_without_any_state_root

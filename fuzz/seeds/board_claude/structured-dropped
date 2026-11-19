@@ -1,0 +1,6 @@
+{
+{"type":"user","isMeta":true,"timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":[{"type":"text","text":"Continue from where you left off."}]}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"out"},{"type":"text","text":"mixed"}]}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":[{"type":"text","text":"⟦ae:msg from peer⟧ synthetic"}]}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"},{"type":"audio"}]}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":[]}}

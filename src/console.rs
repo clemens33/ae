@@ -599,8 +599,14 @@ impl Console {
         priors: bool,
     ) -> board::Observation {
         crate::read_gate("@board-current");
-        let first =
-            board::observe_generations(inputs, None, Some(meta), keep, Generations::Current);
+        let first = board::observe_generations(
+            inputs,
+            None,
+            Some(meta),
+            keep,
+            Generations::Current,
+            &board::Scope::default(),
+        );
         self.follow = Some(Follow::seeded(&first.seeds, &first.coverage, None));
         self.staged.stage = if priors { Stage::Current } else { Stage::Every };
         first
@@ -614,8 +620,14 @@ impl Console {
         keep: &dyn Fn(&meta::RosterEntry) -> bool,
     ) -> board::Observation {
         crate::read_gate("@board-earlier");
-        let earlier =
-            board::observe_generations(inputs, None, Some(meta), keep, Generations::Earlier);
+        let earlier = board::observe_generations(
+            inputs,
+            None,
+            Some(meta),
+            keep,
+            Generations::Earlier,
+            &board::Scope::default(),
+        );
         self.staged.earlier.clone_from(&earlier.coverage);
         self.staged.stage = Stage::Every;
         earlier

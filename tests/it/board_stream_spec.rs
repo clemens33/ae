@@ -4,7 +4,7 @@
 //! `ae::board::observe_selected` across all five supported harnesses (Claude,
 //! Codex, Grok, Muse, Agy) with current and predecessor conversations and all
 //! three reply modes (`Replies::Off`, `Replies::All`, `Replies::ToHuman`),
-//! plus all 105 tracked seeds across the five splitter fuzz targets.
+//! plus all 116 tracked seeds across the five splitter fuzz targets.
 
 #![allow(
     clippy::disallowed_methods,
@@ -147,6 +147,7 @@ impl From<&Row> for GoldenRow {
                 Role::Human => "Human".to_owned(),
                 Role::Assistant => "Assistant".to_owned(),
                 Role::Boundary => "Boundary".to_owned(),
+                Role::Dispatch => "Dispatch".to_owned(),
             },
             body: r.body.clone(),
             offset: r.offset,
@@ -422,17 +423,28 @@ fn run_seed_grammar(target: &str, data: &[u8]) -> (Vec<GoldenRow>, Vec<(String, 
             coverage.into_iter().map(|c| (c.actor, c.reason)).collect(),
         )
     } else {
-        let (replies, bytes) = match rest.split_first() {
-            Some((flag, rest)) if flag & 4 == 4 => (Replies::ToHuman, rest),
-            Some((flag, rest)) if flag & 1 == 1 => (Replies::All, rest),
-            Some((_, rest)) => (Replies::Off, rest),
-            None => (Replies::Off, rest),
+        let (flag, bytes) = match rest.split_first() {
+            Some((flag, rest)) => (*flag, rest),
+            None => (0, rest),
+        };
+        let replies = if flag & 4 == 4 {
+            Replies::ToHuman
+        } else if flag & 1 == 1 {
+            Replies::All
+        } else {
+            Replies::Off
+        };
+        // Bit 7 is the raw text mode, read by the Claude reader alone.
+        let text = if target == "board_claude" && flag & 0x80 == 0x80 {
+            board::TextMode::Raw
+        } else {
+            board::TextMode::Trimmed
         };
         let mut splitter = board::Splitter::new();
         for piece in bytes.chunks(chunk) {
             splitter.feed(piece);
         }
-        let streamed = splitter.finish().with_replies(replies);
+        let streamed = splitter.finish().with_replies(replies).with_text(text);
         let (reader, kind): (fn(&_, _, _, _) -> _, _) = match target {
             "board_claude" => (board::claude::read_stream, ae::tool::ToolKind::Claude),
             "board_codex" => (board::codex::read_stream, ae::tool::ToolKind::Codex),
@@ -484,7 +496,7 @@ fn record_or_verify_seed_goldens() {
             entries.push((format!("{target}/{file_name_str}"), rows, coverage));
         }
     }
-    assert_eq!(entries.len(), 105, "must cover exactly 105 tracked seeds");
+    assert_eq!(entries.len(), 116, "must cover exactly 116 tracked seeds");
     let golden_path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it/board_stream_seed_goldens.json");
     if std::env::var("GEN_GOLDENS").is_ok() {

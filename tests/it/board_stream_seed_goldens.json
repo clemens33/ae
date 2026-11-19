@@ -105,30 +105,35 @@
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/ae-ctx": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/ae-interrupt": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/ae-msg": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/assistant": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/assistant-api-error": {
@@ -163,22 +168,66 @@
     "coverage": [
     ]
   },
+  "board_claude/dispatch-exact": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Dispatch", "body": "/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`", "offset": 0, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "kept after the dispatch", "offset": 186, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/dispatch-near-miss": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`", "offset": 0, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`", "offset": 187, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`\nthen more prose", "offset": 374, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "/compact checkpoint review-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`", "offset": 577, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`", "offset": 767, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "/compact", "offset": 995, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/dispatch-window": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "first question", "offset": 0, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "first answer", "offset": 108, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Dispatch", "body": "/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`", "offset": 249, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "dispatch followup", "offset": 435, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "next question", "offset": 581, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "next answer", "offset": 688, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/malformed-lines": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "first", "offset": 0, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "second", "offset": 130, "ts": 1767323045678000}
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "3 lines not JSON"}
+    ]
+  },
   "board_claude/mid-body-marker": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/missing-timestamp": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/nested-reminder": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/over-cap-line": {
@@ -188,38 +237,60 @@
       {"actor": "s:seat", "reason": "1 line exceeds the 1 MiB cap (largest 1100091 bytes)"}
     ]
   },
+  "board_claude/plumbing-bash-stdout": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "<bash-input>printf fixture</bash-input>", "offset": 139, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "Quoted output follows.\n<bash-stdout>fixture</bash-stdout>", "offset": 272, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
   "board_claude/plumbing-caveat": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/plumbing-command-name": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/plumbing-continued": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/plumbing-interrupted": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/plumbing-local-stdout": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/plumbing-task": {
     "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
+    ]
+  },
+  "board_claude/plumbing-usage-meta": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "[Usage limit reached; twin without the meta field]", "offset": 315, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "typed text tagged isMeta with neither prefix", "offset": 459, "ts": 1767323045678000}
     ],
     "coverage": [
     ]
@@ -228,6 +299,7 @@
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/queue-absorbed-marker": {
@@ -283,23 +355,66 @@
       {"actor": "s:seat", "reason": "torn last record"}
     ]
   },
+  "board_claude/raw-dispatch-spaced": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Dispatch", "body": "/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`", "offset": 0, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief` \n", "offset": 186, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": " /compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`", "offset": 375, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/raw-text": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": " \tkeep this\n", "offset": 0, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "  absorbed\t", "offset": 147, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "  First chunk\nLast chunk\t ", "offset": 288, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/structured-dropped": {
+    "rows": [
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "1 structured part not read"}
+    ]
+  },
+  "board_claude/structured-text-image": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "Look at this.\n[image]\nSecond line.", "offset": 0, "ts": 1767323045678000}
+    ],
+    "coverage": [
+    ]
+  },
+  "board_claude/structured-unread-parts": {
+    "rows": [
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "Output with unread parts", "offset": 0, "ts": 1767323045678000}
+    ],
+    "coverage": [
+      {"actor": "s:seat", "reason": "3 structured parts not read"}
+    ]
+  },
   "board_claude/torn-last-line": {
     "rows": [
     ],
     "coverage": [
-      {"actor": "s:seat", "reason": "torn last record"}
+      {"actor": "s:seat", "reason": "torn last record"},
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/user-array": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/user-string": {
     "rows": [
     ],
     "coverage": [
+      {"actor": "s:seat", "reason": "1 line not JSON"}
     ]
   },
   "board_claude/window-interleave": {
@@ -309,6 +424,7 @@
       {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 408, "ts": 1767323045678000},
       {"actor": "s:seat", "generation": 0, "role": "Boundary", "body": "", "offset": 552, "ts": 0},
       {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 689, "ts": 1767323045678000},
+      {"actor": "s:seat", "generation": 0, "role": "Human", "body": "[image]", "offset": 833, "ts": 1767323045678000},
       {"actor": "s:seat", "generation": 0, "role": "Boundary", "body": "", "offset": 833, "ts": 0},
       {"actor": "s:seat", "generation": 0, "role": "Assistant", "body": "synthetic reply", "offset": 984, "ts": 1767323045678000},
       {"actor": "s:seat", "generation": 0, "role": "Human", "body": "synthetic human turn", "offset": 1128, "ts": 1767323045678000},

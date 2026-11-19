@@ -84,6 +84,7 @@ fn labels(observed: &Observation) -> Vec<String> {
                 Role::Human => 'H',
                 Role::Assistant => 'A',
                 Role::Boundary => 'B',
+                Role::Dispatch => 'D',
             };
             format!("{role}:{}", row.body)
         })

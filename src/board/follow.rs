@@ -373,6 +373,7 @@ impl Follow {
         Observation {
             rows,
             coverage,
+            dispatches: super::count_dispatches(&hidden),
             hidden: super::count_hidden(hidden),
             seeds: Vec::new(),
             day_floor: floor,

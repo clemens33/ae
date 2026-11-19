@@ -91,8 +91,10 @@ pub fn first_line(marker: &str, body: &str) -> String {
 
 /// THE ae-turn recognizer: true iff the line it is handed carries one of this
 /// owner's own spellings. AUTHORITY callers hand it the turn's line 1 and
-/// nothing else — `relay` is bare and never matches, by design, and a marker
-/// pasted into the body is prose that must not reach this function. The one
+/// nothing else — a marker pasted into the body is prose that must not reach this
+/// function. `relay` is a marked chat ask since v2026.10.142 and matches; before it
+/// shipped a relay was bare. The guided compaction dispatch stays bare by design (a
+/// slash command must start with `/`): `ToolKind::is_guided_dispatch` owns it. The one
 /// DISPLAY caller hands it a first inner line only after the whole body
 /// matched the measured Claude wrapper shape (#171): hiding, never authority.
 #[must_use]

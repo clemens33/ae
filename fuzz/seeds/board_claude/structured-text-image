@@ -1,0 +1,2 @@
+{
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":[{"type":"text","text":"Look at this."},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"ZmFrZQ=="}},{"type":"text","text":"Second line."}]}}

@@ -1,0 +1,4 @@
+{€{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":" \tkeep<system-reminder>gone</system-reminder> this\n"}}
+{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","timestamp":"2026-01-02T03:04:05.678Z","content":"  absorbed\t"}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":[{"type":"text","text":"  First chunk"},{"type":"text","text":"Last chunk\t "}]}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"  \n\t"}}

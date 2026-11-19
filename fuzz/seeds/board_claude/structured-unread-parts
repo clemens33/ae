@@ -1,0 +1,2 @@
+{
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":[{"type":"text","text":"Output with unread parts"},{"type":"other","text":"not a supported part"},{"type":"text","text":42},{"type":"text"}]}}

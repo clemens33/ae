@@ -22,6 +22,11 @@ use ae::usage::SessionInput;
 
 use super::cli::ae;
 
+#[path = "board_distill_scope_spec.rs"]
+mod distill_scope_spec;
+#[path = "board_distill_spec.rs"]
+mod distill_spec;
+
 const SCOPE: &str = "scope: current conversations plus each seat's recorded predecessors (up to 4, newest first) — nothing is inferred from time";
 
 const CLAUDE_ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";

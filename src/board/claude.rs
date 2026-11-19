@@ -6,9 +6,18 @@
 //!
 //! * only newline-terminated lines are records; a torn tail is reported, never
 //!   trusted;
-//! * a row is a `type == "user"` record with STRING `message.content` whose
-//!   first line is bare of any ae marker and is not Claude's own plumbing;
-//! * `<system-reminder>` spans are stripped, the body trimmed, empties dropped.
+//! * a row is a `type == "user"` record whose first line is bare of any ae marker
+//!   and is not Claude's own plumbing. Its `message.content` is a STRING, or an
+//!   ARRAY with no `tool_result` part and no `isMeta` flag: the `text` parts and an
+//!   `[image]` label per image part joined with a line feed, any other part
+//!   counted (`<n> structured parts not read`);
+//! * a turn whose WHOLE original content is the guided compaction dispatch ae
+//!   pastes ([`crate::tool::ToolKind::is_guided_dispatch`]) is read as
+//!   [`Role::Dispatch`], before any strip or trim, for the central filter to hide;
+//! * `<system-reminder>` spans are stripped, the body trimmed (or, in
+//!   [`TextMode::Raw`], left untrimmed), empties dropped;
+//! * a complete line that is not UTF-8 or not JSON is skipped and counted
+//!   (`<n> lines not JSON`) in every mode.
 //!
 //! With `--assistant` a second row kind is read: `type == "assistant"` records
 //! with ARRAY `message.content`, joining the `text` of the parts whose
@@ -38,16 +47,33 @@
 //!   2/2 carry it, 4 other `promptSource == "system"` records match no prefix
 //!   and are KEPT. FIELD-CONFIRMED. A queue record carries no such field, so
 //!   there the prefix alone decides.
-//! * `<command-name>` and `<local-command-stdout>` have no structured twin in
-//!   any observed record — first-line prefix only. LOSSY: a human turn opening
+//! * usage-limit notes (`[Usage limit reached`, `[Earlier usage-limit`) require
+//!   `isMeta == true` AND the prefix: 16/16 observed carry the flag.
+//!   FIELD-CONFIRMED.
+//! * `<command-name>`, `<local-command-stdout>` and `<bash-stdout>` have no
+//!   structured twin in any observed record — first-line prefix only. LOSSY: a human turn opening
 //!   with that exact prefix is dropped, pinned by a collision test below.
 //! * `[Request interrupted` and `Your claude.ai usage limit has reset` appear
 //!   in NO local transcript; both are TAKEN from the jq reference, first-line
 //!   prefix only, LOSSY with collision tests.
 
 use super::{Binding, Feed, LineBody, Splitter, Streamed};
-use crate::board::{Coverage, Role, Row};
+use crate::board::{Coverage, Role, Row, TextMode};
 use crate::tool::ToolKind;
+
+/// What `push_text` is told about the text it reads.
+#[derive(Clone, Copy)]
+struct Text {
+    /// It came from a queue record, which has none of the fields a user
+    /// record's plumbing test confirms by.
+    queued: bool,
+    /// It is the record's WHOLE content, not a projection that left a part out:
+    /// only then can it be the guided dispatch.
+    complete: bool,
+}
+
+/// The label one image part of a structured turn reads as.
+const IMAGE_LABEL: &str = "[image]";
 
 /// Read one Claude transcript from whole bytes: one feed through the ONE
 /// splitter, then read the stream. A thin wrapper, so the fuzz target covers
@@ -97,9 +123,12 @@ pub fn read_fed(
         source,
         assistant: binding.assistant,
         windowed: binding.windowed,
+        text: binding.text,
         rows: Vec::new(),
         coverage: Vec::new(),
         missing_ts: 0,
+        not_json: 0,
+        parts_unread: 0,
     };
     let ending = feed(&mut |line| {
         match &line.body {
@@ -121,6 +150,18 @@ pub fn read_fed(
             "records"
         };
         sink.cover(&format!("{} {noun} without a timestamp", sink.missing_ts));
+    }
+    if sink.not_json > 0 {
+        let noun = if sink.not_json == 1 { "line" } else { "lines" };
+        sink.cover(&format!("{} {noun} not JSON", sink.not_json));
+    }
+    if sink.parts_unread > 0 {
+        let noun = if sink.parts_unread == 1 {
+            "part"
+        } else {
+            "parts"
+        };
+        sink.cover(&format!("{} structured {noun} not read", sink.parts_unread));
     }
     (sink.rows, sink.coverage)
 }
@@ -177,9 +218,15 @@ struct Sink<'a> {
     /// `Replies::ToHuman`: a user turn the read does not keep leaves a
     /// [`Role::Boundary`], so the window of replies to a human line can close.
     windowed: bool,
+    /// How a kept row holds its text: trimmed, or raw (reminder spans stripped, nothing else).
+    text: TextMode,
     rows: Vec<Row>,
     coverage: Vec<Coverage>,
     missing_ts: u64,
+    /// Complete lines that were not UTF-8 or not JSON, in every read mode.
+    not_json: u64,
+    /// Parts of a KEPT structured turn that are neither text nor an image.
+    parts_unread: u64,
 }
 
 impl Sink<'_> {
@@ -195,15 +242,18 @@ impl Sink<'_> {
     /// which the loop hands to `unkept` — so no cap check lives in this
     /// function.
     fn push_line(&mut self, line: &[u8], offset: u64) {
-        // Not UTF-8 or not JSON is not a record — skipped silently, like the usage
-        // reader skips malformed lines, though a windowed read marks it: it may
-        // have been a user turn. Only a line that COULD be a turn and is refused
-        // for a stated reason earns coverage.
+        // Not UTF-8 or not JSON is not a record, and the read says how many such
+        // complete lines it skipped (`<n> lines not JSON`) — a count, not a
+        // verdict on what they held. A windowed read also marks it: it may have
+        // been a user turn. A record whose `type` is absent or foreign is valid
+        // JSON and not counted here.
         let Ok(text) = str::from_utf8(line) else {
+            self.not_json += 1;
             self.unkept(offset);
             return;
         };
         let Ok(value) = crate::json::parse(text) else {
+            self.not_json += 1;
             self.unkept(offset);
             return;
         };
@@ -251,7 +301,15 @@ impl Sink<'_> {
         }
         let before = self.rows.len();
         if let Some(crate::json::Value::Str(content)) = value.get("content") {
-            self.push_text(value, content, offset, true);
+            self.push_text(
+                value,
+                content,
+                offset,
+                Text {
+                    queued: true,
+                    complete: true,
+                },
+            );
         }
         if self.rows.len() == before {
             self.unkept(offset);
@@ -273,24 +331,99 @@ impl Sink<'_> {
         else {
             return;
         };
-        let crate::json::Value::Str(content) = content else {
-            // Array content is a tool result or structured turn, never prose.
-            return;
+        match content {
+            crate::json::Value::Str(content) => self.push_text(
+                value,
+                content,
+                offset,
+                Text {
+                    queued: false,
+                    complete: true,
+                },
+            ),
+            crate::json::Value::Arr(parts) => self.push_structured(value, parts, offset),
+            _ => {}
+        }
+    }
+
+    /// A user record whose content is an array: the human's text with images, or
+    /// a harness note. A tool result — any `tool_result` part — and a harness
+    /// turn (`isMeta`) are no row. Otherwise the `text` parts and an `[image]`
+    /// label per image part, in order, are joined with a line feed and read like
+    /// a string turn, so a marker or a plumbing prefix still drops it. Any other
+    /// part, or a `text` part without a string, is counted, whatever becomes of the
+    /// turn, so a record the read cannot show is never silent; and the turn is then
+    /// not the whole content, so it can never read as the guided dispatch.
+    /// A read for the replies to the human also closes its window right after the row
+    /// the turn leaves: an array turn is shown, and its reply is not.
+    fn push_structured(
+        &mut self,
+        value: &crate::json::Value,
+        parts: &[crate::json::Value],
+        offset: u64,
+    ) {
+        let flagged = |key: &str| {
+            value
+                .get(key)
+                .is_some_and(|flag| *flag == crate::json::Value::Bool(true))
         };
-        self.push_text(value, content, offset, false);
+        if flagged("isMeta")
+            || parts
+                .iter()
+                .any(|part| part.get_str("type") == Some("tool_result"))
+        {
+            return;
+        }
+        let mut pieces: Vec<&str> = Vec::new();
+        let mut unread: u64 = 0;
+        for part in parts {
+            match part.get_str("type") {
+                Some("text") => match part.get_str("text") {
+                    Some(text) => pieces.push(text),
+                    None => unread += 1,
+                },
+                Some("image") => pieces.push(IMAGE_LABEL),
+                _ => unread += 1,
+            }
+        }
+        self.parts_unread += unread;
+        let before = self.rows.len();
+        self.push_text(
+            value,
+            &pieces.join("\n"),
+            offset,
+            Text {
+                queued: false,
+                complete: unread == 0,
+            },
+        );
+        // The row is read, and the console's reply window still closes after it: a Claude
+        // turn that carries parts (an image, or any array) hides its reply, the contract of
+        // docs/chat.md, which the board's reading of the row does not change.
+        if self.rows.len() > before {
+            self.unkept(offset);
+        }
     }
 
     /// The text of one human line, wherever the record carries it: markers and
     /// plumbing filtered, reminders stripped, empties dropped. `queued` says it
     /// came from a queue record, which has none of the fields a user record's
-    /// plumbing test confirms by.
-    fn push_text(&mut self, value: &crate::json::Value, content: &str, offset: u64, queued: bool) {
+    /// plumbing test confirms by; `complete` says `content` is the record's whole
+    /// content, not a projection that left a part out.
+    fn push_text(&mut self, value: &crate::json::Value, content: &str, offset: u64, text: Text) {
+        let Text { queued, complete } = text;
+        // The guided compaction dispatch is proved on the WHOLE original content,
+        // before any strip or trim, and carried on as its own role: a near miss
+        // (a space, a reminder, prose, a review id) is an ordinary human turn.
+        let dispatch = complete && self.source.is_guided_dispatch(content);
         let first = content.lines().next().unwrap_or_default();
-        if crate::provenance::is_ae_turn(first) {
-            return;
-        }
-        if is_plumbing(value, first, queued) {
-            return;
+        if !dispatch {
+            if crate::provenance::is_ae_turn(first) {
+                return;
+            }
+            if is_plumbing(value, first, queued) {
+                return;
+            }
         }
         let Some(ts) = value
             .get_str("timestamp")
@@ -299,14 +432,22 @@ impl Sink<'_> {
             self.missing_ts += 1;
             return;
         };
-        let body = strip_reminders(content).trim().to_owned();
-        if body.is_empty() {
+        let stripped = strip_reminders(content);
+        let body = match self.text {
+            TextMode::Trimmed => stripped.trim().to_owned(),
+            TextMode::Raw => stripped,
+        };
+        if body.trim().is_empty() {
             return;
         }
         self.rows.push(Row {
             ts,
             actor: self.actor.to_owned(),
-            role: Role::Human,
+            role: if dispatch {
+                Role::Dispatch
+            } else {
+                Role::Human
+            },
             body,
             source: self.source,
             file: self.file.to_owned(),
@@ -387,11 +528,18 @@ fn is_tool_result(value: &crate::json::Value) -> bool {
 fn is_plumbing(value: &crate::json::Value, first: &str, queued: bool) -> bool {
     const CAVEAT: &str = "<local-command-caveat>";
     const TASK: &str = "<task-notification>";
+    // The usage-limit notes: 16 of 16 observed records carry `isMeta`, so the
+    // field AND the prefix decide, like the caveat. FIELD-CONFIRMED.
+    const USAGE_NOTES: [&str; 2] = ["[Usage limit reached", "[Earlier usage-limit"];
     // LOSSY: no structured twin observed — a human turn opening with one of
     // these exact prefixes is dropped. Each carries a collision test.
-    const LOSSY: [&str; 4] = [
+    // `<bash-stdout>` is the output of Claude's `!` mode (6 of 6 observed carry
+    // neither `isMeta` nor `promptSource`); `<bash-input>` stays, it is the
+    // human's own command.
+    const LOSSY: [&str; 5] = [
         "<command-name>",
         "<local-command-stdout>",
+        "<bash-stdout>",
         "[Request interrupted",
         "Your claude.ai usage limit has reset",
     ];
@@ -400,7 +548,9 @@ fn is_plumbing(value: &crate::json::Value, first: &str, queued: bool) -> bool {
             .get(key)
             .is_some_and(|flag| *flag == crate::json::Value::Bool(true))
     };
-    if flagged("isMeta") && first.starts_with(CAVEAT) {
+    if flagged("isMeta")
+        && (first.starts_with(CAVEAT) || USAGE_NOTES.iter().any(|prefix| first.starts_with(prefix)))
+    {
         return true;
     }
     if (queued || value.get_str("promptSource") == Some("system")) && first.starts_with(TASK) {
@@ -552,16 +702,190 @@ mod tests {
         assert!(rows.is_empty() && coverage.is_empty());
     }
 
+    /// Read one line with the text mode bound, the way `observe_with` binds it.
+    fn read_text(line: &str, text: crate::board::TextMode) -> Vec<crate::board::Row> {
+        let mut splitter = super::Splitter::new();
+        splitter.feed(format!("{line}\n").as_bytes());
+        super::read_stream(
+            &splitter.finish().with_text(text),
+            ACTOR,
+            FILE,
+            crate::tool::ToolKind::Claude,
+        )
+        .0
+    }
+
+    const DISPATCH: &str = "/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`";
+
     #[test]
-    fn non_user_records_malformed_lines_and_non_utf8_stay_silent() {
+    fn the_whole_dispatch_is_a_dispatch_and_every_near_miss_is_a_human_turn() {
+        let (rows, _) = read_one(&user(&format!("\"{DISPATCH}\"")));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].role, crate::board::Role::Dispatch);
+        assert_eq!(rows[0].body, DISPATCH);
+        let review = DISPATCH.replacen("ae-2026", "review-2026", 1);
+        for near in [
+            format!("{DISPATCH} "),
+            format!(" {DISPATCH}"),
+            format!("{DISPATCH}\\nthen more"),
+            review,
+            DISPATCH.replacen("0a5d2b92", "0a5d2b9X", 1),
+            format!("{DISPATCH}<system-reminder>x</system-reminder>"),
+            "/compact".to_owned(),
+        ] {
+            let (rows, _) = read_one(&user(&format!("\"{near}\"")));
+            assert_eq!(rows.len(), 1, "{near}");
+            assert_eq!(rows[0].role, crate::board::Role::Human, "{near}");
+        }
+    }
+
+    #[test]
+    fn a_dispatch_closes_the_window_and_is_not_a_boundary() {
+        let lines = [
+            user(r#""typed""#),
+            said("kept"),
+            user(&format!("\"{DISPATCH}\"")),
+            said("dropped"),
+        ];
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(
+            replies_to_human(&lines),
+            [
+                "H:typed",
+                "A:kept",
+                "D:/compact checkpoint ae-20260923T190939Z-0a5d2b92 saved; compact now, then re-read `ae brief`"
+            ]
+        );
+    }
+
+    #[test]
+    fn raw_text_strips_reminders_and_trims_nothing() {
+        use crate::board::TextMode::{Raw, Trimmed};
+        let record = user(r#"" \tkeep<system-reminder>gone</system-reminder> this\n""#);
+        assert_eq!(read_text(&record, Trimmed)[0].body, "keep this");
+        assert_eq!(read_text(&record, Raw)[0].body, " \tkeep this\n");
+        // A blank turn is no row in either mode, and a dispatch keeps its role.
+        assert!(read_text(&user(r#""  \n\t""#), Raw).is_empty());
+        let spaced = user(&format!("\"{DISPATCH} \""));
+        let rows = read_text(&spaced, Raw);
+        assert_eq!(rows[0].role, crate::board::Role::Human);
+        assert_eq!(rows[0].body, format!("{DISPATCH} "));
+    }
+
+    #[test]
+    fn a_usage_note_drops_only_with_its_meta_field_and_bash_stdout_always() {
+        let stamped = r#""timestamp":"2026-09-16T09:00:00.500Z""#;
+        let meta = |flag: bool, text: &str| {
+            format!(
+                r#"{{"type":"user","isMeta":{flag},{stamped},"message":{{"content":"{text}"}}}}"#
+            )
+        };
+        for note in [
+            "[Usage limit reached; grace]",
+            "[Earlier usage-limit notes]",
+        ] {
+            assert!(read_one(&meta(true, note)).0.is_empty(), "{note}");
+            assert_eq!(read_one(&meta(false, note)).0.len(), 1, "{note}");
+        }
+        assert_eq!(read_one(&meta(true, "[Usage whatever]")).0.len(), 1);
+        assert!(
+            read_one(&user(r#""<bash-stdout>out</bash-stdout>""#))
+                .0
+                .is_empty()
+        );
+        assert_eq!(
+            read_one(&user(r#""<bash-input>ls</bash-input>""#)).0.len(),
+            1
+        );
+        assert_eq!(read_one(&user(r#""see <bash-stdout>x""#)).0.len(), 1);
+    }
+
+    #[test]
+    fn a_structured_turn_reads_text_and_images_and_counts_what_it_skips() {
+        let record = user(
+            r#"[{"type":"text","text":"a"},{"type":"image","source":{}},{"type":"text","text":"b"},{"type":"audio"},{"type":"text","text":7},{"type":"text"}]"#,
+        );
+        let (rows, coverage) = read_one(&record);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "a\n[image]\nb");
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(coverage[0].reason, "3 structured parts not read");
+        let (rows, coverage) = read_one(&user(r#"[{"type":"image"},{"type":"audio"}]"#));
+        assert_eq!(rows[0].body, "[image]");
+        assert_eq!(coverage[0].reason, "1 structured part not read");
+        // A record that is no tool result and no harness turn counts every part it
+        // cannot show, whatever becomes of the turn: an unsupported-only record
+        // leaves no row and still leaves a trace.
+        let (rows, coverage) = read_one(&user(r#"[{"type":"document"}]"#));
+        assert!(rows.is_empty());
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(coverage[0].reason, "1 structured part not read");
+        for dropped in [
+            user(r#"[{"type":"text","text":"⟦ae:msg from x⟧ hi"},{"type":"audio"}]"#),
+            user(r#"[{"type":"text","text":"[Request interrupted by user]"},{"type":"audio"}]"#),
+        ] {
+            let (rows, coverage) = read_one(&dropped);
+            assert!(rows.is_empty(), "{dropped}");
+            assert_eq!(
+                coverage[0].reason, "1 structured part not read",
+                "{dropped}"
+            );
+        }
+        // A tool result and a harness turn (`isMeta`) are no turns: nothing counts.
+        for silent in [
+            user(r#"[{"type":"text","text":"x"},{"type":"tool_result"},{"type":"audio"}]"#),
+            r#"{"type":"user","isMeta":true,"timestamp":"2026-09-16T09:00:00.500Z","message":{"content":[{"type":"text","text":"x"},{"type":"audio"}]}}"#.to_owned(),
+        ] {
+            let (rows, coverage) = read_one(&silent);
+            assert!(rows.is_empty() && coverage.is_empty(), "{silent}");
+        }
+    }
+
+    #[test]
+    fn a_structured_projection_is_never_the_whole_content_of_a_dispatch() {
+        let whole = user(&format!(r#"[{{"type":"text","text":"{DISPATCH}"}}]"#));
+        let (rows, coverage) = read_one(&whole);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].role, crate::board::Role::Dispatch);
+        assert!(coverage.is_empty());
+        // A part the projection left out means the text is not the whole content.
+        for partial in [
+            format!(r#"[{{"type":"text","text":"{DISPATCH}"}},{{"type":"audio"}}]"#),
+            format!(r#"[{{"type":"text","text":"{DISPATCH}"}},{{"type":"text"}}]"#),
+        ] {
+            let (rows, coverage) = read_one(&user(&partial));
+            assert_eq!(rows.len(), 1, "{partial}");
+            assert_eq!(rows[0].role, crate::board::Role::Human, "{partial}");
+            assert_eq!(rows[0].body, DISPATCH);
+            assert_eq!(coverage[0].reason, "1 structured part not read");
+        }
+    }
+
+    #[test]
+    fn non_user_records_stay_silent_and_malformed_lines_are_counted() {
         let (rows, coverage) = read_one(
             r#"{"type":"assistant","timestamp":"2026-09-16T09:00:00.500Z","message":{"content":"hi"}}"#,
         );
         assert!(rows.is_empty() && coverage.is_empty());
         let (rows, coverage) = read_one(r#"{"type":"user",broken"#);
-        assert!(rows.is_empty() && coverage.is_empty());
+        assert!(rows.is_empty());
+        assert_eq!(coverage[0].reason, "1 line not JSON");
         let (rows, coverage) = read(b"\xff\xfe\n", ACTOR, FILE, crate::tool::ToolKind::Claude);
-        assert!(rows.is_empty() && coverage.is_empty());
+        assert!(rows.is_empty());
+        assert_eq!(coverage[0].reason, "1 line not JSON");
+        let (rows, coverage) = read(
+            b"\xff\n{x\n{\"type\":\"system\"}\n{}\n",
+            ACTOR,
+            FILE,
+            crate::tool::ToolKind::Claude,
+        );
+        assert!(rows.is_empty());
+        assert_eq!(
+            coverage.len(),
+            1,
+            "valid JSON without a user type is not counted"
+        );
+        assert_eq!(coverage[0].reason, "2 lines not JSON");
     }
 
     #[test]
@@ -772,21 +1096,50 @@ mod tests {
     }
 
     #[test]
-    fn any_other_array_user_record_closes_the_window() {
-        for content in [
-            r#"[{"type":"text","text":"interrupted"}]"#,
-            r#"[{"type":"image","source":{}}]"#,
-            r#"[{"type":"tool_result","tool_use_id":"t"},{"type":"text","text":"x"}]"#,
-            "[]",
+    fn any_array_user_record_that_yields_no_row_closes_the_window() {
+        let meta = r#"{"type":"user","isMeta":true,"timestamp":"2026-09-16T09:00:00.500Z","message":{"content":[{"type":"text","text":"meta"}]}}"#;
+        for record in [
+            user(r#"[{"type":"tool_result","tool_use_id":"t"},{"type":"text","text":"x"}]"#),
+            meta.to_owned(),
+            user(r#"[{"type":"unknown"}]"#),
+            user("[]"),
+        ] {
+            let lines = [
+                user(r#""typed""#),
+                said("kept"),
+                record.clone(),
+                said("dropped"),
+            ];
+            let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+            assert_eq!(replies_to_human(&lines), ["H:typed", "A:kept"], "{record}");
+        }
+    }
+
+    #[test]
+    fn a_structured_turn_shows_its_row_and_still_closes_the_window() {
+        for (content, body) in [
+            (r#"[{"type":"text","text":"typed parts"}]"#, "typed parts"),
+            (
+                r#"[{"type":"text","text":"typed parts"},{"type":"image","source":{}}]"#,
+                "typed parts\n[image]",
+            ),
         ] {
             let lines = [
                 user(r#""typed""#),
                 said("kept"),
                 user(content),
-                said("dropped"),
+                said("withheld"),
             ];
             let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
-            assert_eq!(replies_to_human(&lines), ["H:typed", "A:kept"], "{content}");
+            assert_eq!(
+                replies_to_human(&lines),
+                [
+                    "H:typed".to_owned(),
+                    "A:kept".to_owned(),
+                    format!("H:{body}")
+                ],
+                "{content}"
+            );
         }
     }
 

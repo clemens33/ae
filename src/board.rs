@@ -45,6 +45,44 @@ pub enum Role {
     /// a record that could not be classified. Only a read for [`Replies::ToHuman`]
     /// emits one, and `answered` consumes it before any row reaches a caller.
     Boundary,
+    /// A user turn whose WHOLE original content is the guided compaction
+    /// dispatch ae pastes into a seat. The reader proves it before any strip or
+    /// trim and hands the verdict on here, so [`hidden`] removes and counts it
+    /// like every other ae turn. No row of this role reaches a caller.
+    Dispatch,
+}
+
+/// How a read keeps the text of a human row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextMode {
+    /// The board's own: reminder spans stripped, then trimmed.
+    #[default]
+    Trimmed,
+    /// Reminder spans stripped and nothing else: leading and trailing
+    /// whitespace stay. Only the Claude reader honours it for now; every other
+    /// reader trims until its own slice.
+    Raw,
+}
+
+/// What one read takes beyond the board's defaults. `Scope::default()` is
+/// exactly the board's read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Scope<'a> {
+    /// How human rows keep their text.
+    pub text: TextMode,
+    /// `None`: every harness the board reads. `Some(set)`: a generation whose
+    /// tool is not in the set is never located, opened or run; it is one
+    /// `not read: <tool>` coverage row.
+    pub tools: Option<&'a [ToolKind]>,
+}
+
+impl Scope<'_> {
+    /// The coverage reason of a generation this scope refuses, or `None` when
+    /// it may be read.
+    fn refusal(&self, tool: ToolKind) -> Option<String> {
+        let allowed = self.tools.is_none_or(|set| set.contains(&tool));
+        (!allowed).then(|| format!("not read: {}", tool.as_str()))
+    }
 }
 
 /// Which of the model's replies a read keeps.
@@ -139,6 +177,10 @@ pub fn collect(mut rows: Vec<Row>) -> Vec<Row> {
 /// Assistant rows are never hidden: a model may legitimately quote a marker.
 #[must_use]
 fn hidden(row: &Row, passive: Option<&str>) -> bool {
+    if row.role == Role::Dispatch {
+        // The reader proved the whole content before any normalisation.
+        return true;
+    }
     if row.role != Role::Human {
         return false;
     }
@@ -169,7 +211,7 @@ pub(crate) fn answered(rows: Vec<Row>, passive: Option<&str>, mut open: bool) ->
     let mut kept = Vec::with_capacity(rows.len());
     for row in rows {
         match row.role {
-            Role::Human => {
+            Role::Human | Role::Dispatch => {
                 open = !hidden(&row, passive);
                 kept.push(row);
             }
@@ -218,6 +260,7 @@ pub(crate) fn window_labels(rows: Vec<Row>) -> Vec<String> {
                 Role::Human => 'H',
                 Role::Assistant => 'A',
                 Role::Boundary => 'B',
+                Role::Dispatch => 'D',
             };
             format!("{tag}:{}", row.body)
         })
@@ -237,6 +280,17 @@ fn count_hidden(rows: Vec<Row>) -> Vec<Hidden> {
         }
     }
     counted
+}
+
+/// Count the [`Role::Dispatch`] rows among the hidden ones, per seat: the part
+/// of [`count_hidden`] that was ae's own guided compaction dispatch.
+pub(crate) fn count_dispatches(rows: &[Row]) -> Vec<Hidden> {
+    count_hidden(
+        rows.iter()
+            .filter(|row| row.role == Role::Dispatch)
+            .cloned()
+            .collect(),
+    )
 }
 
 /// A line longer than this is hostile, not a record: the door reports its
@@ -421,9 +475,20 @@ pub struct Binding {
     /// every user turn they do not keep, so the window of replies to a human
     /// line can close. False until bound; `Off` and `All` never see one.
     pub(crate) windowed: bool,
+    /// How the reader keeps a human row's text. The board's default trims;
+    /// only the Claude reader honours [`TextMode::Raw`] so far.
+    pub(crate) text: TextMode,
 }
 
 impl Binding {
+    /// Bind how human rows keep their text. Bound by a caller that wants the
+    /// bytes a person typed, not the board's trimmed display text.
+    #[must_use]
+    pub fn with_text(mut self, text: TextMode) -> Self {
+        self.text = text;
+        self
+    }
+
     /// Bind the seat's harness conversation id to this read. ONE store — agy's
     /// history — carries several seats' turns, so its reader matches each
     /// record against this id and nothing else.
@@ -492,6 +557,13 @@ impl Streamed {
     #[must_use]
     pub fn with_assistant(mut self, assistant: bool) -> Self {
         self.binding = self.binding.with_assistant(assistant);
+        self
+    }
+
+    /// [`Binding::with_text`] on this read.
+    #[must_use]
+    pub fn with_text(mut self, text: TextMode) -> Self {
+        self.binding = self.binding.with_text(text);
         self
     }
 
@@ -941,6 +1013,9 @@ pub struct Observation {
     pub coverage: Vec<Coverage>,
     /// One row per seat whose read hid ae-injected turns, `--since` applied.
     pub hidden: Vec<Hidden>,
+    /// The part of `hidden` that was ae's own guided compaction dispatch, per
+    /// seat, `--since` applied: every one of these is also counted in `hidden`.
+    pub dispatches: Vec<Hidden>,
     /// What each successfully streamed seat's read observed; the follow seeds
     /// itself from these and a batch carries none.
     pub seeds: Vec<SeatSeed>,
@@ -992,7 +1067,29 @@ pub fn observe_selected(
     supplied: Option<&SuppliedMeta<'_>>,
     keep: &dyn Fn(&crate::meta::RosterEntry) -> bool,
 ) -> Observation {
-    observe_generations(inputs, since_micros, supplied, keep, Generations::All)
+    observe_with(inputs, since_micros, supplied, keep, &Scope::default())
+}
+
+/// [`observe_selected`] with a [`Scope`]: the whole chain of every kept seat
+/// (current conversation and recorded predecessors), its human rows kept as the
+/// scope says and its generations limited to the scope's tools. A generation
+/// the scope refuses is never located, opened or run.
+#[must_use]
+pub fn observe_with(
+    inputs: &Inputs<'_>,
+    since_micros: Option<i64>,
+    supplied: Option<&SuppliedMeta<'_>>,
+    keep: &dyn Fn(&crate::meta::RosterEntry) -> bool,
+    scope: &Scope<'_>,
+) -> Observation {
+    observe_generations(
+        inputs,
+        since_micros,
+        supplied,
+        keep,
+        Generations::All,
+        scope,
+    )
 }
 
 /// Which of a seat's conversations a read takes.
@@ -1015,6 +1112,7 @@ pub(crate) fn observe_generations(
     supplied: Option<&SuppliedMeta<'_>>,
     keep: &dyn Fn(&crate::meta::RosterEntry) -> bool,
     generations: Generations,
+    scope: &Scope<'_>,
 ) -> Observation {
     let mut rows = Vec::new();
     let mut coverage = Vec::new();
@@ -1042,13 +1140,13 @@ pub(crate) fn observe_generations(
             let (rows, coverage, seeds) = (&mut rows, &mut coverage, &mut seeds);
             hidden_rows.extend(match generations {
                 Generations::All => observe_seat(
-                    session, entry, home, replies, &priors, rows, coverage, seeds,
+                    session, entry, home, replies, scope, &priors, rows, coverage, seeds,
                 ),
-                Generations::Current => {
-                    observe_generation(session, entry, home, replies, 0, rows, coverage, seeds)
-                }
+                Generations::Current => observe_generation(
+                    session, entry, home, replies, scope, 0, rows, coverage, seeds,
+                ),
                 Generations::Earlier => observe_priors(
-                    session, entry, home, replies, &priors, rows, coverage, seeds,
+                    session, entry, home, replies, scope, &priors, rows, coverage, seeds,
                 ),
             });
         }
@@ -1061,6 +1159,7 @@ pub(crate) fn observe_generations(
     Observation {
         rows,
         coverage,
+        dispatches: count_dispatches(&hidden_rows),
         hidden: count_hidden(hidden_rows),
         seeds,
         day_floor: None,
@@ -1097,6 +1196,7 @@ pub(crate) fn observe_seat_turns(
         entry,
         home,
         Replies::All,
+        &Scope::default(),
         0,
         &mut rows,
         &mut coverage,
@@ -1113,21 +1213,24 @@ pub(crate) fn observe_seat_turns(
 /// caller counts them under the one actor after `--since`.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the seat read's eight facts — session, entry, home, flag, priors, rows, coverage, seeds — are each a distinct borrow"
+    reason = "the seat read's nine facts — session, entry, home, flag, scope, priors, rows, coverage, seeds — are each a distinct borrow"
 )]
 fn observe_seat(
     session: &crate::usage::SessionInput,
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
     replies: Replies,
+    scope: &Scope<'_>,
     priors: &[&str],
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
     seeds: &mut Vec<SeatSeed>,
 ) -> Vec<Row> {
-    let mut hidden = observe_generation(session, entry, home, replies, 0, rows, coverage, seeds);
+    let mut hidden = observe_generation(
+        session, entry, home, replies, scope, 0, rows, coverage, seeds,
+    );
     hidden.extend(observe_priors(
-        session, entry, home, replies, priors, rows, coverage, seeds,
+        session, entry, home, replies, scope, priors, rows, coverage, seeds,
     ));
     hidden
 }
@@ -1136,13 +1239,14 @@ fn observe_seat(
 /// the whole chain numbers it.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the seat read's eight facts — session, entry, home, flag, priors, rows, coverage, seeds — are each a distinct borrow"
+    reason = "the seat read's nine facts — session, entry, home, flag, scope, priors, rows, coverage, seeds — are each a distinct borrow"
 )]
 fn observe_priors(
     session: &crate::usage::SessionInput,
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
     replies: Replies,
+    scope: &Scope<'_>,
     priors: &[&str],
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
@@ -1175,7 +1279,7 @@ fn observe_priors(
             None => prior.harness_session = Some((*element).to_owned()),
         }
         hidden.extend(observe_generation(
-            session, &prior, home, replies, generation, rows, coverage, seeds,
+            session, &prior, home, replies, scope, generation, rows, coverage, seeds,
         ));
     }
     hidden
@@ -1191,13 +1295,14 @@ fn observe_priors(
 /// actor unchanged.
 #[allow(
     clippy::too_many_arguments,
-    reason = "one generation's nine facts — the seat read's eight plus its number — are each a distinct borrow"
+    reason = "one generation's nine facts — the seat read's nine, its number in place of the priors — are each a distinct borrow"
 )]
 fn observe_generation(
     session: &crate::usage::SessionInput,
     entry: &crate::meta::RosterEntry,
     home: Option<&Path>,
     replies: Replies,
+    scope: &Scope<'_>,
     generation: u8,
     rows: &mut Vec<Row>,
     coverage: &mut Vec<Coverage>,
@@ -1215,6 +1320,14 @@ fn observe_generation(
             },
         });
     };
+    // THE ALLOW-SET, before the board spec and the locator: a tool the scope does
+    // not name is never located, opened or run (the OpenCode export spawns a
+    // process and writes scratch). The tool is the element's own tag, or the
+    // current seat's binary for a legacy untagged id: `observe_priors` decided.
+    if let Some(reason) = scope.refusal(tool) {
+        cover(reason);
+        return Vec::new();
+    }
     let stream = match tool.adapter().board {
         BoardSpec::Stream(stream) => stream,
         BoardSpec::Unsupported { reason } => {
@@ -1263,6 +1376,7 @@ fn observe_generation(
     let binding = Binding::default()
         .for_seat(entry.harness_session.as_deref().unwrap_or_default())
         .with_replies(replies)
+        .with_text(scope.text)
         .with_assistant_rows_found(!leg_rows.is_empty());
     let read = read_located(&path, &metadata, &binding, stream.follow, |feed| {
         reader_for(stream.parser)(feed, &binding, &actor, &file, tool)
@@ -1979,7 +2093,7 @@ fn render_batch_json(observation: &Observation) -> String {
     }
     for row in &observation.rows {
         let role = match row.role {
-            Role::Human | Role::Boundary => "human",
+            Role::Human | Role::Boundary | Role::Dispatch => "human",
             Role::Assistant => "assistant",
         };
         let line = Value::obj([
@@ -2709,6 +2823,7 @@ mod tests {
             entry,
             Some(root),
             super::Replies::Off,
+            &super::Scope::default(),
             priors,
             &mut rows,
             &mut coverage,
@@ -2788,8 +2903,16 @@ mod tests {
             sessions: &sessions,
             replies: super::Replies::Off,
         };
-        let read =
-            |generations| super::observe_generations(&inputs, None, None, &|_| true, generations);
+        let read = |generations| {
+            super::observe_generations(
+                &inputs,
+                None,
+                None,
+                &|_| true,
+                generations,
+                &super::Scope::default(),
+            )
+        };
         let (all, current, earlier) = (read(All), read(Current), read(Earlier));
         let generations = |rows: &[Row]| rows.iter().map(|row| row.generation).collect::<Vec<_>>();
         assert_eq!(generations(&current.rows), [0]);

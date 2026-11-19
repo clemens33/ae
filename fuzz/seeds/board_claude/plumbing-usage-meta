@@ -1,0 +1,5 @@
+{
+{"type":"user","isMeta":true,"timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"[Usage limit reached; fixture grace note]"}}
+{"type":"user","isMeta":true,"timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"[Earlier usage-limit notes no longer apply. Fixture note.]"}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"[Usage limit reached; twin without the meta field]"}}
+{"type":"user","isMeta":true,"timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"typed text tagged isMeta with neither prefix"}}

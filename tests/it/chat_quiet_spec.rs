@@ -412,9 +412,20 @@ impl TranscriptRig {
     }
 
     fn seed(&self) -> ae::board::follow::Follow {
+        self.seed_counting(&[])
+    }
+
+    /// [`Self::seed`] for a fixture that holds deliberately malformed lines: the first read is
+    /// complete when its coverage is exactly `reasons`, the count of lines that are not JSON.
+    fn seed_counting(&self, reasons: &[&str]) -> ae::board::follow::Follow {
         let first = ae::board::observe(&self.inputs(), None);
-        assert!(
-            first.coverage.is_empty(),
+        let got: Vec<&str> = first
+            .coverage
+            .iter()
+            .map(|gap| gap.reason.as_str())
+            .collect();
+        assert_eq!(
+            got, reasons,
             "synthetic first read is complete: {:?}",
             first.coverage
         );
@@ -621,7 +632,7 @@ fn quiet_rewrite_in_an_earlier_stream_chunk_is_not_misreported_as_a_touch() {
     let after = format!("{}malformed B{tail}\n", human("FIRST"));
     assert_eq!(before.len(), after.len());
     let rig = TranscriptRig::new("earlychunk", &before);
-    let mut follow = rig.seed();
+    let mut follow = rig.seed_counting(&["1 line not JSON"]);
     replace_bytes(&rig.transcript, &after, 20);
     let changed = rig.poll(&mut follow);
     assert!(

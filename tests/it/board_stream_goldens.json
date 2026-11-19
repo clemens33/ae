@@ -15,6 +15,7 @@
       {"actor": "s-stream:lead", "generation": 0, "role": "Human", "body": "claude lead gen0 user prompt", "offset": 0, "ts": 1791626400000000}
     ],
     "coverage": [
+      {"actor": "s-stream:lead", "reason": "3 lines not JSON"}
     ]
   },
   "replies_all": {
@@ -38,6 +39,7 @@
       {"actor": "s-stream:lead", "generation": 0, "role": "Assistant", "body": "claude lead gen0 reply", "offset": 118, "ts": 1791626460000000}
     ],
     "coverage": [
+      {"actor": "s-stream:lead", "reason": "3 lines not JSON"}
     ]
   },
   "replies_to_human": {
@@ -60,6 +62,7 @@
       {"actor": "s-stream:lead", "generation": 0, "role": "Assistant", "body": "claude lead gen0 reply", "offset": 118, "ts": 1791626460000000}
     ],
     "coverage": [
+      {"actor": "s-stream:lead", "reason": "3 lines not JSON"},
       {"actor": "s-stream:agy-worker", "reason": "agy: no assistant records (history carries prompts only)"}
     ]
   }

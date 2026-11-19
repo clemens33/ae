@@ -734,6 +734,52 @@ pub enum CompactSpec {
     },
 }
 
+impl CompactSpec {
+    /// What a guided dispatch says between its command and the checkpoint
+    /// reference, and after it. ONE owner for the writer and the recognizer.
+    const GUIDED_HEAD: &'static str = " checkpoint ";
+    const GUIDED_TAIL: &'static str = " saved; compact now, then re-read `ae brief`";
+
+    /// The exact guided dispatch for `reference`, or `None` for a spec that
+    /// takes no guidance with its command. The one renderer: seat compaction
+    /// pastes it and the board recognizes it.
+    #[must_use]
+    pub(crate) fn guided_dispatch(self, reference: &str) -> Option<String> {
+        match self {
+            Self::Guided { command } => Some(format!(
+                "{command}{}{reference}{}",
+                Self::GUIDED_HEAD,
+                Self::GUIDED_TAIL
+            )),
+            Self::Bare { .. } | Self::Unsupported { .. } => None,
+        }
+    }
+
+    /// Whether `text` is, byte for byte, the guided dispatch of a request id
+    /// seat compaction mints: the `ae` ask prefix and the exact id grammar, never
+    /// a review id. The caller hands over the WHOLE untouched text; a trimmed,
+    /// extended or reminder-bearing copy is not one.
+    #[must_use]
+    pub(crate) fn is_guided_dispatch(self, text: &str) -> bool {
+        let Self::Guided { command } = self else {
+            return false;
+        };
+        let Some(reference) = text
+            .strip_prefix(command)
+            .and_then(|rest| rest.strip_prefix(Self::GUIDED_HEAD))
+            .and_then(|rest| rest.strip_suffix(Self::GUIDED_TAIL))
+        else {
+            return false;
+        };
+        let ask = crate::tracked::Kind::Ask.id_prefix();
+        crate::tracked::is_request_id(reference)
+            && reference
+                .strip_prefix(ask)
+                .is_some_and(|rest| rest.starts_with('-'))
+            && self.guided_dispatch(reference).as_deref() == Some(text)
+    }
+}
+
 /// How a harness draws a prompt only the HUMAN may answer — data only; the
 /// ONE detector that reads it is [`crate::watchdog::human_prompt_class`].
 /// MEASURED per tool from a frozen frame: one version's UI text, the same
@@ -1826,6 +1872,14 @@ impl ToolKind {
         matches!(self, Self::Claude)
     }
 
+    /// Whether `text` is, whole and untouched, the guided compaction dispatch
+    /// ae pastes into this harness's seat: its own spec's rendering for an ask
+    /// id. The board's reader asks it of a turn's content before any trim.
+    #[must_use]
+    pub fn is_guided_dispatch(self, text: &str) -> bool {
+        self.adapter().compact.is_guided_dispatch(text)
+    }
+
     /// Whether `row` is this harness's row for a usage-limit wait the human
     /// cancelled: only claude 2.1.296's is measured.
     #[must_use]
@@ -2756,6 +2810,49 @@ mod tests {
                 matches!(spec, CompactSpec::Unsupported { reason } if !reason.is_empty()),
                 "{kind:?}"
             );
+        }
+    }
+
+    #[test]
+    fn the_guided_dispatch_is_recognized_whole_and_only_for_an_ask_id() {
+        const ID: &str = "ae-20260923T190939Z-0a5d2b92";
+        let claude = ToolKind::Claude.adapter().compact;
+        let text = claude.guided_dispatch(ID).expect("a guided spec renders");
+        assert_eq!(
+            text,
+            format!("/compact checkpoint {ID} saved; compact now, then re-read `ae brief`")
+        );
+        assert!(claude.is_guided_dispatch(&text));
+        assert!(ToolKind::Claude.is_guided_dispatch(&text));
+        for near in [
+            format!("{text} "),
+            format!(" {text}"),
+            format!("{text}\nmore"),
+            format!("x{text}"),
+            text.replacen("ae-2026", "review-2026", 1),
+            text.replacen("0a5d2b92", "0A5D2B92", 1),
+            text.replacen("0a5d2b92", "0a5d2b9", 1),
+            text.replacen("Z-", "z-", 1),
+            text.replacen("saved;", "saved", 1),
+            text.replacen("/compact", "/compress", 1),
+            String::new(),
+            "/compact".to_owned(),
+            "/compact checkpoint  saved; compact now, then re-read `ae brief`".to_owned(),
+        ] {
+            assert!(!claude.is_guided_dispatch(&near), "{near:?}");
+        }
+        // A spec that takes no guidance renders none and recognizes none, even
+        // on the very text Claude's spec renders.
+        for kind in [
+            ToolKind::Codex,
+            ToolKind::Gemini,
+            ToolKind::Agy,
+            ToolKind::Unknown,
+        ] {
+            let spec = kind.adapter().compact;
+            assert_eq!(spec.guided_dispatch(ID), None, "{kind:?}");
+            assert!(!spec.is_guided_dispatch(&text), "{kind:?}");
+            assert!(!kind.is_guided_dispatch(&text), "{kind:?}");
         }
     }
 }

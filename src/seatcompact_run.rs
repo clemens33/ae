@@ -590,8 +590,9 @@ fn incarnation(dir: &Path, slot: &str) -> std::result::Result<Rows, RowGap> {
 /// start with `/` — and the Guided arm adds the ref the seat just proved.
 fn dispatch_text(mode: Mode, spec: crate::tool::CompactSpec, reference: &str) -> String {
     match (mode, spec) {
-        (Mode::Guided, crate::tool::CompactSpec::Guided { command }) => {
-            format!("{command} checkpoint {reference} saved; compact now, then re-read `ae brief`")
+        // The board's reader recognizes exactly this rendering (`CompactSpec::is_guided_dispatch`).
+        (Mode::Guided, spec @ crate::tool::CompactSpec::Guided { .. }) => {
+            spec.guided_dispatch(reference).unwrap_or_default()
         }
         (Mode::Bare, crate::tool::CompactSpec::Bare { command }) => command.to_owned(),
         _ => String::new(), // The gate refused every `Unsupported` seat.

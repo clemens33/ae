@@ -1,0 +1,4 @@
+{
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"<bash-stdout>\nfixture output\n</bash-stdout>"}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"<bash-input>printf fixture</bash-input>"}}
+{"type":"user","timestamp":"2026-01-02T03:04:05.678Z","message":{"role":"user","content":"Quoted output follows.\n<bash-stdout>fixture</bash-stdout>"}}
