@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.89] - 2026-11-19
+- The path inventories in doors, floor, phase2 and phase3 compare both sides sorted, so each pins its members and their count and not the order a moved module leaves in the literal list
+- Name the Codex service wait in delivery and watchdog
+
 ## [v2026.11.88] - 2026-11-19
 - The freeze refuses every roster defect a fresh launch refuses, with the launch's own text
 - A reboot or --from child starts with the source session's goal
