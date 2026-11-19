@@ -169,7 +169,9 @@ list and the body: the list keeps one session and its more row, the body three r
 as few as it had undragged). The left border of a side-by-side
 [orchestrator panel](#orchestrator-panel) sets the panel's width: the panel and
 the chat beside it each keep at least 40 cells. The rule being dragged is drawn in the title
-colour, reversed with `theme = off`; letting go ends the drag. The sizes last
+colour, reversed with `theme = off`; letting go ends the drag. Under a full
+orchestrator panel a drag of the sidebar's rule or the list's rule follows the
+pointer over the panel's cells too. The sizes last
 for this run of the app and are not remembered; a smaller pane narrows them
 only while it is small.
 
@@ -465,14 +467,15 @@ open behind the main column and stands beside it again when the frame
 widens; `O` or the button then hands it the keys, and it fills the chat column.
 `F` or a click on its header's `F full` / `F side` switches it between side
 and full. Full screen it fills the chat column, leaves the sidebar drawn and
-holds the keys; a click on a session in the sidebar selects it and turns the
-panel side, so the selection shows, and a drag of the sidebar's rule keeps it
-full. Side by side a click gives the keys to the column it lands on, and the
+holds the keys; a click on a session in the sidebar, also the selected one, or
+`1`-`9`, `j` / `k` or an arrow selects it and turns the panel side with the keys
+on the main column, so the selection shows, and a drag of the sidebar's rule
+keeps it full. Side by side a click gives the keys to the column it lands on, and the
 focused column's name is in the title ink
 (`▸` before it with `theme = off`). Any change of focus ends writing as `Esc`
 does and keeps each draft. While the panel holds the keys, `Esc` (not writing)
 hides it, `1`-`9`, `j` / `k` and the arrows still step the list beside a side
-panel, `v` does nothing, `oo` opens the orchestrator's pane (below), `r` opens
+panel (a full one turns side first), `v` does nothing, `oo` opens the orchestrator's pane (below), `r` opens
 the reader in the main column, and the rest acts on the panel's chat; `O` and
 `F` are plain text while writing.
 

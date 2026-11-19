@@ -156,7 +156,7 @@ impl App {
             return self.reader_mouse(mouse, fresh);
         }
         if !self.orch.active
-            && let Some(acted) = self.panel_edge(mouse)
+            && let Some(acted) = self.held_edge(mouse)
         {
             return acted;
         }
@@ -191,13 +191,22 @@ impl App {
         match mouse.kind {
             MouseKind::Click => {
                 let before = self.model.selected().map(str::to_owned);
+                let row = match self.layout.hit(mouse) {
+                    Some(draw::Hit::Session(name)) => {
+                        self.fleet.rows.iter().any(|row| row.name == name)
+                    }
+                    _ => false,
+                };
                 let acted = self.clicked(mouse, fresh) || ended;
                 // The selection shows in the main column the full panel covers:
-                // the panel turns side, as `!` does for a row.
-                if full && self.model.selected() != before.as_deref() {
+                // the panel turns side, as `!` does for a row, and so does a
+                // press on the row already selected, but not one on a session
+                // that left the fleet since the frame drew it.
+                let turned = full && (row || self.model.selected() != before.as_deref());
+                if turned {
                     self.reader_to_main();
                 }
-                acted
+                acted || turned
             }
             MouseKind::WheelUp | MouseKind::WheelDown => {
                 let (up, layout) = (mouse.kind == MouseKind::WheelUp, &self.layout);
@@ -351,11 +360,17 @@ impl App {
         self.model.drag_to(size)
     }
 
-    /// The side panel's border, before the panel takes the event: a press on
-    /// it grabs it, and that drag's motion and release stay here wherever the
-    /// pointer goes. It moves no keys. `None` for every other event.
-    pub(super) fn panel_edge(&mut self, mouse: Mouse) -> Option<bool> {
-        let dragging = (self.model.drag()).is_some_and(|drag| drag.edge == model::Edge::Panel);
+    /// A border's drag, before the panel takes the event: a press on the side
+    /// panel's border grabs it, and the motion and release of that drag stay
+    /// here wherever the pointer goes. So do those of a sidebar or list drag
+    /// while the panel is full: its cells are the main column's, which the
+    /// pointer crosses to widen the sidebar. A drag of either beside a side
+    /// panel is the panel's once the pointer lands on it. It moves no keys.
+    /// `None` for every other event.
+    pub(super) fn held_edge(&mut self, mouse: Mouse) -> Option<bool> {
+        let full = self.orch.panel.as_ref().is_some_and(|panel| panel.full);
+        let dragging =
+            (self.model.drag()).is_some_and(|drag| drag.edge == model::Edge::Panel || full);
         match mouse.kind {
             MouseKind::Click => {
                 let (edge, at) = self.layout.grab(mouse)?;

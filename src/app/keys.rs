@@ -289,16 +289,18 @@ pub(super) fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> 
         return Some(redraw);
     }
     // With the panel holding the keys, Esc hides it, the arrows step the
-    // list beside a side panel, and the rest is the panel's chat.
+    // list (a full panel turns side first), and the rest is the panel's chat.
+    let mut turned = false;
     if app.panel_focused() && !app.orch.active {
         match key {
             Key::Escape => {
                 app.close_panel();
                 return Some(true);
             }
-            // The arrows are `j` / `k`: the list's beside a side panel only.
-            Key::Up | Key::Down if matches!(app.panel_byte(b'j'), PanelByte::Inert) => {
-                return Some(false);
+            // The arrows are `j` / `k`: the list's, which turn a full panel
+            // side to show the selection.
+            Key::Up | Key::Down if matches!(app.panel_byte(b'j'), PanelByte::Select) => {
+                turned = show_selection(app, &model::browse_keys(key));
             }
             Key::Up | Key::Down | Key::Interrupt => {}
             _ => {
@@ -315,12 +317,26 @@ pub(super) fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> 
     if *key == Key::Enter && app.toggle_marked() {
         return Some(true);
     }
-    let mut redraw = false;
+    let mut redraw = turned;
     for key in model::browse_keys(key) {
         let act = app.model.key(key, &app.fleet, app.can_compose());
         redraw |= apply(app, &act, origin)?;
     }
     Some(redraw)
+}
+
+/// List keys over a full panel: when one names a row, the selected one too,
+/// the panel turns side and the main column takes the keys, so the session
+/// shows. A key that names no row, a digit past the list or a step off either
+/// end, leaves the panel full. Whether the panel turned, which owes a redraw.
+fn show_selection(app: &mut App, keys: &[model::Key]) -> bool {
+    let names = keys
+        .iter()
+        .any(|key| app.model.target(*key, &app.fleet).is_some());
+    if names {
+        app.reader_to_main();
+    }
+    names
 }
 
 /// A paste while browsing is never a command: a writable selection starts
@@ -352,6 +368,7 @@ pub(super) fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bo
         return Some(false);
     }
     let disarmed = !matches!(byte, b'q' | b'o') && app.armed.take().is_some();
+    let mut turned = false;
     if !app.orch.active {
         match byte {
             b'O' => {
@@ -365,6 +382,9 @@ pub(super) fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bo
         if app.panel_focused() {
             match app.panel_byte(byte) {
                 PanelByte::Inert => return Some(disarmed),
+                PanelByte::Select => {
+                    turned = show_selection(app, &model::browse_keys(&Key::Text(vec![byte])));
+                }
                 PanelByte::Open => return Some(app.pane_key(origin)),
                 PanelByte::Panel => {
                     let done = app.in_panel(|app| browse_byte(app, byte, origin));
@@ -397,7 +417,7 @@ pub(super) fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bo
         }
         _ => {}
     }
-    let mut redraw = disarmed;
+    let mut redraw = disarmed || turned;
     for key in model::browse_keys(&Key::Text(vec![byte])) {
         let act = app.model.key(key, &app.fleet, app.can_compose());
         redraw |= apply(app, &act, origin)?;

@@ -165,6 +165,9 @@ fn unproven(gap: &str) -> String {
 pub(super) enum PanelByte {
     /// The main column takes it, as with no panel.
     Main,
+    /// The main column takes it, as with no panel, after a full panel turned
+    /// side so the selection shows.
+    Select,
     /// The panel's own column takes it.
     Panel,
     /// It does nothing in the panel.
@@ -601,9 +604,9 @@ impl App {
     }
 
     /// Who takes browse byte `byte` while the panel holds the keys: the
-    /// list's own keys stay the main column's beside a side panel and do
-    /// nothing over a full one, `v` (the seat view) does nothing, `o` is the
-    /// panel's pane key, and the rest is the panel's chat.
+    /// list's own keys stay the main column's beside a side panel and turn a
+    /// full one side to show what they select, `v` (the seat view) does
+    /// nothing, `o` is the panel's pane key, and the rest is the panel's chat.
     pub(super) fn panel_byte(&self, byte: u8) -> PanelByte {
         let full = self.orch.panel.as_ref().is_some_and(|panel| {
             let columns = model::Columns {
@@ -615,7 +618,7 @@ impl App {
         match byte {
             b'v' => PanelByte::Inert,
             b'o' => PanelByte::Open,
-            b'1'..=b'9' | b'j' | b'k' if full => PanelByte::Inert,
+            b'1'..=b'9' | b'j' | b'k' if full => PanelByte::Select,
             b'1'..=b'9' | b'j' | b'k' | b'q' | b',' | b'?' | b's' | b'z' | b'Z' | b'm' => {
                 PanelByte::Main
             }

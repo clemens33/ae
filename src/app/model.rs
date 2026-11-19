@@ -315,6 +315,23 @@ impl Model {
         }
     }
 
+    /// The row list key `key` names in `fleet`: a digit's own, or the one
+    /// before or after the selection. `None` for any other key and where it
+    /// names no row, a digit past the list or a step off either end.
+    pub(crate) fn target(&self, key: Key, fleet: &Fleet) -> Option<usize> {
+        let at = self.position(fleet);
+        let target = match key {
+            Key::Digit(index) => fleet
+                .rows
+                .iter()
+                .position(|row| row.index == usize::from(index)),
+            Key::Up => at.and_then(|at| at.checked_sub(1)),
+            Key::Down => at.map(|at| at + 1),
+            _ => None,
+        };
+        target.filter(|target| *target < fleet.rows.len())
+    }
+
     /// Take one key. `can_compose` says the selected session may be written.
     /// An open overlay owns every key first; closed behavior is exactly what
     /// it always was.
@@ -330,15 +347,10 @@ impl Model {
         }
         let at = self.position(fleet);
         match key {
-            Key::Digit(index) => {
-                let target = fleet
-                    .rows
-                    .iter()
-                    .position(|row| row.index == usize::from(index));
+            Key::Digit(_) | Key::Up | Key::Down => {
+                let target = self.target(key, fleet);
                 self.select(fleet, target)
             }
-            Key::Up => self.select(fleet, at.and_then(|at| at.checked_sub(1))),
-            Key::Down => self.select(fleet, at.map(|at| at + 1)),
             Key::NextNeed => {
                 let after = at.map_or(0, |at| at + 1);
                 let count = fleet.rows.len();
