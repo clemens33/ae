@@ -610,7 +610,7 @@ fn logical_lines(text: &str) -> Vec<(&str, &str)> {
 
 /// `text` as quoted lines: ae prefixes every logical line with `> `, and keeps
 /// its separator as it was, so nothing the words say can read as a header and
-/// the words come back exactly from [`unquoted`].
+/// the words come back exactly from the quoted section.
 fn quoted(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     for (line, separator) in logical_lines(text) {
@@ -647,6 +647,33 @@ fn sections(parsed: &Parsed, owner: Option<&OwnerAsk>) -> String {
         text.push_str(context);
     }
     text
+}
+
+/// The compatibility gate: the target seat's running conversation was handed a
+/// context turn that teaches it the relay frame. Its start recorded
+/// `context.<slot>` (a seat that was never started by a core that knows the
+/// frame carries none), and a row that is not one positive number at least the
+/// version this core writes, or is named twice, is as good as none.
+///
+/// # Errors
+///
+/// The refusal, naming the seat and the remedy.
+fn context_stamp(meta: &[u8], slot: &str) -> Result<(), String> {
+    let row = meta::sole_value(meta, &format!("context.{slot}"));
+    let Some(row) = row else {
+        return Err(format!(
+            "target seat {slot} carries no context stamp; relaunch the target seat"
+        ));
+    };
+    let version = std::str::from_utf8(row)
+        .ok()
+        .and_then(|text| text.parse::<u32>().ok());
+    match version {
+        Some(version) if version >= crate::render::CONTEXT_VERSION => Ok(()),
+        _ => Err(format!(
+            "target seat {slot} carries an unusable or older context stamp; relaunch the target seat"
+        )),
+    }
 }
 
 /// Every proof before the claim, in order: the orchestrator role, the caller's
@@ -697,6 +724,7 @@ fn prepare(
             names.join(", ")
         ));
     };
+    context_stamp(&bytes, &seat.slot)?;
     let owner = match &parsed.owner {
         Owner::Bound(id) => Some(owner_ask(grant, id)?),
         Owner::Attested { .. } | Owner::Interim => None,

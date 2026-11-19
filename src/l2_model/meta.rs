@@ -2355,6 +2355,10 @@ pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String
                 format!("capture_floor.{slot}"),
                 Some(capture_floor.to_string()),
             ));
+            // A fresh conversation has been handed no context yet: the stamp
+            // of the setup that left is no claim about it. `_run` records its
+            // own at the first start.
+            rows.push((format!("context.{slot}"), None));
             // A predecessor row is written only when there is a conversation to
             // keep: a seat whose id never resolved has nothing to hand on, and
             // `prior_with` refuses an id it cannot judge rather than recording
@@ -2645,6 +2649,12 @@ impl RewriteError {
 /// the rename returned but the directory sync did not.
 pub fn rewrite(dir: &Path, key: &str, value: Option<&str>) -> Result<(), RewriteError> {
     rewrite_rows(dir, &[(key, value)])
+}
+
+/// The context version the seat in `slot` was last started with, as
+/// `context.<slot>`. Nothing changes when the row already says it.
+pub(crate) fn record_context(dir: &Path, slot: &str, version: u32) -> Result<(), RewriteError> {
+    rewrite(dir, &format!("context.{slot}"), Some(&version.to_string()))
 }
 
 /// Publish a config-home row and its optional implicit-HOME base in one

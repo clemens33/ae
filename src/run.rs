@@ -83,6 +83,12 @@ pub struct Plan {
     /// whose launch id is a birth id): the birth its start facts staple to.
     /// Never part of `render()`.
     birth: Option<BirthStart>,
+    /// The context version this start delivers to a lead-pair seat: a real
+    /// start records it as `context.<slot>` before the exec, and a relay
+    /// refuses a seat whose row is missing or not a positive number. `None`
+    /// for any other seat, and for an exact resume that keeps its old
+    /// conversation without a new context turn. Never part of `render()`.
+    context_stamp: Option<u32>,
 }
 
 /// The roster slot prefix of a seat a spawn made.
@@ -491,6 +497,7 @@ pub fn run(
         err.flush()?;
         return Ok(EXIT_FAILED);
     }
+    record_context_stamp(dir, slot, &plan, err)?;
     if let Some(notice) = &plan.config_home_notice {
         writeln!(err, "{notice}")?;
         err.flush()?;
@@ -891,8 +898,44 @@ fn build_with_snapshot(
         refusal,
         reference,
         birth: BirthStart::of(&seat, slot, mode, meta_session_id(dir)),
+        context_stamp: context_stamp_for(dir, slot, seat.tool, exact),
     };
     Ok((plan, choice))
+}
+
+/// The context version a start of lead-pair slot `slot` delivers: the seat
+/// gets the relay-aware context turn on every start that sends one, a fresh
+/// conversation or a resume that keeps the turn ([`resume_keeps_context`]).
+/// Any other seat, and a resume that keeps its old conversation without one,
+/// gets none: its row stays as it was.
+fn context_stamp_for(dir: &Path, slot: &str, tool: ToolKind, exact: bool) -> Option<u32> {
+    let bytes = crate::meta::read_bytes(dir).ok()?;
+    (crate::render::seat_role(&bytes, slot) == crate::render::SeatRole::Lead
+        && resume_keeps_context(tool, exact))
+    .then_some(crate::render::CONTEXT_VERSION)
+}
+
+/// The relay gate reads `context.<slot>`: written before the exec, so a seat
+/// that was handed the context never shows a stamp older than it. A miss starts
+/// the seat anyway; the gate refuses it until a later start records the row.
+fn record_context_stamp(
+    dir: &Path,
+    slot: &str,
+    plan: &Plan,
+    err: &mut impl Write,
+) -> std::io::Result<()> {
+    let Some(version) = plan.context_stamp else {
+        return Ok(());
+    };
+    if let Err(why) = crate::meta::record_context(dir, slot, version) {
+        writeln!(
+            err,
+            "ae: could not record context.{slot} ({}) — launching anyway; a relay to this seat refuses until a later start records it",
+            why.cause()
+        )?;
+        err.flush()?;
+    }
+    Ok(())
 }
 
 /// What this start says about a saved `OpenCode` variant that shadows the
@@ -3093,6 +3136,7 @@ mod tests {
             refusal: None,
             reference: None,
             birth: None,
+            context_stamp: None,
         };
         let line = plan.render();
         assert!(!line.contains('\n'), "{line}");
@@ -3248,6 +3292,7 @@ mod tests {
             refusal: None,
             reference: None,
             birth: None,
+            context_stamp: None,
         };
         assert!(
             plan.render().contains(r#""env_clear":true"#),
@@ -3298,6 +3343,7 @@ mod tests {
             refusal: None,
             reference: None,
             birth: None,
+            context_stamp: None,
         };
         // A guard that no longer holds is the failure: said, journaled ONCE,
         // and Ok, so `run` goes on to exec the plan it built.
