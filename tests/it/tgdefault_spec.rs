@@ -428,10 +428,10 @@ mod tests {
             panic!("/use answers");
         };
         assert!(none.contains("orchestrator"), "{none}");
-        let Route::Answer(set) = at("/use", &world, &selected("work"), &seat) else {
+        let Route::Answer(current) = at("/use", &world, &selected("work"), &seat) else {
             panic!("/use answers");
         };
-        assert!(set.contains("Selected: work"), "{set}");
+        assert!(current.contains("Selected: work"), "{current}");
     }
 
     // ─── Message::parse keeps reply presence (raw Bot API JSON) ──────────
