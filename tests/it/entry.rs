@@ -17,7 +17,7 @@
 //! pinned here instead is the half that can be: the router appends `--pane` for
 //! `stop` and `watchdog` and only when the caller named none
 //! (`src/l6_shell/entry.rs`'s `the_pane_is_appended_only_when_the_caller_named_none`),
-//! and the read itself is one documented door in `src/doors.rs`.
+//! and the read itself is one documented door in `src/l1_platform/doors.rs`.
 
 #![allow(
     clippy::disallowed_methods,

@@ -1,6 +1,6 @@
 //! The real transport, against real tmux servers.
 //!
-//! `src/transport.rs`'s unit tests pin what can be proven without one: that the
+//! `src/l1_platform/transport.rs`'s unit tests pin what can be proven without one: that the
 //! exec can succeed at all, that a program which cannot be spawned is a FAILED
 //! run rather than an empty one, and that an unaddressable socket never reaches
 //! the wire. What is here needs a server that actually answers — because the

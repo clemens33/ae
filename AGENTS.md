@@ -9,7 +9,7 @@ Module map: [Structure](docs/reference/contract.md#structure), layer map: [Layer
 | coordination design | [docs/design-patterns.md](docs/design-patterns.md) |
 | src/l6_shell/shim.rs, helper commands | [Session helpers](docs/reference/contract.md#session-helpers) |
 | src/tool.rs, adapters, src/run.rs, src/launch.rs | [Agent tool capabilities](docs/reference/contract.md#agent-tool-capabilities) |
-| src/doors.rs, src/transport.rs, environment reads | [Environment doors](docs/reference/contract.md#environment-doors) |
+| src/l1_platform/doors.rs, src/l1_platform/transport.rs, environment reads | [Environment doors](docs/reference/contract.md#environment-doors) |
 | src/theme.rs, status formats, tmux hooks and binds | [docs/internals/theme.md](docs/internals/theme.md) |
 | src/upgrade.rs, `ae upgrade` | [docs/upgrade.md](docs/upgrade.md) |
 | shell commands on macOS or Linux | [GNU vs BSD](docs/reference/contract.md#gnu-vs-bsd--check-the-command-you-are-about-to-type) |
@@ -136,7 +136,7 @@ not channels, so CI, laptop and agent sandbox use the same compiler
 exact nightly, only in the justfile `FUZZ_TOOLCHAIN`: there is no `fuzz/rust-toolchain.toml`,
 the lane passes `cargo +<pin>`, and the product compiler does not move.
 tmux floor `3.4`: a launch and the picker refuse below it; `list`, `version`, `doctor` and
-`upgrade` do not (`src/tmux_floor.rs`).
+`upgrade` do not (`src/l1_platform/tmux_floor.rs`).
 
 `--locked` on every graph-consuming lane: `cargo deny --locked check` (global option),
 `cargo mutants --cargo-arg=--locked` (no native flag); `cargo fmt` is exempt.

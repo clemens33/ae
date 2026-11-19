@@ -171,7 +171,7 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
         sorted(vec![
             "src/install.rs".to_owned(),
             "src/run.rs".to_owned(),
-            "src/transport.rs".to_owned(),
+            "src/l1_platform/transport.rs".to_owned(),
             "src/upgrade.rs".to_owned(),
             "tests/it/cli.rs".to_owned(),
             "tests/it/doors.rs".to_owned(),
@@ -197,7 +197,10 @@ fn run_git_has_exactly_one_product_caller() {
     );
     assert_eq!(
         sorted(holders),
-        sorted(vec!["src/git.rs".to_owned(), "src/transport.rs".to_owned()]),
+        sorted(vec![
+            "src/l1_platform/git.rs".to_owned(),
+            "src/l1_platform/transport.rs".to_owned()
+        ]),
         "the git process leg gained (or lost) a product holder"
     );
 }
@@ -216,8 +219,8 @@ fn run_ps_has_exactly_one_product_caller() {
     assert_eq!(
         sorted(holders),
         sorted(vec![
-            "src/procs.rs".to_owned(),
-            "src/transport.rs".to_owned()
+            "src/l1_platform/procs.rs".to_owned(),
+            "src/l1_platform/transport.rs".to_owned()
         ]),
         "the ps process leg gained (or lost) a product holder"
     );
@@ -266,8 +269,8 @@ fn run_sysctl_has_exactly_one_product_caller() {
     assert_eq!(
         sorted(holders),
         sorted(vec![
-            "src/doors.rs".to_owned(),
-            "src/transport.rs".to_owned()
+            "src/l1_platform/doors.rs".to_owned(),
+            "src/l1_platform/transport.rs".to_owned()
         ]),
         "the sysctl process leg gained (or lost) a product holder"
     );
@@ -281,10 +284,13 @@ fn run_agy_quota_has_exactly_one_product_caller_and_no_pipe() {
     // A scan that found nothing fails here too: the expected list is not empty.
     assert_eq!(
         sorted(holders),
-        sorted(["src/quota.rs", "src/transport.rs"]),
+        sorted(["src/quota.rs", "src/l1_platform/transport.rs"]),
         "the agy process leg gained (or lost) a product holder"
     );
-    let code = structural("src/transport.rs", tree_text("src/transport.rs"));
+    let code = structural(
+        "src/l1_platform/transport.rs",
+        tree_text("src/l1_platform/transport.rs"),
+    );
     let body = &code[body_of(&code, "fn spawn_until")];
     assert_eq!(
         body.matches("Stdio::null()").count(),
@@ -306,7 +312,7 @@ fn run_clipboard_image_has_exactly_one_product_caller() {
     assert!(!holders.is_empty(), "empty scan did not run");
     assert_eq!(
         sorted(holders),
-        sorted(["src/clipboard.rs", "src/transport.rs"]),
+        sorted(["src/clipboard.rs", "src/l1_platform/transport.rs"]),
         "the clipboard process leg gained (or lost) a product holder"
     );
 }
@@ -319,7 +325,10 @@ fn run_clipboard_image_has_exactly_one_product_caller() {
 /// output at exit, so the wiring itself is what is pinned.
 #[test]
 fn the_opencode_leg_captures_through_a_file_never_a_pipe() {
-    let code = structural("src/transport.rs", tree_text("src/transport.rs"));
+    let code = structural(
+        "src/l1_platform/transport.rs",
+        tree_text("src/l1_platform/transport.rs"),
+    );
     let body = &code[body_of(&code, "fn run_opencode")];
     assert!(
         body.contains("CapturedToFile"),
@@ -385,7 +394,7 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
             // The shared gate.
             "src/lifecycle/end.rs".to_owned(),
             "src/session_launch.rs".to_owned(),
-            "src/transport.rs".to_owned(),
+            "src/l1_platform/transport.rs".to_owned(),
         ]),
         "the raw absence probe gained (or lost) a caller"
     );
@@ -395,7 +404,7 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
             // The doctor's own absence reading.
             "src/doctor.rs".to_owned(),
             // Its definition and its platform table.
-            "src/doors.rs".to_owned(),
+            "src/l1_platform/doors.rs".to_owned(),
             // The fleet listing's discovery.
             "src/fleet_read.rs".to_owned(),
             // The shared gate.
@@ -532,7 +541,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     }
 
     // Twenty relaxations over ten files, each for a job no library call can
-    // do. The PRODUCT's five: `src/transport.rs`, because a tmux multiplexer
+    // do. The PRODUCT's five: `src/l1_platform/transport.rs`, because a tmux multiplexer
     // that cannot run tmux answers `unknown` about everything; `src/run.rs`,
     // the pane's own `exec` of its tool; `src/upgrade.rs` TWICE — `tar`, to
     // list and unpack the bundle it downloaded, and then the downloaded core's
@@ -567,7 +576,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
         sorted(vec![
             ("src/install.rs".to_owned(), 1),
             ("src/run.rs".to_owned(), 1),
-            ("src/transport.rs".to_owned(), 1),
+            ("src/l1_platform/transport.rs".to_owned(), 1),
             ("src/upgrade.rs".to_owned(), 2),
             ("tests/it/cli.rs".to_owned(), 6),
             ("tests/it/doors.rs".to_owned(), 1),
@@ -1096,11 +1105,11 @@ fn open_popup_and_run_shell_line_have_only_their_named_product_caller_and_pure_s
     for (leg, expected) in [
         (
             "open_popup(",
-            &["src/console/term.rs", "src/transport.rs"][..],
+            &["src/console/term.rs", "src/l1_platform/transport.rs"][..],
         ),
         (
             "run_shell_line(",
-            &["src/console/term.rs", "src/transport.rs"][..],
+            &["src/console/term.rs", "src/l1_platform/transport.rs"][..],
         ),
     ] {
         let callers: Vec<&str> = halves
@@ -1319,11 +1328,11 @@ fn the_deny_list_reader_sees_a_bare_path_and_a_reasonless_table() {
     );
     // The real tree, so a move rewrites the cited paths and the tree alike.
     let (files, doors) = door_claims_in(
-        "run via src/transport.rs run_* leg; store::read_capped (x)",
+        "run via src/l1_platform/transport.rs run_* leg; store::read_capped (x)",
         source_view::tree(),
     )
     .unwrap_or_else(|why| panic!("{why}"));
-    assert_eq!(files, vec!["src/transport.rs".to_owned()]);
+    assert_eq!(files, vec!["src/l1_platform/transport.rs".to_owned()]);
     assert_eq!(
         doors,
         vec![("src/store.rs".to_owned(), "read_capped".to_owned())]

@@ -184,7 +184,7 @@ jobs:
 
       # The floor itself is asserted by the SUITE — `tests/it/floor.rs` panics
       # with a stated reason below it — so the version comparison keeps its one
-      # owner in `src/tmux_floor.rs` rather than gaining a shell copy here.
+      # owner in `src/l1_platform/tmux_floor.rs` rather than gaining a shell copy here.
 
       # rustup is preinstalled on GitHub runners. The toolchain, its components
       # and its targets all come from rust-toolchain.toml — the same file the

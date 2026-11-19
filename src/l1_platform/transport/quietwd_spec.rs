@@ -1,5 +1,5 @@
 //! Independent quietwd acceptance, authored against baseline-delegating cde3e68d.
-//! Install as `src/transport/quietwd_spec.rs`. Register pub(crate) under cfg(test).
+//! Install as `src/l1_platform/transport/quietwd_spec.rs`. Register pub(crate) under cfg(test).
 
 #![allow(
     clippy::disallowed_methods,

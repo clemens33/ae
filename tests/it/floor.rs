@@ -5,7 +5,7 @@
 //! (`ae list`), find out which ae it has (`ae version`) and fix itself
 //! (`ae upgrade`). Those three, and every helper, must never reach the check.
 //!
-//! The refusal itself is unit-tested in `src/tmux_floor.rs`; what is asked here
+//! The refusal itself is unit-tested in `src/l1_platform/tmux_floor.rs`; what is asked here
 //! is WHERE it is spoken, asked of the tree so a new call site is a review
 //! rather than a diff. Conditionals ae hands tmux stay binary for the same
 //! reason: 3.4 reads only the first two operands of one.

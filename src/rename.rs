@@ -36,7 +36,7 @@ pub const USAGE_INSIDE: &str =
 // `shape::current().honours_environment()` BEFORE any environment read, so an
 // installed core never reads the variable and its normal entry ignores even an
 // invalid ambient value. Inventory change: one AGENTS.md environment-door row
-// only; `src/doors.rs` and `tests/it/doors.rs` are untouched by this seam.
+// only; `src/l1_platform/doors.rs` and `tests/it/doors.rs` are untouched by this seam.
 // Each armed value parks at most 60 seconds past its committed facts (the
 // ceiling is pinned by the A2 park test), then exits terminally with the
 // existing `EXIT_FAILED`/1

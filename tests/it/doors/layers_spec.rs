@@ -123,18 +123,26 @@ fn r0_keeps_an_existing_debt_spelling_but_rejects_a_new_one_on_that_edge() {
 #[test]
 fn r0_keeps_permanent_typed_argv_handshakes_without_exempting_the_module_edge() {
     let rows = [
-        ("src/transport.rs", "crate::lifecycle::DetachedArgv", 1),
-        ("src/transport.rs", "crate::console::shell::ShellArgv", 1),
+        (
+            "src/l1_platform/transport.rs",
+            "crate::lifecycle::DetachedArgv",
+            1,
+        ),
+        (
+            "src/l1_platform/transport.rs",
+            "crate::console::shell::ShellArgv",
+            1,
+        ),
     ];
     let source =
         "fn live(_: &crate::lifecycle::DetachedArgv, _: &crate::console::shell::ShellArgv) {}";
     assert!(
-        violations_with("src/transport.rs", source, &rows)
+        violations_with("src/l1_platform/transport.rs", source, &rows)
             .unwrap_or_else(|why| panic!("{why}"))
             .is_empty()
     );
     let findings = violations_with(
-        "src/transport.rs",
+        "src/l1_platform/transport.rs",
         &format!("{source}\nuse crate::lifecycle::LayerguardNewUpwardSpelling;"),
         &rows,
     )

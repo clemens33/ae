@@ -13,7 +13,7 @@ allow-panic-in-tests = true
 #
 # THE DOORS are inventoried by `tests/it/doors.rs`, which asserts the exact
 # number of relaxation sites per file and goes red when one appears or
-# vanishes. Product sites: `src/transport.rs` (`run`, the tmux
+# vanishes. Product sites: `src/l1_platform/transport.rs` (`run`, the tmux
 # child every liveness answer needs), `src/run.rs` (the process's own exec: `_run` becoming
 # the agent tool, a restarting `ae app` becoming the linked core), `src/upgrade.rs`
 # (the `tar` extraction and the downloaded core's `_install`), `src/install.rs`
@@ -62,7 +62,7 @@ allow-panic-in-tests = true
 # no `allow`, group `allow`, `cfg_attr`, `expect` or crate-root `#![allow]` can
 # override.
 disallowed-types = [
-  { path = "std::process::Command", reason = "run a child via a src/transport.rs run_* leg; a new Command site is a review" },
+  { path = "std::process::Command", reason = "run a child via a src/l1_platform/transport.rs run_* leg; a new Command site is a review" },
 ]
 
 # The capability boundary for READING THE OUTSIDE WORLD — the phase-3 gate's
@@ -104,7 +104,7 @@ disallowed-types = [
 # The rule for choosing, in order:
 #   1. an ae-owned file -> its owner's reader: `store::read_capped`,
 #      `store::read_source`, `store::source_presence`; the config -> `config::read_selected`.
-#   2. an environment variable -> a named fn in `src/doors.rs`.
+#   2. an environment variable -> a named fn in `src/l1_platform/doors.rs`.
 #   3. test code -> `#[allow(clippy::disallowed_methods, reason = "...")]` at the
 #      site: the boundary is on product code.
 #   4. no owner fits -> a new one-site product door, `#[allow(..., reason = "a door: ...")]`;
@@ -130,8 +130,8 @@ disallowed-methods = [
   { path = "std::path::Path::metadata", reason = "follows links; use store::source_presence (lstat) or a one-site 'a door:' allow" },
   { path = "std::path::Path::is_dir", reason = "a directory: doors::canonical_strict_dir; a file: store::source_presence" },
   { path = "std::path::Path::is_file", reason = "a file: store::source_presence(path); a directory: doors::canonical_strict_dir" },
-  { path = "std::env::var", reason = "read env in a named src/doors.rs fn (home, cwd, no_autostart); one fn per variable" },
-  { path = "std::env::var_os", reason = "read env in a named src/doors.rs fn (home, cwd, no_autostart); one fn per variable" },
+  { path = "std::env::var", reason = "read env in a named src/l1_platform/doors.rs fn (home, cwd, no_autostart); one fn per variable" },
+  { path = "std::env::var_os", reason = "read env in a named src/l1_platform/doors.rs fn (home, cwd, no_autostart); one fn per variable" },
   # THE TERMINAL DOOR (`ae app`, 2026-10-03, lead ruling D2 on the sideapp
   # plan). rustix's termios module is how the app takes raw mode, puts the mode
   # back and reads the window size without libc or `unsafe`, and every entry

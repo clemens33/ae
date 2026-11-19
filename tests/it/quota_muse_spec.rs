@@ -767,7 +767,7 @@ fn the_only_paid_muse_caller_is_inside_the_cli_run_path() {
             assert!(
                 matches!(
                     relative.to_str(),
-                    Some("src/transport.rs" | "src/muse_usage.rs")
+                    Some("src/l1_platform/transport.rs" | "src/muse_usage.rs")
                 ),
                 "new route around paid-entry cache/consent: {}",
                 relative.display()

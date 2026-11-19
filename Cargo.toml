@@ -116,7 +116,7 @@ rustls = { version = "=0.23.46", default-features = false, features = [
 # `default-features = false` drops `dev_urandom_fallback`: ae hashes bytes it
 # already holds and asks ring for no randomness at all.
 #
-# Note what this does NOT change: `src/shape.rs` still does no hashing on any
+# Note what this does NOT change: `src/l1_platform/shape.rs` still does no hashing on any
 # invocation. Content integrity is proven ONCE, here, by the install — a 2.4 MB
 # digest on every helper call is a cost the product will not pay.
 ring = { version = "=0.17.14", default-features = false }
@@ -198,7 +198,7 @@ expect_used = "warn"
 # conspicuous. The type it denies, and why denying one type is sufficient HERE,
 # are documented in clippy.toml.
 #
-# Product process doors live in `src/transport.rs`, `src/run.rs`,
+# Product process doors live in `src/l1_platform/transport.rs`, `src/run.rs`,
 # `src/upgrade.rs` and `src/install.rs`; suite doors in `tests/it/cli.rs`,
 # `install.rs`, `shape.rs`, `migrate.rs`, `parity.rs` (`mod raw`) and `doors.rs`.
 # `tests/it/doors.rs` is the count of record.

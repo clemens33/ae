@@ -542,7 +542,7 @@ fn phase_a_boot_time_override_skips_sysctl() {
     // R2 in-process memo is outside this frozen spec (waiver: unreachable
     // from tests/it without a new door; `std::env::set_var` is unsafe and
     // the crate forbids unsafe_code). Driver writes a unit test beside
-    // src/doors.rs (proven value reused, None not stored, override read
+    // src/l1_platform/doors.rs (proven value reused, None not stored, override read
     // every call); navigator reviews that test against R2. This pin is the
     // reachable half: AE_TEST_BOOT_TIME is read every call and never
     // memoized into a sysctl skip.

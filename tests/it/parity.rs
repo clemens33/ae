@@ -460,7 +460,7 @@ pub(crate) mod capture {
         // name `std::process::Command`. There are two others crate-wide, each a
         // different job: `tests/it/cli.rs`, whose black-box tests must run the
         // product binary and which is private to that module, and
-        // `src/transport.rs`, THE PRODUCT'S — ae cannot answer a liveness
+        // `src/l1_platform/transport.rs`, THE PRODUCT'S — ae cannot answer a liveness
         // question without running tmux. That third one is not reachable from
         // here: `transport::run` is private and the public transport only ever
         // spawns tmux with an argument list `src/tmux.rs` derived.

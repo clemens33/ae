@@ -576,17 +576,17 @@ pub fn own_tty() -> Option<String> {
 }
 
 #[cfg(test)]
-#[path = "../tests/it/statrow_verdict_spec.rs"]
+#[path = "../../tests/it/statrow_verdict_spec.rs"]
 mod statrow_verdict_spec;
 
 #[cfg(test)]
-#[path = "../tests/it/procs_task225_spec.rs"]
+#[path = "../../tests/it/procs_task225_spec.rs"]
 mod procs_task225_spec;
 #[cfg(test)]
-#[path = "../tests/it/procs_transient312_spec.rs"]
+#[path = "../../tests/it/procs_transient312_spec.rs"]
 mod procs_transient312_spec;
 #[cfg(test)]
-#[path = "../tests/it/statrow_tool_spec.rs"]
+#[path = "../../tests/it/statrow_tool_spec.rs"]
 mod statrow_tool_spec;
 
 #[cfg(test)]

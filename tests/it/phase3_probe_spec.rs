@@ -19,7 +19,7 @@ pub(super) fn expected_production_files() -> Vec<String> {
         "src/compact.rs",
         "src/config.rs",
         "src/doctor.rs",
-        "src/doors.rs",
+        "src/l1_platform/doors.rs",
         "src/events.rs",
         "src/go_usage.rs",
         "src/init.rs",
@@ -40,12 +40,12 @@ pub(super) fn expected_production_files() -> Vec<String> {
         "src/session.rs",
         "src/session_launch.rs",
         "src/session_launch/capture.rs",
-        "src/shape.rs",
+        "src/l1_platform/shape.rs",
         "src/store.rs",
         "src/teardown.rs",
         "src/telegram.rs",
         "src/telegram_lifecycle.rs",
-        "src/transport.rs",
+        "src/l1_platform/transport.rs",
         "src/usage.rs",
         "src/watchdog_daemon.rs",
         "src/watchdog_glue.rs",
@@ -55,7 +55,7 @@ pub(super) fn expected_production_files() -> Vec<String> {
     .collect()
 }
 
-const SITE: &str = r#"{"reason":"compiler-message","message":{"code":{"code":"clippy::disallowed_methods"},"spans":[{"file_name":"src/doors.rs","line_start":38,"is_primary":true}]}}"#;
+const SITE: &str = r#"{"reason":"compiler-message","message":{"code":{"code":"clippy::disallowed_methods"},"spans":[{"file_name":"src/l1_platform/doors.rs","line_start":38,"is_primary":true}]}}"#;
 const OTHER: &str =
     r#"{"reason":"compiler-message","message":{"code":{"code":"unused_variables"},"spans":[]}}"#;
 const ARTIFACT: &str = r#"{"reason":"compiler-artifact","fresh":true}"#;
@@ -143,7 +143,7 @@ fn success_returns_sites_and_ignores_valid_unrelated_records() {
     assert_eq!(
         decode_world_reading_sites(ExitOutcome::Code(0), &stdout, "")
             .expect("complete successful probe"),
-        vec![("src/doors.rs".to_owned(), 38)],
+        vec![("src/l1_platform/doors.rs".to_owned(), 38)],
     );
 }
 

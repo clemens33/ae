@@ -2600,7 +2600,7 @@ HEAD did not build. Both agents did exactly what they were asked.
 
 **Two mechanisms, and the first one is the trap:**
 
-- **`git status` is a NAME oracle, not a CONTENT oracle.** `?? src/transport.rs` reports
+- **`git status` is a NAME oracle, not a CONTENT oracle.** `?? src/l1_platform/transport.rs` reports
   that a file is untracked. It reports nothing whatever about its bytes. Reading a status
   listing as verification looks precisely like diligence, which is why it survives.
 - **Any verification establishes a fact about the tree at time T; the commit captures the

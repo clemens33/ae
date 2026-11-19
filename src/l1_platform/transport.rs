@@ -2938,7 +2938,7 @@ pub(crate) fn spawn_detached(
     spawn(program, argv.as_args(), &[], Streams::Detached, None).is_some()
 }
 
-// Insert before the tests module in src/transport.rs. Acceptance support only.
+// Insert before the tests module in src/l1_platform/transport.rs. Acceptance support only.
 #[cfg(test)]
 pub(crate) mod fixture_tmux {
     use crate::inventory::ServerId;

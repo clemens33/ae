@@ -2328,7 +2328,7 @@ impl Cycle<'_> {
     /// meaning: the observed line never stands for delivery, nor skipped
     /// for observation.
     ///
-    /// CHECKOUT ONLY, exactly like `AE_TEST_BOOT_TIME` (`src/doors.rs`):
+    /// CHECKOUT ONLY, exactly like `AE_TEST_BOOT_TIME` (`src/l1_platform/doors.rs`):
     /// the published shape returns before reading the variable, so the
     /// shipped watchdog has no such door. The integration tests drive the
     /// checkout binary, which is why their trace assertions keep working.
