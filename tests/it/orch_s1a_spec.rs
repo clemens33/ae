@@ -9,6 +9,7 @@
 
 use ae::events::Event;
 use ae::telegram::{
+    Echoes,
     bridge::SharedChat,
     inbound::{Origin, Submit, Submitted},
     routing::Target,
@@ -74,7 +75,7 @@ fn deliver(r: &Rig, fields: &[&str]) -> (String, Event) {
 fn telegram(root: &Path, dir: &Path, session: &str, agent: &str, uuid: &str, update: i64) -> Event {
     let chat = SharedChat {
         root: root.to_path_buf(),
-        echoes: Default::default(),
+        echoes: Echoes::default(),
     };
     let target = Target {
         session: session.to_owned(),
@@ -723,7 +724,11 @@ fn session_tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, Entry> {
         } else if kind.is_symlink() {
             Entry::Link(fs::read_link(&path).expect("fixture link"))
         } else {
-            assert!(kind.is_file(), "unexpected fixture node: {path:?}");
+            assert!(
+                kind.is_file(),
+                "unexpected fixture node: {}",
+                path.display()
+            );
             Entry::File(fs::read(&path).expect("fixture file bytes"))
         };
         paths.insert(path, contents);
@@ -851,6 +856,10 @@ fn ordinary_seat_keeps_cross_session_helper_and_lifecycle_access() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "sender and pane checks share one dispatcher and its recipient ledger"
+)]
 fn non_dispatcher_roles_slots_and_reserved_sender_override_cannot_emit_relay_frame() {
     let r = rig("s1aspoof");
     stamp(&r, "1");
@@ -1435,7 +1444,8 @@ fn refuse_upgrade(tag: &str, instance: &str, running: bool, role: &str) {
         assert_eq!(
             fs::read(dir.join("meta")).expect("meta bytes"),
             old_meta,
-            "repointed {dir:?} before refusal"
+            "repointed {} before refusal",
+            dir.display()
         );
         assert_eq!(fs::read_link(dir.join("send")).expect("helper"), old_helper);
     }
@@ -1554,7 +1564,7 @@ fn permission_denied_meta_refuses_before_any_repoint() {
     let helpers = || dirs.map(|dir| fs::read_link(dir.join("send")).expect("helper location"));
     let old_helpers = helpers();
     let old_healthy = fs::read(healthy.join("meta")).expect("healthy meta bytes");
-    fs::set_permissions(&path, fs::Permissions::from_mode(0)).expect("make meta unreadable");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).expect("make meta unreadable");
     assert!(
         matches!(fs::read(&path), Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied)
     );
