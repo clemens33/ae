@@ -9,6 +9,7 @@
 )]
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use ae::inventory::ServerId;
 use ae::meta::Selector;
@@ -18,7 +19,7 @@ use ae::tmux::{
 };
 
 use super::cli::OwnedScratch;
-use super::phase2::run_tmux;
+use super::phase2::{capture_tmux, run_tmux};
 
 const UUID: &str = "11111111-2222-4333-8444-555555555555";
 const OTHER: &str = "11111111-2222-4333-8444-666666666666";
@@ -67,6 +68,27 @@ impl Server {
         self.stamp_with(name, uuid);
     }
 
+    /// A session `name` on a FRESH server at the same socket. The killed
+    /// server may still be exiting, and a client that reaches it fails, so
+    /// the start is retried until a new server answers.
+    fn session_after_kill(&self, name: &str, uuid: &str) {
+        let mut args = vec!["-S".to_owned(), self.sock.display().to_string()];
+        args.extend(["new-session", "-d", "-s", name].map(ToOwned::to_owned));
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let out = capture_tmux(&args, self.scratch.path());
+            if out.succeeded {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "a fresh server never started: {out:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.stamp_with(name, uuid);
+    }
+
     fn stamp_with(&self, name: &str, uuid: &str) {
         let scope = format!("={name}:");
         self.tmux(&["set-option", "-t", &scope, "@ae_session_uuid", uuid]);
@@ -111,7 +133,7 @@ fn a_fenced_kill_spares_the_session_a_replacement_server_gave_the_same_id() {
     server.tmux(&["kill-server"]);
     // The replacement carries the same uuid and, being a fresh server, the
     // same first id: only the server incarnation tells them apart.
-    server.session("other", UUID);
+    server.session_after_kill("other", UUID);
     let current = server.stamp("other");
     assert_eq!(
         current.session.id, proved.session.id,
