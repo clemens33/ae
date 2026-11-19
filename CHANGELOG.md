@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.90] - 2026-11-19
+- The platform layer (doors, git, instance, netprobe, procs, shape, tmux_floor, transport) moves into src/l1_platform; src/lib.rs re-exports each by name, and the tests, docs, clippy.toml and CI comments that name their paths follow
+
 ## [v2026.11.89] - 2026-11-19
 - The path inventories in doors, floor, phase2 and phase3 compare both sides sorted, so each pins its members and their count and not the order a moved module leaves in the literal list
 - Name the Codex service wait in delivery and watchdog
