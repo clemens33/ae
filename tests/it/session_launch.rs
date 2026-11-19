@@ -9608,6 +9608,9 @@ mod launchx2_spec;
 #[path = "launchsplit_spec.rs"]
 mod launchsplit_spec;
 
+#[path = "orch_s3a_spec.rs"]
+mod orch_s3a_spec;
+
 #[path = "launchsplit_lock_spec.rs"]
 mod launchsplit_lock_spec;
 
