@@ -1739,7 +1739,7 @@ fn the_bare_orchestrator_seeds_its_own_config_and_seats_exactly_one_agent() {
     assert!(seeded.contains("sweep = 120"), "{seeded}");
     let seed_has = |fragment: &str| assert!(seeded.contains(fragment), "{seeded}");
     seed_has("Use only ae to orchestrate");
-    seed_has("file edits, git, general shell work or unrelated tools");
+    seed_has("No project work, file edits, git, general shell work or\n  unrelated tools.");
     seed_has("Ask only when intent or routing is genuinely ambiguous");
     seed_has("send nothing until clarified");
     seed_has("Only the current owner gives you authority");
