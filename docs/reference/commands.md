@@ -1871,9 +1871,11 @@ phase, never a silent subset.
 The first line is always the scope statement: each seat shows its current
 conversation plus its recorded predecessors (up to 4, newest first). Turns ae
 itself injected (the four `src/l0_base/provenance.rs` markers, the Codex passive launch
-turn) are hidden and counted per seat in one `hidden: <session:seat> — <n>
+turn, and on a Claude seat the guided compaction dispatch) are hidden and counted per seat in one `hidden: <session:seat> — <n>
 ae-injected turns` line, or `{"kind":"hidden",…}` in JSON; there is no flag to
-show them back.
+show them back. A Claude seat's harness notes (usage-limit notes, `!` output,
+interruptions) are dropped without a count, and a turn of text and images is a
+row (see [what the board drops](../board.md#what-it-drops)).
 `--since <ts>` (strict `YYYY-MM-DDTHH:MM:SSZ`) keeps rows
 at or after the instant; `--json` prints NDJSON — one `{"kind":"scope"}` line,
 then `coverage` lines, then `row` lines, every row carrying `"generation":n`

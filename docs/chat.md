@@ -15,6 +15,8 @@ the window on demand. See [Keys](#keys).
 
 - **Pane turns** of both lead-pair seats, from their transcripts, as
   `<seat> pane (transcript)` (` · prior n` for a recorded predecessor).
+  A Claude turn whose content is a readable part list shows as one row: the text
+  parts joined with a line feed, each image as `[image]`.
   Workers are not mirrored; an ae-injected turn never renders as one.
 - **Replies to your pane lines**: the lead pair's assistant text, as
   `<seat> assistant (transcript)`, only while it answers a line you typed in

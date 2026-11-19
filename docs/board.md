@@ -1,9 +1,10 @@
 # The message board
 
-`ae board` shows the filtered cross-fleet record: genuine human turns from
-every ae seat's harness transcript, oldest first, ae plumbing excluded. It
-answers "what did the humans actually say" at review-after, handoff, and
-brief-writing time.
+`ae board` shows the filtered cross-fleet record: the user turns of every ae
+seat's harness transcript that no known ae turn and no known harness note
+accounts for, oldest first. It answers "what did the humans actually say" at
+review-after, handoff, and brief-writing time. It never asserts that a person
+typed a row: see [What it drops](#what-it-drops).
 
 ## Source
 
@@ -39,6 +40,31 @@ file-backed seat names `path#dev:ino` and the record's byte offset, while an
 OpenCode row names its own message (`opencode:<session id>#<message id>`,
 offset 0), because an export is regenerated per read and has no stable byte
 offsets — the message id is immutable and repeats across exports.
+
+## What it drops
+
+A Claude user turn is not a row when it is:
+
+- ae's own, by the provenance markers on its first line or by the #171 paste
+  wrapper around one, or the guided compaction dispatch seat compaction pastes
+  (`/compact checkpoint <ask id> saved; …`), recognised only when the WHOLE untouched record content is exactly that text.
+  The wrapper and the dispatch are hidden and counted per seat; a marked first
+  line is dropped by the reader itself.
+- a Claude harness note: a compaction summary, a command caveat, a task
+  notification, a `<command-name>` or `<local-command-stdout>` echo, a
+  `<bash-stdout>` record (the output of `!` mode; `<bash-input>` stays), a
+  `[Request interrupted` note, a usage-limit reset note, or an `isMeta` record
+  that opens `[Usage limit reached` or `[Earlier usage-limit`.
+- a tool result, or an array turn marked `isMeta`.
+
+An array turn of text and images is a row: its `text` parts are joined with a
+line feed and each `image` part reads `[image]`. Any other part counts into one
+`<n> structured parts not read` coverage row. Complete lines that are not UTF-8
+or not JSON count into one `<n> lines not JSON` coverage row in every read mode.
+
+In the reply window of `ae chat` an array turn still closes the window, as it
+did before the board read it: its row shows and the reply that follows does not
+([docs/chat.md](chat.md)).
 
 ## What it never reads
 
