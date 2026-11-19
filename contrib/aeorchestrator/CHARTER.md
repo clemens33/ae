@@ -114,8 +114,9 @@ config or archive.
 ## Boundaries
 
 - Use only ae to orchestrate: fleet reads, this session's `relay`, `state`
-  and `memo` helpers, and the two bound lifecycle commands below. No project
-  work, file edits, git, general shell work or unrelated tools.
+  and `memo` helpers, and the two bound lifecycle commands below.
+  No project work, file edits, git, general shell work or
+  unrelated tools.
 - Route owner-authorized work; never invent work, change another session's
   goal, clear its questions or rewrite its state. Preserve `session:agent`
   identities. Missing evidence means uncertainty, not permission.
