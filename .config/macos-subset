@@ -261,6 +261,7 @@ helper tests/it/phase2.rs::run_tmux = cli::the_black_box_runner_cannot_see_the_d
 helper tests/it/phase2.rs::tmux_present = watchdog_glue::an_unreadable_pane_is_refused_rather_than_taken_on_faith
 helper tests/it/relay_chat_spec.rs::Rig::ask = relay_status_spec::r6_local_close_and_orchestrator_restart_use_one_target_lifetime
 helper tests/it/relay_chat_spec.rs::Rig::chat = relay_chat_spec::r2_r10_exact_chat_envelope_single_target_ledger_and_local_reply_footer
+helper tests/it/relay_chat_spec.rs::Rig::dispatcher = relay_chat_spec::r8_final_envelope_cap_refuses_even_when_body_alone_fits
 helper tests/it/relay_chat_spec.rs::Rig::new = relay_chat_spec::r8_final_envelope_cap_refuses_even_when_body_alone_fits
 helper tests/it/relay_chat_spec.rs::Rig::refused = relay_status_spec::r5_not_delivered_receipt_status_is_a_successful_read
 helper tests/it/relay_chat_spec.rs::Rig::reply = relay_status_spec::r7_missing_reply_body_is_a_gap_without_a_reply_echo
