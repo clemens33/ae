@@ -586,6 +586,15 @@ impl Meta {
                 // A bare `agent.main` / `seat.main` is still a CLAIM on the
                 // slot, so it is noted before the line is refused.
                 meta.note_claim(raw, line, false);
+                // A bare `context.<slot>` is a damaged claim on that seat's
+                // stamp, in either order with a valid row; the MalformedLine
+                // below stays.
+                if raw
+                    .strip_prefix(CONTEXT_PREFIX)
+                    .is_some_and(|slot| !slot.is_empty())
+                {
+                    meta.context_stamps.push((raw.to_owned(), String::new()));
+                }
                 // A bare seat-dir row reports ONLY its keyed verdict (which
                 // the resolver owns): a second MalformedLine anomaly would
                 // doubt the roster in preflight and steal the shared wording.
@@ -1236,14 +1245,17 @@ impl Meta {
             return ContextStamp::Absent;
         }
         let key = format!("{CONTEXT_PREFIX}{slot}");
-        let Some((_, value)) = self.context_stamps.iter().find(|(row, _)| *row == key) else {
-            return ContextStamp::Absent;
-        };
-        match value.parse::<u32>() {
-            Ok(version) if version >= 1 && value.bytes().all(|b| b.is_ascii_digit()) => {
-                ContextStamp::Valid(version)
-            }
-            _ => ContextStamp::Invalid,
+        let mut claims = self.context_stamps.iter().filter(|(row, _)| *row == key);
+        match (claims.next(), claims.next()) {
+            (None, _) => ContextStamp::Absent,
+            (Some((_, value)), None) => match value.parse::<u32>() {
+                Ok(version) if version >= 1 && value.bytes().all(|b| b.is_ascii_digit()) => {
+                    ContextStamp::Valid(version)
+                }
+                _ => ContextStamp::Invalid,
+            },
+            // A seat's stamp is one row: any second claim, bare or not, spoils it.
+            (Some(_), Some(_)) => ContextStamp::Invalid,
         }
     }
 
@@ -2699,10 +2711,48 @@ pub fn rewrite(dir: &Path, key: &str, value: Option<&str>) -> Result<(), Rewrite
     rewrite_rows(dir, &[(key, value)])
 }
 
-/// The context version the seat in `slot` was last started with, as
-/// `context.<slot>`. Nothing changes when the row already says it.
-pub(crate) fn record_context(dir: &Path, slot: &str, version: u32) -> Result<(), RewriteError> {
-    rewrite(dir, &format!("context.{slot}"), Some(&version.to_string()))
+/// Set (`Some`) or clear (`None`) `context.<slot>`, the context version the
+/// start of `launch_id` handed that seat, under the meta lock and only while
+/// that start is still the seat's current one: the slot must still be seated
+/// and `launch_id.<slot>` must still be `launch_id`. An old start can therefore
+/// neither stamp nor clear the seat a later launch replaced. Every claim of the
+/// row is replaced by one, so a repeated row never survives a write, and a row
+/// that already says it is left as it is.
+///
+/// Returns whether the guard held: `false` means nothing was written because
+/// this start no longer owns the slot.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when the lock, read, write, sync or rename
+/// failed.
+pub(crate) fn set_context(
+    dir: &Path,
+    slot: &str,
+    launch_id: &str,
+    version: Option<u32>,
+) -> Result<bool, RewriteError> {
+    let held = std::cell::Cell::new(false);
+    rewrite_under_lock(dir, |current| {
+        let seated = Meta::parse(current)
+            .roster()
+            .iter()
+            .any(|entry| entry.slot == slot);
+        let recorded = sole_value(current.as_bytes(), &format!("launch_id.{slot}"));
+        if !seated || launch_id.is_empty() || recorded != Some(launch_id.as_bytes()) {
+            return None;
+        }
+        held.set(true);
+        let key = format!("context.{slot}");
+        let parsed = Meta::parse(current).context_stamp(slot);
+        let cleared = rewritten(current, &key, None);
+        match (version, parsed) {
+            (Some(version), ContextStamp::Valid(now)) if now == version => None,
+            (Some(version), _) => Some(rewritten(&cleared, &key, Some(&version.to_string()))),
+            (None, _) => (cleared != current).then_some(cleared),
+        }
+    })?;
+    Ok(held.get())
 }
 
 /// Publish a config-home row and its optional implicit-HOME base in one
@@ -4013,6 +4063,64 @@ mod tests {
         }
     }
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture builds and inspects a real session directory"
+    )]
+    fn set_context_writes_only_for_the_launch_that_owns_the_seat() {
+        use super::set_context;
+        let dir = std::env::temp_dir().join(format!("ae-meta-ctx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = "seat.main=lead\nprofile.main=p\nlaunch_id.main=L1\nseat.worker.0=co\nprofile.worker.0=p\n";
+        let read = || std::fs::read_to_string(dir.join("meta")).unwrap();
+        let put = |extra: &str| std::fs::write(dir.join("meta"), format!("{base}{extra}")).unwrap();
+        put("");
+        assert!(set_context(&dir, "main", "L1", Some(1)).unwrap());
+        assert_eq!(read(), format!("{base}context.main=1\n"));
+        // The same claim again is no write at all.
+        let before = std::fs::metadata(dir.join("meta"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert!(set_context(&dir, "main", "L1", Some(1)).unwrap());
+        assert_eq!(
+            std::fs::metadata(dir.join("meta"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            before
+        );
+        // A newer number replaces it; a repeated claim collapses to one.
+        assert!(set_context(&dir, "main", "L1", Some(2)).unwrap());
+        assert_eq!(read(), format!("{base}context.main=2\n"));
+        put("context.main=1\ncontext.main=1\n");
+        assert!(set_context(&dir, "main", "L1", Some(1)).unwrap());
+        assert_eq!(read(), format!("{base}context.main=1\n"));
+        // Clearing takes every claim, and only that seat's.
+        put("context.main=1\ncontext.main=1\ncontext.worker.0=1\n");
+        assert!(set_context(&dir, "main", "L1", None).unwrap());
+        assert_eq!(read(), format!("{base}context.worker.0=1\n"));
+        // Another launch, no launch id, or a slot nobody sits in: nothing moves.
+        for (slot, launch) in [
+            ("main", "L0"),
+            ("main", ""),
+            ("ghost", "L1"),
+            ("worker.0", "L1"),
+        ] {
+            put("context.main=1\ncontext.ghost=1\ncontext.worker.0=1\n");
+            let was = read();
+            assert!(
+                !set_context(&dir, slot, launch, None).unwrap(),
+                "{slot} {launch:?}"
+            );
+            assert!(!set_context(&dir, slot, launch, Some(1)).unwrap());
+            assert_eq!(read(), was);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_context_stamp_is_one_positive_number_on_a_roster_slot() {
         use super::ContextStamp;
         let roster = "seat.main=lead\nprofile.main=p\nseat.worker.0=co\nprofile.worker.0=p\n";
@@ -4046,6 +4154,30 @@ mod tests {
         );
         assert_eq!(
             stamp("context.main=1\ncontext.main=1\ncontext.main=1\n", "main"),
+            ContextStamp::Invalid
+        );
+        // A bare claim spoils the stamp whichever side of a valid row it sits on,
+        // and it keeps its malformed-line anomaly.
+        for rows in [
+            "context.main\ncontext.main=1\n",
+            "context.main=1\ncontext.main\n",
+        ] {
+            let parsed = Meta::parse(&format!("{roster}{rows}"));
+            assert_eq!(
+                parsed.context_stamp("main"),
+                ContextStamp::Invalid,
+                "{rows:?}"
+            );
+            assert!(
+                parsed
+                    .anomalies()
+                    .iter()
+                    .any(|a| matches!(a, Anomaly::MalformedLine { .. })),
+                "{rows:?}"
+            );
+        }
+        assert_eq!(
+            Meta::parse(&format!("{roster}context.main\n")).context_stamp("main"),
             ContextStamp::Invalid
         );
         // A row for no roster slot reads as nothing, and the row is no anomaly.

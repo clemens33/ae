@@ -495,7 +495,7 @@ pub fn run(
         err.flush()?;
         return Ok(EXIT_FAILED);
     }
-    record_context_stamp(dir, slot, &plan, err)?;
+    withheld_notice(slot, &plan, err)?;
     if let Some(notice) = &plan.config_home_notice {
         writeln!(err, "{notice}")?;
         err.flush()?;
@@ -582,10 +582,13 @@ fn exec_between_facts(
     err: &mut impl Write,
 ) -> std::io::Result<std::io::Error> {
     record_start(dir, slot, plan, start, FactKind::StartAttempted, err)?;
+    stamp_context(dir, slot, &plan.context_stamp, err)?;
     let why = exec(plan);
     if plan.mode == Mode::Create {
         let _ = std::fs::remove_file(marker);
     }
+    // The exec returned: this launch handed no context to anyone.
+    let _ = crate::meta::set_context(dir, slot, &plan.context_stamp.launch_id, None);
     record_start(dir, slot, plan, start, FactKind::StartFailed, err)?;
     Ok(why)
 }
@@ -896,15 +899,29 @@ fn build_with_snapshot(
         refusal,
         reference,
         birth: BirthStart::of(&seat, slot, mode, meta_session_id(dir)),
-        context_stamp: context_start(dir, slot, seat.tool, exact),
+        context_stamp: ContextStart {
+            launch_id: seat.launch_id.clone(),
+            proof: context_proof(dir, slot, seat.tool, exact),
+        },
     };
     Ok((plan, choice))
 }
 
+/// What one start of a seat did about the relay context turn, and which launch
+/// it is: the guard for the `context.<slot>` write and its rollback.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ContextStart {
+    /// `launch_id.<slot>` this start carries; empty guards nothing and writes
+    /// nothing.
+    launch_id: String,
+    proof: ContextProof,
+}
+
 /// What a start of one seat proves of the relay context turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContextStart {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ContextProof {
     /// Not a lead-pair seat, or a tool with no context channel: no claim.
+    #[default]
     Unstamped,
     /// A lead-pair seat whose exact resume carries no new context turn: the
     /// retained conversation is not proven to have it, so no stamp is
@@ -918,48 +935,63 @@ enum ContextStart {
 /// conversation was handed the relay context: only a lead-pair seat whose tool
 /// has a context channel, on a start that sends the turn (a fresh conversation
 /// or a resume that keeps it, [`resume_keeps_context`]), earns one.
-fn context_start(dir: &Path, slot: &str, tool: ToolKind, exact: bool) -> ContextStart {
+fn context_proof(dir: &Path, slot: &str, tool: ToolKind, exact: bool) -> ContextProof {
     let lead = crate::meta::read_bytes(dir)
         .is_ok_and(|bytes| crate::render::seat_role(&bytes, slot) == crate::render::SeatRole::Lead);
     if !lead || matches!(tool.adapter().launch.context, ContextChannel::None) {
-        ContextStart::Unstamped
+        ContextProof::Unstamped
     } else if resume_keeps_context(tool, exact) {
-        ContextStart::Stamp(crate::render::CONTEXT_VERSION)
+        ContextProof::Stamp(crate::render::CONTEXT_VERSION)
     } else {
-        ContextStart::Withheld
+        ContextProof::Withheld
     }
 }
 
-/// The relay gate reads `context.<slot>`: written before the exec, so a seat
-/// that was handed the context never shows a stamp older than it. A miss starts
-/// the seat anyway; the gate refuses it until a later start records the row.
-fn record_context_stamp(
-    dir: &Path,
-    slot: &str,
-    plan: &Plan,
-    err: &mut impl Write,
-) -> std::io::Result<()> {
-    let version = match plan.context_stamp {
-        ContextStart::Unstamped => return Ok(()),
-        ContextStart::Withheld => {
-            writeln!(
-                err,
-                "ae: seat {slot}: this resume carries no new context turn, so no relay stamp is recorded; relaunch the seat with a fresh conversation to accept orchestrator relays"
-            )?;
-            err.flush()?;
-            return Ok(());
-        }
-        ContextStart::Stamp(version) => version,
-    };
-    if let Err(why) = crate::meta::record_context(dir, slot, version) {
+/// What a resume that keeps its old conversation without a new context turn
+/// says: the seat gets no stamp, and the remedy.
+fn withheld_notice(slot: &str, plan: &Plan, err: &mut impl Write) -> std::io::Result<()> {
+    if plan.context_stamp.proof == ContextProof::Withheld {
         writeln!(
             err,
-            "ae: could not record context.{slot} ({}) — launching anyway; a relay to this seat refuses until a later start records it",
-            why.cause()
+            "ae: seat {slot}: this resume carries no new context turn, so no relay stamp is recorded; relaunch the seat with a fresh conversation to accept orchestrator relays"
         )?;
         err.flush()?;
     }
     Ok(())
+}
+
+/// The relay gate reads `context.<slot>`, so it says what THIS start handed
+/// the seat: the stamp, written just before the exec, or no stamp, when the
+/// start delivers no context turn — an old row from an earlier launch never
+/// outlives a start that did not teach its conversation. Guarded by the launch
+/// id this start carries, so a start that a later launch replaced changes
+/// nothing. A miss starts the seat anyway; the gate refuses it until a later
+/// start records the row.
+fn stamp_context(
+    dir: &Path,
+    slot: &str,
+    start: &ContextStart,
+    err: &mut impl Write,
+) -> std::io::Result<()> {
+    let version = match start.proof {
+        ContextProof::Stamp(version) => Some(version),
+        ContextProof::Unstamped | ContextProof::Withheld => None,
+    };
+    if start.launch_id.is_empty() {
+        return Ok(());
+    }
+    let said = match crate::meta::set_context(dir, slot, &start.launch_id, version) {
+        Ok(true) => return Ok(()),
+        // Clearing a row of a seat this launch no longer owns is nobody's news.
+        Ok(false) if version.is_none() => return Ok(()),
+        Ok(false) => "this launch no longer owns the seat".to_owned(),
+        Err(why) => why.cause().to_string(),
+    };
+    writeln!(
+        err,
+        "ae: could not update context.{slot} ({said}) — launching anyway; a relay to this seat refuses until a later start records it"
+    )?;
+    err.flush()
 }
 
 /// What this start says about a saved `OpenCode` variant that shadows the
@@ -3160,7 +3192,7 @@ mod tests {
             refusal: None,
             reference: None,
             birth: None,
-            context_stamp: ContextStart::Unstamped,
+            context_stamp: ContextStart::default(),
         };
         let line = plan.render();
         assert!(!line.contains('\n'), "{line}");
@@ -3316,13 +3348,84 @@ mod tests {
             refusal: None,
             reference: None,
             birth: None,
-            context_stamp: ContextStart::Unstamped,
+            context_stamp: ContextStart::default(),
         };
         assert!(
             plan.render().contains(r#""env_clear":true"#),
             "{}",
             plan.render()
         );
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture builds and inspects a real session directory"
+    )]
+    fn a_start_stamps_or_clears_its_own_seat_and_no_replacement_launch() {
+        let dir = std::env::temp_dir().join(format!("ae-run-context-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let meta = |rows: &str| {
+            std::fs::write(
+                dir.join("meta"),
+                format!(
+                    "schema=2\nsession_id=11111111-1111-4111-8111-111111111111\nseat.main=lead\nprofile.main=base\nagent_bin.main=claude\nlaunch_id.main=L1\n{rows}"
+                ),
+            )
+            .expect("meta");
+        };
+        let rows = || -> Vec<String> {
+            std::fs::read_to_string(dir.join("meta"))
+                .expect("meta")
+                .lines()
+                .filter(|line| line.starts_with("context."))
+                .map(str::to_owned)
+                .collect()
+        };
+        let start = |launch_id: &str, proof| ContextStart {
+            launch_id: launch_id.to_owned(),
+            proof,
+        };
+        let go = |start: ContextStart| {
+            let mut err = Vec::new();
+            stamp_context(&dir, "main", &start, &mut err).expect("never in the start's way");
+            String::from_utf8(err).expect("utf-8")
+        };
+
+        // A start that hands the context stamps it, once, over any old claims.
+        meta("context.main=0\ncontext.main=9\n");
+        assert_eq!(go(start("L1", ContextProof::Stamp(1))), "");
+        assert_eq!(rows(), ["context.main=1"]);
+        meta("");
+        go(start("L1", ContextProof::Stamp(1)));
+        assert_eq!(rows(), ["context.main=1"]);
+
+        // A start that hands none — a tool with no channel, a resume that
+        // sends no turn — takes an old stamp away, whatever it said.
+        for proof in [ContextProof::Unstamped, ContextProof::Withheld] {
+            meta("context.main=1\n");
+            assert_eq!(go(start("L1", proof)), "");
+            assert_eq!(rows(), Vec::<String>::new(), "{proof:?}");
+            meta("context.main=1\ncontext.main=1\n");
+            go(start("L1", proof));
+            assert_eq!(rows(), Vec::<String>::new(), "{proof:?}");
+        }
+
+        // An older start cannot touch the seat a later launch replaced, and a
+        // stamp it cannot write is said.
+        meta("context.main=1\n");
+        assert_eq!(go(start("L0", ContextProof::Unstamped)), "");
+        assert_eq!(rows(), ["context.main=1"]);
+        meta("");
+        let said = go(start("L0", ContextProof::Stamp(1)));
+        assert!(said.contains("no longer owns the seat"), "{said}");
+        assert_eq!(rows(), Vec::<String>::new());
+        // No launch id guards nothing, so nothing is written.
+        meta("context.main=1\n");
+        assert_eq!(go(start("", ContextProof::Unstamped)), "");
+        assert_eq!(rows(), ["context.main=1"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3367,7 +3470,7 @@ mod tests {
             refusal: None,
             reference: None,
             birth: None,
-            context_stamp: ContextStart::Unstamped,
+            context_stamp: ContextStart::default(),
         };
         // A guard that no longer holds is the failure: said, journaled ONCE,
         // and Ok, so `run` goes on to exec the plan it built.
