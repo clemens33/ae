@@ -25,6 +25,8 @@ impl Outside {
         let bin = rig.scratch.join("bin");
         let attach = rig.scratch.join("attach");
         let trace = rig.scratch.join("terminal");
+        let prepared = rig.scratch.join("prepared");
+        let hold = rig.scratch.join("hold-view");
         let path = std::env::var_os("PATH").expect("fixture PATH");
         let real = std::env::split_paths(&path)
             .map(|dir| dir.join("tmux"))
@@ -46,13 +48,22 @@ impl Outside {
         fs::write(
             &wrapper,
             format!(
-                "#!/bin/sh\ncase \" $* \" in\n*' attach-session '*|*' attach '*)\n\
+                "#!/bin/sh\ncase \" $* \" in\n*' new-session '*' -s _aeview-'*)\n\
+                 {real} \"$@\" || exit $?\n\
+                 if [ -e {hold} ]; then\n\
+                   printf 'prepared\\n' > {prepared}\n\
+                   polls=0\nwhile [ -e {hold} ]; do\n\
+                     polls=$((polls + 1))\n[ \"$polls\" -lt 400 ] || exit 124\n\
+                     sleep 0.05\ndone\n\
+                 fi\nexit 0\n;;\n*' attach-session '*|*' attach '*)\n\
                  [ -t 0 ] && [ -t 1 ] || exit 72\n\
                  stty icanon echo || exit 72\n\
                  {{ printf '<%s>:<%s>\\n' \"${{TMUX+x}}\" \"${{TMUX_PANE+x}}\"; \
                  printf '%s\\n' \"$@\"; }} > {attach}.part && mv {attach}.part {attach}\n\
                  printf '%s\\n' {output}\n{action}\n;;\nesac\nexec {real} \"$@\"\n",
                 attach = quote(&attach.display().to_string()),
+                prepared = quote(&prepared.display().to_string()),
+                hold = quote(&hold.display().to_string()),
                 output = quote(ATTACH_OUTPUT),
                 real = quote(&real.display().to_string()),
             ),
@@ -325,4 +336,51 @@ fn outside_orchestrator_pane_button_uses_its_recorded_server_and_keeps_its_draft
         first_turn(&after).as_deref() == Some(top.as_str()) && after.contains(below),
         "scroll survives at ORCH-TURN-{top}:\n{after}"
     );
+}
+
+#[test]
+fn outside_attach_refuses_when_a_live_seat_moves_after_the_view_is_created() {
+    let out = Outside::new(Rig::new("outside-moved-proof"), false);
+    let rig = &out.rig;
+    let hold = rig.scratch.join("hold-view");
+    fs::write(&hold, "pause after the real view is created").expect("private view gate");
+    let hold = Hold(hold);
+    rig.compose_open(&out.app, "scout");
+    Rig::wait(
+        "GUARD the view was created from the original scout pane",
+        || fs::read_to_string(rig.scratch.join("prepared")).is_ok_and(|text| text == "prepared\n"),
+    );
+
+    let moved = rig.pane(HOME, "moved-scout");
+    assert_ne!(moved, rig.scout);
+    rig.stamp(&rig.scout, "spawned.1", "former");
+    rig.stamp(&moved, "spawned.0", "scout");
+    let live = rig.tmux(&[
+        "list-panes",
+        "-s",
+        "-t",
+        HOME,
+        "-F",
+        "#{pane_id}|#{@ae_slot}|#{@ae_agent}|#{pane_dead}",
+    ]);
+    let moved_stamp = format!("{moved}|spawned.0|scout|0");
+    let former_stamp = format!("{}|spawned.1|former|0", rig.scout);
+    assert!(live.lines().any(|line| line == moved_stamp));
+    assert!(live.lines().any(|line| line == former_stamp));
+
+    drop(hold);
+    let expected = "refused: /open scout: its pane changed after the proof; nothing selected";
+    let screen = rig.wait_screen(&out.app, "the two proofs name different live panes", |s| {
+        s.contains(expected) || s.contains("back from scout")
+    });
+    assert!(
+        screen.contains(expected),
+        "expected {expected:?}:\n{screen}"
+    );
+    assert!(
+        !out.attach.exists(),
+        "neither pane may take over this terminal"
+    );
+    rig.raw(&out.app, "RAW-INPUT-AFTER-PANE-MOVE");
+    rig.notice(&out.app, "RAW-INPUT-AFTER-PANE-MOVE");
 }
