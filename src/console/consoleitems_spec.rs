@@ -554,6 +554,34 @@ fn g2_collapse_uncertainty_and_via() {
 }
 
 #[test]
+fn a_relay_row_with_origin_and_mode_wears_the_dispatcher_and_a_legacy_one_stays_the_owner() {
+    let old = |_: &Event| Body::OldCore;
+    let via = |_: &str| Via::Named("orch".to_owned());
+    for (mode, dispatcher) in [
+        (Some("bound"), true),
+        (Some("newer-mode"), true),
+        (None, false),
+    ] {
+        let mut relayed = asked(ID, "q");
+        relayed.relay_origin = Some(UUID.to_owned());
+        relayed.relay_mode = mode.map(str::to_owned);
+        let out = draw(S, &[seat(None)], &[relayed], &old, &via);
+        let Kind::Asked {
+            via: Some(shown), ..
+        } = &out.items[0].kind
+        else {
+            panic!("a relayed ask keeps its via: {:?}", out.items[0].kind);
+        };
+        assert_eq!(
+            matches!(shown, Via::Dispatcher(_)),
+            dispatcher,
+            "mode {mode:?}"
+        );
+        assert!(shown.badge().ends_with("orchestrator orch"), "{shown:?}");
+    }
+}
+
+#[test]
 fn g3_abandoned_cancel_and_other_sink_actions() {
     let msg = "g3 sink arms";
     let me = me();

@@ -1478,10 +1478,10 @@ fn micros_of(now: Timestamp) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Printed, Style, Zone, cells, header};
+    use super::{Printed, Style, Zone, cells, header, tag};
     use crate::attention::Reason;
     use crate::console::input::Size;
-    use crate::console::lane::{Item, Kind, Lane, Seat};
+    use crate::console::lane::{Item, Kind, Lane, Seat, Via};
     use crate::console::needs::{Cause, Row, SeatRef, Section, Source, Verdict};
     use crate::theme::{Look, Palette};
     use crate::time::Timestamp;
@@ -2570,6 +2570,27 @@ mod tests {
             rest = &after[after.find('m').expect("a terminated escape") + 1..];
         }
         out + rest
+    }
+
+    #[test]
+    fn a_dispatcher_relay_row_is_tagged_with_the_dispatcher_and_an_owner_ask_with_you() {
+        let asked = |via| Kind::Asked {
+            to: "lead".to_owned(),
+            id: "id".to_owned(),
+            uncertain: false,
+            gap: None,
+            via,
+        };
+        let named = Via::Named("orch".to_owned());
+        assert_eq!(tag(&asked(None)), "you → lead");
+        assert_eq!(
+            tag(&asked(Some(named.clone()))),
+            "you → lead · via orchestrator orch"
+        );
+        assert_eq!(
+            tag(&asked(Some(Via::Dispatcher(Box::new(named))))),
+            "ae/orchestrator → lead · via orchestrator orch"
+        );
     }
 
     #[test]
