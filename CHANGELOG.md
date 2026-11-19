@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.88] - 2026-11-19
+- The freeze refuses every roster defect a fresh launch refuses, with the launch's own text
+- A reboot or --from child starts with the source session's goal
+- The base layer (attention, error, event_text, json, provenance, sanitize, time, token, words) moves into src/l0_base and the shell layer (cli, entry, identity, shim) into src/l6_shell; src/lib.rs re-exports each by name, and the tests and docs that name their paths follow
+
 ## [v2026.11.87] - 2026-11-18
 - The two o8 menu specs press q again when the app refuses it as not yet on screen
 - The readiness gate names OpenCode's "What's new" release-highlights dialog at the spawn wait, the target-lock recheck and the same-seat retry, so ae pastes nothing while it is open, refuses the brief with the dialog named and, when the retry record cannot be published, tells the human to close the dialog before sending
