@@ -356,7 +356,14 @@ impl App {
             return false;
         }
         let count = draw::list_len(&self.fleet, self.stopped());
-        let size = draw::dragged_to(drag, mouse, self.layout.area(), self.model.split(), count);
+        let size = draw::dragged_to(
+            drag,
+            mouse,
+            self.layout.area(),
+            self.model.split(),
+            count,
+            self.desk_present(),
+        );
         self.model.drag_to(size)
     }
 

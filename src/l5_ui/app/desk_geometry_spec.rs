@@ -6,10 +6,12 @@ use super::{Columns, Rect, Split, chat_start, desk_area, panel_area};
 fn a_board_column_fits_only_beside_two_full_width_chat_columns() {
     let side = Columns {
         panel: Some((false, false)),
+        desk: true,
         ..Columns::default()
     };
     let focused_side = Columns {
         panel: Some((false, true)),
+        desk: true,
         ..Columns::default()
     };
     let full = Columns {

@@ -298,6 +298,10 @@ pub(crate) struct Columns {
     pub(crate) panel: Option<(bool, bool)>,
     /// The frame drawn now is the panel's own column.
     pub(crate) drawing_panel: bool,
+    /// A board stands to be shown, or cannot be read: only then does the board
+    /// column keep its place beside a side panel. With no board nothing is
+    /// reserved, and every width and hit target is the one it was without one.
+    pub(crate) desk: bool,
 }
 
 impl Model {

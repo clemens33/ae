@@ -785,13 +785,13 @@ impl Api {
         self.credentials.chat_id()
     }
 
-    /// POST the JSON `body` to `endpoint` and hand back the status and the
+    /// POST the JSON `body` to the fixed Bot API `method` and hand back the status and the
     /// bounded body, whatever the status: the board classifies the answer
     /// itself, and a 4xx body (`message is not modified`) is part of it.
-    fn board_call(&self, endpoint: &str, body: &Value) -> Result<(u16, Vec<u8>), DeskFailure> {
+    fn board_call(&self, method: &str, body: &Value) -> Result<(u16, Vec<u8>), DeskFailure> {
         // The one place the token becomes part of a string, for these calls.
         let url = format!(
-            "{}/bot{}/{endpoint}",
+            "{}/bot{}/{method}",
             self.egress.base(),
             self.credentials.token.expose()
         );

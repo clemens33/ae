@@ -539,21 +539,23 @@ each, a web URL or an absolute path. The board shows in three places and never i
 ([Chat](chat.md#what-it-shows)), a column in this app and one pinned Telegram
 message ([Telegram bridge](reference/telegram.md#the-board-message)).
 
-The column stands right of the open side panel when the frame is at least 161
-columns wide at the default sidebar: the chat column keeps 40 cells, the panel
-40 and the board 36 including its own left border, and a wider sidebar moves
-the bound by the same amount. Narrower, or below the app's row floor, it is not
-drawn and the layout is exactly the one without a board; the panel header then
-says `desk N` for the N items in DECIDE, or `desk unreadable`. The column
-shows `BOARD  updated HH:MM:SS <zone>` and the items wrapped to its width, each
-link on its own row. A web link opens as written and a path opens as its
-`file://` URL, also on every row of a link that wraps. Rows that do not fit are
-cut for height and the last row says `+N more: /board`. Every field passes the
-terminal-output gate, so a control character in a hostile record never reaches
-the terminal as an escape. A record that cannot be read shows one line that says
-why, and no board set shows `no board set`. The column reads the record with the
-panel's own reads, so a change shows within one of them. It is read-only: a click
-on a link opens it and nothing writes the record.
+The column stands right of the open side panel when a board is set or cannot be
+read and the frame is at least 161 columns wide at the default sidebar: the chat
+column keeps 40 cells, the panel 40 and the board 36 including its own left
+border, and a wider sidebar moves the bound by the same amount. Narrower, or
+below the app's row floor, it is not drawn and the layout is exactly the one
+without a board; the panel header then says `desk N` for the N items in DECIDE,
+or `desk unreadable`. The column shows `BOARD  updated HH:MM:SS <zone>` and the
+items wrapped to its width, each link on its own row. A web link opens as
+written and a path opens as its `file://` URL, also on every row of a link that
+wraps. Rows that do not fit are cut for height and the last row says `+N more:
+/board`. Every field passes the terminal-output gate, so a control character in
+a hostile record never reaches the terminal as an escape. A record that cannot
+be read shows one line that says why. With no board set the column is not drawn,
+takes no cell and moves no width or click target, and the panel header says
+nothing about it. The column reads the record with the panel's own reads, so a
+change shows within one of them. It is read-only: a click on a link opens it and
+nothing writes the record.
 
 ## Session menu
 

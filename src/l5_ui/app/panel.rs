@@ -443,6 +443,7 @@ impl App {
                 .as_ref()
                 .map(|panel| (panel.full, panel.focused)),
             drawing_panel: false,
+            desk: self.desk_present(),
         }
     }
 
@@ -522,11 +523,19 @@ impl App {
             .map(|(_, view)| view)
     }
 
+    /// Whether a board column stands beside a side panel: the board the panel's
+    /// incarnation read is shown or cannot be read. No board, no read and a panel
+    /// bound to none keep every cell where it was without a board.
+    pub(super) fn desk_present(&self) -> bool {
+        self.desk_view()
+            .is_some_and(|view| !matches!(view, DeskView::Absent))
+    }
+
     /// Draw the board column right of the open side panel when the frame has
     /// room for it, and keep the links it drew among the frame's.
     pub(super) fn frame_desk(&mut self, buf: &mut Buffer) {
         let columns = self.columns();
-        let Some(area) = draw::desk_area(buf.area, self.model.split(), columns) else {
+        let Some(area) = draw::desk_slot(buf.area, self.model.split(), columns) else {
             return;
         };
         let view = self.desk_view().cloned();
@@ -542,6 +551,7 @@ impl App {
         let panel = self.orch.panel.as_ref()?;
         let columns = model::Columns {
             panel: Some((panel.full, panel.focused)),
+            desk: self.desk_present(),
             ..model::Columns::default()
         };
         draw::panel_area(self.layout.area(), self.model.split(), columns)
@@ -553,6 +563,7 @@ impl App {
         let shown = self.orch.panel.as_ref().is_some_and(|panel| {
             let columns = model::Columns {
                 panel: Some((panel.full, panel.focused)),
+                desk: self.desk_present(),
                 ..model::Columns::default()
             };
             draw::panel_full(self.layout.area(), self.model.split(), columns)
@@ -639,6 +650,7 @@ impl App {
         let full = self.orch.panel.as_ref().is_some_and(|panel| {
             let columns = model::Columns {
                 panel: Some((panel.full, panel.focused)),
+                desk: self.desk_present(),
                 ..model::Columns::default()
             };
             draw::panel_full(self.layout.area(), self.model.split(), columns)

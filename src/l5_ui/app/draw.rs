@@ -803,7 +803,7 @@ fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
     if full {
         return Stand::Full { note: None };
     }
-    let end = desk_area(area, split, columns).map_or(area.width, |desk| desk.x);
+    let end = desk_slot(area, split, columns).map_or(area.width, |desk| desk.x);
     if let Some(width) = side_width(area, end, split) {
         return Stand::Side {
             border: end - width,
@@ -851,6 +851,13 @@ pub(crate) fn desk_area(area: Rect, split: Split, columns: Columns) -> Option<Re
     let end = area.width.checked_sub(DESK_W)?;
     side_width(area, end, split)?;
     Some(Rect::new(end, 0, DESK_W, area.height))
+}
+
+/// [`desk_area`] while `columns` say a board stands to be shown or cannot be
+/// read, else `None`: with no board the frame is the one without a board column,
+/// the panel included.
+pub(crate) fn desk_slot(area: Rect, split: Split, columns: Columns) -> Option<Rect> {
+    desk_area(area, split, columns).filter(|_| columns.desk)
 }
 
 /// Draw the board column into `area` of `buf`: its left border, then the rows
@@ -921,13 +928,15 @@ pub(crate) fn draw_desk(
 
 /// The column a side panel ends at in `area` split as `split`: the frame's
 /// end, or the left edge of the board column that stands there. A drag that
-/// moves the panel's edge asks it before the next frame is drawn.
-fn side_end(area: Rect, split: Split) -> u16 {
+/// moves the panel's edge asks it before the next frame is drawn. `desk` is
+/// whether a board column stands.
+fn side_end(area: Rect, split: Split, desk: bool) -> u16 {
     let side = Columns {
         panel: Some((false, false)),
+        desk,
         ..Columns::default()
     };
-    desk_area(area, split, side).map_or(area.width, |desk| desk.x)
+    desk_slot(area, split, side).map_or(area.width, |slot| slot.x)
 }
 
 /// The cells the open panel covers in `area`, `None` while it is closed.
@@ -1106,8 +1115,16 @@ fn list_border(rows: u16) -> u16 {
 }
 
 /// The size a drag asks for: where its edge stood at the press, moved as far
-/// as the pointer has since, clamped to `area` split as `split` is now.
-pub(crate) fn dragged_to(drag: Drag, mouse: Mouse, area: Rect, split: Split, count: usize) -> u16 {
+/// as the pointer has since, clamped to `area` split as `split` is now. `desk`
+/// is whether a board column stands beside a side panel.
+pub(crate) fn dragged_to(
+    drag: Drag,
+    mouse: Mouse,
+    area: Rect,
+    split: Split,
+    count: usize,
+    desk: bool,
+) -> u16 {
     let (at, from) = (i32::from(drag.at), i32::from(drag.from));
     let moved = match drag.edge {
         Edge::Sidebar => at + i32::from(mouse.column) - from,
@@ -1121,7 +1138,7 @@ pub(crate) fn dragged_to(drag: Drag, mouse: Mouse, area: Rect, split: Split, cou
         Edge::List => list_clamp(to.saturating_sub(list_border(0)), area, count),
         Edge::Panel => side_width(
             area,
-            side_end(area, split),
+            side_end(area, split, desk),
             Split {
                 panel: Some(to),
                 ..split
@@ -4250,6 +4267,9 @@ mod accounts_spec;
 #[cfg(test)]
 #[path = "desk_geometry_spec.rs"]
 mod desk_geometry_spec;
+#[cfg(test)]
+#[path = "desk_presence_tests.rs"]
+mod desk_presence_tests;
 
 #[cfg(test)]
 mod s5_draw;
@@ -6518,6 +6538,7 @@ mod tests {
             buf.area,
             shot.model.split(),
             shot.fleet.rows.len(),
+            false,
         );
         let _ = shot.model.drag_to(size);
         let _ = shot.model.let_go();
@@ -7943,6 +7964,7 @@ mod tests {
             area,
             shot.model.split(),
             1,
+            false,
         );
         assert_eq!(requested, 32_775, "the actual drag allows this sidebar");
         let _ = shot.model.drag_to(requested);

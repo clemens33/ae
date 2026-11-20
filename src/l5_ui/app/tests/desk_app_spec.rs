@@ -119,4 +119,11 @@ fn the_app_reads_the_bound_board_and_writes_its_links_only_when_the_column_fits(
             .iter()
             .all(|run| run.url != url && run.url != file_url)
     );
+
+    fs::remove_file(&path).expect("remove the board record");
+    refresh(&mut rig);
+    let cleared = text(&rig.frame(161, 35));
+    let panel = rig.app.layout.panel.expect("the side chat still stands");
+    assert_eq!((panel.x, panel.width), (103, 58));
+    assert!(!cleared.contains("BOARD") && !cleared.to_lowercase().contains("desk unreadable"));
 }
