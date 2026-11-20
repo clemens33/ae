@@ -323,41 +323,55 @@ fn r4_world_clock_read_positions_and_observation_order_stay_explicit() {
     // Mutation: hoist/merge either clock, reorder scan/discovery/runtime reads.
     // Read every production source through the fail-closed shared source view.
     let product = source_view::product();
-    let bodies: Vec<_> = product
-        .files
-        .iter()
-        .filter_map(|source| {
-            let (file, text) = (&source.path, &source.text);
-            let start = text.find("fn world_read(")?;
-            let rest = &text[start..];
-            let open = rest.find('{').expect("world_read body");
-            let blank = source_view::blank_literals(file, rest).expect("valid source");
-            let mut depth = 0;
-            let mut end = None;
-            for (i, byte) in blank.bytes().enumerate().skip(open) {
-                match byte {
-                    b'{' => depth += 1,
-                    b'}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = Some(i);
-                            break;
-                        }
+    let function_body = |declaration: &str| {
+        let mut definitions = product.files.iter().flat_map(|source| {
+            source
+                .text
+                .match_indices(declaration)
+                .map(|(start, _)| (&source.path, &source.text[start..]))
+        });
+        let (file, rest) = definitions
+            .next()
+            .unwrap_or_else(|| panic!("missing production definition: {declaration}"));
+        assert!(
+            definitions.next().is_none(),
+            "multiple production definitions: {declaration}"
+        );
+        let blank = source_view::blank_literals(file, rest).expect("valid source");
+        let open = blank.find('{').expect("function body");
+        let mut depth = 0;
+        let mut end = None;
+        for (i, byte) in blank.bytes().enumerate().skip(open) {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
                     }
-                    _ => {}
                 }
+                _ => {}
             }
-            Some(rest[..=end.expect("closed world_read")].to_owned())
-        })
-        .collect();
-    assert_eq!(
-        bodies.len(),
-        1,
-        "world_read must be found exactly once across production files"
+        }
+        &rest[open + 1..end.expect("closed function body")]
+    };
+    let world_read = function_body("fn world_read(");
+    let classify = function_body("fn classify(scan: inventory::DurableScan)");
+    let (before, after) = world_read
+        .split_once("classify(")
+        .expect("world_read must call classify");
+    assert!(
+        !after.contains("classify(")
+            && !before.contains("AFTER_CLASSIFY.with(")
+            && after.contains("AFTER_CLASSIFY.with("),
+        "world_read must call classify exactly once before AFTER_CLASSIFY.with"
     );
+    // Splice the helper's observations at its call site in the transcript.
+    let expanded = format!("{before}{classify}{after}");
     // R4c deliberately hides resolver injection behind live(). Both spellings
     // are the same one-cache construction at this seam; no other call moves.
-    let body = bodies[0].replace("SocketPaths::live(", "SocketPaths::asking(");
+    let body = expanded.replace("SocketPaths::live(", "SocketPaths::asking(");
     let calls = [
         "read_gate(",
         "inventory::durable_records_with(",
