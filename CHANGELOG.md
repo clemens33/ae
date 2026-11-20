@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.100] - 2026-11-20
+- The orchestrator seat executes for the owner: it starts, creates and resumes other sessions and stops one in the bound form, reaches another session's seats through its helpers without --cross-session, and writes a dispatch-request and dispatch-result row for each; it never stops, ends or renames its own session, and its new charter reaches a running seat as one CHARTER UPDATE turn
+
 ## [v2026.11.99] - 2026-11-20
 - An upgrade keeps the seat's orchestrator.config current, and says so when it cannot
 - An acceptance arm for the named-instance context notice
