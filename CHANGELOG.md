@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.97] - 2026-11-20
+- The orchestration layer (autoreseat, autotrust, effort, interrupt, lifecycle, migrate, orchestrator, rename, request_verb, reseat, restore, seat_relaunch, seatcompact, seatcompact_run, seatpack, session_launch, session_notice, spawn, teardown, telegram_lifecycle, watchdog_daemon, watchdog_glue, watchdog_lifecycle, worktrees) moves into src/l4_orchestration; src/lib.rs re-exports each by name, and the sources, tests, docs, the .config/nextest.toml group filters and the seatinc re-exec CHILD that name their paths follow
+
 ## [v2026.11.96] - 2026-11-20
 - Telegram guards: each reader reads the path it builds
 - The services layer (autoupgrade, board, brief, brief_retry, carry, compact, deliver, fleet_read, go_usage, init, install, launch, listing, muse_usage, opencode_variant, quota, relay, render, reply, run, send, session, stats, stats_store, telegram, tool_stats, upgrade, usage) moves into src/l3_services; src/lib.rs re-exports each by name, and the sources, tests, fuzz target, docs and the Cargo.toml, clippy.toml and .gitattributes comments that name their paths follow
