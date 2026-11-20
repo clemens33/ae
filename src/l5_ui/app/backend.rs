@@ -120,22 +120,6 @@ pub(crate) fn clean(symbol: &str) -> &str {
     }
 }
 
-/// `bytes` as RFC 4648 base64, padded.
-pub(crate) fn base64(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for group in bytes.chunks(3) {
-        let word = (group.iter()).fold(0_u32, |word, byte| (word << 8) | u32::from(*byte));
-        let word = word << (8 * (3 - group.len()));
-        for place in 0..=group.len() {
-            let digit = usize::try_from((word >> (18 - 6 * place)) & 63).unwrap_or(0);
-            out.push(char::from(DIGITS[digit]));
-        }
-        out.extend(std::iter::repeat_n('=', 3 - group.len()));
-    }
-    out
-}
-
 impl<W: Write> Ansi<W> {
     /// Set the terminal's clipboard to `text` with an OSC 52 write, `ESC ] 52 ;
     /// c ; <base64> BEL`: the data is base64, so no byte of `text` reaches the
@@ -145,7 +129,8 @@ impl<W: Write> Ansi<W> {
         if text.is_empty() {
             return Ok(());
         }
-        write!(self.out, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
+        self.out
+            .write_all(crate::clipboard::osc52(text).as_bytes())?;
         self.out.flush()
     }
 }
@@ -388,7 +373,11 @@ mod tests {
             ("fooba", "Zm9vYmE="),
             ("foobar", "Zm9vYmFy"),
         ] {
-            assert_eq!(super::base64(plain.as_bytes()), coded, "{plain:?}");
+            assert_eq!(
+                crate::clipboard::base64(plain.as_bytes()),
+                coded,
+                "{plain:?}"
+            );
             let sent = written(|ansi| ansi.clipboard(plain));
             let wanted = format!("\x1b]52;c;{coded}\x07");
             assert_eq!(

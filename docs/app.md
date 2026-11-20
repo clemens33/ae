@@ -272,8 +272,9 @@ Browsing:
 | Click `Esc close` at the Settings title row's right end, or the gear | close Settings, like `Esc` |
 | `qq` | quit: the first `q` only arms (`q again to quit`), the second within 2 seconds quits |
 | `^C` | quit, at once; over a draft Esc kept it clears the draft first |
-| `Esc` while writing | dismiss a target warning and keep editing, or return to browsing when no warning is pending |
+| `Esc` while writing | clear a selection, dismiss a target warning, or return to browsing |
 | `Alt+o` while writing | send the warned ask to the orchestrator's lead when the warning offers it (Option as Meta) |
+| `Alt+y` while writing | copy the whole draft (Option as Meta) |
 | `^V` while writing | save a clipboard PNG and insert it as an `[Image #N]` token; Enter sends its path |
 
 No single printable key quits or moves your client: an armed `q` or `o` is
@@ -328,8 +329,10 @@ around the cursor with `… +N lines above` and `… +N lines below` among them
 (no markers below three rows) — and the terminal cursor sits where the next
 character goes. The cursor shows only while writing with the composer drawn:
 browsing, a held composer and Settings hide it. The address row, every draft row
-and the note row under them are one click target. `Enter` sends, `Esc` goes back to browsing and keeps
-the draft. `^C` over any text in the composer — typed, or kept by `Esc`, also under an open Settings or peek — clears it whole and never quits (`draft cleared · ^Y brings it back` on the hint row); over an empty composer it quits at once — except within 2 seconds of a clear (by `^C` or `^U`), where the first `^C` only arms (`^C again to quit · ^Y brings draft back`) and a further one quits, so a `^C` meant for the text never ends the app; any other key disarms. `^U` clears the whole draft the same way, every line. `^W` erases the word before the cursor (back to whitespace), `Opt+Backspace` (`ESC DEL`; the terminal must send Option as Meta) the one before it up to a non-letter, non-digit, and `^K` the rest of the cursor's line, or its line break when nothing is left on it. `^Y` puts the last cleared draft or erased text back at the cursor, once: a send ends it, a newer clear or erase replaces it (an erase of nothing does not), and a draft with no room for it keeps it waiting; an erase that empties the draft guards the quit like `^U`. While there is text the hint row also reads `^C clears`. `/open <seat>` opens that seat of the selected session
+and the note row under them are one click target. While writing, drag over draft
+text to copy the drawn rows, or press `Alt+y` to copy the whole draft. See
+[Selecting text](#selecting-text). `Enter` sends, `Esc` goes back to browsing
+and keeps the draft. `^C` over any text in the composer — typed, or kept by `Esc`, also under an open Settings or peek — clears it whole and never quits (`draft cleared · ^Y brings it back` on the hint row); over an empty composer it quits at once — except within 2 seconds of a clear (by `^C` or `^U`), where the first `^C` only arms (`^C again to quit · ^Y brings draft back`) and a further one quits, so a `^C` meant for the text never ends the app; any other key disarms. `^U` clears the whole draft the same way, every line. `^W` erases the word before the cursor (back to whitespace), `Opt+Backspace` (`ESC DEL`; the terminal must send Option as Meta) the one before it up to a non-letter, non-digit, and `^K` the rest of the cursor's line, or its line break when nothing is left on it. `^Y` puts the last cleared draft or erased text back at the cursor, once: a send ends it, a newer clear or erase replaces it (an erase of nothing does not), and a draft with no room for it keeps it waiting; an erase that empties the draft guards the quit like `^U`. While there is text the hint row also reads `^C clears`. `/open <seat>` opens that seat of the selected session
 ([Opening a seat](#opening-a-seat)). While an ask is being delivered the hint row reads `sending to <seat>…`;
 delivery waits on a busy seat, so it runs off the app's loop, which keeps
 drawing and taking keys. One ask flies at a time: a second `Enter` meanwhile is
@@ -941,10 +944,10 @@ paste buffer works regardless; outside tmux the OSC 52 write is all there is.
 
 ## Selecting text
 
-Drag over drawn text with the left button, in the chat, a viewed seat, the
-session list or the Agents body: the cells light up while you drag (reverse video,
-so text that is already reversed shows its inverse), and letting go copies
-exactly the lit text the way `y` does. The hint row answers with the same
+Drag over drawn text with the left button in the chat, the composer while
+writing, a viewed seat, the session list or the Agents body. The cells light up
+while you drag. Reverse video makes already reversed text show its inverse.
+Releasing the button copies exactly the lit text the way `y` does. The hint row answers with the same
 `copied N lines to the tmux buffer; …` words (outside tmux,
 `sent N lines to the terminal clipboard - unconfirmed`); while a seat is
 viewed the answer rides the keys row instead, for a few seconds.
@@ -953,8 +956,17 @@ The text is the drawn cells, row by row, each row cut at its last character
 and the rows joined by a newline (an empty row stays, nothing follows the last
 one). A wide character is taken whole from either of its cells, a control byte
 reads as the blank the terminal gets, and a marked turn's bar is never part of
-it: the copy is the same marked or not. A drag stays inside the panel it began
-in, and the sidebar rule, the header and the composer are not selectable.
+it. A drag stays inside the panel where it began. The sidebar rule and header
+are outside those regions. In the composer only the rows
+between the address and the hint are selectable. The elision rows copy as blank
+lines. Typing or editing clears the selection and updates the draft as usual.
+The draft preview in browse mode still opens the composer on click.
+
+Press `Alt+y` while writing to copy the logical draft, including text offscreen,
+line breaks, tabs and spaces. The copy uses attachment labels and replaces other
+control characters with U+FFFD. On macOS, configure the terminal to send Option
+as Meta for `Option+y`. Copying leaves the draft and cursor in place. An empty
+draft reports `nothing to copy: the draft is empty`.
 
 A press with no motion is the click it always was, a border still grabs first,
 and the wheel is unchanged. `Esc` with a selection held only clears it (a second

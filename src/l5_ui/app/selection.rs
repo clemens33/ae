@@ -398,6 +398,12 @@ impl App {
         }
     }
 
+    /// A draft edit invalidates a selection even when the edit is offscreen.
+    pub(super) fn clear_composer_selection(&mut self) {
+        self.select
+            .take_if(|held| held.sel.panel() == select::Panel::Composer);
+    }
+
     /// Drop a selection that the model has since moved out from under: a
     /// session, a tab or an overlay changed, even if it changed back. Whether
     /// a highlight went away.

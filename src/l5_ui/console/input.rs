@@ -85,6 +85,8 @@ pub enum Key {
     Newline,
     /// `^V` outside a bracketed paste, in either input surface.
     ImagePaste,
+    /// Alt+y copies the draft.
+    CopyDraft,
     /// The keys below come only from [`Keys::app`]; the chat's decoder never
     /// spells one.
     Mouse(Mouse),
@@ -102,11 +104,11 @@ pub enum Key {
 }
 
 impl Key {
-    fn cancels_confirmation(&self) -> bool {
+    /// Whether this key edits the draft and invalidates a held selection.
+    pub(crate) fn edits_draft(&self) -> bool {
         matches!(
             self,
-            Self::Escape
-                | Self::Pasted(_)
+            Self::Pasted(_)
                 | Self::Text(_)
                 | Self::Newline
                 | Self::Backspace
@@ -480,6 +482,7 @@ fn editing(seq: &[u8]) -> Option<Key> {
     Some(match seq {
         b"\x1b\r" | b"\x1b\n" => Key::Newline,
         b"\x1bo" => Key::Redirect,
+        b"\x1by" => Key::CopyDraft,
         b"\x1b\x7f" | b"\x1b\x08" => Key::KillWord,
         b"\x1b[D" | b"\x1bOD" => Key::Left,
         b"\x1b[C" | b"\x1bOC" => Key::Right,
@@ -728,6 +731,7 @@ impl Composer {
             | Key::Mouse(_)
             | Key::Pasted(_)
             | Key::ImagePaste
+            | Key::CopyDraft
             | Key::Newline => {}
         }
         None
@@ -1073,16 +1077,26 @@ impl Composer {
         if self.over {
             return format!("{prompt}{}", over_notice());
         }
+        format!("{prompt}{}", self.draft_text(true))
+    }
+
+    /// The draft's attachment labels and literal text made safe for a terminal.
+    /// The preview flattens layout controls before sanitizing the text.
+    fn draft_text(&self, flat: bool) -> String {
         let mut draft = String::new();
         for (start, end, slot) in parts(&self.bytes) {
             if let Some(slot) = slot {
                 draft.push_str(&self.label(slot));
             } else {
                 let text = String::from_utf8_lossy(&self.bytes[start..end]);
-                draft.push_str(&text.replace(['\n', '\r', '\t'], " "));
+                if flat {
+                    draft.push_str(&text.replace(['\n', '\r', '\t'], " "));
+                } else {
+                    draft.push_str(&text);
+                }
             }
         }
-        format!("{prompt}{}", terminal_text(&draft))
+        terminal_text(&draft)
     }
 
     /// The draft laid out for a pane of `size`, `prompt` on its first row.
@@ -1119,6 +1133,12 @@ impl Composer {
             .collect();
         View {
             rows,
+            text_rows: if self.over {
+                0..0
+            } else {
+                let first = usize::from(win.above);
+                first..first + win.end - win.start
+            },
             cursor_row,
             before: format!("{}{before}", lead(cursor_row)),
             anchor,
@@ -1392,6 +1412,8 @@ impl Size {
 pub struct View {
     /// Every row, the prompt or its indent included.
     pub rows: Vec<String>,
+    /// The draft rows, excluding elision markers and the over-cap notice.
+    pub text_rows: std::ops::Range<usize>,
     /// The row the cursor is on.
     pub cursor_row: usize,
     /// That row up to the cursor.
@@ -1524,6 +1546,8 @@ pub enum Reading {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     ImagePaste,
+    /// Copy the draft's display text to the clipboard.
+    Copy(String),
     /// Remove the claimed record; the offer stays pending until acknowledged.
     DiscardDraft,
     /// Bracketed paste on or off, written before the line that announces it.
@@ -1861,6 +1885,10 @@ impl Input {
                 }
                 continue;
             }
+            if key == Key::CopyDraft {
+                effects.push(Effect::Copy(self.composer.draft_text(false)));
+                continue;
+            }
             if key == Key::ImagePaste {
                 if self.taking() {
                     effects.push(Effect::ImagePaste);
@@ -1875,7 +1903,7 @@ impl Input {
             {
                 continue;
             }
-            if key.cancels_confirmation() {
+            if key == Key::Escape || key.edits_draft() {
                 self.cancel_confirmation();
             }
             match key {
@@ -2295,6 +2323,7 @@ pub(super) fn paint_target(
             | Effect::Open(_)
             | Effect::More(_)
             | Effect::Board
+            | Effect::Copy(_)
             | Effect::Shell { .. }
             | Effect::ImagePaste => {}
         }
@@ -2327,6 +2356,9 @@ mod inputfeed_spec;
 
 #[cfg(test)]
 mod chattarget_spec;
+
+#[cfg(test)]
+mod composercopy_spec;
 
 #[cfg(test)]
 mod tests {
@@ -3716,6 +3748,7 @@ mod tests {
         let style = Style::resolve(true, None, None, "lead");
         let view = View {
             rows: vec!["to lead> hi".to_owned(), "to lead> again".to_owned()],
+            text_rows: 0..2,
             cursor_row: 1,
             before: "to lead> ag".to_owned(),
             anchor: "to lead> ".to_owned(),

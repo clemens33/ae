@@ -1,11 +1,12 @@
 //! The flight: the staged copy shipped, the asks queued and in flight, their outcome words and the settle at quit.
 
 use super::{
-    App, Arc, Binding, CLIP_MAX, Cell, Duration, Effect, FLASH_WINDOW, File, Instant, Item, Key,
-    Kind, LeaseFile, MouseKind, NOTICES, QUIT_WINDOW, Reading, Receiver, RecvTimeoutError,
-    RoleRoute, Stage, Timestamp, Write, console, lines_word, mpsc, open, shell, submit, term,
-    terminal_text, transport, upgrade,
+    App, Arc, Binding, Cell, Duration, Effect, FLASH_WINDOW, File, Instant, Item, Key, Kind,
+    LeaseFile, MouseKind, NOTICES, QUIT_WINDOW, Reading, Receiver, RecvTimeoutError, RoleRoute,
+    Stage, Timestamp, Write, console, lines_word, mpsc, select, shell, submit, term, terminal_text,
+    transport, upgrade,
 };
+use crate::clipboard;
 
 /// An ask the input produced, held until the frame that names its target is
 /// drawn: the entry that wrote it and the line, for a writer that ended.
@@ -79,36 +80,19 @@ impl App {
     /// how the text is named. Outside tmux there is no client to name: the
     /// loop writes the text to the terminal itself.
     pub(super) fn ship(&mut self, text: &str, count: &str) -> String {
-        let (Some(server), Some(pane)) = (&self.server, &self.pane) else {
-            if text.len() > CLIP_MAX {
-                let size = text.len();
-                return format!(
-                    "not copied: {size} bytes is over the {CLIP_MAX}-byte clipboard limit"
-                );
-            }
-            self.clip = Some(text.to_owned());
-            return format!("sent {count} to the terminal clipboard - unconfirmed");
+        match self.server.as_ref().zip(self.pane.as_deref()) {
+            Some((server, pane)) => clipboard::ship_tmux(server, pane, "app", text, count),
+            None => clipboard::stage_text(&mut self.clip, text, count),
+        }
+    }
+
+    fn copy_draft(&mut self, text: &str) {
+        let line = if text.is_empty() {
+            clipboard::EMPTY_DRAFT.to_owned()
+        } else {
+            self.ship(text, &lines_word(text))
         };
-        let viewer = match transport::observe_clients(server) {
-            None => Err("the tmux clients did not answer".to_owned()),
-            Some(clients) => open::copy_client(&clients, pane).map_err(|why| why.why()),
-        }
-        .and_then(|name| {
-            let named = open::client_name(&name);
-            named
-                .then_some(name)
-                .ok_or("the client name failed its grammar".to_owned())
-        });
-        match (
-            transport::copy_buffer(server, viewer.as_deref().ok(), text.as_bytes()),
-            viewer,
-        ) {
-            (Err(why), _) => format!("copy failed: {}", terminal_text(&why)),
-            (Ok(()), Ok(_)) => format!(
-                "copied {count} to the tmux buffer; terminal clipboard if your terminal allows it"
-            ),
-            (Ok(()), Err(why)) => format!("copied {count} to the tmux buffer only - {why}"),
-        }
+        self.flash = Some((line, Instant::now()));
     }
 
     /// The hint-row line now, loudest first: an ask on its way, an armed
@@ -223,8 +207,9 @@ impl App {
         }
         let input = token.and_then(|(key, _)| self.inputs.get_mut(&key));
         if let Some(input) = input {
-            if let Err(why) = crate::clipboard::finish(input, answer) {
-                self.refuse_paste(&why);
+            match clipboard::finish(input, answer) {
+                Ok(()) => self.clear_composer_selection(),
+                Err(why) => self.refuse_paste(&why),
             }
             self.show();
         }
@@ -234,21 +219,30 @@ impl App {
     /// Ship the copy the last frame highlighted, now that it is written: the
     /// text goes the way `y` sends a turn. Whether it said anything.
     pub(super) fn ship_staged(&mut self) -> bool {
-        let ready = (self.select.as_mut()).filter(|held| matches!(held.stage, Stage::Ready(_)));
-        let Some(Stage::Ready(text)) = ready.map(|held| std::mem::take(&mut held.stage)) else {
+        let Some(held) = self.select.as_mut() else {
             return false;
         };
+        let panel_composer = self.select_on_panel && held.sel.panel() == select::Panel::Composer;
+        let Stage::Ready(text) = &mut held.stage else {
+            return false;
+        };
+        let text = std::mem::take(text);
+        held.stage = Stage::None;
         let line = if text.trim().is_empty() {
             "nothing to copy: the selection is blank".to_owned()
         } else {
             self.ship(&text, &lines_word(&text))
         };
-        self.flash = Some((line, Instant::now()));
+        let flash = Some((line, Instant::now()));
+        if panel_composer {
+            self.in_panel(|app| app.flash = flash);
+        } else {
+            self.flash = flash;
+        }
         true
     }
 
-    /// Carry out what the input asked for; each outcome becomes a notice,
-    /// shown at once.
+    /// Carry out what the input asked for; each outcome is shown at once.
     pub(super) fn effects(&mut self, effects: Vec<Effect>) {
         for effect in effects {
             // A writer's session is always the selection.
@@ -290,6 +284,10 @@ impl App {
                     continue;
                 }
                 Effect::Print(line) => line,
+                Effect::Copy(text) => {
+                    self.copy_draft(&text);
+                    continue;
+                }
                 Effect::Ask { raw, seat, body } => {
                     let Some((key, entry)) = (self.writer.as_ref()).map(|w| (w.key(), w.entry))
                     else {

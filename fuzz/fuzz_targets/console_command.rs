@@ -545,6 +545,13 @@ fuzz_target!(|data: &[u8]| {
                 "a fold number is digits: {number:?}"
             ),
             Effect::ImagePaste => assert!(stream.contains(&0x16), "only ^V asks for an image"),
+            Effect::Copy(text) => {
+                assert!(stream.windows(2).any(|key| key == b"\x1by"));
+                assert!(
+                    text.chars()
+                        .all(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+                );
+            }
             Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) | Effect::Board => {}
         }
     }
@@ -573,7 +580,7 @@ fuzz_target!(|data: &[u8]| {
         let (all, _, _) = effects(kept, &full, chunk, at, size);
         let lines = entered(kept, &full);
         let after: Vec<_> = (all.iter().skip(usize::from(!kept.is_empty())))
-            .filter(|effect| !matches!(effect, Effect::ImagePaste))
+            .filter(|effect| !matches!(effect, Effect::ImagePaste | Effect::Copy(_)))
             .collect();
         assert_eq!(after.len(), lines.len(), "one effect per entered line");
         for (effect, line) in after.into_iter().zip(&lines) {

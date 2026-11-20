@@ -325,7 +325,7 @@ impl App {
         let Some(writer) = &self.writer else {
             return Vec::new();
         };
-        let target = self.target(writer.console.name());
+        let target = (key != Key::CopyDraft).then(|| self.target(writer.console.name()));
         let fleet = (key == Key::Enter).then(|| {
             let running = self
                 .world
@@ -349,7 +349,9 @@ impl App {
         let Some(input) = self.writer_input_mut() else {
             return Vec::new();
         };
-        input.set_target(target);
+        if let Some(target) = target {
+            input.set_target(target);
+        }
         if let Some((running, route)) = fleet {
             input.set_running(Some(running));
             input.set_route(route);
@@ -381,6 +383,9 @@ impl App {
                 }
             }
             key => {
+                if key.edits_draft() || matches!(key, Key::Enter | Key::Redirect) {
+                    self.clear_composer_selection();
+                }
                 let had_text = self.protects();
                 let deleting = matches!(
                     key,
@@ -391,11 +396,14 @@ impl App {
                     self.cleared_note(origin);
                 }
                 if !effects.is_empty() {
-                    if self.warning_unpainted() {
+                    let reread = !matches!(effects.as_slice(), [Effect::Copy(_)]);
+                    if reread && self.warning_unpainted() {
                         let _ = self.model.newest();
                     }
                     self.effects(effects);
-                    self.reread();
+                    if reread {
+                        self.reread();
+                    }
                 }
             }
         }
@@ -426,6 +434,7 @@ impl App {
         let key = writer.unwrap_or_else(|| (name.clone(), self.id(&name)));
         let cleared = self.inputs.get_mut(&key).is_some_and(Input::clear);
         if cleared {
+            self.clear_composer_selection();
             self.cleared_note(origin);
         }
         cleared

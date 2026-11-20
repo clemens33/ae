@@ -2281,17 +2281,13 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
         view: Some(view), ..
     } = screen.composer
     {
-        // The draft under the address, from the column's left edge, and the
-        // cursor after the cells its row draws before it, never past the row.
-        let text = paint.fg(|p| p.text);
-        for (y, row) in (composer + 1..).zip(&view.rows) {
-            put(buf, left, y, row, room, text);
-        }
-        let before = cells(Span::raw(view.before.as_str()).width());
-        layout.cursor = (room > 0).then(|| {
-            let row = composer + 1 + cells(view.cursor_row);
-            Position::new(left + before.min(room - 1), row)
-        });
+        composer_draft(
+            buf,
+            layout,
+            view,
+            Rect::new(left, composer + 1, room, grown),
+            paint,
+        );
     } else {
         put_line(buf, left, composer + 1, &input_row, room);
     }
@@ -2305,6 +2301,33 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     layout.page_rows = room_rows;
     layout.max_scroll = rows.len().saturating_sub(room_rows);
     layout.complete = complete;
+}
+
+/// Draw and expose only the draft rows between the address and the hint.
+fn composer_draft(
+    buf: &mut Buffer,
+    layout: &mut Layout,
+    view: &View,
+    mut area: Rect,
+    paint: Paint,
+) {
+    let (left, first, room) = (area.x, area.y, area.width);
+    let height = buf.area.height;
+    area.height = area.height.min(height.saturating_sub(first + 1));
+    let text = paint.fg(|p| p.text);
+    layout.selectable(buf, select::Panel::Composer, area);
+    for (index, (y, row)) in (first..area.bottom()).zip(&view.rows).enumerate() {
+        put(buf, left, y, row, room, text);
+        if !view.text_rows.contains(&index) {
+            layout
+                .map
+                .blanks
+                .push(Rect::new(left, y, room, 1).intersection(buf.area));
+        }
+    }
+    let before = cells(Span::raw(view.before.as_str()).width());
+    layout.cursor = (room > 0)
+        .then(|| Position::new(left + before.min(room - 1), first + cells(view.cursor_row)));
 }
 
 /// The hint on row `y`, under a scrolled-up lane whose column is `room` cells
@@ -3984,10 +4007,11 @@ fn live_seat_rows(
 }
 
 /// The write, held and settings keys the help lists beside the browse table.
-const WRITE_KEYS: [(&str, &str); 21] = [
+const WRITE_KEYS: [(&str, &str); 22] = [
     ("Enter", "send the line"),
     ("Alt+Enter ^J", "new line in the draft"),
     ("^V", "attach a clipboard PNG"),
+    ("Alt+y", "copy the whole draft"),
     ("Esc", "keep the draft, browse"),
     ("^C", "clear a draft; an empty one quits at once"),
     ("^C", "just after a clear: arms; again in 2 s quits"),
@@ -4576,6 +4600,7 @@ mod tests {
         let facts = sweep_seats();
         let draft = View {
             rows: vec!["a draft long enough to run past the composer row ".repeat(4)],
+            text_rows: 0..1,
             cursor_row: 0,
             before: String::new(),
             anchor: String::new(),
@@ -5387,6 +5412,7 @@ mod tests {
     fn the_rule_runs_the_full_height_beside_the_hint_row() {
         let draft = View {
             rows: vec!["a short draft".to_owned()],
+            text_rows: 0..1,
             cursor_row: 0,
             before: String::new(),
             anchor: String::new(),
@@ -5803,6 +5829,7 @@ mod tests {
     fn drafted(rows: &[&str]) -> View {
         View {
             rows: rows.iter().map(|row| (*row).to_owned()).collect(),
+            text_rows: 0..rows.len(),
             cursor_row: rows.len().saturating_sub(1),
             before: rows.last().map(|row| (*row).to_owned()).unwrap_or_default(),
             anchor: String::new(),

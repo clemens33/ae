@@ -29,6 +29,7 @@ use ratatui_core::layout::Position;
 use ratatui_core::terminal::Terminal;
 
 use crate::board::terminal_text;
+use crate::clipboard::lines_word;
 use crate::console::input::{Effect, Input, Key, Keys, Mouse, MouseKind, Reading, Size, View};
 use crate::console::lane::{Item, Kind, Lane, Seat};
 use crate::console::link;
@@ -205,9 +206,6 @@ const QUIT_WINDOW: Duration = Duration::from_secs(2);
 const QUIT_GUARD: Duration = Duration::from_secs(2);
 /// How long a refused paste or an outcome word stays on the hint row.
 const FLASH_WINDOW: Duration = Duration::from_secs(5);
-/// The most UTF-8 bytes one copy writes to the terminal clipboard outside tmux;
-/// more is refused, never cut.
-const CLIP_MAX: usize = 65536;
 /// How long a drag holds the reads back without any mouse input.
 const LANE_HOLD: Duration = Duration::from_secs(10);
 /// The most replaced layouts kept for a click made on one of them.
@@ -830,13 +828,6 @@ impl App {
         }
         self.evict();
         self.show();
-    }
-}
-
-fn lines_word(text: &str) -> String {
-    match text.lines().count() {
-        1 => "1 line".to_owned(),
-        lines => format!("{lines} lines"),
     }
 }
 

@@ -1,7 +1,84 @@
-//! One bounded image fetch, shared by the two input surfaces.
+//! Clipboard text writes and bounded image reads for both input surfaces.
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
+use crate::console::open;
+use crate::inventory::ServerId;
+use crate::{board::terminal_text, transport};
+
+pub(crate) const EMPTY_DRAFT: &str = "nothing to copy: the draft is empty";
+
+/// The most UTF-8 bytes written to a terminal clipboard outside tmux.
+const TEXT_MAX: usize = 65536;
+
+/// How a copy names the text it wrote.
+pub(crate) fn lines_word(text: &str) -> String {
+    match text.lines().count() {
+        1 => "1 line".to_owned(),
+        lines => format!("{lines} lines"),
+    }
+}
+
+/// Keep the text for the next terminal write if it fits whole.
+pub(crate) fn stage_text(slot: &mut Option<String>, text: &str, count: &str) -> String {
+    if text.len() > TEXT_MAX {
+        let size = text.len();
+        return format!("not copied: {size} bytes is over the {TEXT_MAX}-byte clipboard limit");
+    }
+    *slot = Some(text.to_owned());
+    format!("sent {count} to the terminal clipboard - unconfirmed")
+}
+
+/// Load the tmux paste buffer, also asking tmux to copy to the terminal when
+/// exactly one client is the newest viewer of `pane`.
+pub(crate) fn ship_tmux(
+    server: &ServerId,
+    pane: &str,
+    surface: &str,
+    text: &str,
+    count: &str,
+) -> String {
+    let viewer = match transport::observe_clients(server) {
+        None => Err("the tmux clients did not answer".to_owned()),
+        Some(clients) => open::copy_client(&clients, pane).map_err(|why| why.why_for(surface)),
+    }
+    .and_then(|name| {
+        open::client_name(&name)
+            .then_some(name)
+            .ok_or_else(|| "the client name failed its grammar".to_owned())
+    });
+    match (
+        transport::copy_buffer(server, viewer.as_deref().ok(), text.as_bytes()),
+        viewer,
+    ) {
+        (Err(why), _) => format!("copy failed: {}", terminal_text(&why)),
+        (Ok(()), Ok(_)) => format!(
+            "copied {count} to the tmux buffer; terminal clipboard if your terminal allows it"
+        ),
+        (Ok(()), Err(why)) => format!("copied {count} to the tmux buffer only - {why}"),
+    }
+}
+
+/// An OSC 52 clipboard write. Base64 keeps payload bytes inert.
+pub(crate) fn osc52(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", base64(text.as_bytes()))
+}
+
+/// `bytes` as RFC 4648 base64, padded.
+pub(crate) fn base64(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for group in bytes.chunks(3) {
+        let word = (group.iter()).fold(0_u32, |word, byte| (word << 8) | u32::from(*byte));
+        let word = word << (8 * (3 - group.len()));
+        for place in 0..=group.len() {
+            let digit = usize::try_from((word >> (18 - 6 * place)) & 63).unwrap_or(0);
+            out.push(char::from(DIGITS[digit]));
+        }
+        out.extend(std::iter::repeat_n('=', 3 - group.len()));
+    }
+    out
+}
 type Answer = Result<PathBuf, String>;
 pub(crate) type Job<T> = Option<(T, Receiver<Answer>)>;
 

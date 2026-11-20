@@ -34,6 +34,7 @@ use crate::render::Audience;
 use crate::theme::Mark;
 use crate::time::Timestamp;
 use crate::tmux;
+mod composercopy_app_spec;
 mod f12panel_guards;
 mod f12panel_spec;
 mod flight;
@@ -2589,6 +2590,9 @@ fn a_composer_write_asks_for_a_home_reread() {
     asks.try_iter().for_each(drop);
     assert_eq!(app.compose(Key::Text(b"/close".to_vec()), typed), Some(()));
     assert!(asks.try_iter().next().is_none(), "typing writes nothing");
+    assert_eq!(app.compose(Key::CopyDraft, typed), Some(()));
+    assert_eq!(app.clip.as_deref(), Some("/close"));
+    assert!(asks.try_iter().next().is_none(), "copying writes nothing");
     assert_eq!(app.compose(Key::Enter, typed), Some(()));
     let rereads: Vec<String> = asks
         .try_iter()
@@ -2608,6 +2612,37 @@ fn a_composer_write_asks_for_a_home_reread() {
         })
         .collect();
     assert_eq!(rereads, ["api"]);
+}
+
+#[test]
+fn copying_a_warned_draft_keeps_its_confirmation() {
+    let root = Root::new("copy-confirming");
+    let (mut app, _reader) = housed(&root);
+    let typed = writing(&mut app);
+    let draft = "see D44 now";
+    assert_eq!(
+        app.compose(Key::Text(draft.as_bytes().to_vec()), typed),
+        Some(())
+    );
+    assert_eq!(app.compose(Key::Enter, typed), Some(()));
+    assert!(app.queued.is_empty());
+    assert!(framed(&mut app).contains("D44"));
+    let shown = Instant::now();
+    app.frame_shown(shown);
+
+    let mut keys = crate::console::input::Keys::app();
+    let copy = keys.feed(b"\x1by", shown + Duration::from_millis(1));
+    assert!(take_keys(&mut app, copy).is_some());
+    assert_eq!(app.clip.as_deref(), Some(draft));
+    assert!(app.queued.is_empty());
+    assert!(app.writer_input().is_some_and(Input::confirming));
+
+    let enter = shown + Duration::from_millis(2);
+    assert_eq!(app.compose(Key::Enter, enter), Some(()));
+    let [ask] = app.queued.as_slice() else {
+        panic!("one fresh Enter confirms the original ask");
+    };
+    assert_eq!(ask.body, draft);
 }
 
 /// A lone ESC completes once a wait ends with no keys: on the timeout

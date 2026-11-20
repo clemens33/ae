@@ -19,6 +19,8 @@ use super::backend;
 pub enum Panel {
     /// The chat's turns, between its header rule and the composer.
     Lane,
+    /// The composer draft rows.
+    Composer,
     /// The peek panel's body.
     Peek,
     /// The sidebar's session list.

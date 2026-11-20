@@ -16,7 +16,7 @@ use super::shell::{Place, ShellArgv, popup_args, popup_client, refused, said};
 use super::target::{self, RoleRoute, Target};
 use super::{Console, holder, submit};
 use crate::inventory::ServerId;
-use crate::{archive, doors, lifecycle, meta, theme, time, tmux, tracked, transport};
+use crate::{archive, clipboard, doors, lifecycle, meta, theme, time, tmux, tracked, transport};
 
 /// Stamped terminal reads, until the terminal's input ends.
 struct Reads(Option<Receiver<(Instant, Vec<u8>)>>);
@@ -830,7 +830,9 @@ pub(super) struct Term {
     root: Option<PathBuf>,
     input: Input,
     recovery: submit::Recovery,
-    clipboard: crate::clipboard::Job<Instant>,
+    clipboard: clipboard::Job<Instant>,
+    /// Text for the next OSC 52 write when this terminal is outside tmux.
+    clip: Option<String>,
     pair: Vec<Seat>,
     reads: Reads,
     server: Option<ServerId>,
@@ -855,6 +857,7 @@ impl Term {
             input: Input::new(pair.iter().map(|seat| seat.name.clone()).collect()),
             recovery: crate::console::submit::Recovery::default(),
             clipboard: None,
+            clip: None,
             pair,
             reads: Reads(Some(reads)),
             server: doors::launch_target(declared.as_ref()),
@@ -1034,6 +1037,9 @@ impl Term {
                     Err(why) => format!("refused: {why}"),
                 })
             }
+            Effect::Copy(text) => {
+                Effect::Print(self.copy_draft(&text, super::stdout_is_terminal()))
+            }
             Effect::Open(seat) => Effect::Print(self.open(console, &seat)),
             Effect::Shell { raw, line } => self.bang(console, &raw, &line),
             Effect::More(handle) => match console.printed.more_last(&handle) {
@@ -1044,6 +1050,20 @@ impl Term {
             effect => effect,
         };
         Some(effects.into_iter().map(act).collect())
+    }
+
+    /// Copy the local draft to the buffer of this tmux server, or to the
+    /// console's own terminal when it has no pane.
+    fn copy_draft(&mut self, text: &str, tty: bool) -> String {
+        if text.is_empty() {
+            return clipboard::EMPTY_DRAFT.to_owned();
+        }
+        let count = clipboard::lines_word(text);
+        match (&self.server, self.me.as_deref()) {
+            (Some(server), Some(pane)) => clipboard::ship_tmux(server, pane, "chat", text, &count),
+            (_, None) if tty => clipboard::stage_text(&mut self.clip, text, &count),
+            _ => "copy failed: this chat has no usable terminal clipboard".to_owned(),
+        }
     }
 
     /// `/open`: prove `seat`'s pane against the meta and tmux NOW, then select
@@ -1087,7 +1107,11 @@ impl Term {
     /// again for the pane as it is now: its size read every paint, its screen
     /// only after a narrowing.
     pub(super) fn paint(&mut self, text: &str, effects: &[Effect]) -> String {
-        self.painted(text, effects, Self::pane)
+        let mut out = self.painted(text, effects, Self::pane);
+        if let Some(clip) = self.clip.take() {
+            out.push_str(&clipboard::osc52(&clip));
+        }
+        out
     }
 
     /// `paint` with the pane read through `read`, asked only while a composer is
@@ -1364,6 +1388,7 @@ mod tests {
             pair,
             reads: Reads(None),
             clipboard: None,
+            clip: None,
             server: None,
             me: None,
             screen: Screen::default(),
@@ -1394,6 +1419,7 @@ mod tests {
             pair,
             reads: Reads(None),
             clipboard: None,
+            clip: None,
             server: None,
             me: None,
             screen: Screen::default(),
@@ -1440,6 +1466,7 @@ mod tests {
             pair,
             reads,
             clipboard: None,
+            clip: None,
             server: None,
             me: None,
             screen,
@@ -1525,6 +1552,29 @@ mod tests {
     }
 
     #[test]
+    fn draft_copy_outside_tmux_requires_a_terminal_and_writes_once_after_the_composer() {
+        const OSC52: &str = "\x1b]52;c;aGVsbG8=\x07";
+        let (_rig, console, mut term) = bare_term("term-copy");
+        let _ = term.take(&console, Reading::Owner);
+        let _ = term.input.chunk(b"hello", Instant::now());
+
+        assert_eq!(term.copy_draft("", true), crate::clipboard::EMPTY_DRAFT);
+        assert_eq!(
+            term.copy_draft("hello", false),
+            "copy failed: this chat has no usable terminal clipboard"
+        );
+        assert!(term.clip.is_none());
+
+        let said = term.copy_draft("hello", true);
+        assert_eq!(said, "sent 1 line to the terminal clipboard - unconfirmed");
+        let out = term.paint("", &[Effect::Print(said)]);
+        assert!(out.contains("to lead> hello"), "{out:?}");
+        assert!(out.ends_with(OSC52), "{out:?}");
+        assert_eq!(out.matches(OSC52).count(), 1);
+        assert!(!term.paint("", &[]).contains(OSC52));
+    }
+
+    #[test]
     fn a_paint_with_no_tmux_answer_assumes_80_by_24_and_a_settle_ends_the_composer() {
         let (_rig, console, mut term) = bare_term("term-paint");
         assert_eq!(term.paint("", &[]), "", "nothing taken, nothing drawn");
@@ -1558,6 +1608,7 @@ mod tests {
             pair,
             reads,
             clipboard: None,
+            clip: None,
             server,
             me,
             screen,
@@ -1667,6 +1718,7 @@ mod tests {
             pair,
             reads: Reads(None),
             clipboard: None,
+            clip: None,
             server: None,
             me: None,
             screen: Screen::default(),

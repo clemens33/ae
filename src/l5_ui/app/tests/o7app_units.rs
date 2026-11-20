@@ -247,6 +247,54 @@ fn the_panel_draft_never_shows_in_the_main_column() {
     );
 }
 
+#[test]
+fn a_panel_draft_drag_stops_at_the_hint_and_the_flash_leaves_with_the_panel() {
+    let root = Root::new("o7-copy");
+    let (mut app, _reader) = orchestrated(&root, false);
+    panel_writes(&mut app);
+    press(&mut app, b"qzpanel draft");
+    let frame = at(200, 45, &mut app);
+    let row = frame.area.height - 2;
+    let column = cell_of(&frame, "qzpanel draft", row, 0).expect("panel draft row");
+    let _ = app.mouse(Mouse {
+        kind: MouseKind::Click,
+        column,
+        row,
+    });
+    let _ = app.mouse(Mouse {
+        kind: MouseKind::Drag,
+        column,
+        row: row + 1,
+    });
+    let _ = app.mouse(Mouse {
+        kind: MouseKind::Release,
+        column,
+        row: row + 1,
+    });
+    let _ = at(200, 45, &mut app);
+    assert!(
+        app.ship_staged(),
+        "the frame confirmed the panel's selection"
+    );
+    assert_eq!(app.clip.as_deref(), Some("qzpanel draft"));
+    let frame = at(200, 45, &mut app);
+    assert!(
+        cell_of(
+            &frame,
+            "sent 1 line to the terminal clipboard",
+            row + 1,
+            column
+        )
+        .is_some(),
+        "the panel's hint row shows the copy: {}",
+        text(&frame)
+    );
+    assert_eq!(app.layout.cursor.map(|at| at.y), Some(row));
+    assert!(app.composing() && app.queued.is_empty());
+    app.close_panel();
+    assert_eq!(app.flash, None, "closing the panel clears its own flash");
+}
+
 /// A panel's draft wraps to the cells the panel covers, up to its margin:
 /// the cells right of the sidebar full, its own half side by side.
 #[test]

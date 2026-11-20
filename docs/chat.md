@@ -380,6 +380,22 @@ Residuals: an Esc and an Enter that arrive in one terminal read are read as Alt+
 and a chat window started by an older core has Enter and `^J` as the same byte until
 `prefix h` reopens it (the window sets `-icrnl`, so Enter reads as CR and `^J` as LF).
 
+Press `Alt+y` to copy the whole draft without sending it. The copy preserves
+line breaks, tabs and spaces, includes offscreen text and uses attachment
+labels. Other control characters become U+FFFD. On macOS, the terminal must
+send Option as Meta for `Option+y`. The chat prints the result above the
+composer. In tmux the copy loads its paste buffer and requests a terminal
+clipboard copy for the client showing the chat. An empty draft reports
+`nothing to copy: the draft is empty`.
+
+To copy part of the visible draft while typing, hold Shift and drag in the
+terminal, then use its Copy action. Shift bypasses tmux's mouse handling in
+[Ghostty](https://ghostty.org/docs/config/reference#mouse-shift-capture) on
+macOS and Linux and in
+[GNOME Terminal](https://help.gnome.org/gnome-terminal/txt-select-text.html)
+on Linux. You can also use tmux copy mode with `prefix [`, or a plain drag
+with the default tmux mouse bindings. Leave copy mode to resume typing.
+
 An ask whose submit could not be verified shows `uncertain: check … pane`,
 and keeps its recovery draft. Seats with no modelled input box (Gemini,
 Antigravity, Grok, OpenCode, unknown tools) show this on every send; the active

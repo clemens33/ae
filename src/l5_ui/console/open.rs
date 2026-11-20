@@ -60,6 +60,10 @@ impl Refusal {
     /// The words for why: the chat's line and the app's copy flash both say them.
     #[must_use]
     pub fn why(&self) -> String {
+        self.why_for("app")
+    }
+
+    pub(crate) fn why_for(&self, surface: &str) -> String {
         match self {
             Self::Unread(what) => format!("{what} did not answer"),
             Self::Replaced => "the roster no longer seats it in that slot".to_owned(),
@@ -70,8 +74,10 @@ impl Refusal {
             Self::Dead => "its pane is dead".to_owned(),
             Self::NotMember => "its pane is not in this session".to_owned(),
             Self::NoTmux => "ae app is not running inside tmux".to_owned(),
-            Self::NoViewer => "no tmux client is showing this app".to_owned(),
-            Self::Tied => "two clients showing this app were active in the same second".to_owned(),
+            Self::NoViewer => format!("no tmux client is showing this {surface}"),
+            Self::Tied => {
+                format!("two clients showing this {surface} were active in the same second")
+            }
             Self::Stopped(session) => format!("{session} is stopped; ae {session} resumes it"),
             Self::Elsewhere(session) => format!(
                 "{session} is not on the tmux server this app runs on, or ae cannot prove it is; \
