@@ -104,6 +104,7 @@ fn queued() -> Queued {
         body: "x".to_owned(),
         about: String::new(),
         note: None,
+        redirect: None,
     }
 }
 

@@ -24,6 +24,7 @@ use crate::console::input::Reading;
 use crate::console::lane::{Lane, Seat};
 use crate::console::link::Base;
 use crate::console::needs::{SeatRef, Section};
+use crate::console::target::{RoleRoute, prove_role};
 use crate::console::{self, Console, Panes, Reach, term};
 use crate::digest::Status;
 use crate::inventory::{FailedSource, ServerId};
@@ -275,6 +276,11 @@ pub(super) enum Answer {
     /// Whether the orchestrator this fleet read found is one proven
     /// incarnation: sent right after each [`Answer::Fleet`].
     Orchestrator(Proof),
+    /// The actual role holder and its bound redirect route, if running.
+    ComposerRole {
+        holder: Option<String>,
+        route: Option<RoleRoute>,
+    },
     /// What the panel's seat ask of `generation` came to.
     Seat {
         generation: u64,
@@ -309,44 +315,40 @@ pub(super) enum Proof {
 /// namesake without the role, or a holder under another name, is no seat
 /// here: the panel's seat ask says what it is. A role census that failed
 /// proves no absence: a running seat is then unproven, never absent.
-fn orchestrator_proof(read: &FleetRead, root: &Path, holder: Result<Option<&str>, &str>) -> Proof {
+fn orchestrator_proof(
+    read: &FleetRead,
+    root: &Path,
+    holder: Result<Option<&str>, &str>,
+) -> (Proof, Option<RoleRoute>) {
     let name = crate::orchestrator::ORCHESTRATOR_SESSION;
-    let running = (read.world.sessions.iter())
-        .any(|entry| entry.name == name && entry.status == Status::Running);
+    let running = |name: &str| {
+        read.world
+            .sessions
+            .iter()
+            .any(|entry| entry.name == name && entry.status == Status::Running)
+    };
     let holder = match holder {
-        Ok(holder) => holder,
-        Err(why) if running => return Proof::Gap(format!("role census: {why}")),
-        Err(_) => None,
+        Ok(Some(holder)) if running(holder) => holder,
+        Err(why) if running(name) => return (Proof::Gap(format!("role census: {why}")), None),
+        _ => return (Proof::Absent, None),
     };
-    let Some(dir) = read
-        .dirs
-        .get(name)
-        .filter(|_| running && holder == Some(name))
-    else {
-        return Proof::Absent;
+    let Some(dir) = read.dirs.get(holder) else {
+        return (Proof::Absent, None);
     };
-    // The census proved the holder; its meta proves the seat again as it
-    // reads now, by the census's own predicate.
-    let seat = crate::meta::read_bytes(dir).is_ok_and(|meta| crate::meta::is_seat(&meta, root));
-    if !seat {
-        return Proof::Gap("meta: local_config is not the seat overlay".to_owned());
-    }
-    let option = match crate::session_launch::recorded_server_resolved(dir) {
-        Some(server) => session_menu::live_identity(&server, name),
-        None => tmux::OptionReading::Unknown,
+    let proved = prove_role(root, holder, dir);
+    let panel = if holder == name {
+        match &proved {
+            Ok((uuid, _)) => Proof::Proven(uuid.clone()),
+            Err(why) => Proof::Gap(why.clone()),
+        }
+    } else {
+        Proof::Absent
     };
-    let meta = session_menu::MetaSource::read(dir);
-    if let Some(gap) = session_menu::correlation_gap(&option, &meta) {
-        return Proof::Gap(gap);
-    }
-    let live = match &option {
-        tmux::OptionReading::Set(value) => crate::archive::canonical_uuid(value),
-        _ => String::new(),
-    };
-    match sole_uuid(dir) {
-        Some(sole) if !live.is_empty() && sole == live => Proof::Proven(live),
-        _ => Proof::Gap("meta: session_id not recorded once".to_owned()),
-    }
+    let route = proved.ok().and_then(|proof| {
+        let pair = read.pairs.get(holder)?.as_ref().ok()?;
+        RoleRoute::bind(root, holder, dir, proof, pair.clone())
+    });
+    (panel, route)
 }
 
 /// How pressed each lead-pair seat of a session is, by seat name: its own
@@ -514,6 +516,8 @@ pub(super) struct Reader {
     live_facts: Option<(Vec<crate::quota::LiveSeatFact>, bool, i64)>,
     rereads: BTreeSet<String>,
     looks: BTreeSet<String>,
+    /// Sessions whose look has already been sent to the app for this incarnation.
+    read_looks: BTreeSet<String>,
     /// Home's look is drawn, so no other session's look dresses the app.
     home_drawn: bool,
     seq: u64,
@@ -620,6 +624,7 @@ impl Reader {
             live_facts: None,
             rereads: BTreeSet::new(),
             looks: BTreeSet::new(),
+            read_looks: BTreeSet::new(),
             home_drawn: false,
             seq: 0,
             settings_paths: SettingsPaths::default(),
@@ -743,11 +748,11 @@ impl Reader {
     pub(super) fn take(&mut self, request: Request) {
         match request {
             Request::Focus(selected) => {
-                let home = self.home.as_ref();
-                if let Some(name) = selected
-                    .as_ref()
-                    .filter(|name| !self.home_drawn && home != Some(*name))
-                {
+                // The composer's caption needs the selected session's look
+                // even when home supplies the look for the rest of the app.
+                if let Some(name) = selected.as_ref().filter(|name| {
+                    self.home.as_ref() != Some(*name) && !self.read_looks.contains(*name)
+                }) {
                     self.looks.insert(name.clone());
                 }
                 // If Settings opened with no selected or home session, it
@@ -765,6 +770,11 @@ impl Reader {
                 self.evict();
             }
             Request::Panel(panel) => {
+                if let Some(name) = panel.as_ref().filter(|name| {
+                    self.home.as_ref() != Some(*name) && !self.read_looks.contains(*name)
+                }) {
+                    self.looks.insert(name.clone());
+                }
                 self.panel = panel;
                 self.evict();
             }
@@ -1126,6 +1136,7 @@ impl Reader {
         let lost = |source: &FailedSource| !matches!(source, FailedSource::Server(_));
         read.scanned = !snapshot.incomplete.iter().any(lost);
         self.fleet_at = Some(Instant::now());
+        self.refresh_caption_looks(&read.ids);
         self.dirs.clone_from(&read.dirs);
         self.ids.clone_from(&read.ids);
         self.rows = read.fleet.rows.iter().map(|row| row.name.clone()).collect();
@@ -1134,9 +1145,10 @@ impl Reader {
             .as_ref()
             .map(Option::as_deref)
             .map_err(String::as_str);
-        let proof = orchestrator_proof(&read, &self.root, census);
+        let (proof, route) = orchestrator_proof(&read, &self.root, census);
         answers.push(Answer::Fleet(read));
         answers.push(Answer::Orchestrator(proof));
+        answers.push(Answer::ComposerRole { holder, route });
         answers.extend(self.ended());
         answers
     }
@@ -1344,6 +1356,22 @@ impl Reader {
         self.journals.retain(&fleet);
     }
 
+    /// Keep the cached caption looks for this fleet's incarnations and
+    /// requeue any missing look currently on screen.
+    fn refresh_caption_looks(&mut self, ids: &BTreeMap<String, String>) {
+        self.read_looks.retain(|name| {
+            ids.get(name)
+                .is_some_and(|id| self.ids.get(name).is_none_or(|old| old == id))
+        });
+        for name in self.selected.iter().chain(&self.panel).filter(|name| {
+            self.home.as_ref() != Some(*name)
+                && ids.contains_key(*name)
+                && !self.read_looks.contains(*name)
+        }) {
+            self.looks.insert(name.clone());
+        }
+    }
+
     /// The selection whose look a fleet read reads beside home's: one while
     /// home's is not drawn, and never home's twice.
     fn undressed(&self) -> Option<String> {
@@ -1354,7 +1382,13 @@ impl Reader {
 
     /// Session `name`'s drawn look, and whether home's is drawn.
     pub(super) fn look(&mut self, name: &str) -> Answer {
-        let (look, zone) = console::look_of(name, true);
+        let (look, zone) = match self.dirs.get(name) {
+            Some(dir) => {
+                let server = crate::session_launch::recorded_server_resolved(dir);
+                console::look_on(server.as_ref(), name, true)
+            }
+            None => console::look_of(name, true),
+        };
         self.noted(name, look.is_some());
         Answer::Look {
             name: name.to_owned(),
@@ -1367,6 +1401,7 @@ impl Reader {
     /// home's is drawn.
     fn noted(&mut self, name: &str, drawn: bool) {
         self.looks.remove(name);
+        self.read_looks.insert(name.to_owned());
         if self.home.as_deref() == Some(name) {
             self.home_drawn = drawn;
         }
@@ -1839,12 +1874,7 @@ pub(super) fn reading(console: &Console, seats: &[Seat]) -> Reading {
 
 /// The canonical `session_id` the raw meta in `dir` names exactly once, as
 /// it reads now; `None` for a doubled, absent or unreadable row.
-pub(super) fn sole_uuid(dir: &Path) -> Option<String> {
-    let bytes = crate::meta::read_bytes(dir).ok()?;
-    let one = crate::meta::sole_value(&bytes, "session_id")?;
-    let one = crate::archive::canonical_uuid(&String::from_utf8_lossy(one));
-    (!one.is_empty()).then_some(one)
-}
+pub(super) use crate::console::target::sole_uuid;
 
 fn fleet_live_facts(
     snapshot: &crate::liveness::Snapshot,
@@ -2169,10 +2199,10 @@ mod tests {
         assert_eq!(viewing(&reader.next(read + REFRESH)), Some("b"));
     }
 
-    /// A selection's look is read only while home's is not drawn, and
-    /// home's never twice: a focus queues it, a fleet read reads it.
+    /// A focus queues a missing caption look while a fleet read still uses
+    /// home to dress the app whenever home's look is drawn.
     #[test]
-    fn looks_are_read_for_home_and_an_undressed_selection_only() {
+    fn a_foreign_focus_queues_one_caption_look_while_home_still_dresses_the_app() {
         let root = Root::new("looks");
         let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
         reader.take(Request::Focus(Some("api".to_owned())));
@@ -2188,7 +2218,41 @@ mod tests {
         assert_eq!(reader.undressed(), None, "a drawn home dresses the app");
         reader.looks.clear();
         reader.take(Request::Focus(Some("ops".to_owned())));
-        assert!(reader.looks.is_empty(), "and queues no look");
+        assert_eq!(reader.looks, BTreeSet::from(["ops".to_owned()]));
+        reader.noted("ops", true);
+        reader.take(Request::Focus(Some("api".to_owned())));
+        reader.take(Request::Focus(Some("ops".to_owned())));
+        assert!(reader.looks.is_empty(), "the cached caption look is reused");
+        assert_eq!(
+            reader.undressed(),
+            None,
+            "the caption leaves home in charge"
+        );
+    }
+
+    #[test]
+    fn a_relaunched_selection_reads_its_caption_look_again() {
+        let root = Root::new("caption-relaunch");
+        let mut reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
+        let now = Instant::now();
+        reader.fleet_at = Some(now);
+        reader.ids = BTreeMap::from([("ops".to_owned(), "old-incarnation".to_owned())]);
+        reader.take(Request::Focus(Some("ops".to_owned())));
+        reader.noted("ops", true);
+
+        let same = reader.ids.clone();
+        reader.refresh_caption_looks(&same);
+        assert!(
+            !matches!(reader.next(now), Job::Look(_)),
+            "the same incarnation reuses the caption look"
+        );
+
+        let replaced = BTreeMap::from([("ops".to_owned(), "new-incarnation".to_owned())]);
+        reader.refresh_caption_looks(&replaced);
+        assert!(
+            matches!(reader.next(now), Job::Look(name) if name == "ops"),
+            "the new incarnation of the selected name needs its own look"
+        );
     }
 
     /// Only home's own look says whether home's look is drawn.

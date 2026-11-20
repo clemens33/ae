@@ -304,6 +304,7 @@ impl App {
             self.evict();
         }
         let selected = self.model.selected().map(str::to_owned);
+        self.focus_composer(selected.as_deref());
         if selected == self.focused {
             return;
         }
@@ -314,10 +315,49 @@ impl App {
         self.evict();
     }
 
+    fn focus_composer(&mut self, selected: Option<&str>) {
+        let next = if self.panel_focused() {
+            self.panel_line()
+                .is_none()
+                .then(|| super::Target::Orchestrator(ORCH.to_owned()))
+        } else {
+            selected.map(|name| self.target(name))
+        };
+        let Some(next) = next else {
+            return;
+        };
+        if self.composer_target.as_ref() == Some(&next) {
+            return;
+        }
+        let switched = self.composer_target.replace(next.clone()).is_some();
+        let name = if self.panel_focused() {
+            Some(ORCH)
+        } else {
+            selected
+        };
+        if switched && let Some(name) = name {
+            self.notice(
+                name,
+                format!(
+                    "{}{label}",
+                    super::TARGET_NOTICE,
+                    label = super::target::label(&next)
+                ),
+            );
+            self.show();
+        }
+    }
+
     /// Ask the reader to read the written session again: this app wrote into it.
     pub(super) fn reread(&self) {
-        if let (Some(ask), Some(writer)) = (&self.ask, &self.writer) {
-            let _ = ask.send(Request::Reread(writer.console.name().to_owned()));
+        if let Some(writer) = &self.writer {
+            self.reread_target(writer.console.name());
+        }
+    }
+
+    pub(super) fn reread_target(&self, name: &str) {
+        if let Some(ask) = &self.ask {
+            let _ = ask.send(Request::Reread(name.to_owned()));
         }
     }
 
@@ -380,7 +420,8 @@ impl App {
     /// the newest, carrying what the one it replaced alone had read.
     pub(super) fn park(&mut self, mut answer: Answer) {
         let same = |old: &Answer| match (old, &answer) {
-            (Answer::Fleet(_), Answer::Fleet(_)) => true,
+            (Answer::Fleet(_), Answer::Fleet(_))
+            | (Answer::ComposerRole { .. }, Answer::ComposerRole { .. }) => true,
             (Answer::Look { name: a, .. }, Answer::Look { name: b, .. }) => a == b,
             (Answer::View(a), Answer::View(b)) => a.name == b.name,
             _ => false,

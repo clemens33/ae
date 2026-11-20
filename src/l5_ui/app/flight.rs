@@ -2,9 +2,9 @@
 
 use super::{
     App, Arc, Binding, CLIP_MAX, Cell, Duration, Effect, FLASH_WINDOW, File, Instant, Item, Key,
-    Kind, LeaseFile, MouseKind, NOTICES, QUIT_WINDOW, Reading, Receiver, RecvTimeoutError, Stage,
-    Timestamp, Write, console, lines_word, mpsc, open, shell, submit, term, terminal_text,
-    transport, upgrade,
+    Kind, LeaseFile, MouseKind, NOTICES, QUIT_WINDOW, Reading, Receiver, RecvTimeoutError,
+    RoleRoute, Stage, Timestamp, Write, console, lines_word, mpsc, open, shell, submit, term,
+    terminal_text, transport, upgrade,
 };
 
 /// An ask the input produced, held until the frame that names its target is
@@ -18,6 +18,7 @@ pub(super) struct Queued {
     pub(super) about: String,
     /// The quiet lane note for a line routed away from the lead.
     pub(super) note: Option<String>,
+    pub(super) redirect: Option<RoleRoute>,
 }
 
 /// The one ask on its way to its seat, carried off the loop's thread.
@@ -26,15 +27,24 @@ pub(super) struct Flight {
     seat: String,
     /// The session the ask went to.
     about: String,
+    /// The origin to tell about a redirected ask.
+    source: Option<OriginDraft>,
     /// The quiet lane note for a line routed away from the lead.
     note: Option<String>,
     /// Its outcome, once the delivery has ended.
-    done: Receiver<submit::Outcome>,
+    done: Receiver<submit::Finished>,
     /// The writer lease its submit took on that very incarnation: held until
     /// the delivery ends, whatever happens to the writing, so no other window
     /// is admitted beside it.
     pub(super) lease: Arc<LeaseFile>,
 }
+
+struct OriginDraft {
+    key: (String, String),
+    raw: Vec<u8>,
+}
+
+type Started = (String, Receiver<submit::Finished>, Arc<LeaseFile>);
 
 /// How long a quit waits for an ask in flight before it leaves it: the helpers'
 /// own delivery gives up by itself well inside it (the send lock waits two
@@ -295,8 +305,15 @@ impl App {
                         body,
                         about,
                         note,
+                        redirect: None,
                     });
                     continue;
+                }
+                Effect::Redirect { raw, body } => {
+                    if self.queue_redirect(&about, raw, body) {
+                        continue;
+                    }
+                    "refused: the orchestrator target is unproven".to_owned()
                 }
                 Effect::Close(id) => self.close(id.as_deref()),
                 Effect::Open(seat) => match self.open_written(&seat) {
@@ -326,6 +343,30 @@ impl App {
             self.notice(&about, line);
         }
         self.show();
+    }
+
+    fn queue_redirect(&mut self, about: &str, raw: Vec<u8>, body: String) -> bool {
+        let Some((key, entry)) = self.writer.as_ref().map(|w| (w.key(), w.entry)) else {
+            return false;
+        };
+        let Some(input) = self.writer_input_mut() else {
+            return false;
+        };
+        let Some(route) = input.take_redirect() else {
+            input.put_back(&raw);
+            return false;
+        };
+        self.queued.push(Queued {
+            key,
+            entry,
+            raw,
+            seat: route.seat().to_owned(),
+            body,
+            about: about.to_owned(),
+            note: None,
+            redirect: Some(route),
+        });
+        true
     }
 
     /// `!` in the window that writes: the human's own line, run in the
@@ -406,39 +447,74 @@ impl App {
         raw: &[u8],
         seat: &str,
         body: String,
-    ) -> Result<(String, Receiver<submit::Outcome>, Arc<LeaseFile>), String> {
+        redirect: Option<&RoleRoute>,
+    ) -> Result<Started, String> {
         let Some(writer) = &self.writer else {
             return Err("refused: not writing".to_owned());
         };
-        let (console, lost) = (&writer.console, Cell::default());
-        let record = self.recovery.record(console.dir())?;
+        let recipient = redirect.map(RoleRoute::console);
+        let (console, lost) = (
+            recipient.as_ref().unwrap_or(&writer.console),
+            Cell::default(),
+        );
+        let recovery = if redirect.is_some() {
+            &mut self.redirect_recovery
+        } else {
+            &mut self.recovery
+        };
+        let record = recovery.record(console.dir())?;
         let (lease, lock) = term::send_locks(console).map_err(|why| format!("refused: {why}"))?;
         let held = Arc::new(LeaseFile { file: lease });
         self.note_holder(&held.file);
         let owns = || {
             self.owns(&lost)?;
+            if let Some(route) = redirect {
+                return route.verify(console);
+            }
             let name = console.name();
             let routed = crate::tracked::named_server(console.dir(), name, name);
             let routed = routed.map(drop).map_err(|why| why.message());
             routed.inspect_err(|why| lost.set(Some(why.clone())))
         };
-        let admitted = term::admit_ask_locked(console, record, lock, owns, raw, seat, body);
+        let kept = redirect.map(|_| format!("@{seat} {body}"));
+        let kept_raw = kept.as_ref().map_or(raw, |line| line.as_bytes());
+        let ask = term::Carry::of(console, seat, body).bind_role(redirect.cloned());
+        let admitted = term::admit_ask_locked(console, record, lock, owns, kept_raw, &ask);
         self.unproven(lost, raw);
-        let (ask, admitted) = admitted.map_err(|why| format!("refused: {why}"))?;
+        let admitted = admitted.map_err(|why| format!("refused: {why}"))?;
         let id = ask.id().to_owned();
         let (send, done) = mpsc::channel();
-        let (carry, named) = (Arc::clone(&self.carry), id.clone());
+        let named = id.clone();
+        let carry = Self::carry_delivery(self);
         let thread = std::thread::Builder::new().name("ae-app-ask".to_owned());
         // The admission lock goes with the ask: it is held until the delivery
         // ends, and a thread that dies lets it go.
         thread
             .spawn(move || {
-                let outcome =
-                    admitted.finish(&mut crate::events::Held::default(), &named, || carry(ask));
+                let outcome = admitted.finish_with_receipt(
+                    &mut crate::events::Held::default(),
+                    &named,
+                    || carry(ask),
+                );
                 let _ = send.send(outcome);
             })
             .map_err(|why| format!("refused: could not start the delivery ({why})"))?;
         Ok((id, done, held))
+    }
+
+    #[cfg(not(test))]
+    fn carry_delivery(
+        _: &Self,
+    ) -> impl FnOnce(term::Carry) -> (String, Option<crate::tracked::Receipt>) + Send + use<> {
+        term::Carry::run_typed
+    }
+
+    #[cfg(test)]
+    fn carry_delivery(
+        app: &Self,
+    ) -> impl FnOnce(term::Carry) -> (String, Option<crate::tracked::Receipt>) + Send + use<> {
+        let sink = Arc::clone(&app.carry);
+        move |ask| (sink(ask), None)
     }
 
     /// An ask whose delivery ended: its outcome, said as an ask's outcome is.
@@ -447,12 +523,15 @@ impl App {
         let Some(flight) = &self.flight else {
             return false;
         };
-        let outcome = match flight.done.try_recv() {
-            Ok(outcome) => outcome,
+        let submit::Finished { outcome, refusal } = match flight.done.try_recv() {
+            Ok(result) => result,
             Err(mpsc::TryRecvError::Empty) => return false,
             Err(mpsc::TryRecvError::Disconnected) => {
                 let why = "the delivery ended without an answer";
-                submit::Outcome::Unknown(flight.id.clone(), why.to_owned())
+                submit::Finished {
+                    outcome: submit::Outcome::Unknown(flight.id.clone(), why.to_owned()),
+                    refusal: None,
+                }
             }
         };
         let Some(flight) = self.flight.take() else {
@@ -460,12 +539,24 @@ impl App {
         };
         // The delivery is over: its lease goes, so another window may send.
         drop(flight.lease);
+        if let Some(OriginDraft { key, raw }) = &flight.source {
+            let said = if let Some(why) = refusal {
+                if let Some(input) = self.inputs.get_mut(key) {
+                    input.put_back(raw);
+                }
+                format!("refused: orchestrator target {} · {why}", flight.about)
+            } else {
+                let said = console::input::outcome_line(&outcome, &flight.seat);
+                format!("{} · {said}", flight.about)
+            };
+            self.notice(&key.0, said);
+        }
         let mut lines = self.settle(flight.id, &flight.seat, &flight.about, outcome);
         lines.splice(0..0, flight.note);
         for line in lines {
             self.notice(&flight.about, line);
         }
-        self.reread();
+        self.reread_target(&flight.about);
         self.show();
         true
     }
@@ -486,7 +577,10 @@ impl App {
             err,
             "ae app: finishing the delivery to {seat} (^C stops it)"
         )?;
-        if flight.done.recv_timeout(bound) == Err(RecvTimeoutError::Timeout) {
+        if matches!(
+            flight.done.recv_timeout(bound),
+            Err(RecvTimeoutError::Timeout)
+        ) {
             let secs = bound.as_secs_f32();
             writeln!(
                 err,
@@ -505,6 +599,7 @@ impl App {
         let queued = std::mem::take(&mut self.queued);
         let ran = !queued.is_empty();
         for q in queued {
+            let destination = q.redirect.as_ref().map_or(&q.about, |route| &route.name);
             let live = (self.writer.as_ref()).is_some_and(|writer| writer.entry == q.entry);
             let told = if live {
                 let begun = match &self.flight {
@@ -512,14 +607,18 @@ impl App {
                         "not sent to {}: an ask to {} is still being delivered; the line is back in the draft",
                         q.seat, flight.seat
                     )),
-                    None => self.begin(&q.raw, &q.seat, q.body),
+                    None => self.begin(&q.raw, &q.seat, q.body, q.redirect.as_ref()),
                 };
                 match begun {
                     Ok((id, done, lease)) => {
                         self.flight = Some(Flight {
                             id,
                             seat: q.seat,
-                            about: q.about.clone(),
+                            about: destination.clone(),
+                            source: q.redirect.as_ref().map(|_| OriginDraft {
+                                key: q.key,
+                                raw: q.raw,
+                            }),
                             note: q.note,
                             done,
                             lease,
@@ -534,7 +633,10 @@ impl App {
                         if let Some(input) = self.inputs.get_mut(&q.key).filter(|_| live) {
                             input.put_back(&q.raw);
                         }
-                        vec![refused]
+                        let said = q.redirect.as_ref().map_or(refused.clone(), |route| {
+                            format!("refused: orchestrator target {} · {refused}", route.name)
+                        });
+                        vec![said]
                     }
                 }
             } else {
@@ -542,7 +644,11 @@ impl App {
                     let _ = input.restore(submit::Draft::Kept(q.raw));
                 }
                 let why = "writing ended; the line is back in the draft";
-                vec![format!("not sent to {}: {why}", q.seat)]
+                let target = q
+                    .redirect
+                    .as_ref()
+                    .map_or(q.seat.as_str(), |route| route.name.as_str());
+                vec![format!("not sent to {target}: {why}")]
             };
             for line in told {
                 self.notice(&q.about, line);

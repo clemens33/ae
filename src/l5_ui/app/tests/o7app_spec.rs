@@ -16,6 +16,9 @@ use std::sync::{Arc, Mutex, mpsc};
 #[path = "desk_app_spec.rs"]
 mod desk_app_spec;
 
+#[path = "chattarget_app_spec.rs"]
+mod chattarget_app_spec;
+
 const ORCH: &str = "orchestrator";
 const OID: &str = "0199c0de-2222-4890-abcd-ef0123456789";
 const NEW: &str = "0199c0de-3333-4890-abcd-ef0123456789";

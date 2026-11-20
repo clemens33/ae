@@ -428,6 +428,7 @@ pub(super) fn drain(
     }
     let (mut redraw, mut fed) = (take_keys(app, held)?, false);
     while app.queued.is_empty()
+        && !app.warning_unpainted()
         && app.pane_view.is_none()
         && let Some(wake) = first.take().or_else(|| wakes.try_recv().ok())
     {
@@ -484,7 +485,7 @@ pub(super) fn drain(
         };
         redraw |= take_keys(app, keyed)?;
     }
-    if !fed && app.pane_view.is_none() {
+    if !fed && app.pane_view.is_none() && !app.warning_unpainted() {
         redraw |= take_keys(app, keys.idle(Instant::now()))?;
     }
     app.forget(keys.begun());

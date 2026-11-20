@@ -272,6 +272,8 @@ Browsing:
 | Click `Esc close` at the Settings title row's right end, or the gear | close Settings, like `Esc` |
 | `qq` | quit: the first `q` only arms (`q again to quit`), the second within 2 seconds quits |
 | `^C` | quit, at once; over a draft Esc kept it clears the draft first |
+| `Esc` while writing | dismiss a target warning and keep editing, or return to browsing when no warning is pending |
+| `Alt+o` while writing | send the warned ask to the orchestrator's lead when the warning offers it (Option as Meta) |
 | `^V` while writing | save a clipboard PNG and insert it as an `[Image #N]` token; Enter sends its path |
 
 No single printable key quits or moves your client: an armed `q` or `o` is
@@ -1221,6 +1223,21 @@ Instructions head states the residual below: this is today's render, not what
 a running seat was handed.
 
 ## Routing a line
+
+Each writable composer names its session in the session's colour. The orchestrator
+uses an accent and carries the `[orchestrator]` marker even with `theme = off`.
+A selection or focus change that switches targets adds one `Target:` line
+to the new target's lane.
+
+In an ordinary session, a whole board ID such as `D44` or the full name of
+another running session of at least three characters requires confirmation.
+After the warning, Enter sends to the current target and Esc dismisses the
+warning while you keep writing. A draft edit resets the confirmation. If
+the warning offers `Alt+o` (Option as Meta), that key sends one ask to the
+orchestrator's lead and keeps the current composer open. A refusal before the
+ask reaches the pane returns the draft to its composer. If delivery is
+uncertain, recovery stays in the recipient's session. Check the orchestrator's
+pane before resending.
 
 A plain line goes to the session's lead. When the lead cannot take it — the same
 verdict `ae list` shows: not running, out of quota, blocked, in error, or busy on a

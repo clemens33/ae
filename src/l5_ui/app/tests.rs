@@ -652,7 +652,7 @@ fn an_unproven_ask_is_refused_and_writes_nothing() {
     let dir = root.0.join("sessions").join("api");
     let (mut app, _reader) = housed(&root);
     app.take(Reading::Owner, Instant::now());
-    let refused = app.begin(b"x", "lead", "x".to_owned());
+    let refused = app.begin(b"x", "lead", "x".to_owned(), None);
     assert_eq!(refused.err(), Some("refused: not writing".to_owned()));
     let typed = writing(&mut app);
     meta(&root, &ID.replace("1234", "bbbb"), "colead");
@@ -5445,6 +5445,7 @@ fn a_frame_owes_the_asks_and_the_parked_reads_it_lets_in_together() {
         body: "hi".to_owned(),
         about: "api".to_owned(),
         note: None,
+        redirect: None,
     });
     assert!(app.owed(), "an ask ran and a read landed");
     assert!(app.queued.is_empty() && app.parked.is_empty());
@@ -5722,6 +5723,7 @@ fn a_frame_settles_the_copy_and_the_queued_asks_together() {
                 body: "hi".to_owned(),
                 about: "api".to_owned(),
                 note: None,
+                redirect: None,
             });
         }
         assert_eq!(app.owed(), copy || ask, "copy {copy}, ask {ask}");

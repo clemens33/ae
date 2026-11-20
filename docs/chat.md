@@ -285,6 +285,21 @@ only the watchdog daemon ends a wait on pane input.
 
 ## Input
 
+The row above the seat prompt names the target session. Its label uses that
+session's colour. The orchestrator label uses an accent and carries the
+`[orchestrator]` marker even with `theme = off`. The chat prints one `Target:`
+line when its session gains or loses the orchestrator role.
+
+In an ordinary session, the first Enter warns when an ask contains a whole board
+ID such as `D44`, or another running session's full name of at least three
+characters. Enter again after the warning sends to this chat's session. Esc
+keeps the draft open for editing. Any draft edit resets the confirmation.
+When the warning offers `Alt+o` (Option as Meta), that key sends the ask to the
+orchestrator's lead. The composer stays in the current session. A refusal
+before the ask reaches the pane returns the draft to the composer. If delivery
+is uncertain, recovery stays in the recipient's session. Check the
+orchestrator's pane before resending.
+
 The window runs `--input` behind a fixed `stty` wrapper, which sets `-icrnl` so Enter reads as CR and `^J` as LF. Outside that wrapper (a cooked terminal, ICRNL on) Enter arrives as LF, a newline: `ae chat --input` there never sends, so use the chat window or `ae app`. Only the owner chat
 (first live stamped pane) asks, another is read-only and takes only `/open` and `/more`. A line asks the
 speaker, `@<seat> text` either lead-pair seat, `/close` withdraws your newest open ask,
@@ -321,7 +336,7 @@ takes away exactly the composer's rows, prints, and draws it again — and a res
 is honoured at the next paint. The size comes from tmux (80x24 when it will not
 say); every non-ASCII character counts as two cells, so a row breaks early, never
 late, and no row is wider than the pane. Residual: after the pane narrows ae finds
-the composer's top on the screen by its prompt. When the composer was drawn in six
+the composer's top on the screen by its target label or prompt. When the composer was drawn in six
 columns or fewer, or the draft itself spells the prompt where tmux split a row,
 ae may erase too few rows and leave stale composer rows until they scroll away;
 it never erases lane output, never draws a row wider than the pane and never

@@ -17,6 +17,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ae::console::input::{Effect, Input, Reading};
 use ae::events::Event;
 
+#[path = "chat_redirect_control.rs"]
+mod chat_redirect_control;
+#[path = "chattarget_chat_spec.rs"]
+mod chattarget_chat_spec;
 #[path = "desk_chat_fifo_spec.rs"]
 mod desk_chat_fifo_spec;
 #[path = "desk_chat_ordinary_spec.rs"]

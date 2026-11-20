@@ -806,9 +806,9 @@ fn chat_look_cli_input_off_notice_uses_the_system_colour() {
 
 fn composer_controls_removed(text: &str) -> String {
     let mut text = text.to_owned();
-    // Only the commander's documented terminal controls may bypass the SGR
-    // oracle. This fixture draws one short row; vertical movement is rejected
-    // loudly. Message-only tests still reject every non-SGR escape.
+    // The target row adds CSI 1 A (one row up) and CSI 1 B (one row down).
+    // Only these fixed vertical moves join the commander's documented
+    // controls. Message-only tests still reject every non-SGR escape.
     for control in [
         "\x1b[?2004h",
         "\x1b[?2004l",
@@ -816,6 +816,8 @@ fn composer_controls_removed(text: &str) -> String {
         "\x1b[?7h",
         "\x1b[K",
         "\x1b[J",
+        "\x1b[1A",
+        "\x1b[1B",
         "\x1b7",
         "\x1b8",
     ] {

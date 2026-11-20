@@ -30,6 +30,7 @@ pub mod open;
 pub mod relay_verify;
 pub mod shell;
 pub mod submit;
+pub mod target;
 pub(crate) mod term;
 pub mod toggle;
 pub mod view;
@@ -1100,17 +1101,20 @@ fn stdout_is_terminal() -> bool {
 /// reading the chat and `ae app` both dress by.
 pub(crate) fn look_of(name: &str, tty: bool) -> (Option<theme::Look>, Option<String>) {
     let declared = doors::declared_server(crate::shape::current());
-    let server = doors::launch_target(declared.as_ref()).filter(|_| tty);
-    let look = server
-        .as_ref()
-        .and_then(|server| transport::observe_look(server, name));
+    let server = doors::launch_target(declared.as_ref());
+    look_on(server.as_ref(), name, tty)
+}
+
+pub(crate) fn look_on(
+    server: Option<&inventory::ServerId>,
+    name: &str,
+    tty: bool,
+) -> (Option<theme::Look>, Option<String>) {
+    let server = server.filter(|_| tty);
+    let look = server.and_then(|server| transport::observe_look(server, name));
     let look =
         look.map(|read| theme::Look::read(&read.icons, &read.palette, &read.drawn, &read.motion));
-    let zone = || {
-        server
-            .as_ref()
-            .and_then(|server| transport::observe_zone(server, name))
-    };
+    let zone = || server.and_then(|server| transport::observe_zone(server, name));
     let zone = view::Style::wanted(tty, look).then(zone).flatten();
     (look, zone)
 }
@@ -1186,7 +1190,7 @@ pub fn run(
     }
     let mut term = None;
     if args.input {
-        match term::Term::start(&console) {
+        match term::Term::start(&console, root) {
             Ok(started) => {
                 term = args.follow.then_some(started);
                 // A fold is read whole only through `/more` on a terminal: a
@@ -1275,6 +1279,7 @@ fn pump(
                 if let Some(effects) = term.wait(console, next) {
                     write!(out, "{}", term.paint("", &effects))?;
                     out.flush()?;
+                    term.warning_painted();
                 }
             }
             None => std::thread::sleep(next.saturating_duration_since(std::time::Instant::now())),

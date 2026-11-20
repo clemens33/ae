@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use super::needs::SeatRef;
 use super::submit::{Draft, Outcome};
+use super::target::{self, RoleRoute, Target};
 use super::view::{Style, Styled};
 use crate::board::terminal_text;
 use crate::token::{self, Kind};
@@ -78,6 +79,8 @@ pub enum Key {
     /// at the cursor once.
     Yank,
     Enter,
+    /// Alt+o confirms an offered orchestrator redirect.
+    Redirect,
     /// `^J` or Alt+Enter: a line break in the draft, never a send.
     Newline,
     /// `^V` outside a bracketed paste, in either input surface.
@@ -96,6 +99,25 @@ pub enum Key {
     Interrupt,
     /// A bracketed paste's bytes, kept apart from typed text.
     Pasted(Vec<u8>),
+}
+
+impl Key {
+    fn cancels_confirmation(&self) -> bool {
+        matches!(
+            self,
+            Self::Escape
+                | Self::Pasted(_)
+                | Self::Text(_)
+                | Self::Newline
+                | Self::Backspace
+                | Self::Delete
+                | Self::ClearLine
+                | Self::Yank
+                | Self::KillBigWord
+                | Self::KillWord
+                | Self::KillToEnd
+        )
+    }
 }
 
 /// How long a lone `ESC` waits for the rest of a sequence before
@@ -457,6 +479,7 @@ fn moving(seq: &[u8]) -> Option<Key> {
 fn editing(seq: &[u8]) -> Option<Key> {
     Some(match seq {
         b"\x1b\r" | b"\x1b\n" => Key::Newline,
+        b"\x1bo" => Key::Redirect,
         b"\x1b\x7f" | b"\x1b\x08" => Key::KillWord,
         b"\x1b[D" | b"\x1bOD" => Key::Left,
         b"\x1b[C" | b"\x1bOC" => Key::Right,
@@ -701,6 +724,7 @@ impl Composer {
             | Key::Tab
             | Key::Escape
             | Key::Interrupt
+            | Key::Redirect
             | Key::Mouse(_)
             | Key::Pasted(_)
             | Key::ImagePaste
@@ -1515,6 +1539,11 @@ pub enum Effect {
         seat: String,
         body: String,
     },
+    /// Send this draft to the orchestrator, with the original for refusal.
+    Redirect {
+        raw: Vec<u8>,
+        body: String,
+    },
     /// Withdraw this console's ask: the named one, or the newest open one.
     Close(Option<String>),
     /// Select this seat's pane, as the chat's last settled read named it.
@@ -1556,6 +1585,20 @@ pub struct Input {
     offer: Option<Offer>,
     /// No key from the read that accepted/discarded an offer may submit.
     spent: Option<Instant>,
+    target: Option<Target>,
+    running: Option<Vec<String>>,
+    can_redirect: bool,
+    route: Option<RoleRoute>,
+    confirmation: Option<Confirmation>,
+    redirect: Option<RoleRoute>,
+}
+
+#[derive(Debug)]
+struct Confirmation {
+    at: Instant,
+    unpainted: bool,
+    can_redirect: bool,
+    route: Option<RoleRoute>,
 }
 
 #[derive(Debug)]
@@ -1578,6 +1621,115 @@ impl Input {
         }
     }
 
+    /// Address this composer to its current session.
+    pub fn set_target(&mut self, target: Target) {
+        if self.target.as_ref() != Some(&target) {
+            self.cancel_confirmation();
+            self.target = Some(target);
+        }
+    }
+
+    pub(super) fn target(&self) -> Option<&Target> {
+        self.target.as_ref()
+    }
+
+    /// The last positively running names, or no fleet answer yet.
+    pub fn set_running(&mut self, running: Option<Vec<String>>) {
+        self.running = running;
+    }
+
+    /// Whether an orchestrator redirect can be offered for the next warning.
+    pub fn set_redirect(&mut self, available: bool) {
+        self.can_redirect = available;
+    }
+
+    pub(crate) fn set_route(&mut self, route: Option<RoleRoute>) {
+        self.set_redirect(route.is_some());
+        self.route = route;
+    }
+
+    pub(crate) fn take_redirect(&mut self) -> Option<RoleRoute> {
+        self.redirect.take()
+    }
+
+    pub(crate) fn cancel_confirmation(&mut self) {
+        self.confirmation = None;
+    }
+
+    pub(crate) fn confirming(&self) -> bool {
+        self.confirmation.is_some()
+    }
+
+    pub(crate) fn warning_unpainted(&self) -> bool {
+        self.confirmation
+            .as_ref()
+            .is_some_and(|guard| guard.unpainted)
+    }
+
+    pub(crate) fn warning_painted(&mut self, at: Instant) {
+        if let Some(guard) = &mut self.confirmation
+            && guard.unpainted
+        {
+            guard.unpainted = false;
+            guard.at = at;
+        }
+    }
+
+    /// An armed choice takes Esc before either surface's normal Esc action.
+    pub(crate) fn takes_escape(&self) -> bool {
+        self.offering() || self.confirmation.is_some()
+    }
+
+    /// The human's ask text, with opaque attachment atoms left out. After
+    /// finding a token, check that ordinary command parsing would send it.
+    fn warn(&mut self) -> Option<Effect> {
+        let target = self.target.as_ref()?;
+        if target.orchestrator() || self.composer.over {
+            return None;
+        }
+        let mut text = String::with_capacity(self.composer.bytes.len());
+        for (start, end, slot) in parts(&self.composer.bytes) {
+            if slot.is_some() {
+                text.push(' ');
+            } else {
+                text.push_str(std::str::from_utf8(&self.composer.bytes[start..end]).ok()?);
+            }
+        }
+        let body = if text.starts_with('@') {
+            text.split_once(char::is_whitespace)?.1
+        } else {
+            &text
+        };
+        let token = target::suspect(body, target, self.running.as_deref())?;
+        if !matches!(
+            command_to(&self.composer.resolved(), &self.pair, self.speaker()),
+            Command::Ask { .. }
+        ) {
+            return None;
+        }
+        let warning = target::warning(token, target, self.can_redirect);
+        self.confirmation = Some(Confirmation {
+            at: Instant::now(),
+            unpainted: true,
+            can_redirect: self.can_redirect,
+            route: self.route.clone(),
+        });
+        Some(Effect::Print(warning))
+    }
+
+    fn redirect(&mut self) -> Option<Effect> {
+        let guard = self.confirmation.take_if(|guard| guard.can_redirect)?;
+        let Some(Entered::Line(raw)) = self.composer.key(Key::Enter) else {
+            return None;
+        };
+        let Command::Ask { body, .. } = command_to(&raw, &self.pair, self.speaker()) else {
+            self.composer.put_back(&raw);
+            return None;
+        };
+        self.redirect = guard.route;
+        Some(Effect::Redirect { raw, body })
+    }
+
     /// The seats `/open` names: the roster of the chat's last SETTLED read,
     /// replaced whole by each one.
     pub fn set_seats(&mut self, seats: Vec<SeatRef>) {
@@ -1592,6 +1744,7 @@ impl Input {
         }
         match reading {
             Reading::Owner if self.since.is_none() => {
+                self.cancel_confirmation();
                 (self.since, self.reading) = (Some(now), None);
                 self.composer = self.composer.vacated();
                 let mut effects = vec![Effect::Paste(true)];
@@ -1601,6 +1754,7 @@ impl Input {
                 effects
             }
             Reading::NotOwner(why) if self.read_only.as_ref() != Some(&why) => {
+                self.cancel_confirmation();
                 (self.since, self.reading) = (None, Some(now));
                 self.composer = self.composer.vacated();
                 let line = format!("read-only: {why} - prefix h opens it");
@@ -1668,9 +1822,9 @@ impl Input {
     }
 
     /// The chat normally consumes Esc sequences without a standalone Esc
-    /// action. Only a pending offer needs the same lone-Esc timeout as the app.
+    /// action. A pending choice needs the same lone-Esc timeout as the app.
     pub(crate) fn idle(&mut self, now: Instant) -> Vec<Effect> {
-        let keys = self.keys.expired(now, self.offering());
+        let keys = self.keys.expired(now, self.takes_escape());
         self.keyed(keys)
     }
 
@@ -1713,6 +1867,31 @@ impl Input {
                 }
                 continue;
             }
+            if matches!(key, Key::Enter | Key::Escape | Key::Redirect)
+                && self
+                    .confirmation
+                    .as_ref()
+                    .is_some_and(|guard| origin <= guard.at)
+            {
+                continue;
+            }
+            if key.cancels_confirmation() {
+                self.cancel_confirmation();
+            }
+            match key {
+                Key::Redirect => {
+                    effects.extend(self.redirect());
+                    continue;
+                }
+                Key::Enter if self.confirmation.take().is_some() => {}
+                Key::Enter if self.since.is_some() => {
+                    if let Some(warning) = self.warn() {
+                        effects.push(warning);
+                        continue;
+                    }
+                }
+                _ => {}
+            }
             let entered = match key {
                 Key::Pasted(fragment) => {
                     self.composer.paste(&fragment, origin);
@@ -1725,28 +1904,7 @@ impl Input {
                 Some(Entered::Over) => Effect::Print(format!(
                     "refused: the draft is over {CAP} bytes - ^U clears it"
                 )),
-                Some(Entered::Line(raw)) if self.since.is_none() => {
-                    match command_to(&raw, &self.pair, self.speaker()) {
-                        Command::Open(name) => self.open(&name),
-                        Command::More(number) => Effect::More(number),
-                        Command::Board => Effect::Board,
-                        Command::BoardOperand => Effect::Print(BOARD_OPERAND.to_owned()),
-                        Command::Refused(why)
-                            if [&b"/open"[..], b"/more"]
-                                .contains(&raw.split(|b| *b == b' ').next().unwrap_or(&[])) =>
-                        {
-                            self.composer.put_back(&raw);
-                            Effect::Print(format!("refused: {why}"))
-                        }
-                        _ => {
-                            self.composer.put_back(&raw);
-                            Effect::Print(
-                                "refused: read-only: only /open <agent> works here - prefix h opens the owner chat"
-                                    .to_owned(),
-                            )
-                        }
-                    }
-                }
+                Some(Entered::Line(raw)) if self.since.is_none() => self.read_only_line(&raw),
                 Some(Entered::Line(raw)) => match command_to(&raw, &self.pair, self.speaker()) {
                     Command::Ask { seat, body } => {
                         let at = self.pair.iter().position(|name| *name == seat);
@@ -1770,15 +1928,40 @@ impl Input {
         effects
     }
 
+    fn read_only_line(&mut self, raw: &[u8]) -> Effect {
+        match command_to(raw, &self.pair, self.speaker()) {
+            Command::Open(name) => self.open(&name),
+            Command::More(number) => Effect::More(number),
+            Command::Board => Effect::Board,
+            Command::BoardOperand => Effect::Print(BOARD_OPERAND.to_owned()),
+            Command::Refused(why)
+                if [&b"/open"[..], b"/more"]
+                    .contains(&raw.split(|b| *b == b' ').next().unwrap_or(&[])) =>
+            {
+                self.composer.put_back(raw);
+                Effect::Print(format!("refused: {why}"))
+            }
+            _ => {
+                self.composer.put_back(raw);
+                Effect::Print(
+                    "refused: read-only: only /open <agent> works here - prefix h opens the owner chat"
+                        .to_owned(),
+                )
+            }
+        }
+    }
+
     /// An entry the caller could not carry out, back in the composer ahead of
     /// anything typed since.
     pub fn put_back(&mut self, raw: &[u8]) {
+        self.cancel_confirmation();
         self.composer.put_back(raw);
     }
 
     /// ^C over a draft: the whole draft cleared, kept for [`Key::Yank`]. `false`
     /// when the composer held nothing.
     pub fn clear(&mut self) -> bool {
+        self.cancel_confirmation();
         let had = !self.draft().is_empty();
         let _ = self.composer.key(Key::ClearLine);
         had
@@ -1787,6 +1970,7 @@ impl Input {
     /// The draft dropped whole, for an input about to be discarded: its owned
     /// images wait in [`Input::take_released`] for the caller to remove.
     pub fn vacate(&mut self) {
+        self.cancel_confirmation();
         self.composer = self.composer.vacated();
     }
 
@@ -1808,6 +1992,7 @@ impl Input {
     /// The end of the terminal's input: paste off, the draft dropped, and no
     /// key taken again.
     pub fn closed(&mut self) -> Vec<Effect> {
+        self.cancel_confirmation();
         (self.keys, self.composer) = (Keys::default(), self.composer.vacated());
         (self.since, self.reading, self.closed) = (None, None, true);
         let line = "input closed; this chat only reads now".to_owned();
@@ -1832,7 +2017,9 @@ impl Input {
 
     /// A saved clipboard image as an owned token at the cursor.
     pub(crate) fn image_path(&mut self, path: &str) -> Result<(), String> {
-        self.composer.image_path(path)
+        self.composer.image_path(path)?;
+        self.cancel_confirmation();
+        Ok(())
     }
 
     /// The owned files the draft let go of since the last call: the caller removes them.
@@ -1928,6 +2115,8 @@ struct Drawn {
     up: usize,
     width: usize,
     anchor: String,
+    /// A caption fills its row. The seat prompt can lead into draft text.
+    anchor_exact: bool,
 }
 
 /// The terminal's screen as tmux has it now, read once after the pane narrowed.
@@ -1981,7 +2170,7 @@ fn trusted(anchor: &str) -> bool {
 /// `seen`: the prompt as the narrower pane split it, the nearest one at or
 /// above the cursor; none means the top is in tmux's history. `None` when the
 /// prompt is not [`trusted`].
-fn anchor_up(seen: &Seen, anchor: &str, width: usize) -> Option<usize> {
+fn anchor_up(seen: &Seen, anchor: &str, width: usize, exact: bool) -> Option<usize> {
     if !trusted(anchor) {
         return None;
     }
@@ -1996,8 +2185,13 @@ fn anchor_up(seen: &Seen, anchor: &str, width: usize) -> Option<usize> {
     let matches = |top: &usize| {
         let at = |piece: usize| rows.get(top + piece).copied().unwrap_or_default();
         let whole = pieces[..last].iter().enumerate();
+        let tail = at(last);
         whole.into_iter().all(|(piece, text)| at(piece) == *text)
-            && at(last).starts_with(pieces[last])
+            && if exact {
+                tail == pieces[last]
+            } else {
+                tail.starts_with(pieces[last])
+            }
     };
     let top = seen.cursor_y.checked_sub(last);
     let found = top.and_then(|top| (0..=top).rev().find(matches));
@@ -2010,7 +2204,7 @@ fn anchor_up(seen: &Seen, anchor: &str, width: usize) -> Option<usize> {
 fn erase(drawn: &Drawn, size: Size, seen: Option<&Seen>) -> String {
     let read = seen.filter(|_| size.width < drawn.width);
     let up = read
-        .and_then(|seen| anchor_up(seen, &drawn.anchor, size.width))
+        .and_then(|seen| anchor_up(seen, &drawn.anchor, size.width, drawn.anchor_exact))
         .unwrap_or(drawn.up);
     match up {
         0 => "\r\x1b[J".to_owned(),
@@ -2020,13 +2214,18 @@ fn erase(drawn: &Drawn, size: Size, seen: Option<&Seen>) -> String {
 
 /// The composer's rows, made to exist first by a newline each, which scrolls a
 /// composer at the screen's foot, so the cursor saved on its row stays true.
-fn draw(view: &View, style: &Style) -> String {
-    let below = view.rows.len().saturating_sub(1);
+fn draw(view: &View, style: &Style, caption: Option<&(String, bool)>) -> String {
+    let rows = view.rows.len() + usize::from(caption.is_some());
+    let below = rows.saturating_sub(1);
     let mut out = String::from(DRAW_OPEN);
     if below > 0 {
         out.extend(["\n".repeat(below), format!("\x1b[{below}A")]);
     }
     out.push('\r');
+    if let Some((words, orchestrator)) = caption {
+        out.push_str(&style.target(words, *orchestrator));
+        out.push_str("\r\n");
+    }
     for (at, row) in view.rows.iter().enumerate() {
         // The prompt leads the first row; dressed, it wears the human's hue.
         let dress = |piece: &str| match piece.strip_prefix(view.anchor.as_str()) {
@@ -2041,7 +2240,7 @@ fn draw(view: &View, style: &Style) -> String {
         } else {
             out.push_str(&dress(row));
         }
-        if at < below {
+        if at + 1 < view.rows.len() {
             out.push_str("\r\n");
         }
     }
@@ -2061,6 +2260,18 @@ pub fn paint(
     size: Size,
     seen: Option<&Seen>,
 ) -> String {
+    paint_target(screen, text, effects, view, size, seen, None)
+}
+
+pub(super) fn paint_target(
+    screen: &mut Screen,
+    text: &str,
+    effects: &[Effect],
+    view: Option<&View>,
+    size: Size,
+    seen: Option<&Seen>,
+    target: Option<&Target>,
+) -> String {
     let mut out = match screen.drawn.take() {
         Some(drawn) => erase(&drawn, size, seen),
         None if !text.is_empty() || !effects.is_empty() => "\r\x1b[K".to_owned(),
@@ -2078,6 +2289,7 @@ pub fn paint(
             }
             // The console acts on these before it paints; nothing is drawn.
             Effect::Ask { .. }
+            | Effect::Redirect { .. }
             | Effect::DiscardDraft
             | Effect::Close(_)
             | Effect::Open(_)
@@ -2088,12 +2300,20 @@ pub fn paint(
         }
     }
     if let Some(view) = view {
-        out.push_str(&draw(view, &screen.style));
+        let caption = target.filter(|_| size.height >= 2).map(|target| {
+            (
+                clip(&target::label(target), size.width),
+                target.orchestrator(),
+            )
+        });
+        out.push_str(&draw(view, &screen.style, caption.as_ref()));
+        let extra = usize::from(caption.is_some());
         screen.drawn = Some(Drawn {
-            rows: view.rows.len(),
-            up: view.cursor_row,
+            rows: view.rows.len() + extra,
+            up: view.cursor_row + extra,
             width: size.width,
-            anchor: view.anchor.clone(),
+            anchor_exact: caption.is_some(),
+            anchor: caption.map_or_else(|| view.anchor.clone(), |(words, _)| words),
         });
     }
     out
@@ -2104,6 +2324,9 @@ mod imgtoken_spec;
 
 #[cfg(test)]
 mod inputfeed_spec;
+
+#[cfg(test)]
+mod chattarget_spec;
 
 #[cfg(test)]
 mod tests {
@@ -2839,6 +3062,23 @@ mod tests {
     }
 
     #[test]
+    fn an_over_limit_ask_with_a_board_id_still_gets_the_cap_refusal() {
+        let base = Instant::now();
+        let mut input = owner(base);
+        input.set_target(super::Target::Session("superset".to_owned()));
+        assert!(input.chunk(b"choose D44", at(base, 1)).is_empty());
+        assert!(input.chunk(&vec![b'x'; CAP], at(base, 2)).is_empty());
+
+        assert_eq!(
+            input.chunk(b"\r", at(base, 3)),
+            [Effect::Print(
+                "refused: the draft is over 65536 bytes - ^U clears it".to_owned()
+            )]
+        );
+        assert!(!input.confirming());
+    }
+
+    #[test]
     fn the_composer_line_is_the_whole_draft_on_one_line_with_nothing_live() {
         let line = drafted(b"first\nx\x1b[2J\x07\tb").line("p> ");
         assert_eq!(line, "p> first x\u{fffd}[2J\u{fffd} b");
@@ -3255,7 +3495,7 @@ mod tests {
                 cursor_y,
                 capture: capture.to_owned(),
             };
-            anchor_up(&seen, anchor, width)
+            anchor_up(&seen, anchor, width, false)
         };
         let split = "L1\nto le\nad> ab\n     cd\n     ef";
         assert_eq!(up(4, split, "to lead> ", 5), Some(3), "the prompt, split");
@@ -3282,6 +3522,29 @@ mod tests {
             "too short to tell from a draft"
         );
         assert_eq!(up(3, spelt, "é> abc", 5), None, "not plain ASCII");
+    }
+
+    #[test]
+    fn a_caption_matching_the_lead_name_is_erased_from_its_own_row() {
+        let input = owner(Instant::now());
+        let mut screen = Screen::default();
+        let wide = size(80, 24);
+        let target = super::Target::Session("lead".into());
+        let _ = super::paint_target(
+            &mut screen,
+            "",
+            &[],
+            input.view(wide).as_ref(),
+            wide,
+            None,
+            Some(&target),
+        );
+        let seen = Seen {
+            cursor_y: 4,
+            capture: "lane\nto le\nad\nto le\nad> a".into(),
+        };
+        let erased = paint(&mut screen, "", &[], None, size(5, 24), Some(&seen));
+        assert_eq!(erased, "\x1b[3A\r\x1b[J");
     }
 
     /// `draft` drawn at `from` columns, the pane narrowed to `to` and painted
@@ -3457,7 +3720,7 @@ mod tests {
             before: "to lead> ag".to_owned(),
             anchor: "to lead> ".to_owned(),
         };
-        let drawn = draw(&view, &style);
+        let drawn = draw(&view, &style, None);
         let tone = hue(crate::theme::Palette::DARCULA.title);
         assert_eq!(drawn.matches("\x1b[38;2;").count(), 1, "{drawn:?}");
         assert!(

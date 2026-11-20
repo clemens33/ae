@@ -34,6 +34,7 @@ use crate::console::lane::{Item, Kind, Lane, Seat};
 use crate::console::link;
 use crate::console::needs::{SeatRef, Section};
 use crate::console::open::{self, Move, Refusal};
+use crate::console::target::{self, RoleRoute, Target};
 use crate::console::{self, Console, shell, submit, term, toggle};
 use crate::digest::{SessionEntry, Status};
 use crate::inventory::ServerId;
@@ -195,6 +196,8 @@ const REFRESH: Duration = Duration::from_secs(crate::board::follow::POLL_SECS);
 const TICK: Duration = Duration::from_millis(100);
 /// The most of ae's own notices a session's lane shows.
 const NOTICES: usize = 5;
+/// The reserved opening of ae's composer target notices.
+const TARGET_NOTICE: &str = "Target: ";
 /// How long an armed key waits for its second press.
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
 /// How long after a clear an empty-composer ^C only warns, so a second ^C
@@ -356,6 +359,8 @@ struct App {
     pressures: BTreeMap<String, (String, loader::Pressure)>,
     /// Each session's drawn look and the viewer's zone, by name.
     looks: BTreeMap<String, (Option<theme::Look>, Option<String>)>,
+    /// The last address that took the app's keys.
+    composer_target: Option<Target>,
     lane: Rc<Lane>,
     merged: Option<Merged>,
     /// The selection's lane has not been read yet.
@@ -369,6 +374,7 @@ struct App {
     /// speaker outlive a writer, until a fleet read proves it gone.
     inputs: BTreeMap<(String, String), Input>,
     recovery: submit::Recovery,
+    redirect_recovery: submit::Recovery,
     /// The lead pair each incarnation was first written with: a changed pair
     /// refuses rather than sending elsewhere.
     bound: BTreeMap<(String, String), Vec<Seat>>,
@@ -516,6 +522,7 @@ struct App {
     /// When each session was last shown selected: the unread cue's memory.
     cue: cue::Cue,
     /// How an admitted ask is carried to its seat: the helpers' tracked path.
+    #[cfg(test)]
     carry: Carry,
     /// The orchestrator, which has its own panel instead of a row.
     orch: Orch,
@@ -525,6 +532,7 @@ struct App {
 }
 
 /// The delivery of one admitted ask, which says what the path wrote.
+#[cfg(test)]
 type Carry = Arc<dyn Fn(term::Carry) -> String + Send + Sync>;
 
 /// Whether a detached argv started.
@@ -565,6 +573,7 @@ impl App {
             shown: BTreeMap::new(),
             pressures: BTreeMap::new(),
             looks: BTreeMap::new(),
+            composer_target: None,
             lane: Rc::default(),
             merged: None,
             loading: true,
@@ -573,6 +582,7 @@ impl App {
             pair: Vec::new(),
             inputs: BTreeMap::new(),
             recovery: submit::Recovery::default(),
+            redirect_recovery: submit::Recovery::default(),
             bound: BTreeMap::new(),
             read_only: "the fleet is not read yet".to_owned(),
             entered: None,
@@ -641,6 +651,7 @@ impl App {
             cut: None,
             root: None,
             cue: cue::Cue::default(),
+            #[cfg(test)]
             carry: Arc::new(term::Carry::run),
             detach: Box::new(transport::run_detached),
             orch,
@@ -655,6 +666,7 @@ impl App {
                 | Answer::Look { .. }
                 | Answer::View(_)
                 | Answer::Orchestrator(_)
+                | Answer::ComposerRole { .. }
                 | Answer::Seat { .. }
         );
         if paints && (!self.parked.is_empty() || self.holds_lane()) {
@@ -720,6 +732,9 @@ impl App {
                 self.pressures.insert(name, (id, pressure));
             }
             Answer::Orchestrator(proof) => self.proved(proof, Timestamp::now().epoch()),
+            Answer::ComposerRole { holder, route } => {
+                (self.orch.holder, self.orch.route) = (holder, route);
+            }
             Answer::Seat { generation, said } => self.seated(generation, said),
         }
     }

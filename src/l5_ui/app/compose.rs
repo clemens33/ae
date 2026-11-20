@@ -2,8 +2,8 @@
 
 use super::{
     App, Arm, Armed, Binding, Console, Effect, Entry, Input, Instant, Key, Lane, PathBuf,
-    QUIT_WINDOW, Rc, Reading, Request, SessionEntry, Status, Timestamp, doors, guarded_at, names,
-    overview, route, submit, term,
+    QUIT_WINDOW, Rc, Reading, Request, SessionEntry, Status, Target, Timestamp, doors, guarded_at,
+    names, overview, route, submit, term,
 };
 
 #[cfg(doc)]
@@ -24,6 +24,9 @@ impl App {
     /// refused start is HELD. Each is a new entry, and the reader is told
     /// which writer it re-proves.
     pub(super) fn write(&mut self, on: bool) {
+        if let Some(input) = self.writer_input_mut() {
+            input.cancel_confirmation();
+        }
         (self.entered, self.held, self.writer) = (None, None, None);
         self.admitted = None;
         self.entries = self.entries.wrapping_add(1);
@@ -301,6 +304,59 @@ impl App {
             && !self.model.reader_open()
     }
 
+    pub(super) fn target(&self, name: &str) -> Target {
+        let panel = self.orch.active && name == super::ORCH && self.panel_line().is_none();
+        Target::of(name, panel || self.orch.holder.as_deref() == Some(name))
+    }
+
+    pub(super) fn writer_input(&self) -> Option<&Input> {
+        self.inputs.get(&self.writer.as_ref()?.key())
+    }
+
+    pub(super) fn writer_input_mut(&mut self) -> Option<&mut Input> {
+        self.inputs.get_mut(&self.writer.as_ref()?.key())
+    }
+
+    pub(super) fn warning_unpainted(&self) -> bool {
+        self.writer_input().is_some_and(Input::warning_unpainted)
+    }
+
+    fn compose_effects(&mut self, key: Key, origin: Instant) -> Vec<Effect> {
+        let Some(writer) = &self.writer else {
+            return Vec::new();
+        };
+        let target = self.target(writer.console.name());
+        let fleet = (key == Key::Enter).then(|| {
+            let running = self
+                .world
+                .sessions
+                .iter()
+                .filter(|entry| entry.status == Status::Running)
+                .map(|entry| entry.name.clone())
+                .collect::<Vec<_>>();
+            let route = self
+                .orch
+                .route
+                .as_ref()
+                .filter(|route| {
+                    self.entry(&route.name)
+                        .is_some_and(|entry| entry.status == Status::Running)
+                        && self.ids.get(&route.name) == Some(&route.uuid)
+                })
+                .cloned();
+            (running, route)
+        });
+        let Some(input) = self.writer_input_mut() else {
+            return Vec::new();
+        };
+        input.set_target(target);
+        if let Some((running, route)) = fleet {
+            input.set_running(Some(running));
+            input.set_route(route);
+        }
+        input.keyed(vec![(key, origin)])
+    }
+
     /// One key while composing: Esc keeps the draft and browses, ^C over an
     /// empty composer quits (over text it clears, see [`App::clear_draft`]),
     /// one read before the entry began is dropped, and anything else is
@@ -312,13 +368,7 @@ impl App {
             _ => origin,
         };
         match key {
-            Key::Escape
-                if !self
-                    .writer
-                    .as_ref()
-                    .and_then(|w| self.inputs.get(&w.key()))
-                    .is_some_and(Input::offering) =>
-            {
+            Key::Escape if !self.writer_input().is_some_and(Input::takes_escape) => {
                 self.write(false);
             }
             Key::Interrupt if self.clear_draft(origin) => {}
@@ -336,15 +386,14 @@ impl App {
                     key,
                     Key::ClearLine | Key::KillBigWord | Key::KillWord | Key::KillToEnd
                 );
-                let input = self.writer.as_ref().map(Binding::key);
-                let effects = input
-                    .and_then(|input| self.inputs.get_mut(&input))
-                    .map(|input| input.keyed(vec![(key, origin)]))
-                    .unwrap_or_default();
+                let effects = self.compose_effects(key, origin);
                 if deleting && had_text && !self.protects() {
                     self.cleared_note(origin);
                 }
                 if !effects.is_empty() {
+                    if self.warning_unpainted() {
+                        let _ = self.model.newest();
+                    }
                     self.effects(effects);
                     self.reread();
                 }

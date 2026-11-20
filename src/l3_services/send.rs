@@ -496,7 +496,7 @@ pub(crate) fn run_with_seat(
         event.target_session = &resolved.session;
     }
     let (delivery, lost) =
-        tracked::deliver_expected(&request, &resolved, expectation(env), seat, err)?;
+        tracked::deliver_expected(&request, &resolved, expectation(env), seat, None, err)?;
     write_retryable_marker(&action, &delivery, out)?;
     // A refusal by the expected seat itself is booked once, by its `refused` record:
     // never an attempt of the action the helper carried (#218 P1). Any other

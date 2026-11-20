@@ -178,38 +178,39 @@ pub fn run(
         }
         return bare_cancel(&request, &guard, &target_name, now, cross, err);
     }
-    let delivered = match tracked::deliver_expected(&request, &resolved, Ok(None), seat, err)?.0 {
-        Ok(delivered) => delivered,
-        // Refused before its paste on a human-only prompt: the shared
-        // diagnostic, never an `interrupt` record.
-        Err(deliver::Failure::Abandoned { held }) => {
-            return record_with_body(
-                dir,
-                &target_name,
-                &parsed.message,
-                "",
-                Err(held),
-                now,
-                actor,
-                cross,
-                err,
-            );
-        }
-        Err(failure) => {
-            // A message interrupt must NOT record success on an unconfirmed
-            // submit: the delivery has already said what happened and where the
-            // body is.
-            if let deliver::Failure::Unconfirmed {
-                body_file,
-                notice: true,
-                ..
-            } = &failure
-            {
-                let _ = record_delivery_failure(dir, &target_name, body_file, now, actor);
+    let delivered =
+        match tracked::deliver_expected(&request, &resolved, Ok(None), seat, None, err)?.0 {
+            Ok(delivered) => delivered,
+            // Refused before its paste on a human-only prompt: the shared
+            // diagnostic, never an `interrupt` record.
+            Err(deliver::Failure::Abandoned { held }) => {
+                return record_with_body(
+                    dir,
+                    &target_name,
+                    &parsed.message,
+                    "",
+                    Err(held),
+                    now,
+                    actor,
+                    cross,
+                    err,
+                );
             }
-            return Ok(EXIT_FAILED);
-        }
-    };
+            Err(failure) => {
+                // A message interrupt must NOT record success on an unconfirmed
+                // submit: the delivery has already said what happened and where the
+                // body is.
+                if let deliver::Failure::Unconfirmed {
+                    body_file,
+                    notice: true,
+                    ..
+                } = &failure
+                {
+                    let _ = record_delivery_failure(dir, &target_name, body_file, now, actor);
+                }
+                return Ok(EXIT_FAILED);
+            }
+        };
     record_with_body(
         dir,
         &target_name,

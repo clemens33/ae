@@ -251,6 +251,37 @@ pub(crate) fn world_read(
 ) -> WorldRead {
     read_gate("@world");
     let scan = inventory::durable_records_with(&inventory::Roots::under(root), read);
+    let (snapshot, sockets) = classify(scan);
+    // Criterion 3 only: the opposed disk must change HERE, on this function's
+    // path, not after it returns.
+    #[cfg(debug_assertions)]
+    AFTER_CLASSIFY.with(|slot| {
+        if let Some(hook) = slot.get() {
+            hook(root);
+        }
+    });
+    let (runtimes, panes, pids) = observed_runtimes(&snapshot);
+    let world = listing::Presentation::enter(&snapshot).world_with(
+        time::Timestamp::now(),
+        session::DEFAULT_UNANSWERED_SECS,
+        &runtimes,
+    );
+    WorldRead {
+        snapshot,
+        world,
+        panes,
+        pids,
+        sockets,
+    }
+}
+
+/// The fleet's liveness without reading its journals, panes or runtimes.
+pub(crate) fn live_sessions(root: &std::path::Path) -> liveness::Snapshot {
+    let scan = inventory::durable_meta_records(&inventory::Roots::under(root));
+    classify(scan).0
+}
+
+fn classify(scan: inventory::DurableScan) -> (liveness::Snapshot, SocketPaths) {
     // No caller server: fleet discovery spans recorded destinations plus ae's
     // own default server. A recorded socket may be another spelling of `-L
     // ae`; tmux's own socket answer is the only proof that lets us query it
@@ -278,28 +309,7 @@ pub(crate) fn world_read(
     // classification: a server the boot-time proof read as empty must read as
     // empty in both phases, or the rows would go `unknown` under a listing that
     // no longer says anything is missing.
-    let snapshot = liveness::classify(taken, &discovery);
-    // Criterion 3 only: the opposed disk must change HERE, on this function's
-    // path, not after it returns.
-    #[cfg(debug_assertions)]
-    AFTER_CLASSIFY.with(|slot| {
-        if let Some(hook) = slot.get() {
-            hook(root);
-        }
-    });
-    let (runtimes, panes, pids) = observed_runtimes(&snapshot);
-    let world = listing::Presentation::enter(&snapshot).world_with(
-        time::Timestamp::now(),
-        session::DEFAULT_UNANSWERED_SECS,
-        &runtimes,
-    );
-    WorldRead {
-        snapshot,
-        world,
-        panes,
-        pids,
-        sockets,
-    }
+    (liveness::classify(taken, &discovery), sockets)
 }
 
 /// What tmux says RIGHT NOW about every classified candidate, in snapshot

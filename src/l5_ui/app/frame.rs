@@ -2,7 +2,7 @@
 
 use super::{
     App, Buffer, CellDiffOption, HISTORY, Instant, Item, Kind, Position, Rc, SessionEntry, Size,
-    Status, Terminal, Timestamp, Write, backend, draw, menu, theme,
+    Status, Terminal, Timestamp, Write, backend, console, draw, menu, theme,
 };
 
 /// One frame, drawn exactly as `Terminal::draw` draws it — autoresize, the
@@ -103,40 +103,8 @@ impl App {
         self.model.set_stopped(self.stopped());
         self.sync_spawned();
         let keys = self.keys();
-        let (folds, open, sent) = self.fold_state();
-        let name = self.model.selected();
-        let unread = name
-            .filter(|_| !self.fleeted)
-            .map(|name| SessionEntry::new(name, Status::Unknown));
-        let selected = name.and_then(|name| self.entry(name)).or(unread.as_ref());
-        let agents = name.and_then(|name| self.facts.get(name));
         let (look, zone) = self.dressed();
-        let screen = draw::Screen {
-            fleet: &self.fleet,
-            model: &self.model,
-            overview: &self.overview,
-            selected,
-            pair: &self.pair,
-            agents,
-            lane: &self.lane,
-            composer: self.composer(),
-            look,
-            zone,
-            now: Timestamp::now(),
-        };
-        let dest = name.and_then(|name| self.destination(name));
-        let wait = draw::Wait {
-            fleet: !self.fleeted,
-            lane: self.loading,
-            keys: &keys,
-            folds: &folds,
-            open: &open,
-            sent: &sent,
-            dest: dest.as_ref().map(draw::Dest::of),
-            md: Some(&self.md),
-            desk: None,
-        };
-        let mut drawn = draw::draw_with_layout(&screen, wait, buf);
+        let mut drawn = self.draw_main_column(&keys, look.as_ref(), zone, buf);
         let cards = drawn
             .sessions()
             .map(|name| (name.to_owned(), self.card(name)));
@@ -188,6 +156,64 @@ impl App {
         self.settle_selection(buf);
     }
 
+    fn draw_main_column(
+        &self,
+        keys: &[u64],
+        look: Option<&theme::Look>,
+        zone: Option<&str>,
+        buf: &mut Buffer,
+    ) -> draw::Layout {
+        let (folds, open, sent) = self.fold_state();
+        let name = self.model.selected();
+        let unread = name
+            .filter(|_| !self.fleeted)
+            .map(|name| SessionEntry::new(name, Status::Unknown));
+        let selected = name.and_then(|name| self.entry(name)).or(unread.as_ref());
+        let agents = name.and_then(|name| self.facts.get(name));
+        let screen = draw::Screen {
+            fleet: &self.fleet,
+            model: &self.model,
+            overview: &self.overview,
+            selected,
+            pair: &self.pair,
+            agents,
+            lane: &self.lane,
+            composer: self.composer(),
+            look: look.copied(),
+            zone,
+            now: Timestamp::now(),
+        };
+        let dest = name.and_then(|name| self.destination(name));
+        let target = name.map(|name| (self.target(name), self.target_look(name, look)));
+        let wait = draw::Wait {
+            fleet: !self.fleeted,
+            lane: self.loading,
+            keys,
+            folds: &folds,
+            open: &open,
+            sent: &sent,
+            dest: dest.as_ref().map(draw::Dest::of),
+            target: target.as_ref().map(|(target, look)| (target, *look)),
+            confirming: self
+                .writer_input()
+                .is_some_and(console::input::Input::confirming),
+            md: Some(&self.md),
+            desk: None,
+        };
+        draw::draw_with_layout(&screen, wait, buf)
+    }
+
+    /// A caption borrows the column's look until the target's own look arrives.
+    pub(super) fn target_look<'a>(
+        &'a self,
+        name: &str,
+        fallback: Option<&'a theme::Look>,
+    ) -> Option<&'a theme::Look> {
+        self.looks
+            .get(name)
+            .map_or(fallback, |(look, _)| look.as_ref())
+    }
+
     /// Paint whichever panel stands in the chat's place: the peek or the
     /// reader.
     fn paint_in_place(&mut self, look: Option<&theme::Look>, buf: &mut Buffer) {
@@ -230,6 +256,9 @@ impl App {
     /// The frame just written showed the open modal whole at `at`: the first
     /// such frame dates which input counts as made on it.
     pub(super) fn frame_shown(&mut self, at: Instant) {
+        if let Some(input) = self.writer_input_mut() {
+            input.warning_painted(at);
+        }
         if self.layout.shows_modal()
             && let Some(modal) = self.modal.as_mut()
         {

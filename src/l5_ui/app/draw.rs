@@ -26,7 +26,8 @@ use crate::brief::age;
 use crate::console::deskview::{self, DeskView};
 use crate::console::input::View;
 use crate::console::input::{Mouse, ROWS_MAX};
-use crate::console::lane::Lane;
+use crate::console::lane::{Kind, Lane};
+use crate::console::target::{self, Target};
 use crate::console::view;
 use crate::console::wrap::wrap;
 use crate::digest::{SessionEntry, Status};
@@ -632,6 +633,10 @@ pub(crate) struct Wait<'a> {
     pub(crate) sent: &'a [bool],
     /// The seat a line written now would reach, for the composer's address.
     pub(crate) dest: Option<Dest<'a>>,
+    /// The composer's address and its own drawn look.
+    pub(crate) target: Option<(&'a Target, Option<&'a Look>)>,
+    /// A warning in the lane takes precedence over the editing shortcuts.
+    pub(crate) confirming: bool,
     /// The cache that draws agent turns through Markdown; with none the
     /// lane draws them plain.
     pub(super) md: Option<&'a std::cell::RefCell<super::lanemd::Cache>>,
@@ -2342,7 +2347,11 @@ fn hint_row(
         None => (hint, paint.fg(|p| p.dim)),
     };
     let mut at = put(buf, left, y, first, end - left, style);
-    let keys = mode_hint(&ctx.screen.composer);
+    let keys = if ctx.wait.confirming {
+        ""
+    } else {
+        mode_hint(&ctx.screen.composer)
+    };
     let rest_of = |keys: &str| match (first.is_empty(), keys.is_empty()) {
         (_, true) => String::new(),
         (true, false) => keys.to_owned(),
@@ -2352,7 +2361,7 @@ fn hint_row(
     // The clear key is named only over text, and only where it fits whole.
     let text = matches!(&ctx.screen.composer, Composer::Home { view: Some(_), draft, .. } if !draft.is_empty());
     let long = rest_of(&format!("{keys} · ^C clears"));
-    let rest = if text && fits(&long) {
+    let rest = if text && !keys.is_empty() && fits(&long) {
         long
     } else {
         rest_of(keys)
@@ -2491,7 +2500,16 @@ fn place_turns(
     rows: &mut [Line<'static>],
     layout: &mut Layout,
 ) -> (Vec<TurnSpan>, Vec<usize>, Vec<(u64, usize)>) {
+    // A target switch is visible in the lane but leaves the latest turn as
+    // the first stop for [ and ].
     let keyed: Vec<_> = (turns.iter())
+        .filter(|turn| {
+            !ctx.screen.lane.items.get(turn.at).is_some_and(|item| {
+                item.record.is_none()
+                    && matches!(&item.kind, Kind::Said { who } if who == "ae")
+                    && item.body.starts_with(super::TARGET_NOTICE)
+            })
+        })
         .filter_map(|turn| Some((turn, *ctx.wait.keys.get(turn.at)?)))
         .collect();
     let turns: Vec<TurnSpan> = (keyed.iter())
@@ -2739,10 +2757,24 @@ fn reason_words(ctx: &Ctx<'_, '_>, room: u16) -> Option<String> {
 fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
     let paint = ctx.paint;
     let (text, dim) = (paint.fg(|p| p.text), paint.fg(|p| p.dim));
+    let caption = || {
+        ctx.wait.target.map(|(target, look)| {
+            let style = Paint::of(look).fg(|palette| {
+                if target.orchestrator() {
+                    palette.working
+                } else {
+                    palette.title
+                }
+            });
+            Span::styled(target::label(target), style)
+        })
+    };
     let quiet = |words: String| Line::from(Span::styled(words, dim));
     match ctx.screen.composer {
         Composer::Home { home, view, draft } => {
-            let mut address = vec![Span::styled(address(home), paint.fg(|p| p.title))];
+            let mut address = vec![
+                caption().unwrap_or_else(|| Span::styled(address(home), paint.fg(|p| p.title))),
+            ];
             if let Some(dest) = ctx.wait.dest {
                 let how = if dest.named { "named" } else { "auto" };
                 let seat = crate::board::terminal_text(dest.seat);
@@ -2777,17 +2809,23 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
             String::new(),
         ),
         Composer::Viewing { seat } => (
-            quiet(format!(
-                "viewing {} · read-only · Esc chat",
-                crate::board::terminal_text(seat)
+            Line::from(Span::styled(
+                format!(
+                    "viewing {} · read-only · Esc chat",
+                    crate::board::terminal_text(seat)
+                ),
+                dim,
             )),
             Line::default(),
             "Esc or click the session for its chat".to_owned(),
         ),
         Composer::Reading { path } => (
-            quiet(format!(
-                "reading {} · read-only · Esc lane",
-                crate::board::terminal_text(path)
+            Line::from(Span::styled(
+                format!(
+                    "reading {} · read-only · Esc lane",
+                    crate::board::terminal_text(path)
+                ),
+                dim,
             )),
             Line::default(),
             "Esc or click the session for its chat".to_owned(),

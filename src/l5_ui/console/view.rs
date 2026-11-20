@@ -461,6 +461,18 @@ impl Style {
         self.paint(|palette| Dress::hue(palette, Voice::Human), false, text)
     }
 
+    /// The address above the prompt uses the target's palette.
+    pub(super) fn target(&self, text: &str, orchestrator: bool) -> String {
+        let hue = |palette: &Palette| {
+            if orchestrator {
+                palette.working
+            } else {
+                palette.title
+            }
+        };
+        self.paint(hue, orchestrator, text)
+    }
+
     fn bar(&self, kind: &Kind) -> String {
         let Some(dress) = &self.0 else {
             return String::new();

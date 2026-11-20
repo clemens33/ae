@@ -1292,7 +1292,7 @@ pub(crate) fn deliver_request(
     request: &crate::deliver::Request<'_>,
     err: &mut impl Write,
 ) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
-    deliver_request_with(request, None, err)
+    deliver_request_with(request, None, None, err)
 }
 
 /// [`deliver_request`], audited for the proved orchestrator seat when `seat`
@@ -1300,6 +1300,7 @@ pub(crate) fn deliver_request(
 fn deliver_request_with(
     request: &crate::deliver::Request<'_>,
     seat: Option<&mut Dispatch>,
+    role: Option<RolePin<'_>>,
     err: &mut impl Write,
 ) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
     #[cfg(test)]
@@ -1315,7 +1316,7 @@ fn deliver_request_with(
         slot: request.pane_slot.to_owned(),
         session: request.target_session.to_owned(),
     };
-    deliver_expected(request, &target, Ok(None), seat, err).map(|(delivery, _)| delivery)
+    deliver_expected(request, &target, Ok(None), seat, role, err).map(|(delivery, _)| delivery)
 }
 
 /// A helper's private expected seat (#218 P1): its slot and exact launch token, `""`
@@ -1323,18 +1324,44 @@ fn deliver_request_with(
 /// cannot be used; it refuses before input and never falls back to no expectation.
 pub(crate) type Expectation<'a> = Result<Option<(&'a str, &'a str)>, &'static str>;
 
+/// A confirmed redirect carries the target's exact role, server and incarnation.
+#[derive(Clone, Copy)]
+pub(crate) struct RolePin<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) root: &'a Path,
+    pub(crate) server: &'a ServerId,
+    pub(crate) uuid: &'a str,
+}
+
+impl RolePin<'_> {
+    fn changed(
+        self,
+        server: &ServerId,
+        target: &Resolved,
+        correlated: Option<&str>,
+        bytes: &[u8],
+    ) -> bool {
+        server != self.server
+            || target.session != self.name
+            || target.slot != "main"
+            || correlated != Some(self.uuid)
+            || !meta::is_seat(bytes, self.root)
+    }
+}
+
 /// One guarded delivery to `target`, narrowed by a `send` helper's expected
-/// seat; the flag says the expected seat itself refused (malformed, or its
-/// comparison failed at admission or at any re-proof), so the refusal is no
-/// attempt of the action it carried. For the proved orchestrator seat, once
-/// the guard admitted the target and before any input, `seat` writes its
-/// request row naming the uuid of the snapshot the guard proved; a row that
-/// cannot be written refuses before input.
+/// seat or a console redirect's proved role. The flag says the expected seat
+/// itself refused (malformed, or its comparison failed at admission or
+/// re-proof), so the refusal is no attempt of the action it carried. For
+/// the proved orchestrator seat, once the guard admitted the target and
+/// before any input, `seat` writes its request row naming the uuid the guard
+/// proved. A row that cannot be written refuses before input.
 pub(crate) fn deliver_expected(
     request: &crate::deliver::Request<'_>,
     target: &Resolved,
     expect: Expectation<'_>,
     seat: Option<&mut Dispatch>,
+    role: Option<RolePin<'_>>,
     err: &mut impl Write,
 ) -> io::Result<(
     Result<crate::deliver::Delivered, crate::deliver::Failure>,
@@ -1369,7 +1396,7 @@ pub(crate) fn deliver_expected(
         target,
         mode,
         None,
-        want.as_ref(),
+        (want.as_ref(), role),
     ) {
         Ok(guard) => {
             let guard = guard.acting(request.actor);
@@ -1665,6 +1692,7 @@ pub(crate) struct AddressGuard<'a> {
     ),
     /// A helper's expected seat, re-proven at every check; never a mode or privilege.
     expected: Option<Seat>,
+    role: Option<RolePin<'a>>,
     /// Whether a check refused because that expected seat itself no longer held.
     expected_lost: std::cell::Cell<bool>,
     aborted: std::cell::Cell<bool>,
@@ -1685,7 +1713,7 @@ pub(crate) fn admit_agent_address<'a>(
     target: &Resolved,
     mode: AddressMode<'a>,
 ) -> Result<AddressGuard<'a>, Refusal> {
-    admit(dir, server, target, mode, None, None)
+    admit(dir, server, target, mode, None, (None, None))
 }
 
 /// [`admit_agent_address`] naming `bound`, the seat a guard or a leg bound, in refusals.
@@ -1696,10 +1724,10 @@ fn admit<'a>(
     target: &Resolved,
     mode: AddressMode<'a>,
     bound: Option<&Seat>,
-    want: Option<&Seat>,
+    wants: (Option<&Seat>, Option<RolePin<'a>>),
 ) -> Result<AddressGuard<'a>, Refusal> {
     let mut induced = false;
-    let admitted = admit_proving(dir, server, target, mode, bound, want, &mut induced);
+    let admitted = admit_proving(dir, server, target, mode, bound, wants, &mut induced);
     // Once the snapshot shows the expected seat itself refused, every later exit keeps
     // that origin, the Role checks' included, in their own order and words (#218 F3).
     admitted.map_err(|refusal| {
@@ -1719,7 +1747,7 @@ fn admit_proving<'a>(
     target: &Resolved,
     mode: AddressMode<'a>,
     bound: Option<&Seat>,
-    want: Option<&Seat>,
+    (want, role_pin): (Option<&Seat>, Option<RolePin<'a>>),
     induced: &mut bool,
 ) -> Result<AddressGuard<'a>, Refusal> {
     let (_, bytes) = address_meta(dir, &target.session).map_err(Refusal::Role)?;
@@ -1757,6 +1785,9 @@ fn admit_proving<'a>(
     let seat = compared.map_err(wrap);
     let viewer = viewer.unwrap_or_default();
     let correlated = correlate_uuid(&viewer.session_uuid, &bytes).ok();
+    if role_pin.is_some_and(|pin| pin.changed(server, target, correlated.as_deref(), &bytes)) {
+        return Err("confirmed orchestrator target changed before delivery".into());
+    }
     // The same snapshot's id AS WRITTEN; two rows stamp apart from none.
     let sid = (
         meta::sole_value(&bytes, "session_id").map(<[u8]>::to_vec),
@@ -1814,6 +1845,7 @@ fn admit_proving<'a>(
         actor: "",
         stamp: (physical, sid, seat?, role),
         expected: want.cloned(),
+        role: role_pin,
         expected_lost: std::cell::Cell::new(false),
         aborted: std::cell::Cell::new(false),
         correlated,
@@ -1860,7 +1892,7 @@ impl<'a> AddressGuard<'a> {
             &self.target,
             self.mode.clone(),
             bound,
-            self.expected.as_ref(),
+            (self.expected.as_ref(), self.role),
         );
         let who = bound.map_or_else(|| format!("target pane {}", self.target.pane), Seat::label);
         let reason = match fresh {
@@ -2862,7 +2894,10 @@ impl Receipt {
         }
     }
 
-    fn of(delivery: &Result<crate::deliver::Delivered, crate::deliver::Failure>) -> Self {
+    fn of(
+        delivery: &Result<crate::deliver::Delivered, crate::deliver::Failure>,
+        redirected: bool,
+    ) -> Self {
         use crate::deliver::{DeliveryVerification, Failure};
         match delivery {
             Ok(delivered) => match delivered.verification {
@@ -2872,6 +2907,15 @@ impl Receipt {
             Err(Failure::Unconfirmed { notice: false, .. } | Failure::Paste { .. }) => {
                 Self::Uncertain
             }
+            // A redirect keeps its draft at the recipient when any part may
+            // still be staged or submitted there.
+            Err(
+                Failure::Refused {
+                    stage: Stage::Pasted | Stage::Entered,
+                    ..
+                }
+                | Failure::Unconfirmed { notice: true, .. },
+            ) if redirected => Self::Uncertain,
             Err(_) => Self::NotDelivered,
         }
     }
@@ -3138,6 +3182,8 @@ pub(crate) struct Extra<'a> {
     /// session without the flag, and is bound to the resolved target and
     /// requested before the delivery.
     pub(crate) seat: Option<&'a mut Dispatch>,
+    /// A confirmed console redirect's destination.
+    pub(crate) role: Option<RolePin<'a>>,
 }
 
 /// [`run`] with a relay's [`Extra`].
@@ -3230,7 +3276,7 @@ pub(crate) fn run_with(
     let meta_dir = target_meta_dir(dir, &resolved.session, own_session);
     let mut target_launch = launch_id_at(&meta_dir, &resolved.slot, &target_id);
     let (delivery, outcome) = across_cut(&server, &resolved.pane, &meta_dir, || {
-        deliver_receipted(&request, extra.receipt, seat, err)
+        deliver_receipted(&request, extra.receipt, seat, extra.role, err)
     });
     let delivery = delivery?;
     keep_launch(&mut actor_launch, &caller_dir, &sender.slot, &caller_id);
@@ -3278,14 +3324,15 @@ fn deliver_receipted(
     request: &crate::deliver::Request<'_>,
     receipt: Option<&mut Option<Receipt>>,
     seat: Option<&mut Dispatch>,
+    role: Option<RolePin<'_>>,
     err: &mut impl Write,
 ) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
     let Some(slot) = receipt else {
-        return deliver_request_with(request, seat, err);
+        return deliver_request_with(request, seat, role, err);
     };
     *slot = Some(Receipt::Uncertain);
-    let delivery = deliver_request_with(request, seat, err)?;
-    *slot = Some(Receipt::of(&delivery));
+    let delivery = deliver_request_with(request, seat, role, err)?;
+    *slot = Some(Receipt::of(&delivery, role.is_some()));
     Ok(delivery)
 }
 
@@ -3505,6 +3552,142 @@ mod tests {
 
     const SOCK_A: &str = "session=a\ntmux_server_kind=socket\ntmux_server=/srv/a.sock\n";
     const SOCK_B: &str = "session=b\ntmux_server_kind=socket\ntmux_server=/srv/b.sock\n";
+
+    #[test]
+    fn a_redirect_receipt_keeps_any_input_that_may_have_reached_the_pane() {
+        use super::Receipt;
+        use crate::deliver::{Failure, Request, Shape, Stage};
+
+        let server = ServerId::Ambient;
+        let root = std::path::Path::new("/chattarget-fixture");
+        let pin = super::RolePin {
+            name: "role",
+            root,
+            server: &server,
+            uuid: UUID,
+        };
+        let request = Request {
+            dir: root,
+            server: &server,
+            pane: "%1",
+            logged_target: "lead",
+            target_session: "role",
+            pane_slot: "main",
+            own_session: "role",
+            action: "ask",
+            reference: "ae-20260930T060500Z-000000ff",
+            actor: super::CONSOLE_SINK,
+            body: "choose D44",
+            shape: Shape::Send,
+            defer: std::time::Duration::ZERO,
+            composed: crate::tool::Composed::NONE,
+        };
+        let refusal = |stage| Failure::Refused {
+            body_file: "saved".into(),
+            stage,
+        };
+        let notice = Failure::Unconfirmed {
+            body_file: "saved".into(),
+            framed: "choose D44".into(),
+            notice: true,
+        };
+        for (failure, expected) in [
+            (refusal(Stage::BeforeInput), Receipt::NotDelivered),
+            (refusal(Stage::Pasted), Receipt::Uncertain),
+            (refusal(Stage::Entered), Receipt::Uncertain),
+            (notice, Receipt::Uncertain),
+        ] {
+            super::set_test_delivery(Err(failure.clone()));
+            let mut actual = None;
+            let result = super::deliver_receipted(
+                &request,
+                Some(&mut actual),
+                None,
+                Some(pin),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(result, Err(failure));
+            assert_eq!(actual, Some(expected));
+        }
+    }
+
+    #[test]
+    fn a_non_redirect_receipt_keeps_the_definitive_refusals() {
+        use super::Receipt;
+        use crate::deliver::{Failure, Stage};
+
+        let refusal = |stage| Failure::Refused {
+            body_file: "saved".into(),
+            stage,
+        };
+        let notice = Failure::Unconfirmed {
+            body_file: "saved".into(),
+            framed: "choose D44".into(),
+            notice: true,
+        };
+        for failure in [refusal(Stage::Pasted), refusal(Stage::Entered), notice] {
+            let delivery = Err(failure);
+            assert_eq!(
+                Receipt::of(&delivery, false),
+                Receipt::NotDelivered,
+                "ordinary delivery {delivery:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tracked_address_guard_refuses_a_correlated_but_replaced_redirect_role() {
+        let name = "chattarget-role-pin";
+        let sessions = sessions_root("redirect-role-pin", &[(name, "")]);
+        let root = sessions.parent().unwrap();
+        let dir = sessions.join(name);
+        let overlay = root.join("orchestrator.config");
+        std::fs::write(
+            dir.join("meta"),
+            format!("session={name}\nsession_id={UUID}\nmeta_agent=true\nlocal_config={}\nseat.main=lead\n", overlay.display()),
+        ).unwrap();
+        let server = ServerId::Ambient;
+        let target = Resolved {
+            pane: "%7".into(),
+            agent: "lead".into(),
+            slot: "main".into(),
+            session: name.into(),
+        };
+        super::set_test_address_observation(
+            crate::tmux::ObservedViewer {
+                session: Some(name.into()),
+                session_uuid: crate::tmux::OptionReading::Set(UUID.into()),
+                slot: Some("main".into()),
+                agent: Some("lead".into()),
+                ..crate::tmux::ObservedViewer::default()
+            },
+            crate::tmux::SessionIdentity {
+                id: "$0".into(),
+                created: "1".into(),
+            },
+        );
+        let pin = super::RolePin {
+            name,
+            root,
+            server: &server,
+            uuid: UUID_B,
+        };
+        let result = super::admit(
+            &dir,
+            &server,
+            &target,
+            super::AddressMode::Owner,
+            None,
+            (None, Some(pin)),
+        );
+        super::clear_test_hooks();
+        assert!(matches!(
+            result,
+            Err(super::Refusal::Role(why)) if why == "confirmed orchestrator target changed before delivery"
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn named_server_reads_the_target_sessions_own_recorded_server_not_the_callers() {

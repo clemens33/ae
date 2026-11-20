@@ -515,6 +515,7 @@ fuzz_target!(|data: &[u8]| {
                 assert_eq!((seat.clone(), body.clone()), want);
                 assert!(!body.trim().is_empty(), "nothing to ask is never an ask");
             }
+            Effect::Redirect { .. } => panic!("no composer target was set, so nothing redirects"),
             Effect::Shell { raw, line } => {
                 assert!(raw.len() <= input::CAP);
                 let text = std::str::from_utf8(raw).expect("a shell line is UTF-8");

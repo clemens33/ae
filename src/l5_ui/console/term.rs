@@ -3,6 +3,7 @@
 
 use std::io::{IsTerminal as _, Read as _};
 use std::os::fd::AsFd as _;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -12,6 +13,7 @@ use super::lane::Seat;
 use super::needs::SeatRef;
 use super::open::{self, Refusal};
 use super::shell::{Place, ShellArgv, popup_args, popup_client, refused, said};
+use super::target::{self, RoleRoute, Target};
 use super::{Console, holder, submit};
 use crate::inventory::ServerId;
 use crate::{archive, doors, lifecycle, meta, theme, time, tmux, tracked, transport};
@@ -464,19 +466,17 @@ pub(crate) fn admit_ask_locked(
     lock: std::fs::File,
     owns: impl FnOnce() -> Result<(), String>,
     raw: &[u8],
-    seat: &str,
-    body: String,
-) -> Result<(Carry, submit::Admitted), String> {
-    let admitted = submit::admit_record_locked(
+    ask: &Carry,
+) -> Result<submit::Admitted, String> {
+    submit::admit_record_locked(
         &mut console.held.borrow_mut(),
         &console.dir,
         &console.name,
         raw,
         owns,
-        record,
+        (record, ask.redirect.is_some()),
         lock,
-    )?;
-    Ok((Carry::of(console, seat, body), admitted))
+    )
 }
 
 /// One ask a writer with no composer of its own carries into the shared chat
@@ -652,6 +652,7 @@ pub(crate) struct Carry {
     entropy: u64,
     /// The relay this ask carries, recorded on the opening.
     relay: Option<tracked::RelayStamp>,
+    redirect: Option<RoleRoute>,
 }
 
 impl Carry {
@@ -681,6 +682,7 @@ impl Carry {
             now,
             entropy,
             relay: None,
+            redirect: None,
         }
     }
 
@@ -698,6 +700,11 @@ impl Carry {
             relay: Some(relay),
             ..Self::minted(console, seat, body, minted)
         }
+    }
+
+    pub(crate) fn bind_role(mut self, route: Option<RoleRoute>) -> Self {
+        self.redirect = route;
+        self
     }
 
     /// The request id this ask is recorded under.
@@ -732,11 +739,15 @@ impl Carry {
             session: self.session,
         };
         let (tail, mut said) = ([self.seat, self.body], Vec::new());
-        let mut receipt = None;
+        let mut receipt = self
+            .redirect
+            .as_ref()
+            .map(|_| tracked::Receipt::NotDelivered);
         let extra = tracked::Extra {
             relay: self.relay.as_ref(),
             receipt: Some(&mut receipt),
             seat: None,
+            role: self.redirect.as_ref().map(RoleRoute::pin),
         };
         let run = tracked::run_with(
             tracked::Kind::Ask,
@@ -816,6 +827,7 @@ pub(crate) fn admit_relay(
 
 /// A console that takes input from its terminal.
 pub(super) struct Term {
+    root: Option<PathBuf>,
     input: Input,
     recovery: submit::Recovery,
     clipboard: crate::clipboard::Job<Instant>,
@@ -831,7 +843,7 @@ pub(super) struct Term {
 impl Term {
     /// Input on this process's terminal for `console`'s lead pair. `Err` is
     /// the line saying why there is none: no usable pair, or no terminal.
-    pub(super) fn start(console: &Console) -> Result<Self, String> {
+    pub(super) fn start(console: &Console, root: PathBuf) -> Result<Self, String> {
         let off = |why: &str| format!("input off: {why}; this chat only reads\n");
         let pair = console.seats().and_then(pair_of).map_err(|why| off(&why))?;
         let Some(reads) = stdin_reads() else {
@@ -839,6 +851,7 @@ impl Term {
         };
         let declared = doors::declared_server(crate::shape::current());
         Ok(Self {
+            root: Some(root),
             input: Input::new(pair.iter().map(|seat| seat.name.clone()).collect()),
             recovery: crate::console::submit::Recovery::default(),
             clipboard: None,
@@ -866,7 +879,58 @@ impl Term {
             Some(Ok(())) => Reading::Owner,
             Some(Err(why)) => Reading::NotOwner(why),
         };
-        self.take(console, reading)
+        let mut effects = self.take(console, reading);
+        effects.extend(self.refresh_targets(console));
+        effects
+    }
+
+    /// Follow the fleet on the console's existing pass, independently of keys.
+    fn refresh_targets(&mut self, console: &Console) -> Option<Effect> {
+        let root = self.root.as_deref()?;
+        let holder = crate::settings_menu::role_holder(root);
+        let target = holder
+            .as_ref()
+            .ok()
+            .map(|name| Target::of(&console.name, name.as_deref() == Some(&console.name)))
+            .or_else(|| {
+                self.input
+                    .target()
+                    .is_none()
+                    .then(|| Target::of(&console.name, false))
+            });
+        let notice = target.and_then(|target| {
+            let switched = self.input.target().is_some_and(|old| *old != target);
+            let notice =
+                switched.then(|| Effect::Print(format!("Target: {}", target::label(&target))));
+            self.input.set_target(target);
+            notice
+        });
+        let snapshot = crate::fleet_read::live_sessions(root);
+        let running = snapshot
+            .sessions
+            .iter()
+            .filter(|entry| entry.status == crate::digest::Status::Running)
+            .map(|entry| &entry.candidate);
+        let route = holder
+            .ok()
+            .flatten()
+            .as_deref()
+            .filter(|name| *name != console.name)
+            .and_then(|name| {
+                let record = running
+                    .clone()
+                    .filter(|candidate| candidate.name == name)
+                    .find_map(|candidate| candidate.durable.as_ref())?;
+                let dir = &record.path;
+                let proof = target::prove_role(root, name, dir).ok()?;
+                let other = Console::bound(name.to_owned(), dir.clone(), proof.0.clone());
+                RoleRoute::bind(root, name, dir, proof, other.seats().ok()?)
+            });
+        self.input.set_route(route);
+        self.input.set_running(Some(
+            running.map(|candidate| candidate.name.clone()).collect(),
+        ));
+        notice
     }
 
     /// Take a fresh ownership `reading`; a promotion also restores the kept draft.
@@ -909,7 +973,7 @@ impl Term {
         } else {
             deadline
         };
-        let deadline = if self.input.offering() {
+        let deadline = if self.input.takes_escape() {
             deadline.min(Instant::now() + input::ESC_IDLE)
         } else {
             deadline
@@ -951,6 +1015,7 @@ impl Term {
                 Effect::ImagePaste
             }
             Effect::Ask { raw, seat, body } => self.ask(console, &raw, &seat, body),
+            Effect::Redirect { raw, body } => self.redirect(console, &raw, body),
             Effect::Close(id) => {
                 // An app sending holds the admission through its delivery:
                 // its lease refuses at once rather than after that wait.
@@ -1039,18 +1104,31 @@ impl Term {
             width: pane.width,
             height: pane.height,
         });
-        let view = self.input.view(size);
+        let view_size = if self.input.warning_unpainted() {
+            Size {
+                height: size.height.saturating_sub(1),
+                ..size
+            }
+        } else {
+            size
+        };
+        let view = self.input.view(view_size);
         let seen = pane
             .filter(|_| self.screen.needs_seen(size))
             .and_then(|pane| self.seen(pane.cursor_y));
-        input::paint(
+        input::paint_target(
             &mut self.screen,
             text,
             effects,
             view.as_ref(),
             size,
             seen.as_ref(),
+            self.input.target(),
         )
+    }
+
+    pub(super) fn warning_painted(&mut self) {
+        self.input.warning_painted(Instant::now());
     }
 
     /// The write that leaves the cursor below the composer.
@@ -1117,6 +1195,50 @@ impl Term {
                 console.printed.lane(format!("{gap}{held}"))
             }
         }
+    }
+
+    fn redirect(&mut self, source: &Console, raw: &[u8], body: String) -> Effect {
+        let route = self.input.take_redirect();
+        let name = route
+            .as_ref()
+            .map_or("orchestrator", |route| route.name.as_str());
+        let sent = route
+            .as_ref()
+            .ok_or_else(|| "the orchestrator target is unproven".to_owned())
+            .and_then(|route| {
+                still(&self.pair, source.seats())?;
+                self.owned(source)?;
+                let console = route.console();
+                let (_lease, lock) = send_locks(&console)?;
+                let record = self.recovery.record(console.dir())?;
+                let seat = route.seat();
+                let kept = format!("@{seat} {body}");
+                let owns = || {
+                    still(&self.pair, source.seats())?;
+                    self.owned(source)?;
+                    route.verify(&console)
+                };
+                let ask = Carry::of(&console, seat, body).bind_role(Some(route.clone()));
+                let admitted =
+                    admit_ask_locked(&console, record, lock, owns, kept.as_bytes(), &ask)?;
+                let id = ask.id().to_owned();
+                let finished =
+                    admitted.finish_with_receipt(&mut console.held.borrow_mut(), &id, || {
+                        ask.run_typed()
+                    });
+                if let Some(why) = finished.refusal {
+                    return Err(why);
+                }
+                Ok(input::outcome_line(&finished.outcome, seat))
+            });
+        let line = match sent {
+            Ok(outcome) => format!("{name} · {outcome}"),
+            Err(why) => {
+                self.input.put_back(raw);
+                format!("refused: orchestrator target {name} · {why}")
+            }
+        };
+        Effect::Print(line)
     }
 }
 
@@ -1236,6 +1358,7 @@ mod tests {
         let pair = console.seats().and_then(pair_of).unwrap();
         let input = Input::new(pair.iter().map(|seat| seat.name.clone()).collect());
         let mut term = Term {
+            root: None,
             recovery: crate::console::submit::Recovery::default(),
             input,
             pair,
@@ -1265,6 +1388,7 @@ mod tests {
         let pair = console.seats().and_then(pair_of).unwrap();
         let input = Input::new(pair.iter().map(|seat| seat.name.clone()).collect());
         let mut term = Term {
+            root: None,
             recovery,
             input,
             pair,
@@ -1310,6 +1434,7 @@ mod tests {
         let input = Input::new(pair.iter().map(|seat| seat.name.clone()).collect());
         let (reads, screen) = (Reads(None), Screen::default());
         let term = Term {
+            root: None,
             recovery: crate::console::submit::Recovery::default(),
             input,
             pair,
@@ -1320,6 +1445,33 @@ mod tests {
             screen,
         };
         (rig, console, term)
+    }
+
+    #[test]
+    fn an_unreadable_role_census_does_not_change_the_known_target() {
+        let (rig, console, mut term) = bare_term("term-role-census");
+        let sessions = rig.0.join("sessions");
+        let role = sessions.join("s");
+        std::fs::create_dir_all(&role).unwrap();
+        let path = rig.0.join("orchestrator.config");
+        let meta = format!("meta_agent=true\nlocal_config={}\n", path.display());
+        std::fs::write(role.join("meta"), meta).unwrap();
+        term.root = Some(rig.0.clone());
+        let expected = super::Target::Orchestrator("s".into());
+        assert_eq!(term.refresh_targets(&console), None);
+        assert_eq!(term.input.target(), Some(&expected));
+
+        std::fs::create_dir(sessions.join("unreadable")).unwrap();
+        assert!(crate::settings_menu::role_holder(&rig.0).is_err());
+        assert_eq!(term.refresh_targets(&console), None);
+        assert_eq!(term.input.target(), Some(&expected));
+
+        std::fs::remove_dir(sessions.join("unreadable")).unwrap();
+        std::fs::write(role.join("meta"), b"session=s\n").unwrap();
+        assert_eq!(
+            term.refresh_targets(&console),
+            Some(Effect::Print("Target: to s".into()))
+        );
     }
 
     #[test]
@@ -1400,6 +1552,7 @@ mod tests {
         let (input, reads, server, me) = (Input::default(), Reads(None), None, None);
         let screen = Screen::default();
         let mut term = Term {
+            root: None,
             recovery: crate::console::submit::Recovery::default(),
             input,
             pair,
@@ -1508,6 +1661,7 @@ mod tests {
             "profile rows parse"
         );
         let mut term = Term {
+            root: None,
             recovery: crate::console::submit::Recovery::default(),
             input: Input::default(),
             pair,

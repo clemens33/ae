@@ -223,20 +223,21 @@ pub(crate) struct Admitted {
 enum Kept {
     Legacy(store::SessionStore),
     Instance(Arc<store::DraftRecord>),
+    Redirect(Arc<store::DraftRecord>),
 }
 
 impl Kept {
     fn publish(&self, raw: &[u8]) -> std::io::Result<()> {
         match self {
             Self::Legacy(store) => store.publish_console_draft(raw),
-            Self::Instance(record) => record.publish(raw),
+            Self::Instance(record) | Self::Redirect(record) => record.publish(raw),
         }
     }
 
     fn clear(&self) -> std::io::Result<()> {
         match self {
             Self::Legacy(store) => store.clear_console_draft(),
-            Self::Instance(record) => record.clear(),
+            Self::Instance(record) | Self::Redirect(record) => record.clear(),
         }
     }
 }
@@ -286,10 +287,15 @@ pub(crate) fn admit_record_locked(
     session: &str,
     raw: &[u8],
     owns: impl FnOnce() -> Result<(), String>,
-    record: Arc<store::DraftRecord>,
+    (record, redirect): (Arc<store::DraftRecord>, bool),
     lock: std::fs::File,
 ) -> Result<Admitted, String> {
-    admit_kept(held, dir, session, raw, owns, Kept::Instance(record), lock)
+    let kept = if redirect {
+        Kept::Redirect(record)
+    } else {
+        Kept::Instance(record)
+    };
+    admit_kept(held, dir, session, raw, owns, kept, lock)
 }
 
 /// The ONE cap: below `limit` console asks open in `session`'s journal, or a
@@ -339,11 +345,22 @@ fn admit_kept(
     lock: std::fs::File,
 ) -> Result<Admitted, String> {
     owns()?;
-    draft
-        .publish(raw)
-        .map_err(|why| format!("the draft could not be kept ({why})"))?;
+    let publish = || {
+        draft
+            .publish(raw)
+            .map_err(|why| format!("the draft could not be kept ({why})"))
+    };
+    // A refused redirect goes back to its source, so only a successful
+    // admission can leave a recovery draft at the destination.
+    let sending_elsewhere = matches!(draft, Kept::Redirect(_));
+    if !sending_elsewhere {
+        publish()?;
+    }
     let events = super::snapshot_in(held, dir)?;
     cap(&events, session, OPEN_CAP)?;
+    if sending_elsewhere {
+        publish()?;
+    }
     Ok(Admitted {
         dir: dir.to_owned(),
         draft: Some(draft),
@@ -395,29 +412,77 @@ pub(crate) fn admit_external(
 
 impl Admitted {
     /// Deliver the ask `id` and read back what became of it, under the lock
-    /// taken at the admission; only [`Outcome::Sent`] clears the kept draft,
-    /// and only a draft this admission kept.
+    /// taken at admission. A confirmed send clears the draft this admission kept.
     pub(crate) fn finish(
         self,
         held: &mut crate::events::Held,
         id: &str,
         deliver: impl FnOnce() -> String,
     ) -> Outcome {
-        let said = deliver();
+        self.finish_with_receipt(held, id, || (deliver(), None))
+            .outcome
+    }
+
+    /// A definite delivery refusal may be returned to the originating
+    /// composer once the destination has released its recovery copy.
+    pub(crate) fn finish_with_receipt(
+        self,
+        held: &mut crate::events::Held,
+        id: &str,
+        deliver: impl FnOnce() -> (String, Option<tracked::Receipt>),
+    ) -> Finished {
+        let (said, receipt) = deliver();
         let outcome = match super::snapshot_in(held, &self.dir) {
             Ok(events) => read_back(&events, id, &said),
             Err(why) => Outcome::Unknown(id.to_owned(), why),
         };
-        let Outcome::Sent(id, None) = outcome else {
-            return outcome;
+        let definitive = receipt.map_or_else(
+            || matches!(outcome, Outcome::NotDelivered(_)),
+            |receipt| receipt == tracked::Receipt::NotDelivered,
+        );
+        let (outcome, refusal) = match (outcome, self.draft) {
+            (Outcome::Sent(id, None), Some(draft)) => {
+                let kept = draft
+                    .clear()
+                    .err()
+                    .map(|why| format!("the draft is kept ({why})"));
+                (Outcome::Sent(id, kept), None)
+            }
+            (Outcome::NotDelivered(id), Some(Kept::Redirect(_)))
+                if receipt == Some(tracked::Receipt::Uncertain) =>
+            {
+                (Outcome::Uncertain(id), None)
+            }
+            (Outcome::Unknown(..) | Outcome::NotDelivered(_), Some(draft @ Kept::Redirect(_)))
+                if definitive =>
+            {
+                match draft.clear() {
+                    Ok(()) => {
+                        let why = if said.trim().is_empty() {
+                            "nothing was delivered"
+                        } else {
+                            said.trim()
+                        };
+                        (Outcome::NotDelivered(id.to_owned()), Some(why.to_owned()))
+                    }
+                    Err(why) => (
+                        Outcome::Unknown(
+                            id.to_owned(),
+                            format!("the draft is kept at the destination ({why})"),
+                        ),
+                        None,
+                    ),
+                }
+            }
+            (outcome, _) => (outcome, None),
         };
-        let Some(draft) = self.draft else {
-            return Outcome::Sent(id, None);
-        };
-        let kept = draft.clear().err();
-        let kept = kept.map(|why| format!("the draft is kept ({why})"));
-        Outcome::Sent(id, kept)
+        Finished { outcome, refusal }
     }
+}
+
+pub(crate) struct Finished {
+    pub(crate) outcome: Outcome,
+    pub(crate) refusal: Option<String>,
 }
 
 /// `/close [id]` under the same admission and ownership as a submit.
@@ -560,6 +625,53 @@ pub(in crate::l5_ui::console) mod tests {
 
     fn never() -> String {
         panic!("nothing is delivered past a refusal")
+    }
+
+    #[test]
+    fn redirect_recovery_returns_only_a_definitely_unsent_draft() {
+        let dir = session("redirect-receipt", 0);
+        let record = super::Recovery::default().record(&dir).unwrap();
+        let mut held = crate::events::Held::default();
+        let draft = b"@lead choose D44";
+        let admit = |held: &mut crate::events::Held| {
+            let lock = store::open(&dir).console_admission().unwrap();
+            super::admit_record_locked(
+                held,
+                &dir,
+                "s",
+                draft,
+                || Ok(()),
+                (std::sync::Arc::clone(&record), true),
+                lock,
+            )
+            .unwrap()
+        };
+        let receipt = crate::tracked::Receipt::Uncertain;
+        let finished = admit(&mut held).finish_with_receipt(&mut held, NEW, || {
+            ("submit unconfirmed".into(), Some(receipt))
+        });
+        assert_eq!(finished.refusal, None);
+        assert!(matches!(finished.outcome, Outcome::Unknown(..)));
+        assert_eq!(super::recover(&record), Draft::Kept(draft.to_vec()));
+
+        let abandoned = ask(NEW, "notice left in input")
+            .replace(r#""action":"ask""#, r#""action":"delivery-abandoned""#);
+        let finished = admit(&mut held).finish_with_receipt(&mut held, NEW, || {
+            append(&dir, &abandoned);
+            ("notice submit unconfirmed".into(), Some(receipt))
+        });
+        assert_eq!(finished.refusal, None);
+        assert_eq!(finished.outcome, Outcome::Uncertain(NEW.into()));
+        assert_eq!(super::recover(&record), Draft::Kept(draft.to_vec()));
+
+        let receipt = crate::tracked::Receipt::NotDelivered;
+        let finished = admit(&mut held)
+            .finish_with_receipt(&mut held, NEW, || ("role changed".into(), Some(receipt)));
+        assert_eq!(finished.refusal.as_deref(), Some("role changed"));
+        assert_eq!(finished.outcome, Outcome::NotDelivered(NEW.into()));
+        assert_eq!(super::recover(&record), Draft::Nothing);
+        drop(record);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

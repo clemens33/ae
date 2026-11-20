@@ -214,7 +214,7 @@ impl Delta {
 
 /// `id` read as `D1`: a section letter and a number 1 to 99 without a
 /// leading zero.
-fn parse_id(token: &str) -> Option<Id> {
+pub(crate) fn parse_id(token: &str) -> Option<Id> {
     let mut chars = token.chars();
     let section = Section::of_letter(chars.next()?)?;
     let digits = chars.as_str();

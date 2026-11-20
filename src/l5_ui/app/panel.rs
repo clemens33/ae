@@ -99,6 +99,10 @@ pub(super) struct Column {
 pub(super) struct Orch {
     /// Whether the last fleet read proved one orchestrator incarnation.
     pub(super) proof: loader::Proof,
+    /// The recorded role can also sit under a noncanonical name.
+    pub(super) holder: Option<String>,
+    /// The running role incarnation a composer may offer for a redirect.
+    pub(super) route: Option<super::RoleRoute>,
     /// The open panel; `None` while it is hidden.
     pub(super) panel: Option<Panel>,
     /// The panel's column stands in the app's fields now ([`App::in_panel`]).
@@ -913,6 +917,7 @@ impl App {
                 now: Timestamp::now(),
             };
             let dest = app.destination(ORCH);
+            let target = app.target(ORCH);
             let wait = draw::Wait {
                 fleet: !app.fleeted,
                 lane: app.loading,
@@ -921,6 +926,8 @@ impl App {
                 open: &open,
                 sent: &sent,
                 dest: dest.as_ref().map(draw::Dest::of),
+                target: bound.then(|| (&target, app.target_look(ORCH, look.as_ref()))),
+                confirming: false,
                 md: Some(&app.md),
                 desk: deskview.as_ref(),
             };
