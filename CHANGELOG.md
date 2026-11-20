@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.96] - 2026-11-20
+- Telegram guards: each reader reads the path it builds
+- The services layer (autoupgrade, board, brief, brief_retry, carry, compact, deliver, fleet_read, go_usage, init, install, launch, listing, muse_usage, opencode_variant, quota, relay, render, reply, run, send, session, stats, stats_store, telegram, tool_stats, upgrade, usage) moves into src/l3_services; src/lib.rs re-exports each by name, and the sources, tests, fuzz target, docs and the Cargo.toml, clippy.toml and .gitattributes comments that name their paths follow
+
 ## [v2026.11.95] - 2026-11-20
 - An orchestrator's chat, app panel and phone hide the raw relay answer echo unless relay_replies = on (or ae chat --all), and draw the orchestrator's own say
 - The integration fixture relays as the proven dispatcher
