@@ -194,7 +194,7 @@ additive keys as unknown data.
 
 ## Session notices
 
-`src/session_notice.rs` owns them. The pure fold judges each seat in journal ORDER: its
+`src/l4_orchestration/session_notice.rs` owns them. The pure fold judges each seat in journal ORDER: its
 boundary is its newest `spawn` (by `target`), `reseat` or `relaunch` (by `target_slot`). A
 reseat or relaunch counts only when its start opened a new conversation: `_run` journals its
 conversation record before the launch record, so a `conversation-resumed` or

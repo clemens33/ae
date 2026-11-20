@@ -5,10 +5,11 @@ use crate::watchdog::{LimitStanding, limit_standing};
 
 const ROW: &str = "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 162h20m6s.";
 const ERROR: &str = "Error ID: 00000000-0000-0000-0000-000000000000-000";
-const EMPTY: &str = include_str!("../../tests/fixtures/agy-composer/agy-composed-frame-80x24.txt");
-const DRAFT: &str = include_str!("../../tests/fixtures/agy-composer/agy-draft-frame-80x24.txt");
+const EMPTY: &str =
+    include_str!("../../../tests/fixtures/agy-composer/agy-composed-frame-80x24.txt");
+const DRAFT: &str = include_str!("../../../tests/fixtures/agy-composer/agy-draft-frame-80x24.txt");
 const WRAPPED: &str =
-    include_str!("../../tests/fixtures/agy-composer/agy-wrapped-draft-frame-80x24.txt");
+    include_str!("../../../tests/fixtures/agy-composer/agy-wrapped-draft-frame-80x24.txt");
 
 fn frame(composer: &str, block: &str) -> String {
     let fence = composer

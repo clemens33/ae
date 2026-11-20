@@ -1,5 +1,5 @@
 //! Frozen rule-6 unit acceptance for the planned seam in
-//! `src/lifecycle/aliases.rs`: `create_alias` links only when absent and
+//! `src/l4_orchestration/lifecycle/aliases.rs`: `create_alias` links only when absent and
 //! verifies, `keep_alias` maps a create failure to one warning line.
 //! Included as a `cfg(test)` child module of `aliases`; it does not compile
 //! on main before the seam exists. The ten public integration tests in

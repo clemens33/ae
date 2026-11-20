@@ -701,9 +701,16 @@ fn observers_settings_watchdog_and_reseat_never_name_the_paid_muse_leg() {
     for (name, body) in [
         (
             "watchdog",
-            crate::support::source_view::module_family("src/watchdog_daemon.rs", true).as_str(),
+            crate::support::source_view::module_family(
+                "src/l4_orchestration/watchdog_daemon.rs",
+                true,
+            )
+            .as_str(),
         ),
-        ("reseat", include_str!("../../src/autoreseat.rs")),
+        (
+            "reseat",
+            include_str!("../../src/l4_orchestration/autoreseat.rs"),
+        ),
         ("app loader", include_str!("../../src/app/loader.rs")),
     ] {
         for forbidden in [

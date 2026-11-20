@@ -116,27 +116,39 @@ const NEEDLES: [&str; 6] = [
 ];
 const CENSUS: [(&str, [usize; 6]); 22] = [
     ("src/l2_model/archive/retained.rs", [0, 1, 0, 0, 0, 0]),
-    ("src/autoreseat/leg.rs", [1, 0, 0, 0, 0, 1]),
+    ("src/l4_orchestration/autoreseat/leg.rs", [1, 0, 0, 0, 0, 1]),
     ("src/l3_services/autoupgrade.rs", [0, 0, 2, 0, 2, 0]),
     ("src/console/toggle.rs", [1, 0, 0, 0, 0, 0]),
     ("src/doctor.rs", [3, 0, 0, 0, 0, 0]),
-    ("src/effort/leg.rs", [1, 0, 0, 0, 0, 1]),
+    ("src/l4_orchestration/effort/leg.rs", [1, 0, 0, 0, 0, 1]),
     ("src/lib.rs", [2, 0, 0, 0, 0, 0]),
-    ("src/lifecycle.rs", [4, 0, 4, 4, 0, 0]),
-    ("src/lifecycle/end.rs", [3, 0, 3, 1, 0, 0]),
-    ("src/rename.rs", [2, 0, 0, 0, 0, 0]),
+    ("src/l4_orchestration/lifecycle.rs", [4, 0, 4, 4, 0, 0]),
+    ("src/l4_orchestration/lifecycle/end.rs", [3, 0, 3, 1, 0, 0]),
+    ("src/l4_orchestration/rename.rs", [2, 0, 0, 0, 0, 0]),
     ("src/l3_services/run.rs", [0, 1, 0, 0, 0, 0]),
-    ("src/seat_relaunch.rs", [1, 0, 0, 0, 0, 0]),
-    ("src/session_launch.rs", [1, 0, 0, 0, 0, 0]),
-    ("src/session_launch/capture.rs", [1, 0, 0, 0, 0, 1]),
-    ("src/session_launch/record.rs", [1, 0, 0, 0, 0, 0]),
+    ("src/l4_orchestration/seat_relaunch.rs", [1, 0, 0, 0, 0, 0]),
+    ("src/l4_orchestration/session_launch.rs", [1, 0, 0, 0, 0, 0]),
+    (
+        "src/l4_orchestration/session_launch/capture.rs",
+        [1, 0, 0, 0, 0, 1],
+    ),
+    (
+        "src/l4_orchestration/session_launch/record.rs",
+        [1, 0, 0, 0, 0, 0],
+    ),
     ("src/session_menu.rs", [2, 0, 0, 0, 0, 0]),
     ("src/l2_model/session_tmux.rs", [0, 1, 0, 0, 0, 0]),
     ("src/l1_platform/shape.rs", [2, 1, 0, 0, 0, 0]),
-    ("src/spawn.rs", [1, 0, 0, 0, 0, 0]),
-    ("src/telegram_lifecycle.rs", [2, 0, 0, 0, 0, 0]),
+    ("src/l4_orchestration/spawn.rs", [1, 0, 0, 0, 0, 0]),
+    (
+        "src/l4_orchestration/telegram_lifecycle.rs",
+        [2, 0, 0, 0, 0, 0],
+    ),
     ("src/l1_platform/transport.rs", [1, 0, 0, 1, 1, 1]),
-    ("src/watchdog_lifecycle.rs", [1, 0, 0, 0, 0, 0]),
+    (
+        "src/l4_orchestration/watchdog_lifecycle.rs",
+        [1, 0, 0, 0, 0, 0],
+    ),
 ];
 
 fn references(code: &str) -> [usize; 6] {

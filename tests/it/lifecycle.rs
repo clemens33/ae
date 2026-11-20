@@ -1223,7 +1223,7 @@ fn model_rig(tag: &str, launch_id: Option<&str>) -> Rig {
 /// B1, THE DURABLE CUT: a manual model change is recorded at stop, while the
 /// pane is still alive and the lifecycle lock is held — not merely on the
 /// watchdog cadence. Delete the `observe_models_before_stop` call at
-/// `src/lifecycle.rs` and this goes RED.
+/// `src/l4_orchestration/lifecycle.rs` and this goes RED.
 #[test]
 fn stop_records_the_observed_model_before_the_kill() {
     let rig = model_rig("modeldrift", Some("L1"));

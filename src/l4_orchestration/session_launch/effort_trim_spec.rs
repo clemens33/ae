@@ -182,7 +182,7 @@ fn recovery_after_resume_still_requests_the_step_back_up() {
     let record = Record::parse(VALID).expect("literal applied record");
     let no_twin = Err(TwinRefusal::NoTwin(Level::High));
     // Contract pin: docs/reference/contract.md auto-effort invariant, threshold
-    // 80 minus src/autoreseat.rs:183 REARM_GAP = 5, strictly below 75 to recover.
+    // 80 minus src/l4_orchestration/autoreseat.rs:183 REARM_GAP = 5, strictly below 75 to recover.
     for (percent, expected) in [
         (74.0, Decision::Up),
         (75.0, Decision::Hold(crate::effort::Hold::Pressure)),

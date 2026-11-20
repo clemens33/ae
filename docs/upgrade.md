@@ -7,7 +7,7 @@ not only a binary swap, and the reasoning behind that is here rather than in
 ## The shape row
 
 Every session meta carries `meta_version=<N>`, written at launch. The current N is
-`src/migrate.rs::CURRENT`; the chain steps a meta from N to N+1, and also holds the version
+`src/l4_orchestration/migrate.rs::CURRENT`; the chain steps a meta from N to N+1, and also holds the version
 check and the refusals. Each shape change is a step with a fixture beside it, not a rewrite
 of every reader.
 
@@ -18,7 +18,7 @@ PLACED at 2 and the row is stamped in silently on first touch. Only a meta that 
 has told us nothing, and that one is refused. Getting this backwards would have made the
 release that added the chain the release that made every running session unresumable.
 
-`src/migrate.rs::placed` owns the rule, and both readers call it — the chain, which acts on
+`src/l4_orchestration/migrate.rs::placed` owns the rule, and both readers call it — the chain, which acts on
 the answer, and `ae list`, which only reports it. One question, one answer.
 
 ## The sweep

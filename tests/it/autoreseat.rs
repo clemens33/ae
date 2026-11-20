@@ -703,7 +703,7 @@ fn booked(rig: &Rig, action: &str) -> usize {
 }
 
 /// The daemon's own line for a cycle that began, refreshed its beat and then
-/// did nothing (`src/watchdog_daemon.rs:5499`, the one early return after the
+/// did nothing (`src/l4_orchestration/watchdog_daemon.rs:5499`, the one early return after the
 /// beat at `:3790`). The line is the only trace such a cycle leaves, so a
 /// reworded line stops being subtracted and the floor counts that cycle.
 const SKIPPED_CYCLE: &str = "pane enumeration failed — skipping cycle";
@@ -716,7 +716,7 @@ const SKIPPED_CYCLE: &str = "pane enumeration failed — skipping cycle";
 const CYCLES_AFTER_LIMIT: usize = 4;
 
 /// The daemon's beat: a fresh file renamed into place at the top of every
-/// cycle (`src/watchdog_daemon.rs:3790`), so a new identity is a cycle begun.
+/// cycle (`src/l4_orchestration/watchdog_daemon.rs:3790`), so a new identity is a cycle begun.
 fn beat(rig: &Rig) -> Option<(u64, SystemTime)> {
     let meta = std::fs::metadata(ae::watchdog_glue::beat_path(&rig.dir)).ok()?;
     Some((meta.ino(), meta.modified().ok()?))

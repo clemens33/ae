@@ -37,7 +37,7 @@ pub(crate) mod name;
 mod overrides;
 mod plan;
 #[cfg(test)]
-#[path = "../tests/it/planattach_spec.rs"]
+#[path = "../../tests/it/planattach_spec.rs"]
 mod planattach_spec;
 mod preflight;
 mod ready;

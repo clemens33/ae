@@ -15,8 +15,8 @@
 //! BEFORE the reset hands the wake back — and its resume holds the
 //! auto move exactly like a landed ae wake.
 //!
-//! Installed byte-identical at `src/watchdog_limitwake_spec.rs`, wired
-//! from `src/watchdog_daemon.rs` via
+//! Installed byte-identical at `src/l4_orchestration/watchdog_limitwake_spec.rs`, wired
+//! from `src/l4_orchestration/watchdog_daemon.rs` via
 //! `#[cfg(test)] #[path = "watchdog_limitwake_spec.rs"] mod limitwake_spec;`.
 
 use super::{
@@ -249,9 +249,10 @@ fn the_vendor_armed_row_counts_only_below_the_box() {
     use crate::harness_state::auto_continue_armed;
     use crate::tool::ToolKind;
     const ARMED_REAL: &str =
-        include_str!("../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
-    const CANCELLED_REAL: &str =
-        include_str!("../tests/fixtures/harness-state/claude-limit-cancelled-2.1.296-180x50.txt");
+        include_str!("../../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
+    const CANCELLED_REAL: &str = include_str!(
+        "../../tests/fixtures/harness-state/claude-limit-cancelled-2.1.296-180x50.txt"
+    );
     assert!(
         auto_continue_armed(ARMED_REAL, ToolKind::Claude),
         "the measured armed frame"

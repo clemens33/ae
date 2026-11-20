@@ -69,7 +69,7 @@ max-threads = 2
 # share these slots to limit contention during their safe-point and recovery
 # waits at release scheduling. Nothing skipped, retried or weakened.
 [[profile.default.overrides]]
-filter = 'test(/^(reseat(_carry)?|effort_live_spec)::/)'
+filter = 'test(/^(reseat(_carry)?|effort_live_spec|l4_orchestration::reseat)::/)'
 test-group = 'tmux-seats'
 
 # `spawn::tests::tmux_*`: same class again — socket-pinned REAL tmux
@@ -78,7 +78,7 @@ test-group = 'tmux-seats'
 max-threads = 2
 
 [[profile.default.overrides]]
-filter = 'test(/^spawn::tests::tmux_/)'
+filter = 'test(/^l4_orchestration::spawn::tests::tmux_/)'
 test-group = 'tmux-spawn-unit'
 
 # The Linux container lane runs the WHOLE suite with a bound: fail-fast off, so

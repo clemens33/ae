@@ -1,7 +1,7 @@
 # The self/target identity contract of `stop`
 
 Moved verbatim from the bash glue's stop arm when the whole stop moved into the core
-(`src/lifecycle.rs`, `_stop`; glue cut 3, 2026-09-03). The reasoning, the C/D facts and the
+(`src/l4_orchestration/lifecycle.rs`, `_stop`; glue cut 3, 2026-09-03). The reasoning, the C/D facts and the
 review-findings ledger are historical evidence for the core's behaviour: the glue's stop arm
 is now a pane passthrough, and the core resolves the pane to a session itself.
 

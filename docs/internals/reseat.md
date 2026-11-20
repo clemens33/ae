@@ -1,13 +1,13 @@
 # Moving a seat to another tool (`ae reseat`)
 
-The verb is `src/reseat.rs`. It owns the argv, the refusal ladder and the
+The verb is `src/l4_orchestration/reseat.rs`. It owns the argv, the refusal ladder and the
 order; it owns no liveness rule and no paste of its own.
 
 ## What it reuses, and why that is the point
 
 `relaunch` already answers "is this seat's tool provably gone, and may ae
 paste into its pane". A reseat asks exactly the same question — the only
-difference is what gets pasted afterwards — so `src/seat_relaunch.rs` keeps
+difference is what gets pasted afterwards — so `src/l4_orchestration/seat_relaunch.rs` keeps
 that answer and lends it out:
 
 | Borrowed | What it decides |
@@ -667,8 +667,8 @@ happens next.
 
 The watchdog moves a seat PROVEN stuck on its vendor usage limit the same way,
 through the same verb: the only difference is who types it. The decisions live
-in `src/autoreseat.rs`, the legs in `src/autoreseat/leg.rs`, the daemon step in
-`src/watchdog_daemon/cycle_apply.rs::Cycle::auto_reseat`. The config is `[workspace] auto_reseat`
+in `src/l4_orchestration/autoreseat.rs`, the legs in `src/l4_orchestration/autoreseat/leg.rs`, the daemon step in
+`src/l4_orchestration/watchdog_daemon/cycle_apply.rs::Cycle::auto_reseat`. The config is `[workspace] auto_reseat`
 (`off` by default), `auto_reseat_sessions`, `auto_reseat_grace_secs`,
 `auto_reseat_at`, and the `[auto_reseat]` map; see
 [Configuration](../getting-started/config.md).

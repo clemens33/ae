@@ -11,7 +11,8 @@ mod seatinc_acceptance {
     use std::os::unix::fs::PermissionsExt as _;
 
     const UUID: &str = "11111111-1111-4111-8111-111111111111";
-    const CHILD: &str = "watchdog_daemon::tests::seatinc_acceptance::seatinc_real_send_child";
+    const CHILD: &str =
+        "l4_orchestration::watchdog_daemon::tests::seatinc_acceptance::seatinc_real_send_child";
     const AGENT: &str = r#"#!/usr/bin/perl
 use strict; use warnings;
 system('stty raw -echo'); binmode(STDIN, ':raw'); $|=1;

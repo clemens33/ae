@@ -1723,7 +1723,7 @@ fn a_resume_reruns_with_the_resume_variant() {
 /// deleted) — and the resumed pane's `_run` then MINTS the fresh
 /// conversation's id and records it, so the meta row equals the argv's
 /// `--session-id`. (The REBUILD still never mints; that boundary is pinned at
-/// the id choice in `src/session_launch.rs`.)
+/// the id choice in `src/l4_orchestration/session_launch.rs`.)
 #[test]
 fn a_resume_carries_the_predecessor_row_and_mints_the_fresh_one() {
     if skip() {

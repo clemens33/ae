@@ -15,7 +15,7 @@ fn muse_long_frame(reset: i64) -> String {
     )
 }
 
-/// mutant `src/reseat.rs:1154:29` (`&&` -> `||`): a NON-Muse seat on a limit
+/// mutant `src/l4_orchestration/reseat.rs:1154:29` (`&&` -> `||`): a NON-Muse seat on a limit
 /// episode whose pane happens to draw a Muse-shaped background-only frame,
 /// reset 12 h+ ahead and past the 10 min grace, is not a harness whose
 /// background tasks ae reads: the stop refuses its unknown frame and the

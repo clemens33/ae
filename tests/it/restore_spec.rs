@@ -203,7 +203,7 @@ impl Fleet {
 }
 
 fn line(epoch: i64, name: &str, action: &str, summary: &str) -> String {
-    // Stop-result spellings: src/lifecycle.rs:683,688,689 at 17afa2af.
+    // Stop-result spellings: src/l4_orchestration/lifecycle.rs:683,688,689 at 17afa2af.
     format!(
         "{{\"ts\":\"{}\",\"actor\":\"human\",\"action\":\"{action}\",\"target\":\"{name}\",\"summary\":\"{summary}\"}}\n",
         ae::time::Timestamp::from_epoch(epoch)

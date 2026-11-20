@@ -107,7 +107,7 @@ fn the_floor_is_asked_at_exactly_the_two_sites_that_create_or_draw() {
             // `floor_refusal`'s definition, the `clears_floor` inside it, and
             // `_launch`'s call to it ahead of the first-run config seed and the
             // migration chain — which the `compact` relaunch goes through too.
-            ("src/session_launch.rs".to_owned(), 3),
+            ("src/l4_orchestration/session_launch.rs".to_owned(), 3),
         ]),
         "a new floor gate is a ruling, not a diff — see AGENTS.md"
     );
@@ -442,9 +442,9 @@ fn no_tmux_format_literal_in_src_carries_a_control_character() {
         sorted(extracted.iter().copied()),
         sorted([
             "src/app/tests.rs",
-            "src/session_launch/tests.rs",
+            "src/l4_orchestration/session_launch/tests.rs",
             "src/l2_model/tmux/tests.rs",
-            "src/watchdog_daemon/tests.rs"
+            "src/l4_orchestration/watchdog_daemon/tests.rs"
         ]),
         "the extracted test modules the scan leaves out changed: review the new one"
     );

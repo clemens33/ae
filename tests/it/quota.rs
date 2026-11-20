@@ -1959,7 +1959,10 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let quota = std::fs::read_to_string(root.join("src/l3_services/quota.rs"))
         .expect("src/l3_services/quota.rs is read");
-    let watchdog = crate::support::source_view::module_family("src/watchdog_daemon.rs", false);
+    let watchdog = crate::support::source_view::module_family(
+        "src/l4_orchestration/watchdog_daemon.rs",
+        false,
+    );
 
     // A policy is CONSTRUCTED nowhere but inside the one file that reads a
     // scope. Private fields closed assignment only; this closes construction.
@@ -2021,7 +2024,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
         "src/l3_services/quota/pace_history_spec.rs",
         "src/l3_services/quota/credits_spec.rs",
         "src/l3_services/quota/credits_api_spec.rs",
-        "src/watchdog_daemon.rs",
+        "src/l4_orchestration/watchdog_daemon.rs",
         "tests/it/quota.rs",
     ] {
         assert!(

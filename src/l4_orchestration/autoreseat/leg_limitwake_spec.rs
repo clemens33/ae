@@ -3,8 +3,8 @@
 //! the epoch comes from a held quota reading, never from zone text;
 //! unknown reset means no wake and no wait.
 //!
-//! Installed byte-identical at `src/autoreseat/leg_limitwake_spec.rs`,
-//! wired from `src/autoreseat/leg.rs` via
+//! Installed byte-identical at `src/l4_orchestration/autoreseat/leg_limitwake_spec.rs`,
+//! wired from `src/l4_orchestration/autoreseat/leg.rs` via
 //! `#[cfg(test)] #[path = "leg_limitwake_spec.rs"] mod leg_limitwake_spec;`.
 
 use super::own_reset;

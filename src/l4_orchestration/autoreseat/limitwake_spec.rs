@@ -4,8 +4,8 @@
 //! reset waits; 60 min or more, unknown, or not proven short moves as
 //! today; a wait that outlives reset + fallback moves as today.
 //!
-//! Installed byte-identical at `src/autoreseat/limitwake_spec.rs`, wired
-//! from `src/autoreseat.rs` via
+//! Installed byte-identical at `src/l4_orchestration/autoreseat/limitwake_spec.rs`, wired
+//! from `src/l4_orchestration/autoreseat.rs` via
 //! `#[cfg(test)] #[path = "autoreseat/limitwake_spec.rs"] mod limitwake_spec;`.
 
 use super::{LIMIT_WAIT_MAX_SECS, LIMIT_WAKE_FALLBACK_SECS, LimitReset, reset_wait};

@@ -5,10 +5,12 @@ use super::{HarnessState, ToolKind, frame_gap, refusal_why};
 use crate::watchdog::{LimitStanding, limit_standing};
 
 const ROW: &str = "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 162h20m6s.";
-const EMPTY: &str = include_str!("../../tests/fixtures/agy-composer/agy-composed-frame-80x24.txt");
-const DRAFT: &str = include_str!("../../tests/fixtures/agy-composer/agy-draft-frame-80x24.txt");
-const TRUST: &str = include_str!("../../tests/fixtures/agy-composer/agy-trust-modal-frame.txt");
-const MUSE: &str = include_str!("../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+const EMPTY: &str =
+    include_str!("../../../tests/fixtures/agy-composer/agy-composed-frame-80x24.txt");
+const DRAFT: &str = include_str!("../../../tests/fixtures/agy-composer/agy-draft-frame-80x24.txt");
+const TRUST: &str = include_str!("../../../tests/fixtures/agy-composer/agy-trust-modal-frame.txt");
+const MUSE: &str =
+    include_str!("../../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
 
 #[test]
 fn non_limit_agy_refusals_keep_no_frame_for_composer_draft_and_modal() {

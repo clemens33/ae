@@ -1,4 +1,4 @@
-// Frozen unreach addendum a2. Include at EOF of src/autotrust.rs under cfg(test).
+// Frozen unreach addendum a2. Include at EOF of src/l4_orchestration/autotrust.rs under cfg(test).
 #[cfg(test)]
 mod unreach_clock_a2 {
     use super::*;

@@ -161,13 +161,13 @@ pub(crate) fn prune(root: &Path, removed: Option<&Path>) -> io::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/it/regsid_aliases_spec.rs"]
+#[path = "../../../tests/it/regsid_aliases_spec.rs"]
 mod regsid_aliases_spec;
 
 #[cfg(test)]
-#[path = "../../tests/it/regsid_maintenance_spec.rs"]
+#[path = "../../../tests/it/regsid_maintenance_spec.rs"]
 mod regsid_maintenance_spec;
 
 #[cfg(test)]
-#[path = "../../tests/it/regsid_retarget_spec.rs"]
+#[path = "../../../tests/it/regsid_retarget_spec.rs"]
 mod regsid_retarget_spec;

@@ -701,16 +701,19 @@ fn no_decision_path_reads_quota_history() {
     let read = |file: &str| std::fs::read_to_string(root.join(file)).expect("source");
     let reads = ["read_fleet", "HistoryCache", "view_held_cached"];
     for file in [
-        "src/watchdog_daemon.rs",
-        "src/autoreseat.rs",
-        "src/autoreseat/leg.rs",
-        "src/effort.rs",
-        "src/effort/leg.rs",
+        "src/l4_orchestration/watchdog_daemon.rs",
+        "src/l4_orchestration/autoreseat.rs",
+        "src/l4_orchestration/autoreseat/leg.rs",
+        "src/l4_orchestration/effort.rs",
+        "src/l4_orchestration/effort/leg.rs",
         "src/doctor.rs",
     ] {
         let text = match file {
-            "src/watchdog_daemon.rs" => {
-                crate::support::source_view::module_family("src/watchdog_daemon.rs", false)
+            "src/l4_orchestration/watchdog_daemon.rs" => {
+                crate::support::source_view::module_family(
+                    "src/l4_orchestration/watchdog_daemon.rs",
+                    false,
+                )
             }
             _ => read(file),
         };

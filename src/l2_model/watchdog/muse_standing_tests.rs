@@ -1,5 +1,5 @@
 //! Driver-owned unit tests of `limit_standing` for muse, beside the frozen
-//! acceptance spec in `src/reseat/limitmuse_spec.rs`: each variant of
+//! acceptance spec in `src/l4_orchestration/reseat/limitmuse_spec.rs`: each variant of
 //! [`LimitStanding`], each row shape the muse reader accepts or names, and the
 //! boundaries the spec reaches only through the stop leg.
 use super::{LimitStanding, limit_standing};

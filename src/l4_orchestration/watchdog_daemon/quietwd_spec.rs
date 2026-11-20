@@ -1,5 +1,5 @@
 //! Independent quietwd scheduling and committed-state acceptance.
-//! Install as `src/watchdog_daemon/quietwd_spec.rs` under cfg(test).
+//! Install as `src/l4_orchestration/watchdog_daemon/quietwd_spec.rs` under cfg(test).
 
 use super::{
     Adoption, Carry, Look, MotionState, MotionTicker, MotionVerdict, Pace, Verdict,

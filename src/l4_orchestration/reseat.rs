@@ -3185,7 +3185,7 @@ mod tests {
         // idle: the row above the prompt is muse's own `── Voice input …`
         // rule, which is not a claude border, so the frame fails closed.
         let idle_muse =
-            include_str!("../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+            include_str!("../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
         assert_eq!(classify(idle_muse, ToolKind::Muse), HarnessState::Unknown);
         // An unmodelled tool has no grammar at all, and an empty capture is
         // the shape a failed read takes.
@@ -3555,7 +3555,7 @@ mod tests {
     #[test]
     fn a_limit_over_an_echo_is_proven_and_over_work_is_not() {
         const LIMITED: &str =
-            include_str!("../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
+            include_str!("../../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
         const DONE: &str = "✻ Baked for 0s · done 10:23 AM";
         let tool = super::ToolKind::Claude;
         for (below, proven) in [
@@ -3582,8 +3582,9 @@ mod tests {
     fn a_refusal_names_the_first_reading_that_proves_nothing() {
         use super::{HarnessState::Idle, HarnessState::Unknown, refusal_why};
         const LIMITED: &str =
-            include_str!("../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
-        const IDLE: &str = include_str!("../tests/fixtures/harness-state/claude-idle-167x40.txt");
+            include_str!("../../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
+        const IDLE: &str =
+            include_str!("../../tests/fixtures/harness-state/claude-idle-167x40.txt");
         let tool = super::ToolKind::Claude;
         let working = LIMITED.replace("✻ Baked for 0s · done 10:23 AM", "⏺ a \"tool\" row");
         for (first, second, why) in [
@@ -3637,7 +3638,7 @@ mod tests {
     #[test]
     fn limitstop_the_real_limit_requires_two_proven_captures() {
         const REAL: &str =
-            include_str!("../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
+            include_str!("../../tests/fixtures/harness-state/claude-limit-2.1.296-180x50.txt");
         let limited = (
             crate::harness_state::classify(REAL, super::ToolKind::Claude),
             super::limit_proven(REAL, "claude", super::ToolKind::Claude),
@@ -3660,7 +3661,7 @@ mod tests {
     #[test]
     fn limitstop_measured_cancelled_continue_is_finished_only_when_current() {
         const CANCELLED: &str = include_str!(
-            "../tests/fixtures/harness-state/claude-limit-cancelled-2.1.296-180x50.txt"
+            "../../tests/fixtures/harness-state/claude-limit-cancelled-2.1.296-180x50.txt"
         );
         let current = (
             crate::harness_state::classify(CANCELLED, super::ToolKind::Claude),
@@ -3709,7 +3710,7 @@ mod tests {
     #[test]
     fn a_claude_limit_menu_is_a_limit_proof_only_as_the_live_bottom_with_no_turn_above() {
         const MENU: &str =
-            include_str!("../tests/fixtures/claude-limit-menu/claude-limit-menu-39col.txt");
+            include_str!("../../tests/fixtures/claude-limit-menu/claude-limit-menu-39col.txt");
         let claude = super::ToolKind::Claude;
         assert_eq!(
             crate::harness_state::read_frame(MENU, claude),
@@ -3726,7 +3727,7 @@ mod tests {
             "the measured menu is a finished limit on both reads"
         );
 
-        let busy = include_str!("../tests/fixtures/harness-state/claude-busy-167x40.txt")
+        let busy = include_str!("../../tests/fixtures/harness-state/claude-busy-167x40.txt")
             .lines()
             .find(|row| row.starts_with("✻ Enchanting"))
             .unwrap_or_default();

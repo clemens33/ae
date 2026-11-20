@@ -1275,8 +1275,8 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     assert_eq!(
         sorted(sites(concat!("SessionRead", "::open("))),
         sorted(vec![
-            ("src/rename.rs".to_owned(), 2),
-            ("src/restore.rs".to_owned(), 1),
+            ("src/l4_orchestration/rename.rs".to_owned(), 2),
+            ("src/l4_orchestration/restore.rs".to_owned(), 1),
             ("src/l3_services/session.rs".to_owned(), 1),
         ]),
         "and so is the event stream — plus the stopped rename's two ledger \

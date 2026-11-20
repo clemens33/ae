@@ -1,8 +1,9 @@
 //! Independent acceptance tests; navigator-owned, installed byte-identically.
 use super::{HarnessState, StopPolicy, ToolKind, frame_gap, limit_proven, may_stop};
 
-const PLAIN: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-plain.txt");
-const WATCHING: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-watching.txt");
+const PLAIN: &str = include_str!("../../../tests/fixtures/harness-state/muse-limit-plain.txt");
+const WATCHING: &str =
+    include_str!("../../../tests/fixtures/harness-state/muse-limit-watching.txt");
 const STOPPED: &str = "  This turn stopped because your usage limit was reached.\n";
 
 fn proves(frame: &str) -> bool {
@@ -17,7 +18,7 @@ fn before_voice(frame: &str, row: &str) -> String {
 fn limitmuse_measured_plain_frame_proves_only_the_limit_stop() {
     assert!(proves(PLAIN));
     assert!(proves(&format!("[older transcript]\n{PLAIN}\n\n")));
-    let idle = include_str!("../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+    let idle = include_str!("../../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
     assert!(!proves(idle));
     assert_eq!(
         crate::harness_state::classify(idle, ToolKind::Muse),

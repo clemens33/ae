@@ -5,8 +5,9 @@ use super::*;
 
 const NOW: i64 = 1_800_000_000;
 const TITLE: &str = "background evidence watch";
-const WATCHING: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-watching.txt");
-const PLAIN: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-plain.txt");
+const WATCHING: &str =
+    include_str!("../../../tests/fixtures/harness-state/muse-limit-watching.txt");
+const PLAIN: &str = include_str!("../../../tests/fixtures/harness-state/muse-limit-plain.txt");
 
 fn frame(reset: i64) -> String {
     format!(

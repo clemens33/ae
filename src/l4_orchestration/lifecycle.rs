@@ -1086,7 +1086,7 @@ impl DetachedArgv {
 }
 
 /// What asking an attached tmux client did.
-pub(super) enum ClientPrompt {
+pub(crate) enum ClientPrompt {
     /// Tmux displayed the question and retained the continuation.
     Shown,
     /// No client is attached to the caller's session.
@@ -1100,7 +1100,7 @@ pub(super) enum ClientPrompt {
 /// One prompt has one continuation. Prompting every attached client would let
 /// two `y` answers start the destructive operation twice, so the active client
 /// is the deterministic owner of this confirmation.
-pub(super) fn confirm_on_client(
+pub(crate) fn confirm_on_client(
     server: &ServerId,
     session: &str,
     prompt: &str,
@@ -1130,7 +1130,7 @@ pub(super) fn confirm_on_client(
 }
 
 /// Display one outcome on every client still attached to `server`.
-pub(super) fn announce_to_clients(server: &ServerId, text: &str) {
+pub(crate) fn announce_to_clients(server: &ServerId, text: &str) {
     let Some(clients) = transport::observe_clients(server) else {
         return;
     };
@@ -1148,7 +1148,7 @@ pub(super) fn announce_to_clients(server: &ServerId, text: &str) {
 /// the dying session is the only ranked one, the one fleet listing that keeps
 /// rankless rows still names a destination on an ae-owned server, so a viewer
 /// is detached only when its session is the last one there.
-pub(super) fn handoff_clients_before_kill(server: &ServerId, name: &str) -> Option<String> {
+pub(crate) fn handoff_clients_before_kill(server: &ServerId, name: &str) -> Option<String> {
     handoff_clients(server, name, None)
 }
 
@@ -1270,7 +1270,7 @@ fn handoff_created(id: &str) -> u64 {
 }
 
 /// The positive server record of one session.
-pub(super) fn recorded_server(root: &Path, name: &str) -> Option<ServerId> {
+pub(crate) fn recorded_server(root: &Path, name: &str) -> Option<ServerId> {
     let bytes = meta::read_bytes(&sessions_dir(root).join(name)).ok()?;
     match server_of(&bytes) {
         ServerSelector::Positive(selector) => Some(ServerId::Selected(selector)),
@@ -1392,7 +1392,7 @@ fn handoff_argv(name: &str) -> Option<DetachedArgv> {
 }
 
 /// Append one line to the target's event log, best-effort.
-pub(super) fn emit_lifecycle_event(dir: &Path, name: &str, action: &str, summary: &str) {
+pub(crate) fn emit_lifecycle_event(dir: &Path, name: &str, action: &str, summary: &str) {
     let _ = crate::store::open(dir).append_event(&lifecycle_event_line(name, action, summary));
 }
 

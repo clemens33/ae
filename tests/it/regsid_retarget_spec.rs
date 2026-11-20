@@ -1,5 +1,5 @@
 //! Frozen race-guard acceptance for `retarget_one` in
-//! `src/lifecycle/aliases.rs`: a captured `prior` alone never replaces an
+//! `src/l4_orchestration/lifecycle/aliases.rs`: a captured `prior` alone never replaces an
 //! entry that is no longer our alias. Included as a `cfg(test)` child
 //! module of `aliases`; it compiles with the extraction, not on main.
 #![allow(

@@ -2112,7 +2112,7 @@ fn a_wait_on_an_unknown_seat_warns_on_stderr_and_still_records() {
 /// Driving `_retire` rather than composing its line is the whole point. The
 /// rule reads the slot off that record, and a fixture that wrote the record
 /// itself could not notice the writer dropping it. Drop `target_slot` in
-/// `src/spawn.rs` and the request below stays open forever, which is the bug
+/// `src/l4_orchestration/spawn.rs` and the request below stays open forever, which is the bug
 /// this rule exists to end.
 #[test]
 fn a_real_retire_closes_the_request_that_seat_was_sent() {

@@ -1,7 +1,7 @@
 # In-place seat compaction (`ae compact`)
 
-The verb is `src/seatcompact_run.rs::run`; the pure half is
-`src/seatcompact.rs` (vocabulary, gates, audit shapes, report). The compaction
+The verb is `src/l4_orchestration/seatcompact_run.rs::run`; the pure half is
+`src/l4_orchestration/seatcompact.rs` (vocabulary, gates, audit shapes, report). The compaction
 capability is the `compact` row on `ToolAdapter` (`src/l2_model/tool.rs`), matched by
 the call site — never the tool.
 

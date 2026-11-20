@@ -5,8 +5,9 @@
 use super::{HarnessState, LongLimit, ToolKind, background_only, long_limit_last_word};
 use crate::tmux::ObservedClient;
 
-const PLAIN: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-plain.txt");
-const WATCHING: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-watching.txt");
+const PLAIN: &str = include_str!("../../../tests/fixtures/harness-state/muse-limit-plain.txt");
+const WATCHING: &str =
+    include_str!("../../../tests/fixtures/harness-state/muse-limit-watching.txt");
 const TITLE: &str = "background evidence watch";
 /// `date -u -j -f %Y-%m-%dT%H:%M:%SZ 2027-01-15T08:00:00Z +%s`.
 const RESET: i64 = 1_800_000_000;

@@ -1,5 +1,5 @@
 //! Driver-owned unit tests of the two muse readers a long-limit stop is proven
-//! from (#304), beside the frozen acceptance in `src/autoreseat/bgtask_spec.rs`:
+//! from (#304), beside the frozen acceptance in `src/l4_orchestration/autoreseat/bgtask_spec.rs`:
 //! `muse_background_tasks` and `muse_limit_reset`, each shape they accept and
 //! each row that must refuse.
 use super::{muse_background_tasks, muse_limit_reset, muse_task_title};

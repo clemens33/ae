@@ -60,7 +60,8 @@ fn quiet_start_proof_requires_two_identical_complete_empty_nonbusy_frames() {
             "✻ Working… (esc to interrupt)",
         ),
         missing_footer,
-        include_str!("../../tests/fixtures/claude-trust/claude-trust-modal-80x24.txt").to_owned(),
+        include_str!("../../../tests/fixtures/claude-trust/claude-trust-modal-80x24.txt")
+            .to_owned(),
     ] {
         assert!(
             !quiet_pair(Some(&rejected), Some(&rejected), "claude"),

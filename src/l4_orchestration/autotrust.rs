@@ -615,9 +615,9 @@ fn line(seat: &Seat<'_>, proof: &Proof, action: &str, summary: &str) -> String {
 }
 
 #[cfg(test)]
-include!("../tests/unit/unreach_clock.rs");
+include!("../../tests/unit/unreach_clock.rs");
 #[cfg(test)]
-include!("../tests/unit/unreach_clock_a2.rs");
+include!("../../tests/unit/unreach_clock_a2.rs");
 
 #[cfg(test)]
 mod tests {

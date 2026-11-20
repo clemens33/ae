@@ -1,12 +1,12 @@
 // Frozen bgmark acceptance (.local/bgmark/freeze.tsv), installed byte-identically.
-include!("../../tests/spec/bgmark_daemon.rs");
-include!("../../tests/spec/bgmark_cycle.rs");
-include!("../../tests/spec/deadnotify.rs");
-include!("../../tests/spec/alertlatch.rs");
-include!("../../tests/spec/alertlatch_slots.rs");
-include!("../../tests/spec/alertlatch_rename.rs");
-include!("../../tests/spec/deadnotify_impl.rs");
-include!("../../tests/spec/seatinc.rs");
+include!("../../../tests/spec/bgmark_daemon.rs");
+include!("../../../tests/spec/bgmark_cycle.rs");
+include!("../../../tests/spec/deadnotify.rs");
+include!("../../../tests/spec/alertlatch.rs");
+include!("../../../tests/spec/alertlatch_slots.rs");
+include!("../../../tests/spec/alertlatch_rename.rs");
+include!("../../../tests/spec/deadnotify_impl.rs");
+include!("../../../tests/spec/seatinc.rs");
 #[test]
 fn history_state_is_known_at_900_seconds_and_unknown_at_901() {
     assert_eq!(super::history_clock(Some(100), 1000), Some(100));
@@ -8276,7 +8276,7 @@ fn witness_b_idle_after_new_working_then_memo() -> Observation {
         None,
         "the later memo is activity, not a quiet declaration"
     );
-    let capture = include_str!("../../tests/fixtures/harness-state/codex-idle-112x40.txt");
+    let capture = include_str!("../../../tests/fixtures/harness-state/codex-idle-112x40.txt");
     let harness = cycle.harness_observation(
         capture,
         crate::tool::ToolKind::Codex,
@@ -10101,7 +10101,7 @@ fn resolve(
 
 #[test]
 fn a_held_identity_survives_an_unreadable_frame_and_expires_by_age_incarnation_or_death() {
-    let live = include_str!("../../tests/fixtures/harness-state/claude-idle-167x40.txt");
+    let live = include_str!("../../../tests/fixtures/harness-state/claude-idle-167x40.txt");
     let scratch = Scratch::new("identity-hold");
     let helper = SendHelper::for_session(&scratch.0);
     let server = ServerId::Ambient;
@@ -10183,7 +10183,7 @@ fn a_held_identity_survives_an_unreadable_frame_and_expires_by_age_incarnation_o
 
 #[test]
 fn the_drift_mark_needs_a_pin_to_disagree_with() {
-    let live = include_str!("../../tests/fixtures/harness-state/claude-idle-167x40.txt");
+    let live = include_str!("../../../tests/fixtures/harness-state/claude-idle-167x40.txt");
     let scratch = Scratch::new("identity-drift");
     let helper = SendHelper::for_session(&scratch.0);
     let server = ServerId::Ambient;
@@ -10219,8 +10219,9 @@ fn the_drift_mark_needs_a_pin_to_disagree_with() {
 
 #[test]
 fn the_drift_mark_reads_a_claude_pin_through_family_version() {
-    let idle = include_str!("../../tests/fixtures/harness-state/claude-idle-167x40.txt");
-    let busy = include_str!("../../tests/fixtures/harness-state/claude-busy-nbsp-tip-101x41.txt");
+    let idle = include_str!("../../../tests/fixtures/harness-state/claude-idle-167x40.txt");
+    let busy =
+        include_str!("../../../tests/fixtures/harness-state/claude-busy-nbsp-tip-101x41.txt");
     let scratch = Scratch::new("identity-drift-family");
     let helper = SendHelper::for_session(&scratch.0);
     let server = ServerId::Ambient;
@@ -10244,7 +10245,7 @@ fn the_drift_mark_reads_a_claude_pin_through_family_version() {
 /// from a frame whose composer is gone.
 #[test]
 fn the_cycle_resolves_a_quoted_frame_as_unobserved() {
-    let muse = include_str!("../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
+    let muse = include_str!("../../../tests/fixtures/runtime-identity/muse-idle-plain-80x24.txt");
     let quoted: String = muse
         .lines()
         .filter(|line| !line.trim_start().starts_with('\u{276f}'))
@@ -11905,8 +11906,8 @@ mod pacewords_spec {
         }
     }
 }
-include!("../../tests/unit/unreach_episode.rs");
-include!("../../tests/unit/unreach_motion_a4.rs");
+include!("../../../tests/unit/unreach_episode.rs");
+include!("../../../tests/unit/unreach_motion_a4.rs");
 
 /// Mutant closure for the death latch (chal225): a seat back from a
 /// death carries neither its pre-death proof frame nor its child lease.
@@ -12164,25 +12165,25 @@ fn vendorwait_the_pane_border_keeps_the_reason_and_the_roster_keeps_working() {
 // Codex's self-continuing service wait as a WORKING seat, names it on the
 // observed option `ae list` prints, keeps `working` in the `@ae_agents`
 // roster fact, and never nudges or names it needs-you. Append
-// byte-identically to `src/watchdog_daemon/tests.rs`.
+// byte-identically to `src/l4_orchestration/watchdog_daemon/tests.rs`.
 const VENDORWAIT_FRAMES: [(&str, &str); 4] = [
     (
         "0.170.0 at 80 columns",
-        include_str!("../../tests/fixtures/harness-state/codex-service-wait-0.170.0-80w.txt"),
+        include_str!("../../../tests/fixtures/harness-state/codex-service-wait-0.170.0-80w.txt"),
     ),
     (
         "0.152.1 at 80 columns",
-        include_str!("../../tests/fixtures/harness-state/codex-service-wait-0.152.1-80w.txt"),
+        include_str!("../../../tests/fixtures/harness-state/codex-service-wait-0.152.1-80w.txt"),
     ),
     (
         "0.170.0 without the retry option",
         include_str!(
-            "../../tests/fixtures/harness-state/codex-service-wait-noretry-0.170.0-80w.txt"
+            "../../../tests/fixtures/harness-state/codex-service-wait-noretry-0.170.0-80w.txt"
         ),
     ),
     (
         "0.170.0 at 200 columns",
-        include_str!("../../tests/fixtures/harness-state/codex-service-wait-0.170.0-200w.txt"),
+        include_str!("../../../tests/fixtures/harness-state/codex-service-wait-0.170.0-200w.txt"),
     ),
 ];
 
@@ -12251,7 +12252,7 @@ fn vendorwait_the_service_wait_is_working_named_and_never_nudged() {
 #[test]
 fn vendorwait_the_plain_codex_busy_frame_keeps_its_words() {
     let (prior, observed) = vendorwait_still(include_str!(
-        "../../tests/fixtures/harness-state/codex-busy-280x40.txt"
+        "../../../tests/fixtures/harness-state/codex-busy-280x40.txt"
     ));
     let booked = account(&prior, &observed, &Knobs::default());
     assert_eq!(booked.verdict, Verdict::Active);

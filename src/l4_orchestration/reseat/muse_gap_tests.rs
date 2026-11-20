@@ -5,10 +5,11 @@
 use super::{HarnessState, ToolKind, frame_gap, limit_proven, refusal_why};
 use crate::watchdog::{LimitStanding, limit_standing};
 
-const PLAIN: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-plain.txt");
-const WATCHING: &str = include_str!("../../tests/fixtures/harness-state/muse-limit-watching.txt");
+const PLAIN: &str = include_str!("../../../tests/fixtures/harness-state/muse-limit-plain.txt");
+const WATCHING: &str =
+    include_str!("../../../tests/fixtures/harness-state/muse-limit-watching.txt");
 const CLAUDE_LIMITED: &str =
-    include_str!("../../tests/fixtures/harness-state/claude-limit-echo-2.1.317.txt");
+    include_str!("../../../tests/fixtures/harness-state/claude-limit-echo-2.1.317.txt");
 
 fn muse_gap(capture: Option<&str>) -> Option<String> {
     frame_gap(

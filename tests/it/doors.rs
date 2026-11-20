@@ -378,9 +378,9 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
             // The listing, through its fleet discovery's `all_predate`.
             "src/l2_model/inventory.rs".to_owned(),
             // The ONE boot-proof gate `end` and `rename` share.
-            "src/lifecycle/end.rs".to_owned(),
+            "src/l4_orchestration/lifecycle/end.rs".to_owned(),
             // The resume, at `resume_absence`.
-            "src/session_launch.rs".to_owned(),
+            "src/l4_orchestration/session_launch.rs".to_owned(),
             // Its own definition.
             "src/l2_model/tmux.rs".to_owned(),
             // Its unit table, in the module's test file.
@@ -392,8 +392,8 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
         sorted(holders("probe_absence(")),
         sorted(vec![
             // The shared gate.
-            "src/lifecycle/end.rs".to_owned(),
-            "src/session_launch.rs".to_owned(),
+            "src/l4_orchestration/lifecycle/end.rs".to_owned(),
+            "src/l4_orchestration/session_launch.rs".to_owned(),
             "src/l1_platform/transport.rs".to_owned(),
         ]),
         "the raw absence probe gained (or lost) a caller"
@@ -408,8 +408,8 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
             // The fleet listing's discovery.
             "src/l3_services/fleet_read.rs".to_owned(),
             // The shared gate.
-            "src/lifecycle/end.rs".to_owned(),
-            "src/session_launch.rs".to_owned(),
+            "src/l4_orchestration/lifecycle/end.rs".to_owned(),
+            "src/l4_orchestration/session_launch.rs".to_owned(),
         ]),
         "the boot time gained (or lost) a reader"
     );
@@ -418,9 +418,9 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
         sorted(vec![
             // One definition: called by the Positive arm, stopped-card question
             // capture and guarded execution's under-lock reproof.
-            "src/lifecycle/end.rs".to_owned(),
+            "src/l4_orchestration/lifecycle/end.rs".to_owned(),
             // The rename preflight and its retry.
-            "src/rename.rs".to_owned(),
+            "src/l4_orchestration/rename.rs".to_owned(),
         ]),
         "the shared boot-proof gate gained (or lost) a caller"
     );
@@ -433,18 +433,21 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
     let count_in = |file: &str, needle: &str| tree_text(file).matches(needle).count();
     for needle in ["classify_absence(", "probe_absence(", "boot_time("] {
         assert_eq!(
-            count_in("src/lifecycle/end.rs", needle),
+            count_in("src/l4_orchestration/lifecycle/end.rs", needle),
             1,
             "end.rs must compose `{needle}` exactly once, inside boot_proved_stopped"
         );
     }
     assert_eq!(
-        count_in("src/lifecycle/end.rs", "boot_proved_stopped("),
+        count_in(
+            "src/l4_orchestration/lifecycle/end.rs",
+            "boot_proved_stopped("
+        ),
         4,
         "end.rs must hold one definition and exactly three calls: the Positive arm, stopped-card question capture and guarded under-lock reproof"
     );
     assert_eq!(
-        count_in("src/rename.rs", "boot_proved_stopped("),
+        count_in("src/l4_orchestration/rename.rs", "boot_proved_stopped("),
         2,
         "rename.rs must call the shared gate from the preflight and the retry, and nowhere else"
     );
@@ -452,7 +455,7 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
     // And the two verbs that still refuse on the strict proof alone.
     for (file, operation) in [
         ("src/l3_services/compact.rs", "compact"),
-        ("src/lifecycle.rs", "stop"),
+        ("src/l4_orchestration/lifecycle.rs", "stop"),
     ] {
         let code = tree_text(file);
         assert!(
@@ -811,7 +814,7 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
         // no-clobber publication to get wrong. 0o644 is the plain-file mode:
         // the witness is not secret (its UUID also sits in the intent).
         (
-            "src/rename.rs",
+            "src/l4_orchestration/rename.rs",
             "crate::init::create_exclusive(&path, witness_bytes(nonce).as_bytes(), 0o644)",
             "the witness publication must be init's exclusive writer at plain-file mode",
         ),
@@ -1012,7 +1015,7 @@ fn a_live_session_file_is_named_in_exactly_one_place() {
         // happens to be spelled the same, so it is pinned by count: a second
         // one is a review, not a diff.
         let occurrences = code.matches("\"meta\"").count();
-        let allowed = usize::from(name == "src/session_launch/preflight.rs");
+        let allowed = usize::from(name == "src/l4_orchestration/session_launch/preflight.rs");
         assert_eq!(
             occurrences, allowed,
             "{name} spells \"meta\" {occurrences} time(s); the file is named in src/l2_model/store.rs \

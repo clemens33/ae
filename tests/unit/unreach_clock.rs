@@ -1,4 +1,4 @@
-// Frozen unreach r1. Append verbatim to src/autotrust.rs.
+// Frozen unreach r1. Append verbatim to src/l4_orchestration/autotrust.rs.
 #[cfg(test)]
 mod unreach_clock_spec {
     use super::*;
