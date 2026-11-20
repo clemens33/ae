@@ -716,13 +716,17 @@ fn format_case(misformatted: bool) {
         if misformatted {
             "formatter-note\n"
         } else {
-            "formatter-note\ntaplo-err\n"
+            "formatter-note\nformatter-note\ntaplo-err\n"
         },
         "both stderr streams stay exact: {err}"
     );
     assert_eq!(
         f.file("arguments"),
-        "fmt\n--all\n--check\n",
+        if misformatted {
+            "fmt\n--all\n--check\n"
+        } else {
+            "fmt\n--manifest-path\nfuzz/Cargo.toml\n--check\n"
+        },
         "Cargo fmt argv stays exact"
     );
     assert_eq!(
@@ -730,7 +734,7 @@ fn format_case(misformatted: bool) {
         if misformatted {
             vec!["fmt"]
         } else {
-            vec!["fmt", "taplo-fmt"]
+            vec!["fmt", "fmt", "taplo-fmt"]
         },
         "taplo follows only a successful formatter"
     );

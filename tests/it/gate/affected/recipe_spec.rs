@@ -301,7 +301,7 @@ fn clean_subset_runs_all_three_checks_and_forwards_one_exact_filter() {
     for label in ["fmt", "clippy", "check", "selector", "lane-filtered"] {
         assert_eq!(
             f.count(label),
-            1,
+            if label == "fmt" { 2 } else { 1 },
             "missing or duplicate {label}: {recorded:?}; {out}{err}"
         );
     }

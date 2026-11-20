@@ -2718,11 +2718,13 @@ rust-fmt-check:
     {{ NEST }}
     {{ DETACHED }}
     detached cargo fmt --all --check
+    detached cargo fmt --manifest-path fuzz/Cargo.toml --check
     exec taplo fmt --check
 
 # Auto-format Rust + TOML
 rust-fmt:
     cargo fmt --all
+    cargo fmt --manifest-path fuzz/Cargo.toml
     taplo fmt
 
 # `-D warnings` is what makes [lints] a gate rather than a suggestion — which is
@@ -4197,8 +4199,8 @@ _fuzz-preflight:
         echo "       git add fuzz/Cargo.lock" >&2
         exit 1
     fi
-    # No product lane formats these sources — fuzz/ is not a workspace member —
-    # so the lane checks them itself, with the PRODUCT rustfmt.
+    # fuzz/ is not a workspace member. Check it with the PRODUCT rustfmt, as the
+    # format gate does; neither check requires the fuzz nightly.
     if ! cargo fmt --manifest-path fuzz/Cargo.toml --check; then
         echo "Error: the fuzz sources are not rustfmt-clean" >&2
         echo "       cargo fmt --manifest-path fuzz/Cargo.toml" >&2

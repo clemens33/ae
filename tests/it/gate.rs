@@ -10385,3 +10385,23 @@ fn the_live_harness_smoke_guards_catch_every_way_of_reaching_it() {
             .is_empty()
     );
 }
+
+/// The format gate checks the separate fuzz crate with the product rustfmt too.
+#[test]
+fn the_format_gate_checks_fuzz_sources() {
+    let justfile = read(&root().join("justfile"));
+    let commands = recipe_text(&justfile, "rust-fmt-check:");
+    assert!(
+        commands
+            .iter()
+            .any(|line| line == "detached cargo fmt --manifest-path fuzz/Cargo.toml --check"),
+        "rust-fmt-check must check fuzz sources with the product rustfmt"
+    );
+    let fixer = recipe_text(&justfile, "rust-fmt:");
+    assert!(
+        fixer
+            .iter()
+            .any(|line| line == "cargo fmt --manifest-path fuzz/Cargo.toml"),
+        "rust-fmt must format fuzz sources with the product rustfmt"
+    );
+}
