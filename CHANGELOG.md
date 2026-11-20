@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.95] - 2026-11-20
+- An orchestrator's chat, app panel and phone hide the raw relay answer echo unless relay_replies = on (or ae chat --all), and draw the orchestrator's own say
+- The integration fixture relays as the proven dispatcher
+- Scope Telegram forwarding to the orchestrator
+- Move session name validation to the config layer
+- Pin credential assignments in the Telegram settings parser
+
 ## [v2026.11.94] - 2026-11-19
 - Orch S1a: frozen acceptance spec (red until the slice lands): relay sections, owner-input binding, verify, stamp gate, dispatcher refusals, upgrade gate
 - Orch S1a: install frozen acceptance spec v5 (integration file lint-clean; no assertion changed)
