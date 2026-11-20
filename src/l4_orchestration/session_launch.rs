@@ -23,6 +23,7 @@ use crate::tool::ToolKind;
 use crate::{deliver, roster, tmux, transport};
 
 pub(crate) mod assets;
+mod caller;
 pub(crate) mod capture;
 #[cfg(test)]
 #[path = "session_launch/effort_trim_bounded_spec.rs"]
@@ -70,6 +71,8 @@ use overrides::{recorded_solo_identity, resolve_spawn_pair, split_seat_override}
 pub use plan::{Env, Mode, Plan, is_bound_resume, parse_plan};
 use plan::{EnvError, read_env};
 pub(crate) use plan::{parse_plan_with_attach, parse_seat_plan};
+
+pub(crate) use caller::{Caller, LaunchCaller, LaunchRoute};
 #[cfg(test)]
 use preflight::check_resume_target;
 use preflight::{
@@ -90,7 +93,7 @@ pub use record::{
     ProvenIdentity, SeedOutcome, pane_proven_identity, publish_meta_and_seed_uuid,
     seed_session_uuid,
 };
-use record::{announce_inherited_goal, meta_document};
+use record::{announce_inherited_goal, document_uuid, meta_document};
 use stamp::{
     apply_layout, assert_status_bindings, open_first_chat, stamp_pane, stamp_session, stamp_windows,
 };
@@ -325,17 +328,20 @@ pub(crate) const CHAT_FAILED_ACTION: &str = "chat-window-failed";
 // entry
 // ---------------------------------------------------------------------------
 
-/// `_launch …` — create or resume a session.
+/// `_launch …` — create or resume a session for `who`, which came in by
+/// `route`.
 ///
 /// # Errors
 ///
 /// Only a failure to write `out` or `err`. Every refusal is an exit code.
-pub fn run(
+pub(crate) fn run(
     tail: &[String],
+    who: &LaunchCaller,
+    route: LaunchRoute,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
-    run_with_expected(tail, None, None, None, out, err)
+    run_with_expected(tail, None, None, None, (who, route), out, err)
 }
 
 /// The proved orchestrator seat's audit of a launch it runs (G4).
@@ -363,6 +369,10 @@ pub(crate) trait LaunchAudit {
     /// Called once the session's record is published, still under the same
     /// lock: `uuid` is the canonical session uuid that record holds.
     fn built(&mut self, uuid: &str);
+
+    /// The reference of the request row [`LaunchAudit::locked`] wrote, which
+    /// the target's start row repeats; empty before that row exists.
+    fn reference(&self) -> String;
 }
 
 /// [`run`] for the proved orchestrator seat: `audit` records the request
@@ -374,10 +384,19 @@ pub(crate) trait LaunchAudit {
 pub(crate) fn run_audited(
     tail: &[String],
     audit: &mut dyn LaunchAudit,
+    who: &LaunchCaller,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
-    run_with_expected(tail, None, None, Some(audit), out, err)
+    run_with_expected(
+        tail,
+        None,
+        None,
+        Some(audit),
+        (who, LaunchRoute::Dispatch),
+        out,
+        err,
+    )
 }
 
 /// Whether a served `_launch` tail carries exactly the bound resume as its
@@ -388,20 +407,31 @@ pub fn serves_bound_resume(tail: &[String]) -> bool {
     read_env(tail).is_ok_and(|(_, user)| is_bound_resume(&user))
 }
 
-/// Settings-only entry into the same launch owner with a locked expectation.
+/// Settings-only entry into the same launch owner with a locked expectation,
+/// for `who`, which came in by `route`.
 pub(crate) fn run_expected(
     preamble: &crate::entry::Preamble,
     user: &[String],
     expected: &ExpectedLaunch,
+    (who, route): (&LaunchCaller, LaunchRoute),
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
     let argv = expected_launch_argv(preamble, user, expected);
-    run_with_expected(&argv[1..], Some(expected), None, None, out, err)
+    run_with_expected(
+        &argv[1..],
+        Some(expected),
+        None,
+        None,
+        (who, route),
+        out,
+        err,
+    )
 }
 
 /// One restored session: the ordinary launch owner, told the saved facts the
-/// scan judged by so it can re-check them under the lifecycle lock.
+/// scan judged by so it can re-check them under the lifecycle lock. Bare `ae`
+/// restores only outside tmux, so its caller is the owner's own terminal.
 pub(crate) fn run_restore(
     preamble: &crate::entry::Preamble,
     name: &str,
@@ -411,7 +441,15 @@ pub(crate) fn run_restore(
 ) -> crate::error::Result<u8> {
     let user = [name.to_owned(), "--no-attach".to_owned()];
     let argv = preamble.launch_argv(&user);
-    run_with_expected(&argv[1..], None, Some(attempt), None, out, err)
+    run_with_expected(
+        &argv[1..],
+        None,
+        Some(attempt),
+        None,
+        (&LaunchCaller::Outside, LaunchRoute::Restore),
+        out,
+        err,
+    )
 }
 
 fn expected_launch_argv(
@@ -440,6 +478,7 @@ fn run_with_expected(
     expected: Option<&ExpectedLaunch>,
     restore: Option<&crate::restore::Attempt>,
     audit: Option<&mut dyn LaunchAudit>,
+    (who, route): (&LaunchCaller, LaunchRoute),
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -489,7 +528,14 @@ fn run_with_expected(
     if let Some(attach) = plan.attach {
         env.attach = attach;
     }
-    launch(&env, &plan, None, expected, restore, audit, out, err)
+    let caller = Caller {
+        who,
+        route,
+        words: &args,
+    };
+    launch(
+        &env, &plan, None, expected, restore, audit, caller, out, err,
+    )
 }
 
 /// The facts a `compact` relaunch carries across the boundary.
@@ -560,6 +606,16 @@ pub fn relaunch(
         resume: false,
         expect_uuid: None,
     };
+    // The pane that asked for the reboot ended with the session it rebooted:
+    // the child's start names ae's reboot and the archive it inherits.
+    let who = LaunchCaller::Reboot {
+        archive: plan.uuid.to_owned(),
+    };
+    let caller = Caller {
+        who: &who,
+        route: LaunchRoute::Reboot,
+        words: &[],
+    };
     launch(
         &env,
         &launch_plan,
@@ -567,6 +623,7 @@ pub fn relaunch(
         None,
         None,
         None,
+        caller,
         out,
         err,
     )
@@ -830,7 +887,8 @@ struct Session {
 )]
 #[allow(
     clippy::too_many_arguments,
-    reason = "each caller's optional proof (expected, restore, the seat's audit) is its own word"
+    reason = "each caller's optional proof (expected, restore, the seat's audit) is its own word, \
+              and so is the caller the entry observed"
 )]
 fn launch(
     env: &Env,
@@ -839,6 +897,7 @@ fn launch(
     expected_launch: Option<&ExpectedLaunch>,
     restore: Option<&crate::restore::Attempt>,
     mut audit: Option<&mut dyn LaunchAudit>,
+    caller: Caller<'_>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -939,12 +998,13 @@ fn launch(
     // preflight above exists only to place the tmux floor before this lock-file
     // write; every expected fact is re-read while the lock is held.
     // The seat's audited launch always holds it, so its request names the
-    // locked target.
+    // locked target, and so does an agent seat's, so its guard does.
     let mut lifecycle = if settings_start
         || expected_resume
         || bound_uuid.is_some()
         || preflight_meta_present
         || audit.is_some()
+        || matches!(caller.who, LaunchCaller::Seat(_))
         || crate::lifecycle::aliases::target(&dir).is_some()
     {
         let Ok(held) = crate::store::lock(
@@ -962,6 +1022,17 @@ fn launch(
     // uuid's, has a server, and is provably stopped there.
     if let Some(uuid) = bound_uuid {
         step!(check_bound_resume(&dir, &session, uuid, err));
+    }
+    // The seat guard, on the locked name and before the alias reclaim and every
+    // other write: an ordinary agent seat runs no launch form on another
+    // session, the attach to a running one included.
+    if let LaunchCaller::Seat(seat) = caller.who
+        && !caller::is_own(&dir, seat)
+    {
+        let typed = plan.name.as_deref().unwrap_or(&session);
+        return Ok(caller::refuse(
+            &sessions, &session, &dir, typed, seat, caller, err,
+        )?);
     }
     // The seat's request, before the first write: a launch on an alias name
     // reclaims it, so it creates as surely as one on a name with no record.
@@ -1210,6 +1281,7 @@ fn launch(
         parent.as_ref(),
         lifecycle.take(),
         audit,
+        caller,
         out,
         err,
     )
@@ -1344,6 +1416,7 @@ fn build(
     parent: Option<&FromProof>,
     lifecycle: Option<std::fs::File>,
     audit: Option<&mut dyn LaunchAudit>,
+    caller: Caller<'_>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -1398,7 +1471,7 @@ fn build(
     {
         return rollback_launch(shape, &dir, &server, &line, err);
     }
-    if let Err(line) = publish_meta(
+    let uuid = match publish_meta(
         at,
         env,
         shape,
@@ -1407,8 +1480,9 @@ fn build(
         parent,
         &live_session_id,
     ) {
-        return rollback_launch(shape, &dir, &server, &line, err);
-    }
+        Ok(uuid) => uuid,
+        Err(line) => return rollback_launch(shape, &dir, &server, &line, err),
+    };
     if let Some(proof) = parent {
         announce_inherited_goal(&dir, &env.home.join("archive"), &proof.id, &shape.name, err);
     }
@@ -1430,11 +1504,13 @@ fn build(
         Err(line) => return rollback_launch(shape, &dir, &server, &line, err),
     };
 
-    // The seat's audit takes the uuid the record holds before the hold ends.
+    // The start row, under the hold and before the session is handed over:
+    // a session whose start cannot be journaled does not stay running. The
+    // seat's audit then takes the published uuid before the hold ends.
+    if let Err(why) = journal_launch_start(&dir, shape, &server, &uuid, audit.as_deref(), caller) {
+        return rollback_unjournaled(shape, &dir, &server, &why, err);
+    }
     if let Some(audit) = audit {
-        let uuid = crate::meta::read_bytes(&dir)
-            .map(|bytes| crate::relay::recorded_uuid(&bytes))
-            .unwrap_or_default();
         audit.built(&uuid);
     }
     // The session is fully on disk; `ae end` may safely delete it, and the
@@ -1770,7 +1846,9 @@ fn restore_spawned(
     Ok(())
 }
 
-/// The meta, published as ONE document. Answers the line a refusal prints.
+/// The meta, published as ONE document, and the canonical session uuid that
+/// document records (empty when it records none valid). Answers the line a
+/// refusal prints.
 fn publish_meta(
     at: Building<'_>,
     env: &Env,
@@ -1779,7 +1857,7 @@ fn publish_meta(
     watchdog: WatchdogFacts<'_>,
     parent: Option<&FromProof>,
     live_session_id: &ProvenIdentity,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let document = meta_document(env, shape, launching, watchdog, parent)
         .map_err(|why| format!("Error: {why}"))?;
     let published = publish_meta_and_seed_uuid(
@@ -1792,7 +1870,7 @@ fn publish_meta(
     if published.is_err() {
         return Err("Error: the session meta could not be published.".to_owned());
     }
-    Ok(())
+    Ok(document_uuid(&document))
 }
 
 /// The session's assets: the helper links and the workspace manifest.
@@ -2669,6 +2747,73 @@ fn rollback_launch(
     writeln!(err, "ae: launch failed — rolling back '{}'.", shape.name)?;
     writeln!(err, "{why}")?;
     let _ = kill_session(server, &shape.name);
+    rollback_dir(shape, dir, err)?;
+    Ok(EXIT_FAILED)
+}
+
+/// The start row of a built session, appended under the lifecycle hold before
+/// the session is handed over. `uuid` is the canonical session uuid of the
+/// meta the launch published, which the seat's audit also takes.
+///
+/// # Errors
+///
+/// A published meta with no canonical session uuid: no row names the session,
+/// so the launch rolls back rather than hand it over. Otherwise why the start
+/// row could not be appended.
+fn journal_launch_start(
+    dir: &Path,
+    shape: &Session,
+    server: &ServerId,
+    uuid: &str,
+    audit: Option<&dyn LaunchAudit>,
+    caller: Caller<'_>,
+) -> Result<(), String> {
+    if uuid.is_empty() {
+        return Err("the published session meta holds no canonical session uuid".to_owned());
+    }
+    let reference = audit.map(LaunchAudit::reference).unwrap_or_default();
+    caller::journal_start(
+        dir,
+        &shape.name,
+        uuid,
+        &caller::socket_spelling(server),
+        shape.resuming,
+        &reference,
+        caller,
+    )
+}
+
+/// The rollback of a session whose start row could not be appended, under the
+/// lifecycle hold its build still holds: the session is killed, and only a
+/// strict absence proof on its server lets the record go as any rollback's
+/// does. Anything less keeps the record, so the stop the line names can find
+/// the session.
+fn rollback_unjournaled(
+    shape: &Session,
+    dir: &Path,
+    server: &ServerId,
+    why: &str,
+    err: &mut impl Write,
+) -> crate::error::Result<u8> {
+    let name = &shape.name;
+    let killed = kill_session(server, name);
+    let unresolved = match (killed, transport::verify_session_absent(server, name)) {
+        (_, tmux::StopProbe::Absent) => None,
+        (false, _) => Some("the kill failed"),
+        (true, tmux::StopProbe::Present) => Some("it is still listed"),
+        (true, tmux::StopProbe::Unknown) => Some("its server could not be read"),
+    };
+    if let Some(unresolved) = unresolved {
+        writeln!(
+            err,
+            "ae: launch failed — the start of '{name}' could not be journaled ({why}), and the rollback could not confirm it stopped ({unresolved}). Stop it with: ae stop {name}"
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    writeln!(
+        err,
+        "ae: launch failed — the start of '{name}' could not be journaled ({why}); the rollback stopped it: verified gone on its server."
+    )?;
     rollback_dir(shape, dir, err)?;
     Ok(EXIT_FAILED)
 }

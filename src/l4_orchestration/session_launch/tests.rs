@@ -2536,3 +2536,43 @@ mod inherited_goal_spec {
         assert!(goal_rows(&document).is_empty(), "{document}");
     }
 }
+
+/// A start row that cannot be appended rolls the session back, but only a
+/// strict absence proof lets the record go: on a server ae cannot reach, the
+/// kill fails, the line says so with the stop that finds the session, and the
+/// record this attempt created stays for that stop.
+#[test]
+fn an_unjournaled_start_keeps_the_record_when_the_rollback_cannot_prove_the_session_gone() {
+    let root = scratch("unjournaled-unproven");
+    let dir = root.join("s");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("meta"), "session=s\n").unwrap();
+    let shape = super::Session {
+        name: "s".to_owned(),
+        mode: super::Mode::Local,
+        work_dir: PathBuf::from("/w"),
+        origin: PathBuf::from("/o"),
+        layout: "vertical".to_owned(),
+        look: crate::theme::Look::DEFAULT,
+        chat: false,
+        resuming: false,
+        dir_created: true,
+    };
+    let server = ServerId::Selected(crate::meta::Selector::Socket(PathBuf::from(
+        "/nonexistent-ae-socket-dir/server",
+    )));
+    let mut err = Vec::new();
+    let code = super::rollback_unjournaled(&shape, &dir, &server, "the journal is full", &mut err)
+        .expect("a vector takes every line");
+    assert_eq!(code, crate::state::EXIT_FAILED);
+    assert_eq!(
+        String::from_utf8_lossy(&err),
+        "ae: launch failed — the start of 's' could not be journaled (the journal is full), and \
+         the rollback could not confirm it stopped (the kill failed). Stop it with: ae stop s\n"
+    );
+    assert!(
+        dir.join("meta").is_file(),
+        "the record this attempt created stays for the stop the line names"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

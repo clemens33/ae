@@ -1361,7 +1361,22 @@ pub(crate) fn physical_session(
     let Some(root) = dir.parent() else {
         return Err("caller session directory could not be resolved");
     };
-    let caller_dir = root.join(session);
+    recorded_session(root, session, actual_server)
+}
+
+/// The record of session `session` under the sessions directory `sessions`,
+/// when its meta names that session and its recorded server is proved to be
+/// `actual_server`: the directory and the raw meta bytes.
+///
+/// # Errors
+///
+/// The clause that failed.
+pub(crate) fn recorded_session(
+    sessions: &Path,
+    session: &str,
+    actual_server: &ServerId,
+) -> Result<(PathBuf, Vec<u8>), &'static str> {
+    let caller_dir = sessions.join(session);
     let Ok(bytes) = meta::read_bytes(&caller_dir) else {
         return Err("caller session meta could not be read");
     };

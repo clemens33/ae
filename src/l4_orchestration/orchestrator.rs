@@ -397,7 +397,8 @@ fn parse_resume(tail: &[String]) -> Result<CapturedResume, String> {
 /// under the same expectation the settings menu uses; the launch itself — the
 /// meta re-read, the absence proof on the recorded server, create-vs-resume —
 /// happens exactly where `ae <name>` makes it happen. On success this client is
-/// switched to the resumed session, which is what choosing a row means.
+/// switched to the resumed session, which is what choosing a row means. `who`
+/// is the caller the entry observed.
 #[allow(
     clippy::too_many_lines,
     reason = "one action from captured identity proof through launch and client hand-off"
@@ -405,6 +406,7 @@ fn parse_resume(tail: &[String]) -> Result<CapturedResume, String> {
 pub(crate) fn run_resume(
     preamble: &crate::entry::Preamble,
     tail: &[String],
+    who: &crate::session_launch::LaunchCaller,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -463,6 +465,7 @@ pub(crate) fn run_resume(
         &seat,
         std::slice::from_ref(&captured.name),
         &expectation,
+        (who, crate::session_launch::LaunchRoute::Picker),
         &mut launch_out,
         &mut launch_err,
     )?;

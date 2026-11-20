@@ -142,6 +142,7 @@ pub use l6_shell::identity;
 pub use l6_shell::shim;
 
 use std::io::Write;
+use std::ops::ControlFlow;
 
 pub use error::{Error, Result};
 pub use fleet_read::current_world;
@@ -633,7 +634,11 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         return Ok(entry::EXIT_USAGE);
     }
     let request = cli::Request::parse(args);
+    // A served launch observes its caller ONCE, where `run_with` meets it
+    // ([`run_served_launch`]): the class gate and the seat guard judge the
+    // same observation.
     if let Some(what) = outbound_of(&request)
+        && !matches!(request, cli::Request::Launch { .. })
         && let Some(code) = refuse_dispatcher(what, err)?
     {
         return Ok(code);
@@ -641,18 +646,51 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     run_admitted(args, &request, out, err)
 }
 
-/// The served `_launch` of an admitted bound resume, in this process: the one
-/// `_launch` argv that does not cross the dispatcher gate, because the entry
-/// admitted its user words for every caller. Anything else here, including a
-/// request whose user words are not exactly the bound resume, goes through
-/// [`run_dispatch`] and its gate.
-fn run_bound_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
+/// The served `_launch` of an admitted bound resume, in this process with the
+/// caller the entry observed: the one `_launch` argv that does not cross the
+/// dispatcher gate, because the entry admitted its user words for every
+/// caller. Anything else here, including a request whose user words are not
+/// exactly the bound resume, goes through [`run_dispatch`] and its gate.
+fn run_bound_dispatch(
+    args: &[String],
+    who: &session_launch::LaunchCaller,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
     let request = cli::Request::parse(args);
-    let bound = matches!(&request, cli::Request::Launch { tail } if session_launch::serves_bound_resume(tail));
-    if !bound || speaks_as_reserved(args) {
+    let cli::Request::Launch { tail } = &request else {
+        return run_dispatch(args, out, err);
+    };
+    if !session_launch::serves_bound_resume(tail) || speaks_as_reserved(args) {
         return run_dispatch(args, out, err);
     }
-    run_admitted(args, &request, out, err)
+    let route = session_launch::LaunchRoute::Bound;
+    let code = session_launch::run(tail, who, route, out, err)?;
+    err.flush()?;
+    error::with_status(code, out.flush())?;
+    Ok(code)
+}
+
+/// The served `_launch` of a launch line the entry admitted past the
+/// orchestrator class gate, in this process with the caller that gate
+/// observed. Anything else here goes through [`run_dispatch`] and its gate.
+fn run_caller_dispatch(
+    args: &[String],
+    (who, route): (&session_launch::LaunchCaller, session_launch::LaunchRoute),
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let request = cli::Request::parse(args);
+    let cli::Request::Launch { tail } = &request else {
+        return run_dispatch(args, out, err);
+    };
+    if speaks_as_reserved(args) {
+        return run_dispatch(args, out, err);
+    }
+    let code = session_launch::run(tail, who, route, out, err)?;
+    err.flush()?;
+    error::with_status(code, out.flush())?;
+    Ok(code)
 }
 
 /// [`run_dispatch`] past its gate.
@@ -1642,6 +1680,52 @@ fn sort_stopped_rows(rows: &mut [orchestrator::PickerStopped]) {
     });
 }
 
+/// The two words of the orchestrator's own session that run before the entry
+/// router: the settings menu's apply, then the resume. Each proves its caller
+/// first, and the orchestrator seat itself is refused. `None` when `argv` is
+/// neither word.
+fn run_orchestrator_word(
+    preamble: &entry::Preamble,
+    argv: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<Option<u8>> {
+    if argv.first().map(String::as_str) != Some(orchestrator::ORCHESTRATOR_SESSION) {
+        return Ok(None);
+    }
+    let tail = &argv[1..];
+    let settings = settings_menu::is_apply(tail);
+    if !settings && !orchestrator::is_resume(tail) {
+        return Ok(None);
+    }
+    let refusal = if settings {
+        (
+            "settings",
+            "never changes, starts, resumes or stops its own seat; the owner runs ae orchestrator",
+        )
+    } else {
+        (
+            "launch",
+            "never starts or resumes its own seat; the owner runs ae orchestrator",
+        )
+    };
+    let who = match launch_caller(
+        observe_calling_pane(),
+        state_root().as_deref(),
+        refusal,
+        err,
+    )? {
+        ControlFlow::Continue(who) => who,
+        ControlFlow::Break(code) => return Ok(Some(code)),
+    };
+    let code = if settings {
+        settings_menu::run_apply(preamble, tail, &who, out, err)?
+    } else {
+        orchestrator::run_resume(preamble, tail, &who, out, err)?
+    };
+    Ok(Some(code))
+}
+
 /// The human route: what `ae` itself answers, once the doors have said what
 /// this invocation carries.
 fn run_entry(
@@ -1650,29 +1734,8 @@ fn run_entry(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
-    if argv.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION)
-        && settings_menu::is_apply(&argv[1..])
-    {
-        let settings = Outbound::Verb(
-            "settings",
-            "never changes, starts, resumes or stops its own seat; the owner runs ae orchestrator",
-        );
-        if let Some(code) = refuse_dispatcher(settings, err)? {
-            return Ok(code);
-        }
-        return settings_menu::run_apply(preamble, &argv[1..], out, err);
-    }
-    if argv.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION)
-        && orchestrator::is_resume(&argv[1..])
-    {
-        let launch = Outbound::Verb(
-            "launch",
-            "never starts or resumes its own seat; the owner runs ae orchestrator",
-        );
-        if let Some(code) = refuse_dispatcher(launch, err)? {
-            return Ok(code);
-        }
-        return orchestrator::run_resume(preamble, &argv[1..], out, err);
+    if let Some(code) = run_orchestrator_word(preamble, argv, out, err)? {
+        return Ok(code);
     }
     let code = match entry::route(preamble, argv, doors::calling_pane_id().as_deref()) {
         entry::Route::Help => {
@@ -1726,9 +1789,10 @@ fn run_entry(
             if session_launch::is_bound_resume(&user) {
                 return run_bound_resume(preamble, &user, out, err);
             }
-            if let Some(code) = run_seat_launch_gate(preamble, &user, out, err)? {
-                return Ok(code);
-            }
+            let who = match run_seat_launch_gate(preamble, &user, out, err)? {
+                ControlFlow::Continue(who) => who,
+                ControlFlow::Break(code) => return Ok(code),
+            };
             if user.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION) {
                 let Some(flags) = orchestrator::parse_launch_tail(&user[1..]) else {
                     return run_dispatch(&user, out, err);
@@ -1741,9 +1805,11 @@ fn run_entry(
                 }
                 seat.inside_tmux |= flags.inside_tmux;
                 seat.no_autostart |= flags.no_autostart;
-                return run_launch(&seat, &launch, false, None, out, err);
+                let route = session_launch::LaunchRoute::OrchestratorStart;
+                return run_launch(&seat, &launch, false, None, (&who, route), out, err);
             }
-            return run_launch(preamble, &user, true, None, out, err);
+            let route = session_launch::LaunchRoute::Entry;
+            return run_launch(preamble, &user, true, None, (&who, route), out, err);
         }
     };
     err.flush()?;
@@ -2034,29 +2100,41 @@ fn run_archive_preview(
 /// lets a named line on a terminal open the app on its session instead of
 /// attaching ([`named_lands`]); the orchestrator seat passes false.
 /// `first_use` is the directory bare `ae` made the session from: the landing
-/// then says so ([`run_first_use`]).
+/// then says so ([`run_first_use`]). `caller` is who the entry observed and
+/// the route it came in by.
 fn run_launch(
     preamble: &entry::Preamble,
     user: &[String],
     land: bool,
     first_use: Option<&std::path::Path>,
+    (who, route): (&session_launch::LaunchCaller, session_launch::LaunchRoute),
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
-    run_launch_as(preamble, user, land, first_use, Gate::Dispatcher, out, err)
+    let gate = Gate::Caller(who, route);
+    run_launch_as(preamble, user, land, first_use, gate, out, err)
 }
 
-/// Which gate a launch's served `_launch` crosses.
+/// Which gate a launch's served `_launch` crosses. Each carries the caller
+/// the entry observed, so the launch owner judges and journals that ONE
+/// observation.
 enum Gate<'a> {
-    /// [`run_dispatch`]'s: the orchestrator's agent pane is refused.
-    Dispatcher,
+    /// An ordinary caller's launch, which the entry admitted past the
+    /// orchestrator class gate: [`run_caller_dispatch`].
+    Caller(
+        &'a session_launch::LaunchCaller,
+        session_launch::LaunchRoute,
+    ),
     /// The bound resume the entry admitted for every caller:
     /// [`run_bound_dispatch`].
-    Bound,
+    Bound(&'a session_launch::LaunchCaller),
     /// The proved seat's start, create or bound resume, which the entry
     /// admitted; the audit records it under the launch's lifecycle lock:
     /// [`run_executor_dispatch`].
-    Executor(&'a mut dyn session_launch::LaunchAudit),
+    Executor(
+        &'a mut dyn session_launch::LaunchAudit,
+        &'a session_launch::LaunchCaller,
+    ),
 }
 
 /// G4 of a launch the proved seat runs: the request row under the launch's
@@ -2183,6 +2261,13 @@ impl session_launch::LaunchAudit for SeatLaunch<'_> {
             uuid.clone_into(&mut dispatch.target_uuid);
         }
     }
+
+    fn reference(&self) -> String {
+        self.written
+            .as_ref()
+            .map(|dispatch| dispatch.reference.clone())
+            .unwrap_or_default()
+    }
 }
 
 impl SeatLaunch<'_> {
@@ -2196,12 +2281,13 @@ impl SeatLaunch<'_> {
         err: &mut impl Write,
     ) -> Result<u8> {
         let (mut held_out, mut held_err) = (Vec::new(), Vec::new());
+        let who = session_launch::LaunchCaller::Orchestrator(self.seat.clone());
         let code = run_launch_as(
             preamble,
             user,
             false,
             None,
-            Gate::Executor(&mut self),
+            Gate::Executor(&mut self, &who),
             &mut held_out,
             &mut held_err,
         );
@@ -2220,8 +2306,13 @@ fn run_bound_resume(
 ) -> Result<u8> {
     let seat = match calling_class(observe_calling_pane(), state_root().as_deref(), err)? {
         Err(code) => return Ok(code),
-        Ok(None | Some(relay::SeatClass::Ordinary(_))) => {
-            return run_launch_as(preamble, user, false, None, Gate::Bound, out, err);
+        Ok(None) => {
+            let who = session_launch::LaunchCaller::Outside;
+            return run_launch_as(preamble, user, false, None, Gate::Bound(&who), out, err);
+        }
+        Ok(Some(relay::SeatClass::Ordinary(identity))) => {
+            let who = session_launch::LaunchCaller::of(identity);
+            return run_launch_as(preamble, user, false, None, Gate::Bound(&who), out, err);
         }
         Ok(Some(relay::SeatClass::Unproven(why))) => {
             writeln!(err, "{}", unproven_refusal("launch", why))?;
@@ -2244,25 +2335,71 @@ fn run_bound_resume(
 }
 
 /// The launch caller gate: the proved seat's launch runs here, and a pane in
-/// the seat's session that ae cannot prove to be the seat is refused. `None`
-/// for every other caller, whose launch goes on unchanged.
+/// the seat's session that ae cannot prove to be the seat is refused. Every
+/// other caller goes on with the class the same ONE observation gives it,
+/// which the launch owner's seat guard judges under the target's lock.
 fn run_seat_launch_gate(
     preamble: &entry::Preamble,
     user: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
-) -> Result<Option<u8>> {
+) -> Result<ControlFlow<u8, session_launch::LaunchCaller>> {
     match calling_class(observe_calling_pane(), state_root().as_deref(), err)? {
-        Err(code) => Ok(Some(code)),
+        Err(code) => Ok(ControlFlow::Break(code)),
         Ok(Some(relay::SeatClass::Dispatcher(seat))) => {
-            run_seat_launch(preamble, user, &seat, out, err).map(Some)
+            run_seat_launch(preamble, user, &seat, out, err).map(ControlFlow::Break)
         }
         Ok(Some(relay::SeatClass::Unproven(why))) => {
             writeln!(err, "{}", unproven_refusal("launch", why))?;
             err.flush()?;
-            Ok(Some(entry::EXIT_USAGE))
+            Ok(ControlFlow::Break(entry::EXIT_USAGE))
         }
-        Ok(None | Some(relay::SeatClass::Ordinary(_))) => Ok(None),
+        Ok(None) => Ok(ControlFlow::Continue(session_launch::LaunchCaller::Outside)),
+        Ok(Some(relay::SeatClass::Ordinary(identity))) => Ok(ControlFlow::Continue(
+            session_launch::LaunchCaller::of(identity),
+        )),
+    }
+}
+
+/// The caller of a launch form outside the entry's launch line (the served
+/// `_launch`, the settings apply, the picker resume), from ONE observation:
+/// the owner outside tmux, an ordinary pane or agent seat, or the break code
+/// once the refusal of `word` is said to a pane of the orchestrator seat's
+/// session, with `why` as the seat's clause.
+fn launch_caller(
+    seen: CallerRead<(tmux::ObservedViewer, inventory::ServerId)>,
+    root: Option<&std::path::Path>,
+    (word, why): (&'static str, &'static str),
+    err: &mut impl Write,
+) -> Result<ControlFlow<u8, session_launch::LaunchCaller>> {
+    let said = match calling_class(seen, root, err)? {
+        Err(code) => return Ok(ControlFlow::Break(code)),
+        Ok(None) => return Ok(ControlFlow::Continue(session_launch::LaunchCaller::Outside)),
+        Ok(Some(relay::SeatClass::Ordinary(identity))) => {
+            return Ok(ControlFlow::Continue(session_launch::LaunchCaller::of(
+                identity,
+            )));
+        }
+        Ok(Some(relay::SeatClass::Unproven(reason))) => unproven_refusal(word, reason),
+        Ok(Some(relay::SeatClass::Dispatcher(_))) => seat_verb_refusal(word, why),
+    };
+    writeln!(err, "{said}")?;
+    err.flush()?;
+    Ok(ControlFlow::Break(entry::EXIT_USAGE))
+}
+
+/// The served `_launch`, wherever the dispatch meets it: its caller from ONE
+/// observation ([`launch_caller`]), then the launch owner, which judges that
+/// caller.
+fn run_served_launch(tail: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
+    let seen = observe_calling_pane();
+    let launch = ("launch", SEAT_LAUNCH_ONLY);
+    match launch_caller(seen, state_root().as_deref(), launch, err)? {
+        ControlFlow::Continue(who) => {
+            let route = session_launch::LaunchRoute::Served;
+            session_launch::run(tail, &who, route, out, err)
+        }
+        ControlFlow::Break(code) => Ok(code),
     }
 }
 
@@ -2460,14 +2597,19 @@ fn run_launch_as(
         err.flush()?;
         return Ok(entry::EXIT_FAILED);
     }
-    if land && named_lands(preamble, &plan) {
-        return run_named_landing(preamble, &plan, hint, user, first_use, out, err);
+    if land
+        && named_lands(preamble, &plan)
+        && let Gate::Caller(who, route) = gate
+    {
+        return run_named_landing(preamble, &plan, user, first_use, (who, route), out, err);
     }
     match gate {
-        Gate::Dispatcher => run_dispatch(&preamble.launch_argv(user), out, err),
-        Gate::Bound => run_bound_dispatch(&preamble.launch_argv(user), out, err),
-        Gate::Executor(audit) => {
-            run_executor_dispatch(&preamble.launch_argv(user), audit, out, err)
+        Gate::Caller(who, route) => {
+            run_caller_dispatch(&preamble.launch_argv(user), (who, route), out, err)
+        }
+        Gate::Bound(who) => run_bound_dispatch(&preamble.launch_argv(user), who, out, err),
+        Gate::Executor(audit, who) => {
+            run_executor_dispatch(&preamble.launch_argv(user), audit, who, out, err)
         }
     }
 }
@@ -2478,6 +2620,7 @@ fn run_launch_as(
 fn run_executor_dispatch(
     args: &[String],
     audit: &mut dyn session_launch::LaunchAudit,
+    who: &session_launch::LaunchCaller,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
@@ -2488,7 +2631,7 @@ fn run_executor_dispatch(
     if speaks_as_reserved(args) {
         return run_dispatch(args, out, err);
     }
-    let code = session_launch::run_audited(tail, audit, out, err)?;
+    let code = session_launch::run_audited(tail, audit, who, out, err)?;
     err.flush()?;
     error::with_status(code, out.flush())?;
     Ok(code)
@@ -2544,12 +2687,13 @@ fn landing_name(name: &str) -> bool {
 fn run_named_landing(
     preamble: &entry::Preamble,
     plan: &session_launch::Plan,
-    name: &str,
     user: &[String],
     first_use: Option<&std::path::Path>,
+    caller: (&session_launch::LaunchCaller, session_launch::LaunchRoute),
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
+    let name = plan.name.as_deref().unwrap_or_default();
     if lifecycle::aliases::target(&preamble.sessions().join(name)).is_none()
         && let Some((recorded, requested)) = plan.dir.as_deref().and_then(|dir| {
             session_launch::recorded_origin_conflict(&preamble.sessions().join(name), dir)
@@ -2567,7 +2711,7 @@ fn run_named_landing(
     }
     let mut headless = preamble.clone();
     headless.attach = false;
-    let code = run_dispatch(&headless.launch_argv(user), out, err)?;
+    let code = run_caller_dispatch(&headless.launch_argv(user), caller, out, err)?;
     if code != 0 {
         return Ok(code);
     }
@@ -2604,7 +2748,10 @@ fn run_first_use(
         "--dir".to_owned(),
         path.to_owned(),
     ];
-    run_launch(preamble, &user, true, Some(&dir), out, err).map(Some)
+    // Bare `ae` comes here only outside tmux: the owner's own terminal.
+    let who = session_launch::LaunchCaller::Outside;
+    let caller = (&who, session_launch::LaunchRoute::Entry);
+    run_launch(preamble, &user, true, Some(&dir), caller, out, err).map(Some)
 }
 
 /// The two lines an unsafe session path is refused with.
@@ -4022,9 +4169,7 @@ fn refuse_dispatcher_seen(
                 ),
                 _ => own_session_refusal("stop", &seat.session),
             },
-            Outbound::Verb(word, why) => {
-                format!("ae: {word} REFUSED — the orchestrator seat {why}. Nothing was changed.")
-            }
+            Outbound::Verb(word, why) => seat_verb_refusal(word, why),
         },
     };
     writeln!(err, "{said}")?;
@@ -4038,6 +4183,12 @@ fn outbound_word(what: &Outbound) -> &'static str {
         Outbound::Cross(word) | Outbound::Verb(word, _) => word,
         Outbound::Stop(_) => "stop",
     }
+}
+
+/// The refusal of a verb the orchestrator seat does not run, with the clause
+/// that says why.
+fn seat_verb_refusal(word: &str, why: &str) -> String {
+    format!("ae: {word} REFUSED — the orchestrator seat {why}. Nothing was changed.")
 }
 
 /// The refusal a pane of the seat's session takes when it fails the
@@ -4744,7 +4895,7 @@ pub fn run_with(
         cli::Request::Focus { dir, tail } => {
             panes::focus(dir, tail, &own_session(dir), time::Timestamp::now(), err)?
         }
-        cli::Request::Launch { tail } => session_launch::run(tail, out, err)?,
+        cli::Request::Launch { tail } => run_served_launch(tail, out, err)?,
         cli::Request::CaptureSid { dir, slot, pane } => {
             session_launch::capture::run(dir, slot, pane, &session_launch::recorded_server(dir))
         }

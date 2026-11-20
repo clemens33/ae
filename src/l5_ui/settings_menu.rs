@@ -1088,7 +1088,7 @@ fn report(
 /// waited child) tells nobody and writes exactly ONE line to stdout, the line
 /// the app's panel shows: what it did, else why nothing (or the launch's first
 /// refusal line), with the launch's own streams on stderr. The exit code is
-/// the launch's.
+/// the launch's. `who` is the caller the entry observed.
 #[allow(
     clippy::too_many_lines,
     reason = "one action from captured identity proof through exact-client report"
@@ -1096,6 +1096,7 @@ fn report(
 pub(crate) fn run_apply(
     preamble: &crate::entry::Preamble,
     tail: &[String],
+    who: &crate::session_launch::LaunchCaller,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -1181,6 +1182,7 @@ pub(crate) fn run_apply(
         &seat,
         &user,
         &expectation,
+        (who, crate::session_launch::LaunchRoute::Settings),
         &mut launch_out,
         &mut launch_err,
     )?;

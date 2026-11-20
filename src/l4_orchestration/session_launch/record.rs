@@ -350,6 +350,14 @@ pub fn seed_session_uuid(
     }
 }
 
+/// The canonical session uuid a meta document records: empty when it records
+/// none, or none valid. The uuid seed and the start row both read it here.
+pub(super) fn document_uuid(document: &str) -> String {
+    crate::meta::first_value(document.as_bytes(), "session_id")
+        .map(|value| crate::archive::canonical_uuid(&String::from_utf8_lossy(value)))
+        .unwrap_or_default()
+}
+
 /// Publish `document` as the session meta, then — ONLY on success — seed the
 /// session UUID fact from the SAME in-memory document, onto the SAME tmux
 /// incarnation the caller proved.
@@ -374,9 +382,7 @@ pub fn publish_meta_and_seed_uuid(
     } else {
         crate::meta::init(dir, document)?;
     }
-    let uuid = crate::meta::first_value(document.as_bytes(), "session_id")
-        .map(|value| crate::archive::canonical_uuid(&String::from_utf8_lossy(value)))
-        .unwrap_or_default();
+    let uuid = document_uuid(document);
     let Some(expected_identity) = expected_identity.filter(|_| !uuid.is_empty()) else {
         return Ok(SeedOutcome::Unobserved);
     };
