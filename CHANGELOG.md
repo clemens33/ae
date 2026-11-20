@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.101] - 2026-11-20
+- The orchestrator board record, its app column, the /board chat command and one pinned Telegram message
+- No board, no column; the app keeps every width and hit target it had until a board is shown or unreadable
+- Allow too_many_lines on the one app fixture that follows the board through four states
+- Rustfmt the two desk fuzz targets
+- The orchestrator seat sets its board with the desk helper, and the seat prompt teaches it
+- Check fuzz formatting in the gate
+- An agent seat runs no launch form on another session, and every start journals its actor and caller pane
+- Show composer targets and confirm suspicious asks
+- Copy drafts in both composers
+- Follow fleet classification in the observation transcript
+
 ## [v2026.11.100] - 2026-11-20
 - The orchestrator seat executes for the owner: it starts, creates and resumes other sessions and stops one in the bound form, reaches another session's seats through its helpers without --cross-session, and writes a dispatch-request and dispatch-result row for each; it never stops, ends or renames its own session, and its new charter reaches a running seat as one CHARTER UPDATE turn
 
