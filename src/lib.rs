@@ -637,13 +637,55 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     // A served launch observes its caller ONCE, where `run_with` meets it
     // ([`run_served_launch`]): the class gate and the seat guard judge the
     // same observation.
+    // A rename does the same: its gate and its worker judge one observation.
     if let Some(what) = outbound_of(&request)
         && !matches!(request, cli::Request::Launch { .. })
-        && let Some(code) = refuse_dispatcher(what, err)?
+    {
+        if let cli::Request::Rename { tail } = &request {
+            return run_rename(what, tail, out, err);
+        }
+        if let Some(code) = refuse_dispatcher(what, err)? {
+            return Ok(code);
+        }
+    }
+    run_admitted(args, &request, out, err)
+}
+
+/// A rename's class gate and the rename, from ONE observation of the calling
+/// pane. An ordinary agent seat the gate admits, because it names its own
+/// session, carries that observation into the rename, which proves under
+/// the source's lifecycle lock that the source is still that session.
+fn run_rename(
+    what: Outbound,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let root = state_root();
+    let seen = match observe_calling_pane().require() {
+        Ok(seen) => seen,
+        Err(why) => {
+            writeln!(err, "{why}")?;
+            err.flush()?;
+            return Ok(entry::EXIT_FAILED);
+        }
+    };
+    let class = match (&seen, root.as_deref()) {
+        (Some((viewer, server)), Some(root)) => Some(seat_class_of(root, viewer, server)),
+        _ => None,
+    };
+    if let Some(class) = &class
+        && let Some(code) = refuse_class(what, class, root.as_deref(), err)?
     {
         return Ok(code);
     }
-    run_admitted(args, &request, out, err)
+    let observed = rename::Entry { seen, class };
+    let code = with_state_root(err, |root, err| {
+        rename::run_as(root, tail, Some(&observed), out, err)
+    })?;
+    err.flush()?;
+    error::with_status(code, out.flush())?;
+    Ok(code)
 }
 
 /// The served `_launch` of an admitted bound resume, in this process with the
@@ -4009,12 +4051,13 @@ pub(crate) fn observe_calling_pane() -> CallerRead<(tmux::ObservedViewer, invent
 
 /// What the orchestrator seat's pane runs only by its own class's rules, as one
 /// word for the refusal and the clause that says why. The proved seat runs a
-/// helper `--cross-session` word; it runs a stop only in the bound form (the
-/// gate admits it, and the bound stop proves the rest); it runs a start or a
-/// create only from the entry, with `--no-attach`. Every other word here is
-/// refused to the seat in this release, and every word here is refused to a
-/// pane of the seat's session that fails the dispatcher proof. Ordinary panes
-/// never reach this table.
+/// helper `--cross-session` word; it runs a stop or a rename only in the bound
+/// form (the gate admits it, and the bound form proves the rest); it runs a
+/// start or a create only from the entry, with `--no-attach`. Every other word
+/// here is refused to the seat in this release, and every word here is refused
+/// to a pane of the seat's session that fails the dispatcher proof. Of the
+/// ordinary panes, only an agent seat's rename of another session is read here
+/// ([`refuse_ordinary`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Outbound {
     /// A helper `--cross-session` send, ask, review or interrupt.
@@ -4022,6 +4065,15 @@ enum Outbound {
     /// A stop other than the bound form: the session it names, or `None` for
     /// the caller's own (`--self`, or no name).
     Stop(Option<String>),
+    /// A rename: the session it moves (`None` for the caller's own, the
+    /// one-name form), the new name, whether it is the bound form, and the
+    /// user words after `ae`.
+    Rename {
+        old: Option<String>,
+        new: String,
+        bound: bool,
+        words: Vec<String>,
+    },
     /// A verb the seat does not run: the word and the clause.
     Verb(&'static str, &'static str),
 }
@@ -4082,12 +4134,33 @@ fn outbound_of(request: &cli::Request) -> Option<Outbound> {
             "end",
             "does not end or remove sessions in this release; give the owner the command",
         )),
-        cli::Request::Rename { .. } => Some(Outbound::Verb(
-            "rename",
-            "does not rename sessions in this release; give the owner a proposal",
-        )),
+        cli::Request::Rename { tail } => rename_aim(tail),
         _ => None,
     }
+}
+
+/// The outbound class of a `rename` tail: the bound form, the two-name form
+/// or the caller's own one-name form. Any other tail is the rename's own usage
+/// refusal, which changes nothing, so no class gate reads it.
+fn rename_aim(tail: &[String]) -> Option<Outbound> {
+    let (old, new, bound) = match rename::bound_form(tail) {
+        Some(Ok(request)) => (Some(request.old), request.new, true),
+        Some(Err(_)) => return None,
+        None => match tail {
+            [old, new] => (Some(old.clone()), new.clone(), false),
+            [new] => (None, new.clone(), false),
+            _ => return None,
+        },
+    };
+    let words = std::iter::once(cli::RENAME.to_owned())
+        .chain(tail.iter().cloned())
+        .collect();
+    Some(Outbound::Rename {
+        old,
+        new,
+        bound,
+        words,
+    })
 }
 
 /// The session a plain `_stop` tail names: `None` for `--self` or no name.
@@ -4142,8 +4215,17 @@ fn calling_class(
     let Some(root) = root else {
         return Ok(Ok(None));
     };
+    Ok(Ok(Some(seat_class_of(root, &viewer, &server))))
+}
+
+/// The class ONE reading of the calling pane gives it.
+fn seat_class_of(
+    root: &std::path::Path,
+    viewer: &tmux::ObservedViewer,
+    server: &inventory::ServerId,
+) -> relay::SeatClass {
     let pane = doors::calling_pane_id().unwrap_or_default();
-    Ok(Ok(Some(relay::seat_class(root, &viewer, &server, &pane))))
+    relay::seat_class(root, viewer, server, &pane)
 }
 
 /// [`refuse_dispatcher`] on an observation already taken.
@@ -4158,16 +4240,34 @@ fn refuse_dispatcher_seen(
         Ok(None) => return Ok(None),
         Err(code) => return Ok(Some(code)),
     };
+    refuse_class(what, &class, root, err)
+}
+
+/// The outbound gate's verdict on one observed class of the calling pane.
+fn refuse_class(
+    what: Outbound,
+    class: &relay::SeatClass,
+    root: Option<&std::path::Path>,
+    err: &mut impl Write,
+) -> Result<Option<u8>> {
     let said = match class {
-        relay::SeatClass::Ordinary(_) => return Ok(None),
+        relay::SeatClass::Ordinary(pane) => return refuse_ordinary(&what, pane.clone(), root, err),
         relay::SeatClass::Unproven(why) => unproven_refusal(outbound_word(&what), why),
         relay::SeatClass::Dispatcher(seat) => match what {
-            Outbound::Cross(_) => return Ok(None),
+            // The bound rename proves the caller, its target and every seat's
+            // declaration itself, under both lifecycle locks.
+            Outbound::Cross(_) | Outbound::Rename { bound: true, .. } => return Ok(None),
             Outbound::Stop(aim) => match aim {
-                Some(name) if !names_own_session(root, &seat, &name) => format!(
+                Some(name) if !names_own_session(root, seat, &name) => format!(
                     "ae: stop REFUSED — the orchestrator stops another session only in the bound form: ae stop {name} --expect-uuid <uuid>, with --owner-input <ask-id> when a seat there is busy. Nothing was changed."
                 ),
                 _ => own_session_refusal("stop", &seat.session),
+            },
+            Outbound::Rename { old, new, .. } => match old {
+                Some(name) if !names_own_session(root, seat, &name) => format!(
+                    "ae: rename REFUSED — the orchestrator renames another session only in the bound form: ae rename {name} {new} --expect-uuid <uuid>, with --owner-input <ask-id> when a seat there is busy. Nothing was changed."
+                ),
+                _ => rename::own_session_refusal(&seat.session, &new),
             },
             Outbound::Verb(word, why) => seat_verb_refusal(word, why),
         },
@@ -4177,11 +4277,46 @@ fn refuse_dispatcher_seen(
     Ok(Some(entry::EXIT_USAGE))
 }
 
+/// An ordinary pane's lifecycle form: an agent seat's rename of another
+/// session is refused with the owner's command and one row in the seat's own
+/// record. The names are the ones the rename itself can reach, a recorded
+/// pre-grammar name too. Any other pane, its own session, a name the rename
+/// cannot reach (it refuses that itself) and every other word go on.
+fn refuse_ordinary(
+    what: &Outbound,
+    pane: relay::PaneIdentity,
+    root: Option<&std::path::Path>,
+    err: &mut impl Write,
+) -> Result<Option<u8>> {
+    let (
+        Outbound::Rename {
+            old: Some(old),
+            words,
+            ..
+        },
+        Some(root),
+    ) = (what, root)
+    else {
+        return Ok(None);
+    };
+    let session_launch::LaunchCaller::Seat(seat) = session_launch::LaunchCaller::of(pane) else {
+        return Ok(None);
+    };
+    let sessions = lifecycle::sessions_dir(root);
+    if !lifecycle::name_is_usable(root, old) || session_launch::is_own(&sessions.join(old), &seat) {
+        return Ok(None);
+    }
+    Ok(Some(session_launch::refuse_lifecycle(
+        &sessions, old, &seat, "rename", words, err,
+    )?))
+}
+
 /// The one word an [`Outbound`] is refused as.
 fn outbound_word(what: &Outbound) -> &'static str {
     match what {
         Outbound::Cross(word) | Outbound::Verb(word, _) => word,
         Outbound::Stop(_) => "stop",
+        Outbound::Rename { .. } => "rename",
     }
 }
 
@@ -5138,7 +5273,8 @@ pub fn run_with(
 mod tests {
     /// What the seat's class rules decide: a helper `--cross-session` send,
     /// ask, review or interrupt, a non-bound stop with the session it names,
-    /// and the verbs the seat does not run in this release.
+    /// each rename form with its names, and the verbs the seat does not run in
+    /// this release.
     #[test]
     fn only_a_helper_cross_session_word_a_plain_stop_and_the_class_verbs_are_outbound() {
         use super::{Outbound, cli::Request, outbound_of};
@@ -5173,7 +5309,6 @@ mod tests {
             (vec!["_compact", "/d", "lead"], "compact"),
             (vec!["_relaunch", "/d", "lead"], "relaunch"),
             (vec!["reseat", "t", "lead", "--using", "p"], "reseat"),
-            (vec!["rename", "a", "b"], "rename"),
             // The served underscore entry of every launch form.
             (vec!["_launch", "--no-attach"], "launch"),
             (vec!["_launch", "new", "--local"], "launch"),
@@ -5185,6 +5320,47 @@ mod tests {
         }
         assert_eq!(of(&["list"]), None);
         assert_eq!(of(&["_relay", "/d", "t", "--task", "x"]), None);
+        let rename = |old: Option<&str>, new: &str, bound: bool, argv: &[&str]| {
+            Some(Outbound::Rename {
+                old: old.map(ToOwned::to_owned),
+                new: new.to_owned(),
+                bound,
+                words: argv.iter().map(|word| (*word).to_owned()).collect(),
+            })
+        };
+        for (argv, old, bound) in [
+            (vec!["rename", "a", "b"], Some("a"), false),
+            (vec!["rename", "b"], None, false),
+            (
+                vec!["rename", "a", "b", "--expect-uuid", uuid],
+                Some("a"),
+                true,
+            ),
+            (
+                vec![
+                    "rename",
+                    "a",
+                    "b",
+                    "--expect-uuid",
+                    uuid,
+                    "--owner-input",
+                    "i",
+                ],
+                Some("a"),
+                true,
+            ),
+        ] {
+            assert_eq!(of(&argv), rename(old, "b", bound, &argv), "{argv:?}");
+        }
+        // A tail the rename refuses as usage changes nothing, so no gate reads it.
+        for argv in [
+            vec!["rename"],
+            vec!["rename", "a", "b", "c"],
+            vec!["rename", "a", "b", "--expect-uuid"],
+            vec!["rename", "a", "--expect-uuid", uuid],
+        ] {
+            assert_eq!(of(&argv), None, "{argv:?}");
+        }
     }
 
     /// A failed read of the calling pane is no observation: the outbound gate

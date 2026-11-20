@@ -1382,6 +1382,19 @@ pub fn observe_session_stamp(server: &ServerId, name: &str) -> Option<tmux::Sess
     tmux::interpret_session_stamp(succeeded, &stdout, name)
 }
 
+/// Rename the session `stamp` proved to `new`, in the one tmux command that
+/// checks the server and session incarnation and the ae stamp first
+/// ([`tmux::fenced_rename_args`]). `true` means tmux ran the command, not that
+/// the guard held: a guard that no longer holds renames nothing, so the
+/// caller reads the new name's stamp back.
+#[must_use]
+pub fn rename_fenced(server: &ServerId, stamp: &tmux::SessionStamp, new: &str) -> bool {
+    if !addressable(server) {
+        return false;
+    }
+    tmux::fenced_rename_args(server, stamp, new).is_some_and(|args| run(PROGRAM, &args).0)
+}
+
 /// `session`'s panes with the window each belongs to, for the per-window glyphs.
 #[must_use]
 pub fn observe_window_panes(server: &ServerId, session: &str) -> Option<Vec<tmux::WindowPane>> {

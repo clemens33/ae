@@ -2978,10 +2978,11 @@ pub struct Dispatch {
     pub(crate) server: String,
     /// The row pair's `ref`.
     pub(crate) reference: String,
-    /// The verb: `stop`, `start`, `create`, `resume`, `send`, `ask`, `review`
-    /// or `interrupt`.
+    /// The verb: `stop`, `rename`, `start`, `create`, `resume`, `send`, `ask`,
+    /// `review` or `interrupt`.
     pub(crate) verb: &'static str,
-    /// The target as typed: a session, or `session:agent`.
+    /// The target as typed: a session, `session:agent`, or a rename's
+    /// `old new`.
     pub(crate) target: String,
     /// The target's session name.
     pub(crate) target_session: String,

@@ -8,6 +8,11 @@
 //! assets, durable result) that a proved retry completes after interruption.
 //! Either way every check that reads state it then mutates happens INSIDE
 //! the lock rather than in front of it.
+//!
+//! The orchestrator seat renames another session only in the bound form
+//! (`--expect-uuid`), which proves the session uuid, every seat's declaration
+//! and the live incarnation under both locks and then reuses the same live
+//! publication and stopped transaction (the `bound` submodule).
 
 use std::io::Write;
 use std::os::unix::fs::MetadataExt as _;
@@ -18,6 +23,10 @@ use crate::meta::Selector;
 use crate::session_tmux::{Op, argv};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::transport;
+
+mod bound;
+
+pub(crate) use bound::{bound_form, own_session_refusal};
 
 /// The usage, both lines.
 pub const USAGE: &str = "Usage: ae rename [old-name] <new-name>";
@@ -110,9 +119,40 @@ pub fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
-    let (old, new) = match tail {
-        [old, new] => (old.clone(), new.clone()),
-        [new] => {
+    run_as(root, tail, None, out, err)
+}
+
+/// `rename [old] <new>` as the entry ran it, on the entry's ONE reading of
+/// the calling pane. An ordinary agent seat that its gate admitted, because
+/// the old name was the seat's own session, must still own that session
+/// under the source's lifecycle lock, in the plain and the bound form,
+/// before any effect. The bound form judges permission, its own-session
+/// checks and its audit on the same reading and class.
+///
+/// # Errors
+///
+/// Propagates a write failure on the caller's streams.
+pub(crate) fn run_as(
+    root: &Path,
+    tail: &[String],
+    entry: Option<&Entry>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::error::Result<u8> {
+    let seat = entry.and_then(Entry::seat);
+    let bound = match bound_form(tail) {
+        None => None,
+        Some(Ok(request)) => Some(request),
+        Some(Err(line)) => {
+            writeln!(err, "Error: {line}")?;
+            writeln!(err, "{}", bound::USAGE)?;
+            return Ok(EXIT_USAGE);
+        }
+    };
+    let (old, new) = match (&bound, tail) {
+        (Some(request), _) => (request.old.clone(), request.new.clone()),
+        (None, [old, new]) => (old.clone(), new.clone()),
+        (None, [new]) => {
             let Some(old) = current_session(root) else {
                 writeln!(err, "{USAGE}")?;
                 writeln!(err, "{USAGE_INSIDE}")?;
@@ -165,6 +205,14 @@ pub fn run(
         )?;
         return Ok(EXIT_FAILED);
     }
+    // The bound form reads every node itself, under both locks, and never
+    // reclaims an alias at the new name.
+    if let Some(request) = bound {
+        let CrashGate::Proceed(crash) = crash_gate(err)? else {
+            return Ok(EXIT_FAILED);
+        };
+        return bound::run(root, &request, crash.as_deref(), entry, tail, out, err);
+    }
     let sessions = crate::lifecycle::sessions_dir(root);
     for name in [&old, &new] {
         let dir = sessions.join(name);
@@ -199,14 +247,68 @@ pub fn run(
     };
     let held = crate::lifecycle::lock(root, first)
         .and_then(|one| crate::lifecycle::lock(root, second).map(|two| (one, two)));
-    let Ok(_held) = held else {
+    let Ok(pair) = held else {
         writeln!(
             err,
             "Error: another lifecycle operation (start/resume/stop/end) is in progress for '{old}' or '{new}' — retry shortly. Nothing was renamed."
         )?;
         return Ok(EXIT_FAILED);
     };
+    if let Some(seat) = seat.as_ref()
+        && !owns(root, &old, seat)
+    {
+        drop(pair);
+        return Ok(seat_refusal(root, &old, seat, tail, err)?);
+    }
     locked(root, &old, &new, crash.as_deref(), out, err)
+}
+
+/// The entry's ONE reading of the calling pane, carried into the rename.
+pub(crate) struct Entry {
+    /// The pane as tmux reported it and the server it was read on; `None`
+    /// outside tmux.
+    pub(crate) seen: Option<(crate::tmux::ObservedViewer, ServerId)>,
+    /// The class the entry gate judged from that reading; `None` without a
+    /// reading or a state root.
+    pub(crate) class: Option<crate::relay::SeatClass>,
+}
+
+impl Entry {
+    /// The ordinary agent seat the reading names, if it is one.
+    fn seat(&self) -> Option<crate::relay::PaneIdentity> {
+        let Some(crate::relay::SeatClass::Ordinary(pane)) = &self.class else {
+            return None;
+        };
+        match crate::session_launch::LaunchCaller::of(pane.clone()) {
+            crate::session_launch::LaunchCaller::Seat(seat) => Some(seat),
+            _ => None,
+        }
+    }
+}
+
+/// Whether `old` is still the ordinary agent seat's own session, read under
+/// the source's lifecycle lock.
+fn owns(root: &Path, old: &str, seat: &crate::relay::PaneIdentity) -> bool {
+    crate::session_launch::is_own(&crate::lifecycle::sessions_dir(root).join(old), seat)
+}
+
+/// The refusal of an ordinary agent seat whose rename names a session that
+/// is no longer its own (another session took the name while the rename
+/// waited): the entry gate's refusal, with its one row in the seat's own
+/// record. The caller released both lifecycle locks first, because that row
+/// takes the seat's own lifecycle lock.
+fn seat_refusal(
+    root: &Path,
+    old: &str,
+    seat: &crate::relay::PaneIdentity,
+    tail: &[String],
+    err: &mut impl Write,
+) -> std::io::Result<u8> {
+    let words: Vec<String> = std::iter::once("rename".to_owned())
+        .chain(tail.iter().cloned())
+        .collect();
+    let sessions = crate::lifecycle::sessions_dir(root);
+    crate::session_launch::refuse_lifecycle(&sessions, old, seat, "rename", &words, err)
 }
 
 /// A0: `rename x x` validates the source under a single lock and reports an
@@ -1076,7 +1178,17 @@ fn locked(
     // Addressed by the EXACT id from here on: `-t proj` prefix-matches, so a
     // rename addressed by name can move a live `project` and report success.
     let Some(session_id) = crate::lifecycle::live_id(&server, old) else {
-        return stopped(root, old, new, &server, crash, out, err);
+        return stopped(
+            root,
+            old,
+            new,
+            &server,
+            crash,
+            Absence::BootProof,
+            &mut None,
+            out,
+            err,
+        );
     };
     // The crash seam is a stopped-rename instrument: its cuts name stopped
     // facts only. A live source with an armed seam refuses before mutation
@@ -1764,6 +1876,7 @@ fn preflight(
     new: &str,
     server: &ServerId,
     crash: Option<&str>,
+    absence: Absence,
 ) -> Result<Preflight, String> {
     let sessions = crate::lifecycle::sessions_dir(root);
     let old_dir = sessions.join(old);
@@ -1810,6 +1923,11 @@ fn preflight(
             ));
         }
         crate::tmux::StopProbe::Unknown => {
+            if absence == Absence::Strict {
+                return Err(format!(
+                    "cannot prove session '{old}' stopped: its recorded tmux server is unreachable, and a bound rename moves only a session that server positively reports absent"
+                ));
+            }
             // The SAME boot-time proof `end` crosses behind --assume-stopped.
             // A rename deletes no state, so it needs no acknowledgement — it
             // must not stay stricter than the verb that erases the session.
@@ -3019,16 +3137,33 @@ impl From<String> for TxnError {
     }
 }
 
+/// How a stopped rename proves its session is not running on the recorded
+/// server, at each point of use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Absence {
+    /// A positive absence, or, when the recorded server is unreachable, the
+    /// boot-time proof `end` crosses behind `--assume-stopped`.
+    BootProof,
+    /// A positive absence only: the bound rename.
+    Strict,
+}
+
 /// The stopped rename: preflight, durable intent, settled moves, checked
 /// assets, durable result. Every failure names committed paths, remaining
 /// work and the proved retry; nothing after the intent is left to a manual
 /// rollback.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one ordered handoff: root, the locked pair, the recorded server, the seam, the absence proof and both streams travel together"
+)]
 fn stopped(
     root: &Path,
     old: &str,
     new: &str,
     server: &ServerId,
     crash: Option<&str>,
+    absence: Absence,
+    events: &mut Option<crate::store::EventsHold>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -3037,10 +3172,12 @@ fn stopped(
     // a new ordinary rename over any of them.
     match read_carrier(root, old, new) {
         Carrier::Pending(intent) => {
-            return recover(root, old, new, &intent, crash, out, err);
+            return recover_as(root, old, new, &intent, crash, absence, events, out, err);
         }
         Carrier::Complete(intent) => {
-            return converge_completed(root, old, new, &intent, server, crash, out, err);
+            return converge_completed(
+                root, old, new, &intent, server, crash, absence, events, out, err,
+            );
         }
         Carrier::Damaged(damaged) => {
             writeln!(
@@ -3069,14 +3206,14 @@ fn stopped(
         )?;
         return Ok(EXIT_FAILED);
     }
-    let plan = match preflight(root, old, new, server, crash) {
+    let plan = match preflight(root, old, new, server, crash, absence) {
         Ok(plan) => plan,
         Err(why) => {
             writeln!(err, "Error: {why}. Nothing was renamed.")?;
             return Ok(EXIT_FAILED);
         }
     };
-    stopped_fresh(root, old, new, plan, crash, out, err)
+    stopped_fresh(root, old, new, plan, crash, events, out, err)
 }
 
 /// A completed carrier that no longer converges idempotently: the names were
@@ -3095,6 +3232,8 @@ fn converge_completed(
     intent: &Intent,
     server: &ServerId,
     crash: Option<&str>,
+    absence: Absence,
+    events: &mut Option<crate::store::EventsHold>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -3135,7 +3274,7 @@ fn converge_completed(
         )?;
         return Ok(EXIT_FAILED);
     }
-    let plan = match preflight(root, old, new, server, crash) {
+    let plan = match preflight(root, old, new, server, crash, absence) {
         Ok(plan) => plan,
         Err(why) => {
             writeln!(err, "Error: {why}. Nothing was renamed.")?;
@@ -3149,7 +3288,7 @@ fn converge_completed(
         writeln!(err, "Error: {why}. Nothing was renamed.")?;
         return Ok(EXIT_FAILED);
     }
-    stopped_fresh(root, old, new, plan, crash, out, err)
+    stopped_fresh(root, old, new, plan, crash, events, out, err)
 }
 
 /// Rotate a superseded completion aside, preserving its bytes under a
@@ -3184,12 +3323,17 @@ fn rotate_aside(root: &Path, old: &str, new: &str) -> Result<(), String> {
 
 /// The fresh-transaction tail shared by `stopped` and `converge_completed`:
 /// witness, publish, cut, drive, report.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one ordered handoff: root, the locked pair, the plan, the seam, the bound event lock and both streams travel together"
+)]
 fn stopped_fresh(
     root: &Path,
     old: &str,
     new: &str,
     plan: Preflight,
     crash: Option<&str>,
+    events: &mut Option<crate::store::EventsHold>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -3259,7 +3403,7 @@ fn stopped_fresh(
     if let Some(code) = crash_cut("after-intent", crash, err)? {
         return Ok(code);
     }
-    match complete_transaction(root, &mut intent, crash, err) {
+    match complete_transaction(root, &mut intent, crash, events, err) {
         Ok(()) => {
             print_stopped_success(&intent, plan.warn_implicit, out, err)?;
             Ok(0)
@@ -3283,12 +3427,14 @@ fn complete_transaction(
     root: &Path,
     intent: &mut Intent,
     crash: Option<&str>,
+    events: &mut Option<crate::store::EventsHold>,
     err: &mut impl Write,
 ) -> Result<(), TxnError> {
-    complete_transaction_until(
+    complete_transaction_until_held(
         root,
         intent,
         crash,
+        events,
         err,
         park_deadline(std::time::Instant::now()),
     )?;
@@ -3300,10 +3446,12 @@ fn complete_transaction(
 /// path passes one fresh deadline per drive (observably identical to
 /// per-cut deadlines — at most one cut fires per drive); tests drive spent
 /// deadlines to prove terminality without sleeping.
-fn complete_transaction_until(
+/// `events` is the bound rename's event lock, released before the meta step.
+fn complete_transaction_until_held(
     root: &Path,
     intent: &mut Intent,
     crash: Option<&str>,
+    events: &mut Option<crate::store::EventsHold>,
     err: &mut impl Write,
     deadline: std::time::Instant,
 ) -> Result<(), TxnError> {
@@ -3347,6 +3495,10 @@ fn complete_transaction_until(
             return Err(TxnError::Crash(code));
         }
     }
+    // The bound rename's event lock covered the pending read and the moves.
+    // It is released before the meta step takes the moved meta lock, because
+    // an archive publisher takes meta, then memo, then events.
+    drop(events.take());
     if intent.phase == PHASE_STATE_MOVED {
         if !meta_coherent(root, intent) {
             do_meta(root, intent).map_err(|why| {
@@ -3583,17 +3735,24 @@ fn locate(old: Occupancy, new: Occupancy) -> Result<Located, Unlocated> {
 /// registration against the recorded intent (including a move completed
 /// before its phase update), then converge forward. Never a new ordinary
 /// rename over partial state, never an overwrite of a replacement occupant.
-fn recover(
+/// `absence` is the proof of a stopped session the rename entry requires.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one ordered handoff: root, the locked pair, the carrier, the seam, the absence proof and both streams travel together"
+)]
+fn recover_as(
     root: &Path,
     old: &str,
     new: &str,
     intent: &Intent,
     crash: Option<&str>,
+    absence: Absence,
+    events: &mut Option<crate::store::EventsHold>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
     let mut intent = intent.clone();
-    match reprove(root, old, new, &mut intent) {
+    match reprove(root, old, new, &mut intent, absence) {
         Err(refusal) => {
             writeln!(err, "{}", refusal.0)?;
             return Ok(EXIT_FAILED);
@@ -3607,7 +3766,7 @@ fn recover(
         }
         Ok(Reproved::Pending) => {}
     }
-    match complete_transaction(root, &mut intent, crash, err) {
+    match complete_transaction(root, &mut intent, crash, events, err) {
         Ok(()) => {
             print_stopped_success(&intent, false, out, err)?;
             Ok(0)
@@ -3633,13 +3792,19 @@ enum Reproved {
 /// then decide what completing owes. Each step proves its facts or returns
 /// the one refusal line; every read, probe and the one phase write happen in
 /// this order and nowhere else, and nothing is written to the streams here.
-fn reprove(root: &Path, old: &str, new: &str, intent: &mut Intent) -> Result<Reproved, Refusal> {
+fn reprove(
+    root: &Path,
+    old: &str,
+    new: &str,
+    intent: &mut Intent,
+    absence: Absence,
+) -> Result<Reproved, Refusal> {
     correlate(intent, old, new)?;
     let sessions = crate::lifecycle::sessions_dir(root);
     refuse_live_pair(&sessions, intent)?;
     let (located, current_dir) = locate_uuid(&sessions, intent)?;
     let server = reprove_server(&current_dir, intent)?;
-    reprove_stopped(&current_dir, &server, intent)?;
+    reprove_stopped(&current_dir, &server, intent, absence)?;
     if intent.mode != WorkMode::Local {
         reprove_managed(root, intent)?;
     }
@@ -3764,7 +3929,12 @@ fn reprove_server(current_dir: &Path, intent: &Intent) -> Result<ServerId, Refus
 /// occupied new name, or an unreachable server refuses the retry UNLESS the
 /// boot-time proof positively places the session before the host boot —
 /// the same gate the fresh preflight crosses.
-fn reprove_stopped(current_dir: &Path, server: &ServerId, intent: &Intent) -> Result<(), Refusal> {
+fn reprove_stopped(
+    current_dir: &Path,
+    server: &ServerId,
+    intent: &Intent,
+    absence: Absence,
+) -> Result<(), Refusal> {
     match crate::transport::verify_session_absent(server, &intent.old) {
         crate::tmux::StopProbe::Absent => {}
         crate::tmux::StopProbe::Present => {
@@ -3777,6 +3947,12 @@ fn reprove_stopped(current_dir: &Path, server: &ServerId, intent: &Intent) -> Re
             )));
         }
         crate::tmux::StopProbe::Unknown => {
+            if absence == Absence::Strict {
+                return Err(Refusal(format!(
+                    "Error: cannot prove session '{}' stopped: its recorded tmux server is unreachable, and a bound rename moves only a session that server positively reports absent. Nothing was renamed.",
+                    intent.old
+                )));
+            }
             if !crate::lifecycle::end::boot_proved_stopped(current_dir, server, &intent.old) {
                 return Err(Refusal(format!(
                     "Error: cannot prove session '{}' stopped (its recorded tmux server is unreachable) — refusing a retry over unknown liveness. Nothing was renamed.",
@@ -4095,6 +4271,44 @@ fn is_symlink(path: &Path) -> bool {
     )]
     let probe = std::fs::symlink_metadata(path);
     probe.is_ok_and(|meta| meta.file_type().is_symlink())
+}
+
+/// The transaction drive without a bound rename's event lock: the entry the
+/// recovery unit specs drive.
+#[cfg(test)]
+fn complete_transaction_until(
+    root: &Path,
+    intent: &mut Intent,
+    crash: Option<&str>,
+    err: &mut impl Write,
+    deadline: std::time::Instant,
+) -> Result<(), TxnError> {
+    complete_transaction_until_held(root, intent, crash, &mut None, err, deadline)
+}
+
+/// The plain rename's recovery, which accepts the boot-time proof: the entry
+/// the recovery unit specs drive.
+#[cfg(test)]
+fn recover(
+    root: &Path,
+    old: &str,
+    new: &str,
+    intent: &Intent,
+    crash: Option<&str>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::error::Result<u8> {
+    recover_as(
+        root,
+        old,
+        new,
+        intent,
+        crash,
+        Absence::BootProof,
+        &mut None,
+        out,
+        err,
+    )
 }
 
 #[cfg(test)]
@@ -4887,7 +5101,7 @@ mod tests {
         std::fs::write(dir.join("workspace.md"), manifest).unwrap();
         std::os::unix::fs::symlink(dir.join("nowhere"), dir.join("send")).unwrap();
         intent.phase = PHASE_META_PUBLISHED.to_owned();
-        match complete_transaction(&root, &mut intent, None, &mut Vec::new()) {
+        match complete_transaction(&root, &mut intent, None, &mut None, &mut Vec::new()) {
             Err(TxnError::Fail(msg)) => {
                 assert!(msg.contains("coherent meta published"), "{msg}");
                 assert!(msg.contains("Remaining: assets, result"), "{msg}");
@@ -5232,7 +5446,16 @@ mod tests {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let server = ServerId::Ambient;
         let code = converge_completed(
-            &root, "sold", "snew", &intent, &server, None, &mut out, &mut err,
+            &root,
+            "sold",
+            "snew",
+            &intent,
+            &server,
+            None,
+            Absence::BootProof,
+            &mut None,
+            &mut out,
+            &mut err,
         );
         let said = String::from_utf8_lossy(&err);
         assert_eq!(code.unwrap(), EXIT_FAILED, "{said}");
@@ -5268,5 +5491,48 @@ mod tests {
             assert!(code == EXIT_FAILED && said.contains(&named), "{said}");
             let _ = std::fs::remove_dir_all(&root);
         }
+    }
+
+    /// A stopped session whose recorded server is unreachable: the plain
+    /// rename may still cross the boot-time proof, and the bound rename never
+    /// does, neither at the fresh preflight nor on a recovered retry.
+    #[test]
+    fn a_bound_rename_never_crosses_the_boot_time_proof_of_an_unreachable_server() {
+        let root = scratch("strict-absence");
+        let dir = root.join("sessions").join("sold");
+        std::fs::create_dir_all(&dir).unwrap();
+        let intent = trap_intent("sold", "snew", "/o/sold", "/o/snew");
+        let meta = format!(
+            "session=sold\nsession_id={}\nmode=local\norigin=/o\nwork_dir=/o/sold\n",
+            intent.uuid
+        );
+        std::fs::write(dir.join("meta"), meta).unwrap();
+        // A relative socket is no address: the probe is unknown, and no tmux runs.
+        let server = ServerId::Selected(crate::meta::Selector::Socket(std::path::PathBuf::from(
+            "no-sock",
+        )));
+        let strict = "a bound rename moves only a session that server positively reports absent";
+        let unreachable = "its recorded tmux server is unreachable";
+        let fresh = |absence| {
+            preflight(&root, "sold", "snew", &server, None, absence)
+                .err()
+                .unwrap_or_default()
+        };
+        let retry = |absence| {
+            reprove_stopped(&dir, &server, &intent, absence)
+                .err()
+                .map(|refusal| refusal.0)
+                .unwrap_or_default()
+        };
+        for said in [fresh(Absence::Strict), retry(Absence::Strict)] {
+            assert!(said.contains(strict), "{said}");
+        }
+        for said in [fresh(Absence::BootProof), retry(Absence::BootProof)] {
+            assert!(
+                said.contains(unreachable) && !said.contains(strict),
+                "{said}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

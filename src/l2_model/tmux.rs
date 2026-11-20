@@ -1931,6 +1931,45 @@ fn fenced_args(server: &ServerId, target: &str, guard: String, command: String) 
     args
 }
 
+/// Rename the stamped session to `new` only while the server, the session
+/// incarnation and its ae stamp are still the ones the read proved, by its
+/// exact `$<n>` id. `None` when a component is not tmux's or ae's own
+/// spelling, or `new` is no session name.
+///
+/// ```
+/// use ae::inventory::ServerId;
+/// use ae::tmux::{SessionStamp, fenced_rename_args, interpret_session_stamp};
+/// let read = "41 | 1789100000 | $3 | 1789100001 | demo | 11111111-2222-4333-8444-555555555555\n";
+/// let stamp = interpret_session_stamp(true, read, "demo").unwrap();
+/// let args = fenced_rename_args(&ServerId::Ambient, &stamp, "topic").unwrap();
+/// assert_eq!(&args[..4], ["if-shell", "-F", "-t", "$3"]);
+/// assert_eq!(
+///     args[4],
+///     "#{&&:#{&&:#{==:#{pid},41},#{==:#{start_time},1789100000}},#{&&:#{&&:#{==:#{session_id},$3},#{==:#{session_created},1789100001}},#{==:#{@ae_session_uuid},11111111-2222-4333-8444-555555555555}}}"
+/// );
+/// assert_eq!(args[5], "rename-session -t $3 topic");
+/// assert_eq!(args.len(), 6);
+/// assert_eq!(fenced_rename_args(&ServerId::Ambient, &stamp, "two words"), None);
+/// assert_eq!(fenced_rename_args(&ServerId::Ambient, &stamp, "a;kill-server"), None);
+/// let unset = SessionStamp { uuid: String::new(), ..stamp };
+/// assert_eq!(fenced_rename_args(&ServerId::Ambient, &unset, "topic"), None);
+/// ```
+#[must_use]
+pub fn fenced_rename_args(
+    server: &ServerId,
+    stamp: &SessionStamp,
+    new: &str,
+) -> Option<Vec<String>> {
+    (fence_spelled(stamp) && crate::config::is_session_name(new)).then(|| {
+        fenced_args(
+            server,
+            &stamp.session.id,
+            stamp_guard(stamp),
+            format!("rename-session -t {} {new}", stamp.session.id),
+        )
+    })
+}
+
 /// Kill the stamped session only while the server, the session incarnation
 /// and its ae stamp are still the ones the read proved. `None` when a
 /// component is not tmux's or ae's own spelling.

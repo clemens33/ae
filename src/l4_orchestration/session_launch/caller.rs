@@ -9,6 +9,9 @@
 //!   the target, with the owner's command, and the refusal is journaled once
 //!   in the seat's own record when that record correlates with the
 //!   observation ([`refuse`]);
+//! - the same seat renames, ends or removes no other session: the dispatcher
+//!   gate refuses it before any lock with the owner's command and one
+//!   `lifecycle-refused` row in the same place ([`refuse_lifecycle`]);
 //! - every session a launch builds is journaled in the target's own
 //!   `events.jsonl` with its actor and caller pane, under the lock and before
 //!   the session is handed over ([`journal_start`]).
@@ -27,6 +30,9 @@ const START_ACTION: &str = "session-start";
 
 /// The journal action of a launch the seat guard refused.
 const REFUSED_ACTION: &str = "launch-refused";
+
+/// The journal action of a lifecycle form the seat guard refused.
+const LIFECYCLE_REFUSED_ACTION: &str = "lifecycle-refused";
 
 /// The `@ae_agent` values ae writes on a pane without `@ae_slot`: the watchdog
 /// pane and the event monitor pane. Any other agent stamp without a slot is a
@@ -131,7 +137,7 @@ pub(crate) struct Caller<'a> {
 /// unobserved uuid seed, or an older session) owns it only when the target is
 /// a real directory whose meta names the session the pane is in, on the
 /// pane's own server.
-pub(super) fn is_own(dir: &Path, seat: &PaneIdentity) -> bool {
+pub(crate) fn is_own(dir: &Path, seat: &PaneIdentity) -> bool {
     if crate::lifecycle::aliases::target(dir).is_some() {
         return false;
     }
@@ -189,6 +195,85 @@ pub(super) fn refuse(
     caller: Caller<'_>,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    let refused = Refused {
+        word: "launch",
+        form: "launch",
+        action: REFUSED_ACTION,
+        summary: format!(
+            "launch refused via {}: an agent seat runs no launch form on another session",
+            caller.route.word()
+        ),
+    };
+    let target = Target {
+        sessions,
+        name: target,
+        dir,
+        typed,
+    };
+    refuse_seat(&target, seat, &refused, caller.words, err)
+}
+
+/// The refusal of an agent seat's `verb` (`rename`, `end` or `rm`) of the
+/// session `target`, which is not its own: the line with the owner's command
+/// `ae <words>`, then one `lifecycle-refused` row in the seat's own record.
+/// Nothing else is read or changed.
+///
+/// # Errors
+///
+/// Only a failure to write `err`.
+pub(crate) fn refuse_lifecycle(
+    sessions: &Path,
+    target: &str,
+    seat: &PaneIdentity,
+    verb: &str,
+    words: &[String],
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let refused = Refused {
+        word: verb,
+        form: "lifecycle",
+        action: LIFECYCLE_REFUSED_ACTION,
+        summary: format!("{verb} refused: an agent seat runs no lifecycle form on another session"),
+    };
+    let dir = sessions.join(target);
+    let target = Target {
+        sessions,
+        name: target,
+        dir: &dir,
+        typed: target,
+    };
+    refuse_seat(&target, seat, &refused, words, err)
+}
+
+/// What a seat-guard refusal names and journals.
+struct Refused<'a> {
+    /// The verb the line names.
+    word: &'a str,
+    /// The class of form the seat runs none of on another session.
+    form: &'a str,
+    /// The journal action.
+    action: &'a str,
+    /// The journal summary.
+    summary: String,
+}
+
+/// The session a seat-guard refusal is about: the sessions directory, its
+/// locked name and directory, and the name as typed.
+struct Target<'a> {
+    sessions: &'a Path,
+    name: &'a str,
+    dir: &'a Path,
+    typed: &'a str,
+}
+
+/// The line with the owner's command, then the one row ([`journal_refusal`]).
+fn refuse_seat(
+    target: &Target<'_>,
+    seat: &PaneIdentity,
+    refused: &Refused<'_>,
+    words: &[String],
+    err: &mut impl Write,
+) -> io::Result<u8> {
     let actor = seat_actor(seat);
     let own = seat.session.as_deref().unwrap_or_default();
     let slot = seat
@@ -196,13 +281,16 @@ pub(super) fn refuse(
         .as_deref()
         .filter(|slot| !slot.is_empty())
         .unwrap_or("-");
-    let words: Vec<String> = caller.words.iter().map(|word| owner_word(word)).collect();
+    let words: Vec<String> = words.iter().map(|word| owner_word(word)).collect();
     writeln!(
         err,
-        "ae: launch REFUSED — agent seat {actor} ({own}:{slot}) runs no launch form on another session, and '{typed}' is not its own. The owner runs, in the owner's own terminal: ae {}; or the orchestrator seat runs it on the owner's word. Nothing was changed.",
+        "ae: {} REFUSED — agent seat {actor} ({own}:{slot}) runs no {} form on another session, and '{}' is not its own. The owner runs, in the owner's own terminal: ae {}; or the orchestrator seat runs it on the owner's word. Nothing was changed.",
+        refused.word,
+        refused.form,
+        target.typed,
         words.join(" ")
     )?;
-    if let Err(why) = journal_refusal(sessions, target, dir, typed, seat, caller.route) {
+    if let Err(why) = journal_refusal(target, seat, refused) {
         writeln!(
             err,
             "ae: the refusal could not be journaled in session '{own}': {why}."
@@ -221,13 +309,11 @@ pub(super) fn refuse(
 /// pane's server, and record exactly one canonical session uuid, the live one,
 /// all read from one snapshot of its meta.
 fn journal_refusal(
-    sessions: &Path,
-    target: &str,
-    dir: &Path,
-    typed: &str,
+    target: &Target<'_>,
     seat: &PaneIdentity,
-    route: LaunchRoute,
+    refused: &Refused<'_>,
 ) -> Result<(), String> {
+    let sessions = target.sessions;
     let session = caller_session(seat).map_err(str::to_owned)?;
     let _hold = crate::store::lock(
         &sessions.join(format!(".lifecycle.{session}.lock")),
@@ -235,18 +321,14 @@ fn journal_refusal(
     )
     .map_err(|_| "the caller's session is in another lifecycle operation".to_owned())?;
     let (record, uuid) = correlated_record(sessions, session, seat).map_err(str::to_owned)?;
-    let target_uuid = if crate::lifecycle::aliases::target(dir).is_some() {
+    let target_uuid = if crate::lifecycle::aliases::target(target.dir).is_some() {
         String::new()
     } else {
-        sole_uuid(dir).unwrap_or_default()
+        sole_uuid(target.dir).unwrap_or_default()
     };
     let actor = seat_actor(seat);
     let own = seat.session.as_deref().unwrap_or_default();
     let slot = seat.slot.as_deref().unwrap_or_default();
-    let summary = format!(
-        "launch refused via {}: an agent seat runs no launch form on another session",
-        route.word()
-    );
     let triple = IdentityTriple {
         server: seat.server.clone().unwrap_or_default(),
         pane: seat.pane.clone(),
@@ -259,14 +341,14 @@ fn journal_refusal(
         ..EventFields::new(
             crate::time::Timestamp::now(),
             &actor,
-            REFUSED_ACTION,
-            typed,
+            refused.action,
+            target.typed,
             "",
             slot,
             own,
             "",
-            target,
-            &summary,
+            target.name,
+            &refused.summary,
             "",
         )
     };

@@ -72,7 +72,7 @@ pub use plan::{Env, Mode, Plan, is_bound_resume, parse_plan};
 use plan::{EnvError, read_env};
 pub(crate) use plan::{parse_plan_with_attach, parse_seat_plan};
 
-pub(crate) use caller::{Caller, LaunchCaller, LaunchRoute};
+pub(crate) use caller::{Caller, LaunchCaller, LaunchRoute, is_own, refuse_lifecycle};
 #[cfg(test)]
 use preflight::check_resume_target;
 use preflight::{

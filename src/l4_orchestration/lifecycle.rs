@@ -19,7 +19,7 @@
 //! 5. only then is the live state removed.
 
 pub(crate) mod aliases;
-mod bound;
+pub(crate) mod bound;
 pub(crate) mod claims;
 pub(crate) mod compaction;
 pub(crate) mod end;
