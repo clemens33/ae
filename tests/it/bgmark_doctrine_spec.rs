@@ -1,7 +1,7 @@
 //! Approved S2 doctrine, lead refinement ae-20261112T075112Z-4cad99e4.
 //! Text contract, not runtime proof. Whitespace may wrap in the rendered source.
 fn bgmark_doctrine_words() -> String {
-    include_str!("../../src/render/core.txt")
+    include_str!("../../src/l3_services/render/core.txt")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")

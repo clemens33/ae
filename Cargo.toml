@@ -87,7 +87,7 @@ pulldown-cmark = { version = "=0.13.6", default-features = false }
 # already bounds nesting at MAX_DEPTH and keeps oversized integers verbatim.
 #
 # `rustls-no-provider` takes the rustls transport WITHOUT ureq choosing the
-# crypto provider for us (that is `src/telegram.rs`'s job, explicitly).
+# crypto provider for us (that is `src/l3_services/telegram.rs`'s job, explicitly).
 # `rustls-webpki-roots` is NOT optional decoration: with the feature off,
 # ureq's default `RootCerts::WebPki` reaches a `panic!("WebPki is disabled...")`
 # at the first request (ureq-3.4.0 src/tls/rustls.rs:200). Mozilla's root set,
@@ -198,8 +198,8 @@ expect_used = "warn"
 # conspicuous. The type it denies, and why denying one type is sufficient HERE,
 # are documented in clippy.toml.
 #
-# Product process doors live in `src/l1_platform/transport.rs`, `src/run.rs`,
-# `src/upgrade.rs` and `src/install.rs`; suite doors in `tests/it/cli.rs`,
+# Product process doors live in `src/l1_platform/transport.rs`, `src/l3_services/run.rs`,
+# `src/l3_services/upgrade.rs` and `src/l3_services/install.rs`; suite doors in `tests/it/cli.rs`,
 # `install.rs`, `shape.rs`, `migrate.rs`, `parity.rs` (`mod raw`) and `doors.rs`.
 # `tests/it/doors.rs` is the count of record.
 # Not `forbid`: forbid would block these, so the residual is that a further relaxation

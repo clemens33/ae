@@ -7583,20 +7583,20 @@ fn buildtune_has_source_line(trace: &str, source: &str) -> bool {
 #[test]
 fn buildtune_panic_backtraces_resolve_ae_and_dependency_source_lines() {
     assert!(buildtune_has_source_line(
-        "at /repo/src/board.rs:703:4",
-        "src/board.rs"
+        "at /repo/src/l3_services/board.rs:703:4",
+        "src/l3_services/board.rs"
     ));
     assert!(!buildtune_has_source_line(
         "ae::board::Splitter::feed_each",
-        "src/board.rs"
+        "src/l3_services/board.rs"
     ));
     assert!(!buildtune_has_source_line(
-        "at /repo/src/board.rs",
-        "src/board.rs"
+        "at /repo/src/l3_services/board.rs",
+        "src/l3_services/board.rs"
     ));
     assert!(!buildtune_has_source_line(
-        "at /repo/src/board.rs:unknown",
-        "src/board.rs"
+        "at /repo/src/l3_services/board.rs:unknown",
+        "src/l3_services/board.rs"
     ));
     assert!(!buildtune_has_source_line(
         "thread 'probe' panicked at /repo/src/buffer/buffer.rs:251:13:",
@@ -7624,7 +7624,11 @@ fn buildtune_panic_backtraces_resolve_ae_and_dependency_source_lines() {
         trace.contains("index outside of buffer"),
         "the real dependency panic: {trace}"
     );
-    for source in ["src/board.rs", "src/buffer/buffer.rs", "tests/it/gate.rs"] {
+    for source in [
+        "src/l3_services/board.rs",
+        "src/buffer/buffer.rs",
+        "tests/it/gate.rs",
+    ] {
         assert!(
             buildtune_has_source_line(&trace, source),
             "panic backtrace lost file:line for {source}: {trace}"

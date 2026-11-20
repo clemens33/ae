@@ -172,7 +172,7 @@ roster is derived from the found harnesses:
 | Neither; Grok + agy, with or without others | `grok46` | `agy` | `grok46` |
 | Neither; other combinations | first found | second found, or solo | first found |
 
-Models and efforts are a dated table in `src/init/roles.rs`, not a live probe (init runs no
+Models and efforts are a dated table in `src/l3_services/init/roles.rs`, not a live probe (init runs no
 child). Claude: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `fable`, each with
 `low` to `max`; that is `claude --help`'s vocabulary for the harness, not a check that a given
 model accepts each level. Codex, as `codex` 0.165.0 listed its model cache: `gpt-6.1-sol`,
@@ -875,7 +875,7 @@ source share one section. That is why the dialog can show fewer sections than
 provenance.
 
 The dialog is one table, laid out by the same pure formatter `ae app`'s Settings > Quota
-tab uses (`src/quota/view.rs`). A dim column header (`WINDOW`, an 8-cell bar, `USED`,
+tab uses (`src/l3_services/quota/view.rs`). A dim column header (`WINDOW`, an 8-cell bar, `USED`,
 `COUNTS`, `NOTE`, `RESETS`, `SEEN`) sits above each scope: a head row naming the client
 (`claude · cc`), its profiles and any account fact (`credits 12.40`, `spend cap reached`,
 `plan: claude max 20x (reported 44m ago)`),

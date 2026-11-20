@@ -6,7 +6,7 @@
 # (caught at commit ce8965e; a fresh clone would have failed the gate). The
 # evidence tree those lived in is retired, but the rule outlived it: the list
 # goldens under tests/fixtures moved out of that tree in slice Z4 and are
-# `include_str!`d and compared byte for byte by `src/listing.rs`.
+# `include_str!`d and compared byte for byte by `src/l3_services/listing.rs`.
 #
 # Never remove without re-checking every byte-exact comparison from a CLONE.
 tests/fixtures/** -text

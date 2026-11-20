@@ -122,7 +122,11 @@ fn the_floor_is_asked_at_exactly_the_two_sites_that_create_or_draw() {
 #[test]
 fn the_recovery_commands_never_reach_the_gate() {
     let gated: Vec<String> = gate_sites().into_iter().map(|(file, _)| file).collect();
-    for module in ["src/listing.rs", "src/upgrade.rs", "src/install.rs"] {
+    for module in [
+        "src/l3_services/listing.rs",
+        "src/l3_services/upgrade.rs",
+        "src/l3_services/install.rs",
+    ] {
         assert!(
             !gated.contains(&module.to_owned()),
             "{module} decides the floor; ae list / version / upgrade must work below it"

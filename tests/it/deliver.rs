@@ -2408,7 +2408,8 @@ fn a_prove_leg_skips_with_the_send_lock_released() {
 fn the_guarded_operation_is_pinned_against_its_own_source() {
     // R10 pins asked of the source text, doors-style.
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let product = std::fs::read_to_string(root.join("src/deliver.rs")).expect("the product source");
+    let product = std::fs::read_to_string(root.join("src/l3_services/deliver.rs"))
+        .expect("the product source");
     // No guard is implemented twice. (`pane_agent_is_dead` is the design's
     // name for what main calls `pane_liveness_at` — pinned under its real
     // name.)

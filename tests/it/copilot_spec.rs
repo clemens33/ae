@@ -1100,7 +1100,7 @@ fn the_watchdog_neither_fetches_nor_feeds_copilot() {
         !daemon.contains("copilot"),
         "display-only: the watchdog carries no Copilot path"
     );
-    let quota = product_part("src/quota.rs");
+    let quota = product_part("src/l3_services/quota.rs");
     assert!(
         !quota.contains("api.github.com"),
         "quota.rs must not name the vendor URL"

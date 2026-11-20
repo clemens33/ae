@@ -5,7 +5,7 @@
 //! cannot route refuses and never becomes a default ask, including a reply to a message without
 //! text; the unavailable-default notice is confirmed by Telegram before the offset checkpoint) and
 //! the reviewer's test-oracle notes. The bridge-level census and wiring pins live beside the
-//! bridge: `src/telegram/bridge.rs` tests and `tests/it/telegram.rs`.
+//! bridge: `src/l3_services/telegram/bridge.rs` tests and `tests/it/telegram.rs`.
 #[cfg(test)]
 mod tests {
     #![allow(

@@ -8,10 +8,10 @@ Module map: [Structure](docs/reference/contract.md#structure), layer map: [Layer
 | gating or reviewing | run [The protocol](docs/gatekeeping.md#the-protocol) and [the second protocol](docs/gatekeeping.md#the-second-protocol--reviewing-a-claim-a-criterion-or-a-body-of-evidence); read an entry from [Which entry do I need?](docs/gatekeeping.md#which-entry-do-i-need) when its symptom matches |
 | coordination design | [docs/design-patterns.md](docs/design-patterns.md) |
 | src/l6_shell/shim.rs, helper commands | [Session helpers](docs/reference/contract.md#session-helpers) |
-| src/l2_model/tool.rs, adapters, src/run.rs, src/launch.rs | [Agent tool capabilities](docs/reference/contract.md#agent-tool-capabilities) |
+| src/l2_model/tool.rs, adapters, src/l3_services/run.rs, src/l3_services/launch.rs | [Agent tool capabilities](docs/reference/contract.md#agent-tool-capabilities) |
 | src/l1_platform/doors.rs, src/l1_platform/transport.rs, environment reads | [Environment doors](docs/reference/contract.md#environment-doors) |
 | src/l2_model/theme.rs, status formats, tmux hooks and binds | [docs/internals/theme.md](docs/internals/theme.md) |
-| src/upgrade.rs, `ae upgrade` | [docs/upgrade.md](docs/upgrade.md) |
+| src/l3_services/upgrade.rs, `ae upgrade` | [docs/upgrade.md](docs/upgrade.md) |
 | shell commands on macOS or Linux | [GNU vs BSD](docs/reference/contract.md#gnu-vs-bsd--check-the-command-you-are-about-to-type) |
 | any src/ module; find its named owner before editing | [Key invariants](docs/reference/contract.md#key-invariants) |
 | src/l2_model/config.rs, src/l2_model/meta.rs, config grammar | [Config](docs/reference/contract.md#config) |

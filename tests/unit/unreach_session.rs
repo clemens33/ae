@@ -1,4 +1,4 @@
-// Frozen unreach r1. Included at EOF of src/session.rs, under cfg(test).
+// Frozen unreach r1. Included at EOF of src/l3_services/session.rs, under cfg(test).
 #[cfg(test)]
 mod unreach_fold_spec {
     use super::*;

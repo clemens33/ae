@@ -483,7 +483,7 @@ fn narrow_width_clips_by_cell_neutralizes_and_keeps_session_seat() {
 /// grant wording drifts.
 #[test]
 fn the_grant_stands_and_the_projection_reads_nothing() {
-    let quota = include_str!("../../quota.rs");
+    let quota = include_str!("../../l3_services/quota.rs");
     let grant = "GRANT ae-20261024T143648Z-bd5bf3db: the existing join owner quota::recorded_identity -> run::canonical_config_home may run its fs::canonicalize + symlink_metadata probes, on the LOADER thread only, at most once per proved seat per fleet projection, through the unchanged owner. Still forbidden: file content/cache/session scans, a second quota observation, tmux/process/network reads, new doors, UI-thread I/O, any lexical/second join.";
     assert!(quota.contains(grant), "GRANT wording missing from quota.rs");
     for name in ["live_seat_facts", "project_live_seats"] {

@@ -445,6 +445,7 @@ fn every_prestage_refusal_is_decided_before_the_first_key_reaches_the_pane() {
     let source = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
+            .join("l3_services")
             .join("deliver.rs"),
     )
     .expect("the deliver source should read");

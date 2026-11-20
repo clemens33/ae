@@ -169,10 +169,10 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
     assert_eq!(
         sorted(sites),
         sorted(vec![
-            "src/install.rs".to_owned(),
-            "src/run.rs".to_owned(),
+            "src/l3_services/install.rs".to_owned(),
+            "src/l3_services/run.rs".to_owned(),
             "src/l1_platform/transport.rs".to_owned(),
-            "src/upgrade.rs".to_owned(),
+            "src/l3_services/upgrade.rs".to_owned(),
             "tests/it/cli.rs".to_owned(),
             "tests/it/doors.rs".to_owned(),
             "tests/it/install.rs".to_owned(),
@@ -227,7 +227,7 @@ fn run_ps_has_exactly_one_product_caller() {
 }
 
 /// The board's streaming door lives at exactly ONE product site: the
-/// transcript open in `src/board.rs`, reused by every harness reader. A second
+/// transcript open in `src/l3_services/board.rs`, reused by every harness reader. A second
 /// opener anywhere else is a review, not a diff.
 #[test]
 fn the_board_streaming_door_has_exactly_one_product_site() {
@@ -240,17 +240,17 @@ fn the_board_streaming_door_has_exactly_one_product_site() {
     );
     assert_eq!(
         holders,
-        vec!["src/board.rs".to_owned()],
+        vec!["src/l3_services/board.rs".to_owned()],
         "the board streaming door gained (or lost) a product site"
     );
 
     // And the site opens exactly once: a second `File::open` in the same file
     // is the same bypass one file over.
-    let board = tree_text("src/board.rs");
+    let board = tree_text("src/l3_services/board.rs");
     assert_eq!(
         board.matches("File::open").count(),
         1,
-        "src/board.rs opens more than once"
+        "src/l3_services/board.rs opens more than once"
     );
 }
 
@@ -284,7 +284,7 @@ fn run_agy_quota_has_exactly_one_product_caller_and_no_pipe() {
     // A scan that found nothing fails here too: the expected list is not empty.
     assert_eq!(
         sorted(holders),
-        sorted(["src/quota.rs", "src/l1_platform/transport.rs"]),
+        sorted(["src/l3_services/quota.rs", "src/l1_platform/transport.rs"]),
         "the agy process leg gained (or lost) a product holder"
     );
     let code = structural(
@@ -406,7 +406,7 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
             // Its definition and its platform table.
             "src/l1_platform/doors.rs".to_owned(),
             // The fleet listing's discovery.
-            "src/fleet_read.rs".to_owned(),
+            "src/l3_services/fleet_read.rs".to_owned(),
             // The shared gate.
             "src/lifecycle/end.rs".to_owned(),
             "src/session_launch.rs".to_owned(),
@@ -450,7 +450,10 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
     );
 
     // And the two verbs that still refuse on the strict proof alone.
-    for (file, operation) in [("src/compact.rs", "compact"), ("src/lifecycle.rs", "stop")] {
+    for (file, operation) in [
+        ("src/l3_services/compact.rs", "compact"),
+        ("src/lifecycle.rs", "stop"),
+    ] {
         let code = tree_text(file);
         assert!(
             !code.contains("classify_absence(")
@@ -542,12 +545,12 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
 
     // Twenty relaxations over ten files, each for a job no library call can
     // do. The PRODUCT's five: `src/l1_platform/transport.rs`, because a tmux multiplexer
-    // that cannot run tmux answers `unknown` about everything; `src/run.rs`,
-    // the pane's own `exec` of its tool; `src/upgrade.rs` TWICE — `tar`, to
+    // that cannot run tmux answers `unknown` about everything; `src/l3_services/run.rs`,
+    // the pane's own `exec` of its tool; `src/l3_services/upgrade.rs` TWICE — `tar`, to
     // list and unpack the bundle it downloaded, and then the downloaded core's
     // own `_install`, because the migration chain a publish runs belongs to the
     // version being INSTALLED and not to the one doing the installing; and
-    // `src/install.rs`, which runs the digest-verified bundle core once to ask
+    // `src/l3_services/install.rs`, which runs the digest-verified bundle core once to ask
     // which version it is, because the directory is named for that answer.
     //
     // The suite's fifteen: the parity harness's one, which must never judge a
@@ -574,10 +577,10 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     assert_eq!(
         sorted(inventory),
         sorted(vec![
-            ("src/install.rs".to_owned(), 1),
-            ("src/run.rs".to_owned(), 1),
+            ("src/l3_services/install.rs".to_owned(), 1),
+            ("src/l3_services/run.rs".to_owned(), 1),
             ("src/l1_platform/transport.rs".to_owned(), 1),
-            ("src/upgrade.rs".to_owned(), 2),
+            ("src/l3_services/upgrade.rs".to_owned(), 2),
             ("tests/it/cli.rs".to_owned(), 6),
             ("tests/it/doors.rs".to_owned(), 1),
             ("tests/it/install.rs".to_owned(), 4),
@@ -772,7 +775,7 @@ fn direct_session_mutation(code: &str) -> Option<&str> {
     })
 }
 
-/// `src/init.rs` owns ae's ONE exclusive publication — a temp under a nonce
+/// `src/l3_services/init.rs` owns ae's ONE exclusive publication — a temp under a nonce
 /// only that call opened, fsynced, then hard-linked onto a name that must not
 /// already exist — and every other product caller of it is NAMED here. The
 /// caller list is ONE table: a file reaches the boundary only by appearing in
@@ -797,7 +800,7 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
         // and a duplicate of it would be a second no-clobber publication to get
         // wrong. Its mode is the store's, not the config's.
         (
-            "src/carry.rs",
+            "src/l3_services/carry.rs",
             "crate::init::create_exclusive(path, bytes, 0o600)",
             "the carry's publication must be init's exclusive writer at the store's own mode",
         ),
@@ -826,7 +829,7 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
             .find(|(name, _)| name == wanted)
             .map_or_else(|| panic!("{wanted} was not scanned"), |(_, code)| code)
     };
-    let init = half("src/init.rs");
+    let init = half("src/l3_services/init.rs");
     assert!(
         init.contains(".create_new(true)"),
         "init's staging writer must retain O_EXCL"
@@ -845,7 +848,8 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
         assert!(half(name).contains(call), "{why}");
     }
     for (name, code) in &halves {
-        if name == "src/init.rs" || CALLERS.iter().any(|(caller, _, _)| caller == name) {
+        if name == "src/l3_services/init.rs" || CALLERS.iter().any(|(caller, _, _)| caller == name)
+        {
             continue;
         }
         assert!(
@@ -863,10 +867,10 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
 const TOOL_BRANCH_DEBT: [(&str, &str, usize); 3] = [
     // `model_family` and its family helper: model-scoped quota windows are
     // Claude-only today (slice toolrows).
-    ("src/quota.rs", "ToolKind::Claude", 2),
+    ("src/l3_services/quota.rs", "ToolKind::Claude", 2),
     // The agy quota leg: the spoken-groups filter and the home-inheriting
     // leg (slice toolrows).
-    ("src/quota.rs", "ToolKind::Agy", 2),
+    ("src/l3_services/quota.rs", "ToolKind::Agy", 2),
     // Muse quota leg debt (slice toolrows), seven distinct decisions:
     // muse_home: select the opted-in scope's config home.
     // muse_legs: select scopes the Muse leg may speak for.
@@ -875,7 +879,7 @@ const TOOL_BRANCH_DEBT: [(&str, &str, usize); 3] = [
     // absorb_resolved (asks): admit the paid leg only when Muse is opted in.
     // absorb_resolved (identity): use the config home as the keychain account identity.
     // leg_hint: show a Muse hint only after its leg spoke.
-    ("src/quota.rs", "ToolKind::Muse", 7),
+    ("src/l3_services/quota.rs", "ToolKind::Muse", 7),
 ];
 
 /// Contiguous `ToolKind::UppercaseFirst` tokens, without an enum vocabulary
@@ -1019,7 +1023,7 @@ fn a_live_session_file_is_named_in_exactly_one_place() {
 
 #[test]
 fn known_session_file_mutations_stay_with_the_store() {
-    // What `src/telegram.rs`'s cursor proof rests on, checked rather than
+    // What `src/l3_services/telegram.rs`'s cursor proof rests on, checked rather than
     // asserted in prose: the locked append primitive is private, and the
     // retention rename is owned by the store. This conservative lexical
     // tripwire catches known direct write/rename forms before they can drift
@@ -1067,15 +1071,15 @@ fn the_claude_project_key_is_spelled_in_src_carry_alone() {
     let halves = product_halves();
     let probe = halves
         .iter()
-        .find(|(name, _)| name == "src/run.rs")
+        .find(|(name, _)| name == "src/l3_services/run.rs")
         .map_or("", |(_, code)| code.as_str());
     assert!(
         probe.contains("crate::carry::project_key("),
-        "src/run.rs::resumable must call ae::carry::project_key, the one owner of claude's \
+        "src/l3_services/run.rs::resumable must call ae::carry::project_key, the one owner of claude's \
          project-folder rule"
     );
     for (name, code) in halves {
-        if name == "src/carry.rs" {
+        if name == "src/l3_services/carry.rs" {
             continue;
         }
         for shape in [

@@ -8,7 +8,7 @@ use ae::store::SourceRead;
 
 #[test]
 fn env_unset_and_clear_remove_prior_shell_state_assignments() {
-    // The launch oracle is run::peel_env, src/run.rs:1953-1972 at ea6def362:
+    // The launch oracle is run::peel_env, src/l3_services/run.rs:1953-1972 at ea6def362:
     // -i clears prefix.assign; -u removes that name from prefix.assign.
     // HOME=/h is assigned later. Neither command can keep /old as its XDG root.
     for prefix in [

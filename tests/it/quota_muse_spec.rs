@@ -678,7 +678,7 @@ fn missing_binary_and_unusable_vendor_output_name_the_failure_without_usage() {
 /// may read the held cache, but cannot acquire a route to the paid entry.
 #[test]
 fn observers_settings_watchdog_and_reseat_never_name_the_paid_muse_leg() {
-    let quota = include_str!("../../src/quota.rs");
+    let quota = include_str!("../../src/l3_services/quota.rs");
     for (start, end) in [
         ("pub(crate) fn observe(", "pub(crate) fn view_of("),
         ("pub(crate) fn view_of(", "Read configured client scopes"),
@@ -767,12 +767,12 @@ fn the_only_paid_muse_caller_is_inside_the_cli_run_path() {
             assert!(
                 matches!(
                     relative.to_str(),
-                    Some("src/l1_platform/transport.rs" | "src/muse_usage.rs")
+                    Some("src/l1_platform/transport.rs" | "src/l3_services/muse_usage.rs")
                 ),
                 "new route around paid-entry cache/consent: {}",
                 relative.display()
             );
-            if relative == std::path::Path::new("src/muse_usage.rs") {
+            if relative == std::path::Path::new("src/l3_services/muse_usage.rs") {
                 for _ in code.match_indices("run_muse_quota") {
                     transport_callers.push(relative.clone());
                 }
@@ -784,13 +784,16 @@ fn the_only_paid_muse_caller_is_inside_the_cli_run_path() {
         1,
         "one product reference to paid refresh (including imports): {paid_references:?}"
     );
-    assert_eq!(paid_references[0].0, std::path::Path::new("src/quota.rs"));
+    assert_eq!(
+        paid_references[0].0,
+        std::path::Path::new("src/l3_services/quota.rs")
+    );
     assert_eq!(
         transport_callers.len(),
         1,
         "only the held-cache module may call transport"
     );
-    let quota: String = include_str!("../../src/quota.rs")
+    let quota: String = include_str!("../../src/l3_services/quota.rs")
         .split_whitespace()
         .collect();
     let run = quota.find("pubfnrun(").expect("CLI quota entry");

@@ -399,7 +399,7 @@ fn sole_flag_value_reads_model_without_changing_the_opencode_adapter() {
 
 #[test]
 fn recorded_identity_stays_none_for_an_opencode_roster_seat() {
-    let src = product_src("src/quota.rs");
+    let src = product_src("src/l3_services/quota.rs");
     assert!(
         src.contains("QuotaSource::GrokLog | QuotaSource::Unsupported => return None"),
         "named gap: opencode stays on the Unsupported arm; no checkpoint ask / throttle / headroom reseat"
@@ -823,7 +823,7 @@ fn the_failure_note_says_ago_once_between_the_age_and_failed() {
 
 #[test]
 fn observe_never_calls_refresh_in_quota_rs() {
-    let src = product_src("src/quota.rs");
+    let src = product_src("src/l3_services/quota.rs");
     let product = src
         .split_once("#[cfg(test)]\nmod tests {")
         .map_or(src.as_str(), |(m, _)| m);
@@ -918,8 +918,8 @@ fn rotated_key_is_due_within_300s_and_old_samples_do_not_render() {
 
 #[test]
 fn third_locked_agent_site_is_go_usage() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/go_usage.rs");
-    let text = std::fs::read_to_string(&path).expect("src/go_usage.rs exists");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/l3_services/go_usage.rs");
+    let text = std::fs::read_to_string(&path).expect("src/l3_services/go_usage.rs exists");
     assert!(text.contains("Agent::new_with_config"));
     assert!(text.contains("https_only"));
     assert!(text.contains("max_redirects"));

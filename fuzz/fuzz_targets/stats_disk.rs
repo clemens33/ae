@@ -8,15 +8,15 @@ use ae::stats_store::disk::{self, Decision, Dir, Memory, Next, Op, Prepared, Rea
 use ae::stats_store::{Doc, parse_count};
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../src/stats_store/s2_cases.rs"]
+#[path = "../../src/l3_services/stats_store/s2_cases.rs"]
 mod cases;
 
-#[path = "../../src/stats_store/s3_cases.rs"]
+#[path = "../../src/l3_services/stats_store/s3_cases.rs"]
 mod s3_cases;
-#[path = "../../src/stats_store/s3_keys.rs"]
+#[path = "../../src/l3_services/stats_store/s3_keys.rs"]
 mod s3_keys;
 
-#[path = "../../src/stats_store/s4_cases.rs"]
+#[path = "../../src/l3_services/stats_store/s4_cases.rs"]
 mod s4_cases;
 
 use cases::{Rig, S, T, birth, complete, published, recover};

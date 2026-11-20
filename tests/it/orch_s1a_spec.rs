@@ -1884,7 +1884,7 @@ fn charter_and_seeded_prompt_carry_s1a_authority_and_lifecycle_limits() {
 
 #[test]
 fn core_prompt_bytes_are_unchanged() {
-    let core = include_bytes!("../../src/render/core.txt");
+    let core = include_bytes!("../../src/l3_services/render/core.txt");
     assert_eq!(
         ae::install::sha256_hex(core),
         "6b562048d1f60060e7e382e5776122831b5913005c488fd8c1adf9aaa3eb272e"

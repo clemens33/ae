@@ -1881,7 +1881,7 @@ mod tests {
             "A\x1b[2J bold claim. B safe path | C other path (recommend B)",
             "Ship 2026.10.6 today, e.g. after lunch. The note src/app.rs:12 explains why. Wait... then roll it. Done?",
             "details: .local/only.md",
-            "src/render.rs:322.",
+            "src/l3_services/render.rs:322.",
             "Recommend A.",
         ]
         .iter()

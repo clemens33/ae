@@ -537,7 +537,7 @@ fn legacy_codex_setup_stays_hidden_and_closes_the_reply_window() {
 
 #[test]
 fn the_board_respells_no_provenance_marker() {
-    let source = include_str!("../../src/board.rs");
+    let source = include_str!("../../src/l3_services/board.rs");
     assert!(
         !source.contains("⟦ae:"),
         "the marker spellings live in src/l0_base/provenance.rs alone"

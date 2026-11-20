@@ -1189,7 +1189,7 @@ fn criterion_20_a_real_ownership_marker_round_trips_through_the_product_reader()
 /// The product text of every module under `src/`, from the shared source view:
 /// comments and `#[cfg(test)]` items blanked in place, files registered by test
 /// code alone left out, a file the view cannot classify a failure naming
-/// `file:line`. Names are root-relative, `src/session.rs`.
+/// `file:line`. Names are root-relative, `src/l3_services/session.rs`.
 fn product_source() -> Vec<(String, String)> {
     source_view::product()
         .files
@@ -1261,13 +1261,15 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
         modules
             .iter()
             .any(|(name, _)| name == "src/l2_model/liveness.rs")
-            && modules.iter().any(|(name, _)| name == "src/listing.rs"),
+            && modules
+                .iter()
+                .any(|(name, _)| name == "src/l3_services/listing.rs"),
         "the scan reached the phase-2 modules"
     );
 
     assert_eq!(
         sites(concat!("Meta", "::read(")),
-        vec![("src/session.rs".to_owned(), 1)],
+        vec![("src/l3_services/session.rs".to_owned(), 1)],
         "the meta is opened in exactly one place"
     );
     assert_eq!(
@@ -1275,7 +1277,7 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
         sorted(vec![
             ("src/rename.rs".to_owned(), 2),
             ("src/restore.rs".to_owned(), 1),
-            ("src/session.rs".to_owned(), 1),
+            ("src/l3_services/session.rs".to_owned(), 1),
         ]),
         "and so is the event stream — plus the stopped rename's two ledger \
          reads (its own source log and one peer-log probe), which go through \
@@ -1289,7 +1291,7 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
             ("src/console.rs".to_owned(), 1),
             ("src/l2_model/inventory.rs".to_owned(), 1),
             ("src/lib.rs".to_owned(), 1),
-            ("src/session.rs".to_owned(), 1),
+            ("src/l3_services/session.rs".to_owned(), 1),
         ]),
         "the one reader is called from discovery, from the convenience wrapper \
          that exists for callers who genuinely want a fresh read, from the \
@@ -1302,14 +1304,14 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
 
     let Some((_, listing)) = product_source()
         .into_iter()
-        .find(|(name, _)| name == "src/listing.rs")
+        .find(|(name, _)| name == "src/l3_services/listing.rs")
     else {
-        panic!("src/listing.rs must be scanned");
+        panic!("src/l3_services/listing.rs must be scanned");
     };
     // The projection moved into `Presentation::world` when phase 3 made the
     // boundary a production type; the obligation did not move with it.
     let Some((_, projection)) = listing.split_once("pub fn world(") else {
-        panic!("the projection must be in src/listing.rs");
+        panic!("the projection must be in src/l3_services/listing.rs");
     };
     for read in [
         concat!("entry_", "for("),

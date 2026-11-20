@@ -1834,7 +1834,10 @@ fn the_presentation_input_declares_no_path_typed_field() {
 
 /// One product module's source, comments stripped, tests excluded.
 fn product_module(name: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(name);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("l3_services")
+        .join(name);
     let Ok(text) = std::fs::read_to_string(&path) else {
         panic!("{name} must be readable");
     };

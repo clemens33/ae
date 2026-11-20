@@ -1957,14 +1957,15 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
     }
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let quota = std::fs::read_to_string(root.join("src/quota.rs")).expect("src/quota.rs is read");
+    let quota = std::fs::read_to_string(root.join("src/l3_services/quota.rs"))
+        .expect("src/l3_services/quota.rs is read");
     let watchdog = crate::support::source_view::module_family("src/watchdog_daemon.rs", false);
 
     // A policy is CONSTRUCTED nowhere but inside the one file that reads a
     // scope. Private fields closed assignment only; this closes construction.
     assert!(
         !quota.contains("pub(crate) const fn new("),
-        "the policy constructor is private to src/quota.rs"
+        "the policy constructor is private to src/l3_services/quota.rs"
     );
     assert!(
         quota.contains("#[cfg(test)]\n    pub(crate) const fn for_tests("),
@@ -1983,10 +1984,10 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
             .display()
             .to_string();
         seen.push(name.clone());
-        if name == "src/quota.rs" {
+        if name == "src/l3_services/quota.rs" {
             continue;
         }
-        let reach = if name.starts_with("src/quota/") {
+        let reach = if name.starts_with("src/l3_services/quota/") {
             Reach::Child
         } else {
             Reach::Outside
@@ -2003,23 +2004,23 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
     // An unseen file is not a compliant one, so the scan says what it saw — and
     // the descendants are the whole reason this guard exists.
     for required in [
-        "src/quota.rs",
-        "src/quota/agy.rs",
-        "src/quota/codex.rs",
-        "src/quota/claude.rs",
-        "src/quota/feed.rs",
-        "src/quota/pace.rs",
-        "src/quota/grok.rs",
-        "src/quota/view.rs",
-        "src/quota/go.rs",
-        "src/quota/copilot.rs",
-        "src/quota/muse.rs",
-        "src/quota/machine.rs",
-        "src/quota/history.rs",
-        "src/quota/history/store.rs",
-        "src/quota/pace_history_spec.rs",
-        "src/quota/credits_spec.rs",
-        "src/quota/credits_api_spec.rs",
+        "src/l3_services/quota.rs",
+        "src/l3_services/quota/agy.rs",
+        "src/l3_services/quota/codex.rs",
+        "src/l3_services/quota/claude.rs",
+        "src/l3_services/quota/feed.rs",
+        "src/l3_services/quota/pace.rs",
+        "src/l3_services/quota/grok.rs",
+        "src/l3_services/quota/view.rs",
+        "src/l3_services/quota/go.rs",
+        "src/l3_services/quota/copilot.rs",
+        "src/l3_services/quota/muse.rs",
+        "src/l3_services/quota/machine.rs",
+        "src/l3_services/quota/history.rs",
+        "src/l3_services/quota/history/store.rs",
+        "src/l3_services/quota/pace_history_spec.rs",
+        "src/l3_services/quota/credits_spec.rs",
+        "src/l3_services/quota/credits_api_spec.rs",
         "src/watchdog_daemon.rs",
         "tests/it/quota.rs",
     ] {
@@ -2028,7 +2029,7 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
             "{required} was never visited, so this guard proved nothing about it: {seen:?}"
         );
     }
-    // A census of PHYSICAL PATHS under `src/quota/`, and only that. A sixth
+    // A census of PHYSICAL PATHS under `src/l3_services/quota/`, and only that. A sixth
     // file there trips this and gets its own review (`pace.rs` was the third,
     // reviewed for exactly this: it judges through `Derived` and builds no
     // level; `grok.rs` the fourth: it reads one bounded log tail and builds no
@@ -2054,13 +2055,13 @@ fn the_quota_surface_cannot_pair_a_level_with_an_observation_it_did_not_judge() 
     // only through `Policy::for_tests`, `Reading::of` and `Classified::first`,
     // the same constructors every caller uses). Two
     // descendants it cannot see: a module written INLINE inside
-    // `src/quota.rs`, because the owner file is skipped whole, and a
+    // `src/l3_services/quota.rs`, because the owner file is skipped whole, and a
     // `#[path]`-attributed module whose file lives outside this directory, which is scanned with the Outside needles and
     // leaves the count at six. Neither is a reach today; both would be a
     // reviewed change to the owner file rather than something a needle catches.
     assert_eq!(
         seen.iter()
-            .filter(|name| name.starts_with("src/quota/"))
+            .filter(|name| name.starts_with("src/l3_services/quota/"))
             .count(),
         16,
         "the quota directory gained or lost a file, and each one needs the \

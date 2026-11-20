@@ -117,7 +117,7 @@ const NEEDLES: [&str; 6] = [
 const CENSUS: [(&str, [usize; 6]); 22] = [
     ("src/l2_model/archive/retained.rs", [0, 1, 0, 0, 0, 0]),
     ("src/autoreseat/leg.rs", [1, 0, 0, 0, 0, 1]),
-    ("src/autoupgrade.rs", [0, 0, 2, 0, 2, 0]),
+    ("src/l3_services/autoupgrade.rs", [0, 0, 2, 0, 2, 0]),
     ("src/console/toggle.rs", [1, 0, 0, 0, 0, 0]),
     ("src/doctor.rs", [3, 0, 0, 0, 0, 0]),
     ("src/effort/leg.rs", [1, 0, 0, 0, 0, 1]),
@@ -125,7 +125,7 @@ const CENSUS: [(&str, [usize; 6]); 22] = [
     ("src/lifecycle.rs", [4, 0, 4, 4, 0, 0]),
     ("src/lifecycle/end.rs", [3, 0, 3, 1, 0, 0]),
     ("src/rename.rs", [2, 0, 0, 0, 0, 0]),
-    ("src/run.rs", [0, 1, 0, 0, 0, 0]),
+    ("src/l3_services/run.rs", [0, 1, 0, 0, 0, 0]),
     ("src/seat_relaunch.rs", [1, 0, 0, 0, 0, 0]),
     ("src/session_launch.rs", [1, 0, 0, 0, 0, 0]),
     ("src/session_launch/capture.rs", [1, 0, 0, 0, 0, 1]),

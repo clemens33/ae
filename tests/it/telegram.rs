@@ -1,7 +1,7 @@
 //! Structural guards for the outbound Telegram bridge.
 //!
 //! The BEHAVIOURAL gate — the fake Telegram server, the cursor's crash window,
-//! the hostile-response cases — lives in `src/telegram.rs`'s own test module,
+//! the hostile-response cases — lives in `src/l3_services/telegram.rs`'s own test module,
 //! because the test-only egress seam it drives is `cfg(test)`-gated and does not
 //! exist outside the library. What lives HERE is the class of assertion a
 //! behavioural test cannot make: that there is exactly one place the locked
@@ -24,7 +24,10 @@ use std::path::Path;
 /// The product half of a module: comment lines dropped, and everything from the
 /// `#[cfg(test)]` marker onwards cut off.
 fn product(name: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(name);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("l3_services")
+        .join(name);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{name} must be readable"));
     product_half(&text)
 }
@@ -58,7 +61,10 @@ fn product_half(text: &str) -> String {
 /// The product half of a module WITH its comments — the only way to assert
 /// something about documentation, which `product` strips by design.
 fn product_with_comments(name: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(name);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("l3_services")
+        .join(name);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{name} must be readable"));
     text.split_once("#[cfg(test)]\nmod tests {")
         .map_or(text.clone(), |(module, _)| module.to_owned())
@@ -102,12 +108,12 @@ fn the_locked_agent_has_exactly_one_construction_site() {
     // Sorted: `read_dir` order is a filesystem fact, not a contract (measured:
     // the two lanes disagree on it).
     sites.sort();
-    // THREE SITES. `src/upgrade.rs` builds an agent with the same lock except
+    // THREE SITES. `src/l3_services/upgrade.rs` builds an agent with the same lock except
     // for `max_redirects`, because a GitHub release download answers with a
     // 302 to its object store and there is no token in that URL to leak to it.
     // What keeps the difference honest is the SHA-256 proof of the downloaded
     // bundle — a redirect that lands somewhere unexpected is a checksum
-    // refusal, not an install. `src/go_usage.rs` is the third: same lock as
+    // refusal, not an install. `src/l3_services/go_usage.rs` is the third: same lock as
     // telegram (https_only, proxy None, max_redirects 0). A fourth agent is a
     // line in a review, not a diff nobody read.
     assert_eq!(
@@ -120,7 +126,7 @@ fn the_locked_agent_has_exactly_one_construction_site() {
     assert_eq!(
         telegram.matches("Agent::new_with_config").count(),
         1,
-        "src/telegram.rs builds more than one Agent"
+        "src/l3_services/telegram.rs builds more than one Agent"
     );
     // The same for the other two ways to get one, both of which skip the
     // config entirely and would inherit every default.
@@ -211,7 +217,7 @@ fn the_bridge_writes_to_no_log_of_its_own() {
     for printer in ["println!", "eprintln!", "dbg!", "print!", "eprint!"] {
         assert!(
             !telegram.contains(printer),
-            "src/telegram.rs prints ({printer}); this module handles the bot token"
+            "src/l3_services/telegram.rs prints ({printer}); this module handles the bot token"
         );
     }
 }

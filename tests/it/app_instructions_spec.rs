@@ -90,13 +90,13 @@ fn owner(dir: &Path, name: &str, work_dir: &str, slot: &str, files: &[PathBuf]) 
 /// The CORE as the tab shows it: the template file with the seat facts spelled
 /// as visible markers.
 fn core() -> String {
-    include_str!("../../src/render/core.txt")
+    include_str!("../../src/l3_services/render/core.txt")
         .replace("${meta_dir}", "<helpers>")
         .replace("${session}", "<session>")
         .replace("${_owner_line}", "<owner line>")
 }
 
-const WORKER: &str = include_str!("../../src/render/worker.txt");
+const WORKER: &str = include_str!("../../src/l3_services/render/worker.txt");
 /// Sentences of the leadership texts, which live in render.rs, not a template.
 const LEADERSHIP: [&str; 4] = [
     "STATE REASONS: The human decides from this text ALONE",

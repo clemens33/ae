@@ -326,18 +326,26 @@ mod tests {
             let cut = end.iter().filter_map(|end| rest.find(end)).min();
             rest[..cut.unwrap_or(rest.len())].to_owned()
         };
-        let stored = body("src/quota.rs", "pub(crate) fn view_stored(", &["\n}\n"]);
+        let stored = body(
+            "src/l3_services/quota.rs",
+            "pub(crate) fn view_stored(",
+            &["\n}\n"],
+        );
         let ends = ["Route::", "\n    }\n"]; // the next arm, or the end of `execute`
-        let arm = body("src/telegram/inbound.rs", "Route::Quota =>", &ends);
+        let arm = body(
+            "src/l3_services/telegram/inbound.rs",
+            "Route::Quota =>",
+            &ends,
+        );
         let banned = "AgyCache view_cached view_of( refresh( refresh_ run_with( run_as( \
             quota::run( ask( transport:: env:: var_os muse_ask";
         let banned: Vec<&str> = banned.split_whitespace().collect();
         want(&stored, &["compose("], &banned);
         want(&arm, &["view_stored("], &banned);
-        let routing = src("src/telegram/routing.rs").unwrap();
+        let routing = src("src/l3_services/telegram/routing.rs").unwrap();
         let pure = "pub fn decide(\n    message: Inbound<'_>,\n    sessions: &[RunningSession],\n";
         want(&routing, &[pure], &["view_stored", "Inputs {"]);
-        let bridge = src("src/telegram/bridge.rs").unwrap();
+        let bridge = src("src/l3_services/telegram/bridge.rs").unwrap();
         want(&bridge, &[".with_quota(", "(\"quota\","], &[]);
     }
 }

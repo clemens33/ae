@@ -1,0 +1,3364 @@
+//! The ae message board — the filtered cross-fleet record, derived on read.
+//!
+//! One schema, thin per-harness readers. Each reader is a pure function over
+//! the transcript bytes it is handed; locating the file and opening it belong
+//! to a later slice. The view is DERIVED: [`collect`] is the one place rows
+//! from many files merge, sort and dedup. Nothing writes a board file.
+//!
+//! Row identity is the SOURCE RECORD — (`file`, `offset`) — never the actor
+//! or the body: two seats may type the same words in the same microsecond, and
+//! that is two rows, not one.
+
+pub mod agy;
+pub mod agy_transcript;
+pub mod claude;
+pub mod codex;
+pub mod follow;
+pub mod grok;
+pub mod muse;
+pub mod opencode;
+
+#[cfg(test)]
+mod stream_spec;
+
+use std::fmt::Write as _;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read as _, Seek as _};
+use std::path::{Path, PathBuf};
+
+use crate::json::Value;
+use crate::quota::{Bounded, Budget};
+use crate::tool::{
+    BoardFollow, BoardLocator, BoardParser, BoardSpec, BoardStream, RepliesLeg, ToolKind,
+    UsageSource,
+};
+
+/// Who speaks in a board row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// A genuine human turn: bare of any ae marker.
+    Human,
+    /// A model turn from the harness's own transcript, read only with
+    /// `--assistant`: text parts joined, thinking and tool calls never read.
+    Assistant,
+    /// A user turn the board does not keep — an ae-marked or plumbing turn,
+    /// a record that could not be classified. Only a read for [`Replies::ToHuman`]
+    /// emits one, and `answered` consumes it before any row reaches a caller.
+    Boundary,
+    /// A user turn whose WHOLE original content is the guided compaction
+    /// dispatch ae pastes into a seat. The reader proves it before any strip or
+    /// trim and hands the verdict on here, so [`hidden`] removes and counts it
+    /// like every other ae turn. No row of this role reaches a caller.
+    Dispatch,
+}
+
+/// How a read keeps the text of a human row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextMode {
+    /// The board's own: reminder spans stripped, then trimmed.
+    #[default]
+    Trimmed,
+    /// Reminder spans stripped and nothing else: leading and trailing
+    /// whitespace stay. Only the Claude reader honours it for now; every other
+    /// reader trims until its own slice.
+    Raw,
+}
+
+/// What one read takes beyond the board's defaults. `Scope::default()` is
+/// exactly the board's read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Scope<'a> {
+    /// How human rows keep their text.
+    pub text: TextMode,
+    /// `None`: every harness the board reads. `Some(set)`: a generation whose
+    /// tool is not in the set is never located, opened or run; it is one
+    /// `not read: <tool>` coverage row.
+    pub tools: Option<&'a [ToolKind]>,
+}
+
+impl Scope<'_> {
+    /// The coverage reason of a generation this scope refuses, or `None` when
+    /// it may be read.
+    fn refusal(&self, tool: ToolKind) -> Option<String> {
+        let allowed = self.tools.is_none_or(|set| set.contains(&tool));
+        (!allowed).then(|| format!("not read: {}", tool.as_str()))
+    }
+}
+
+/// Which of the model's replies a read keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Replies {
+    /// None: the board's default.
+    #[default]
+    Off,
+    /// Every text reply (`ae board --assistant`, `ae console --all`).
+    All,
+    /// Only a reply that answers a line the human typed in the seat's pane:
+    /// from that line to the next user turn of any kind in the transcript.
+    ToHuman,
+}
+
+impl Replies {
+    /// Whether the readers' reply path is live at all.
+    #[must_use]
+    pub(crate) fn read(self) -> bool {
+        self != Self::Off
+    }
+
+    /// Whether the readers also mark the user turns they do not keep.
+    #[must_use]
+    pub(crate) fn windowed(self) -> bool {
+        self == Self::ToHuman
+    }
+}
+
+/// One board row: one turn — a human's, or with `--assistant` a model's text
+/// reply — from one harness transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// Epoch micros, in the source store's native precision.
+    pub ts: i64,
+    /// `session:seat`, from the meta roster.
+    pub actor: String,
+    /// Who speaks.
+    pub role: Role,
+    /// The turn's body, trimmed, reminders stripped.
+    pub body: String,
+    /// Which harness wrote the transcript.
+    pub source: ToolKind,
+    /// Source file identity, as the caller names it.
+    pub file: String,
+    /// Byte offset of the record's first byte in that file.
+    pub offset: u64,
+    /// Which conversation this turn comes from: 0 is the seat's current one,
+    /// n ≥ 1 its nth recorded predecessor, nearest first. Readers always
+    /// build 0; the seat read stamps the generation it read.
+    pub generation: u8,
+}
+
+/// A per-seat coverage row: the board is INCOMPLETE for this seat, and says
+/// why. A partial board must never look whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Coverage {
+    /// `session:seat`, from the meta roster.
+    pub actor: String,
+    /// Why coverage is incomplete (`torn last record`, a tripped line cap, …).
+    pub reason: String,
+}
+
+/// One seat's hidden count: ae-injected turns [`hidden`] removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hidden {
+    /// `session:seat`, from the meta roster.
+    pub actor: String,
+    /// How many of this seat's turns were hidden.
+    pub count: usize,
+}
+
+/// THE one sort/dedup point: stable sort by (`ts`, `file`, `offset`), then
+/// drop an identical (`file`, `offset`) read twice. Same-timestamp rows from
+/// different files all survive; so do two seats' identical words.
+#[must_use]
+pub fn collect(mut rows: Vec<Row>) -> Vec<Row> {
+    rows.sort_by(|left, right| {
+        (left.ts, &left.file, left.offset).cmp(&(right.ts, &right.file, right.offset))
+    });
+    rows.dedup_by(|later, first| first.file == later.file && first.offset == later.offset);
+    rows
+}
+
+/// THE ae-turn filter, after every reader and before [`collect`]. A row is
+/// HIDDEN when its body's FIRST line is one of the marker spellings
+/// [`crate::provenance`] owns — its predicate, never a respelling — or when the
+/// whole body IS this seat's Codex passive launch turn ([`passive_turn`]).
+/// A Claude row also hides when its whole body is a harness-wrapped ae turn
+/// ([`claude::is_wrapped_ae_turn`], #171): exact same-id tags, marker on the
+/// first inner line. A byte-faithful human copy collides and hides too.
+/// Assistant rows are never hidden: a model may legitimately quote a marker.
+#[must_use]
+fn hidden(row: &Row, passive: Option<&str>) -> bool {
+    if row.role == Role::Dispatch {
+        // The reader proved the whole content before any normalisation.
+        return true;
+    }
+    if row.role != Role::Human {
+        return false;
+    }
+    let first = row.body.lines().next().unwrap_or_default();
+    crate::provenance::is_ae_turn(first)
+        || passive.is_some_and(|turn| crate::launch::is_passive_body(&row.body, turn))
+        // #171: a harness whose store wraps ae turns consults the wrapper
+        // recognizer; the capability owner names which (#171 measured Claude).
+        || (row.source.board_has_paste_wrapper() && claude::is_wrapped_ae_turn(&row.body))
+}
+
+/// The body of one seat's passive launch turn, where its tool has one: the text
+/// [`crate::launch::initial_prompt_for`] renders under its own marker line.
+fn passive_turn(tool: ToolKind, meta_dir: &Path, slot: &str) -> Option<String> {
+    let prompt = crate::launch::initial_prompt_for(tool, meta_dir, slot);
+    let (_, body) = prompt.split_once('\n')?;
+    Some(body.to_owned())
+}
+
+/// THE window of replies to the human, run on one reader's rows in TRANSCRIPT
+/// ORDER before the [`hidden`] partition: a human row the board keeps opens it,
+/// a [`Role::Boundary`] or a human row [`hidden`] removes closes it, and an
+/// assistant row survives only while it is open. `open` is where the read
+/// begins — a follow tail carries the state it ended on — and the state it ends
+/// on comes back. Boundaries are consumed here; none reaches a caller.
+#[must_use]
+pub(crate) fn answered(rows: Vec<Row>, passive: Option<&str>, mut open: bool) -> (Vec<Row>, bool) {
+    let mut kept = Vec::with_capacity(rows.len());
+    for row in rows {
+        match row.role {
+            Role::Human | Role::Dispatch => {
+                open = !hidden(&row, passive);
+                kept.push(row);
+            }
+            Role::Boundary => open = false,
+            Role::Assistant if open => kept.push(row),
+            Role::Assistant => {}
+        }
+    }
+    (kept, open)
+}
+
+/// Mark one user turn the read does not keep, for a windowed read. A boundary
+/// straight after a boundary closes nothing new and is not stored, so a
+/// transcript of junk lines costs one row.
+pub(crate) fn close_window(
+    rows: &mut Vec<Row>,
+    actor: &str,
+    file: &str,
+    source: ToolKind,
+    offset: u64,
+) {
+    if rows.last().is_some_and(|last| last.role == Role::Boundary) {
+        return;
+    }
+    rows.push(Row {
+        ts: 0,
+        actor: actor.to_owned(),
+        role: Role::Boundary,
+        body: String::new(),
+        source,
+        file: file.to_owned(),
+        offset,
+        generation: 0,
+    });
+}
+
+/// Test seam: one windowed read's rows run through the window, each as
+/// `H:`, `A:` or `B:` and its body, so a reader test names what survived.
+#[cfg(test)]
+pub(crate) fn window_labels(rows: Vec<Row>) -> Vec<String> {
+    answered(rows, None, false)
+        .0
+        .iter()
+        .map(|row| {
+            let tag = match row.role {
+                Role::Human => 'H',
+                Role::Assistant => 'A',
+                Role::Boundary => 'B',
+                Role::Dispatch => 'D',
+            };
+            format!("{tag}:{}", row.body)
+        })
+        .collect()
+}
+
+/// Count hidden rows into one [`Hidden`] per seat, first-encountered order.
+fn count_hidden(rows: Vec<Row>) -> Vec<Hidden> {
+    let mut counted: Vec<Hidden> = Vec::new();
+    for row in rows {
+        match counted.iter_mut().find(|item| item.actor == row.actor) {
+            Some(item) => item.count += 1,
+            None => counted.push(Hidden {
+                actor: row.actor,
+                count: 1,
+            }),
+        }
+    }
+    counted
+}
+
+/// Count the [`Role::Dispatch`] rows among the hidden ones, per seat: the part
+/// of [`count_hidden`] that was ae's own guided compaction dispatch.
+pub(crate) fn count_dispatches(rows: &[Row]) -> Vec<Hidden> {
+    count_hidden(
+        rows.iter()
+            .filter(|row| row.role == Role::Dispatch)
+            .cloned()
+            .collect(),
+    )
+}
+
+/// A line longer than this is hostile, not a record: the door reports its
+/// true length without buffering it, and the reader covers it, never parses it.
+pub(crate) const LINE_CAP: usize = 1024 * 1024;
+
+/// What `ae board` prints when its argv does not parse.
+pub const USAGE: &str = "Usage: ae board [session…] [--since <ts>] [--json] [--follow] [--lines <n>] [--assistant]\n\n  session       read this session (repeatable; default is every running session)\n  --since <ts>  keep rows at or after <ts>, strict YYYY-MM-DDTHH:MM:SSZ\n  --json        NDJSON: one scope line, coverage lines, then row lines\n  --follow      keep printing new rows and coverage changes every 5 s until\n                interrupted; the selection is fixed at start (Ctrl-C to stop)\n  --lines <n>   text only: clip each body to its first <n> lines; the dropped\n                remainder prints one `… +k lines` marker\n  --assistant   add the model's replies (text only; off by default)\n";
+
+const LINES_TEXT_ONLY: &str = "--lines is text-only";
+
+/// A parsed `ae board` argv.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Args {
+    /// Explicit sessions, caller order, deduplicated by rejection.
+    pub sessions: Vec<String>,
+    /// `--since`, in epoch micros — rows at or after this survive.
+    pub since_micros: Option<i64>,
+    /// `--json`: NDJSON instead of text.
+    pub json: bool,
+    /// `--follow`: print the one-shot board, then keep printing new rows.
+    pub follow: bool,
+    /// `--lines <n>`: text rows clip each body to its first `n` lines.
+    pub lines: Option<usize>,
+    /// `--assistant`: also read the model's replies (text only).
+    pub assistant: bool,
+}
+
+/// The argv did not parse; the offending token, when there is one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Usage(pub Option<String>);
+
+impl Usage {
+    /// The stderr text, offending token first when one was named.
+    #[must_use]
+    pub fn render(&self) -> String {
+        match &self.0 {
+            Some(token) => format!("ae board: unexpected {token}\n{USAGE}"),
+            None => USAGE.to_owned(),
+        }
+    }
+}
+
+/// Read `tail` — everything after the word `board`.
+///
+/// ```
+/// use ae::board::{Args, parse};
+///
+/// let words = |items: &[&str]| items.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+/// assert_eq!(parse(&[]), Ok(Args::default()));
+/// assert_eq!(
+///     parse(&words(&["aedev", "--json"])),
+///     Ok(Args { sessions: vec!["aedev".to_owned()], since_micros: None, json: true, follow: false, lines: None, assistant: false })
+/// );
+/// assert!(parse(&words(&["--follow"])).is_ok_and(|args| args.follow));
+/// assert_eq!(parse(&words(&["--lines", "3"])).map(|args| args.lines), Ok(Some(3)));
+/// assert!(parse(&words(&["--assistant"])).is_ok_and(|args| args.assistant));
+/// assert!(parse(&words(&["--frobnicate"])).is_err());
+/// ```
+///
+/// # Errors
+///
+/// [`Usage`] for an unknown flag, a repeated session name, `--since` without a
+/// strict `YYYY-MM-DDTHH:MM:SSZ` value, `--lines` without a positive decimal
+/// value or combined with `--json`, or a value missing entirely.
+pub fn parse(tail: &[String]) -> Result<Args, Usage> {
+    let mut args = Args::default();
+    let mut index = 0;
+    while let Some(token) = tail.get(index) {
+        match token.as_str() {
+            "--json" => args.json = true,
+            "--follow" => args.follow = true,
+            "--assistant" => args.assistant = true,
+            "--lines" => {
+                let value = tail.get(index + 1).ok_or(Usage(Some(token.clone())))?;
+                if value.as_str() == "--json" || args.json {
+                    return Err(Usage(Some(LINES_TEXT_ONLY.to_owned())));
+                }
+                let count: usize = value.parse().map_err(|_| Usage(Some(value.clone())))?;
+                if count == 0 {
+                    return Err(Usage(Some(value.clone())));
+                }
+                args.lines = Some(count);
+                index += 1;
+            }
+            "--since" => {
+                let value = tail.get(index + 1).ok_or(Usage(Some(token.clone())))?;
+                let micros = crate::time::Timestamp::parse(value)
+                    .map(|moment| moment.epoch().saturating_mul(1_000_000))
+                    .ok_or(Usage(Some(value.clone())))?;
+                args.since_micros = Some(micros);
+                index += 1;
+            }
+            // A `-`/`--` token nothing above defines is a usage error, exactly
+            // as a `brief` tail treats one. A bare word is a session name.
+            flag if flag.starts_with('-') => return Err(Usage(Some(token.clone()))),
+            name => {
+                if args.sessions.iter().any(|known| known == name) {
+                    return Err(Usage(Some(token.clone())));
+                }
+                args.sessions.push(name.to_owned());
+            }
+        }
+        index += 1;
+    }
+    if args.json && args.lines.is_some() {
+        return Err(Usage(Some(LINES_TEXT_ONLY.to_owned())));
+    }
+    Ok(args)
+}
+
+/// One streamed transcript line: path in, lines out — the door carries no
+/// harness knowledge, so every later reader reuses it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Line {
+    /// Byte offset of the line's first byte in the file.
+    pub(crate) offset: u64,
+    /// The line's body, or its true length when it tripped the cap.
+    pub(crate) body: LineBody,
+}
+
+/// A line's body: bytes the reader may parse, or a length it must cover.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LineBody {
+    /// A newline-terminated line, newline excluded, within the cap.
+    Full(Vec<u8>),
+    /// A line past [`LINE_CAP`]: its TRUE length in bytes, newline excluded.
+    /// The bytes were discarded while reading, never buffered.
+    Overlong(usize),
+}
+
+/// One transcript, streamed: its lines plus whether the tail was torn.
+#[derive(Debug)]
+pub struct Streamed {
+    /// Every newline-terminated line, in file order with its byte offset.
+    pub(crate) lines: Vec<Line>,
+    /// Trailing bytes without a newline were seen and NOT trusted.
+    pub(crate) torn: bool,
+    /// Absolute position after the last newline-terminated line — the
+    /// splitter's base when none — so a follow's next read starts there.
+    pub(crate) committed: u64,
+    /// The absolute offset this read started at: what `committed` and the
+    /// fingerprint chain continue from.
+    pub(crate) from: u64,
+    /// Fingerprint of the raw committed bytes, `[from..committed]`, over the
+    /// seed the read started from — torn tail excluded, overlong and
+    /// malformed bytes included.
+    pub(crate) fp: u64,
+    /// One `(line end, fingerprint)` per committed line, each covering
+    /// `[seed..end]` from this read's seed.
+    pub(crate) checkpoints: Vec<(u64, u64)>,
+    /// What the caller bound to this read.
+    pub(crate) binding: Binding,
+}
+
+/// What a caller binds to one read before its first line: the splitter stays
+/// pure, so every fact here comes from the caller.
+#[derive(Debug, Clone, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "assistant and the agy context bits are independent caller-bound defaults, and a state machine would couple every reader's construction to agy's two arms"
+)]
+pub struct Binding {
+    /// The seat's harness conversation id, when the caller bound one. A store
+    /// that interleaves conversations (agy) filters on it; every other reader
+    /// ignores it.
+    pub(crate) seat_id: String,
+    /// `--assistant`: read the model's replies too, text parts only. False
+    /// until the caller binds it, so a reader with the flag off takes exactly
+    /// the human-only path it took before the flag existed.
+    pub(crate) assistant: bool,
+    /// The caller already produced assistant rows for this read (agy's
+    /// transcript leg runs first and reports back). False until bound, so
+    /// the history reader covers the missing replies exactly when none
+    /// were found — the line prints when it is true, never otherwise.
+    pub(crate) assistant_rows_found: bool,
+    /// This stream is a follow poll's tail, and the seat's assistant rows
+    /// were read once on the first pass and are not followed. False until
+    /// the caller binds it; only the agy follow arm ever does.
+    pub(crate) assistant_read_once: bool,
+    /// [`Replies::ToHuman`]: the readers also emit a [`Role::Boundary`] for
+    /// every user turn they do not keep, so the window of replies to a human
+    /// line can close. False until bound; `Off` and `All` never see one.
+    pub(crate) windowed: bool,
+    /// How the reader keeps a human row's text. The board's default trims;
+    /// only the Claude reader honours [`TextMode::Raw`] so far.
+    pub(crate) text: TextMode,
+}
+
+impl Binding {
+    /// Bind how human rows keep their text. Bound by a caller that wants the
+    /// bytes a person typed, not the board's trimmed display text.
+    #[must_use]
+    pub fn with_text(mut self, text: TextMode) -> Self {
+        self.text = text;
+        self
+    }
+
+    /// Bind the seat's harness conversation id to this read. ONE store — agy's
+    /// history — carries several seats' turns, so its reader matches each
+    /// record against this id and nothing else.
+    #[must_use]
+    pub fn for_seat(mut self, seat_id: &str) -> Self {
+        seat_id.clone_into(&mut self.seat_id);
+        self
+    }
+
+    /// Bind `--assistant` to this read: readers emit the model's replies
+    /// beside the human turns, text parts only.
+    #[must_use]
+    pub fn with_assistant(mut self, assistant: bool) -> Self {
+        self.assistant = assistant;
+        self
+    }
+
+    /// Bind the reply mode to this read: any mode but [`Replies::Off`] lets
+    /// the readers emit the model's replies, and [`Replies::ToHuman`] also
+    /// has them mark the user turns they drop.
+    #[must_use]
+    pub fn with_replies(mut self, replies: Replies) -> Self {
+        self.windowed = replies.windowed();
+        self.with_assistant(replies.read())
+    }
+
+    /// Bind whether the caller already produced assistant rows for this
+    /// read: the history reader's missing-replies line answers to it.
+    #[must_use]
+    pub fn with_assistant_rows_found(mut self, found: bool) -> Self {
+        self.assistant_rows_found = found;
+        self
+    }
+
+    /// Bind that this stream is a follow poll's tail whose assistant rows
+    /// were read once and are not followed.
+    #[must_use]
+    pub fn with_assistant_read_once(mut self, once: bool) -> Self {
+        self.assistant_read_once = once;
+        self
+    }
+}
+
+impl Streamed {
+    /// The buffered lines and the facts the read committed to.
+    fn of(lines: Vec<Line>, commit: Commit) -> Self {
+        Self {
+            lines,
+            torn: commit.ending.torn,
+            committed: commit.committed,
+            from: commit.from,
+            fp: commit.fp,
+            checkpoints: commit.checkpoints,
+            binding: Binding::default(),
+        }
+    }
+
+    /// [`Binding::for_seat`] on this read.
+    #[must_use]
+    pub fn for_seat(mut self, seat_id: &str) -> Self {
+        self.binding = self.binding.for_seat(seat_id);
+        self
+    }
+
+    /// [`Binding::with_assistant`] on this read.
+    #[must_use]
+    pub fn with_assistant(mut self, assistant: bool) -> Self {
+        self.binding = self.binding.with_assistant(assistant);
+        self
+    }
+
+    /// [`Binding::with_text`] on this read.
+    #[must_use]
+    pub fn with_text(mut self, text: TextMode) -> Self {
+        self.binding = self.binding.with_text(text);
+        self
+    }
+
+    /// [`Binding::with_replies`] on this read.
+    #[must_use]
+    pub fn with_replies(mut self, replies: Replies) -> Self {
+        self.binding = self.binding.with_replies(replies);
+        self
+    }
+
+    /// [`Binding::with_assistant_rows_found`] on this read.
+    #[must_use]
+    pub fn with_assistant_rows_found(mut self, found: bool) -> Self {
+        self.binding = self.binding.with_assistant_rows_found(found);
+        self
+    }
+
+    /// [`Binding::with_assistant_read_once`] on this read.
+    #[must_use]
+    pub fn with_assistant_read_once(mut self, once: bool) -> Self {
+        self.binding = self.binding.with_assistant_read_once(once);
+        self
+    }
+
+    /// The torn tail plus the over-cap lines, counted from the held lines.
+    #[must_use]
+    pub fn ending(&self) -> Ending {
+        let mut ending = Ending {
+            torn: self.torn,
+            ..Ending::default()
+        };
+        for line in &self.lines {
+            if let LineBody::Overlong(len) = &line.body {
+                ending.overlong += 1;
+                ending.largest = ending.largest.max(*len);
+            }
+        }
+        ending
+    }
+
+    /// Hand every held line to `each` in file order, then the ending: the
+    /// buffered read as a [`Feed`].
+    pub(crate) fn replay(&self, each: &mut dyn FnMut(&Line)) -> Ending {
+        for line in &self.lines {
+            each(line);
+        }
+        self.ending()
+    }
+
+    /// The fingerprint covering `[seed..offset]`: [`fp_at`].
+    pub(crate) fn fp_at(&self, offset: u64, seed: u64) -> u64 {
+        fp_at(self.from, &self.checkpoints, self.fp, offset, seed)
+    }
+}
+
+/// What only a stream's end can say: a torn tail, and the over-cap lines it
+/// covered by count and largest true length.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Ending {
+    /// Trailing bytes without a newline were seen and NOT trusted.
+    pub(crate) torn: bool,
+    /// How many lines tripped [`LINE_CAP`].
+    pub(crate) overlong: usize,
+    /// The largest true length among them.
+    pub(crate) largest: usize,
+}
+
+impl Ending {
+    /// ONE coverage row for a seat's every over-cap line: the count plus the
+    /// largest true length. Readers skip `Overlong` lines in their loop and
+    /// push this row after it — N huge lines name one row, never N.
+    pub(crate) fn overlong_coverage(&self, actor: &str) -> Option<Coverage> {
+        if self.overlong == 0 {
+            return None;
+        }
+        let noun = if self.overlong == 1 {
+            "line exceeds"
+        } else {
+            "lines exceed"
+        };
+        Some(Coverage {
+            actor: actor.to_owned(),
+            reason: format!(
+                "{} {noun} the 1 MiB cap (largest {} bytes)",
+                self.overlong, self.largest
+            ),
+        })
+    }
+}
+
+/// A read's commit facts without its lines: what the streaming door returns.
+#[derive(Debug)]
+pub(crate) struct Commit {
+    /// The torn tail and the over-cap lines.
+    pub(crate) ending: Ending,
+    /// As [`Streamed::committed`].
+    pub(crate) committed: u64,
+    /// As [`Streamed::from`].
+    pub(crate) from: u64,
+    /// As [`Streamed::fp`].
+    pub(crate) fp: u64,
+    /// As [`Streamed::checkpoints`].
+    pub(crate) checkpoints: Vec<(u64, u64)>,
+}
+
+impl Commit {
+    /// The fingerprint covering `[seed..offset]`: [`fp_at`].
+    pub(crate) fn fp_at(&self, offset: u64, seed: u64) -> u64 {
+        fp_at(self.from, &self.checkpoints, self.fp, offset, seed)
+    }
+}
+
+/// The fingerprint covering `[seed..offset]`: the read's seed at `from`,
+/// a line-end checkpoint inside. Anything else answers the whole read —
+/// callers only ask for line ends, so a miss reads as changed, never held.
+fn fp_at(from: u64, checkpoints: &[(u64, u64)], fp: u64, offset: u64, seed: u64) -> u64 {
+    if offset == from {
+        return seed;
+    }
+    if let Some((_, fp)) = checkpoints.iter().find(|(end, _)| *end == offset) {
+        return *fp;
+    }
+    fp
+}
+
+/// One read as a reader takes it: called once with a sink, it hands every
+/// line to that sink in file order and then answers the stream's ending.
+pub type Feed<'f> = &'f mut dyn FnMut(&mut dyn FnMut(&Line)) -> Ending;
+
+/// FNV-1a 64, inline so the committed-bytes fingerprint takes no
+/// dependency. The follow compares transcript identity across polls of one
+/// process, so a stable cross-run hash is not needed.
+pub(crate) const FNV_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+/// Fold `bytes` into the running fingerprint `fp`.
+pub(crate) fn fnv_fold(mut fp: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        fp ^= u64::from(*byte);
+        fp = fp.wrapping_mul(FNV_PRIME);
+    }
+    fp
+}
+
+/// THE line splitter: bytes in, lines out, no I/O. The door feeds it buffer
+/// chunks and the whole-bytes reader feeds it one slice — one splitter, so
+/// the fuzz target covers the code hostile transcripts hit.
+#[derive(Debug, Default)]
+pub struct Splitter {
+    lines: Vec<Line>,
+    line: Vec<u8>,
+    start: u64,
+    cursor: u64,
+    overlong: bool,
+    line_len: usize,
+    /// The read's first byte: `start` walks, this does not.
+    base: u64,
+    /// Fingerprint of the raw committed bytes, `[base..start]`.
+    fp: u64,
+    /// Fingerprint state extended with the uncommitted line bytes,
+    /// `[seed..cursor]`: every fed byte folds here on arrival, so a line
+    /// split across chunks hashes whole; `end_line` commits it into `fp`
+    /// and a torn tail dies with the splitter, never folded in.
+    pending: u64,
+    /// One `(line end, fingerprint)` per committed line, covering
+    /// `[seed..end]`: a held-back tail restores its exact prefix from these.
+    checkpoints: Vec<(u64, u64)>,
+    /// Lines that tripped [`LINE_CAP`] so far, and the largest true length.
+    overlong_lines: usize,
+    largest: usize,
+}
+
+impl Splitter {
+    /// An empty splitter at byte zero.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::at(0)
+    }
+
+    /// An empty splitter whose line offsets start at `base`: a follow streams
+    /// only a tail and every offset stays ABSOLUTE in the file.
+    #[must_use]
+    pub fn at(base: u64) -> Self {
+        Self::at_seed(base, FNV_BASIS)
+    }
+
+    /// [`Splitter::at`], continuing the held fingerprint `seed`: an append's
+    /// committed bytes extend the chain its earlier polls hashed.
+    #[must_use]
+    pub fn at_seed(base: u64, seed: u64) -> Self {
+        Self {
+            start: base,
+            cursor: base,
+            base,
+            fp: seed,
+            pending: seed,
+            ..Self::default()
+        }
+    }
+
+    /// Feed one chunk and keep its lines for [`Splitter::finish`]: the
+    /// whole-bytes and follow-tail path.
+    pub fn feed(&mut self, chunk: &[u8]) {
+        let mut lines = std::mem::take(&mut self.lines);
+        self.feed_each(chunk, &mut |line| lines.push(line));
+        self.lines = lines;
+    }
+
+    /// Feed one chunk and hand each line it ends to `each`, keeping none:
+    /// newlines end lines, the cap trips mid-chunk, and a partial line
+    /// carries over to the next feed.
+    pub fn feed_each(&mut self, chunk: &[u8], each: &mut dyn FnMut(Line)) {
+        let mut rest = chunk;
+        while !rest.is_empty() {
+            let Some(at) = rest.iter().position(|byte| *byte == b'\n') else {
+                self.push_body(rest);
+                self.cursor += rest.len() as u64;
+                break;
+            };
+            self.push_body(&rest[..at]);
+            self.pending = fnv_fold(self.pending, b"\n");
+            self.cursor += (at + 1) as u64;
+            each(self.end_line());
+            rest = &rest[at + 1..];
+        }
+    }
+
+    /// What the stream's end says so far: a torn tail and the over-cap lines.
+    #[must_use]
+    pub fn ending(&self) -> Ending {
+        Ending {
+            torn: self.cursor != self.start,
+            overlong: self.overlong_lines,
+            largest: self.largest,
+        }
+    }
+
+    /// The read's commit facts: what [`Splitter::feed_each`] leaves behind.
+    pub(crate) fn end(mut self) -> Commit {
+        Commit {
+            ending: self.ending(),
+            committed: self.start,
+            from: self.base,
+            fp: self.fp,
+            checkpoints: std::mem::take(&mut self.checkpoints),
+        }
+    }
+
+    /// The streamed transcript: every newline-terminated line, plus whether a
+    /// torn tail was seen and not trusted, plus the offset after the last
+    /// complete line. A fresh stream carries no seat id; [`Streamed::for_seat`]
+    /// binds one, [`Streamed::with_assistant`] the reply flag.
+    #[must_use]
+    pub fn finish(mut self) -> Streamed {
+        let lines = std::mem::take(&mut self.lines);
+        Streamed::of(lines, self.end())
+    }
+
+    /// Test seam: lines held for [`Splitter::finish`].
+    #[cfg(test)]
+    pub(crate) fn held_lines(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Test seam: bytes held — the kept lines' bodies plus the partial line.
+    #[cfg(test)]
+    pub(crate) fn held_bytes(&self) -> usize {
+        let kept: usize = self
+            .lines
+            .iter()
+            .map(|line| match &line.body {
+                LineBody::Full(bytes) => bytes.len(),
+                LineBody::Overlong(_) => 0,
+            })
+            .sum();
+        kept + self.line.capacity()
+    }
+
+    fn push_body(&mut self, body: &[u8]) {
+        self.pending = fnv_fold(self.pending, body);
+        if !self.overlong {
+            if self.line.len() + body.len() > LINE_CAP {
+                self.line.clear();
+                self.overlong = true;
+            } else {
+                self.line.extend_from_slice(body);
+            }
+        }
+        self.line_len += body.len();
+    }
+
+    fn end_line(&mut self) -> Line {
+        let body = if self.overlong {
+            self.overlong_lines += 1;
+            self.largest = self.largest.max(self.line_len);
+            LineBody::Overlong(self.line_len)
+        } else {
+            LineBody::Full(std::mem::take(&mut self.line))
+        };
+        let line = Line {
+            offset: self.start,
+            body,
+        };
+        self.start = self.cursor;
+        self.fp = self.pending;
+        self.checkpoints.push((self.start, self.fp));
+        self.overlong = false;
+        self.line_len = 0;
+        line
+    }
+}
+
+/// Why the streaming door refused a located transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DoorError {
+    /// The file could not be opened or read.
+    Unreadable,
+    /// The opened file is not the located one, or shrank under the read.
+    Changed,
+    /// The opened file is not a regular file.
+    NotRegular,
+}
+
+/// THE streaming door: open a located transcript and feed it to the splitter.
+///
+/// The caller located the file and hands over its lstat metadata; this
+/// function proves the opened file IS that file — regular, same dev+inode,
+/// length not shrunk — reads at most the located length, and feeds buffer
+/// chunks to the ONE [`Splitter`], handing each line to `each` as it ends.
+/// `from` is the absolute byte offset the caller already committed to (`0`
+/// in the one-shot): the read starts there and every line offset stays
+/// absolute; `seed` is the fingerprint chain it continues. No splitting
+/// logic and no harness knowledge inside: open, prove, feed.
+pub(crate) fn stream_transcript(
+    path: &Path,
+    expected: &std::fs::Metadata,
+    from: u64,
+    seed: u64,
+    each: &mut dyn FnMut(Line),
+) -> Result<Commit, DoorError> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: streams only the lstat-checked board transcript"
+    )]
+    let mut file = File::open(path).map_err(|_| DoorError::Unreadable)?;
+    let opened = file.metadata().map_err(|_| DoorError::Unreadable)?;
+    if !opened.file_type().is_file() {
+        return Err(DoorError::NotRegular);
+    }
+    if opened.len() < expected.len() || expected.len() < from || !same_file(expected, &opened) {
+        return Err(DoorError::Changed);
+    }
+    file.seek(std::io::SeekFrom::Start(from))
+        .map_err(|_| DoorError::Unreadable)?;
+    let mut reader = BufReader::new(file.take(expected.len() - from));
+    let mut splitter = Splitter::at_seed(from, seed);
+    loop {
+        let chunk = reader.fill_buf().map_err(|_| DoorError::Unreadable)?;
+        if chunk.is_empty() {
+            break;
+        }
+        let consumed = chunk.len();
+        splitter.feed_each(chunk, each);
+        reader.consume(consumed);
+    }
+    if reader.into_inner().limit() != 0 {
+        return Err(DoorError::Changed);
+    }
+    Ok(splitter.end())
+}
+
+/// [`stream_transcript`], keeping every line: a follow tail continues the
+/// chain its earlier polls hashed and reads its lines after the read. Same
+/// door, same proof, one site.
+pub(crate) fn stream_transcript_seeded(
+    path: &Path,
+    expected: &std::fs::Metadata,
+    from: u64,
+    seed: u64,
+) -> Result<Streamed, DoorError> {
+    let mut lines = Vec::new();
+    let commit = stream_transcript(path, expected, from, seed, &mut |line| lines.push(line))?;
+    Ok(Streamed::of(lines, commit))
+}
+
+#[cfg(unix)]
+fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
+    true
+}
+
+/// ONE clock for the text board: the UTC day and the wall time at second
+/// precision, fraction dropped. The day drives the `# YYYY-MM-DD UTC` divider,
+/// the time the `## HH:MM:SS` header. Built on the one timestamp spelling, so
+/// a negative (pre-epoch) instant still renders.
+pub(crate) fn clock_text(micros: i64) -> (String, String) {
+    let stamped = crate::time::Timestamp::from_epoch(micros.div_euclid(1_000_000)).to_string();
+    let day: String = stamped.chars().take(10).collect();
+    let time: String = stamped.chars().skip(11).take(8).collect();
+    (day, time)
+}
+
+/// Filesystem roots and already-selected sessions.
+pub struct Inputs<'a> {
+    /// The effective home, for legacy stores no meta row pins down.
+    pub home: Option<&'a Path>,
+    /// The sessions to read, caller order.
+    pub sessions: &'a [crate::usage::SessionInput],
+    /// Which of the model's replies (text only) to read beside the humans.
+    pub replies: Replies,
+}
+
+/// One seat's read facts, exactly as a read observed them: the follow seed, so
+/// the first pass's read and the offsets it binds are ONE read, never two.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatSeed {
+    /// `session:seat`, from the meta roster.
+    pub(crate) actor: String,
+    /// The located file's dev+inode.
+    pub(crate) identity: (u64, u64),
+    /// The located file's mtime, when the OS reports one.
+    pub(crate) mtime: Option<std::time::SystemTime>,
+    /// Absolute position after the last complete line of the read.
+    pub(crate) committed: u64,
+    /// Fingerprint of the raw committed bytes, `[0..committed]`.
+    pub(crate) fp: u64,
+    /// The newest row timestamp this read observed, if it observed any row.
+    /// The follow seeds its divider day from these, `--since` applied there.
+    pub(crate) last_row_ts: Option<i64>,
+    /// A windowed read ended with the window of replies to the human OPEN:
+    /// the follow starts its next tail from this state.
+    pub(crate) window: bool,
+}
+
+/// One board: every row read plus every seat that could not be read fully.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Observation {
+    /// Board turns — human, and with `--assistant` the model's text replies —
+    /// oldest first through [`collect`], `--since` applied.
+    pub rows: Vec<Row>,
+    /// One row per seat the board could not read fully, caller order.
+    pub coverage: Vec<Coverage>,
+    /// One row per seat whose read hid ae-injected turns, `--since` applied.
+    pub hidden: Vec<Hidden>,
+    /// The part of `hidden` that was ae's own guided compaction dispatch, per
+    /// seat, `--since` applied: every one of these is also counted in `hidden`.
+    pub dispatches: Vec<Hidden>,
+    /// What each successfully streamed seat's read observed; the follow seeds
+    /// itself from these and a batch carries none.
+    pub seeds: Vec<SeatSeed>,
+    /// The UTC day printed before this observation's first row — `None` on a
+    /// one-shot, the follow's held day on a batch. The text divider prints
+    /// before the first row unless it names this day; JSON never reads it.
+    pub(crate) day_floor: Option<String>,
+}
+
+/// A caller-correlated meta for exactly one session: the snapshot the caller
+/// proved, bound to the session directory it was read from. The owner applies
+/// it only to the iterated session whose path matches, so a supplied snapshot
+/// can never leak across a multi-session read; a path that matches no session
+/// reads the disk as if nothing was supplied.
+pub struct SuppliedMeta<'m> {
+    /// The session directory the snapshot was read from.
+    pub path: &'m Path,
+    /// The correlated snapshot itself.
+    pub meta: &'m crate::meta::Meta,
+}
+
+/// Read every session from the disk it names: [`observe_with_meta`] with no
+/// supplied snapshot.
+#[must_use]
+pub fn observe(inputs: &Inputs<'_>, since_micros: Option<i64>) -> Observation {
+    observe_with_meta(inputs, since_micros, None)
+}
+
+/// Read every Claude, Codex, Grok, Muse and Antigravity seat of the handed-in
+/// sessions. A seat that cannot be read — unknown tool, unlocated store,
+/// unreadable transcript — becomes a [`Coverage`], never a silent subset; ae's
+/// own injected turns are removed by [`hidden`] and counted per seat.
+#[must_use]
+pub fn observe_with_meta(
+    inputs: &Inputs<'_>,
+    since_micros: Option<i64>,
+    supplied: Option<&SuppliedMeta<'_>>,
+) -> Observation {
+    observe_selected(inputs, since_micros, supplied, &|_| true)
+}
+
+/// [`observe_with_meta`] over the roster seats `keep` names, and only those:
+/// a seat it refuses is never located, read or reported. The whole board is
+/// this with every seat kept, so a filtered read is the same read.
+#[must_use]
+pub fn observe_selected(
+    inputs: &Inputs<'_>,
+    since_micros: Option<i64>,
+    supplied: Option<&SuppliedMeta<'_>>,
+    keep: &dyn Fn(&crate::meta::RosterEntry) -> bool,
+) -> Observation {
+    observe_with(inputs, since_micros, supplied, keep, &Scope::default())
+}
+
+/// [`observe_selected`] with a [`Scope`]: the whole chain of every kept seat
+/// (current conversation and recorded predecessors), its human rows kept as the
+/// scope says and its generations limited to the scope's tools. A generation
+/// the scope refuses is never located, opened or run.
+#[must_use]
+pub fn observe_with(
+    inputs: &Inputs<'_>,
+    since_micros: Option<i64>,
+    supplied: Option<&SuppliedMeta<'_>>,
+    keep: &dyn Fn(&crate::meta::RosterEntry) -> bool,
+    scope: &Scope<'_>,
+) -> Observation {
+    observe_generations(
+        inputs,
+        since_micros,
+        supplied,
+        keep,
+        Generations::All,
+        scope,
+    )
+}
+
+/// Which of a seat's conversations a read takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Generations {
+    /// The current conversation, then every recorded predecessor.
+    All,
+    /// The current conversation alone: the follow seeds from it.
+    Current,
+    /// The recorded predecessors alone: no seed, since none is ever polled.
+    Earlier,
+}
+
+/// [`observe_selected`] over `generations` of each kept seat: `Current`
+/// and `Earlier` together read exactly what `All` reads.
+#[must_use]
+pub(crate) fn observe_generations(
+    inputs: &Inputs<'_>,
+    since_micros: Option<i64>,
+    supplied: Option<&SuppliedMeta<'_>>,
+    keep: &dyn Fn(&crate::meta::RosterEntry) -> bool,
+    generations: Generations,
+    scope: &Scope<'_>,
+) -> Observation {
+    let mut rows = Vec::new();
+    let mut coverage = Vec::new();
+    let mut seeds = Vec::new();
+    let mut hidden_rows = Vec::new();
+    for session in inputs.sessions {
+        let held = supplied
+            .filter(|held| held.path == session.path.as_path())
+            .map(|held| held.meta.clone());
+        let meta = if let Some(meta) = held {
+            meta
+        } else {
+            let Ok(meta) = crate::session::read_meta(&session.path) else {
+                coverage.push(Coverage {
+                    actor: format!("{}:?", session.name),
+                    reason: "session meta unreadable".to_owned(),
+                });
+                continue;
+            };
+            meta
+        };
+        for entry in meta.roster().iter().filter(|entry| keep(entry)) {
+            let priors = meta.harness_session_prior(&entry.slot);
+            let (home, replies) = (inputs.home, inputs.replies);
+            let (rows, coverage, seeds) = (&mut rows, &mut coverage, &mut seeds);
+            hidden_rows.extend(match generations {
+                Generations::All => observe_seat(
+                    session, entry, home, replies, scope, &priors, rows, coverage, seeds,
+                ),
+                Generations::Current => observe_generation(
+                    session, entry, home, replies, scope, 0, rows, coverage, seeds,
+                ),
+                Generations::Earlier => observe_priors(
+                    session, entry, home, replies, scope, &priors, rows, coverage, seeds,
+                ),
+            });
+        }
+    }
+    let mut rows = collect(rows);
+    if let Some(since) = since_micros {
+        rows.retain(|row| row.ts >= since);
+        hidden_rows.retain(|row| row.ts >= since);
+    }
+    Observation {
+        rows,
+        coverage,
+        dispatches: count_dispatches(&hidden_rows),
+        hidden: count_hidden(hidden_rows),
+        seeds,
+        day_floor: None,
+    }
+}
+
+/// ONE seat's own conversation, oldest first: the turns a seed pack carries.
+///
+/// Generation 0 ONLY. A predecessor's words belong to a conversation this seat
+/// has already left behind, and what a successor takes over is the one running
+/// now; [`observe_seat`] is where the whole chain is read instead.
+///
+/// The model's replies are always read, because half an exchange tells a
+/// successor less than a short one — and [`Role::Assistant`] is text parts
+/// alone, so no thinking and no tool call can reach a pack through here.
+///
+/// READ-ONLY and seedless: nothing follows this read, so the generation-0
+/// follow seed is dropped rather than offered to a caller with no poll to feed.
+/// Coverage comes back rather than being swallowed: a seat whose tool has no
+/// reader must SAY so in the pack, or a successor reads "no turns" as "nothing
+/// was said".
+pub(crate) fn observe_seat_turns(
+    session: &crate::usage::SessionInput,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+) -> (Vec<Row>, Vec<Coverage>) {
+    let mut rows = Vec::new();
+    let mut coverage = Vec::new();
+    let mut seeds = Vec::new();
+    // The hidden rows are already OUT of `rows`; the returned vec is the count
+    // the board reports per seat, and a pack reports no such number.
+    let _hidden = observe_generation(
+        session,
+        entry,
+        home,
+        Replies::All,
+        &Scope::default(),
+        0,
+        &mut rows,
+        &mut coverage,
+        &mut seeds,
+    );
+    (collect(rows), coverage)
+}
+
+/// Read one roster seat: its current conversation, then — nearest first, at
+/// most [`crate::meta::PRIOR_MAX`] — its recorded predecessors. Every
+/// generation runs through the ONE read below; the current seat's id may be
+/// `pending` after a fallback, and then its coverage row prints as today while
+/// the predecessors still read. Returns every generation's hidden rows, so the
+/// caller counts them under the one actor after `--since`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the seat read's nine facts — session, entry, home, flag, scope, priors, rows, coverage, seeds — are each a distinct borrow"
+)]
+fn observe_seat(
+    session: &crate::usage::SessionInput,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    replies: Replies,
+    scope: &Scope<'_>,
+    priors: &[&str],
+    rows: &mut Vec<Row>,
+    coverage: &mut Vec<Coverage>,
+    seeds: &mut Vec<SeatSeed>,
+) -> Vec<Row> {
+    let mut hidden = observe_generation(
+        session, entry, home, replies, scope, 0, rows, coverage, seeds,
+    );
+    hidden.extend(observe_priors(
+        session, entry, home, replies, scope, priors, rows, coverage, seeds,
+    ));
+    hidden
+}
+
+/// [`observe_seat`]'s predecessors alone, nearest first, each numbered as
+/// the whole chain numbers it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the seat read's nine facts — session, entry, home, flag, scope, priors, rows, coverage, seeds — are each a distinct borrow"
+)]
+fn observe_priors(
+    session: &crate::usage::SessionInput,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    replies: Replies,
+    scope: &Scope<'_>,
+    priors: &[&str],
+    rows: &mut Vec<Row>,
+    coverage: &mut Vec<Coverage>,
+    seeds: &mut Vec<SeatSeed>,
+) -> Vec<Row> {
+    let mut hidden = Vec::new();
+    let mut generation: u8 = 0;
+    for element in priors.iter().rev().take(crate::meta::PRIOR_MAX) {
+        generation += 1;
+        let mut prior = entry.clone();
+        // THE TAG DECIDES THE TOOL. A seat that was reseated onto another CLI
+        // records predecessors from more than one store, so the locator and the
+        // reader below are chosen by the element's OWN tool and only fall back
+        // to the slot's current binary for a legacy untagged id — the chain's
+        // rule for one, applied here rather than assumed. An element this
+        // reader cannot judge is passed through as it stands, so the locator
+        // still names it in a coverage row instead of it vanishing.
+        //
+        // The KNOWN GAP: `config_home` is the slot's current one. A predecessor
+        // whose tool ALSO ran under another config home is looked for in the
+        // wrong store and reported as not found, because a reseat replaces that
+        // row and ae never recorded the old one.
+        match crate::meta::prior_parts(element) {
+            Some(parsed) => {
+                prior.harness_session = Some(parsed.id.to_owned());
+                if let Some(tool) = parsed.tool {
+                    prior.binary = Some(tool.to_owned());
+                }
+            }
+            None => prior.harness_session = Some((*element).to_owned()),
+        }
+        hidden.extend(observe_generation(
+            session, &prior, home, replies, scope, generation, rows, coverage, seeds,
+        ));
+    }
+    hidden
+}
+
+/// Read one generation of one roster seat: locate it through THE one locator,
+/// stream it through the door, read it with the one dispatch for its tool,
+/// then hide every ae-injected turn this generation's read produced. Every
+/// refusal is a coverage row, never a silent subset. Generation 0 seeds the
+/// follow; predecessors never do — an abandoned conversation never grows, so
+/// no poll revisits one. Every predecessor row is stamped with its generation
+/// and every predecessor coverage reason wears its `predecessor n:` prefix,
+/// actor unchanged.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one generation's nine facts — the seat read's nine, its number in place of the priors — are each a distinct borrow"
+)]
+fn observe_generation(
+    session: &crate::usage::SessionInput,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    replies: Replies,
+    scope: &Scope<'_>,
+    generation: u8,
+    rows: &mut Vec<Row>,
+    coverage: &mut Vec<Coverage>,
+    seeds: &mut Vec<SeatSeed>,
+) -> Vec<Row> {
+    let actor = format!("{}:{}", session.name, entry.name);
+    let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
+    let mut cover = |reason: String| {
+        coverage.push(Coverage {
+            actor: actor.clone(),
+            reason: if generation == 0 {
+                reason
+            } else {
+                format!("predecessor {generation}: {reason}")
+            },
+        });
+    };
+    // THE ALLOW-SET, before the board spec and the locator: a tool the scope does
+    // not name is never located, opened or run (the OpenCode export spawns a
+    // process and writes scratch). The tool is the element's own tag, or the
+    // current seat's binary for a legacy untagged id: `observe_priors` decided.
+    if let Some(reason) = scope.refusal(tool) {
+        cover(reason);
+        return Vec::new();
+    }
+    let stream = match tool.adapter().board {
+        BoardSpec::Stream(stream) => stream,
+        BoardSpec::Unsupported { reason } => {
+            cover(reason.to_owned());
+            return Vec::new();
+        }
+        // OpenCode keeps its conversation in SQLite, which the board never opens:
+        // the export leg runs the CLI (`opencode session export <id>`) and the pure reader
+        // takes its bytes. No file, no follow seed — D1 reads it once per board
+        // and `follow_seat` covers it after that.
+        BoardSpec::Export { .. } => {
+            let (seat_rows, seat_coverage) =
+                read_opencode(&actor, entry, tool, replies == Replies::All);
+            let (mut seat_rows, hidden_rows): (Vec<Row>, Vec<Row>) =
+                seat_rows.into_iter().partition(|row| !hidden(row, None));
+            for row in &mut seat_rows {
+                row.generation = generation;
+            }
+            rows.append(&mut seat_rows);
+            for item in seat_coverage {
+                cover(item.reason);
+            }
+            return hidden_rows;
+        }
+    };
+    let (path, metadata) = match locate_seat(stream, tool, entry, home) {
+        Ok(located) => located,
+        Err(reason) => {
+            cover(reason);
+            return Vec::new();
+        }
+    };
+    // The replies leg runs before the history READ (never before its
+    // locate, so an invalid id still refuses exactly once): it reports
+    // whether assistant rows were produced, and the history stream binds
+    // that verdict. With the flag off the leg never runs, and a read for the
+    // replies to the human skips it: the transcript carries no human turn to
+    // attribute a reply to.
+    let (mut leg_rows, leg_coverage) = match stream.replies_leg {
+        Some(RepliesLeg::AgyBrain) if replies == Replies::All => {
+            read_agy_transcript(&actor, entry, home, tool)
+        }
+        Some(RepliesLeg::AgyBrain) | None => (Vec::new(), Vec::new()),
+    };
+    let file = file_identity(&path, &metadata);
+    let binding = Binding::default()
+        .for_seat(entry.harness_session.as_deref().unwrap_or_default())
+        .with_replies(replies)
+        .with_text(scope.text)
+        .with_assistant_rows_found(!leg_rows.is_empty());
+    let read = read_located(&path, &metadata, &binding, stream.follow, |feed| {
+        reader_for(stream.parser)(feed, &binding, &actor, &file, tool)
+    });
+    let (mut seat_rows, mut seat_coverage, commit, hold) = match read {
+        Ok(read) => read,
+        Err(failure) => {
+            // A failed history door refuses the generation — but the leg
+            // already read from a different file, so its rows stay: a
+            // partial board that says so, never a silent subset.
+            for row in &mut leg_rows {
+                row.generation = generation;
+            }
+            rows.append(&mut leg_rows);
+            for item in leg_coverage {
+                cover(item.reason);
+            }
+            cover(door_reason(failure).to_owned());
+            return Vec::new();
+        }
+    };
+    let passive = passive_turn(tool, &session.path, &entry.slot);
+    let mut window = false;
+    if binding.windowed {
+        (seat_rows, window) = answered(seat_rows, passive.as_deref(), false);
+    }
+    seat_rows.extend(leg_rows);
+    seat_coverage.extend(leg_coverage);
+    let (mut seat_rows, hidden_rows): (Vec<Row>, Vec<Row>) = seat_rows
+        .into_iter()
+        .partition(|row| !hidden(row, passive.as_deref()));
+    for row in &mut seat_rows {
+        row.generation = generation;
+    }
+    if generation == 0 {
+        seeds.push(seed(&actor, &metadata, &commit, hold, &seat_rows, window));
+    }
+    rows.append(&mut seat_rows);
+    for item in seat_coverage {
+        cover(item.reason);
+    }
+    hidden_rows
+}
+
+/// One agy generation's transcript leg: locate the seat's own transcript,
+/// stream it through the ONE door, and read it with the transcript reader.
+/// Absence is rows, not coverage — the caller binds the rows-found verdict
+/// on the history stream, which covers the missing replies. Only a refused
+/// door is a coverage row of this leg's own.
+fn read_agy_transcript(
+    actor: &str,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    tool: ToolKind,
+) -> (Vec<Row>, Vec<Coverage>) {
+    let id = entry.harness_session.as_deref().unwrap_or_default();
+    let found = match locate_agy_transcript(tool, home, id) {
+        Ok(Some(found)) => found,
+        Ok(None) => return (Vec::new(), Vec::new()),
+        Err(reason) => {
+            return (
+                Vec::new(),
+                vec![Coverage {
+                    actor: actor.to_owned(),
+                    reason,
+                }],
+            );
+        }
+    };
+    let (path, metadata, truncated) = found;
+    let binding = Binding::default().for_seat(id).with_assistant(true);
+    let file = format!("agy:{id}");
+    let read = read_located(&path, &metadata, &binding, BoardFollow::Tail, |feed| {
+        agy_transcript::read_fed(feed, &binding, actor, &file, tool, truncated)
+    });
+    match read {
+        Ok((rows, coverage, _, _)) => (rows, coverage),
+        Err(failure) => (
+            Vec::new(),
+            vec![Coverage {
+                actor: actor.to_owned(),
+                reason: door_reason(failure).to_owned(),
+            }],
+        ),
+    }
+}
+
+/// A located read: the reader's rows and coverage, the commit facts, the hold.
+type Located = (Vec<Row>, Vec<Coverage>, Commit, Option<u64>);
+
+/// One located transcript read through THE door, each line handed to `read`
+/// as the splitter ends it and none kept: the reader's rows and coverage, the
+/// read's commit facts, and the open run's start for a read that can hold
+/// mid-turn. The door runs once — a second call of the feed answers the
+/// first call's ending, and a reader that never calls it still gets the
+/// door's verdict. A refused door returns no rows.
+fn read_located(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    binding: &Binding,
+    follow: BoardFollow,
+    read: impl FnOnce(Feed<'_>) -> (Vec<Row>, Vec<Coverage>),
+) -> Result<Located, DoorError> {
+    let hold = holds(binding, follow);
+    let mut run = grok::OpenRun::new();
+    let mut door: Option<Result<Commit, DoorError>> = None;
+    let (rows, coverage) = read(&mut |each| {
+        if door.is_none() {
+            door = Some(stream_transcript(
+                path,
+                metadata,
+                0,
+                FNV_BASIS,
+                &mut |line| {
+                    if hold {
+                        run.see(&line);
+                    }
+                    each(&line);
+                },
+            ));
+        }
+        door.as_ref()
+            .and_then(|done| done.as_ref().ok())
+            .map_or_else(Ending::default, |commit| commit.ending)
+    });
+    let commit = match door {
+        Some(done) => done?,
+        None => stream_transcript(path, metadata, 0, FNV_BASIS, &mut |line| {
+            if hold {
+                run.see(&line);
+            }
+        })?,
+    };
+    Ok((rows, coverage, commit, run.start()))
+}
+
+/// One `OpenCode` generation: prove the recorded id through the ONE grammar,
+/// mint the export argv, run it through the EXISTING `opencode` leg, and hand
+/// the stdout bytes to the pure reader. The export's wall time is the child's
+/// and is charged to no shared budget — a slow `opencode` delays its own seat
+/// only, never another seat's rows (D3).
+fn read_opencode(
+    actor: &str,
+    entry: &crate::meta::RosterEntry,
+    tool: ToolKind,
+    assistant: bool,
+) -> (Vec<Row>, Vec<Coverage>) {
+    let refuse = |reason: &str| {
+        (
+            Vec::new(),
+            vec![Coverage {
+                actor: actor.to_owned(),
+                reason: reason.to_owned(),
+            }],
+        )
+    };
+    let Some(id) = entry.harness_session.as_deref() else {
+        return refuse("invalid or missing conversation id");
+    };
+    let Some(argv) = crate::session_launch::capture::opencode_export_argv(id) else {
+        return refuse("invalid or missing conversation id");
+    };
+    // The caller's byte ceiling: the door returns at most EXPORT_CAP + 1
+    // bytes, and the reader below refuses anything past its own cap with the
+    // one budget reason.
+    let (ran, exported) =
+        crate::transport::run_opencode(&argv, crate::board::opencode::EXPORT_CAP as u64);
+    if !ran {
+        return refuse("export failed");
+    }
+    opencode::read(exported.as_bytes(), id, actor, tool, assistant)
+}
+
+/// One harness reader: the door's lines in, rows and coverage out.
+pub(crate) type Reader = fn(Feed<'_>, &Binding, &str, &str, ToolKind) -> (Vec<Row>, Vec<Coverage>);
+
+/// The reader for one transcript stream, chosen by its row: ONE dispatch for
+/// the one-shot read and the follow's reassembled batches alike.
+pub(crate) fn reader_for(parser: BoardParser) -> Reader {
+    match parser {
+        BoardParser::Claude => claude::read_fed,
+        BoardParser::Codex => codex::read_fed,
+        BoardParser::Agy => agy::read_fed,
+        BoardParser::Grok => grok::read_fed,
+        BoardParser::Muse => muse::read_fed,
+    }
+}
+
+/// [`reader_for`] over a buffered read: its held lines replayed, its own
+/// binding.
+pub(crate) fn read_buffered(
+    parser: BoardParser,
+    source: ToolKind,
+    streamed: &Streamed,
+    actor: &str,
+    file: &str,
+) -> (Vec<Row>, Vec<Coverage>) {
+    reader_for(parser)(
+        &mut |each| streamed.replay(each),
+        &streamed.binding,
+        actor,
+        file,
+        source,
+    )
+}
+
+/// ONE lstat for every board locator: the candidate proved a regular file
+/// without following a link. A missing candidate (or a non-directory on its
+/// path) is `Ok(None)` — the locator keeps looking; a symlink or non-file
+/// refuses; any other failure is unreadable.
+fn lstat_regular(candidate: &Path) -> Result<Option<std::fs::Metadata>, String> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: board lstat proves the transcript candidate a regular file, never a symlink"
+    )]
+    let metadata = match std::fs::symlink_metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(None);
+        }
+        Err(_) => return Err("transcript unreadable".to_owned()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err("transcript is not a regular file".to_owned());
+    }
+    Ok(Some(metadata))
+}
+
+/// THE seat locator, one owner for the one-shot read and every follow poll:
+/// prove the recorded id before any path, resolve the store the row names,
+/// then its current transcript. The returned reason IS the coverage row's text.
+fn locate_seat(
+    stream: BoardStream,
+    tool: ToolKind,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+) -> Result<(PathBuf, std::fs::Metadata), String> {
+    let Some(id) = crate::usage::valid_id(entry.harness_session.as_deref()) else {
+        return Err("invalid or missing conversation id".to_owned());
+    };
+    match stream.locator {
+        BoardLocator::RolloutScan => {
+            let root = crate::usage::source_for(entry, UsageSource::CodexRollout, home)?;
+            let mut budget = Budget::new();
+            match crate::quota::find_codex_rollout(&root, &id, &mut budget) {
+                Ok(Bounded::Ready(Some(rollout))) => {
+                    Ok((rollout.path().to_owned(), rollout.metadata().clone()))
+                }
+                Ok(Bounded::Ready(None)) => Err("rollout not found".to_owned()),
+                Ok(Bounded::Truncated) => Err("rollout scan truncated".to_owned()),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+        BoardLocator::UpdatesScan => {
+            let Some(home) = home else {
+                return Err("legacy config home unavailable".to_owned());
+            };
+            let Some(dir) = tool.adapter().quota.default_home else {
+                return Err("unsupported tool".to_owned());
+            };
+            let mut budget = Budget::new();
+            match locate_grok_updates(&home.join(dir).join("sessions"), &id, &mut budget)? {
+                Some(found) => Ok((found.path, found.metadata)),
+                None => Err("transcript not found".to_owned()),
+            }
+        }
+        BoardLocator::SessionFileScan => {
+            let Some(home) = home else {
+                return Err("legacy config home unavailable".to_owned());
+            };
+            let mut budget = Budget::new();
+            let Some(path) =
+                crate::session_launch::capture::find_muse_session_file(home, &id, &mut budget)?
+            else {
+                return Err("transcript not found".to_owned());
+            };
+            match lstat_regular(&path)? {
+                Some(metadata) => Ok((path, metadata)),
+                None => Err("transcript not found".to_owned()),
+            }
+        }
+        // ONE history file per home carries every conversation, so the reader
+        // — not the locator — separates this seat's turns. The home names the
+        // store; the literal lives in tool.rs's adapter row alone.
+        BoardLocator::SharedHistoryFile => {
+            let Some(home) = home else {
+                return Err("legacy config home unavailable".to_owned());
+            };
+            let Some(dir) = tool.adapter().quota.default_home else {
+                return Err("unsupported tool".to_owned());
+            };
+            let path = home.join(dir).join("history.jsonl");
+            match lstat_regular(&path)? {
+                Some(metadata) => Ok((path, metadata)),
+                None => Err("transcript not found".to_owned()),
+            }
+        }
+        BoardLocator::ProjectTranscripts => {
+            let store = crate::usage::source_for(entry, UsageSource::ClaudeTranscripts, home)?;
+            let mut budget = Budget::new();
+            let located = crate::usage::locate_claude_parent(&store, &id, &mut budget)
+                .map_err(|failure| locate_reason(&failure))?;
+            match located {
+                Some(transcript) => Ok((transcript.path, transcript.metadata)),
+                None => Err("transcript not found".to_owned()),
+            }
+        }
+    }
+}
+
+/// One agy seat's transcript: `transcript_full.jsonl` first, else
+/// `transcript.jsonl`, under the seat's own `brain/<id>/` store. The id is
+/// grammar-proven before any path is built, so the join cannot traverse,
+/// and each candidate goes through the ONE lstat — a symlink refuses, never
+/// falls through. `Ok(None)` is an absent (or unprovable) store, which the
+/// caller covers; the bool says the truncated sibling was opened.
+fn locate_agy_transcript(
+    tool: ToolKind,
+    home: Option<&Path>,
+    id: &str,
+) -> Result<Option<(PathBuf, std::fs::Metadata, bool)>, String> {
+    if !crate::session_launch::capture::is_lowercase_uuid(id) {
+        return Ok(None);
+    }
+    let Some(home) = home else {
+        return Ok(None);
+    };
+    let Some(dir) = tool.adapter().quota.default_home else {
+        return Ok(None);
+    };
+    let logs = home
+        .join(dir)
+        .join("brain")
+        .join(id)
+        .join(".system_generated")
+        .join("logs");
+    let full = logs.join("transcript_full.jsonl");
+    if let Some(metadata) = lstat_regular(&full)? {
+        return Ok(Some((full, metadata, false)));
+    }
+    let tran = logs.join("transcript.jsonl");
+    match lstat_regular(&tran)? {
+        Some(metadata) => Ok(Some((tran, metadata, true))),
+        None => Ok(None),
+    }
+}
+
+/// One follow poll: re-resolve every selected session's roster, re-locate every
+/// seat, read the bytes the held offsets ask for through the ONE door, and step
+/// the state. Selection itself is the caller's and is fixed for the follow.
+pub fn follow_poll(inputs: &Inputs<'_>, follow: &mut follow::Follow) -> Observation {
+    follow_poll_selected(inputs, follow, &|_| true)
+}
+
+/// [`follow_poll`] over the seats `keep` names: the SAME seats the first pass
+/// read, so a seat never read is never polled either.
+pub fn follow_poll_selected(
+    inputs: &Inputs<'_>,
+    follow: &mut follow::Follow,
+    keep: &dyn Fn(&crate::meta::RosterEntry) -> bool,
+) -> Observation {
+    let mut snapshots = Vec::new();
+    for session in inputs.sessions {
+        let Ok(meta) = crate::session::read_meta(&session.path) else {
+            snapshots.push(follow::Snapshot {
+                actor: format!("{}:?", session.name),
+                located: Err("session meta unreadable".to_owned()),
+                streamed: None,
+                passive: None,
+            });
+            continue;
+        };
+        for entry in meta.roster().iter().filter(|entry| keep(entry)) {
+            snapshots.push(follow_seat(
+                session,
+                entry,
+                inputs.home,
+                follow,
+                inputs.replies,
+            ));
+        }
+    }
+    follow.step(snapshots)
+}
+
+/// The follow read-once bit: only an `--assistant` follow of a seat with a
+/// replies leg whose transcript store exists reads replies once. The probe is
+/// lazy — a flag-off or leg-less follow never stats the transcript path — and
+/// the truth table lives in its own test, because two of the three `false` arms
+/// are silent through the follow output and no poll observes the bit itself.
+fn agy_read_once(assistant: bool, has_leg: bool, store_present: impl FnOnce() -> bool) -> bool {
+    assistant && has_leg && store_present()
+}
+
+/// One seat's polled snapshot: locate, then read exactly the tail the held
+/// offset asks for. A refusal is carried as the reason, never as a silent skip.
+/// The passive launch-turn body rides along: the batch's [`hidden`] filter
+/// runs after the reader and an actor alone cannot carry it.
+fn follow_seat(
+    session: &crate::usage::SessionInput,
+    entry: &crate::meta::RosterEntry,
+    home: Option<&Path>,
+    follow: &follow::Follow,
+    replies: Replies,
+) -> follow::Snapshot {
+    let actor = format!("{}:{}", session.name, entry.name);
+    let tool = ToolKind::from_binary_name(entry.binary.as_deref().unwrap_or(""));
+    let passive = passive_turn(tool, &session.path, &entry.slot);
+    let stream = match tool.adapter().board {
+        BoardSpec::Stream(stream) => stream,
+        BoardSpec::Unsupported { reason } => {
+            return follow::Snapshot {
+                actor,
+                located: Err(reason.to_owned()),
+                streamed: None,
+                passive,
+            };
+        }
+        // D1: an export per tick is a child process per seat per tick, and an
+        // export has no append or offset semantics to follow — the one-shot read
+        // stands, and this steady line says why no poll revisits it.
+        BoardSpec::Export { steady } => {
+            return follow::Snapshot {
+                actor,
+                located: Err(steady.to_owned()),
+                streamed: None,
+                passive,
+            };
+        }
+    };
+    let (path, metadata) = match locate_seat(stream, tool, entry, home) {
+        Ok(located) => located,
+        Err(reason) => {
+            return follow::Snapshot {
+                actor,
+                located: Err(reason),
+                streamed: None,
+                passive,
+            };
+        }
+    };
+    // Agy + assistant: the transcript leg read once on the first pass and
+    // polls tail history only. Store EXISTENCE (not a row count — the poll
+    // reads nothing) decides the steady line; the reader's wins-rule keeps
+    // it singular, and an empty store's first pass already said "no records".
+    let read_once = agy_read_once(
+        replies == Replies::All,
+        stream.replies_leg.is_some(),
+        || {
+            matches!(
+                locate_agy_transcript(
+                    tool,
+                    home,
+                    entry.harness_session.as_deref().unwrap_or_default()
+                ),
+                Ok(Some(_))
+            )
+        },
+    );
+    let observed = follow::Located::of(&metadata);
+    let streamed = match follow.plan(&actor, &observed) {
+        follow::Plan::Hold => None,
+        follow::Plan::Read(from) => Some(
+            stream_transcript_seeded(&path, &metadata, from, follow.seed_for(&actor, from))
+                .map_err(door_reason)
+                .map(|streamed| {
+                    streamed
+                        .for_seat(entry.harness_session.as_deref().unwrap_or_default())
+                        .with_replies(replies)
+                        .with_assistant_read_once(read_once)
+                }),
+        ),
+    };
+    follow::Snapshot {
+        actor,
+        located: Ok(follow::Loaded {
+            file: file_identity(&path, &metadata),
+            source: tool,
+            stream,
+            observed,
+        }),
+        streamed,
+        passive,
+    }
+}
+
+/// Scan `<sessions root>/*/<uuid>/updates.jsonl` for one seat's conversation.
+/// Only the candidate file is classified — a missing candidate (or a
+/// non-directory on its path) skips; two hits refuse; a symlink refuses.
+fn locate_grok_updates(
+    root: &Path,
+    id: &str,
+    budget: &mut Budget,
+) -> Result<Option<crate::usage::TranscriptFile>, String> {
+    if !budget.claim_file() {
+        return Err("transcript scan truncated".to_owned());
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: bounded board enumeration of the grok sessions root"
+    )]
+    let listing = match std::fs::read_dir(root) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("transcript unreadable".to_owned()),
+    };
+    let mut found: Option<crate::usage::TranscriptFile> = None;
+    for entry in listing {
+        // One claim per probe bounds the scan: survivors reach it, failures abort.
+        if !budget.claim_file() {
+            return Err("transcript scan truncated".to_owned());
+        }
+        let entry = entry.map_err(|_| "directory entry unreadable".to_owned())?;
+        let candidate = entry.path().join(id).join("updates.jsonl");
+        let Some(metadata) = lstat_regular(&candidate)? else {
+            continue;
+        };
+        if found.is_some() {
+            return Err("conversation id is not unique".to_owned());
+        }
+        found = Some(crate::usage::TranscriptFile {
+            path: candidate,
+            metadata,
+            modified: None,
+        });
+    }
+    Ok(found)
+}
+
+/// The locate failure, in usage's own vocabulary.
+fn locate_reason(failure: &crate::usage::Coverage) -> String {
+    match failure {
+        crate::usage::Coverage::Unreadable(reason) => reason.clone(),
+        crate::usage::Coverage::Truncated => "transcript scan truncated".to_owned(),
+        crate::usage::Coverage::Unlocated => "transcript not located".to_owned(),
+        crate::usage::Coverage::Unsupported => "transcript source unsupported".to_owned(),
+        crate::usage::Coverage::Read => "transcript unreadable".to_owned(),
+    }
+}
+
+/// The door failure, in the transcript vocabulary.
+fn door_reason(failure: DoorError) -> &'static str {
+    match failure {
+        DoorError::Unreadable => "transcript unreadable",
+        DoorError::Changed => "transcript changed during read",
+        DoorError::NotRegular => "transcript is not a regular file",
+    }
+}
+
+/// The stream row of a tool a test drives through the follow.
+#[cfg(test)]
+pub(crate) fn stream_row(tool: ToolKind) -> BoardStream {
+    match tool.adapter().board {
+        BoardSpec::Stream(stream) => stream,
+        BoardSpec::Export { .. } | BoardSpec::Unsupported { .. } => {
+            panic!("{tool:?} declares no stream")
+        }
+    }
+}
+
+/// [`Ending::overlong_coverage`] for a buffered read.
+#[cfg(test)]
+pub(crate) fn overlong_coverage(streamed: &Streamed, actor: &str) -> Option<Coverage> {
+    streamed.ending().overlong_coverage(actor)
+}
+
+/// The scope statement: line 1 of EVERY board, even an empty one.
+const SCOPE_TEXT: &str = "scope: current conversations plus each seat's recorded predecessors (up to 4, newest first) — nothing is inferred from time";
+
+/// Render the observation as text or NDJSON. Line 1 is ALWAYS the scope
+/// statement; coverage rows precede the per-seat hidden lines, which precede
+/// body rows; JSON never carries a bare line.
+/// `lines` clips text bodies only — NDJSON always carries the whole body.
+#[must_use]
+pub fn render(observation: &Observation, json: bool, lines: Option<usize>) -> String {
+    let mut out = if json {
+        Value::obj([
+            ("kind", Value::str("scope")),
+            ("scope", Value::str("current-and-recorded-predecessors")),
+            ("phase", Value::str("8b")),
+        ])
+        .render()
+    } else {
+        SCOPE_TEXT.to_owned()
+    };
+    out.push('\n');
+    out.push_str(&render_batch(observation, json, lines));
+    out
+}
+
+/// Render ONE board body — coverage rows, then body rows, no scope line. The
+/// one-shot prepends the scope statement once; the follow appends one of these
+/// per batch under it.
+#[must_use]
+pub fn render_batch(observation: &Observation, json: bool, lines: Option<usize>) -> String {
+    if json {
+        render_batch_json(observation)
+    } else {
+        render_batch_text(observation, lines)
+    }
+}
+
+/// The indent every text body line wears, the clip marker included.
+const BODY_INDENT: &str = "  ";
+
+/// THE terminal-output owner for the text board: every C0 control except the
+/// row structure's `\n` and `\t`, DEL, and every C1 control renders as
+/// U+FFFD. A transcript body is hostile persisted state, and a raw ESC, BEL or
+/// NUL would let a board read clear the screen, retitle the terminal or smuggle
+/// an OSC 52 clipboard write; neutralising the introducer makes the rest of a
+/// sequence inert text, so no escape grammar is parsed. Neither neighbour fits:
+/// `goal::printable` DROPS controls and flattens to one line, and
+/// `event_text::display_cell` keeps printable ASCII only, parses escape
+/// sequences and bounds to a cell count; `sanitize::sanitize` is the compact
+/// verb's terminal-INPUT strip (drops, normalizes CR and NEL, strict UTF-8).
+/// This is the one owner for terminal OUTPUT: [`render_batch_text`] and the
+/// console lane's view are its callers.
+#[must_use]
+pub(crate) fn terminal_text(text: &str) -> String {
+    text.chars()
+        .map(|ch| {
+            if ch == '\n' || ch == '\t' || !ch.is_control() {
+                ch
+            } else {
+                '\u{FFFD}'
+            }
+        })
+        .collect()
+}
+
+/// ONE text row renderer: the header, every body line indented, a blank line,
+/// and — with a clip — one marker naming the dropped remainder. Both the
+/// one-shot and every follow batch print rows through this function.
+fn text_row(row: &Row, lines: Option<usize>) -> String {
+    let (_, time) = clock_text(row.ts);
+    let mut out = format!("## {time} {}", row.actor);
+    if row.generation > 0 {
+        let _ = write!(out, " · prior {}", row.generation);
+    }
+    if row.role == Role::Assistant {
+        out.push_str(" · assistant");
+    }
+    out.push('\n');
+    let total = row.body.lines().count();
+    let shown = lines.map_or(total, |count| count.min(total));
+    for line in row.body.lines().take(shown) {
+        let _ = writeln!(out, "{BODY_INDENT}{line}");
+    }
+    if let Some(count) = lines
+        && total > count
+    {
+        let _ = writeln!(out, "{BODY_INDENT}… +{} lines", total - count);
+    }
+    out.push('\n');
+    out
+}
+
+fn render_batch_text(observation: &Observation, lines: Option<usize>) -> String {
+    let mut out = String::new();
+    for item in &observation.coverage {
+        let _ = writeln!(out, "coverage incomplete: {} — {}", item.actor, item.reason);
+    }
+    for item in &observation.hidden {
+        let _ = writeln!(
+            out,
+            "hidden: {} — {} ae-injected turns",
+            item.actor, item.count
+        );
+    }
+    // The divider names the UTC day once and reprints only when the day moves
+    // past the previously printed row's — within this batch, and across follow
+    // batches through the observation's floor. Coverage stays above it.
+    let mut last = observation.day_floor.clone();
+    for row in &observation.rows {
+        let (day, _) = clock_text(row.ts);
+        if last.as_deref() != Some(day.as_str()) {
+            let _ = writeln!(out, "# {day} UTC");
+            last = Some(day);
+        }
+        out.push_str(&text_row(row, lines));
+    }
+    terminal_text(&out)
+}
+
+fn render_batch_json(observation: &Observation) -> String {
+    let mut out = String::new();
+    for item in &observation.coverage {
+        let line = Value::obj([
+            ("kind", Value::str("coverage")),
+            ("actor", Value::str(&item.actor)),
+            ("reason", Value::str(&item.reason)),
+        ])
+        .render();
+        out.push_str(&line);
+        out.push('\n');
+    }
+    for item in &observation.hidden {
+        let line = Value::obj([
+            ("kind", Value::str("hidden")),
+            ("actor", Value::str(&item.actor)),
+            (
+                "count",
+                json_u64(u64::try_from(item.count).unwrap_or(u64::MAX)),
+            ),
+        ])
+        .render();
+        out.push_str(&line);
+        out.push('\n');
+    }
+    for row in &observation.rows {
+        let role = match row.role {
+            Role::Human | Role::Boundary | Role::Dispatch => "human",
+            Role::Assistant => "assistant",
+        };
+        let line = Value::obj([
+            ("kind", Value::str("row")),
+            ("ts", Value::Num(row.ts)),
+            ("actor", Value::str(&row.actor)),
+            ("role", Value::str(role)),
+            ("body", Value::str(&row.body)),
+            ("source", Value::str(row.source.as_str())),
+            ("file", Value::str(&row.file)),
+            ("offset", json_u64(row.offset)),
+            ("generation", Value::Num(i64::from(row.generation))),
+        ])
+        .render();
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Epoch micros as ISO 8601 UTC at micro precision. The text board reads the
+/// clock now; this spelling stays for the tests that need identity.
+#[cfg(test)]
+fn format_micros(micros: i64) -> String {
+    let secs = micros.div_euclid(1_000_000);
+    let fraction = micros.rem_euclid(1_000_000);
+    let base = crate::time::Timestamp::from_epoch(secs).to_string();
+    let date = base.strip_suffix('Z').unwrap_or(&base);
+    format!("{date}.{fraction:06}Z")
+}
+
+/// The located file's dev+inode where the OS has them — the follow's identity,
+/// and the `file` naming's second half. `(0, 0)` where the OS has neither.
+#[cfg(unix)]
+pub(crate) fn identity_of(metadata: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt as _;
+    (metadata.dev(), metadata.ino())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn identity_of(_: &std::fs::Metadata) -> (u64, u64) {
+    (0, 0)
+}
+
+/// The follow seed for one successful stream: what that read bound offsets
+/// to, plus the newest row it observed for the divider day.
+fn seed(
+    actor: &str,
+    metadata: &std::fs::Metadata,
+    commit: &Commit,
+    hold: Option<u64>,
+    seat_rows: &[Row],
+    window: bool,
+) -> SeatSeed {
+    let committed = hold.unwrap_or(commit.committed);
+    SeatSeed {
+        actor: actor.to_owned(),
+        identity: identity_of(metadata),
+        mtime: metadata.modified().ok(),
+        committed,
+        fp: commit.fp_at(committed, FNV_BASIS),
+        last_row_ts: seat_rows.iter().map(|row| row.ts).max(),
+        window,
+    }
+}
+
+/// The follow hold for an `--assistant` stream ending mid-turn: the open
+/// run's first-chunk offset, where the commit point holds so the next poll
+/// re-reads the whole turn. `None` everywhere else — a row that does not hold,
+/// the flag off, or no open run — and the stream's own commit stands.
+pub(crate) fn hold_at(streamed: &Streamed, follow: BoardFollow) -> Option<u64> {
+    if !holds(&streamed.binding, follow) {
+        return None;
+    }
+    grok::open_run_start(streamed)
+}
+
+/// Whether a read can hold mid-turn: a row that says so, with `--assistant`.
+fn holds(binding: &Binding, follow: BoardFollow) -> bool {
+    binding.assistant && matches!(follow, BoardFollow::HoldOpenAssistantTurn)
+}
+
+/// The source file's identity: path plus dev+inode, so a replaced file is a
+/// different file even at the same path.
+fn file_identity(path: &Path, metadata: &std::fs::Metadata) -> String {
+    let (dev, ino) = identity_of(metadata);
+    format!("{}#{dev}:{ino}", path.display())
+}
+
+/// A `u64` for the JSON stream: an integer while it fits, the raw literal past
+/// it — never a clipped different number.
+fn json_u64(value: u64) -> Value {
+    i64::try_from(value).map_or_else(|_| Value::Raw(value.to_string()), Value::Num)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Binding, Coverage, DoorError, FNV_BASIS, LINE_CAP, LineBody, Role, Row, Splitter, collect,
+        format_micros, read_located, stream_row, stream_transcript_seeded,
+    };
+    use crate::tool::ToolKind;
+    use std::path::{Path, PathBuf};
+
+    fn row(ts: i64, file: &str, offset: u64, body: &str) -> Row {
+        Row {
+            ts,
+            actor: "s:seat".to_owned(),
+            role: Role::Human,
+            body: body.to_owned(),
+            source: ToolKind::Claude,
+            file: file.to_owned(),
+            offset,
+            generation: 0,
+        }
+    }
+
+    #[test]
+    fn collect_sorts_by_timestamp_file_then_offset() {
+        let rows = collect(vec![
+            row(3, "b", 0, "fourth"),
+            row(1, "b", 9, "third"),
+            row(1, "a", 0, "first"),
+            row(1, "a", 5, "second"),
+        ]);
+        let bodies: Vec<&str> = rows.iter().map(|row| row.body.as_str()).collect();
+        assert_eq!(bodies, ["first", "second", "third", "fourth"]);
+    }
+
+    #[test]
+    fn collect_keeps_same_microsecond_rows_from_two_files() {
+        // Mutation 4's guard: sorting by (ts, actor) would still order these,
+        // but sorting must never consult the actor at all — same actor, same
+        // micro, two files, both survive in file order.
+        let rows = collect(vec![row(7, "b", 0, "bee"), row(7, "a", 0, "aye")]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].body, "aye");
+        assert_eq!(rows[1].body, "bee");
+    }
+
+    #[test]
+    fn collect_dedups_only_the_same_source_record() {
+        let twice = row(5, "a", 3, "same words");
+        let rows = collect(vec![
+            twice.clone(),
+            row(5, "a", 9, "same words"),
+            twice,
+            row(5, "b", 3, "same words"),
+        ]);
+        // One (a,3) survives; the same words at another offset or in another
+        // file are different records and all survive.
+        let kept: Vec<(&str, u64)> = rows
+            .iter()
+            .map(|row| (row.file.as_str(), row.offset))
+            .collect();
+        assert_eq!(kept, [("a", 3), ("a", 9), ("b", 3)]);
+    }
+
+    #[test]
+    fn coverage_rows_carry_their_reason_verbatim() {
+        let coverage = Coverage {
+            actor: "s:seat".to_owned(),
+            reason: "torn last record".to_owned(),
+        };
+        assert_eq!(coverage.reason, "torn last record");
+    }
+
+    #[test]
+    fn a_row_hides_when_its_first_line_is_an_ae_spelling() {
+        for marker in [
+            crate::provenance::peer("lead"),
+            crate::provenance::ctx(),
+            crate::provenance::brief("lead"),
+            crate::provenance::interrupt("lead"),
+        ] {
+            assert!(super::hidden(&row(1, "a", 0, &marker), None), "{marker}");
+            let buried = format!("human words\n{marker}");
+            assert!(
+                !super::hidden(&row(1, "a", 0, &buried), None),
+                "a marker past line 1 is prose: {marker}"
+            );
+            let mut assistant = row(1, "a", 0, &marker);
+            assistant.role = Role::Assistant;
+            assert!(
+                !super::hidden(&assistant, None),
+                "assistant rows are never hidden: {marker}"
+            );
+        }
+    }
+
+    /// Wrap `inner` as the measured Claude harness does: exact opener, the
+    /// marker on the first inner line, the exact matching closer last.
+    fn wrapped(id: &str, marker: &str, inner: &str) -> String {
+        format!("<pasted_content id=\"{id}\">\n{marker}\n{inner}\n</pasted_content id=\"{id}\">")
+    }
+
+    #[test]
+    fn a_harness_wrapped_ae_turn_hides_like_a_bare_marker() {
+        // #171: Claude 2.1.280 stores a multi-line ae turn wrapped, so the
+        // marker leaves line 1 and the bare check misses it. Every verb hides.
+        for marker in [
+            crate::provenance::peer("lead"),
+            crate::provenance::ctx(),
+            crate::provenance::brief("lead"),
+            crate::provenance::interrupt("lead"),
+        ] {
+            let body = wrapped("cbef", &marker, "synthetic turn body");
+            assert!(super::hidden(&row(1, "a", 0, &body), None), "{marker}");
+            let minimal =
+                format!("<pasted_content id=\"cbef\">\n{marker}\n</pasted_content id=\"cbef\">");
+            assert!(
+                super::hidden(&row(1, "a", 0, &minimal), None),
+                "3-line {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wrapper_that_breaks_the_exact_grammar_stays_a_human_row() {
+        let marker = crate::provenance::peer("lead");
+        let whole = wrapped("cbef", &marker, "synthetic turn body");
+        let open = "<pasted_content id=\"cbef\">";
+        let close = "</pasted_content id=\"cbef\">";
+        let cases: [(&str, String); 16] = [
+            ("prose before opener", format!("human words\n{whole}")),
+            (
+                "blank between opener and marker",
+                format!("{open}\n\n{marker}\nwords\n{close}"),
+            ),
+            (
+                "marker past the first inner line",
+                format!("{open}\nwords\n{marker}\nwords\n{close}"),
+            ),
+            ("missing closer", format!("{open}\n{marker}\nwords")),
+            (
+                "id mismatch",
+                format!("{open}\n{marker}\nwords\n</pasted_content id=\"dead\">"),
+            ),
+            ("empty id", wrapped("", &marker, "synthetic turn body")),
+            (
+                "missing id",
+                format!("<pasted_content>\n{marker}\nwords\n</pasted_content>"),
+            ),
+            (
+                "junk attribute on opener",
+                format!("<pasted_content id=\"cbef\" extra=\"1\">\n{marker}\nwords\n{close}"),
+            ),
+            (
+                "prefix before opener",
+                format!("x{open}\n{marker}\nwords\n{close}"),
+            ),
+            (
+                "embedded quote in id",
+                wrapped("cb\"ef", &marker, "synthetic turn body"),
+            ),
+            (
+                "premature same-id closer plus prose plus repeated closer",
+                format!("{open}\n{marker}\n{close}\nhuman prose\n{close}"),
+            ),
+            (
+                "trailing prose after closer",
+                format!("{whole}\nhuman prose"),
+            ),
+            (
+                "human wrapper prose on the first inner line",
+                format!("{open}\nhuman words\n{close}"),
+            ),
+            (
+                "marker nested below the first inner wrapper",
+                format!("{open}\nhuman words\n{whole}\n{close}"),
+            ),
+            ("bare opener alone", open.to_owned()),
+            ("bare closer alone", close.to_owned()),
+        ];
+        for (name, body) in &cases {
+            assert!(!super::hidden(&row(1, "a", 0, body), None), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_non_matching_closer_inside_the_wrapper_is_prose() {
+        // Only the SAME id closes: a foreign closer mid-body changes nothing.
+        let marker = crate::provenance::peer("lead");
+        let body = format!(
+            "<pasted_content id=\"cbef\">\n{marker}\n</pasted_content id=\"dead\">\nwords\n</pasted_content id=\"cbef\">"
+        );
+        assert!(super::hidden(&row(1, "a", 0, &body), None));
+    }
+
+    #[test]
+    fn wrapped_classification_needs_a_human_claude_row() {
+        let body = wrapped(
+            "cbef",
+            &crate::provenance::peer("lead"),
+            "synthetic turn body",
+        );
+        let mut assistant = row(1, "a", 0, &body);
+        assistant.role = Role::Assistant;
+        assert!(
+            !super::hidden(&assistant, None),
+            "assistant rows never hide"
+        );
+        let mut foreign = row(1, "a", 0, &body);
+        foreign.source = ToolKind::Codex;
+        assert!(!super::hidden(&foreign, None), "only Claude is measured");
+    }
+
+    #[test]
+    fn the_codex_passive_launch_turn_hides_by_its_exact_body() {
+        let meta = Path::new("/tmp/ae-board-passive");
+        let passive = super::passive_turn(ToolKind::Codex, meta, "main")
+            .expect("codex carries a launch turn");
+        assert!(
+            !crate::provenance::is_ae_turn(&passive),
+            "the marker line is not part of the body"
+        );
+        assert!(super::hidden(&row(1, "a", 0, &passive), Some(&passive)));
+        let extended = format!("{passive} and one more word");
+        assert!(
+            !super::hidden(&row(1, "a", 0, &extended), Some(&passive)),
+            "the body must match exactly"
+        );
+        assert!(super::passive_turn(ToolKind::Claude, meta, "main").is_none());
+    }
+
+    #[test]
+    fn micros_format_as_iso_utc_with_a_zero_padded_fraction() {
+        assert_eq!(
+            format_micros(1_789_549_200_500_000),
+            "2026-09-16T09:00:00.500000Z"
+        );
+        assert_eq!(
+            format_micros(1_789_549_200_000_007),
+            "2026-09-16T09:00:00.000007Z"
+        );
+    }
+
+    #[test]
+    fn a_newline_split_across_two_feeds_ends_one_line() {
+        let mut splitter = Splitter::new();
+        splitter.feed(b"ab");
+        splitter.feed(b"c\nde\n");
+        let streamed = splitter.finish();
+        assert!(!streamed.torn);
+        assert_eq!(streamed.lines.len(), 2);
+        assert_eq!(streamed.lines[0].offset, 0);
+        assert!(matches!(
+            streamed.lines[0].body,
+            LineBody::Full(ref bytes) if bytes == b"abc"
+        ));
+        assert_eq!(streamed.lines[1].offset, 4);
+        assert!(matches!(
+            streamed.lines[1].body,
+            LineBody::Full(ref bytes) if bytes == b"de"
+        ));
+    }
+
+    #[test]
+    fn two_newlines_in_one_feed_end_two_lines() {
+        let mut splitter = Splitter::new();
+        splitter.feed(b"a\nb\n");
+        let streamed = splitter.finish();
+        assert!(!streamed.torn);
+        assert_eq!(streamed.lines.len(), 2);
+        assert_eq!(streamed.lines[0].offset, 0);
+        assert!(matches!(
+            streamed.lines[0].body,
+            LineBody::Full(ref bytes) if bytes == b"a"
+        ));
+        assert_eq!(streamed.lines[1].offset, 2);
+        assert!(matches!(
+            streamed.lines[1].body,
+            LineBody::Full(ref bytes) if bytes == b"b"
+        ));
+    }
+
+    #[test]
+    fn an_overlong_line_reports_and_the_next_line_starts_clean() {
+        let mut splitter = Splitter::new();
+        splitter.feed(&vec![b'x'; LINE_CAP + 1]);
+        splitter.feed(b"\nok\n");
+        let streamed = splitter.finish();
+        assert!(!streamed.torn);
+        assert_eq!(streamed.lines.len(), 2);
+        assert_eq!(streamed.lines[0].offset, 0);
+        assert!(matches!(
+            streamed.lines[0].body,
+            LineBody::Overlong(len) if len == LINE_CAP + 1
+        ));
+        assert_eq!(streamed.lines[1].offset, (LINE_CAP + 2) as u64);
+        assert!(matches!(
+            streamed.lines[1].body,
+            LineBody::Full(ref bytes) if bytes == b"ok"
+        ));
+    }
+
+    #[test]
+    fn a_splitter_base_keeps_offsets_absolute_and_commit_after_the_last_line() {
+        let mut splitter = Splitter::at(100);
+        splitter.feed(b"ab\nc");
+        let streamed = splitter.finish();
+        assert!(streamed.torn);
+        assert_eq!(streamed.lines.len(), 1);
+        assert_eq!(streamed.lines[0].offset, 100);
+        assert_eq!(streamed.committed, 103, "the partial tail does not commit");
+        let mut splitter = Splitter::at(7);
+        splitter.feed(b"");
+        let streamed = splitter.finish();
+        assert!(!streamed.torn);
+        assert_eq!(streamed.committed, 7, "an empty read commits at its base");
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: stats its own scratch file to drive the door"
+    )]
+    fn the_door_reads_from_the_offset_it_is_given_with_absolute_offsets() {
+        let dir = std::env::temp_dir().join(format!("ae-board-door-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("transcript.jsonl");
+        std::fs::write(&path, b"first\nsecond\n").unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+
+        let streamed = stream_transcript_seeded(&path, &metadata, 6, FNV_BASIS).unwrap();
+        assert!(!streamed.torn);
+        assert_eq!(streamed.lines.len(), 1);
+        assert_eq!(
+            streamed.lines[0].offset, 6,
+            "the tail's offsets stay absolute"
+        );
+        assert_eq!(streamed.committed, 13);
+
+        let whole = stream_transcript_seeded(&path, &metadata, 0, FNV_BASIS).unwrap();
+        assert_eq!(whole.committed, 13);
+        assert_eq!(whole.lines.len(), 2);
+
+        assert_eq!(
+            stream_transcript_seeded(&path, &metadata, 14, FNV_BASIS).unwrap_err(),
+            DoorError::Changed,
+            "an offset past the located length is a refusal, not a clipped read"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scratch transcript and its lstat, for the located-read tests.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: writes and stats its own scratch file to drive the door"
+    )]
+    fn scratch(tag: &str, bytes: &[u8]) -> (std::path::PathBuf, std::fs::Metadata) {
+        let dir = std::env::temp_dir().join(format!("ae-board-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("transcript.jsonl");
+        std::fs::write(&path, bytes).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        (path, metadata)
+    }
+
+    #[test]
+    fn a_located_read_runs_the_door_once_and_a_second_feed_answers_the_first_ending() {
+        let (path, metadata) = scratch("located-once", b"a\nb\ntorn");
+        let mut seen = Vec::new();
+        let mut endings = Vec::new();
+        let (_, _, commit, hold) = read_located(
+            &path,
+            &metadata,
+            &Binding::default(),
+            stream_row(ToolKind::Claude).follow,
+            |feed| {
+                endings.push(feed(&mut |line| seen.push(line.offset)));
+                endings.push(feed(&mut |line| seen.push(line.offset)));
+                (Vec::new(), Vec::new())
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, [0, 2], "the second feed reads nothing");
+        assert!(endings[0].torn);
+        assert_eq!(endings[0], endings[1]);
+        assert_eq!((commit.committed, commit.ending), (4, endings[0]));
+        assert_eq!(hold, None);
+        let _ = std::fs::remove_dir_all(path.with_file_name(""));
+    }
+
+    #[test]
+    fn a_reader_that_never_feeds_still_gets_the_doors_verdict_and_a_refusal_drops_its_rows() {
+        let (path, metadata) = scratch("located-unfed", b"one\n");
+        let unfed = read_located(
+            &path,
+            &metadata,
+            &Binding::default(),
+            stream_row(ToolKind::Claude).follow,
+            |_| (Vec::new(), Vec::new()),
+        );
+        assert_eq!(unfed.map(|(.., commit, _)| commit.committed).ok(), Some(4));
+        let gone = path.with_file_name("gone.jsonl");
+        let covered = || {
+            let item = Coverage {
+                actor: "s:seat".to_owned(),
+                reason: "read".to_owned(),
+            };
+            (Vec::new(), vec![item])
+        };
+        for fed in [false, true] {
+            let refused = read_located(
+                &gone,
+                &metadata,
+                &Binding::default(),
+                stream_row(ToolKind::Claude).follow,
+                |feed| {
+                    if fed {
+                        feed(&mut |_| {});
+                    }
+                    covered()
+                },
+            );
+            assert_eq!(refused.err(), Some(DoorError::Unreadable), "fed {fed}");
+        }
+        let _ = std::fs::remove_dir_all(path.with_file_name(""));
+    }
+
+    #[test]
+    fn a_located_grok_read_holds_at_the_open_run_only_with_assistant() {
+        let chunk = |kind: &str, text: &str| {
+            format!(
+                r#"{{"timestamp":1789549800,"method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"{kind}","content":{{"type":"text","text":"{text}"}}}}}}}}"#
+            )
+        };
+        let user = chunk("user_message_chunk", "ask");
+        let body = format!("{user}\n{}\n", chunk("agent_message_chunk", "open"));
+        let (path, metadata) = scratch("located-grok", body.as_bytes());
+        for (assistant, tool, hold) in [
+            (true, ToolKind::Grok, Some(user.len() as u64 + 1)),
+            (false, ToolKind::Grok, None),
+            (true, ToolKind::Claude, None),
+        ] {
+            let binding = Binding::default().with_assistant(assistant);
+            let follow = stream_row(tool).follow;
+            let read = read_located(&path, &metadata, &binding, follow, |feed| {
+                feed(&mut |_| {});
+                (Vec::new(), Vec::new())
+            });
+            assert_eq!(read.map(|(.., held)| held).ok(), Some(hold));
+        }
+        let _ = std::fs::remove_dir_all(path.with_file_name(""));
+    }
+
+    fn rendered(rows: Vec<Row>, json: bool, lines: Option<usize>) -> String {
+        let board = super::Observation {
+            rows,
+            ..super::Observation::default()
+        };
+        super::render_batch(&board, json, lines)
+    }
+
+    fn words(items: &[&str]) -> Vec<String> {
+        items.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_control_laden_body_reaches_text_with_placeholders_and_no_control() {
+        let body = "A\u{1b}[2J B\u{7} C\u{0} D\u{d} E\u{7f} F\u{9b}";
+        let text = rendered(vec![row(1_789_549_200_500_000, "a", 0, body)], false, None);
+        assert!(
+            !text
+                .chars()
+                .any(|ch| ch.is_control() && ch != '\n' && ch != '\t'),
+            "no forbidden byte reaches the terminal: {text:?}"
+        );
+        assert_eq!(text.matches('\u{FFFD}').count(), 6, "{text:?}");
+        for visible in ["A", "B", "C", "D", "E", "F", "[2J"] {
+            assert!(text.contains(visible), "{visible} kept: {text:?}");
+        }
+    }
+
+    #[test]
+    fn an_osc_clipboard_or_title_sequence_is_inert_text() {
+        let body = "x\u{1b}]52;c;cGF5bG9hZA==\u{7}y\u{1b}]0;title\u{7}";
+        let text = rendered(vec![row(1_789_549_200_500_000, "a", 0, body)], false, None);
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{7}'),
+            "the introducer and terminator are gone: {text:?}"
+        );
+        assert!(
+            text.contains("52;c;cGF5bG9hZA==") && text.contains("0;title"),
+            "the payload stays as inert text: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_clean_multi_line_body_renders_byte_identically() {
+        let text = rendered(
+            vec![row(1_789_549_200_500_000, "a", 0, "first\nsecond")],
+            false,
+            None,
+        );
+        assert_eq!(
+            text,
+            "# 2026-09-16 UTC\n## 09:00:00 s:seat\n  first\n  second\n\n"
+        );
+    }
+
+    #[test]
+    fn the_json_row_for_a_control_laden_body_is_byte_identical() {
+        // `--json` goes through json::escape_into: C0, DEL and C1 all leave as
+        // `\u00XX` escapes (owner json.rs), so a hostile body cannot put a raw
+        // control byte into the document.
+        let body = "A\u{1b}[2J B\u{7} C\u{0} D\u{d} E\u{7f} F\u{9b}";
+        let json = rendered(vec![row(1_789_549_200_500_000, "a", 0, body)], true, None);
+        let expected = "{\"kind\":\"row\",\"ts\":1789549200500000,\"actor\":\"s:seat\",\"role\":\"human\",\"body\":\"A\\u001b[2J B\\u0007 C\\u0000 D\\r E\\u007f F\\u009b\",\"source\":\"claude\",\"file\":\"a\",\"offset\":0,\"generation\":0}\n";
+        assert_eq!(json, expected);
+    }
+
+    #[test]
+    fn a_text_row_indents_the_body_and_unclipped_prints_no_marker() {
+        let text = rendered(vec![row(1, "a", 0, "one line")], false, None);
+        assert!(
+            text.contains("# 1970-01-01 UTC\n## 00:00:00 s:seat\n  one line\n\n"),
+            "{text}"
+        );
+        let exact = rendered(vec![row(1, "a", 0, "one\ntwo")], false, Some(2));
+        assert!(exact.contains("  one\n  two\n\n"), "{exact}");
+    }
+
+    #[test]
+    fn the_clock_drops_the_fraction_and_survives_pre_epoch() {
+        assert_eq!(
+            super::clock_text(1_789_549_200_500_000),
+            ("2026-09-16".to_owned(), "09:00:00".to_owned())
+        );
+        assert_eq!(
+            super::clock_text(-1),
+            ("1969-12-31".to_owned(), "23:59:59".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_day_flips_exactly_at_midnight_utc() {
+        // 2026-09-16T00:00:00Z, and the micro before it.
+        assert_eq!(
+            super::clock_text(1_789_516_800_000_000),
+            ("2026-09-16".to_owned(), "00:00:00".to_owned())
+        );
+        assert_eq!(
+            super::clock_text(1_789_516_799_999_999),
+            ("2026-09-15".to_owned(), "23:59:59".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_divider_prints_once_per_day_unless_the_floor_names_it() {
+        let day_one = row(1_789_549_200_000_000, "a", 0, "morning");
+        let day_two = row(1_789_636_800_000_000, "a", 1, "next day");
+        let text = rendered(vec![day_one.clone(), day_two], false, None);
+        assert_eq!(text.matches("# 2026-09-16 UTC\n").count(), 1, "{text}");
+        assert_eq!(text.matches("# 2026-09-17 UTC\n").count(), 1, "{text}");
+        let floored = super::Observation {
+            rows: vec![day_one],
+            day_floor: Some("2026-09-16".to_owned()),
+            ..super::Observation::default()
+        };
+        let text = super::render_batch(&floored, false, None);
+        assert!(!text.contains("# 2026-09-16"), "{text}");
+        assert!(text.contains("## 09:00:00 s:seat"), "{text}");
+    }
+
+    #[test]
+    fn a_five_line_body_clipped_to_two_names_the_three_dropped() {
+        let body = "one\ntwo\nthree\nfour\nfive";
+        let text = rendered(vec![row(1, "a", 0, body)], false, Some(2));
+        assert!(text.contains("  one\n  two\n  … +3 lines\n"), "{text}");
+        let json = rendered(vec![row(1, "a", 0, body)], true, Some(1));
+        assert!(
+            json.contains("\"body\":\"one\\ntwo\\nthree\\nfour\\nfive\""),
+            "{json}"
+        );
+    }
+
+    const PRIOR_OLD: &str = "0199c0de-1111-4890-abcd-ef0123456789";
+    const PRIOR_NEW: &str = "0199c0de-2222-4890-abcd-ef0123456789";
+    const CURRENT_ID: &str = "0199c0de-3333-4890-abcd-ef0123456789";
+
+    /// A seat's store: readable transcripts for the handed ids, plus the meta
+    /// carrying `current` as its id — `pending` plants no current transcript.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants its own scratch store to drive the seat read"
+    )]
+    fn prior_rig(tag: &str, current: &str, readable: &[&str]) -> (PathBuf, crate::meta::Meta) {
+        let root =
+            std::env::temp_dir().join(format!("ae-board-prior-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = root.join("claude");
+        let dir = store.join("projects").join("work");
+        std::fs::create_dir_all(&dir).expect("project dir");
+        for &id in readable {
+            std::fs::write(
+                dir.join(format!("{id}.jsonl")),
+                format!(
+                    "{{\"type\":\"user\",\"timestamp\":\"2026-09-16T09:00:00Z\",\"message\":{{\"role\":\"user\",\"content\":\"words {id}\"}}}}\n"
+                ),
+            )
+            .expect("transcript");
+        }
+        let meta = crate::meta::Meta::parse(&format!(
+            "schema=2\nseat.main=lead\nharness_session.main={current}\nagent_bin.main=claude\nconfig_home.main={}\n",
+            store.display()
+        ));
+        (root, meta)
+    }
+
+    fn read_seat(
+        root: &std::path::Path,
+        meta: &crate::meta::Meta,
+        priors: &[&str],
+    ) -> (Vec<Row>, Vec<Coverage>, Vec<super::SeatSeed>) {
+        let entry = meta.roster().first().expect("one seat");
+        let session = crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: root.join("sessions").join("s"),
+        };
+        let mut rows = Vec::new();
+        let mut coverage = Vec::new();
+        let mut seeds = Vec::new();
+        let hidden = super::observe_seat(
+            &session,
+            entry,
+            Some(root),
+            super::Replies::Off,
+            &super::Scope::default(),
+            priors,
+            &mut rows,
+            &mut coverage,
+            &mut seeds,
+        );
+        assert!(hidden.is_empty(), "the fixtures inject no ae turn");
+        (rows, coverage, seeds)
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: removes its own scratch dir"
+    )]
+    fn predecessors_read_nearest_first_with_prefixed_coverage_and_no_seeds() {
+        let (root, meta) = prior_rig("order", CURRENT_ID, &[CURRENT_ID, PRIOR_NEW]);
+        let (rows, coverage, seeds) = read_seat(&root, &meta, &[PRIOR_OLD, PRIOR_NEW]);
+        let mut pairs: Vec<(u8, &str)> = rows
+            .iter()
+            .map(|row| (row.generation, row.body.as_str()))
+            .collect();
+        pairs.sort_unstable();
+        assert_eq!(
+            pairs,
+            [
+                (0, &*format!("words {CURRENT_ID}")),
+                (1, &*format!("words {PRIOR_NEW}")),
+            ]
+        );
+        let reasons: Vec<&str> = coverage.iter().map(|item| item.reason.as_str()).collect();
+        assert_eq!(reasons, ["predecessor 2: transcript not found"]);
+        assert_eq!(coverage[0].actor, "s:lead", "actor unchanged");
+        assert_eq!(seeds.len(), 1, "the current read alone seeds");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: removes its own scratch dir"
+    )]
+    fn a_pending_current_covers_while_its_predecessor_reads() {
+        let (root, meta) = prior_rig("pending", "pending", &[PRIOR_NEW]);
+        let (rows, coverage, seeds) = read_seat(&root, &meta, &[PRIOR_NEW]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].generation, 1);
+        let reasons: Vec<&str> = coverage.iter().map(|item| item.reason.as_str()).collect();
+        assert_eq!(reasons, ["invalid or missing conversation id"]);
+        assert!(seeds.is_empty(), "a covered read seeds nothing");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The staged halves read exactly the whole: the current conversation and
+    /// the predecessors together give `All`'s rows and the seat's coverage in
+    /// its order, and only the current read seeds.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants and removes its own scratch session"
+    )]
+    fn the_current_and_earlier_generations_read_exactly_the_whole() {
+        use super::Generations::{All, Current, Earlier};
+        let (root, _) = prior_rig("split", CURRENT_ID, &[CURRENT_ID, PRIOR_NEW]);
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let meta = format!(
+            "schema=2\nseat.main=lead\nharness_session.main={CURRENT_ID}\nagent_bin.main=claude\nconfig_home.main={}\nharness_session_prior.main={PRIOR_OLD},{PRIOR_NEW}\n",
+            root.join("claude").display()
+        );
+        std::fs::write(dir.join("meta"), meta).expect("meta");
+        let sessions = [crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: dir,
+        }];
+        let inputs = super::Inputs {
+            home: Some(&root),
+            sessions: &sessions,
+            replies: super::Replies::Off,
+        };
+        let read = |generations| {
+            super::observe_generations(
+                &inputs,
+                None,
+                None,
+                &|_| true,
+                generations,
+                &super::Scope::default(),
+            )
+        };
+        let (all, current, earlier) = (read(All), read(Current), read(Earlier));
+        let generations = |rows: &[Row]| rows.iter().map(|row| row.generation).collect::<Vec<_>>();
+        assert_eq!(generations(&current.rows), [0]);
+        assert_eq!(generations(&earlier.rows), [1]);
+        let rows = [current.rows.clone(), earlier.rows.clone()].concat();
+        assert_eq!(collect(rows), all.rows);
+        let reasons = |coverage: &[Coverage]| {
+            coverage
+                .iter()
+                .map(|item| item.reason.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(reasons(&current.coverage), Vec::<String>::new());
+        assert_eq!(
+            reasons(&earlier.coverage),
+            ["predecessor 2: transcript not found"]
+        );
+        assert_eq!([current.coverage, earlier.coverage].concat(), all.coverage);
+        assert_eq!(current.seeds, all.seeds);
+        assert_eq!(current.seeds.len(), 1, "the current read seeds");
+        assert!(earlier.seeds.is_empty(), "a predecessor never seeds");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants and removes its own scratch session"
+    )]
+    fn an_opencode_seat_is_read_once_and_every_follow_poll_says_so_once() {
+        let root = std::env::temp_dir().join(format!("ae-board-oc-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        std::fs::write(
+            dir.join("meta"),
+            "schema=2\nseat.main=oc\nharness_session.main=ses_00000000000000000000000000\nagent_bin.main=opencode\n",
+        )
+        .expect("meta");
+        let sessions = vec![crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: dir,
+        }];
+        let inputs = crate::board::Inputs {
+            home: Some(root.as_path()),
+            sessions: &sessions,
+            replies: crate::board::Replies::Off,
+        };
+        let mut follow = super::follow::Follow::seeded(&[], &[], None);
+        let batch = super::follow_poll(&inputs, &mut follow);
+        assert!(batch.rows.is_empty(), "no export runs per tick");
+        assert_eq!(batch.coverage.len(), 1);
+        assert_eq!(
+            batch.coverage[0].reason,
+            "opencode: read once, not followed"
+        );
+        let batch = super::follow_poll(&inputs, &mut follow);
+        assert!(
+            batch.coverage.is_empty(),
+            "the steady reason prints on change only"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants and removes its own scratch session"
+    )]
+    fn an_agy_seat_streams_history_while_its_replies_read_once() {
+        let id = "0199c0de-ffff-4890-abcd-ef0123456789";
+        let root = std::env::temp_dir().join(format!("ae-board-agy-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        std::fs::write(
+            dir.join("meta"),
+            format!("schema=2\nseat.main=lead\nharness_session.main={id}\nagent_bin.main=agy\n"),
+        )
+        .expect("meta");
+        let store = root.join(".gemini/antigravity-cli");
+        std::fs::create_dir_all(&store).expect("agy dir");
+        std::fs::write(
+            store.join("history.jsonl"),
+            format!(
+                "{{\"display\":\"synthetic human words\",\"timestamp\":1789549200500,\"conversationId\":\"{id}\",\"workspace\":\"/work\"}}\n"
+            ),
+        )
+        .expect("history");
+        let logs = store.join("brain").join(id).join(".system_generated/logs");
+        std::fs::create_dir_all(&logs).expect("brain dir");
+        std::fs::write(
+            logs.join("transcript_full.jsonl"),
+            "{\"step_index\":1,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"created_at\":\"2026-09-16T09:00:00Z\",\"content\":\"synthetic reply\"}\n",
+        )
+        .expect("transcript");
+        let sessions = vec![crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: dir,
+        }];
+        let inputs = crate::board::Inputs {
+            home: Some(root.as_path()),
+            sessions: &sessions,
+            replies: crate::board::Replies::All,
+        };
+        let mut follow = super::follow::Follow::seeded(&[], &[], None);
+        let batch = super::follow_poll(&inputs, &mut follow);
+        assert_eq!(batch.rows.len(), 1, "the human row streams");
+        assert_eq!(batch.rows[0].body, "synthetic human words");
+        assert_eq!(batch.coverage.len(), 1, "the once-read line prints");
+        assert_eq!(
+            batch.coverage[0].reason,
+            "agy: assistant replies read once, not followed"
+        );
+        let batch = super::follow_poll(&inputs, &mut follow);
+        assert!(batch.rows.is_empty() && batch.coverage.is_empty(), "steady");
+        let off = crate::board::Inputs {
+            home: Some(root.as_path()),
+            sessions: &sessions,
+            replies: crate::board::Replies::Off,
+        };
+        let mut follow = super::follow::Follow::seeded(&[], &[], None);
+        let batch = super::follow_poll(&off, &mut follow);
+        assert_eq!(batch.rows.len(), 1);
+        assert!(batch.coverage.is_empty(), "flag off: no once-read line");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn agy_read_once_pins_every_arm_and_probes_only_agy_assistant_follows() {
+        assert!(super::agy_read_once(true, true, || true));
+        assert!(!super::agy_read_once(false, true, || true));
+        assert!(!super::agy_read_once(true, false, || true));
+        assert!(!super::agy_read_once(true, true, || false));
+        for (assistant, is_agy) in [(false, false), (false, true), (true, false)] {
+            let mut probed = false;
+            assert!(!super::agy_read_once(assistant, is_agy, || {
+                probed = true;
+                true
+            }));
+            assert!(
+                !probed,
+                "assistant={assistant} is_agy={is_agy} must not probe"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants and removes its own scratch session"
+    )]
+    fn an_agy_follow_without_a_transcript_store_says_no_records_not_read_once() {
+        let id = "0199c0de-ffff-4890-abcd-ef0123456789";
+        let root = std::env::temp_dir().join(format!(
+            "ae-board-agy-follow-nostore-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        std::fs::write(
+            dir.join("meta"),
+            format!("schema=2\nseat.main=lead\nharness_session.main={id}\nagent_bin.main=agy\n"),
+        )
+        .expect("meta");
+        let store = root.join(".gemini/antigravity-cli");
+        std::fs::create_dir_all(&store).expect("agy dir");
+        std::fs::write(
+            store.join("history.jsonl"),
+            format!(
+                "{{\"display\":\"synthetic human words\",\"timestamp\":1789549200500,\"conversationId\":\"{id}\",\"workspace\":\"/work\"}}\n"
+            ),
+        )
+        .expect("history");
+        // No brain/<id>/ store: the replies were never read, so the poll
+        // must say so rather than claim a once-read.
+        let sessions = vec![crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: dir,
+        }];
+        let inputs = crate::board::Inputs {
+            home: Some(root.as_path()),
+            sessions: &sessions,
+            replies: crate::board::Replies::All,
+        };
+        let mut follow = super::follow::Follow::seeded(&[], &[], None);
+        let batch = super::follow_poll(&inputs, &mut follow);
+        assert_eq!(batch.rows.len(), 1, "the human row streams");
+        assert_eq!(
+            batch
+                .coverage
+                .iter()
+                .map(|item| item.reason.as_str())
+                .collect::<Vec<_>>(),
+            ["agy: no assistant records (history carries prompts only)"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_prior_header_composes_with_assistant_and_json_names_every_generation() {
+        let mut prior = row(1_789_549_201_000_000, "a", 0, "old words");
+        prior.generation = 1;
+        prior.role = Role::Assistant;
+        let text = rendered(vec![row(1, "b", 0, "new words"), prior], false, None);
+        assert!(
+            text.contains("## 09:00:01 s:seat · prior 1 · assistant\n  old words\n"),
+            "{text}"
+        );
+        assert!(!text.contains("· prior 0"), "{text}");
+        let json = rendered(
+            vec![row(1, "b", 0, "new words"), {
+                let mut prior = row(1_789_549_201_000_000, "a", 0, "old words");
+                prior.generation = 1;
+                prior
+            }],
+            true,
+            None,
+        );
+        assert!(json.contains("\"generation\":0"), "{json}");
+        assert!(json.contains("\"generation\":1"), "{json}");
+    }
+
+    #[test]
+    fn lines_parses_anywhere_and_refuses_bad_values_and_combinations() {
+        let parsed = super::parse(&words(&["day", "--lines", "3"])).expect("clipped tail parses");
+        assert_eq!(parsed.lines, Some(3));
+        for tail in [
+            words(&["--lines", "0"]),
+            words(&["--lines", "x"]),
+            words(&["--lines"]),
+        ] {
+            assert!(super::parse(&tail).is_err(), "{tail:?}");
+        }
+        for tail in [
+            words(&["--json", "--lines", "2"]),
+            words(&["--lines", "2", "--json"]),
+        ] {
+            let usage = super::parse(&tail).expect_err("must refuse").render();
+            assert!(usage.contains("--lines is text-only"), "{usage}");
+        }
+        assert!(super::parse(&words(&["--lines", "--json"])).is_err());
+    }
+
+    fn turn(role: Role, body: &str) -> Row {
+        let mut turn = row(0, "f", 0, body);
+        turn.role = role;
+        turn
+    }
+
+    /// What `answered` kept (bodies, in order) and the state it ended on.
+    fn answer(turns: &[(Role, &str)], passive: Option<&str>, open: bool) -> (Vec<String>, bool) {
+        let rows = turns.iter().map(|(role, body)| turn(*role, body)).collect();
+        let (kept, end) = super::answered(rows, passive, open);
+        (kept.into_iter().map(|row| row.body).collect(), end)
+    }
+
+    #[test]
+    fn a_reply_survives_only_while_a_kept_human_row_is_the_last_turn() {
+        use Role::{Assistant as A, Boundary as B, Human as H};
+        let none: Vec<String> = Vec::new();
+        assert_eq!(answer(&[(A, "x")], None, false), (none.clone(), false));
+        assert_eq!(answer(&[], None, false), (none.clone(), false));
+        assert_eq!(answer(&[], None, true), (none, true), "the state carries");
+        assert_eq!(
+            answer(&[(A, "x")], None, true),
+            (vec!["x".to_owned()], true)
+        );
+        assert_eq!(
+            answer(&[(H, "h"), (A, "x"), (B, ""), (A, "y")], None, false),
+            (vec!["h".to_owned(), "x".to_owned()], false)
+        );
+        assert_eq!(
+            answer(&[(B, ""), (H, "h"), (A, "x"), (A, "y")], None, true),
+            (vec!["h".to_owned(), "x".to_owned(), "y".to_owned()], true)
+        );
+        assert_eq!(
+            answer(&[(A, "x"), (B, ""), (A, "y")], None, true),
+            (vec!["x".to_owned()], false),
+            "a carried window closes on the first boundary"
+        );
+    }
+
+    #[test]
+    fn a_human_row_the_board_hides_closes_the_window_and_stays_for_the_count() {
+        use Role::{Assistant as A, Human as H};
+        let marked = format!("{}\nping", crate::provenance::peer("lead"));
+        let marked = marked.as_str();
+        let (kept, end) = answer(
+            &[(H, "typed"), (A, "one"), (H, marked), (A, "two")],
+            None,
+            false,
+        );
+        assert_eq!(
+            kept,
+            ["typed", "one", marked],
+            "the hidden row goes on to be counted"
+        );
+        assert!(!end);
+        let launch = "launch words";
+        let (kept, end) = answer(&[(H, launch), (A, "to the launch")], Some(launch), false);
+        assert_eq!(kept, [launch], "a passive launch turn is not a human line");
+        assert!(!end);
+        let (kept, end) = answer(&[(H, "launch words too"), (A, "x")], Some(launch), false);
+        assert_eq!(kept, ["launch words too", "x"]);
+        assert!(end);
+    }
+
+    #[test]
+    fn a_boundary_is_stored_once_per_run_and_never_after_a_stored_boundary() {
+        let mut rows = vec![row(1, "f", 0, "h")];
+        for offset in [10, 20, 30] {
+            super::close_window(&mut rows, "s:seat", "f", ToolKind::Claude, offset);
+        }
+        assert_eq!(rows.len(), 2, "one human row and one boundary");
+        assert_eq!(rows[1].role, Role::Boundary);
+        assert_eq!(rows[1].offset, 10, "the first one stands");
+        rows.push(row(2, "f", 40, "h2"));
+        super::close_window(&mut rows, "s:seat", "f", ToolKind::Claude, 50);
+        assert_eq!(rows.len(), 4);
+    }
+
+    const WINDOW_ID: &str = "0199c0de-1234-4890-abcd-ef0123456789";
+    const WINDOW_PRIOR: &str = "0199c0de-1234-4890-abcd-ef0123456790";
+
+    fn claude_line(role: &str, body: &str) -> String {
+        let mut escaped = String::new();
+        crate::json::escape_into(body, &mut escaped);
+        if role == "user" {
+            format!(
+                r#"{{"type":"user","timestamp":"2026-09-16T09:00:00.500Z","message":{{"role":"user","content":"{escaped}"}}}}"#
+            )
+        } else {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-09-16T09:00:00.500Z","message":{{"role":"assistant","content":[{{"type":"text","text":"{escaped}"}}]}}}}"#
+            )
+        }
+    }
+
+    /// A one-seat session `s` whose current Claude conversation holds
+    /// `current` and whose recorded predecessor holds `prior`.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: plants its own scratch session"
+    )]
+    fn windowed_rig(
+        tag: &str,
+        current: &[String],
+        prior: &[String],
+    ) -> (PathBuf, Vec<crate::usage::SessionInput>) {
+        let root =
+            std::env::temp_dir().join(format!("ae-board-window-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("s");
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let store = root.join("claude");
+        std::fs::write(
+            dir.join("meta"),
+            format!(
+                "schema=2\nseat.main=lead\nagent_bin.main=claude\nharness_session.main={WINDOW_ID}\nharness_session_prior.main=claude:{WINDOW_PRIOR}\nconfig_home.main={}\n",
+                store.display()
+            ),
+        )
+        .expect("meta");
+        let project = store.join("projects").join("work");
+        std::fs::create_dir_all(&project).expect("project dir");
+        for (id, lines) in [(WINDOW_ID, current), (WINDOW_PRIOR, prior)] {
+            std::fs::write(project.join(format!("{id}.jsonl")), lines.join("\n") + "\n")
+                .expect("transcript");
+        }
+        let sessions = vec![crate::usage::SessionInput {
+            name: "s".to_owned(),
+            path: dir,
+        }];
+        (root, sessions)
+    }
+
+    fn windowed_bodies(observation: &super::Observation) -> Vec<(u8, Role, &str)> {
+        observation
+            .rows
+            .iter()
+            .map(|row| (row.generation, row.role, row.body.as_str()))
+            .collect()
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test: removes its own scratch session"
+    )]
+    fn a_seat_read_for_the_human_keeps_only_replies_to_human_lines_in_every_generation() {
+        let wrapped = include_str!("../../tests/fixtures/board/claude-wrapped-ae-turn.txt");
+        let current = [
+            claude_line("user", "typed"),
+            claude_line("assistant", "answer"),
+            claude_line(
+                "user",
+                &format!("{}\nping", crate::provenance::peer("worker")),
+            ),
+            claude_line("assistant", "to the worker"),
+            claude_line("user", wrapped),
+            claude_line("assistant", "to the wrapped paste"),
+            claude_line("user", "typed again"),
+            claude_line("assistant", "answer again"),
+        ];
+        let prior = [
+            claude_line("assistant", "before any turn"),
+            claude_line("user", "old words"),
+            claude_line("assistant", "old answer"),
+        ];
+        let (root, sessions) = windowed_rig("seat", &current, &prior);
+        let inputs = |replies| super::Inputs {
+            home: Some(root.as_path()),
+            sessions: &sessions,
+            replies,
+        };
+        let seen = super::observe(&inputs(super::Replies::ToHuman), None);
+        assert!(seen.coverage.is_empty(), "{:?}", seen.coverage);
+        assert_eq!(
+            windowed_bodies(&seen),
+            [
+                (0, Role::Human, "typed"),
+                (0, Role::Assistant, "answer"),
+                (0, Role::Human, "typed again"),
+                (0, Role::Assistant, "answer again"),
+                (1, Role::Human, "old words"),
+                (1, Role::Assistant, "old answer"),
+            ]
+        );
+        assert!(seen.rows.iter().all(|row| row.role != Role::Boundary));
+        assert_eq!(
+            seen.hidden.len(),
+            1,
+            "the wrapped paste still counts as hidden"
+        );
+        let all = super::observe(&inputs(super::Replies::All), None);
+        let off = super::observe(&inputs(super::Replies::Off), None);
+        assert_eq!(
+            all.rows
+                .iter()
+                .filter(|row| row.role == Role::Assistant)
+                .count(),
+            6
+        );
+        assert!(off.rows.iter().all(|row| row.role == Role::Human));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

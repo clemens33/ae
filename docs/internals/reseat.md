@@ -247,7 +247,7 @@ Then, under `.lifecycle.<session>.lock`:
 9. `prove_dead`, which refuses a pane running a KNOWN harness other than the
    recorded one BY NAME (`procs::observed_harness`, diagnosis only; `ae doctor`
    names the same seat) rather than as busy;
-9a. the CARRY question (`src/carry.rs`) — see below. Asked here, past the dead
+9a. the CARRY question (`src/l3_services/carry.rs`) — see below. Asked here, past the dead
     proof and before anything is removed, so every refusal costs only the
     reading. A move that does not carry leaves steps 10-17 exactly as they
     were. A copy failure here is only what appeared after 7a — the target
@@ -472,9 +472,9 @@ refusal and `--stop-unknown` is the caller saying they meant it — there is no
 It does not recreate a pane, and it does not touch anything in the session but
 the seat named on the argv.
 
-## Carrying the conversation between two accounts (`src/carry.rs`)
+## Carrying the conversation between two accounts (`src/l3_services/carry.rs`)
 
-`src/carry.rs` owns this and states its own rules; what belongs here is the
+`src/l3_services/carry.rs` owns this and states its own rules; what belongs here is the
 evidence it rests on, the ladder, and what is deliberately left open.
 
 MEASURED 2026-09-19, claude 2.1.278: a transcript copied into another config
@@ -595,7 +595,7 @@ one, cuts it at 200 and appends `-` plus a hash of the whole path (read in
 2.1.299's bundle, never measured against a real long-path folder).
 `project_key` does not implement that: a work dir whose key passes 200
 characters is not found, so its seat starts fresh and its carry refuses.
-`tests/it/doors.rs` guards that no product file but `src/carry.rs` spells the
+`tests/it/doors.rs` guards that no product file but `src/l3_services/carry.rs` spells the
 rule.
 
 The human's rulings, 2026-09-19: typing the move with the other account's

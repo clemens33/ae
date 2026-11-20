@@ -718,7 +718,7 @@ fn no_decision_path_reads_quota_history() {
             assert!(!text.contains(word), "{file} reaches {word}");
         }
     }
-    let quota = read("src/quota.rs");
+    let quota = read("src/l3_services/quota.rs");
     for header in [
         "pub(crate) fn observe(",
         "pub(crate) fn observe_full(",

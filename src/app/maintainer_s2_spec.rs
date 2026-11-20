@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-#[path = "../stats_store/s2_cases.rs"]
+#[path = "../l3_services/stats_store/s2_cases.rs"]
 #[allow(
     clippy::duplicate_mod,
     reason = "independent unit and thread specs share the frozen fixture and fold oracle"

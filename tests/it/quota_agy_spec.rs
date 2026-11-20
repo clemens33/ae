@@ -308,7 +308,7 @@ fn oversized_stdout_is_refused_without_echoing_vendor_bytes() {
 /// is reversed for Settings display only; no executor or classifier path is added.
 #[test]
 fn local_observers_never_reference_the_on_demand_leg_or_run_wrapper() {
-    let source = include_str!("../../src/quota.rs");
+    let source = include_str!("../../src/l3_services/quota.rs");
     let slice = |start: &str, end: &str| {
         source
             .split_once(start)
