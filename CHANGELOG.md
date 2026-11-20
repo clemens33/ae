@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.98] - 2026-11-20
+- Layout-independent L5 fixtures: app_family_spec builds its control trees from PARENT, and the closed-ask excerpt test cuts a path the move does not rename
+- The terminal UI layer (app, clipboard, console, doctor, events_tail, jump, monitor, next, overview, panes, profile_view, reader, session_menu, settings_menu) moves into src/l5_ui; src/lib.rs re-exports each by name and now declares only the seven layers, the pub(in ...) visibility paths name the layer, and the sources, tests, docs, AGENTS.md, the clippy.toml termios reasons and the Cargo.toml comment that name their paths follow
+
 ## [v2026.11.97] - 2026-11-20
 - The orchestration layer (autoreseat, autotrust, effort, interrupt, lifecycle, migrate, orchestrator, rename, request_verb, reseat, restore, seat_relaunch, seatcompact, seatcompact_run, seatpack, session_launch, session_notice, spawn, teardown, telegram_lifecycle, watchdog_daemon, watchdog_glue, watchdog_lifecycle, worktrees) moves into src/l4_orchestration; src/lib.rs re-exports each by name, and the sources, tests, docs, the .config/nextest.toml group filters and the seatinc re-exec CHILD that name their paths follow
 
