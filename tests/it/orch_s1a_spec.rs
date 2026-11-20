@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 use super::o2guard_p2_spec::{Seat, ledger, uuid_of};
 use super::relay_chat_spec::{Out, Rig, events, receipt, rows, wait_for, words};
 
+mod orchcfg_spec;
+
 const OWNER: &str = "I approve this exact fixture action for this session.\n\nαβ  final 'line'";
 const TASK: &str = "Take the fixture action.";
 const CONTEXT: &str = "The fixture passed.\nUse the local record.";
@@ -633,11 +635,7 @@ fn compatibility_gate_refuses_missing_and_older_stamp_and_admits_current() {
             &[target, "--owner-input", input_id, "--task", TASK],
             &[target, "--interim-ruling", "--task", TASK],
         ] {
-            refuse(
-                &r,
-                argv,
-                "relaunch the target seat with a fresh conversation",
-            );
+            refuse(&r, argv, "carries no current context stamp");
         }
     }
     fs::write(&path, &base).expect("restore unstamped meta");
@@ -646,7 +644,7 @@ fn compatibility_gate_refuses_missing_and_older_stamp_and_admits_current() {
     refuse(
         &r,
         &[&peer, "--quote", "owner words", "--task", TASK],
-        "relaunch the target seat with a fresh conversation",
+        "carries no current context stamp",
     );
     let _ = deliver(&r, &args[1..]);
 }
@@ -1828,7 +1826,7 @@ fn upgrade_reseeds_only_a_byte_known_old_prompt_and_preserves_every_other_byte()
 }
 
 #[test]
-fn stale_dispatcher_prompt_names_the_copy_step_before_claiming() {
+fn stale_dispatcher_prompt_names_the_repair_before_claiming() {
     let old = include_str!("../fixtures/orchestrator/s1a-previous.config");
     let edited = format!("{old}# owner edit to the prompt stanza\n");
     for (tag, overlay) in [("s1astale", old), ("s1astaleedit", edited.as_str())] {
@@ -1836,7 +1834,7 @@ fn stale_dispatcher_prompt_names_the_copy_step_before_claiming() {
         stamp(&r, "1");
         fs::write(r.world.root.join("orchestrator.config"), overlay).expect("old overlay");
         let argv = [r.owner.home.as_str(), "--quote", "words", "--task", TASK];
-        refuse(&r, &argv, "copy");
+        refuse(&r, &argv, "predates the bound owner words");
         assert!(words(&r.run(&argv)).contains("orchestrator.config"));
     }
 }

@@ -81,6 +81,8 @@ use std::path::{Path, PathBuf};
 use crate::inventory::ServerId;
 use crate::meta::{Selector, ServerSelector};
 
+mod seat_config;
+
 /// The row that carries the shape, in every session meta.
 pub const KEY: &str = "meta_version";
 
@@ -585,8 +587,8 @@ fn unreadable_refusal(name: &str, why: &std::io::Error) -> String {
 /// after it is attempted.
 pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, String> {
     let planned = census_default(root)?;
-    let (mut moved, mut stops) = (Vec::new(), false);
-    onto_scoped(
+    let (mut moved, mut stops, mut stale) = (Vec::new(), false, Vec::new());
+    let mut notes = onto_scoped(
         root,
         core,
         version,
@@ -594,7 +596,10 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
         planned,
         &mut moved,
         &mut stops,
-    )
+        &mut stale,
+    )?;
+    notes.extend(seat_config::context_notice(&stale));
+    Ok(notes)
 }
 
 /// [`onto`] over the default root of a [`FleetPlan`]: its sessions and their
@@ -603,7 +608,12 @@ pub fn onto(root: &Path, core: &Path, version: &str) -> Result<Vec<String>, Stri
 /// # Errors
 ///
 /// As [`onto`].
-fn onto_planned(plan: &mut FleetPlan, core: &Path, version: &str) -> Result<Vec<String>, String> {
+fn onto_planned(
+    plan: &mut FleetPlan,
+    core: &Path,
+    version: &str,
+    stale: &mut Vec<seat_config::StaleSeats>,
+) -> Result<Vec<String>, String> {
     let FleetPlan {
         default: (root, planned),
         moved,
@@ -618,6 +628,7 @@ fn onto_planned(plan: &mut FleetPlan, core: &Path, version: &str) -> Result<Vec<
         std::mem::take(planned),
         moved,
         &mut stops,
+        stale,
     )
 }
 
@@ -647,8 +658,6 @@ struct Planned {
     /// Whether it records the orchestrator role (`meta_agent`, byte-exact or
     /// damaged) as planned: a session of the protected cohort.
     protected: bool,
-    /// Whether it is the seat of its root, which the apply re-seeds.
-    seat: bool,
     judged: Judged,
 }
 
@@ -869,29 +878,26 @@ fn judge(
     if let Some(why) = admission(&dir, name, &place_of(scope, root), read, renaming) {
         return Err(Stop::Fatal(why));
     }
-    let planned = |digest, protected, seat, judged| Planned {
+    let planned = |digest, protected, judged| Planned {
         name: name.to_owned(),
         digest,
         protected,
-        seat,
         judged,
     };
     let Ok(bytes) = read else {
-        return Ok(planned(None, false, false, Judged::NoMeta));
+        return Ok(planned(None, false, Judged::NoMeta));
     };
     let digest = Some(crate::install::sha256_hex(bytes));
     let protected = crate::meta::meta_agent_role(bytes) != crate::meta::MetaAgentRole::Absent;
-    let seat = crate::meta::is_seat(bytes, root);
     if renaming {
-        return Ok(planned(digest, protected, seat, Judged::Renaming));
+        return Ok(planned(digest, protected, Judged::Renaming));
     }
     let text = String::from_utf8_lossy(bytes);
     match migrate(&text) {
-        Ok(_) => Ok(planned(digest, protected, seat, Judged::Move)),
+        Ok(_) => Ok(planned(digest, protected, Judged::Move)),
         Err(refusal) if scope.skips() && !unplaceable_is_running(&text, name) => Ok(planned(
             digest,
             protected,
-            seat,
             Judged::Skip(skipped_refusal(name, &refusal)),
         )),
         Err(refusal) if scope.skips() => Err(Stop::Fatal(refusal.line(name))),
@@ -1020,6 +1026,10 @@ impl Scope {
 /// cohort on the old core: one that failed itself, or one the abort kept the
 /// sweep from reaching. Then the whole publish stops, before the command
 /// moves, and names every session that already moved.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the sweep's three accumulators (moved sessions, the stop flag, the stale seats) travel with its root and verdicts"
+)]
 fn onto_scoped(
     root: &Path,
     core: &Path,
@@ -1028,6 +1038,7 @@ fn onto_scoped(
     planned: Vec<Planned>,
     moved: &mut Vec<String>,
     stops: &mut bool,
+    stale: &mut Vec<seat_config::StaleSeats>,
 ) -> Result<Vec<String>, String> {
     let protected: Vec<String> = planned
         .iter()
@@ -1035,7 +1046,9 @@ fn onto_scoped(
         .map(|session| session.name.clone())
         .collect();
     let mut at = String::new();
-    let result = sweep(root, core, version, scope, planned, moved, stops, &mut at);
+    let result = sweep(
+        root, core, version, scope, planned, moved, stops, stale, &mut at,
+    );
     let Err(why) = result else {
         return result;
     };
@@ -1072,6 +1085,7 @@ fn sweep(
     planned: Vec<Planned>,
     moved: &mut Vec<String>,
     stops: &mut bool,
+    stale: &mut Vec<seat_config::StaleSeats>,
     at: &mut String,
 ) -> Result<Vec<String>, String> {
     // NOTHING HERE IS A SECOND CENSUS. The census ([`plan_fleet`]) read every
@@ -1269,10 +1283,14 @@ fn sweep(
                 already(scope, &repointed, version)
             )
         })?;
-        if now.seat {
-            notes.extend(reseed_seat_prompt(root));
-        }
         notes.extend(restart_daemons(root, &dir, &name, core, &mut bridges));
+        // The running lead seats with no current relay context stamp: the caller lists
+        // those of every root in one line.
+        stale.extend(seat_config::stale_context(
+            &dir,
+            &name,
+            crate::instance::instance_of(root),
+        ));
     }
     if stamped > 0 {
         notes.insert(
@@ -1294,49 +1312,6 @@ fn sweep(
 
 /// The most a seat config may weigh for the re-seed to read it.
 const SEAT_CONFIG_CAP: u64 = 1024 * 1024;
-
-/// Bring the seat file of `root` to the current prompt when it still carries,
-/// byte for byte, the prompt of the template ae seeded before: the stanza is
-/// replaced and every other byte of the file stays. A prompt that is current
-/// already, or that anyone has edited, is left alone, and a changed or
-/// edited-and-stale one is reported with the step that fixes it. Only a
-/// regular file is rewritten: a link (a dotfile manager's) is never replaced.
-fn reseed_seat_prompt(root: &Path) -> Option<String> {
-    use crate::store::SourceRead;
-
-    let path = root.join(crate::meta::SEAT_CONFIG_FILE);
-    let read = crate::store::read_capped(&path, SEAT_CONFIG_CAP);
-    let Ok(SourceRead::Ready(bytes)) = read else {
-        return Some(format!(
-            "left {} alone: it is not a regular file this upgrade can read; copy the current \
-             [prompt] stanza of the seat template into it and restart the seat",
-            path.display()
-        ));
-    };
-    let text = String::from_utf8(bytes).ok()?;
-    if crate::config::seat_prompt_is_current(&text) {
-        return None;
-    }
-    let Some(new) = crate::config::reseeded_seat_config(&text) else {
-        return Some(format!(
-            "left {} alone: its [prompt] is not a template ae wrote; copy the current [prompt] \
-             stanza into it, keeping your edits, and restart the seat",
-            path.display()
-        ));
-    };
-    Some(match publish_reseed(&path, text.as_bytes(), &new) {
-        Ok(()) => format!(
-            "re-seeded the [prompt] of {} (it matched the previous template byte for byte); \
-             restart the orchestrator seat to load it",
-            path.display()
-        ),
-        Err(why) => format!(
-            "could not re-seed the [prompt] of {} ({why}); copy the current stanza into it and \
-             restart the seat",
-            path.display()
-        ),
-    })
-}
 
 /// Publish the re-seeded seat config `new` over `path`, which was read as
 /// `seen`: the rename waits on a last look at the target, so an owner's edit,
@@ -1813,7 +1788,9 @@ fn strict_proof(root: &Path) -> Result<Option<Vec<String>>, String> {
 /// onto `core`, in name order. A named root in doubt is skipped untouched and
 /// one that fails part-way is reported; neither stops the publish, and both are
 /// HELD — returned beside the notes — so the version sweep removes nothing,
-/// unless the hold would strand a session of the protected cohort.
+/// unless the hold would strand a session of the protected cohort. The roots
+/// that finished are returned too, SETTLED: the commit reconciles the seat
+/// config of those alone.
 ///
 /// # Errors
 ///
@@ -1823,10 +1800,11 @@ pub(crate) fn onto_fleet(
     mut plan: FleetPlan,
     core: &Path,
     version: &str,
-) -> Result<(Vec<String>, Vec<String>), String> {
+) -> Result<(Vec<String>, FleetHold), String> {
     // The default root goes first, so its refusal stays exactly what it was
     // and nothing of a named root moves behind a refusal there.
-    let mut notes = onto_planned(&mut plan, core, version)?;
+    let mut stale: Vec<seat_config::StaleSeats> = Vec::new();
+    let mut notes = onto_planned(&mut plan, core, version, &mut stale)?;
     let FleetPlan {
         named,
         doubts,
@@ -1835,6 +1813,7 @@ pub(crate) fn onto_fleet(
     } = plan;
     let repair = format!("repair it, then run AE_VERSION={version} ae upgrade");
     let mut held = Vec::new();
+    let mut settled: Vec<PathBuf> = Vec::new();
     for (label, why) in doubts {
         notes.push(format!("skipped {label}: {why} — {repair}"));
         held.push(label);
@@ -1848,7 +1827,10 @@ pub(crate) fn onto_fleet(
                 continue;
             }
             // No sessions directory: nothing to move and nothing pinned.
-            NamedRoot::Ready(planned) if planned.is_empty() => continue,
+            NamedRoot::Ready(planned) if planned.is_empty() => {
+                settled.push(root);
+                continue;
+            }
             NamedRoot::Ready(planned) => planned,
         };
         let mut stops = false;
@@ -1860,8 +1842,12 @@ pub(crate) fn onto_fleet(
             planned,
             &mut moved,
             &mut stops,
+            &mut stale,
         ) {
-            Ok(done) => notes.extend(done.into_iter().map(|note| format!("{label}: {note}"))),
+            Ok(done) => {
+                notes.extend(done.into_iter().map(|note| format!("{label}: {note}")));
+                settled.push(root);
+            }
             // A protected session, or a meta that stopped being readable, found
             // at apply stops the publish before the command is relinked,
             // exactly as it would have at the census. Any other failure holds
@@ -1873,7 +1859,21 @@ pub(crate) fn onto_fleet(
             }
         }
     }
-    Ok((notes, held))
+    notes.extend(seat_config::context_notice(&stale));
+    Ok((notes, FleetHold { held, settled }))
+}
+
+/// What the fleet sweep tells the commit that follows it.
+#[derive(Debug, Default)]
+pub(crate) struct FleetHold {
+    /// The named roots the publish skipped or that failed part-way, and the
+    /// blanket hold of a container that could not be read: the version sweep
+    /// removes nothing while any is unrepaired.
+    held: Vec<String>,
+    /// The named roots that finished the planned sweep, or had no sessions to
+    /// sweep: the only ones whose seat config the commit reconciles. A root the
+    /// plan never admitted is not here, even when it is readable by then.
+    settled: Vec<PathBuf>,
 }
 
 // ─── the version-directory sweep ─────────────────────────────────────────
@@ -1905,18 +1905,49 @@ pub(crate) fn onto_fleet(
 /// nothing. With no `<root>/instances` the sweep is the default root's alone.
 #[must_use]
 pub fn prune_versions(root: &Path, link: &Path, published: &str) -> Vec<String> {
-    prune_fleet(root, link, published, &[])
+    sweep_versions(root, link, published, &[])
 }
 
-/// [`prune_versions`], told which named roots the publish itself HELD — skipped
-/// or failed part-way — so it removes nothing while any of them is unrepaired.
+/// What a publish does once it is committed: reconcile every root's seat
+/// config, then [`sweep_versions`]. Nothing here can fail the publish, and
+/// nothing runs for a publish that rolled back, so a changed overlay is always
+/// reported with the notes that name it and its backup.
 #[must_use]
 pub(crate) fn prune_fleet(
     root: &Path,
     link: &Path,
     published: &str,
-    held: &[String],
+    hold: &FleetHold,
 ) -> Vec<String> {
+    let mut notes = reconcile_fleet(root, published, &hold.settled);
+    notes.extend(sweep_versions(root, link, published, &hold.held));
+    notes
+}
+
+/// The seat config of the default root and of the `settled` named roots,
+/// reconciled for `version`. The named roots are the ones the publish moved and
+/// no others, so a root held or never admitted stays untouched even if it is
+/// readable now; one that no longer proves its chain is skipped as well.
+fn reconcile_fleet(root: &Path, version: &str, settled: &[PathBuf]) -> Vec<String> {
+    let mut notes: Vec<String> = seat_config::reconcile(root, version).into_iter().collect();
+    for named in settled {
+        let Some(name) = crate::instance::instance_of(named) else {
+            continue;
+        };
+        if named_root_doubt(named).is_some() {
+            continue;
+        }
+        notes.extend(
+            seat_config::reconcile(named, version).map(|note| format!("instance {name}: {note}")),
+        );
+    }
+    notes
+}
+
+/// [`prune_versions`], told which named roots the publish itself HELD — skipped
+/// or failed part-way — so it removes nothing while any of them is unrepaired.
+#[must_use]
+fn sweep_versions(root: &Path, link: &Path, published: &str, held: &[String]) -> Vec<String> {
     if !held.is_empty() {
         return vec![format!(
             "WARNING: no version was removed — {} did not move onto {published}, so the versions it records cannot be ruled out of use",
@@ -2358,7 +2389,7 @@ mod tests {
         let read = crate::meta::read_bytes(&dir);
         let planned = judge(Scope::Default, root, "a-ok", false, &read).expect("placeable");
         assert_eq!(planned.judged, Judged::Move);
-        assert!(!planned.protected && !planned.seat);
+        assert!(!planned.protected);
         assert_eq!(
             recheck(Scope::Default, root, &planned, &read).expect("unchanged"),
             planned
@@ -2507,6 +2538,7 @@ mod tests {
             planned,
             &mut moved,
             &mut stops,
+            &mut Vec::new(),
         )
         .expect_err("the ordinary failure aborts the sweep");
         assert!(stops, "a stranded seat stops the publish: {why}");
@@ -2551,6 +2583,7 @@ mod tests {
                 planned,
                 &mut moved,
                 &mut stops,
+                &mut Vec::new(),
             );
             assert_eq!(
                 crate::meta::read_bytes(&root.join("sessions").join(owned)).expect("meta"),
@@ -2612,6 +2645,66 @@ mod tests {
         assert_eq!(
             crate::store::read_capped(&path, SEAT_CONFIG_CAP).ok(),
             Some(crate::store::SourceRead::Ready(b"new\n".to_vec()))
+        );
+    }
+    #[test]
+    fn a_publish_reconciles_only_the_named_roots_it_settled_after_the_commit() {
+        let seat = |root: &Path| {
+            crate::store::read_capped(&root.join("orchestrator.config"), SEAT_CONFIG_CAP).ok()
+        };
+        let old = include_str!("../../tests/fixtures/orchestrator/v2026.9.61.config");
+        let scratch = Scratch::new("named-settled-seat");
+        let base = &scratch.0;
+        let root = base.join("instances/blue");
+        std::fs::create_dir_all(&root).expect("named root");
+        std::fs::write(root.join("orchestrator.config"), old).expect("old seat file");
+        // A root the sweep settled is reconciled.
+        let notes = reconcile_fleet(base, "2099.1.1", std::slice::from_ref(&root));
+        assert_eq!(
+            seat(&root),
+            Some(crate::store::SourceRead::Ready(
+                crate::config::SEAT_TEMPLATE.as_bytes().to_vec()
+            ))
+        );
+        let [line] = notes.as_slice() else {
+            panic!("one note: {notes:?}");
+        };
+        assert!(
+            line.starts_with("instance blue: replaced ") && !line.contains("ae stop"),
+            "{line}"
+        );
+        // A readable root that is not settled (held, or never admitted) stays untouched.
+        std::fs::write(root.join("orchestrator.config"), old).expect("old seat file again");
+        assert!(reconcile_fleet(base, "2099.1.1", &[]).is_empty());
+        assert_eq!(
+            seat(&root),
+            Some(crate::store::SourceRead::Ready(old.as_bytes().to_vec()))
+        );
+    }
+
+    #[test]
+    fn a_blanket_hold_settles_no_named_root_even_when_the_container_is_readable_by_the_commit() {
+        let scratch = Scratch::new("named-blanket-hold");
+        let base = &scratch.0;
+        std::fs::create_dir_all(base.join("sessions")).expect("sessions");
+        // The plan finds the container unreadable: `every named instance` is held.
+        std::fs::write(base.join("instances"), b"not a directory").expect("a file");
+        let plan = plan_fleet(base).expect("the default root is placeable");
+        let core = base.join("new-core");
+        std::fs::write(&core, b"").expect("core");
+        let (_, hold) = onto_fleet(plan, &core, "2099.1.1").expect("the fleet sweep");
+        assert_eq!(hold.held, ["every named instance".to_owned()]);
+        assert!(hold.settled.is_empty(), "{:?}", hold.settled);
+        // By the commit the container reads: its roots were never admitted.
+        std::fs::remove_file(base.join("instances")).expect("remove the file");
+        let root = base.join("instances/blue");
+        std::fs::create_dir_all(&root).expect("named root");
+        let old = include_str!("../../tests/fixtures/orchestrator/v2026.9.61.config");
+        std::fs::write(root.join("orchestrator.config"), old).expect("old seat file");
+        assert!(reconcile_fleet(base, "2099.1.1", &hold.settled).is_empty());
+        assert_eq!(
+            crate::store::read_capped(&root.join("orchestrator.config"), SEAT_CONFIG_CAP).ok(),
+            Some(crate::store::SourceRead::Ready(old.as_bytes().to_vec()))
         );
     }
 }

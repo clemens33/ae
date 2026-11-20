@@ -259,17 +259,19 @@ struct Caller {
 /// refuses, or `None`: its `[prompt]` carries no [`SEAT_PROMPT_MARKER`]. A seat
 /// file that cannot be read gives no such evidence, and the running seat
 /// carries the prompt it launched with. The refusal is made before anything is
-/// claimed, and names the copy step.
+/// claimed, and ends in the repair the upgrade's warning prints.
 ///
 /// [`SEAT_PROMPT_MARKER`]: crate::config::SEAT_PROMPT_MARKER
 fn stale_prompt(root: &Path) -> Option<String> {
     let path = root.join(meta::SEAT_CONFIG_FILE);
     let text = crate::config::read_selected(&path).ok()?;
     (!crate::config::seat_prompt_is_current(&text)).then(|| {
+        let backup = crate::config::seat_backup_path(&path, crate::shape::VERSION);
         format!(
-            "the seat prompt in {} predates the bound owner words: copy the current [prompt] \
-             stanza of the seat template into that file, keeping your edits, and restart the seat",
-            path.display()
+            "the seat prompt in {} predates the bound owner words (or an owner edit removed \
+             them); {}",
+            path.display(),
+            crate::config::seat_config_repair(&path, &backup, crate::instance::instance_of(root))
         )
     })
 }
@@ -715,15 +717,77 @@ pub(crate) fn sections(parsed: &Parsed, owner: Option<&OwnerAsk>) -> String {
 ///
 /// # Errors
 ///
-/// The refusal, naming the seat and the remedy.
-pub(crate) fn context_stamp(meta: &[u8], slot: &str) -> Result<(), String> {
+/// The refusal, naming the seat and the cheapest remedy for its tool
+/// ([`stamp_remedy`]). `dir` is the target session's directory.
+pub(crate) fn context_stamp(meta: &[u8], slot: &str, dir: &Path) -> Result<(), String> {
     let parsed = meta::Meta::parse(&String::from_utf8_lossy(meta));
     match parsed.context_stamp(slot) {
         meta::ContextStamp::Valid(version) if version >= crate::render::CONTEXT_VERSION => Ok(()),
         _ => Err(format!(
-            "target seat {slot} carries no current context stamp; relaunch the target seat with a fresh conversation"
+            "target seat {slot} carries no current context stamp; {}",
+            stamp_remedy(meta, slot, dir)
         )),
     }
+}
+
+/// What makes the stamp of `slot` current again, for the tool its meta records:
+/// a stop and a resume where the resume hands the conversation the context
+/// turn, a fresh conversation where it cannot, and no remedy for a tool with no
+/// context channel. A named instance's session is named without an ae command,
+/// because the one this could print starts the default root.
+fn stamp_remedy(meta: &[u8], slot: &str, dir: &Path) -> String {
+    use crate::run::ContextRoute;
+
+    let tool = crate::tool::ToolKind::from_binary_name(
+        &meta::first_value(meta, &format!("agent_bin.{slot}"))
+            .map(|value| String::from_utf8_lossy(value).into_owned())
+            .unwrap_or_default(),
+    );
+    let session = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match crate::run::context_route(tool) {
+        ContextRoute::Resume => match dir
+            .parent()
+            .and_then(Path::parent)
+            .and_then(crate::instance::instance_of)
+        {
+            None if plain_session_name(&session) => format!(
+                "stop and resume the target session (ae stop {session}; ae {session} --resume): \
+                 the resume keeps the conversation and hands it the relay context"
+            ),
+            // `ae stop all` stops the fleet, and no ae command reads a name that starts with `-`:
+            // such a name gets no command to copy.
+            None => format!(
+                "stop and resume session {session:?} by hand, since its name cannot be given to \
+                 ae stop or ae as an argument: the resume keeps the conversation and hands it the \
+                 relay context"
+            ),
+            Some(name) => format!(
+                "stop and resume session {session} of instance {name} with that instance's own \
+                 ae command: the resume keeps the conversation and hands it the relay context"
+            ),
+        },
+        ContextRoute::FreshOnly => "this tool's resume carries no relay context turn, so only \
+             a fresh conversation records the stamp: relaunch the target seat with a fresh \
+             conversation"
+            .to_owned(),
+        ContextRoute::NoChannel => "its tool has no relay context channel, so no restart records \
+             a stamp and this seat cannot take an orchestrator relay"
+            .to_owned(),
+    }
+}
+
+/// Whether `name` is an ordinary session name that `ae stop <name>` and `ae <name>`
+/// take as one, never `all` (which makes `ae stop` stop every session).
+fn plain_session_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    name != "all"
+        && bytes
+            .next()
+            .is_some_and(|first| first.is_ascii_alphanumeric())
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
 /// Every proof before the claim, in order: the orchestrator role, the caller's
@@ -779,7 +843,7 @@ fn prepare(
             names.join(", ")
         ));
     };
-    context_stamp(&bytes, &seat.slot)?;
+    context_stamp(&bytes, &seat.slot, &target_dir)?;
     let owner = match &parsed.owner {
         Owner::Bound(id) => Some(owner_ask(grant, id)?),
         Owner::Attested { .. } | Owner::Interim => None,
@@ -1341,10 +1405,11 @@ fn refuse(
 )]
 mod tests {
     use super::{
-        Caller, Owner, Parsed, Target, Usage, parse, quoted, reserved_line, sections, target,
+        Caller, Owner, Parsed, Target, Usage, context_stamp, parse, quoted, reserved_line,
+        sections, target,
     };
     use crate::time::Timestamp;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
@@ -1561,5 +1626,50 @@ mod tests {
             target(&caller, "world:*"),
             Err("target agent name is invalid".to_owned())
         );
+    }
+    #[test]
+    fn the_stamp_refusal_names_the_remedy_for_the_tool_it_is_about() {
+        let said = |bin: &str, dir: &str, stamp: &str| {
+            let meta = format!("agent_bin.main={bin}\n{stamp}");
+            context_stamp(meta.as_bytes(), "main", Path::new(dir)).expect_err("no current stamp")
+        };
+        let home = "/h/.ae/sessions/s";
+        let claude = said("claude", home, "");
+        assert!(
+            claude.starts_with("target seat main carries no current context stamp; ")
+                && claude.contains("ae stop s; ae s --resume")
+                && !claude.contains("fresh conversation"),
+            "{claude}"
+        );
+        let muse = said("muse", home, "context.main=0\n");
+        assert!(
+            muse.contains("fresh conversation") && !muse.contains("ae stop"),
+            "{muse}"
+        );
+        let unknown = said("", home, "");
+        assert!(
+            unknown.contains("no relay context channel")
+                && !unknown.contains("ae stop")
+                && !unknown.contains("fresh conversation"),
+            "{unknown}"
+        );
+        // A named instance's session never gets the default root's command.
+        let named = said("claude", "/h/.ae/instances/blue/sessions/s", "");
+        assert!(
+            named.contains("session s of instance blue") && !named.contains("ae stop"),
+            "{named}"
+        );
+        // A name that cannot go through `ae stop` and `ae` as one argument gets no command:
+        // `ae stop all` stops the fleet.
+        for odd in ["all", "-x", "a b"] {
+            let by_hand = said("claude", &format!("/h/.ae/sessions/{odd}"), "");
+            assert!(
+                by_hand.contains("by hand")
+                    && !by_hand.contains("; ae ")
+                    && !by_hand.contains(&format!("ae stop {odd}")),
+                "{odd:?}: {by_hand}"
+            );
+        }
+        assert!(super::plain_session_name("allx") && super::plain_session_name("a_b-1"));
     }
 }

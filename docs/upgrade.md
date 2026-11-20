@@ -46,9 +46,54 @@ first repoint and before the command link moves. The refusal names the session a
 repair or end it. A named root that a doubt about an ordinary session holds stays held, unless
 the hold would strand a planned orchestrator session: then the publish refuses. A change to a
 planned orchestrator session's meta between the census and its repoint is a late refusal naming
-the sessions that already moved. The same locked step re-seeds the seat's own
-`orchestrator.config` prompt, only when its `[prompt]` stanza is byte-equal to the one the
-previous release shipped; an owner-edited prompt stays exactly as it is.
+the sessions that already moved.
+
+### The seat's own `orchestrator.config`
+
+The publish reconciles each root's `orchestrator.config` once it is committed (the journal is
+gone, so a publish that rolled back changes no seat file and reports none), with or without an
+orchestrator session, for the default root and every named root it did not hold. ae keeps a ledger of every released seat template
+(`src/l4_orchestration/migrate/seat_config.rs`, `LEDGER`: the SHA-256 of the whole file and of its
+`[prompt]` stanza, one row per distinct template, the current one last). A file byte-equal to an
+earlier template is replaced by the current template, even when that template shares its
+`[prompt]` stanza with the current one. A file whose `[prompt]` stanza is
+byte-equal to an earlier stanza gets only its prompt row replaced, so the owner's other edits
+stay. Either way the old file is kept first at `orchestrator.config.pre-v<new version>` (then
+`-2`, `-3` when a name is taken, and nothing is overwritten), and ONE `ae:` line names both paths
+and says to restart the seat with `ae stop orchestrator` and `ae orchestrator`. The upgrade never
+stops or starts the seat. A prompt that already teaches the bound owner words stays exactly as it
+is, owner edits included, and the upgrade says nothing. Any other file, and a file that is not a
+regular file, is over 1 MiB or is not UTF-8, changes nothing and gets one warning line with the
+repair: one `sh -c` command that refuses an occupied backup name, moves the file aside and runs
+`ae stop orchestrator` and `ae orchestrator`, so the launch seeds the current template. A
+directory at that path gets a `mkdir` of the backup name and a `mv` into it, in place of the hard
+link a directory cannot take; `mkdir` fails for a name that exists, so nothing occupied is used as
+a container. The
+relay refusal for a stale seat prompt prints the same repair. A change to
+`contrib/aeorchestrator/orchestrator.config` appends its row to the ledger in the same commit;
+a guard test fails otherwise. A named instance's lines carry its name and name no `ae` command,
+because the one on the path starts the default root. The automatic upgrade (`ae _autoupgrade`)
+writes these lines to the upgrade log only, so the relay refusal is what an owner sees there.
+
+### Running lead seats without a relay context stamp
+
+A lead seat's `context.<slot>` row records the version of the relay context turn its conversation
+was handed. After the sweeps of all roots ONE `ae:` line lists every running lead seat of the
+default root and of every named root (its session exists and a pane stamped with its slot is
+alive, not dead and not at a shell) whose row is absent, malformed or older than this core's
+`CONTEXT_VERSION`. The line has one entry per session and a remedy for each affected slot,
+because the two lead seats of a pair can run different tools. A seat whose tool keeps the
+conversation on resume needs a stop and resume: `ae stop <session>; ae <session> --resume`
+(`--resume` also resumes a stopped session whose name looks like an `ae` command), the session name
+single-quoted when it is outside the ordinary grammar. A seat whose exact resume carries no context
+turn (Muse) needs a fresh conversation, since a resume records no stamp for it. A session name that
+cannot go through both commands (`all`, which makes `ae stop` stop the whole fleet, a name that
+starts with `-`, which neither command reads as a name, or one with a control character) is shown
+escaped, with "by hand" in place of a command. A named instance's entries read
+`instance <name>/<session>` and name no `ae` command. A tool with no context channel is not listed.
+The rows prove compatibility, not a transition: the line repeats on every upgrade while a seat
+stays stale, which also covers a fleet upgraded in stages. The relay
+refusal names the same remedy for its target's tool.
 
 An abort later than that names the sessions that did move rather than claiming none did.
 

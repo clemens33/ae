@@ -709,7 +709,7 @@ fn publish_with_mode(
 
     let fleet = |core: &Path, version: &str| crate::migrate::onto_fleet(plan, core, version);
     match publish_steps(bundle, paths, &mut journal, fleet) {
-        Ok((mut published, held)) => {
+        Ok((mut published, hold)) => {
             // THE COMMIT. Everything above is reversible by [`replay`], and the
             // journal's `link_old` names the version directory it would relink
             // to. So the version sweep may not run until the journal is GONE:
@@ -730,7 +730,7 @@ fn publish_with_mode(
                 &paths.home,
                 &paths.link,
                 &bundle.version,
-                &held,
+                &hold,
             ));
             Ok(AutomaticPublish::Published(published))
         }
@@ -779,14 +779,15 @@ pub(crate) fn current_public_version(paths: &Paths) -> Result<String, String> {
     Ok(version.to_owned())
 }
 
-/// Everything between the journal's creation and its removal, answering the
-/// named instance roots the sweep HELD beside the publication.
-fn publish_steps(
+/// Everything between the journal's creation and its removal, answering what
+/// the fleet sweep tells the commit about the named instance roots (which it
+/// HELD, which it settled) beside the publication.
+fn publish_steps<H>(
     bundle: &Bundle,
     paths: &Paths,
     journal: &mut Journal,
-    fleet: impl FnOnce(&Path, &str) -> Result<(Vec<String>, Vec<String>), String>,
-) -> Result<(Published, Vec<String>), String> {
+    fleet: impl FnOnce(&Path, &str) -> Result<(Vec<String>, H), String>,
+) -> Result<(Published, H), String> {
     let versions = paths.versions();
     mkdir_recorded(&versions, journal, paths)?;
     let version_dir = versions.join(&bundle.version);
@@ -803,7 +804,7 @@ fn publish_steps(
     // named root in doubt or failing part-way is reported and HELD, never a
     // reason to leave the default on the old core — unless the hold strands an
     // orchestrator session, which stops the publish here, before the relink.
-    let (notes, held) = fleet(&core, &bundle.version)?;
+    let (notes, hold) = fleet(&core, &bundle.version)?;
 
     let parent = paths
         .link
@@ -817,7 +818,7 @@ fn publish_steps(
         version: bundle.version.clone(),
         notes,
     };
-    Ok((published, held))
+    Ok((published, hold))
 }
 
 /// Stage the three members, mode them, and rename the whole directory in.

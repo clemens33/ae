@@ -54,12 +54,6 @@ pub(crate) fn read_selected(file: &Path) -> Result<String, ConfigError> {
 pub(crate) const SEAT_TEMPLATE: &str =
     include_str!("../../contrib/aeorchestrator/orchestrator.config");
 
-/// The seat template the release before the bound owner words seeded, byte for
-/// byte: the one generated template whose `[prompt]` an upgrade may replace.
-/// It is the very file the acceptance fixtures pin, so the two cannot drift.
-const SEAT_TEMPLATE_S1A_PREDECESSOR: &str =
-    include_str!("../../tests/fixtures/orchestrator/s1a-previous.config");
-
 /// The sentence a current seat prompt carries and a stale one cannot: the
 /// bound-owner-words rule for reserved items. A prompt without it also teaches
 /// a relay form the core refuses.
@@ -90,39 +84,139 @@ pub(crate) fn seat_prompt_is_current(config: &str) -> bool {
         .is_some_and(|row| row.value.contains(SEAT_PROMPT_MARKER))
 }
 
-/// The seat config an upgrade writes over `config`, when the prompt a launch
-/// reads from it is, byte for byte, the previous generated template's: only
-/// that block is replaced, with the current template's, and every other byte
-/// stays, later sections included. The block must end its section: any text
-/// after it before the next section header is an owner's edit of the prompt
-/// stanza, and any other prompt, an owner's edit included, gives `None` and is
-/// left alone.
+/// The `[prompt]` stanza of the seat config `config` as a launch reads it, from
+/// the line after the header of the winning `prompt.instructions` row to the next
+/// section header, with its trailing blank space dropped: a comment before the
+/// row, an earlier row or any text after it is part of the stanza, so an owner's
+/// edit of the prompt changes it and a blank line before the next section does
+/// not. `None` when no row of the file is under a `[prompt]` header.
 #[must_use]
-pub(crate) fn reseeded_seat_config(config: &str) -> Option<String> {
+pub(crate) fn seat_prompt_stanza(config: &str) -> Option<&str> {
     let winner = prompt_rows(config).pop()?;
-    let known = prompt_rows(SEAT_TEMPLATE_S1A_PREDECESSOR).pop()?;
-    let current = prompt_rows(SEAT_TEMPLATE).pop()?;
-    let known_stanza = SEAT_TEMPLATE_S1A_PREDECESSOR
-        .get(prompt_stanza(SEAT_TEMPLATE_S1A_PREDECESSOR, &known.span)?)?;
     let stanza = config.get(prompt_stanza(config, &winner.span)?)?;
-    // The stanza, from the line after its `[prompt]` header to the next section
-    // header, is the generated one: a comment before the block, an earlier row
-    // or any text after it is an owner's edit of it. A blank line that
-    // separates it from the next section is not.
-    let bare = |text: &str| text.trim_end_matches(is_ini_space).to_owned();
-    if bare(stanza) != bare(known_stanza) {
-        return None;
-    }
-    let old = SEAT_TEMPLATE_S1A_PREDECESSOR.get(known.span)?;
+    Some(stanza.trim_end_matches(is_ini_space))
+}
+
+/// `config` with only its winning `prompt.instructions` row replaced by the
+/// current template's, every other byte kept, later sections included. `None`
+/// when the file has no such row.
+#[must_use]
+pub(crate) fn seat_prompt_replaced(config: &str) -> Option<String> {
+    let winner = prompt_rows(config).pop()?;
+    let current = prompt_rows(SEAT_TEMPLATE).pop()?;
     let new = SEAT_TEMPLATE.get(current.span)?;
-    if old == new || config.get(winner.span.clone())? != old {
-        return None;
-    }
     let (head, rest) = (
         config.get(..winner.span.start)?,
         config.get(winner.span.end..)?,
     );
     Some(format!("{head}{new}{rest}"))
+}
+
+/// How many backup names beside a seat config a repair or an upgrade tries.
+const SEAT_BACKUP_NAMES: u32 = 99;
+
+/// The first free name for a backup of the seat config at `path` that version
+/// `version` makes: `<file>.pre-v<version>`, then `-2`, `-3` and on. A name is
+/// taken by any node, a link or a directory included, so no backup is ever
+/// overwritten. When every name is taken the last one comes back, and the
+/// exclusive create or the repair's own guard refuses it.
+#[must_use]
+pub(crate) fn seat_backup_path(path: &Path, version: &str) -> PathBuf {
+    let file = path.file_name().map_or_else(
+        || SEAT_CONFIG_NAME.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let named = |n: u32| {
+        path.with_file_name(match n {
+            1 => format!("{file}.pre-v{version}"),
+            _ => format!("{file}.pre-v{version}-{n}"),
+        })
+    };
+    (1..=SEAT_BACKUP_NAMES)
+        .map(named)
+        .find(|candidate| {
+            matches!(
+                crate::store::source_presence(candidate),
+                crate::store::SourcePresence::Absent
+            )
+        })
+        .unwrap_or_else(|| named(SEAT_BACKUP_NAMES))
+}
+
+/// The one repair for a seat config whose prompt an upgrade cannot replace,
+/// printed by the upgrade and by the relay refusal alike: move the file aside
+/// to `backup` without overwriting anything, then restart the seat, whose
+/// launch seeds the current template because the file is gone.
+///
+/// The default root's repair is one `sh -c` command. A name that exists in any
+/// form (file, directory, link, dangling link) when the command looks stops it
+/// before anything moves. `ln` without `-f` cannot overwrite a file, but a
+/// directory that appears at the backup name between the check and the `ln`
+/// takes the link as a member instead: nothing is overwritten and the backup
+/// lands inside it. The stop and the start run only after the original is gone. `ae stop` exits 1 for a
+/// seat that is stopped or was never started, so the two run in sequence and
+/// the first one's exit decides nothing. A named instance's repair has no ae
+/// command to print, because the one on the path starts the default root: it
+/// names the instance and leaves the stop and start to that instance's own ae.
+#[must_use]
+pub(crate) fn seat_config_repair(path: &Path, backup: &Path, instance: Option<&str>) -> String {
+    use crate::words::shell_quote;
+
+    let (path, backup) = (
+        shell_quote(&path.to_string_lossy()),
+        shell_quote(&backup.to_string_lossy()),
+    );
+    let guard = "if [ -e \"$2\" ] || [ -L \"$2\" ]; then echo \"ae: $2 exists, nothing was moved\" >&2; exit 1; fi; ln \"$1\" \"$2\" && rm \"$1\"";
+    match instance {
+        None => format!(
+            "move the file aside and restart the seat (ae stop says \"is not running\" for a \
+             stopped seat, which is fine; ae orchestrator seeds the current template because the \
+             file is gone, so re-apply your edits from the backup): \
+             sh -c '{guard} && {{ ae stop orchestrator; ae orchestrator; }}' sh {path} {backup}"
+        ),
+        Some(name) => format!(
+            "move the file aside, then stop and start the orchestrator seat of instance {name} \
+             with that instance's own ae command (the launch seeds the current template because \
+             the file is gone, so re-apply your edits from the backup): \
+             sh -c '{guard}' sh {path} {backup}"
+        ),
+    }
+}
+
+/// [`seat_config_repair`] for a seat config path that is a directory. A
+/// directory cannot be hard-linked aside, and `mv` into an occupied directory
+/// name would use it as a container, so `mkdir` creates `backup` exclusively
+/// (it fails for a name that exists in any form) and the directory moves INTO
+/// that private one. The stop and the start follow as there, inside the `sh -c`
+/// string so fish never parses the brace group, and a named instance again gets
+/// no ae command to print.
+#[must_use]
+pub(crate) fn seat_config_directory_repair(
+    path: &Path,
+    backup: &Path,
+    instance: Option<&str>,
+) -> String {
+    use crate::words::shell_quote;
+
+    let (path, backup) = (
+        shell_quote(&path.to_string_lossy()),
+        shell_quote(&backup.to_string_lossy()),
+    );
+    match instance {
+        None => format!(
+            "move the directory into a new backup directory and restart the seat (ae stop says \
+             \"is not running\" for a stopped seat, which is fine; ae orchestrator seeds the \
+             current template because the path is free, so copy what you need from the backup): \
+             sh -c 'mkdir \"$2\" && mv \"$1\" \"$2\"/ && {{ ae stop orchestrator; ae orchestrator; }}' \
+             sh {path} {backup}"
+        ),
+        Some(name) => format!(
+            "move the directory into a new backup directory, then stop and start the \
+             orchestrator seat of instance {name} with that instance's own ae command (the launch \
+             seeds the current template because the path is free, so copy what you need from the \
+             backup): sh -c 'mkdir \"$2\" && mv \"$1\" \"$2\"/' sh {path} {backup}"
+        ),
+    }
 }
 
 /// The bytes of the `[prompt]` stanza the row at `row` sits in: from the line
@@ -4845,62 +4939,116 @@ mod tests {
         )));
     }
 
+    /// The seat template the release before the bound owner words seeded: the
+    /// very file the acceptance fixtures pin.
+    const PREVIOUS: &str = include_str!("../../tests/fixtures/orchestrator/s1a-previous.config");
+
     #[test]
-    fn the_seat_template_is_current_and_its_predecessor_is_not() {
-        assert!(seat_prompt_is_current(SEAT_TEMPLATE));
-        assert!(!seat_prompt_is_current(SEAT_TEMPLATE_S1A_PREDECESSOR));
+    fn the_backup_is_the_first_name_nothing_holds() {
+        let dir = std::env::temp_dir().join(format!("ae-seatbackup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch");
+        let path = dir.join("orchestrator.config");
+        let name = |suffix: &str| dir.join(format!("orchestrator.config.pre-v1.2{suffix}"));
+        assert_eq!(seat_backup_path(&path, "1.2"), name(""));
+        std::fs::write(name(""), "a backup").expect("file");
+        assert_eq!(seat_backup_path(&path, "1.2"), name("-2"));
+        std::fs::create_dir(name("-2")).expect("a directory holds a name");
+        std::os::unix::fs::symlink(dir.join("nowhere"), name("-3")).expect("dangling link");
+        assert_eq!(seat_backup_path(&path, "1.2"), name("-4"));
+        // Every name taken: the last one comes back and the exclusive create refuses it.
+        for n in 4..=SEAT_BACKUP_NAMES {
+            std::fs::write(name(&format!("-{n}")), "").expect("file");
+        }
+        assert_eq!(
+            seat_backup_path(&path, "1.2"),
+            name(&format!("-{SEAT_BACKUP_NAMES}"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn only_a_byte_known_old_prompt_block_is_replaced_and_every_other_byte_stays() {
-        let old = SEAT_TEMPLATE_S1A_PREDECESSOR;
-        let (head, known) = old.split_once("[prompt]\n").expect("old prompt");
+    fn the_repair_is_one_quoted_command_that_ends_the_line() {
+        let path = Path::new("/h/it's/orchestrator.config");
+        let backup = Path::new("/h/it's/orchestrator.config.pre-v1");
+        let tail = " sh '/h/it'\\''s/orchestrator.config' '/h/it'\\''s/orchestrator.config.pre-v1'";
+        let line = seat_config_repair(path, backup, None);
+        assert!(line.ends_with(tail), "{line}");
+        assert!(
+            line.contains("{ ae stop orchestrator; ae orchestrator; }")
+                && line.contains("[ -e \"$2\" ] || [ -L \"$2\" ]")
+                && !line.contains('\n'),
+            "{line}"
+        );
+        let named = seat_config_repair(path, backup, Some("blue"));
+        assert!(named.ends_with(tail), "{named}");
+        assert!(
+            named.contains("instance blue") && !named.contains("ae stop orchestrator"),
+            "{named}"
+        );
+    }
+
+    #[test]
+    fn the_seat_template_is_current_and_its_predecessor_is_not() {
+        assert!(seat_prompt_is_current(SEAT_TEMPLATE));
+        assert!(!seat_prompt_is_current(PREVIOUS));
+    }
+
+    #[test]
+    fn the_prompt_stanza_is_what_an_owner_edit_changes_and_a_blank_line_does_not() {
+        let (head, known) = PREVIOUS.split_once("[prompt]\n").expect("old prompt");
+        let bare = seat_prompt_stanza(PREVIOUS).expect("the template stanza");
+        assert_eq!(bare, known.trim_end());
+        // A later section ends the stanza, and the blank space before it is no part of it.
+        let later = format!("{PREVIOUS}\n[workspace]\nmain = mine\n# end\n");
+        assert_eq!(seat_prompt_stanza(&later), Some(bare));
+        assert_eq!(
+            seat_prompt_stanza(&format!("# mine\n{PREVIOUS}")),
+            Some(bare),
+            "a line above the header is not in the stanza"
+        );
+        // Anything else in the prompt section, before the next header, is an
+        // owner's edit of the stanza: after the block, and before it too.
+        for (tag, text) in [
+            ("comment before", format!("{head}[prompt]\n# note\n{known}")),
+            (
+                "earlier row",
+                format!("{head}[prompt]\ninstructions = early\n{known}"),
+            ),
+            ("blank line before", format!("{head}[prompt]\n\n{known}")),
+            ("comment after", format!("{PREVIOUS}# owner\n")),
+            ("later winner", format!("{PREVIOUS}instructions = mine\n")),
+            ("edited block", PREVIOUS.replace("router", "RouTer")),
+            ("crlf copy", PREVIOUS.replace('\n', "\r\n")),
+        ] {
+            assert_ne!(seat_prompt_stanza(&text), Some(bare), "{tag}");
+        }
+        assert_eq!(seat_prompt_stanza(""), None);
+        assert_eq!(seat_prompt_stanza("[workspace]\nmain = a\n"), None);
+    }
+
+    #[test]
+    fn replacing_the_prompt_row_changes_that_row_and_no_other_byte() {
+        let (head, known) = PREVIOUS.split_once("[prompt]\n").expect("old prompt");
         let (_, new) = SEAT_TEMPLATE.split_once("[prompt]\n").expect("new prompt");
         let prefixed = format!("# mine\n{head}[prompt]\n{known}");
         assert_eq!(
-            reseeded_seat_config(&prefixed),
+            seat_prompt_replaced(&prefixed),
             Some(format!("# mine\n{head}[prompt]\n{new}")),
-            "the known prompt becomes the current one"
+            "the old prompt becomes the current one"
         );
         // A later section survives untouched, a blank line before it too.
         let later = format!("{prefixed}\n[workspace]\nmain = mine\n# end\n");
         assert_eq!(
-            reseeded_seat_config(&later),
+            seat_prompt_replaced(&later),
             Some(format!(
                 "# mine\n{head}[prompt]\n{new}\n[workspace]\nmain = mine\n# end\n"
             ))
         );
-        // Anything else in the prompt section, before the next header, is an
-        // owner's edit of the stanza: after the block, and before it too.
-        assert_eq!(
-            reseeded_seat_config(&format!("# mine\n{head}[prompt]\n# note\n{known}")),
-            None,
-            "a comment before the block"
-        );
-        assert_eq!(
-            reseeded_seat_config(&format!("{head}[prompt]\ninstructions = early\n{known}")),
-            None,
-            "an earlier row"
-        );
-        assert_eq!(
-            reseeded_seat_config(&format!("{head}[prompt]\n\n{known}")),
-            None,
-            "a blank line before the block is a change of the stanza"
-        );
-        assert_eq!(reseeded_seat_config(&format!("{prefixed}# owner\n")), None);
-        assert_eq!(
-            reseeded_seat_config(&format!("{prefixed}instructions = mine\n")),
-            None
-        );
-        // An edited block, a later winner, a CRLF copy and the current template stay.
-        assert_eq!(
-            reseeded_seat_config(&prefixed.replace("router", "RouTer")),
-            None
-        );
-        assert_eq!(reseeded_seat_config(&prefixed.replace('\n', "\r\n")), None);
-        assert_eq!(reseeded_seat_config(SEAT_TEMPLATE), None);
-        assert_eq!(reseeded_seat_config(""), None);
+        assert_eq!(seat_prompt_replaced(""), None);
+        assert_eq!(seat_prompt_replaced("[workspace]\nmain = a\n"), None);
     }
+
     #[test]
     fn a_header_the_launch_does_not_see_does_not_open_a_prompt_section() {
         // A non-breaking space before the second header: `trim()` strips it,

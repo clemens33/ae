@@ -799,7 +799,7 @@ pub(crate) fn admit_relay(
         };
         // The stamp is the seat's own: a start that lost it between the proof
         // and this lock leaves the same uuid and roster behind.
-        crate::relay::context_stamp(&bytes, &lead.slot)
+        crate::relay::context_stamp(&bytes, &lead.slot, console.dir())
     };
     submit::admit_relay(
         &mut console.held.borrow_mut(),

@@ -997,7 +997,7 @@ fn stamp_context(
         // empty, damaged, older) holds every relay as it is, so the start
         // goes on, as every start without a context channel does.
         let claim = crate::meta::read_bytes(dir).map_or(true, |bytes| {
-            crate::relay::context_stamp(&bytes, slot).is_ok()
+            crate::relay::context_stamp(&bytes, slot, dir).is_ok()
         });
         if claim {
             return Ok(Some(format!(
@@ -1884,6 +1884,31 @@ fn compose(
         cmd: launch::build_launch_command(&injected.cmd, &prompt_text),
         fresh: None,
     })
+}
+
+/// What makes the relay context stamp of a lead seat's tool current again, by
+/// what its restart records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextRoute {
+    /// A stop and a resume keeps the conversation and hands it the context turn.
+    Resume,
+    /// The tool has a context channel but its exact resume carries no turn
+    /// ([`resume_keeps_context`]): only a fresh conversation records a stamp.
+    FreshOnly,
+    /// The tool has no context channel: no restart records a stamp.
+    NoChannel,
+}
+
+/// The [`ContextRoute`] of `tool`, the one answer behind the relay refusal and
+/// the upgrade notice.
+pub(crate) fn context_route(tool: ToolKind) -> ContextRoute {
+    if matches!(tool.adapter().launch.context, ContextChannel::None) {
+        ContextRoute::NoChannel
+    } else if resume_keeps_context(tool, true) {
+        ContextRoute::Resume
+    } else {
+        ContextRoute::FreshOnly
+    }
 }
 
 /// Whether an EXACT resume may keep the inline context turn.
@@ -3800,6 +3825,25 @@ mod tests {
         );
         let bare = words(&["/bin/agy", "--flag"]);
         assert_eq!(drop_recorded_mint(&bare), bare, "no mint, no change");
+    }
+
+    #[test]
+    fn the_context_route_names_what_a_restart_can_record() {
+        for tool in [
+            ToolKind::Claude,
+            ToolKind::Codex,
+            ToolKind::Gemini,
+            ToolKind::Grok,
+        ] {
+            assert_eq!(
+                context_route(tool),
+                ContextRoute::Resume,
+                "{}",
+                tool.as_str()
+            );
+        }
+        assert_eq!(context_route(ToolKind::Muse), ContextRoute::FreshOnly);
+        assert_eq!(context_route(ToolKind::Unknown), ContextRoute::NoChannel);
     }
 
     #[test]

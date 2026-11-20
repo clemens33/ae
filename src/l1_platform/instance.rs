@@ -104,6 +104,16 @@ pub fn is_instance_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
+/// The name of the named instance whose state root is `root`
+/// (`<base>/instances/<name>`), or `None` for any other root, the default one
+/// included.
+#[must_use]
+pub fn instance_of(root: &Path) -> Option<&str> {
+    let name = root.file_name()?.to_str()?;
+    let container = root.parent()?.file_name()?.to_str()?;
+    (container == INSTANCES && is_instance_name(name)).then_some(name)
+}
+
 /// The user HOME a state root sits under — what a publish, a command link and
 /// a harness's default config home are spelled from. ONE owner, so nothing
 /// re-derives it as `root.parent()` at its own site.
@@ -200,6 +210,26 @@ mod tests {
             Some((PathBuf::from("/s"), PathBuf::from("/c/config")))
         );
         assert_eq!(places(&checkout, &env(None, None, Some("/c"))), None);
+    }
+
+    #[test]
+    fn only_a_root_under_instances_is_a_named_instance() {
+        assert_eq!(
+            instance_of(Path::new("/u/me/.ae/instances/blue")),
+            Some("blue")
+        );
+        for other in [
+            "/u/me/.ae",
+            "/u/me/.ae/instances",
+            "/u/me/.ae/instances/Blue",
+            "/u/me/.ae/instances/dev",
+            "/u/me/.ae/other/blue",
+            "/u/me/.ae/instances/blue/sessions",
+            "/",
+            "",
+        ] {
+            assert_eq!(instance_of(Path::new(other)), None, "{other}");
+        }
     }
 
     #[test]

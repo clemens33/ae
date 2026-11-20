@@ -20,6 +20,13 @@ or `[roster]` are ignored for identity; `[workspace]` and `[prompt]` still
 overlay. Edit the seeded file to change local preferences. `CHARTER.md` is the readable copy of the role
 contract; it is not loaded from a guessed path.
 
+`ae upgrade` keeps the seeded file current: a file byte-equal to an earlier released template is
+replaced (the old one is kept as `orchestrator.config.pre-v<version>`), and a file whose prompt
+stanza matches an earlier one gets only its prompt replaced. A file with an owner-edited prompt
+that predates the bound owner words is left alone with one repair line. Editing
+`orchestrator.config` in this directory means appending its row to `LEDGER` in
+`src/l4_orchestration/migrate/seat_config.rs` in the same commit.
+
 ## Role
 
 The watchdog reads fleet state through ae, renders a compact `NEEDS YOU` /
@@ -138,10 +145,9 @@ routing decision. The seat is started explicitly; it is never an autostart compa
 
 Edit `~/.ae/config` to choose another profile, or edit
 `~/.ae/orchestrator.config` for local preferences. Keep the role boundaries
-intact. The seat file seeds once. To apply this charter to an existing seat,
-copy the new `[prompt] instructions` value from this version's
-`orchestrator.config` into `~/.ae/orchestrator.config`, preserving local
-`[workspace]` preferences. `CHARTER.md` is not read at runtime.
+intact. `ae upgrade` replaces a seat file that an earlier release seeded and
+the owner never edited, and warns with the repair for any other stale one (see
+above). `CHARTER.md` is not read at runtime.
 
 For a RUNNING orchestrator, the owner runs `ae stop orchestrator` from another
 terminal, confirms, then starts it with `ae orchestrator`. Launch rebuilds the
