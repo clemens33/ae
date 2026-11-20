@@ -84,6 +84,11 @@ mod dechist_spec;
 mod declared_task_spec;
 mod deliver;
 mod desk_display_spec;
+#[allow(
+    clippy::similar_names,
+    reason = "the frozen spec binds `seat` and `set` in one test and its bytes stay as board-rev froze them"
+)]
+mod desk_helper_spec;
 mod desk_record_edges_spec;
 mod desk_record_spec;
 mod desk_status_pending_spec;

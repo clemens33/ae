@@ -71,6 +71,7 @@ pub use l3_services::brief_retry;
 pub use l3_services::carry;
 pub(crate) use l3_services::compact;
 pub use l3_services::deliver;
+pub use l3_services::deskcmd;
 pub use l3_services::deskstore;
 pub(crate) use l3_services::fleet_read;
 pub use l3_services::go_usage;
@@ -3802,6 +3803,16 @@ pub(crate) fn actual_calling_pane() -> Option<(tmux::ObservedViewer, inventory::
     }
 }
 
+/// One reading of the calling pane for the board writer: what tmux says it is,
+/// the server it was read on and the pane id the proof compares.
+fn observe_for_desk() -> Option<relay::Observed> {
+    actual_calling_pane().map(|(viewer, server)| relay::Observed {
+        viewer,
+        server,
+        pane: doors::calling_pane_id(),
+    })
+}
+
 /// One owner for absence by design, a positive answer (vacant included), and a
 /// failed observation. Only the last refuses a writer that permits humans.
 pub(crate) enum CallerRead<T> {
@@ -4668,6 +4679,15 @@ pub fn run_with(
         // rather than a bare header.
         cli::Request::State { dir, tail } => run_state(dir, tail, out, err)?,
         cli::Request::Goal { dir, tail } => run_goal(dir, tail, out, err)?,
+        cli::Request::Desk { dir, tail } => deskcmd::run(
+            dir,
+            tail,
+            &mut observe_for_desk,
+            time::Timestamp::now(),
+            &mut std::io::stdin(),
+            out,
+            err,
+        )?,
         cli::Request::Memo { dir, tail } => run_memo(dir, tail, out, err)?,
         cli::Request::Ask { dir, tail } => run_tracked(tracked::Kind::Ask, dir, tail, out, err)?,
         cli::Request::Interrupt { dir, tail } => run_interrupt(dir, tail, out, err)?,

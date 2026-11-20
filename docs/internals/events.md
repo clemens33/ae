@@ -163,6 +163,7 @@ additive keys as unknown data.
 | `done` | `mark-done` helper | Completion / pause signal. `mark-done` is an alias for `state done`; both are read as `done`. |
 | `chat` | `say` helper | Agent's free-text line to the human, forwarded by the Telegram bridge when a lead-pair seat (or the watchdog) wrote it. Text in `summary`. |
 | `memo` | `memo add` helper | Append to shared session memory. |
+| `desk` | `desk set` helper | The orchestrator seat replaced its board. `summary` holds the changed ids and the item count, as `+D3 -D1 ~R2 (12 items)`, never an item's text or link. Informational: the seat's own `desk` event ends no quiet state. |
 | `spawn` | ae internal | A new agent joined the workspace. `summary` is its task text. A modern record carries `birth`, the link to its certificate. |
 | `worker-birth` | ae internal | The durable birth certificate of one committed new worker. No summary; see [Worker birth records](#worker-birth-records). |
 | `worker-fact` | ae internal | A later fact about a birth: `brief-failed` from `spawn` (actor the caller), `start-attempted` and `start-failed` from `_run` (actor `watchdog`). No summary; see [Worker birth records](#worker-birth-records). |

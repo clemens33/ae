@@ -46,7 +46,7 @@ pub const GOAL_USAGE: &str = "Usage: goal            # show the session goal\n  
 
 /// THE helper set — the names a session directory holds, and the only names
 /// this dispatch answers to.
-pub const HELPERS: [Helper; 27] = [
+pub const HELPERS: [Helper; 28] = [
     Helper {
         name: "send",
         usage: "Usage: send [--cross-session] <agent-name|pane-id|@session:agent> <message>\nDeliver a message to another agent.\n",
@@ -123,6 +123,12 @@ pub const HELPERS: [Helper; 27] = [
         name: "goal",
         usage: GOAL_USAGE,
         entry: crate::cli::GOAL,
+        prefix: &[],
+    },
+    Helper {
+        name: "desk",
+        usage: "Usage: desk show\n       desk set [<file>|-]\nShow the orchestrator board in the form `desk set` reads, or replace the whole board from a file or standard input (orchestrator seat only). A bare desk shows it.\n",
+        entry: crate::cli::DESK,
         prefix: &[],
     },
     Helper {
@@ -472,7 +478,7 @@ mod tests {
         let helper = lookup("usage").expect("usage is a helper");
         let argv = translate(helper, Path::new("/s/work"), &[]);
         assert_eq!(argv, ["_usage", "/s/work"]);
-        assert_eq!(HELPERS.len(), 27);
+        assert_eq!(HELPERS.len(), 28);
     }
 
     #[test]

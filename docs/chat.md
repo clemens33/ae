@@ -132,8 +132,8 @@ prints `no board set` when none exists and `board unreadable: <why>` when the
 record is damaged, never a guess. It writes no event, no draft and no file, and
 works in a read-only chat too. It takes no word: `/board x` prints
 `refused: /board takes no argument` and clears the submitted line, which is not
-kept for a command that only reads. The chat reads the board and never writes it
-([Orchestrator board](app.md#orchestrator-board)).
+kept for a command that only reads. The chat reads the board and never writes it: the orchestrator seat sets it with
+its `desk` helper ([Orchestrator board](app.md#orchestrator-board)).
 
 ## Needs you
 

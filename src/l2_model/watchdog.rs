@@ -15,6 +15,9 @@ use crate::procs::Descendancy;
 #[path = "watchdog/agylimit_spec.rs"]
 mod agylimit_spec;
 #[cfg(test)]
+#[path = "watchdog/desk_watchdog_spec.rs"]
+mod desk_watchdog_spec;
+#[cfg(test)]
 #[path = "watchdog/muse_standing_tests.rs"]
 mod muse_standing_tests;
 #[cfg(test)]
@@ -1843,21 +1846,22 @@ pub fn ends_quiet(state: &str, event: &Event, is_own: bool, own_requests: &[&str
 }
 
 /// The seat's OWN actions that carry information and ask nothing of anyone:
-/// a message, a memo, an answer, a retire or a withdrawal.
-const OWN_INFORMATIONAL: [&str; 5] = [
+/// a message, a memo, an answer, a retire, a withdrawal or a board update.
+const OWN_INFORMATIONAL: [&str; 6] = [
     crate::send::ACTION,
     "memo",
     crate::reply::ACTION,
     "retire",
     "cancel",
+    crate::desk::ACTION,
 ];
 
 /// Whether `event` is information that asks nothing of the seat (#225, F576):
-/// the seat's own send, memo, reply, retire or cancel, or a `send` addressed to
-/// it. Everything else — an ask, a review, a reply to the seat, a spawn, an
-/// accept, the human, an action this table does not know — is actionable,
-/// the safe direction. The watchdog's and the birth family's records are
-/// neither: [`ends_quiet`] judges them first.
+/// the seat's own send, memo, reply, retire, cancel or board update, or a
+/// `send` addressed to it. Everything else — an ask, a review, a reply to the
+/// seat, a spawn, an accept, the human, an action this table does not know — is
+/// actionable, the safe direction. The watchdog's and the birth family's
+/// records are neither: [`ends_quiet`] judges them first.
 ///
 /// ONE table, read only through [`ends_quiet`] and the two proof folds, so the
 /// daemon and `ae list` cannot split on it.

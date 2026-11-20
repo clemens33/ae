@@ -341,7 +341,7 @@ When inside an ae session, stop/end/reboot work without specifying the name.
 
 Config: ~/.ae/config (per-project override: .ae/config in project dir)
 Session helpers, in every session dir: send, relay, ask, review, reply, withdraw, accept,
-  requests, state, mark-done, goal, memo, say, peek (peak), agents, quota, usage, focus,
+  requests, state, mark-done, goal, desk, memo, say, peek (peak), agents, quota, usage, focus,
   interrupt, spawn, retire, relaunch.
   ae @<session> <helper> [args...]
                          Run one of those helpers against a session, the short way

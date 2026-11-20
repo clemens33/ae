@@ -58,9 +58,15 @@ pub const MAX_TEXT: usize = 160;
 pub const MAX_LINKS: usize = 3;
 /// The most bytes in one link.
 pub const MAX_LINK: usize = 300;
+/// The journal action of a board change.
+pub const ACTION: &str = "desk";
 /// The record's file name in a session directory. The session helper `desk`
 /// is a link of that other name, so the record cannot share it.
 pub const RECORD_FILE: &str = "desk-record";
+
+#[cfg(test)]
+#[path = "desk/input_tests.rs"]
+mod input_tests;
 
 const MAGIC: &str = "ae-desk 1";
 const UPDATED: &str = "updated ";
@@ -450,15 +456,56 @@ pub fn diff(old: &[Item], new: &[Item]) -> Delta {
     delta
 }
 
-/// The audit words of a change: ids only, never an item's text, as
-/// `+D3 -D1 ~R2 (12 items)`.
+/// The ids a change touched, never an item's text, as `+D3 -D1 ~R2`.
 #[must_use]
-pub fn summary(delta: &Delta, total: usize) -> String {
+pub fn change_ids(delta: &Delta) -> String {
     let mut parts: Vec<String> = Vec::new();
     parts.extend(delta.added.iter().map(|id| format!("+{id}")));
     parts.extend(delta.removed.iter().map(|id| format!("-{id}")));
     parts.extend(delta.changed.iter().map(|id| format!("~{id}")));
-    let noun = if total == 1 { "item" } else { "items" };
-    parts.push(format!("({total} {noun})"));
     parts.join(" ")
+}
+
+/// The audit words of a change: its ids and the item count, as
+/// `+D3 -D1 ~R2 (12 items)`.
+#[must_use]
+pub fn summary(delta: &Delta, total: usize) -> String {
+    let noun = if total == 1 { "item" } else { "items" };
+    let count = format!("({total} {noun})");
+    let ids = change_ids(delta);
+    if ids.is_empty() {
+        count
+    } else {
+        format!("{ids} {count}")
+    }
+}
+
+/// `items` in the INPUT spelling: each section's heading once, then one
+/// `<id> | <text> | <link>` line per item, so the text parses back to the same
+/// items. No items print the first heading alone. The items stand in canonical order, as [`parse_input`] returns them.
+#[must_use]
+pub fn render_input(items: &[Item]) -> String {
+    if items.is_empty() {
+        // An empty board is a set board: one bare heading is legal input, and
+        // empty text is not.
+        return format!("{}\n", Section::ALL[0].heading());
+    }
+    let mut out = String::new();
+    let mut open: Option<Section> = None;
+    for item in items {
+        if open != Some(item.id.section) {
+            out.push_str(item.id.section.heading());
+            out.push('\n');
+            open = Some(item.id.section);
+        }
+        out.push_str(&item.id.to_string());
+        out.push_str(" | ");
+        out.push_str(&item.text);
+        for link in &item.links {
+            out.push_str(" | ");
+            out.push_str(link);
+        }
+        out.push('\n');
+    }
+    out
 }

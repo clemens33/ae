@@ -77,6 +77,9 @@ pub const STATE: &str = "_state";
 /// The `goal` helper's surface — `_goal <meta-dir> [<text…>|--clear|--help]`.
 pub const GOAL: &str = "_goal";
 
+/// The `desk` helper's surface — `_desk <meta-dir> [show|set [<file>|-]]`.
+pub const DESK: &str = "_desk";
+
 /// The `memo` helper's surface —
 /// `_memo <meta-dir> [add [--topic <t>] <text…>|read [--topic <t>]|tail [n]]`.
 pub const MEMO: &str = "_memo";
@@ -389,6 +392,14 @@ pub enum Request {
     /// `_goal <meta-dir> [<text…>|--clear|--help]` — validated by
     /// [`crate::goal::parse`].
     Goal {
+        /// The session meta directory.
+        dir: std::path::PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_desk <meta-dir> [show|set [<file>|-]]` — validated by
+    /// [`crate::deskcmd`].
+    Desk {
         /// The session meta directory.
         dir: std::path::PathBuf,
         /// Everything after it, as typed.
@@ -976,6 +987,7 @@ impl Request {
             REQUESTS => Self::parse_requests(tail),
             STATE => Self::parse_dir_tail(STATE, tail, |dir, tail| Self::State { dir, tail }),
             GOAL => Self::parse_dir_tail(GOAL, tail, |dir, tail| Self::Goal { dir, tail }),
+            DESK => Self::parse_dir_tail(DESK, tail, |dir, tail| Self::Desk { dir, tail }),
             ASK => Self::parse_dir_tail(ASK, tail, |dir, tail| Self::Ask { dir, tail }),
             REVIEW => Self::parse_dir_tail(REVIEW, tail, |dir, tail| Self::Review { dir, tail }),
             REPLY => Self::parse_dir_tail(REPLY, tail, |dir, tail| Self::Reply { dir, tail }),
@@ -1556,6 +1568,7 @@ impl Request {
             | Self::Run { .. }
             | Self::State { .. }
             | Self::Goal { .. }
+            | Self::Desk { .. }
             | Self::Memo { .. }
             | Self::Ask { .. }
             | Self::Review { .. }
@@ -1620,6 +1633,7 @@ impl Request {
             | Self::RequestsVerify { dir, .. }
             | Self::State { dir, .. }
             | Self::Goal { dir, .. }
+            | Self::Desk { dir, .. }
             | Self::Memo { dir, .. }
             | Self::Ask { dir, .. }
             | Self::Review { dir, .. }
@@ -1845,9 +1859,9 @@ mod tests {
     use super::{
         ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_CANCEL, COMPACT_FIND_OUTSTANDING,
         COMPACT_FREEZE, COMPACT_MEMO_BASELINE, COMPACT_REVALIDATE, COMPACT_TEARDOWN, COMPACT_WAIT,
-        DEFAULT_REVALIDATE_WHEN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, INIT, INTERRUPT, MEMO,
-        NET_PROBE, QUOTA, RELAY, REPLY, REQUESTS, REVIEW, RUN, Request, SEND, STATE, TELEGRAM_RUN,
-        USAGE, WATCHDOG_RUN,
+        DEFAULT_REVALIDATE_WHEN, DESK, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, INIT, INTERRUPT,
+        MEMO, NET_PROBE, QUOTA, RELAY, REPLY, REQUESTS, REVIEW, RUN, Request, SEND, STATE,
+        TELEGRAM_RUN, USAGE, WATCHDOG_RUN,
     };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
@@ -2151,6 +2165,7 @@ mod tests {
             ARCHIVE_PREVIEW,
             STATE,
             GOAL,
+            DESK,
             MEMO,
             ASK,
             REVIEW,
@@ -2270,6 +2285,7 @@ mod tests {
             ARCHIVE_PREVIEW,
             STATE,
             GOAL,
+            DESK,
             MEMO,
             ASK,
             REVIEW,

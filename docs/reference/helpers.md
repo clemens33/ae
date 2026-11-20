@@ -196,6 +196,15 @@ Every agent pane carries a stable **slot** — `main`, `worker.<n>`, or `spawned
 
 `memo` is the right place for findings, decisions, and handoffs that should survive agent restarts. Don't dump chat transcripts.
 
+## Board
+
+| Helper | Purpose |
+|---|---|
+| `desk [show]` | Print this session's orchestrator board in the form `desk set` reads: a heading per used section (DECIDE, COMING, RUNNING, WAITING ON OTHERS, LINKS), then `<id> \| <text> \| <link>` per item. `no board set` when there is none; a board set with no items prints the heading `DECIDE` alone, which `desk set` reads as the same empty board. Needs no proof and writes nothing. |
+| `desk set [<file>\|-]` | Replace the WHOLE board from a regular file, or from standard input for `-` or no operand (at most 4096 bytes; a symlink, a FIFO or any other file that is not a regular file is refused, never followed or opened; the grammar refuses anything else by line and reason, and nothing is half applied). Orchestrator seat only: from any other caller it refuses `desk set REFUSED: ...`, exit 1, before it reads the input or takes a lock. `desk set: <n> items written (+D3 -D1 ~R2)` or `desk set: unchanged (<n> items)` on success. `desk set FAILED AFTER WRITE` and `desk set UNCONFIRMED` exit 2: the board changed but the event or the directory sync did not complete, so do not run it again; when a journal rollback also failed, the detail says the journal's state is unknown. |
+
+The board is one replaced record per orchestrator session ([Orchestrator board](../app.md#orchestrator-board)).
+
 ## Inspection
 
 | Helper | Purpose |

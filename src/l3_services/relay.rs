@@ -276,12 +276,21 @@ fn stale_prompt(root: &Path) -> Option<String> {
     })
 }
 
+/// One reading of the calling pane: what tmux says it is, the server it was
+/// read on, and the pane id the proof compares to the recorded main pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Observed {
+    pub(crate) viewer: ObservedViewer,
+    pub(crate) server: ServerId,
+    pub(crate) pane: Option<String>,
+}
+
 /// The caller and what its meta grants it: whether it is the dispatcher
 /// ([`crate::meta::dispatcher_proof`], with the pane it stands in), the
 /// canonical `session_id` and the seat's `launch_id`, each empty when absent.
 /// Proved before the claim and proved equal again under the target's locks.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Grant {
+pub(crate) struct Grant {
     caller: Caller,
     session_id: String,
     launch: String,
@@ -291,7 +300,25 @@ struct Grant {
 
 impl Grant {
     fn of(dir: &Path, actual: Option<&(ObservedViewer, ServerId)>) -> Result<Self, &'static str> {
-        let (caller, bytes) = caller(dir, actual.map(|(viewer, server)| (viewer, server)))?;
+        let observed = actual.map(|(viewer, server)| Observed {
+            viewer: viewer.clone(),
+            server: server.clone(),
+            pane: crate::doors::calling_pane_id(),
+        });
+        Self::of_observed(dir, observed.as_ref())
+    }
+
+    /// The grant of one reading of the calling pane: the relay's proof and
+    /// the board writer's are this one.
+    ///
+    /// # Errors
+    ///
+    /// Why the reading proves no caller of a session of this state root.
+    pub(crate) fn of_observed(
+        dir: &Path,
+        observed: Option<&Observed>,
+    ) -> Result<Self, &'static str> {
+        let (caller, bytes) = caller(dir, observed.map(|seen| (&seen.viewer, &seen.server)))?;
         // One snapshot of the caller's meta says the id, the launch and the
         // proof, so none of them can come from a different file than another.
         let parsed = std::str::from_utf8(&bytes).map(meta::Meta::parse).ok();
@@ -312,7 +339,7 @@ impl Grant {
                 root,
                 &caller.slot,
                 &caller.actor,
-                crate::doors::calling_pane_id().as_deref(),
+                observed.and_then(|seen| seen.pane.as_deref()),
             ),
             None => Err("the session root could not be resolved"),
         };
@@ -322,6 +349,21 @@ impl Grant {
             launch,
             dispatcher,
         })
+    }
+
+    /// Why the caller is no dispatcher, when it is not.
+    pub(crate) fn dispatcher(&self) -> Result<(), &'static str> {
+        self.dispatcher
+    }
+
+    /// The agent name the caller's pane carries.
+    pub(crate) fn actor(&self) -> &str {
+        &self.caller.actor
+    }
+
+    /// The session directory the caller's pane belongs to.
+    pub(crate) fn session_dir(&self) -> &Path {
+        &self.caller.dir
     }
 }
 

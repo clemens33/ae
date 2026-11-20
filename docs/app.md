@@ -532,8 +532,9 @@ the seat runs.
 
 The orchestrator's board is one record of what needs the human, in its session
 directory (`desk-record`), always replaced whole and never edited in place.
-This version reads and shows the record and has no command that writes it. It
-has five sections in this order: DECIDE, COMING, RUNNING, WAITING ON OTHERS and
+Only the orchestrator seat writes it, with its `desk` helper
+([Helpers](reference/helpers.md#board)); this app, the chat and the Telegram
+bridge only read it. It has five sections in this order: DECIDE, COMING, RUNNING, WAITING ON OTHERS and
 LINKS, with items `D1` to `L99` of at most 160 characters and up to three links
 each, a web URL or an absolute path. The board shows in three places and never in the chat lane: `/board` in the chat
 ([Chat](chat.md#what-it-shows)), a column in this app and one pinned Telegram

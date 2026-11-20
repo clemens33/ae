@@ -156,6 +156,7 @@ pub(super) const MODULE_LAYERS: [(usize, &[&str]); 7] = [
             "brief",
             "brief_retry",
             "board",
+            "deskcmd",
             "deskstore",
             "quota",
             "usage",
