@@ -521,6 +521,7 @@ fn pump(
     // survive between passes.
     let mut bridges: BTreeMap<PathBuf, Outbound> = BTreeMap::new();
     let machine = ForwardingMachine(Machine::under(paths.roots()).with_census(relay.census));
+    let mut board = super::desk::Machine::new(paths.state());
     let mut told = false;
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -534,6 +535,7 @@ fn pump(
             return Ok(0);
         }
         let stale = forward(api, &machine, relay, &paths.state(), &mut bridges, err)?;
+        board_pass(api, &machine, &mut board, err);
         if stale > 0 && !told {
             told = true;
             let line = format!(
@@ -693,6 +695,48 @@ fn forward(
     Ok(held_back)
 }
 
+/// One pass of the pinned board: the board of the orchestrator seat, and only
+/// that. The seat is the one the role census proves, and it counts as present
+/// only while a running session with the seat's canonical directory and the
+/// orchestrator role stands: a living namesake elsewhere is no source. The
+/// outbound scope does not apply, because the board is not a chat event.
+fn board_pass(
+    api: &Api,
+    world: &dyn World,
+    board: &mut super::desk::Machine,
+    err: &mut impl Write,
+) {
+    let Seat::Held { dir, name } = world.seat() else {
+        board.namesake_over();
+        return;
+    };
+    let running = world.running();
+    if !running
+        .iter()
+        .any(|session| session.name == name && session.dir == dir && session.meta_agent)
+    {
+        // A living namesake elsewhere is no seat, and fails closed: say so
+        // once per episode, so a spelling difference does not read as silence.
+        match running
+            .iter()
+            .find(|session| session.name == name && session.dir != dir)
+        {
+            Some(other) => board.namesake(&name, &other.dir, &dir, err),
+            None => board.namesake_over(),
+        }
+        return;
+    }
+    board.namesake_over();
+    let now = crate::time::Timestamp::now().epoch();
+    match crate::deskstore::read(&dir) {
+        // No board is still a pass: it reads the checkpoint, so a hold is told.
+        Ok(found) => {
+            let _ = board.pass(api, api.chat(), found.as_ref(), now, err);
+        }
+        Err(why) => board.unreadable(api.chat(), &why.to_string(), err),
+    }
+}
+
 /// Sleep, in slices, so a stop flag is noticed sooner than the whole delay.
 fn sleep_until(stop: &AtomicBool, total: Duration) {
     const SLICE: Duration = Duration::from_millis(200);
@@ -753,6 +797,12 @@ mod tests {
 
     #[path = "tgorchonly_spec.rs"]
     mod tgorchonly_spec;
+
+    #[path = "desk_bridge_spec.rs"]
+    mod desk_bridge_spec;
+
+    #[path = "desk_namesake_tests.rs"]
+    mod desk_namesake_tests;
 
     #[test]
     fn the_conventional_layout_derives_the_config_and_the_home_from_ae_home() {

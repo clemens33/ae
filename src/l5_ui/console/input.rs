@@ -1376,6 +1376,9 @@ pub struct View {
     pub anchor: String,
 }
 
+/// What `/board` answers when an operand follows it.
+const BOARD_OPERAND: &str = "refused: /board takes no argument";
+
 /// What one entered line asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -1388,6 +1391,11 @@ pub enum Command {
     Open(String),
     /// Print the folded turn with this fold number whole.
     More(String),
+    /// Print this session's board, read now.
+    Board,
+    /// `/board` with an operand: answered with one line, and the entry is
+    /// not kept, for a command that only reads has nothing to lose.
+    BoardOperand,
     /// Run this line, the human's own command, outside the session.
     Shell(String),
     Refused(String),
@@ -1397,8 +1405,8 @@ pub enum Command {
 /// literal whatever it begins with; `!<command>` runs that one line as the
 /// human's own command; a bare `/close` withdraws this console's
 /// newest open ask, `/close <id>` a named one, `/open <agent>` selects that
-/// seat's pane without a word to it, and any other bare `/word` is
-/// refused, so only a seat prefix carries a slash or a `!` to a seat; anything
+/// seat's pane without a word to it, a bare `/board` prints this session's
+/// board, and any other bare `/word` is refused, so only a seat prefix carries a slash or a `!` to a seat; anything
 /// else asks `pair[0]`, the main seat.
 #[must_use]
 pub fn command(raw: &[u8], pair: &[String]) -> Command {
@@ -1447,6 +1455,8 @@ pub fn command_to(raw: &[u8], pair: &[String], speaker: &str) -> Command {
                 Command::More((*number).to_owned())
             }
             ("/more", _) => Command::Refused("/more takes one fold number".to_owned()),
+            ("/board", []) => Command::Board,
+            ("/board", _) => Command::BoardOperand,
             _ => Command::Refused(format!(
                 "unknown command {word}; to send it, name a seat: @{speaker} {word} \
                  (a line starting with ! the same way)"
@@ -1511,6 +1521,8 @@ pub enum Effect {
     Open(SeatRef),
     /// Print the folded turn with this fold number whole.
     More(String),
+    /// Print the board of this session, read now.
+    Board,
     /// Run `line`, entered as `raw`: refused, `raw` goes back to the composer.
     Shell {
         raw: Vec<u8>,
@@ -1717,6 +1729,8 @@ impl Input {
                     match command_to(&raw, &self.pair, self.speaker()) {
                         Command::Open(name) => self.open(&name),
                         Command::More(number) => Effect::More(number),
+                        Command::Board => Effect::Board,
+                        Command::BoardOperand => Effect::Print(BOARD_OPERAND.to_owned()),
                         Command::Refused(why)
                             if [&b"/open"[..], b"/more"]
                                 .contains(&raw.split(|b| *b == b' ').next().unwrap_or(&[])) =>
@@ -1742,6 +1756,8 @@ impl Input {
                     Command::Close(id) => Effect::Close(id),
                     Command::Open(name) => self.open(&name),
                     Command::More(number) => Effect::More(number),
+                    Command::Board => Effect::Board,
+                    Command::BoardOperand => Effect::Print(BOARD_OPERAND.to_owned()),
                     Command::Shell(line) => Effect::Shell { raw, line },
                     Command::Refused(why) => {
                         self.composer.put_back(&raw);
@@ -2066,6 +2082,7 @@ pub fn paint(
             | Effect::Close(_)
             | Effect::Open(_)
             | Effect::More(_)
+            | Effect::Board
             | Effect::Shell { .. }
             | Effect::ImagePaste => {}
         }

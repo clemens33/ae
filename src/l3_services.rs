@@ -7,6 +7,7 @@ pub mod brief_retry;
 pub mod carry;
 pub(crate) mod compact;
 pub mod deliver;
+pub mod deskstore;
 pub(crate) mod fleet_read;
 pub mod go_usage;
 pub mod init;

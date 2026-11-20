@@ -13,6 +13,9 @@
 use super::*;
 use std::sync::{Arc, Mutex, mpsc};
 
+#[path = "desk_app_spec.rs"]
+mod desk_app_spec;
+
 const ORCH: &str = "orchestrator";
 const OID: &str = "0199c0de-2222-4890-abcd-ef0123456789";
 const NEW: &str = "0199c0de-3333-4890-abcd-ef0123456789";
@@ -709,6 +712,7 @@ fn p3_panel_scroll_is_independent_of_the_main_column_and_survives_selection_chan
         seq: 105,
         lane,
         needs: None,
+        desk: None,
         roster: None,
     }));
     let initial = rig.frame(160, 45);

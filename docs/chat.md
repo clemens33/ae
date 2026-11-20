@@ -124,6 +124,17 @@ neutraliser as every other row; `/more` takes ASCII digits only (`/more` alone o
 `/more x` is refused as `/more takes one fold number`). A decision card, standing or
 closed, folds after its options are split onto their own lines.
 
+`/board` prints the orchestrator's board, the record in the chat session's directory:
+the header `BOARD  updated HH:MM:SS <zone>` (your clock, UTC when tmux gives
+none), then each section that holds items with its heading, its items by id and
+each item's links on rows of their own, unwrapped (the chat wraps them). It
+prints `no board set` when none exists and `board unreadable: <why>` when the
+record is damaged, never a guess. It writes no event, no draft and no file, and
+works in a read-only chat too. It takes no word: `/board x` prints
+`refused: /board takes no argument` and clears the submitted line, which is not
+kept for a command that only reads. The chat reads the board and never writes it
+([Orchestrator board](app.md#orchestrator-board)).
+
 ## Needs you
 
 The conversation stays the lead pair's, but the section that follows it lists

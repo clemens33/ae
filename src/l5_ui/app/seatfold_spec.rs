@@ -103,6 +103,7 @@ fn install(app: &mut App, session: &str, seats: &[(&str, &str, &str)]) {
         seq: 1,
         lane: Lane::default(),
         needs: None,
+        desk: None,
         roster: Some(
             seats
                 .iter()

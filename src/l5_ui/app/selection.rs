@@ -252,6 +252,10 @@ impl App {
         if let Some(section) = view.needs {
             self.needs.insert(view.name.clone(), section);
         }
+        // The board rides the panel's read: kept for that incarnation only.
+        if panel && let Some(desk) = view.desk {
+            self.orch.desk = Some((view.id.clone(), desk));
+        }
         // The seats `/open` names, as the chat's own tick hands them over.
         let key = (view.name.clone(), view.id.clone());
         let roster = view.roster.clone();
@@ -279,6 +283,9 @@ impl App {
         let rows: Vec<String> = self.fleet.rows.iter().map(|row| row.name.clone()).collect();
         let keep = loader::order(&rows, self.model.selected(), self.home.as_deref());
         let open = self.orch.panel.is_some();
+        if !open {
+            self.orch.desk = None;
+        }
         self.shown
             .retain(|name, _| open && name == ORCH || keep.iter().any(|(kept, _)| kept == name));
     }

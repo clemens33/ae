@@ -528,6 +528,33 @@ again binds or starts one. An app started on the orchestrator (`ae app
 orchestrator`, or a handed-over view of it) opens the panel full screen when
 the seat runs.
 
+### Orchestrator board
+
+The orchestrator's board is one record of what needs the human, in its session
+directory (`desk-record`), always replaced whole and never edited in place.
+This version reads and shows the record and has no command that writes it. It
+has five sections in this order: DECIDE, COMING, RUNNING, WAITING ON OTHERS and
+LINKS, with items `D1` to `L99` of at most 160 characters and up to three links
+each, a web URL or an absolute path. The board shows in three places and never in the chat lane: `/board` in the chat
+([Chat](chat.md#what-it-shows)), a column in this app and one pinned Telegram
+message ([Telegram bridge](reference/telegram.md#the-board-message)).
+
+The column stands right of the open side panel when the frame is at least 161
+columns wide at the default sidebar: the chat column keeps 40 cells, the panel
+40 and the board 36 including its own left border, and a wider sidebar moves
+the bound by the same amount. Narrower, or below the app's row floor, it is not
+drawn and the layout is exactly the one without a board; the panel header then
+says `desk N` for the N items in DECIDE, or `desk unreadable`. The column
+shows `BOARD  updated HH:MM:SS <zone>` and the items wrapped to its width, each
+link on its own row. A web link opens as written and a path opens as its
+`file://` URL, also on every row of a link that wraps. Rows that do not fit are
+cut for height and the last row says `+N more: /board`. Every field passes the
+terminal-output gate, so a control character in a hostile record never reaches
+the terminal as an escape. A record that cannot be read shows one line that says
+why, and no board set shows `no board set`. The column reads the record with the
+panel's own reads, so a change shows within one of them. It is read-only: a click
+on a link opens it and nothing writes the record.
+
 ## Session menu
 
 While browsing, `m` opens a menu on the selected session's card; a right press

@@ -134,6 +134,7 @@ impl App {
             sent: &sent,
             dest: dest.as_ref().map(draw::Dest::of),
             md: Some(&self.md),
+            desk: None,
         };
         let mut drawn = draw::draw_with_layout(&screen, wait, buf);
         let cards = drawn

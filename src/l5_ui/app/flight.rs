@@ -317,6 +317,10 @@ impl App {
                     "refused: /more is the tmux chat's; click or press Enter on the fold line"
                         .to_owned()
                 }
+                Effect::Board => {
+                    "refused: /board is the tmux chat's; the board column shows it beside the panel"
+                        .to_owned()
+                }
                 Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) => continue,
             };
             self.notice(&about, line);

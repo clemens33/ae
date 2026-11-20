@@ -355,6 +355,7 @@ fn view(name: &str, id: &str, seq: u64, body: &str) -> Answer {
             coverage: Vec::new(),
         },
         needs: None,
+        desk: None,
         roster: None,
     })
 }
@@ -2655,6 +2656,7 @@ fn scrolled(turns: i64) -> App {
             coverage: Vec::new(),
         },
         needs: None,
+        desk: None,
         roster: None,
     }));
     app
@@ -5947,6 +5949,7 @@ fn a_restored_scroll_survives_the_frame_before_its_lane_is_read() {
             coverage: Vec::new(),
         },
         needs: None,
+        desk: None,
         roster: None,
     }));
     let _ = framed(&mut app);

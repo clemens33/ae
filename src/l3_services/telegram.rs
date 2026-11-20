@@ -64,6 +64,8 @@ use crate::json::{self, Value};
 
 // The inbound half, in submodules of THIS one rather than beside it.
 pub mod bridge;
+mod desk;
+pub use desk::{Pin, PinStatus, Placed, encode_shown, parse_pin, parse_shown, pin_status};
 pub mod inbound;
 pub mod routing;
 mod scope;
@@ -777,6 +779,110 @@ impl Api {
         accepted(&bytes)
     }
 
+    /// The configured chat, verbatim: the chat every call of this client goes to.
+    #[must_use]
+    pub(crate) fn chat(&self) -> &str {
+        self.credentials.chat_id()
+    }
+
+    /// POST the JSON `body` to `endpoint` and hand back the status and the
+    /// bounded body, whatever the status: the board classifies the answer
+    /// itself, and a 4xx body (`message is not modified`) is part of it.
+    fn board_call(&self, endpoint: &str, body: &Value) -> Result<(u16, Vec<u8>), DeskFailure> {
+        // The one place the token becomes part of a string, for these calls.
+        let url = format!(
+            "{}/bot{}/{endpoint}",
+            self.egress.base(),
+            self.credentials.token.expose()
+        );
+        let body = body.render();
+        let sent = self
+            .agent
+            .post(&url)
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .content_type("application/json")
+            .send(body.as_str());
+        // The error dies in `classify`: its Display quotes the URI, the token.
+        let mut response = sent.map_err(|error| {
+            let _ = classify(error);
+            DeskFailure::Transient
+        })?;
+        let status = response.status().as_u16();
+        let bytes =
+            read_bounded(response.body_mut().as_reader()).map_err(|_| DeskFailure::Transient)?;
+        Ok((status, bytes))
+    }
+
+    /// The fields every board message call carries: the chat, the HTML parse
+    /// mode and no link preview.
+    fn board_message(&self, message: Option<i64>, text: &str) -> Value {
+        let mut fields = vec![("chat_id", self.credentials.chat_id_value())];
+        if let Some(id) = message {
+            fields.push(("message_id", Value::Num(id)));
+        }
+        fields.push(("text", Value::str(text)));
+        fields.push(("parse_mode", Value::str("HTML")));
+        fields.push((
+            "link_preview_options",
+            Value::obj([("is_disabled", Value::Bool(true))]),
+        ));
+        Value::obj(fields)
+    }
+
+    /// Send the board as one HTML message and return its id.
+    ///
+    /// # Errors
+    ///
+    /// [`DeskFailure`], redacted by construction like every failure here. A
+    /// reply that is accepted and names no message id is [`DeskFailure::Transient`]:
+    /// the message may exist and cannot be named.
+    pub(crate) fn send_html(&self, text: &str) -> Result<i64, DeskFailure> {
+        let (status, bytes) = self.board_call("sendMessage", &self.board_message(None, text))?;
+        let answer = board_outcome(status, &bytes, Board::Send)?;
+        match answer
+            .get("result")
+            .and_then(|result| result.get("message_id"))
+        {
+            Some(&Value::Num(id)) if id > 0 => Ok(id),
+            _ => Err(DeskFailure::Transient),
+        }
+    }
+
+    /// Replace the text of message `message` with the board.
+    ///
+    /// # Errors
+    ///
+    /// [`DeskFailure`]: [`DeskFailure::Gone`] is Telegram saying the message
+    /// does not exist, and nothing else is. "Message is not modified" is
+    /// [`Edited::Unchanged`], a success.
+    pub(crate) fn edit_html(&self, message: i64, text: &str) -> Result<Edited, DeskFailure> {
+        let (status, bytes) =
+            self.board_call("editMessageText", &self.board_message(Some(message), text))?;
+        match board_outcome(status, &bytes, Board::Edit) {
+            Ok(_) => Ok(Edited::Applied),
+            Err(DeskFailure::NotModified) => Ok(Edited::Unchanged),
+            Err(failure) => Err(failure),
+        }
+    }
+
+    /// Pin message `message` without notifying the chat.
+    ///
+    /// # Errors
+    ///
+    /// [`DeskFailure`]: a refusal such as "message to pin not found" or a
+    /// missing right is [`DeskFailure::Refused`].
+    pub(crate) fn pin(&self, message: i64) -> Result<(), DeskFailure> {
+        let body = Value::obj([
+            ("chat_id", self.credentials.chat_id_value()),
+            ("message_id", Value::Num(message)),
+            ("disable_notification", Value::Bool(true)),
+        ]);
+        let (status, bytes) = self.board_call("pinChatMessage", &body)?;
+        board_outcome(status, &bytes, Board::Pin).map(|_| ())
+    }
+
     /// Long-poll `getUpdates` for everything from `offset` onwards.
     ///
     /// # Errors
@@ -834,6 +940,118 @@ impl Api {
             // reporting health.
             _ => Err(SendFailure::Malformed),
         }
+    }
+}
+
+/// Why one board call did not land, in the classes the board's retry rules
+/// tell apart. Like [`SendFailure`] it owns no text, so no token can reach it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeskFailure {
+    /// An edit that shows the text the message already has: HTTP 400 with
+    /// `message is not modified`. A success to every caller.
+    NotModified,
+    /// An edit of a message that does not exist: HTTP 400, an envelope with
+    /// `error_code` 400 and `message to edit not found`, and nothing else.
+    Gone,
+    /// HTTP 429 and the seconds Telegram asked for, 0 when it named none.
+    RetryAfter(u64),
+    /// A 5xx, a transport failure or an answer that cannot be read: ask again.
+    Transient,
+    /// Any other refusal: a 4xx that is not one of the above, or an accepted
+    /// call that is not `ok`. The message stays: a missing right can be
+    /// granted later.
+    Refused,
+}
+
+impl DeskFailure {
+    /// The words a log line names the class by.
+    pub(crate) fn label(self) -> String {
+        match self {
+            Self::NotModified => "not modified".to_owned(),
+            Self::Gone => "message gone".to_owned(),
+            Self::RetryAfter(0) => "rate limited".to_owned(),
+            Self::RetryAfter(seconds) => format!("rate limited, retry after {seconds}s"),
+            Self::Transient => "temporary failure".to_owned(),
+            Self::Refused => "refused".to_owned(),
+        }
+    }
+}
+
+/// What an accepted edit did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Edited {
+    /// The message now shows the new text.
+    Applied,
+    /// The message already showed it.
+    Unchanged,
+}
+
+/// Which board call an answer belongs to: only an edit can be "not modified"
+/// or "gone".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Board {
+    /// `sendMessage`.
+    Send,
+    /// `editMessageText`.
+    Edit,
+    /// `pinChatMessage`.
+    Pin,
+}
+
+/// The longest a `retry_after` is believed.
+const MAX_RETRY_AFTER: u64 = 3600;
+
+/// Classify one answer of a board call: the parsed envelope when Telegram
+/// accepted it, else the [`DeskFailure`] that says how to go on. The answer is
+/// untrusted network input: this never panics, and it reads `Gone` only from
+/// an edit answered with HTTP 400, an envelope `ok:false` with `error_code` 400
+/// and the words `message to edit not found`.
+///
+/// # Errors
+///
+/// The [`DeskFailure`] class of an answer that did not land.
+pub fn board_outcome(status: u16, bytes: &[u8], call: Board) -> Result<Value, DeskFailure> {
+    let parsed = std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|text| json::parse(text).ok());
+    match status {
+        200..=299 => match envelope(bytes) {
+            Ok(answer) => Ok(answer),
+            Err(SendFailure::Rejected) => Err(DeskFailure::Refused),
+            Err(_) => Err(DeskFailure::Transient),
+        },
+        429 => {
+            let asked = parsed
+                .as_ref()
+                .and_then(|answer| answer.get("parameters"))
+                .and_then(|parameters| parameters.get("retry_after"));
+            Err(DeskFailure::RetryAfter(match asked {
+                Some(&Value::Num(seconds)) if seconds > 0 => {
+                    u64::try_from(seconds).unwrap_or(0).min(MAX_RETRY_AFTER)
+                }
+                _ => 0,
+            }))
+        }
+        400 => {
+            let Some(answer) = parsed else {
+                return Err(DeskFailure::Transient);
+            };
+            let plain = answer.get("ok") == Some(&Value::Bool(false))
+                && answer.get("error_code") == Some(&Value::Num(400));
+            let said = answer
+                .get_str("description")
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_default();
+            if plain && call == Board::Edit && said.contains("message is not modified") {
+                Err(DeskFailure::NotModified)
+            } else if plain && call == Board::Edit && said.contains("message to edit not found") {
+                Err(DeskFailure::Gone)
+            } else {
+                Err(DeskFailure::Refused)
+            }
+        }
+        401..=499 => Err(DeskFailure::Refused),
+        _ => Err(DeskFailure::Transient),
     }
 }
 
@@ -1675,6 +1893,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    mod desk_telegram_spec;
     mod orch_s1a_spec;
 
     /// A token that is obviously fake and obviously searchable.

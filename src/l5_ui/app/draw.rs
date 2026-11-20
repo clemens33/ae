@@ -23,6 +23,7 @@ use super::settings::{
     self, AboutFacts, ConfigView, InstructionsView, RowTone, SettingsBodies, StatsTab,
 };
 use crate::brief::age;
+use crate::console::deskview::{self, DeskView};
 use crate::console::input::View;
 use crate::console::input::{Mouse, ROWS_MAX};
 use crate::console::lane::Lane;
@@ -450,9 +451,9 @@ impl Layout {
     /// Record the border of a side panel drawn in `buf` over this main
     /// column's frame, so a press grabs it before the panel takes the press.
     pub(crate) fn panel_border(&mut self, buf: &Buffer, split: Split, columns: Columns) {
-        if let Stand::Side { border } = stand(buf.area, split, columns) {
+        if let Stand::Side { border, end } = stand(buf.area, split, columns) {
             let cells = Rect::new(border, 0, 1, buf.area.height);
-            self.border(buf, Edge::Panel, buf.area.width - border, cells);
+            self.border(buf, Edge::Panel, end - border, cells);
         }
     }
 
@@ -634,6 +635,9 @@ pub(crate) struct Wait<'a> {
     /// The cache that draws agent turns through Markdown; with none the
     /// lane draws them plain.
     pub(super) md: Option<&'a std::cell::RefCell<super::lanemd::Cache>>,
+    /// The orchestrator's board as the panel's incarnation last read it: with
+    /// none, the panel header carries no `desk` cue.
+    pub(crate) desk: Option<&'a DeskView>,
 }
 
 /// Where the composer's line would land: the seat the router picked, or the
@@ -732,7 +736,7 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Bu
     };
     // A side panel takes the right of the chat; the main column keeps the rest.
     let end = match stand {
-        Stand::Side { border } => border,
+        Stand::Side { border, .. } => border,
         _ => width,
     };
     layout.chat = Rect::new(chat.start, 0, end - chat.start, height);
@@ -763,8 +767,9 @@ enum Stand {
     /// No panel drawn: none is open, or a side panel did not fit while the
     /// main column holds the keys and covers the frame.
     Closed,
-    /// Right of the main column, from its border column to the frame's end.
-    Side { border: u16 },
+    /// Right of the main column, from its border column to `end`: the
+    /// frame's end, or the left edge of the board column that stands there.
+    Side { border: u16, end: u16 },
     /// Over the main column: right of the sidebar's rule, to the frame's end,
     /// the whole frame where no sidebar is drawn. `note` says why a side
     /// panel did not fit.
@@ -772,12 +777,15 @@ enum Stand {
 }
 
 /// How wide a side panel stands in `area` split as `split`, its border
-/// included: the width it was dragged to, else half of the chat columns,
-/// always leaving both columns [`PANEL_FLOOR`]. `None` when no side panel
-/// fits. The one clamp: a dragged width is kept as asked and clamped here.
-fn side_width(area: Rect, split: Split) -> Option<u16> {
+/// included, when it ends at the column `end`: the frame's end, or the left
+/// edge of the board column. It is the width it was dragged to, else half of
+/// the chat columns, always leaving both columns [`PANEL_FLOOR`]. `None` when
+/// no side panel fits. The main column starts where the whole frame puts it,
+/// for the sidebar's width is the frame's to give. The one clamp: a dragged
+/// width is kept as asked and clamped here.
+fn side_width(area: Rect, end: u16, split: Split) -> Option<u16> {
     let start = chat_start(area, split);
-    let chat = area.width.saturating_sub(start);
+    let chat = end.saturating_sub(start);
     let half = chat / 2;
     // Both halves keep the floor, so the clamp's bounds never cross.
     (half >= PANEL_FLOOR)
@@ -795,9 +803,11 @@ fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
     if full {
         return Stand::Full { note: None };
     }
-    if let Some(width) = side_width(area, split) {
+    let end = desk_area(area, split, columns).map_or(area.width, |desk| desk.x);
+    if let Some(width) = side_width(area, end, split) {
         return Stand::Side {
-            border: area.width - width,
+            border: end - width,
+            end,
         };
     }
     if !focused {
@@ -822,11 +832,109 @@ pub(crate) fn floor_met(area: Rect) -> bool {
     area.width >= MIN.0 && area.height >= MIN.1
 }
 
+/// The board column's width, its own left border included.
+pub(crate) const DESK_W: u16 = 36;
+
+/// Where the orchestrator's board stands in `area` split as `split`: the last
+/// [`DESK_W`] columns, only while the frame meets the app's size floor, the
+/// panel stands at the side and the main column and the panel each still keep
+/// [`PANEL_FLOOR`] beside it. Else `None`, and every other cell of the frame
+/// is the one it was without a board: nothing is taken from a frame that
+/// cannot spare the room, and a frame below the floor shows its note alone.
+pub(crate) fn desk_area(area: Rect, split: Split, columns: Columns) -> Option<Rect> {
+    let Some((false, _)) = columns.panel else {
+        return None;
+    };
+    if !floor_met(area) {
+        return None;
+    }
+    let end = area.width.checked_sub(DESK_W)?;
+    side_width(area, end, split)?;
+    Some(Rect::new(end, 0, DESK_W, area.height))
+}
+
+/// Draw the board column into `area` of `buf`: its left border, then the rows
+/// of `view` from the top, the last one marking what the height cut. Answers
+/// the runs of the links it drew, each over the cells the visible fragment
+/// covers and carrying the link's whole destination.
+pub(crate) fn draw_desk(
+    buf: &mut Buffer,
+    area: Rect,
+    view: Option<&DeskView>,
+    (look, zone): (Option<&Look>, Option<&str>),
+) -> Vec<super::backend::Run> {
+    let paint = Paint::of(look);
+    for y in area.y..area.y.saturating_add(area.height) {
+        for x in area.x..area.x.saturating_add(area.width) {
+            if inside(buf, x, y) {
+                buf[(x, y)].reset();
+            }
+        }
+    }
+    buf.set_style(area, paint.ground(|p| p.ink));
+    let rule = paint.rule(false);
+    for y in area.y..area.y.saturating_add(area.height) {
+        put(buf, area.x, y, "│", 1, rule);
+    }
+    let left = area.x.saturating_add(2);
+    let room = area.width.saturating_sub(2);
+    let rows = deskview::fit(deskview::column(view, room, zone), area.height);
+    let (dim, text, title) = (
+        paint.fg(|p| p.dim),
+        paint.fg(|p| p.text),
+        paint.fg(|p| p.title),
+    );
+    let mut runs = Vec::new();
+    for (step, row) in rows.iter().enumerate() {
+        let y = area.y.saturating_add(cells(step));
+        let style = match row.kind {
+            deskview::RowKind::Heading => title.add_modifier(Modifier::BOLD),
+            deskview::RowKind::Item => text,
+            deskview::RowKind::Link => title.add_modifier(Modifier::UNDERLINED),
+            deskview::RowKind::Header | deskview::RowKind::More | deskview::RowKind::Notice => dim,
+        };
+        put(buf, left, y, &row.text, room, style);
+        for link in &row.links {
+            let (Some(before), Some(shown)) = (
+                row.text.get(..link.range.start),
+                row.text.get(link.range.clone()),
+            ) else {
+                continue;
+            };
+            let run = link_area(
+                crate::event_text::terminal_cells(before),
+                crate::event_text::terminal_cells(shown),
+                (left, y, room),
+            );
+            if run.width > 0 {
+                runs.push(super::backend::Run {
+                    x: run.x,
+                    y: run.y,
+                    width: run.width,
+                    url: link.url.clone(),
+                });
+            }
+        }
+    }
+    runs
+}
+
+/// The column a side panel ends at in `area` split as `split`: the frame's
+/// end, or the left edge of the board column that stands there. A drag that
+/// moves the panel's edge asks it before the next frame is drawn.
+fn side_end(area: Rect, split: Split) -> u16 {
+    let side = Columns {
+        panel: Some((false, false)),
+        ..Columns::default()
+    };
+    desk_area(area, split, side).map_or(area.width, |desk| desk.x)
+}
+
 /// The cells the open panel covers in `area`, `None` while it is closed.
 pub(crate) fn panel_area(area: Rect, split: Split, columns: Columns) -> Option<Rect> {
     match stand(area, split, columns) {
         Stand::Closed => None,
-        Stand::Side { border } => Some(Rect::new(border, 0, area.width - border, area.height)),
+        Stand::Side { border, end } => Some(Rect::new(border, 0, end - border, area.height)),
         Stand::Full { .. } => {
             let start = chat_start(area, split);
             Some(Rect::new(start, 0, area.width - start, area.height))
@@ -855,9 +963,13 @@ pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) 
         icons: screen.look.is_none_or(|look| look.icons),
         wait,
     };
-    let (height, width) = (area.height, area.width);
+    let height = area.height;
+    let width = match stand {
+        Stand::Side { end, .. } => end,
+        _ => area.width,
+    };
     let from = match stand {
-        Stand::Side { border } => border,
+        Stand::Side { border, .. } => border,
         _ => chat_start(area, screen.model.split()),
     };
     for y in 0..height {
@@ -902,8 +1014,8 @@ pub(crate) fn draft_width(area: Rect, split: Split) -> usize {
 /// an open side panel keeps its half, the panel its own.
 pub(crate) fn column_width(area: Rect, split: Split, columns: Columns) -> usize {
     let width = match stand(area, split, columns) {
-        Stand::Side { border } if columns.drawing_panel => area.width - border - 1,
-        Stand::Side { border } => border - chat_start(area, split),
+        Stand::Side { border, end } if columns.drawing_panel => end - border - 1,
+        Stand::Side { border, .. } => border - chat_start(area, split),
         // A full panel stands in the cells of the main column, so both draw a
         // draft as wide as the main column's.
         Stand::Closed | Stand::Full { .. } => return draft_width(area, split),
@@ -1009,6 +1121,7 @@ pub(crate) fn dragged_to(drag: Drag, mouse: Mouse, area: Rect, split: Split, cou
         Edge::List => list_clamp(to.saturating_sub(list_border(0)), area, count),
         Edge::Panel => side_width(
             area,
+            side_end(area, split),
             Split {
                 panel: Some(to),
                 ..split
@@ -2559,6 +2672,16 @@ fn panel_head(
         let need = cells(note.chars().count());
         if stop >= left + need {
             put(buf, stop - need, 0, &note, need, ctx.paint.fg(|p| p.dim));
+            stop = stop.saturating_sub(need + 2);
+        }
+    }
+    // While the board column has no room, the header says what it would show.
+    if desk_area(buf.area, model.split(), columns).is_none()
+        && let Some(cue) = ctx.wait.desk.and_then(deskview::cue)
+    {
+        let need = cells(cue.chars().count());
+        if stop >= left + need {
+            put(buf, stop - need, 0, &cue, need, ctx.paint.fg(|p| p.dim));
             stop = stop.saturating_sub(need + 2);
         }
     }
@@ -4123,6 +4246,10 @@ fn put_line(buf: &mut Buffer, x: u16, y: u16, line: &Line<'_>, max: u16) -> u16 
 
 #[cfg(test)]
 mod accounts_spec;
+
+#[cfg(test)]
+#[path = "desk_geometry_spec.rs"]
+mod desk_geometry_spec;
 
 #[cfg(test)]
 mod s5_draw;

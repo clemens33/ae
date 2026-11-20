@@ -1,0 +1,8 @@
+ae-desk 1
+updated 2026-11-20T08:40:12Z
+D2	Choose & verify <now>	https://example.test/a?q=1&n=2	/tmp/board notes/α.md
+D17	Publish later
+C9	Stage the release
+R3	Read the gate
+W7	Wait for the owner
+L1	Read the release notes	https://example.test/releases

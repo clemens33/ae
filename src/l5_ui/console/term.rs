@@ -975,6 +975,7 @@ impl Term {
                 Ok(text) => console.printed.lane(text),
                 Err(why) => Effect::Print(why),
             },
+            Effect::Board => console.printed.board(console.dir()),
             effect => effect,
         };
         Some(effects.into_iter().map(act).collect())

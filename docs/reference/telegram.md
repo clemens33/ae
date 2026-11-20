@@ -105,6 +105,16 @@ Every message is asked in **one session's shared chat** — admitted, capped at 
 
 The [orchestrator seat](commands.md#ae-orchestrator) is where plain messages go by default: with no `/use` selection, your plain messages are asked in its chat (`objective: …`, `status`, `what next`, … are plain messages). `/use <session>` selects another session, `/use clear` returns to the seat, and `@session <msg>` asks any session once. Its `say` reports reach you as `[orchestrator] …`. When the seat is stopped or cannot be proven, you get the one-line refusal of [rung 4](#inbound-commands-chat--ae), never a redirect.
 
+## The board message
+
+The bridge keeps **one** message in the configured chat that shows the [orchestrator's board](../app.md#orchestrator-board), edits it in place when the board changes and pins it without a notification. It is sent only for the orchestrator seat the role census proves while a running session of that name stands in the seat's own directory: a running session of the same name elsewhere is no source, and the bridge prints `desk skipped: running session <name> is at <dir>, not the census-held <held>` once per episode. The outbound scope does not apply, because the board is not a chat event. A board that cannot be read leaves the message as it is and prints `the pin keeps its last text`.
+
+The message is HTML: a heading per section, `<a href>` for web links and `<code>` for paths, link previews off, at most 3900 units of markup. Whole items are left out from the end (LINKS first) and a line says `… N more: /board`.
+
+Each pass makes the calls the board needs, each independent of the others: send (no message yet), edit (the shown text differs), pin (not pinned yet). A failed send or edit waits 1 s, doubling to a minute, and a pin waits 40 s, doubling to ten minutes; a longer `retry_after` wins. A refusal (403, `chat not found`, no right to pin) keeps the message. Only an edit answered with HTTP 400, `error_code` 400 and `message to edit not found` clears it, and the next pass then sends a new message. `message is not modified` is a success. A restart keeps the message.
+
+The checkpoint `desk-pin` holds the chat, the message id and whether it is pinned; `desk-pin.shown` holds the text the message shows, bound to that chat and message, so an unchanged board costs no call after a restart. A `desk-pin` the bridge cannot read **holds** the board: no call is made and the bridge prints the one line `desk pin state <path> unreadable (<why>): holding`. Repair or remove the file. `ae telegram status` shows the row `board:` (`none yet`, `no message yet (chat <id>)`, `message <id> sent, pin pending`, `message <id> pinned` or `HOLD - <why>; repair or remove <path>`) and never writes. A message Telegram accepted whose checkpoint cannot be written stays in memory and is told on stderr, and the pin waits until the disk takes it.
+
 ## Commands
 
 ```bash
@@ -147,6 +157,8 @@ There is **one** bridge implementation: the ae core binary, run in the
 |---|---|
 | `~/.ae/telegram/tg_offset` | Durable inbound `getUpdates` cursor. Advances only *after* an update is durably routed — at-least-once (see **Replay safety**, above) |
 | `~/.ae/telegram/current_target` | The `/use` selection: `<session>\t<seat>`, `*` for the chat's own router |
+| `~/.ae/telegram/desk-pin` | The board message: `ae-desk-pin 1`, the chat, then the message id and `pinned 0` or `pinned 1` once one was sent. Strict: a file that does not parse holds the board |
+| `~/.ae/telegram/desk-pin.shown` | The text the board message shows, bound to its chat and message id (up to 16 KiB); a cache, a missing or mismatched one costs one edit |
 | `~/.ae/telegram/stale-inbound.jsonl` | Phone messages a start held back as older than its cutoff, one JSON object each with their text (0600, never read back) |
 | `~/.ae/telegram/backlog.log` | One line per outbound pass that held rows back: time, session, count, cutoff; no text (0600) |
 | `~/.ae/telegram/autostart-refusal` | Last autostart refusal as a fixed category, such as `settings-invalid`, `token-unreadable` or `spawn-failed`, with its UTC timestamp. The record remains after a successful start. |

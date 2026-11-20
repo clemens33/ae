@@ -317,7 +317,7 @@ fn line_suffix(after: &str) -> (usize, Option<usize>, Option<usize>) {
 
 /// `path` as the path of a `file://` URL: every byte outside
 /// `A-Za-z0-9-._~/` is `%XX`.
-fn encode_path(path: &str) -> String {
+pub(crate) fn encode_path(path: &str) -> String {
     let mut out = String::from("file://");
     for byte in path.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {

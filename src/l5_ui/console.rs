@@ -19,6 +19,7 @@ use crate::{
 use lane::Seat;
 
 pub mod card;
+pub mod deskview;
 pub(crate) mod fold;
 pub mod holder;
 pub mod input;

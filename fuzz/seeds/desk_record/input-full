@@ -1,0 +1,11 @@
+DECIDE
+D17 | Publish later
+D2 | Choose & verify <now> | https://example.test/a?q=1&n=2 | /tmp/board notes/α.md
+COMING
+C9 | Stage the release
+RUNNING
+R3 | Read the gate
+WAITING ON OTHERS
+W7 | Wait for the owner
+LINKS
+L1 | Read the release notes | https://example.test/releases

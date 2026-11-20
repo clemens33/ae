@@ -436,6 +436,8 @@ fn refused_line(line: &[u8]) -> bool {
             ["/close"] | ["/close", _] => false,
             ["/open", name] => !ae::config::is_agent_name(name),
             ["/more", n] => n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()),
+            // `/board` takes no word: an operand is told off in a printed line and the composer stays clean.
+            ["/board", ..] => false,
             _ => true,
         };
     }
@@ -542,7 +544,7 @@ fuzz_target!(|data: &[u8]| {
                 "a fold number is digits: {number:?}"
             ),
             Effect::ImagePaste => assert!(stream.contains(&0x16), "only ^V asks for an image"),
-            Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) => {}
+            Effect::Paste(_) | Effect::Lane(_) | Effect::Styled(_) | Effect::Board => {}
         }
     }
     let line = line.expect("an owner has a composer line");

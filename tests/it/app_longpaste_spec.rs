@@ -187,6 +187,7 @@ fn a_toggle_preserves_a_composed_draft_and_enter_submits_it() {
             coverage: vec![],
         },
         needs: None,
+        desk: None,
         roster: None,
     }));
     app.read_only.clear();
@@ -227,6 +228,7 @@ fn successful_outcomes_live_in_the_ask_header_and_failures_keep_visible_lines() 
             seq: 1,
             lane: lane.clone(),
             needs: None,
+            desk: None,
             roster: None,
         }));
         let notices = app.settle(

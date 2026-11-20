@@ -17,6 +17,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ae::console::input::{Effect, Input, Reading};
 use ae::events::Event;
 
+#[path = "desk_chat_fifo_spec.rs"]
+mod desk_chat_fifo_spec;
+#[path = "desk_chat_ordinary_spec.rs"]
+mod desk_chat_ordinary_spec;
+#[path = "desk_chat_spec.rs"]
+mod desk_chat_spec;
+
 const UUID: &str = "0199c0de-aaaa-4890-abcd-ef0123456789";
 const PROMPT: &str = "to lead> ";
 const WAIT: Duration = Duration::from_secs(20);

@@ -34,6 +34,13 @@ src/                — Rust sources. main.rs thin (argv in, exit code out); lib
                       the socket proof cache, discovery and the snapshot's assembly.
                       worktrees.rs is the one worktree-cleanup classifier `ae worktree gc`
                       and the retire guard share; its git facts come through git.rs
+                      desk.rs (l2) is the orchestrator board's pure record: the input and
+                      stored grammars, diff and audit summary, fuzzed as `desk_record`; its l3
+                      store, l3_services/deskstore.rs (`<session>/desk-record`, replaced whole
+                      under `desk-record.lock`, one `desk` event per change), is `deskstore`.
+                      console/deskview.rs turns it into rows for the app column and
+                      `/board`; telegram/desk.rs keeps one pinned Telegram message in step with
+                      it, its checkpoint and Telegram-answer readers fuzzed as `desk_pin`
 src/l5_ui/app/            — `ae app`; src/l5_ui/app.rs is the coordinator (the `App` state, its
                       constants, `new`, `answer` and `absorb`). loader.rs the one
                       background reader; journals.rs its
@@ -115,13 +122,13 @@ A file may name its own layer and the layers below it. A `crate::` path that nam
 - **2 state and model** — what config, session files, journals, tmux addressing and the agent-tool
   capability rows say, and the pure classifiers and verdicts over them. Modules: `config`, `meta`,
   `tool`, `harness_state`, `launch_cmd`, `theme`, `store`, `events`, `effort_journal`, `state`,
-  `requests`, `inventory`, `tracked`, `roster`, `pairs`, `tmux`, `session_tmux`, `archive`,
-  `digest`, `filters`, `memo`, `goal`, `wait_on`, `birth`, `model_drift`, `liveness`,
+  `requests`, `inventory`, `tracked`, `desk`, `roster`, `pairs`, `tmux`, `session_tmux`,
+  `archive`, `digest`, `filters`, `memo`, `goal`, `wait_on`, `birth`, `model_drift`, `liveness`,
   `conversation`, `watchdog`.
 - **3 services** — one capability each over that state: delivery and the helper verbs, the board,
   usage and Statistics reads, Telegram, launch builders, install and upgrade. Modules: `deliver`,
-  `send`, `reply`, `relay`, `brief`, `brief_retry`, `board`, `quota`, `usage`, `go_usage`,
-  `muse_usage`, `stats`, `stats_store`, `tool_stats`, `telegram`, `render`, `listing`, `fleet_read`,
+  `send`, `reply`, `relay`, `brief`, `brief_retry`, `board`, `deskstore`, `quota`, `usage`,
+  `go_usage`, `muse_usage`, `stats`, `stats_store`, `tool_stats`, `telegram`, `render`, `listing`, `fleet_read`,
   `session`, `launch`, `run`, `install`, `upgrade`, `autoupgrade`, `init`, `compact`, `carry`,
   `opencode_variant`.
 - **4 seat and session orchestration** — operations on a live session or seat: launch, spawn,

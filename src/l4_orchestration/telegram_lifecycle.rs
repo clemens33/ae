@@ -320,6 +320,12 @@ fn status(paths: &Paths, server: &ServerId, out: &mut impl Write) -> crate::erro
             state_dir.display()
         )?;
     }
+    // Read only: a status never writes the pin checkpoint.
+    writeln!(
+        out,
+        "  board:   {}",
+        crate::telegram::pin_status(&state_dir)
+    )?;
     // An explicit include= that omits `chat` silently drops agents' `say`
     // replies.
     if let Some(include) = section_value(config.as_deref().unwrap_or_default(), "include")

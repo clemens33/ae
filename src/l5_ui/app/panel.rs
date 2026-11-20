@@ -7,6 +7,7 @@ use super::{
     Position, QUIT_WINDOW, Rc, Refusal, SeatRef, Size, Timestamp, View, apply, draw, fleet, loader,
     model, overview,
 };
+use crate::console::deskview::DeskView;
 
 /// The open orchestrator panel: how it stands, what it is bound to, and its
 /// own chat column.
@@ -111,6 +112,10 @@ pub(super) struct Orch {
     /// When the panel raised the hint row's flash: its own line, which
     /// hiding the panel drops.
     flash: Option<Instant>,
+    /// The board the reader last found for the panel's incarnation: the
+    /// `session_id` it was read as, and the record. Kept only while the panel
+    /// is open on that incarnation.
+    pub(super) desk: Option<(String, DeskView)>,
 }
 
 impl Orch {
@@ -508,6 +513,29 @@ impl App {
         }
     }
 
+    /// The board the open panel's incarnation last read, `None` while the
+    /// panel is bound to none or nothing was read for that incarnation.
+    pub(super) fn desk_view(&self) -> Option<&DeskView> {
+        let pin = self.orch.panel.as_ref()?.pin()?;
+        (self.orch.desk.as_ref())
+            .filter(|(id, _)| id == pin)
+            .map(|(_, view)| view)
+    }
+
+    /// Draw the board column right of the open side panel when the frame has
+    /// room for it, and keep the links it drew among the frame's.
+    pub(super) fn frame_desk(&mut self, buf: &mut Buffer) {
+        let columns = self.columns();
+        let Some(area) = draw::desk_area(buf.area, self.model.split(), columns) else {
+            return;
+        };
+        let view = self.desk_view().cloned();
+        let (look, zone) = self.dressed();
+        let zone = zone.map(str::to_owned);
+        let runs = draw::draw_desk(buf, area, view.as_ref(), (look.as_ref(), zone.as_deref()));
+        self.layout.links.extend(runs);
+    }
+
     /// The cells the open panel covers in the last frame, `None` while it is
     /// closed or the main column covers it.
     pub(super) fn panel_area(&self) -> Option<ratatui_core::layout::Rect> {
@@ -842,6 +870,7 @@ impl App {
         // orchestrator is no listed session, so its own column reads none.
         let (look, zone) = self.dressed();
         let zone = zone.map(str::to_owned);
+        let deskview = self.desk_view().cloned();
         let cursor = self.in_panel(|app| {
             app.show();
             app.model.set_columns(columns);
@@ -881,6 +910,7 @@ impl App {
                 sent: &sent,
                 dest: dest.as_ref().map(draw::Dest::of),
                 md: Some(&app.md),
+                desk: deskview.as_ref(),
             };
             let drawn = draw::draw_panel(&screen, wait, buf);
             let replaced = std::mem::replace(&mut app.layout, drawn);
@@ -906,5 +936,6 @@ impl App {
         }
         self.layout.panel = cells;
         self.layout.panel_border(buf, self.model.split(), columns);
+        self.frame_desk(buf);
     }
 }

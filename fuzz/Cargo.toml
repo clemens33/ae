@@ -503,3 +503,17 @@ path = "fuzz_targets/redact_text.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "desk_record"
+path = "fuzz_targets/desk_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "desk_pin"
+path = "fuzz_targets/desk_pin.rs"
+test = false
+doc = false
+bench = false

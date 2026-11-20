@@ -19,6 +19,7 @@ use super::journals::Journals;
 use super::menu::Dialog;
 use super::peek::{self, Body};
 use super::{REFRESH, facts_of, filedoor, fleet, proven_pane, reader};
+use crate::console::deskview::DeskView;
 use crate::console::input::Reading;
 use crate::console::lane::{Lane, Seat};
 use crate::console::link::Base;
@@ -380,6 +381,9 @@ pub(super) struct ViewRead {
     pub(super) needs: Option<Section>,
     /// The roster `/open` names, after a settled read.
     pub(super) roster: Option<Vec<SeatRef>>,
+    /// The orchestrator's board as this read found it; `None` for every other
+    /// session.
+    pub(super) desk: Option<DeskView>,
 }
 
 /// How eagerly a session is kept read.
@@ -1465,7 +1469,7 @@ impl Reader {
         let console = self
             .consoles
             .entry(name.to_owned())
-            .or_insert_with(|| Console::open_standing(name.to_owned(), dir));
+            .or_insert_with(|| Console::open_standing(name.to_owned(), dir.clone()));
         // Read afresh with every stage, so a changed `relay_replies` shows on
         // the next read of the session's lane.
         console.relay_replies(crate::config::global_relay_replies(Some(
@@ -1500,6 +1504,7 @@ impl Reader {
         };
         let roster = console.roster().map(<[SeatRef]>::to_vec);
         let id = console.uuid().to_owned();
+        let desk = (name == super::ORCH).then(|| DeskView::read(&dir));
         self.read_at.insert(name.to_owned(), Instant::now());
         self.seq += 1;
         Some(Answer::View(ViewRead {
@@ -1509,6 +1514,7 @@ impl Reader {
             lane,
             needs,
             roster,
+            desk,
         }))
     }
 

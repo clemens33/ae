@@ -4,6 +4,7 @@ pub mod archive;
 pub mod birth;
 pub mod config;
 pub mod conversation;
+pub mod desk;
 pub mod digest;
 pub mod effort_journal;
 pub mod events;

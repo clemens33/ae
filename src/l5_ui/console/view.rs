@@ -69,15 +69,15 @@ enum Voice {
 
 /// The viewer's clock zone, as tmux spelled it (`+0200`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Zone {
-    label: String,
-    secs: i64,
+pub(super) struct Zone {
+    pub(super) label: String,
+    pub(super) secs: i64,
 }
 
 impl Zone {
     /// `[+-]HHMM` with a real hour and minute, else nothing: the answer is
     /// printed, so a malformed one is never kept.
-    fn parse(answer: &str) -> Option<Self> {
+    pub(super) fn parse(answer: &str) -> Option<Self> {
         let digits = answer.strip_prefix(['+', '-'])?;
         if digits.len() != 4 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
             return None;
@@ -149,6 +149,13 @@ impl Style {
             dress.base = base;
         }
         self
+    }
+
+    /// The viewer's zone as tmux spelled it, when a real one is kept.
+    #[must_use]
+    pub(super) fn zone(&self) -> Option<&str> {
+        let dress = self.0.as_ref()?;
+        dress.zone.as_ref().map(|zone| zone.label.as_str())
     }
 
     /// `micros` on the viewer's clock.
@@ -861,6 +868,13 @@ impl Printed {
             Style(None) => Effect::Lane(text),
             Style(Some(_)) => Effect::Styled(Styled(text)),
         }
+    }
+
+    /// `/board`: the board of the session in `dir`, read now, as the lane text
+    /// that shows it. The clock reads in the viewer's zone.
+    pub(super) fn board(&self, dir: &std::path::Path) -> Effect {
+        let view = super::deskview::DeskView::read(dir);
+        self.lane(super::deskview::board_text(&view, self.style.zone()))
     }
 
     /// Keep an outcome until its ask row prints, or two readable passes have
