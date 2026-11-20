@@ -12,7 +12,11 @@ use libfuzzer_sys::fuzz_target;
 // themselves by nothing.
 fuzz_target!(|data: &[u8]| {
     if let Ok(desk) = std::hint::black_box(parse(data)) {
-        assert_eq!(encode(&desk), data, "a parsed record encodes back to itself");
+        assert_eq!(
+            encode(&desk),
+            data,
+            "a parsed record encodes back to itself"
+        );
     }
     if let Ok(items) = std::hint::black_box(parse_input(data)) {
         let desk = Desk {

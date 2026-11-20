@@ -1,9 +1,7 @@
 #![no_main]
 
 use ae::json::{self, Value};
-use ae::telegram::{
-    Board, DeskFailure, board_outcome, encode_shown, parse_pin, parse_shown,
-};
+use ae::telegram::{Board, DeskFailure, board_outcome, encode_shown, parse_pin, parse_shown};
 use libfuzzer_sys::fuzz_target;
 
 // The Telegram board's three readers of untrusted bytes. The first byte picks
