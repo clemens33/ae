@@ -25,7 +25,8 @@ use std::path::Path;
 /// `#[cfg(test)]` marker onwards cut off.
 fn product(name: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(name);
-    product_at(&path, name)
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{name} must be readable"));
+    product_half(&text)
 }
 
 /// The product half of the crate root. `src/lib.rs` stays at the top of `src/`
@@ -33,12 +34,15 @@ fn product(name: &str) -> String {
 /// root is read by its full path, never through `product`.
 fn crate_root_product() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
-    product_at(&path, "src/lib.rs")
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("src/lib.rs must be readable"));
+    product_half(&text)
 }
 
-/// The product half of the file at `path`; `name` labels the panic.
-fn product_at(path: &Path, name: &str) -> String {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("{name} must be readable"));
+/// The product half of a module's text: comment lines dropped, and everything
+/// from the test module onwards cut off. Each caller reads its own file, so the
+/// path it builds and the read stay in one function.
+fn product_half(text: &str) -> String {
     let code: String = text
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
