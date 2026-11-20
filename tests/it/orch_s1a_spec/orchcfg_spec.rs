@@ -1,8 +1,8 @@
 //! Released orchestrator overlays and relay context compatibility through the real CLI.
 
 use super::{
-    ATTEMPT, Rig, Upgrade, context_recording_tool, events, meta, read, rig, stamp_config,
-    stamp_launch, words,
+    ATTEMPT, Rig, Upgrade, context_recording_tool, events, meta, read, recorded_context, rig,
+    stamp_config, stamp_launch, words,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -406,11 +406,11 @@ fn relay_names_stop_resume_for_claude_and_fresh_conversation_for_muse() {
     }
 }
 
-fn launch_pair(r: &Rig, u: &Upgrade<'_>, name: &str) -> PathBuf {
+fn launch_pair(r: &Rig, u: &Upgrade<'_>, state: &Path, name: &str) -> PathBuf {
     let output = crate::cli::ae()
         .env("HOME", &u.home)
-        .env("AE_HOME", u.state())
-        .env("CONFIG_FILE", u.state().join("config"))
+        .env("AE_HOME", state)
+        .env("CONFIG_FILE", state.join("config"))
         .env("TMUX_TMPDIR", &r.world.root)
         .env("AE_TMUX_SERVER_KIND", "socket")
         .env("AE_TMUX_SERVER", &r.world.sock)
@@ -424,17 +424,14 @@ fn launch_pair(r: &Rig, u: &Upgrade<'_>, name: &str) -> PathBuf {
         .output()
         .expect("real launch on the private server");
     assert!(output.status.success(), "launch {name}: {output:?}");
-    u.state().join("sessions").join(name)
+    state.join("sessions").join(name)
 }
 
-#[test]
-fn upgrade_lists_running_leads_without_current_context_and_their_remedies() {
-    let r = rig("ocnotice");
-    let u = Upgrade::new(&r);
+fn configure_pair(r: &Rig, state: &Path) -> PathBuf {
     let claude = context_recording_tool(&r.world.root.join("notice-claude"), "claude");
     let muse = context_recording_tool(&r.world.root.join("notice-muse"), "muse");
     fs::write(
-        u.state().join("config"),
+        state.join("config"),
         format!(
             "[profiles]\nprimary = \"{}\"\nsecondary = \"{}\"\n\n\
              [roster]\nlead = primary\ncolead = secondary\n\n\
@@ -445,8 +442,17 @@ fn upgrade_lists_running_leads_without_current_context_and_their_remedies() {
         ),
     )
     .expect("isolated config for the lead-pair tools");
-    let stale = launch_pair(&r, &u, "stale-orchcfg");
-    let _current = launch_pair(&r, &u, "current-orchcfg");
+    claude.with_file_name("received-context")
+}
+
+#[test]
+fn upgrade_lists_running_leads_without_current_context_and_their_remedies() {
+    let r = rig("ocnotice");
+    let u = Upgrade::new(&r);
+    let root = u.state();
+    configure_pair(&r, &root);
+    let stale = launch_pair(&r, &u, &root, "stale-orchcfg");
+    let _current = launch_pair(&r, &u, &root, "current-orchcfg");
     let _stopped = u.plant(
         "",
         "stopped-orchcfg",
@@ -475,4 +481,36 @@ fn upgrade_lists_running_leads_without_current_context_and_their_remedies() {
     );
     let stale_after = read(&stale.join("meta"));
     assert!(!stale_after.contains("context.main=") && !stale_after.contains("context.worker.0="));
+}
+
+#[test]
+fn named_instance_context_notice_routes_resume_to_that_instance() {
+    let r = rig("ocnamedcontext");
+    let u = Upgrade::new(&r);
+    let instance = "orchcfg-blue";
+    let name = "named-stale-lead";
+    let root = u.state().join("instances").join(instance);
+    fs::create_dir_all(&root).expect("named instance state");
+    let claude_context = configure_pair(&r, &root);
+    let dir = launch_pair(&r, &u, &root, name);
+    let _ = recorded_context(&claude_context);
+    drop_context(&dir.join("meta"), &["main"]);
+
+    let said = published(&u, VERSION);
+    let line = one_line(&said, |line| {
+        line.starts_with("ae: ") && line.contains("context stamp") && line.contains(name)
+    });
+    assert!(
+        line.contains(&format!("instance {instance}")),
+        "context notice lost the session's instance: {line}"
+    );
+    for required in ["main", "stop and resume", "instance's own ae command"] {
+        assert!(line.contains(required), "missing {required:?}: {line}");
+    }
+    for wrong_root in [format!("ae stop {name}"), format!("ae {name}")] {
+        assert!(
+            !line.contains(&wrong_root),
+            "command would target the default root: {line}"
+        );
+    }
 }
