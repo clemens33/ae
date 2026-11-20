@@ -12,6 +12,10 @@ use super::{Answer, ORCH, Rig, cell, text};
 use crate::app::{Terminal, backend, draw_frame};
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one app fixture follows the board through wide, narrow, damaged and removed states"
+)]
 fn the_app_reads_the_bound_board_and_writes_its_links_only_when_the_column_fits() {
     let mut rig = Rig::new(Some("api"));
     let sessions = rig.root.0.join("sessions");
