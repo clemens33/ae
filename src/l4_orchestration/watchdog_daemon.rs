@@ -2458,7 +2458,7 @@ impl Cycle<'_> {
         // attempted one sends the seat no overview beside it, and while the
         // current launch holds an unconfirmed turn the overview names the
         // owner's remedy.
-        let charter = self.charter_update(&events, &observed, settling, err)?;
+        let charter = self.charter_update(&observed, settling, err)?;
         let overview = if self.meta_agent
             && self.knobs.sweep.enabled()
             && charter != charter::Charter::Attempted

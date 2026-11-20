@@ -166,6 +166,7 @@ mod orch_s1a_spec;
 mod orch_s3a_driver;
 mod orchexec_charter_spec;
 mod orchexec_delivery_spec;
+mod orchrename_charter_spec;
 mod pairguard_after;
 mod pairguard_spec;
 mod pairpin_relaunch_spec;

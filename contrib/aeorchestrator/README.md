@@ -170,10 +170,11 @@ above). `CHARTER.md` is not read at runtime.
 A RUNNING orchestrator picks the new charter up without a restart. When its
 launch recorded an older charter and the seat file's prompt carries the
 current one, the watchdog sends the seat one `CHARTER UPDATE (ae <version>)`
-turn once the seat declares `done`: a pointer to the saved body, which holds
-the seat file's prompt. A landed turn stamps the launch, so the turn is sent
-once per launch. A turn refused before any paste is tried again on a later
-cycle. A turn whose submit ae cannot confirm is never sent again; the overview
+turn once the seat declares `done` or `waiting-user` at an idle input box: a
+pointer to the saved body, which holds the seat file's prompt. A landed turn
+stamps the launch, so the turn is sent once per launch. A turn refused before
+any paste is tried again on a later cycle. A turn whose submit ae cannot
+confirm is never sent again; the overview
 then shows `orchestrator charter update uncertain: ae stop orchestrator, then
 ae orchestrator`, which the owner runs from another terminal; for the seat of a
 named instance it names that instance and its own ae command instead. The

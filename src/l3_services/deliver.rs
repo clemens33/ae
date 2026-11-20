@@ -1209,9 +1209,16 @@ pub(crate) fn prompt_hold(
     } else {
         None
     };
-    let read = if !prompt_row(tool) {
+    let read = prompt_read(tool, capture.as_deref());
+    (capture, read)
+}
+
+/// The verdict [`prompt_hold`] gives `capture`: the shared frame model over
+/// its printable rows, for a tool with a measured row.
+pub(crate) fn prompt_read(tool: Option<ToolKind>, capture: Option<&str>) -> PromptRead {
+    if !prompt_row(tool) {
         PromptRead::Unmodelled
-    } else if let (Some(kind), Some(screen)) = (tool, capture.as_deref()) {
+    } else if let (Some(kind), Some(screen)) = (tool, capture) {
         let plain = region::plain_text(screen);
         if kind.input_model() == InputModel::StyleDelimited && codex_service_wait(&plain) {
             PromptRead::CodexServiceWait
@@ -1221,8 +1228,7 @@ pub(crate) fn prompt_hold(
         }
     } else {
         PromptRead::Unreadable
-    };
-    (capture, read)
+    }
 }
 
 /// The held half naming the drawn question, neutralised for the terminal.

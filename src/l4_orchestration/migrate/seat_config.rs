@@ -25,7 +25,8 @@
 //! first free `<file>.pre-v<version>[-N]` and says so in one line. No step here
 //! stops or starts a seat: the seat reads its prompt at launch, and a running
 //! seat whose charter the replacement raised gets the new prompt as one
-//! CHARTER UPDATE turn from its watchdog after it next declares `done`.
+//! CHARTER UPDATE turn from its watchdog after it next declares `done` or
+//! `waiting-user` at an idle input box.
 
 use super::{SEAT_CONFIG_CAP, publish_reseed};
 use crate::config::{
@@ -307,20 +308,21 @@ pub(super) fn reconcile(root: &Path, version: &str) -> Option<String> {
 
 /// How a replacement line tells the owner the seat loads the new file. When the
 /// replacement raises the charter, a running seat gets the new prompt as one
-/// CHARTER UPDATE turn from its watchdog after it next declares `done`, and
-/// only a restart loads the rest of the file. A named instance's line names no
-/// ae command, because the one on the path starts the default root.
+/// CHARTER UPDATE turn from its watchdog after it next declares `done` or
+/// `waiting-user` at an idle input box, and only a restart loads the rest of
+/// the file. A named instance's line names no ae command, because the one on
+/// the path starts the default root.
 fn restart(named_instance: bool, raised: bool) -> &'static str {
     match (named_instance, raised) {
         (false, true) => {
             "a running orchestrator seat gets the new prompt as one CHARTER UPDATE turn after it \
-             next declares done, and a restart loads the whole file: ae stop orchestrator, then \
-             ae orchestrator"
+             next declares done or waiting-user at an idle input box, and a restart loads the \
+             whole file: ae stop orchestrator, then ae orchestrator"
         }
         (true, true) => {
             "a running orchestrator seat of that instance gets the new prompt as one CHARTER \
-             UPDATE turn after it next declares done, and a restart with that instance's own ae \
-             command loads the whole file"
+             UPDATE turn after it next declares done or waiting-user at an idle input box, and a \
+             restart with that instance's own ae command loads the whole file"
         }
         (false, false) => {
             "restart the orchestrator seat to load it: ae stop orchestrator, then ae orchestrator"

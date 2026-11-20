@@ -117,8 +117,8 @@ struct Seat {
 
 impl Cycle<'_> {
     /// Hand the orchestrator seat the current charter once per launch: when
-    /// the seat is proved, its newest declaration is `done`, the charter its
-    /// launch recorded is older than [`crate::config::SEAT_CHARTER_VERSION`],
+    /// the seat is proved, the charter its launch recorded is older than
+    /// [`crate::config::SEAT_CHARTER_VERSION`], the seat [`admits`] the turn
     /// and the prompt of the seat overlay teaches the current one. A
     /// launch-bound claim is taken under the meta lock before the first key;
     /// only a refusal the delivery proves came before any paste drops it, a
@@ -131,7 +131,6 @@ impl Cycle<'_> {
     /// Only a failure to write `err`.
     pub(super) fn charter_update(
         &self,
-        events: &[Event],
         observed: &[tmux::WatchPane],
         settling: bool,
         err: &mut impl Write,
@@ -142,55 +141,29 @@ impl Cycle<'_> {
         if seat.claimed {
             return Ok(Charter::Unresolved);
         }
-        let target = crate::config::SEAT_CHARTER_VERSION;
-        if settling || seat.running >= target || !self.declared_done(events, &seat) {
+        if settling || seat.running >= crate::config::SEAT_CHARTER_VERSION {
             return Ok(Charter::Idle);
         }
-        let Some(prompt) = charter_prompt(&seat.overlay) else {
-            return Ok(Charter::Idle);
-        };
-        match crate::meta::claim_charter(self.meta_dir, SLOT, &seat.launch, target) {
-            Ok(true) => {}
-            Ok(false) => return Ok(Charter::Idle),
-            Err(why) => {
-                writeln!(
-                    err,
-                    "ae: watchdog: could not claim the orchestrator charter update ({}) — not sent",
-                    why.cause()
-                )?;
-                return Ok(Charter::Idle);
-            }
-        }
-        let reference = format!(
-            "charter-{}-{}",
-            crate::time::Timestamp::now().epoch(),
-            seat.launch
-        );
-        let text = format!(
-            "{HEAD}{}): your instructions changed. These replace your earlier instructions:\n\n{prompt}",
-            crate::shape::VERSION
-        );
-        let receipt = self.charter_deliver(&seat, &reference, &text, err)?;
-        if let Err(why) = settle(self.meta_dir, &seat.launch, receipt) {
-            writeln!(
-                err,
-                "ae: watchdog: {}, but its claim could not be settled ({}); it is not sent again",
-                receipt.summary(),
-                why.cause()
-            )?;
-        }
-        Journal {
+        let sight = Live {
             meta_dir: self.meta_dir,
             session: self.session,
-        }
-        .record_referring(
-            crate::watchdog::CHARTER_UPDATE_ACTION,
-            &seat.agent,
-            &reference,
-            receipt.summary(),
+            server: self.server,
+            seat: &seat,
+            tool: crate::tool::ToolKind::from_binary_name(
+                self.agent_bin(SLOT).as_deref().unwrap_or_default(),
+            ),
+        };
+        let journal = Journal {
+            meta_dir: self.meta_dir,
+            session: self.session,
+        };
+        attempt(
+            &journal,
+            &seat,
+            &sight,
+            |reference, compose, err| self.charter_deliver(&seat, reference, compose, err),
             err,
-        )?;
-        Ok(Charter::Attempted)
+        )
     }
 
     /// The seat a charter turn may reach: the pane this cycle observed in the
@@ -239,29 +212,15 @@ impl Cycle<'_> {
         })
     }
 
-    /// Whether the seat's newest declaration in this session's main slot is
-    /// `done`.
-    fn declared_done(&self, events: &[Event], seat: &Seat) -> bool {
-        let key = crate::events::SessionKey::new(self.session, &seat.session_id);
-        events
-            .iter()
-            .rev()
-            .find(|event| {
-                event.declared_state().is_some()
-                    && crate::watchdog::event_is_actor_in(event, key, SLOT, &seat.agent)
-            })
-            .and_then(Event::declared_state)
-            == Some("done")
-    }
-
     /// One composed turn to the proved pane on this cycle's server, admitted
     /// in process as ae's own leg against the launch `seat` carries, and its
-    /// typed receipt.
+    /// typed receipt. `compose` runs after the delivery's quiet gate, just
+    /// before the paste; its `None` pastes nothing.
     fn charter_deliver(
         &self,
         seat: &Seat,
         reference: &str,
-        text: &str,
+        compose: &dyn Fn() -> Option<String>,
         err: &mut impl Write,
     ) -> crate::error::Result<Receipt> {
         let request = crate::deliver::Request {
@@ -283,14 +242,188 @@ impl Cycle<'_> {
         let Some(guard) = crate::tracked::admit_leg(&request, (SLOT, &seat.launch), err)? else {
             return Ok(Receipt::BeforeSubmit);
         };
-        let delivery = crate::deliver::deliver_composed_checked(
-            &request,
-            Some(&guard),
-            || Some(text.to_owned()),
-            err,
-        )?;
+        let delivery =
+            crate::deliver::deliver_composed_checked(&request, Some(&guard), compose, err)?;
         Ok(Receipt::of(delivery.as_ref()))
     }
+}
+
+/// One charter attempt for `seat`, whose launch holds an older charter. The
+/// seat must [`admits`] the turn at this early read. Then the claim is taken,
+/// and `deliver` composes the turn through a closure that reads `sight` again
+/// (the late gate): a seat that turned busy or changed its declaration in
+/// between gets nothing pasted, and the refusal before submit releases its
+/// claim for a later cycle. The receipt settles the claim and is journaled.
+fn attempt<W: Write>(
+    journal: &Journal<'_>,
+    seat: &Seat,
+    sight: &impl Sight,
+    deliver: impl FnOnce(&str, &dyn Fn() -> Option<String>, &mut W) -> crate::error::Result<Receipt>,
+    err: &mut W,
+) -> crate::error::Result<Charter> {
+    if !admits(sight) {
+        return Ok(Charter::Idle);
+    }
+    let Some(prompt) = charter_prompt(&seat.overlay) else {
+        return Ok(Charter::Idle);
+    };
+    let target = crate::config::SEAT_CHARTER_VERSION;
+    match crate::meta::claim_charter(journal.meta_dir, SLOT, &seat.launch, target) {
+        Ok(true) => {}
+        Ok(false) => return Ok(Charter::Idle),
+        Err(why) => {
+            writeln!(
+                err,
+                "ae: watchdog: could not claim the orchestrator charter update ({}) — not sent",
+                why.cause()
+            )?;
+            return Ok(Charter::Idle);
+        }
+    }
+    let reference = format!(
+        "charter-{}-{}",
+        crate::time::Timestamp::now().epoch(),
+        seat.launch
+    );
+    let text = format!(
+        "{HEAD}{}): your instructions changed. These replace your earlier instructions:\n\n{prompt}",
+        crate::shape::VERSION
+    );
+    let compose = || late_compose(sight, &text);
+    let receipt = deliver(&reference, &compose, err)?;
+    if let Err(why) = settle(journal.meta_dir, &seat.launch, receipt) {
+        writeln!(
+            err,
+            "ae: watchdog: {}, but its claim could not be settled ({}); it is not sent again",
+            receipt.summary(),
+            why.cause()
+        )?;
+    }
+    journal.record_referring(
+        crate::watchdog::CHARTER_UPDATE_ACTION,
+        &seat.agent,
+        &reference,
+        receipt.summary(),
+        err,
+    )?;
+    Ok(Charter::Attempted)
+}
+
+/// What the charter step reads of the seat, fresh at each call: once at the
+/// early gate and once more at the late gate, just before the turn is
+/// composed.
+trait Sight {
+    /// The seat's newest declaration in this session's main slot.
+    fn declared(&self) -> Option<String>;
+    /// The seat's frame.
+    fn frame(&self) -> Frame;
+}
+
+/// The seat's frame as one fresh capture of its main pane shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Frame {
+    /// The tool's input model reads its input box empty, its grammar reads no
+    /// running turn, and the same capture shows no human-only prompt or
+    /// service wait.
+    Idle,
+    /// Anything else, or no capture: a running turn, a draft, a drawn prompt.
+    Held,
+    /// A tool whose frame ae cannot read.
+    Unread,
+}
+
+/// The late gate: `text` when the seat still [`admits`] the turn at this read,
+/// just before the paste, else nothing, so nothing is pasted.
+fn late_compose(sight: &impl Sight, text: &str) -> Option<String> {
+    admits(sight).then(|| text.to_owned())
+}
+
+/// Whether the seat takes the turn now, from one fresh declaration read and,
+/// when the declaration allows a turn at all, one fresh frame read.
+fn admits(sight: &impl Sight) -> bool {
+    let declared = sight.declared();
+    matches!(declared.as_deref(), Some("done" | "waiting-user"))
+        && eligible(declared.as_deref(), sight.frame())
+}
+
+/// Whether a seat that declared `declared` and shows `frame` may get the turn:
+/// `done` or `waiting-user` on an idle frame. For a tool whose frame ae cannot
+/// read, only `done`, as before: its checked delivery still refuses a draft or
+/// a busy composer before any paste.
+fn eligible(declared: Option<&str>, frame: Frame) -> bool {
+    match frame {
+        Frame::Idle => matches!(declared, Some("done" | "waiting-user")),
+        Frame::Unread => declared == Some("done"),
+        Frame::Held => false,
+    }
+}
+
+/// The frame one styled capture shows. `read` is the delivery's own prompt
+/// read of that capture. Only a capture whose input box the tool's input model
+/// reads empty, with no known prompt drawn, and whose printable rows the tool's
+/// grammar classifies idle, is [`Frame::Idle`]: the printable rows alone cannot
+/// tell a dim placeholder from the same text typed as a draft. No capture is
+/// held.
+fn frame_of(
+    tool: crate::tool::ToolKind,
+    capture: Option<&str>,
+    read: &crate::deliver::PromptRead,
+) -> Frame {
+    use crate::deliver::region;
+    let model = tool.input_model();
+    let idle = model.is_modelled()
+        && matches!(read, crate::deliver::PromptRead::NoKnownPrompt)
+        && capture.is_some_and(|styled| {
+            region::occupancy(styled, model) == region::Occupancy::Idle
+                && crate::harness_state::classify(&region::plain_text(styled), tool)
+                    == crate::harness_state::HarnessState::Idle
+        });
+    if idle { Frame::Idle } else { Frame::Held }
+}
+
+/// The live seat: its journal on disk and one capture of its main pane.
+struct Live<'a> {
+    meta_dir: &'a Path,
+    session: &'a str,
+    server: &'a crate::inventory::ServerId,
+    seat: &'a Seat,
+    tool: crate::tool::ToolKind,
+}
+
+impl Sight for Live<'_> {
+    fn declared(&self) -> Option<String> {
+        newest_declaration(&super::read_events(self.meta_dir), self.session, self.seat)
+    }
+
+    /// One styled capture, taken with the tool's own input model, serves every
+    /// half: the delivery's prompt read takes it, the input model reads its box,
+    /// and the tool's grammar classifies its printable rows.
+    fn frame(&self) -> Frame {
+        if !crate::harness_state::observable(self.tool) {
+            return Frame::Unread;
+        }
+        let (capture, read) = crate::deliver::prompt_hold(
+            self.server,
+            &self.seat.pane,
+            self.tool.input_model(),
+            Some(self.tool),
+        );
+        frame_of(self.tool, capture.as_deref(), &read)
+    }
+}
+
+/// The newest declaration in `events` of the seat in `session`'s main slot.
+fn newest_declaration(events: &[Event], session: &str, seat: &Seat) -> Option<String> {
+    let key = crate::events::SessionKey::new(session, &seat.session_id);
+    events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.declared_state().is_some()
+                && crate::watchdog::event_is_actor_in(event, key, SLOT, &seat.agent)
+        })
+        .and_then(Event::declared_state)
+        .map(str::to_owned)
 }
 
 /// The prompt of the seat overlay at `overlay`, when it teaches the current
@@ -392,6 +525,376 @@ mod tests {
             !crate::meta::claim_charter(&dir, SLOT, "tok", version).expect("second claim"),
             "the kept claim refuses a second turn to the launch"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const TEMPLATE: &str = include_str!("../../../contrib/aeorchestrator/orchestrator.config");
+    /// The measured styled Codex idle frame: a bold `›` and the DIM
+    /// placeholder.
+    const CODEX_IDLE: &str =
+        include_str!("../../../tests/fixtures/codex-composer/codex-idle-0.155.1-200x40.esc");
+    /// The placeholder's dim run in [`CODEX_IDLE`].
+    const DIM_PLACEHOLDER: &str = "\u{1b}[2mAsk Codex to do anything\u{1b}[0m";
+    /// The row above the composer in [`CODEX_IDLE`].
+    const CODEX_DONE_ROW: &str = "\u{1b}[2m  done 12:53 PM\u{1b}[0m";
+    /// The running turn's row of the measured plain busy frame
+    /// `tests/fixtures/harness-state/codex-busy-280x40.txt`.
+    const CODEX_WORKING_ROW: &str = "• Working (5m 03s • esc to interrupt)";
+    const CLAUDE_IDLE: &str =
+        include_str!("../../../tests/fixtures/harness-state/claude-idle-167x40.txt");
+
+    /// [`CODEX_IDLE`] with `from` replaced by `to`, once; the replacement must
+    /// hit.
+    fn codex_with(from: &str, to: &str) -> String {
+        assert!(
+            CODEX_IDLE.contains(from),
+            "{from:?} is in the measured frame"
+        );
+        CODEX_IDLE.replacen(from, to, 1)
+    }
+
+    /// The frame [`Live`] reads from `capture`: the delivery's prompt read of
+    /// the same capture, then [`frame_of`].
+    fn frame_read(tool: crate::tool::ToolKind, capture: &str) -> Frame {
+        frame_of(
+            tool,
+            Some(capture),
+            &crate::deliver::prompt_read(Some(tool), Some(capture)),
+        )
+    }
+
+    /// A sight that declares `declared` at every read and whose frames are real
+    /// captures, read as [`Live`] reads one: the first from `early`, every
+    /// later one from `late`.
+    struct Captured {
+        declared: &'static str,
+        early: String,
+        late: String,
+        frames: std::cell::Cell<u32>,
+    }
+
+    impl Sight for Captured {
+        fn declared(&self) -> Option<String> {
+            Some(self.declared.to_owned())
+        }
+
+        fn frame(&self) -> Frame {
+            let read = self.frames.replace(self.frames.get() + 1);
+            let capture = if read == 0 { &self.early } else { &self.late };
+            frame_read(crate::tool::ToolKind::Codex, capture)
+        }
+    }
+
+    /// A sight that answers its first read of each half from `early` and every
+    /// later read from `late`.
+    struct Scripted {
+        early: (Option<&'static str>, Frame),
+        late: (Option<&'static str>, Frame),
+        declared: std::cell::Cell<u32>,
+        frames: std::cell::Cell<u32>,
+    }
+
+    impl Scripted {
+        fn new(early: (Option<&'static str>, Frame), late: (Option<&'static str>, Frame)) -> Self {
+            Self {
+                early,
+                late,
+                declared: std::cell::Cell::new(0),
+                frames: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl Sight for Scripted {
+        fn declared(&self) -> Option<String> {
+            let read = self.declared.replace(self.declared.get() + 1);
+            let (declared, _) = if read == 0 { self.early } else { self.late };
+            declared.map(str::to_owned)
+        }
+
+        fn frame(&self) -> Frame {
+            let read = self.frames.replace(self.frames.get() + 1);
+            if read == 0 { self.early.1 } else { self.late.1 }
+        }
+    }
+
+    /// A seat in `dir` whose launch `tok` recorded charter 1, with the
+    /// released template as its overlay.
+    fn seat_in(dir: &Path) -> Seat {
+        let overlay = dir.join("orchestrator.config");
+        std::fs::write(&overlay, TEMPLATE).expect("the seat overlay");
+        Seat {
+            agent: "lead".to_owned(),
+            pane: "%1".to_owned(),
+            launch: "tok".to_owned(),
+            running: 1,
+            claimed: false,
+            overlay,
+            session_id: String::new(),
+        }
+    }
+
+    /// One attempt whose delivery pastes what the late compose returns, as the
+    /// checked delivery does past its quiet gate: the text lands, and no text
+    /// is a refusal before any paste.
+    fn attempt_with(dir: &Path, seat: &Seat, sight: &impl Sight) -> (Charter, Option<String>) {
+        let journal = Journal {
+            meta_dir: dir,
+            session: "orch",
+        };
+        let mut pasted = None;
+        let charter = attempt(
+            &journal,
+            seat,
+            sight,
+            |_, compose, _| {
+                pasted = compose();
+                Ok(if pasted.is_some() {
+                    Receipt::Landed
+                } else {
+                    Receipt::of(None)
+                })
+            },
+            &mut Vec::new(),
+        )
+        .expect("the attempt writes its diagnostics");
+        (charter, pasted)
+    }
+
+    fn summaries(dir: &Path) -> Vec<String> {
+        super::super::read_events(dir)
+            .into_iter()
+            .filter(|event| event.action == crate::watchdog::CHARTER_UPDATE_ACTION)
+            .filter_map(|event| event.summary)
+            .collect()
+    }
+
+    #[test]
+    fn a_seat_that_turns_busy_or_redeclares_after_the_early_read_gets_nothing_pasted() {
+        let idle = (Some("waiting-user"), Frame::Idle);
+        for (tag, late) in [
+            ("late-frame", (Some("waiting-user"), Frame::Held)),
+            ("late-declaration", (Some("working"), Frame::Idle)),
+        ] {
+            let dir = scratch(tag);
+            let seat = seat_in(&dir);
+            let (charter, pasted) = attempt_with(&dir, &seat, &Scripted::new(idle, late));
+            assert_eq!(charter, Charter::Attempted, "{tag}");
+            assert_eq!(pasted, None, "{tag}: the late gate composes nothing");
+            let after = meta(&dir);
+            assert!(!after.contains("charter_pending.main="), "{tag}: {after}");
+            assert!(!after.contains("charter.main="), "{tag}: {after}");
+            assert_eq!(summaries(&dir), [Receipt::BeforeSubmit.summary()], "{tag}");
+
+            let (charter, pasted) = attempt_with(&dir, &seat, &Scripted::new(idle, idle));
+            assert_eq!(charter, Charter::Attempted, "{tag}");
+            assert!(
+                pasted.is_some_and(|text| text.starts_with(HEAD)),
+                "{tag}: a later idle cycle delivers"
+            );
+            let after = meta(&dir);
+            let version = crate::config::SEAT_CHARTER_VERSION;
+            assert!(
+                after.contains(&format!("charter.main={version}\n")),
+                "{tag}: {after}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_seat_the_early_read_does_not_admit_is_never_claimed() {
+        for early in [
+            (Some("waiting-user"), Frame::Held),
+            (Some("done"), Frame::Held),
+            (Some("waiting-user"), Frame::Unread),
+            (Some("working"), Frame::Idle),
+            (None, Frame::Idle),
+        ] {
+            let dir = scratch("early");
+            let seat = seat_in(&dir);
+            let journal = Journal {
+                meta_dir: &dir,
+                session: "orch",
+            };
+            let charter = attempt(
+                &journal,
+                &seat,
+                &Scripted::new(early, (Some("done"), Frame::Idle)),
+                |_, _, _| panic!("{early:?} reached the delivery"),
+                &mut Vec::new(),
+            )
+            .expect("no diagnostics");
+            assert_eq!(charter, Charter::Idle, "{early:?}");
+            let after = meta(&dir);
+            assert!(
+                !after.contains("charter_pending.main="),
+                "{early:?}: {after}"
+            );
+            assert!(summaries(&dir).is_empty(), "{early:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn done_or_waiting_user_needs_an_idle_frame_and_an_unread_tool_keeps_done_only() {
+        for (declared, frame, admitted) in [
+            (Some("done"), Frame::Idle, true),
+            (Some("waiting-user"), Frame::Idle, true),
+            (Some("done"), Frame::Held, false),
+            (Some("waiting-user"), Frame::Held, false),
+            (Some("done"), Frame::Unread, true),
+            (Some("waiting-user"), Frame::Unread, false),
+            (Some("working"), Frame::Idle, false),
+            (Some("waiting-agent"), Frame::Idle, false),
+            (Some("blocked"), Frame::Idle, false),
+            (Some("working"), Frame::Unread, false),
+            (None, Frame::Idle, false),
+            (None, Frame::Unread, false),
+        ] {
+            assert_eq!(
+                eligible(declared, frame),
+                admitted,
+                "{declared:?} {frame:?}"
+            );
+            let sight = Scripted::new((declared, frame), (declared, frame));
+            assert_eq!(admits(&sight), admitted, "{declared:?} {frame:?}");
+        }
+    }
+
+    #[test]
+    fn only_an_idle_capture_with_no_drawn_prompt_is_an_idle_frame() {
+        use crate::deliver::{PromptRead, region};
+        use crate::tool::{InputModel, ToolKind};
+        let drawn = PromptRead::Drawn(crate::watchdog::HumanPrompt {
+            question: "Allow this command?".to_owned(),
+            keys: "Enter to confirm".to_owned(),
+            trust: None,
+            dismiss: false,
+        });
+        // COMPOSITE: the measured styled idle frame with the measured running
+        // turn's row in place of the row above its still empty composer.
+        let busy = codex_with(CODEX_DONE_ROW, CODEX_WORKING_ROW);
+        assert_eq!(
+            region::occupancy(&busy, InputModel::StyleDelimited),
+            region::Occupancy::Idle,
+            "the running turn's composer is empty"
+        );
+        let claude_draft = CLAUDE_IDLE.replacen("❯\u{a0}\n", "❯\u{a0}fix the build\n", 1);
+        assert_ne!(claude_draft, CLAUDE_IDLE, "the draft is typed into the box");
+        for (tool, capture, frame) in [
+            (ToolKind::Codex, CODEX_IDLE, Frame::Idle),
+            (ToolKind::Claude, CLAUDE_IDLE, Frame::Idle),
+            (ToolKind::Codex, busy.as_str(), Frame::Held),
+            (ToolKind::Claude, claude_draft.as_str(), Frame::Held),
+        ] {
+            assert_eq!(frame_read(tool, capture), frame, "{tool:?} {capture:?}");
+        }
+        // The printable rows alone carry no style for the input model to read.
+        assert_eq!(
+            frame_read(ToolKind::Codex, &region::plain_text(CODEX_IDLE)),
+            Frame::Held
+        );
+        for read in [drawn, PromptRead::CodexServiceWait, PromptRead::Unreadable] {
+            assert_eq!(
+                frame_of(ToolKind::Codex, Some(CODEX_IDLE), &read),
+                Frame::Held,
+                "{read:?}"
+            );
+        }
+        assert_eq!(
+            frame_of(ToolKind::Codex, None, &PromptRead::NoKnownPrompt),
+            Frame::Held
+        );
+    }
+
+    #[test]
+    fn a_draft_typed_like_the_dim_placeholder_is_held_at_the_late_gate() {
+        use crate::deliver::{PromptRead, region};
+        use crate::tool::{InputModel, ToolKind};
+        let tool = ToolKind::Codex;
+        // The placeholder's own cells, typed: its dim run without the dim.
+        let draft = codex_with(DIM_PLACEHOLDER, "Ask Codex to do anything");
+        let plain = region::plain_text(CODEX_IDLE);
+        assert_eq!(
+            region::plain_text(&draft),
+            plain,
+            "identical printable rows"
+        );
+        assert_eq!(
+            crate::harness_state::classify(&plain, tool),
+            crate::harness_state::HarnessState::Idle
+        );
+        for capture in [CODEX_IDLE, draft.as_str()] {
+            assert_eq!(
+                crate::deliver::prompt_read(Some(tool), Some(capture)),
+                PromptRead::NoKnownPrompt
+            );
+        }
+        let model = InputModel::StyleDelimited;
+        assert_eq!(tool.input_model(), model);
+        assert_eq!(
+            region::occupancy(CODEX_IDLE, model),
+            region::Occupancy::Idle
+        );
+        assert_eq!(
+            region::occupancy(&draft, model),
+            region::Occupancy::Occupied
+        );
+        assert_eq!(frame_read(tool, CODEX_IDLE), Frame::Idle);
+        assert_eq!(frame_read(tool, &draft), Frame::Held);
+
+        let dir = scratch("draft");
+        let seat = seat_in(&dir);
+        let typed = Captured {
+            declared: "waiting-user",
+            early: CODEX_IDLE.to_owned(),
+            late: draft,
+            frames: std::cell::Cell::new(0),
+        };
+        let (charter, pasted) = attempt_with(&dir, &seat, &typed);
+        assert_eq!(charter, Charter::Attempted);
+        assert_eq!(
+            pasted, None,
+            "the late gate composes nothing over the draft"
+        );
+        assert_eq!(typed.frames.get(), 2, "each gate read one frame");
+        let after = meta(&dir);
+        assert!(!after.contains("charter_pending.main="), "{after}");
+        assert!(!after.contains("charter.main="), "{after}");
+        assert_eq!(summaries(&dir), [Receipt::BeforeSubmit.summary()]);
+
+        let idle = Captured {
+            declared: "waiting-user",
+            early: CODEX_IDLE.to_owned(),
+            late: CODEX_IDLE.to_owned(),
+            frames: std::cell::Cell::new(0),
+        };
+        let (_, pasted) = attempt_with(&dir, &seat, &idle);
+        assert!(
+            pasted.is_some_and(|text| text.starts_with(HEAD)),
+            "the placeholder at both gates gets the turn"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tool_whose_frame_ae_cannot_read_is_unread_without_a_capture() {
+        let tool = crate::tool::ToolKind::Muse;
+        assert!(!crate::harness_state::observable(tool));
+        let dir = scratch("unread");
+        let seat = seat_in(&dir);
+        let server = crate::inventory::ServerId::Selected(crate::meta::Selector::Name(
+            "ae-charter-no-such-server".to_owned(),
+        ));
+        let live = Live {
+            meta_dir: &dir,
+            session: "orch",
+            server: &server,
+            seat: &seat,
+            tool,
+        };
+        assert_eq!(live.frame(), Frame::Unread);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

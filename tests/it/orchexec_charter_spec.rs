@@ -123,6 +123,7 @@ fn assert_charter_notice(dir: &Path, receipt: &str) {
 #[test]
 fn a_running_dispatcher_gets_one_charter_turn_for_its_current_launch_when_done() {
     let rig = Rig::new("execcharter");
+    super::orchrename_charter_spec::turn_fixture(&rig);
     let global = rig.root.join("config");
     let meta = rig.tool.dir.join("meta");
     prepare_old_launch(&rig, &global, &meta);

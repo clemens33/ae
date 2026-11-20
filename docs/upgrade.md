@@ -61,22 +61,21 @@ byte-equal to an earlier stanza gets only its prompt row replaced, so the owner'
 stay. Either way the old file is kept first at `orchestrator.config.pre-v<new version>` (then
 `-2`, `-3` when a name is taken, and nothing is overwritten), and ONE `ae:` line names both paths.
 When the replacement raises the charter, the line says that a running seat gets the new prompt as
-one `CHARTER UPDATE` turn after it next declares `done`, and that `ae stop orchestrator` and
-`ae orchestrator` load the whole file. Otherwise it says to restart the seat with those two
-commands. The upgrade never stops or starts the seat. A prompt that already teaches the bound
-owner words and the current charter stays exactly as it is, owner edits included, and the upgrade
-says nothing. A prompt that teaches the bound owner words with an older charter also stays as it
-is, and the relay keeps accepting it, but it gets one warning line with the repair below, because
-its watchdog sends no `CHARTER UPDATE` turn. Any other file, and a file that is not a
+one `CHARTER UPDATE` turn after it next declares `done` or `waiting-user` at an idle input box, and
+that `ae stop orchestrator` and `ae orchestrator` load the whole file. Otherwise it says to restart
+the seat with those two commands. The upgrade never stops or starts the seat. A prompt that already
+teaches the bound owner words and the current charter stays exactly as it is, owner edits included,
+and the upgrade says nothing. A prompt that teaches the bound owner words with an older charter also
+stays as it is, and the relay keeps accepting it, but it gets one warning line with the repair
+below, because its watchdog sends no `CHARTER UPDATE` turn. Any other file, and a file that is not a
 regular file, is over 1 MiB or is not UTF-8, changes nothing and gets one warning line with the
 repair: one `sh -c` command that refuses an occupied backup name, moves the file aside and runs
-`ae stop orchestrator` and `ae orchestrator`, so the launch seeds the current template. A
-directory at that path gets a `mkdir` of the backup name and a `mv` into it, in place of the hard
-link a directory cannot take; `mkdir` fails for a name that exists, so nothing occupied is used as
-a container. The
-relay refusal for a stale seat prompt prints the same repair. A change to
-`contrib/aeorchestrator/orchestrator.config` appends its row to the ledger in the same commit;
-a guard test fails otherwise. A named instance's lines carry its name and name no `ae` command,
+`ae stop orchestrator` and `ae orchestrator`, so the launch seeds the current template. A directory
+at that path gets a `mkdir` of the backup name and a `mv` into it, in place of the hard link a
+directory cannot take; `mkdir` fails for a name that exists, so nothing occupied is used as a
+container. The relay refusal for a stale seat prompt prints the same repair. A change to
+`contrib/aeorchestrator/orchestrator.config` appends its row to the ledger in the same commit; a
+guard test fails otherwise. A named instance's lines carry its name and name no `ae` command,
 because the one on the path starts the default root. The automatic upgrade (`ae _autoupgrade`)
 writes these lines to the upgrade log only, so the relay refusal is what an owner sees there.
 

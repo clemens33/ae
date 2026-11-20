@@ -2143,7 +2143,8 @@ claim. If the bound stop refuses and the human still wants the stop, it asks the
 the human explicitly names that verb and session, and `ae end <name> -f --purge-history` only when
 the human explicitly says purge or delete history. For a rename it gives the owner a proposal and
 runs no rename command. A running seat whose launch recorded an older charter gets one
-`CHARTER UPDATE (ae <version>)` turn from its watchdog once it declares `done`. See
+`CHARTER UPDATE (ae <version>)` turn from its watchdog once it declares `done` or `waiting-user`
+at an idle input box. See
 [`contrib/aeorchestrator`](../../contrib/aeorchestrator/).
 
 **Pausing it.** `ae stop orchestrator` pauses the seat and keeps its state;
