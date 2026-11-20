@@ -1,6 +1,6 @@
-//! The `src/app.rs` module family: the retained parent and every child it registers, read as one text.
+//! The `src/l5_ui/app.rs` module family: the retained parent and every child it registers, read as one text.
 //!
-//! `src/app.rs` used to hold the coordinator whole. A negative text check over that one file stays green when its code
+//! `src/l5_ui/app.rs` used to hold the coordinator whole. A negative text check over that one file stays green when its code
 //! moves into a child, so this guard reads the parent together with each production child it registers. The base
 //! siblings (the 23 children the parent registered before any code left it) are not part of the family: their bodies
 //! have their own guards.
@@ -19,7 +19,7 @@ use crate::support::source_view::{
     Product, Registration, Target, classify, product, product_of, target_of, tree,
 };
 
-/// The children `src/app.rs` registered ungated before the split, sorted. They are the only exclusions: a child cut
+/// The children `src/l5_ui/app.rs` registered ungated before the split, sorted. They are the only exclusions: a child cut
 /// from the parent is never listed here.
 const OUTSIDE: [&str; 23] = [
     "backend",
@@ -50,12 +50,12 @@ const OUTSIDE: [&str; 23] = [
 /// Calls that only the loader may use to build live seat facts from its own reads.
 const NEEDLES: [&str; 2] = ["live_seat_facts(", "project_live_seats("];
 
-const PARENT: &str = "src/app.rs";
+const PARENT: &str = "src/l5_ui/app.rs";
 
 type Rows = Vec<(String, String)>;
 
-/// The text of the family: `src/app.rs` first, then the production files below each ungated child that
-/// `src/app.rs` registers and that is not an `OUTSIDE` sibling, in registration order.
+/// The text of the family: `src/l5_ui/app.rs` first, then the production files below each ungated child that
+/// `src/l5_ui/app.rs` registers and that is not an `OUTSIDE` sibling, in registration order.
 fn family(files: &[(String, String)], product: &Product) -> Result<Rows, String> {
     let known: Vec<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
     let Some((_, parent)) = files.iter().find(|(path, _)| path == PARENT) else {
@@ -154,7 +154,7 @@ fn real_family() -> Rows {
     }
 }
 
-/// The ungated registrations of the real `src/app.rs`, by name.
+/// The ungated registrations of the real `src/l5_ui/app.rs`, by name.
 fn registered() -> Vec<String> {
     let Some((_, text)) = tree().iter().find(|(path, _)| path == PARENT) else {
         panic!("{PARENT} was not loaded");
@@ -262,8 +262,8 @@ fn every_row_path_resolves_from_a_registered_name() {
         .collect();
     for (path, _) in rows.iter().skip(1) {
         let rest = path
-            .strip_prefix("src/app/")
-            .unwrap_or_else(|| panic!("{path} is not below src/app/"));
+            .strip_prefix("src/l5_ui/app/")
+            .unwrap_or_else(|| panic!("{path} is not below src/l5_ui/app/"));
         let stem = rest.split(['/', '.']).next().unwrap_or(rest);
         assert!(
             children.iter().any(|name| name.as_str() == stem),
@@ -271,7 +271,7 @@ fn every_row_path_resolves_from_a_registered_name() {
         );
     }
     for child in &children {
-        let own = format!("src/app/{child}");
+        let own = format!("src/l5_ui/app/{child}");
         assert!(
             rows.iter().skip(1).any(|(path, _)| path.starts_with(&own)),
             "the registered child {child} has no row"
@@ -303,7 +303,7 @@ fn a_needle_in_every_extracted_child_is_found_for_each_call() {
 #[test]
 fn a_needle_in_a_base_sibling_is_outside_the_family() {
     for needle in NEEDLES {
-        let copy = injected(product(), "src/app/loader.rs", needle);
+        let copy = injected(product(), "src/l5_ui/app/loader.rs", needle);
         let rows = family(tree(), &copy).unwrap_or_else(|why| panic!("{why}"));
         assert_eq!(offenders(&rows), Vec::<String>::new());
         assert_eq!(paths(&rows), paths(&real_family()));
@@ -314,17 +314,23 @@ fn a_needle_in_a_base_sibling_is_outside_the_family() {
 fn identical_text_in_two_children_keeps_two_rows() {
     let same = "pub(super) fn same() {}\n";
     let app = "mod a;\nmod b;\n";
-    let (files, product) = synthetic(app, &[("src/app/a.rs", same), ("src/app/b.rs", same)]);
+    let (files, product) = synthetic(
+        app,
+        &[("src/l5_ui/app/a.rs", same), ("src/l5_ui/app/b.rs", same)],
+    );
     let rows = family(&files, &product).unwrap_or_else(|why| panic!("{why}"));
-    assert_eq!(paths(&rows), [PARENT, "src/app/a.rs", "src/app/b.rs"]);
-    let copy = injected(&product, "src/app/a.rs", NEEDLES[0]);
+    assert_eq!(
+        paths(&rows),
+        [PARENT, "src/l5_ui/app/a.rs", "src/l5_ui/app/b.rs"]
+    );
+    let copy = injected(&product, "src/l5_ui/app/a.rs", NEEDLES[0]);
     let rows = family(&files, &copy).unwrap_or_else(|why| panic!("{why}"));
-    assert_eq!(offenders(&rows), ["src/app/a.rs live_seat_facts("]);
+    assert_eq!(offenders(&rows), ["src/l5_ui/app/a.rs live_seat_facts("]);
 }
 
 #[test]
 fn an_omitted_parent_is_an_error_not_an_empty_family() {
-    let (files, product) = synthetic("mod a;\n", &[("src/app/a.rs", "fn a() {}\n")]);
+    let (files, product) = synthetic("mod a;\n", &[("src/l5_ui/app/a.rs", "fn a() {}\n")]);
     let without_file: Vec<(String, String)> = files
         .iter()
         .filter(|(path, _)| path != PARENT)
@@ -339,13 +345,19 @@ fn an_omitted_parent_is_an_error_not_an_empty_family() {
 #[test]
 fn a_comment_or_raw_string_mod_decoy_registers_nothing() {
     let app = "// mod ghost;\nconst S: &str = r#\"mod ghost;\"#;\n/* mod phantom; */\nmod real;\n";
-    let rows = built(app, &[("src/app/real.rs", "fn real() {}\n")]);
-    assert_eq!(paths(&rows), [PARENT, "src/app/real.rs"]);
+    let rows = built(app, &[("src/l5_ui/app/real.rs", "fn real() {}\n")]);
+    assert_eq!(paths(&rows), [PARENT, "src/l5_ui/app/real.rs"]);
     let mut decoyed = chain();
     decoyed.extend([
         (PARENT.to_owned(), app.to_owned()),
-        ("src/app/real.rs".to_owned(), "fn real() {}\n".to_owned()),
-        ("src/app/ghost.rs".to_owned(), "fn ghost() {}\n".to_owned()),
+        (
+            "src/l5_ui/app/real.rs".to_owned(),
+            "fn real() {}\n".to_owned(),
+        ),
+        (
+            "src/l5_ui/app/ghost.rs".to_owned(),
+            "fn ghost() {}\n".to_owned(),
+        ),
     ]);
     assert!(
         product_of(&decoyed).is_err(),
@@ -359,11 +371,11 @@ fn a_gated_registration_is_not_family() {
     let rows = built(
         app,
         &[
-            ("src/app/keys.rs", "fn keys() {}\n"),
-            ("src/app/keys_spec.rs", "fn keys_spec() {}\n"),
+            ("src/l5_ui/app/keys.rs", "fn keys() {}\n"),
+            ("src/l5_ui/app/keys_spec.rs", "fn keys_spec() {}\n"),
         ],
     );
-    assert_eq!(paths(&rows), [PARENT, "src/app/keys.rs"]);
+    assert_eq!(paths(&rows), [PARENT, "src/l5_ui/app/keys.rs"]);
 }
 
 #[test]
@@ -380,7 +392,10 @@ fn a_redirected_production_registration_is_refused() {
 #[test]
 fn a_nested_production_registration_is_refused() {
     let nested = "mod inline {\n    mod deep;\n}\n";
-    let (files, product) = synthetic(nested, &[("src/app/inline/deep.rs", "fn deep() {}\n")]);
+    let (files, product) = synthetic(
+        nested,
+        &[("src/l5_ui/app/inline/deep.rs", "fn deep() {}\n")],
+    );
     let Err(why) = family(&files, &product) else {
         panic!("a nested registration was read as a plain child");
     };
@@ -389,10 +404,10 @@ fn a_nested_production_registration_is_refused() {
 
 #[test]
 fn an_unrecognised_cfg_or_cfg_attr_fails_the_classification_so_the_family_is_refused() {
-    let control = built("mod z;\n", &[("src/app/z.rs", "fn z() {}\n")]);
+    let control = built("mod z;\n", &[("src/l5_ui/app/z.rs", "fn z() {}\n")]);
     assert_eq!(
         paths(&control),
-        [PARENT, "src/app/z.rs"],
+        [PARENT, "src/l5_ui/app/z.rs"],
         "without the attribute the same tree is a family"
     );
     for attr in [
@@ -402,7 +417,7 @@ fn an_unrecognised_cfg_or_cfg_attr_fails_the_classification_so_the_family_is_ref
         let mut files = chain();
         files.extend([
             (PARENT.to_owned(), format!("{attr}\nmod z;\n")),
-            ("src/app/z.rs".to_owned(), "fn z() {}\n".to_owned()),
+            ("src/l5_ui/app/z.rs".to_owned(), "fn z() {}\n".to_owned()),
         ]);
         assert!(
             product_of(&files).is_err(),
@@ -420,18 +435,18 @@ fn other_attributes_do_not_stop_a_child_being_read() {
     let rows = built(
         "#[cfg(not(test))]\nmod kept;\n#[allow(dead_code)]\nmod also;\n#[cfg(unix)]\nmod host;\n",
         &[
-            ("src/app/kept.rs", "fn kept() {}\n"),
-            ("src/app/also.rs", "fn also() {}\n"),
-            ("src/app/host.rs", "fn host() {}\n"),
+            ("src/l5_ui/app/kept.rs", "fn kept() {}\n"),
+            ("src/l5_ui/app/also.rs", "fn also() {}\n"),
+            ("src/l5_ui/app/host.rs", "fn host() {}\n"),
         ],
     );
     assert_eq!(
         paths(&rows),
         [
             PARENT,
-            "src/app/kept.rs",
-            "src/app/also.rs",
-            "src/app/host.rs"
+            "src/l5_ui/app/kept.rs",
+            "src/l5_ui/app/also.rs",
+            "src/l5_ui/app/host.rs"
         ],
         "a child with an attribute the guard does not inspect is read, not dropped"
     );
@@ -442,12 +457,12 @@ fn a_child_does_not_take_the_files_of_a_sibling_whose_name_starts_with_its_own()
     let rows = built(
         "mod load;\nmod loader;\n",
         &[
-            ("src/app/load.rs", "fn load() {}\n"),
-            ("src/app/loader.rs", "mod deep;\n"),
-            ("src/app/loader/deep.rs", "fn deep() {}\n"),
+            ("src/l5_ui/app/load.rs", "fn load() {}\n"),
+            ("src/l5_ui/app/loader.rs", "mod deep;\n"),
+            ("src/l5_ui/app/loader/deep.rs", "fn deep() {}\n"),
         ],
     );
-    assert_eq!(paths(&rows), [PARENT, "src/app/load.rs"]);
+    assert_eq!(paths(&rows), [PARENT, "src/l5_ui/app/load.rs"]);
 }
 
 #[test]
@@ -455,14 +470,19 @@ fn pub_and_pub_crate_registrations_are_family_children() {
     let rows = built(
         "pub mod a;\npub(crate) mod b;\nmod c;\n",
         &[
-            ("src/app/a.rs", "fn a() {}\n"),
-            ("src/app/b.rs", "fn b() {}\n"),
-            ("src/app/c.rs", "fn c() {}\n"),
+            ("src/l5_ui/app/a.rs", "fn a() {}\n"),
+            ("src/l5_ui/app/b.rs", "fn b() {}\n"),
+            ("src/l5_ui/app/c.rs", "fn c() {}\n"),
         ],
     );
     assert_eq!(
         paths(&rows),
-        [PARENT, "src/app/a.rs", "src/app/b.rs", "src/app/c.rs"]
+        [
+            PARENT,
+            "src/l5_ui/app/a.rs",
+            "src/l5_ui/app/b.rs",
+            "src/l5_ui/app/c.rs"
+        ]
     );
 }
 
@@ -471,22 +491,22 @@ fn a_child_subdirectory_is_family_with_its_child() {
     let rows = built(
         "mod keys;\nmod mid;\nmod loader;\n",
         &[
-            ("src/app/keys.rs", "mod inner;\n"),
-            ("src/app/keys/inner.rs", "fn inner() {}\n"),
-            ("src/app/mid/mod.rs", "mod part;\n"),
-            ("src/app/mid/part.rs", "fn part() {}\n"),
-            ("src/app/loader.rs", "mod deep;\n"),
-            ("src/app/loader/deep.rs", "fn deep() {}\n"),
+            ("src/l5_ui/app/keys.rs", "mod inner;\n"),
+            ("src/l5_ui/app/keys/inner.rs", "fn inner() {}\n"),
+            ("src/l5_ui/app/mid/mod.rs", "mod part;\n"),
+            ("src/l5_ui/app/mid/part.rs", "fn part() {}\n"),
+            ("src/l5_ui/app/loader.rs", "mod deep;\n"),
+            ("src/l5_ui/app/loader/deep.rs", "fn deep() {}\n"),
         ],
     );
     assert_eq!(
         paths(&rows),
         [
             PARENT,
-            "src/app/keys.rs",
-            "src/app/keys/inner.rs",
-            "src/app/mid/mod.rs",
-            "src/app/mid/part.rs"
+            "src/l5_ui/app/keys.rs",
+            "src/l5_ui/app/keys/inner.rs",
+            "src/l5_ui/app/mid/mod.rs",
+            "src/l5_ui/app/mid/part.rs"
         ],
         "the loader subtree belongs to a base sibling and stays out"
     );
@@ -496,23 +516,23 @@ fn a_child_subdirectory_is_family_with_its_child() {
 fn an_outside_name_is_excluded_and_any_other_registered_name_is_included() {
     let app = "mod loader;\nmod draw;\nmod keys;\nmod loaders;\n";
     let children = [
-        ("src/app/loader.rs", "fn l() {}\n"),
-        ("src/app/draw.rs", "fn d() {}\n"),
-        ("src/app/keys.rs", "fn k() {}\n"),
-        ("src/app/loaders.rs", "fn s() {}\n"),
+        ("src/l5_ui/app/loader.rs", "fn l() {}\n"),
+        ("src/l5_ui/app/draw.rs", "fn d() {}\n"),
+        ("src/l5_ui/app/keys.rs", "fn k() {}\n"),
+        ("src/l5_ui/app/loaders.rs", "fn s() {}\n"),
     ];
     let rows = built(app, &children);
     assert_eq!(
         paths(&rows),
-        [PARENT, "src/app/keys.rs", "src/app/loaders.rs"],
+        [PARENT, "src/l5_ui/app/keys.rs", "src/l5_ui/app/loaders.rs"],
         "an exclusion is an exact name, never a prefix"
     );
     let (files, product) = synthetic(app, &children);
     for (path, hit) in [
-        ("src/app/loader.rs", false),
-        ("src/app/draw.rs", false),
-        ("src/app/keys.rs", true),
-        ("src/app/loaders.rs", true),
+        ("src/l5_ui/app/loader.rs", false),
+        ("src/l5_ui/app/draw.rs", false),
+        ("src/l5_ui/app/keys.rs", true),
+        ("src/l5_ui/app/loaders.rs", true),
     ] {
         let copy = injected(&product, path, NEEDLES[1]);
         let rows = family(&files, &copy).unwrap_or_else(|why| panic!("{why}"));
@@ -522,11 +542,11 @@ fn an_outside_name_is_excluded_and_any_other_registered_name_is_included() {
 
 #[test]
 fn a_registered_child_that_is_not_a_production_file_is_an_error() {
-    let (files, product) = synthetic("mod a;\n", &[("src/app/a.rs", "fn a() {}\n")]);
+    let (files, product) = synthetic("mod a;\n", &[("src/l5_ui/app/a.rs", "fn a() {}\n")]);
     let mut without_child = product.clone();
     without_child
         .files
-        .retain(|file| file.path != "src/app/a.rs");
+        .retain(|file| file.path != "src/l5_ui/app/a.rs");
     let Err(why) = family(&files, &without_child) else {
         panic!("a registered child without a production file was skipped");
     };
@@ -537,18 +557,18 @@ fn a_registered_child_that_is_not_a_production_file_is_an_error() {
 fn a_child_file_whose_name_ends_in_mod_rs_owns_no_directory_by_that_prefix() {
     let app = "mod loadermod;\nmod loader;\n";
     let children = [
-        ("src/app/loadermod.rs", "fn lm() {}\n"),
-        ("src/app/loader.rs", "mod deep;\n"),
-        ("src/app/loader/deep.rs", "fn deep() {}\n"),
+        ("src/l5_ui/app/loadermod.rs", "fn lm() {}\n"),
+        ("src/l5_ui/app/loader.rs", "mod deep;\n"),
+        ("src/l5_ui/app/loader/deep.rs", "fn deep() {}\n"),
     ];
     let rows = built(app, &children);
     assert_eq!(
         paths(&rows),
-        [PARENT, "src/app/loadermod.rs"],
+        [PARENT, "src/l5_ui/app/loadermod.rs"],
         "loadermod.rs is a file child: the loader files stay outside"
     );
     let (files, product) = synthetic(app, &children);
-    for path in ["src/app/loader.rs", "src/app/loader/deep.rs"] {
+    for path in ["src/l5_ui/app/loader.rs", "src/l5_ui/app/loader/deep.rs"] {
         let copy = injected(&product, path, NEEDLES[0]);
         let rows = family(&files, &copy).unwrap_or_else(|why| panic!("{why}"));
         assert_eq!(
@@ -563,15 +583,19 @@ fn a_child_file_whose_name_ends_in_mod_rs_owns_no_directory_by_that_prefix() {
 fn a_mod_rs_child_owns_its_directory_up_to_the_boundary_only() {
     let app = "mod load;\nmod loader;\n";
     let children = [
-        ("src/app/load/mod.rs", "mod part;\n"),
-        ("src/app/load/part.rs", "fn part() {}\n"),
-        ("src/app/loader.rs", "mod deep;\n"),
-        ("src/app/loader/deep.rs", "fn deep() {}\n"),
+        ("src/l5_ui/app/load/mod.rs", "mod part;\n"),
+        ("src/l5_ui/app/load/part.rs", "fn part() {}\n"),
+        ("src/l5_ui/app/loader.rs", "mod deep;\n"),
+        ("src/l5_ui/app/loader/deep.rs", "fn deep() {}\n"),
     ];
     let rows = built(app, &children);
     assert_eq!(
         paths(&rows),
-        [PARENT, "src/app/load/mod.rs", "src/app/load/part.rs"],
+        [
+            PARENT,
+            "src/l5_ui/app/load/mod.rs",
+            "src/l5_ui/app/load/part.rs"
+        ],
         "load/ ends at its slash: loader.rs and loader/ stay outside"
     );
 }

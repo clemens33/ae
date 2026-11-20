@@ -230,8 +230,8 @@ fn the_docs_name_ghostty_hyperlinks_on_ae_servers_only() {
         "docs/internals/theme.md names the Ghostty entry"
     );
     for rel in [
-        "src/app/applink_spec.rs",
-        "src/console/applink_chat_spec.rs",
+        "src/l5_ui/app/applink_spec.rs",
+        "src/l5_ui/console/applink_chat_spec.rs",
     ] {
         let text = read(rel);
         assert!(text.contains(ENTRY), "{rel}");

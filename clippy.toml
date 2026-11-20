@@ -138,24 +138,24 @@ disallowed-methods = [
   # point it exports under these features is listed (`ttyname` needs `procfs`,
   # which is off), not only the three the app calls, so a second
   # caller of ANY of them is a review rather than a diff. The one allowed site is
-  # `src/app/tty.rs`, carrying its reason at the allow, and it is inventoried in
+  # `src/l5_ui/app/tty.rs`, carrying its reason at the allow, and it is inventoried in
   # tests/it/phase3.rs like every door above. rustix is a THIRD-PARTY reader:
   # the note above the list applies to it exactly as to ureq — over ae's own
   # source this is an enumeration, over the compiled artifact a convention.
   # Only the `termios` feature is enabled (Cargo.toml), so no other rustix
   # module exists in the graph to route around this list.
-  { path = "rustix::termios::tcgetattr", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::tcsetattr", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::tcgetwinsize", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::tcsetwinsize", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::tcgetpgrp", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::tcsetpgrp", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::tcgetsid", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::tcsendbreak", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::tcdrain", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::tcflush", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::tcflow", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::isatty", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::ioctl_tiocexcl", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
-  { path = "rustix::termios::ioctl_tiocnxcl", reason = "termios lives only in src/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcgetattr", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcsetattr", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcgetwinsize", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcsetwinsize", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcgetpgrp", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcsetpgrp", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcgetsid", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcsendbreak", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcdrain", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcflush", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::tcflow", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::isatty", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::ioctl_tiocexcl", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
+  { path = "rustix::termios::ioctl_tiocnxcl", reason = "termios lives only in src/l5_ui/app/tty.rs: use Tty (start, size, suspend, resume)" },
 ]

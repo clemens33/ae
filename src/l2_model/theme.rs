@@ -1698,7 +1698,7 @@ mod tests {
             ("text on ink", palette.text, palette.ink, 4.5),
             ("title on ink", palette.title, palette.ink, 4.5),
             ("working on ink", palette.working, palette.ink, 4.5),
-            // The reader's syntax colour is text (src/app/highlight.rs): a keyword
+            // The reader's syntax colour is text (src/l5_ui/app/highlight.rs): a keyword
             // wears `waiting_agent` on the file's ground and on a fence's, strings
             // and numbers `working` and `title`, comments and keys `text`.
             (

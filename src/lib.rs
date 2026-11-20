@@ -9,26 +9,13 @@
 //! assert_eq!(request.exit_code(), Some(0));
 //! ```
 
-pub mod app;
-mod clipboard;
-pub mod console;
-pub mod doctor;
-pub mod events_tail;
-pub mod jump;
 mod l0_base;
 mod l1_platform;
 mod l2_model;
 mod l3_services;
 mod l4_orchestration;
+mod l5_ui;
 mod l6_shell;
-pub mod monitor;
-pub mod next;
-pub mod overview;
-pub mod panes;
-mod profile_view;
-mod reader;
-pub mod session_menu;
-mod settings_menu;
 
 pub use l0_base::attention;
 pub use l0_base::error;
@@ -132,6 +119,20 @@ pub use l4_orchestration::watchdog_daemon;
 pub use l4_orchestration::watchdog_glue;
 pub use l4_orchestration::watchdog_lifecycle;
 pub use l4_orchestration::worktrees;
+pub use l5_ui::app;
+pub(crate) use l5_ui::clipboard;
+pub use l5_ui::console;
+pub use l5_ui::doctor;
+pub use l5_ui::events_tail;
+pub use l5_ui::jump;
+pub use l5_ui::monitor;
+pub use l5_ui::next;
+pub use l5_ui::overview;
+pub use l5_ui::panes;
+pub(crate) use l5_ui::profile_view;
+pub(crate) use l5_ui::reader;
+pub use l5_ui::session_menu;
+pub(crate) use l5_ui::settings_menu;
 pub use l6_shell::cli;
 pub use l6_shell::entry;
 pub use l6_shell::identity;

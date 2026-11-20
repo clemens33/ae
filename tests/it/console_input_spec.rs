@@ -722,7 +722,7 @@ fn shell_literal_sites(dir: &std::path::Path) -> Vec<(PathBuf, usize)> {
 fn the_fixed_shell_literal_is_present_and_the_opened_pane_uses_it() {
     // The exact literal is a contract pin; the real pane argv below separately
     // pins that the consumer actually uses the authorized wrapper.
-    let source = include_str!("../../src/console/toggle.rs");
+    let source = include_str!("../../src/l5_ui/console/toggle.rs");
     let source = source
         .split_once("\n#[cfg(test)]\n")
         .expect("terminal test module")
@@ -736,7 +736,7 @@ fn the_fixed_shell_literal_is_present_and_the_opened_pane_uses_it() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     assert_eq!(
         shell_literal_sites(&root),
-        vec![(root.join("console/toggle.rs"), 1)],
+        vec![(root.join("l5_ui").join("console/toggle.rs"), 1)],
         "one shell-literal site across all production sources"
     );
     let rig = ConsoleRig::new("specwrapper");

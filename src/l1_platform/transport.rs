@@ -1081,7 +1081,7 @@ pub(crate) fn run_opencode(
 /// The orchestrator-report leg of the one process door — the ONLY way product
 /// code runs a session's `say` helper, and the program is not chosen here at
 /// all: it arrives inside a [`crate::monitor::Notice`], whose fields are
-/// private to `src/monitor.rs` and whose one constructor joins the literal
+/// private to `src/l5_ui/monitor.rs` and whose one constructor joins the literal
 /// `say` onto a session directory.
 pub(crate) fn run_say(notice: &crate::monitor::Notice) -> bool {
     spawn(

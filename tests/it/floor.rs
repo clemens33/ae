@@ -441,7 +441,7 @@ fn no_tmux_format_literal_in_src_carries_a_control_character() {
     assert_eq!(
         sorted(extracted.iter().copied()),
         sorted([
-            "src/app/tests.rs",
+            "src/l5_ui/app/tests.rs",
             "src/l4_orchestration/session_launch/tests.rs",
             "src/l2_model/tmux/tests.rs",
             "src/l4_orchestration/watchdog_daemon/tests.rs"

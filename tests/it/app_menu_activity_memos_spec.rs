@@ -1,9 +1,9 @@
 //! S6a frozen acceptance specification: `Activity…` and `Memos…` in the `ae app`
 //! session card menu (`#230` checklist; `plan-r2.md` §5 S6a).
 //!
-//! # Minimal `src/app/menu.rs` / `src/session_menu.rs` contract named by this spec
+//! # Minimal `src/l5_ui/app/menu.rs` / `src/l5_ui/session_menu.rs` contract named by this spec
 //!
-//! * `src/app/menu.rs`:
+//! * `src/l5_ui/app/menu.rs`:
 //!   - `Item::Activity` (`"Activity…"` with `icons = true`, `"Activity..."` with
 //!     `icons = false`; word `"Activity"`) and `Item::Memos` (`"Memos…"` with
 //!     `icons = true`, `"Memos..."` with `icons = false`; word `"Memos"`).
@@ -17,7 +17,7 @@
 //!     opens a read-only in-app dialog/overlay (`Modal` variant or equivalent
 //!     in-app overlay); `Esc` and `q` dismiss it and return to the app
 //!     unchanged.
-//! * Content parity with `src/session_menu.rs` (`activity_cells` / `memo_cells`):
+//! * Content parity with `src/l5_ui/session_menu.rs` (`activity_cells` / `memo_cells`):
 //!   - **Activity**: newest 30 records (`ACTIVITY_ROWS_MAX = 30`) of the 15
 //!     curated actions (`state`, `done`, `goal`, `spawn`, `retire`, `relaunch`,
 //!     `reseat`, `ask`, `review`, `reply`, `watchdog-start`, `watchdog-stop`,

@@ -706,7 +706,7 @@ fn no_decision_path_reads_quota_history() {
         "src/l4_orchestration/autoreseat/leg.rs",
         "src/l4_orchestration/effort.rs",
         "src/l4_orchestration/effort/leg.rs",
-        "src/doctor.rs",
+        "src/l5_ui/doctor.rs",
     ] {
         let text = match file {
             "src/l4_orchestration/watchdog_daemon.rs" => {

@@ -432,7 +432,7 @@ fn every_window_reproves_its_original_incarnation_pair_and_recorded_server_at_su
 #[test]
 fn controls_quit_waits_for_the_actual_flight_and_the_default_bound_stays_four_minutes() {
     assert!(
-        include_str!("../../src/app/flight.rs")
+        include_str!("../../src/l5_ui/app/flight.rs")
             .contains("const FLIGHT_QUIT_BOUND: Duration = Duration::from_mins(4);"),
         "default quit bound remains unchanged; behavioral timeout test is app::tests::flight"
     );

@@ -21,7 +21,7 @@ fn pad() -> Vec<u8> {
         .collect()
 }
 
-pub(in crate::app) fn file_proof<F: Files>(make: impl Fn() -> F) {
+pub(in crate::l5_ui::app) fn file_proof<F: Files>(make: impl Fn() -> F) {
     let root = Root::new("chatperf-proof");
     let dir = seed(&root, "api");
     let journal = dir.join("events.jsonl");
@@ -83,7 +83,7 @@ pub(in crate::app) fn file_proof<F: Files>(make: impl Fn() -> F) {
 
 /// A kept journal's pending requests are folded with the key the meta holds
 /// at each read: a new `session_id` reopens what a retire closed for the old.
-pub(in crate::app) fn file_session_key<F: Files>(make: impl Fn() -> F) {
+pub(in crate::l5_ui::app) fn file_session_key<F: Files>(make: impl Fn() -> F) {
     let root = Root::new("chatperf-key");
     let dir = seed(&root, "api");
     let ask = format!(

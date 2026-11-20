@@ -8,8 +8,8 @@ use std::path::Path;
 /// Independent file-level inventory. Source witnesses live in inventory.md.
 pub(super) fn expected_production_files() -> Vec<String> {
     [
-        "src/app/filedoor.rs",
-        "src/app/tty.rs",
+        "src/l5_ui/app/filedoor.rs",
+        "src/l5_ui/app/tty.rs",
         "src/l2_model/archive.rs",
         "src/l2_model/archive/store.rs",
         "src/l3_services/autoupgrade.rs",
@@ -18,7 +18,7 @@ pub(super) fn expected_production_files() -> Vec<String> {
         "src/l3_services/carry.rs",
         "src/l3_services/compact.rs",
         "src/l2_model/config.rs",
-        "src/doctor.rs",
+        "src/l5_ui/doctor.rs",
         "src/l1_platform/doors.rs",
         "src/l2_model/events.rs",
         "src/l3_services/go_usage.rs",
@@ -31,7 +31,7 @@ pub(super) fn expected_production_files() -> Vec<String> {
         "src/l4_orchestration/lifecycle/end.rs",
         "src/l2_model/meta.rs",
         "src/l4_orchestration/migrate.rs",
-        "src/monitor.rs",
+        "src/l5_ui/monitor.rs",
         "src/l3_services/quota.rs",
         "src/l3_services/quota/history/store.rs",
         "src/l4_orchestration/rename.rs",

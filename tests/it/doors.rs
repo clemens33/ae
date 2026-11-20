@@ -312,7 +312,7 @@ fn run_clipboard_image_has_exactly_one_product_caller() {
     assert!(!holders.is_empty(), "empty scan did not run");
     assert_eq!(
         sorted(holders),
-        sorted(["src/clipboard.rs", "src/l1_platform/transport.rs"]),
+        sorted(["src/l5_ui/clipboard.rs", "src/l1_platform/transport.rs"]),
         "the clipboard process leg gained (or lost) a product holder"
     );
 }
@@ -402,7 +402,7 @@ fn the_boot_time_proof_is_reachable_from_exactly_its_named_operations() {
         sorted(holders("boot_time(")),
         sorted(vec![
             // The doctor's own absence reading.
-            "src/doctor.rs".to_owned(),
+            "src/l5_ui/doctor.rs".to_owned(),
             // Its definition and its platform table.
             "src/l1_platform/doors.rs".to_owned(),
             // The fleet listing's discovery.
@@ -710,20 +710,20 @@ fn the_door_scan_reaches_app_registrations_and_leaves_test_only_files_out() {
     assert!(
         halves
             .iter()
-            .any(|(name, code)| name == "src/app.rs" && code.lines().any(|line| line == last)),
+            .any(|(name, code)| name == "src/l5_ui/app.rs" && code.lines().any(|line| line == last)),
         "the scan must reach {last:?} past app.rs's first gate"
     );
     assert!(
         halves
             .iter()
-            .all(|(name, _)| name != "src/app/fleet_spec.rs"),
+            .all(|(name, _)| name != "src/l5_ui/app/fleet_spec.rs"),
         "a registered test-only spec file is not product"
     );
     assert!(
         source_view::product()
             .test_only
             .iter()
-            .any(|name| name == "src/app/fleet_spec.rs"),
+            .any(|name| name == "src/l5_ui/app/fleet_spec.rs"),
         "and the view names it as test-only, rather than not finding it at all"
     );
 }
@@ -819,7 +819,7 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
             "the witness publication must be init's exclusive writer at plain-file mode",
         ),
         (
-            "src/clipboard.rs",
+            "src/l5_ui/clipboard.rs",
             "crate::init::create_exclusive(&path, &bytes, 0o600)",
             "the clipboard image publication must be init's exclusive writer at the store's own mode",
         ),
@@ -1112,11 +1112,11 @@ fn open_popup_and_run_shell_line_have_only_their_named_product_caller_and_pure_s
     for (leg, expected) in [
         (
             "open_popup(",
-            &["src/console/term.rs", "src/l1_platform/transport.rs"][..],
+            &["src/l5_ui/console/term.rs", "src/l1_platform/transport.rs"][..],
         ),
         (
             "run_shell_line(",
-            &["src/console/term.rs", "src/l1_platform/transport.rs"][..],
+            &["src/l5_ui/console/term.rs", "src/l1_platform/transport.rs"][..],
         ),
     ] {
         let callers: Vec<&str> = halves
@@ -1132,22 +1132,22 @@ fn open_popup_and_run_shell_line_have_only_their_named_product_caller_and_pure_s
     }
     let shell = halves
         .iter()
-        .find(|(name, _)| name == "src/console/shell.rs")
+        .find(|(name, _)| name == "src/l5_ui/console/shell.rs")
         .map_or_else(
-            || panic!("src/console/shell.rs was not scanned"),
+            || panic!("src/l5_ui/console/shell.rs was not scanned"),
             |(_, code)| code,
         );
     for forbidden in ["transport", "doors", "lifecycle", "std::fs", "std::process"] {
         assert!(
             !shell.contains(forbidden),
-            "src/console/shell.rs must stay pure, found {forbidden}"
+            "src/l5_ui/console/shell.rs must stay pure, found {forbidden}"
         );
     }
     let term = halves
         .iter()
-        .find(|(name, _)| name == "src/console/term.rs")
+        .find(|(name, _)| name == "src/l5_ui/console/term.rs")
         .map_or_else(
-            || panic!("src/console/term.rs was not scanned"),
+            || panic!("src/l5_ui/console/term.rs was not scanned"),
             |(_, code)| code,
         );
     let shell_fn = &term[body_of(term, "fn shell(")];
@@ -1163,7 +1163,7 @@ fn open_popup_and_run_shell_line_have_only_their_named_product_caller_and_pure_s
     ] {
         assert!(
             !shell_fn.contains(writer),
-            "src/console/term.rs::shell must never record or send ! lines, found {writer}"
+            "src/l5_ui/console/term.rs::shell must never record or send ! lines, found {writer}"
         );
     }
 }

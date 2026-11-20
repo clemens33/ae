@@ -711,7 +711,7 @@ fn observers_settings_watchdog_and_reseat_never_name_the_paid_muse_leg() {
             "reseat",
             include_str!("../../src/l4_orchestration/autoreseat.rs"),
         ),
-        ("app loader", include_str!("../../src/app/loader.rs")),
+        ("app loader", include_str!("../../src/l5_ui/app/loader.rs")),
     ] {
         for forbidden in [
             "run_muse_quota",

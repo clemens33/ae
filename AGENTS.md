@@ -111,7 +111,7 @@ Other rules of the loop:
   owner ruling permits exact-pinned pulldown-cmark (default features off), tables +
   strikethrough only, inert output, no tui-markdown.
 - No new Bash. `install` is policy-frozen, and no other bash file may be added. The one
-  shell literal is the chat's pane argv `src/console/toggle.rs::TTY_SETUP` (termios needs libc
+  shell literal is the chat's pane argv `src/l5_ui/console/toggle.rs::TTY_SETUP` (termios needs libc
   or `unsafe`): not a bash file, not a door, one site. The chat's and the
   app's `!<command>` runs the human's own line, through the fixed `/bin/sh -c` outside tmux or
   the tmux server's default shell in a popup; ae authors no script text there.

@@ -1198,21 +1198,21 @@ fn product_source() -> Vec<(String, String)> {
         .collect()
 }
 
-/// The last ungated `mod name;` registration of `src/app.rs`, which sits past
+/// The last ungated `mod name;` registration of `src/l5_ui/app.rs`, which sits past
 /// its first `#[cfg(test)]`: the independent reference the view must reach.
 pub(crate) fn last_ungated_app_registration() -> String {
     let Some((_, text)) = source_view::tree()
         .iter()
-        .find(|(name, _)| name == "src/app.rs")
+        .find(|(name, _)| name == "src/l5_ui/app.rs")
     else {
-        panic!("src/app.rs was not loaded");
+        panic!("src/l5_ui/app.rs was not loaded");
     };
     let lines: Vec<&str> = text.lines().collect();
     let Some(last) = lines.windows(2).rev().find_map(|pair| {
         (pair[1].starts_with("mod ") && pair[1].ends_with(';') && !pair[0].starts_with("#["))
             .then_some(pair[1])
     }) else {
-        panic!("src/app.rs registers an ungated module");
+        panic!("src/l5_ui/app.rs registers an ungated module");
     };
     last.to_owned()
 }
@@ -1222,7 +1222,7 @@ fn the_scan_reaches_the_app_registrations_after_its_spec_block() {
     let last = last_ungated_app_registration();
     let visible = product_source()
         .into_iter()
-        .find_map(|(name, code)| (name == "src/app.rs").then_some(code));
+        .find_map(|(name, code)| (name == "src/l5_ui/app.rs").then_some(code));
     assert!(
         visible.is_some_and(|code| code.lines().any(|line| line == last)),
         "the scan must reach {last:?}"
@@ -1288,7 +1288,7 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     assert_eq!(
         sorted(sites(concat!("RecordSnapshot", "::read("))),
         sorted(vec![
-            ("src/console.rs".to_owned(), 1),
+            ("src/l5_ui/console.rs".to_owned(), 1),
             ("src/l2_model/inventory.rs".to_owned(), 1),
             ("src/lib.rs".to_owned(), 1),
             ("src/l3_services/session.rs".to_owned(), 1),
