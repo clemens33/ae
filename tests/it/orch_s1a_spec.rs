@@ -917,30 +917,8 @@ fn dispatcher_outbound_refusals_cover_public_launch_lifecycle_and_helper_argv() 
     let r = rig("s1aout");
     let d = r.caller.dir.to_str().expect("caller path");
     let t = r.owner.home.as_str();
-    let named = format!("{t}:lead");
     let _stopped = r.world.session("stopped", "agent", "");
     assert!(r.world.tmux("kill-session -t", &["stopped"]).0);
-    let work = r.world.root.to_str().expect("private project directory");
-    for verb in [
-        ae::cli::SEND,
-        ae::cli::ASK,
-        ae::cli::REVIEW,
-        ae::cli::INTERRUPT,
-    ] {
-        refused_outbound(
-            &r,
-            &r.caller.pane,
-            &[verb, d, "--cross-session", &named, TASK],
-            "relay",
-        );
-        let public = verb.trim_start_matches('_');
-        refused_outbound(
-            &r,
-            &r.caller.pane,
-            &["@orch", public, "--cross-session", &named, TASK],
-            "relay",
-        );
-    }
     for argv in [
         vec![ae::cli::SPAWN, d, "new-seat", "--using", "profile", TASK],
         vec![ae::cli::RETIRE, d, "boss"],
@@ -953,13 +931,9 @@ fn dispatcher_outbound_refusals_cover_public_launch_lifecycle_and_helper_argv() 
         vec!["rm", t],
         vec!["rename", t, "other"],
         vec!["rename", "other"],
-        vec!["stopped", "--no-attach"],
         vec!["stopped", "--resume", "--no-attach"],
         vec!["new-session", "--no-attach"],
         vec!["new-session", "--from", "fixture", "--no-attach"],
-        vec!["new-session", "--dir", work, "--local", "--no-attach"],
-        vec!["new-session", "--dir", work, "--worktree", "--no-attach"],
-        vec!["new-session", "--dir", work, "--copy", "--no-attach"],
         vec!["orchestrator", "--no-attach"],
     ] {
         refused_outbound(&r, &r.caller.pane, &argv, "REFUSED");

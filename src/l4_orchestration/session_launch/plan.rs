@@ -121,6 +121,25 @@ pub(crate) fn parse_plan_with_attach(args: &[String], allow_attach: bool) -> Res
         rest: args,
         allow_attach,
         colead_override: false,
+        one_mode: false,
+    }
+    .parse()
+}
+
+/// The refusal of a second working-copy mode flag in the seat's launch.
+const SEAT_ONE_MODE: &str = "Error: more than one of --local, --copy and --worktree.";
+
+/// [`parse_plan`] for the orchestrator seat's launch: the same grammar, and a
+/// second working-copy mode flag in the option position is refused rather than
+/// replacing the first, because the seat's create names exactly one. A value
+/// such as a `--dir` path is consumed verbatim and counts as no flag.
+pub(crate) fn parse_seat_plan(args: &[String]) -> Result<Plan, String> {
+    PlanParser {
+        plan: Plan::default(),
+        rest: args,
+        allow_attach: false,
+        colead_override: false,
+        one_mode: true,
     }
     .parse()
 }
@@ -132,6 +151,8 @@ struct PlanParser<'a> {
     rest: &'a [String],
     allow_attach: bool,
     colead_override: bool,
+    /// The seat's policy: a second mode flag is refused, not taken.
+    one_mode: bool,
 }
 
 impl PlanParser<'_> {
@@ -153,6 +174,9 @@ impl PlanParser<'_> {
 
     fn parse_word(&mut self, word: &str) -> Result<(), String> {
         match word {
+            "--worktree" | "--copy" | "--local" if self.one_mode && self.plan.mode.is_some() => {
+                return Err(SEAT_ONE_MODE.to_owned());
+            }
             "--worktree" => self.plan.mode = Some(Mode::Git),
             "--copy" => self.plan.mode = Some(Mode::Full),
             "--local" => self.plan.mode = Some(Mode::Local),
@@ -491,4 +515,40 @@ pub(super) fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> 
         )));
     }
     Ok((env, rest.to_vec()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Mode, SEAT_ONE_MODE, parse_plan, parse_seat_plan};
+
+    fn words(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    /// The seat's policy refuses a second mode flag in the option position
+    /// only: a `--dir` value spelled like a flag is a path, and the ordinary
+    /// grammar still takes the last flag.
+    #[test]
+    fn only_the_seat_parse_refuses_a_second_mode_flag_and_a_dir_value_is_no_flag() {
+        for pair in [
+            ["--local", "--copy"],
+            ["--copy", "--worktree"],
+            ["--worktree", "--local"],
+            ["--local", "--local"],
+        ] {
+            let line = words(&["api", "--dir", "/w", pair[0], pair[1], "--no-attach"]);
+            assert_eq!(
+                parse_seat_plan(&line),
+                Err(SEAT_ONE_MODE.to_owned()),
+                "{pair:?}"
+            );
+            assert!(parse_plan(&line).is_ok(), "{pair:?}");
+        }
+        for value in ["--copy", "--local", "--worktree"] {
+            let line = words(&["api", "--dir", value, "--worktree", "--no-attach"]);
+            let plan = parse_seat_plan(&line).expect("a path spelled like a flag");
+            assert_eq!(plan.dir.as_deref(), Some(value));
+            assert_eq!(plan.mode, Some(Mode::Git));
+        }
+    }
 }

@@ -73,6 +73,7 @@ use accounting::{
 mod deadnotice;
 pub use deadnotice::{Death, DeathEpisode};
 use deadnotice::{Reading, Standing};
+mod charter;
 mod cycle_apply;
 mod cycle_observe;
 mod cycle_publish;
@@ -2300,6 +2301,47 @@ impl OverviewReading {
     fn body(&self) -> String {
         crate::overview::nudge_body(&self.rendered)
     }
+
+    /// This reading with `line` after the fleet text, before the trailer.
+    /// The line is part of what the reading says, so it is part of its hash:
+    /// an unchanged fleet with a new line is a changed overview.
+    fn with_remedy(mut self, line: &str) -> Self {
+        if !self.rendered.ends_with('\n') {
+            self.rendered.push('\n');
+        }
+        self.rendered.push_str(line);
+        self.hash = remedy_hash(&self.hash, line);
+        self
+    }
+}
+
+/// The overview hash `hash` extended by the line `line`, in the same 64-bit
+/// FNV-1a and 16-digit form as [`crate::overview::semantic_hash`].
+fn remedy_hash(hash: &str, line: &str) -> String {
+    let mut value = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in hash.bytes().chain([0]).chain(line.bytes()) {
+        value ^= u64::from(byte);
+        value = value.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{value:016x}")
+}
+
+/// The owner's remedy while the orchestrator seat's charter turn is
+/// unconfirmed: a restart of the seat, which only the owner runs. When the
+/// seat's state directory `meta_dir` sits in a named instance's root, its
+/// restart is that instance's own ae command, so no default-root command is
+/// printed that would stop a different live seat.
+fn charter_remedy(meta_dir: &Path, session: &str) -> String {
+    let root = meta_dir.parent().and_then(Path::parent);
+    match root.and_then(crate::instance::instance_of) {
+        None => format!(
+            "orchestrator charter update uncertain: ae stop {session}, then ae orchestrator"
+        ),
+        Some(name) => format!(
+            "orchestrator charter update uncertain: restart the orchestrator seat of instance \
+             {name} with that instance's own ae command"
+        ),
+    }
 }
 
 /// What [`Cycle::apply`] is acting on: one pane, and the cycle-wide readings an
@@ -2412,8 +2454,22 @@ impl Cycle<'_> {
         let events = read_events(self.meta_dir);
         let suspended = crate::watchdog::Suspensions::read(&events);
         let now = Timestamp::now().epoch();
-        let overview = if self.meta_agent && self.knobs.sweep.enabled() {
-            self.overview(now, err)
+        // The orchestrator seat's charter turn goes first; a cycle that
+        // attempted one sends the seat no overview beside it, and while the
+        // current launch holds an unconfirmed turn the overview names the
+        // owner's remedy.
+        let charter = self.charter_update(&events, &observed, settling, err)?;
+        let overview = if self.meta_agent
+            && self.knobs.sweep.enabled()
+            && charter != charter::Charter::Attempted
+        {
+            self.overview(now, err).map(|reading| {
+                if charter == charter::Charter::Unresolved {
+                    reading.with_remedy(&charter_remedy(self.meta_dir, self.session))
+                } else {
+                    reading
+                }
+            })
         } else {
             None
         };

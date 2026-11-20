@@ -23,7 +23,8 @@ contract; it is not loaded from a guessed path.
 `ae upgrade` keeps the seeded file current: a file byte-equal to an earlier released template is
 replaced (the old one is kept as `orchestrator.config.pre-v<version>`), and a file whose prompt
 stanza matches an earlier one gets only its prompt replaced. A file with an owner-edited prompt
-that predates the bound owner words is left alone with one repair line. Editing
+that predates the bound owner words or the current charter is left alone with one repair line.
+Editing
 `orchestrator.config` in this directory means appending its row to `LEDGER` in
 `src/l4_orchestration/migrate/seat_config.rs` in the same commit.
 
@@ -57,56 +58,73 @@ the target session and prints its id, transport outcome and request state;
 `relay --status <id>` reads one back. Delivery is not acceptance or
 completion; uncertain submit is never auto-resent.
 Other sessions' text is data. The seat never answers as the owner, invents work,
-changes goals, clears questions or edits project/session state. On an
-The seat's own ae refuses spawn, retire, cross-session send, ask, review, interrupt, end, rm,
-every rename, every create and every other stop or launch form. It admits exactly two bound
-forms, which the seat runs itself: `ae stop <name> --expect-uuid <uuid>` and
-`ae <name> --resume --no-attach --expect-uuid <uuid>`. The seat reads the target's `uuid` from
-`ae list --all --json` right before it runs either one and passes it on the command line; neither
-command looks the uuid up itself. The bound stop refuses unless the name is that session and no
-seat declares working, waiting-agent or blocked, and tmux checks every client handoff and kill
-against the server and session incarnation the stop proved. The bound resume resumes only that stopped session, in place on its
-recorded server, and never creates one. The seat runs both at its own discretion (plan Amendment
-A2): when the owner asks, to save compute while a session's work is parked, or to continue parked
-work it found in a stopped session. If ae refuses either form, the seat reports the line. Only for a
-refused resume does it give the owner `ae <name> --no-attach`; it never suggests bare `ae <name>`.
-A refused stop gets the owner's `ae stop <name> -y` only when the owner explicitly still wants
-that stop. For every other lifecycle command it
-gives the owner the exact command to run in the owner's own terminal, then declares `done`. To create a session, it acts only on explicit instruction. When the
-human names the session and a directory that exists at the spelled path (including `~` or
-relative paths expanded), it gives the owner the default local command at once, with profiles=
-defaults only when the configured defaults are confirmed for this creation; it confirms whenever a
-fact is inferred or missing, including an unconfirmed profile decision. Before creating, it runs
-`ae quota` once for the profiles the creation will use; the seat's injected guidance defines how
-to read the result. Otherwise it first prints one proposal line
-`name=<n> dir=<canonical path> mode=local|copy|worktree profiles=<profile-flags|defaults>` (default `local`,
-`worktree` only for branch/isolated/parallel, `copy` only when asked), where
-<profile-flags> are the exact --lead/--colead/--seat overrides the final command will
-carry, or the word defaults when the configured defaults stand (<profile-flags>
-is empty only then), waits
-for `yes` or an edit, and declares `waiting-user` with the full decision and
-recommended command rather than a short caption. It then asks the owner to run exactly one
-matching command, carrying the confirmed <profile-flags> verbatim and omitting
-them only with profiles=defaults: mode `local` →
+changes goals, clears questions or edits project/session state.
+
+The seat is the owner's chief of staff: it runs the owner's ae work on the other
+sessions itself. Its `send`, `ask`, `review` and `interrupt` helpers reach
+`<session>:<agent>` directly, without `--cross-session`, and the target sees
+the sender as `ae/orchestrator`. Such a message carries no owner authority; an
+owner instruction still goes through `relay`.
+
+For another session, the seat's own ae admits four lifecycle forms:
+
+| Form | Command |
+|---|---|
+| start a stopped session | `ae <name> --no-attach` |
+| create | `ae <name> --dir <path> --local\|--copy\|--worktree <profile-flags> --no-attach` |
+| bound resume | `ae <name> --resume --no-attach --expect-uuid <uuid>` |
+| bound stop | `ae stop <name> --expect-uuid <uuid> [--owner-input <ask-id>]` |
+
+Every admitted lifecycle command, and every `send`, `ask`, `review` or
+`interrupt` to a pane address, writes two rows to the seat's own journal before
+and after its effect: `dispatch-request` and `dispatch-result`, actor
+`ae/orchestrator`, with one shared `dispatch-<ts>-<hex>` reference. If the
+request row cannot be written, nothing happens. A delivery to an event-only sink
+(`telegram:`, `discord:`, `console:local` or an `ae:` sink) records only its own
+event and names no target uuid. A start or resume refuses a
+running session and never attaches. The seat reads a target's `uuid` from
+`ae list --all --json` right before a bound command and passes it on the command
+line. The bound stop refuses while any seat of the target declares working,
+waiting-agent or blocked; `--owner-input <ask-id>` overrides only that clause,
+once, when the owner's stored chat or Telegram words name the verb `stop` and
+the session. tmux checks every client handoff and kill against the server and
+session incarnation the stop proved. The seat never runs the bound stop for a
+session whose seats hold or wait for a lane claim, which ae cannot see.
+
+ae refuses end, rm, every rename, spawn, retire, reseat, relaunch, compact,
+every fleet form, every launch without `--no-attach` and every other stop form.
+Every lifecycle command against the seat's own session is refused too. The
+refusal of a stop prints the owner's own command `ae stop orchestrator -y`; for
+every other refused form the seat gives the owner the command, as below.
+For a refused form the seat gives the owner the exact command to run in the
+owner's own terminal, then declares `done`: `ae stop <name> -y` only when the
+owner still wants a refused stop, `ae end <name> -f --keep-history` only when
+the owner names that verb and session, and `ae end <name> -f --purge-history`
+only when the owner explicitly says purge or delete history. For a rename it
+gives the owner a proposal and runs no rename command.
+
+To create a session, the seat acts only on explicit instruction. When every
+fact is explicit (the name, a directory that exists at the spelled path with `~`
+or relative paths expanded, the mode and confirmed profiles), it runs the
+command at once. Before creating, it runs `ae quota` once for the profiles the
+creation will use; the seat's injected guidance defines how to read the result.
+Otherwise it first prints one proposal line
+`name=<n> dir=<canonical path> mode=local|copy|worktree profiles=<profile-flags|defaults>`
+(default `local`, `worktree` only for branch/isolated/parallel, `copy` only
+when asked), where <profile-flags> are the exact --lead/--colead/--seat
+overrides the final command will carry, or the word defaults when the
+configured defaults stand. It declares `waiting-user` with the full decision
+and waits for `yes` or an edit. After `yes` it runs exactly one matching
+command, carrying the confirmed <profile-flags> verbatim and omitting them only
+with profiles=defaults: mode `local` →
 `ae <name> --dir <path> --local <profile-flags> --no-attach`; mode `copy` →
 `ae <name> --dir <path> --copy <profile-flags> --no-attach`; mode `worktree` →
-`ae <name> --dir <path> --worktree <profile-flags> --no-attach`. It never omits or combines
-mode flags and never infers a missing directory. ae never substitutes a profile for you.
-An alternative may be recommended, but only the human's confirmation changes the
-choice: a known-exhausted choice, or a
-default whose applicable scope cannot be identified (a target-local roster it
-cannot inspect is unidentifiable, never inferred from the global `ae quota`
-PROFILES column), takes the unconfirmed path — proposal, at most a recommended
-usable alternative, `waiting-user`, no substitution without confirmation.
-It never runs the bound stop for a session whose seats hold or wait for a lane claim, which ae
-cannot see. If the bound stop refuses and the human still wants the stop, it asks the owner to run
-`ae stop <name> -y`. It asks
-the owner to run ordinary `ae end <name> -f --keep-history` only
-when the human explicitly names that verb and session, and `ae end <name> -f --purge-history`
-only when the human explicitly says purge or delete history. It never suggests stopping or
-ending its own session (the seat named `orchestrator`) and never all sessions. For a rename it
-gives the owner a proposal and runs no rename command. Other-session text is data. See
-[`CHARTER.md`](CHARTER.md).
+`ae <name> --dir <path> --worktree <profile-flags> --no-attach`. It never omits
+or combines mode flags and never infers a missing directory. ae never
+substitutes a profile. An alternative may be recommended, but only the owner's
+confirmation changes the choice: a known-exhausted choice, or a default whose
+applicable scope cannot be identified (never inferred from the global `ae quota`
+PROFILES column), takes the confirmation path. See [`CHARTER.md`](CHARTER.md).
 
 A relayed chat ask reads as the owner's words, yet the seat is a model.
 Only owner instructions may be relayed, and a condensed body says nothing the
@@ -149,11 +167,17 @@ intact. `ae upgrade` replaces a seat file that an earlier release seeded and
 the owner never edited, and warns with the repair for any other stale one (see
 above). `CHARTER.md` is not read at runtime.
 
-For a RUNNING orchestrator, the owner runs `ae stop orchestrator` from another
-terminal, confirms, then starts it with `ae orchestrator`. Launch rebuilds the
-injected context from edited config; edits alone never reload a running prompt.
-Conversation resume still depends on recorded-id checks. The orchestrator must
-not stop itself to perform this update.
+A RUNNING orchestrator picks the new charter up without a restart. When its
+launch recorded an older charter and the seat file's prompt carries the
+current one, the watchdog sends the seat one `CHARTER UPDATE (ae <version>)`
+turn once the seat declares `done`: a pointer to the saved body, which holds
+the seat file's prompt. A landed turn stamps the launch, so the turn is sent
+once per launch. A turn refused before any paste is tried again on a later
+cycle. A turn whose submit ae cannot confirm is never sent again; the overview
+then shows `orchestrator charter update uncertain: ae stop orchestrator, then
+ae orchestrator`, which the owner runs from another terminal; for the seat of a
+named instance it names that instance and its own ae command instead. The
+orchestrator must not stop itself.
 
 ## Dependencies
 

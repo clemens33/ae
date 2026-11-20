@@ -634,6 +634,47 @@ pub(crate) fn source_ask(
     }
 }
 
+/// The stored words of owner input `id` in the orchestrator seat's own
+/// journal at `dir`, whose canonical session uuid is `uuid`, proved exactly as
+/// a bound relay proves them ([`source_ask`]): one ask opening with that id,
+/// opened by the console in this session, no relay produced it, and its body
+/// reads whole.
+///
+/// # Errors
+///
+/// Why the id is no owner input of that session.
+pub(crate) fn stored_owner_words(dir: &Path, uuid: &str, id: &str) -> Result<String, String> {
+    let journal = store::read_source(&store::open(dir).events_path());
+    let events = console::snapshot(journal).map_err(|why| format!("its own journal: {why}"))?;
+    source_ask(dir, &events, id, uuid).map(|ask| ask.text)
+}
+
+/// Whether the owner's stored `words` name `verb` and `target`: one word equal
+/// to the verb, ASCII case ignored, and one word equal to the target byte for
+/// byte. A word is a maximal run of ASCII letters, digits, `.`, `_` and `-`
+/// (plan §3), so `stopper` is no `stop`, and neither `exec-target-shadow`
+/// nor `exec-target.example` is `exec-target`. Presence, not intent: the owner
+/// rules what the words mean.
+///
+/// # Errors
+///
+/// Which of the two the words do not name.
+pub(crate) fn words_name(words: &str, verb: &str, target: &str) -> Result<(), String> {
+    let tokens = words
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+        .filter(|token| !token.is_empty());
+    let (mut said_verb, mut said_target) = (false, false);
+    for token in tokens {
+        said_verb |= token.eq_ignore_ascii_case(verb);
+        said_target |= token == target;
+    }
+    match (said_verb, said_target) {
+        (true, true) => Ok(()),
+        (false, _) => Err(format!("the owner's words do not say {verb}")),
+        (true, false) => Err(format!("the owner's words do not name {target}")),
+    }
+}
+
 /// The ask `id` in the caller's own journal, or why it is no owner input: the
 /// journal is read strictly, exactly one opening carries the id, it is a
 /// console ask of this session that no relay produced, and its stored body
@@ -1295,6 +1336,183 @@ pub(crate) fn physical_session(
         return Err("caller session is not the recorded one");
     }
     Ok((caller_dir, bytes))
+}
+
+/// An ordinary calling pane as ONE observation read it, unvalidated: the
+/// identity the seat guard (the slice after S1) judges without a second read.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct PaneIdentity {
+    /// `@ae_agent`: the display name.
+    pub(crate) display: Option<String>,
+    /// `@ae_slot`.
+    pub(crate) slot: Option<String>,
+    /// `#{session_name}`.
+    pub(crate) session: Option<String>,
+    /// The live `@ae_session_uuid`, canonical, when the pane carries one.
+    pub(crate) session_uuid: Option<String>,
+    /// The calling pane.
+    pub(crate) pane: String,
+    /// `#{socket_path}`: the server's own spelling.
+    pub(crate) server: Option<String>,
+}
+
+impl PaneIdentity {
+    /// The identity `viewer` read for `pane`.
+    fn of(viewer: &ObservedViewer, pane: &str) -> Self {
+        let session_uuid = match &viewer.session_uuid {
+            crate::tmux::OptionReading::Set(live) => Some(archive::canonical_uuid(live)),
+            _ => None,
+        };
+        Self {
+            display: viewer.agent.clone(),
+            slot: viewer.slot.clone(),
+            session: viewer.session.clone(),
+            session_uuid,
+            pane: pane.to_owned(),
+            server: viewer.socket_path.clone(),
+        }
+    }
+}
+
+/// What ONE observation of the calling pane is to the orchestrator's powers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SeatClass {
+    /// Not the seat: a pane of an ordinary session, or one ae cannot place in
+    /// a recorded session at all. Its rights are the ordinary ones; the
+    /// identity is what the same observation read.
+    Ordinary(PaneIdentity),
+    /// The proved orchestrator seat: the executor of the owner's wishes.
+    Dispatcher(Dispatcher),
+    /// A pane in the seat's own session (the one role and the seat overlay)
+    /// that fails one fact of the dispatcher proof: the clause that failed. It
+    /// gets neither the seat's powers nor an ordinary pane's.
+    Unproven(&'static str),
+}
+
+/// The proved seat, as the one observation and its meta say it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Dispatcher {
+    /// The seat's tmux session name.
+    pub(crate) session: String,
+    /// The seat's session directory.
+    pub(crate) dir: PathBuf,
+    /// The canonical `session_id` its meta records, equal to the pane's live
+    /// `@ae_session_uuid`.
+    pub(crate) uuid: String,
+    /// The pane's slot (always `main`).
+    pub(crate) slot: String,
+    /// The calling pane.
+    pub(crate) pane: String,
+    /// The server's own socket path, as the observation read it.
+    pub(crate) server: String,
+}
+
+/// Whether the seat meta at `dir` records, as its canonical `session_id`, the
+/// pane's live `@ae_session_uuid`: the pane is positively that seat's, even
+/// when its recorded server does not prove.
+fn names_seat_by_uuid(dir: &Path, viewer: &ObservedViewer, root: &Path) -> bool {
+    let crate::tmux::OptionReading::Set(live) = &viewer.session_uuid else {
+        return false;
+    };
+    let Ok(bytes) = meta::read_bytes(dir) else {
+        return false;
+    };
+    if !meta::is_seat(&bytes, root) {
+        return false;
+    }
+    let recorded = recorded_uuid(&bytes);
+    !recorded.is_empty() && recorded == archive::canonical_uuid(live)
+}
+
+/// Whether the meta `bytes` record `pane` as the session's main pane.
+fn records_main_pane(bytes: &[u8], pane: &str) -> bool {
+    !pane.is_empty() && meta::sole_value(bytes, "main_pane") == Some(pane.as_bytes())
+}
+
+/// Whether the meta at `dir` records `pane` as its main pane.
+fn is_seat_main(dir: &Path, pane: &str) -> bool {
+    meta::read_bytes(dir).is_ok_and(|bytes| records_main_pane(&bytes, pane))
+}
+
+/// The canonical `session_id` the meta `bytes` record; empty when none.
+pub(crate) fn recorded_uuid(bytes: &[u8]) -> String {
+    std::str::from_utf8(bytes)
+        .ok()
+        .map(meta::Meta::parse)
+        .and_then(|parsed| parsed.session_id().map(archive::canonical_uuid))
+        .unwrap_or_default()
+}
+
+/// The [`SeatClass`] of the calling pane `pane`, from ONE observation
+/// (`viewer`, `server`) under state root `root`: the session it is in must be
+/// the recorded one ([`physical_session`]), that session must be the seat
+/// ([`meta::is_seat`]), the pane must pass [`meta::dispatcher_proof`], and the
+/// pane's live `@ae_session_uuid` must be the canonical `session_id` the meta
+/// records.
+pub(crate) fn seat_class(
+    root: &Path,
+    viewer: &ObservedViewer,
+    server: &ServerId,
+    pane: &str,
+) -> SeatClass {
+    let ordinary = SeatClass::Ordinary(PaneIdentity::of(viewer, pane));
+    let Some(session) = viewer.session.as_deref() else {
+        return ordinary;
+    };
+    if !is_session_name(session) {
+        return ordinary;
+    }
+    let sessions = crate::inventory::Roots::under(root).sessions().to_owned();
+    let (dir, bytes) = match physical_session(&sessions.join(session), viewer, server) {
+        Ok(found) => found,
+        // The pane's live uuid names the seat's recorded session, but its
+        // recorded server does not prove: the actual seat, never a plain pane.
+        // A same-name pane on another server carries another uuid and stays
+        // ordinary, and so does an unstamped pane that is not the seat's main.
+        Err(why)
+            if names_seat_by_uuid(&sessions.join(session), viewer, root)
+                && (viewer.slot.is_some() || is_seat_main(&sessions.join(session), pane)) =>
+        {
+            return SeatClass::Unproven(why);
+        }
+        Err(_) => return ordinary,
+    };
+    if !meta::is_seat(&bytes, root) {
+        return ordinary;
+    }
+    let Some(slot) = viewer.slot.as_deref() else {
+        // An unstamped shell in the seat's session stays an ordinary pane;
+        // the seat's recorded main pane without its stamp proves nothing.
+        return if records_main_pane(&bytes, pane) {
+            SeatClass::Unproven("the orchestrator seat's recorded main pane carries no slot stamp")
+        } else {
+            ordinary
+        };
+    };
+    let agent = viewer.agent.as_deref().unwrap_or_default();
+    if let Err(why) = meta::dispatcher_proof(&bytes, root, slot, agent, Some(pane)) {
+        return SeatClass::Unproven(why);
+    }
+    let uuid = recorded_uuid(&bytes);
+    if uuid.is_empty() {
+        return SeatClass::Unproven("the orchestrator's session records no session uuid");
+    }
+    match &viewer.session_uuid {
+        crate::tmux::OptionReading::Set(live) if archive::canonical_uuid(live) == uuid => {}
+        _ => {
+            return SeatClass::Unproven(
+                "the caller pane's live session uuid is not the one the orchestrator's session records",
+            );
+        }
+    }
+    SeatClass::Dispatcher(Dispatcher {
+        session: session.to_owned(),
+        dir,
+        uuid,
+        slot: slot.to_owned(),
+        pane: pane.to_owned(),
+        server: viewer.socket_path.clone().unwrap_or_default(),
+    })
 }
 
 fn target(caller: &Caller, raw: &str) -> Result<Target, String> {

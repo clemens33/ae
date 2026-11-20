@@ -67,9 +67,9 @@ use overrides::{
 pub(crate) use overrides::{approved_pair, split_profile_client};
 #[cfg(test)]
 use overrides::{recorded_solo_identity, resolve_spawn_pair, split_seat_override};
-pub(crate) use plan::parse_plan_with_attach;
 pub use plan::{Env, Mode, Plan, is_bound_resume, parse_plan};
 use plan::{EnvError, read_env};
+pub(crate) use plan::{parse_plan_with_attach, parse_seat_plan};
 #[cfg(test)]
 use preflight::check_resume_target;
 use preflight::{
@@ -335,7 +335,49 @@ pub fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
-    run_with_expected(tail, None, None, out, err)
+    run_with_expected(tail, None, None, None, out, err)
+}
+
+/// The proved orchestrator seat's audit of a launch it runs (G4).
+pub(crate) trait LaunchAudit {
+    /// Called once, after every read-only guard on the checked name and before
+    /// the lifecycle lock file is written: `session` is the canonical name and
+    /// `dir` its state directory. `Err` is the refusal line; the launch then
+    /// has written nothing.
+    ///
+    /// # Errors
+    ///
+    /// The refusal the launch prints.
+    fn before_lock(&mut self, session: &str, dir: &Path) -> Result<(), String>;
+
+    /// Called once, under the session's lifecycle lock and before the
+    /// launch's first write: `session` is the locked name, `dir` its state
+    /// directory, and `creates` whether this launch makes a new session there.
+    /// `Err` is the refusal line; the launch then changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// The refusal the launch prints.
+    fn locked(&mut self, session: &str, dir: &Path, creates: bool) -> Result<(), String>;
+
+    /// Called once the session's record is published, still under the same
+    /// lock: `uuid` is the canonical session uuid that record holds.
+    fn built(&mut self, uuid: &str);
+}
+
+/// [`run`] for the proved orchestrator seat: `audit` records the request
+/// under the lifecycle lock, which the launch then always takes.
+///
+/// # Errors
+///
+/// Only a failure to write `out` or `err`. Every refusal is an exit code.
+pub(crate) fn run_audited(
+    tail: &[String],
+    audit: &mut dyn LaunchAudit,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::error::Result<u8> {
+    run_with_expected(tail, None, None, Some(audit), out, err)
 }
 
 /// Whether a served `_launch` tail carries exactly the bound resume as its
@@ -355,7 +397,7 @@ pub(crate) fn run_expected(
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
     let argv = expected_launch_argv(preamble, user, expected);
-    run_with_expected(&argv[1..], Some(expected), None, out, err)
+    run_with_expected(&argv[1..], Some(expected), None, None, out, err)
 }
 
 /// One restored session: the ordinary launch owner, told the saved facts the
@@ -369,7 +411,7 @@ pub(crate) fn run_restore(
 ) -> crate::error::Result<u8> {
     let user = [name.to_owned(), "--no-attach".to_owned()];
     let argv = preamble.launch_argv(&user);
-    run_with_expected(&argv[1..], None, Some(attempt), out, err)
+    run_with_expected(&argv[1..], None, Some(attempt), None, out, err)
 }
 
 fn expected_launch_argv(
@@ -397,6 +439,7 @@ fn run_with_expected(
     tail: &[String],
     expected: Option<&ExpectedLaunch>,
     restore: Option<&crate::restore::Attempt>,
+    audit: Option<&mut dyn LaunchAudit>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -446,7 +489,7 @@ fn run_with_expected(
     if let Some(attach) = plan.attach {
         env.attach = attach;
     }
-    launch(&env, &plan, None, expected, restore, out, err)
+    launch(&env, &plan, None, expected, restore, audit, out, err)
 }
 
 /// The facts a `compact` relaunch carries across the boundary.
@@ -517,7 +560,16 @@ pub fn relaunch(
         resume: false,
         expect_uuid: None,
     };
-    launch(&env, &launch_plan, Some(plan.proof), None, None, out, err)
+    launch(
+        &env,
+        &launch_plan,
+        Some(plan.proof),
+        None,
+        None,
+        None,
+        out,
+        err,
+    )
 }
 
 /// Split `main=<name> workers=<a,b|->` into its two overrides.
@@ -605,12 +657,14 @@ enum Destination {
 }
 
 /// What placing a saved session needs besides its record: the server this
-/// launch was asked on, whether the launch resumes in place, and the crash
-/// restore it serves, if any.
+/// launch was asked on, whether the launch resumes in place, whether it may
+/// only start a stopped session (the bound resume and every audited launch),
+/// and the crash restore it serves, if any.
 #[derive(Clone, Copy)]
 struct Placing<'a> {
     proposed: &'a ServerId,
     in_place: bool,
+    stopped_only: bool,
     restore: Option<&'a crate::restore::Attempt>,
 }
 
@@ -774,12 +828,17 @@ struct Session {
               lifecycle lock, the expected-launch proofs and the reattach stay inline where the \
               source-order unit pins read them"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each caller's optional proof (expected, restore, the seat's audit) is its own word"
+)]
 fn launch(
     env: &Env,
     plan: &Plan,
     expected_proof: Option<&str>,
     expected_launch: Option<&ExpectedLaunch>,
     restore: Option<&crate::restore::Attempt>,
+    mut audit: Option<&mut dyn LaunchAudit>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -799,6 +858,7 @@ fn launch(
     let placing = Placing {
         proposed: &proposed_server,
         in_place: expected_resume || restore.is_some() || bound_uuid.is_some(),
+        stopped_only: bound_uuid.is_some() || audit.is_some(),
         restore,
     };
     let settings_start = expected_launch.is_some_and(ExpectedLaunch::is_start);
@@ -856,6 +916,15 @@ fn launch(
         err
     ));
 
+    // The seat's read-only preflight on the checked name: a refusal here has
+    // written nothing, not even the lifecycle lock file.
+    if let Some(audit) = audit.as_deref_mut()
+        && let Err(line) = audit.before_lock(&session, &dir)
+    {
+        writeln!(err, "{line}")?;
+        return Ok(EXIT_FAILED);
+    }
+
     #[cfg(debug_assertions)]
     if let Some(marker) = &env.test_pre_lock_marker {
         let _ = std::fs::OpenOptions::new()
@@ -869,10 +938,13 @@ fn launch(
     // captured target lock even though preflight saw its state. The read-only
     // preflight above exists only to place the tmux floor before this lock-file
     // write; every expected fact is re-read while the lock is held.
+    // The seat's audited launch always holds it, so its request names the
+    // locked target.
     let mut lifecycle = if settings_start
         || expected_resume
         || bound_uuid.is_some()
         || preflight_meta_present
+        || audit.is_some()
         || crate::lifecycle::aliases::target(&dir).is_some()
     {
         let Ok(held) = crate::store::lock(
@@ -891,10 +963,22 @@ fn launch(
     if let Some(uuid) = bound_uuid {
         step!(check_bound_resume(&dir, &session, uuid, err));
     }
+    // The seat's request, before the first write: a launch on an alias name
+    // reclaims it, so it creates as surely as one on a name with no record.
+    if let Some(audit) = audit.as_deref_mut() {
+        let creates = crate::lifecycle::aliases::target(&dir).is_some()
+            || !node_exists(&dir.join(crate::store::META));
+        if let Err(line) = audit.locked(&session, &dir, creates) {
+            writeln!(err, "{line}")?;
+            return Ok(EXIT_FAILED);
+        }
+    }
     if lifecycle.is_some() {
         step!(reclaim_launch_alias(&dir, err));
     }
-    let meta_present = if expected_launch.is_some() {
+    // An expected or audited launch decides by what the lock holds, as its
+    // proof or its audit request did.
+    let meta_present = if expected_launch.is_some() || audit.is_some() {
         node_exists(&dir.join(crate::store::META))
     } else {
         preflight_meta_present
@@ -1125,6 +1209,7 @@ fn launch(
         },
         parent.as_ref(),
         lifecycle.take(),
+        audit,
         out,
         err,
     )
@@ -1258,6 +1343,7 @@ fn build(
     watchdog: WatchdogFacts<'_>,
     parent: Option<&FromProof>,
     lifecycle: Option<std::fs::File>,
+    audit: Option<&mut dyn LaunchAudit>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -1344,6 +1430,13 @@ fn build(
         Err(line) => return rollback_launch(shape, &dir, &server, &line, err),
     };
 
+    // The seat's audit takes the uuid the record holds before the hold ends.
+    if let Some(audit) = audit {
+        let uuid = crate::meta::read_bytes(&dir)
+            .map(|bytes| crate::relay::recorded_uuid(&bytes))
+            .unwrap_or_default();
+        audit.built(&uuid);
+    }
     // The session is fully on disk; `ae end` may safely delete it, and the
     // capture children below are spawned detached past the hold.
     drop(lifecycle);

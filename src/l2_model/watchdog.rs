@@ -1548,6 +1548,9 @@ const NUDGE_ACTION: &str = "nudge";
 /// The action the orchestrator's fleet-overview prompt carries: its own, so a
 /// changed overview is never read as the idle nudge that lapses a `done`.
 pub(crate) const SWEEP_NUDGE_ACTION: &str = "sweep-nudge";
+/// The action of the one turn that hands a running orchestrator seat the
+/// current charter (D5): its own, so it never reads as a nudge or an overview.
+pub(crate) const CHARTER_UPDATE_ACTION: &str = "charter-update";
 /// The action telling a `waiting-agent` seat its `--on` target moved; its `ref`
 /// is the transition's ordinal.
 pub(crate) const TARGET_MOVED_ACTION: &str = "target-moved";

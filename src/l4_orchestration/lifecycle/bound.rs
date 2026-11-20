@@ -6,17 +6,27 @@
 //! The order is the contract:
 //!
 //! 1. the caller is read from `$TMUX_PANE` alone, and the caller's own session
-//!    and the fleet word `all` are refused;
+//!    and the fleet word `all` are refused. ONE observation classes the pane
+//!    (`relay::seat_class`): a pane in the orchestrator seat's session that
+//!    fails the dispatcher proof is refused; the proved seat is refused its
+//!    own session with the owner's exact command; `--owner-input` is the
+//!    proved seat's alone, and its id must be stored owner words in the
+//!    seat's own journal that name `stop` and this session;
 //! 2. under the lifecycle lock, with no write: the name is a real session
 //!    directory (never a rename alias), its meta names exactly that uuid, its
 //!    record names a positive server, and ONE isolated read of the live
 //!    session of that name proves the server incarnation, the session
-//!    incarnation and its `@ae_session_uuid` stamp together;
+//!    incarnation and its `@ae_session_uuid` stamp together. Only then does
+//!    the proved seat write its dispatch request to its OWN journal (a failed
+//!    append, or an owner input an earlier request already used, refuses);
+//!    its dispatch result follows the stop;
 //! 3. still without a write, each seat's pane text and launch guard are read;
 //! 4. the event container's lock is taken and held: the roster is read again
 //!    from the current meta, a roster ae doubts or cannot read refuses, and
 //!    any seat whose latest declaration is not `done` or `waiting-user`
-//!    refuses, as does a journal ae cannot read;
+//!    refuses, except that the seat's owner input that approved this stop
+//!    admits `working`, `waiting-agent` and `blocked`, and a journal ae
+//!    cannot read refuses;
 //! 5. still holding it: the stop request (a failed append refuses), the
 //!    client handoff, the kill and the stop result. The tmux server checks
 //!    every handoff and kill against the incarnation step 2 proved, in the
@@ -28,14 +38,14 @@
 //!
 //! A target proven already stopped crosses the same guard in step 4 before
 //! its receipt is appended through the held lock. A refusal before step 5
-//! writes nothing. A declaration either precedes the
+//! writes nothing in the target's journal. A declaration either precedes the
 //! read in step 4 and is judged there, or waits on the held lock until the
 //! kill is done. This process never holds the event lock and the meta lock
 //! together, so it keeps the meta-then-events order of every other writer.
 //! Both events carry the bound uuid as their target and the caller as ONE
 //! observation proved it, or the named gap when it did not. Their actor is
-//! `ae/orchestrator` for a pane the dispatcher gate's proof recognizes as the
-//! orchestrator seat, `human` for a caller outside tmux (the owner's own
+//! `ae/orchestrator` for the proved orchestrator seat, `human` for a caller
+//! outside tmux (the owner's own
 //! terminal, as that gate reads it), and the neutral `ae:stop` for every
 //! other pane, whose facts the correlation fields carry.
 
@@ -44,7 +54,7 @@ use std::path::Path;
 
 use super::{
     ALREADY_STOPPED_SUMMARY, CallerGap, STOP_REQUEST_ACTION, STOP_RESULT_ACTION, StopOutcome,
-    caller_resolution, capture_models, kill_under_lock, lock, name_is_usable, publish_models,
+    caller_correlation, capture_models, kill_under_lock, lock, name_is_usable, publish_models,
     server_of, sessions_dir, stop_summary,
 };
 use crate::doors::CallerServer;
@@ -52,13 +62,17 @@ use crate::inventory::ServerId;
 use crate::meta::{self, ServerSelector};
 use crate::state::{EXIT_FAILED, EXIT_USAGE};
 use crate::store::{EventsHold, SourceRead};
-use crate::tmux::{ObservedViewer, SessionStamp, StopProbe};
-use crate::tracked::{CorrelationGap, EventFields, IdentityTriple};
+use crate::tmux::{SessionStamp, StopProbe};
+use crate::tracked::{EventFields, IdentityTriple};
 use crate::transport;
 
 /// The declarations a bound stop admits. A seat that never declared is
 /// admitted too; every other value, a future one included, refuses.
 const IDLE_STATES: [&str; 2] = ["done", "waiting-user"];
+
+/// The busy declarations stored owner words may waive (G3). A value outside
+/// these and [`IDLE_STATES`] refuses even an approved stop.
+const WAIVABLE_STATES: [&str; 3] = ["working", "waiting-agent", "blocked"];
 
 /// The gap a bound event names when the caller's pane correlates with its
 /// session but that session's recorded tmux server is not proved to be the
@@ -72,20 +86,27 @@ const HUMAN_ACTOR: &str = "human";
 /// orchestrator seat: a pane proves where the command ran, not who typed it.
 const PANE_ACTOR: &str = "ae:stop";
 
-/// `_stop <name> --expect-uuid <uuid>`; `panes` is every `--pane` word of the
-/// tail, in order.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the bound stop's one linear order: proof, capture, events hold, the held writes and kill, then the buffered publication; each refusal reads beside the step that raises it"
-)]
+/// The bound stop's argv, as the one parser read it.
+pub(super) struct Request<'a> {
+    /// The session name.
+    pub(super) name: &'a str,
+    /// The canonical session uuid the caller read from the fleet.
+    pub(super) uuid: &'a str,
+    /// `--owner-input <ask-id>`: the orchestrator seat's stored owner words
+    /// that approve this stop of a busy session.
+    pub(super) owner_input: Option<&'a str>,
+}
+
+/// `_stop <name> --expect-uuid <uuid> [--owner-input <ask-id>]`; `panes` is
+/// every `--pane` word of the tail, in order.
 pub(super) fn run(
     root: &Path,
-    name: &str,
-    uuid: &str,
+    request: &Request<'_>,
     panes: &[Option<String>],
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    let (name, uuid) = (request.name, request.uuid);
     if name == "all" {
         writeln!(
             err,
@@ -100,6 +121,30 @@ pub(super) fn run(
             return Ok(code);
         }
     };
+    let seen = observe(root, &caller);
+    let seat = match &seen.class {
+        Class::Unproven(why) => {
+            writeln!(
+                err,
+                "ae: stop REFUSED — this pane is in the orchestrator seat's session but ae cannot prove it is the seat ({why}). Nothing was stopped."
+            )?;
+            return Ok(EXIT_FAILED);
+        }
+        Class::Seat(seat) => Some(seat),
+        Class::Other => None,
+    };
+    // G1, by name or by uuid; the remedy names the session ae proved the seat
+    // runs in, never the requested name.
+    if let Some(seat) = seat
+        && (seat.session == name || seat.uuid == uuid)
+    {
+        let own = &seat.session;
+        writeln!(
+            err,
+            "ae: stop REFUSED — '{own}' is the orchestrator seat's own session, and the seat never stops it. The owner runs, in the owner's own terminal: ae stop {own} -y. Nothing was stopped."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
     if caller.session() == Some(name) {
         writeln!(
             err,
@@ -107,6 +152,9 @@ pub(super) fn run(
         )?;
         return Ok(EXIT_FAILED);
     }
+    let Some(approved) = owner_approval(seat, request, err)? else {
+        return Ok(EXIT_FAILED);
+    };
     if !name_is_usable(root, name) {
         writeln!(err, "ae: '{name}' is not a usable session name.")?;
         return Ok(EXIT_FAILED);
@@ -119,20 +167,144 @@ pub(super) fn run(
         return Ok(EXIT_FAILED);
     };
     let dir = sessions_dir(root).join(name);
-    let (server, stamp) = match prove(&dir, name, uuid) {
+    let proof = prove(&dir, name, uuid);
+    if let Proof::Refused(line) = &proof {
+        writeln!(err, "Error: {line}. Nothing was stopped.")?;
+        return Ok(EXIT_FAILED);
+    }
+    let dispatch = seat.map(|seat| stop_dispatch(seat, request));
+    if let Some(dispatch) = &dispatch
+        && let Err(why) = dispatch.request()
+    {
+        writeln!(
+            err,
+            "ae: stop REFUSED — ae could not record the dispatch in the orchestrator's journal ({why}). Nothing was stopped."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
+    // Both streams are buffered, so the dispatch result is settled before
+    // anything reaches a caller whose stream may be closed.
+    let guards = Guards { approved };
+    let (mut held_out, mut held_err) = (Vec::new(), Vec::new());
+    let code = stopped(
+        &dir,
+        request,
+        &guards,
+        proof,
+        seen.provenance,
+        &mut held_out,
+        &mut held_err,
+    )?;
+    if let Some(dispatch) = &dispatch
+        && let Err(why) = dispatch.result(&crate::tracked::dispatch_outcome(code))
+    {
+        writeln!(
+            held_err,
+            "Warning: '{name}': ae could not record the dispatch result in the orchestrator's journal ({why})."
+        )?;
+    }
+    let output = crate::error::with_status(code, out.write_all(&held_out));
+    err.write_all(&held_err)?;
+    output?;
+    Ok(code)
+}
+
+/// Whether the stop carries owner words that approve it: `Some(false)`
+/// without `--owner-input`, `Some(true)` when the proved seat cites stored
+/// owner words naming `stop` and this session, and `None` once a refusal is
+/// written: another caller cites them, or the words do not approve the stop.
+fn owner_approval(
+    seat: Option<&crate::relay::Dispatcher>,
+    request: &Request<'_>,
+    err: &mut impl Write,
+) -> io::Result<Option<bool>> {
+    let name = request.name;
+    match (seat, request.owner_input) {
+        (_, None) => Ok(Some(false)),
+        (None, Some(_)) => {
+            writeln!(
+                err,
+                "ae: stop REFUSED — --owner-input cites the owner's stored words, and only the proved orchestrator seat may cite them. Nothing was stopped."
+            )?;
+            Ok(None)
+        }
+        (Some(seat), Some(id)) => {
+            let approval = crate::relay::stored_owner_words(&seat.dir, &seat.uuid, id)
+                .and_then(|words| crate::relay::words_name(&words, "stop", name));
+            if let Err(why) = approval {
+                writeln!(
+                    err,
+                    "ae: stop REFUSED — owner input {id} does not approve stopping '{name}': {why}. Nothing was stopped."
+                )?;
+                return Ok(None);
+            }
+            Ok(Some(true))
+        }
+    }
+}
+
+/// The proved seat's audit of this bound stop (G4), not yet written.
+fn stop_dispatch(
+    seat: &crate::relay::Dispatcher,
+    request: &Request<'_>,
+) -> crate::tracked::Dispatch {
+    crate::tracked::Dispatch {
+        dir: seat.dir.clone(),
+        session: seat.session.clone(),
+        uuid: seat.uuid.clone(),
+        slot: seat.slot.clone(),
+        pane: seat.pane.clone(),
+        server: seat.server.clone(),
+        reference: crate::tracked::Dispatch::reference(crate::time::Timestamp::now(), entropy()),
+        verb: "stop",
+        target: request.name.to_owned(),
+        target_session: request.name.to_owned(),
+        target_uuid: request.uuid.to_owned(),
+        owner_input: request.owner_input.map(ToOwned::to_owned),
+        requested: false,
+    }
+}
+
+/// What the bound stop may waive once the caller and its owner words are
+/// proved.
+struct Guards {
+    /// The orchestrator seat cited stored owner words that name `stop` and
+    /// this session: a seat that declares working, waiting-agent or blocked
+    /// does not refuse (G3). Any other declared value, a doubtful roster or an
+    /// unreadable journal still does.
+    approved: bool,
+}
+
+/// The bound stop after the proof under the lifecycle lock: the capture, the
+/// events hold, the held writes and the kill, then the buffered publication.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the bound stop's one linear order: capture, events hold, the held writes and kill, then the buffered publication; each refusal reads beside the step that raises it"
+)]
+fn stopped(
+    dir: &Path,
+    request: &Request<'_>,
+    guards: &Guards,
+    proof: Proof,
+    provenance: Provenance,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let (name, uuid) = (request.name, request.uuid);
+    let (server, stamp) = match proof {
         Proof::Proven { server, stamp } => (server, stamp),
         Proof::Absent => {
-            let bound = Bound::new(name, uuid, provenance(root, &caller));
-            return already_stopped(&dir, &bound, err);
+            let bound = Bound::new(name, uuid, provenance);
+            return already_stopped(dir, &bound, guards, err);
         }
         Proof::Refused(line) => {
             writeln!(err, "Error: {line}. Nothing was stopped.")?;
             return Ok(EXIT_FAILED);
         }
     };
-    let bound = Bound::new(name, uuid, provenance(root, &caller));
+    let bound = Bound::new(name, uuid, provenance);
     let mut held_err = Vec::new();
-    let captured = match capture_models(&dir, &server, name) {
+    let captured = match capture_models(dir, &server, name) {
         Ok((captures, gaps)) => {
             for gap in gaps {
                 warn_model(&mut held_err, name, &gap)?;
@@ -144,14 +316,14 @@ pub(super) fn run(
             Vec::new()
         }
     };
-    let hold = match crate::store::open(&dir).hold_events() {
+    let hold = match crate::store::open(dir).hold_events() {
         Ok(hold) => hold,
         Err(why) => {
             writeln!(err, "Error: {why}. Nothing was stopped.")?;
             return Ok(EXIT_FAILED);
         }
     };
-    if let Err(line) = seats_idle(&dir, name, &hold) {
+    if let Err(line) = seats_idle(dir, name, &hold, guards.approved) {
         writeln!(err, "Error: {line}. Nothing was stopped.")?;
         return Ok(EXIT_FAILED);
     }
@@ -190,10 +362,10 @@ pub(super) fn run(
     drop(hold);
     // The rest completes before anything reaches the caller, so a closed
     // stream cannot skip the migration note or the model publication.
-    if let Some(note) = crate::migrate::session_noted(&dir, name) {
+    if let Some(note) = crate::migrate::session_noted(dir, name) {
         writeln!(held_err, "{note}")?;
     }
-    for gap in publish_models(&dir, captured) {
+    for gap in publish_models(dir, captured) {
         warn_model(&mut held_err, name, &gap)?;
     }
     let code = u8::from(!matches!(outcome, StopOutcome::Stopped));
@@ -206,7 +378,12 @@ pub(super) fn run(
 /// A proven, already stopped target: the same declaration guard as a kill,
 /// then the durable receipt through the held lock. A seat a plain stop left
 /// working, or a journal ae cannot read, refuses and writes nothing.
-fn already_stopped(dir: &Path, bound: &Bound<'_>, err: &mut impl Write) -> io::Result<u8> {
+fn already_stopped(
+    dir: &Path,
+    bound: &Bound<'_>,
+    guards: &Guards,
+    err: &mut impl Write,
+) -> io::Result<u8> {
     let name = bound.name;
     let hold = match crate::store::open(dir).hold_events() {
         Ok(hold) => hold,
@@ -215,7 +392,7 @@ fn already_stopped(dir: &Path, bound: &Bound<'_>, err: &mut impl Write) -> io::R
             return Ok(EXIT_FAILED);
         }
     };
-    if let Err(line) = seats_idle(dir, name, &hold) {
+    if let Err(line) = seats_idle(dir, name, &hold, guards.approved) {
         writeln!(err, "Error: {line}. Nothing was stopped.")?;
         return Ok(EXIT_FAILED);
     }
@@ -246,11 +423,15 @@ enum Caller {
     Outside,
     /// The ambient pane on the server `$TMUX` names, in `session`; `proved`
     /// when that session's recorded tmux server is proved to be the caller's.
+    /// `viewer` is the ONE observation of the pane that named `session`, and
+    /// the class and the provenance read the same one; boxed, because it is
+    /// the one large reading and `Outside` carries nothing.
     Pane {
         server: ServerId,
         pane: String,
         session: String,
         proved: bool,
+        viewer: Box<crate::tmux::ObservedViewer>,
     },
 }
 
@@ -316,32 +497,41 @@ fn caller_session(root: &Path, panes: &[Option<String>]) -> Result<Caller, (u8, 
             ));
         }
     }
-    match caller_resolution(root, Some(&server), &ambient) {
-        Ok(session) => Ok(Caller::Pane {
-            server,
-            pane: ambient,
-            session,
-            proved: true,
-        }),
+    // ONE observation of the validated pane: the session it names, the class
+    // and the provenance all come from it.
+    let Some((viewer, session)) = transport::observe_viewer(&server, &ambient).and_then(|viewer| {
+        let session = viewer
+            .session
+            .clone()
+            .filter(|session| !session.is_empty())?;
+        Some((viewer, session))
+    }) else {
+        return Err((
+            EXIT_FAILED,
+            "tmux did not report this caller's pane, so ae cannot tell which session it is in.",
+        ));
+    };
+    let (session, proved) = match caller_correlation(root, &server, session) {
+        Ok(session) => (session, true),
         // An unproven owner still names its session: a target of that name
         // is refused as the caller's own rather than guessed apart.
         Err(CallerGap::NotAnAeSession(session) | CallerGap::ServerUnproved(session)) => {
-            Ok(Caller::Pane {
-                server,
-                pane: ambient,
-                session,
-                proved: false,
-            })
+            (session, false)
         }
-        Err(CallerGap::PaneUnreadable) => Err((
-            EXIT_FAILED,
-            "tmux did not report this caller's pane, so ae cannot tell which session it is in.",
-        )),
-        Err(CallerGap::NotInTmux | CallerGap::NoPane) => Err((
-            EXIT_FAILED,
-            "ae cannot tell which session this caller is in.",
-        )),
-    }
+        Err(CallerGap::PaneUnreadable | CallerGap::NotInTmux | CallerGap::NoPane) => {
+            return Err((
+                EXIT_FAILED,
+                "ae cannot tell which session this caller is in.",
+            ));
+        }
+    };
+    Ok(Caller::Pane {
+        server,
+        pane: ambient,
+        session,
+        proved,
+        viewer: Box::new(viewer),
+    })
 }
 
 /// The caller as the bound events record it, under the existing keys.
@@ -369,57 +559,86 @@ impl Provenance {
     }
 }
 
-/// ONE observation of the calling pane, correlated with its session's meta,
-/// and the actor that observation supports.
-fn provenance(root: &Path, caller: &Caller) -> Provenance {
+/// The calling pane's class, as the dispatcher gate reads it.
+enum Class {
+    /// The owner's terminal, or a pane that is not the seat.
+    Other,
+    /// The proved orchestrator seat.
+    Seat(crate::relay::Dispatcher),
+    /// A pane positively in the seat's session that fails the dispatcher
+    /// proof: neither the seat's powers nor an ordinary pane's.
+    Unproven(&'static str),
+}
+
+/// What ONE observation of the calling pane proves: its class and the
+/// provenance both bound events record.
+struct Seen {
+    class: Class,
+    provenance: Provenance,
+}
+
+/// ONE observation of the calling pane, correlated with its session's meta:
+/// the class `relay::seat_class` gives it, and the actor it supports.
+fn observe(root: &Path, caller: &Caller) -> Seen {
     let Caller::Pane {
         server,
         pane,
         session,
         proved,
+        viewer,
     } = caller
     else {
-        return Provenance {
-            actor: HUMAN_ACTOR,
-            session: String::new(),
-            triple: None,
-            gap: "",
+        return Seen {
+            class: Class::Other,
+            provenance: Provenance {
+                actor: HUMAN_ACTOR,
+                session: String::new(),
+                triple: None,
+                gap: "",
+            },
         };
     };
-    let Some(viewer) = transport::observe_viewer(server, pane) else {
-        return Provenance::unproved(CorrelationGap::Unreadable.name());
-    };
     let dir = sessions_dir(root).join(session);
-    let triple = match crate::tracked::triple_from_viewer(&viewer, pane, &dir) {
+    let class = match crate::relay::seat_class(root, viewer, server, pane) {
+        crate::relay::SeatClass::Ordinary(_) => Class::Other,
+        crate::relay::SeatClass::Dispatcher(seat) => Class::Seat(seat),
+        crate::relay::SeatClass::Unproven(why) => Class::Unproven(why),
+    };
+    let triple = match crate::tracked::triple_from_viewer(viewer, pane, &dir) {
         Ok(triple) => triple,
-        Err(gap) => return Provenance::unproved(gap.name()),
+        Err(gap) => {
+            return Seen {
+                class,
+                provenance: Provenance::unproved(gap.name()),
+            };
+        }
     };
     if !*proved {
-        return Provenance::unproved(UNPROVED_SERVER);
+        return Seen {
+            class,
+            provenance: Provenance::unproved(UNPROVED_SERVER),
+        };
     }
-    let actor = if is_dispatcher(root, &viewer, server) {
+    let actor = if matches!(class, Class::Seat(_)) {
         crate::tracked::ORCHESTRATOR_DISPLAY
     } else {
         PANE_ACTOR
     };
-    Provenance {
-        actor,
-        session: session.clone(),
-        triple: Some(triple),
-        gap: "",
+    Seen {
+        class,
+        provenance: Provenance {
+            actor,
+            session: session.clone(),
+            triple: Some(triple),
+            gap: "",
+        },
     }
 }
 
-/// Whether the observed calling pane is provably the orchestrator seat: the
-/// proof the dispatcher gate (`refuse_dispatcher_seen` in src/lib.rs) takes
-/// before it refuses a dispatcher, on the same observation.
-fn is_dispatcher(root: &Path, viewer: &ObservedViewer, server: &ServerId) -> bool {
-    let (Some(session), Some(_slot)) = (viewer.session.as_deref(), viewer.slot.as_deref()) else {
-        return false;
-    };
-    crate::session_launch::name::is_session_name(session)
-        && crate::relay::physical_session(&sessions_dir(root).join(session), viewer, server)
-            .is_ok_and(|(_, bytes)| meta::is_seat(&bytes, root))
+/// Per-call entropy for a dispatch `ref`.
+fn entropy() -> u64 {
+    use std::hash::{BuildHasher as _, RandomState};
+    RandomState::new().hash_one((std::process::id(), crate::time::Timestamp::now().epoch()))
 }
 
 /// The facts both bound events carry.
@@ -535,8 +754,10 @@ fn prove(dir: &Path, name: &str, uuid: &str) -> Proof {
 /// Under the held event lock: the CURRENT roster is whole and every seat of
 /// it has no declaration or a latest one ae admits. `Err` names a doubtful or
 /// unreadable roster, each other seat with its state, or the journal ae could
-/// not read.
-fn seats_idle(dir: &Path, name: &str, hold: &EventsHold) -> Result<(), String> {
+/// not read. `approved` (stored owner words that name this stop) admits a seat
+/// that declares working, waiting-agent or blocked; it never admits any other
+/// value, a roster or a journal ae doubts.
+fn seats_idle(dir: &Path, name: &str, hold: &EventsHold, approved: bool) -> Result<(), String> {
     let Ok(bytes) = meta::read_bytes(dir) else {
         return Err(format!("ae cannot read the roster of '{name}'"));
     };
@@ -585,6 +806,7 @@ fn seats_idle(dir: &Path, name: &str, hold: &EventsHold) -> Result<(), String> {
     let busy: Vec<String> = crate::state::latest_for_all(&container, &actors)
         .into_iter()
         .filter(|(_, latest)| !is_idle(&latest.value))
+        .filter(|(_, latest)| !(approved && is_waivable(&latest.value)))
         .map(|(actor, latest)| {
             format!(
                 "{} is {}",
@@ -606,6 +828,12 @@ fn seats_idle(dir: &Path, name: &str, hold: &EventsHold) -> Result<(), String> {
 /// byte with nothing normalized.
 fn is_idle(value: &[u8]) -> bool {
     IDLE_STATES.iter().any(|idle| idle.as_bytes() == value)
+}
+
+/// Whether a raw declared value is one stored owner words may waive, compared
+/// byte for byte with nothing normalized.
+fn is_waivable(value: &[u8]) -> bool {
+    WAIVABLE_STATES.iter().any(|busy| busy.as_bytes() == value)
 }
 
 #[cfg(test)]
@@ -684,5 +912,56 @@ mod tests {
         assert!(!super::is_idle(b"Done"));
         assert!(!super::is_idle(b"done\xff"));
         assert!(!super::is_idle(b""));
+    }
+
+    /// Plan A's one observation: the class and the provenance read the
+    /// snapshot the caller carries. Its server socket does not exist, so a
+    /// second tmux read could only fail.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test writes its isolated session meta"
+    )]
+    fn the_class_and_the_provenance_read_the_one_observation_the_caller_carries() {
+        const UUID: &str = "11111111-2222-4333-8444-777777777777";
+        let root = std::env::temp_dir().join(format!("ae-bound-snapshot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = super::sessions_dir(&root).join("caller");
+        std::fs::create_dir_all(&dir).expect("isolated session directory");
+        std::fs::write(
+            dir.join("meta"),
+            format!("session=caller\nsession_id={UUID}\n"),
+        )
+        .expect("isolated meta");
+        let socket = root.join("no-server");
+        let viewer = crate::tmux::ObservedViewer {
+            slot: Some("main".to_owned()),
+            session: Some("caller".to_owned()),
+            agent: Some("lead".to_owned()),
+            session_uuid: crate::tmux::OptionReading::Set(UUID.to_owned()),
+            socket_path: Some(socket.display().to_string()),
+        };
+        let caller = super::Caller::Pane {
+            server: crate::inventory::ServerId::Selected(crate::meta::Selector::Socket(
+                socket.clone(),
+            )),
+            pane: "%9".to_owned(),
+            session: "caller".to_owned(),
+            proved: true,
+            viewer: Box::new(viewer),
+        };
+        let seen = super::observe(&root, &caller);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(matches!(seen.class, super::Class::Other));
+        assert_eq!(seen.provenance.actor, super::PANE_ACTOR);
+        assert_eq!(seen.provenance.gap, "");
+        assert_eq!(seen.provenance.session, "caller");
+        let triple = seen
+            .provenance
+            .triple
+            .expect("the snapshot's identity triple");
+        assert_eq!(triple.server, socket.display().to_string());
+        assert_eq!(triple.pane, "%9");
+        assert_eq!(triple.session_uuid, UUID);
     }
 }

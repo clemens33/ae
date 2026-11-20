@@ -15,19 +15,23 @@
 //! a release that changed only the `[workspace]` shares its prompt stanza with
 //! the current one, so the whole file is asked first), the current stanza
 //! (nothing to do), an earlier stanza (replace only the prompt row), a prompt
-//! that already teaches the bound owner words (nothing to do, owner edits kept)
-//! or none of these (leave the file, name the repair).
+//! that already teaches the bound owner words and the current charter (nothing
+//! to do, owner edits kept), one that teaches the owner words but an older
+//! charter (leave the file, name the repair) or none of these (leave the file,
+//! name the repair).
 //!
 //! **The reconcile.** [`reconcile`] runs once per root after its sweep, with or
 //! without an orchestrator session. A replacement keeps the old file at the
 //! first free `<file>.pre-v<version>[-N]` and says so in one line. No step here
-//! stops or starts a seat: the seat reads its prompt at launch, so the owner
-//! restarts it.
+//! stops or starts a seat: the seat reads its prompt at launch, and a running
+//! seat whose charter the replacement raised gets the new prompt as one
+//! CHARTER UPDATE turn from its watchdog after it next declares `done`.
 
 use super::{SEAT_CONFIG_CAP, publish_reseed};
 use crate::config::{
-    SEAT_TEMPLATE, seat_backup_path, seat_config_directory_repair, seat_config_repair,
-    seat_prompt_is_current, seat_prompt_replaced, seat_prompt_stanza,
+    SEAT_CHARTER_MARKER, SEAT_CHARTER_VERSION, SEAT_TEMPLATE, seat_backup_path,
+    seat_config_directory_repair, seat_config_repair, seat_prompt_charter, seat_prompt_is_current,
+    seat_prompt_replaced, seat_prompt_stanza,
 };
 use crate::install::sha256_hex;
 use crate::store::{SourcePresence, SourceRead};
@@ -142,14 +146,23 @@ const LEDGER: &[Released] = &[
         file: "a5b22eefb74cfcca57e5b521ec0be9ef16820c5e74efe12a056ebd8e956a8540",
         stanza: Some("c516017d3caef922239317b06ee5b72933ba4f78983c57e3317693a850817911"),
     },
+    Released {
+        tag: "v2026.11.100",
+        file: "ba40b53d3e210fb82cd5f8ad28b6ce2c13cd53d81ed531cacfe218df9a91f808",
+        stanza: Some("493c14e1281a99e67352d58b6ff2584e8ddb287849cfa479e9d0bce44d9e2e58"),
+    },
 ];
 
 /// What a publish does with one seat config.
 #[derive(Debug, PartialEq, Eq)]
 enum Verdict {
     /// The current template, or a prompt that already teaches the bound owner
-    /// words: nothing to do and nothing to say.
+    /// words and the current charter: nothing to do and nothing to say.
     Compatible,
+    /// A prompt that teaches the bound owner words but an older charter, which
+    /// no released template wrote: the file stays as it is, the relay keeps
+    /// accepting it, and the repair is named.
+    Charterless,
     /// Byte for byte an earlier template: the file becomes the current template.
     Whole(&'static str),
     /// An earlier template's prompt stanza: only the prompt row is replaced, and
@@ -190,17 +203,21 @@ fn classify_with(text: &str, ledger: &[Released]) -> Verdict {
     {
         return Verdict::Stanza(row.tag, new);
     }
-    if seat_prompt_is_current(text) {
-        Verdict::Compatible
-    } else {
+    if !seat_prompt_is_current(text) {
         Verdict::Stale
+    } else if seat_prompt_charter(text) < SEAT_CHARTER_VERSION {
+        Verdict::Charterless
+    } else {
+        Verdict::Compatible
     }
 }
 
 /// Bring the seat config of `root` to the current template as far as a publish
 /// of `version` may, and return the one line that says what happened, or `None`
 /// when there is nothing to say: no file, a current template, or a prompt that
-/// already teaches the bound owner words. A file that is not a regular file, is
+/// already teaches the bound owner words and the current charter. A prompt with
+/// the owner words and an older charter is left as it is and named with its
+/// repair. A file that is not a regular file, is
 /// over the cap or is not UTF-8 is left as it is and named with its repair, like
 /// a prompt no released template wrote.
 pub(super) fn reconcile(root: &Path, version: &str) -> Option<String> {
@@ -241,6 +258,13 @@ pub(super) fn reconcile(root: &Path, version: &str) -> Option<String> {
     };
     let (new, what) = match classify(&text) {
         Verdict::Compatible => return None,
+        Verdict::Charterless => {
+            return unchanged(&format!(
+                "its seat prompt keeps the bound owner words but lacks the charter sentence \
+                 \"{SEAT_CHARTER_MARKER}\", so the seat is not taught to act for the owner and \
+                 its watchdog sends it no CHARTER UPDATE turn"
+            ));
+        }
         Verdict::Stale => {
             return unchanged(
                 "its seat prompt predates the bound owner words (or an owner edit removed \
@@ -268,15 +292,38 @@ pub(super) fn reconcile(root: &Path, version: &str) -> Option<String> {
     if let Err(why) = replace(&path, &text, &new, &backup) {
         return unchanged(&format!("it could not be replaced ({why})"));
     }
-    let restart = if instance.is_some() {
-        "restart that instance's orchestrator seat with its own ae command to load it"
-    } else {
-        "restart the orchestrator seat to load it: ae stop orchestrator, then ae orchestrator"
-    };
+    let raised = seat_prompt_charter(&new) > seat_prompt_charter(&text);
     Some(format!(
-        "{what}; the previous file is kept at {}; {restart}",
-        backup.display()
+        "{what}; the previous file is kept at {}; {}",
+        backup.display(),
+        restart(instance.is_some(), raised)
     ))
+}
+
+/// How a replacement line tells the owner the seat loads the new file. When the
+/// replacement raises the charter, a running seat gets the new prompt as one
+/// CHARTER UPDATE turn from its watchdog after it next declares `done`, and
+/// only a restart loads the rest of the file. A named instance's line names no
+/// ae command, because the one on the path starts the default root.
+fn restart(named_instance: bool, raised: bool) -> &'static str {
+    match (named_instance, raised) {
+        (false, true) => {
+            "a running orchestrator seat gets the new prompt as one CHARTER UPDATE turn after it \
+             next declares done, and a restart loads the whole file: ae stop orchestrator, then \
+             ae orchestrator"
+        }
+        (true, true) => {
+            "a running orchestrator seat of that instance gets the new prompt as one CHARTER \
+             UPDATE turn after it next declares done, and a restart with that instance's own ae \
+             command loads the whole file"
+        }
+        (false, false) => {
+            "restart the orchestrator seat to load it: ae stop orchestrator, then ae orchestrator"
+        }
+        (true, false) => {
+            "restart that instance's orchestrator seat with its own ae command to load it"
+        }
+    }
 }
 
 /// Keep `seen` at `backup` and publish `new` over `path`. The backup is made
@@ -494,10 +541,12 @@ mod tests {
             .filter(|path| path.extension().is_some_and(|ext| ext == "config"))
             .map(|path| {
                 let stem = path.file_stem().expect("stem").to_string_lossy();
-                let tag = if stem == "s1a-previous" {
-                    "v2026.11.32".to_owned()
-                } else {
-                    stem.into_owned()
+                let tag = match stem.as_ref() {
+                    "s1a-previous" => "v2026.11.32".to_owned(),
+                    // The executor acceptance's released overlay: v2026.11.98
+                    // still seeded the template v2026.11.94 first carried.
+                    "orchexec-v2026.11.98" => "v2026.11.94".to_owned(),
+                    _ => stem.into_owned(),
                 };
                 (tag, std::fs::read_to_string(&path).expect("fixture text"))
             })
@@ -959,5 +1008,92 @@ mod tests {
                 && !named.contains("ae stop all"),
             "{named}"
         );
+    }
+
+    /// The v2026.11.94 template, byte for byte: the last one before the
+    /// chief-of-staff charter, which carries the bound owner words.
+    const BEFORE_CHARTER: &str =
+        include_str!("../../../tests/fixtures/orchestrator/orchexec-v2026.11.98.config");
+
+    #[test]
+    fn an_owner_prompt_with_the_owner_words_but_no_charter_is_left_alone_and_named() {
+        let (body, tail) = BEFORE_CHARTER
+            .rsplit_once("\n\"\"\"")
+            .expect("the template's prompt block");
+        let edited = format!("{body}\nAn owner note.\n\"\"\"{tail}");
+        assert!(
+            seat_prompt_is_current(&edited),
+            "the relay keeps accepting it"
+        );
+        assert!(!edited.contains(crate::config::SEAT_CHARTER_MARKER));
+        assert_ne!(classify(&edited), Verdict::Compatible);
+        let scratch = root_with("charterless", Some(edited.as_bytes()));
+        let path = scratch.0.join("orchestrator.config");
+        let line = reconcile(&scratch.0, "9.9").expect("a repair line");
+        assert_eq!(std::fs::read_to_string(&path).expect("file"), edited);
+        assert!(!scratch.0.join("orchestrator.config.pre-v9.9").exists());
+        assert!(
+            line.starts_with(&format!("left {} unchanged: ", path.display()))
+                && line.contains("charter")
+                && line.contains("CHARTER UPDATE")
+                && line.contains("ae stop orchestrator; ae orchestrator")
+                && !line.contains('\n'),
+            "{line}"
+        );
+        // The current prompt with an owner note carries the charter: nothing to say.
+        let (body, tail) = SEAT_TEMPLATE
+            .rsplit_once("\n\"\"\"")
+            .expect("the template's prompt block");
+        let current = root_with(
+            "chartered",
+            Some(format!("{body}\nAn owner note.\n\"\"\"{tail}").as_bytes()),
+        );
+        assert_eq!(reconcile(&current.0, "9.9"), None);
+    }
+
+    #[test]
+    fn a_migration_that_raises_the_charter_names_the_charter_update_turn() {
+        for (tag, old) in [
+            (
+                "v2026.9.61",
+                fixtures()
+                    .into_iter()
+                    .find(|(tag, _)| tag == "v2026.9.61")
+                    .expect("fixture")
+                    .1,
+            ),
+            ("v2026.11.94", BEFORE_CHARTER.to_owned()),
+        ] {
+            let scratch = root_with(&format!("raised-{tag}"), Some(old.as_bytes()));
+            let path = scratch.0.join("orchestrator.config");
+            let line = reconcile(&scratch.0, "9.9").unwrap_or_else(|| panic!("{tag}: a line"));
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("file"),
+                SEAT_TEMPLATE,
+                "{tag}"
+            );
+            assert!(
+                line.contains(tag)
+                    && line.contains("CHARTER UPDATE")
+                    && line.contains("declares done")
+                    && line.contains("ae stop orchestrator, then ae orchestrator")
+                    && !line.contains('\n'),
+                "{tag}: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_restart_advice_names_the_charter_turn_only_when_the_charter_rose() {
+        for named in [false, true] {
+            let raised = restart(named, true);
+            let flat = restart(named, false);
+            assert!(raised.contains("CHARTER UPDATE") && raised.contains("declares done"));
+            assert!(!flat.contains("CHARTER UPDATE"), "{flat}");
+            for line in [raised, flat] {
+                assert_eq!(line.contains("ae stop orchestrator"), !named, "{line}");
+                assert_eq!(line.contains("that instance"), named, "{line}");
+            }
+        }
     }
 }

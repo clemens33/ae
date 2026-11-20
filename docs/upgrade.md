@@ -59,10 +59,15 @@ earlier template is replaced by the current template, even when that template sh
 `[prompt]` stanza with the current one. A file whose `[prompt]` stanza is
 byte-equal to an earlier stanza gets only its prompt row replaced, so the owner's other edits
 stay. Either way the old file is kept first at `orchestrator.config.pre-v<new version>` (then
-`-2`, `-3` when a name is taken, and nothing is overwritten), and ONE `ae:` line names both paths
-and says to restart the seat with `ae stop orchestrator` and `ae orchestrator`. The upgrade never
-stops or starts the seat. A prompt that already teaches the bound owner words stays exactly as it
-is, owner edits included, and the upgrade says nothing. Any other file, and a file that is not a
+`-2`, `-3` when a name is taken, and nothing is overwritten), and ONE `ae:` line names both paths.
+When the replacement raises the charter, the line says that a running seat gets the new prompt as
+one `CHARTER UPDATE` turn after it next declares `done`, and that `ae stop orchestrator` and
+`ae orchestrator` load the whole file. Otherwise it says to restart the seat with those two
+commands. The upgrade never stops or starts the seat. A prompt that already teaches the bound
+owner words and the current charter stays exactly as it is, owner edits included, and the upgrade
+says nothing. A prompt that teaches the bound owner words with an older charter also stays as it
+is, and the relay keeps accepting it, but it gets one warning line with the repair below, because
+its watchdog sends no `CHARTER UPDATE` turn. Any other file, and a file that is not a
 regular file, is over 1 MiB or is not UTF-8, changes nothing and gets one warning line with the
 repair: one `sh -c` command that refuses an occupied backup name, moves the file aside and runs
 `ae stop orchestrator` and `ae orchestrator`, so the launch seeds the current template. A

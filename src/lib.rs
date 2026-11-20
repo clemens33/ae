@@ -1652,7 +1652,7 @@ fn run_entry(
     {
         let settings = Outbound::Verb(
             "settings",
-            "does not start, resume or stop its own seat; ask the human",
+            "never changes, starts, resumes or stops its own seat; the owner runs ae orchestrator",
         );
         if let Some(code) = refuse_dispatcher(settings, err)? {
             return Ok(code);
@@ -1662,7 +1662,10 @@ fn run_entry(
     if argv.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION)
         && orchestrator::is_resume(&argv[1..])
     {
-        let launch = Outbound::Verb("launch", "does not start sessions; ask the human");
+        let launch = Outbound::Verb(
+            "launch",
+            "never starts or resumes its own seat; the owner runs ae orchestrator",
+        );
         if let Some(code) = refuse_dispatcher(launch, err)? {
             return Ok(code);
         }
@@ -1697,6 +1700,13 @@ fn run_entry(
         }
         entry::Route::Core(effective) => return run_dispatch(&effective, out, err),
         entry::Route::Compact(tail) => {
+            let compact = Outbound::Verb(
+                "compact",
+                "does not compact seats in this release; give the owner the command",
+            );
+            if let Some(code) = refuse_dispatcher(compact, err)? {
+                return Ok(code);
+            }
             return run_compact(preamble, &tail, out, err);
         }
         entry::Route::Attach => return run_bare_attach(preamble, Bare::App, out, err),
@@ -1707,14 +1717,13 @@ fn run_entry(
             entry::EXIT_USAGE
         }
         entry::Route::Launch(user) => {
-            // The one launch the dispatcher may run: the bound resume of a
-            // stopped session other than the seat, which the launch owner
-            // proves under the target's lifecycle lock.
+            // The bound resume of a stopped session other than the seat, which
+            // the launch owner proves under the target's lifecycle lock, runs
+            // for every caller; the proved seat's is audited.
             if session_launch::is_bound_resume(&user) {
-                return run_launch_as(preamble, &user, false, None, Gate::Bound, out, err);
+                return run_bound_resume(preamble, &user, out, err);
             }
-            let launch = Outbound::Verb("launch", "does not start sessions; ask the human");
-            if let Some(code) = refuse_dispatcher(launch, err)? {
+            if let Some(code) = run_seat_launch_gate(preamble, &user, out, err)? {
                 return Ok(code);
             }
             if user.first().map(String::as_str) == Some(orchestrator::ORCHESTRATOR_SESSION) {
@@ -2035,13 +2044,364 @@ fn run_launch(
 }
 
 /// Which gate a launch's served `_launch` crosses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Gate {
+enum Gate<'a> {
     /// [`run_dispatch`]'s: the orchestrator's agent pane is refused.
     Dispatcher,
     /// The bound resume the entry admitted for every caller:
     /// [`run_bound_dispatch`].
     Bound,
+    /// The proved seat's start, create or bound resume, which the entry
+    /// admitted; the audit records it under the launch's lifecycle lock:
+    /// [`run_executor_dispatch`].
+    Executor(&'a mut dyn session_launch::LaunchAudit),
+}
+
+/// G4 of a launch the proved seat runs: the request row under the launch's
+/// lifecycle lock, naming the session that lock holds; the result row after,
+/// with the uuid the record held under that same lock.
+struct SeatLaunch<'a> {
+    seat: &'a relay::Dispatcher,
+    /// Which of the seat's three launch forms the argv is.
+    form: SeatForm,
+    /// The session as typed.
+    target: String,
+    /// The request row, once written.
+    written: Option<tracked::Dispatch>,
+}
+
+/// The three launch forms the proved seat runs, each with `--no-attach`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeatForm {
+    /// `ae <name> --resume --no-attach --expect-uuid <uuid>`.
+    Resume,
+    /// `ae <name> --no-attach`: a stopped session that exists.
+    Start,
+    /// `ae <name> --dir <path> --local|--copy|--worktree [profiles] --no-attach`.
+    Create,
+}
+
+impl SeatForm {
+    /// The word a dispatch and its refusals name.
+    const fn verb(self) -> &'static str {
+        match self {
+            Self::Resume => "resume",
+            Self::Start => "start",
+            Self::Create => "create",
+        }
+    }
+
+    /// The form of the parsed `plan` other than the bound resume, or `None`
+    /// for a shape the seat does not run (an unbound `--resume`, `--from`,
+    /// a frozen worker list, a mode without `--dir` and the like).
+    fn of(plan: &session_launch::Plan) -> Option<Self> {
+        let bare = plan.attach == Some(false)
+            && !plan.resume
+            && plan.expect_uuid.is_none()
+            && plan.from.is_none()
+            && plan.workers.is_none()
+            && plan.main.is_none()
+            && !plan.tmux;
+        if !bare {
+            return None;
+        }
+        match (&plan.dir, &plan.mode) {
+            (None, None) if plan.seat_profiles.is_empty() => Some(Self::Start),
+            (Some(_), Some(_)) => Some(Self::Create),
+            _ => None,
+        }
+    }
+}
+
+impl session_launch::LaunchAudit for SeatLaunch<'_> {
+    fn before_lock(
+        &mut self,
+        session: &str,
+        dir: &std::path::Path,
+    ) -> std::result::Result<(), String> {
+        // A start of a checked name with nothing at all at its state path, no
+        // directory, link or file: any other state is judged under the lock.
+        if self.form == SeatForm::Start
+            && matches!(store::source_presence(dir), store::SourcePresence::Absent)
+        {
+            return Err(absent_refusal("start", session));
+        }
+        Ok(())
+    }
+
+    fn locked(
+        &mut self,
+        session: &str,
+        dir: &std::path::Path,
+        creates: bool,
+    ) -> std::result::Result<(), String> {
+        let verb = self.form.verb();
+        // What the lock holds decides: a create names no session that
+        // exists, and a start or resume one that does.
+        match (self.form, creates) {
+            (SeatForm::Create, false) => {
+                return Err(format!(
+                    "ae: create REFUSED — '{session}' already exists; the orchestrator seat starts it with: ae {session} --no-attach. Nothing was changed."
+                ));
+            }
+            (SeatForm::Start | SeatForm::Resume, true) => {
+                return Err(absent_refusal(verb, session));
+            }
+            _ => {}
+        }
+        let uuid = if creates {
+            String::new()
+        } else {
+            session_uuid(dir)
+        };
+        if !creates && uuid.is_empty() {
+            return Err(format!(
+                "ae: {verb} REFUSED — the record of '{session}' names no single canonical session uuid, so the orchestrator's dispatch cannot name its target. Nothing was changed."
+            ));
+        }
+        if !creates && uuid == self.seat.uuid {
+            return Err(format!(
+                "ae: {verb} REFUSED — '{session}' records the orchestrator seat's own session uuid, and the seat never starts its own session. Nothing was changed."
+            ));
+        }
+        let dispatch = seat_dispatch(self.seat, verb, &self.target, session, &uuid);
+        dispatch.request().map_err(|why| {
+            format!(
+                "ae: {verb} REFUSED — ae could not record the dispatch in the orchestrator's journal ({why}). Nothing was changed."
+            )
+        })?;
+        self.written = Some(dispatch);
+        Ok(())
+    }
+
+    fn built(&mut self, uuid: &str) {
+        if let Some(dispatch) = self.written.as_mut()
+            && dispatch.target_uuid.is_empty()
+        {
+            uuid.clone_into(&mut dispatch.target_uuid);
+        }
+    }
+}
+
+impl SeatLaunch<'_> {
+    /// Run the launch with both streams held, then settle the result row
+    /// before anything reaches the caller.
+    fn run(
+        mut self,
+        preamble: &entry::Preamble,
+        user: &[String],
+        out: &mut impl Write,
+        err: &mut impl Write,
+    ) -> Result<u8> {
+        let (mut held_out, mut held_err) = (Vec::new(), Vec::new());
+        let code = run_launch_as(
+            preamble,
+            user,
+            false,
+            None,
+            Gate::Executor(&mut self),
+            &mut held_out,
+            &mut held_err,
+        );
+        finish_dispatch(self.written, code, &held_out, held_err, out, err)
+    }
+}
+
+/// The bound resume, which runs for every caller. The proved seat's is
+/// audited; an unread pane and a pane of the seat's session that fails the
+/// proof are refused.
+fn run_bound_resume(
+    preamble: &entry::Preamble,
+    user: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let seat = match calling_class(observe_calling_pane(), state_root().as_deref(), err)? {
+        Err(code) => return Ok(code),
+        Ok(None | Some(relay::SeatClass::Ordinary(_))) => {
+            return run_launch_as(preamble, user, false, None, Gate::Bound, out, err);
+        }
+        Ok(Some(relay::SeatClass::Unproven(why))) => {
+            writeln!(err, "{}", unproven_refusal("launch", why))?;
+            err.flush()?;
+            return Ok(entry::EXIT_USAGE);
+        }
+        Ok(Some(relay::SeatClass::Dispatcher(seat))) => seat,
+    };
+    let target = session_launch::parse_plan(user)
+        .ok()
+        .and_then(|plan| plan.name)
+        .unwrap_or_default();
+    SeatLaunch {
+        seat: &seat,
+        form: SeatForm::Resume,
+        target,
+        written: None,
+    }
+    .run(preamble, user, out, err)
+}
+
+/// The launch caller gate: the proved seat's launch runs here, and a pane in
+/// the seat's session that ae cannot prove to be the seat is refused. `None`
+/// for every other caller, whose launch goes on unchanged.
+fn run_seat_launch_gate(
+    preamble: &entry::Preamble,
+    user: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<Option<u8>> {
+    match calling_class(observe_calling_pane(), state_root().as_deref(), err)? {
+        Err(code) => Ok(Some(code)),
+        Ok(Some(relay::SeatClass::Dispatcher(seat))) => {
+            run_seat_launch(preamble, user, &seat, out, err).map(Some)
+        }
+        Ok(Some(relay::SeatClass::Unproven(why))) => {
+            writeln!(err, "{}", unproven_refusal("launch", why))?;
+            err.flush()?;
+            Ok(Some(entry::EXIT_USAGE))
+        }
+        Ok(None | Some(relay::SeatClass::Ordinary(_))) => Ok(None),
+    }
+}
+
+/// The proved seat's start or create of another session, from the entry:
+/// `--no-attach` only, so no client moves, never the seat's own session, and
+/// audited under the launch's lifecycle lock (G4).
+fn run_seat_launch(
+    preamble: &entry::Preamble,
+    user: &[String],
+    seat: &relay::Dispatcher,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    // A malformed or nameless line is none of the seat's forms: its typed
+    // refusal, before any gate and before any write.
+    let plan = match session_launch::parse_seat_plan(user) {
+        Ok(plan) if plan.name.is_some() => plan,
+        parsed => {
+            let why = parsed
+                .err()
+                .unwrap_or_else(|| "it names no session".to_owned());
+            let why = why
+                .trim()
+                .trim_start_matches("Error: ")
+                .trim_end_matches('.');
+            writeln!(
+                err,
+                "{}",
+                seat_forms_refusal("<name>", &format!(" ({why})"))
+            )?;
+            err.flush()?;
+            return Ok(entry::EXIT_USAGE);
+        }
+    };
+    let form = SeatForm::of(&plan);
+    let name = plan.name.unwrap_or_default();
+    let refusal = if plan.attach != Some(false) {
+        "ae: launch REFUSED — the orchestrator seat starts and creates other sessions only with --no-attach, so no client moves. Nothing was changed.".to_owned()
+    } else if name == seat.session || name == orchestrator::ORCHESTRATOR_SESSION {
+        format!(
+            "ae: launch REFUSED — '{name}' is the orchestrator seat's own session, and the seat never starts it. The owner runs, in the owner's own terminal: ae orchestrator. Nothing was changed."
+        )
+    } else if let Some(form) = form {
+        return SeatLaunch {
+            seat,
+            form,
+            target: name,
+            written: None,
+        }
+        .run(preamble, user, out, err);
+    } else {
+        seat_forms_refusal(&name, "")
+    };
+    writeln!(err, "{refusal}")?;
+    err.flush()?;
+    Ok(entry::EXIT_USAGE)
+}
+
+/// The refusal of a launch line that is none of the seat's three forms, for
+/// session `name`, with the parser's reason in `why` when it has one.
+fn seat_forms_refusal(name: &str, why: &str) -> String {
+    format!(
+        "ae: launch REFUSED — the orchestrator seat runs three launch forms only: ae {name} --no-attach (start), ae {name} --dir <path> --local|--copy|--worktree [--lead|--colead|--seat <profile>] --no-attach (create), and ae {name} --resume --no-attach --expect-uuid <uuid> (resume); this line is none of them{why}. Nothing was changed."
+    )
+}
+
+/// The refusal of the seat's `verb` (start or resume) of `session`, which does
+/// not exist.
+fn absent_refusal(verb: &str, session: &str) -> String {
+    format!(
+        "ae: {verb} REFUSED — no session '{session}' exists to {verb}; the orchestrator seat creates one with: ae {session} --dir <path> --local --no-attach. Nothing was changed."
+    )
+}
+
+/// The canonical session uuid of the one `session_id` row the meta in `dir`
+/// records; empty when it records none, more than one or no valid one.
+fn session_uuid(dir: &std::path::Path) -> String {
+    meta::read_bytes(dir)
+        .ok()
+        .and_then(|bytes| {
+            meta::sole_value(&bytes, "session_id")
+                .and_then(|raw| std::str::from_utf8(raw).ok())
+                .map(archive::canonical_uuid)
+        })
+        .unwrap_or_default()
+}
+
+/// A dispatch of the proved seat `seat`: `verb` on `target`, in session
+/// `target_session` whose uuid is `target_uuid` (empty before a create).
+fn seat_dispatch(
+    seat: &relay::Dispatcher,
+    verb: &'static str,
+    target: &str,
+    target_session: &str,
+    target_uuid: &str,
+) -> tracked::Dispatch {
+    tracked::Dispatch {
+        dir: seat.dir.clone(),
+        session: seat.session.clone(),
+        uuid: seat.uuid.clone(),
+        slot: seat.slot.clone(),
+        pane: seat.pane.clone(),
+        server: seat.server.clone(),
+        reference: tracked::Dispatch::reference(time::Timestamp::now(), entropy()),
+        verb,
+        target: target.to_owned(),
+        target_session: target_session.to_owned(),
+        target_uuid: target_uuid.to_owned(),
+        owner_input: None,
+        requested: false,
+    }
+}
+
+/// The end of a seat dispatch whose streams were held: the result row when
+/// its request row was written, then the streams, so a closed stream never
+/// skips the result.
+fn finish_dispatch(
+    written: Option<tracked::Dispatch>,
+    code: Result<u8>,
+    held_out: &[u8],
+    mut held_err: Vec<u8>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    if let Some(dispatch) = written {
+        let outcome = match &code {
+            Ok(code) => tracked::dispatch_outcome(*code),
+            Err(_) => "failed (error)".to_owned(),
+        };
+        if let Err(why) = dispatch.result(&outcome) {
+            writeln!(
+                held_err,
+                "Warning: ae could not record the dispatch result in the orchestrator's journal ({why})."
+            )?;
+        }
+    }
+    let shown = out.write_all(held_out).and_then(|()| out.flush());
+    err.write_all(&held_err)?;
+    err.flush()?;
+    let code = code?;
+    error::with_status(code, shown)?;
+    Ok(code)
 }
 
 /// [`run_launch`], with the gate its served `_launch` crosses.
@@ -2054,7 +2414,7 @@ fn run_launch_as(
     user: &[String],
     land: bool,
     first_use: Option<&std::path::Path>,
-    gate: Gate,
+    gate: Gate<'_>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
@@ -2103,7 +2463,32 @@ fn run_launch_as(
     match gate {
         Gate::Dispatcher => run_dispatch(&preamble.launch_argv(user), out, err),
         Gate::Bound => run_bound_dispatch(&preamble.launch_argv(user), out, err),
+        Gate::Executor(audit) => {
+            run_executor_dispatch(&preamble.launch_argv(user), audit, out, err)
+        }
     }
+}
+
+/// The served `_launch` of a launch the proved seat runs, which the entry
+/// admitted: `audit` records it under the lifecycle lock. Anything else goes
+/// through [`run_dispatch`] and its gate.
+fn run_executor_dispatch(
+    args: &[String],
+    audit: &mut dyn session_launch::LaunchAudit,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let request = cli::Request::parse(args);
+    let cli::Request::Launch { tail } = &request else {
+        return run_dispatch(args, out, err);
+    };
+    if speaks_as_reserved(args) {
+        return run_dispatch(args, out, err);
+    }
+    let code = session_launch::run_audited(tail, audit, out, err)?;
+    err.flush()?;
+    error::with_status(code, out.flush())?;
+    Ok(code)
 }
 
 /// The argv of an app start ae makes itself, which says no hint.
@@ -3201,15 +3586,45 @@ fn run_tracked(
     err: &mut impl Write,
 ) -> Result<u8> {
     let sender = if let Some(display) = sender_override() {
+        if let Some(code) = refuse_seat_override(kind.action(), tail, err)? {
+            return Ok(code);
+        }
         Some(tracked::Sender {
             display,
             slot: String::new(),
             session: String::new(),
         })
     } else {
-        let Some(viewer) = writing_viewer(dir, err)? else {
-            return Ok(state::EXIT_FAILED);
+        let (viewer, seat) = match writing_caller(dir, kind.action(), err)? {
+            Ok(found) => found,
+            Err(code) => return Ok(code),
         };
+        if let Some(seat) = seat {
+            let sender = tracked::Sender {
+                display: tracked::ORCHESTRATOR_DISPLAY.to_owned(),
+                slot: seat.slot.clone(),
+                session: seat.session.clone(),
+            };
+            let run = |dispatch: &mut tracked::Dispatch, out: &mut Vec<u8>, err: &mut Vec<u8>| {
+                tracked::run_with(
+                    kind,
+                    dir,
+                    tail,
+                    Some(&sender),
+                    &own_session(dir),
+                    time::Timestamp::now(),
+                    entropy(),
+                    send_defer(),
+                    tracked::Extra {
+                        seat: Some(dispatch),
+                        ..tracked::Extra::default()
+                    },
+                    out,
+                    err,
+                )
+            };
+            return run_seat_helper(&seat, kind.action(), run, out, err);
+        }
         let known = viewer.is_known();
         known.then_some(tracked::Sender {
             display: viewer.display,
@@ -3432,21 +3847,30 @@ pub(crate) fn observe_calling_pane() -> CallerRead<(tmux::ObservedViewer, invent
     })
 }
 
-/// What the orchestrator's agent pane is refused outbound, as one word for the
-/// refusal and the clause that says why: spawn, retire, a cross-session helper
-/// send, stop, end and rm, a rename, and every launch form. Two bound forms
-/// are admitted: `ae stop <name> --expect-uuid <uuid>` here, and
-/// `ae <name> --resume --no-attach --expect-uuid <uuid>` at the entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the orchestrator seat's pane runs only by its own class's rules, as one
+/// word for the refusal and the clause that says why. The proved seat runs a
+/// helper `--cross-session` word; it runs a stop only in the bound form (the
+/// gate admits it, and the bound stop proves the rest); it runs a start or a
+/// create only from the entry, with `--no-attach`. Every other word here is
+/// refused to the seat in this release, and every word here is refused to a
+/// pane of the seat's session that fails the dispatcher proof. Ordinary panes
+/// never reach this table.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Outbound {
-    /// A helper `--cross-session` send, ask, review or interrupt: ae carries
-    /// the orchestrator's cross-session words only through `relay`.
+    /// A helper `--cross-session` send, ask, review or interrupt.
     Cross(&'static str),
-    /// One of the orchestrator's refused verbs.
+    /// A stop other than the bound form: the session it names, or `None` for
+    /// the caller's own (`--self`, or no name).
+    Stop(Option<String>),
+    /// A verb the seat does not run: the word and the clause.
     Verb(&'static str, &'static str),
 }
 
-/// The outbound class of `request`, or `None` for any word the dispatcher may
+/// The clause a launch refusal gives the seat.
+const SEAT_LAUNCH_ONLY: &str =
+    "starts and creates other sessions only from the entry, with --no-attach, so no client moves";
+
+/// The outbound class of `request`, or `None` for any word every caller may
 /// run.
 fn outbound_of(request: &cli::Request) -> Option<Outbound> {
     let cross = |word, tail: &[String]| {
@@ -3458,24 +3882,31 @@ fn outbound_of(request: &cli::Request) -> Option<Outbound> {
         cli::Request::Ask { tail, .. } => cross("ask", tail),
         cli::Request::Review { tail, .. } => cross("review", tail),
         cli::Request::Interrupt { tail, .. } => cross("interrupt", tail),
-        cli::Request::Launch { .. } => Some(Outbound::Verb(
-            "launch",
-            "does not start sessions; ask the human",
+        cli::Request::Launch { .. } => Some(Outbound::Verb("launch", SEAT_LAUNCH_ONLY)),
+        cli::Request::Spawn { .. } => Some(Outbound::Verb(
+            "spawn",
+            "does not add seats in this release; give the owner the command",
         )),
-        cli::Request::Spawn { .. } => {
-            Some(Outbound::Verb("spawn", "does not add seats; ask the human"))
-        }
         cli::Request::Retire { .. } => Some(Outbound::Verb(
             "retire",
-            "does not retire seats; ask the human",
+            "does not retire seats in this release; give the owner the command",
+        )),
+        cli::Request::Compact { .. } => Some(Outbound::Verb(
+            "compact",
+            "does not compact seats in this release; give the owner the command",
+        )),
+        cli::Request::Relaunch { .. } => Some(Outbound::Verb(
+            "relaunch",
+            "does not relaunch seats in this release; give the owner the command",
+        )),
+        cli::Request::Reseat { .. } => Some(Outbound::Verb(
+            "reseat",
+            "does not reseat seats in this release; give the owner the command",
         )),
         // The bound stop proves the caller, its target and every seat's
         // declaration itself, under the target's lifecycle lock.
         cli::Request::Stop { tail } if lifecycle::is_bound_stop(tail) => None,
-        cli::Request::Stop { .. } => Some(Outbound::Verb(
-            "stop",
-            "does not stop sessions; ask the human",
-        )),
+        cli::Request::Stop { tail } => Some(Outbound::Stop(stop_aim(tail))),
         // A resume word on the seat's own name is a launch of the seat.
         cli::Request::Orchestrator { tail }
             if tail
@@ -3484,79 +3915,144 @@ fn outbound_of(request: &cli::Request) -> Option<Outbound> {
         {
             Some(Outbound::Verb(
                 "launch",
-                "does not start sessions; ask the human",
+                "never starts or resumes its own seat; the owner runs ae orchestrator",
             ))
         }
         cli::Request::End { .. } => Some(Outbound::Verb(
             "end",
-            "does not end or remove sessions; ask the human",
+            "does not end or remove sessions in this release; give the owner the command",
         )),
         cli::Request::Rename { .. } => Some(Outbound::Verb(
             "rename",
-            "does not rename sessions; give the human a proposal",
+            "does not rename sessions in this release; give the owner a proposal",
         )),
         _ => None,
     }
 }
 
-/// Refuse `what` to the orchestrator's own agent pane, before any lock or
-/// write: the calling pane carries a slot of an ae session whose meta is the
-/// seat (the one role and the seat overlay). That is the proven dispatcher, and
-/// also a seat whose main pane or launch id no longer proves, which fails
-/// closed. A pane with no slot (the human's shell in the same window), a
-/// session that only claims the role, and an unobserved or foreign caller go
-/// on. `Some(code)` means the refusal is said and nothing was changed.
-fn refuse_dispatcher(what: Outbound, err: &mut impl Write) -> Result<Option<u8>> {
-    refuse_dispatcher_seen(what, observe_calling_pane(), state_root(), err)
+/// The session a plain `_stop` tail names: `None` for `--self` or no name.
+fn stop_aim(tail: &[String]) -> Option<String> {
+    if tail.iter().any(|word| word == "--self") {
+        return None;
+    }
+    let mut words = tail.iter();
+    let mut named = None;
+    while let Some(word) = words.next() {
+        if word == "--pane" {
+            words.next();
+        } else if !word.starts_with('-') && named.is_none() {
+            named = Some(word.clone());
+        }
+    }
+    named
 }
 
-/// [`refuse_dispatcher`] on an observation already taken. OUTSIDE (no tmux
-/// markers: a binding, a popup, a plain shell) goes on, as does a positively
-/// observed pane that is no seat's. An UNREAD pane is no observation at all:
-/// it takes the typed refusal [`CallerRead::require`] says, before any writer
-/// below runs, so a failed read can never pass as the human.
-fn refuse_dispatcher_seen(
-    what: Outbound,
+/// Apply the seat's class rules to `what` before any lock or write. An
+/// ordinary pane, a pane with no slot (the human's shell in the same window), a
+/// session that only claims the role and an unobserved or foreign caller go on.
+/// `Some(code)` means the refusal is said and nothing was changed. An explicit
+/// `--cross-session` helper takes no observation here: its writer, or its
+/// sender-override decision, makes the route's ONE observation, which is both
+/// the seat's permission and its audit, and refuses an UNREAD pane there.
+fn refuse_dispatcher(what: Outbound, err: &mut impl Write) -> Result<Option<u8>> {
+    if matches!(what, Outbound::Cross(_)) {
+        return Ok(None);
+    }
+    refuse_dispatcher_seen(what, observe_calling_pane(), state_root().as_deref(), err)
+}
+
+/// The class of the calling pane, from ONE observation: `Ok(None)` for no
+/// tmux markers (a binding, a popup, a plain shell), and `Err(code)` once an
+/// UNREAD pane's typed refusal is said, so a failed read never passes as the
+/// human.
+fn calling_class(
     seen: CallerRead<(tmux::ObservedViewer, inventory::ServerId)>,
-    root: Option<std::path::PathBuf>,
+    root: Option<&std::path::Path>,
     err: &mut impl Write,
-) -> Result<Option<u8>> {
+) -> Result<std::result::Result<Option<relay::SeatClass>, u8>> {
     let (viewer, server) = match seen.require() {
         Ok(Some(seen)) => seen,
-        Ok(None) => return Ok(None),
+        Ok(None) => return Ok(Ok(None)),
         Err(why) => {
             writeln!(err, "{why}")?;
             err.flush()?;
-            return Ok(Some(entry::EXIT_FAILED));
+            return Ok(Err(entry::EXIT_FAILED));
         }
     };
     let Some(root) = root else {
-        return Ok(None);
+        return Ok(Ok(None));
     };
-    let (Some(session), Some(_slot)) = (viewer.session.as_deref(), viewer.slot.as_deref()) else {
-        return Ok(None);
+    let pane = doors::calling_pane_id().unwrap_or_default();
+    Ok(Ok(Some(relay::seat_class(root, &viewer, &server, &pane))))
+}
+
+/// [`refuse_dispatcher`] on an observation already taken.
+fn refuse_dispatcher_seen(
+    what: Outbound,
+    seen: CallerRead<(tmux::ObservedViewer, inventory::ServerId)>,
+    root: Option<&std::path::Path>,
+    err: &mut impl Write,
+) -> Result<Option<u8>> {
+    let class = match calling_class(seen, root, err)? {
+        Ok(Some(class)) => class,
+        Ok(None) => return Ok(None),
+        Err(code) => return Ok(Some(code)),
     };
-    if !session_launch::name::is_session_name(session) {
-        return Ok(None);
-    }
-    let seat = lifecycle::sessions_dir(&root).join(session);
-    let Ok((_, bytes)) = relay::physical_session(&seat, &viewer, &server) else {
-        return Ok(None);
-    };
-    if !meta::is_seat(&bytes, &root) {
-        return Ok(None);
-    }
-    let said = match what {
-        Outbound::Cross(word) => format!(
-            "ae: {word} --cross-session REFUSED — the orchestrator is the human's dispatcher and carries cross-session words only through `relay`. Nothing was sent."
-        ),
-        Outbound::Verb(word, why) => format!(
-            "ae: {word} REFUSED — the orchestrator is the human's dispatcher and {why}. Nothing was changed."
-        ),
+    let said = match class {
+        relay::SeatClass::Ordinary(_) => return Ok(None),
+        relay::SeatClass::Unproven(why) => unproven_refusal(outbound_word(&what), why),
+        relay::SeatClass::Dispatcher(seat) => match what {
+            Outbound::Cross(_) => return Ok(None),
+            Outbound::Stop(aim) => match aim {
+                Some(name) if !names_own_session(root, &seat, &name) => format!(
+                    "ae: stop REFUSED — the orchestrator stops another session only in the bound form: ae stop {name} --expect-uuid <uuid>, with --owner-input <ask-id> when a seat there is busy. Nothing was changed."
+                ),
+                _ => own_session_refusal("stop", &seat.session),
+            },
+            Outbound::Verb(word, why) => {
+                format!("ae: {word} REFUSED — the orchestrator seat {why}. Nothing was changed.")
+            }
+        },
     };
     writeln!(err, "{said}")?;
     err.flush()?;
     Ok(Some(entry::EXIT_USAGE))
+}
+
+/// The one word an [`Outbound`] is refused as.
+fn outbound_word(what: &Outbound) -> &'static str {
+    match what {
+        Outbound::Cross(word) | Outbound::Verb(word, _) => word,
+        Outbound::Stop(_) => "stop",
+    }
+}
+
+/// The refusal a pane of the seat's session takes when it fails the
+/// dispatcher proof: neither the seat's powers nor an ordinary pane's.
+fn unproven_refusal(word: &str, why: &str) -> String {
+    format!(
+        "ae: {word} REFUSED — this pane is in the orchestrator seat's session but ae cannot prove it is the seat ({why}). Nothing was changed."
+    )
+}
+
+/// G1: the seat never stops, ends or renames the session it runs in; the
+/// owner's exact command is the remedy.
+fn own_session_refusal(word: &str, own: &str) -> String {
+    format!(
+        "ae: {word} REFUSED — '{own}' is the orchestrator seat's own session, and the seat never stops it. The owner runs, in the owner's own terminal: ae stop {own} -y. Nothing was changed."
+    )
+}
+
+/// Whether `name` is the seat's own session: its name, or a rename alias that
+/// resolves to its directory.
+fn names_own_session(root: Option<&std::path::Path>, seat: &relay::Dispatcher, name: &str) -> bool {
+    if name == seat.session {
+        return true;
+    }
+    root.is_some_and(|root| {
+        lifecycle::aliases::target(&lifecycle::sessions_dir(root).join(name))
+            .is_some_and(|target| target.file_name() == Some(std::ffi::OsStr::new(&seat.session)))
+    })
 }
 
 /// Refuse UNREAD before invoking any helper writer. The returned viewer IS
@@ -3573,6 +4069,112 @@ fn writing_viewer(dir: &std::path::Path, err: &mut impl Write) -> Result<Option<
             Ok(None)
         }
     }
+}
+
+/// [`writing_viewer`], and from the SAME observation the proved orchestrator
+/// seat when the caller is the seat, whichever session's helper serves it. A
+/// pane in the seat's session that ae cannot prove to be the seat is refused
+/// as `word`: it gets neither the seat's powers nor an ordinary pane's. `Err`
+/// carries the exit code of a refusal already written.
+fn writing_caller(
+    dir: &std::path::Path,
+    word: &str,
+    err: &mut impl Write,
+) -> Result<std::result::Result<(requests::Viewer, Option<relay::Dispatcher>), u8>> {
+    let own = own_session(dir);
+    match observe_calling_pane().require() {
+        Ok(None) => Ok(Ok((requests::Viewer::default(), None))),
+        Ok(Some((pane, server))) => {
+            let viewer = requests::Viewer::from_pane(&pane, &own);
+            let id = doors::calling_pane_id().unwrap_or_default();
+            match state_root().map(|root| relay::seat_class(&root, &pane, &server, &id)) {
+                Some(relay::SeatClass::Dispatcher(seat)) => Ok(Ok((viewer, Some(seat)))),
+                Some(relay::SeatClass::Unproven(why)) => {
+                    writeln!(err, "{}", unproven_refusal(word, why))?;
+                    err.flush()?;
+                    Ok(Err(entry::EXIT_USAGE))
+                }
+                Some(relay::SeatClass::Ordinary(_)) | None => Ok(Ok((viewer, None))),
+            }
+        }
+        Err(why) => {
+            writeln!(err, "{why}")?;
+            Ok(Err(state::EXIT_FAILED))
+        }
+    }
+}
+
+/// The refusal of `AE_SENDER_OVERRIDE` from the proved seat's own pane, and
+/// from a pane of the seat's session that fails the proof: the seat speaks
+/// only under its own name and with its audit, whichever session the helper
+/// serves. A pane-less caller and every ordinary pane keep the override. On an
+/// explicit `--cross-session` route (`tail` starts with the flag) this is the
+/// route's ONE observation, so an UNREAD pane takes its typed refusal here; the
+/// bare route keeps the override for it, as the send helper always has.
+fn refuse_seat_override(word: &str, tail: &[String], err: &mut impl Write) -> Result<Option<u8>> {
+    let explicit = tail.first().map(String::as_str) == Some(tracked::CROSS_SESSION_FLAG);
+    let id = doors::calling_pane_id().unwrap_or_default();
+    let root = state_root();
+    refuse_seat_override_seen(
+        word,
+        explicit,
+        observe_calling_pane(),
+        root.as_deref(),
+        &id,
+        err,
+    )
+}
+
+/// [`refuse_seat_override`] on an observation already taken: `explicit` for
+/// the `--cross-session` route, `id` the calling pane.
+fn refuse_seat_override_seen(
+    word: &str,
+    explicit: bool,
+    seen: CallerRead<(tmux::ObservedViewer, inventory::ServerId)>,
+    root: Option<&std::path::Path>,
+    id: &str,
+    err: &mut impl Write,
+) -> Result<Option<u8>> {
+    let (pane, server) = match seen.require() {
+        Ok(Some(seen)) => seen,
+        Err(why) if explicit => {
+            writeln!(err, "{why}")?;
+            err.flush()?;
+            return Ok(Some(entry::EXIT_FAILED));
+        }
+        Ok(None) | Err(_) => return Ok(None),
+    };
+    let Some(root) = root else {
+        return Ok(None);
+    };
+    let said = match relay::seat_class(root, &pane, &server, id) {
+        relay::SeatClass::Ordinary(_) => return Ok(None),
+        relay::SeatClass::Unproven(why) => unproven_refusal(word, why),
+        relay::SeatClass::Dispatcher(_) => format!(
+            "ae: {word} REFUSED — the orchestrator seat speaks under its own name, with its audit, so AE_SENDER_OVERRIDE is refused from its pane. Nothing was sent."
+        ),
+    };
+    writeln!(err, "{said}")?;
+    err.flush()?;
+    Ok(Some(entry::EXIT_USAGE))
+}
+
+/// A helper word of the proved seat: the seat speaks as
+/// [`tracked::ORCHESTRATOR_DISPLAY`], `run` delivers with both streams held
+/// and the dispatch the helper binds to its resolved target, and the result
+/// row is written before anything reaches the caller.
+fn run_seat_helper(
+    seat: &relay::Dispatcher,
+    verb: &'static str,
+    run: impl FnOnce(&mut tracked::Dispatch, &mut Vec<u8>, &mut Vec<u8>) -> std::io::Result<u8>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let mut dispatch = seat_dispatch(seat, verb, "", "", "");
+    let (mut held_out, mut held_err) = (Vec::new(), Vec::new());
+    let code = run(&mut dispatch, &mut held_out, &mut held_err).map_err(Into::into);
+    let written = dispatch.requested.then_some(dispatch);
+    finish_dispatch(written, code, &held_out, held_err, out, err)
 }
 
 /// `session=` in `<dir>/meta`, empty-or-missing folded to `None`.
@@ -3817,6 +4419,9 @@ fn run_send(
     let own_session = own_session(dir);
     let env = send_env();
     let viewer = if env.sender_override.is_some() {
+        if let Some(code) = refuse_seat_override("send", tail, err)? {
+            return Ok(code);
+        }
         Some(
             actual_calling_pane()
                 .as_ref()
@@ -3824,7 +4429,32 @@ fn run_send(
                 .unwrap_or_default(),
         )
     } else {
-        writing_viewer(dir, err)?
+        let (viewer, seat) = match writing_caller(dir, "send", err)? {
+            Ok(found) => found,
+            Err(code) => return Ok(code),
+        };
+        if let Some(seat) = seat {
+            let words = send::Words {
+                display: tracked::ORCHESTRATOR_DISPLAY,
+                caller_session: &seat.session,
+                own_session: &own_session,
+            };
+            let run = |dispatch: &mut tracked::Dispatch, out: &mut Vec<u8>, err: &mut Vec<u8>| {
+                send::run_with_seat(
+                    dir,
+                    tail,
+                    &env,
+                    &words,
+                    time::Timestamp::now(),
+                    send_defer(),
+                    Some(dispatch),
+                    out,
+                    err,
+                )
+            };
+            return run_seat_helper(&seat, "send", run, out, err);
+        }
+        Some(viewer)
     };
     let Some(viewer) = viewer else {
         return Ok(state::EXIT_FAILED);
@@ -3841,6 +4471,46 @@ fn run_send(
         out,
         err,
     )?)
+}
+
+/// `interrupt`: the sender is the observed viewer, or the proved seat.
+fn run_interrupt(
+    dir: &std::path::Path,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let own_session = own_session(dir);
+    let (viewer, seat) = match writing_caller(dir, "interrupt", err)? {
+        Ok(found) => found,
+        Err(code) => return Ok(code),
+    };
+    if let Some(seat) = seat {
+        let run = |dispatch: &mut tracked::Dispatch, _: &mut Vec<u8>, err: &mut Vec<u8>| {
+            interrupt::run(
+                dir,
+                tail,
+                tracked::ORCHESTRATOR_DISPLAY,
+                &seat.session,
+                &own_session,
+                time::Timestamp::now(),
+                Some(dispatch),
+                err,
+            )
+        };
+        return run_seat_helper(&seat, "interrupt", run, out, err);
+    }
+    let code = interrupt::run(
+        dir,
+        tail,
+        &viewer.display,
+        &viewer.session,
+        &own_session,
+        time::Timestamp::now(),
+        None,
+        err,
+    )?;
+    Ok(code)
 }
 
 /// Run `entry` over the world the caller already read; there is none when the
@@ -3998,20 +4668,7 @@ pub fn run_with(
         cli::Request::Goal { dir, tail } => run_goal(dir, tail, out, err)?,
         cli::Request::Memo { dir, tail } => run_memo(dir, tail, out, err)?,
         cli::Request::Ask { dir, tail } => run_tracked(tracked::Kind::Ask, dir, tail, out, err)?,
-        cli::Request::Interrupt { dir, tail } => {
-            let own_session = own_session(dir);
-            with_writing_viewer(dir, err, |viewer, err| {
-                interrupt::run(
-                    dir,
-                    tail,
-                    &viewer.display,
-                    &viewer.session,
-                    &own_session,
-                    time::Timestamp::now(),
-                    err,
-                )
-            })?
-        }
+        cli::Request::Interrupt { dir, tail } => run_interrupt(dir, tail, out, err)?,
         cli::Request::Send { dir, tail } => run_send(dir, tail, out, err)?,
         cli::Request::Relay { dir, tail } => relay::run(
             dir,
@@ -4306,10 +4963,11 @@ pub fn run_with(
 
 #[cfg(test)]
 mod tests {
-    /// What the orchestrator seat is refused outbound: a helper
-    /// `--cross-session` send, ask, review or interrupt, and five verbs.
+    /// What the seat's class rules decide: a helper `--cross-session` send,
+    /// ask, review or interrupt, a non-bound stop with the session it names,
+    /// and the verbs the seat does not run in this release.
     #[test]
-    fn only_a_helper_cross_session_word_and_the_refused_verbs_are_outbound() {
+    fn only_a_helper_cross_session_word_a_plain_stop_and_the_class_verbs_are_outbound() {
         use super::{Outbound, cli::Request, outbound_of};
         let of = |argv: &[&str]| {
             let words: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
@@ -4327,11 +4985,21 @@ mod tests {
             assert_eq!(of(&[verb, "/d", "boss", "--cross-session"]), None);
             assert_eq!(of(&[verb, "/d", "boss", "x"]), None);
         }
+        assert_eq!(
+            of(&["_stop", "t"]),
+            Some(Outbound::Stop(Some("t".to_owned())))
+        );
+        assert_eq!(of(&["_stop", "--self"]), Some(Outbound::Stop(None)));
+        assert_eq!(of(&["_stop", "--pane", "%3"]), Some(Outbound::Stop(None)));
+        let uuid = "0b6c8f5e-1d2a-4c3b-9e8f-7a6b5c4d3e2f";
+        assert_eq!(of(&["_stop", "t", "--expect-uuid", uuid]), None);
         for (argv, word) in [
             (vec!["_spawn", "/d", "n", "--using", "p"], "spawn"),
             (vec!["_retire", "/d", "n"], "retire"),
-            (vec!["_stop", "t"], "stop"),
             (vec!["_end", "t"], "end"),
+            (vec!["_compact", "/d", "lead"], "compact"),
+            (vec!["_relaunch", "/d", "lead"], "relaunch"),
+            (vec!["reseat", "t", "lead", "--using", "p"], "reseat"),
             (vec!["rename", "a", "b"], "rename"),
             // The served underscore entry of every launch form.
             (vec!["_launch", "--no-attach"], "launch"),
@@ -4352,11 +5020,11 @@ mod tests {
     #[test]
     fn the_outbound_gate_refuses_an_unread_pane_and_admits_outside_and_a_vacant_one() {
         use super::{CallerRead, Outbound, refuse_dispatcher_seen};
-        let what = Outbound::Verb("stop", "does not stop sessions; ask the human");
         let root = Some(std::path::PathBuf::from("/state"));
         let run = |seen| {
             let mut said = Vec::new();
-            let code = refuse_dispatcher_seen(what, seen, root.clone(), &mut said);
+            let what = Outbound::Stop(Some("t".to_owned()));
+            let code = refuse_dispatcher_seen(what, seen, root.as_deref(), &mut said);
             (code.expect("the gate writes to a vector"), said)
         };
         let (code, said) = run(CallerRead::Unread);
@@ -4378,6 +5046,50 @@ mod tests {
             let seen = CallerRead::Read((viewer, crate::inventory::ServerId::Ambient));
             let (code, said) = run(seen);
             assert_eq!((code, said.is_empty()), (None, true));
+        }
+    }
+
+    /// An explicit `--cross-session` helper takes no observation at the
+    /// outbound gate. Its sender-override decision is the route's one
+    /// observation: UNREAD refuses there with the typed message, OUTSIDE (a
+    /// pane-less caller) keeps the override, and the bare route keeps it for
+    /// UNREAD as the send helper always has.
+    #[test]
+    fn the_explicit_override_refuses_an_unread_pane_and_keeps_a_paneless_one() {
+        use super::{CallerRead, Outbound, refuse_dispatcher, refuse_seat_override_seen};
+        let mut said = Vec::new();
+        let code = refuse_dispatcher(Outbound::Cross("send"), &mut said);
+        assert_eq!(code.expect("the gate writes to a vector"), None);
+        assert!(said.is_empty());
+        let root = std::env::temp_dir().join("ae-no-such-root-for-the-override-gate");
+        let run = |explicit, seen| {
+            let mut said = Vec::new();
+            let code =
+                refuse_seat_override_seen("send", explicit, seen, Some(&root), "%1", &mut said);
+            (code.expect("the decision writes to a vector"), said)
+        };
+        let (code, said) = run(true, CallerRead::Unread);
+        assert_eq!(code, Some(crate::entry::EXIT_FAILED));
+        assert!(
+            String::from_utf8_lossy(&said).contains("could not detect current agent identity"),
+            "{}",
+            String::from_utf8_lossy(&said)
+        );
+        let vacant = || {
+            CallerRead::Read((
+                crate::tmux::ObservedViewer::default(),
+                crate::inventory::ServerId::Ambient,
+            ))
+        };
+        for (explicit, seen) in [
+            (true, CallerRead::Outside),
+            (false, CallerRead::Outside),
+            (false, CallerRead::Unread),
+            (true, vacant()),
+            (false, vacant()),
+        ] {
+            let (code, said) = run(explicit, seen);
+            assert_eq!((code, said.is_empty()), (None, true), "explicit {explicit}");
         }
     }
 

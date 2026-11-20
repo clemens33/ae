@@ -822,7 +822,7 @@ fn build_with_snapshot(
     } else {
         (None, None)
     };
-    let ctx = crate::render::seat_context_document(
+    let (ctx, instructions) = crate::render::seat_context_parts(
         dir,
         &seat.session,
         &seat.work_dir,
@@ -830,6 +830,7 @@ fn build_with_snapshot(
         &seat.config_files,
         seat.dir_source,
     );
+    let charter = seat_charter(dir, slot, instructions.as_deref());
     let reference = spawn_reference(dir, slot, &seat);
     let current = crate::launch_cmd::config_home_resolution(&seat.command, seat.tool, &env_lookup);
     let canonical_current = canonical_config_home(&current.home);
@@ -904,6 +905,7 @@ fn build_with_snapshot(
         context_stamp: ContextStart {
             launch_id: seat.launch_id.clone(),
             proof: context_proof(dir, slot, seat.tool, exact),
+            charter,
         },
     };
     Ok((plan, choice))
@@ -917,6 +919,9 @@ struct ContextStart {
     /// nothing.
     launch_id: String,
     proof: ContextProof,
+    /// The charter version the context of this start teaches, for the
+    /// orchestrator seat's main slot only: recorded beside the stamp.
+    charter: Option<u32>,
 }
 
 /// What a start of one seat proves of the relay context turn.
@@ -947,6 +952,19 @@ fn context_proof(dir: &Path, slot: &str, tool: ToolKind, exact: bool) -> Context
     } else {
         ContextProof::Withheld
     }
+}
+
+/// The charter version the winning `[prompt] instructions` text
+/// `instructions` teaches, the very text this launch rendered into its
+/// context, for the main slot of the proved orchestrator seat only (the
+/// session records the role and its state root's seat overlay); `None` for
+/// every other seat. No other context text counts: a marker in the spend
+/// policy teaches nothing.
+fn seat_charter(dir: &Path, slot: &str, instructions: Option<&str>) -> Option<u32> {
+    let root = crate::doors::state_root(crate::shape::current())?;
+    let seat = slot == "main"
+        && crate::meta::read_bytes(dir).is_ok_and(|bytes| crate::meta::is_seat(&bytes, &root));
+    seat.then(|| crate::config::charter_version(instructions.unwrap_or_default()))
 }
 
 /// What a resume that keeps its old conversation without a new context turn
@@ -983,7 +1001,22 @@ fn stamp_context(
         return Ok(None);
     }
     let said = match crate::meta::set_context(dir, slot, &start.launch_id, version) {
-        Ok(true) => return Ok(None),
+        Ok(true) => {
+            // The context this start hands the orchestrator seat says which
+            // charter the conversation holds; a start that hands none leaves
+            // the rows of an earlier launch, which the watchdog reads as old.
+            if version.is_some()
+                && let Some(charter) = start.charter
+                && let Err(why) = crate::meta::set_charter(dir, slot, &start.launch_id, charter)
+            {
+                writeln!(
+                    err,
+                    "ae: could not record charter.{slot} ({}) — launching anyway; the watchdog may send this seat one charter update it already has",
+                    why.cause()
+                )?;
+            }
+            return Ok(None);
+        }
         // Clearing a row of a seat this launch no longer owns is nobody's news.
         Ok(false) if version.is_none() => return Ok(None),
         Ok(false) => "this launch no longer owns the seat".to_owned(),
@@ -3430,6 +3463,7 @@ mod tests {
         let start = |launch_id: &str, proof| ContextStart {
             launch_id: launch_id.to_owned(),
             proof,
+            charter: None,
         };
         let go = |start: ContextStart| {
             let mut err = Vec::new();
@@ -3487,6 +3521,7 @@ mod tests {
         let start = |proof| ContextStart {
             launch_id: "L1".to_owned(),
             proof,
+            charter: None,
         };
         // The meta lock is a directory, so opening it fails for any user: the
         // clear cannot happen while the meta stays readable.

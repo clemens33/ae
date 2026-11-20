@@ -784,6 +784,21 @@ pub(crate) fn seat_context_document(
     config_files: &[PathBuf],
     provenance: crate::meta::SeatProvenance,
 ) -> String {
+    seat_context_parts(dir, session, work_dir, slot, config_files, provenance).0
+}
+
+/// [`seat_context_document`], and the winning `[prompt] instructions` text
+/// that went into it, from the same read: what a launch's charter stamp
+/// judges.
+#[must_use]
+pub(crate) fn seat_context_parts(
+    dir: &Path,
+    session: &str,
+    work_dir: &str,
+    slot: &str,
+    config_files: &[PathBuf],
+    provenance: crate::meta::SeatProvenance,
+) -> (String, Option<String>) {
     let meta_bytes = meta::read_bytes(dir).unwrap_or_default();
     let mode = row(&meta_bytes, "mode");
     let origin = row(&meta_bytes, "origin");
@@ -857,9 +872,10 @@ pub(crate) fn seat_context_document(
         }
     }
 
-    if let Some((_, instructions)) = prompt_instructions(config_files) {
+    let instructions = prompt_instructions(config_files).map(|(_, text)| text);
+    if let Some(instructions) = &instructions {
         ctx.push_str(" --- Workspace instructions: ");
-        ctx.push_str(&instructions);
+        ctx.push_str(instructions);
     }
     // The spend policy: whole for the lead pair and for a slot the
     // classification cannot place (an unplaceable seat is never starved of
@@ -879,7 +895,7 @@ pub(crate) fn seat_context_document(
             ctx.push_str(&spawn);
         }
     }
-    ctx
+    (ctx, instructions)
 }
 
 /// What the context treats a seat as: the one classification behind its owner
@@ -3866,5 +3882,47 @@ mod tests {
         }
         assert!(!unrecorded.contains("client_pairs"), "{unrecorded}");
         assert!(!unrecorded.contains("profile@client"), "{unrecorded}");
+    }
+
+    /// The launch's charter stamp judges the winning `[prompt] instructions`
+    /// text the context rendered, never the rest of the context: a marker in
+    /// the spend policy teaches no charter.
+    #[test]
+    fn the_rendered_instructions_are_the_winning_prompt_row_alone() {
+        let dir = scratch("charter-parts");
+        write(&dir, "meta", "mode=local\nseat.main=orchestrator\n");
+        let marker = crate::config::SEAT_CHARTER_MARKER;
+        let global = write(
+            &dir,
+            "config",
+            &format!("[prompt]\ninstructions = {marker}\n"),
+        );
+        let local = write(
+            &dir,
+            "local",
+            &format!("[prompt]\ninstructions = route only\nspawn_instructions = {marker}\n"),
+        );
+        let (ctx, instructions) = super::seat_context_parts(
+            &dir,
+            "s",
+            "/w",
+            "main",
+            &[global, local],
+            crate::meta::SeatProvenance::Inherited,
+        );
+        assert!(
+            ctx.contains(marker),
+            "the spend policy reaches the context: {ctx}"
+        );
+        assert_eq!(instructions.as_deref(), Some("route only"));
+        assert_eq!(
+            crate::config::charter_version(&ctx),
+            2,
+            "judging the whole context would stamp the current charter"
+        );
+        assert_eq!(
+            crate::config::charter_version(instructions.as_deref().unwrap_or_default()),
+            1
+        );
     }
 }

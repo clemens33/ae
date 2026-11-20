@@ -1292,6 +1292,16 @@ pub(crate) fn deliver_request(
     request: &crate::deliver::Request<'_>,
     err: &mut impl Write,
 ) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
+    deliver_request_with(request, None, err)
+}
+
+/// [`deliver_request`], audited for the proved orchestrator seat when `seat`
+/// is given ([`deliver_expected`]).
+fn deliver_request_with(
+    request: &crate::deliver::Request<'_>,
+    seat: Option<&mut Dispatch>,
+    err: &mut impl Write,
+) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
     #[cfg(test)]
     if let Some(hit) = take_test_delivery() {
         if let Some(act) = DURING_DELIVERY.with(|slot| slot.borrow_mut().take()) {
@@ -1305,7 +1315,7 @@ pub(crate) fn deliver_request(
         slot: request.pane_slot.to_owned(),
         session: request.target_session.to_owned(),
     };
-    deliver_addressed(request, &target, err)
+    deliver_expected(request, &target, Ok(None), seat, err).map(|(delivery, _)| delivery)
 }
 
 /// A helper's private expected seat (#218 P1): its slot and exact launch token, `""`
@@ -1313,21 +1323,18 @@ pub(crate) fn deliver_request(
 /// cannot be used; it refuses before input and never falls back to no expectation.
 pub(crate) type Expectation<'a> = Result<Option<(&'a str, &'a str)>, &'static str>;
 
-pub(crate) fn deliver_addressed(
-    request: &crate::deliver::Request<'_>,
-    target: &Resolved,
-    err: &mut impl Write,
-) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
-    deliver_expected(request, target, Ok(None), err).map(|(delivery, _)| delivery)
-}
-
-/// [`deliver_addressed`] narrowed by a `send` helper's expected seat; the flag says
-/// the expected seat itself refused (malformed, or its comparison failed at admission
-/// or at any re-proof), so the refusal is no attempt of the action it carried.
+/// One guarded delivery to `target`, narrowed by a `send` helper's expected
+/// seat; the flag says the expected seat itself refused (malformed, or its
+/// comparison failed at admission or at any re-proof), so the refusal is no
+/// attempt of the action it carried. For the proved orchestrator seat, once
+/// the guard admitted the target and before any input, `seat` writes its
+/// request row naming the uuid of the snapshot the guard proved; a row that
+/// cannot be written refuses before input.
 pub(crate) fn deliver_expected(
     request: &crate::deliver::Request<'_>,
     target: &Resolved,
     expect: Expectation<'_>,
+    seat: Option<&mut Dispatch>,
     err: &mut impl Write,
 ) -> io::Result<(
     Result<crate::deliver::Delivered, crate::deliver::Failure>,
@@ -1353,7 +1360,10 @@ pub(crate) fn deliver_expected(
             return Ok((Err(crate::deliver::refused("", Stage::BeforeInput)), true));
         }
     };
-    match admit(
+    // A refused admission, and an admitted one whose audit request row the
+    // seat cannot write, end in the same before-input refusal; `lost` says
+    // whether the expected seat is gone.
+    let lost = match admit(
         request.dir,
         request.server,
         target,
@@ -1363,15 +1373,22 @@ pub(crate) fn deliver_expected(
     ) {
         Ok(guard) => {
             let guard = guard.acting(request.actor);
-            let delivery = crate::deliver::deliver_checked(request, Some(&guard), false, err)?;
-            Ok((delivery, guard.expected_lost.get()))
+            if let Some(seat) = seat
+                && let Err(why) = seat.request_admitted(&guard)
+            {
+                seat.refuse(&why, err)?;
+                false
+            } else {
+                let delivery = crate::deliver::deliver_checked(request, Some(&guard), false, err)?;
+                return Ok((delivery, guard.expected_lost.get()));
+            }
         }
         Err(why) => {
             refuse_as(request.dir, request.actor, &why, Stage::BeforeInput, err)?;
-            let lost = matches!(why, Refusal::Expected(_));
-            Ok((Err(crate::deliver::refused("", Stage::BeforeInput)), lost))
+            matches!(why, Refusal::Expected(_))
         }
-    }
+    };
+    Ok((Err(crate::deliver::refused("", Stage::BeforeInput)), lost))
 }
 
 /// Observe, run `cut`, re-observe. Correlation is kept only when the triple is
@@ -1651,6 +1668,13 @@ pub(crate) struct AddressGuard<'a> {
     /// Whether a check refused because that expected seat itself no longer held.
     expected_lost: std::cell::Cell<bool>,
     aborted: std::cell::Cell<bool>,
+    /// The canonical uuid the pane's live session and the record's one
+    /// `session_id` row both name in this snapshot, or `None` when they do
+    /// not agree.
+    correlated: Option<String>,
+    /// Whether an audited delivery bound its row to [`Self::correlated`]:
+    /// every later check then requires the same agreement.
+    audited: std::cell::Cell<bool>,
 }
 
 /// The ONE role-session entry policy. Ordinary targets preserve compatibility;
@@ -1732,6 +1756,7 @@ fn admit_proving<'a>(
         && current_seat(&bytes, target, observed, None, bound).is_ok();
     let seat = compared.map_err(wrap);
     let viewer = viewer.unwrap_or_default();
+    let correlated = correlate_uuid(&viewer.session_uuid, &bytes).ok();
     // The same snapshot's id AS WRITTEN; two rows stamp apart from none.
     let sid = (
         meta::sole_value(&bytes, "session_id").map(<[u8]>::to_vec),
@@ -1791,10 +1816,27 @@ fn admit_proving<'a>(
         expected: want.cloned(),
         expected_lost: std::cell::Cell::new(false),
         aborted: std::cell::Cell::new(false),
+        correlated,
+        audited: std::cell::Cell::new(false),
     })
 }
 
 impl<'a> AddressGuard<'a> {
+    /// Bind an audited delivery to the uuid the pane's live session and its
+    /// record agreed on in this guard's snapshot; every later check of this
+    /// guard then requires that agreement again.
+    ///
+    /// # Errors
+    ///
+    /// Why the snapshot proved no such uuid.
+    fn audited_uuid(&self) -> Result<String, &'static str> {
+        let uuid = self.correlated.clone().ok_or(
+            "the target pane's live session uuid and the one session uuid its record names do not agree",
+        )?;
+        self.audited.set(true);
+        Ok(uuid)
+    }
+
     /// The actor a refusal is audited as when no caller pane is proven.
     pub(crate) const fn acting(mut self, actor: &'a str) -> Self {
         self.actor = actor;
@@ -1822,7 +1864,15 @@ impl<'a> AddressGuard<'a> {
         );
         let who = bound.map_or_else(|| format!("target pane {}", self.target.pane), Seat::label);
         let reason = match fresh {
-            Ok(now) if now.stamp == self.stamp => return Ok(true),
+            Ok(now)
+                if now.stamp == self.stamp
+                    && (!self.audited.get() || now.correlated == self.correlated) =>
+            {
+                return Ok(true);
+            }
+            Ok(now) if now.stamp == self.stamp => Refusal::Seat(format!(
+                "{who} could not be proven: its live session uuid no longer matches its record"
+            )),
             Ok(now)
                 if now.stamp.3 != meta::MetaAgentRole::Absent || self.stamp.3 != now.stamp.3 =>
             {
@@ -2594,7 +2644,13 @@ fn sender_session<'a>(sender: &'a Sender, own_session: &'a str) -> &'a str {
     }
 }
 
-/// Resolve and admit one tracked pane route before any delivery is attempted.
+/// Resolve and admit one tracked pane route before any delivery is attempted;
+/// the proved seat's `seat` admits another session and is bound to the
+/// admitted target.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the route's inputs plus the proved seat's dispatch"
+)]
 fn admitted_route(
     kind: Kind,
     dir: &Path,
@@ -2602,6 +2658,7 @@ fn admitted_route(
     sender: &Sender,
     own_session: &str,
     now: Timestamp,
+    seat: Option<&mut Dispatch>,
     err: &mut impl Write,
 ) -> io::Result<Result<(Resolved, ServerId, bool), u8>> {
     let (resolved, server) = match resolve_on(&parsed.target, own_session, dir) {
@@ -2615,7 +2672,7 @@ fn admitted_route(
     if refuse_cross_session(
         dir,
         kind.action(),
-        parsed.cross_session,
+        parsed.cross_session || seat.is_some(),
         &parsed.target,
         &parsed.body,
         &resolved,
@@ -2627,8 +2684,21 @@ fn admitted_route(
     )? {
         return Ok(Err(EXIT_FAILED));
     }
+    if let Some(seat) = seat {
+        seat.bind(&parsed.target, &resolved.session);
+    }
     let cross_session = resolved.session != caller_session;
     Ok(Ok((resolved, server, cross_session)))
+}
+
+/// The name a request shows for its target: the resolved agent, or the
+/// address as typed when the pane carries no agent.
+fn display_target(typed: &str, resolved: &Resolved) -> String {
+    if resolved.agent.is_empty() {
+        typed.to_owned()
+    } else {
+        resolved.agent.clone()
+    }
 }
 
 /// The fallback for a caller with no identity: a plain send, which writes its
@@ -2657,6 +2727,14 @@ fn unidentified(
     );
     out.write_all(delivery.stdout.as_bytes())?;
     delivery_code(&delivery, &helper, action, err)
+}
+
+/// Clear `launch` unless the launch id of `slot` at `dir` still reads the
+/// same after the delivery: a relaunch during it keeps no stale id.
+fn keep_launch(launch: &mut String, dir: &Path, slot: &str, session_id: &str) {
+    if *launch != launch_id_at(dir, slot, session_id) {
+        launch.clear();
+    }
 }
 
 /// A missing, damaged or foreign incarnation never becomes a guessed stamp.
@@ -2825,6 +2903,203 @@ impl RelayStamp {
     }
 }
 
+/// The action of the audit row the orchestrator seat writes BEFORE an action
+/// it runs: no effect happens unless this row is in its own journal.
+pub const DISPATCH_REQUEST: &str = "dispatch-request";
+
+/// The action of the audit row that closes a [`DISPATCH_REQUEST`] under the
+/// same `ref`.
+pub const DISPATCH_RESULT: &str = "dispatch-result";
+
+/// The prefix of a dispatch's `ref`.
+const DISPATCH_PREFIX: &str = "dispatch";
+
+/// G4: one action the proved orchestrator seat runs, as both audit rows
+/// record it in the seat's own journal — who (the seat and the one
+/// observation that proved it), what (`verb` and `target`), the target's
+/// uuid, and the owner input that authorized it, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dispatch {
+    /// The seat's own session directory: the journal both rows go to.
+    pub(crate) dir: PathBuf,
+    /// The seat's session name.
+    pub(crate) session: String,
+    /// The seat's canonical session uuid.
+    pub(crate) uuid: String,
+    /// The seat's slot.
+    pub(crate) slot: String,
+    /// The calling pane.
+    pub(crate) pane: String,
+    /// The calling pane's server socket path.
+    pub(crate) server: String,
+    /// The row pair's `ref`.
+    pub(crate) reference: String,
+    /// The verb: `stop`, `start`, `create`, `resume`, `send`, `ask`, `review`
+    /// or `interrupt`.
+    pub(crate) verb: &'static str,
+    /// The target as typed: a session, or `session:agent`.
+    pub(crate) target: String,
+    /// The target's session name.
+    pub(crate) target_session: String,
+    /// The target's canonical uuid; empty before a create made one.
+    pub(crate) target_uuid: String,
+    /// The owner input that authorizes the action.
+    pub(crate) owner_input: Option<String>,
+    /// Whether a helper bound this dispatch to its resolved target and wrote
+    /// the request row ([`Dispatch::request_admitted`]).
+    pub(crate) requested: bool,
+}
+
+impl Dispatch {
+    /// Bind this dispatch to the target a helper resolved: `typed` is the
+    /// address as typed and `session` the session it resolved to. No write.
+    pub(crate) fn bind(&mut self, typed: &str, session: &str) {
+        typed.clone_into(&mut self.target);
+        session.clone_into(&mut self.target_session);
+    }
+
+    /// Write the request row once `guard` admitted the target, before any
+    /// input: the target uuid is the one the pane's live session and the
+    /// record's `session_id` agreed on in the SAME snapshot the guard proved,
+    /// and the guard requires that agreement at every later check. A target
+    /// without that agreement refuses.
+    ///
+    /// # Errors
+    ///
+    /// Why the row was not written; the helper then delivers nothing.
+    pub(crate) fn request_admitted(&mut self, guard: &AddressGuard<'_>) -> Result<(), String> {
+        let uuid = guard
+            .audited_uuid()
+            .map_err(|why| format!("{why} for the target session {}", self.target_session))?;
+        self.target_uuid = uuid;
+        self.request()?;
+        self.requested = true;
+        Ok(())
+    }
+
+    /// Refuse a delivery whose request row [`Self::request_admitted`] could
+    /// not write; nothing was sent.
+    ///
+    /// # Errors
+    ///
+    /// Only a failure to write `err`.
+    pub(crate) fn refuse(&self, why: &str, err: &mut impl Write) -> io::Result<()> {
+        writeln!(
+            err,
+            "ae: {} REFUSED — ae could not record the orchestrator's dispatch ({why}). Nothing was sent.",
+            self.verb
+        )
+    }
+
+    /// A fresh dispatch `ref`.
+    #[must_use]
+    pub(crate) fn reference(now: Timestamp, entropy: u64) -> String {
+        request_id(DISPATCH_PREFIX, now, entropy)
+    }
+
+    /// One audit row of this dispatch.
+    fn line(&self, action: &str, summary: &str) -> String {
+        let fields = EventFields {
+            actor_session_id: &self.uuid,
+            target_session_id: &self.target_uuid,
+            target_session_uuid: &self.target_uuid,
+            caller_server: &self.server,
+            caller_pane: &self.pane,
+            caller_session_uuid: &self.uuid,
+            ..EventFields::new(
+                Timestamp::now(),
+                ORCHESTRATOR_DISPLAY,
+                action,
+                &self.target,
+                &self.reference,
+                &self.slot,
+                &self.session,
+                "",
+                &self.target_session,
+                summary,
+                "",
+            )
+        };
+        let extra: Vec<(&'static str, &str)> = self
+            .owner_input
+            .iter()
+            .map(|id| ("owner_input", id.as_str()))
+            .collect();
+        render_event_line(&fields, false, None, None, &extra)
+    }
+
+    /// Write the request row before any effect, under the seat journal's
+    /// lock. With an owner input, the same hold first proves no earlier
+    /// request row used it: one stored owner word authorizes one action.
+    ///
+    /// # Errors
+    ///
+    /// Why the row was not written; the caller then changes nothing.
+    pub(crate) fn request(&self) -> Result<(), String> {
+        let hold = store::open(&self.dir)
+            .hold_events()
+            .map_err(|why| why.to_string())?;
+        if let Some(id) = self.owner_input.as_deref() {
+            let journal = match hold.read() {
+                store::SourceRead::Absent => Vec::new(),
+                store::SourceRead::Ready(bytes) => bytes,
+                store::SourceRead::Invalid(what) => {
+                    return Err(format!("the orchestrator's journal is {what}"));
+                }
+                store::SourceRead::Unreadable(why) => {
+                    return Err(format!("the orchestrator's journal is unreadable: {why}"));
+                }
+            };
+            if let Some(when) = spent_owner_input(&journal, id)? {
+                return Err(format!(
+                    "owner input {id} already authorized the dispatch recorded at {when}; one stored owner word authorizes one action"
+                ));
+            }
+        }
+        let summary = format!("{} {}", self.verb, self.target);
+        hold.append_event(&self.line(DISPATCH_REQUEST, &summary))
+            .map_err(|why| why.to_string())
+    }
+
+    /// Write the result row: `ok`, `refused` or `failed (exit N)` for `code`.
+    ///
+    /// # Errors
+    ///
+    /// Why the row was not written; the effect already happened.
+    pub(crate) fn result(&self, outcome: &str) -> Result<(), String> {
+        let summary = format!("{} {}: {outcome}", self.verb, self.target);
+        store::open(&self.dir)
+            .append_event(&self.line(DISPATCH_RESULT, &summary))
+            .map_err(|why| why.to_string())
+    }
+}
+
+/// The outcome word of a dispatch result for exit `code`.
+#[must_use]
+pub(crate) fn dispatch_outcome(code: u8) -> String {
+    if code == 0 {
+        "ok".to_owned()
+    } else {
+        format!("failed (exit {code})")
+    }
+}
+
+/// When the journal `bytes` record a [`DISPATCH_REQUEST`] that carries owner
+/// input `id`: its timestamp. A row that names the id and does not parse
+/// fails closed.
+fn spent_owner_input(bytes: &[u8], id: &str) -> Result<Option<String>, String> {
+    let text = String::from_utf8_lossy(bytes);
+    for line in text.lines().filter(|line| line.contains(id)) {
+        let event = crate::events::Event::parse_line(line).map_err(|why| {
+            format!("a journal row that names owner input {id} does not parse ({why:?})")
+        })?;
+        if event.action == DISPATCH_REQUEST && event.owner_input.as_deref() == Some(id) {
+            return Ok(Some(event.ts.to_string()));
+        }
+    }
+    Ok(None)
+}
+
 /// The DISPLAY sender and the delivered text of an ask: a relay is framed by
 /// [`compose_relay`] under the dispatcher's name, everything else by
 /// [`compose`] under [`display_sender`] of its stored sender.
@@ -2859,6 +3134,10 @@ pub(crate) struct Extra<'a> {
     /// Set to [`Receipt::Uncertain`] as the delivery begins, then to what its
     /// typed result says; an I/O error in between keeps it uncertain.
     pub(crate) receipt: Option<&'a mut Option<Receipt>>,
+    /// The proved orchestrator seat's dispatch: it admits a target in another
+    /// session without the flag, and is bound to the resolved target and
+    /// requested before the delivery.
+    pub(crate) seat: Option<&'a mut Dispatch>,
 }
 
 /// [`run`] with a relay's [`Extra`].
@@ -2904,16 +3183,21 @@ pub(crate) fn run_with(
     let caller_id = routing_id(dir, &sender.slot, caller_session, own_session);
     let caller_dir = target_meta_dir(dir, caller_session, own_session);
     let mut actor_launch = launch_id_at(&caller_dir, &sender.slot, &caller_id);
-    let (resolved, server, cross_session) =
-        match admitted_route(kind, dir, &parsed, sender, own_session, now, err)? {
-            Ok(route) => route,
-            Err(code) => return Ok(code),
-        };
-    let target_name = if resolved.agent.is_empty() {
-        parsed.target.clone()
-    } else {
-        resolved.agent.clone()
+    let mut seat = extra.seat;
+    let (resolved, server, cross_session) = match admitted_route(
+        kind,
+        dir,
+        &parsed,
+        sender,
+        own_session,
+        now,
+        seat.as_deref_mut(),
+        err,
+    )? {
+        Ok(route) => route,
+        Err(code) => return Ok(code),
     };
+    let target_name = display_target(&parsed.target, &resolved);
     let reply_cmd =
         reply_footer_command(dir, own_session, &target_name, &req_id, kind.reply_label());
     // Rendered, not stored: the composed line and the envelope name the DISPLAY
@@ -2946,15 +3230,11 @@ pub(crate) fn run_with(
     let meta_dir = target_meta_dir(dir, &resolved.session, own_session);
     let mut target_launch = launch_id_at(&meta_dir, &resolved.slot, &target_id);
     let (delivery, outcome) = across_cut(&server, &resolved.pane, &meta_dir, || {
-        deliver_receipted(&request, extra.receipt, err)
+        deliver_receipted(&request, extra.receipt, seat, err)
     });
     let delivery = delivery?;
-    if actor_launch != launch_id_at(&caller_dir, &sender.slot, &caller_id) {
-        actor_launch.clear();
-    }
-    if target_launch != launch_id_at(&meta_dir, &resolved.slot, &target_id) {
-        target_launch.clear();
-    }
+    keep_launch(&mut actor_launch, &caller_dir, &sender.slot, &caller_id);
+    keep_launch(&mut target_launch, &meta_dir, &resolved.slot, &target_id);
     let fields = stamp_target(
         &EventFields {
             actor_session_id: &caller_id,
@@ -2997,13 +3277,14 @@ pub(crate) fn run_with(
 fn deliver_receipted(
     request: &crate::deliver::Request<'_>,
     receipt: Option<&mut Option<Receipt>>,
+    seat: Option<&mut Dispatch>,
     err: &mut impl Write,
 ) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
     let Some(slot) = receipt else {
-        return deliver_request(request, err);
+        return deliver_request_with(request, seat, err);
     };
     *slot = Some(Receipt::Uncertain);
-    let delivery = deliver_request(request, err)?;
+    let delivery = deliver_request_with(request, seat, err)?;
     *slot = Some(Receipt::of(&delivery));
     Ok(delivery)
 }
@@ -5257,5 +5538,53 @@ mod tests {
             }
             std::fs::remove_dir_all(root.parent().expect("scratch root")).expect("cleanup");
         }
+    }
+
+    /// G4: both audit rows of one dispatch carry the seat's one observation
+    /// (server, pane, session uuid), the seat's and the target's ids, the
+    /// shared ref and the owner input, under the orchestrator's name.
+    #[test]
+    fn a_dispatch_audit_pair_carries_the_seat_observation_and_the_target_ids() {
+        use crate::tracked::{DISPATCH_REQUEST, DISPATCH_RESULT, Dispatch, ORCHESTRATOR_DISPLAY};
+        let dir = meta_dir("dispatchrows", "");
+        let target_uuid = "6f1d2c3b-4a59-4e8d-9c7b-2a1f0e9d8c7b";
+        let dispatch = Dispatch {
+            dir: dir.clone(),
+            session: "orchestrator".to_owned(),
+            uuid: UUID.to_owned(),
+            slot: "main".to_owned(),
+            pane: "%7".to_owned(),
+            server: "/tmp/ae-sock-seat".to_owned(),
+            reference: "dispatch-20261120T000000Z-0a0b0c0d".to_owned(),
+            verb: "resume",
+            target: "api".to_owned(),
+            target_session: "api".to_owned(),
+            target_uuid: target_uuid.to_owned(),
+            owner_input: Some("ae-owner-1".to_owned()),
+            requested: false,
+        };
+        dispatch.request().expect("the request row");
+        dispatch.result("ok").expect("the result row");
+        let rows = crate::watchdog_daemon::read_events(&dir);
+        let actions: Vec<&str> = rows.iter().map(|row| row.action.as_str()).collect();
+        assert_eq!(actions, [DISPATCH_REQUEST, DISPATCH_RESULT]);
+        let value = |id: &str| crate::events::RoutingMember::Value(id.to_owned());
+        for (row, summary) in rows.iter().zip(["resume api", "resume api: ok"]) {
+            assert_eq!(row.actor, ORCHESTRATOR_DISPLAY);
+            assert_eq!(row.reference.as_deref(), Some(dispatch.reference.as_str()));
+            assert_eq!(row.target.as_deref(), Some("api"));
+            assert_eq!(row.summary.as_deref(), Some(summary));
+            assert_eq!(row.actor_slot, value("main"));
+            assert_eq!(row.actor_session, value("orchestrator"));
+            assert_eq!(row.actor_session_id, value(UUID));
+            assert_eq!(row.target_session, value("api"));
+            assert_eq!(row.target_session_id, value(target_uuid));
+            assert_eq!(row.target_session_uuid.as_deref(), Some(target_uuid));
+            assert_eq!(row.caller_server.as_deref(), Some("/tmp/ae-sock-seat"));
+            assert_eq!(row.caller_pane.as_deref(), Some("%7"));
+            assert_eq!(row.caller_session_uuid.as_deref(), Some(UUID));
+            assert_eq!(row.owner_input.as_deref(), Some("ae-owner-1"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

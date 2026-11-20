@@ -80,6 +80,10 @@ pub fn parse(tail: &[String]) -> Result<Parsed, Usage> {
     clippy::too_many_lines,
     reason = "one interrupt coordinator keeps admission, bare cancel and message outcomes in order"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the helper's inputs plus the proved seat's dispatch"
+)]
 pub fn run(
     dir: &Path,
     tail: &[String],
@@ -87,6 +91,7 @@ pub fn run(
     caller_session: &str,
     own_session: &str,
     now: Timestamp,
+    seat: Option<&mut tracked::Dispatch>,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     let Ok(parsed) = parse(tail) else {
@@ -108,7 +113,7 @@ pub fn run(
     if tracked::refuse_cross_session(
         dir,
         ACTION,
-        parsed.cross_session,
+        parsed.cross_session || seat.is_some(),
         &parsed.target,
         &parsed.message,
         &resolved,
@@ -119,6 +124,10 @@ pub fn run(
         err,
     )? {
         return Ok(EXIT_FAILED);
+    }
+    let mut seat = seat;
+    if let Some(seat) = seat.as_deref_mut() {
+        seat.bind(&parsed.target, &resolved.session);
     }
     let cross = (resolved.session != caller_session).then_some(CrossDelivery {
         caller_session,
@@ -159,9 +168,17 @@ pub fn run(
                 return Ok(EXIT_FAILED);
             }
         };
+        // The seat's request names the snapshot this guard proved, before
+        // any key.
+        if let Some(seat) = seat
+            && let Err(why) = seat.request_admitted(&guard)
+        {
+            seat.refuse(&why, err)?;
+            return Ok(EXIT_FAILED);
+        }
         return bare_cancel(&request, &guard, &target_name, now, cross, err);
     }
-    let delivered = match tracked::deliver_addressed(&request, &resolved, err)? {
+    let delivered = match tracked::deliver_expected(&request, &resolved, Ok(None), seat, err)?.0 {
         Ok(delivered) => delivered,
         // Refused before its paste on a human-only prompt: the shared
         // diagnostic, never an `interrupt` record.

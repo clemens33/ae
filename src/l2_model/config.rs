@@ -60,6 +60,26 @@ pub(crate) const SEAT_TEMPLATE: &str =
 pub(crate) const SEAT_PROMPT_MARKER: &str =
     "A reserved item requires bound owner words that approve the exact act for the target session.";
 
+/// The sentence a seat prompt carries from charter version 2 on, when the
+/// orchestrator seat became the owner's executor across the fleet.
+pub(crate) const SEAT_CHARTER_MARKER: &str =
+    "You are the owner's chief of staff across the ae fleet";
+
+/// The charter version the seat template teaches. A running seat launched
+/// with an older one gets one charter update turn from its watchdog.
+pub(crate) const SEAT_CHARTER_VERSION: u32 = 2;
+
+/// The charter version a seat context or prompt `text` teaches:
+/// [`SEAT_CHARTER_VERSION`] when it carries [`SEAT_CHARTER_MARKER`], else 1.
+#[must_use]
+pub(crate) fn charter_version(text: &str) -> u32 {
+    if text.contains(SEAT_CHARTER_MARKER) {
+        SEAT_CHARTER_VERSION
+    } else {
+        1
+    }
+}
+
 /// The name a seat config's refusals call it by.
 const SEAT_CONFIG_NAME: &str = "orchestrator.config";
 
@@ -82,6 +102,17 @@ pub(crate) fn seat_prompt_is_current(config: &str) -> bool {
     prompt_rows(config)
         .pop()
         .is_some_and(|row| row.value.contains(SEAT_PROMPT_MARKER))
+}
+
+/// The charter version ([`charter_version`]) the seat config `config` teaches:
+/// that of the `prompt.instructions` a launch reads from it, the LAST row, and
+/// 1 when it has none. A marker in a comment, in another key or in an
+/// overridden row proves nothing.
+#[must_use]
+pub(crate) fn seat_prompt_charter(config: &str) -> u32 {
+    prompt_rows(config)
+        .pop()
+        .map_or(1, |row| charter_version(&row.value))
 }
 
 /// The `[prompt]` stanza of the seat config `config` as a launch reads it, from

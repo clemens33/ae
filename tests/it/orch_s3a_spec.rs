@@ -165,12 +165,87 @@ fn snapshot(rig: &Rig) -> (BTreeMap<PathBuf, Node>, String) {
     (nodes, sessions)
 }
 
-fn refuses(rig: &Rig, pane: Option<&str>, argv: &[&str]) -> Out {
-    let before = snapshot(rig);
+fn refusal_output(rig: &Rig, pane: Option<&str>, argv: &[&str]) -> Out {
     let out = run(rig, pane, argv);
     assert!(matches!(out.0, Some(1 | 2)), "{argv:?}: {out:?}");
     assert_eq!(out.1, "", "{argv:?}: refusal wrote stdout");
+    out
+}
+
+fn refuses(rig: &Rig, pane: Option<&str>, argv: &[&str]) -> Out {
+    let before = snapshot(rig);
+    let out = refusal_output(rig, pane, argv);
     assert_eq!(snapshot(rig), before, "{argv:?}: refusal changed state");
+    out
+}
+
+/// The target identity proved, so G4 records the rejected stop in the
+/// dispatcher's own journal. Every claim about target state still holds.
+fn refuses_after_dispatch(rig: &Rig, caller: &Seat, uuid: &str) -> Out {
+    let (mut before, live_before) = snapshot(rig);
+    let out = refusal_output(rig, Some(&caller.pane), &stop(TARGET, uuid));
+    let (mut after, live_after) = snapshot(rig);
+    let journal = Path::new("orch/events.jsonl");
+    let previous = match before.remove(journal) {
+        Some(Node::File(bytes)) => bytes,
+        None => Vec::new(),
+        other => panic!("dispatcher journal before refusal: {other:?}"),
+    };
+    let Some(Node::File(bytes)) = after.remove(journal) else {
+        panic!("refused stop did not write a dispatcher audit");
+    };
+    let lock = Path::new("orch/events.jsonl.lock");
+    let empty_lock = Some(Node::File(Vec::new()));
+    assert_eq!(after.remove(lock), empty_lock);
+    let previous_lock = before.remove(lock);
+    assert!(previous_lock.is_none() || previous_lock == empty_lock);
+    assert_eq!(
+        after, before,
+        "refusal changed state beyond the dispatcher audit"
+    );
+    assert_eq!(live_after, live_before, "refusal changed live sessions");
+
+    let appended = bytes
+        .strip_prefix(previous.as_slice())
+        .expect("audit appended");
+    let rows: Vec<_> = std::str::from_utf8(appended)
+        .expect("UTF-8 audit")
+        .lines()
+        .map(|line| ae::events::Event::parse_line(line).expect("parsed audit row"))
+        .collect();
+    let [request, result] = rows.as_slice() else {
+        panic!("expected exactly one audit pair: {rows:?}");
+    };
+    assert_eq!(request.action, "dispatch-request");
+    assert_eq!(result.action, "dispatch-result");
+    assert!(
+        request
+            .reference
+            .as_deref()
+            .is_some_and(|id| id.starts_with("dispatch-"))
+    );
+    assert_eq!(request.reference, result.reference);
+    for row in [request, result] {
+        assert_eq!(row.actor, "ae/orchestrator");
+        assert_eq!(row.target_session.value(), Some(TARGET));
+        assert_eq!(row.target_session_id.value(), Some(uuid));
+        assert_eq!(row.target_session_uuid.as_deref(), Some(uuid));
+        assert!(row.owner_input.is_none());
+    }
+    assert_eq!(
+        request.summary.as_deref(),
+        Some(format!("stop {TARGET}").as_str())
+    );
+    let refused = format!("stop {TARGET}: refused");
+    let failed = format!(
+        "stop {TARGET}: failed (exit {})",
+        out.0.expect("refused exit")
+    );
+    assert!(
+        result.summary.as_deref() == Some(refused.as_str())
+            || result.summary.as_deref() == Some(failed.as_str()),
+        "{result:?}"
+    );
     out
 }
 
@@ -430,12 +505,12 @@ fn bound_stop_checks_every_seat_and_uses_the_latest_declaration() {
     let pane = Some(caller.pane.as_str());
     for state in ["working", "waiting-agent", "blocked"] {
         declare(&rig, "colead", state);
-        let out = refuses(&rig, pane, &argv);
+        let out = refuses_after_dispatch(&rig, &caller, &uuid);
         assert!(out.2.contains("colead") && out.2.contains(state), "{out:?}");
     }
     declare(&rig, "colead", "working");
     declare(&rig, "lead", "done");
-    let out = refuses(&rig, pane, &argv);
+    let out = refuses_after_dispatch(&rig, &caller, &uuid);
     assert!(
         out.2.contains("colead") && out.2.contains("working"),
         "{out:?}"
@@ -475,7 +550,7 @@ fn bound_stop_checks_the_latest_declaration_of_a_spawned_seat() {
     declare(&rig, "builder", "working");
     let pane = Some(caller.pane.as_str());
     let argv = stop(TARGET, &uuid);
-    let out = refuses(&rig, pane, &argv);
+    let out = refuses_after_dispatch(&rig, &caller, &uuid);
     assert!(
         out.2.contains("builder") && out.2.contains("working"),
         "{out:?}"
@@ -500,7 +575,7 @@ fn bound_stop_refuses_an_unrecognized_latest_declaration() {
             "\n",
         ).as_bytes())
         .expect("append the unknown state value");
-    let out = refuses(&rig, Some(&caller.pane), &stop(TARGET, &uuid));
+    let out = refuses_after_dispatch(&rig, &caller, &uuid);
     assert!(
         out.2.contains("colead") && out.2.contains("paused"),
         "{out:?}"
@@ -516,7 +591,7 @@ fn an_unreadable_declaration_source_refuses_a_bound_stop() {
     fs::rename(dir.join("events.jsonl"), dir.join("saved-events"))
         .expect("preserve the real journal");
     fs::create_dir(dir.join("events.jsonl")).expect("an unreadable journal container");
-    let out = refuses(&rig, Some(&caller.pane), &stop(TARGET, &uuid));
+    let out = refuses_after_dispatch(&rig, &caller, &uuid);
     let diagnostic = out.2.to_ascii_lowercase();
     assert!(
         diagnostic.contains("events.jsonl") || diagnostic.contains("journal"),
@@ -548,10 +623,10 @@ fn a_held_declaration_lock_keeps_bound_stop_from_reading_past_an_inflight_writer
     let uuid = create(&rig, TARGET);
     let path = rig.dir(TARGET).join("events.jsonl.lock");
     let held = ae::store::lock(&path, Duration::ZERO).expect("fixture holds the real journal lock");
-    refuses(&rig, Some(&caller.pane), &stop(TARGET, &uuid));
+    refuses_after_dispatch(&rig, &caller, &uuid);
     drop(held);
     declare(&rig, "colead", "working");
-    let out = refuses(&rig, Some(&caller.pane), &stop(TARGET, &uuid));
+    let out = refuses_after_dispatch(&rig, &caller, &uuid);
     assert!(
         out.2.contains("colead") && out.2.contains("working"),
         "{out:?}"
@@ -578,7 +653,7 @@ fn bound_stop_refuses_the_callers_own_session() {
         other,
         &[ae::cli::STOP, "orch", "--expect-uuid", &orch],
     );
-    assert!(raw.2.contains("--self"), "{raw:?}");
+    assert!(raw.2.contains("ae stop orch -y"), "{raw:?}");
     let argv = [stop("orch", &orch).as_slice(), &["--pane", pane.trim()]].concat();
     refuses(&rig, other, &argv);
     let argv = [stop(TARGET, &uuid).as_slice(), &["--pane", pane.trim()]].concat();
@@ -647,7 +722,6 @@ fn dispatcher_refuses_noncanonical_launches_and_the_direct_served_entry() {
     succeeds(&run(&rig, None, &["stop", TARGET]));
     for argv in [
         vec![TARGET, "--resume", "--no-attach"],
-        vec![TARGET, "--no-attach"],
         vec!["fresh", "--no-attach"],
         vec!["fresh", "--new", "--no-attach"],
     ] {

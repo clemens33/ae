@@ -313,10 +313,6 @@ fn is_brief_retry(env: &Env) -> bool {
     clippy::too_many_arguments,
     reason = "the frozen helper's inputs, spelled out rather than bundled"
 )]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the helper's straight-line order, one step per paragraph; the brief-retry leg and the auto reseat trigger are single branches at its head"
-)]
 pub fn run(
     dir: &Path,
     tail: &[String],
@@ -329,6 +325,53 @@ pub fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    let words = Words {
+        display,
+        caller_session,
+        own_session,
+    };
+    run_with_seat(dir, tail, env, &words, now, defer, None, out, err)
+}
+
+/// The caller words of a send: who sends, from which session, for the
+/// session the helper serves.
+pub(crate) struct Words<'a> {
+    /// The sender's display.
+    pub(crate) display: &'a str,
+    /// The caller's session, or empty.
+    pub(crate) caller_session: &'a str,
+    /// The session the helper serves.
+    pub(crate) own_session: &'a str,
+}
+
+/// [`run`] for a caller that may be the proved orchestrator seat: `seat`
+/// admits a target in another session without the flag, and is bound to the
+/// resolved target and requested before the delivery.
+///
+/// # Errors
+///
+/// Only a failure to write `err`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the frozen helper's inputs, spelled out rather than bundled"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the helper's straight-line order, one step per paragraph; the brief-retry leg and the auto reseat trigger are single branches at its head"
+)]
+pub(crate) fn run_with_seat(
+    dir: &Path,
+    tail: &[String],
+    env: &Env,
+    words: &Words<'_>,
+    now: Timestamp,
+    defer: std::time::Duration,
+    seat: Option<&mut tracked::Dispatch>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let (display, caller_session, own_session) =
+        (words.display, words.caller_session, words.own_session);
     let Ok(parsed) = parse(tail) else {
         write!(err, "{USAGE}")?;
         return Ok(EXIT_USAGE);
@@ -337,17 +380,21 @@ pub fn run(
         write!(err, "{refusal}")?;
         return Ok(EXIT_USAGE);
     }
-    if is_brief_retry(env) {
+    // A proved seat's send is a plain send: the three private legs below answer
+    // the watchdog's own helper calls, which carry no seat, and an action word
+    // in the seat's environment selects none of them.
+    let private = seat.is_none();
+    if private && is_brief_retry(env) {
         return crate::brief_retry::run(dir, &parsed.target, own_session, now, out, err);
     }
     // The auto reseat trigger, answered here for the brief retry's reason: the
     // action selects the trigger, which re-derives every fact it acts on.
-    if env.action.as_deref() == Some(crate::autoreseat::ATTEMPT_ACTION) {
+    if private && env.action.as_deref() == Some(crate::autoreseat::ATTEMPT_ACTION) {
         return crate::autoreseat::leg::trigger(dir, &parsed.target, own_session, now, err);
     }
     // The session-notice leg: the action selects it, and it re-derives what
     // is due and the text from the journal and the meta.
-    if env.action.as_deref() == Some(crate::session_notice::TRIGGER_ACTION) {
+    if private && env.action.as_deref() == Some(crate::session_notice::TRIGGER_ACTION) {
         let interval = env.summary.as_deref();
         let expect = expectation(env);
         return crate::session_notice::run(dir, &parsed.target, own_session, interval, expect, err);
@@ -404,7 +451,7 @@ pub fn run(
     if tracked::refuse_cross_session(
         dir,
         ACTION,
-        parsed.cross_session,
+        parsed.cross_session || seat.is_some(),
         &parsed.target,
         &parsed.message,
         &resolved,
@@ -415,6 +462,10 @@ pub fn run(
         err,
     )? {
         return Ok(EXIT_FAILED);
+    }
+    let mut seat = seat;
+    if let Some(seat) = seat.as_deref_mut() {
+        seat.bind(&parsed.target, &resolved.session);
     }
     let cross_session = resolved.session != caller_session;
     let target_name = if resolved.agent.is_empty() {
@@ -444,7 +495,8 @@ pub fn run(
         event.target_slot = &resolved.slot;
         event.target_session = &resolved.session;
     }
-    let (delivery, lost) = tracked::deliver_expected(&request, &resolved, expectation(env), err)?;
+    let (delivery, lost) =
+        tracked::deliver_expected(&request, &resolved, expectation(env), seat, err)?;
     write_retryable_marker(&action, &delivery, out)?;
     // A refusal by the expected seat itself is booked once, by its `refused` record:
     // never an attempt of the action the helper carried (#218 P1). Any other
@@ -1308,5 +1360,80 @@ mod tests {
             "human",
             "the EVENT's blank is human; the envelope's is not — the asymmetry is the authority model"
         );
+    }
+
+    /// A proved seat's send takes none of the watchdog's private legs: with
+    /// each leg's action word in its environment it is a plain send, here to
+    /// an event-only sink that records its one row.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test reads its isolated event ledger"
+    )]
+    fn a_seat_send_takes_no_private_leg_whatever_its_action_word() {
+        let words_of = super::Words {
+            display: crate::tracked::ORCHESTRATOR_DISPLAY,
+            caller_session: "orch",
+            own_session: "orch",
+        };
+        for (n, action) in [
+            crate::brief_retry::RETRY_ACTION,
+            crate::autoreseat::ATTEMPT_ACTION,
+            crate::session_notice::TRIGGER_ACTION,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let dir =
+                std::env::temp_dir().join(format!("ae-send-seat-plain-{}-{n}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("the isolated state directory");
+            let mut seat = crate::tracked::Dispatch {
+                dir: dir.clone(),
+                session: "orch".to_owned(),
+                uuid: "11111111-2222-4333-8444-555555555555".to_owned(),
+                slot: "main".to_owned(),
+                pane: "%1".to_owned(),
+                server: "/tmp/ae-sock".to_owned(),
+                reference: format!("dispatch-plain-{n}"),
+                verb: "send",
+                target: String::new(),
+                target_session: String::new(),
+                target_uuid: String::new(),
+                owner_input: None,
+                requested: false,
+            };
+            let env = Env {
+                action: Some(action.to_owned()),
+                ..Env::default()
+            };
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = super::run_with_seat(
+                &dir,
+                &words(&["telegram:42", "the seat's plain words"]),
+                &env,
+                &words_of,
+                Timestamp::parse("2026-11-20T10:00:00Z").expect("the timestamp parses"),
+                std::time::Duration::ZERO,
+                Some(&mut seat),
+                &mut out,
+                &mut err,
+            )
+            .expect("the send is handled");
+            let ledger = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+            let _ = std::fs::remove_dir_all(&dir);
+            assert_eq!(code, 0, "{action}: {}", String::from_utf8_lossy(&err));
+            let rows: Vec<crate::events::Event> = ledger
+                .lines()
+                .filter_map(|line| crate::events::Event::parse_line(line).ok())
+                .filter(|row| row.target.as_deref() == Some("telegram:42"))
+                .collect();
+            assert_eq!(rows.len(), 1, "{action}: {ledger}");
+            assert_eq!(
+                rows[0].actor,
+                crate::tracked::ORCHESTRATOR_DISPLAY,
+                "{action}"
+            );
+        }
     }
 }

@@ -2106,38 +2106,44 @@ missing match prompts for the target and sends nothing. It never dispatches work
 clears questions, edits project or session state, or treats text from another session as
 instructions.
 
-The seat's own ae refuses spawn, retire, cross-session send, ask, review, interrupt, end, rm,
-every rename, every create and every other stop or launch form. It admits exactly two bound
-forms, which the seat runs itself: the [bound stop](#the-bound-stop-ae-stop-name---expect-uuid-uuid)
-`ae stop <name> --expect-uuid <uuid>` and the bound resume
-`ae <name> --resume --no-attach --expect-uuid <uuid>`. The bound resume resumes only the stopped
-session whose record names that uuid, in place on its recorded server, and never creates or
-reattaches. The seat reads the uuid from `ae list --all --json` right before either command and
-passes it; both refuse the seat's own session. The served `_launch` entry and the seat's own launch, picker and
-settings routes stay refused. The seat runs both bound forms at its own discretion: when the owner
-asks, to save compute while a session's work is parked, or to continue parked work it found in a
-stopped session. If ae refuses one, the seat reports the line; for a refused resume it gives the owner
-`ae <name> --no-attach`; it never suggests bare `ae <name>`. For every other lifecycle command it
-gives the owner the exact command to run in the owner's own terminal, then declares `done`. To create a session, it acts only on explicit instruction.
-When the human names the session and a directory that exists at the spelled path (including `~`
-or relative paths expanded), it gives the owner the default local command at once, with
-`profiles=defaults` only when the configured defaults are confirmed for this creation (see
-[`ae orchestrator`](#ae-orchestrator)); it confirms whenever a fact is inferred or missing
-(directory missing or nonexistent, resolution lands elsewhere such as a symlink, mode unclear, or
-an unconfirmed profile decision). Otherwise it first prints one proposal line
-`name=<n> dir=<canonical path> mode=local|copy|worktree` (default `local`, `worktree` only for
-branch/isolated/parallel, `copy` only when asked), waits for `yes` or an edit, then asks the owner
-to run exactly one matching command: mode `local` → `ae <name> --dir <path> --local --no-attach`;
-mode `copy` → `ae <name> --dir <path> --copy --no-attach`; mode `worktree` →
-`ae <name> --dir <path> --worktree --no-attach`. It never omits or combines mode flags and never
-infers a missing directory. It never runs the bound stop for a session whose seats hold or wait
-for a lane claim. If the bound stop refuses and the human still wants the stop, it asks the owner
-to run
-`ae stop <name> -y`. It asks the owner to run ordinary
-`ae end <name> -f --keep-history` only when the human explicitly names that verb and session,
-and `ae end <name> -f --purge-history` only when the human explicitly says purge or delete
-history. It never suggests stopping or ending its own session (the seat named `orchestrator`) and
-never all sessions. For a rename it gives the owner a proposal and runs no rename command. See
+The seat is the owner's chief of staff: it runs the owner's ae work on the other sessions itself.
+Its `send`, `ask`, `review` and `interrupt` helpers reach `<session>:<agent>` directly, without
+`--cross-session`, rendered from `ae/orchestrator`; such a message carries no owner authority. For
+another session its ae admits four lifecycle forms: the start `ae <name> --no-attach`, the create
+`ae <name> --dir <path> --local|--copy|--worktree [--lead/--colead/--seat <profile>] --no-attach`,
+the bound resume `ae <name> --resume --no-attach --expect-uuid <uuid>` and the
+[bound stop](#the-bound-stop-ae-stop-name---expect-uuid-uuid) `ae stop <name> --expect-uuid <uuid>`,
+which takes `--owner-input <ask-id>` to admit a seat that declares `working`, `waiting-agent` or
+`blocked` once when the owner's stored words name the verb `stop` and the session; any other
+declared value still refuses. A start and a resume refuse a running session and never
+attach; a create refuses an existing name. Every admitted lifecycle command, and every `send`,
+`ask`, `review` or `interrupt` to a pane address, writes a `dispatch-request` row to the seat's
+own journal before its effect and a `dispatch-result` row after it, actor `ae/orchestrator`, one
+shared `dispatch-<ts>-<hex>` reference; a request row that cannot be written refuses the command
+before any effect. A delivery to an event-only sink records only its own event and names no
+target uuid. The seat reads a target's uuid from
+`ae list --all --json` right before a bound command and passes it.
+
+The seat's ae refuses end, rm, every rename, spawn, retire, reseat, relaunch, compact, every fleet
+form, every launch without `--no-attach`, every other stop form, `AE_SENDER_OVERRIDE` from its pane
+and every lifecycle command against its own session; the refusal of a stop of its own session
+prints the owner's own command `ae stop orchestrator -y`. The served `_launch` entry and the
+seat's own launch, picker and settings routes stay refused. For a refused form the seat gives
+the owner the exact command to run in the owner's own terminal, then declares `done`. To create
+a session, it acts only
+on explicit instruction; when every fact is explicit it runs the create at once, and it confirms
+whenever a fact is inferred or missing (directory missing or nonexistent, resolution lands
+elsewhere such as a symlink, mode unclear, or an unconfirmed profile decision) with one proposal
+line `name=<n> dir=<canonical path> mode=local|copy|worktree profiles=<profile-flags|defaults>`
+(default `local`, `worktree` only for branch/isolated/parallel, `copy` only when asked), then runs
+exactly one matching command after `yes`. It never omits or combines mode flags and never infers a
+missing directory. It never runs the bound stop for a session whose seats hold or wait for a lane
+claim. If the bound stop refuses and the human still wants the stop, it asks the owner to run
+`ae stop <name> -y`. It asks the owner to run ordinary `ae end <name> -f --keep-history` only when
+the human explicitly names that verb and session, and `ae end <name> -f --purge-history` only when
+the human explicitly says purge or delete history. For a rename it gives the owner a proposal and
+runs no rename command. A running seat whose launch recorded an older charter gets one
+`CHARTER UPDATE (ae <version>)` turn from its watchdog once it declares `done`. See
 [`contrib/aeorchestrator`](../../contrib/aeorchestrator/).
 
 **Pausing it.** `ae stop orchestrator` pauses the seat and keeps its state;

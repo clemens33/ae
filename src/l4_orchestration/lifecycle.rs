@@ -334,8 +334,13 @@ pub(crate) fn run_stop(
     // `--expect-*`: the identity a menu confirmation proved, which only the
     // detached supervisor re-proves under the target's lifecycle lock.
     let (expect, words) = match split_expectation(&words) {
-        Ok((Expectation::Bound(name, uuid), _)) => {
-            return bound::run(root, &name, &uuid, &pane_words(tail), out, err);
+        Ok((Expectation::Bound(name, uuid, owner_input), _)) => {
+            let bound = bound::Request {
+                name: &name,
+                uuid: &uuid,
+                owner_input: owner_input.as_deref(),
+            };
+            return bound::run(root, &bound, &pane_words(tail), out, err);
         }
         Ok((Expectation::Confirmed(expect), words)) => (Some(expect), words),
         Ok((Expectation::None, words)) => (None, words),
@@ -1342,7 +1347,17 @@ fn caller_resolution(
     }
     let owner =
         transport::observe_pane_owner(caller_server, pane).ok_or(CallerGap::PaneUnreadable)?;
-    let session = owner.session;
+    caller_correlation(root, caller_server, owner.session)
+}
+
+/// Whether `session`, the session ONE observation found the caller's pane in,
+/// is an ae session whose recorded tmux server is proved to be `caller_server`.
+/// No tmux read: the caller's own observation supplies the session.
+fn caller_correlation(
+    root: &Path,
+    caller_server: &ServerId,
+    session: String,
+) -> Result<String, CallerGap> {
     let recorded = name_is_usable(root, &session)
         .then(|| recorded_server(root, &session))
         .flatten();
@@ -1598,10 +1613,12 @@ fn split_expectation(tail: &[String]) -> std::result::Result<(Expectation, Vec<S
     let mut server_kind = None;
     let mut server_value = None;
     let mut require_meta_agent = None;
+    let mut owner_input = None;
     let mut words: Vec<String> = Vec::with_capacity(tail.len());
     let mut rest = tail.iter();
     while let Some(arg) = rest.next() {
         let slot = match arg.as_str() {
+            "--owner-input" => &mut owner_input,
             "--expect-session-id" => &mut session_id,
             "--expect-uuid" => &mut uuid,
             "--expect-server-pid" => &mut server_pid,
@@ -1640,6 +1657,10 @@ fn split_expectation(tail: &[String]) -> std::result::Result<(Expectation, Vec<S
     .iter()
     .filter(|slot| slot.is_some())
     .count();
+    // `--owner-input` travels only with the bound stop's one `--expect-uuid`.
+    if owner_input.is_some() && (given != 1 || uuid.is_none()) {
+        return Err(OWNER_INPUT_GRAMMAR.to_owned());
+    }
     if given == 0 {
         return Ok((Expectation::None, words));
     }
@@ -1657,9 +1678,12 @@ fn split_expectation(tail: &[String]) -> std::result::Result<(Expectation, Vec<S
             if uuid.is_empty() {
                 return Err("--expect-uuid is not a session uuid.".to_owned());
             }
-            return Ok((Expectation::Bound(name.clone(), uuid), Vec::new()));
+            return Ok((
+                Expectation::Bound(name.clone(), uuid, owner_input),
+                Vec::new(),
+            ));
         }
-        if named {
+        if named || owner_input.is_some() {
             return Err(BOUND_GRAMMAR.to_owned());
         }
     }
@@ -1751,13 +1775,17 @@ enum Expectation {
     None,
     /// All ten: the identity a menu confirmation proved.
     Confirmed(StopExpectation),
-    /// `<name> --expect-uuid <uuid>` and nothing else: the bound stop, with
-    /// the session name and the canonical uuid.
-    Bound(String, String),
+    /// `<name> --expect-uuid <uuid> [--owner-input <ask-id>]` and nothing
+    /// else: the bound stop, with the session name, the canonical uuid and
+    /// the owner input the orchestrator seat cites.
+    Bound(String, String, Option<String>),
 }
 
+/// The refusal of an `--owner-input` outside the bound stop.
+const OWNER_INPUT_GRAMMAR: &str = "--owner-input travels only with the bound stop: ae stop <name> --expect-uuid <uuid> --owner-input <ask-id>.";
+
 /// The refusal of a bound stop with any word beside its name.
-const BOUND_GRAMMAR: &str = "--expect-uuid alone binds one stop: ae stop <name> --expect-uuid <uuid>, with no other flag and one session name.";
+const BOUND_GRAMMAR: &str = "--expect-uuid alone binds one stop: ae stop <name> --expect-uuid <uuid> [--owner-input <ask-id>], with no other flag and one session name.";
 
 /// Whether a `_stop` tail is the bound stop, read by the one parser
 /// [`run_stop`] reads it with: the pane words lifted, then `--expect-uuid`

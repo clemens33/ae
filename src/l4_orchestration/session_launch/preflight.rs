@@ -479,15 +479,23 @@ pub(super) fn resolve_server(
     };
     let (probe, why) = resume_absence(&recorded.server, session, dir);
     let placed = placement(&probe, placing.in_place, recorded.legacy);
-    // The bound resume proved its target stopped under this lock; a session
-    // that appears since is refused here, before any adoption, seed,
-    // migration or restamp could act on it.
-    if plan.expect_uuid.is_some() && matches!(placed, Placement::Running) {
-        writeln!(
-            err,
-            "Error: {}. Nothing was resumed.",
-            bound_running(session)
-        )?;
+    // The bound resume proved its target stopped under this lock, and the
+    // orchestrator seat's audited start names a stopped session; a session
+    // that is running is refused here, before any adoption, seed, migration
+    // or restamp could act on it.
+    if placing.stopped_only && matches!(placed, Placement::Running) {
+        if plan.expect_uuid.is_some() {
+            writeln!(
+                err,
+                "Error: {}. Nothing was resumed.",
+                bound_running(session)
+            )?;
+        } else {
+            writeln!(
+                err,
+                "Error: '{session}' is running; the orchestrator seat starts only a stopped session. Nothing was started."
+            )?;
+        }
         return Ok(ControlFlow::Break(EXIT_FAILED));
     }
     match placed {

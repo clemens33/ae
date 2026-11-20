@@ -876,13 +876,21 @@ fn flying_guard_clears_when_the_closure_panics() {
 
 #[test]
 fn watchdog_refresh_is_gated_on_quota_aware_and_is_single_flight() {
-    let src = crate::support::source_view::module_family(
-        "src/l4_orchestration/watchdog_daemon.rs",
-        false,
+    // The production text of the watchdog daemon's module family: the product
+    // view blanks every test item and comment in each file, so no file's test
+    // module can cut off the files after it.
+    let root = "src/l4_orchestration/watchdog_daemon.rs";
+    let dir = "src/l4_orchestration/watchdog_daemon/";
+    let files = &crate::support::source_view::product().files;
+    assert!(
+        files.iter().any(|file| file.path == root),
+        "{root} is a production file"
     );
-    let product = src
-        .split_once("#[cfg(test)]\nmod tests {")
-        .map_or(src.as_str(), |(m, _)| m);
+    let product: String = files
+        .iter()
+        .filter(|file| file.path == root || file.path.starts_with(dir))
+        .map(|file| file.text.as_str())
+        .collect();
     assert!(
         product.contains("watchdog_due"),
         "daemon must call go_usage::watchdog_due; the table owns the gate"

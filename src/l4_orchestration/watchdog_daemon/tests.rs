@@ -12263,3 +12263,21 @@ fn vendorwait_the_plain_codex_busy_frame_keeps_its_words() {
         "busy"
     );
 }
+
+/// The D5 remedy names the default root's restart only for a default-root
+/// seat; a named instance's seat gets its own instance named and no bare
+/// `ae stop orchestrator` that would reach the default root's live seat.
+#[test]
+fn the_charter_remedy_names_the_instance_and_never_the_default_root_command_there() {
+    let default = std::path::Path::new("/home/u/.ae/sessions/orchestrator");
+    assert_eq!(
+        super::charter_remedy(default, "orchestrator"),
+        "orchestrator charter update uncertain: ae stop orchestrator, then ae orchestrator"
+    );
+    let named = std::path::Path::new("/home/u/.ae/instances/work/sessions/orchestrator");
+    let line = super::charter_remedy(named, "orchestrator");
+    assert!(line.contains("instance work"), "{line}");
+    assert!(line.contains("that instance's own ae command"), "{line}");
+    assert!(!line.contains("ae stop"), "{line}");
+    assert!(!line.contains("ae orchestrator"), "{line}");
+}

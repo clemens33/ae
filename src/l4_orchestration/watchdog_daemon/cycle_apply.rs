@@ -425,6 +425,9 @@ impl Cycle<'_> {
     /// route through it rather than each spawning for itself: a second delivery
     /// site is a second thing to audit, and a unit guard in this file holds the
     /// count at one.
+    /// The orchestrator seat's charter turn ([`super::charter`]) spawns
+    /// nothing: it types in process as ae's own leg, admitted against the
+    /// launch it claimed, because its receipt decides that claim.
     ///
     /// `seat` is the slot the delivery was decided for: the helper then proves
     /// the incarnation this cycle's snapshot read there (#218 2c), and a row

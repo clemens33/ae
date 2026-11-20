@@ -2830,6 +2830,119 @@ pub(crate) fn set_context(
     Ok(held.get())
 }
 
+/// Record that the seat at `slot`, launch `launch_id`, holds charter
+/// `version`: `charter.<slot>` and `charter_launch.<slot>`, with no pending
+/// claim left. Guarded like [`set_context`]: nothing is written unless
+/// `launch_id.<slot>` is still `launch_id`, which the return says.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when the lock, read, write, sync or rename
+/// failed.
+pub(crate) fn set_charter(
+    dir: &Path,
+    slot: &str,
+    launch_id: &str,
+    version: u32,
+) -> Result<bool, RewriteError> {
+    charter_rewrite(dir, slot, launch_id, |current| {
+        let next = rewritten(
+            current,
+            &format!("charter.{slot}"),
+            Some(&version.to_string()),
+        );
+        let next = rewritten(&next, &format!("charter_launch.{slot}"), Some(launch_id));
+        rewritten(&next, &format!("charter_pending.{slot}"), None)
+    })
+}
+
+/// Claim the one charter update of launch `launch_id` before its first key:
+/// `charter_pending.<slot>`. A watchdog that restarts between the submit and
+/// the stamp finds the claim and never sends the update again. The claim is
+/// granted, under the meta lock, only while `launch_id.<slot>` is still
+/// `launch_id`, no claim of that launch exists, and the launch does not
+/// already hold charter `version`; the return says whether this call took it.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when the lock, read, write, sync or rename
+/// failed.
+pub(crate) fn claim_charter(
+    dir: &Path,
+    slot: &str,
+    launch_id: &str,
+    version: u32,
+) -> Result<bool, RewriteError> {
+    let claimed = std::cell::Cell::new(false);
+    rewrite_under_lock(dir, |current| {
+        let bytes = current.as_bytes();
+        let row = |key: &str| sole_value(bytes, &format!("{key}.{slot}"));
+        let ours = Some(launch_id.as_bytes());
+        if launch_id.is_empty() || row("launch_id") != ours || row("charter_pending") == ours {
+            return None;
+        }
+        let holds = row("charter_launch") == ours
+            && row("charter")
+                .and_then(|value| std::str::from_utf8(value).ok())
+                .and_then(|value| value.parse::<u32>().ok())
+                .is_some_and(|held| held >= version);
+        if holds {
+            return None;
+        }
+        claimed.set(true);
+        Some(rewritten(
+            current,
+            &format!("charter_pending.{slot}"),
+            Some(launch_id),
+        ))
+    })?;
+    Ok(claimed.get())
+}
+
+/// Drop the claim of launch `launch_id` after a refusal that provably came
+/// before any submit, so a later cycle may try again. Guarded like
+/// [`set_charter`]; a claim of another launch stays.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when the lock, read, write, sync or rename
+/// failed.
+pub(crate) fn release_charter(
+    dir: &Path,
+    slot: &str,
+    launch_id: &str,
+) -> Result<bool, RewriteError> {
+    let key = format!("charter_pending.{slot}");
+    charter_rewrite(dir, slot, launch_id, |current| {
+        if sole_value(current.as_bytes(), &key) == Some(launch_id.as_bytes()) {
+            rewritten(current, &key, None)
+        } else {
+            current.to_owned()
+        }
+    })
+}
+
+/// One guarded charter write: `edit` runs only while `launch_id.<slot>` is
+/// still `launch_id`, and an unchanged text writes nothing.
+fn charter_rewrite(
+    dir: &Path,
+    slot: &str,
+    launch_id: &str,
+    edit: impl FnOnce(&str) -> String,
+) -> Result<bool, RewriteError> {
+    let held = std::cell::Cell::new(false);
+    rewrite_under_lock(dir, |current| {
+        let recorded = sole_value(current.as_bytes(), &format!("launch_id.{slot}"));
+        if launch_id.is_empty() || recorded != Some(launch_id.as_bytes()) {
+            return None;
+        }
+        held.set(true);
+        let next = edit(current);
+        (next != current).then_some(next)
+    })?;
+    Ok(held.get())
+}
+
 /// Publish a config-home row and its optional implicit-HOME base in one
 /// replacement. No reader can observe an implicit store without its base.
 pub(crate) fn record_config_home(

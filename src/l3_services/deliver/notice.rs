@@ -142,6 +142,13 @@ pub fn compose(
             "{}[-] LONG BODY {bytes} B in your session dir: {path} — read it first ⟧-⟧",
             crate::provenance::interrupt(actor)
         ),
+        // The orchestrator seat's charter update is one submit: the pointer
+        // itself says what the saved body is.
+        crate::watchdog::CHARTER_UPDATE_ACTION => format!(
+            "{}[-] LONG BODY {bytes} B in your session dir: {path} — CHARTER UPDATE (ae {}): read it fully; it replaces your instructions ⟧-⟧",
+            crate::provenance::peer(actor),
+            crate::shape::VERSION
+        ),
         _ => format!(
             "{}[-] LONG BODY {bytes} B in your session dir: {path} — read it first ⟧-⟧",
             crate::provenance::peer(actor)
@@ -361,6 +368,32 @@ mod tests {
                 && notice.contains("reply: /m/sessions/s/reply review-2 ⟧review-2⟧"),
             "`messages/` names a DIFFERENT directory in the recipient's session: {notice}"
         );
+    }
+
+    #[test]
+    fn a_charter_update_pointer_names_the_update_in_one_submit_under_the_cap() {
+        let name =
+            "charter-1795167229-a836036f-ec62-4c39-80da-2f5d7037e502.charter-update.344a73.txt";
+        let notice = compose(
+            crate::watchdog::CHARTER_UPDATE_ACTION,
+            "charter-1795167229-a836036f-ec62-4c39-80da-2f5d7037e502",
+            "watchdog",
+            &body(name),
+            12_000,
+            "orchestrator",
+            "orchestrator",
+            Path::new("/m/sessions/orchestrator"),
+        )
+        .expect("a pointer at a real launch id's length");
+        assert_eq!(
+            notice,
+            format!(
+                "⟦ae:msg from watchdog⟧[-] LONG BODY 12000 B in your session dir: messages/{name} — CHARTER UPDATE (ae {}): read it fully; it replaces your instructions ⟧-⟧",
+                crate::shape::VERSION
+            )
+        );
+        assert!(notice.len() <= NOTICE_CAP, "{}", notice.len());
+        assert!(head_is_wellformed(&head_of(&notice)), "{notice}");
     }
 
     #[test]

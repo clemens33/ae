@@ -33,6 +33,12 @@ mod presetreseat_resume_spec;
 #[path = "orchprof_spec.rs"]
 mod orchprof_spec;
 
+#[path = "orchexec_lifecycle_spec.rs"]
+mod orchexec_lifecycle_spec;
+
+#[path = "orchexec_driver.rs"]
+mod orchexec_driver;
+
 /// A TUI-shaped fake agent: it records its argv, then sits there drawing the
 /// ornament the input sensor reads.
 const FAKE_AGENT: &str = r#"#!/usr/bin/perl

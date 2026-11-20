@@ -736,6 +736,7 @@ impl Carry {
         let extra = tracked::Extra {
             relay: self.relay.as_ref(),
             receipt: Some(&mut receipt),
+            seat: None,
         };
         let run = tracked::run_with(
             tracked::Kind::Ask,
