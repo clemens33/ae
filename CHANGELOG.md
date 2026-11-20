@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.99] - 2026-11-20
+- An upgrade keeps the seat's orchestrator.config current, and says so when it cannot
+- An acceptance arm for the named-instance context notice
+
 ## [v2026.11.98] - 2026-11-20
 - Layout-independent L5 fixtures: app_family_spec builds its control trees from PARENT, and the closed-ask excerpt test cuts a path the move does not rename
 - The terminal UI layer (app, clipboard, console, doctor, events_tail, jump, monitor, next, overview, panes, profile_view, reader, session_menu, settings_menu) moves into src/l5_ui; src/lib.rs re-exports each by name and now declares only the seven layers, the pub(in ...) visibility paths name the layer, and the sources, tests, docs, AGENTS.md, the clippy.toml termios reasons and the Cargo.toml comment that name their paths follow
