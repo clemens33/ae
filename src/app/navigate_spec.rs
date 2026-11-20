@@ -1002,12 +1002,12 @@ fn padded(head: &str, upto: usize, path: &str) -> String {
 
 #[test]
 fn a_closed_ask_reads_its_excerpt_links_but_never_a_path_cut_at_80() {
-    // The path starts at character 69: the excerpt keeps `src/app/rea`.
-    let cut = padded("see src/early.rs and ", 69, "src/app/reader.rs tail");
+    // The path starts at character 69: the excerpt keeps `docs/reader`.
+    let cut = padded("see src/early.rs and ", 69, "docs/reader.md tail");
     assert!(cut.chars().count() > 80);
     let (mut app, rx) = closed_app(&cut);
     let cells = frame_of(&mut app);
-    let clipped = occurrences(&app, &cells, "src/app/rea");
+    let clipped = occurrences(&app, &cells, "docs/reader");
     let last = clipped.last().expect("the cut path is drawn").clone();
     let (x, y) = *last.last().expect("cells");
     assert_eq!(

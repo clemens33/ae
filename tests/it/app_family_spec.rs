@@ -170,13 +170,41 @@ fn registered() -> Vec<String> {
     }
 }
 
-/// A control tree: `src/lib.rs` registers `app`, `src/app.rs` holds `app`, and each child is a file below
-/// `src/app/`. Returns the loaded files and the product view built from them.
+/// The files that register `PARENT` from the crate root: one `mod` line for each component of its path below
+/// `src/`, each in the file that owns the directory the component sits in. The chain follows `PARENT`, so a control
+/// tree reaches the parent wherever it lives.
+fn chain() -> Vec<(String, String)> {
+    let Some(stem) = PARENT
+        .strip_prefix("src/")
+        .and_then(|rest| rest.strip_suffix(".rs"))
+    else {
+        panic!("{PARENT} is not a .rs file below src/");
+    };
+    let parts: Vec<&str> = stem.split('/').collect();
+    let mut files = Vec::new();
+    for (at, name) in parts.iter().enumerate() {
+        let holder = match at {
+            0 => "src/lib.rs".to_owned(),
+            _ => format!("src/{}.rs", parts[..at].join("/")),
+        };
+        files.push((holder, format!("mod {name};\n")));
+    }
+    files
+}
+
+/// `relative` in the directory of `PARENT`, where a `#[path]` in the parent points.
+fn beside(relative: &str) -> String {
+    match PARENT.rsplit_once('/') {
+        Some((dir, _)) => format!("{dir}/{relative}"),
+        None => relative.to_owned(),
+    }
+}
+
+/// A control tree: the `chain` registers `PARENT`, `PARENT` holds `app`, and each child is a file below the
+/// directory the parent owns. Returns the loaded files and the product view built from them.
 fn synthetic(app: &str, children: &[(&str, &str)]) -> (Vec<(String, String)>, Product) {
-    let mut files: Vec<(String, String)> = vec![
-        ("src/lib.rs".to_owned(), "mod app;\n".to_owned()),
-        (PARENT.to_owned(), app.to_owned()),
-    ];
+    let mut files = chain();
+    files.push((PARENT.to_owned(), app.to_owned()));
     for (path, text) in children {
         files.push(((*path).to_owned(), (*text).to_owned()));
     }
@@ -313,12 +341,12 @@ fn a_comment_or_raw_string_mod_decoy_registers_nothing() {
     let app = "// mod ghost;\nconst S: &str = r#\"mod ghost;\"#;\n/* mod phantom; */\nmod real;\n";
     let rows = built(app, &[("src/app/real.rs", "fn real() {}\n")]);
     assert_eq!(paths(&rows), [PARENT, "src/app/real.rs"]);
-    let decoyed = [
-        ("src/lib.rs".to_owned(), "mod app;\n".to_owned()),
+    let mut decoyed = chain();
+    decoyed.extend([
         (PARENT.to_owned(), app.to_owned()),
         ("src/app/real.rs".to_owned(), "fn real() {}\n".to_owned()),
         ("src/app/ghost.rs".to_owned(), "fn ghost() {}\n".to_owned()),
-    ];
+    ]);
     assert!(
         product_of(&decoyed).is_err(),
         "a file only a decoy names is registered by nothing, so the product view refuses the tree"
@@ -341,7 +369,8 @@ fn a_gated_registration_is_not_family() {
 #[test]
 fn a_redirected_production_registration_is_refused() {
     let app = "#[path = \"elsewhere/y.rs\"]\nmod y;\n";
-    let (files, product) = synthetic(app, &[("src/elsewhere/y.rs", "fn y() {}\n")]);
+    let redirected = beside("elsewhere/y.rs");
+    let (files, product) = synthetic(app, &[(redirected.as_str(), "fn y() {}\n")]);
     let Err(why) = family(&files, &product) else {
         panic!("a #[path] registration was read as a plain child");
     };
@@ -360,15 +389,21 @@ fn a_nested_production_registration_is_refused() {
 
 #[test]
 fn an_unrecognised_cfg_or_cfg_attr_fails_the_classification_so_the_family_is_refused() {
+    let control = built("mod z;\n", &[("src/app/z.rs", "fn z() {}\n")]);
+    assert_eq!(
+        paths(&control),
+        [PARENT, "src/app/z.rs"],
+        "without the attribute the same tree is a family"
+    );
     for attr in [
         "#[cfg(all(test, unix))]",
         "#[cfg_attr(unix, path = \"a.rs\")]",
     ] {
-        let files = [
-            ("src/lib.rs".to_owned(), "mod app;\n".to_owned()),
+        let mut files = chain();
+        files.extend([
             (PARENT.to_owned(), format!("{attr}\nmod z;\n")),
             ("src/app/z.rs".to_owned(), "fn z() {}\n".to_owned()),
-        ];
+        ]);
         assert!(
             product_of(&files).is_err(),
             "{attr} must make the product view fail, not pass quietly"
