@@ -309,6 +309,24 @@ pub fn row_detail(probe: &Probe) -> String {
     }
 }
 
+/// Report the window-owned menus shipped in tmux 3.8 without changing the floor.
+#[must_use]
+pub(crate) fn menu_advisory(probe: &Probe) -> Option<String> {
+    let found = probe.found();
+    matches!(
+        read(found),
+        Reading::Release(Version { major: 3, minor: 8 })
+    )
+    .then(|| {
+        format!(
+            "tmux {found} {} has known-degraded menus. Menus draw on every client viewing their window. \
+             A cross-session right-click menu appears on the clicked window. Use tmux 3.7b. \
+             If Homebrew has 3.7b installed, run `brew pin tmux` before upgrading.",
+            probe.source()
+        )
+    })
+}
+
 /// The warning a PUBLISH prints when the machine's tmux will not run what was
 /// just installed, or `None` when it will.
 ///

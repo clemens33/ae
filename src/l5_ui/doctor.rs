@@ -495,6 +495,9 @@ fn install_rows(facts: &Facts, out: &mut Report) {
         "tmux-floor",
         &crate::tmux_floor::row_detail(floor),
     );
+    if let Some(detail) = crate::tmux_floor::menu_advisory(floor) {
+        out.push(Level::Warn, "tmux-menus", &detail);
+    }
 
     if let Some(why) = &facts.config_error {
         out.push(Level::Fail, "config", why);
@@ -1873,6 +1876,10 @@ pub fn shims_render(dir: &Path, tail: &[String], err: &mut impl Write) -> crate:
 mod leadfloor2_warnings_spec;
 
 #[cfg(test)]
+#[path = "doctor/tmux38_menus_spec.rs"]
+mod tmux38_menus_spec;
+
+#[cfg(test)]
 #[allow(
     clippy::disallowed_methods,
     reason = "tests read back what the doors wrote; the boundary is on product code — see clippy.toml"
@@ -1880,7 +1887,7 @@ mod leadfloor2_warnings_spec;
 mod tests {
     use super::*;
 
-    fn facts() -> Facts {
+    pub(super) fn facts() -> Facts {
         Facts {
             version: "2026.9.1".to_owned(),
             core: Some(PathBuf::from("/opt/ae/versions/1/ae-core")),

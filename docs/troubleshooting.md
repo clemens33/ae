@@ -254,6 +254,12 @@ socket in another is reported once. `ae <session>` or `ae upgrade` reasserts the
 checkout) asserted the map last — reassert to take it back; `a foreign command`
 means no ae at all bound that key.
 
+On tmux 3.8, menus draw on every client viewing their window. A cross-session
+right-click menu appears on the clicked session's window. `ae doctor` reports
+this on its `tmux-menus` row. Use tmux 3.7b for per-client menus. If Homebrew
+has 3.7b installed, run `brew pin tmux` before upgrading. A running server keeps
+its original tmux version. To switch versions, start a new server with 3.7b.
+
 ## A link in `ae app` does not open on click
 
 A plain click never opens a link: `ae app` and tmux hold the mouse, so the click
