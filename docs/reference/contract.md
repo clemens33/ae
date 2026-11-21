@@ -273,6 +273,10 @@ Name resolution takes the exact name, `%pane-id`, or `session:agent` / `@session
   once per tool start: inside a spawn brief or launch-turn wait, inside a FRESH launch's 15 s watch of
   its turnless seats, else by the watchdog from its first sight. Otherwise it names it; a reseat seed
   fails fast on it, exit 1, with the next step.
+- **A measured folder-trust or login dialog holds its seat.** Launch and resume name the seat,
+  dialog kind, action and warnings before returning success or attaching. The watchdog uses its
+  existing human-prompt verdict. Guarded delivery refuses before typing. The extra Claude settings
+  warnings and the captured Codex, Agy and Grok login and Muse trust dialogs authorize no keys.
 - **codex's Warnings panel replaces its composer** once opened (F2, or a click on the footer's
   `⚠ N warning · f2 to view`, which codex >= 0.156.1 draws for any `-c`). With `auto_trust` on, ae
   dismisses it with ONE Escape per panel episode, 60 s after its first naming and after a client's

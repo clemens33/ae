@@ -1168,10 +1168,10 @@ fn quiet_held(
 }
 
 /// Whether `tool` has a MEASURED human-only prompt row to read for.
-fn prompt_row(tool: Option<ToolKind>) -> bool {
+pub(crate) fn prompt_row(tool: Option<ToolKind>) -> bool {
     tool.is_some_and(|kind| {
         let adapter = kind.adapter();
-        adapter.prompt.is_some() || adapter.panel.is_some()
+        adapter.prompt.is_some() || adapter.panel.is_some() || adapter.startup.is_some()
     })
 }
 
@@ -1191,11 +1191,11 @@ pub(crate) enum PromptRead {
     Unreadable,
 }
 
-/// The ONE delivery-side read for a prompt or service wait: one capture — the
+/// The delivery-side read for a prompt or service wait starts with the
 /// `Escapes` capture a modelled `model`'s composer read also takes, a `Plain`
 /// one only for a measured row otherwise (a shape about to send keys reads no
-/// composer and passes `InputModel::Unmodelled`) — handed back with the
-/// verdict of the shared frame model over its printable rows.
+/// composer and passes `InputModel::Unmodelled`). Only an unresolved dialog
+/// footer can extend the prompt read into the watchdog's bounded history.
 pub(crate) fn prompt_hold(
     server: &ServerId,
     pane: &str,
@@ -1209,13 +1209,29 @@ pub(crate) fn prompt_hold(
     } else {
         None
     };
-    let read = prompt_read(tool, capture.as_deref());
+    let read = read_prompt(tool, capture.as_deref(), |kind, plain| {
+        if !crate::watchdog::startup::needs_history(plain, kind.adapter()) {
+            return PromptRead::NoKnownPrompt;
+        }
+        match transport::capture_pane(server, pane) {
+            Some(history) => prompt_read(Some(kind), Some(&history)),
+            None => PromptRead::Unreadable,
+        }
+    });
     (capture, read)
 }
 
 /// The verdict [`prompt_hold`] gives `capture`: the shared frame model over
 /// its printable rows, for a tool with a measured row.
 pub(crate) fn prompt_read(tool: Option<ToolKind>, capture: Option<&str>) -> PromptRead {
+    read_prompt(tool, capture, |_, _| PromptRead::NoKnownPrompt)
+}
+
+fn read_prompt(
+    tool: Option<ToolKind>,
+    capture: Option<&str>,
+    on_unknown: impl FnOnce(ToolKind, &str) -> PromptRead,
+) -> PromptRead {
     if !prompt_row(tool) {
         PromptRead::Unmodelled
     } else if let (Some(kind), Some(screen)) = (tool, capture) {
@@ -1224,7 +1240,7 @@ pub(crate) fn prompt_read(tool: Option<ToolKind>, capture: Option<&str>) -> Prom
             PromptRead::CodexServiceWait
         } else {
             crate::watchdog::human_prompt_class(&plain, kind.as_str())
-                .map_or(PromptRead::NoKnownPrompt, PromptRead::Drawn)
+                .map_or_else(|| on_unknown(kind, &plain), PromptRead::Drawn)
         }
     } else {
         PromptRead::Unreadable
@@ -1247,6 +1263,28 @@ pub(crate) fn prompt_refusal(
     read: &PromptRead,
     err: &mut impl Write,
 ) -> io::Result<Option<DeferHeld>> {
+    if let PromptRead::Drawn(prompt) = read
+        && let Some(notice) = prompt.startup_notice()
+    {
+        let held = if escaped {
+            DeferHeld::EscapedPrompt
+        } else {
+            DeferHeld::HumanPrompt
+        };
+        let status = if escaped {
+            held.head()
+        } else {
+            "target needs a human"
+        };
+        let clause = prompt_clause(prompt);
+        let notice = crate::board::terminal_text(&notice);
+        writeln!(
+            err,
+            "ae: {} to {} REFUSED — {status} ({clause}) — {notice}",
+            request.action, request.logged_target
+        )?;
+        return Ok(Some(held));
+    }
     let (held, clause, next) = match read {
         PromptRead::Drawn(prompt) => (
             DeferHeld::HumanPrompt,
@@ -2488,6 +2526,26 @@ mod tests {
     use crate::inventory::ServerId;
     use crate::tool::{Composed, InputModel, ToolKind};
     use std::time::Duration;
+
+    #[test]
+    fn prompt_row_reports_a_startup_dialog_for_a_tool_with_only_the_new_signature() {
+        let grok = include_str!("../../tests/fixtures/dialogseat/grok-1.0.92-login-120x40.txt");
+        let muse = include_str!("../../tests/fixtures/dialogseat/muse-1.4.24-trust-120x40.txt");
+        for (tool, frame, kind) in [
+            (ToolKind::Grok, grok, crate::watchdog::DialogKind::Login),
+            (
+                ToolKind::Muse,
+                muse,
+                crate::watchdog::DialogKind::FolderTrust,
+            ),
+        ] {
+            let super::PromptRead::Drawn(prompt) = super::prompt_read(Some(tool), Some(frame))
+            else {
+                panic!("delivery must read {tool:?}'s startup frame");
+            };
+            assert_eq!(prompt.kind, kind);
+        }
+    }
 
     /// The REAL opencode boot frame: blank, stable for ~2.7 s. This is the
     /// frame `e737b6b3` accepted as ready.

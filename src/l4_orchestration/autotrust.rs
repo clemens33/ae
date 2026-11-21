@@ -171,7 +171,7 @@ fn try_in_wait(
         .binary
         .clone()?;
     let frame = crate::transport::capture_pane(server, pane)?;
-    crate::watchdog::human_prompt_class(&frame, &tool)?.trust?;
+    crate::watchdog::answer_prompt(&frame, &tool)?.trust?;
     let seat = Seat {
         dir,
         server,

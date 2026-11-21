@@ -198,7 +198,7 @@ fn steady(seat: &Seat<'_>, settle: bool) -> Result<TrustSighting, String> {
 fn panel(seat: &Seat<'_>) -> Result<String, String> {
     let shown = || {
         let frame = crate::transport::capture_pane(seat.server, seat.pane)?;
-        let prompt = crate::watchdog::human_prompt_class(&frame, seat.tool)?;
+        let prompt = crate::watchdog::answer_prompt(&frame, seat.tool)?;
         prompt.dismiss.then_some((frame, prompt.question))
     };
     let first = shown().ok_or("no dismissable panel is drawn")?;
@@ -224,7 +224,7 @@ fn read(seat: &Seat<'_>) -> Frame {
     let Some(frame) = crate::transport::capture_pane(seat.server, seat.pane) else {
         return Frame::Neither;
     };
-    match crate::watchdog::human_prompt_class(&frame, seat.tool) {
+    match crate::watchdog::answer_prompt(&frame, seat.tool) {
         None => Frame::Clear,
         Some(found) => found.trust.map_or(Frame::Neither, Frame::Trust),
     }

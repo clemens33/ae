@@ -217,6 +217,8 @@ fn sleepgap_every_due_fold_delivery_waits_without_consuming_its_delivery_clock()
     cases.push(("sweep", PaneState::default(), sweep, None));
     let mut trust = seen(2_000);
     trust.human_prompt = Some(crate::watchdog::HumanPrompt {
+        kind: crate::watchdog::DialogKind::FolderTrust,
+        warnings: Vec::new(),
         question: "Do you trust this folder?".to_owned(),
         keys: "Enter".to_owned(),
         trust: None,
@@ -298,6 +300,8 @@ fn sleepgap_held_trust_answer_keeps_the_prompt_naming_at_its_observed_threshold(
     let knobs = Knobs::default();
     let mut observation = seen(2_000);
     observation.human_prompt = Some(crate::watchdog::HumanPrompt {
+        kind: crate::watchdog::DialogKind::FolderTrust,
+        warnings: Vec::new(),
         question: "Do you trust this folder?".to_owned(),
         keys: "Enter".to_owned(),
         trust: None,

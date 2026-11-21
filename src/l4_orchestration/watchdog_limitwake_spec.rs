@@ -434,6 +434,8 @@ fn a_busy_draft_prompt_or_moving_seat_is_not_woken() {
     let knobs = Knobs::default();
     let due = limited(RESET + GRACE, None);
     let prompt = HumanPrompt {
+        kind: crate::watchdog::DialogKind::FolderTrust,
+        warnings: Vec::new(),
         question: "Do you trust the contents of this project?".to_owned(),
         keys: "↑/↓ Navigate · enter Confirm".to_owned(),
         trust: None,

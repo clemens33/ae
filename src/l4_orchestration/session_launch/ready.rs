@@ -3,7 +3,7 @@
 use super::{
     FORK_POLLS, LAUNCH_FAILED_ACTION, LAUNCH_READY_POLLS, Launching, Path, READY_CHUNK,
     READY_CHUNKS, START_POLL, START_POLLS, ServerId, Session, ToolKind, Write, config, deliver, io,
-    launch, meta, tmux, transport, write_private,
+    launch, meta, transport, write_private,
 };
 
 /// Phase 1 of a seat launch: hand one agent's pane the command that BECOMES
@@ -203,7 +203,7 @@ fn wait_ready(
     let input = tool.adapter().input;
     let polled =
         |polls| deliver::wait_input_ready(server, pane, input.model, input.composed, polls);
-    if tool.adapter().prompt.is_none() {
+    if !deliver::prompt_row(Some(tool)) {
         return if polled(LAUNCH_READY_POLLS) {
             Readiness::Ready
         } else {
@@ -214,8 +214,7 @@ fn wait_ready(
         if polled(chunk_polls(input.model)) {
             return ReadyRead::Ready;
         }
-        let prompt = transport::capture_screen(server, pane, tmux::Styling::Plain)
-            .and_then(|frame| crate::watchdog::human_prompt_class(&frame, tool.adapter().name));
+        let prompt = super::launch_human_prompt(server, pane, tool);
         if prompt.as_ref().is_some_and(|asked| asked.trust.is_some()) && trusted() {
             return ReadyRead::Unready(None);
         }
@@ -283,10 +282,15 @@ pub(crate) fn deliver_launch_turn(
         }
         Readiness::Blocked(asked) => {
             outcome = TurnOutcome::Blocked;
-            format!(
-                "a prompt only the human may answer is up: \"{}\" — press: {}; ae never answers it",
+            let mut reason = format!(
+                "a prompt only the human may answer is up: \"{}\" — press: {}",
                 asked.question, asked.keys
-            )
+            );
+            if let Some(notice) = asked.startup_notice() {
+                reason.push_str(" — ");
+                reason.push_str(&notice);
+            }
+            crate::board::terminal_text(&reason)
         }
         Readiness::NotReady => "input never reached a confirmed-ready state within 45s (still initializing, busy, modal, or unreadable)".to_owned(),
     };

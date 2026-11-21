@@ -323,7 +323,7 @@ pub(super) const DEBT: &[Row] = &[
     ("src/l2_model/wait_on.rs", "crate::session::declaration_of", 1),
     ("src/l2_model/wait_on.rs", "crate::session_launch::name::is_session_name", 1),
     ("src/l2_model/watchdog.rs", "crate::deliver::region::composed_ui", 1),
-    ("src/l2_model/watchdog.rs", "crate::deliver::region::composer_drawn", 2),
+    ("src/l2_model/watchdog.rs", "crate::deliver::region::composer_drawn", 1),
     ("src/l2_model/watchdog.rs", "crate::quota::action::ADVISORY", 1),
     ("src/l2_model/watchdog.rs", "crate::quota::action::CHECKPOINT", 1),
     ("src/l2_model/watchdog.rs", "crate::quota::muse::limit_reason", 1),

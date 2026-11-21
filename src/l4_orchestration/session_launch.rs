@@ -1547,6 +1547,7 @@ fn build(
         let _ = transport::run_tmux_op(&argv(&server, &Op::SelectWindow { pane: chat }));
     }
     crate::autoupgrade::schedule();
+    report_startup_dialogs(at.server, &shape.name, &launching, out)?;
     if !env.attach {
         writeln!(
             out,
@@ -1989,6 +1990,91 @@ fn open_views(
 /// cut short, so the attach waits at most this plus one answer sequence.
 const TRUST_WATCH: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// Startup reporting samples the whole roster in these rounds. A seat that
+/// has drawn either a known dialog or a composer uses no more samples.
+/// Claude 2.1.330 drew the settings dialog footer after 0.41–0.45 s in three
+/// private tmux runs. Eight reads leave time for that draw before attach.
+const STARTUP_READS: u32 = 8;
+const STARTUP_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+fn report_startup_dialogs(
+    server: &ServerId,
+    session: &str,
+    launching: &[Launching],
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let mut waiting: Vec<_> = launching
+        .iter()
+        .filter(|agent| !agent.pane.is_empty() && deliver::prompt_row(Some(agent.tool)))
+        .collect();
+    for round in 0..STARTUP_READS {
+        if waiting.is_empty() {
+            break;
+        }
+        let mut drawing = Vec::new();
+        for agent in waiting {
+            let input = agent.tool.adapter().input;
+            let (capture, read) =
+                deliver::prompt_hold(server, &agent.pane, input.model, Some(agent.tool));
+            if let deliver::PromptRead::Drawn(prompt) = read {
+                if let Some(notice) = prompt.startup_notice() {
+                    let notice = crate::board::terminal_text(&notice);
+                    writeln!(
+                        out,
+                        "Session '{session}' seat {} ({}) needs a human — {notice}",
+                        agent.name, agent.slot
+                    )?;
+                }
+            } else if !capture.as_deref().is_some_and(|frame| {
+                deliver::region::composer_drawn(frame, input.model, input.composed)
+            }) {
+                drawing.push(agent);
+            }
+        }
+        waiting = drawing;
+        if !waiting.is_empty() && round + 1 < STARTUP_READS {
+            std::thread::sleep(STARTUP_POLL);
+        }
+    }
+    out.flush()
+}
+
+/// Only the original visible-screen answer proof can enter the launch
+/// answerer. A history match can explain the hold without authorizing keys.
+fn launch_human_prompt(
+    server: &ServerId,
+    pane: &str,
+    tool: ToolKind,
+) -> Option<crate::watchdog::HumanPrompt> {
+    let (screen, read) = deliver::prompt_hold(
+        server,
+        pane,
+        crate::tool::InputModel::Unmodelled,
+        Some(tool),
+    );
+    launch_prompt_read(screen.as_deref(), read, tool)
+}
+
+fn launch_prompt_read(
+    screen: Option<&str>,
+    read: deliver::PromptRead,
+    tool: ToolKind,
+) -> Option<crate::watchdog::HumanPrompt> {
+    let visible =
+        screen.and_then(|frame| crate::watchdog::answer_prompt(frame, tool.adapter().name));
+    if visible
+        .as_ref()
+        .is_some_and(|prompt| prompt.trust.is_some())
+    {
+        return visible;
+    }
+    let deliver::PromptRead::Drawn(mut prompt) = read else {
+        return visible;
+    };
+    prompt.trust = None;
+    Some(prompt)
+}
+
 /// `auto_trust`'s answer for a FRESH launch's seats that get no launch turn:
 /// a turnless seat has no wait of its own, and the watchdog would reach it a
 /// cycle later at best. Each seat whose tool measured a trust block is read
@@ -2026,11 +2112,7 @@ fn watch_trust(
                 ) {
                     return WatchRead::Ready;
                 }
-                let prompt =
-                    transport::capture_screen(at.server, &agent.pane, tmux::Styling::Plain)
-                        .and_then(|frame| {
-                            crate::watchdog::human_prompt_class(&frame, agent.tool.adapter().name)
-                        });
+                let prompt = launch_human_prompt(at.server, &agent.pane, agent.tool);
                 classify(prompt, || {
                     crate::autotrust::in_wait(at.dir, at.server, &agent.slot, &agent.pane, err)
                 })

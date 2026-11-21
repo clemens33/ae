@@ -93,6 +93,8 @@ mod desk_record_edges_spec;
 mod desk_record_spec;
 mod desk_status_pending_spec;
 mod desk_status_spec;
+mod dialogseat_live_spec;
+mod dialogseat_spec;
 mod doctor;
 mod doctor_feeds_spec;
 mod doors;

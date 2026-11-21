@@ -73,6 +73,8 @@ fn family() -> String {
 
 fn prompt() -> crate::watchdog::HumanPrompt {
     crate::watchdog::HumanPrompt {
+        kind: crate::watchdog::DialogKind::FolderTrust,
+        warnings: Vec::new(),
         question: "Do you trust the contents of this project?".to_owned(),
         keys: "↑/↓ Navigate · enter Confirm".to_owned(),
         trust: None,
@@ -122,6 +124,7 @@ fn a_due_panel_is_not_answered_at_first_sight() {
     let knobs = Knobs::default();
     let panel = Observation {
         human_prompt: Some(crate::watchdog::HumanPrompt {
+            kind: crate::watchdog::DialogKind::InformationPanel,
             dismiss: true,
             ..prompt()
         }),

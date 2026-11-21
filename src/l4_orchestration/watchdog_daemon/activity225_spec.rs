@@ -411,6 +411,8 @@ fn child_activity_preserves_dead_limit_and_throttle_precedence() {
     );
     let mut prompted = seen(1000);
     prompted.human_prompt = Some(crate::watchdog::HumanPrompt {
+        kind: crate::watchdog::DialogKind::FolderTrust,
+        warnings: Vec::new(),
         question: "Do you trust the contents of this project?".to_owned(),
         keys: "enter Confirm".to_owned(),
         trust: None,

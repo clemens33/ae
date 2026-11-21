@@ -830,6 +830,38 @@ pub(crate) struct TrustSpec {
     pub(crate) trailer: usize,
 }
 
+/// A measured start dialog that requires the person at the terminal. Its
+/// evidence can name a hold but cannot authorize keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StartupDialog {
+    pub(crate) kind: crate::watchdog::DialogKind,
+    pub(crate) question: &'static str,
+    pub(crate) footer: &'static str,
+    pub(crate) window: usize,
+    pub(crate) evidence: StartupEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartupEvidence {
+    /// A ruled trust modal with extra project settings warnings.
+    TrustWarnings(TrustWarnings),
+    /// Ordered rows for a login or trust screen. Some screens also require
+    /// all the choices in order, with precisely one selected.
+    Rows {
+        anchors: &'static [&'static str],
+        choices: Option<(char, &'static [&'static str])>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TrustWarnings {
+    pub(crate) permissions: &'static str,
+    pub(crate) permission_file: &'static str,
+    pub(crate) permission_notice: &'static str,
+    pub(crate) hooks: &'static str,
+    pub(crate) loads: &'static [&'static str],
+}
+
 /// An information panel a harness draws in place of its composer until a key
 /// closes it — data only, read by [`crate::watchdog::human_prompt_class`]. It
 /// is NAMED by its title and hint alone; `auto_trust` may dismiss it only when
@@ -908,6 +940,8 @@ pub(crate) struct ToolAdapter {
     pub(crate) input: InputSpec,
     /// The prompt only the human may answer, where one is measured.
     pub(crate) prompt: Option<PromptSpec>,
+    /// Start-dialog evidence that is used exclusively to report a hold.
+    pub(crate) startup: Option<StartupDialog>,
     /// The information panel that can stand where the composer was, where one
     /// is measured.
     pub(crate) panel: Option<PanelSpec>,
@@ -936,6 +970,91 @@ pub(crate) struct ToolAdapter {
     /// How the board reads this harness.
     pub(crate) board: BoardSpec,
 }
+
+// Measured in tests/fixtures/dialogseat. The tallest supported Claude frame
+// occupies 47 rows including its rule and footer at 34x12.
+const CLAUDE_SETTINGS_TRUST: StartupDialog = StartupDialog {
+    kind: crate::watchdog::DialogKind::FolderTrust,
+    question: "Quick safety check:",
+    footer: "Enter to confirm · Esc to cancel",
+    window: 52,
+    evidence: StartupEvidence::TrustWarnings(TrustWarnings {
+        permissions: "⚠ This folder pre-approves ",
+        permission_file: "in .claude/settings.json:",
+        permission_notice: "These will apply without asking. Only proceed if you trust this configuration.",
+        hooks: "⚠ This folder configures hooks that can run commands without asking, declared in .claude/settings.json",
+        loads: &[
+            "Trusting this folder loads .claude/settings.json.",
+            "Trusting this folder loads .claude/settings.json (runs commands).",
+            "Trusting this folder loads .claude/settings.json (runs commands) and .mcp.json here or above (MCP servers).",
+        ],
+    }),
+};
+
+const CODEX_LOGIN: StartupDialog = StartupDialog {
+    kind: crate::watchdog::DialogKind::Login,
+    question: "Choose how you want to use Codex.",
+    footer: "Press enter to continue",
+    window: 24,
+    evidence: StartupEvidence::Rows {
+        anchors: &[
+            "Welcome to Codex, OpenAI's command-line coding agent",
+            "Choose how you want to use Codex.",
+        ],
+        choices: Some((
+            '>',
+            &[
+                "1. Sign in with ChatGPT",
+                "2. Sign in with Device Code",
+                "3. Sign in another way",
+            ],
+        )),
+    },
+};
+
+const AGY_LOGIN: StartupDialog = StartupDialog {
+    kind: crate::watchdog::DialogKind::Login,
+    question: "Select login method:",
+    footer: "↑/↓ Navigate · enter Select",
+    window: 16,
+    evidence: StartupEvidence::Rows {
+        anchors: &[
+            "Welcome to the Antigravity CLI. You are currently not signed in.",
+            "Select login method:",
+        ],
+        choices: Some(('>', &["1. Google OAuth", "2. Use a Google Cloud project"])),
+    },
+};
+
+const GROK_LOGIN: StartupDialog = StartupDialog {
+    kind: crate::watchdog::DialogKind::Login,
+    question: "Approve in your browser to finish signing in.",
+    footer: "ctrl+q quit",
+    window: 32,
+    evidence: StartupEvidence::Rows {
+        anchors: &[
+            "Approve in your browser to finish signing in.",
+            "Make sure your browser shows this code.",
+            "Waiting for approval…",
+        ],
+        choices: None,
+    },
+};
+
+const MUSE_TRUST: StartupDialog = StartupDialog {
+    kind: crate::watchdog::DialogKind::FolderTrust,
+    question: "Do you trust this workspace?",
+    footer: "Use Up/Down or 1/2, then Enter. Esc quits.",
+    window: 16,
+    evidence: StartupEvidence::Rows {
+        anchors: &[
+            "Do you trust this workspace?",
+            "Trusting allows project-local skills, rules, hooks, and plugin config to load before the model runs.",
+            "Only trust this workspace when you trust its contents.",
+        ],
+        choices: Some(('⟩', &["1 Trust and continue", "2 Quit"])),
+    },
+};
 
 const CLAUDE: ToolAdapter = ToolAdapter {
     kind: ToolKind::Claude,
@@ -1017,6 +1136,7 @@ const CLAUDE: ToolAdapter = ToolAdapter {
             trailer: 0,
         }),
     }),
+    startup: Some(CLAUDE_SETTINGS_TRUST),
     panel: None,
     identity: IdentitySpec::BorderComposer,
     model: ModelSpec::ReportOnly(&["--model"]),
@@ -1126,6 +1246,7 @@ const CODEX: ToolAdapter = ToolAdapter {
     }),
     // MEASURED on codex 0.163.0 (F2, or a click on its footer warning):
     // `tests/fixtures/codex-warning/`.
+    startup: Some(CODEX_LOGIN),
     panel: Some(PanelSpec {
         title: "Warnings",
         counted: ("Warnings · ", " · Startup"),
@@ -1201,6 +1322,7 @@ const GEMINI: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: false,
     },
     prompt: None,
+    startup: None,
     panel: None,
     identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
@@ -1297,6 +1419,7 @@ const AGY: ToolAdapter = ToolAdapter {
             trailer: 1,
         }),
     }),
+    startup: Some(AGY_LOGIN),
     panel: None,
     identity: IdentitySpec::TrailingLabel,
     model: ModelSpec::Unobserved,
@@ -1382,6 +1505,7 @@ const GROK: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: false,
     },
     prompt: None,
+    startup: Some(GROK_LOGIN),
     panel: None,
     identity: IdentitySpec::BorderText,
     model: ModelSpec::Unobserved,
@@ -1453,6 +1577,7 @@ const MUSE: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: false,
     },
     prompt: None,
+    startup: Some(MUSE_TRUST),
     panel: None,
     identity: IdentitySpec::RuleFooter,
     model: ModelSpec::Unobserved,
@@ -1549,6 +1674,7 @@ const OPENCODE: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: false,
     },
     prompt: None,
+    startup: None,
     panel: None,
     identity: IdentitySpec::RailStatus,
     model: ModelSpec::Unobserved,
@@ -1607,6 +1733,7 @@ const UNKNOWN: ToolAdapter = ToolAdapter {
         paste_initial_on_resume: false,
     },
     prompt: None,
+    startup: None,
     panel: None,
     identity: IdentitySpec::Unmodelled,
     model: ModelSpec::Unobserved,
@@ -2248,6 +2375,7 @@ mod tests {
                             trailer: 0,
                         }),
                     }),
+                    startup: Some(CLAUDE_SETTINGS_TRUST),
                     panel: None,
                     identity: IdentitySpec::BorderComposer,
                     model: ModelSpec::ReportOnly(&["--model"]),
@@ -2343,6 +2471,7 @@ mod tests {
                             trailer: 0,
                         }),
                     }),
+                    startup: Some(CODEX_LOGIN),
                     panel: Some(PanelSpec {
                         title: "Warnings",
                         counted: ("Warnings · ", " · Startup"),
@@ -2417,6 +2546,7 @@ mod tests {
                         paste_initial_on_resume: false,
                     },
                     prompt: None,
+                    startup: None,
                     panel: None,
                     identity: IdentitySpec::Unmodelled,
                     model: ModelSpec::Unobserved,
@@ -2497,6 +2627,7 @@ mod tests {
                             trailer: 1,
                         }),
                     }),
+                    startup: Some(AGY_LOGIN),
                     panel: None,
                     identity: IdentitySpec::TrailingLabel,
                     model: ModelSpec::Unobserved,
@@ -2564,6 +2695,7 @@ mod tests {
                         paste_initial_on_resume: false,
                     },
                     prompt: None,
+                    startup: Some(GROK_LOGIN),
                     panel: None,
                     identity: IdentitySpec::BorderText,
                     model: ModelSpec::Unobserved,
@@ -2625,6 +2757,7 @@ mod tests {
                         paste_initial_on_resume: false,
                     },
                     prompt: None,
+                    startup: Some(MUSE_TRUST),
                     panel: None,
                     identity: IdentitySpec::RuleFooter,
                     model: ModelSpec::Unobserved,
@@ -2690,6 +2823,7 @@ mod tests {
                         paste_initial_on_resume: false,
                     },
                     prompt: None,
+                    startup: None,
                     panel: None,
                     identity: IdentitySpec::RailStatus,
                     model: ModelSpec::Unobserved,
@@ -2755,6 +2889,7 @@ mod tests {
                     paste_initial_on_resume: false,
                 },
                 prompt: None,
+                startup: None,
                 panel: None,
                 identity: IdentitySpec::Unmodelled,
                 model: ModelSpec::Unobserved,

@@ -669,31 +669,34 @@ behaves exactly as without the feature.
 
 ## Human-only prompts
 
-A modal only the human may answer is NAMED and never answered — except the measured folder-trust
-block and codex's Warnings panel below, under `auto_trust` — and ae writes no tool's trust list or config itself. `watchdog::human_prompt_class` is the one detector, pure over a
-frame and the seat's binary name; the shape comes from that tool's adapter row
-(`tool::PromptSpec`), so a tool with no row, or a renamed binary, reads as no prompt.
+`watchdog::human_prompt_class` reads the seat's pane and recorded tool binary. The tool
+adapter supplies the dialog evidence. Unknown binary names have no measured signature.
 
-| Tool | Question row | Anchor | Selected | Key hint | Window |
-|---|---|---|---|---|---|
-| `agy` | ends in `?` | none | `>` | `enter Confirm` or `↑/↓ Navigate` | 15 rows |
-| `claude` | starts `Quick safety check:` | `Accessing workspace:` under a `─` rule no row below is wider than | `❯` | `to confirm · ` | 20 rows |
+| Harness | Measured hold |
+|---|---|
+| Claude | Folder trust, including permission, settings, hook and MCP warnings |
+| Codex | Folder trust, login method chooser and Warnings panel |
+| Agy | Folder trust and login method chooser |
+| Muse | Workspace trust |
+| Grok | Browser approval for login |
 
-The claude row is claude 2.1.281's folder-trust modal, measured at 80×24 and 200×50, bare and
-under `--permission-mode bypassPermissions` (the modal rows below the launch line are
-byte-identical); provenance in `tests/fixtures/claude-trust/`. A window where the tool's own
-composer is drawn (`deliver::region::composer_drawn`) is never a prompt, and readiness reads the
-modal as occupied.
+The startup fixtures and their provenance live in `tests/fixtures/dialogseat/`. The
+Claude settings signature requires the ruled title, the stable trust paragraphs, the
+selected choice and the final key hint. The classifier can use the watchdog's short
+history to read a clipped title. The delivery gate reads that history when the visible
+footer matches but the screen does not contain a complete dialog.
 
-A turn ae PASTES reads it while it waits (`session_launch::deliver_launch_turn`). `reseat` and
-`relaunch` fail FAST: the same question on two consecutive reads ends the turn `Blocked`, exit 1,
-naming the prompt and the pane; a reseat then prints the hand-send of its kept seed, a relaunch
-says to re-send its turn. A session launch keeps its full 45 s wait, because a human there can
-answer and the turn still lands; it names the prompt only if it is still up at the end. Readiness
-wins whenever the prompt clears. Only a pasted turn reads it: claude takes its context on the argv,
-so a fresh launch, a relaunch and a reseat that carries its conversation paste nothing to a claude
-seat and exit without looking; the watchdog names the modal there, and a spawn brief waits in the
-brief retry, which refuses while the prompt is up.
+Launch and resume sample the roster before reporting success or attaching. They name
+the seat, dialog kind, action and any warnings. An attached launch prints the line before
+tmux redraws the terminal. The dialog stays visible in its seat after the redraw. The
+watchdog names a held seat through its existing human-prompt verdict, including dialogs
+that draw after the launch's eight samples. A delivery to a seat at trust or login refuses
+at its guarded pane check before typing. Claude's warning summaries carry the vendor
+warning text and permission count. Grok's browser code stays in its pane.
+
+`reseat` and `relaunch` fail fast when two consecutive reads name the same prompt
+during a pasted turn. A session launch keeps its full 45 s wait for a pasted turn so
+the turn can still land if the human answers. Readiness wins if the prompt clears.
 
 **`auto_trust`** (global, default `on`). `tool::TrustSpec` carries each tool's whole measured trust
 block — heading, folder row, paragraphs, options in order, hint, trailer rows — and the detector
@@ -726,14 +729,11 @@ equal WHOLE captures FRAME_GAP apart, checks `VIEW_GRACE`, reserves, presses Esc
 `auto-dismiss-failed`, and the episode stays spent either way. A new tool start is a new episode,
 named again.
 
-Named residuals: claude's accessible `Enter y/n:` branch, a project-settings warning block and
-panes narrower than about 65 columns are unmeasured and can push the modal out of the window, so
-they degrade to the generic "never landed" text; a fresh home's bypass-acceptance screen is
-unmeasured; a reseat does not refuse on a trust guess before it stops a tool — measured only:
-"No, exit" writes no project entry; a folder path that wraps, or one damaged journal line, keeps
-`auto_trust` from answering (named as before);
-a human who answers after the fail-fast sends the seed by hand; a turnless relaunch and a carried
-reseat exit by their ordinary rules while the seat may sit on the modal, left to the watchdog.
+Claude login past the theme picker, Gemini CLI, Claude's accessible `Enter y/n:` branch
+and the fresh-home bypass acceptance screen have no measured signatures. At 30×12 the
+full Claude settings variant can scroll past the short history. A wrapped folder path
+still prevents an automatic trust answer. A turnless relaunch and a carried reseat
+continue to rely on the watchdog for reporting.
 
 ## What the watchdog cannot do
 

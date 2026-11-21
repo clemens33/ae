@@ -248,9 +248,48 @@ const CLAUDE_LIMIT_MENU: Menu = Menu {
 /// The widest a notice is quoted in a journal summary or a Notify line.
 const NOTICE_CELLS: usize = 160;
 
+pub(crate) mod startup;
+
+/// The human decision holding a seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogKind {
+    /// The harness asks whether to trust the workspace and its settings.
+    FolderTrust,
+    /// The harness awaits sign-in or browser approval.
+    Login,
+    /// The harness shows a measured information panel.
+    InformationPanel,
+}
+
+impl DialogKind {
+    /// Short name for a launch, delivery or watchdog notice.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::FolderTrust => "folder trust",
+            Self::Login => "login",
+            Self::InformationPanel => "information panel",
+        }
+    }
+
+    /// The action the operator can take at the named seat.
+    #[must_use]
+    pub const fn action(self) -> &'static str {
+        match self {
+            Self::FolderTrust => "attach to review and answer",
+            Self::Login => "attach to complete sign-in",
+            Self::InformationPanel => "attach to review the panel",
+        }
+    }
+}
+
 /// A prompt only the HUMAN may answer, and what it takes to answer it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HumanPrompt {
+    /// The human decision the screen requires.
+    pub kind: DialogKind,
+    /// The vendor's warning paragraphs, joined and bounded for reporting.
+    pub warnings: Vec<String>,
     /// The question row, trimmed — WHAT is being asked.
     pub question: String,
     /// The key-hint row, trimmed — WHAT the human must press. This is the whole
@@ -261,6 +300,22 @@ pub struct HumanPrompt {
     /// Whether this is a measured information panel whose body is listed
     /// whole, so `auto_trust` may close it with one Escape.
     pub dismiss: bool,
+}
+
+impl HumanPrompt {
+    /// The common operator detail for a trust or login dialog. Existing
+    /// information panels keep their own question-and-keys copy.
+    pub(crate) fn startup_notice(&self) -> Option<String> {
+        if self.kind == DialogKind::InformationPanel {
+            return None;
+        }
+        let mut detail = format!("{} — {}", self.kind.label(), self.kind.action());
+        for warning in &self.warnings {
+            detail.push_str(" — ");
+            detail.push_str(warning);
+        }
+        Some(detail)
+    }
 }
 
 /// What a measured folder-trust block shows. Reading it sends nothing.
@@ -278,7 +333,7 @@ pub struct TrustSighting {
 ///
 /// The gate is an exact binary name, like [`throttle_class`], looked up in the
 /// adapter table: a tool's row names its prompt (`tool::PromptSpec`)
-/// and its composer, so a second tool is a second ROW, never a second branch
+/// and start dialogs and its composer, so a second tool is a second ROW, never a second branch
 /// here, and no tool is named in this half. A renamed binary, or a tool with
 /// no prompt measured, reads as no prompt, which degrades SAFE (no notify, and
 /// readiness still refuses what it cannot prove). The window is a fixed count
@@ -294,6 +349,17 @@ pub struct TrustSighting {
 #[must_use]
 pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
     let adapter = crate::tool::ToolKind::from_known_binary_name(agent_bin)?.adapter();
+    startup::read(buf, adapter).or_else(|| legacy_prompt(buf, adapter))
+}
+
+/// The original observation used by the existing answer sequence, including
+/// its post-key clear check. Report-only signatures never affect that proof.
+pub(crate) fn answer_prompt(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
+    let adapter = crate::tool::ToolKind::from_known_binary_name(agent_bin)?.adapter();
+    legacy_prompt(buf, adapter)
+}
+
+fn legacy_prompt(buf: &str, adapter: &crate::tool::ToolAdapter) -> Option<HumanPrompt> {
     if let Some(panel) = adapter
         .panel
         .and_then(|panel| panel_shown(buf, adapter.input, panel))
@@ -306,8 +372,7 @@ pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
     // Scoped to the WINDOW, not the buffer: a modal drawn BELOW a composer is
     // the case this must still catch. The inverse — a draft whose own text is
     // shaped like a modal, with the fence above the window — is accepted.
-    let input = adapter.input;
-    if crate::deliver::region::composer_drawn(&window.join("\n"), input.model, input.composed) {
+    if has_composer(window, adapter.input) {
         return None;
     }
     // EVERY question row is tried, top-down, and the first COMPLETE shape wins.
@@ -352,6 +417,8 @@ pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
                 return None;
             }
             Some(HumanPrompt {
+                kind: DialogKind::FolderTrust,
+                warnings: Vec::new(),
                 question: reported(spec.question, window[question]),
                 keys: after[keys].trim().to_owned(),
                 trust: spec.trust.and_then(|trust| {
@@ -373,9 +440,7 @@ fn panel_shown(
 ) -> Option<HumanPrompt> {
     let rows = bottom_window(buf, panel.window)?;
     let (hint, above) = rows.split_last()?;
-    if hint.trim() != panel.hint
-        || crate::deliver::region::composer_drawn(&rows.join("\n"), input.model, input.composed)
-    {
+    if hint.trim() != panel.hint || has_composer(&rows, input) {
         return None;
     }
     let (open, close) = panel.counted;
@@ -399,6 +464,8 @@ fn panel_shown(
         body.push_str(row);
     }
     Some(HumanPrompt {
+        kind: DialogKind::InformationPanel,
+        warnings: Vec::new(),
         question: above[title].trim().to_owned(),
         keys: panel.hint.to_owned(),
         trust: None,
@@ -538,12 +605,18 @@ fn titled(window: &[&str], question: usize, title: &str) -> bool {
 /// the row above it.
 fn title_at(window: &[&str], question: usize, title: &str) -> Option<usize> {
     (1..question).find(|&at| {
-        let rule = window[at - 1];
-        let width = rule.chars().count();
         window[at].trim_start().starts_with(title)
-            && rule.chars().all(|ch| ch == '─')
-            && window[at..].iter().all(|row| row.chars().count() <= width)
+            && rule_covers(window[at - 1], &window[at..], |row| row.chars().count())
     })
+}
+
+fn rule_covers(rule: &str, body: &[&str], columns: impl Fn(&str) -> usize) -> bool {
+    let width = rule.chars().count();
+    rule.chars().all(|ch| ch == '─') && body.iter().all(|row| columns(row) <= width)
+}
+
+fn has_composer(rows: &[&str], input: crate::tool::InputSpec) -> bool {
+    crate::deliver::region::composer_drawn(&rows.join("\n"), input.model, input.composed)
 }
 
 /// The bottom `height` rows of `buf`, ending at its last non-blank row, or

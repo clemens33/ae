@@ -767,6 +767,8 @@ mod tests {
         use crate::deliver::{PromptRead, region};
         use crate::tool::{InputModel, ToolKind};
         let drawn = PromptRead::Drawn(crate::watchdog::HumanPrompt {
+            kind: crate::watchdog::DialogKind::FolderTrust,
+            warnings: Vec::new(),
             question: "Allow this command?".to_owned(),
             keys: "Enter to confirm".to_owned(),
             trust: None,

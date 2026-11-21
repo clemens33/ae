@@ -87,6 +87,8 @@ fn the_watch_deadline_is_the_budget_after_its_start_and_ends_reads_at_it() {
 #[test]
 fn only_a_trust_block_reaches_the_in_wait_answer() {
     let prompt = |trust: bool| crate::watchdog::HumanPrompt {
+        kind: crate::watchdog::DialogKind::FolderTrust,
+        warnings: Vec::new(),
         question: "Trust this folder?".to_owned(),
         keys: "enter continue · esc back".to_owned(),
         trust: trust.then(|| crate::watchdog::TrustSighting {
@@ -111,6 +113,21 @@ fn only_a_trust_block_reaches_the_in_wait_answer() {
     );
     assert_eq!(classify(None, answer), WatchRead::Nothing);
     assert_eq!(asked.get(), 1, "nothing but a trust block is answered");
+}
+
+#[test]
+fn startup_history_names_a_measured_trust_prompt_without_authorizing_an_answer() {
+    let frame = include_str!("../../../tests/fixtures/dialogseat/claude-2.1.330-plain-80x24.txt");
+    let screen = frame.lines().skip(10).collect::<Vec<_>>().join("\n");
+    let tool = ToolKind::Claude;
+    let history = crate::deliver::prompt_read(Some(tool), Some(frame));
+    let full =
+        super::launch_prompt_read(Some(frame), history.clone(), tool).expect("full visible modal");
+    assert!(full.trust.is_some(), "the original rule still answers");
+    let clipped =
+        super::launch_prompt_read(Some(&screen), history, tool).expect("history explains the hold");
+    assert_eq!(clipped.question, full.question);
+    assert!(clipped.trust.is_none(), "a history match is report only");
 }
 
 /// Run `reads` under a budget of `opens` reads; how it ended and how many

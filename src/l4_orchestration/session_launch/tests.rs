@@ -2268,6 +2268,8 @@ fn unresolvable_first_start_refuses_naming_the_override_and_why() {
 /// One read showing the human-only prompt asking `question`.
 fn asking(question: &str) -> super::ReadyRead {
     super::ReadyRead::Unready(Some(crate::watchdog::HumanPrompt {
+        kind: crate::watchdog::DialogKind::FolderTrust,
+        warnings: Vec::new(),
         question: question.to_owned(),
         keys: "Enter to confirm · Esc to cancel".to_owned(),
         trust: None,
@@ -2286,6 +2288,8 @@ fn settled(reads: Vec<super::ReadyRead>, on: super::OnHumanPrompt) -> (super::Re
 
 fn blocked(question: &str) -> super::Readiness {
     super::Readiness::Blocked(crate::watchdog::HumanPrompt {
+        kind: crate::watchdog::DialogKind::FolderTrust,
+        warnings: Vec::new(),
         question: question.to_owned(),
         keys: "Enter to confirm · Esc to cancel".to_owned(),
         trust: None,

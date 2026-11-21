@@ -442,15 +442,18 @@ fn book_human_prompt(
 
 /// The ONE naming of a human-only prompt: its event and its Notify line.
 pub(super) fn naming(prompt: &crate::watchdog::HumanPrompt) -> [Effect; 2] {
+    let mut summary = format!("{} — press: {}", prompt.question, prompt.keys);
+    if let Some(notice) = prompt.startup_notice() {
+        summary.push_str(" — ");
+        summary.push_str(&notice);
+    }
+    let summary = crate::board::terminal_text(&summary);
     [
         Effect::Emit {
             action: "human-prompt",
-            summary: format!("{} — press: {}", prompt.question, prompt.keys),
+            summary: summary.clone(),
         },
-        Effect::Notify(format!(
-            "waiting for you: {} — press: {}",
-            prompt.question, prompt.keys
-        )),
+        Effect::Notify(format!("waiting for you: {summary}")),
     ]
 }
 
