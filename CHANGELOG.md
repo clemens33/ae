@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.105] - 2026-11-21
+- Warn about window-owned menus on tmux 3.8
+
 ## [v2026.11.104] - 2026-11-21
 - Report harness startup dialogs across launch and delivery
 - Register the startup dialog fuzz target
