@@ -256,7 +256,7 @@ impl App {
         let held = self.held.take().is_some();
         if let Some((edge, at)) = self.layout.grab(mouse) {
             let from = match edge {
-                model::Edge::Sidebar | model::Edge::Panel => mouse.column,
+                model::Edge::Sidebar | model::Edge::Panel | model::Edge::Desk => mouse.column,
                 model::Edge::List => mouse.row,
             };
             self.model.grab(model::Drag { edge, from, at });
@@ -361,17 +361,17 @@ impl App {
         self.model.drag_to(size)
     }
 
-    /// A border's drag, before the panel takes the event: a press on the side
-    /// panel's border grabs it, and the motion and release of that drag stay
-    /// here wherever the pointer goes. A drag of the sidebar or the list beside
-    /// a side panel is the panel's once the pointer lands on it. It moves no keys.
-    /// `None` for every other event.
+    /// The panel and board borders take presses before the panel does. Their
+    /// motion and release stay here wherever the pointer goes, without moving
+    /// the keys. A drag of the sidebar or list is the panel's once the pointer
+    /// lands on it. `None` for every other event.
     pub(super) fn held_edge(&mut self, mouse: Mouse) -> Option<bool> {
-        let dragging = (self.model.drag()).is_some_and(|drag| drag.edge == model::Edge::Panel);
+        let right_edge = |edge| matches!(edge, model::Edge::Panel | model::Edge::Desk);
+        let dragging = self.model.drag().is_some_and(|drag| right_edge(drag.edge));
         match mouse.kind {
             MouseKind::Click => {
                 let (edge, at) = self.layout.grab(mouse)?;
-                if edge != model::Edge::Panel {
+                if !right_edge(edge) {
                     return None;
                 }
                 self.held = None;

@@ -166,13 +166,13 @@ Every border can be dragged with the mouse. The rule between the sidebar and
 the chat sets the sidebar's width: at least 30 cells, and the chat keeps at
 least 40. The rule under the `Agents` heading moves the split between the session
 list and the body: the list keeps one session and its more row, the body three rows (or
-as few as it had undragged). The left border of a side-by-side
-[orchestrator panel](#orchestrator-panel) sets the panel's width: the panel and
-the chat beside it each keep at least 40 cells. The rule being dragged is drawn in the title
-colour, reversed with `theme = off`; letting go ends the drag. A [zoom](#zoom) hides the
-sidebar and with it its rule and the list's, so there is none to drag. The sizes last
-for this run of the app and are not remembered; a smaller pane narrows them
-only while it is small.
+as few as it had undragged). The left border of the side-by-side
+[orchestrator panel](#orchestrator-panel) or [board](#orchestrator-board) sets
+its width. The two chat columns each keep at least 40 cells and the board keeps
+at least 24. A rule takes the title colour while you drag it, or reverses with
+`theme = off`. Letting go ends the drag. [Zoom](#zoom) hides the sidebar and
+its rules. A smaller pane limits the sizes temporarily. An app restart carries
+the dragged sizes.
 
 Below 90x20 the sidebar goes and the chat takes the pane; below 40x8 the app
 only says how large it needs to be. Colours come from the session's own look
@@ -258,7 +258,7 @@ Browsing:
 | Click a seat row | highlight that seat |
 | Wheel over chat or the Agents body | scroll three rows per notch, also while writing |
 | Wheel over the session list | scroll one session per notch, also while writing |
-| Drag a border | resize the sidebar, the session list or the orchestrator panel, also while writing |
+| Drag a border | resize the sidebar, session list, orchestrator panel or board, also while writing |
 | Click composer | write the selected session, when no other app writes it |
 | `Esc` | clear the seat cursor, else back to home |
 | `Enter` or `i` | write the selected session, when no other app writes it |
@@ -591,13 +591,13 @@ each, a web URL or an absolute path. The board shows in three places and never i
 ([Chat](chat.md#what-it-shows)), a column in this app and one pinned Telegram
 message ([Telegram bridge](reference/telegram.md#the-board-message)).
 
-The column stands right of the open side panel when a board is set or cannot be
-read and the frame is at least 161 columns wide at the default sidebar: the chat
-column keeps 40 cells, the panel 40 and the board 36 including its own left
-border, and a wider sidebar moves the bound by the same amount. Narrower, or
-below the app's row floor, it is not drawn and the layout is exactly the one
-without a board; the panel header then says `desk N` for the N items in DECIDE,
-or `desk unreadable`. The column shows `BOARD  updated HH:MM:SS <zone>` and the
+The board stands right of the open side panel when a board is set or cannot be
+read and the frame has room. It starts at 36 cells including its left border.
+With the default sidebar, the frame needs 161 columns to show it at that size.
+Drag the board's left border to give it as few as 24 cells. The app keeps that
+width while the board is hidden and carries it through an app restart. If the
+board cannot fit, the panel header says `desk N` for the N items in DECIDE or
+`desk unreadable`. The column shows `BOARD  updated HH:MM:SS <zone>` and the
 items wrapped to its width, each link on its own row. A web link opens as
 written and a path opens as its `file://` URL, also on every row of a link that
 wraps. Rows that do not fit are cut for height and the last row says `+N more:

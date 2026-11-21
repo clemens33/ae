@@ -313,3 +313,27 @@ fn a_listed_namesake_read_leaves_the_open_panel_on_its_pinned_lane() {
         "an ordinary row's read never refreshes the panel, which keeps its pinned lane"
     );
 }
+
+use super::boarddrag_spec::{board_rules, drag_rule, shown_board};
+
+#[test]
+fn the_board_border_follows_the_pointer() {
+    let mut app = shown_board();
+    assert_eq!(board_rules(&mut app, 200), [44, 105, 164]);
+    drag_rule(&mut app, 164, 159);
+    assert_eq!(board_rules(&mut app, 200).last(), Some(&159));
+}
+
+#[test]
+fn the_panel_border_moves_with_a_board_and_when_the_board_does_not_fit() {
+    let mut app = shown_board();
+    assert_eq!(board_rules(&mut app, 200), [44, 105, 164]);
+    drag_rule(&mut app, 105, 110);
+    assert_eq!(board_rules(&mut app, 200), [44, 110, 164]);
+    assert_eq!(board_rules(&mut app, 150), [44, 96]);
+    drag_rule(&mut app, 96, 91);
+    assert_eq!(board_rules(&mut app, 150), [44, 91]);
+    assert_eq!(board_rules(&mut app, 100), [34], "narrow panel fallback");
+    app.flip_panel();
+    assert!(board_rules(&mut app, 200).is_empty(), "full panel");
+}

@@ -26,6 +26,9 @@
 //! tuple after it. The tag is the zoom, so a `v3` line has one spelling too, and
 //! `v1` alone reads the `overview` token. The panel's own full-frame zoom rides
 //! as the `full` mode, in `v2` or `v3`.
+//!
+//! A dragged board adds `|desk=<width>` after any of these canonical lines.
+//! Without a chosen board width, all three encodings keep their old bytes.
 
 use crate::archive::is_canonical_uuid;
 use crate::config::is_agent_name;
@@ -66,6 +69,8 @@ pub struct View {
     /// The side panel's width as dragged, its border column included; the
     /// layout clamps it, never this preference.
     pub panel: Option<u16>,
+    /// The board's dragged width, including its left border.
+    pub desk: Option<u16>,
     /// The main column was zoomed: it holds the whole frame while it holds
     /// the keys, the sidebar not drawn. Independent of the panel's own zoom.
     pub zoom: bool,
@@ -164,12 +169,16 @@ impl Handover {
             view.body_top.min(PAGES_MAX).to_string(),
         ];
         let line = fields.join("|");
-        match (&view.orchestrator, view.panel) {
+        let line = match (&view.orchestrator, view.panel) {
             // The main column's zoom is the tag; its panel field is always there.
             (None, width) if view.zoom => format!("{line}|{}", small(width)),
             (Some(orch), width) => format!("{line}|{}|{}", small(width), orch.render()),
             (None, Some(width)) => format!("{line}|{width}"),
             (None, None) => line,
+        };
+        match view.desk {
+            Some(width) => format!("{line}|desk={width}"),
+            None => line,
         }
     }
 
@@ -234,10 +243,18 @@ pub fn parse(text: &str) -> Option<Handover> {
     if text.len() > CAP {
         return None;
     }
+    let (text, desk) = match text.rsplit_once("|desk=") {
+        Some((text, width)) => (text, Some(width)),
+        None => (text, None),
+    };
     let parts: Vec<&str> = text.split('|').collect();
     let (parts, panel, orchestrator, zoom) = match (parts.first().copied()?, parts.as_slice()) {
         ("v1", fields) if fields.len() == 14 => (fields, "", None, false),
-        ("v1", [fields @ .., panel]) if fields.len() == 14 => (fields, *panel, None, false),
+        ("v1", [fields @ .., panel])
+            if fields.len() == 14 && (!panel.is_empty() || desk.is_none()) =>
+        {
+            (fields, *panel, None, false)
+        }
         ("v2", [fields @ .., panel, orch]) if fields.len() == 14 => {
             (fields, *panel, Some(OrchestratorView::parse(orch)?), false)
         }
@@ -277,7 +294,7 @@ pub fn parse(text: &str) -> Option<Handover> {
             .ok()
     };
     // `overview` is the one view token an older core wrote, in `v1` alone.
-    let legacy = *tab == "overview" && orchestrator.is_none() && !zoom;
+    let legacy = *tab == "overview" && orchestrator.is_none() && !zoom && desk.is_none();
     if !(*tab == "agents" || legacy) {
         return None;
     }
@@ -288,6 +305,10 @@ pub fn parse(text: &str) -> Option<Handover> {
     };
     let list_top = optional(list_top, ROWS_MAX as u64)?;
     let list_top = list_top.map(usize::try_from).transpose().ok()?;
+    let desk = match desk {
+        Some(width) => Some(small(width)??),
+        None => None,
+    };
     let view = View {
         session: is_session_name(session).then(|| (*session).to_owned())?,
         id: is_canonical_uuid(id).then(|| (*id).to_owned())?,
@@ -299,6 +320,7 @@ pub fn parse(text: &str) -> Option<Handover> {
         list_top,
         body_top: size(body_top, PAGES_MAX)?,
         panel: small(panel)?,
+        desk,
         zoom,
         orchestrator,
     };
@@ -401,6 +423,37 @@ mod tests {
         let empty = parse(&format!("{WIRE}|")).expect("an empty width parses");
         assert_eq!((empty.view.panel, empty.render()), (None, WIRE.to_owned()));
         assert_eq!(parse(WIRE).map(|h| h.view.panel), Some(None));
+    }
+
+    #[test]
+    fn a_board_width_extends_each_canonical_view_without_changing_older_wires() {
+        let open_panel = format!("side,{ORCH_ID},0,0");
+        let side = WIRE.replacen("v1|", "v2|", 1);
+        let zoom = WIRE.replacen("v1|", "v3|", 1);
+        for old in [
+            WIRE.to_owned(),
+            format!("{WIRE}|56"),
+            format!("{side}||{open_panel}"),
+            format!("{zoom}|"),
+            format!("{zoom}|56|{open_panel}"),
+        ] {
+            let old_view = parse(&old).expect("an old view");
+            assert_eq!(old_view.view.desk, None);
+            assert_eq!(old_view.render(), old);
+
+            let extended = format!("{old}|desk=44");
+            let new_view = parse(&extended).expect("a view with a board width");
+            assert_eq!(new_view.view.desk, Some(44));
+            assert_eq!(new_view.render(), extended);
+        }
+        let overview = WIRE.replace("|agents|", "|overview|");
+        for bad in [
+            format!("{WIRE}||desk=44"),
+            format!("{overview}|desk=44"),
+            format!("{WIRE}|desk=44|desk=45"),
+        ] {
+            assert!(parse(&bad).is_none(), "refuse {bad:?}");
+        }
     }
 
     #[test]

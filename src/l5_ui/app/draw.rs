@@ -456,7 +456,7 @@ impl Layout {
     /// Record a border at `at` over `cells`, grabbed within a cell of it.
     fn border(&mut self, buf: &Buffer, edge: Edge, at: u16, cells: Rect) {
         let grab = match edge {
-            Edge::Sidebar | Edge::Panel => {
+            Edge::Sidebar | Edge::Panel | Edge::Desk => {
                 Rect::new(cells.x.saturating_sub(1), cells.y, 3, cells.height)
             }
             Edge::List => Rect::new(cells.x, cells.y.saturating_sub(1), cells.width, 3),
@@ -885,11 +885,28 @@ pub(crate) fn floor_met(area: Rect) -> bool {
     area.width >= MIN.0 && area.height >= MIN.1
 }
 
-/// The board column's width, its own left border included.
+/// The board's default and smallest dragged widths, left border included.
 pub(crate) const DESK_W: u16 = 36;
+const DESK_FLOOR: u16 = 24;
 
-/// Where the orchestrator's board stands in `area` split as `split`: the last
-/// [`DESK_W`] columns, only while the frame meets the app's size floor, the
+/// How much room the board can use after both chat columns keep their floors.
+/// An undragged board needs its default width. A dragged board can fit down to
+/// its floor without replacing the chosen width in `split`.
+fn desk_width(area: Rect, split: Split) -> Option<u16> {
+    let room = area
+        .width
+        .saturating_sub(chat_start(area, split, false))
+        .saturating_sub(PANEL_FLOOR * 2);
+    let floor = if split.desk.is_some() {
+        DESK_FLOOR
+    } else {
+        DESK_W
+    };
+    (room >= floor).then(|| split.desk.unwrap_or(DESK_W).clamp(floor, room))
+}
+
+/// Where the orchestrator's board stands in `area` split as `split`: the
+/// rightmost columns, only while the frame meets the app's size floor, the
 /// panel stands at the side and the main column and the panel each still keep
 /// [`PANEL_FLOOR`] beside it. Else `None`, and every other cell of the frame
 /// is the one it was without a board: nothing is taken from a frame that
@@ -904,9 +921,8 @@ pub(crate) fn desk_area(area: Rect, split: Split, columns: Columns) -> Option<Re
     if !floor_met(area) {
         return None;
     }
-    let end = area.width.checked_sub(DESK_W)?;
-    side_width(area, end, split)?;
-    Some(Rect::new(end, 0, DESK_W, area.height))
+    let width = desk_width(area, split)?;
+    Some(Rect::new(area.width - width, 0, width, area.height))
 }
 
 /// [`desk_area`] while `columns` say a board stands to be shown or cannot be
@@ -917,15 +933,16 @@ pub(crate) fn desk_slot(area: Rect, split: Split, columns: Columns) -> Option<Re
 }
 
 /// Draw the board column into `area` of `buf`: its left border, then the rows
-/// of `view` from the top, the last one marking what the height cut. Answers
-/// the runs of the links it drew, each over the cells the visible fragment
-/// covers and carrying the link's whole destination.
-pub(crate) fn draw_desk(
+/// of `view` from the top, the last one marking what the height cut. Record the
+/// border and the visible link runs in the main frame's layout.
+pub(super) fn draw_desk(
     buf: &mut Buffer,
     area: Rect,
     view: Option<&DeskView>,
     (look, zone): (Option<&Look>, Option<&str>),
-) -> Vec<super::backend::Run> {
+    layout: &mut Layout,
+    model: &Model,
+) {
     let paint = Paint::of(look);
     for y in area.y..area.y.saturating_add(area.height) {
         for x in area.x..area.x.saturating_add(area.width) {
@@ -935,7 +952,9 @@ pub(crate) fn draw_desk(
         }
     }
     buf.set_style(area, paint.ground(|p| p.ink));
-    let rule = paint.rule(false);
+    let border_cells = Rect::new(area.x, area.y, 1, area.height);
+    layout.border(buf, Edge::Desk, area.width, border_cells);
+    let rule = paint.rule(dragged(model, Edge::Desk));
     for y in area.y..area.y.saturating_add(area.height) {
         put(buf, area.x, y, "│", 1, rule);
     }
@@ -947,7 +966,6 @@ pub(crate) fn draw_desk(
         paint.fg(|p| p.text),
         paint.fg(|p| p.title),
     );
-    let mut runs = Vec::new();
     for (step, row) in rows.iter().enumerate() {
         let y = area.y.saturating_add(cells(step));
         let style = match row.kind {
@@ -970,7 +988,7 @@ pub(crate) fn draw_desk(
                 (left, y, room),
             );
             if run.width > 0 {
-                runs.push(super::backend::Run {
+                layout.links.push(super::backend::Run {
                     x: run.x,
                     y: run.y,
                     width: run.width,
@@ -979,7 +997,6 @@ pub(crate) fn draw_desk(
             }
         }
     }
-    runs
 }
 
 /// The column a side panel ends at in `area` split as `split`: the frame's
@@ -1193,8 +1210,8 @@ pub(crate) fn dragged_to(
     let moved = match drag.edge {
         Edge::Sidebar => at + i32::from(mouse.column) - from,
         Edge::List => at + i32::from(mouse.row) - from,
-        // The panel's border is its left column: moving it left widens it.
-        Edge::Panel => at + from - i32::from(mouse.column),
+        // These borders are left of their columns: moving one left widens it.
+        Edge::Panel | Edge::Desk => at + from - i32::from(mouse.column),
     };
     let to = u16::try_from(moved.max(0)).unwrap_or(u16::MAX);
     match drag.edge {
@@ -1205,6 +1222,14 @@ pub(crate) fn dragged_to(
             side_end(area, split, desk),
             Split {
                 panel: Some(to),
+                ..split
+            },
+        )
+        .unwrap_or(to),
+        Edge::Desk => desk_width(
+            area,
+            Split {
+                desk: Some(to),
                 ..split
             },
         )
@@ -6677,14 +6702,14 @@ mod tests {
         let at = match edge {
             Edge::Sidebar => vertical(buf),
             Edge::List => horizontal(buf),
-            // A shot draws no orchestrator panel, so no panel border.
-            Edge::Panel => None,
+            // A shot draws neither the orchestrator panel nor the board.
+            Edge::Panel | Edge::Desk => None,
         }
         .expect("the border is drawn");
         let drag = Drag { edge, from: at, at };
         shot.model.grab(drag);
         let mouse = match edge {
-            Edge::Sidebar | Edge::Panel => Mouse {
+            Edge::Sidebar | Edge::Panel | Edge::Desk => Mouse {
                 kind: MouseKind::Drag,
                 column: to,
                 row: 1,

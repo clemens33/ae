@@ -34,6 +34,7 @@ use crate::render::Audience;
 use crate::theme::Mark;
 use crate::time::Timestamp;
 use crate::tmux;
+mod boarddrag_spec;
 mod composercopy_app_spec;
 mod f12panel_guards;
 mod f12panel_spec;
@@ -6000,6 +6001,7 @@ fn handed(pages: usize, rows: usize) -> Answer {
         list_top: None,
         body_top: 0,
         panel: None,
+        desk: None,
         zoom: false,
         orchestrator: None,
     };

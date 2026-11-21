@@ -135,6 +135,8 @@ pub(crate) enum Edge {
     List,
     /// The side panel's border, its left column.
     Panel,
+    /// The board's border, its left column.
+    Desk,
 }
 
 /// The sizes the borders were dragged to, kept for the app's run and clamped
@@ -147,6 +149,8 @@ pub(crate) struct Split {
     pub(crate) list: Option<u16>,
     /// The side panel's width, its border included.
     pub(crate) panel: Option<u16>,
+    /// The board's width, its border included.
+    pub(crate) desk: Option<u16>,
 }
 
 /// A drag in progress: the edge, the pointer's cell along the edge's axis at
@@ -765,6 +769,7 @@ impl Model {
             list_top: self.list_top,
             body_top: self.body_top,
             panel: self.split.panel,
+            desk: self.split.desk,
             zoom: self.zoom,
             orchestrator: None,
         })
@@ -788,6 +793,7 @@ impl Model {
                 sidebar: view.sidebar,
                 list: view.list,
                 panel: view.panel,
+                desk: view.desk,
             },
             zoom: view.zoom,
             epoch: self.epoch.wrapping_add(1),
@@ -846,6 +852,7 @@ impl Model {
             Edge::Sidebar => &mut self.split.sidebar,
             Edge::List => &mut self.split.list,
             Edge::Panel => &mut self.split.panel,
+            Edge::Desk => &mut self.split.desk,
         };
         kept.replace(size) != Some(size)
     }
@@ -1724,6 +1731,7 @@ mod tests {
             list_top: None,
             body_top: 0,
             panel: None,
+            desk: None,
             zoom: false,
             orchestrator: None,
         };

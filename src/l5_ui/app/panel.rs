@@ -576,8 +576,14 @@ impl App {
         let view = self.desk_view().cloned();
         let (look, zone) = self.dressed();
         let zone = zone.map(str::to_owned);
-        let runs = draw::draw_desk(buf, area, view.as_ref(), (look.as_ref(), zone.as_deref()));
-        self.layout.links.extend(runs);
+        draw::draw_desk(
+            buf,
+            area,
+            view.as_ref(),
+            (look.as_ref(), zone.as_deref()),
+            &mut self.layout,
+            &self.model,
+        );
     }
 
     /// The cells the open panel covers in the last frame, `None` while it is
