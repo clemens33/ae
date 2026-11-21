@@ -3,10 +3,13 @@
 ## Structure
 
 ```
-src/                — Rust sources. main.rs thin (argv in, exit code out); lib.rs and the
-                      modules beside it, grouped by domain (some a file, some a file plus a
-                      directory of submodules), hold everything testable. theme.rs is PURE:
-                      the palettes, the eight marks and every tmux format ae draws a session with.
+src/                — Rust sources. main.rs is thin (argv in, exit code out). lib.rs
+                      declares the seven layer modules privately and re-exports their
+                      modules by name. A layer file sits beside its folder, for example
+                      src/l0_base.rs beside src/l0_base/. Each folder contains the layer's
+                      modules and their submodules. See the Layer map below for the names.
+                      theme.rs is PURE: the palettes, the eight marks and every tmux format
+                      ae draws a session with.
                       birth.rs is the worker birth family: its journal wire and one reader.
                       pairs.rs is the approved `profile@client` list (`[client_pairs]`):
                       global config only, fail closed, read by `spawn` and later `reseat`.
@@ -148,7 +151,11 @@ A file may name its own layer and the layers below it. A `crate::` path that nam
   `src/lib.rs`, `src/main.rs` and every root item of `src/lib.rs` belong here too. Modules: `cli`,
   `entry`, `identity`, `shim`.
 
-A new top-level module gets its layer first: decide which layers it may name and which may name it, then add it to `MODULE_LAYERS` in `tests/it/doors/layers.rs`. The ratchet refuses a module the table does not list, and `tests/it/doors/layers_map.rs` fails until this list shows the same modules per layer, so change the table and this list together. A submodule has the layer of its top-level module.
+A new top-level module gets its layer by its folder and the layer file's declaration. Place
+the module in the layer folder, declare it in the layer file, and re-export it by name in
+`src/lib.rs`. A submodule shares the layer of its top-level module. The ratchet allows only
+the crate roots and the seven layer files directly under `src/`. Update this list with the
+declaration so `tests/it/doors/layers_map.rs` finds the same modules in both places.
 
 ## Session helpers
 

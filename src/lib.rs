@@ -1,7 +1,7 @@
 //! `ae` — fleet coordination for AI coding agents: a thin layer over tmux.
 //!
-//! Module layout is 2018-edition style: `cli.rs` beside a future `cli/`, never
-//! a `mod.rs`.
+//! Seven layer files declare the modules in their matching folders. This root
+//! re-exports those modules by name.
 //!
 //! ```
 //! let request = ae::cli::Request::parse(&["--version".to_owned()]);

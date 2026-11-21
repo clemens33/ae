@@ -1,22 +1,19 @@
 //! The LAYER RATCHET — which layer of the crate a production file may name.
 //!
-//! Every top-level module of `src/` belongs to one of seven layers (base, platform doors,
-//! state and model, services, seat and session orchestration, terminal UI, CLI shell); a
-//! file belongs to the layer of its top-level module, `src/lib.rs` and `src/main.rs` to
-//! the top one. A file may name its own layer and the layers below it. A `crate::` path
-//! that names a HIGHER layer is an UPWARD reference. Most of them are old and most are
-//! small (a predicate or constant that lives one layer too high), so the guard does not
-//! forbid them: it PINS today's upward spellings in an allow-list that may only shrink.
+//! Seven layer files and their folders hold the production modules. The ratchet reads
+//! the source layer from the path and the destination layer of a root alias from the
+//! layer file's production module declarations. The crate roots and the items of
+//! src/lib.rs belong to the top layer. A file may name its own layer and the layers
+//! below it. A `crate::` path that names a higher layer is an upward reference, with
+//! today's spellings pinned in an allow-list that may only shrink.
 //!
-//! OWNERS. A layer may live in a folder: `src/l0_base.rs` beside `src/l0_base/` holds
-//! layer 0, src/lib.rs declares the layer module private and re-exports each module by name
-//! (`pub use l0_base::json;`). The guard walks the registrations from the crate roots and
-//! gives every production file one owner: the layer file that starts its chain, or the
-//! table's layer of its flat top-level module. A file lies in its owner's folder (a flat
-//! owner's file in none), one owner reaches it, and the table agrees with the owner. The
-//! declarations keep one spelling each: src/lib.rs writes `pub mod` or `mod`, a layer file
-//! `pub mod` or `pub(crate) mod`, and only src/lib.rs, the layer files and a `pub(in …)`
-//! scope spell `crate::l<N>_…`. Test-only files carry no owner.
+//! OWNERS. src/lib.rs declares the layer modules and re-exports their modules by name
+//! (`pub use l0_base::json;`). The guard walks production registrations from the crate
+//! roots. A layer file starts each chain, one layer owns each reached file, and the file
+//! lies in its owner's folder. A layer file declares its modules as `pub mod` or
+//! `pub(crate) mod`. Only src/lib.rs, the layer files and a `pub(in …)` scope may spell
+//! `crate::l<N>_…`. Test-only files carry no owner. The crate roots and the seven layer
+//! files are the only Rust files directly under src/.
 //!
 //! * [`layers_allow::DEBT`](super::layers_allow::DEBT) pins each spelling of an upward
 //!   reference that is a defect to remove, as `(file, spelling, count)`.
@@ -49,11 +46,10 @@
 //! catches a new upward spelling at the gate; it does not prove that no upward
 //! dependency exists.
 //!
-//! A module the table does not name has no reviewed layer, and the guard refuses the
-//! file instead of picking one. Assigning a layer to a new module is a review.
-
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque, btree_map::Entry};
+use std::path::Path;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
 use syn::ext::IdentExt as _;
@@ -76,173 +72,7 @@ pub(super) const LAYER_NAMES: [&str; 7] = [
 /// root item of `src/lib.rs`.
 const TOP: usize = 6;
 
-/// The reviewed layer of each top-level module, from the architecture review
-/// (`.local/archrev/report.html` section 5). `worktrees` (layer 4) was added after it:
-/// it names `teardown`. `effort_journal` (layer 2) was added after it too: the effort
-/// journal vocabulary the meta writer journals a reseat discard with, moved out of
-/// `effort` (layer 4). The `#[cfg(test)]` fixture modules have no entry: no production
-/// file names them. This table is the single source: the layer map in
-/// `docs/reference/contract.md` mirrors it and `layers_map.rs` fails when the two differ.
-pub(super) const MODULE_LAYERS: [(usize, &[&str]); 7] = [
-    (
-        0,
-        &[
-            "json",
-            "time",
-            "token",
-            "event_text",
-            "attention",
-            "provenance",
-            "error",
-            "words",
-            "sanitize",
-            "redact",
-        ],
-    ),
-    (
-        1,
-        &[
-            "doors",
-            "transport",
-            "procs",
-            "git",
-            "shape",
-            "instance",
-            "tmux_floor",
-            "netprobe",
-        ],
-    ),
-    (
-        2,
-        &[
-            "config",
-            "meta",
-            "tool",
-            "harness_state",
-            "launch_cmd",
-            "theme",
-            "store",
-            "events",
-            "effort_journal",
-            "state",
-            "requests",
-            "inventory",
-            "tracked",
-            "desk",
-            "roster",
-            "pairs",
-            "tmux",
-            "session_tmux",
-            "archive",
-            "digest",
-            "filters",
-            "memo",
-            "goal",
-            "wait_on",
-            "birth",
-            "model_drift",
-            "liveness",
-            "conversation",
-            "watchdog",
-        ],
-    ),
-    (
-        3,
-        &[
-            "deliver",
-            "send",
-            "reply",
-            "relay",
-            "brief",
-            "brief_retry",
-            "board",
-            "deskcmd",
-            "deskstore",
-            "quota",
-            "usage",
-            "go_usage",
-            "muse_usage",
-            "stats",
-            "stats_store",
-            "tool_stats",
-            "telegram",
-            "render",
-            "listing",
-            "fleet_read",
-            "fleetfeed",
-            "session",
-            "launch",
-            "run",
-            "install",
-            "upgrade",
-            "autoupgrade",
-            "init",
-            "compact",
-            "carry",
-            "opencode_variant",
-        ],
-    ),
-    (
-        4,
-        &[
-            "session_launch",
-            "request_verb",
-            "effort",
-            "migrate",
-            "lifecycle",
-            "spawn",
-            "reseat",
-            "seat_relaunch",
-            "rename",
-            "autoreseat",
-            "autotrust",
-            "watchdog_daemon",
-            "watchdog_glue",
-            "watchdog_lifecycle",
-            "telegram_lifecycle",
-            "orchestrator",
-            "seatpack",
-            "seatcompact",
-            "seatcompact_run",
-            "restore",
-            "teardown",
-            "interrupt",
-            "session_notice",
-            "worktrees",
-        ],
-    ),
-    (
-        5,
-        &[
-            "console",
-            "clipboard",
-            "doctor",
-            "app",
-            "session_menu",
-            "settings_menu",
-            "overview",
-            "profile_view",
-            "monitor",
-            "jump",
-            "panes",
-            "next",
-            "events_tail",
-            "reader",
-        ],
-    ),
-    (6, &["cli", "entry", "identity", "shim"]),
-];
-
-/// The reviewed layer of a top-level module, if it has one.
-fn module_layer(module: &str) -> Option<usize> {
-    MODULE_LAYERS
-        .iter()
-        .find(|(_, modules)| modules.contains(&module))
-        .map(|(layer, _)| *layer)
-}
-
-/// The layer modules, bottom first: `src/l0_base.rs` beside `src/l0_base/` holds layer 0. A
-/// layer module is the folder of its layer, never a module of the table.
+/// The layer modules, bottom first: `src/l0_base.rs` beside `src/l0_base/` holds layer 0.
 pub(super) const LAYER_DIRS: [&str; 7] = [
     "l0_base",
     "l1_platform",
@@ -258,70 +88,46 @@ fn layer_dir(name: &str) -> Option<usize> {
     LAYER_DIRS.iter().position(|dir| *dir == name)
 }
 
-/// The layer folder a `src/` path lies in or is the file of: `src/l0_base.rs` and
-/// `src/l0_base/<module>.rs` are both in layer 0; a flat `src/<module>.rs` is in none.
-fn folder_layer(file: &str) -> Option<usize> {
-    let first = file.strip_prefix("src/")?.split('/').next()?;
-    layer_dir(first.strip_suffix(".rs").unwrap_or(first))
+/// The crate roots and their items belong to the top layer.
+const ROOT_FILES: [&str; 2] = ["src/lib.rs", "src/main.rs"];
+
+/// The layer file itself, as in `src/l0_base.rs`.
+fn layer_file(file: &str) -> Option<usize> {
+    layer_dir(file.strip_prefix("src/")?.strip_suffix(".rs")?)
 }
 
-/// Whether `file` is a layer file itself: `src/l0_base.rs`.
-fn is_layer_file(file: &str) -> bool {
-    file.strip_prefix("src/")
-        .and_then(|rest| rest.strip_suffix(".rs"))
-        .is_some_and(|name| layer_dir(name).is_some())
-}
-
-/// The top-level module of a `src/` file as the table names it, under the folder grammar:
-/// `src/<module>/x.rs`, `src/l<N>_<word>/<module>/x.rs` and a flat `src/<module>.rs` are all
-/// `<module>`.
-/// `None` for `src/lib.rs` and `src/main.rs`, which are the top layer themselves, and for a
-/// layer file, which is the folder of its layer.
-fn top_module(file: &str) -> Result<Option<&str>, String> {
-    let rest = file
-        .strip_prefix("src/")
-        .ok_or_else(|| format!("{file}: not a src/ file, so it has no layer"))?;
-    if rest == "lib.rs" || rest == "main.rs" {
-        return Ok(None);
-    }
-    let mut parts = rest.split('/');
-    let first = parts.next().unwrap_or(rest);
-    let first = first.strip_suffix(".rs").unwrap_or(first);
-    if layer_dir(first).is_some() {
-        return Ok(parts
-            .next()
-            .map(|module| module.strip_suffix(".rs").unwrap_or(module)));
-    }
-    Ok(Some(first))
-}
-
-/// The layer a file belongs to, or the reason it has none: the layer folder it lies in,
-/// else the reviewed layer of its top-level module.
+/// A source file takes its layer from the folder or layer file at its path.
 fn file_layer(file: &str) -> Result<usize, String> {
-    if let Some(layer) = folder_layer(file) {
-        return Ok(layer);
+    if ROOT_FILES.contains(&file) {
+        return Ok(TOP);
     }
-    match top_module(file)? {
-        None => Ok(TOP),
-        Some(module) => module_layer(module).ok_or_else(|| unreviewed(file, module)),
-    }
+    let folder = file
+        .strip_prefix("src/")
+        .and_then(|path| path.split_once('/'))
+        .and_then(|(dir, _)| layer_dir(dir));
+    folder.or_else(|| layer_file(file)).ok_or_else(|| {
+        format!(
+            "{file}: Rust source belongs in a layer folder, except for crate roots and layer files"
+        )
+    })
 }
 
-fn unreviewed(file: &str, module: &str) -> String {
-    format!(
-        "{file}: module `{module}` has no reviewed layer; add it to MODULE_LAYERS in \
-         tests/it/doors/layers.rs (a new module is a layer review, never a default)"
-    )
+fn is_flat_rust(file: &str) -> bool {
+    file.strip_prefix("src/").is_some_and(|name| {
+        !name.contains('/') && Path::new(name).extension().is_some_and(|ext| ext == "rs")
+    })
 }
 
-/// The layer a `crate::<first>` path names: a layer module's own layer, the module's, or
-/// the top layer when `first` is no module, which makes it an item of `src/lib.rs`. A raw
-/// identifier (`r#time`) names the module its plain spelling names; only the pin's key
-/// keeps the spelling as written.
-fn target_layer(first: &str) -> usize {
+/// Layers of the production module names declared in the layer files.
+pub(super) type ModuleLayers = BTreeMap<String, usize>;
+
+/// The layer a `crate::<first>` path names: a layer module's own layer, a declared
+/// module's layer, or the top layer for an item of src/lib.rs. A raw identifier
+/// (`r#time`) looks up its plain spelling. The pin keeps the spelling as written.
+fn target_layer(first: &str, modules: &ModuleLayers) -> usize {
     let plain = first.strip_prefix("r#").unwrap_or(first);
     layer_dir(plain)
-        .or_else(|| module_layer(plain))
+        .or_else(|| modules.get(plain).copied())
         .unwrap_or(TOP)
 }
 
@@ -472,22 +278,16 @@ struct Upward {
     to: usize,
 }
 
-/// The findings of one file's PRODUCTION text against `allow`, from the layer of its path.
-/// Rows of other files are not this file's business: they are neither a grant nor slack here.
-fn check(file: &str, production: &str, allow: &[Row]) -> Result<Vec<String>, String> {
-    check_from(file, file_layer(file)?, production, allow)
-}
-
-/// [`check`] from layer `from`: in a whole tree, the owner the D4 walk gave the file. A
-/// `crate::l<N>_…` spelling names a layer module directly, which only src/lib.rs, the layer
-/// files and a `pub(in …)` scope may do; everyone else names the module by its root alias.
+/// Check a production file from its path's layer. Only src/lib.rs, the layer files and
+/// a `pub(in …)` scope may spell a layer module directly. Each pin belongs to its file.
 fn check_from(
     file: &str,
     from: usize,
     production: &str,
     allow: &[Row],
+    modules: &ModuleLayers,
 ) -> Result<Vec<String>, String> {
-    let canonical = file == "src/lib.rs" || is_layer_file(file);
+    let canonical = file == "src/lib.rs" || layer_file(file).is_some();
     let mut direct = Vec::new();
     let mut upward: BTreeMap<String, Upward> = BTreeMap::new();
     for spelling in spellings(file, production)? {
@@ -502,7 +302,7 @@ fn check_from(
                 spelling.line, spelling.text
             ));
         }
-        let to = target_layer(&spelling.first);
+        let to = target_layer(&spelling.first, modules);
         if to > from {
             let entry = upward.entry(spelling.text).or_insert(Upward {
                 count: 0,
@@ -552,9 +352,9 @@ fn check_from(
 /// Classify raw source by the shared view, then check its production text.
 fn classified(file: &str, source: &str, allow: &[Row]) -> Result<Vec<String>, String> {
     // The layer first: a file without one is refused before its text is read.
-    file_layer(file)?;
+    let from = file_layer(file)?;
     let class = source_view::classify(file, source).map_err(|failure| failure.to_string())?;
-    check(file, &class.production, allow)
+    check_from(file, from, &class.production, allow, real_module_layers())
 }
 
 /// The pinned rows of the real tree: the debt and the permanent handshakes.
@@ -584,105 +384,76 @@ pub(super) fn violations_with(
     classified(file, source, allow)
 }
 
-/// The findings of a whole `src/` tree, `files` as `(path, raw text)`, against `allow`:
-/// the declarations of src/lib.rs and the layer files, the D4 owner walk, and each production
-/// file's spellings from its owner. `Err` is a tree the guard cannot place: a file the shared
-/// view cannot read, classify or reach, or a declaration file syn cannot parse. A policy
-/// refusal is a finding that names its `file:line`. The real-tree guard and the frozen
-/// fixtures both enter here.
+/// Check a whole source tree: its paths, production declarations, owners and spellings.
+/// The real-tree guard and frozen fixtures both enter here. A source-view failure is
+/// an error. A policy violation is a finding.
 pub(super) fn violations_in(
     files: &[(String, String)],
     allow: &[Row],
 ) -> Result<Vec<String>, String> {
+    // Inspect paths before reachability so a gated or unregistered flat file is refused.
+    // Return layout findings first, then check declarations and imports after the paths are fixed.
+    let mut findings: Vec<_> = files
+        .iter()
+        .filter(|(path, _)| is_flat_rust(path))
+        .filter_map(|(path, _)| file_layer(path).err())
+        .collect();
+    let has_flat = !findings.is_empty();
+    for (path, text) in files
+        .iter()
+        .filter(|(path, _)| ROOT_FILES.contains(&path.as_str()))
+    {
+        let class = source_view::classify(path, text).map_err(|failure| failure.to_string())?;
+        findings.extend(root_declaration_findings(path, &class.production)?);
+    }
+    if has_flat {
+        return Ok(findings);
+    }
+
     let product = source_view::product_of(files).map_err(|failure| failure.to_string())?;
+    let layer_sources = files.iter().filter_map(|(path, source)| {
+        let layer = layer_file(path)?;
+        let file = product.files.iter().find(|file| file.path == *path)?;
+        Some((layer, path.as_str(), source.as_str(), file.text.as_str()))
+    });
+    let (modules, declaration_findings) = layer_declarations(layer_sources)?;
+    findings.extend(declaration_findings);
+    if let Some(lib) = product.files.iter().find(|file| file.path == "src/lib.rs") {
+        findings.extend(alias_findings(&root_uses(&lib.text)?, &modules));
+    }
     let mut classified = BTreeMap::new();
     for (path, text) in files {
         let class = source_view::classify(path, text).map_err(|failure| failure.to_string())?;
         classified.insert(path.as_str(), class);
     }
-    let mut findings = declarations(files)?;
-    let walk = owner_walk(files, &classified)?;
-    findings.extend(walk.findings);
+    findings.extend(owner_findings(&classified)?);
     for file in product
         .files
         .iter()
         .filter(|file| file.path.starts_with("src/"))
     {
-        let from = if ROOT_FILES.contains(&file.path.as_str()) {
-            TOP
-        } else if let Some((owner, _)) = walk.owners.get(&file.path) {
-            owner.layer
-        } else {
-            // A file the walk could not own already has its finding.
-            continue;
-        };
-        findings.extend(check_from(&file.path, from, &file.text, allow)?);
+        match file_layer(&file.path) {
+            Ok(from) => findings.extend(check_from(&file.path, from, &file.text, allow, &modules)?),
+            Err(why) => findings.push(why),
+        }
     }
     Ok(findings)
 }
 
 // ---- the owner walk (D4) -----------------------------------------------------
 
-/// The crate roots: the top layer, and where every registration chain starts.
-const ROOT_FILES: [&str; 2] = ["src/lib.rs", "src/main.rs"];
-
-/// Who owns a production file: its layer, and whether a layer file (`src/l<N>_<word>.rs`)
-/// or a flat top-level module of `MODULE_LAYERS` started its registration chain.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Owner {
-    layer: usize,
-    foldered: bool,
-}
-
-impl Owner {
-    fn describe(self) -> String {
-        if self.foldered {
-            format!(
-                "layer {} ({}) through src/{}.rs",
-                self.layer, LAYER_NAMES[self.layer], LAYER_DIRS[self.layer]
-            )
-        } else {
-            format!(
-                "layer {} ({}) through a flat module",
-                self.layer, LAYER_NAMES[self.layer]
-            )
-        }
-    }
-
-    /// Where a file this owner reaches must lie, or `None` when `file` lies there.
-    fn misplaced(self, file: &str, from_root: bool) -> Option<String> {
-        let dir = LAYER_DIRS[self.layer];
-        if self.foldered {
-            let at_home = if from_root {
-                file == format!("src/{dir}.rs")
-            } else {
-                file.starts_with(&format!("src/{dir}/"))
-            };
-            (!at_home).then(|| format!("outside src/{dir}/, the folder of its owner"))
-        } else {
-            folder_layer(file).map(|layer| {
-                format!(
-                    "inside the layer folder of {}, but its owner is a flat module",
-                    LAYER_DIRS[layer]
-                )
-            })
-        }
-    }
-}
-
-/// The walk's result: every production file it owned, with its owner and the registration
-/// that first reached it, the files placed where their owner forbids, and the findings.
-struct Walk {
-    owners: BTreeMap<String, (Owner, String)>,
-    misplaced: BTreeSet<String>,
-    findings: Vec<String>,
+fn owner_description(layer: usize) -> String {
+    format!(
+        "layer {layer} ({}) through src/{}.rs",
+        LAYER_NAMES[layer], LAYER_DIRS[layer]
+    )
 }
 
 /// One ungated registration the walk follows: the file it names, the owner it carries, its
 /// `file:line`, the module name, and whether a crate root wrote it.
 struct Edge {
     target: String,
-    owner: Owner,
+    layer: usize,
     site: String,
     name: String,
     from_root: bool,
@@ -704,161 +475,84 @@ fn src_target(
     }
 }
 
-/// The ungated registrations of the crate roots, each with the owner it starts: a layer
-/// module that src/lib.rs registers starts its layer, and until P7 a flat top-level module
-/// starts the layer `MODULE_LAYERS` gives it. A flat module without a row is a finding.
-fn root_edges(
+/// Follow the ungated production registrations. Each chain starts with a layer file
+/// registered by src/lib.rs. Every later file must lie in that layer's folder.
+fn owner_findings(
     classified: &BTreeMap<&str, source_view::Classified>,
-    known: &[&str],
-    findings: &mut Vec<String>,
-) -> Result<Vec<Edge>, String> {
-    let mut edges = Vec::new();
+) -> Result<Vec<String>, String> {
+    let known: Vec<&str> = classified.keys().copied().collect();
+    let mut owners: BTreeMap<String, (usize, String)> = BTreeMap::new();
+    let mut findings = Vec::new();
+    let mut queue = VecDeque::new();
     for root in ROOT_FILES {
         let Some(class) = classified.get(root) else {
             continue;
         };
         for reg in class.registrations.iter().filter(|reg| !reg.gated) {
             let site = format!("{root}:{}", reg.line);
-            let layer = (root == ROOT_FILES[0] && reg.nesting.is_empty())
-                .then(|| layer_dir(&reg.name))
-                .flatten();
-            let owner = match (layer, module_layer(&reg.name)) {
-                (Some(layer), _) => Owner {
+            if !reg.nesting.is_empty() {
+                findings.push(format!(
+                    "{site}: `mod {}` must be declared inside a layer folder",
+                    reg.name
+                ));
+            } else if root == "src/lib.rs"
+                && let Some(layer) = layer_dir(reg.name.strip_prefix("r#").unwrap_or(&reg.name))
+            {
+                queue.push_back(Edge {
+                    target: src_target(root, reg, &known)?,
                     layer,
-                    foldered: true,
-                },
-                (None, Some(layer)) => Owner {
-                    layer,
-                    foldered: false,
-                },
-                (None, None) => {
-                    findings.push(unreviewed(&site, &reg.name));
-                    continue;
-                }
-            };
-            edges.push(Edge {
-                target: src_target(root, reg, known)?,
-                owner,
-                site,
-                name: reg.name.clone(),
-                from_root: true,
-            });
+                    site,
+                    name: reg.name.clone(),
+                    from_root: true,
+                });
+            }
         }
     }
-    Ok(edges)
-}
 
-/// D4: carry an owner from the roots through every ungated registration. Every reached file
-/// must lie where its owner says, no two owners may reach one file, and the module a file
-/// belongs to must have the owner's layer in `MODULE_LAYERS`. Gated registrations and
-/// everything below them are test-only and exempt.
-fn owner_walk(
-    files: &[(String, String)],
-    classified: &BTreeMap<&str, source_view::Classified>,
-) -> Result<Walk, String> {
-    let known: Vec<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
-    let mut walk = Walk {
-        owners: BTreeMap::new(),
-        misplaced: BTreeSet::new(),
-        findings: Vec::new(),
-    };
-    let mut edges = root_edges(classified, &known, &mut walk.findings)?;
-    let mut queue = std::collections::VecDeque::new();
-    loop {
-        for edge in edges.drain(..) {
-            let Edge {
-                target,
-                owner,
-                site,
-                name,
-                from_root,
-            } = edge;
-            if let Some(place) = owner.misplaced(&target, from_root) {
-                walk.findings.push(format!(
-                    "{site}: `mod {name}` places {target} {place}, {}",
-                    owner.describe()
-                ));
-                walk.misplaced.insert(target.clone());
-            }
-            match walk.owners.get(&target) {
-                None => {
-                    walk.owners.insert(target.clone(), (owner, site));
-                    queue.push_back(target);
-                }
-                Some((first, first_site)) if *first != owner => {
-                    walk.findings.push(format!(
-                        "{target}: two owners reach it, {first_site} ({}) and {site} ({}); a \
-                         production file has one owner",
-                        first.describe(),
-                        owner.describe()
-                    ));
-                }
-                Some(_) => {}
-            }
-        }
-        let Some(file) = queue.pop_front() else {
-            break;
+    while let Some(Edge {
+        target,
+        layer,
+        site,
+        name,
+        from_root,
+    }) = queue.pop_front()
+    {
+        let dir = LAYER_DIRS[layer];
+        let at_home = if from_root {
+            target == format!("src/{dir}.rs")
+        } else {
+            target.starts_with(&format!("src/{dir}/"))
         };
-        let (Some(owner), Some(class)) = (
-            walk.owners.get(&file).map(|(owner, _)| *owner),
-            classified.get(file.as_str()),
-        ) else {
+        if !at_home {
+            findings.push(format!(
+                "{site}: `mod {name}` places {target} outside its owner's layer, {}",
+                owner_description(layer)
+            ));
+        }
+        if let Some((first, first_site)) = owners.get(&target) {
+            if *first != layer {
+                findings.push(format!(
+                    "{target}: two owners reach it, {first_site} ({}) and {site} ({}); a \
+                     production file has one owner",
+                    owner_description(*first),
+                    owner_description(layer)
+                ));
+            }
             continue;
+        }
+        let Some(class) = classified.get(target.as_str()) else {
+            return Err(format!("{site}: registration target {target} is missing"));
         };
         for reg in class.registrations.iter().filter(|reg| !reg.gated) {
-            let site = format!("{file}:{}", reg.line);
-            // A layer file introduces top-level modules: each one's own name must carry the
-            // owner's layer, whatever file its `#[path]` loads.
-            if is_layer_file(&file) && reg.nesting.is_empty() {
-                match module_layer(&reg.name) {
-                    None => walk.findings.push(unreviewed(&site, &reg.name)),
-                    Some(layer) if layer != owner.layer => walk.findings.push(format!(
-                        "{site}: `mod {}` registers a module that MODULE_LAYERS gives layer \
-                         {layer} ({}), but {}",
-                        reg.name,
-                        LAYER_NAMES[layer],
-                        owner.describe()
-                    )),
-                    Some(_) => {}
-                }
-            }
-            edges.push(Edge {
-                target: src_target(&file, reg, &known)?,
-                owner,
-                site,
+            queue.push_back(Edge {
+                target: src_target(&target, reg, &known)?,
+                layer,
+                site: format!("{target}:{}", reg.line),
                 name: reg.name.clone(),
                 from_root: false,
             });
         }
-    }
-    walk.findings.extend(table_findings(&walk)?);
-    Ok(walk)
-}
-
-/// The module each placed file belongs to must have its owner's layer in `MODULE_LAYERS`.
-fn table_findings(walk: &Walk) -> Result<Vec<String>, String> {
-    let mut findings = Vec::new();
-    for (file, (owner, site)) in &walk.owners {
-        if walk.misplaced.contains(file) {
-            continue;
-        }
-        let Some(module) = top_module(file)? else {
-            continue;
-        };
-        match module_layer(module) {
-            None => findings.push(format!(
-                "{site}: {file} is module `{module}`, which has no reviewed layer; add it to \
-                 MODULE_LAYERS in tests/it/doors/layers.rs (a new module is a layer review, \
-                 never a default)"
-            )),
-            Some(layer) if layer != owner.layer => findings.push(format!(
-                "{site}: {file} is module `{module}` of {} through this registration, but \
-                 MODULE_LAYERS gives `{module}` layer {layer} ({})",
-                owner.describe(),
-                LAYER_NAMES[layer]
-            )),
-            Some(_) => {}
-        }
+        owners.insert(target, (layer, site));
     }
     Ok(findings)
 }
@@ -897,7 +591,7 @@ fn mod_declarations(file: &str, text: &str) -> Result<Vec<(String, String, usize
         .filter_map(|item| match item {
             syn::Item::Mod(module) if module.content.is_none() => Some((
                 visibility(&module.vis),
-                module.ident.to_string(),
+                module.ident.unraw().to_string(),
                 module.mod_token.span.start().line,
             )),
             _ => None,
@@ -979,51 +673,34 @@ fn root_uses(lib: &str) -> Result<Vec<UseLeaf>, String> {
     Ok(out)
 }
 
-/// D1 and the D4 alias rule, on src/lib.rs and the layer files it registers: the flat block
-/// declares only `pub mod` and `mod`, a layer file only `pub mod` and `pub(crate) mod`, no
-/// flat module belongs to a foldered layer, and every root `use` through a layer module is
-/// `l<N>_<word>::<module>`, binds the name `<module>` and names a module that its layer file
-/// registers. A renamed alias or a re-export below or of the layer module would give a
-/// higher layer a name that the spelling ratchet reads as another module's layer.
-fn declarations(files: &[(String, String)]) -> Result<Vec<String>, String> {
-    let text_of = |file: &str| {
-        files
-            .iter()
-            .find(|(path, _)| path == file)
-            .map(|(_, text)| text.as_str())
-    };
-    let Some(lib) = text_of("src/lib.rs") else {
-        return Ok(Vec::new());
-    };
+/// A crate root's production file declarations may only introduce layer modules in lib.rs.
+fn root_declaration_findings(file: &str, production: &str) -> Result<Vec<String>, String> {
     let mut findings = Vec::new();
-    let flat = mod_declarations("src/lib.rs", lib)?;
-    let foldered: BTreeSet<usize> = flat
-        .iter()
-        .filter_map(|(_, name, _)| layer_dir(name))
-        .collect();
-    let mut registered: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
-    for (vis, name, line) in &flat {
-        if !vis.is_empty() && vis != "pub" {
-            findings.push(format!(
-                "src/lib.rs:{line}: `{vis} mod {name};` in the flat block, which declares a \
-                 module only as `pub mod` or `mod` (D1)"
-            ));
-        }
-        if let Some(layer) = module_layer(name).filter(|layer| foldered.contains(layer)) {
-            findings.push(format!(
-                "src/lib.rs:{line}: flat module `{name}` belongs to layer {layer} ({}), which is \
-                 foldered: declare it in src/{}.rs",
-                LAYER_NAMES[layer], LAYER_DIRS[layer]
-            ));
-        }
-    }
-    for layer in &foldered {
-        let file = format!("src/{}.rs", LAYER_DIRS[*layer]);
-        let Some(text) = text_of(&file) else {
+    for (vis, name, line) in mod_declarations(file, production)? {
+        if file == "src/lib.rs" && vis.is_empty() && layer_dir(&name).is_some() {
             continue;
+        }
+        let prefix = if vis.is_empty() {
+            String::new()
+        } else {
+            format!("{vis} ")
         };
-        let names = registered.entry(*layer).or_default();
-        for (vis, name, line) in mod_declarations(&file, text)? {
+        findings.push(format!(
+            "{file}:{line}: `{prefix}mod {name};` at a crate root; only src/lib.rs declares \
+             private layer modules"
+        ));
+    }
+    Ok(findings)
+}
+
+/// Check the visibility of all declarations, then map the production names to their layers.
+fn layer_declarations<'a>(
+    files: impl IntoIterator<Item = (usize, &'a str, &'a str, &'a str)>,
+) -> Result<(ModuleLayers, Vec<String>), String> {
+    let mut declarations = BTreeMap::new();
+    let mut findings = Vec::new();
+    for (layer, file, source, production) in files {
+        for (vis, name, line) in mod_declarations(file, source)? {
             match vis.as_str() {
                 "pub" | "pub(crate)" => {}
                 "" => findings.push(format!(
@@ -1035,19 +712,54 @@ fn declarations(files: &[(String, String)]) -> Result<Vec<String>, String> {
                      only as `pub mod` or `pub(crate) mod` (D1)"
                 )),
             }
-            names.insert(name);
+        }
+        for (_, name, line) in mod_declarations(file, production)? {
+            match declarations.entry(name) {
+                Entry::Vacant(entry) => {
+                    entry.insert((layer, file, line));
+                }
+                Entry::Occupied(entry) => {
+                    let (_, first, first_line) = entry.get();
+                    findings.push(format!(
+                        "{file}:{line}: module `{}` is also declared at {first}:{first_line}",
+                        entry.key()
+                    ));
+                }
+            }
         }
     }
-    findings.extend(alias_findings(&root_uses(lib)?, &registered));
-    Ok(findings)
+    let modules = declarations
+        .into_iter()
+        .map(|(name, (layer, _, _))| (name, layer))
+        .collect();
+    Ok((modules, findings))
 }
 
-/// The D1 rule on root `use`s through a layer module: each is `l<N>_<word>::<module>`, binds
-/// `<module>` and names a module that `registered` lists for its layer.
-fn alias_findings(
-    leaves: &[UseLeaf],
-    registered: &BTreeMap<usize, BTreeSet<String>>,
-) -> Vec<String> {
+/// The map for the real documentation and the fixtures that supply a single source file.
+pub(super) fn real_module_layers() -> &'static ModuleLayers {
+    static MAP: OnceLock<ModuleLayers> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let files: Vec<_> = source_view::tree()
+            .iter()
+            .filter_map(|(file, text)| {
+                let layer = layer_file(file)?;
+                let class = source_view::classify(file, text).unwrap_or_else(|why| panic!("{why}"));
+                Some((layer, file.as_str(), text.as_str(), class.production))
+            })
+            .collect();
+        let (modules, findings) =
+            layer_declarations(files.iter().map(|(layer, file, source, production)| {
+                (*layer, *file, *source, production.as_str())
+            }))
+            .unwrap_or_else(|why| panic!("{why}"));
+        assert!(findings.is_empty(), "{}", findings.join("\n"));
+        modules
+    })
+}
+
+/// Each root alias through a layer module must name a module that layer declares
+/// and bind it under its declared name.
+fn alias_findings(leaves: &[UseLeaf], modules: &ModuleLayers) -> Vec<String> {
     let mut findings = Vec::new();
     for leaf in leaves {
         let Some((first, line)) = leaf.path.first() else {
@@ -1068,10 +780,7 @@ fn alias_findings(
                 "src/lib.rs:{line}: a glob re-export from {dir}; re-export each module by name"
             )),
             [_, (module, line)] => {
-                let known = registered
-                    .get(&layer)
-                    .is_some_and(|names| names.contains(module));
-                if !known {
+                if modules.get(module) != Some(&layer) {
                     findings.push(format!(
                         "src/lib.rs:{line}: the root alias `{dir}::{module}` names no module \
                          that src/{dir}.rs registers"
@@ -1229,43 +938,6 @@ fn no_production_file_names_an_unpinned_higher_layer() {
 }
 
 #[test]
-fn every_production_module_has_one_reviewed_layer_and_every_entry_is_live() {
-    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
-    for (layer, modules) in MODULE_LAYERS {
-        for module in modules {
-            *seen.entry(*module).or_default() += 1;
-            assert!(
-                layer < LAYER_NAMES.len(),
-                "{module}: layer {layer} does not exist"
-            );
-        }
-    }
-    let twice: Vec<_> = seen
-        .iter()
-        .filter(|(_, n)| **n > 1)
-        .map(|(m, _)| *m)
-        .collect();
-    assert!(twice.is_empty(), "modules listed in two layers: {twice:?}");
-
-    let files = product_files();
-    let produced: BTreeSet<&str> = files
-        .iter()
-        .filter_map(|(path, _)| top_module(path).ok().flatten())
-        .collect();
-    let listed: BTreeSet<&str> = seen.keys().copied().collect();
-    let unlisted: Vec<_> = produced.difference(&listed).collect();
-    let stale: Vec<_> = listed.difference(&produced).collect();
-    assert!(
-        unlisted.is_empty(),
-        "production modules with no reviewed layer: {unlisted:?}"
-    );
-    assert!(
-        stale.is_empty(),
-        "layer table entries with no production module: {stale:?}"
-    );
-}
-
-#[test]
 fn every_pin_is_unique_positive_and_names_a_production_file() {
     let produced: BTreeSet<&str> = product_files().iter().map(|(path, _)| *path).collect();
     let mut seen = BTreeSet::new();
@@ -1378,29 +1050,82 @@ fn fixture_tree(files: &[(&str, &str)]) -> Vec<(String, String)> {
         .collect()
 }
 
-#[test]
-fn p0_review_a_layer_file_registration_takes_the_layer_of_its_own_name() {
-    // Review r1 (layout-nav): a placed, table-listed file registered under another module's
-    // name. The alias `crate::time` would read as layer 0 while the file is owned by layer 5.
-    let renamed = fixture_tree(&[
-        ("lib", "mod l5_ui;\npub use l5_ui::time;\n"),
-        ("l5_ui", "#[path = \"l5_ui/console.rs\"]\npub mod time;\n"),
-        ("l5_ui/console", "pub fn shown() {}\n"),
-    ]);
-    let found = violations_in(&renamed, &[]).unwrap_or_else(|why| panic!("{why}"));
+/// The guard places the fixture tree and reports a finding at `site` that names every piece
+/// of `evidence`.
+fn p7_review_refuses(files: &[(&str, &str)], site: &str, evidence: &[&str]) {
+    let found = violations_in(&fixture_tree(files), &[]).unwrap_or_else(|why| panic!("{why}"));
     assert!(
-        found
-            .iter()
-            .any(|finding| finding.contains("`mod time`") && finding.contains("layer 0")),
-        "{found:?}"
+        found.iter().any(|finding| {
+            finding.contains(site) && evidence.iter().all(|part| finding.contains(part))
+        }),
+        "expected a finding at {site} naming {evidence:?}, got {found:#?}"
     );
-    // Control: the same file registered under its own name is accepted.
-    let own = fixture_tree(&[
-        ("lib", "mod l5_ui;\npub use l5_ui::console;\n"),
-        ("l5_ui", "pub mod console;\n"),
-        ("l5_ui/console", "pub fn shown() {}\n"),
-    ]);
-    assert_eq!(violations_in(&own, &[]), Ok(Vec::new()));
+}
+
+#[test]
+fn p7_review_a_test_only_flat_file_is_refused() {
+    // Review r1 (layoutp7-rev): the gated registration makes src/fixture.rs test-only, so
+    // production reachability never shows it; only the path check refuses it.
+    let path = format!("{}/fixture.rs", "src");
+    p7_review_refuses(
+        &[
+            (
+                "lib",
+                "mod l0_base;\npub use l0_base::json;\n#[cfg(test)]\nmod fixture;\n",
+            ),
+            ("l0_base", "pub mod json;\n"),
+            ("l0_base/json", ""),
+            ("fixture", ""),
+        ],
+        &path,
+        &[],
+    );
+}
+
+#[test]
+fn p7_review_src_lib_rs_declares_its_layer_modules_privately() {
+    let site = format!("{}/lib.rs:1", "src");
+    p7_review_refuses(
+        &[
+            ("lib", "pub mod l0_base;\npub use l0_base::json;\n"),
+            ("l0_base", "pub mod json;\n"),
+            ("l0_base/json", ""),
+        ],
+        &site,
+        &["l0_base"],
+    );
+}
+
+#[test]
+fn p7_review_src_main_rs_declares_no_module() {
+    let site = format!("{}/main.rs:1", "src");
+    p7_review_refuses(
+        &[
+            ("lib", "mod l0_base;\npub use l0_base::json;\n"),
+            ("main", "mod l0_base;\nfn main() {}\n"),
+            ("l0_base", "pub mod json;\n"),
+            ("l0_base/json", ""),
+        ],
+        &site,
+        &["l0_base"],
+    );
+}
+
+#[test]
+fn p7_review_a_test_only_layer_file_declaration_keeps_the_visibility_rule() {
+    // Review r2 (layoutp7-rev): a gated declaration stays out of the destination map, but a
+    // layer file still declares every module as `pub mod` or `pub(crate) mod`.
+    let site = format!("{}/l0_base.rs:3", "src");
+    p7_review_refuses(
+        &[
+            ("lib", "mod l0_base;\npub use l0_base::json;\n"),
+            ("l0_base", "pub mod json;\n#[cfg(test)]\nmod fixture;\n"),
+            ("l0_base/json", ""),
+            ("l0_base/fixture", ""),
+        ],
+        &site,
+        &["private", "fixture"],
+    );
 }
 
 #[test]

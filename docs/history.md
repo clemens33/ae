@@ -1073,7 +1073,12 @@ The bootstrap contract, in full — nothing else is assumed to exist:
 
 - **One crate, no workspace.** Dead-code analysis stops at crate boundaries, and cross-crate
   dead code is the agent "reinvention" failure mode. Split on measured need, not on taste.
-- **2018-edition module style**: `cli.rs` beside a future `cli/`, never a `mod.rs`.
+- **Source folders by layer (owner ruling 2026-11-18, `ae-20261118T134348Z-120bcdc3`).**
+  The crate uses seven layer files beside their folders. Each module uses `x.rs` beside its
+  companion `x/` directory when it has submodules. The layout forbids `mod.rs`. The crate root
+  kept the existing public paths through re-exports by name. The layer ratchet reads a file's
+  source layer from its path and derives an alias's destination layer from the layer file's
+  declaration.
 - **`main.rs` is thin** — argv in, exit code out, presentation of the one top-level error.
   Everything testable lives in the library, because a binary is not a unit-testable thing.
 - **Errors**: start with one top-level presentation error; a domain error type is permitted

@@ -1443,12 +1443,15 @@ mod layers;
 mod layers_allow;
 #[path = "doors/layers_spec.rs"]
 mod layers_spec;
-// The layer map in the contract reference lists the table's modules, layer by layer.
+// The layer map in the contract reference lists the modules declared by the layer files.
 #[path = "doors/layers_map.rs"]
 mod layers_map;
 // The frozen P0 folder and ownership cases call the entry point the real-tree guard uses.
 #[path = "doors/layers_folder_spec.rs"]
 mod layers_folder_spec;
+// The frozen P7 cases: the ratchet keys on folders and the layer files' declarations.
+#[path = "doors/layers_p7_spec.rs"]
+mod layers_p7_spec;
 
 // Frozen P0 cases. Install this block in tests/it/doors.rs.
 #[cfg(test)]

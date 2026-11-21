@@ -2,6 +2,7 @@
 
 Before touching a module, read its matching topic below.
 Module map: [Structure](docs/reference/contract.md#structure), layer map: [Layer map](docs/reference/contract.md#layer-map).
+To locate a module such as `crate::config`, run `ls src/*/config.rs`.
 
 | When | Read first |
 |---|---|

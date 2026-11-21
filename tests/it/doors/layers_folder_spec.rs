@@ -1,12 +1,13 @@
-//! Frozen P0 folder and ownership cases from plan-r5.
-//! The real-tree guard and these input fixtures use the same entry point.
+//! Frozen P0 folder and ownership cases from plan-r5, amended for P7 by layoutp7-rev
+//! (lead ruling ae-20261121T134024Z-3b068043): the flat transition is gone, so every case
+//! is foldered. The real-tree guard and these input fixtures use the same entry point.
 
 use super::layers::violations_in;
 
 type Fixture = Vec<(&'static str, &'static str)>;
 
-// A fixture's module name is also a real MODULE_LAYERS name where it needs a
-// reviewed layer. Build the virtual paths without adding gate data edges.
+// A fixture's layer files declare its modules. Build the virtual paths without adding
+// gate data edges.
 fn source(module: &str) -> String {
     const SOURCE: &str = "src";
     format!("{SOURCE}/{module}.rs")
@@ -78,17 +79,15 @@ fn p0_rejects_a_crossing_hidden_under_an_inline_path_attribute() {
 }
 
 #[test]
-fn p0_rejects_two_flat_owners_of_one_production_file() {
-    let files = [
-        ("lib", "pub mod json;\npub mod app;"),
-        ("json", r#"#[path = "time.rs"] pub mod shared;"#),
-        ("app", r#"#[path = "time.rs"] pub mod shared;"#),
-        ("time", "pub fn shared() {}"),
-    ];
+fn p0_rejects_two_owners_of_one_production_file() {
+    let mut files = foldered_json(r#"#[path = "../l5_ui/time.rs"] pub mod shared;"#);
+    files.retain(|(module, _)| *module != "l5_ui/app");
+    files.push(("l5_ui/app", r#"#[path = "time.rs"] pub mod shared;"#));
+    files.push(("l5_ui/time", "pub fn shared() {}"));
     let got = findings(&files);
-    let path = source("time");
-    let base = format!("{}:1", source("json"));
-    let ui = format!("{}:1", source("app"));
+    let path = source("l5_ui/time");
+    let base = format!("{}:1", source("l0_base/json"));
+    let ui = format!("{}:1", source("l5_ui/app"));
 
     assert!(
         got.iter().any(|finding| {
@@ -98,41 +97,6 @@ fn p0_rejects_two_flat_owners_of_one_production_file() {
         }),
         "expected a conflicting-owner finding naming both registrations of {path}, got {got:#?}"
     );
-}
-
-#[test]
-fn p0_rejects_a_flat_owned_file_inside_a_layer_folder() {
-    let files = [
-        ("lib", "mod l0_base;\npub use l0_base::json;\npub mod app;"),
-        ("l0_base", "pub mod json;"),
-        ("l0_base/json", ""),
-        (
-            "app",
-            r#"#[path = "l0_base/borrowed.rs"] pub mod borrowed;"#,
-        ),
-        ("l0_base/borrowed", ""),
-    ];
-
-    refuses(&files, "app", 1, &[&source("l0_base/borrowed")]);
-}
-
-#[test]
-fn p0_control_a_gated_registration_can_cross_between_flat_layers() {
-    // This control also passes on the P0 parent.
-    accepts(&[
-        ("lib", "pub mod app;\npub mod stats_store;"),
-        ("app", "mod maintainer;"),
-        (
-            "app/maintainer",
-            "#[cfg(test)]\n#[path = \"maintainer_s2_spec.rs\"] mod maintainer_s2_spec;",
-        ),
-        (
-            "app/maintainer_s2_spec",
-            r#"#[path = "../stats_store/s2_cases.rs"] mod s2_cases;"#,
-        ),
-        ("stats_store", ""),
-        ("stats_store/s2_cases", "use crate::app;"),
-    ]);
 }
 
 #[test]
@@ -173,20 +137,22 @@ fn p0_rejects_a_root_alias_without_a_registration_in_its_layer() {
 }
 
 #[test]
-fn p0_rejects_a_registration_that_disagrees_with_module_layers() {
+fn p0_rejects_a_registration_that_disagrees_with_another_layer_file() {
     let files = [
-        ("lib", "mod l5_ui;\npub use l5_ui::json;"),
+        ("lib", "mod l0_base;\nmod l5_ui;\npub use l0_base::json;"),
+        ("l0_base", "pub mod json;"),
+        ("l0_base/json", ""),
         ("l5_ui", "pub mod json;"),
         ("l5_ui/json", ""),
     ];
 
     // The registration resolves and the file is correctly placed for its
-    // claimed owner. The reviewed table assigns json to the base layer.
-    refuses(&files, "l5_ui", 1, &["json", "base"]);
+    // claimed owner. The base layer file already declares json.
+    refuses(&files, "l5_ui", 1, &["json", &source("l0_base")]);
 }
 
 #[test]
-fn p0_rejects_a_flat_module_in_a_foldered_layer() {
+fn p0_rejects_a_flat_module_beside_the_layer_modules() {
     let files = [
         ("lib", "mod l0_base;\npub use l0_base::json;\npub mod time;"),
         ("l0_base", "pub mod json;"),
@@ -194,19 +160,23 @@ fn p0_rejects_a_flat_module_in_a_foldered_layer() {
         ("time", ""),
     ];
 
-    refuses(&files, "lib", 3, &["time", "l0_base"]);
+    refuses(&files, "lib", 3, &["time"]);
 }
 
 #[test]
 fn p0_rejects_a_direct_layer_spelling_in_an_ordinary_module() {
     let files = [
-        ("lib", "mod l0_base;\npub use l0_base::json;\npub mod cli;"),
+        (
+            "lib",
+            "mod l0_base;\nmod l6_shell;\npub use l0_base::json;\npub use l6_shell::cli;",
+        ),
         ("l0_base", "pub mod json;"),
         ("l0_base/json", "pub struct Value;"),
-        ("cli", "use crate::l0_base::json::Value;"),
+        ("l6_shell", "pub mod cli;"),
+        ("l6_shell/cli", "use crate::l0_base::json::Value;"),
     ];
 
-    refuses(&files, "cli", 1, &["crate::l0_base::json"]);
+    refuses(&files, "l6_shell/cli", 1, &["crate::l0_base::json"]);
 }
 
 #[test]

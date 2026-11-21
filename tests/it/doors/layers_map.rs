@@ -1,12 +1,9 @@
 //! The LAYER MAP of `docs/reference/contract.md` names the ratchet's modules, layer by layer.
 //!
-//! [`MODULE_LAYERS`] in `layers.rs` is the one table of which top-level module of `src/`
-//! belongs to which layer. The `### Layer map` subsection of the contract's Structure topic
-//! is the one-screen reading aid over that table, so an agent learns the layers before it
-//! opens a file. This guard keeps the two equal in both directions and prints the
-//! difference: a module the doc lacks, a module the doc invents, a module the doc puts in
-//! another layer, a layer whose name or item is wrong. The table wins; the doc line is what
-//! gets fixed.
+//! The seven layer files declare the production modules. The `### Layer map` subsection
+//! of the contract's Structure topic lists the same modules so an agent can locate them
+//! before opening a file. This guard compares the documentation with the ratchet's
+//! derived map and reports missing, extra or misplaced modules and wrong layer items.
 //!
 //! Grammar of the doc, bounded on purpose. The subsection runs from the `### Layer map`
 //! heading to the next heading. A layer is a list item `- **<n> <name>** ...`; the item
@@ -17,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use super::layers::{LAYER_NAMES, MODULE_LAYERS};
+use super::layers::{LAYER_NAMES, ModuleLayers, real_module_layers};
 
 const REFERENCE: &str = "docs/reference/contract.md";
 const HEADING: &str = "### Layer map";
@@ -121,10 +118,8 @@ fn items(lines: &[&str]) -> (Vec<Item>, Vec<String>) {
     (parsed, errors)
 }
 
-/// Every difference between the doc's layer map and the guard's table, one line each.
-/// Empty means equal. `table` and `names` are the guard's own, passed in so a fixture can
-/// stand in for them.
-fn map_errors(doc: &str, table: &[(usize, &[&str])], names: &[&str]) -> Vec<String> {
+/// Every difference between the doc's layer map and the derived map, one line each.
+fn map_errors(doc: &str, modules: &ModuleLayers, names: &[&str]) -> Vec<String> {
     let lines = match subsection(doc) {
         Ok(lines) => lines,
         Err(why) => return vec![why],
@@ -150,16 +145,11 @@ fn map_errors(doc: &str, table: &[(usize, &[&str])], names: &[&str]) -> Vec<Stri
         }
     }
 
-    let mut guard: BTreeMap<&str, usize> = BTreeMap::new();
-    for (layer, modules) in table {
-        if !doc_items.contains_key(layer) {
+    for (layer, name) in names.iter().enumerate() {
+        if !doc_items.contains_key(&layer) {
             errors.push(format!(
-                "layer {layer} ({}): no `- **{layer} <name>**` item in the doc",
-                names.get(*layer).copied().unwrap_or("?")
+                "layer {layer} ({name}): no `- **{layer} <name>**` item in the doc"
             ));
-        }
-        for module in *modules {
-            guard.insert(module, *layer);
         }
     }
 
@@ -171,21 +161,21 @@ fn map_errors(doc: &str, table: &[(usize, &[&str])], names: &[&str]) -> Vec<Stri
             ));
         }
         for layer in unique {
-            match guard.get(module) {
+            match modules.get(*module) {
                 None => errors.push(format!(
-                    "`{module}`: the doc lists it in layer {layer}, the guard's table has no such module"
+                    "`{module}`: the doc lists it in layer {layer}, the layer files declare no such module"
                 )),
                 Some(want) if want != layer => errors.push(format!(
-                    "`{module}`: the doc lists it in layer {layer}, the guard's table puts it in layer {want}"
+                    "`{module}`: the doc lists it in layer {layer}, the layer files put it in layer {want}"
                 )),
                 Some(_) => {}
             }
         }
     }
-    for (module, layer) in &guard {
-        if !doc_layers.contains_key(module) {
+    for (module, layer) in modules {
+        if !doc_layers.contains_key(module.as_str()) {
             errors.push(format!(
-                "`{module}`: the guard's table puts it in layer {layer}, the doc does not list it"
+                "`{module}`: the layer files put it in layer {layer}, the doc does not list it"
             ));
         }
     }
@@ -193,30 +183,27 @@ fn map_errors(doc: &str, table: &[(usize, &[&str])], names: &[&str]) -> Vec<Stri
 }
 
 #[test]
-fn the_layer_map_lists_exactly_the_modules_of_the_ratchet_table() {
-    let errors = map_errors(&read(REFERENCE), &MODULE_LAYERS, &LAYER_NAMES);
+fn the_layer_map_lists_exactly_the_modules_declared_in_the_layer_files() {
+    let errors = map_errors(&read(REFERENCE), real_module_layers(), &LAYER_NAMES);
     assert!(
         errors.is_empty(),
-        "{} difference(s) between the `{HEADING}` of {REFERENCE} and MODULE_LAYERS in \
-         tests/it/doors/layers.rs; the table is the source, fix the doc:\n{}",
+        "{} difference(s) between the `{HEADING}` of {REFERENCE} and the production module declarations \
+         in the layer files:\n{}",
         errors.len(),
         errors.join("\n")
     );
 }
 
-// ---- the grammar, on a doc rendered from the table ---------------------------------------
+// ---- the grammar, on a doc rendered from the derived map ---------------------------------------
 
-/// A doc that mirrors `table`: a Structure topic, the subsection with one item per layer
-/// (the module list wrapped over continuation lines, as the real doc wraps it), and the
-/// next topic. The shape the real doc has, built from the table so the two cannot drift
-/// in this fixture.
-fn rendered(table: &[(usize, &[&str])], names: &[&str]) -> String {
+/// The doc's shape with a wrapped item per layer and a heading after the layer map.
+fn rendered(modules: &ModuleLayers, names: &[&str]) -> String {
     let mut doc = String::from("## Structure\n\n```\nsrc/ - sources\n```\n\n");
     doc.push_str(HEADING);
     doc.push_str("\n\nA rule sentence that names no module.\n\n");
-    for (layer, modules) in table {
-        let mut line = format!("- **{layer} {}** - a purpose. Modules:", names[*layer]);
-        for module in *modules {
+    for (layer, name) in names.iter().enumerate() {
+        let mut line = format!("- **{layer} {name}** - a purpose. Modules:");
+        for (module, _) in modules.iter().filter(|(_, placed)| **placed == layer) {
             if line.len() > 84 {
                 doc.push_str(&line);
                 doc.push('\n');
@@ -235,20 +222,16 @@ fn rendered(table: &[(usize, &[&str])], names: &[&str]) -> String {
     doc
 }
 
-fn fixture_table() -> Vec<(usize, &'static [&'static str])> {
-    MODULE_LAYERS.to_vec()
-}
-
 fn fixture_errors(doc: &str) -> Vec<String> {
-    map_errors(doc, &fixture_table(), &LAYER_NAMES)
+    map_errors(doc, real_module_layers(), &LAYER_NAMES)
 }
 
 fn good() -> String {
-    rendered(&fixture_table(), &LAYER_NAMES)
+    rendered(real_module_layers(), &LAYER_NAMES)
 }
 
 #[test]
-fn a_doc_that_mirrors_the_table_has_no_difference() {
+fn a_doc_that_mirrors_the_derived_map_has_no_difference() {
     let doc = good();
     assert!(
         doc.matches("\n- **").count() >= LAYER_NAMES.len(),
