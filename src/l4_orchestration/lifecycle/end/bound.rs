@@ -158,6 +158,7 @@ fn parse(tail: &[String]) -> Result<Request, String> {
 pub(crate) fn run(
     root: &Path,
     request: &Request,
+    reason: &str,
     entry: Option<&crate::rename::Entry>,
     out: &mut impl Write,
     err: &mut impl Write,
@@ -271,9 +272,15 @@ pub(crate) fn run(
     // Both streams are buffered, so the dispatch result is settled before
     // anything reaches a caller whose stream may be closed.
     let (mut held_out, mut held_err) = (Vec::new(), Vec::new());
+    let observed = entry.map_or_else(|| "human".to_owned(), crate::rename::Entry::actor);
+    let who = crate::lifecycle::Stopper {
+        actor: guard::fleet_actor(seen.actor(), &observed),
+        reason: reason.to_owned(),
+    };
     let stopped = Stopped {
         root,
         request,
+        who: &who,
         server: &server,
         stamp: stamp.as_ref(),
         checked,
@@ -625,6 +632,8 @@ enum Kept {
 struct Stopped<'a> {
     root: &'a Path,
     request: &'a Request,
+    /// Who ends the session and why, for the fleet feed.
+    who: &'a crate::lifecycle::Stopper,
     server: &'a crate::inventory::ServerId,
     /// The proved live incarnation, or `None` for a session proved stopped.
     stamp: Option<&'a crate::tmux::SessionStamp>,
@@ -659,6 +668,19 @@ impl Stopped<'_> {
         // The archive's source holds take meta, memo and events in that
         // order, so the event lock is released before them.
         drop(hold);
+        // The owner's or the seat's words survive in the archive: a bound end
+        // has no request row of its own, so with a reason one is recorded now,
+        // ahead of the capture, under the completed-end guard every row takes.
+        if !self.who.reason.is_empty() {
+            transaction::emit(
+                &sessions_dir(self.root).join(name),
+                name,
+                &crate::archive::canonical_uuid(uuid),
+                self.who.journal_actor(),
+                super::END_REQUEST_ACTION,
+                &crate::lifecycle::with_reason("end requested (bound)", &self.who.reason),
+            );
+        }
         if let Some(note) = crate::migrate::session_noted(&sessions_dir(self.root).join(name), name)
         {
             writeln!(err, "{note}")?;
@@ -697,7 +719,17 @@ impl Stopped<'_> {
             }
         };
         if let Some((git, ended)) = early {
-            if !transaction::finish_vetoed(root, name, bytes, plan, git, Some(&veto), out, err)? {
+            if !transaction::finish_vetoed(
+                root,
+                name,
+                bytes,
+                plan,
+                git,
+                Some(&veto),
+                self.who,
+                out,
+                err,
+            )? {
                 return Ok(refused());
             }
             writeln!(out, "{ended} {name}")?;
@@ -715,7 +747,17 @@ impl Stopped<'_> {
             preserve = true;
             git.preserved = work_dir.display().to_string();
         }
-        if !transaction::finish_vetoed(root, name, bytes, plan, &git, Some(&veto), out, err)? {
+        if !transaction::finish_vetoed(
+            root,
+            name,
+            bytes,
+            plan,
+            &git,
+            Some(&veto),
+            self.who,
+            out,
+            err,
+        )? {
             return Ok(refused());
         }
         if preserve {

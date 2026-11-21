@@ -184,6 +184,10 @@ impl Style {
     fn head_with(&self, kind: &Kind, words: &str, time: &str, sent: bool) -> String {
         let suffix = if sent { SENT } else { "" };
         let Some(dress) = &self.0 else {
+            // A fleet line is one plain line: the minute and the words.
+            if matches!(kind, Kind::Fleet { .. }) {
+                return terminal_text(&format!("{time} {words}{suffix}\n"));
+            }
             return terminal_text(&format!("## {time} {words}{suffix}\n"));
         };
         let voice = dress.voice(kind);
@@ -619,7 +623,7 @@ impl Dress {
             Kind::Reply { from, .. } | Kind::Unadmitted { from, .. } => self.seat(from),
             Kind::Said { who } => self.seat(who),
             // Progress, not a turn the human must read: drawn dim.
-            Kind::Accepted { .. } => Voice::System,
+            Kind::Accepted { .. } | Kind::Fleet { .. } => Voice::System,
         }
     }
 }
@@ -717,6 +721,7 @@ pub(super) fn tag(kind: &Kind) -> String {
             format!("{from} reply · not admitted: {why} · preview (600-char summary)")
         }
         Kind::Accepted { seat, .. } => format!("{seat} accepted"),
+        Kind::Fleet { words, .. } => words.clone(),
     }
 }
 
@@ -818,6 +823,11 @@ impl Pending {
 /// What names a turn across passes: its journal position when it has one, else
 /// its words.
 fn turn_key(item: &Item) -> String {
+    // A fleet line is one occurrence: its `ref` alone names it, whatever the
+    // clock or the words say, and a trim of the journal cannot change it.
+    if let Kind::Fleet { id, .. } = &item.kind {
+        return format!("fleet|{id}");
+    }
     match &item.record {
         Some(record) => format!("{CONSOLE_KEY}{record}"),
         None => format!("{}|{:?}|{}", item.micros, item.kind, item.body),
@@ -1176,8 +1186,9 @@ impl Printed {
 
     /// The rows of `item`'s body below its header, one string each.
     fn body_rows(&self, item: &Item) -> Vec<String> {
-        // An acceptance's note rides its header ([`heading`]).
-        if matches!(item.kind, Kind::Accepted { .. }) {
+        // An acceptance's note rides its header ([`heading`]), and a fleet
+        // line is its header.
+        if matches!(item.kind, Kind::Accepted { .. } | Kind::Fleet { .. }) {
             return Vec::new();
         }
         if !matches!(item.kind, Kind::Card { .. } | Kind::PastCard { .. }) {
@@ -1199,6 +1210,11 @@ impl Printed {
     /// `item`'s header, drawn at this console's width.
     fn header_of(&self, item: &Item, sent: bool) -> String {
         let (_, time) = clock_text(self.style.shift(item.micros));
+        // A fleet line wears the minute alone, as the app's rows do.
+        let time = match item.kind {
+            Kind::Fleet { .. } => time.chars().take(5).collect(),
+            _ => time,
+        };
         self.style
             .head_in(&item.kind, &heading(item), &time, self.width, sent)
     }
@@ -1548,6 +1564,94 @@ mod tests {
             items,
             coverage: coverage.iter().map(|gap| (*gap).to_owned()).collect(),
         }
+    }
+
+    #[test]
+    fn a_fleet_line_is_one_plain_line_of_the_minute_and_its_words_printed_once() {
+        let fleet = |id: &str, words: &str, micros: i64| {
+            item(
+                Kind::Fleet {
+                    id: id.to_owned(),
+                    words: words.to_owned(),
+                },
+                micros,
+                "",
+            )
+        };
+        let lane = lane(
+            vec![
+                fleet("a", "alpha stopped by owner — pause", T),
+                fleet("b", "beta created by orchestrator", T + 60_000_000),
+            ],
+            &[],
+        );
+        let mut printed = Printed::default();
+        let shown = printed.step(&lane, 0, true);
+        let lines: Vec<&str> = shown.lines().filter(|line| line.contains(" by ")).collect();
+        assert_eq!(
+            lines,
+            [
+                "06:01 alpha stopped by owner — pause",
+                "06:02 beta created by orchestrator"
+            ]
+        );
+        assert!(!shown.contains("##"), "{shown}");
+        // The same lane again prints nothing new; a fresh row prints alone.
+        assert_eq!(printed.step(&lane, 0, true), "");
+        let more = {
+            let mut items = lane.items.clone();
+            items.push(fleet("c", "gamma ended by owner", T + 120_000_000));
+            Lane {
+                items,
+                coverage: Vec::new(),
+            }
+        };
+        let next = printed.step(&more, 0, true);
+        assert!(next.contains("06:03 gamma ended by owner"), "{next}");
+        assert!(!next.contains("alpha") && !next.contains("beta"), "{next}");
+    }
+
+    // A fleet line is named by its journal `ref` alone: the same ref is the
+    // same line whatever its time or words say, and equal words are two lines.
+    #[test]
+    fn a_fleet_line_is_one_occurrence_named_by_its_ref_alone() {
+        let fleet = |id: &str, words: &str, micros: i64| {
+            item(
+                Kind::Fleet {
+                    id: id.to_owned(),
+                    words: words.to_owned(),
+                },
+                micros,
+                "",
+            )
+        };
+        let mut printed = Printed::default();
+        let first = lane(vec![fleet("a", "alpha stopped by owner", T)], &[]);
+        assert!(
+            printed
+                .step(&first, 0, true)
+                .contains("alpha stopped by owner")
+        );
+        // The same ref, read again with another stamp: nothing new.
+        let again = lane(
+            vec![fleet("a", "alpha stopped by owner", T + 5_000_000)],
+            &[],
+        );
+        assert_eq!(printed.step(&again, 0, true), "");
+        // Equal words under a new ref are a new line.
+        let twin = lane(
+            vec![
+                fleet("a", "alpha stopped by owner", T),
+                fleet("b", "alpha stopped by owner", T),
+            ],
+            &[],
+        );
+        let shown = printed.step(&twin, 0, true);
+        assert_eq!(
+            shown.matches("alpha stopped by owner").count(),
+            1,
+            "{shown}"
+        );
     }
 
     #[test]

@@ -169,6 +169,7 @@ pub(super) const MODULE_LAYERS: [(usize, &[&str]); 7] = [
             "render",
             "listing",
             "fleet_read",
+            "fleetfeed",
             "session",
             "launch",
             "run",

@@ -90,6 +90,11 @@ pub enum Kind {
     /// The seat console request `id` reached accepted it: the work is taken
     /// on and the answer still owed. Named by that seat, as [`Kind::Answer`] is.
     Accepted { seat: String, id: String },
+    /// One session-level event of the fleet — a session was created, resumed,
+    /// stopped, ended or renamed — in an orchestrator's chat only. Header
+    /// only: `words` is the whole line after the time, and `id` the feed row's
+    /// unique `ref`, which names this occurrence across re-reads and trims.
+    Fleet { id: String, words: String },
 }
 
 /// Where a console ask's `relay_origin` points, as one read resolved it: audit
@@ -209,6 +214,50 @@ pub struct Item {
 pub struct Lane {
     pub items: Vec<Item>,
     pub coverage: Vec<String>,
+}
+
+/// The fleet feed's lines as lane items, oldest first.
+#[must_use]
+pub fn fleet_items(rows: &[crate::fleetfeed::Row]) -> Vec<Item> {
+    rows.iter()
+        .map(|row| Item {
+            micros: row.ts.epoch().saturating_mul(1_000_000),
+            kind: Kind::Fleet {
+                id: row.id.clone(),
+                words: row.words(),
+            },
+            body: String::new(),
+            record: None,
+        })
+        .collect()
+}
+
+impl Lane {
+    /// This lane with the fleet feed's lines among its rows, each before the
+    /// first row that is later than it, and the feed's own gaps in its
+    /// coverage. The rows already here keep their order, the console's own
+    /// thread included.
+    #[must_use]
+    pub fn with_fleet(mut self, items: Vec<Item>, skipped: usize, unreadable: bool) -> Self {
+        let mut fleet = items.into_iter().peekable();
+        let mut merged = Vec::with_capacity(self.items.len() + fleet.len());
+        for item in std::mem::take(&mut self.items) {
+            merged.extend(std::iter::from_fn(|| {
+                fleet.next_if(|line| line.micros < item.micros)
+            }));
+            merged.push(item);
+        }
+        merged.extend(fleet);
+        self.items = merged;
+        if unreadable {
+            self.coverage.push("fleet — feed unreadable".to_owned());
+        } else if skipped > 0 {
+            let plural = if skipped == 1 { "" } else { "s" };
+            self.coverage
+                .push(format!("fleet — {skipped} unreadable line{plural} skipped"));
+        }
+        self
+    }
 }
 
 fn item(kind: Kind, micros: i64, body: &str) -> Item {
@@ -1013,6 +1062,113 @@ fn standing_items(session: &str, seats: &[Seat], events: &[Event]) -> Vec<Item> 
 #[cfg(test)]
 #[path = "consoleitems_spec.rs"]
 mod consoleitems_spec;
+
+#[cfg(test)]
+mod fleet_tests {
+    use super::{Item, Kind, Lane, fleet_items};
+    use crate::fleetfeed::{Row, What};
+    use crate::time::Timestamp;
+
+    fn at(micros: i64, what: &str) -> Item {
+        Item {
+            micros,
+            kind: Kind::Said {
+                who: what.to_owned(),
+            },
+            body: what.to_owned(),
+            record: None,
+        }
+    }
+
+    fn row(n: u32, epoch: i64) -> Row {
+        Row {
+            ts: Timestamp::from_epoch(epoch),
+            id: format!("00000000-0000-4000-8000-{n:012}"),
+            what: What::Ended,
+            session: format!("s{n}"),
+            actor: "owner".to_owned(),
+            note: String::new(),
+        }
+    }
+
+    #[test]
+    fn fleet_items_carry_the_row_identity_and_words_and_no_body() {
+        let items = fleet_items(&[row(1, 100)]);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].micros, 100_000_000);
+        assert_eq!(
+            items[0].kind,
+            Kind::Fleet {
+                id: "00000000-0000-4000-8000-000000000001".to_owned(),
+                words: "s1 ended by owner".to_owned()
+            }
+        );
+        assert!(items[0].body.is_empty() && items[0].record.is_none());
+    }
+
+    #[test]
+    fn the_fleet_lines_merge_by_time_and_keep_the_lane_order() {
+        let lane = Lane {
+            items: vec![
+                at(10_000_000, "a"),
+                at(30_000_000, "b"),
+                at(30_000_000, "c"),
+                at(50_000_000, "d"),
+            ],
+            coverage: Vec::new(),
+        };
+        let merged = lane.with_fleet(
+            fleet_items(&[row(1, 20), row(2, 30), row(3, 40), row(4, 60)]),
+            0,
+            false,
+        );
+        let order: Vec<String> = merged
+            .items
+            .iter()
+            .map(|item| match &item.kind {
+                Kind::Fleet { words, .. } => words.clone(),
+                _ => item.body.clone(),
+            })
+            .collect();
+        // A fleet line sorts before the first lane row that is strictly later:
+        // at an equal time the lane's own rows come first.
+        assert_eq!(
+            order,
+            [
+                "a",
+                "s1 ended by owner",
+                "b",
+                "c",
+                "s2 ended by owner",
+                "s3 ended by owner",
+                "d",
+                "s4 ended by owner"
+            ]
+        );
+        assert!(merged.coverage.is_empty());
+    }
+
+    #[test]
+    fn the_feeds_gaps_become_coverage_rows() {
+        let empty = || Lane {
+            items: Vec::new(),
+            coverage: vec!["x".to_owned()],
+        };
+        assert_eq!(empty().with_fleet(Vec::new(), 0, false).coverage, ["x"]);
+        assert_eq!(
+            empty().with_fleet(Vec::new(), 1, false).coverage,
+            ["x", "fleet — 1 unreadable line skipped"]
+        );
+        assert_eq!(
+            empty().with_fleet(Vec::new(), 3, false).coverage,
+            ["x", "fleet — 3 unreadable lines skipped"]
+        );
+        assert_eq!(
+            empty().with_fleet(Vec::new(), 3, true).coverage,
+            ["x", "fleet — feed unreadable"]
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

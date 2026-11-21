@@ -132,6 +132,10 @@ pub fn run(
 /// # Errors
 ///
 /// Propagates a write failure on the caller's streams.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered rename entry: grammar, caller class, ownership, actor and the locked rename read top to bottom"
+)]
 pub(crate) fn run_as(
     root: &Path,
     tail: &[String],
@@ -260,7 +264,8 @@ pub(crate) fn run_as(
         drop(pair);
         return Ok(seat_refusal(root, &old, seat, tail, err)?);
     }
-    locked(root, &old, &new, crash.as_deref(), out, err)
+    let actor = entry.map_or_else(|| "human".to_owned(), Entry::actor);
+    locked_as(root, &old, &new, (crash.as_deref(), &actor), out, err)
 }
 
 /// The entry's ONE reading of the calling pane, carried into the rename.
@@ -274,6 +279,15 @@ pub(crate) struct Entry {
 }
 
 impl Entry {
+    /// The actor the lifecycle journals name for this caller: the agent
+    /// seat's display name (else `slot:<slot>`), or `human` for the owner's
+    /// own terminal and for any pane that is not an agent seat.
+    pub(crate) fn actor(&self) -> String {
+        self.seat()
+            .as_ref()
+            .map_or_else(|| "human".to_owned(), crate::session_launch::seat_actor)
+    }
+
     /// The ordinary agent seat the reading names, if it is one.
     pub(crate) fn seat(&self) -> Option<crate::relay::PaneIdentity> {
         let Some(crate::relay::SeatClass::Ordinary(pane)) = &self.class else {
@@ -1160,11 +1174,25 @@ fn crash_cut_until(
 /// A live source keeps the existing live behavior in [`live`] (with checked
 /// publication); a positively stopped source takes the Slice-A transaction in
 /// [`stopped`]/`recover`.
+/// [`locked_as`] for the owner's own terminal: the entry the frozen locked
+/// pins drive.
+#[cfg(test)]
 fn locked(
     root: &Path,
     old: &str,
     new: &str,
     crash: Option<&str>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> crate::error::Result<u8> {
+    locked_as(root, old, new, (crash, "human"), out, err)
+}
+
+fn locked_as(
+    root: &Path,
+    old: &str,
+    new: &str,
+    (crash, actor): (Option<&str>, &str),
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -1183,7 +1211,7 @@ fn locked(
             old,
             new,
             &server,
-            crash,
+            (crash, actor),
             Absence::BootProof,
             &mut None,
             out,
@@ -1196,7 +1224,7 @@ fn locked(
     if let Err(refusal) = armed_live(crash, old) {
         return refuse(err, &refusal);
     }
-    live(root, old, new, &server, &session_id, out, err)
+    live(root, old, new, (&server, &session_id), actor, out, err)
 }
 
 /// Write one whole refusal line and exit [`EXIT_FAILED`].
@@ -1244,8 +1272,8 @@ fn live(
     root: &Path,
     old: &str,
     new: &str,
-    server: &ServerId,
-    session_id: &str,
+    (server, session_id): (&ServerId, &str),
+    actor: &str,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -1264,10 +1292,12 @@ fn live(
     // 3.
     if !crate::lifecycle::path_exists(&new_dir.join(crate::meta::FILE)) {
         crate::lifecycle::aliases::keep_live(root, old, new, err)?;
+        // A session with no meta has no uuid to name; the rename is still one.
+        feed_renamed(root, &new_dir, old, new, actor, err);
         writeln!(out, "Renamed '{old}' → '{new}'")?;
         return Ok(0);
     }
-    republish(root, server, old, new, look.as_ref(), out, err)
+    republish(root, server, (old, new), (look.as_ref(), actor), out, err)
 }
 
 /// The destination and request checks, in order: an existing tmux session,
@@ -1332,9 +1362,8 @@ fn move_state_dir(old_dir: &Path, new_dir: &Path, old: &str, new: &str) -> Resul
 fn republish(
     root: &Path,
     server: &ServerId,
-    old: &str,
-    new: &str,
-    look: Option<&crate::theme::Look>,
+    (old, new): (&str, &str),
+    (look, actor): (Option<&crate::theme::Look>, &str),
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -1379,7 +1408,34 @@ fn republish(
         return Ok(EXIT_FAILED);
     }
     crate::lifecycle::aliases::keep_live(root, old, new, err)?;
+    // The rename is complete: every checked publication above held. The fleet
+    // feed says so once; a refused or failed publication writes nothing, and
+    // the retry the refusal names reaches this edge again.
+    feed_renamed(root, &new_dir, old, new, actor, err);
     report_success(old, new, &new_dir, journaled, watchdog_expected, out)
+}
+
+/// The fleet feed's `renamed` row of a session now at `new`, which was `old`.
+fn feed_renamed(
+    root: &Path,
+    new_dir: &Path,
+    old: &str,
+    new: &str,
+    actor: &str,
+    err: &mut impl Write,
+) {
+    let uuid = crate::meta::session_id_in(new_dir);
+    crate::fleetfeed::record_or_warn(
+        root,
+        &crate::fleetfeed::Fact {
+            what: crate::fleetfeed::What::Renamed,
+            session: new,
+            uuid: &uuid,
+            actor,
+            note: old,
+        },
+        err,
+    );
 }
 
 /// The pre-mutation look, redressed without reseeding verdicts. An
@@ -3161,7 +3217,7 @@ fn stopped(
     old: &str,
     new: &str,
     server: &ServerId,
-    crash: Option<&str>,
+    (crash, actor): (Option<&str>, &str),
     absence: Absence,
     events: &mut Option<crate::store::EventsHold>,
     out: &mut impl Write,
@@ -3172,11 +3228,30 @@ fn stopped(
     // a new ordinary rename over any of them.
     match read_carrier(root, old, new) {
         Carrier::Pending(intent) => {
-            return recover_as(root, old, new, &intent, crash, absence, events, out, err);
+            return recover_as(
+                root,
+                old,
+                new,
+                &intent,
+                (crash, actor),
+                absence,
+                events,
+                out,
+                err,
+            );
         }
         Carrier::Complete(intent) => {
             return converge_completed(
-                root, old, new, &intent, server, crash, absence, events, out, err,
+                root,
+                old,
+                new,
+                &intent,
+                server,
+                (crash, actor),
+                absence,
+                events,
+                out,
+                err,
             );
         }
         Carrier::Damaged(damaged) => {
@@ -3213,7 +3288,7 @@ fn stopped(
             return Ok(EXIT_FAILED);
         }
     };
-    stopped_fresh(root, old, new, plan, crash, events, out, err)
+    stopped_fresh(root, old, new, plan, (crash, actor), events, out, err)
 }
 
 /// A completed carrier that no longer converges idempotently: the names were
@@ -3231,7 +3306,7 @@ fn converge_completed(
     new: &str,
     intent: &Intent,
     server: &ServerId,
-    crash: Option<&str>,
+    (crash, actor): (Option<&str>, &str),
     absence: Absence,
     events: &mut Option<crate::store::EventsHold>,
     out: &mut impl Write,
@@ -3288,7 +3363,7 @@ fn converge_completed(
         writeln!(err, "Error: {why}. Nothing was renamed.")?;
         return Ok(EXIT_FAILED);
     }
-    stopped_fresh(root, old, new, plan, crash, events, out, err)
+    stopped_fresh(root, old, new, plan, (crash, actor), events, out, err)
 }
 
 /// Rotate a superseded completion aside, preserving its bytes under a
@@ -3332,7 +3407,7 @@ fn stopped_fresh(
     old: &str,
     new: &str,
     plan: Preflight,
-    crash: Option<&str>,
+    (crash, actor): (Option<&str>, &str),
     events: &mut Option<crate::store::EventsHold>,
     out: &mut impl Write,
     err: &mut impl Write,
@@ -3403,7 +3478,7 @@ fn stopped_fresh(
     if let Some(code) = crash_cut("after-intent", crash, err)? {
         return Ok(code);
     }
-    match complete_transaction(root, &mut intent, crash, events, err) {
+    match complete_transaction(root, &mut intent, (crash, actor), events, err) {
         Ok(()) => {
             print_stopped_success(&intent, plan.warn_implicit, out, err)?;
             Ok(0)
@@ -3426,14 +3501,14 @@ fn stopped_fresh(
 fn complete_transaction(
     root: &Path,
     intent: &mut Intent,
-    crash: Option<&str>,
+    (crash, actor): (Option<&str>, &str),
     events: &mut Option<crate::store::EventsHold>,
     err: &mut impl Write,
 ) -> Result<(), TxnError> {
     complete_transaction_until_held(
         root,
         intent,
-        crash,
+        (crash, actor),
         events,
         err,
         park_deadline(std::time::Instant::now()),
@@ -3447,10 +3522,14 @@ fn complete_transaction(
 /// per-cut deadlines — at most one cut fires per drive); tests drive spent
 /// deadlines to prove terminality without sleeping.
 /// `events` is the bound rename's event lock, released before the meta step.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered durable transaction: every phase and its fleet row read top to bottom"
+)]
 fn complete_transaction_until_held(
     root: &Path,
     intent: &mut Intent,
-    crash: Option<&str>,
+    (crash, actor): (Option<&str>, &str),
     events: &mut Option<crate::store::EventsHold>,
     err: &mut impl Write,
     deadline: std::time::Instant,
@@ -3545,6 +3624,16 @@ fn complete_transaction_until_held(
                 retry
             )
         })?;
+        // The commit edge is behind us: the fleet feed says so once. A retry
+        // that finds the carrier complete never reaches this block.
+        feed_renamed(
+            root,
+            &crate::lifecycle::sessions_dir(root).join(&intent.new),
+            &intent.old,
+            &intent.new,
+            actor,
+            err,
+        );
         // The durability cut: the completed result is already published, so
         // the attestation proves survival of process death, not partial work.
         if let Some(code) = crash_cut_until("after-result", crash, err, deadline)
@@ -3745,7 +3834,7 @@ fn recover_as(
     old: &str,
     new: &str,
     intent: &Intent,
-    crash: Option<&str>,
+    (crash, actor): (Option<&str>, &str),
     absence: Absence,
     events: &mut Option<crate::store::EventsHold>,
     out: &mut impl Write,
@@ -3766,7 +3855,7 @@ fn recover_as(
         }
         Ok(Reproved::Pending) => {}
     }
-    match complete_transaction(root, &mut intent, crash, events, err) {
+    match complete_transaction(root, &mut intent, (crash, actor), events, err) {
         Ok(()) => {
             print_stopped_success(&intent, false, out, err)?;
             Ok(0)
@@ -4283,7 +4372,7 @@ fn complete_transaction_until(
     err: &mut impl Write,
     deadline: std::time::Instant,
 ) -> Result<(), TxnError> {
-    complete_transaction_until_held(root, intent, crash, &mut None, err, deadline)
+    complete_transaction_until_held(root, intent, (crash, "human"), &mut None, err, deadline)
 }
 
 /// The plain rename's recovery, which accepts the boot-time proof: the entry
@@ -4303,7 +4392,7 @@ fn recover(
         old,
         new,
         intent,
-        crash,
+        (crash, "human"),
         Absence::BootProof,
         &mut None,
         out,
@@ -5101,7 +5190,13 @@ mod tests {
         std::fs::write(dir.join("workspace.md"), manifest).unwrap();
         std::os::unix::fs::symlink(dir.join("nowhere"), dir.join("send")).unwrap();
         intent.phase = PHASE_META_PUBLISHED.to_owned();
-        match complete_transaction(&root, &mut intent, None, &mut None, &mut Vec::new()) {
+        match complete_transaction(
+            &root,
+            &mut intent,
+            (None, "human"),
+            &mut None,
+            &mut Vec::new(),
+        ) {
             Err(TxnError::Fail(msg)) => {
                 assert!(msg.contains("coherent meta published"), "{msg}");
                 assert!(msg.contains("Remaining: assets, result"), "{msg}");
@@ -5451,7 +5546,7 @@ mod tests {
             "snew",
             &intent,
             &server,
-            None,
+            (None, "human"),
             Absence::BootProof,
             &mut None,
             &mut out,

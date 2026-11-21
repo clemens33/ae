@@ -21,15 +21,14 @@ use crate::tool::ToolKind;
 use crate::transport;
 
 use super::{
-    ClientPrompt, DetachedArgv, all_sessions, announce_to_clients, claims, confirm_on_client,
-    dir_exists, handoff_clients_before_kill, kill_verified, lock, meta_value, name_is_usable,
-    path_exists, recorded_server, server_from_words, server_kind_word, server_of,
+    ClientPrompt, DetachedArgv, Origin, all_sessions, announce_to_clients, claims,
+    confirm_on_client, dir_exists, handoff_clients_before_kill, kill_verified, lock, meta_value,
+    name_is_usable, path_exists, recorded_server, server_from_words, server_kind_word, server_of,
     server_value_word, sessions_dir, views_gone, worktrees_dir,
 };
 
 /// The usage line.
-const USAGE: &str =
-    "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] <session-name|all>";
+const USAGE: &str = "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] [--reason <text>] <session-name|all>";
 
 mod bound;
 #[cfg(test)]
@@ -43,6 +42,9 @@ pub(crate) use bound::{bound_form, own_session_refusal};
 pub(crate) const RM_MARKER: &str = "--verb=rm";
 
 const END_REQUEST_ACTION: &str = "end-request";
+
+/// The journal spelling of the owner, for the rows no seat's words reach.
+const OWNER_ACTOR: &str = "human";
 const END_RESULT_ACTION: &str = "end-result";
 
 /// Whether `word` is one [`EndExpectation::consequence`] can name.
@@ -522,7 +524,8 @@ impl EndExpectation {
             format!("--expect-deadline={}", self.deadline),
             format!("--expect-pushes={}", if self.pushes { "on" } else { "off" }),
         ]);
-        DetachedArgv(command)
+        // Only the menu's confirmed End mints this argv: an owner's click.
+        DetachedArgv(command, Origin::Owner)
     }
 
     /// Prove the expectation against the world, under the caller's lock.
@@ -757,6 +760,9 @@ struct Args {
     /// confirmation, the handoff and the supervisor, and proven under the
     /// lifecycle lock before any migration, stop or write.
     expect_own: Option<String>,
+    /// Who ends the sessions and why, for the fleet feed and the request
+    /// rows. A detached supervisor reads only the reason from its argv.
+    who: super::Stopper,
 }
 
 /// Which process owns the destructive sequence.
@@ -784,6 +790,10 @@ pub(crate) fn run(
 
 /// [`run`] on the entry's ONE reading of the calling pane, which the bound
 /// end judges its caller by (`None`: it reads the pane itself).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered end entry: lifts, grammar, caller, prompt route and the effect read top to bottom"
+)]
 pub(crate) fn run_as(
     root: &Path,
     tail: &[String],
@@ -792,8 +802,21 @@ pub(crate) fn run_as(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    // `--reason <text>` and a detached form's `--actor-pane=<id>` are lifted
+    // first: they are the caller's own words, and neither grammar below has a
+    // place for them.
+    let (who, tail) = match super::lift_who(tail, || {
+        entry.map_or_else(|| OWNER_ACTOR.to_owned(), crate::rename::Entry::actor)
+    }) {
+        Ok(lifted) => lifted,
+        Err(why) => {
+            writeln!(err, "Error: {why} Nothing was ended.")?;
+            return Ok(EXIT_USAGE);
+        }
+    };
+    let tail = tail.as_slice();
     match bound_form(tail) {
-        Some(Ok(request)) => return bound::run(root, &request, entry, out, err),
+        Some(Ok(request)) => return bound::run(root, &request, &who.reason, entry, out, err),
         Some(Err(why)) => {
             writeln!(err, "Error: {why} Nothing was ended.")?;
             return Ok(EXIT_USAGE);
@@ -807,6 +830,7 @@ pub(crate) fn run_as(
             return Ok(EXIT_USAGE);
         }
     };
+    args.who = who;
     if args.pane.is_none() {
         args.pane = ambient_pane.map(ToOwned::to_owned);
     }
@@ -1157,6 +1181,7 @@ fn parse(tail: &[String]) -> Result<Args, String> {
         purge_cli: None,
         expect: None,
         expect_own: None,
+        who: super::Stopper::default(),
     };
     let mut confirmed = Vec::<ConfirmedParts>::new();
     let mut expect = ExpectWords::default();
@@ -1354,6 +1379,12 @@ fn push_confirmed(command: &mut Vec<String>, confirmed: &ConfirmedPlan) {
     );
 }
 
+/// `--reason=<text>` and `--actor-pane=<id>` for a detached argv, each only when
+/// the end has one to carry.
+fn push_reason(command: &mut Vec<String>, args: &Args) {
+    command.extend(args.who.carried(true));
+}
+
 /// The detached worker's exact argv.
 fn supervisor_argv(args: &Args, confirmed: &ConfirmedPlan) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
@@ -1381,7 +1412,8 @@ fn supervisor_args(core: String, args: &Args, confirmed: &ConfirmedPlan) -> Deta
     if let Some(own) = &args.expect_own {
         command.push(format!("--expect-own={own}"));
     }
-    DetachedArgv(command)
+    push_reason(&mut command, args);
+    DetachedArgv(command, args.who.origin())
 }
 
 /// The short-lived tmux job's exact argv. It records intent, starts the
@@ -1406,7 +1438,9 @@ fn handoff_argv(args: &Args, frozen: &[FrozenTarget]) -> Option<DetachedArgv> {
     if let Some(own) = &args.expect_own {
         command.push(format!("--expect-own={own}"));
     }
-    Some(DetachedArgv(command))
+    push_reason(&mut command, args);
+    // Tmux runs this job, not the detached door: no policy applies to it.
+    Some(DetachedArgv(command, Origin::Inherited))
 }
 
 /// Facts which survive the successful removal of a session's live state.
@@ -1434,6 +1468,14 @@ fn notices(root: &Path, args: &Args) -> Vec<Notice> {
             }
         })
         .collect()
+}
+
+/// What a direct end's request row says: the caller's pane when it has one.
+fn direct_summary(pane: Option<&str>) -> String {
+    match pane.filter(|pane| !pane.is_empty()) {
+        Some(_) => request_summary(pane),
+        None => "end requested".to_owned(),
+    }
 }
 
 fn request_summary(pane: Option<&str>) -> String {
@@ -1624,8 +1666,9 @@ fn run_own(
         &dir,
         name,
         id,
+        args.who.journal_actor(),
         END_REQUEST_ACTION,
-        &request_summary(args.pane.as_deref()),
+        &super::with_reason(&request_summary(args.pane.as_deref()), &args.who.reason),
     );
     let (mut captured_out, mut captured_err) = (Vec::new(), Vec::new());
     let ended = end_locked(
@@ -1685,6 +1728,7 @@ fn record_failure(root: &Path, notices: &[Notice], summary: &str) {
                 &notice.dir,
                 &notice.name,
                 if notice.purge { "" } else { &notice.archive_id },
+                OWNER_ACTOR,
                 END_RESULT_ACTION,
                 summary,
             );
@@ -1777,6 +1821,7 @@ fn run_expected(
         &dir,
         name,
         id,
+        OWNER_ACTOR,
         END_REQUEST_ACTION,
         "end requested from a confirmed menu",
     );
@@ -1871,7 +1916,7 @@ fn handoff(
         )?;
         return Ok(EXIT_FAILED);
     };
-    let requested = request_summary(args.pane.as_deref());
+    let requested = super::with_reason(&request_summary(args.pane.as_deref()), &args.who.reason);
     let captured: Vec<_> = frozen
         .iter()
         .map(|target| {
@@ -1890,11 +1935,20 @@ fn handoff(
     let own = args.expect_own.is_some();
     if !own {
         for (name, dir, id) in &captured {
-            transaction::emit(dir, name, id, END_REQUEST_ACTION, &requested);
+            transaction::emit(
+                dir,
+                name,
+                id,
+                args.who.journal_actor(),
+                END_REQUEST_ACTION,
+                &requested,
+            );
         }
     }
     let mut failures = 0_u32;
     for (name, argv) in supervisors {
+        // An owner's end (a handoff the owner confirmed included) is minted with
+        // the owner's origin: the pane tmux ran the job in asked nothing.
         if !transport::run_detached(&argv) {
             failures += 1;
             let dir = sessions_dir(root).join(name);
@@ -1904,6 +1958,7 @@ fn handoff(
                     &dir,
                     name,
                     id,
+                    args.who.journal_actor(),
                     END_RESULT_ACTION,
                     "FAILED: supervisor did not start",
                 );
@@ -2246,6 +2301,27 @@ fn end_locked(
         None
     };
 
+    // A direct end leaves no request row of its own, and the supervised ones
+    // wrote theirs before this. The owner's words survive in the archive: with
+    // a reason, the request is recorded now that the end is proved and
+    // admitted, ahead of the stop and the capture. The row takes the same
+    // completed-end guard as every other (`transaction::emit`).
+    if args.mode == RunMode::Direct && !args.who.reason.is_empty() {
+        let id = if plan.action == Action::Keep {
+            archive::canonical_uuid(&meta_value(&bytes, "session_id"))
+        } else {
+            String::new()
+        };
+        transaction::emit(
+            &dir,
+            name,
+            &id,
+            args.who.journal_actor(),
+            END_REQUEST_ACTION,
+            &super::with_reason(&direct_summary(args.pane.as_deref()), &args.who.reason),
+        );
+    }
+
     // Local mode, or a retry of an end whose git step already ran: stop, then
     // capture, with no git of its own.
     if let Some((git, ended)) = early_finish(&mode, retry) {
@@ -2253,7 +2329,7 @@ fn end_locked(
             return Ok(false);
         }
         // CAPTURE BEFORE DELETE.
-        if !transaction::finish(root, name, &bytes, &plan, &git, out, err)? {
+        if !transaction::finish(root, name, &bytes, &plan, &git, &args.who, out, err)? {
             return Ok(false);
         }
         writeln!(out, "{ended} {name}")?;
@@ -2286,7 +2362,7 @@ fn end_locked(
 
     // The last thing before the session stops existing: capture it, or fail and
     // keep it.
-    if !transaction::finish(root, name, &bytes, &plan, &git, out, err)? {
+    if !transaction::finish(root, name, &bytes, &plan, &git, &args.who, out, err)? {
         return Ok(false);
     }
     if preserve_workdir {
@@ -2489,7 +2565,14 @@ fn stop_target(
         } else {
             String::new()
         };
-        transaction::emit(dir, name, &archive_id, END_RESULT_ACTION, &note);
+        transaction::emit(
+            dir,
+            name,
+            &archive_id,
+            OWNER_ACTOR,
+            END_RESULT_ACTION,
+            &note,
+        );
         writeln!(err, "Warning: {note}")?;
     }
     Ok(true)
@@ -2947,7 +3030,18 @@ fn cleanup(
         return Ok(true);
     }
     // A grammar-invalid name: removed here, so it is never made un-endable.
-    let _ = std::fs::remove_dir_all(&dir);
+    // The end is reported only when the state is gone, or positively absent.
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => {}
+        Err(why) if why.kind() == io::ErrorKind::NotFound => {}
+        Err(why) => {
+            writeln!(
+                err,
+                "Error: the session state for '{name}' was not removed ({why}); the session is NOT ended."
+            )?;
+            return Ok(false);
+        }
+    }
     if preserve {
         writeln!(
             out,
@@ -3605,6 +3699,144 @@ mod tests {
         assert_eq!(read.expect_own.as_deref(), Some(UUID));
         assert!(parse(&["all".to_owned(), word]).is_err());
     }
+
+    /// The owner is never a word of an argv: the minting site derives the
+    /// origin, and only the owner's detached end (and the menu's) is ownerless.
+    #[test]
+    fn only_the_owners_detached_end_is_minted_ownerless() {
+        let tail: Vec<String> = ["alpha", "-f"].map(ToOwned::to_owned).to_vec();
+        let confirmed = ConfirmedPlan {
+            name: "alpha".to_owned(),
+            plan: keep(),
+            from_default: false,
+            tmux: FrozenTmux::Unknown,
+        };
+        let frozen = [FrozenTarget {
+            name: "alpha".to_owned(),
+            plan: keep(),
+            tmux: FrozenTmux::Unknown,
+        }];
+        for (actor, ownerless) in [("", true), ("human", true), ("lead", false)] {
+            let mut args = parse(&tail).expect("an end");
+            args.who = crate::lifecycle::Stopper {
+                actor: actor.to_owned(),
+                ..crate::lifecycle::Stopper::default()
+            };
+            let supervisor = supervisor_args("/core".to_owned(), &args, &confirmed);
+            assert_eq!(supervisor.ownerless(), ownerless, "{actor:?}");
+            // Tmux runs the handoff job, not the detached door.
+            let handoff = handoff_argv(&args, &frozen).expect("ae names its own executable");
+            assert!(!handoff.ownerless(), "{actor:?}");
+        }
+        // The menu's confirmed End is a click: the owner's.
+        assert!(expectation(keep(), 0).argv("/core".to_owned()).ownerless());
+    }
+
+    /// The reason rides every hop of a detached end, and no identity does: an
+    /// owner and a seat carry the same words. Each hop reads the reason back
+    /// through the lift, and its text is data.
+    #[test]
+    fn the_reason_alone_rides_the_detached_end_argv() {
+        let tail: Vec<String> = ["alpha", "-f"].map(ToOwned::to_owned).to_vec();
+        let mut args = parse(&tail).expect("an end");
+        let confirmed = ConfirmedPlan {
+            name: "alpha".to_owned(),
+            plan: keep(),
+            from_default: false,
+            tmux: FrozenTmux::Unknown,
+        };
+        let frozen = [FrozenTarget {
+            name: "alpha".to_owned(),
+            plan: keep(),
+            tmux: FrozenTmux::Unknown,
+        }];
+        args.who = crate::lifecycle::Stopper {
+            actor: "lead".to_owned(),
+            reason: "work --pane finished".to_owned(),
+        };
+        let supervisor = supervisor_args("/core".to_owned(), &args, &confirmed);
+        let handoff = handoff_argv(&args, &frozen).expect("ae names its own executable");
+        for argv in [supervisor.as_args(), handoff.as_args()] {
+            assert!(
+                argv.contains(&"--reason=work --pane finished".to_owned()),
+                "{argv:?}"
+            );
+            assert!(
+                argv.iter().all(|word| !word.starts_with("--actor")),
+                "{argv:?}"
+            );
+            let words = argv.get(2..).expect("words");
+            let (who, rest) =
+                crate::lifecycle::lift_who(words, || "lead".to_owned()).expect("a reason");
+            assert_eq!(who.reason, "work --pane finished");
+            // Every form reads its caller; no word of the argv is an identity.
+            assert_eq!(who.actor, "lead", "{words:?}");
+            // What is left parses as the same end, and the reason text is data.
+            let read = parse(&rest).expect("the lifted argv");
+            assert_eq!(read.target, "alpha");
+        }
+        // An owner carries no reason it does not have.
+        args.who = crate::lifecycle::Stopper::owner();
+        let supervisor = supervisor_args("/core".to_owned(), &args, &confirmed);
+        assert!(
+            supervisor
+                .as_args()
+                .iter()
+                .all(|word| !word.starts_with("--reason") && !word.starts_with("--actor")),
+            "{:?}",
+            supervisor.as_args()
+        );
+        // `--actor-pane` is no flag of an end.
+        let public: Vec<String> = ["alpha", "--actor-pane=%7"].map(ToOwned::to_owned).to_vec();
+        assert!(parse(&public).is_err());
+    }
+
+    /// A name from before the name grammar is removed by the core's own
+    /// `remove_dir_all`; the end is reported only when the state is gone.
+    #[test]
+    fn a_legacy_named_end_is_not_reported_while_its_state_remains() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = std::env::temp_dir().join(format!("ae-end-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("sessions").join("old.one");
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).expect("a legacy session");
+        std::fs::write(sub.join("file"), "x").expect("a file");
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o500)).expect("a lock");
+        // A privileged user removes it anyway: nothing to show then.
+        if std::fs::File::create(sub.join("probe")).is_ok() {
+            let _ = std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700));
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        let plan = Plan {
+            action: Action::Keep,
+            detail: String::new(),
+            purge: false,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let ended =
+            super::cleanup(&root, "old.one", b"", &plan, false, &mut out, &mut err).expect("io");
+        let said = String::from_utf8_lossy(&err).into_owned();
+        assert!(!ended, "{said}");
+        assert!(
+            said.contains("was not removed") && said.contains("NOT ended"),
+            "{said}"
+        );
+        assert!(path_exists(&dir), "the state the end did not remove stays");
+        // Once the obstacle is gone the end completes; a state already absent is gone too.
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).expect("unlock");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert!(
+            super::cleanup(&root, "old.one", b"", &plan, false, &mut out, &mut err).expect("io")
+        );
+        assert!(!path_exists(&dir));
+        assert!(
+            super::cleanup(&root, "old.one", b"", &plan, false, &mut out, &mut err).expect("io")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_confirmation_is_refused_on_its_stamp_and_record_before_tmux_is_asked() {
         let record = |rows: &str| {

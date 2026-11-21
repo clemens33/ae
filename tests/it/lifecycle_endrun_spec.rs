@@ -8,8 +8,7 @@
 
 use super::*;
 
-const USAGE: &str =
-    "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] <session-name|all>\n";
+const USAGE: &str = "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] [--reason <text>] <session-name|all>\n";
 const SUPERVISOR: &str = "Error: end supervisor received no matching confirmed plan.\n";
 const ALL_ACK: &str = "Error: --assume-stopped is per-target only — not valid with 'all'.\n";
 

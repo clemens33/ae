@@ -114,6 +114,9 @@ pub(crate) struct Console {
     /// records against: set by `ae chat` alone, so a view that reads a
     /// session it does not sit in (`ae app`, the relay) never asks tmux.
     proof: Option<inventory::ServerId>,
+    /// The fleet feed an orchestrator's chat draws: its one read of the
+    /// fleet journal per refresh, and which rows it shows.
+    fleet: crate::fleetfeed::Feed,
 }
 
 /// How far a staged read may go into the lead pair's transcripts.
@@ -196,6 +199,7 @@ impl Console {
             standing: false,
             staged: Staged::default(),
             proof: None,
+            fleet: crate::fleetfeed::Feed::default(),
         }
     }
 
@@ -498,6 +502,12 @@ impl Console {
             &via,
             chat,
         );
+        // An orchestrator's chat also draws the fleet's lifecycle lines: one
+        // read of the fleet journal for this refresh, never one per frame.
+        if orchestrator && let Some(root) = self.dir.parent().and_then(Path::parent) {
+            let (rows, skipped, unreadable) = self.fleet.pick(root, crate::time::Timestamp::now());
+            lane = lane.with_fleet(lane::fleet_items(&rows), skipped, unreadable);
+        }
         let journal_read = read_gap.is_none();
         let settled = journal_read && self.staged.stage == Stage::Every;
         lane.coverage.extend(read_gap);

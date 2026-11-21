@@ -2,6 +2,8 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::lifecycle::Stopper;
+
 use super::{
     Action, Git, Notice, Plan, archive, archive_keep, archive_step, cleanup, meta, meta_value,
     recorded_server, sessions_dir,
@@ -118,16 +120,21 @@ fn removed_workdir(
 
 /// Git network work is finished before entry. Every handle survives the final
 /// source proof, managed removal and durable canonical unregister.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "finish's inputs, and who ended the session for the fleet feed"
+)]
 pub(super) fn finish(
     root: &Path,
     name: &str,
     before: &[u8],
     plan: &Plan,
     git: &Git,
+    who: &Stopper,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<bool> {
-    finish_vetoed(root, name, before, plan, git, None, out, err)
+    finish_vetoed(root, name, before, plan, git, None, who, out, err)
 }
 
 /// The admission a bound end re-runs under the source holds, after the
@@ -136,13 +143,50 @@ pub(super) type Veto<'a> = &'a dyn Fn(&Path) -> Result<(), String>;
 
 /// [`finish`], with a bound end's `veto` judged under the same holds that
 /// publish the archive: a veto refuses before anything is published, and the
-/// stopped session stays registered.
+/// stopped session stays registered. The ONE funnel of every end, Keep and
+/// purge, ordinary and bound: when it returns `true` the session is gone, and
+/// the fleet feed records that `who` ended it, exactly once. A refused,
+/// vetoed or failed end records nothing.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "finish's inputs, the bound end's one veto, and who ended the session"
+)]
+pub(super) fn finish_vetoed(
+    root: &Path,
+    name: &str,
+    before: &[u8],
+    plan: &Plan,
+    git: &Git,
+    veto: Option<Veto<'_>>,
+    who: &Stopper,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<bool> {
+    let ended = finish_held(root, name, before, plan, git, veto, out, err)?;
+    if ended {
+        let uuid = archive::canonical_uuid(&meta_value(before, "session_id"));
+        crate::fleetfeed::record_or_warn(
+            root,
+            &crate::fleetfeed::Fact {
+                what: crate::fleetfeed::What::Ended,
+                session: name,
+                uuid: &uuid,
+                actor: &who.actor,
+                note: &who.reason,
+            },
+            err,
+        );
+    }
+    Ok(ended)
+}
+
+/// [`finish_vetoed`] without the feed's row.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "finish's inputs and its one ordered held sequence, plus the bound end's one veto"
 )]
-pub(super) fn finish_vetoed(
+fn finish_held(
     root: &Path,
     name: &str,
     before: &[u8],
@@ -261,10 +305,10 @@ pub(super) fn finish_vetoed(
 
 /// This closure holds EVENTS ONLY. It never takes meta/memo locks or compares
 /// live sources: the captured UUID and complete strict archive are sufficient.
-pub(super) fn emit(dir: &Path, name: &str, id: &str, action: &str, summary: &str) {
+pub(super) fn emit(dir: &Path, name: &str, id: &str, actor: &str, action: &str, summary: &str) {
     let line = crate::tracked::event_line(&crate::tracked::EventFields::new(
         crate::time::Timestamp::now(),
-        "human",
+        actor,
         action,
         name,
         "",

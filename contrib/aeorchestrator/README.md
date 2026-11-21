@@ -73,14 +73,16 @@ For another session, the seat's own ae admits six lifecycle forms:
 | start a stopped session | `ae <name> --no-attach` |
 | create | `ae <name> --dir <path> --local\|--copy\|--worktree <profile-flags> --no-attach` |
 | bound resume | `ae <name> --resume --no-attach --expect-uuid <uuid>` |
-| bound stop | `ae stop <name> --expect-uuid <uuid> [--owner-input <ask-id>]` |
+| bound stop | `ae stop <name> --expect-uuid <uuid> [--owner-input <ask-id>] --reason "<why>"` |
 | bound rename | `ae rename <old> <new> --expect-uuid <uuid> [--owner-input <ask-id>]` |
-| bound end | `ae end <name> --keep-history --expect-uuid <uuid> [--owner-input <ask-id>]` |
+| bound end | `ae end <name> --keep-history --expect-uuid <uuid> [--owner-input <ask-id>] --reason "<why>"` |
 
 Every admitted lifecycle command, and every `send`, `ask`, `review` or
 `interrupt` to a pane address, writes two rows to the seat's own journal before
 and after its effect: `dispatch-request` and `dispatch-result`, actor
-`ae/orchestrator`, with one shared `dispatch-<ts>-<hex>` reference. If the
+`ae/orchestrator`, with one shared `dispatch-<ts>-<hex>` reference. The seat always passes `--reason "<why>"`
+on a stop and an end: one short sentence, which ae stores (one line, at most 200 characters)
+and the owner reads in this chat's fleet feed as `HH:MM <session> stopped by orchestrator — <why>`. If the
 request row cannot be written, nothing happens. A delivery to an event-only sink
 (`telegram:`, `discord:`, `console:local` or an `ae:` sink) records only its own
 event and names no target uuid. A start or resume refuses a

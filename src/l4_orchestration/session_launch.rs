@@ -72,7 +72,9 @@ pub use plan::{Env, Mode, Plan, is_bound_resume, parse_plan};
 use plan::{EnvError, read_env};
 pub(crate) use plan::{parse_plan_with_attach, parse_seat_plan};
 
-pub(crate) use caller::{Caller, LaunchCaller, LaunchRoute, is_own, own_uuid, refuse_lifecycle};
+pub(crate) use caller::{
+    Caller, LaunchCaller, LaunchRoute, is_own, own_uuid, refuse_lifecycle, seat_actor,
+};
 #[cfg(test)]
 use preflight::check_resume_target;
 use preflight::{
@@ -1513,6 +1515,9 @@ fn build(
     if let Some(audit) = audit {
         audit.built(&uuid);
     }
+    // The fleet feed's row, past the last rollback and still under the hold:
+    // it names a launch that is handed over, never one that was undone.
+    record_fleet_launch(&env.home, &dir, shape, &uuid, caller, err);
     // The session is fully on disk; `ae end` may safely delete it, and the
     // capture children below are spawned detached past the hold.
     drop(lifecycle);
@@ -2781,6 +2786,39 @@ fn journal_launch_start(
         &reference,
         caller,
     )
+}
+
+/// The fleet feed's row of a launch handed over: `created`, or `resumed` with
+/// what the session parked when it filed a parking memo. Best-effort: a row
+/// the feed cannot append is a warning, never a failed launch.
+fn record_fleet_launch(
+    root: &Path,
+    dir: &Path,
+    shape: &Session,
+    uuid: &str,
+    caller: Caller<'_>,
+    err: &mut impl Write,
+) {
+    let actor = caller::actor_of(caller);
+    let (what, note) = if shape.resuming {
+        (
+            crate::fleetfeed::What::Resumed,
+            crate::fleetfeed::parked_in(dir).unwrap_or_default(),
+        )
+    } else {
+        (crate::fleetfeed::What::Created, String::new())
+    };
+    crate::fleetfeed::record_or_warn(
+        root,
+        &crate::fleetfeed::Fact {
+            what,
+            session: &shape.name,
+            uuid,
+            actor: &actor,
+            note: &note,
+        },
+        err,
+    );
 }
 
 /// The rollback of a session whose start row could not be appended, under the

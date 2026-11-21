@@ -1097,8 +1097,27 @@ pub(crate) fn run_say(notice: &crate::monitor::Notice) -> bool {
 /// The detached-supervisor leg of the one process door — the ONLY way product
 /// code starts a process that must OUTLIVE it, and the program is FIXED here to
 /// `nohup`.
+///
+/// The argv carries the one policy this door applies: the sealed argv of an
+/// owner's own act (a menu or app click, a prompt's job that read no seat)
+/// starts a process with `TMUX_PANE` emptied, so that process reads no calling
+/// pane. Anything else inherits the environment of the process that asks.
 pub(crate) fn run_detached(argv: &crate::lifecycle::DetachedArgv) -> bool {
-    spawn("nohup", argv.as_args(), &[], Streams::Detached, None).is_some()
+    spawn(
+        "nohup",
+        argv.as_args(),
+        detached_env(argv.ownerless()),
+        Streams::Detached,
+        None,
+    )
+    .is_some()
+}
+
+/// The environment [`run_detached`] adds: an empty `TMUX_PANE` for an owner's
+/// act, so the process it starts is never taken for the seat whose pane a
+/// click or a tmux job happened to run in.
+fn detached_env(ownerless: bool) -> &'static [(&'static str, &'static str)] {
+    if ownerless { &[("TMUX_PANE", "")] } else { &[] }
 }
 
 /// The automatic-upgrade leg of the existing detached process door. The argv
@@ -3181,6 +3200,15 @@ mod paneerr_spec;
 
 #[cfg(test)]
 mod tests {
+    /// The one environment override of the detached door: an owner's act
+    /// empties `TMUX_PANE` (set but empty, so the process reads no calling
+    /// pane), and any other act adds nothing.
+    #[test]
+    fn the_detached_door_empties_the_pane_only_for_an_owners_act() {
+        assert_eq!(super::detached_env(true), &[("TMUX_PANE", "")]);
+        assert!(super::detached_env(false).is_empty());
+    }
+
     thread_local! {
         static SPAWNS: std::cell::RefCell<Option<Vec<Vec<String>>>> =
             const { std::cell::RefCell::new(None) };

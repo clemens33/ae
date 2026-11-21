@@ -735,14 +735,18 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         },
         Some("doctor") => Route::Core(with_head(crate::cli::DOCTOR, &tail())),
         Some("init") => Route::Core(with_head(crate::cli::INIT, &tail())),
-        Some("stop") => Route::Core(with_head(crate::cli::STOP, &with_pane(&tail(), pane))),
+        Some("stop") => Route::Core(with_head(
+            crate::cli::STOP,
+            &with_pane(&tail(), pane, &["--reason"]),
+        )),
         Some("rename") => Route::Core(with_head(crate::cli::RENAME, &tail())),
         Some("reseat") => Route::Core(with_head(crate::cli::RESEAT, &tail())),
         // `loop` is the deprecated spelling of the renamed feature, kept as an
         // alias for sessions created before it.
-        Some("watchdog" | "loop") => {
-            Route::Core(with_head(crate::cli::WATCHDOG, &with_pane(&tail(), pane)))
-        }
+        Some("watchdog" | "loop") => Route::Core(with_head(
+            crate::cli::WATCHDOG,
+            &with_pane(&tail(), pane, &[]),
+        )),
         Some("telegram") => Route::Core(with_head(
             crate::cli::TELEGRAM,
             &telegram_tail(preamble, &tail()),
@@ -794,11 +798,25 @@ fn with_head(head: &str, tail: &[String]) -> Vec<String> {
     argv
 }
 
-/// Append `--pane <id>` unless the caller named one itself.
-fn with_pane(tail: &[String], pane: Option<&str>) -> Vec<String> {
-    let named = tail
-        .iter()
-        .any(|word| word == "--pane" || word.starts_with("--pane="));
+/// Append `--pane <id>` unless the caller named one itself. The operand of a
+/// word in `valued` is its value, whatever it spells: the core consumes it
+/// before it reads any other flag, so `--reason --pane` is a reason, not a
+/// pane.
+fn with_pane(tail: &[String], pane: Option<&str>, valued: &[&str]) -> Vec<String> {
+    let mut named = false;
+    let mut words = tail.iter();
+    while let Some(word) = words.next() {
+        if valued.contains(&word.as_str()) {
+            // A valued word with no operand is the core's refusal to make
+            // ("--reason requires a text"): nothing is injected behind it, or
+            // the injected `--pane` would become its operand.
+            if words.next().is_none() {
+                return tail.to_vec();
+            }
+        } else if word == "--pane" || word.starts_with("--pane=") {
+            named = true;
+        }
+    }
     let mut words = tail.to_vec();
     if let Some(pane) = pane.filter(|id| !id.is_empty() && !named) {
         words.push("--pane".to_owned());
@@ -1216,6 +1234,68 @@ mod tests {
         assert_eq!(
             route(&preamble(), &argv(&["stop"]), Some("")),
             Route::Core(argv(&["_stop"]))
+        );
+    }
+
+    // `--reason` takes the next word as its text, so a reason that spells
+    // `--pane` names no pane: the caller's own pane is still appended, and
+    // `--self` keeps its caller. A real `--pane` beside a reason still wins.
+    #[test]
+    fn a_reason_that_spells_the_pane_flag_does_not_name_a_pane() {
+        assert_eq!(
+            route(
+                &preamble(),
+                &argv(&["stop", "--self", "--reason", "--pane"]),
+                Some("%7")
+            ),
+            Route::Core(argv(&[
+                "_stop", "--self", "--reason", "--pane", "--pane", "%7"
+            ]))
+        );
+        assert_eq!(
+            route(
+                &preamble(),
+                &argv(&["stop", "x", "--reason", "--pane=%3"]),
+                Some("%7")
+            ),
+            Route::Core(argv(&[
+                "_stop",
+                "x",
+                "--reason",
+                "--pane=%3",
+                "--pane",
+                "%7"
+            ]))
+        );
+        assert_eq!(
+            route(
+                &preamble(),
+                &argv(&["stop", "x", "--reason=a", "--pane", "%3"]),
+                Some("%7")
+            ),
+            Route::Core(argv(&["_stop", "x", "--reason=a", "--pane", "%3"]))
+        );
+        // A bare final `--reason` has no text: the tail stays as typed, so the
+        // core's own missing-text refusal runs and no `--pane` becomes its text.
+        for tail in [
+            &["stop", "x", "--reason"][..],
+            &["stop", "--self", "--reason"][..],
+        ] {
+            let mut expect = vec!["_stop"];
+            expect.extend(&tail[1..]);
+            assert_eq!(
+                route(&preamble(), &argv(tail), Some("%7")),
+                Route::Core(argv(&expect)),
+                "{tail:?}"
+            );
+        }
+        assert_eq!(
+            route(
+                &preamble(),
+                &argv(&["stop", "--reason", "why", "--pane=%3"]),
+                Some("%7")
+            ),
+            Route::Core(argv(&["_stop", "--reason", "why", "--pane=%3"]))
         );
     }
 

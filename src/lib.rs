@@ -74,6 +74,7 @@ pub use l3_services::deliver;
 pub use l3_services::deskcmd;
 pub use l3_services::deskstore;
 pub(crate) use l3_services::fleet_read;
+pub use l3_services::fleetfeed;
 pub use l3_services::go_usage;
 pub use l3_services::init;
 pub use l3_services::install;
@@ -643,7 +644,7 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     {
         if matches!(
             request,
-            cli::Request::Rename { .. } | cli::Request::End { .. }
+            cli::Request::Rename { .. } | cli::Request::End { .. } | cli::Request::Stop { .. }
         ) {
             return run_observed(what, &request, out, err);
         }
@@ -652,6 +653,19 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
         }
     }
     run_admitted(args, &request, out, err)
+}
+
+/// The calling pane's one soft reading for a bound stop's fleet row: its class
+/// as the entry reads it, or `None` outside tmux and for a pane tmux cannot
+/// read. Only the row's actor word reads this; the bound stop proves its
+/// caller by its own rules.
+fn bound_entry(root: &std::path::Path) -> Option<rename::Entry> {
+    let seen = actual_calling_pane()?;
+    let class = seat_class_of(root, &seen.0, &seen.1);
+    Some(rename::Entry {
+        seen: Some(seen),
+        class: Some(class),
+    })
 }
 
 /// A rename's or an end's class gate and the operation, from ONE
@@ -691,6 +705,9 @@ fn run_observed(
         })?,
         cli::Request::Rename { tail } => with_state_root(err, |root, err| {
             rename::run_as(root, tail, Some(&observed), out, err)
+        })?,
+        cli::Request::Stop { tail } => with_state_root(err, |root, err| {
+            lifecycle::run_stop(root, tail, Some(&observed), out, err)
         })?,
         _ => return Ok(entry::EXIT_USAGE),
     };
@@ -4185,6 +4202,9 @@ fn rename_aim(tail: &[String]) -> Option<Outbound> {
 /// not the admitted form is the end's own usage refusal, which changes
 /// nothing, so no class gate reads it.
 fn end_aim(tail: &[String]) -> Option<Outbound> {
+    // The reason's text is data, whatever it spells: lift it before the scan.
+    let (_, lifted) = lifecycle::split_reason(tail).ok()?;
+    let tail = lifted.as_slice();
     let marker = lifecycle::end::RM_MARKER;
     let verb = if tail.iter().any(|word| word == marker) {
         "rm"
@@ -4215,6 +4235,8 @@ fn end_aim(tail: &[String]) -> Option<Outbound> {
 
 /// The session a plain `_stop` tail names: `None` for `--self` or no name.
 fn stop_aim(tail: &[String]) -> Option<String> {
+    // The reason's text is data, whatever it spells: lift it before the scan.
+    let (_, tail) = lifecycle::split_reason(tail).ok()?;
     if tail.iter().any(|word| word == "--self") {
         return None;
     }
@@ -5181,9 +5203,17 @@ pub fn run_with(
         cli::Request::End { tail } => with_state_root(err, |root, err| {
             lifecycle::end::run(root, tail, doors::calling_pane_id().as_deref(), out, err)
         })?,
-        cli::Request::Stop { tail } => {
-            with_state_root(err, |root, err| lifecycle::run_stop(root, tail, out, err))?
-        }
+        cli::Request::Stop { tail } => with_state_root(err, |root, err| {
+            // The bound stop proves its caller itself, so the dispatcher's
+            // class gate never reads it. The fleet feed still names the agent
+            // seat that ran it, from one soft reading of the calling pane: an
+            // unread pane or none is the provenance's own word, and no
+            // refusal comes from here.
+            let observed = lifecycle::is_bound_stop(tail)
+                .then(|| bound_entry(root))
+                .flatten();
+            lifecycle::run_stop(root, tail, observed.as_ref(), out, err)
+        })?,
         cli::Request::SessionMenu { tail } => {
             with_state_root(err, |root, err| session_menu::run(root, tail, out, err))?
         }
@@ -5398,6 +5428,32 @@ mod tests {
             )
         );
         assert_eq!(of(&["_end", "t", "--expect-uuid", uuid]), None);
+        // The reason is lifted first: it is no word of the end and no target.
+        assert_eq!(
+            of(&[
+                "_end",
+                "t",
+                "--keep-history",
+                "--expect-uuid",
+                uuid,
+                "--reason",
+                "work finished"
+            ]),
+            end(
+                Some("t"),
+                true,
+                "end",
+                &["end", "t", "--keep-history", "--expect-uuid", uuid]
+            )
+        );
+        assert_eq!(
+            of(&["_end", "--reason", "other", "t"]),
+            end(Some("t"), false, "end", &["end", "t"])
+        );
+        assert_eq!(
+            of(&["_end", "t", "--reason", "--keep-history"]),
+            end(Some("t"), false, "end", &["end", "t"])
+        );
         assert_eq!(
             of(&[
                 "_end",
@@ -5442,6 +5498,29 @@ mod tests {
         assert_eq!(of(&["_stop", "--pane", "%3"]), Some(Outbound::Stop(None)));
         let uuid = "0b6c8f5e-1d2a-4c3b-9e8f-7a6b5c4d3e2f";
         assert_eq!(of(&["_stop", "t", "--expect-uuid", uuid]), None);
+        // The reason is data: it neither names the target nor hides a flag, and the
+        // bound form stays bound with one.
+        assert_eq!(
+            of(&["_stop", "t", "--reason", "--self"]),
+            Some(Outbound::Stop(Some("t".to_owned())))
+        );
+        assert_eq!(
+            of(&["_stop", "--reason", "other", "t"]),
+            Some(Outbound::Stop(Some("t".to_owned())))
+        );
+        assert_eq!(
+            of(&["_stop", "--reason=x", "--self"]),
+            Some(Outbound::Stop(None))
+        );
+        assert_eq!(
+            of(&["_stop", "t", "--expect-uuid", uuid, "--reason", "parked"]),
+            None
+        );
+        // A reason that only spells the expectation makes no bound stop.
+        assert_eq!(
+            of(&["_stop", "t", "--reason", "--expect-uuid", uuid]),
+            Some(Outbound::Stop(Some("t".to_owned())))
+        );
         for (argv, word) in [
             (vec!["_spawn", "/d", "n", "--using", "p"], "spawn"),
             (vec!["_retire", "/d", "n"], "retire"),

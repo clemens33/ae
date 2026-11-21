@@ -98,6 +98,34 @@ the window on demand. See [Keys](#keys).
   a card once: one it showed while it stood is not shown again as closed, only
   its `-- closed:` line is; a fresh start shows the closed cards in history
   order. A needs-you prompt keeps no history.
+- <a id="fleet-lifecycle-lines"></a>**Fleet lifecycle lines** (an orchestrator's chat only): one dim line
+  for each session-level event of every session in the state root, as
+  `HH:MM <session> <event> by <actor> — <reason>`. The events are `created`,
+  `resumed`, `stopped`, `ended` and `renamed`; a plain start of a stopped session is
+  `resumed`. A reseat, a dead-seat relaunch and every refused, failed or already-done
+  operation write nothing. The time is the minute alone, in the viewer's zone, and the
+  reason is left out when there is none. A resume names what the session parked
+  when it filed a `parking` memo, `— parked: <excerpt>`; a rename names the old name,
+  `<new> renamed (was <old>) by <actor>`. `<actor>` is `owner` (the owner's terminal, any pane that is not an agent seat, or a
+  menu or prompt the owner confirmed), `orchestrator`, `reboot`, or the display name of the
+  agent seat that ran the command (`slot:<slot>` when it has none; a stop or end that a
+  supervisor finishes keeps the seat that started it, and one an owner's click started, or a
+  tmux prompt's job that reads no proved seat, is the owner's). `ae stop <name> --reason <text>` and `ae end <name> --reason <text>`
+  give the reason: one line of at most 200 characters, which the orchestrator charter tells
+  the seat to always pass. A chat shows the newest 10 lines of the last 24 hours when it opens
+  (chosen line by line, so a late-written old line never hides a recent one),
+  and afterwards every line recorded since, each once, as long as the journal still holds
+  it: the 400-row bound drops the oldest rows, so a line recorded and evicted between two
+  refreshes is never drawn. Ordinary sessions' chats show none.
+  The lines come from one bounded fleet journal, `<state root>/fleet/events.jsonl`, with one
+  writer: each lifecycle verb appends one row after its effect is proved, and the journal keeps
+  the newest 400 rows (append and trim are one locked, atomic replace). The journal is hostile
+  input: a row that is not whole, repeats an earlier row's `ref` or fails the session-name grammar
+  is skipped and counted in a coverage row (`fleet — 2 unreadable lines skipped`), never drawn.
+  The feed is observability, so its failure only prints a warning and never blocks the verb.
+  Two residuals: a crash between a verb's effect and its row, and a journal lock not taken
+  within the store's wait, lose that one event (a retry never writes it twice), and a purge,
+  which leaves no per-session record, shows in this feed only.
 - **Coverage rows** for anything it cannot read: a torn or absent transcript,
   an unsupported harness, an unreadable journal, skipped journal lines.
 - `--all` shows every assistant reply of the lead pair, answers to agents

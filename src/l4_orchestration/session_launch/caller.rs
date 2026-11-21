@@ -456,6 +456,12 @@ pub(super) fn journal_start(
         .map_err(|why| why.to_string())
 }
 
+/// The actor a launch's journal rows name for `caller`: `human`, `ae:launch`,
+/// a seat's display name or `slot:<slot>`, `ae/orchestrator` or `ae:reboot`.
+pub(super) fn actor_of(caller: Caller<'_>) -> String {
+    Facts::of(caller.who).actor
+}
+
 /// What a start row says of its caller.
 struct Facts<'a> {
     actor: String,
@@ -547,7 +553,7 @@ pub(super) fn socket_spelling(server: &ServerId) -> String {
 
 /// A seat's journal actor: its display name, else `slot:<slot>`, which no
 /// agent name can spell.
-fn seat_actor(seat: &PaneIdentity) -> String {
+pub(crate) fn seat_actor(seat: &PaneIdentity) -> String {
     match (seat.display.as_deref(), seat.slot.as_deref()) {
         (Some(name), _) if !name.is_empty() => name.to_owned(),
         (_, Some(slot)) if !slot.is_empty() => format!("slot:{slot}"),

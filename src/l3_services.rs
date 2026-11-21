@@ -10,6 +10,7 @@ pub mod deliver;
 pub mod deskcmd;
 pub mod deskstore;
 pub(crate) mod fleet_read;
+pub mod fleetfeed;
 pub mod go_usage;
 pub mod init;
 pub mod install;

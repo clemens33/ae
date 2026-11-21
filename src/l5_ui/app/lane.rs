@@ -340,7 +340,7 @@ fn bullet(icons: bool) -> &'static str {
 
 /// The same displayed parts serve keyboard reads and drawn occurrences.
 fn parts(item: &Item, closed: Option<&Closing>) -> Vec<(Role, String)> {
-    if matches!(item.kind, Kind::Accepted { .. }) {
+    if matches!(item.kind, Kind::Accepted { .. } | Kind::Fleet { .. }) {
         return Vec::new();
     }
     let said = closed.map(|closed| match &closed.ask {
@@ -815,6 +815,8 @@ fn head(kind: &Kind, main: &str, through: bool) -> (String, String, Voice) {
         ),
         // Progress, not a turn the human must read: the whole row is dim.
         Kind::Accepted { seat: name, .. } => (name.clone(), "accepted".to_owned(), Voice::System),
+        // One dim line: the words are the speaker, no qualifier follows.
+        Kind::Fleet { words, .. } => (words.clone(), String::new(), Voice::System),
     }
 }
 
@@ -840,7 +842,8 @@ pub(super) fn preview_why(item: &Item) -> Option<String> {
         | Kind::Card { .. }
         | Kind::PastCard { .. }
         | Kind::NeedsYou { .. }
-        | Kind::Accepted { .. } => Some(summary.to_owned()),
+        | Kind::Accepted { .. }
+        | Kind::Fleet { .. } => Some(summary.to_owned()),
         Kind::Said { .. } if item.body.chars().count() >= CHAT_SUMMARY_CAP => Some(format!(
             "journal summary, capped at {CHAT_SUMMARY_CAP} chars"
         )),

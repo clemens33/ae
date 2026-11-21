@@ -84,8 +84,11 @@ ae watchdog <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
 ae telegram <setup|start|stop|status>
                        Machine-global Telegram bridge — see Telegram bridge reference
-ae stop [name]         Pause session, keep ae + agent conversation state for resume
-ae stop <name> --expect-uuid <uuid>
+ae stop [name] [--reason <text>]
+                       Pause session, keep ae + agent conversation state for resume;
+                       the reason (one line, at most 200 characters) shows in the
+                       orchestrator chat's fleet feed and in the session's stop rows
+ae stop <name> --expect-uuid <uuid> [--reason <text>]
                        Bound stop: stop only if the name is the session with this uuid
                        and no seat declares working, waiting-agent or blocked
 ae archive preview [name]
@@ -2512,10 +2515,34 @@ found (no usable tmux socket marker, no usable pane id, a pane tmux did not repo
 whose session has no usable or unproved tmux server record) on one line before the usage;
 from a `run-shell` job, pass `--pane=#{pane_id}`.
 
+### The stop reason (`--reason <text>`)
+
+`ae stop <name> --reason <text>` and `ae end <name> --reason <text>` (also the bound forms) record
+why the owner or the seat stops or ends a session. ae reads the operand before any other word, so a
+reason that spells `--pane` or `--expect-uuid` stays text. The text becomes one line (every run of
+white space and control characters is one space), is capped at 200 characters with a closing `…`,
+and shows in the orchestrator chat's [fleet feed](../chat.md#fleet-lifecycle-lines) and in the
+session's own `stop-request` or `end-request` row. `--reason` without a text, given twice, or empty
+once cleaned refuses with exit 2 and changes nothing. The detached supervisors that `--self`,
+`stop all` from inside and a confirmed end start carry the reason in their argv.
+
+A stop or end that hands over to a detached supervisor (`--self`, `stop all` from inside, an end)
+carries only the reason, as `--reason`. No identity rides the argv. The supervisor ae starts out of
+the asking seat's pane inherits that pane and reads it as every command does, so the feed and the
+session's own `stop-request`/`end-request` rows name that seat. A seat that is proved at the entry
+stays that seat in every form, whatever mode word it passes: `--handoff`, `--supervise` and
+`--expect-*` prove no owner. The supervisors that ae starts for an owner's own act (a menu or app
+click, a tmux prompt's `--handoff` job that reads no seat) run with `TMUX_PANE` emptied, so they
+read no calling pane and the owner is the actor. A stop that asks the owner at a tmux prompt (no
+`-y`, no terminal) is the owner's in the feed when its job reads no proved seat, although a seat
+asked, and that seat's when the job does read one. A direct `ae end` or a bound end with a
+reason also records an `end-request` row (its reason, its actor) in the session's journal ahead of
+the archive; without a reason it writes none, as before.
+
 ### The bound stop (`ae stop <name> --expect-uuid <uuid>`)
 
 The bound stop is the one stop the orchestrator seat may run, and any caller may use it. Its
-grammar is exact: one session name and one `--expect-uuid`. The caller passes the uuid; the seat
+grammar is exact: one session name and one `--expect-uuid`, and an optional `--reason <text>`. The caller passes the uuid; the seat
 reads it from the `uuid` column of `ae list --all --json` right before the command, and the stop
 never looks it up itself. Any other flag, a second name, a repeated
 `--expect-uuid` and the fleet word `all` refuse. It never stops the caller's own session: that
@@ -2774,7 +2801,7 @@ purge. Their bytes remain untouched; reinstall a compatible core to read them.
 The bound end is the one end the orchestrator seat may run, and the owner may use it too. An
 ordinary agent seat runs it on no session: it ends no other session, and the bound form never takes
 the caller's own. Its grammar is exact: one session name, `--keep-history` and one `--expect-uuid`, with `--owner-input
-<ask-id>` for the seat alone. It always keeps the history, whatever the session's
+<ask-id>` for the seat alone, and an optional `--reason <text>`. It always keeps the history, whatever the session's
 `purge_agent_history` says; `ae rm`, `-f`, `--purge-history`, `all` and every other word refuse.
 It never ends the caller's own session, and the seat never ends its own session by name or by uuid.
 It asks no confirmation: the uuid is the confirmation.

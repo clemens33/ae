@@ -86,6 +86,19 @@ const HUMAN_ACTOR: &str = "human";
 /// orchestrator seat: a pane proves where the command ran, not who typed it.
 const PANE_ACTOR: &str = "ae:stop";
 
+/// The actor the fleet feed names for a bound caller: the proved seat or the
+/// owner's terminal as the bound `provenance` says, and for an admitted
+/// ordinary pane the agent seat the entry's one reading `observed` there (the
+/// owner's `human` for a pane that is no agent seat). Only the feed's word
+/// reads this: the proof-bearing rows keep the provenance's own actor.
+pub(crate) fn fleet_actor(provenance: &str, observed: &str) -> String {
+    if provenance == PANE_ACTOR && !observed.is_empty() {
+        observed.to_owned()
+    } else {
+        provenance.to_owned()
+    }
+}
+
 /// The bound stop's argv, as the one parser read it.
 pub(super) struct Request<'a> {
     /// The session name.
@@ -95,14 +108,21 @@ pub(super) struct Request<'a> {
     /// `--owner-input <ask-id>`: the orchestrator seat's stored owner words
     /// that approve this stop of a busy session.
     pub(super) owner_input: Option<&'a str>,
+    /// `--reason <text>`: the owner's or the seat's words, one clean capped
+    /// line, or empty.
+    pub(super) reason: &'a str,
 }
 
 /// `_stop <name> --expect-uuid <uuid> [--owner-input <ask-id>]`; `panes` is
 /// every `--pane` word of the tail, in order.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered bound stop: caller, G1, owner input, lock, proof, audit, effect and result read top to bottom"
+)]
 pub(super) fn run(
     root: &Path,
     request: &Request<'_>,
-    panes: &[Option<String>],
+    (panes, observed): (&[Option<String>], &str),
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -186,10 +206,14 @@ pub(super) fn run(
     // anything reaches a caller whose stream may be closed.
     let guards = Guards { approved };
     let (mut held_out, mut held_err) = (Vec::new(), Vec::new());
+    let who = super::Stopper {
+        actor: fleet_actor(seen.provenance.actor, observed),
+        reason: request.reason.to_owned(),
+    };
     let code = stopped(
-        &dir,
+        (root, &dir),
         request,
-        &guards,
+        (&guards, &who),
         proof,
         seen.provenance,
         &mut held_out,
@@ -307,9 +331,9 @@ struct Guards {
     reason = "the bound stop's one linear order: capture, events hold, the held writes and kill, then the buffered publication; each refusal reads beside the step that raises it"
 )]
 fn stopped(
-    dir: &Path,
+    (root, dir): (&Path, &Path),
     request: &Request<'_>,
-    guards: &Guards,
+    (guards, who): (&Guards, &super::Stopper),
     proof: Proof,
     provenance: Provenance,
     out: &mut impl Write,
@@ -352,9 +376,12 @@ fn stopped(
         writeln!(err, "Error: {line}. Nothing was stopped.")?;
         return Ok(EXIT_FAILED);
     }
-    let requested = format!(
-        "stop requested, bound to session {uuid} ({})",
-        stamp.session.id
+    let requested = super::with_reason(
+        &format!(
+            "stop requested, bound to session {uuid} ({})",
+            stamp.session.id
+        ),
+        &who.reason,
     );
     if let Err(why) = hold.append_event(&bound.event_line(STOP_REQUEST_ACTION, &requested)) {
         writeln!(
@@ -372,6 +399,9 @@ fn stopped(
         &mut held_out,
         &mut held_err,
     )?;
+    if matches!(outcome, StopOutcome::Stopped) {
+        super::feed_stopped(root, dir, name, who, &mut held_err);
+    }
     let result = stop_summary(&outcome, &held_err);
     if let Err(why) = hold.append_event(&bound.event_line(STOP_RESULT_ACTION, &result)) {
         let found = match &outcome {
@@ -633,6 +663,14 @@ pub(crate) enum Class {
 pub(crate) struct Seen {
     pub(crate) class: Class,
     provenance: Provenance,
+}
+
+impl Seen {
+    /// The actor the bound events record for this caller: `ae/orchestrator`
+    /// for the proved seat, `human` outside tmux, else the neutral `ae:stop`.
+    pub(crate) fn actor(&self) -> &'static str {
+        self.provenance.actor
+    }
 }
 
 /// ONE observation of the calling pane, correlated with its session's meta:
@@ -924,6 +962,22 @@ fn is_waivable(value: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The feed names the agent seat an admitted ordinary pane belongs to; the
+    /// proved orchestrator and the owner's terminal keep the provenance's word.
+    #[test]
+    fn the_fleet_actor_is_the_observed_seat_for_an_ordinary_pane_only() {
+        use super::{HUMAN_ACTOR, PANE_ACTOR, fleet_actor};
+        let orchestrator = crate::tracked::ORCHESTRATOR_DISPLAY;
+        assert_eq!(fleet_actor(PANE_ACTOR, "lead"), "lead");
+        assert_eq!(fleet_actor(PANE_ACTOR, "slot:2"), "slot:2");
+        // A pane that is no agent seat observes as the owner's `human`.
+        assert_eq!(fleet_actor(PANE_ACTOR, "human"), "human");
+        assert_eq!(fleet_actor(PANE_ACTOR, ""), PANE_ACTOR);
+        // The proof-bearing actors are never replaced by an observation.
+        assert_eq!(fleet_actor(orchestrator, "lead"), orchestrator);
+        assert_eq!(fleet_actor(HUMAN_ACTOR, "lead"), HUMAN_ACTOR);
+    }
+
     #[test]
     fn the_stamp_read_ends_with_the_session_uuid_option() {
         assert!(

@@ -1545,12 +1545,123 @@ impl SessionStore {
         let _ = std::fs::remove_file(&temp);
     }
 
+    /// Append `line` and keep the container to its newest `keep` lines in ONE
+    /// hold of the container's lock and ONE published file: below the bound the
+    /// line is appended; at the bound a staged sibling holding the newest
+    /// `keep - 1` lines plus `line` replaces the container by rename. The
+    /// published container never holds more than `keep` lines, no reader sees
+    /// an over-long intermediate, and nothing is truncated in place.
+    ///
+    /// The container is read as BYTE lines, so a line that is not UTF-8 is a
+    /// line like any other and ages out of the window; an unterminated tail
+    /// is ended before the new line, so a torn prior row never swallows it.
+    /// Empty lines are not rows and take no place. No line is exempt from the
+    /// cut: a worker-birth family line gets no special keep here.
+    ///
+    /// The bound is never traded for the line: a node that is not a regular
+    /// file (observed before any open, so a FIFO never blocks the call), a
+    /// container over [`BOUNDED_CAP`], one that cannot be read, a replacement
+    /// that cannot be staged or renamed and a failed append all REFUSE the
+    /// append with the container as it was. The caller warns; nothing is
+    /// published past `keep`. The staged replacement is the exclusive private
+    /// publication ([`publish_private`]): a name that is taken, whatever sits
+    /// behind it, refuses the append, so no FIFO is waited on and no link is
+    /// written through.
+    ///
+    /// The BYTE bound holds for the result too: the published container is
+    /// never over [`BOUNDED_CAP`], the size the reader accepts. The oldest
+    /// lines go until the newest ones and the new line fit; a line that alone
+    /// does not fit is refused.
+    ///
+    /// # Errors
+    ///
+    /// [`Error`] — the lock was not taken in [`LOCK_WAIT`], or the container
+    /// could not be read, replaced or appended as above.
+    pub fn append_event_bounded(&self, line: &str, keep: usize) -> Result<(), Error> {
+        let path = self.events_path();
+        let lock_path = lock_path(&path);
+        let _held = lock(&lock_path, LOCK_WAIT)
+            .map_err(|why| Error::Lock(lock_path.display().to_string(), why))?;
+        let refuse = |why: io::Error| Error::Append(path.display().to_string(), why);
+        let old = match read_capped(&path, BOUNDED_CAP) {
+            Ok(SourceRead::Ready(bytes)) => bytes,
+            Ok(SourceRead::Absent) => Vec::new(),
+            Ok(SourceRead::Invalid(what)) => {
+                return Err(refuse(io::Error::other(format!("the node is {what}"))));
+            }
+            Ok(SourceRead::Unreadable(why)) => return Err(refuse(io::Error::other(why))),
+            Err(Oversized) => {
+                return Err(refuse(io::Error::other(format!(
+                    "the container is over {BOUNDED_CAP} bytes"
+                ))));
+            }
+        };
+        let stamped = stamp_event_records(line);
+        let row = stamped.trim_end_matches('\n');
+        // The new line and its newline must fit the cap on their own: the
+        // reader refuses a container over it, so no cut can make room.
+        let row_bytes = row.len() as u64 + 1;
+        if row_bytes > BOUNDED_CAP {
+            return Err(refuse(io::Error::other(format!(
+                "the row is over {BOUNDED_CAP} bytes"
+            ))));
+        }
+        let lines: Vec<&[u8]> = old
+            .split(|byte| *byte == b'\n')
+            .filter(|piece| !piece.is_empty())
+            .collect();
+        // The newest lines that keep the line count to `keep` AND the whole
+        // result to the cap, newest first: the published container is one the
+        // reader accepts, whatever the old lines weigh.
+        let room = keep.saturating_sub(1);
+        let mut weight = row_bytes;
+        let mut held = 0;
+        for piece in lines.iter().rev().take(room) {
+            let next = weight + piece.len() as u64 + 1;
+            if next > BOUNDED_CAP {
+                break;
+            }
+            weight = next;
+            held += 1;
+        }
+        // What a plain append adds to the body AS IT IS: blank lines weigh
+        // nothing above, but they are bytes of the file the reader caps.
+        let added = u64::from(old.last().is_some_and(|last| *last != b'\n')) + row_bytes;
+        if held == lines.len() && old.len() as u64 + added <= BOUNDED_CAP {
+            // Nothing is cut and the whole body still fits: a plain append,
+            // behind a newline when a torn tail has none.
+            let mut bytes = Vec::with_capacity(row.len() + 2);
+            if old.last().is_some_and(|last| *last != b'\n') {
+                bytes.push(b'\n');
+            }
+            bytes.extend_from_slice(row.as_bytes());
+            bytes.push(b'\n');
+            return append(&path, &bytes).map_err(refuse);
+        }
+        let mut retained = Vec::with_capacity(usize::try_from(weight).unwrap_or(0));
+        for kept in &lines[lines.len() - held..] {
+            retained.extend_from_slice(kept);
+            retained.push(b'\n');
+        }
+        retained.extend_from_slice(row.as_bytes());
+        retained.push(b'\n');
+        // The exclusive staged publication every private file uses: a name
+        // that is taken, whatever is behind it, refuses the append instead of
+        // being written through or waited on.
+        publish_private(&path, &retained).map_err(refuse)
+    }
+
     /// The staged sibling used by [`Self::retain_events`].
     fn events_trim_path(&self) -> PathBuf {
         self.dir
             .join(format!("{EVENTS}.trim.{}", std::process::id()))
     }
 }
+
+/// The most bytes [`SessionStore::append_event_bounded`] reads of its container.
+/// A bounded container holds at most a few hundred capped rows, so a node over
+/// this is not one the bound wrote: the append refuses it.
+pub(crate) const BOUNDED_CAP: u64 = 8 * 1024 * 1024;
 
 /// `O_NONBLOCK | O_NOFOLLOW` for the stamp hold's open, spelled per target
 /// because ae carries no `libc`: a FIFO swapped in is opened without waiting
@@ -1989,7 +2100,10 @@ fn commit(sink: &mut impl Sink, bytes: &[u8]) -> io::Result<()> {
     reason = "tests read back what the door wrote; the boundary is on product code — see clippy.toml"
 )]
 mod tests {
-    use super::{EVENTS, LOCK_WAIT, MEMO, META, Sink, StampGap, commit, lock, lock_path, open};
+    use super::{
+        EVENTS, LOCK_WAIT, MEMO, META, Sink, SourcePresence, StampGap, commit, lock, lock_path,
+        open, source_presence,
+    };
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -2876,5 +2990,334 @@ mod tests {
         assert!(super::counted_split::take().is_some(), "both halves marked");
         assert!(super::counted_split::take().is_none(), "taken once");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn row(tag: &str) -> String {
+        format!(
+            "{{\"ts\":\"2026-11-21T07:00:00Z\",\"actor\":\"t\",\"action\":\"x\",\"ref\":\"{tag}\"}}\n"
+        )
+    }
+
+    fn refs(dir: &Path) -> Vec<String> {
+        let text = std::fs::read_to_string(dir.join(EVENTS)).unwrap_or_default();
+        assert!(
+            text.is_empty() || text.ends_with('\n'),
+            "a torn tail: {text:?}"
+        );
+        text.lines()
+            .map(|line| {
+                let at = line.find("\"ref\":\"").expect("a whole row") + 7;
+                let end = line[at..].find('"').expect("a closed ref") + at;
+                line[at..end].to_owned()
+            })
+            .collect()
+    }
+
+    // The fleet journal's bound: a line appended below the bound is a plain
+    // append; at the bound ONE replacement drops the oldest and adds the line,
+    // so the published container is never longer than `keep`.
+    #[test]
+    fn a_bounded_append_never_publishes_more_than_its_bound() {
+        let dir = scratch("bounded-bound");
+        let store = open(&dir);
+        for n in 0..12 {
+            store
+                .append_event_bounded(&row(&format!("r{n}")), 5)
+                .unwrap();
+            let seen = refs(&dir);
+            assert!(seen.len() <= 5, "after r{n}: {seen:?}");
+            assert_eq!(
+                seen.last().map(String::as_str),
+                Some(format!("r{n}").as_str())
+            );
+        }
+        assert_eq!(refs(&dir), ["r7", "r8", "r9", "r10", "r11"]);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".trim."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "a staged sibling stayed: {leftovers:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bounded_append_below_the_bound_only_appends() {
+        let dir = scratch("bounded-below");
+        let store = open(&dir);
+        for n in 0..3 {
+            store
+                .append_event_bounded(&row(&format!("b{n}")), 5)
+                .unwrap();
+        }
+        assert_eq!(refs(&dir), ["b0", "b1", "b2"]);
+        // The record is stamped like any journal line.
+        let text = std::fs::read_to_string(dir.join(EVENTS)).unwrap();
+        assert!(
+            text.lines()
+                .all(|line| line.contains("\"schema_version\":1"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A line that is not UTF-8 is a line like any other: it takes one place of
+    // the bound and ages out of the window, so it never blocks a later cut.
+    #[test]
+    fn a_bounded_append_cuts_through_a_line_that_is_not_text() {
+        let dir = scratch("bounded-bytes");
+        let mut start = vec![0xff_u8, 0xfe, b'\n'];
+        start.extend_from_slice(row("a").as_bytes());
+        start.extend_from_slice(row("b").as_bytes());
+        std::fs::write(dir.join(EVENTS), start).unwrap();
+        let store = open(&dir);
+        store.append_event_bounded(&row("c"), 4).unwrap();
+        let held = std::fs::read(dir.join(EVENTS)).unwrap();
+        assert_eq!(
+            held.split(|byte| *byte == b'\n').count(),
+            5,
+            "four lines, newline-ended"
+        );
+        assert!(held.starts_with(&[0xff, 0xfe, b'\n']), "{held:?}");
+        store.append_event_bounded(&row("d"), 4).unwrap();
+        // The bad line left the window; the container is whole text again.
+        assert_eq!(refs(&dir), ["a", "b", "c", "d"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A torn tail (a prior write that stopped before its newline) is ended on
+    // its own line: the new row never joins it, below the bound or at it.
+    #[test]
+    fn a_bounded_append_never_lets_a_torn_tail_swallow_the_new_row() {
+        for keep in [10_usize, 2] {
+            let dir = scratch(&format!("bounded-torn-{keep}"));
+            let mut start = row("a").into_bytes();
+            start.extend_from_slice(b"{\"ts\":\"2026-11-21T07:0");
+            std::fs::write(dir.join(EVENTS), start).unwrap();
+            open(&dir).append_event_bounded(&row("z"), keep).unwrap();
+            let text = std::fs::read_to_string(dir.join(EVENTS)).unwrap();
+            assert!(
+                text.ends_with('\n') && text.lines().count() <= keep,
+                "{text:?}"
+            );
+            let last = text.lines().last().unwrap();
+            assert!(
+                last.starts_with('{') && last.contains("\"ref\":\"z\"") && last.ends_with('}'),
+                "{last:?}"
+            );
+            assert_eq!(text.matches("\"ref\":\"z\"").count(), 1);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    // The bound is never traded for the line: whatever keeps the container
+    // from being replaced refuses the append and leaves the container as it was.
+    #[test]
+    fn a_bounded_append_refuses_instead_of_publishing_past_its_bound() {
+        let dir = scratch("bounded-refuse");
+        let store = open(&dir);
+        for n in 0..3 {
+            store
+                .append_event_bounded(&row(&format!("k{n}")), 3)
+                .unwrap();
+        }
+        // A replacement that cannot be staged: the exclusive name is taken by
+        // a directory, a socket and a link. None is written through, waited on
+        // or removed, and the container stays as it was.
+        let staged = dir.join(format!("{EVENTS}.tmp.{}", std::process::id()));
+        let outside = dir.join("outside");
+        std::fs::create_dir(&staged).unwrap();
+        assert!(store.append_event_bounded(&row("over"), 3).is_err());
+        assert_eq!(refs(&dir), ["k0", "k1", "k2"]);
+        std::fs::remove_dir(&staged).unwrap();
+        let socket = std::os::unix::net::UnixListener::bind(&staged).unwrap();
+        assert!(store.append_event_bounded(&row("over"), 3).is_err());
+        assert_eq!(refs(&dir), ["k0", "k1", "k2"]);
+        assert!(
+            source_presence(&staged) != SourcePresence::Absent,
+            "not removed"
+        );
+        drop(socket);
+        std::fs::remove_file(&staged).unwrap();
+        std::os::unix::fs::symlink(&outside, &staged).unwrap();
+        assert!(store.append_event_bounded(&row("over"), 3).is_err());
+        assert_eq!(refs(&dir), ["k0", "k1", "k2"]);
+        assert_eq!(
+            source_presence(&outside),
+            SourcePresence::Absent,
+            "a link is not written through"
+        );
+        std::fs::remove_file(&staged).unwrap();
+        store.append_event_bounded(&row("over"), 3).unwrap();
+        assert_eq!(refs(&dir), ["k1", "k2", "over"]);
+        assert_eq!(
+            source_presence(&staged),
+            SourcePresence::Absent,
+            "a published cut leaves no staged file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The byte bound holds for the result as for the input: a container just
+    // under the cap gets the oldest lines cut until the new line fits, so the
+    // reader (which refuses a container over the cap) never loses the journal.
+    #[test]
+    fn a_bounded_append_never_publishes_a_container_over_the_byte_cap() {
+        let dir = scratch("bounded-bytes");
+        let store = open(&dir);
+        let cap = usize::try_from(super::BOUNDED_CAP).unwrap();
+        let wide = |tag: &str, len: usize| {
+            let mut line = format!(r#"{{"ref":"{tag}","pad":""#);
+            line.push_str(&"p".repeat(len));
+            line.push_str("\"}\n");
+            line
+        };
+        // Two lines of `pad + 21` bytes fill the cap but ten bytes.
+        let first = wide("a", (cap - 52) / 2);
+        let second = wide("b", (cap - 52) / 2);
+        std::fs::write(dir.join(EVENTS), format!("{first}{second}")).unwrap();
+        assert!(std::fs::metadata(dir.join(EVENTS)).unwrap().len() < super::BOUNDED_CAP);
+        // Keep is generous: only the bytes cut.
+        store.append_event_bounded(&row("c"), 400).unwrap();
+        let size = std::fs::metadata(dir.join(EVENTS)).unwrap().len();
+        assert!(size <= super::BOUNDED_CAP, "{size}");
+        assert_eq!(refs(&dir), ["b", "c"]);
+        // Blank lines are bytes of the file: padding the body to the cap gets
+        // compacted by the append, never appended onto.
+        std::fs::write(
+            dir.join(EVENTS),
+            format!("{}{}", row("a"), "\n".repeat(cap - row("a").len() - 10)),
+        )
+        .unwrap();
+        store.append_event_bounded(&row("p"), 400).unwrap();
+        let size = std::fs::metadata(dir.join(EVENTS)).unwrap().len();
+        assert!(size < 4096, "{size}");
+        assert_eq!(refs(&dir), ["a", "p"]);
+        // A line that alone is over the cap is refused, and the journal stays.
+        let giant = wide("g", cap);
+        assert!(store.append_event_bounded(&giant, 400).is_err());
+        assert_eq!(refs(&dir), ["a", "p"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A node that is not a regular file is observed before any open: a FIFO
+    // would block the call, a link would redirect it. A directory and a socket
+    // stand for every such leg (the FIFO itself is the black-box test).
+    #[test]
+    fn a_bounded_append_refuses_a_node_that_is_not_a_regular_file() {
+        let dir = scratch("bounded-node");
+        let store = open(&dir);
+        std::fs::create_dir(dir.join(EVENTS)).unwrap();
+        assert!(store.append_event_bounded(&row("x"), 3).is_err());
+        assert!(dir.join(EVENTS).is_dir());
+        std::fs::remove_dir(dir.join(EVENTS)).unwrap();
+        let socket = std::os::unix::net::UnixListener::bind(dir.join(EVENTS)).unwrap();
+        assert!(store.append_event_bounded(&row("x"), 3).is_err());
+        drop(socket);
+        std::fs::remove_file(dir.join(EVENTS)).unwrap();
+        let elsewhere = dir.join("elsewhere");
+        std::fs::write(&elsewhere, row("keep")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join(EVENTS)).unwrap();
+        assert!(store.append_event_bounded(&row("x"), 3).is_err());
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), row("keep"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A container over the cap is not one the bound wrote: refused, untouched.
+    #[test]
+    fn a_bounded_append_refuses_a_container_over_its_cap() {
+        let dir = scratch("bounded-cap");
+        let big = vec![b'x'; usize::try_from(super::BOUNDED_CAP).unwrap() + 1];
+        std::fs::write(dir.join(EVENTS), &big).unwrap();
+        assert!(open(&dir).append_event_bounded(&row("x"), 3).is_err());
+        assert_eq!(
+            std::fs::metadata(dir.join(EVENTS)).unwrap().len(),
+            big.len() as u64
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A worker-birth family line is exempt from `retain_events` and from
+    // nothing else: the bounded append gives it no place beyond the bound.
+    #[test]
+    fn a_bounded_append_gives_no_line_a_place_beyond_the_bound() {
+        let dir = scratch("bounded-durable");
+        let birth = "{\"ts\":\"2026-11-21T07:00:00Z\",\"actor\":\"t\",\"action\":\"worker-birth\",\"ref\":\"birth\"}\n";
+        let store = open(&dir);
+        store.append_event_bounded(birth, 2).unwrap();
+        for n in 0..4 {
+            store
+                .append_event_bounded(&row(&format!("p{n}")), 2)
+                .unwrap();
+        }
+        assert_eq!(refs(&dir), ["p2", "p3"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Many processes append to one fleet journal: threads each take their own
+    // lock handle, so this is the same exclusion. Every reader sees a whole,
+    // bounded container; no appender's rows are torn or reordered; the final
+    // container is exactly the bound and holds each writer's newest rows.
+    #[test]
+    fn concurrent_bounded_appenders_lose_no_row_and_tear_none() {
+        let dir = scratch("bounded-threads");
+        let (writers, per, keep) = (4_usize, 40_usize, 50_usize);
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let mut reads = 0_u32;
+                while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                    let text = std::fs::read_to_string(dir.join(EVENTS)).unwrap_or_default();
+                    let held = text.lines().count();
+                    assert!(held <= keep, "over the bound: {held}");
+                    reads += 1;
+                }
+                reads
+            });
+            let handles: Vec<_> = (0..writers)
+                .map(|writer| {
+                    let dir = dir.clone();
+                    scope.spawn(move || {
+                        let store = open(&dir);
+                        for n in 0..per {
+                            store
+                                .append_event_bounded(&row(&format!("w{writer}-{n:03}")), keep)
+                                .expect("a bounded append");
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            assert!(reader.join().unwrap() > 0, "the reader never read");
+        });
+        let seen = refs(&dir);
+        assert_eq!(seen.len(), keep, "{seen:?}");
+        let mut distinct = seen.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), keep, "a row repeated: {seen:?}");
+        for writer in 0..writers {
+            let mine: Vec<&String> = seen
+                .iter()
+                .filter(|tag| tag.starts_with(&format!("w{writer}-")))
+                .collect();
+            assert!(
+                mine.windows(2).all(|pair| pair[0] < pair[1]),
+                "reordered: {mine:?}"
+            );
+        }
+        // The very last row of every writer is among the newest `keep` rows
+        // only when it was not overtaken; the newest row overall is a last row.
+        assert!(
+            (0..writers).any(|writer| seen.contains(&format!("w{writer}-{:03}", per - 1))),
+            "{seen:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

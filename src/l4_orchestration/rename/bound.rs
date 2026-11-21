@@ -251,9 +251,14 @@ pub(super) fn run(
     // anything reaches a caller whose stream may be closed.
     let (mut held_out, mut held_err) = (Vec::new(), Vec::new());
     let code = match proved {
-        Proved::Live(live) => {
-            renamed_live(root, request, &server, *live, &mut held_out, &mut held_err)?
-        }
+        Proved::Live(live) => renamed_live(
+            root,
+            request,
+            &server,
+            (*live, seen.actor()),
+            &mut held_out,
+            &mut held_err,
+        )?,
         // The stopped transaction takes the event lock over: its fresh strict
         // absence, its pending read and the durable moves run under it, and it
         // releases the lock before its meta step.
@@ -262,7 +267,7 @@ pub(super) fn run(
             old,
             new,
             &server,
-            crash,
+            (crash, seen.actor()),
             super::Absence::Strict,
             &mut Some(hold),
             &mut held_out,
@@ -369,7 +374,7 @@ fn renamed_live(
     root: &Path,
     request: &Request,
     server: &ServerId,
-    live: Live,
+    (live, actor): (Live, &str),
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -387,7 +392,7 @@ fn renamed_live(
         return super::refuse(err, &refusal);
     }
     drop(hold);
-    super::republish(root, server, old, new, look.as_ref(), out, err)
+    super::republish(root, server, (old, new), (look.as_ref(), actor), out, err)
 }
 
 /// The refusal when the new name does not read back as the proved session.

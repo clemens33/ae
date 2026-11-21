@@ -162,6 +162,11 @@ const LEDGER: &[Released] = &[
         file: "7521c7b364d38d1a993a64b8fc0559c6c69a02a72b76211f9943af347fac0e6a",
         stanza: Some("1e20c028c1964bf25f7929e23f543b2c15fd8e6945e4bfe6f157d410822a10eb"),
     },
+    Released {
+        tag: "v2026.11.103",
+        file: "44f69983ac246b53cff9fc5e662d03fa4946081a02de020653b94bf45057fa74",
+        stanza: Some("c2c1aa8290d28afdc62abcbca387b17610e7eecbf0cc97bd0f9c6282c73f910f"),
+    },
 ];
 
 /// What a publish does with one seat config.

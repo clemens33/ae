@@ -109,6 +109,7 @@ mod entry_first_use_spec;
 mod entry_name_app_spec;
 mod fixtures;
 mod fleet_read_spec;
+mod fleetstore_fifo_spec;
 mod floor;
 mod gate;
 mod git;
@@ -135,6 +136,8 @@ mod launch_context_spec;
 )]
 mod leadfloor_spec;
 mod lifecycle;
+mod lifefeed_bound_spec;
+mod lifefeed_spec;
 mod linkfeat_spec;
 mod list_ended_spec;
 mod list_harness_spec;

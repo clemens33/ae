@@ -316,7 +316,7 @@ pub(crate) fn path_metadata(path: &Path) -> std::io::Result<fs::Metadata> {
 // ---- `_stop` ---------------------------------------------------------------
 
 /// The `ae stop` usage.
-const STOP_USAGE: &str = "Usage: _stop <session-name|all> [-y] [--self]";
+const STOP_USAGE: &str = "Usage: _stop <session-name|all> [-y] [--self] [--reason <text>]";
 
 /// `_stop <name|all> [-y] [--self|--handoff|--supervise]` — the whole stop
 /// operation, in one order: the argv, the caller's own session, the target,
@@ -324,9 +324,22 @@ const STOP_USAGE: &str = "Usage: _stop <session-name|all> [-y] [--self]";
 pub(crate) fn run_stop(
     root: &Path,
     tail: &[String],
+    observed: Option<&crate::rename::Entry>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    // `--reason <text>` first: it is the caller's own words, whatever else the tail says, and the bound
+    // grammar below never sees them.
+    let (who, tail) = match lift_who(tail, || {
+        observed.map_or_else(|| HUMAN_ACTOR.to_owned(), crate::rename::Entry::actor)
+    }) {
+        Ok(lifted) => lifted,
+        Err(why) => {
+            writeln!(err, "Error: {why}")?;
+            return Ok(EXIT_USAGE);
+        }
+    };
+    let tail = tail.as_slice();
     // `--pane <id>`: the caller's own pane (the shim passes `$TMUX_PANE`, or
     // the operator's explicit `--pane=<id>` from a run-shell child, where the
     // inherited $TMUX_PANE names a FOREIGN pane).
@@ -339,8 +352,9 @@ pub(crate) fn run_stop(
                 name: &name,
                 uuid: &uuid,
                 owner_input: owner_input.as_deref(),
+                reason: &who.reason,
             };
-            return bound::run(root, &bound, &pane_words(tail), out, err);
+            return bound::run(root, &bound, (&pane_words(tail), &who.actor), out, err);
         }
         Ok((Expectation::Confirmed(expect), words)) => (Some(expect), words),
         Ok((Expectation::None, words)) => (None, words),
@@ -373,7 +387,9 @@ pub(crate) fn run_stop(
             )?;
             return Ok(EXIT_USAGE);
         }
-        Early::Supervise => return run_supervisor(root, &aim.target, expect.as_ref(), out, err),
+        Early::Supervise => {
+            return run_supervisor(root, &aim.target, expect.as_ref(), &who, out, err);
+        }
         Early::ExpectPublic => {
             writeln!(
                 err,
@@ -381,7 +397,7 @@ pub(crate) fn run_stop(
             )?;
             return Ok(EXIT_USAGE);
         }
-        Early::Handoff => return start_stop_supervisor(root, &aim.target, out, err),
+        Early::Handoff => return start_stop_supervisor(root, &aim.target, &who, out, err),
         Early::Public => {}
     }
     let own = caller_session.as_deref();
@@ -390,10 +406,10 @@ pub(crate) fn run_stop(
         aim.target == "all" && all_sessions(root).iter().any(|name| name == own)
     });
     match late_route(&aim, own, own_in_census) {
-        Late::Fleet(own) => fleet_supervised(root, own, args.yes, out, err),
-        Late::SelfStop => self_supervised(root, &aim.target, args.yes, out, err),
-        Late::All => stop_public_all(root, args.yes, out, err),
-        Late::One => stop_public_one(root, &aim.target, out, err),
+        Late::Fleet(own) => fleet_supervised(root, own, args.yes, &who, out, err),
+        Late::SelfStop => self_supervised(root, &aim.target, args.yes, &who, out, err),
+        Late::All => stop_public_all(root, args.yes, &who, out, err),
+        Late::One => stop_public_one(root, &aim.target, &who, out, err),
     }
 }
 
@@ -431,6 +447,7 @@ fn no_aim(
 fn stop_public_all(
     root: &Path,
     yes: bool,
+    who: &Stopper,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -449,7 +466,7 @@ fn stop_public_all(
         // A stopped session in the roster is not a failure of `stop all`:
         // the fleet form's job is that nothing is left running, and one
         // already down satisfies it.
-        match stop_recorded(root, name, None, carry, out, err)? {
+        match stop_recorded(root, name, None, carry, who, out, err)? {
             StopOutcome::Stopped => {}
             // Down, but a pane view of it may still run its agents.
             StopOutcome::AlreadyStopped => {
@@ -476,6 +493,7 @@ fn stop_public_all(
 fn stop_public_one(
     root: &Path,
     target: &str,
+    who: &Stopper,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -483,7 +501,7 @@ fn stop_public_one(
         writeln!(err, "ae: '{target}' is not a usable session name.")?;
         return Ok(EXIT_FAILED);
     }
-    match stop_recorded(root, target, None, 0, out, err)? {
+    match stop_recorded(root, target, None, 0, who, out, err)? {
         StopOutcome::Stopped => Ok(0),
         StopOutcome::AlreadyStopped | StopOutcome::Failed | StopOutcome::Refused(_) => {
             Ok(EXIT_FAILED)
@@ -912,6 +930,8 @@ pub(crate) fn stop_confirmed(
 }
 
 /// The existing detached door: what [`stop_confirmed`] starts a supervisor with.
+/// A menu's confirmation is the owner's: its argv is minted for the owner, so
+/// the door starts a supervisor that reads no calling pane.
 fn detach(argv: &DetachedArgv) -> bool {
     crate::transport::run_detached(argv)
 }
@@ -930,7 +950,7 @@ pub(crate) fn stop_confirmed_via(
         writeln!(err, "ae: '{name}' is not a usable session name.")?;
         return Ok(EXIT_FAILED);
     }
-    let Some(argv) = supervisor_argv_expecting(name, Some(expect)) else {
+    let Some(argv) = supervisor_argv_expecting(name, Some(expect), &Stopper::owner()) else {
         writeln!(
             err,
             "Error: ae cannot name its own executable, so it cannot hand '{name}' to a supervisor — nothing was stopped."
@@ -986,6 +1006,7 @@ fn stop_recorded(
     name: &str,
     expect: Option<&StopExpectation>,
     carry: u8,
+    who: &Stopper,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<StopOutcome> {
@@ -996,13 +1017,27 @@ fn stop_recorded(
     // the identity under, so no window exists in which this process has
     // written to a directory it never proved was the confirmed one.
     if expect.is_some() {
-        return stop_one(root, name, expect, out, err);
+        return stop_one(root, name, expect, who, out, err);
     }
-    emit_stop_event(&dir, name, STOP_REQUEST_ACTION, "stop requested");
+    emit_stop_event(
+        who,
+        &dir,
+        name,
+        STOP_REQUEST_ACTION,
+        &with_reason("stop requested", &who.reason),
+    );
     let mut captured_out = Vec::new();
     let mut captured_err = Vec::new();
-    let outcome = stop_one(root, name, expect, &mut captured_out, &mut captured_err)?;
+    let outcome = stop_one(
+        root,
+        name,
+        expect,
+        who,
+        &mut captured_out,
+        &mut captured_err,
+    )?;
     emit_stop_event(
+        who,
         &dir,
         name,
         STOP_RESULT_ACTION,
@@ -1040,6 +1075,158 @@ fn stop_summary(outcome: &StopOutcome, captured_err: &[u8]) -> String {
     }
 }
 
+/// The journal spelling of the owner at their own terminal.
+const HUMAN_ACTOR: &str = "human";
+
+/// Who stops a session and why. `actor` is the spelling the lifecycle
+/// journals use ([`crate::fleetfeed::actor_word`] turns it into the feed's
+/// word) and `reason` the owner's words, already one clean capped line, or
+/// empty. No identity rides an argv: a detached supervisor started by the
+/// asking seat inherits that seat's pane and reads it as any command does,
+/// and one that carries the owner's confirmation is the owner's.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Stopper {
+    pub(crate) actor: String,
+    pub(crate) reason: String,
+}
+
+impl Stopper {
+    /// The owner at their own terminal, with no reason.
+    pub(crate) fn owner() -> Self {
+        Self {
+            actor: HUMAN_ACTOR.to_owned(),
+            reason: String::new(),
+        }
+    }
+
+    /// Whether the owner is the actor: an empty actor, `human`, or any pane
+    /// that is not an agent seat.
+    fn is_owner(&self) -> bool {
+        self.actor.is_empty() || crate::fleetfeed::actor_word(&self.actor) == "owner"
+    }
+
+    /// The origin of a supervisor this actor starts: the owner's act reads no
+    /// calling pane, a seat's keeps the seat that started it.
+    pub(crate) fn origin(&self) -> Origin {
+        if self.is_owner() {
+            Origin::Owner
+        } else {
+            Origin::Inherited
+        }
+    }
+
+    /// The actor a stop or end row of the session's own journal names: the
+    /// seat or the orchestrator that ran it, else `human`.
+    pub(crate) fn journal_actor(&self) -> &str {
+        if self.is_owner() {
+            HUMAN_ACTOR
+        } else {
+            &self.actor
+        }
+    }
+
+    /// The words that carry this stopper across a detached argv: the reason,
+    /// when there is one. `joined` spells `--reason=text` for the end.
+    pub(crate) fn carried(&self, joined: bool) -> Vec<String> {
+        match (self.reason.is_empty(), joined) {
+            (true, _) => Vec::new(),
+            (false, true) => vec![format!("--reason={}", self.reason)],
+            (false, false) => vec!["--reason".to_owned(), self.reason.clone()],
+        }
+    }
+}
+
+/// Who runs a `_stop` or `_end` and why, lifted out of `tail` FIRST: the
+/// reason, then the actor, which is what `observed` reads of the calling pane
+/// and nothing a word of the argv says. A seat that is proved at the entry
+/// stays that seat whatever mode word it passes; the supervisors ae starts
+/// for an owner's own act (a menu click, a tmux prompt's handoff) run with no
+/// calling pane, so they read as the owner.
+///
+/// # Errors
+///
+/// The refusal line, without its `Error:` lead.
+pub(crate) fn lift_who(
+    tail: &[String],
+    observed: impl FnOnce() -> String,
+) -> std::result::Result<(Stopper, Vec<String>), String> {
+    let (reason, tail) = split_reason(tail)?;
+    Ok((
+        Stopper {
+            actor: observed(),
+            reason,
+        },
+        tail,
+    ))
+}
+
+/// `--reason <text>` out of a `_stop` or `_end` tail: the text as the feed
+/// keeps it (one clean line, capped), and the tail without the two words.
+/// Given twice, without a text or with a text that is empty once cleaned is
+/// the refusal.
+///
+/// # Errors
+///
+/// The refusal line, without its `Error:` lead.
+pub(crate) fn split_reason(tail: &[String]) -> std::result::Result<(String, Vec<String>), String> {
+    let mut reason: Option<String> = None;
+    let mut words = Vec::with_capacity(tail.len());
+    let mut rest = tail.iter();
+    while let Some(arg) = rest.next() {
+        let value = if arg == "--reason" {
+            let Some(text) = rest.next() else {
+                return Err("--reason requires a text.".to_owned());
+            };
+            text.as_str()
+        } else if let Some(text) = arg.strip_prefix("--reason=") {
+            text
+        } else {
+            words.push(arg.clone());
+            continue;
+        };
+        if reason.is_some() {
+            return Err("--reason may be given only once.".to_owned());
+        }
+        let text = crate::fleetfeed::clean(value, crate::fleetfeed::TEXT_CAP);
+        if text.is_empty() {
+            return Err("--reason requires a text.".to_owned());
+        }
+        reason = Some(text);
+    }
+    Ok((reason.unwrap_or_default(), words))
+}
+
+/// `base`, and the reason when there is one, as a stop row's summary.
+pub(crate) fn with_reason(base: &str, reason: &str) -> String {
+    if reason.is_empty() {
+        base.to_owned()
+    } else {
+        format!("{base} (reason: {reason})")
+    }
+}
+
+/// The fleet feed's `stopped` row of a session a stop just proved gone.
+pub(crate) fn feed_stopped(
+    root: &Path,
+    dir: &Path,
+    name: &str,
+    who: &Stopper,
+    err: &mut impl Write,
+) {
+    let uuid = meta::session_id_in(dir);
+    crate::fleetfeed::record_or_warn(
+        root,
+        &crate::fleetfeed::Fact {
+            what: crate::fleetfeed::What::Stopped,
+            session: name,
+            uuid: &uuid,
+            actor: &who.actor,
+            note: &who.reason,
+        },
+        err,
+    );
+}
+
 /// What one target's stop did — kept distinct so the fleet form can treat an
 /// already-stopped session as satisfied while the singular form still reports
 /// it as the `Session 'x' is not running.` failure.
@@ -1064,9 +1251,23 @@ pub(crate) const STOP_RESULT_ACTION: &str = "stop-result";
 pub(crate) const STOPPED_SUMMARY: &str = "stopped: verified gone on its recorded server";
 pub(crate) const ALREADY_STOPPED_SUMMARY: &str = "already stopped";
 
-/// A `nohup` argv minted ONLY by [`supervisor_argv_expecting`] and
-/// [`resume_argv`].
-pub(crate) struct DetachedArgv(Vec<String>);
+/// A `nohup` argv minted ONLY by this module and `end`, with the policy the
+/// detached door applies to the process it starts.
+pub(crate) struct DetachedArgv(Vec<String>, Origin);
+
+/// Whose act a [`DetachedArgv`] continues. It decides what the process the
+/// door starts reads as its calling pane, so the owner is never named by a
+/// word of the argv: the minting site derives it from who asked.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Origin {
+    /// A seat's or an ordinary caller's act: the process inherits the pane of
+    /// the process that starts it, so a seat's own supervisor reads that seat.
+    Inherited,
+    /// The owner's own act (a menu or app click, a tmux prompt's job that read
+    /// no seat): the process reads no calling pane, whatever pane tmux ran the
+    /// click or the job in.
+    Owner,
+}
 
 /// `nohup <this binary> <name> --no-attach --resume` — a stopped session
 /// resumed with nothing attached, the session name its own argv element (no
@@ -1075,18 +1276,27 @@ pub(crate) struct DetachedArgv(Vec<String>);
 /// command needs and which never creates a session whose record is gone.
 pub(crate) fn resume_argv(name: &str) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
-    Some(DetachedArgv(vec![
-        own.to_string_lossy().into_owned(),
-        name.to_owned(),
-        "--no-attach".to_owned(),
-        "--resume".to_owned(),
-    ]))
+    Some(DetachedArgv(
+        vec![
+            own.to_string_lossy().into_owned(),
+            name.to_owned(),
+            "--no-attach".to_owned(),
+            "--resume".to_owned(),
+        ],
+        Origin::Inherited,
+    ))
 }
 
 impl DetachedArgv {
     /// The argv for the transport door to spawn.
     pub(crate) fn as_args(&self) -> &[String] {
         &self.0
+    }
+
+    /// Whether the process it starts must read no calling pane: the owner's
+    /// own act. The transport door empties `TMUX_PANE` for it.
+    pub(crate) fn ownerless(&self) -> bool {
+        self.1 == Origin::Owner
     }
 }
 
@@ -1375,12 +1585,16 @@ fn caller_correlation(
 /// `nohup <this binary> _stop --supervise <name>` — the ONE shape this module
 /// can mint, with the session name as its own argv element (no shell, so
 /// nothing to inject) and nothing else settable by a caller.
-fn supervisor_argv(name: &str) -> Option<DetachedArgv> {
-    supervisor_argv_expecting(name, None)
+fn supervisor_argv(name: &str, who: &Stopper) -> Option<DetachedArgv> {
+    supervisor_argv_expecting(name, None, who)
 }
 
 /// The same argv, plus the identity a CONFIRMED stop must still find.
-fn supervisor_argv_expecting(name: &str, expect: Option<&StopExpectation>) -> Option<DetachedArgv> {
+fn supervisor_argv_expecting(
+    name: &str,
+    expect: Option<&StopExpectation>,
+    who: &Stopper,
+) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
     let mut argv = vec![
         own.to_string_lossy().into_owned(),
@@ -1391,31 +1605,42 @@ fn supervisor_argv_expecting(name: &str, expect: Option<&StopExpectation>) -> Op
     if let Some(expect) = expect {
         argv.extend(expect.argv_words());
     }
-    Some(DetachedArgv(argv))
+    argv.extend(who.carried(false));
+    Some(DetachedArgv(argv, who.origin()))
 }
 
 /// `<core> _stop --handoff <name>` — the short-lived tmux job which starts
 /// [`supervisor_argv`] and exits before the target session is killed.
-fn handoff_argv(name: &str) -> Option<DetachedArgv> {
+fn handoff_argv(name: &str, who: &Stopper) -> Option<DetachedArgv> {
     let own = crate::shape::resolved_exe()?;
-    Some(DetachedArgv(vec![
+    let mut argv = vec![
         own.to_string_lossy().into_owned(),
         crate::cli::STOP.to_owned(),
         "--handoff".to_owned(),
         name.to_owned(),
-    ]))
+    ];
+    argv.extend(who.carried(false));
+    // Tmux runs this job, not the detached door: no policy applies to it.
+    Some(DetachedArgv(argv, Origin::Inherited))
 }
 
 /// Append one line to the target's event log, best-effort.
-pub(crate) fn emit_lifecycle_event(dir: &Path, name: &str, action: &str, summary: &str) {
-    let _ = crate::store::open(dir).append_event(&lifecycle_event_line(name, action, summary));
+pub(crate) fn emit_lifecycle_event(
+    dir: &Path,
+    name: &str,
+    actor: &str,
+    action: &str,
+    summary: &str,
+) {
+    let _ =
+        crate::store::open(dir).append_event(&lifecycle_event_line(name, actor, action, summary));
 }
 
-/// One lifecycle event of the human actor about `name`, as a journal line.
-fn lifecycle_event_line(name: &str, action: &str, summary: &str) -> String {
+/// One lifecycle event of `actor` about `name`, as a journal line.
+fn lifecycle_event_line(name: &str, actor: &str, action: &str, summary: &str) -> String {
     crate::tracked::event_line(&crate::tracked::EventFields {
         ts: crate::time::Timestamp::now(),
-        actor: "human",
+        actor,
         action,
         target: name,
         reference: "",
@@ -1438,8 +1663,8 @@ fn lifecycle_event_line(name: &str, action: &str, summary: &str) -> String {
 }
 
 /// Append one stop event to the target's log, best-effort.
-fn emit_stop_event(dir: &Path, name: &str, action: &str, summary: &str) {
-    emit_lifecycle_event(dir, name, action, summary);
+fn emit_stop_event(who: &Stopper, dir: &Path, name: &str, action: &str, summary: &str) {
+    emit_lifecycle_event(dir, name, who.journal_actor(), action, summary);
 }
 
 fn stop_prompt(name: &str) -> String {
@@ -1448,10 +1673,15 @@ fn stop_prompt(name: &str) -> String {
 
 /// `_stop --self <name>`: hand the whole stop to a detached supervisor and
 /// return.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered self-stop: refuse, record the request, detach, report"
+)]
 fn self_supervised(
     root: &Path,
     name: &str,
     yes: bool,
+    who: &Stopper,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -1470,7 +1700,7 @@ fn self_supervised(
     if !yes {
         // ASK WHETHER WE CAN ASK, BEFORE ASKING.
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            let Some(argv) = handoff_argv(name) else {
+            let Some(argv) = handoff_argv(name, who) else {
                 writeln!(
                     err,
                     "Error: ae cannot name its own executable, so it cannot hand '{name}' to a supervisor — nothing was stopped."
@@ -1523,7 +1753,7 @@ fn self_supervised(
             return Ok(EXIT_FAILED);
         }
     }
-    let Some(argv) = supervisor_argv(name) else {
+    let Some(argv) = supervisor_argv(name, who) else {
         writeln!(
             err,
             "Error: ae cannot name its own executable, so it cannot hand '{name}' to a supervisor — nothing was stopped."
@@ -1533,14 +1763,16 @@ fn self_supervised(
     // The INTENT is recorded before the handover, so a human whose pane vanished
     // can tell "ae was asked and something went wrong" from "ae was never asked".
     emit_stop_event(
+        who,
         &dir,
         name,
         STOP_REQUEST_ACTION,
-        "self-stop requested from inside the session",
+        &with_reason("self-stop requested from inside the session", &who.reason),
     );
     if !crate::transport::run_detached(&argv) {
         // THE REQUEST IS ALREADY IN THE LOG, so the outcome has to be too.
         emit_stop_event(
+            who,
             &dir,
             name,
             STOP_RESULT_ACTION,
@@ -1785,13 +2017,16 @@ enum Expectation {
 const OWNER_INPUT_GRAMMAR: &str = "--owner-input travels only with the bound stop: ae stop <name> --expect-uuid <uuid> --owner-input <ask-id>.";
 
 /// The refusal of a bound stop with any word beside its name.
-const BOUND_GRAMMAR: &str = "--expect-uuid alone binds one stop: ae stop <name> --expect-uuid <uuid> [--owner-input <ask-id>], with no other flag and one session name.";
+const BOUND_GRAMMAR: &str = "--expect-uuid alone binds one stop: ae stop <name> --expect-uuid <uuid> [--owner-input <ask-id>] [--reason <text>], with no other flag and one session name.";
 
 /// Whether a `_stop` tail is the bound stop, read by the one parser
 /// [`run_stop`] reads it with: the pane words lifted, then `--expect-uuid`
 /// with exactly one session name and no other word.
 pub(crate) fn is_bound_stop(tail: &[String]) -> bool {
-    let (_, words) = split_pane_flag(tail);
+    let Ok((_, tail)) = split_reason(tail) else {
+        return false;
+    };
+    let (_, words) = split_pane_flag(&tail);
     matches!(split_expectation(&words), Ok((Expectation::Bound(..), _)))
 }
 
@@ -1801,6 +2036,7 @@ fn run_supervisor(
     root: &Path,
     name: &str,
     expect: Option<&StopExpectation>,
+    who: &Stopper,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -1809,13 +2045,13 @@ fn run_supervisor(
     // the fleet form, whatever that session happens to be called. The public
     // fleet syntax below is untouched.
     if name != "all" || expect.is_some() {
-        return supervise_one(root, name, expect, out, err);
+        return supervise_one(root, name, expect, who, out, err);
     }
     // A fleet stop may move a client to the next session that this same sweep
     // will end; once no session remains, tmux detaches it as usual.
     let mut failures = 0_u32;
     for session in all_sessions(root) {
-        if supervise_one(root, &session, None, out, err)? != 0 {
+        if supervise_one(root, &session, None, who, out, err)? != 0 {
             failures += 1;
         }
     }
@@ -1827,20 +2063,32 @@ fn run_supervisor(
 fn start_stop_supervisor(
     root: &Path,
     name: &str,
+    who: &Stopper,
     _out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let Some(argv) = supervisor_argv(name) else {
+    let Some(argv) = supervisor_argv(name, who) else {
         writeln!(
             err,
             "Error: ae cannot name its own executable, so it cannot hand '{name}' to a supervisor — nothing was stopped."
         )?;
         return Ok(EXIT_FAILED);
     };
+    // The handoff is run by tmux for an owner's prompt: when it reads no seat
+    // at its entry, its supervisor reads as the owner too (the argv is minted
+    // with that origin). A seat it does read (a caller who typed the internal
+    // word) stays that seat.
     if !transport::run_detached(&argv) {
         let dir = sessions_dir(root).join(name);
-        emit_stop_event(&dir, name, STOP_REQUEST_ACTION, "stop requested from tmux");
         emit_stop_event(
+            who,
+            &dir,
+            name,
+            STOP_REQUEST_ACTION,
+            &with_reason("stop requested from tmux", &who.reason),
+        );
+        emit_stop_event(
+            who,
             &dir,
             name,
             STOP_RESULT_ACTION,
@@ -1862,13 +2110,14 @@ fn fleet_supervised(
     root: &Path,
     own: &str,
     yes: bool,
+    who: &Stopper,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
     if !yes {
         // THE SUPERVISOR CANNOT PROMPT; THIS PROCESS STILL CAN.
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            let Some(argv) = handoff_argv("all") else {
+            let Some(argv) = handoff_argv("all", who) else {
                 writeln!(
                     err,
                     "Error: could not locate this binary to detach the fleet stop."
@@ -1897,7 +2146,7 @@ fn fleet_supervised(
             return Ok(EXIT_FAILED);
         }
     }
-    let Some(argv) = supervisor_argv("all") else {
+    let Some(argv) = supervisor_argv("all", who) else {
         writeln!(
             err,
             "Error: could not locate this binary to detach the fleet stop."
@@ -1906,15 +2155,17 @@ fn fleet_supervised(
     };
     let dir = sessions_dir(root).join(own);
     emit_stop_event(
+        who,
         &dir,
         own,
         STOP_REQUEST_ACTION,
-        "stop all requested from inside",
+        &with_reason("stop all requested from inside", &who.reason),
     );
     if !crate::transport::run_detached(&argv) {
         // Same reason as the single self-stop: a request already recorded and
         // no result is a stop that reads as still running.
         emit_stop_event(
+            who,
             &dir,
             own,
             STOP_RESULT_ACTION,
@@ -1938,6 +2189,7 @@ fn supervise_one(
     root: &Path,
     name: &str,
     expect: Option<&StopExpectation>,
+    who: &Stopper,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -1965,7 +2217,7 @@ fn supervise_one(
     // stop itself is the durable outcome. A menu-origin stop answers the ONE
     // client that asked for it; only an ordinary supervisor announces to every
     // client, because only it has no particular human to answer.
-    match stop_recorded(root, name, expect, 0, out, err)? {
+    match stop_recorded(root, name, expect, 0, who, out, err)? {
         StopOutcome::Stopped => {
             let line = format!("Stopped {name}");
             match expect {
@@ -2133,10 +2385,15 @@ fn warn_uncovered_models(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered stop: proof, request rows, kill, feed row and result row read top to bottom"
+)]
 fn stop_one(
     root: &Path,
     name: &str,
     expect: Option<&StopExpectation>,
+    who: &Stopper,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<StopOutcome> {
@@ -2163,7 +2420,7 @@ fn stop_one(
             ExpectCheck::Absent => {
                 // Proven ae's and proven already gone: this directory IS the
                 // confirmed one, so the durable result belongs in it.
-                emit_stop_event(&dir, name, STOP_RESULT_ACTION, ALREADY_STOPPED_SUMMARY);
+                emit_stop_event(who, &dir, name, STOP_RESULT_ACTION, ALREADY_STOPPED_SUMMARY);
                 writeln!(err, "Session '{name}' is not running.")?;
                 return Ok(StopOutcome::AlreadyStopped);
             }
@@ -2176,6 +2433,7 @@ fn stop_one(
                     "ae app with no tmux client".to_owned()
                 };
                 emit_stop_event(
+                    who,
                     &dir,
                     name,
                     STOP_REQUEST_ACTION,
@@ -2237,7 +2495,11 @@ fn stop_one(
     // the stop proceeds.
     warn_uncovered_models(name, observe_models_before_stop(&dir, &server, name), err)?;
     if expect.is_none() {
-        return kill_under_lock(&server, name, &session_id, None, out, err);
+        let outcome = kill_under_lock(&server, name, &session_id, None, out, err)?;
+        if matches!(outcome, StopOutcome::Stopped) {
+            feed_stopped(root, &dir, name, who, err);
+        }
+        return Ok(outcome);
     }
     // The confirmed path keeps its own streams so it can write the durable
     // result BEFORE `_guard` drops: the request line, the kill and the result
@@ -2252,7 +2514,11 @@ fn stop_one(
         &mut confirmed_out,
         &mut confirmed_err,
     )?;
+    if matches!(outcome, StopOutcome::Stopped) {
+        feed_stopped(root, &dir, name, who, &mut confirmed_err);
+    }
     emit_stop_event(
+        who,
         &dir,
         name,
         STOP_RESULT_ACTION,
@@ -2317,6 +2583,197 @@ mod tests {
             target: target.to_owned(),
             is_self,
         }
+    }
+
+    #[test]
+    fn the_reason_is_lifted_first_cleaned_and_its_text_stays_data() {
+        use super::{is_bound_stop, split_reason};
+        let uuid = "0b6c8f5e-1d2a-4c3b-9e8f-7a6b5c4d3e2f";
+        let lifted = |tail: &[&str]| split_reason(&words(tail));
+        // No reason: the words pass through untouched.
+        assert_eq!(
+            lifted(&["t", "-y"]),
+            Ok((String::new(), words(&["t", "-y"])))
+        );
+        // Both spellings, anywhere in the tail, leave the other words in order.
+        assert_eq!(
+            lifted(&["--reason", "parked", "t"]),
+            Ok(("parked".to_owned(), words(&["t"])))
+        );
+        assert_eq!(
+            lifted(&["t", "--reason=parked work", "-y"]),
+            Ok(("parked work".to_owned(), words(&["t", "-y"])))
+        );
+        // The operand is text even when it spells a flag the later passes read.
+        assert_eq!(
+            lifted(&["t", "--reason", "--pane", "--expect-uuid"]),
+            Ok(("--pane".to_owned(), words(&["t", "--expect-uuid"])))
+        );
+        assert_eq!(
+            lifted(&["t", "--reason", "--expect-uuid"]),
+            Ok(("--expect-uuid".to_owned(), words(&["t"])))
+        );
+        // One line, bounded: white space and control characters become one space.
+        assert_eq!(
+            lifted(&["--reason", " a\n\tb\u{7}c ", "t"]),
+            Ok(("a b c".to_owned(), words(&["t"])))
+        );
+        let long = "x".repeat(500);
+        let Ok((text, _)) = lifted(&["--reason", &long]) else {
+            panic!("a long reason is capped, not refused");
+        };
+        assert_eq!(text.chars().count(), crate::fleetfeed::TEXT_CAP);
+        assert!(text.ends_with('…'));
+        // Missing, repeated and empty reasons refuse.
+        for tail in [
+            &["t", "--reason"][..],
+            &["--reason", "a", "--reason=b", "t"][..],
+            &["--reason", "", "t"][..],
+            &["--reason=", "t"][..],
+            &["--reason", " \n ", "t"][..],
+        ] {
+            assert!(lifted(tail).is_err(), "{tail:?}");
+        }
+        // A bound stop is recognised with the reason before, after or inside its words.
+        for tail in [
+            vec!["t", "--expect-uuid", uuid, "--reason", "why"],
+            vec!["--reason", "why", "t", "--expect-uuid", uuid],
+            vec!["t", "--reason=--pane", "--expect-uuid", uuid],
+        ] {
+            assert!(is_bound_stop(&words(&tail)), "{tail:?}");
+        }
+        // A reason that only spells the expectation does not make a bound stop.
+        assert!(!is_bound_stop(&words(&["t", "--reason", "--expect-uuid"])));
+        assert!(!is_bound_stop(&words(&["t", "--reason=--expect-uuid"])));
+        // A reason the lift refuses is no bound stop.
+        assert!(!is_bound_stop(&words(&[
+            "t",
+            "--expect-uuid",
+            uuid,
+            "--reason"
+        ])));
+    }
+
+    /// The owner is never a word of an argv: the minting site derives the
+    /// origin from who asked, and only the owner's supervisor is ownerless.
+    #[test]
+    fn only_the_owners_supervisor_is_minted_ownerless() {
+        use super::{Stopper, handoff_argv, supervisor_argv, supervisor_argv_expecting};
+        let seat = Stopper {
+            actor: "lead".to_owned(),
+            ..Stopper::default()
+        };
+        for owner in [Stopper::owner(), Stopper::default()] {
+            let argv = supervisor_argv("t", &owner).expect("ae names its own executable");
+            assert!(argv.ownerless(), "{:?}", argv.as_args());
+            let argv = supervisor_argv_expecting("t", None, &owner).expect("own executable");
+            assert!(argv.ownerless(), "{:?}", argv.as_args());
+        }
+        let argv = supervisor_argv("t", &seat).expect("ae names its own executable");
+        assert!(!argv.ownerless(), "a seat's supervisor inherits that seat");
+        // The handoff job is run by tmux and a resume by the app: the door's
+        // owner policy applies to neither.
+        let handoff = handoff_argv("t", &Stopper::owner()).expect("own executable");
+        assert!(!handoff.ownerless());
+        assert!(!resume_argv("t").expect("own executable").ownerless());
+    }
+
+    #[test]
+    fn the_actor_is_what_the_calling_pane_reads_and_no_mode_word_changes_it() {
+        use super::{Stopper, lift_who};
+        let seat = || "lead".to_owned();
+        let actor = |tail: &[&str]| lift_who(&words(tail), seat).map(|(who, _)| who.actor);
+        // A proved seat stays that seat in every form, the internal mode words
+        // and an expectation included: none of them proves an owner.
+        for tail in [
+            &["t"][..],
+            &["--supervise", "t"][..],
+            &["--supervise", "all"][..],
+            &["--handoff", "t"][..],
+            &["--supervise", "t", "--expect-session-id", "$1"][..],
+            &["t", "--expect-uuid", "u"][..],
+        ] {
+            assert_eq!(actor(tail).as_deref(), Ok("lead"), "{tail:?}");
+        }
+        // The reason is lifted first, so a reason that spells a mode is text.
+        let (who, rest) = lift_who(&words(&["t", "--reason", "--handoff"]), seat).expect("lifted");
+        assert_eq!(
+            (who.actor.as_str(), who.reason.as_str()),
+            ("lead", "--handoff")
+        );
+        assert_eq!(rest, words(&["t"]));
+        // `--actor` and `--actor-pane` are no flags: nothing is believed from
+        // the argv, so they stay for the parser to refuse.
+        let tail = words(&["--supervise", "t", "--actor=lead", "--actor-pane=%1"]);
+        let (_, rest) = lift_who(&tail, seat).expect("lifted");
+        assert_eq!(rest, tail);
+        // Who the journal names: an owner as `human`, a seat as itself.
+        for (actor, journal) in [
+            ("", "human"),
+            ("human", "human"),
+            ("ae:stop", "human"),
+            ("lead", "lead"),
+            ("slot:2", "slot:2"),
+            ("ae/orchestrator", "ae/orchestrator"),
+        ] {
+            let who = Stopper {
+                actor: actor.to_owned(),
+                ..Stopper::default()
+            };
+            assert_eq!(who.journal_actor(), journal, "{actor:?}");
+        }
+    }
+
+    #[test]
+    fn a_stop_row_names_the_actor_that_asked() {
+        use super::{Stopper, emit_stop_event};
+        let dir = std::env::temp_dir().join(format!("ae-stoprow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a dir");
+        for actor in ["human", "lead", "ae/orchestrator"] {
+            let who = Stopper {
+                actor: actor.to_owned(),
+                ..Stopper::default()
+            };
+            emit_stop_event(&who, &dir, "alpha", "stop-request", "stop requested");
+        }
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "test: reads the journal this test wrote"
+        )]
+        let text = std::fs::read_to_string(dir.join(crate::store::EVENTS)).expect("journal");
+        let actors: Vec<&str> = text
+            .lines()
+            .map(|line| {
+                let at = line.find("\"actor\":\"").expect("an actor") + 9;
+                &line[at..at + line[at..].find('"').expect("closed")]
+            })
+            .collect();
+        assert_eq!(actors, ["human", "lead", "ae/orchestrator"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_detached_stop_carries_its_reason_and_an_empty_reason_adds_nothing() {
+        use super::{Stopper, with_reason};
+        let stopper = |actor: &str, reason: &str| Stopper {
+            actor: actor.to_owned(),
+            reason: reason.to_owned(),
+        };
+        assert!(stopper("human", "").carried(false).is_empty());
+        assert!(Stopper::owner().carried(true).is_empty());
+        assert_eq!(
+            stopper("lead", "pause").carried(false),
+            words(&["--reason", "pause"])
+        );
+        // No identity rides an argv, whoever asked.
+        assert_eq!(stopper("slot:2", "x").carried(true), words(&["--reason=x"]));
+        assert!(stopper("lead", "").carried(true).is_empty());
+        assert_eq!(with_reason("stop requested", ""), "stop requested");
+        assert_eq!(
+            with_reason("stop requested", "why"),
+            "stop requested (reason: why)"
+        );
     }
 
     #[test]

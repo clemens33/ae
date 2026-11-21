@@ -42,6 +42,8 @@ mod endrecord_spec;
 mod endrun_spec;
 #[path = "lifecycle_guard_spec.rs"]
 mod guard_spec;
+#[path = "lifefeed_rename_spec.rs"]
+mod lifefeed_rename_spec;
 #[path = "lifecycle_purgeguard_spec.rs"]
 mod purgeguard_spec;
 #[path = "lifecycle_rebootkeep_spec.rs"]
@@ -70,7 +72,7 @@ const UUID: &str = "33333333-3333-3333-3333-333333333333";
 fn stop_gap(cause: &str) -> String {
     format!(
         "Error: with no session name, ae stop needs a pane ae can resolve (--pane <id>); {cause}.\n\
-         Usage: _stop <session-name|all> [-y] [--self]\n"
+         Usage: _stop <session-name|all> [-y] [--self] [--reason <text>]\n"
     )
 }
 
@@ -1307,7 +1309,7 @@ fn a_bare_end_from_a_foreign_namesake_never_targets_the_recorded_session() {
     assert_eq!(code, Some(2), "stdout: {out}\nstderr: {err}");
     assert_eq!(
         err,
-        "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] <session-name|all>\n"
+        "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] [--reason <text>] <session-name|all>\n"
     );
     assert!(rig.session_is_live(), "the recorded session stays live");
     assert!(exists(&rig.dir), "the recorded state stays intact");
