@@ -475,3 +475,6 @@ mod appzoom_spec;
 
 #[path = "appzoom_drive_spec.rs"]
 mod appzoom_drive_spec;
+
+#[path = "panellinks_spec.rs"]
+mod panellinks_spec;
