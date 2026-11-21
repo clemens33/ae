@@ -978,13 +978,26 @@ impl App {
             }
             app.drawn = Some(app.freeze(ORCH));
             app.model.set_columns(main);
-            (app.layout.cursor, app.layout.panel)
+            (
+                app.layout.cursor,
+                app.layout.panel,
+                app.layout.links.clone(),
+            )
         });
-        let (cursor, cells) = cursor.unwrap_or_default();
+        let (cursor, cells, links) = cursor.unwrap_or_default();
         if let Some(cursor) = cursor {
             self.layout.cursor = Some(cursor);
         }
         self.layout.panel = cells;
+        // The panel drew into this frame's cells, so its runs are already in
+        // the frame's coordinates, and the backend wraps what the frame
+        // carries: the panel's links join it, and a run the main column drew
+        // on a cell the panel now covers goes, or the terminal would open that
+        // link from the panel's text.
+        if let Some(cells) = cells {
+            self.layout.uncover(cells);
+        }
+        self.layout.links.extend(links);
         self.layout.panel_border(buf, self.model.split(), columns);
         self.frame_desk(buf);
     }

@@ -343,8 +343,39 @@ impl Layout {
     /// Record `target` over `area` ahead of every target under it: an
     /// overlay's cells are its own.
     pub(super) fn overlay(&mut self, buf: &Buffer, area: Rect, target: Hit) {
-        self.targets
-            .insert(0, (area.intersection(buf.area), target));
+        let area = area.intersection(buf.area);
+        if matches!(target, Hit::Modal) {
+            self.uncover(area);
+        }
+        self.targets.insert(0, (area, target));
+    }
+
+    /// Drop the cells of `area`, which a dialog or the open panel paints whole,
+    /// from the link runs: a run it covers wholly goes, one it cuts keeps what
+    /// stands left and right of it, so the terminal never opens a link from the
+    /// text drawn over it.
+    pub(super) fn uncover(&mut self, area: Rect) {
+        for run in std::mem::take(&mut self.links) {
+            let end = run.x.saturating_add(run.width);
+            let (left, start) = (area.x.saturating_sub(run.x), area.right().max(run.x));
+            let row = Rect::new(run.x, run.y, run.width, 1);
+            let parts = if row.intersects(area) {
+                [
+                    (run.x, left.min(run.width)),
+                    (start, end.saturating_sub(start)),
+                ]
+            } else {
+                [(run.x, run.width), (0, 0)]
+            };
+            for (x, width) in parts.into_iter().filter(|(_, width)| *width > 0) {
+                self.links.push(super::backend::Run {
+                    x,
+                    y: run.y,
+                    width,
+                    url: run.url.clone(),
+                });
+            }
+        }
     }
 
     /// The sessions whose cards the frame drew.
@@ -518,6 +549,9 @@ impl Layout {
         self.turns.clear();
         self.folds.clear();
         self.cursor = None;
+        // The overlay paints over every cell a link was drawn on: no run may
+        // wrap its text.
+        self.links.clear();
         self.settings_page_rows = 0;
         self.settings_max_scroll = 0;
         self.settings_keep = None;

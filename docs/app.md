@@ -1064,7 +1064,8 @@ a `memo` topic or a request id. The link is `file://` with an empty host and the
 path percent-encoded; ae does not check that the file exists, does not
 normalise `..`, and never links a path with a space in it.
 
-Only the chat column's turns are linked (the Settings About tab's addresses and the
+Only the chat column's turns are linked, the orchestrator panel's turns as the main
+column's, in the side, full and zoomed panel alike (the Settings About tab's addresses and the
 seat view stay text), and the underline needs a drawn look. The visible text, the wrapping and the fold counts are the same with or without a
 link, and a link a wrap cuts is two links with one id, so a terminal that
 lights a link under the mouse lights both rows. The app writes the pair around exactly the cells
