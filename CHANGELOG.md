@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.106] - 2026-11-21
+- Derive the layer ratchet from source folders
+
 ## [v2026.11.105] - 2026-11-21
 - Warn about window-owned menus on tmux 3.8
 
