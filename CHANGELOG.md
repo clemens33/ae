@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.104] - 2026-11-21
+- Report harness startup dialogs across launch and delivery
+- Register the startup dialog fuzz target
+- Inventory the startup dialog warning clipper caller
+
 ## [v2026.11.103] - 2026-11-21
 - Let the orchestrator board divider resize its column
 - Fleet feed: the orchestrator chat shows every session's lifecycle as dim lines

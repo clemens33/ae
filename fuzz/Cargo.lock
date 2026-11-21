@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ae"
-version = "2026.11.103"
+version = "2026.11.104"
 dependencies = [
  "pulldown-cmark",
  "ratatui-core",
