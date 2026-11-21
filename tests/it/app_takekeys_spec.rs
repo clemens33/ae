@@ -89,6 +89,7 @@ fn keep() -> Keep {
             list_top: None,
             body_top: 0,
             panel: None,
+            zoom: false,
             orchestrator: None,
         },
         at: 0,

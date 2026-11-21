@@ -31,6 +31,7 @@ fn view() -> View {
         list_top: Some(1),
         body_top: 4,
         panel: None,
+        zoom: false,
         orchestrator: None,
     }
 }

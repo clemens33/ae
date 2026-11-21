@@ -528,7 +528,7 @@ fn p2_a_narrow_side_request_falls_back_and_small_frames_never_panic() {
     rig.open();
     let narrow = text(&rig.frame(90, 20));
     assert!(
-        narrow.contains(PANEL) && !narrow.contains(MAIN) && narrow.contains("F side"),
+        narrow.contains(PANEL) && !narrow.contains(MAIN) && narrow.contains("F full"),
         "{narrow}"
     );
     assert!(
@@ -905,6 +905,7 @@ fn p3_an_orchestrator_home_or_handover_opens_full_without_an_ordinary_row() {
                     list_top: None,
                     body_top: 0,
                     panel: None,
+                    zoom: false,
                     orchestrator: None,
                 },
                 at: Timestamp::now().epoch(),
@@ -1337,7 +1338,7 @@ fn p2_widening_restores_the_open_side_panel_after_either_column_covered_the_fram
     assert!(
         narrow_panel.contains(PANEL)
             && !narrow_panel.contains(MAIN)
-            && narrow_panel.contains("F side")
+            && narrow_panel.contains("F full")
             && narrow_panel.contains("side needs"),
         "{narrow_panel}"
     );

@@ -1249,7 +1249,7 @@ fn app_draw_home_160x43() {
         "the ask is told in the header: {head:?}"
     );
     let age = ae::brief::age(Some(60));
-    let right = format!("feat/auth-v2  ·  active {age}");
+    let right = format!("feat/auth-v2  ·  active {age}  X zoom");
     assert!(head.ends_with(&right), "branch and activity: {head:?}");
     for x in 47..157 {
         assert_eq!(cell_at(&buf, x, 1).symbol(), "─", "head rule {x}");

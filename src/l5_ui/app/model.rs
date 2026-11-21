@@ -263,6 +263,10 @@ pub struct Model {
     prior: Option<(String, String)>,
     /// How the orchestrator panel stands; the App writes it each frame.
     columns: Columns,
+    /// The main column is zoomed: while it holds the keys it fills the whole
+    /// frame, the sidebar not drawn. A view preference like the split, so a
+    /// restart carries it.
+    zoom: bool,
 }
 
 /// The view state one chat column keeps for itself: the session it shows,
@@ -290,6 +294,10 @@ impl Chat {
 /// How the orchestrator panel stands in the frame, written by the App before
 /// each draw: the button's ink, and the open panel's mode and focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts the App writes before each draw: the needs-you mark, the drawing column, the board and the main zoom"
+)]
 pub(crate) struct Columns {
     /// The button wears the needs-you mark.
     pub(crate) needy: bool,
@@ -302,6 +310,50 @@ pub(crate) struct Columns {
     /// column keep its place beside a side panel. With no board nothing is
     /// reserved, and every width and hit target is the one it was without one.
     pub(crate) desk: bool,
+    /// The main column's own zoom ([`Model::zoom`]).
+    pub(crate) zoom: bool,
+}
+
+/// The surface that fills the frame ([`Columns::surface`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Surface {
+    /// The sidebar, and the chat beside the panel or alone.
+    Split,
+    /// The main column over the whole frame.
+    Chat,
+    /// The panel over the whole frame.
+    Panel,
+}
+
+impl Columns {
+    /// Whether the frame hides the sidebar: the column that holds the keys is
+    /// zoomed. A panel that asked for the full frame covers it whatever the
+    /// main column asked; a panel that holds the keys beside the main column
+    /// leaves the sidebar drawn, the main column's own zoom kept for when it
+    /// holds the keys again; otherwise the main column's zoom decides.
+    pub(crate) fn zoomed(self) -> bool {
+        match self.panel {
+            Some((true, _)) => true,
+            Some((false, true)) => false,
+            Some((false, false)) | None => self.zoom,
+        }
+    }
+
+    /// What fills the frame. A change is a change of the cells under every
+    /// coordinate of the last frame, even from one zoomed frame to another.
+    pub(crate) fn surface(self) -> Surface {
+        match self.panel {
+            Some((true, _)) => Surface::Panel,
+            _ if self.zoomed() => Surface::Chat,
+            _ => Surface::Split,
+        }
+    }
+
+    /// Whether a zoomed main column covers the open panel it holds the keys
+    /// from: the panel stays open behind it, not drawn.
+    pub(crate) fn hides_panel(self) -> bool {
+        self.zoom && self.panel == Some((false, false))
+    }
 }
 
 impl Model {
@@ -534,7 +586,29 @@ impl Model {
 
     /// Write how the orchestrator panel stands, before a frame is drawn.
     pub(crate) fn set_columns(&mut self, columns: Columns) {
+        if self.columns.surface() != columns.surface() {
+            self.moved();
+        }
         self.columns = columns;
+    }
+
+    /// A panel's zoom changed: the cells under the old coordinates are other
+    /// cells now, so a selection they drew ends.
+    pub(crate) fn reshaped(&mut self) {
+        self.moved();
+    }
+
+    /// Whether the main column is zoomed.
+    pub(crate) fn zoom(&self) -> bool {
+        self.zoom
+    }
+
+    /// Zoom or unzoom the main column. A change is a change of what the
+    /// panels show: it ends a selection the old cells drew.
+    pub(crate) fn set_zoom(&mut self, zoom: bool) {
+        if std::mem::replace(&mut self.zoom, zoom) != zoom {
+            self.moved();
+        }
     }
 
     /// The selected session.
@@ -667,6 +741,7 @@ impl Model {
                 settings: self.settings,
                 peek: self.peek,
                 reader: self.reader,
+                zoom: self.zoom,
                 epoch: self.epoch.wrapping_add(1),
                 ..Self::new(fleet)
             };
@@ -690,6 +765,7 @@ impl Model {
             list_top: self.list_top,
             body_top: self.body_top,
             panel: self.split.panel,
+            zoom: self.zoom,
             orchestrator: None,
         })
     }
@@ -713,6 +789,7 @@ impl Model {
                 list: view.list,
                 panel: view.panel,
             },
+            zoom: view.zoom,
             epoch: self.epoch.wrapping_add(1),
             ..Self::default()
         };
@@ -727,6 +804,7 @@ impl Model {
             settings: self.settings,
             peek: self.peek,
             reader: self.reader,
+            zoom: self.zoom,
             epoch: self.epoch.wrapping_add(1),
             ..Self::new(fleet)
         };
@@ -1646,6 +1724,7 @@ mod tests {
             list_top: None,
             body_top: 0,
             panel: None,
+            zoom: false,
             orchestrator: None,
         };
         model.adopt(&both, &view);

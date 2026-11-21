@@ -401,6 +401,14 @@ struct App {
     history: Vec<(Instant, draw::Layout)>,
     /// The instant of the newest layout the bound dropped.
     lost: Option<Instant>,
+    /// The instant the newest frame that put another surface under the
+    /// coordinates of the one before it (a zoom or unzoom of either column)
+    /// was published. It belongs to the app, not to a column: a press made at
+    /// or before it acts on nothing, whichever column the press landed on.
+    zoom_cut: Option<Instant>,
+    /// The frame just drawn changed the surface and is not yet published: the
+    /// cut moves to the instant it is.
+    zoom_pending: bool,
     /// The reader's requests; `None` for an app driven by hand.
     ask: Option<Sender<Request>>,
     /// The selection the reader was last told of.
@@ -595,6 +603,8 @@ impl App {
             layout: draw::Layout::default(),
             history: Vec::new(),
             lost: None,
+            zoom_cut: None,
+            zoom_pending: false,
             ask,
             focused: None,
             deferred: Vec::new(),

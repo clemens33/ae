@@ -63,12 +63,27 @@ impl App {
         // Every press ends a selection first, a stale or refused one too: no
         // frame is kept to aim a drag at.
         let cleared = mouse.kind == MouseKind::Click && self.unselect();
+        // A press made before the surface changed aims at cells that are
+        // another column's now, the panel's own frames included.
+        if mouse.kind == MouseKind::Click && self.zoom_gone(origin) {
+            return self.frame_gone() || cleared;
+        }
         let acted = match self.panel_made(mouse, origin) {
             Some(acted) => acted,
             None if self.covered_since(mouse, origin) => self.frame_gone(),
             None => self.frame_made(mouse, origin),
         };
         acted || cleared
+    }
+
+    /// Whether a press read at `origin` was made on a surface that is gone: at
+    /// or before the instant the last surface change was published
+    /// ([`App::zoom_cut`]), or while the zoom the keys changed is not drawn yet,
+    /// the old frame's cells being the only ones the press can name.
+    pub(super) fn zoom_gone(&self, origin: Instant) -> bool {
+        self.zoom_cut.is_some_and(|cut| origin <= cut)
+            || (!self.orch.active
+                && self.stand_columns().surface() != self.model.columns().surface())
     }
 
     /// Whether `mouse`, a press made at `origin` on the main column, lands
@@ -168,10 +183,6 @@ impl App {
         // keys.
         let area = self.layout.area();
         let drawn = draw::floor_met(area) && area.contains(Position::new(mouse.column, mouse.row));
-        // A full panel covers the main column alone: a press off the panel is
-        // the sidebar's, acts as in the main column and keeps the keys on the
-        // panel until it selects another session.
-        let full = !self.orch.active && self.orch.panel.as_ref().is_some_and(|panel| panel.full);
         if !self.orch.active && mouse.kind == MouseKind::Click && self.orch.panel.is_some() && drawn
         {
             self.focus_column(false);
@@ -189,25 +200,7 @@ impl App {
         }
         let ended = self.model.let_go();
         match mouse.kind {
-            MouseKind::Click => {
-                let before = self.model.selected().map(str::to_owned);
-                let row = match self.layout.hit(mouse) {
-                    Some(draw::Hit::Session(name)) => {
-                        self.fleet.rows.iter().any(|row| row.name == name)
-                    }
-                    _ => false,
-                };
-                let acted = self.clicked(mouse, fresh) || ended;
-                // The selection shows in the main column the full panel covers:
-                // the panel turns side, as `!` does for a row, and so does a
-                // press on the row already selected, but not one on a session
-                // that left the fleet since the frame drew it.
-                let turned = full && (row || self.model.selected() != before.as_deref());
-                if turned {
-                    self.reader_to_main();
-                }
-                acted || turned
-            }
+            MouseKind::Click => self.clicked(mouse, fresh) || ended,
             MouseKind::WheelUp | MouseKind::WheelDown => {
                 let (up, layout) = (mouse.kind == MouseKind::WheelUp, &self.layout);
                 if layout.in_chat(mouse) {
@@ -340,6 +333,7 @@ impl App {
                 return true;
             }
             draw::Hit::PanelMode => return self.flip_panel() || held,
+            draw::Hit::Zoom => return self.click_zoom() || held,
         };
         apply(self, &act, Instant::now()).unwrap_or(false)
             || was_writing != self.composing()
@@ -369,15 +363,11 @@ impl App {
 
     /// A border's drag, before the panel takes the event: a press on the side
     /// panel's border grabs it, and the motion and release of that drag stay
-    /// here wherever the pointer goes. So do those of a sidebar or list drag
-    /// while the panel is full: its cells are the main column's, which the
-    /// pointer crosses to widen the sidebar. A drag of either beside a side
-    /// panel is the panel's once the pointer lands on it. It moves no keys.
+    /// here wherever the pointer goes. A drag of the sidebar or the list beside
+    /// a side panel is the panel's once the pointer lands on it. It moves no keys.
     /// `None` for every other event.
     pub(super) fn held_edge(&mut self, mouse: Mouse) -> Option<bool> {
-        let full = self.orch.panel.as_ref().is_some_and(|panel| panel.full);
-        let dragging =
-            (self.model.drag()).is_some_and(|drag| drag.edge == model::Edge::Panel || full);
+        let dragging = (self.model.drag()).is_some_and(|drag| drag.edge == model::Edge::Panel);
         match mouse.kind {
             MouseKind::Click => {
                 let (edge, at) = self.layout.grab(mouse)?;

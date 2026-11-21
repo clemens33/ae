@@ -262,6 +262,16 @@ pub(super) fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> 
                 rest = tail;
                 continue;
             }
+            // The zoom is the frame's, not the overlay's: `X` reaches it through
+            // the seat view and the reader as it does through the chat.
+            if byte == b'X'
+                && !app.orch.active
+                && (app.model.peek_open() || app.model.reader_open())
+            {
+                redraw |= app.flip_zoom();
+                rest = tail;
+                continue;
+            }
             if app.model.peek_open() {
                 redraw |= peek_keys(app, model::browse_keys(&Key::Text(vec![byte])));
                 rest = tail;
@@ -376,6 +386,7 @@ pub(super) fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bo
                 return Some(true);
             }
             b'F' => return Some(app.flip_panel() || disarmed),
+            b'X' => return Some(app.flip_zoom() || disarmed),
             b'!' => return Some(app.next_need() || disarmed),
             _ => {}
         }

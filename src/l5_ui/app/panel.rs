@@ -12,8 +12,8 @@ use crate::console::deskview::DeskView;
 /// The open orchestrator panel: how it stands, what it is bound to, and its
 /// own chat column.
 pub(super) struct Panel {
-    /// It covers the main column instead of standing beside it; the sidebar
-    /// stays drawn.
+    /// The panel's own zoom: it holds the keys and fills the whole frame, the
+    /// sidebar not drawn. It ends with the panel.
     pub(super) full: bool,
     /// It takes the keys; the main column does otherwise.
     focused: bool,
@@ -220,7 +220,8 @@ impl App {
                     draw::Hit::Session(_)
                     | draw::Hit::Seat(_)
                     | draw::Hit::Stopped
-                    | draw::Hit::Spawned,
+                    | draw::Hit::Spawned
+                    | draw::Hit::Zoom,
                 ) => self.clicked(mouse, fresh),
                 _ if self.layout.grab(mouse).is_some() => self.clicked(mouse, fresh),
                 _ => {
@@ -441,13 +442,22 @@ impl App {
     pub(super) fn columns(&self) -> model::Columns {
         model::Columns {
             needy: self.orchestrator_needy(),
+            ..self.stand_columns()
+        }
+    }
+
+    /// [`App::columns`] without the needs-you mark: what the geometry reads,
+    /// from the logical state (the zoom bits), never from the last frame.
+    pub(super) fn stand_columns(&self) -> model::Columns {
+        model::Columns {
             panel: self
                 .orch
                 .panel
                 .as_ref()
                 .map(|panel| (panel.full, panel.focused)),
-            drawing_panel: false,
             desk: self.desk_present(),
+            zoom: self.model.zoom(),
+            ..model::Columns::default()
         }
     }
 
@@ -512,9 +522,30 @@ impl App {
     /// it; an open panel a main column covers takes the keys and shows.
     pub(super) fn toggle_panel(&mut self) {
         match self.panel_area() {
-            _ if self.orch.panel.is_none() => self.open_panel(false),
-            None => self.focus_column(true),
+            _ if self.orch.panel.is_none() => self.open_panel(self.model.zoom()),
+            None => self.bring_panel(),
             Some(_) => self.close_panel(),
+        }
+    }
+
+    /// The panel takes the keys. It comes up zoomed while the main column is
+    /// zoomed, so the frame keeps its look as the keys move: leaving the zoom
+    /// is `X` or `F`, never a side effect of the keys.
+    fn bring_panel(&mut self) {
+        self.focus_column(true);
+        if self.model.zoom() {
+            self.set_full(true);
+        }
+    }
+
+    /// Set the open panel's own zoom. A change ends a selection, as the
+    /// frame's own change does a frame later: the key that made it must not
+    /// leave one running against the cells it replaced.
+    fn set_full(&mut self, full: bool) {
+        if let Some(panel) = self.orch.panel.as_mut()
+            && std::mem::replace(&mut panel.full, full) != full
+        {
+            self.model.reshaped();
         }
     }
 
@@ -552,35 +583,45 @@ impl App {
     /// The cells the open panel covers in the last frame, `None` while it is
     /// closed or the main column covers it.
     pub(super) fn panel_area(&self) -> Option<ratatui_core::layout::Rect> {
-        let panel = self.orch.panel.as_ref()?;
-        let columns = model::Columns {
-            panel: Some((panel.full, panel.focused)),
-            desk: self.desk_present(),
-            ..model::Columns::default()
-        };
-        draw::panel_area(self.layout.area(), self.model.split(), columns)
+        self.orch.panel.as_ref()?;
+        draw::panel_area(self.layout.area(), self.model.split(), self.stand_columns())
     }
 
-    /// `F` and the mode label: the panel between side and full as the last
-    /// frame showed it; full takes the keys. Whether the panel is open.
+    /// `F` and the panel's mode label: the panel's own zoom, on or off. Turning
+    /// it on takes the keys and fills the whole frame, a resize-forced full
+    /// column too (that one is a fallback of the layout, never the human's
+    /// zoom). Turning it off shows the side panel and leaves the main column's
+    /// own zoom stored: it shows again when the main column holds the keys,
+    /// as when the panel closes. Whether the panel is open.
     pub(super) fn flip_panel(&mut self) -> bool {
-        let shown = self.orch.panel.as_ref().is_some_and(|panel| {
-            let columns = model::Columns {
-                panel: Some((panel.full, panel.focused)),
-                desk: self.desk_present(),
-                ..model::Columns::default()
-            };
-            draw::panel_full(self.layout.area(), self.model.split(), columns)
-        });
-        if self.orch.panel.is_none() {
+        let Some(full) = self.orch.panel.as_ref().map(|panel| panel.full) else {
             return false;
-        }
-        if !shown {
+        };
+        if !full {
             self.focus_column(true);
         }
-        if let Some(panel) = self.orch.panel.as_mut() {
-            panel.full = !shown;
+        self.set_full(!full);
+        true
+    }
+
+    /// `X` and the main column's zoom label: the zoom of the column that holds
+    /// the keys, on or off. The panel's own zoom is [`App::flip_panel`], which
+    /// this is while the panel holds the keys.
+    pub(super) fn flip_zoom(&mut self) -> bool {
+        if self.panel_focused() {
+            return self.flip_panel();
         }
+        self.model.set_zoom(!self.model.zoom());
+        true
+    }
+
+    /// A click on the main column header's zoom label: the label names what the
+    /// frame drew, so the click does the opposite of it. The press already gave
+    /// the main column the keys, and its stored zoom may differ from the frame
+    /// the press was made on (a side panel that held the keys showed the split).
+    pub(super) fn click_zoom(&mut self) -> bool {
+        let zoom = !self.model.columns().zoomed();
+        self.model.set_zoom(zoom);
         true
     }
 
@@ -625,19 +666,17 @@ impl App {
         match target {
             None => false,
             Some(0) => {
+                // The orchestrator comes up the way the main column stands: beside
+                // it, or zoomed with it.
                 if self.orch.panel.is_none() {
-                    self.open_panel(false);
+                    self.open_panel(self.model.zoom());
                 }
                 self.focus_column(true);
-                if let Some(panel) = self.orch.panel.as_mut() {
-                    panel.full = false;
-                }
+                self.set_full(self.model.zoom());
                 true
             }
             Some(at) => {
-                if let Some(panel) = self.orch.panel.as_mut() {
-                    panel.full = false;
-                }
+                self.set_full(false);
                 self.focus_column(false);
                 let act = self.model.select_at(&self.fleet, at - 1);
                 let _ = apply(self, &act, Instant::now());
@@ -651,14 +690,8 @@ impl App {
     /// full one side to show what they select, `v` (the seat view) does
     /// nothing, `o` is the panel's pane key, and the rest is the panel's chat.
     pub(super) fn panel_byte(&self, byte: u8) -> PanelByte {
-        let full = self.orch.panel.as_ref().is_some_and(|panel| {
-            let columns = model::Columns {
-                panel: Some((panel.full, panel.focused)),
-                desk: self.desk_present(),
-                ..model::Columns::default()
-            };
-            draw::panel_full(self.layout.area(), self.model.split(), columns)
-        });
+        let full = self.orch.panel.is_some()
+            && draw::panel_full(self.layout.area(), self.model.split(), self.stand_columns());
         match byte {
             b'v' => PanelByte::Inert,
             b'o' => PanelByte::Open,
@@ -785,9 +818,7 @@ impl App {
     /// The reader a panel turn opened stands in the main column, which takes
     /// the keys; a full panel turns side so the file shows.
     pub(super) fn reader_to_main(&mut self) {
-        if let Some(panel) = self.orch.panel.as_mut() {
-            panel.full = false;
-        }
+        self.set_full(false);
         self.focus_column(false);
     }
 

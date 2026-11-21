@@ -612,3 +612,6 @@ fn appload_a_meta_lost_during_the_predecessor_stage_loses_no_predecessor() {
         "the predecessors are read or named, never silently dropped: {after}"
     );
 }
+
+#[path = "appzoom_live_spec.rs"]
+mod appzoom_live_spec;

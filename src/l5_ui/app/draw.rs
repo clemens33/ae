@@ -156,6 +156,8 @@ pub(crate) enum Hit {
     PanelPane,
     /// The panel header's mode label: side or full.
     PanelMode,
+    /// The main column header's zoom label: zoom the column or leave the zoom.
+    Zoom,
 }
 
 /// A border as drawn: its edge, where it stands, its own cells and the cells
@@ -722,7 +724,12 @@ pub(crate) fn draw_with_layout(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Bu
     let (height, width) = (area.height, area.width);
     let split = screen.model.split();
     let mut fallback = None;
-    let chat = if let Some(rule) = sidebar_width(area, split) {
+    let columns = screen.model.columns();
+    let chat = if columns.zoomed() {
+        // Zoomed: the keys-holding column owns the whole frame; the sidebar, its
+        // rule, its targets and its fit warning are not drawn.
+        0..width
+    } else if let Some(rule) = sidebar_width(area, split) {
         buf.set_style(Rect::new(0, 0, rule, height), ctx.paint.ground(|p| p.base));
         let cells = Rect::new(rule, 0, 1, height);
         layout.border(buf, Edge::Sidebar, rule, cells);
@@ -762,7 +769,10 @@ const PANEL_FLOOR: u16 = 40;
 
 /// The column the main column starts at in `area` split as `split`: right of
 /// the sidebar's rule, or the frame's first column where no sidebar is drawn.
-fn chat_start(area: Rect, split: Split) -> u16 {
+fn chat_start(area: Rect, split: Split, zoomed: bool) -> u16 {
+    if zoomed {
+        return 0;
+    }
     sidebar_width(area, split).map_or(0, |rule| rule + 1)
 }
 
@@ -789,7 +799,8 @@ enum Stand {
 /// for the sidebar's width is the frame's to give. The one clamp: a dragged
 /// width is kept as asked and clamped here.
 fn side_width(area: Rect, end: u16, split: Split) -> Option<u16> {
-    let start = chat_start(area, split);
+    // A side panel stands only in a frame that keeps its sidebar.
+    let start = chat_start(area, split, false);
     let chat = end.saturating_sub(start);
     let half = chat / 2;
     // Both halves keep the floor, so the clamp's bounds never cross.
@@ -808,6 +819,9 @@ fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
     if full {
         return Stand::Full { note: None };
     }
+    if columns.hides_panel() {
+        return Stand::Closed;
+    }
     let end = desk_slot(area, split, columns).map_or(area.width, |desk| desk.x);
     if let Some(width) = side_width(area, end, split) {
         return Stand::Side {
@@ -818,7 +832,7 @@ fn stand(area: Rect, split: Split, columns: Columns) -> Stand {
     if !focused {
         return Stand::Closed;
     }
-    let start = chat_start(area, split);
+    let start = chat_start(area, split, false);
     let need = start.saturating_add(PANEL_FLOOR * 2);
     Stand::Full {
         note: Some(format!("side needs {need} columns")),
@@ -850,6 +864,9 @@ pub(crate) fn desk_area(area: Rect, split: Split, columns: Columns) -> Option<Re
     let Some((false, _)) = columns.panel else {
         return None;
     };
+    if columns.hides_panel() {
+        return None;
+    }
     if !floor_met(area) {
         return None;
     }
@@ -950,7 +967,7 @@ pub(crate) fn panel_area(area: Rect, split: Split, columns: Columns) -> Option<R
         Stand::Closed => None,
         Stand::Side { border, end } => Some(Rect::new(border, 0, end - border, area.height)),
         Stand::Full { .. } => {
-            let start = chat_start(area, split);
+            let start = chat_start(area, split, columns.zoomed());
             Some(Rect::new(start, 0, area.width - start, area.height))
         }
     }
@@ -984,7 +1001,7 @@ pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) 
     };
     let from = match stand {
         Stand::Side { border, .. } => border,
-        _ => chat_start(area, screen.model.split()),
+        _ => chat_start(area, screen.model.split(), columns.zoomed()),
     };
     for y in 0..height {
         for x in from..width {
@@ -1019,8 +1036,14 @@ fn overlay_open(model: &Model) -> bool {
 
 /// The cells a draft has in the chat column of `area` split as `split`: what
 /// the caller wraps it to.
+#[cfg(test)]
 pub(crate) fn draft_width(area: Rect, split: Split) -> usize {
-    let left = chat_start(area, split) + 2;
+    draft_room(area, chat_start(area, split, false))
+}
+
+/// The cells a draft has in a chat column that starts at the column `start`.
+fn draft_room(area: Rect, start: u16) -> usize {
+    let left = start + 2;
     usize::from(area.width.saturating_sub(2).saturating_sub(left)).max(1)
 }
 
@@ -1029,10 +1052,12 @@ pub(crate) fn draft_width(area: Rect, split: Split) -> usize {
 pub(crate) fn column_width(area: Rect, split: Split, columns: Columns) -> usize {
     let width = match stand(area, split, columns) {
         Stand::Side { border, end } if columns.drawing_panel => end - border - 1,
-        Stand::Side { border, .. } => border - chat_start(area, split),
+        Stand::Side { border, .. } => border - chat_start(area, split, false),
         // A full panel stands in the cells of the main column, so both draw a
         // draft as wide as the main column's.
-        Stand::Closed | Stand::Full { .. } => return draft_width(area, split),
+        Stand::Closed | Stand::Full { .. } => {
+            return draft_room(area, chat_start(area, split, columns.zoomed()));
+        }
     };
     usize::from(width.saturating_sub(4)).max(1)
 }
@@ -2592,6 +2617,7 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, (left, end): (u16, u16), layout: 
     let screen = ctx.screen;
     let paint = ctx.paint;
     let end = panel_head(ctx, buf, (left, end), layout);
+    let end = zoom_head(ctx, buf, (left, end), layout);
     let Some(entry) = screen.selected else {
         // A panel bound to no running seat names the seat and nothing else:
         // no state, no age, no pair.
@@ -2685,6 +2711,34 @@ fn header(ctx: &Ctx<'_, '_>, buf: &mut Buffer, (left, end): (u16, u16), layout: 
     put(buf, dir_from, 0, &shown, room, paint.fg(|p| p.dim));
 }
 
+/// The main column header's right end: the zoom label, `X zoom` or `X unzoom`,
+/// a click target. The answer is where the rest of the header ends; the
+/// panel's column keeps `end`, its own label being [`panel_head`]'s.
+fn zoom_head(
+    ctx: &Ctx<'_, '_>,
+    buf: &mut Buffer,
+    (left, end): (u16, u16),
+    layout: &mut Layout,
+) -> u16 {
+    let model = ctx.screen.model;
+    if model.columns().drawing_panel {
+        return end;
+    }
+    let label = if model.columns().zoomed() {
+        "X unzoom"
+    } else {
+        "X zoom"
+    };
+    let width = cells(label.chars().count());
+    if end < left + width {
+        return end;
+    }
+    let from = end - width;
+    put(buf, from, 0, label, width, ctx.paint.fg(|p| p.title));
+    layout.record(buf, Rect::new(from, 0, width, 1), Hit::Zoom);
+    from.saturating_sub(2).max(left)
+}
+
 /// The word of the panel header's pane target, plain whatever the icons.
 const PANE_WORD: &str = "pane";
 
@@ -2704,7 +2758,8 @@ fn panel_head(
         return end;
     }
     let stand = stand(buf.area, model.split(), columns);
-    let label = if matches!(stand, Stand::Full { .. }) {
+    // The label names the human's zoom, never the layout's fallback.
+    let label = if matches!(stand, Stand::Full { note: None }) {
         "F side"
     } else {
         "F full"
@@ -2868,7 +2923,10 @@ const BROWSE_KEYS: [(&str, &str); 21] = [
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
     ("oo", "open seat; panel: orchestrator pane; twice in 2 s"),
-    ("O F", "orchestrator panel; F: side or full; click pane"),
+    (
+        "O F X",
+        "orchestrator panel; F, X: zoom or unzoom; click pane",
+    ),
     ("m", "session menu; right-click a card too"),
     ("s", "start / stop the selected session"),
     ("z", "show / hide stopped sessions"),
@@ -4940,7 +4998,7 @@ mod tests {
         }];
         let buf = shot.draw(100, 30, READ_ONLY);
         let header = line(&buf, 0).concat();
-        assert!(header.contains("⚠ ghost: resume at sc"), "{header:?}");
+        assert!(header.contains("⚠ ghost: resume"), "{header:?}");
         let end = rule_end(&buf).expect("the chat column's rule");
         let (_, x) = spot(&buf, "· 6m").expect("the age is kept");
         assert!(x + 4 <= usize::from(end), "inside the column: {header:?}");
@@ -5194,20 +5252,23 @@ mod tests {
         shot.entry.last_active_epoch = Some(PIN_NOW - 172_800);
         let buf = shot.draw(160, 45, READ_ONLY);
         let header = line(&buf, 0).concat();
-        assert!(header.trim_end().ends_with("stopped 2d"), "{header:?}");
+        assert!(
+            header.trim_end().ends_with("stopped 2d  X zoom"),
+            "{header:?}"
+        );
         assert!(!header.contains("active"), "{header:?}");
     }
 
     /// Frame calm r1 draws `feat/auth-v2  ·  active 1m` when it fits after
     /// the middle; when it would not fit after a two-cell gap the branch is
     /// dropped, the activity stays right-aligned to the column's end (the
-    /// rule's last cell) and the middle is whole. At 160 the middle starts
-    /// @53: 77 cells leave cols 130-131 blank before the 26-cell branch @132,
-    /// 78 leave one.
+    /// rule's last cell, now the zoom label's) and the middle is whole. At 160 the
+    /// middle starts @53 and the 34-cell branch and label end the column: 69
+    /// cells leave two blank cells before the branch, 70 leave one.
     #[test]
     fn the_header_drops_the_branch_before_it_overlaps() {
-        let branch = "feat/auth-v2  ·  active 1m";
-        for (middle, fits) in [(77, true), (78, false)] {
+        let branch = "feat/auth-v2  ·  active 1m  X zoom";
+        for (middle, fits) in [(69, true), (70, false)] {
             let mut shot = Shot::new();
             shot.entry.branch = Some("feat/auth-v2".to_owned());
             shot.entry.last_active_epoch = Some(PIN_NOW - 60);
@@ -5225,7 +5286,7 @@ mod tests {
                 assert!(shown.ends_with(branch), "{header:?}");
             } else {
                 assert!(
-                    shown.ends_with("active 1m") && !shown.contains("feat/auth-v2"),
+                    shown.ends_with("active 1m  X zoom") && !shown.contains("feat/auth-v2"),
                     "{header:?}"
                 );
             }
@@ -6152,7 +6213,10 @@ mod tests {
         for (width, shown) in [(160, true), (140, true), (139, false)] {
             let header = line(&shot.draw(width, 18, READ_ONLY), 0).concat();
             let header = header.trim_end();
-            assert!(header.ends_with("active 1m"), "{width}x18: {header:?}");
+            assert!(
+                header.ends_with("active 1m  X zoom"),
+                "{width}x18: {header:?}"
+            );
             assert_eq!(
                 header.contains("feat/auth-v2  ·  "),
                 shown,

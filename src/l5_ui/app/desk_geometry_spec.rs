@@ -50,7 +50,7 @@ fn a_board_column_fits_only_beside_two_full_width_chat_columns() {
             assert_eq!(rect.x + rect.width, wide.width);
             assert_eq!(panel.x + panel.width, rect.x);
             assert!(panel.width >= 40);
-            assert!(panel.x - chat_start(wide, split) >= 40);
+            assert!(panel.x - chat_start(wide, split, false) >= 40);
         }
     }
 }

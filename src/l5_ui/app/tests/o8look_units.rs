@@ -193,48 +193,6 @@ fn the_panel_clock_reads_in_the_main_columns_zone() {
     );
 }
 
-/// A full panel covers the main column and nothing left of it: the sidebar's
-/// cells, rule included, are those of the same frame beside a side panel.
-#[test]
-fn a_full_panel_leaves_the_sidebar_as_it_is_drawn_beside_a_side_panel() {
-    for look in looks() {
-        let name = look.palette.name;
-        let drawn = |full: bool| {
-            let root = Root::new(&format!("o8look-full-{full}-{name}"));
-            let (mut app, _reader) = standing(&root, full, &look);
-            frame(WIDTH, HEIGHT, &mut app)
-        };
-        let (side, full) = (drawn(false), drawn(true));
-        let rule = rule_of(&side);
-        for y in 0..HEIGHT {
-            for x in 0..=rule {
-                assert_eq!(
-                    full[(x, y)],
-                    side[(x, y)],
-                    "{name}: sidebar cell {x},{y}\n{}",
-                    text(&full)
-                );
-            }
-        }
-        assert_eq!(rule_of(&full), rule, "{name}: the rule stays");
-        let left = |buf: &Buffer| -> String {
-            (0..HEIGHT)
-                .map(|y| (0..rule).map(|x| buf[(x, y)].symbol()).collect::<String>())
-                .collect()
-        };
-        assert!(
-            left(&full).contains("api"),
-            "{name}: the session list is drawn"
-        );
-        let mode = cell_of(&full, "F side", 0, 0).expect("the full panel's mode label");
-        let panel = cell_of(&full, "orchestrator", 0, 0).expect("the panel's name");
-        assert!(
-            panel > rule && mode > panel,
-            "{name}: the panel starts right of the rule"
-        );
-    }
-}
-
 /// A full panel's ground is the ground of the sidebar's rule cells in the
 /// frame beside a side panel: the look's, never the terminal's default.
 #[test]
@@ -254,57 +212,6 @@ fn a_full_panel_wears_the_ground_of_the_sidebar_rule() {
             assert_eq!(full[(rule + 4, y)].bg, ground, "{name}: ground, row {y}");
         }
     }
-}
-
-/// A press on a sidebar row under a full panel acts as in the main column:
-/// it selects the row, and the panel turns side so the selection shows, with
-/// the keys on the main column, as `!` does.
-#[test]
-fn a_press_on_a_sidebar_row_under_a_full_panel_selects_it_and_turns_the_panel_side() {
-    let mut app = app(None);
-    two(&mut app);
-    opened(&mut app, true);
-    let buf = frame(WIDTH, HEIGHT, &mut app);
-    let rule = rule_without_panel();
-    let (x, y) = (0..HEIGHT)
-        .find_map(|y| {
-            cell_of(&buf, "ops", y, 0)
-                .filter(|x| *x < rule)
-                .map(|x| (x, y))
-        })
-        .expect("the ops row left of the rule");
-    let redraw = app.mouse(Mouse {
-        kind: MouseKind::Click,
-        column: x,
-        row: y,
-    });
-    assert!(redraw, "the press redraws");
-    assert_eq!(app.model.selected(), Some("ops"), "the row is selected");
-    let full = app.orch.panel.as_ref().is_some_and(|panel| panel.full);
-    assert!(!full, "the panel turned side");
-    assert!(!app.panel_focused(), "the main column holds the keys");
-}
-
-/// A press on the sidebar's rule grabs it and leaves the panel full, with
-/// the keys where they were.
-#[test]
-fn a_press_on_the_sidebar_rule_under_a_full_panel_grabs_it_and_keeps_the_panel_full() {
-    let mut app = app(None);
-    two(&mut app);
-    opened(&mut app, true);
-    let _ = frame(WIDTH, HEIGHT, &mut app);
-    let rule = rule_without_panel();
-    let _ = app.mouse(Mouse {
-        kind: MouseKind::Click,
-        column: rule,
-        row: 20,
-    });
-    assert_eq!(app.model.drag().map(|drag| drag.edge), Some(Edge::Sidebar));
-    let full = app.orch.panel.as_ref().is_some_and(|panel| panel.full);
-    assert!(
-        full && app.panel_focused(),
-        "full, with the keys on the panel"
-    );
 }
 
 /// An undrawn look (`theme = off`) paints no colour in either column: the
@@ -347,57 +254,12 @@ fn an_undrawn_look_leaves_the_panel_border_as_plain_as_the_sidebar_rule() {
     }
 }
 
-/// A wheel notch over the sidebar's list under a full panel scrolls the list
-/// and leaves the panel full: the notch is the sidebar's, not the panel's.
-#[test]
-fn a_wheel_notch_over_the_sidebar_list_under_a_full_panel_scrolls_the_list() {
-    let mut app = app(None);
-    app.fleet = Fleet {
-        rows: (0..30)
-            .map(|at| row(&format!("n{at:02}"), at + 1, false))
-            .collect(),
-        home: None,
-    };
-    app.model = Model::new(&app.fleet);
-    opened(&mut app, true);
-    let buf = frame(WIDTH, HEIGHT, &mut app);
-    let rule = rule_without_panel();
-    // The first card of the list: its number and the row it stands on.
-    let first = |buf: &Buffer| -> Option<(u16, u8)> {
-        (1..HEIGHT).find_map(|y| {
-            let line: String = (0..rule).map(|x| buf[(x, y)].symbol()).collect();
-            let number = line
-                .split_whitespace()
-                .find_map(|word| word.strip_prefix('n')?.parse().ok())?;
-            Some((y, number))
-        })
-    };
-    let (y, top) = first(&buf).expect("a card in the sidebar list");
-    let notch = Mouse {
-        kind: MouseKind::WheelDown,
-        column: 2,
-        row: y,
-    };
-    assert!(app.mouse(notch), "the notch scrolls the list");
-    let after = frame(WIDTH, HEIGHT, &mut app);
-    assert_eq!(
-        first(&after).map(|card| card.1),
-        Some(top + 1),
-        "by one session"
-    );
-    assert!(
-        app.orch.panel.as_ref().is_some_and(|panel| panel.full),
-        "still full"
-    );
-}
-
 /// What a drag of the sidebar's rule left behind: the width it asked for, the
-/// rule and the panel's left edge in the frame drawn after it, and whether a
-/// drag still stood after the release.
+/// rule in the frame drawn after it, and whether a drag still stood after the
+/// release.
 struct Dragged {
     asked: Option<u16>,
     rule: u16,
-    edge: Option<u16>,
     held: bool,
 }
 
@@ -426,21 +288,17 @@ fn drag_rule(app: &mut App, width: u16, rule: u16, by: i32) -> Dragged {
     Dragged {
         asked: app.model.split().sidebar,
         rule: rule_of(&buf),
-        edge: app.layout.panel.map(|cells| cells.x),
         held: app.model.drag().is_some(),
     }
 }
 
-/// A drag that grabbed the sidebar's rule moves it the same way with no panel,
-/// beside a side panel and under a full one, each way: the full panel covers
-/// the main column the pointer moves through, so it must take neither the
-/// motion nor the release. The drawn rule follows the pointer and a full
-/// panel keeps its left edge one cell right of the rule.
+/// A drag that grabbed the sidebar's rule moves it the same way with no panel
+/// and beside a side panel, each way. The drawn rule follows the pointer.
 #[test]
-fn a_drag_of_the_sidebar_rule_moves_it_under_a_full_panel_as_it_does_beside_a_side_panel() {
+fn a_drag_of_the_sidebar_rule_moves_it_as_it_does_beside_a_side_panel() {
     let rule = rule_without_panel();
     let mut wrong = Vec::new();
-    for panel in [None, Some(false), Some(true)] {
+    for panel in [None, Some(false)] {
         for by in [6, -6] {
             let mut app = app(None);
             two(&mut app);
@@ -461,68 +319,9 @@ fn a_drag_of_the_sidebar_rule_moves_it_under_a_full_panel_as_it_does_beside_a_si
                 &format!("drew the rule at {}", left.rule),
             );
             expect(!left.held, "the release left the drag held");
-            if panel == Some(true) {
-                expect(
-                    left.edge == Some(want + 1),
-                    &format!("panel at {:?}", left.edge),
-                );
-            }
         }
     }
     assert!(wrong.is_empty(), "want the rule at {rule} +- 6: {wrong:#?}");
-}
-
-/// Under a full panel the dragged rule keeps its documented bounds: the
-/// sidebar at least 30 cells and the chat at least 40, so the rule stands in
-/// column 30 to `width - 41`, however far the pointer goes. 160 columns start
-/// the rule in column 44, a narrower pane in column 34.
-#[test]
-fn a_drag_of_the_sidebar_rule_under_a_full_panel_stops_at_its_bounds() {
-    for (width, start, by, want) in [
-        (160, 44, 115, 119),
-        (160, 44, -44, 30),
-        (100, 34, 60, 59),
-        (100, 34, -34, 30),
-    ] {
-        let mut app = app(None);
-        two(&mut app);
-        opened(&mut app, true);
-        let _ = frame(width, HEIGHT, &mut app);
-        let left = drag_rule(&mut app, width, start, by);
-        let at = format!("width {width}, by {by}");
-        assert_eq!(left.asked, Some(want), "asked, {at}");
-        assert_eq!(left.rule, want, "drawn, {at}");
-        assert_eq!(left.edge, Some(want + 1), "the panel's edge, {at}");
-    }
-}
-
-/// A drag grabbed under a full panel waits out a frame that draws no sidebar
-/// and follows the pointer again once the rule is back: the motion under the
-/// small frame moves nothing and the drag stays held.
-#[test]
-fn a_drag_under_a_full_panel_waits_out_a_frame_without_a_sidebar() {
-    let rule = rule_without_panel();
-    let mut app = app(None);
-    two(&mut app);
-    opened(&mut app, true);
-    let _ = frame(WIDTH, HEIGHT, &mut app);
-    let mouse = |kind, column: u16| Mouse {
-        kind,
-        column,
-        row: 20,
-    };
-    let _ = app.mouse(mouse(MouseKind::Click, rule));
-    let _ = frame(80, 19, &mut app);
-    assert!(!app.layout.shows(Edge::Sidebar), "no sidebar at 80x19");
-    assert!(
-        !app.mouse(mouse(MouseKind::Drag, 50)),
-        "the motion has no rule to move"
-    );
-    assert_eq!(app.model.split().sidebar, None, "the width stays unasked");
-    assert!(app.model.drag().is_some(), "the drag is still held");
-    let _ = frame(WIDTH, HEIGHT, &mut app);
-    let _ = app.mouse(mouse(MouseKind::Drag, rule + 3));
-    assert_eq!(app.model.split().sidebar, Some(rule + 3), "followed again");
 }
 
 /// Beside a side panel the panel keeps the motion that lands on it, as it
@@ -560,30 +359,6 @@ fn a_drag_that_crosses_a_side_panel_is_still_the_panels() {
     assert!(app.model.drag().is_none(), "the release ends the drag");
 }
 
-/// A drag of the session list's rule follows the pointer's row while the
-/// pointer is over a full panel: the panel covers the main column beside the
-/// sidebar, and the motion there still belongs to the grabbed rule.
-#[test]
-fn a_drag_of_the_list_rule_follows_the_pointer_over_a_full_panel() {
-    let mut app = app(None);
-    two(&mut app);
-    opened(&mut app, true);
-    let list_rule = |buf: &Buffer| (0..HEIGHT).find(|y| buf[(2, *y)].symbol() == "─");
-    let first = list_rule(&frame(WIDTH, HEIGHT, &mut app)).expect("the list rule");
-    let over = rule_without_panel() + 6;
-    let mouse = |kind, column, row| Mouse { kind, column, row };
-    let _ = app.mouse(mouse(MouseKind::Click, 2, first));
-    assert_eq!(app.model.drag().map(|drag| drag.edge), Some(Edge::List));
-    let _ = app.mouse(mouse(MouseKind::Drag, over, first + 3));
-    let _ = app.mouse(mouse(MouseKind::Release, over, first + 3));
-    assert!(app.model.drag().is_none(), "the release ends the drag");
-    assert_eq!(
-        list_rule(&frame(WIDTH, HEIGHT, &mut app)),
-        Some(first + 3),
-        "the rule followed the pointer's row over the panel"
-    );
-}
-
 /// How a route to a session under a full panel ended.
 struct Routed {
     selected: Option<String>,
@@ -616,30 +391,6 @@ fn routed(start: Option<&str>, act: impl Fn(&mut App) -> bool) -> Routed {
         full: app.orch.panel.as_ref().is_some_and(|panel| panel.full),
         keys_on_panel: app.panel_focused(),
         redraw,
-    }
-}
-
-/// A press on the sidebar row `name` as the frame drew it; with `leave` the
-/// session has left the fleet since, so the press is a historical one.
-fn press_row(name: &'static str, leave: bool) -> impl Fn(&mut App) -> bool {
-    let rule = rule_without_panel();
-    move |app: &mut App| {
-        let buf = frame(WIDTH, HEIGHT, app);
-        let (x, y) = (0..HEIGHT)
-            .find_map(|y| {
-                cell_of(&buf, name, y, 0)
-                    .filter(|x| *x < rule)
-                    .map(|x| (x, y))
-            })
-            .expect("the row in the sidebar");
-        if leave {
-            app.fleet.rows.retain(|row| row.name != name);
-        }
-        app.mouse(Mouse {
-            kind: MouseKind::Click,
-            column: x,
-            row: y,
-        })
     }
 }
 
@@ -678,27 +429,18 @@ fn case<'a>(
     }
 }
 
-/// Every way to name a session under a full panel shows it: a press on its
-/// row, also the one already selected, and `j`, `k`, the arrows and `1`-`9`
-/// that name a row select it, turn the panel side, give the main column the
-/// keys and owe a redraw. A key that names no row (a digit past the list, a
-/// step off either end), a press on a session that left the fleet, the
-/// panel's own keys and a list key with no session leave the panel full.
+/// Every key that names a session under a zoomed panel shows it: `j`, `k`, the
+/// arrows and `1`-`9` that name a row select it, turn the panel side, give the
+/// main column the keys and owe a redraw. A key that names no row (a digit past
+/// the list, a step off either end), the panel's own keys and a list key with
+/// no session leave the panel zoomed. The sidebar is not drawn, so no press
+/// names a session.
 #[test]
-fn every_route_to_a_session_under_a_full_panel_selects_it_and_turns_the_panel_side() {
+fn every_key_that_names_a_session_under_a_zoomed_panel_selects_it_and_turns_the_panel_side() {
     let text = |byte: &[u8]| typed(Key::Text(byte.to_vec()));
     let (web, ops) = (Some("web"), Some("ops"));
     let (yes, no) = (Some(true), Some(false));
     let cases = [
-        case("press ops", web, press_row("ops", false), ops, true, yes),
-        case(
-            "press web, the selected",
-            web,
-            press_row("web", false),
-            web,
-            true,
-            yes,
-        ),
         case("j", web, text(b"j"), ops, true, yes),
         case("Down", web, typed(Key::Down), ops, true, yes),
         case("2", web, text(b"2"), ops, true, yes),
@@ -718,14 +460,6 @@ fn every_route_to_a_session_under_a_full_panel_selects_it_and_turns_the_panel_si
             no,
         ),
         case("9 past the list", web, text(b"9"), web, false, no),
-        case(
-            "press on a departed row",
-            web,
-            press_row("ops", true),
-            web,
-            false,
-            no,
-        ),
         case("j with no session", None, text(b"j"), None, false, no),
         case("Enter", web, typed(Key::Enter), web, false, None),
         case("Tab", web, typed(Key::Tab), web, false, None),
@@ -746,4 +480,39 @@ fn every_route_to_a_session_under_a_full_panel_selects_it_and_turns_the_panel_si
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A zoomed panel fills the frame: no sidebar cell is drawn, and a press where
+/// the sidebar's rule stood grabs nothing and leaves the panel zoomed with the
+/// keys.
+#[test]
+fn a_zoomed_panel_draws_no_sidebar_and_a_press_on_its_old_rule_grabs_nothing() {
+    for look in looks() {
+        let name = look.palette.name;
+        let root = Root::new(&format!("o8look-zoomed-{name}"));
+        let (mut app, _reader) = standing(&root, true, &look);
+        let buf = frame(WIDTH, HEIGHT, &mut app);
+        let rule = rule_without_panel();
+        assert!(
+            (0..HEIGHT).all(|y| buf[(rule, y)].symbol() != "│"),
+            "{name}: no rule cell\n{}",
+            text(&buf)
+        );
+        assert!(
+            cell_of(&buf, "orchestrator", 0, 0).is_some_and(|x| x < rule),
+            "{name}: the panel starts at the left edge\n{}",
+            text(&buf)
+        );
+        assert!(app.layout.sessions().next().is_none(), "{name}: no row");
+        let _ = app.mouse(Mouse {
+            kind: MouseKind::Click,
+            column: rule,
+            row: 20,
+        });
+        assert_eq!(app.model.drag(), None, "{name}: nothing is grabbed");
+        assert!(
+            app.orch.panel.as_ref().is_some_and(|panel| panel.full) && app.panel_focused(),
+            "{name}: zoomed, with the keys on the panel"
+        );
+    }
 }

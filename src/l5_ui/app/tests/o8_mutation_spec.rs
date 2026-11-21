@@ -70,6 +70,7 @@ fn handed_seat() -> Answer {
             list_top: None,
             body_top: 0,
             panel: None,
+            zoom: false,
             orchestrator: None,
         },
         at: Timestamp::now().epoch(),

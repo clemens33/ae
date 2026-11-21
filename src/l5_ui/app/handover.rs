@@ -20,6 +20,12 @@
 //! An open panel on a proved seat uses `v2`: the same fields, the width
 //! field (possibly empty), and `|mode,uuid,pages,rows`. This version has
 //! one spelling and requires the panel tuple.
+//!
+//! A zoomed main column uses `v3`: the same fields, the width field (always
+//! there, possibly empty) and, with the panel open, the same `|mode,uuid,pages,rows`
+//! tuple after it. The tag is the zoom, so a `v3` line has one spelling too, and
+//! `v1` alone reads the `overview` token. The panel's own full-frame zoom rides
+//! as the `full` mode, in `v2` or `v3`.
 
 use crate::archive::is_canonical_uuid;
 use crate::config::is_agent_name;
@@ -60,6 +66,9 @@ pub struct View {
     /// The side panel's width as dragged, its border column included; the
     /// layout clamps it, never this preference.
     pub panel: Option<u16>,
+    /// The main column was zoomed: it holds the whole frame while it holds
+    /// the keys, the sidebar not drawn. Independent of the panel's own zoom.
+    pub zoom: bool,
     /// An open orchestrator panel, independent of the main view.
     pub orchestrator: Option<OrchestratorView>,
 }
@@ -133,10 +142,10 @@ impl Handover {
     pub fn render(&self) -> String {
         let view = &self.view;
         let small = |n: Option<u16>| n.map(|n| n.to_string()).unwrap_or_default();
-        let tag = if view.orchestrator.is_some() {
-            "v2"
-        } else {
-            "v1"
+        let tag = match (view.zoom, view.orchestrator.is_some()) {
+            (true, _) => "v3",
+            (false, true) => "v2",
+            (false, false) => "v1",
         };
         let fields = [
             tag.to_owned(),
@@ -156,6 +165,8 @@ impl Handover {
         ];
         let line = fields.join("|");
         match (&view.orchestrator, view.panel) {
+            // The main column's zoom is the tag; its panel field is always there.
+            (None, width) if view.zoom => format!("{line}|{}", small(width)),
             (Some(orch), width) => format!("{line}|{}|{}", small(width), orch.render()),
             (None, Some(width)) => format!("{line}|{width}"),
             (None, None) => line,
@@ -224,11 +235,15 @@ pub fn parse(text: &str) -> Option<Handover> {
         return None;
     }
     let parts: Vec<&str> = text.split('|').collect();
-    let (parts, panel, orchestrator) = match (parts.first().copied()?, parts.as_slice()) {
-        ("v1", fields) if fields.len() == 14 => (fields, "", None),
-        ("v1", [fields @ .., panel]) if fields.len() == 14 => (fields, *panel, None),
+    let (parts, panel, orchestrator, zoom) = match (parts.first().copied()?, parts.as_slice()) {
+        ("v1", fields) if fields.len() == 14 => (fields, "", None, false),
+        ("v1", [fields @ .., panel]) if fields.len() == 14 => (fields, *panel, None, false),
         ("v2", [fields @ .., panel, orch]) if fields.len() == 14 => {
-            (fields, *panel, Some(OrchestratorView::parse(orch)?))
+            (fields, *panel, Some(OrchestratorView::parse(orch)?), false)
+        }
+        ("v3", [fields @ .., panel]) if fields.len() == 14 => (fields, *panel, None, true),
+        ("v3", [fields @ .., panel, orch]) if fields.len() == 14 => {
+            (fields, *panel, Some(OrchestratorView::parse(orch)?), true)
         }
         _ => return None,
     };
@@ -261,7 +276,9 @@ pub fn parse(text: &str) -> Option<Handover> {
             .transpose()
             .ok()
     };
-    if !(*tab == "agents" || *tab == "overview" && orchestrator.is_none()) {
+    // `overview` is the one view token an older core wrote, in `v1` alone.
+    let legacy = *tab == "overview" && orchestrator.is_none() && !zoom;
+    if !(*tab == "agents" || legacy) {
         return None;
     }
     let focus = match *focus {
@@ -282,6 +299,7 @@ pub fn parse(text: &str) -> Option<Handover> {
         list_top,
         body_top: size(body_top, PAGES_MAX)?,
         panel: small(panel)?,
+        zoom,
         orchestrator,
     };
     let digits = pane.strip_prefix('%')?;
@@ -299,6 +317,10 @@ pub fn parse(text: &str) -> Option<Handover> {
         view,
     })
 }
+
+#[cfg(test)]
+#[path = "appzoom_wire_spec.rs"]
+mod appzoom_wire_spec;
 
 #[cfg(test)]
 mod tests {

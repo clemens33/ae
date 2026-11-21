@@ -590,6 +590,7 @@ fn restored_view_of_stopped_session_opens_group_and_preserves_explicit_selection
             list_top: None,
             body_top: 0,
             panel: None,
+            zoom: false,
             orchestrator: None,
         },
         at: Timestamp::now().epoch(),

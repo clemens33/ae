@@ -5923,6 +5923,7 @@ fn handed(pages: usize, rows: usize) -> Answer {
         list_top: None,
         body_top: 0,
         panel: None,
+        zoom: false,
         orchestrator: None,
     };
     let at = Timestamp::now().epoch();

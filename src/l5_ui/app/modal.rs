@@ -44,7 +44,7 @@ impl App {
     /// drew under it. One made on a frame the bound dropped opens none.
     pub(super) fn menu_press(&mut self, mouse: Mouse, origin: Instant) -> bool {
         let ended = self.model.let_go();
-        if self.lost.is_some_and(|lost| origin <= lost) {
+        if self.lost.is_some_and(|lost| origin <= lost) || self.zoom_gone(origin) {
             self.spend(origin);
             let line = "menu not opened: its frame is gone".to_owned();
             self.flash = Some((line, Instant::now()));
@@ -96,7 +96,7 @@ impl App {
         if self.unseen(origin) {
             return true;
         }
-        if self.lost.is_some_and(|lost| origin <= lost) {
+        if self.lost.is_some_and(|lost| origin <= lost) || self.zoom_gone(origin) {
             let line = "click not taken: its frame is gone".to_owned();
             self.flash = Some((line, Instant::now()));
             return true;

@@ -469,3 +469,9 @@ fn a_carrier_with_a_panel_is_canonical_bounded_and_refuses_garbage() {
         }
     }
 }
+
+#[path = "appzoom_spec.rs"]
+mod appzoom_spec;
+
+#[path = "appzoom_drive_spec.rs"]
+mod appzoom_drive_spec;

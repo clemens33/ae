@@ -296,7 +296,7 @@ fn a_panel_draft_drag_stops_at_the_hint_and_the_flash_leaves_with_the_panel() {
 }
 
 /// A panel's draft wraps to the cells the panel covers, up to its margin:
-/// the cells right of the sidebar full, its own half side by side.
+/// the whole frame zoomed, its own half side by side.
 #[test]
 fn a_panel_draft_wraps_to_the_cells_the_panel_covers() {
     for full in [true, false] {
@@ -306,11 +306,7 @@ fn a_panel_draft_wraps_to_the_cells_the_panel_covers() {
         let draft = "0123456789".repeat(if full { 40 } else { 20 });
         press(&mut app, draft.as_bytes());
         let buf = at(160, 45, &mut app);
-        let from = if full {
-            rule_of(&buf) + 1
-        } else {
-            border_of(&buf) + 1
-        };
+        let from = if full { 0 } else { border_of(&buf) + 1 };
         assert_fills_to_the_margin(&draft_rows(&buf, from, 160), &draft, 160);
     }
 }
@@ -529,8 +525,8 @@ fn the_reader_beside_a_side_panel_leaves_the_panel_footer_its_gear() {
     );
 }
 
-/// A side request that cannot fit covers the frame with the panel, whose
-/// header says why, at every width from the app's floor up.
+/// A side request that cannot fit covers the chat column with the panel, whose
+/// header says why and offers `F full`, at every width from the app's floor up.
 #[test]
 fn a_fallen_back_panel_says_why_at_every_width() {
     let mut app = app(None);
@@ -540,9 +536,9 @@ fn a_fallen_back_panel_says_why_at_every_width() {
     for width in 40..160 {
         let shown = text(&at(width, 20, &mut app));
         let head = shown.lines().next().unwrap_or_default();
-        if head.contains("F side") {
+        if head.contains("side needs") {
             fell += 1;
-            assert!(head.contains("side needs"), "{width}: {head}");
+            assert!(head.contains("F full"), "{width}: {head}");
         }
     }
     assert!(fell >= 40, "the narrow widths fall back: {fell}");
@@ -558,7 +554,7 @@ fn an_open_panel_draws_at_exactly_the_size_floor() {
     let shown = text(&at(40, 8, &mut app));
     assert!(!shown.contains("ae app needs at least"), "{shown}");
     assert!(
-        shown.contains("F side"),
+        shown.contains("F full") && shown.contains("side needs"),
         "the panel covers the floor frame: {shown}"
     );
 }
@@ -728,11 +724,7 @@ fn a_mode_label_press_flips_the_panel_and_arms_nothing() {
         two(&mut app);
         opened(&mut app, full);
         let buf = at(160, 45, &mut app);
-        let from = if full {
-            rule_of(&buf) + 1
-        } else {
-            border_of(&buf)
-        };
+        let from = if full { 0 } else { border_of(&buf) };
         let x = cell_of(&buf, label, 0, from).expect("the mode label");
         assert!(app.mouse(Mouse {
             kind: MouseKind::Click,
@@ -765,11 +757,7 @@ fn a_mode_label_press_ends_a_held_panel_entry() {
             "a panel entry without its pair is refused"
         );
         let buf = at(160, 45, &mut app);
-        let from = if full {
-            rule_of(&buf) + 1
-        } else {
-            border_of(&buf)
-        };
+        let from = if full { 0 } else { border_of(&buf) };
         let x = cell_of(&buf, label, 0, from).expect("the mode label");
         assert!(app.mouse(Mouse {
             kind: MouseKind::Click,
@@ -1813,12 +1801,12 @@ fn a_main_turn_click_read_with_the_f_that_covers_it_is_not_taken() {
     assert_eq!(app.model.selected(), Some("web"));
 }
 
-/// A click on a sidebar row read in the same batch as the `F` that turns the
-/// panel full is taken: the full panel leaves the sidebar drawn, so the row
-/// is selected and the panel turns side to show it, with the keys on the
-/// main column.
+/// A click on a sidebar row read in the same batch as the `F` that zooms the
+/// panel is not taken: the zoom hides the sidebar, so the row the press aimed
+/// at is not there any more. The panel keeps the zoom and the keys and the
+/// selection stays.
 #[test]
-fn a_sidebar_row_click_read_with_the_f_is_taken_and_turns_the_panel_side() {
+fn a_sidebar_row_click_read_with_the_f_is_not_taken_the_zoom_hides_the_row() {
     let mut app = app(None);
     two(&mut app);
     let row = ops_cell(&mut app);
@@ -1833,9 +1821,9 @@ fn a_sidebar_row_click_read_with_the_f_is_taken_and_turns_the_panel_side() {
     assert!(take_keys(&mut app, batch).is_some());
     assert_eq!(
         app.model.selected(),
-        Some("ops"),
-        "the sidebar row is taken"
+        Some("web"),
+        "the sidebar row is not taken"
     );
-    assert!(!app.orch.panel.as_ref().is_some_and(|panel| panel.full));
-    assert!(!app.panel_focused(), "the main column holds the keys");
+    assert!(app.orch.panel.as_ref().is_some_and(|panel| panel.full));
+    assert!(app.panel_focused(), "the zoomed panel keeps the keys");
 }

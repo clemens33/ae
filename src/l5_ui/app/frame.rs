@@ -67,6 +67,16 @@ impl App {
     /// to the width its column leaves.
     fn frame_columns(&mut self, area: ratatui_core::layout::Rect) {
         let columns = self.columns();
+        // A frame that zooms or unzooms, or hands the zoom from one column to
+        // the other, puts other cells under the coordinates the last one drew:
+        // no press made before it is published may land on them, a right press
+        // on a hidden card least of all. The cut is monotonic and the app's
+        // own, so neither the bound's drops nor a column swap can lower or hide
+        // it; it moves to the replaced layout's instant and then to the
+        // instant the frame is shown ([`App::frame_shown`]).
+        if self.model.columns().surface() != columns.surface() {
+            self.zoom_pending = true;
+        }
         self.model.set_columns(columns);
         if self.model.selected().is_some() {
             let size = Size {
@@ -110,7 +120,11 @@ impl App {
             .map(|name| (name.to_owned(), self.card(name)));
         drawn.cards = cards.collect();
         let replaced = std::mem::replace(&mut self.layout, drawn);
-        self.history.push((Instant::now(), replaced));
+        let replaced_at = Instant::now();
+        self.history.push((replaced_at, replaced));
+        if self.zoom_pending {
+            self.zoom_cut = self.zoom_cut.max(Some(replaced_at));
+        }
         if self.history.len() > HISTORY {
             self.lost = Some(self.history.remove(0).0);
         }
@@ -256,6 +270,9 @@ impl App {
     /// The frame just written showed the open modal whole at `at`: the first
     /// such frame dates which input counts as made on it.
     pub(super) fn frame_shown(&mut self, at: Instant) {
+        if std::mem::take(&mut self.zoom_pending) {
+            self.zoom_cut = self.zoom_cut.max(Some(at));
+        }
         if let Some(input) = self.writer_input_mut() {
             input.warning_painted(at);
         }
