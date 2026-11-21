@@ -106,6 +106,12 @@ fn end_while_the_memo_is_held(rig: &Rig, meddle: impl FnOnce(&Path)) -> (String,
     all_done(rig, TARGET, &panes);
     let memo_hold = ae::store::lock(&rig.dir(TARGET).join("memo.tsv.lock"), Duration::ZERO)
         .expect("hold the archive memo read");
+    // The archive's first activity hold: nothing else in this rig makes it.
+    let activity = rig.dir(TARGET).join(".console-writer.lock");
+    assert!(
+        !activity.exists(),
+        "the activity hold exists before the end"
+    );
     let child = rig
         .command(Some(&caller))
         .args(["end", TARGET, "--keep-history", "--expect-uuid", B])
@@ -120,6 +126,33 @@ fn end_while_the_memo_is_held(rig: &Rig, meddle: impl FnOnce(&Path)) -> (String,
             "the bound end never reached its stop"
         );
         std::thread::sleep(Duration::from_millis(10));
+    }
+    // The vanished name is no barrier: the end still verifies its kill, clears
+    // the views and migrates the meta under the meta lock. Only then does the
+    // archive make and take its activity holds, which it takes without
+    // waiting, so they are watched by the file appearing, never probed by a
+    // lock. Its source holds come next and wait: the meta hold is held, and
+    // kept, once a probe of it is refused as contended while the archive waits
+    // for the memo lock held here.
+    let reached = || {
+        assert!(
+            Instant::now() < until,
+            "the bound end never reached the archive holds"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    while !activity.exists() {
+        reached();
+    }
+    loop {
+        match ae::store::lock(&rig.dir(TARGET).join("meta.lock"), Duration::ZERO) {
+            Err(why) if why.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(why) => panic!("the meta hold could not be probed: {why}"),
+            Ok(probe) => {
+                drop(probe);
+                reached();
+            }
+        }
     }
     meddle(&rig.dir(TARGET));
     drop(memo_hold);
