@@ -31,9 +31,16 @@ use super::{
 const USAGE: &str =
     "Usage: _end [-f] [--purge-history|--keep-history] [--assume-stopped] <session-name|all>";
 
+mod bound;
 #[cfg(test)]
 mod end_expect_spec;
 pub(crate) mod transaction;
+
+pub(crate) use bound::{bound_form, own_session_refusal};
+
+/// The word the entry puts first in an `_end` tail when the user typed `rm`:
+/// the end is the same, and only the words a refusal names differ.
+pub(crate) const RM_MARKER: &str = "--verb=rm";
 
 const END_REQUEST_ACTION: &str = "end-request";
 const END_RESULT_ACTION: &str = "end-result";
@@ -745,6 +752,11 @@ struct Args {
     /// What a supervisor must prove under the lock before it touches `target`,
     /// which it then treats as one literal session name.
     expect: Option<EndExpectation>,
+    /// The session uuid of the record an ordinary agent seat's end of its own
+    /// session was admitted on (`--expect-own=<uuid>`): carried through the
+    /// confirmation, the handoff and the supervisor, and proven under the
+    /// lifecycle lock before any migration, stop or write.
+    expect_own: Option<String>,
 }
 
 /// Which process owns the destructive sequence.
@@ -767,6 +779,27 @@ pub(crate) fn run(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
+    run_as(root, tail, ambient_pane, None, out, err)
+}
+
+/// [`run`] on the entry's ONE reading of the calling pane, which the bound
+/// end judges its caller by (`None`: it reads the pane itself).
+pub(crate) fn run_as(
+    root: &Path,
+    tail: &[String],
+    ambient_pane: Option<&str>,
+    entry: Option<&crate::rename::Entry>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    match bound_form(tail) {
+        Some(Ok(request)) => return bound::run(root, &request, entry, out, err),
+        Some(Err(why)) => {
+            writeln!(err, "Error: {why} Nothing was ended.")?;
+            return Ok(EXIT_USAGE);
+        }
+        None => {}
+    }
     let mut args = match parse(tail) {
         Ok(args) => args,
         Err(message) => {
@@ -788,6 +821,11 @@ pub(crate) fn run(
             return Ok(EXIT_USAGE);
         };
         args.target.clone_from(own);
+    }
+    if let Some(seat) = entry.and_then(crate::rename::Entry::seat)
+        && let ControlFlow::Break(code) = own_expectation(root, tail, &mut args, &seat, err)?
+    {
+        return Ok(code);
     }
     if args.mode == RunMode::Supervise {
         return run_supervised(root, &args, out, err);
@@ -1118,6 +1156,7 @@ fn parse(tail: &[String]) -> Result<Args, String> {
         confirmed: Vec::new(),
         purge_cli: None,
         expect: None,
+        expect_own: None,
     };
     let mut confirmed = Vec::<ConfirmedParts>::new();
     let mut expect = ExpectWords::default();
@@ -1129,6 +1168,7 @@ fn parse(tail: &[String]) -> Result<Args, String> {
             "--assume-stopped" => args.assume_stopped = true,
             "--purge-history" => args.purge_cli = Some(true),
             "--keep-history" => args.purge_cli = Some(false),
+            RM_MARKER => {}
             "--pane" => {
                 return Err("Error: --pane needs a pane id as its next argument.".to_owned());
             }
@@ -1181,6 +1221,16 @@ fn parse(tail: &[String]) -> Result<Args, String> {
                 };
                 last_confirmed(&mut confirmed, flag)?.tmux = Some(tmux);
             }
+            flag if flag.starts_with("--expect-own=") => {
+                let uuid =
+                    archive::canonical_uuid(flag.strip_prefix("--expect-own=").unwrap_or_default());
+                if uuid.is_empty() {
+                    return Err("Error: --expect-own is not a session uuid.".to_owned());
+                }
+                if args.expect_own.replace(uuid).is_some() {
+                    return Err("Error: --expect-own may be given only once.".to_owned());
+                }
+            }
             flag if flag.starts_with("--expect-") => expect.take(flag)?,
             flag if flag.starts_with('-') => {
                 return Err(format!(
@@ -1225,6 +1275,9 @@ fn parse(tail: &[String]) -> Result<Args, String> {
         .collect::<Result<Vec<_>, String>>()?;
     if expect.any() {
         args.expect = Some(expect.build(&args)?);
+    }
+    if args.expect_own.is_some() && args.target == "all" {
+        return Err("Error: --expect-own names one session, never 'all'.".to_owned());
     }
     Ok(args)
 }
@@ -1325,6 +1378,9 @@ fn supervisor_args(core: String, args: &Args, confirmed: &ConfirmedPlan) -> Deta
     if let Some(pane) = args.pane.as_deref().filter(|pane| !pane.is_empty()) {
         command.push(format!("--pane={pane}"));
     }
+    if let Some(own) = &args.expect_own {
+        command.push(format!("--expect-own={own}"));
+    }
     DetachedArgv(command)
 }
 
@@ -1346,6 +1402,9 @@ fn handoff_argv(args: &Args, frozen: &[FrozenTarget]) -> Option<DetachedArgv> {
     }
     if let Some(pane) = args.pane.as_deref().filter(|pane| !pane.is_empty()) {
         command.push(format!("--pane={pane}"));
+    }
+    if let Some(own) = &args.expect_own {
+        command.push(format!("--expect-own={own}"));
     }
     Some(DetachedArgv(command))
 }
@@ -1410,6 +1469,9 @@ fn run_supervised(
     if let Some(expect) = &args.expect {
         return run_expected(root, args, expect, out, err);
     }
+    if let Some(own) = &args.expect_own {
+        return run_own(root, args, own, out, err);
+    }
     let notices = notices(root, args);
     let mut captured_out = Vec::new();
     let mut captured_err = Vec::new();
@@ -1451,6 +1513,146 @@ fn end_literal(
     }
     let frozen = [freeze_target(root, args, name)];
     end_each(root, args, &frozen, out, err)
+}
+
+/// An ordinary agent seat ends only its own session, however the operand was
+/// found: typed, or resolved from the pane. Another session refuses as the
+/// entry gate refuses it, with its one row. The session uuid of the record
+/// the seat was admitted on becomes the end's own expectation, unless the
+/// argv already carries one. A name that is no session name is left to the
+/// end's own refusal.
+fn own_expectation(
+    root: &Path,
+    tail: &[String],
+    args: &mut Args,
+    seat: &crate::relay::PaneIdentity,
+    err: &mut impl Write,
+) -> io::Result<ControlFlow<u8>> {
+    let fleet = args.target == "all";
+    if !fleet && !name_is_usable(root, &args.target) {
+        return Ok(ControlFlow::Continue(()));
+    }
+    let sessions = sessions_dir(root);
+    let dir = sessions.join(&args.target);
+    if !fleet && let Some(uuid) = crate::session_launch::own_uuid(&dir, seat) {
+        if args.expect_own.is_none() {
+            args.expect_own = Some(uuid);
+        }
+        return Ok(ControlFlow::Continue(()));
+    }
+    if !fleet && crate::session_launch::is_own(&dir, seat) {
+        writeln!(
+            err,
+            "Error: ae cannot prove which record is this seat's own session: '{}' records no single session uuid. Nothing was ended.",
+            args.target
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
+    }
+    let verb = if tail.iter().any(|word| word == RM_MARKER) {
+        "rm"
+    } else {
+        "end"
+    };
+    let words: Vec<String> = std::iter::once(verb.to_owned())
+        .chain(tail.iter().filter(|word| *word != RM_MARKER).cloned())
+        .collect();
+    let code =
+        crate::session_launch::refuse_lifecycle(&sessions, &args.target, seat, verb, &words, err)?;
+    Ok(ControlFlow::Break(code))
+}
+
+/// Why `dir` is no longer the record an ordinary agent seat's end of its own
+/// session was admitted on: a link stands there now, or its one session uuid
+/// is not `own`. Read under the lifecycle lock, before anything is written.
+fn own_replaced(dir: &Path, name: &str, own: &str) -> Option<String> {
+    let real = matches!(
+        crate::teardown::classify_dir(dir),
+        crate::teardown::DirKind::RealDir
+    );
+    let recorded = real
+        .then(|| meta::read_bytes(dir).ok())
+        .flatten()
+        .and_then(|bytes| {
+            meta::sole_value(&bytes, "session_id")
+                .map(|value| archive::canonical_uuid(&String::from_utf8_lossy(value)))
+        });
+    let same = recorded.as_deref() == Some(own);
+    (!same).then(|| {
+        format!(
+            "Error: '{name}' is no longer the session {own} this seat asked to end: its record was replaced since the end was asked — nothing was stopped and nothing was deleted."
+        )
+    })
+}
+
+/// `_end --supervise` carrying a seat's own expectation: [`end_literal`],
+/// with the expectation proven first under the lifecycle lock. Until it
+/// holds nothing is written to the target, not even the record of this
+/// refusal, because the record there may be another session's.
+fn run_own(
+    root: &Path,
+    args: &Args,
+    own: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    let name = args.target.as_str();
+    if let ControlFlow::Break(code) = literal_target(root, name, err)? {
+        return Ok(code);
+    }
+    let targets = [name.to_owned()];
+    if let ControlFlow::Break(code) = rename_pending(root, &targets, err)? {
+        return Ok(code);
+    }
+    let Ok(_guard) = lock(root, name) else {
+        writeln!(err, "{}", locked_out(name))?;
+        return Ok(EXIT_FAILED);
+    };
+    if let Some(why) = own_replaced(&sessions_dir(root).join(name), name, own) {
+        writeln!(err, "{why}")?;
+        return Ok(EXIT_FAILED);
+    }
+    let notices = notices(root, args);
+    // The request the handoff left unwritten, now that the record is proved.
+    let dir = sessions_dir(root).join(name);
+    let frozen = freeze_target(root, args, name);
+    let id = if frozen.plan.action == Action::Keep {
+        own
+    } else {
+        ""
+    };
+    transaction::emit(
+        &dir,
+        name,
+        id,
+        END_REQUEST_ACTION,
+        &request_summary(args.pane.as_deref()),
+    );
+    let (mut captured_out, mut captured_err) = (Vec::new(), Vec::new());
+    let ended = end_locked(
+        root,
+        name,
+        args,
+        contract_for(args, &frozen),
+        &mut captured_out,
+        &mut captured_err,
+    );
+    let code = match ended {
+        Ok(true) => 0,
+        Ok(false) => EXIT_FAILED,
+        Err(why) => return supervisor_io_failed(root, &notices, &why, err),
+    };
+    settle(
+        root,
+        &notices,
+        &Supervised {
+            code,
+            out: captured_out,
+            err: captured_err,
+            stopped: false,
+        },
+        out,
+        err,
+    )
 }
 
 /// What a supervised end left behind, to report.
@@ -1682,15 +1884,22 @@ fn handoff(
             (target.name.as_str(), dir, id)
         })
         .collect();
-    for (name, dir, id) in &captured {
-        transaction::emit(dir, name, id, END_REQUEST_ACTION, &requested);
+    // A seat's own end writes nothing here: the record by that name may be
+    // a replacement until the supervisor proves the carried uuid under the
+    // lifecycle lock, and the supervisor records the request then.
+    let own = args.expect_own.is_some();
+    if !own {
+        for (name, dir, id) in &captured {
+            transaction::emit(dir, name, id, END_REQUEST_ACTION, &requested);
+        }
     }
     let mut failures = 0_u32;
     for (name, argv) in supervisors {
         if !transport::run_detached(&argv) {
             failures += 1;
             let dir = sessions_dir(root).join(name);
-            if let Some((_, _, id)) = captured.iter().find(|(n, _, _)| *n == name.as_str()) {
+            if !own && let Some((_, _, id)) = captured.iter().find(|(n, _, _)| *n == name.as_str())
+            {
                 transaction::emit(
                     &dir,
                     name,
@@ -1956,6 +2165,12 @@ fn end_locked(
     err: &mut impl Write,
 ) -> io::Result<bool> {
     let dir = sessions_dir(root).join(name);
+    if let Some(own) = &args.expect_own
+        && let Some(why) = own_replaced(&dir, name, own)
+    {
+        writeln!(err, "{why}")?;
+        return Ok(false);
+    }
     let current_purge = end_purge(confirmed_for(args, name), args.purge_cli);
     // Refuse unsupported/unreadable snapshot nodes before migration writes
     // meta. This is advisory; the publisher repeats capture under source holds.
@@ -3307,9 +3522,9 @@ mod tests {
         Action, Answer, ConfirmedPlan, EndExpectation, ExpectWords, FrozenTarget, FrozenTmux, Git,
         Plan, Prompt, Pushed, Reproof, RunMode, Sweep, TmuxSight, Verdict, answer, archive_step,
         carried_targets, consequence_is_valid, contract_for, early_finish, end_prompt, end_purge,
-        freeze_target, parse, path_exists, prompt_route, purge_conversation_files, push_facts,
-        refusal_before_stop, reprove, sanitize_branch_name, server_from_words, supervisor_args,
-        unrecorded_verdict,
+        freeze_target, handoff_argv, parse, path_exists, prompt_route, purge_conversation_files,
+        push_facts, refusal_before_stop, reprove, sanitize_branch_name, server_from_words,
+        supervisor_args, unrecorded_verdict,
     };
     use std::path::{Path, PathBuf};
 
@@ -3354,6 +3569,42 @@ mod tests {
         }
     }
 
+    /// A seat's own expectation rides every hop out of the admitting process:
+    /// the supervisor's argv, and the handoff job's that the client's yes
+    /// runs. Each hop reads the same uuid back, and `all` never carries one.
+    #[test]
+    fn the_own_expectation_rides_the_supervisor_and_the_handoff_argv() {
+        let word = format!("--expect-own={UUID}");
+        let tail: Vec<String> = ["alpha", "-f", "--pane=%3", word.as_str()]
+            .map(ToOwned::to_owned)
+            .to_vec();
+        let args = parse(&tail).expect("an own end");
+        assert_eq!(args.expect_own.as_deref(), Some(UUID));
+        let confirmed = ConfirmedPlan {
+            name: "alpha".to_owned(),
+            plan: keep(),
+            from_default: false,
+            tmux: FrozenTmux::Unknown,
+        };
+        let supervisor = supervisor_args("/core".to_owned(), &args, &confirmed);
+        assert!(
+            supervisor.as_args().contains(&word),
+            "{:?}",
+            supervisor.as_args()
+        );
+        let read = parse(supervisor.as_args().get(2..).expect("words")).expect("supervisor argv");
+        assert_eq!(read.expect_own.as_deref(), Some(UUID));
+        let frozen = [FrozenTarget {
+            name: "alpha".to_owned(),
+            plan: keep(),
+            tmux: FrozenTmux::Unknown,
+        }];
+        let handoff = handoff_argv(&args, &frozen).expect("ae names its own executable");
+        assert!(handoff.as_args().contains(&word), "{:?}", handoff.as_args());
+        let read = parse(handoff.as_args().get(2..).expect("words")).expect("handoff argv");
+        assert_eq!(read.expect_own.as_deref(), Some(UUID));
+        assert!(parse(&["all".to_owned(), word]).is_err());
+    }
     #[test]
     fn a_confirmation_is_refused_on_its_stamp_and_record_before_tmux_is_asked() {
         let record = |rows: &str| {

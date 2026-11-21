@@ -34,6 +34,8 @@ mod compactrun_fresh_spec;
 mod compactrun_spec;
 #[path = "lifecycle_endlocked_spec.rs"]
 mod endlocked_spec;
+#[path = "lifecycle_endown_spec.rs"]
+mod endown_spec;
 #[path = "lifecycle_endrecord_spec.rs"]
 mod endrecord_spec;
 #[path = "lifecycle_endrun_spec.rs"]

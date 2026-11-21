@@ -66,7 +66,7 @@ sessions itself. Its `send`, `ask`, `review` and `interrupt` helpers reach
 the sender as `ae/orchestrator`. Such a message carries no owner authority; an
 owner instruction still goes through `relay`.
 
-For another session, the seat's own ae admits four lifecycle forms:
+For another session, the seat's own ae admits six lifecycle forms:
 
 | Form | Command |
 |---|---|
@@ -74,6 +74,8 @@ For another session, the seat's own ae admits four lifecycle forms:
 | create | `ae <name> --dir <path> --local\|--copy\|--worktree <profile-flags> --no-attach` |
 | bound resume | `ae <name> --resume --no-attach --expect-uuid <uuid>` |
 | bound stop | `ae stop <name> --expect-uuid <uuid> [--owner-input <ask-id>]` |
+| bound rename | `ae rename <old> <new> --expect-uuid <uuid> [--owner-input <ask-id>]` |
+| bound end | `ae end <name> --keep-history --expect-uuid <uuid> [--owner-input <ask-id>]` |
 
 Every admitted lifecycle command, and every `send`, `ask`, `review` or
 `interrupt` to a pane address, writes two rows to the seat's own journal before
@@ -91,17 +93,26 @@ the session. tmux checks every client handoff and kill against the server and
 session incarnation the stop proved. The seat never runs the bound stop for a
 session whose seats hold or wait for a lane claim, which ae cannot see.
 
-ae refuses end, rm, every rename, spawn, retire, reseat, relaunch, compact,
-every fleet form, every launch without `--no-attach` and every other stop form.
+The bound rename refuses the same busy seats, and a request still pending in
+the session; `--owner-input` names the verb `rename`. The bound end always
+keeps the history in the archive. ae admits it for a session the seat itself
+created or started, by its own journal and the session uuid, never by name;
+otherwise only when every seat of the target declares `done` and no request
+in it is pending, or once with `--owner-input` words that name the verb `end`
+and the session. The seat never ends a session whose seats hold or wait for a
+lane claim.
+
+ae refuses rm, every other end and rename form, spawn, retire, reseat,
+relaunch, compact, every fleet form, every launch without `--no-attach` and
+every other stop form.
 Every lifecycle command against the seat's own session is refused too. The
 refusal of a stop prints the owner's own command `ae stop orchestrator -y`; for
 every other refused form the seat gives the owner the command, as below.
 For a refused form the seat gives the owner the exact command to run in the
 owner's own terminal, then declares `done`: `ae stop <name> -y` only when the
 owner still wants a refused stop, `ae end <name> -f --keep-history` only when
-the owner names that verb and session, and `ae end <name> -f --purge-history`
-only when the owner explicitly says purge or delete history. For a rename it
-gives the owner a proposal and runs no rename command.
+the owner still wants a refused end, and `ae end <name> -f --purge-history`
+only when the owner explicitly says purge or delete history.
 
 To create a session, the seat acts only on explicit instruction. When every
 fact is explicit (the name, a directory that exists at the spelled path with `~`

@@ -30,9 +30,9 @@
 
 use super::{SEAT_CONFIG_CAP, publish_reseed};
 use crate::config::{
-    SEAT_CHARTER_MARKER, SEAT_CHARTER_VERSION, SEAT_TEMPLATE, seat_backup_path,
-    seat_config_directory_repair, seat_config_repair, seat_prompt_charter, seat_prompt_is_current,
-    seat_prompt_replaced, seat_prompt_stanza,
+    SEAT_CHARTER_3_MARKER, SEAT_CHARTER_MARKER, SEAT_CHARTER_VERSION, SEAT_TEMPLATE,
+    seat_backup_path, seat_config_directory_repair, seat_config_repair, seat_prompt_charter,
+    seat_prompt_is_current, seat_prompt_replaced, seat_prompt_stanza,
 };
 use crate::install::sha256_hex;
 use crate::store::{SourcePresence, SourceRead};
@@ -157,6 +157,11 @@ const LEDGER: &[Released] = &[
         file: "bd9362fc5be863a7c93fbac6c73ea0b18a710200ede0efdb4779157e1164334f",
         stanza: Some("da7ed4af79a961e45a241d329339c871f4eb463a5d5f90ed488e5d60afefb95b"),
     },
+    Released {
+        tag: "v2026.11.102",
+        file: "7521c7b364d38d1a993a64b8fc0559c6c69a02a72b76211f9943af347fac0e6a",
+        stanza: Some("1e20c028c1964bf25f7929e23f543b2c15fd8e6945e4bfe6f157d410822a10eb"),
+    },
 ];
 
 /// What a publish does with one seat config.
@@ -265,10 +270,16 @@ pub(super) fn reconcile(root: &Path, version: &str) -> Option<String> {
     let (new, what) = match classify(&text) {
         Verdict::Compatible => return None,
         Verdict::Charterless => {
+            // The sentence of the first charter version the prompt lacks.
+            let missing = if seat_prompt_charter(&text) < 2 {
+                SEAT_CHARTER_MARKER
+            } else {
+                SEAT_CHARTER_3_MARKER
+            };
             return unchanged(&format!(
                 "its seat prompt keeps the bound owner words but lacks the charter sentence \
-                 \"{SEAT_CHARTER_MARKER}\", so the seat is not taught to act for the owner and \
-                 its watchdog sends it no CHARTER UPDATE turn"
+                 \"{missing}\", so the seat is not taught the current charter and its \
+                 watchdog sends it no CHARTER UPDATE turn"
             ));
         }
         Verdict::Stale => {

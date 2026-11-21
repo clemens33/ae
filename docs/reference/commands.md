@@ -77,6 +77,9 @@ ae init [--yes] [--lead <profile>|--lead-harness <h> --lead-model <m> --lead-eff
                        Discover harnesses and propose or write the global config
 ae rename [old] <new>  Rename a running session; its watchdog tells each running seat the
                        new name, helper paths and goal (`⟦ae:ctx⟧`), or the output says NOT told
+ae rename <old> <new> --expect-uuid <uuid>
+                       Bound rename: rename only if the old name is the session with this
+                       uuid and no seat declares working, waiting-agent or blocked
 ae watchdog <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
 ae telegram <setup|start|stop|status>
@@ -101,6 +104,9 @@ ae end|rm [-f] [--purge-history|--keep-history] [name]
                        to ~/.ae/archive/<session-uuid>/, then remove ae state. KEEPS the
                        per-session claude/codex conversation files by default (token history);
                        --purge-history deletes them AND writes no archive.
+ae end <name> --keep-history --expect-uuid <uuid>
+                       Bound end: keep the history and end only the session with this uuid;
+                       the one end the orchestrator seat may run
 ae version             Show version, tmux floor, auto-upgrade policy, and last check
 ae help                Show short help
 ```
@@ -2109,9 +2115,13 @@ instructions.
 The seat is the owner's chief of staff: it runs the owner's ae work on the other sessions itself.
 Its `send`, `ask`, `review` and `interrupt` helpers reach `<session>:<agent>` directly, without
 `--cross-session`, rendered from `ae/orchestrator`; such a message carries no owner authority. For
-another session its ae admits four lifecycle forms: the start `ae <name> --no-attach`, the create
+another session its ae admits six lifecycle forms: the start `ae <name> --no-attach`, the create
 `ae <name> --dir <path> --local|--copy|--worktree [--lead/--colead/--seat <profile>] --no-attach`,
-the bound resume `ae <name> --resume --no-attach --expect-uuid <uuid>` and the
+the bound resume `ae <name> --resume --no-attach --expect-uuid <uuid>`, the
+[bound rename](#the-bound-rename-ae-rename-old-new---expect-uuid-uuid)
+`ae rename <old> <new> --expect-uuid <uuid>`, the
+[bound end](#the-bound-end-ae-end-name---keep-history---expect-uuid-uuid)
+`ae end <name> --keep-history --expect-uuid <uuid>` and the
 [bound stop](#the-bound-stop-ae-stop-name---expect-uuid-uuid) `ae stop <name> --expect-uuid <uuid>`,
 which takes `--owner-input <ask-id>` to admit a seat that declares `working`, `waiting-agent` or
 `blocked` once when the owner's stored words name the verb `stop` and the session; any other
@@ -2124,8 +2134,8 @@ before any effect. A delivery to an event-only sink records only its own event a
 target uuid. The seat reads a target's uuid from
 `ae list --all --json` right before a bound command and passes it.
 
-The seat's ae refuses end, rm, every rename, spawn, retire, reseat, relaunch, compact, every fleet
-form, every launch without `--no-attach`, every other stop form, `AE_SENDER_OVERRIDE` from its pane
+The seat's ae refuses rm, every other end and rename form, spawn, retire, reseat, relaunch,
+compact, every fleet form, every launch without `--no-attach`, every other stop form, `AE_SENDER_OVERRIDE` from its pane
 and every lifecycle command against its own session; the refusal of a stop of its own session
 prints the owner's own command `ae stop orchestrator -y`. The served `_launch` entry and the
 seat's own launch, picker and settings routes stay refused. For a refused form the seat gives
@@ -2138,11 +2148,11 @@ line `name=<n> dir=<canonical path> mode=local|copy|worktree profiles=<profile-f
 (default `local`, `worktree` only for branch/isolated/parallel, `copy` only when asked), then runs
 exactly one matching command after `yes`. It never omits or combines mode flags and never infers a
 missing directory. It never runs the bound stop for a session whose seats hold or wait for a lane
-claim. If the bound stop refuses and the human still wants the stop, it asks the owner to run
-`ae stop <name> -y`. It asks the owner to run ordinary `ae end <name> -f --keep-history` only when
-the human explicitly names that verb and session, and `ae end <name> -f --purge-history` only when
-the human explicitly says purge or delete history. For a rename it gives the owner a proposal and
-runs no rename command. A running seat whose launch recorded an older charter gets one
+claim, and never ends one: it must never end a session whose seats hold or wait for a build or
+test lane claim. If the bound stop refuses and the human still wants the stop, it asks the owner
+to run `ae stop <name> -y`; if a bound end refuses and the human still wants the end, it asks the
+owner to run `ae end <name> -f --keep-history`, and `ae end <name> -f --purge-history` only when
+the human explicitly says purge or delete history. A running seat whose launch recorded an older charter gets one
 `CHARTER UPDATE (ae <version>)` turn from its watchdog once it declares `done` or `waiting-user`
 at an idle input box. See
 [`contrib/aeorchestrator`](../../contrib/aeorchestrator/).
@@ -2252,6 +2262,27 @@ was not kept. The short form `ae @<old>` remains refused.
 A seat that resumes its conversation after a rename keeps the text that conversation opened
 under, which still names the old session and its helper paths. The watchdog tells such a seat
 the new name and helper paths too, once. A relaunch or reseat that keeps the conversation counts as a resume.
+
+### The bound rename (`ae rename <old> <new> --expect-uuid <uuid>`)
+
+The bound rename is the one rename the orchestrator seat may run, and the owner may use it too.
+An ordinary agent seat runs it only on its own session, which ae proves again under the lifecycle
+lock. Its grammar is exact: the old name, the new name and one `--expect-uuid`, with `--owner-input
+<ask-id>` for the seat alone. The orchestrator seat never renames its own session by name or by
+uuid. Under both names' lifecycle locks, before it writes anything, it proves that the new name
+is free, that the old name is a real session directory whose record
+names exactly that uuid, and that the live session of that name carries the same
+`@ae_session_uuid`, or that a strict probe finds it not running on its recorded server. Holding the
+session's event lock, it refuses while any seat declares `working`, `waiting-agent` or `blocked`
+(the seat's `--owner-input` words that name `rename` and the session waive that clause once) and
+while a request in the session is pending. The live rename is fenced to the proved incarnation and
+read back; a stopped session renames as the transaction above. The seat's journal gets a
+`dispatch-request` row before the effect and a `dispatch-result` row after it.
+
+An agent seat runs no rename, end or rm of another session, plain or bound. ae refuses it with exit
+2, changes nothing, prints the owner's command and writes one `lifecycle-refused` row to the
+seat's own journal; when that row cannot be written, the refusal says so. A seat's rename of its own
+session proves under the lifecycle lock that the old name is still the seat's own session.
 
 ## `ae reseat <session> <agent> --using <profile[@client]> [--stop-unknown]`
 
@@ -2737,6 +2768,34 @@ archive-validation time to that lock's hold span.
 
 Older cores reject `retained/` archives as invalid in `list --ended`, `--from` and
 purge. Their bytes remain untouched; reinstall a compatible core to read them.
+
+### The bound end (`ae end <name> --keep-history --expect-uuid <uuid>`)
+
+The bound end is the one end the orchestrator seat may run, and the owner may use it too. An
+ordinary agent seat runs it on no session: it ends no other session, and the bound form never takes
+the caller's own. Its grammar is exact: one session name, `--keep-history` and one `--expect-uuid`, with `--owner-input
+<ask-id>` for the seat alone. It always keeps the history, whatever the session's
+`purge_agent_history` says; `ae rm`, `-f`, `--purge-history`, `all` and every other word refuse.
+It never ends the caller's own session, and the seat never ends its own session by name or by uuid.
+It asks no confirmation: the uuid is the confirmation.
+
+Under the session's lifecycle lock, before it writes anything, it proves the session's identity as
+the bound stop does, and runs the end's own read-only checks (the archive plan, a retry, the
+working directory of a managed mode). Holding the session's event lock, the seat is admitted when
+its own journal shows its `create` or `start` of that uuid as a joined `dispatch-request` and `ok`
+`dispatch-result`, never by name; otherwise only when every seat of the session declares `done`
+and no request in it is pending, or once with `--owner-input` words that name `end` and the
+session. The owner outside tmux needs no admission. The seat's `dispatch-request` row comes next;
+then the fenced client handoff and the fenced, verified kill of the proved incarnation. A session
+proved stopped is checked again instead, read only: its name must still be absent from its
+server, and no pane view recorded for its uuid may hold its windows. The bound end kills no view;
+a view, or a view listing ae cannot read, keeps the session registered. The end then archives and
+removes the stopped session as an ordinary Keep end does. Under the archive's source holds the
+record must still name exactly the proved uuid, the session must still run nowhere ae can see (a
+session of that name started meanwhile refuses, and ae does not call it stopped), and ae judges the
+all-done admission again: a request written while the end waited refuses before anything is
+published, and the stopped session stays registered for `ae <name> --resume`. The
+`dispatch-result` row follows, also when the end fails after its admission.
 
 ### Controlling conversation-file cleanup
 

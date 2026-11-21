@@ -462,7 +462,7 @@ pub(crate) enum Caller {
 
 impl Caller {
     /// The session the caller's pane is in.
-    fn session(&self) -> Option<&str> {
+    pub(crate) fn session(&self) -> Option<&str> {
         match self {
             Self::Outside => None,
             Self::Pane { session, .. } => Some(session),
@@ -837,35 +837,7 @@ pub(crate) fn seats_idle(
     approved: bool,
     verb: &str,
 ) -> Result<(), String> {
-    let Ok(bytes) = meta::read_bytes(dir) else {
-        return Err(format!("ae cannot read the roster of '{name}'"));
-    };
-    let Ok(text) = String::from_utf8(bytes) else {
-        return Err(format!(
-            "the metadata of '{name}' is not UTF-8, so ae cannot read its roster"
-        ));
-    };
-    let parsed = meta::Meta::parse(&text);
-    if let Some(anomaly) = parsed
-        .anomalies()
-        .iter()
-        .find(|anomaly| crate::roster::roster_doubting(anomaly))
-    {
-        return Err(format!(
-            "'{name}' has doubtful roster metadata ({}); run 'ae doctor' first",
-            anomaly.to_string().escape_debug()
-        ));
-    }
-    let actors: Vec<String> = parsed
-        .roster()
-        .iter()
-        .map(meta::RosterEntry::reference)
-        .collect();
-    if actors.is_empty() {
-        return Err(format!(
-            "'{name}' records no seats, so ae cannot read their states"
-        ));
-    }
+    let actors = roster_actors(dir, name)?;
     let container = match hold.read() {
         SourceRead::Absent => Vec::new(),
         SourceRead::Ready(bytes) => bytes,
@@ -901,6 +873,41 @@ pub(crate) fn seats_idle(
         "'{name}' has seats that are not idle ({}); a bound {verb} waits until each seat declares done or waiting-user",
         busy.join(", ")
     ))
+}
+
+/// The CURRENT roster of `name` as its meta records it, whole: `Err` names
+/// an unreadable, doubtful or empty roster.
+pub(crate) fn roster_actors(dir: &Path, name: &str) -> Result<Vec<String>, String> {
+    let Ok(bytes) = meta::read_bytes(dir) else {
+        return Err(format!("ae cannot read the roster of '{name}'"));
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return Err(format!(
+            "the metadata of '{name}' is not UTF-8, so ae cannot read its roster"
+        ));
+    };
+    let parsed = meta::Meta::parse(&text);
+    if let Some(anomaly) = parsed
+        .anomalies()
+        .iter()
+        .find(|anomaly| crate::roster::roster_doubting(anomaly))
+    {
+        return Err(format!(
+            "'{name}' has doubtful roster metadata ({}); run 'ae doctor' first",
+            anomaly.to_string().escape_debug()
+        ));
+    }
+    let actors: Vec<String> = parsed
+        .roster()
+        .iter()
+        .map(meta::RosterEntry::reference)
+        .collect();
+    if actors.is_empty() {
+        return Err(format!(
+            "'{name}' records no seats, so ae cannot read their states"
+        ));
+    }
+    Ok(actors)
 }
 
 /// Whether a raw declared value is one a bound stop admits, compared byte for

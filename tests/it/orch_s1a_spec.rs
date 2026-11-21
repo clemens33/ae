@@ -1843,7 +1843,7 @@ fn charter_and_seeded_prompt_carry_s1a_authority_and_lifecycle_limits() {
             "rulings",
             "Use an interim ruling only for a local, non-reserved decision.",
             "Report every interim ruling to the owner immediately and record it in memo `rulings`.",
-            "Give the owner a proposal for a rename. Run no rename command.",
+            "ae rename <old> <new> --expect-uuid <uuid>",
             "A reserved item requires bound owner words that approve the exact act for the target session.",
         ] {
             assert!(text.contains(required), "{source} lacks {required:?}");

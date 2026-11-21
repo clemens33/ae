@@ -641,8 +641,11 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     if let Some(what) = outbound_of(&request)
         && !matches!(request, cli::Request::Launch { .. })
     {
-        if let cli::Request::Rename { tail } = &request {
-            return run_rename(what, tail, out, err);
+        if matches!(
+            request,
+            cli::Request::Rename { .. } | cli::Request::End { .. }
+        ) {
+            return run_observed(what, &request, out, err);
         }
         if let Some(code) = refuse_dispatcher(what, err)? {
             return Ok(code);
@@ -651,13 +654,14 @@ fn run_dispatch(args: &[String], out: &mut impl Write, err: &mut impl Write) -> 
     run_admitted(args, &request, out, err)
 }
 
-/// A rename's class gate and the rename, from ONE observation of the calling
-/// pane. An ordinary agent seat the gate admits, because it names its own
-/// session, carries that observation into the rename, which proves under
-/// the source's lifecycle lock that the source is still that session.
-fn run_rename(
+/// A rename's or an end's class gate and the operation, from ONE
+/// observation of the calling pane. An ordinary agent seat the gate admits,
+/// because it names its own session, carries that observation into the
+/// rename, which proves under the source's lifecycle lock that the source is
+/// still that session; the bound forms judge their caller on it.
+fn run_observed(
     what: Outbound,
-    tail: &[String],
+    request: &cli::Request,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
@@ -680,9 +684,16 @@ fn run_rename(
         return Ok(code);
     }
     let observed = rename::Entry { seen, class };
-    let code = with_state_root(err, |root, err| {
-        rename::run_as(root, tail, Some(&observed), out, err)
-    })?;
+    let code = match request {
+        cli::Request::End { tail } => with_state_root(err, |root, err| {
+            let pane = doors::calling_pane_id();
+            lifecycle::end::run_as(root, tail, pane.as_deref(), Some(&observed), out, err)
+        })?,
+        cli::Request::Rename { tail } => with_state_root(err, |root, err| {
+            rename::run_as(root, tail, Some(&observed), out, err)
+        })?,
+        _ => return Ok(entry::EXIT_USAGE),
+    };
     err.flush()?;
     error::with_status(code, out.flush())?;
     Ok(code)
@@ -4074,6 +4085,15 @@ enum Outbound {
         bound: bool,
         words: Vec<String>,
     },
+    /// An end or rm: the session it names (`None` for the caller's own),
+    /// whether it is the bound Keep form, the word the user typed and the user
+    /// words after `ae`.
+    End {
+        target: Option<String>,
+        bound: bool,
+        verb: &'static str,
+        words: Vec<String>,
+    },
     /// A verb the seat does not run: the word and the clause.
     Verb(&'static str, &'static str),
 }
@@ -4130,10 +4150,7 @@ fn outbound_of(request: &cli::Request) -> Option<Outbound> {
                 "never starts or resumes its own seat; the owner runs ae orchestrator",
             ))
         }
-        cli::Request::End { .. } => Some(Outbound::Verb(
-            "end",
-            "does not end or remove sessions in this release; give the owner the command",
-        )),
+        cli::Request::End { tail } => end_aim(tail),
         cli::Request::Rename { tail } => rename_aim(tail),
         _ => None,
     }
@@ -4159,6 +4176,39 @@ fn rename_aim(tail: &[String]) -> Option<Outbound> {
         old,
         new,
         bound,
+        words,
+    })
+}
+
+/// The outbound class of an `_end` tail: the bound Keep form or a plain end
+/// or rm, and the session it names. A tail that names the bound words but is
+/// not the admitted form is the end's own usage refusal, which changes
+/// nothing, so no class gate reads it.
+fn end_aim(tail: &[String]) -> Option<Outbound> {
+    let marker = lifecycle::end::RM_MARKER;
+    let verb = if tail.iter().any(|word| word == marker) {
+        "rm"
+    } else {
+        "end"
+    };
+    let user: Vec<String> = tail
+        .iter()
+        .filter(|word| *word != marker)
+        .cloned()
+        .collect();
+    let (target, bound) = match lifecycle::end::bound_form(tail) {
+        Some(Ok(request)) => (Some(request.name), true),
+        Some(Err(_)) => return None,
+        None => (
+            user.iter().find(|word| !word.starts_with('-')).cloned(),
+            false,
+        ),
+    };
+    let words = std::iter::once(verb.to_owned()).chain(user).collect();
+    Some(Outbound::End {
+        target,
+        bound,
+        verb,
         words,
     })
 }
@@ -4256,7 +4306,9 @@ fn refuse_class(
         relay::SeatClass::Dispatcher(seat) => match what {
             // The bound rename proves the caller, its target and every seat's
             // declaration itself, under both lifecycle locks.
-            Outbound::Cross(_) | Outbound::Rename { bound: true, .. } => return Ok(None),
+            Outbound::Cross(_)
+            | Outbound::Rename { bound: true, .. }
+            | Outbound::End { bound: true, .. } => return Ok(None),
             Outbound::Stop(aim) => match aim {
                 Some(name) if !names_own_session(root, seat, &name) => format!(
                     "ae: stop REFUSED — the orchestrator stops another session only in the bound form: ae stop {name} --expect-uuid <uuid>, with --owner-input <ask-id> when a seat there is busy. Nothing was changed."
@@ -4268,6 +4320,25 @@ fn refuse_class(
                     "ae: rename REFUSED — the orchestrator renames another session only in the bound form: ae rename {name} {new} --expect-uuid <uuid>, with --owner-input <ask-id> when a seat there is busy. Nothing was changed."
                 ),
                 _ => rename::own_session_refusal(&seat.session, &new),
+            },
+            Outbound::End {
+                target,
+                verb,
+                words,
+                ..
+            } => match target {
+                Some(name)
+                    if name == "all" || (verb == "rm" && !names_own_session(root, seat, &name)) =>
+                {
+                    format!(
+                        "ae: {verb} REFUSED — the orchestrator ends one session at a time, only in the bound Keep form, so {verb} {name} stays the owner's. The owner runs, in the owner's own terminal: ae {}. Nothing was changed.",
+                        words.join(" ")
+                    )
+                }
+                Some(name) if !names_own_session(root, seat, &name) => format!(
+                    "ae: {verb} REFUSED — the orchestrator ends another session only in the bound Keep form: ae end {name} --keep-history --expect-uuid <uuid>, with --owner-input <ask-id> when a seat there is not done. Nothing was changed."
+                ),
+                _ => lifecycle::end::own_session_refusal(&seat.session),
             },
             Outbound::Verb(word, why) => seat_verb_refusal(word, why),
         },
@@ -4288,27 +4359,43 @@ fn refuse_ordinary(
     root: Option<&std::path::Path>,
     err: &mut impl Write,
 ) -> Result<Option<u8>> {
-    let (
-        Outbound::Rename {
-            old: Some(old),
-            words,
-            ..
-        },
-        Some(root),
-    ) = (what, root)
-    else {
+    let ((verb, old, words), Some(root)) = (lifecycle_aim(what), root) else {
+        return Ok(None);
+    };
+    let Some(old) = old else {
         return Ok(None);
     };
     let session_launch::LaunchCaller::Seat(seat) = session_launch::LaunchCaller::of(pane) else {
         return Ok(None);
     };
     let sessions = lifecycle::sessions_dir(root);
-    if !lifecycle::name_is_usable(root, old) || session_launch::is_own(&sessions.join(old), &seat) {
+    // The fleet word names every other session, and an end of it is refused
+    // like any other session's.
+    let fleet = verb != "rename" && old == "all";
+    if !fleet
+        && (!lifecycle::name_is_usable(root, old)
+            || session_launch::is_own(&sessions.join(old), &seat))
+    {
         return Ok(None);
     }
     Ok(Some(session_launch::refuse_lifecycle(
-        &sessions, old, &seat, "rename", words, err,
+        &sessions, old, &seat, verb, words, err,
     )?))
+}
+
+/// The verb, the named session and the user words of a lifecycle form an
+/// ordinary seat's gate judges: a rename, an end or an rm.
+fn lifecycle_aim(what: &Outbound) -> (&'static str, Option<&String>, &[String]) {
+    match what {
+        Outbound::Rename { old, words, .. } => ("rename", old.as_ref(), words),
+        Outbound::End {
+            target,
+            verb,
+            words,
+            ..
+        } => (verb, target.as_ref(), words),
+        _ => ("", None, &[]),
+    }
 }
 
 /// The one word an [`Outbound`] is refused as.
@@ -4317,6 +4404,7 @@ fn outbound_word(what: &Outbound) -> &'static str {
         Outbound::Cross(word) | Outbound::Verb(word, _) => word,
         Outbound::Stop(_) => "stop",
         Outbound::Rename { .. } => "rename",
+        Outbound::End { verb, .. } => verb,
     }
 }
 
@@ -5271,6 +5359,58 @@ pub fn run_with(
 
 #[cfg(test)]
 mod tests {
+    /// An end and an rm are outbound with the session they name, the word the
+    /// user typed and the bound Keep form; a tail that names the bound words
+    /// but is not that form is the end's own usage refusal.
+    #[test]
+    fn an_end_and_an_rm_are_outbound_with_their_target_and_their_word() {
+        use super::{Outbound, cli::Request, outbound_of};
+        let of = |argv: &[&str]| {
+            let words: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
+            outbound_of(&Request::parse(&words))
+        };
+        let uuid = "0b6c8f5e-1d2a-4c3b-9e8f-7a6b5c4d3e2f";
+        let end = |target: Option<&str>, bound: bool, verb: &'static str, words: &[&str]| {
+            Some(Outbound::End {
+                target: target.map(ToOwned::to_owned),
+                bound,
+                verb,
+                words: words.iter().map(|word| (*word).to_owned()).collect(),
+            })
+        };
+        assert_eq!(
+            of(&["_end", "t"]),
+            end(Some("t"), false, "end", &["end", "t"])
+        );
+        assert_eq!(of(&["_end", "-f"]), end(None, false, "end", &["end", "-f"]));
+        assert_eq!(
+            of(&["_end", "--verb=rm", "t", "-f"]),
+            end(Some("t"), false, "rm", &["rm", "t", "-f"])
+        );
+        let bound = ["_end", "t", "--keep-history", "--expect-uuid", uuid];
+        assert_eq!(
+            of(&bound),
+            end(
+                Some("t"),
+                true,
+                "end",
+                &["end", "t", "--keep-history", "--expect-uuid", uuid]
+            )
+        );
+        assert_eq!(of(&["_end", "t", "--expect-uuid", uuid]), None);
+        assert_eq!(
+            of(&[
+                "_end",
+                "--verb=rm",
+                "t",
+                "--keep-history",
+                "--expect-uuid",
+                uuid
+            ]),
+            None
+        );
+    }
+
     /// What the seat's class rules decide: a helper `--cross-session` send,
     /// ask, review or interrupt, a non-bound stop with the session it names,
     /// each rename form with its names, and the verbs the seat does not run in
@@ -5305,7 +5445,6 @@ mod tests {
         for (argv, word) in [
             (vec!["_spawn", "/d", "n", "--using", "p"], "spawn"),
             (vec!["_retire", "/d", "n"], "retire"),
-            (vec!["_end", "t"], "end"),
             (vec!["_compact", "/d", "lead"], "compact"),
             (vec!["_relaunch", "/d", "lead"], "relaunch"),
             (vec!["reseat", "t", "lead", "--using", "p"], "reseat"),

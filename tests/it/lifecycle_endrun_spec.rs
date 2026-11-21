@@ -441,14 +441,22 @@ fn wait_ended(rig: &Rig) {
     panic!("supervisor did not finish: {}", rig.name);
 }
 
-/// Caller membership selects the handoff, including an inferred name and
-/// fleet. These exact start lines distinguish the branch from direct end.
+fn unstamp_agent(rig: &Rig) {
+    assert!(
+        rig.tmux(&["set-option", "-p", "-u", "-t", &rig.pane, "@ae_agent"])
+            .0
+    );
+}
+
+/// Caller membership selects the handoff for an agent seat ending its own
+/// session and for a non-seat pane ending the fleet.
 #[test]
 fn endrun_caller_membership_handoff_table() {
     for (tag, target) in [("erself", "self"), ("erfleet", "all")] {
         let rig = Rig::new(tag);
         let mut tail = words(&["-f"]);
         if target == "all" {
+            unstamp_agent(&rig);
             tail.push("all".to_owned());
         }
         let got = run(&rig, &tail, true);
@@ -466,12 +474,32 @@ fn endrun_caller_membership_handoff_table() {
     }
 }
 
-/// A caller outside the target set does not cause handoff. An unresolvable
-/// pane is likewise harmless when an explicit target supplies the intent.
+/// A fleet end names sessions beyond the calling seat's own.
+#[test]
+fn endrun_agent_seat_cannot_end_the_fleet() {
+    let rig = Rig::new("erfleet-seat");
+    let before = guard_spec::tree(&rig.dir);
+    let (code, out, err) = run(&rig, &words(&["-f", "all"]), true);
+    assert_eq!(code, Some(2), "{out}{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(
+        err.contains("ae: end REFUSED") && err.contains("'all' is not its own"),
+        "{err}"
+    );
+    assert!(err.contains("the refusal could not be journaled"), "{err}");
+    assert_eq!(guard_spec::tree(&rig.dir), before);
+    assert!(rig.session_is_live());
+    assert!(!rig.archive().exists());
+}
+
+/// A non-seat caller outside the target set does not cause handoff. An
+/// unresolvable pane is likewise harmless when an explicit target supplies
+/// the intent.
 #[test]
 fn endrun_explicit_target_direct_despite_other_or_unreadable_caller() {
     for (tag, pane) in [("erother", None), ("erunread", Some("%999999"))] {
         let rig = Rig::new(tag);
+        unstamp_agent(&rig);
         let target = "victim";
         let dir = rig.home.join("sessions").join(target);
         std::fs::create_dir(&dir).expect("target dir");

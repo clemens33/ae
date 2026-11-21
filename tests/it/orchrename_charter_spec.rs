@@ -76,7 +76,7 @@ fn prepare_launch(rig: &Rig, global: &Path, meta: &Path) {
         meta,
         format!(
             "{solo}\nmeta_agent=true\nmain_pane={}\nlocal_config={}\nconfig={}\n\
-             charter.main=1\ncharter_launch.main=tok-rig\n",
+             charter.main=2\ncharter_launch.main=tok-rig\n",
             rig.tool.pane,
             overlay.display(),
             global.display()
@@ -152,7 +152,7 @@ fn delivery_rows(rig: &Rig) -> usize {
 
 fn assert_held(rig: &Rig) {
     let meta = read(&rig.tool.dir.join("meta"));
-    assert!(meta.lines().any(|line| line == "charter.main=1"), "{meta}");
+    assert!(meta.lines().any(|line| line == "charter.main=2"), "{meta}");
     assert!(!meta.contains("charter_pending.main="), "{meta}");
     assert!(!read(&rig.root.join("received")).contains(HEAD));
     assert!(read(&rig.root.join("enters")).is_empty());
@@ -181,7 +181,7 @@ fn assert_delivery(rig: &Rig) {
         .lines()
         .find_map(|line| line.strip_prefix("charter.main="))
         .expect("charter version stamp");
-    assert!(matches!(stamp, "2" | "3"), "{meta}");
+    assert_eq!(stamp, "3", "{meta}");
     assert!(
         meta.lines()
             .any(|line| line == "charter_launch.main=tok-rig")
@@ -241,6 +241,12 @@ fn waiting_user_refreshes_once_when_the_same_launch_is_idle_and_empty() {
         },
     );
 
+    let overlay = rig.root.join("orchestrator.config");
+    let updated = read(&overlay);
+    fs::write(&overlay, RELEASE_100).expect("the old on-disk charter stays at version 2");
+    stepper.step();
+    assert_held(&rig);
+    fs::write(&overlay, updated).expect("the on-disk overlay now teaches charter 3");
     stepper.step();
     assert_delivery(&rig);
     stepper.steps(2);
@@ -292,7 +298,7 @@ fn an_unconfirmed_charter_claim_stays_bound_to_the_running_launch() {
     stepper.ready();
     stepper.steps(2);
     let current = read(&meta);
-    assert!(current.lines().any(|line| line == "charter.main=1"));
+    assert!(current.lines().any(|line| line == "charter.main=2"));
     assert!(
         current
             .lines()

@@ -2793,6 +2793,30 @@ pub fn orphan_views(server: &ServerId, uuid: &str) -> StopViews {
     }
 }
 
+/// The pane views recorded as views of the ae session `uuid`, read only:
+/// nothing is killed, so no saved id can reach a session that a changed
+/// server gave the same id. `Held` names every such view.
+#[must_use]
+pub fn orphan_view_holders(server: &ServerId, uuid: &str) -> StopViews {
+    if !addressable(server) {
+        return StopViews::Unreadable;
+    }
+    match view_rows(
+        &tmux::view_uuid_listing_args(server),
+        tmux::interpret_view_uuids,
+    ) {
+        Some(rows) => {
+            let held = tmux::orphan_view_ids(uuid, &rows);
+            if held.is_empty() {
+                StopViews::Clear
+            } else {
+                StopViews::Held(held)
+            }
+        }
+        None => StopViews::Unreadable,
+    }
+}
+
 /// Every session's id, attachment and name, or `None` when tmux did not
 /// answer in that shape.
 #[must_use]

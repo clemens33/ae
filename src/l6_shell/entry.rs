@@ -747,7 +747,13 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
             crate::cli::TELEGRAM,
             &telegram_tail(preamble, &tail()),
         )),
-        Some("end" | "rm") => Route::Core(with_head(crate::cli::END, &tail())),
+        Some("end") => Route::Core(with_head(crate::cli::END, &tail())),
+        // The same end; the marker keeps the word the user typed for refusals.
+        Some("rm") => {
+            let mut words = vec![crate::lifecycle::end::RM_MARKER.to_owned()];
+            words.extend(tail());
+            Route::Core(with_head(crate::cli::END, &words))
+        }
         Some("status") => Route::Retired(RETIRED_STATUS),
         // The BARE word is a launch of the orchestrator seat, which needs the
         // preamble like any launch; with a tail (`--popup`) it is the core's picker.
@@ -1151,7 +1157,7 @@ mod tests {
     fn the_human_words_translate_to_the_core_entries() {
         let table = [
             (argv(&["end", "-f", "x"]), argv(&["_end", "-f", "x"])),
-            (argv(&["rm", "x"]), argv(&["_end", "x"])),
+            (argv(&["rm", "x"]), argv(&["_end", "--verb=rm", "x"])),
             (argv(&["reboot", "x"]), argv(&["_compact", "x"])),
             (argv(&["rename", "a", "b"]), argv(&["rename", "a", "b"])),
             (argv(&["ls", "--all"]), argv(&["list", "--all"])),

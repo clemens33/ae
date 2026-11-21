@@ -147,6 +147,15 @@ pub(crate) fn is_own(dir: &Path, seat: &PaneIdentity) -> bool {
     }
 }
 
+/// The one session uuid of `dir` when it is `seat`'s own session ([`is_own`]):
+/// the expectation an end of that session carries to its lifecycle lock. The
+/// record is read on both sides of the proof, so a record replaced between
+/// the two reads names no expectation.
+pub(crate) fn own_uuid(dir: &Path, seat: &PaneIdentity) -> Option<String> {
+    let before = sole_uuid(dir)?;
+    (is_own(dir, seat) && sole_uuid(dir)? == before).then_some(before)
+}
+
 /// The proof [`is_own`] takes when the pane carries no session uuid: `dir`
 /// is the real directory of the session the pane is in, and its meta names
 /// that session on the pane's own server.

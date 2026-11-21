@@ -275,7 +275,7 @@ pub(crate) struct Entry {
 
 impl Entry {
     /// The ordinary agent seat the reading names, if it is one.
-    fn seat(&self) -> Option<crate::relay::PaneIdentity> {
+    pub(crate) fn seat(&self) -> Option<crate::relay::PaneIdentity> {
         let Some(crate::relay::SeatClass::Ordinary(pane)) = &self.class else {
             return None;
         };

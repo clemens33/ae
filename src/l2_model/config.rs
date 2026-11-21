@@ -65,18 +65,27 @@ pub(crate) const SEAT_PROMPT_MARKER: &str =
 pub(crate) const SEAT_CHARTER_MARKER: &str =
     "You are the owner's chief of staff across the ae fleet";
 
+/// The sentence a seat prompt carries from charter version 3 on, when the
+/// orchestrator seat also renames and ends other sessions in their bound forms.
+pub(crate) const SEAT_CHARTER_3_MARKER: &str =
+    "never end a session whose seats hold or wait for a build or test lane claim";
+
 /// The charter version the seat template teaches. A running seat launched
 /// with an older one gets one charter update turn from its watchdog.
-pub(crate) const SEAT_CHARTER_VERSION: u32 = 2;
+pub(crate) const SEAT_CHARTER_VERSION: u32 = 3;
 
-/// The charter version a seat context or prompt `text` teaches:
-/// [`SEAT_CHARTER_VERSION`] when it carries [`SEAT_CHARTER_MARKER`], else 1.
+/// The charter version a seat context or prompt `text` teaches: 3 when it
+/// carries [`SEAT_CHARTER_3_MARKER`] and [`SEAT_CHARTER_MARKER`], 2 when it
+/// carries [`SEAT_CHARTER_MARKER`] alone, else 1.
 #[must_use]
 pub(crate) fn charter_version(text: &str) -> u32 {
-    if text.contains(SEAT_CHARTER_MARKER) {
-        SEAT_CHARTER_VERSION
-    } else {
-        1
+    match (
+        text.contains(SEAT_CHARTER_MARKER),
+        text.contains(SEAT_CHARTER_3_MARKER),
+    ) {
+        (true, true) => 3,
+        (true, false) => 2,
+        (false, _) => 1,
     }
 }
 

@@ -168,6 +168,8 @@ mod orchexec_charter_spec;
 mod orchexec_delivery_spec;
 mod orchrename_charter_spec;
 mod orchrename_driver;
+mod orchrename_end_spec;
+mod orchrename_endfix_spec;
 mod orchrename_rename_spec;
 mod pairguard_after;
 mod pairguard_spec;

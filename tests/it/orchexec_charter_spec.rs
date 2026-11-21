@@ -19,7 +19,7 @@ use std::process::Stdio;
 const CHARTER_HEAD: &str = "CHARTER UPDATE (ae ";
 const MARKER: &str = "You are the owner's chief of staff across the ae fleet";
 const OWNER_LINE: &str = "The owner's fixture sentence exists only in this on-disk overlay.";
-const LEGACY_OVERLAY: &str = include_str!("../fixtures/orchestrator/orchexec-v2026.11.98.config");
+const CURRENT_OVERLAY: &str = include_str!("../../contrib/aeorchestrator/orchestrator.config");
 
 #[test]
 fn the_released_orchestrator_prompt_carries_the_chief_of_staff_charter() {
@@ -34,14 +34,11 @@ fn prepare_old_launch(rig: &Rig, global: &Path, meta: &Path) {
     fs::write(global, "[workspace]\nquota = off\nauto_upgrade = off\n")
         .expect("no external tools in the watchdog cycle");
     let local = rig.root.join("orchestrator.config");
-    let (prompt, end) = LEGACY_OVERLAY
+    let (prompt, end) = CURRENT_OVERLAY
         .rsplit_once("\n\"\"\"")
-        .expect("legacy prompt delimiter");
-    fs::write(
-        &local,
-        format!("{prompt}\n{MARKER}.\n{OWNER_LINE}\n\"\"\"{end}"),
-    )
-    .expect("a compatible overlay with the current charter marker");
+        .expect("current prompt delimiter");
+    fs::write(&local, format!("{prompt}\n{OWNER_LINE}\n\"\"\"{end}"))
+        .expect("a compatible overlay with the current charter marker");
     let current = fs::read_to_string(meta).expect("live fixture meta");
     let solo = current
         .lines()
@@ -179,7 +176,7 @@ fn a_running_dispatcher_gets_one_charter_turn_for_its_current_launch_when_done()
     let delivered = receipt();
     assert_charter_notice(&rig.tool.dir, &delivered);
     let current = fs::read_to_string(&meta).expect("updated live meta");
-    assert!(current.lines().any(|line| line == "charter.main=2"));
+    assert!(current.lines().any(|line| line == "charter.main=3"));
     assert!(
         current
             .lines()

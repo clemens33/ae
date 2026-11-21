@@ -1277,13 +1277,17 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
         sorted(vec![
             ("src/l4_orchestration/rename.rs".to_owned(), 2),
             ("src/l4_orchestration/restore.rs".to_owned(), 1),
+            ("src/l4_orchestration/lifecycle/end/bound.rs".to_owned(), 1),
             ("src/l3_services/session.rs".to_owned(), 1),
         ]),
         "and so is the event stream — plus the stopped rename's two ledger \
          reads (its own source log and one peer-log probe), which go through \
          the same reader rather than around it: refusing a rename over a \
-         pending legacy request must see both, and the count pins both — and \
-         the restore guard's one fresh ledger read under the lifecycle lock"
+         pending legacy request must see both, and the count pins both — the \
+         restore guard's one fresh ledger read under the lifecycle lock — and \
+         the bound end's one source site for the all-done admission's pending \
+         requests, read under the target's event lock and again under the \
+         archive holds"
     );
     assert_eq!(
         sorted(sites(concat!("RecordSnapshot", "::read("))),

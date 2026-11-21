@@ -127,6 +127,31 @@ pub(super) fn finish(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<bool> {
+    finish_vetoed(root, name, before, plan, git, None, out, err)
+}
+
+/// The admission a bound end re-runs under the source holds, after the
+/// identity check and before the archive: `Err` is why it no longer holds.
+pub(super) type Veto<'a> = &'a dyn Fn(&Path) -> Result<(), String>;
+
+/// [`finish`], with a bound end's `veto` judged under the same holds that
+/// publish the archive: a veto refuses before anything is published, and the
+/// stopped session stays registered.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "finish's inputs and its one ordered held sequence, plus the bound end's one veto"
+)]
+pub(super) fn finish_vetoed(
+    root: &Path,
+    name: &str,
+    before: &[u8],
+    plan: &Plan,
+    git: &Git,
+    veto: Option<Veto<'_>>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<bool> {
     if plan.action != Action::Keep {
         return Ok(archive_step(root, name, plan, git, out, err)?
             && cleanup(root, name, before, plan, git.preserved != "-", out, err)?);
@@ -163,6 +188,12 @@ pub(super) fn finish(
                 )?;
                 return Ok(false);
             }
+        }
+        if let Some(veto) = veto
+            && let Err(why) = veto(&dir)
+        {
+            writeln!(err, "Error: {why}")?;
+            return Ok(false);
         }
         if let Some(expected) = &git.retry_id
             && (expected != &id || archive::publish::completed_end(&dir, expected).is_none())
