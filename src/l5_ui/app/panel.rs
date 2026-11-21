@@ -615,10 +615,10 @@ impl App {
         true
     }
 
-    /// A click on the main column header's zoom label: the label names what the
-    /// frame drew, so the click does the opposite of it. The press already gave
-    /// the main column the keys, and its stored zoom may differ from the frame
-    /// the press was made on (a side panel that held the keys showed the split).
+    /// A click on the main column header's zoom label: the label names the
+    /// action (`X zoom` on a split frame, `X unzoom` on a zoomed one), so the
+    /// click sets the opposite of what the frame drew. The press already gave
+    /// the main column the keys; its stored zoom may differ from that frame.
     pub(super) fn click_zoom(&mut self) -> bool {
         let zoom = !self.model.columns().zoomed();
         self.model.set_zoom(zoom);

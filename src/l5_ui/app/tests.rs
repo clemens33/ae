@@ -517,6 +517,83 @@ fn an_emptied_then_refilled_fleet_keeps_its_sizes_and_drag() {
     assert_eq!(rule_row(&framed(&mut app)), Some(row + 4));
 }
 
+/// The first row of the frame an app draws.
+fn head_of(app: &mut App) -> String {
+    framed(app)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim_end()
+        .to_owned()
+}
+
+/// `X`, as the keys deliver it.
+fn press_zoom(app: &mut App) {
+    assert!(take_keys(app, vec![(Key::Text(b"X".to_vec()), Instant::now())]).is_some());
+}
+
+/// A zoom chosen on an empty fleet survives every read that leaves the fleet
+/// empty and the read that refills it: a read rebuilds the selection, never
+/// the preference. The refilled fleet starts on its first row, still zoomed.
+#[test]
+fn a_zoom_chosen_on_an_empty_fleet_survives_the_reads_and_the_refill() {
+    let mut app = app(None);
+    two(&mut app);
+    let full = read_of(&app, &[("web", ID), ("ops", ID)]);
+    let emptied = |app: &App| {
+        let mut read = read_of(app, &[]);
+        (read.fleet, read.world) = (Fleet::default(), World::new(Timestamp::now(), Vec::new()));
+        read
+    };
+    let read = emptied(&app);
+    app.answer(Answer::Fleet(read));
+    assert_eq!(
+        app.model.selected(),
+        None,
+        "the empty fleet selects nothing"
+    );
+    press_zoom(&mut app);
+    assert!(app.model.zoom(), "X zooms with nothing selected");
+    let read = emptied(&app);
+    app.answer(Answer::Fleet(read));
+    assert_eq!(app.model.selected(), None, "still nothing selected");
+    assert!(
+        app.model.zoom(),
+        "a read that leaves the fleet empty keeps it"
+    );
+    let _ = framed(&mut app);
+    assert!(app.model.columns().zoomed(), "and the frame stays zoomed");
+    app.answer(Answer::Fleet(full));
+    assert_eq!(app.model.selected(), Some("web"), "the first row");
+    let head = head_of(&mut app);
+    assert!(head.ends_with("X unzoom"), "the refill keeps it: {head:?}");
+}
+
+/// The read that drops the selected session hands the selection to the first
+/// row left, and the zoom stays: the human asked for it, the fleet did not.
+#[test]
+fn a_zoom_survives_the_read_that_drops_the_selected_row() {
+    let mut app = app(None);
+    two(&mut app);
+    assert_eq!(app.model.selected(), Some("web"));
+    press_zoom(&mut app);
+    let head = head_of(&mut app);
+    assert!(head.ends_with("X unzoom"), "zoomed first: {head:?}");
+    let mut read = read_of(&app, &[("ops", ID)]);
+    read.fleet = Fleet {
+        rows: vec![row("ops", 2, false)],
+        home: None,
+    };
+    read.world = World::new(Timestamp::now(), vec![entry("ops", Status::Running, None)]);
+    app.answer(Answer::Fleet(read));
+    assert_eq!(app.model.selected(), Some("ops"), "the first row left");
+    let head = head_of(&mut app);
+    assert!(
+        head.ends_with("X unzoom"),
+        "the frame stays zoomed: {head:?}"
+    );
+}
+
 /// The bottom hint row is inside chat and scrolls, like the composer above it.
 #[test]
 fn mouse_wheel_on_the_hint_row_scrolls() {
