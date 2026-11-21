@@ -790,6 +790,9 @@ test-affected *args:
             if source_path "$path"; then sources+=("$path"); fi
         done <"$scratch/tracked"
         for path in "${sources[@]}"; do
+            # Reader selection depends on the complete source inventory. Reject linked sources
+            # and non-regular files before opening them.
+            [[ -f "$path" && ! -L "$path" ]] || { why="$path is not a regular source file"; return 1; }
             content new "$path" "$path" || { why="$path cannot be read"; return 1; }
         done
         for path in "${modified[@]}"; do

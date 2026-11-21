@@ -7,12 +7,14 @@
 //! selects the integration modules whose own file names it: an `ae::` path or `use` of it, or a
 //! name that `src/lib.rs` or its parent module re-exports from it. Every changed path is also
 //! data: an `include*!`, a `#[path]` or a string literal that names it selects the reader, and a
-//! library module that includes it counts as changed. What the rules cannot place, and every
-//! build input, config, crate root, module-map, shared-rig, deletion, rename and macro change,
+//! library module that includes it counts as changed. Source views and checkout directory reads
+//! also name paths by their root. An identified source read without a place runs the whole suite.
+//! What the rules cannot place, and every build input, config, crate root, module-map, shared-rig,
+//! deletion, rename and macro change,
 //! runs the whole suite and names why.
 //!
 //! The accepted M1 gaps: a test that reaches a changed module only through another module
-//! (A -> B -> C), a test that drives only the binary, and run-time or macro-built paths. Every
+//! (A -> B -> C), a test that drives only the binary, and computed paths with no source anchor. Every
 //! subset run prints their size as the counter line; the release's whole hp run is the backstop.
 //!
 //! Pure, std only: `examples/affected.rs` mounts this file and owns stdin and stdout.
@@ -92,7 +94,8 @@ pub(crate) struct Why {
     pub(crate) owner: String,
     pub(crate) file: String,
     pub(crate) line: usize,
-    /// `own`, `namespace`, `reexport`, `include`, `path-attr`, `literal`, `basename` or `unresolved`.
+    /// `own`, `namespace`, `reexport`, `include`, `path-attr`, `literal`, `basename`,
+    /// `source-view` or `unresolved`.
     pub(crate) rule: &'static str,
     pub(crate) target: String,
 }
@@ -160,7 +163,7 @@ fn is_rust(path: &str) -> bool {
 
 /// A `.rs` file under `src/` or `tests/`: the stream carries its text.
 fn is_source(path: &str) -> bool {
-    is_rust(path) && (path.starts_with("src/") || path.starts_with("tests/"))
+    is_rust(path) && is_source_tree(path)
 }
 
 // ---------------------------------------------------------------------------
@@ -469,6 +472,7 @@ pub(crate) fn select(input: &Input) -> Selection {
     run.triggers();
     run.structure();
     run.data();
+    run.source_views();
     run.namespace();
     run.unplaced();
     run.finish()
@@ -581,6 +585,8 @@ struct Run<'a> {
     why: BTreeMap<(String, String, &'static str, String), usize>,
     /// Library modules counted as changed for the namespace rule.
     changed_src: BTreeSet<String>,
+    /// Source reads must have a selectable test owner, including a mandatory guard ancestor.
+    source_readers: BTreeSet<(String, &'a str, usize)>,
     /// Changed paths a rule placed: owned by a module or named by a reader.
     placed: BTreeSet<String>,
     /// Changed paths that are a whole trigger by name.
@@ -606,6 +612,7 @@ impl<'a> Run<'a> {
             owners: BTreeSet::new(),
             why: BTreeMap::new(),
             changed_src: BTreeSet::new(),
+            source_readers: BTreeSet::new(),
             placed: BTreeSet::new(),
             triggered: BTreeSet::new(),
             doctests: false,
@@ -924,6 +931,42 @@ impl<'a> Run<'a> {
         self.changed_src.extend(modules);
     }
 
+    /// Source views describe read sets, even when no literal names the changed file.
+    fn source_views(&mut self) {
+        let wanted: Vec<&str> = self.input.changes.iter().flat_map(named_paths).collect();
+        if !wanted.iter().any(|path| is_source_tree(path)) {
+            return;
+        }
+        let mut picks = Vec::new();
+        let mut unresolved = Vec::new();
+        for (file, lexed) in &self.lexed {
+            let owners = self.owners_of(file, Crate::It);
+            if owners.is_empty() {
+                continue;
+            }
+            for (line, read) in source_reads(lexed, &self.input.tracked) {
+                match read {
+                    SourceRead::Unplaced(what) => unresolved.push((*file, line, what)),
+                    _ => {
+                        for path in wanted.iter().copied().filter(|path| read.contains(path)) {
+                            for owner in &owners {
+                                picks.push((owner.clone(), *file, line, path));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (file, line, what) in unresolved {
+            self.whole("source-view", format!("{file}:{line} {what}"));
+        }
+        for (owner, file, line, path) in picks {
+            self.pick(&owner, file, line, "source-view", path);
+            self.source_readers.insert((owner, file, line));
+            self.placed.insert(path.to_owned());
+        }
+    }
+
     /// Rule 3.3: a changed library module selects every integration file that names it.
     fn namespace(&mut self) {
         let mut targets: Vec<(Vec<String>, &'static str, String)> = Vec::new();
@@ -1104,7 +1147,38 @@ impl<'a> Run<'a> {
         }
     }
 
-    fn finish(self) -> Selection {
+    fn finish(mut self) -> Selection {
+        let names = self
+            .tree
+            .as_ref()
+            .map(|tree| modtree::test_names(&self.input.new, &tree.owners))
+            .unwrap_or_default();
+        let generated = self
+            .tree
+            .as_ref()
+            .map(|tree| modtree::generated_roots(&self.input.new, &tree.owners))
+            .unwrap_or_default();
+        let has_tests = |owner: &str| {
+            !owner.is_empty()
+                && (names.iter().any(|name| under(name, owner))
+                    || generated
+                        .iter()
+                        .any(|root| root == owner || under(root, owner)))
+        };
+        for (owner, file, line) in std::mem::take(&mut self.source_readers) {
+            if !GUARDS.iter().any(|guard| within(&owner, guard))
+                && !has_tests(&owner)
+                && !self
+                    .owners
+                    .iter()
+                    .any(|outer| within(&owner, outer) && has_tests(outer))
+            {
+                self.whole(
+                    "source-view",
+                    format!("{file}:{line} has no selectable test owner"),
+                );
+            }
+        }
         let why: Vec<Why> = self
             .why
             .into_iter()
@@ -1131,16 +1205,6 @@ impl<'a> Run<'a> {
         }
         let mut owners = self.owners;
         owners.extend(GUARDS.map(str::to_owned));
-        let names = self
-            .tree
-            .as_ref()
-            .map(|tree| modtree::test_names(&self.input.new, &tree.owners))
-            .unwrap_or_default();
-        let generated = self
-            .tree
-            .as_ref()
-            .map(|tree| modtree::generated_roots(&self.input.new, &tree.owners))
-            .unwrap_or_default();
         let not_selected = names
             .iter()
             .filter(|name| !owners.iter().any(|owner| under(name, owner)))
@@ -1149,13 +1213,7 @@ impl<'a> Run<'a> {
         // writes tests in it or below it: only an owner with neither is a dead prefix.
         let listed: Vec<&str> = owners
             .iter()
-            .filter(|owner| {
-                GUARDS.contains(&owner.as_str())
-                    || names.iter().any(|name| under(name, owner))
-                    || generated
-                        .iter()
-                        .any(|root| root == *owner || under(root, owner))
-            })
+            .filter(|owner| GUARDS.contains(&owner.as_str()) || has_tests(owner))
             .map(String::as_str)
             .collect();
         let kept: Vec<&str> = listed
@@ -1320,6 +1378,268 @@ fn include_argument<'t>(lexed: &'t Lexed, start: usize, close: usize) -> Option<
     lexed
         .literal(start + 9)
         .map(|path| Argument::Manifest(path.trim_start_matches('/')))
+}
+
+// ---------------------------------------------------------------------------
+// Checkout source readers
+// ---------------------------------------------------------------------------
+
+fn is_source_tree(path: &str) -> bool {
+    path.starts_with("src/") || path.starts_with("tests/")
+}
+
+fn rooted_source(path: &str) -> bool {
+    matches!(path, "src" | "tests") || is_source_tree(path)
+}
+
+fn in_source_root(path: &str, root: &str) -> bool {
+    path.strip_prefix(root)
+        .is_some_and(|tail| tail.is_empty() || tail.starts_with('/'))
+}
+
+enum SourceRead {
+    /// `source_view::product()` classifies all Rust sources. `tree()` also returns test text.
+    RustTree {
+        tests: bool,
+    },
+    /// The root `.rs` file and its matching directory, as read by `module_family`.
+    Family {
+        file: String,
+        dir: String,
+    },
+    /// A checkout path used by a filesystem reader, including every file below a directory.
+    Path(String),
+    Unplaced(&'static str),
+}
+
+impl SourceRead {
+    fn contains(&self, path: &str) -> bool {
+        match self {
+            Self::RustTree { tests } => {
+                is_rust(path)
+                    && (path.starts_with("src/") || (*tests && path.starts_with("tests/")))
+            }
+            Self::Family { file, dir } => {
+                is_rust(path) && (path == file || in_source_root(path, dir))
+            }
+            Self::Path(root) => in_source_root(path, root),
+            Self::Unplaced(_) => false,
+        }
+    }
+}
+
+/// References to the checkout-loading APIs, including named, aliased and grouped imports.
+/// Helpers that take already loaded text are pure and introduce no source dependency.
+fn source_view_uses(lexed: &Lexed) -> Vec<(usize, &'static str)> {
+    const APIS: [&str; 4] = ["tree", "product", "module_family", "load"];
+    let api = |name: &str| APIS.into_iter().find(|candidate| *candidate == name);
+    let mut modules = BTreeSet::from(["source_view".to_owned()]);
+    let mut functions = BTreeMap::new();
+    for (_, _, leaves) in uses(lexed) {
+        for (path, alias, glob) in leaves {
+            let segments: Vec<_> = path.iter().map(String::as_str).collect();
+            match segments.as_slice() {
+                [.., "source_view"] if glob => {
+                    functions.extend(APIS.map(|name| (name.to_owned(), name)));
+                }
+                [.., "source_view"] => {
+                    modules.insert(alias);
+                }
+                [.., "source_view", name] => {
+                    if let Some(name) = api(name) {
+                        functions.insert(alias, name);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut references = Vec::new();
+    let mut import = false;
+    for at in 0..lexed.tokens.len() {
+        if lexed.is_punct(at, b';') {
+            import = false;
+        }
+        import |= lexed.is_ident(at, "use");
+        let Some(name) = lexed.ident(at).filter(|_| !import) else {
+            continue;
+        };
+        if modules.contains(name)
+            && lexed.is_path_sep(at + 1)
+            && let Some(function) = lexed.ident(at + 3).and_then(api)
+        {
+            references.push((at + 3, function));
+        }
+        if !(at >= 2 && lexed.is_path_sep(at - 2))
+            && let Some(function) = functions.get(name)
+        {
+            references.push((at, *function));
+        }
+    }
+    references
+}
+
+fn family_read(lexed: &Lexed, call: usize, tracked: &BTreeSet<String>) -> SourceRead {
+    if lexed.is_punct(call + 1, b'(')
+        && let Some(file) = lexed.literal(call + 2)
+        && lexed.is_punct(call + 3, b',')
+        && is_source(file)
+        && tracked.contains(file)
+        && let Some(dir) = file.strip_suffix(".rs")
+    {
+        return SourceRead::Family {
+            file: file.to_owned(),
+            dir: dir.to_owned(),
+        };
+    }
+    SourceRead::Unplaced("module_family has no known literal root")
+}
+
+fn filesystem_read(name: &str) -> bool {
+    matches!(name, "read" | "read_to_string" | "read_dir" | "open")
+}
+
+fn source_anchor(value: &str) -> bool {
+    value
+        .split(['/', '}'])
+        .any(|segment| matches!(segment, "src" | "tests"))
+}
+
+fn has_source_anchor(lexed: &Lexed, start: usize, close: usize) -> bool {
+    (start..close).any(|at| lexed.literal(at).is_some_and(source_anchor))
+}
+
+fn source_format(lexed: &Lexed, at: usize) -> bool {
+    lexed.is_ident(at, "format")
+        && lexed.is_punct(at + 1, b'!')
+        && lexed
+            .matching(at + 2)
+            .is_some_and(|close| has_source_anchor(lexed, at + 3, close))
+}
+
+/// A path beginning at a known source root, followed by successive literal `.join`s. A
+/// variable below a known directory conservatively gives the reader that directory's scope.
+fn joined_source_path(lexed: &Lexed, path: &str, mut at: usize) -> SourceRead {
+    let mut path = normalize(path);
+    while lexed.is_punct(at, b'.')
+        && lexed.is_ident(at + 1, "join")
+        && let Some(close) = lexed.matching(at + 2)
+        && let Some(Argument::Relative(part)) = include_argument(lexed, at + 3, close)
+    {
+        if part.starts_with('/') {
+            return SourceRead::Unplaced("a source join changes to an absolute path");
+        }
+        path = normalize(&format!("{path}/{part}"));
+        at = close + 1;
+    }
+    if rooted_source(&path) {
+        SourceRead::Path(path)
+    } else {
+        SourceRead::Unplaced("a source path leaves the checkout source trees")
+    }
+}
+
+/// A literal directory argument of `read_dir`, a Path constructor, or a `.join` in a file
+/// that names the manifest root. Ordinary reads of scratch files and fixtures stay local.
+fn checkout_path_argument<'t>(
+    lexed: &'t Lexed,
+    at: usize,
+    name: &str,
+    manifest: bool,
+) -> Option<(&'t str, usize)> {
+    let path_constructor = matches!(name, "new" | "from")
+        && at >= 3
+        && lexed.is_path_sep(at - 2)
+        && matches!(lexed.ident(at - 3), Some("Path" | "PathBuf"));
+    if !(path_constructor
+        || filesystem_read(name)
+        || (manifest && name == "join" && at > 0 && lexed.is_punct(at - 1, b'.')))
+    {
+        return None;
+    }
+    let close = lexed.matching(at + 1)?;
+    let path = match include_argument(lexed, at + 2, close)? {
+        Argument::Relative(path) if !path.starts_with('/') => path,
+        Argument::Manifest(path) => path,
+        Argument::Relative(_) => return None,
+    };
+    rooted_source(&normalize(path)).then_some((path, close))
+}
+
+fn source_reads(lexed: &Lexed, tracked: &BTreeSet<String>) -> Vec<(usize, SourceRead)> {
+    let line = |at: usize| lexed.line(lexed.tokens[at].start);
+    let manifest =
+        (0..lexed.tokens.len()).any(|at| lexed.literal(at) == Some("CARGO_MANIFEST_DIR"));
+    let mut reads = Vec::new();
+    for (at, function) in source_view_uses(lexed) {
+        let read = match function {
+            "tree" | "product" => SourceRead::RustTree {
+                tests: function == "tree",
+            },
+            "module_family" => family_read(lexed, at, tracked),
+            "load" if manifest => SourceRead::Unplaced("load has no declared checkout scope"),
+            _ => continue,
+        };
+        reads.push((line(at), read));
+    }
+    let reads_files = (0..lexed.tokens.len())
+        .any(|at| lexed.ident(at).is_some_and(filesystem_read) && lexed.is_punct(at + 1, b'('));
+    let mut computed_paths = BTreeSet::new();
+    if reads_files {
+        let assigns_format = |at| lexed.is_punct(at, b'=') && source_format(lexed, at + 1);
+        for at in 0..lexed.tokens.len() {
+            if !lexed.is_ident(at, "let") {
+                continue;
+            }
+            let binding = at + 1 + usize::from(lexed.is_ident(at + 1, "mut"));
+            let Some(name) = lexed.ident(binding) else {
+                continue;
+            };
+            let annotated = lexed.is_punct(binding + 1, b':')
+                && (binding + 2..lexed.tokens.len())
+                    .take_while(|at| !lexed.is_punct(*at, b';'))
+                    .any(assigns_format);
+            if assigns_format(binding + 1) || annotated {
+                computed_paths.insert(name);
+            }
+        }
+    }
+    for at in 0..lexed.tokens.len() {
+        let Some(name) = lexed.ident(at) else {
+            continue;
+        };
+        if reads_files
+            && let Some((path, close)) = checkout_path_argument(lexed, at, name, manifest)
+        {
+            reads.push((line(at), joined_source_path(lexed, path, close + 1)));
+        }
+        if filesystem_read(name)
+            && let Some(close) = lexed.matching(at + 1)
+            && (at + 2..close).any(|index| {
+                source_format(lexed, index)
+                    || lexed
+                        .ident(index)
+                        .is_some_and(|name| computed_paths.contains(name))
+            })
+        {
+            reads.push((
+                line(at),
+                SourceRead::Unplaced("a filesystem read formats a source path"),
+            ));
+        }
+        if matches!(name, "include" | "include_str" | "include_bytes")
+            && lexed.is_punct(at + 1, b'!')
+            && let Some(close) = lexed.matching(at + 2)
+            && include_argument(lexed, at + 3, close).is_none()
+            && has_source_anchor(lexed, at + 3, close)
+        {
+            reads.push((
+                line(at),
+                SourceRead::Unplaced("an include computes a source path"),
+            ));
+        }
+    }
+    reads
 }
 
 /// Every multi-segment path `a::b…` that does not continue another path: its first token and

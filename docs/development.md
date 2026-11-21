@@ -521,7 +521,12 @@ library module selects the integration files that name it: an `ae::` path to it 
 `use ae::…` of it, or a name that `src/lib.rs` or its parent module re-exports from it with
 `pub use`. Every changed path is also data: an `include!`, `include_str!` or `include_bytes!`, a
 `#[path]` or a string literal that names it (or its base name) selects the reader, and a library
-module that includes it counts as changed. Docs, top-level Markdown, `fuzz/` and
+module that includes it counts as changed. A checked-in source view can name a read set by its
+root. `source_view::tree()` matches Rust files under `src/` and `tests/`. `product()` matches the
+Rust sources it classifies under `src/`. `module_family()` matches its literal root file and the
+Rust files in the matching directory. A filesystem reader with a known checkout directory matches
+the files beneath it, including non-Rust files. The selector follows literal path joins and uses
+the known directory when a later join is computed. Docs, top-level Markdown, `fuzz/` and
 `.config/macos-subset` add nothing when nobody names them. A selected module becomes a filter term
 when a test name is under it, or when a `macro_rules!` body in it writes a `#[test] fn $name`. A
 selected module with neither is explained by its `why` lines and adds no term.
@@ -533,17 +538,19 @@ except the Mac manifest), `crate-root` (a change to `src/main.rs`, or to `src/li
 `tests/it/main.rs` other than an added `mod` of an added file), `module-map` (a file whose owners
 change), `shared-rig` (a changed item other than a `#[test]` fn in an integration file that other
 modules reference), `deleted` and `renamed` (a Rust file), `macro` (a changed `macro_rules!`),
+`source-view` (a checkout source read with an unresolved path or no selectable integration owner),
 `unknown-path` (a path no rule places) and `stream` (a change stream the selector cannot decode). A
 failed producer, a failed selector or an answer that is not exactly the protocol runs the whole lane
 and `just check` too (`producer`, `selector-exit`, `selector-output`): nothing then says that
-`install` did not change.
+`install` did not change. A symlink or non-regular Rust source file fails the producer before it
+opens the file.
 
 **The M1 gaps.** The human accepted three, with the release's whole hp run as the backstop:
 
 - a test that reaches a changed module only through another module (A → B → C);
 - a test that drives only the binary: most integration tests run `ae` as a process and name no
   library module (3752 of 4022 when the plan was measured);
-- a path built at run time or by a macro.
+- a path built at run time or by a macro with no checkout source reference for the selector to see.
 
 Every subset prints `test-affected: not selected: <N> of <M> integration tests (M1 gap)`: the
 statically enumerated integration tests outside every selected module. A test that a macro writes

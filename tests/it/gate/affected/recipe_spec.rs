@@ -430,6 +430,32 @@ fn producer_error_after_partial_output_skips_selection_and_runs_whole() {
 }
 
 #[test]
+fn a_linked_source_fails_the_producer_and_runs_the_whole_lane() {
+    let f = AffectedFixture::new("linked-source");
+    let source = f.old.tree.join("src/lib.rs");
+    let target = f.old.tree.join("src/source-text.txt");
+    spec_put(&target, "pub fn linked() {}\n");
+    std::fs::remove_file(&source).expect("remove regular fixture source");
+    std::os::unix::fs::symlink(&target, &source).expect("link fixture source");
+    for args in [
+        vec!["add", "src/lib.rs", "src/source-text.txt"],
+        vec!["commit", "-qm", "linked source"],
+    ] {
+        let (code, out, err) = f.old.git(&args);
+        assert_eq!(code, 0, "fixture git: {out}{err}");
+    }
+    let (code, out, err) = f.run(false, &[]);
+    assert_eq!(code, 0, "whole fallback: {out}{err}");
+    assert!(
+        format!("{out}{err}").contains("whole: producer: src/lib.rs is not a regular source file")
+    );
+    assert_eq!(f.count("selector"), 0);
+    assert_eq!(f.count("lane-whole"), 1);
+    assert_eq!(f.count("shell-check"), 1);
+    f.no_receipt();
+}
+
+#[test]
 fn selector_failure_runs_whole_even_when_its_stdout_claims_subset() {
     let f = AffectedFixture::new("selector-exit");
     let (code, out, err) = f.run(false, &[("AE_P2_SELECTOR_EXIT", "37")]);

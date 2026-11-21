@@ -418,6 +418,354 @@ fn source_as_text_is_a_dependency_without_a_namespace_reference() {
 }
 
 #[test]
+fn source_view_product_search_selects_the_text_reader() {
+    let mut input = fixture();
+    add_it(
+        &mut input,
+        "source_search",
+        "use super::support::source_view;
+         #[test] fn finds_body() {
+             assert!(source_view::product().files.iter().any(|file| file.text.contains(\"fn value(\")));
+         }",
+    );
+    let got = select(&input);
+    subset(&got);
+    assert!(got.owners.contains("source_search"));
+    assert!(got.filterset.contains("source_search"));
+    assert!(!got.owners.contains("unrelated"));
+
+    only_edit(&mut input, "docs/note.md", "before", "after");
+    let got = select(&input);
+    subset(&got);
+    assert!(!got.owners.contains("source_search"));
+}
+
+#[test]
+fn a_manifest_src_walk_selects_its_guard_for_each_source_edit() {
+    let mut input = fixture();
+    add_it(
+        &mut input,
+        "tree_guard",
+        "#[test] fn visits_sources() {
+             let root = std::path::Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"src\");
+             let mut stack = vec![root];
+             while let Some(dir) = stack.pop() {
+                 for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                     let path = entry.path();
+                     if path.is_dir() { stack.push(path); }
+                     else { let _ = std::fs::read(path).unwrap(); }
+                 }
+             }
+         }",
+    );
+    for path in ["src/changed.rs", "src/indirect.rs"] {
+        only_edit(
+            &mut input,
+            path,
+            "pub fn value() {}",
+            "pub fn value() { () }",
+        );
+        let got = select(&input);
+        subset(&got);
+        assert!(
+            got.filterset.contains("tree_guard"),
+            "guard omitted for {path}"
+        );
+        assert!(!got.owners.contains("unrelated"));
+    }
+    only_edit(&mut input, "src/render/template.txt", "before", "after");
+    let got = select(&input);
+    subset(&got);
+    assert!(got.filterset.contains("tree_guard"));
+
+    only_edit(&mut input, "docs/note.md", "before", "after");
+    let got = select(&input);
+    subset(&got);
+    assert!(!got.owners.contains("tree_guard"));
+}
+
+#[test]
+fn source_views_with_tests_select_their_owners_for_a_test_source_edit() {
+    let mut input = fixture();
+    for (name, reader) in [
+        (
+            "tree_reader",
+            "use super::support::source_view::{tree as files};
+             #[test] fn reads_tests() {
+                 let _ = files().iter().filter(|(path, _)| path.starts_with(\"tests/it/\")).count();
+             }",
+        ),
+        (
+            "both_roots",
+            "#[test] fn reads_roots() {
+                 let root = std::path::Path::new(env!(\"CARGO_MANIFEST_DIR\"));
+                 for dir in [root.join(\"src\"), root.join(\"tests\")] {
+                     let _ = std::fs::read_dir(dir).unwrap().count();
+                 }
+             }",
+        ),
+        (
+            "product_only",
+            "#[test] fn reads_product() { let _ = crate::support::source_view::product(); }",
+        ),
+    ] {
+        add_it(&mut input, name, reader);
+    }
+    only_edit(
+        &mut input,
+        "tests/it/unrelated.rs",
+        "#[test] fn unrelated_test() { assert_eq!(1, 1); }",
+        "#[test] fn unrelated_test() { assert_eq!(2, 2); }",
+    );
+    let got = select(&input);
+    subset(&got);
+    assert!(got.filterset.contains("tree_reader"));
+    assert!(got.filterset.contains("both_roots"));
+    assert!(!got.owners.contains("product_only"));
+}
+
+#[test]
+fn source_root_spelled_relative_or_with_manifest_concat_selects_readers() {
+    let mut input = fixture();
+    for (name, reader) in [
+        (
+            "relative_walk",
+            "#[test] fn visits() { let _ = std::fs::read_dir(\"src\").unwrap().count(); }",
+        ),
+        (
+            "concat_walk",
+            "#[test] fn visits() {
+                 let root = std::path::Path::new(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src\"));
+                 let _ = std::fs::read_dir(root).unwrap().count();
+             }",
+        ),
+    ] {
+        add_it(&mut input, name, reader);
+    }
+    let got = select(&input);
+    subset(&got);
+    for owner in ["relative_walk", "concat_walk"] {
+        assert!(got.filterset.contains(owner), "missing walker {owner}");
+    }
+}
+
+#[test]
+fn a_split_literal_path_or_full_path_wrapper_selects_only_the_reader() {
+    let mut input = fixture();
+    for (name, reader) in [
+        (
+            "joined_reader",
+            "#[test] fn reads() {
+                 let root = std::path::Path::new(env!(\"CARGO_MANIFEST_DIR\"));
+                 let _ = std::fs::read(root.join(\"src\").join(\"changed.rs\")).unwrap();
+             }",
+        ),
+        (
+            "literal_wrapper",
+            "fn read(path: &str) -> String {
+                 let root = std::path::Path::new(env!(\"CARGO_MANIFEST_DIR\"));
+                 std::fs::read_to_string(root.join(path)).unwrap()
+             }
+             #[test] fn reads() { let _ = read(\"src/changed.rs\"); }",
+        ),
+        (
+            "fixture_walk",
+            "#[test] fn visits() {
+                 let scratch = super::cli::OwnedScratch::root(\"case\", \"tree\");
+                 let _ = std::fs::read_dir(scratch.path()).unwrap().count();
+             }",
+        ),
+    ] {
+        add_it(&mut input, name, reader);
+    }
+    let got = select(&input);
+    subset(&got);
+    assert!(got.filterset.contains("joined_reader"));
+    assert!(got.filterset.contains("literal_wrapper"));
+    assert!(!got.owners.contains("fixture_walk"));
+
+    only_edit(
+        &mut input,
+        "src/indirect.rs",
+        "pub fn one() {}",
+        "pub fn two() {}",
+    );
+    let got = select(&input);
+    subset(&got);
+    assert!(!got.owners.contains("joined_reader"));
+    assert!(!got.owners.contains("literal_wrapper"));
+}
+
+#[test]
+fn a_source_prefix_wrapper_with_a_partial_path_keeps_its_reader() {
+    let mut input = fixture();
+    put(&mut input, "src/changed.rs", "mod child; pub fn value() {}");
+    only_edit(
+        &mut input,
+        "src/changed/child.rs",
+        "pub fn child() -> u8 { 0 }",
+        "pub fn child() -> u8 { 1 }",
+    );
+    add_it(
+        &mut input,
+        "prefix_wrapper",
+        "fn read(name: &str) -> String {
+             let root = std::path::Path::new(env!(\"CARGO_MANIFEST_DIR\"));
+             std::fs::read_to_string(root.join(\"src\").join(name)).unwrap()
+         }
+         #[test] fn reads() { let _ = read(\"changed/child.rs\"); }",
+    );
+    let got = select(&input);
+    subset(&got);
+    assert!(got.filterset.contains("prefix_wrapper"));
+}
+
+#[test]
+fn an_unknown_source_view_family_runs_the_whole_lane() {
+    let mut input = fixture();
+    add_it(
+        &mut input,
+        "unknown_family",
+        "use crate::support::source_view::module_family as family;
+         #[test] fn reads_family() {
+             let root = std::env::var(\"SOURCE_VIEW_ROOT\").unwrap();
+             assert!(!family(&root, false).is_empty());
+         }",
+    );
+    let got = select(&input);
+    whole(&got, "source-view");
+    assert!(
+        got.reasons
+            .iter()
+            .any(|reason| reason.detail.contains("unknown_family.rs:"))
+    );
+}
+
+#[test]
+fn a_literal_source_family_selects_its_descendants() {
+    let mut input = fixture();
+    put(
+        &mut input,
+        "src/changed.rs",
+        "mod child; pub fn value() {} ",
+    );
+    only_edit(
+        &mut input,
+        "src/changed/child.rs",
+        "pub fn child() -> u8 { 0 }",
+        "pub fn child() -> u8 { 1 }",
+    );
+    add_it(
+        &mut input,
+        "family_reader",
+        "#[test] fn reads_child() {
+             assert!(super::support::source_view::module_family(\"src/changed.rs\", false)
+                 .contains(\"fn child(\"));
+         }",
+    );
+    let got = select(&input);
+    subset(&got);
+    assert!(got.filterset.contains("family_reader"));
+
+    let root = input.new.get_mut("src/lib.rs").expect("lib root");
+    root.push_str(" mod changed_x;");
+    only_edit(
+        &mut input,
+        "src/changed_x.rs",
+        "pub fn one() {}",
+        "pub fn two() {}",
+    );
+    let got = select(&input);
+    subset(&got);
+    assert!(!got.owners.contains("family_reader"));
+}
+
+#[test]
+fn a_computed_source_read_runs_the_whole_lane() {
+    for body in [
+        r#"std::fs::read_to_string(format!("src/{name}.rs")).unwrap()"#,
+        r#"std::fs::read_to_string(format!("{}/src/{name}.rs", env!("CARGO_MANIFEST_DIR"))).unwrap()"#,
+        r#"let root = env!("CARGO_MANIFEST_DIR");
+           let path = format!("{root}/src/{name}.rs");
+           std::fs::read_to_string(&path).unwrap()"#,
+        r#"let mut path = format!("src/{name}");
+           path.push_str(".rs");
+           std::fs::read_to_string(&path).unwrap()"#,
+        r#"let path: String = format!("src/{name}.rs");
+           std::fs::read_to_string(&path).unwrap()"#,
+    ] {
+        let mut input = fixture();
+        add_it(
+            &mut input,
+            "computed_reader",
+            &format!(
+                r#"#[test] fn reads_path() {{
+                let name = std::env::var("SOURCE_FILE").unwrap();
+                {body};
+            }}"#
+            ),
+        );
+        let got = select(&input);
+        assert_eq!(got.verdict, Verdict::Whole, "unplaced read: {body}");
+        whole(&got, "source-view");
+        assert!(
+            got.reasons
+                .iter()
+                .any(|reason| reason.detail.contains("computed_reader.rs:")),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn a_source_reader_without_a_selectable_test_owner_runs_the_whole_lane() {
+    let mut input = fixture();
+    add_it(
+        &mut input,
+        "support",
+        "pub(super) mod text_reader;
+         mod source_view { pub(super) fn product() -> &'static str { \"product\" } }",
+    );
+    put(
+        &mut input,
+        "tests/it/support/text_reader.rs",
+        "pub(crate) fn read_text() { let _ = super::source_view::product(); }",
+    );
+    add_it(
+        &mut input,
+        "source_consumer",
+        "#[test] fn reads_text() { super::support::text_reader::read_text(); }",
+    );
+    let got = select(&input);
+    whole(&got, "source-view");
+    assert!(
+        got.reasons
+            .iter()
+            .any(|reason| reason.detail.contains("text_reader.rs:")
+                && reason.detail.ends_with("has no selectable test owner"))
+    );
+}
+
+#[test]
+fn an_unresolved_source_include_runs_the_whole_lane() {
+    let mut input = fixture();
+    add_it(
+        &mut input,
+        "concat_reader",
+        r#"#[test] fn reads_text() {
+            let _ = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/", "changed.rs"));
+        }"#,
+    );
+    let got = select(&input);
+    whole(&got, "source-view");
+    assert!(
+        got.reasons
+            .iter()
+            .any(|reason| reason.detail.ends_with("an include computes a source path"))
+    );
+}
+
+#[test]
 fn parent_module_reexports_keep_direct_consumers() {
     let mut input = fixture();
     put(
