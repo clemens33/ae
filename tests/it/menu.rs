@@ -8840,7 +8840,7 @@ fn the_memos_dialog_draws_eight_topics_on_tall_and_narrow_clients() {
 
 /// Cell clipping has exactly one implementation: the cutter definition lives
 /// once, and only its home plus the dialog renderer ever name it directly.
-/// The prose projector delegates to it for one named caller, pinned beside it.
+/// The prose projector delegates to it for the named callers pinned below.
 #[allow(
     clippy::disallowed_methods,
     reason = "the inventory guard reads the crate's own sources; it proves where a name may appear"
@@ -8877,10 +8877,9 @@ fn cell_clipping_runs_through_the_one_cutter() {
         "a second clipper appeared"
     );
     assert_eq!(defs, 1, "the cutter is defined more than once");
-    // The prose projector over the same cutter: one definition, four callers —
-    // the nudge body, menu/question labels, `requests` excerpts, and the
-    // quota view's scope heads and elided names, which clip through it rather
-    // than beside it. App rows draw no reason prose any more.
+    // The prose projector over the same cutter: one definition, five callers.
+    // It clips the nudge body, menu/question labels, `requests` excerpts,
+    // startup dialog warnings and the quota view's scope heads and elided names.
     let head_needle = ["clip", "_head("].concat();
     let head_def = ["fn clip", "_head"].concat();
     let (mut head_holders, mut head_defs) = (Vec::new(), 0);
@@ -8906,6 +8905,7 @@ fn cell_clipping_runs_through_the_one_cutter() {
             "event_text.rs".to_owned(),
             "menu.rs".to_owned(),
             "requests.rs".to_owned(),
+            "startup.rs".to_owned(),
             "view.rs".to_owned(),
         ],
         "the prose projector gained an unnamed caller"
