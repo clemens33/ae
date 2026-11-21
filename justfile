@@ -3892,6 +3892,10 @@ _tmux-isolated lane *args:
     mkdir "$test_tmux_tmp/tmp"
     export TMPDIR="$test_tmux_tmp/tmp"
     export TMUX_TMPDIR="$test_tmux_tmp"
+    # In-process code reads the state root from the environment, so the lane gives
+    # it an empty root of its own: no test reads the developer's real ~/.ae.
+    mkdir "$test_tmux_tmp/ae-home"
+    export AE_HOME="$test_tmux_tmp/ae-home"
     unset TMUX TMUX_PANE
     size_counts
     size_load "lane $lane"

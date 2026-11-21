@@ -222,6 +222,8 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         "keep_or_remove \"$test_tmux_tmp\"",
         "trap cleanup EXIT",
         "export TMUX_TMPDIR=\"$test_tmux_tmp\"",
+        "mkdir \"$test_tmux_tmp/ae-home\"",
+        "export AE_HOME=\"$test_tmux_tmp/ae-home\"",
         "unset TMUX TMUX_PANE",
         "tmux -f /dev/null -L ae new-session -d -s foreign-review-sentry -e AE_SESSION=foreign-review-sentry",
         "detached nice -n 10 cargo nextest run --locked --all-features",
@@ -262,6 +264,15 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
     ) else {
         return false;
     };
+    // In-process code reads the state root from the environment: the lane points
+    // AE_HOME at its own empty root before any test runs, so no test reads the
+    // developer's real ~/.ae.
+    let (Some(home), Some(ae_home)) = (
+        position("mkdir \"$test_tmux_tmp/ae-home\""),
+        position("export AE_HOME=\"$test_tmux_tmp/ae-home\""),
+    ) else {
+        return false;
+    };
     // Each caller execs the nested just, so a TERM from the outer just reaches the
     // lane itself: dash keeps a single command as a child (#340).
     let callers = [
@@ -277,6 +288,9 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
     reap < mktemp
         && registry < remove
         && mktemp < tmpdir
+        && mktemp < home
+        && home < ae_home
+        && ae_home < nextest
         && tmpdir < nextest
         && unset < sentry
         && sentry < nextest
@@ -475,6 +489,14 @@ fn the_rust_test_recipe_isolates_every_real_tmux_probe() {
             "just _tmux-isolated mutants \"$@\"",
             "just _tmux-isolated mutants {{ args }}"
         )
+    ));
+
+    // RED — a lane that isolates tmux but keeps the developer's state root: an
+    // in-process read of a fixture named like a real session reads the real
+    // record (the v2026.11.102 Mac refusal). The real justfile without the export.
+    assert!(!rust_test_tmux_isolation_ok(
+        &read(&root().join("justfile"))
+            .replace("export AE_HOME=\"$test_tmux_tmp/ae-home\"", "true")
     ));
 
     // RED — merely unsetting the inherited client still reaches the ordinary
@@ -4084,6 +4106,78 @@ fn a_mutants_lane_builds_in_cargo_roots_it_owns_whatever_the_caller_exported() {
         assert!(
             !base.join("work/target").exists(),
             "{case}: the caller's own target/ was written"
+        );
+    }
+}
+
+/// The fake `cargo` for the state-root pin: for a nextest or mutants call it
+/// records the lane's `TMUX_TMPDIR`, the `AE_HOME` it was given and whether
+/// that directory exists and is empty, then `end`.
+const HOME_CARGO: &str = r#"case "$1" in nextest|mutants) ;; *) exit 0 ;; esac
+{
+  echo "tool=$1"
+  echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+  if [ -n "${AE_HOME+x}" ]; then echo "AE_HOME=$AE_HOME"; else echo "AE_HOME unset"; fi
+  if [ -d "$AE_HOME" ] && [ -z "$(ls -A "$AE_HOME")" ]; then echo "home=empty"; else echo "home=missing-or-used"; fi
+  echo end
+} >>"$AE_FAKE_REC"
+exit 0
+"#;
+
+/// In-process code reads the state root from the environment, so every lane
+/// hands Cargo an empty root of its own under its own directory, in place of
+/// any `AE_HOME` the caller exported, and its cleanup removes it: no test reads
+/// the developer's real `~/.ae` (the v2026.11.102 Mac refusal, where a fixture
+/// named like a real session read the real record).
+#[test]
+fn every_lane_gives_cargo_an_empty_state_root_of_its_own() {
+    let scratch = super::cli::OwnedScratch::root("gate", "aehome");
+    let base = scratch.path();
+    let lane_base = base.join("l b");
+    let caller = base.join("caller home");
+    std::fs::create_dir_all(caller.join("sessions/orchestrator")).expect("the caller's state root");
+    let caller_text = caller.to_str().expect("a UTF-8 scratch path").to_owned();
+    let exported = [("AE_HOME", caller_text.clone())];
+    let none: &[(&str, String)] = &[];
+    for (case, env, args) in [
+        (
+            "a filtered test, caller AE_HOME",
+            &exported[..],
+            &["test", "-E", "test(=x)"][..],
+        ),
+        (
+            "a filtered test, no AE_HOME",
+            none,
+            &["test", "-E", "test(=x)"][..],
+        ),
+        ("mutants, caller AE_HOME", &exported[..], &["mutants"][..]),
+    ] {
+        let (outcome, calls, stderr) = rooted_lane(base, &lane_base, HOME_CARGO, env, args);
+        assert!(matches!(outcome, ExitOutcome::Code(0)), "{case}: {stderr}");
+        let [call] = &calls[..] else {
+            panic!(
+                "{case}: one cargo call expected, {} recorded: {stderr}",
+                calls.len()
+            );
+        };
+        let lane = lane_root(call, &lane_base, case);
+        assert_eq!(
+            call.field("AE_HOME"),
+            Some(format!("{lane}/ae-home").as_str()),
+            "{case}: cargo did not run under the lane's own state root"
+        );
+        assert_eq!(
+            call.field("home"),
+            Some("empty"),
+            "{case}: the lane's state root was not an empty directory"
+        );
+        assert!(
+            lanes_left(&lane_base).is_empty(),
+            "{case}: the lane left its directory: {stderr}"
+        );
+        assert!(
+            caller.join("sessions/orchestrator").is_dir(),
+            "{case}: the caller's state root changed"
         );
     }
 }
