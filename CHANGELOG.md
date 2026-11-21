@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.102] - 2026-11-21
+- Zoom the focused column over the whole frame
+- Describe the whole-frame zoom in app.md
+- Keep the zoom through a fleet read that rebuilds the selection
+- A link the panel draws is a terminal link
+- Carry the panel's link runs into the frame and drop those a dialog or the panel covers
+- Select source-view tests in test-affected
+- The CHARTER UPDATE turn also reaches an idle waiting-user seat, rechecked just before the paste
+- A bound rename the orchestrator seat runs on another session, proved by uuid, fenced and audited
+- A bound Keep end the orchestrator seat runs on another session, admitted by its own audit row or an all-done session, proved by uuid and rechecked under the archive holds
+- Test lane: every _tmux-isolated run exports an empty AE_HOME of its own
+- The late-live endfix fixture meddles only once the archive holds its sources
+
 ## [v2026.11.101] - 2026-11-20
 - The orchestrator board record, its app column, the /board chat command and one pinned Telegram message
 - No board, no column; the app keeps every width and hit target it had until a board is shown or unreadable
