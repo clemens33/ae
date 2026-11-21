@@ -169,9 +169,8 @@ list and the body: the list keeps one session and its more row, the body three r
 as few as it had undragged). The left border of a side-by-side
 [orchestrator panel](#orchestrator-panel) sets the panel's width: the panel and
 the chat beside it each keep at least 40 cells. The rule being dragged is drawn in the title
-colour, reversed with `theme = off`; letting go ends the drag. Under a full
-orchestrator panel a drag of the sidebar's rule or the list's rule follows the
-pointer over the panel's cells too. The sizes last
+colour, reversed with `theme = off`; letting go ends the drag. A [zoom](#zoom) hides the
+sidebar and with it its rule and the list's, so there is none to drag. The sizes last
 for this run of the app and are not remembered; a smaller pane narrows them
 only while it is small.
 
@@ -239,7 +238,8 @@ Browsing:
 | `j` / `k`, `↓` / `↑` | next / previous session |
 | `!` | the next session that needs you |
 | `O`, click `◆` | open the orchestrator panel beside the chat, or hide it ([Orchestrator panel](#orchestrator-panel)) |
-| `F`, click `F full` / `F side` | the open panel full screen over the chat column (the sidebar stays), or side by side again |
+| `F`, click `F full` / `F side` | the open panel over the whole frame, the sidebar hidden, or side by side again ([Zoom](#zoom)) |
+| `X`, click `X zoom` / `X unzoom` | the column that holds the keys over the whole frame, the sidebar hidden, or back; text while writing ([Zoom](#zoom)) |
 | `oo`, click `pane` in the panel header | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat. While the orchestrator panel holds the keys, `oo` and the click open the orchestrator's pane ([Orchestrator panel](#orchestrator-panel)) |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
 | Click a seat, or `v` on the highlighted seat | inside tmux: watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)); outside tmux a click works in the seat itself ([Working in a seat](#working-in-a-seat)) |
@@ -450,6 +450,53 @@ views a seat, `F12` and `C-]` still go back, but nothing takes the client back
 when the seat's session ends meanwhile. The cursor steps only through the rows
 drawn.
 
+## Zoom
+
+The column that holds the keys fills the whole frame: the sidebar, its rule
+and its fleet summary are not drawn, and they record no click, right-click or
+drag target. The column that takes their cells handles a press there as it
+does anywhere else in its own cells. Row 0, the header, stays and carries the
+way back. The main column and the orchestrator panel each have their own zoom:
+
+- `X` zooms the column that holds the keys, or ends its zoom. With the panel
+  holding the keys it is `F`. The main column's header ends in `X zoom`, or
+  `X unzoom` while the frame is zoomed, a click target that works while writing
+  and keeps the draft and the writing; the click does what the label names. A
+  zoomed chat column shows the reader `r` opens and the seat view
+  `v` opens, and `X` reaches the zoom from both. The sidebar is not drawn then,
+  so a seat view opens only on a seat the last frame drew (`v` otherwise says
+  `refused: peek …`) and a click on a seat has no target.
+- `F` or `F full` zooms the open panel, `F side` ends it. It acts on the zoom
+  the human asked for, so the narrow fallback (the panel filling the chat column
+  when a side panel does not fit) is not a zoom: `F full` there zooms the panel,
+  and a wider frame leaves the zoom on.
+- The two zooms are independent. `F side` ends the panel's zoom and leaves the
+  main column's stored: while the side panel holds the keys the frame shows the
+  split, and when the main column holds the keys again, by a click on it or by
+  `Esc` hiding the panel, its zoom shows.
+- A zoomed main column covers an open panel, which stays open behind it as in
+  the narrow fallback. `O`, the `◆` button and `!` to the orchestrator hand the
+  panel the keys zoomed, so the frame keeps its look; `Esc` hides the panel and
+  shows the zoomed main column again. A zoomed panel that is hidden takes its
+  zoom with it.
+- `Esc` keeps every meaning it has and never ends a zoom by itself: it ends
+  writing, clears a selection, closes the reader or the seat view, and where it
+  has nothing to do it does nothing.
+- `j` / `k`, the arrows, `1`-`9` and `!` select sessions as ever, over the
+  hidden list; the header names the session. A zoomed panel turns side first.
+- `s` and `m` act on the card the last frame drew for the selection. With the
+  sidebar hidden none was drawn, and the keys keep their refusal: the hint row
+  says `menu not opened: no card is on screen for it` and nothing starts, stops
+  or opens. `X` shows the sidebar again.
+- `X` is text while writing, as `F` and `O` are.
+
+A zoom change, also one that hands the zoom from the main column to the panel
+or back, draws other cells under the coordinates of the last frame, so a press
+made before it is not taken, in either column (`click not taken: its frame is gone`, or
+`menu not opened: its frame is gone`), and it ends a selection. A restart
+carries both zooms: the main column's zoom in the handed view, the panel's with
+its mode. The tmux status line and the tmux options are not touched.
+
 ## Orchestrator panel
 
 The orchestrator is no row of the list. Its control is the `◆` (`O` with
@@ -475,12 +522,11 @@ header saying `side needs <N> columns`, or the main column, so a writer, the
 reader `r` opens and the session `!` selects stay on screen. The panel stays
 open behind the main column and stands beside it again when the frame
 widens; `O` or the button then hands it the keys, and it fills the chat column.
-`F` or a click on its header's `F full` / `F side` switches it between side
-and full. Full screen it fills the chat column, leaves the sidebar drawn and
-holds the keys; a click on a session in the sidebar, also the selected one, or
-`1`-`9`, `j` / `k` or an arrow selects it and turns the panel side with the keys
-on the main column, so the selection shows, and a drag of the sidebar's rule
-keeps it full. Side by side a click gives the keys to the column it lands on, and the
+`F` or a click on its header's `F full` / `F side` switches the panel between
+side and its zoom ([Zoom](#zoom)): it fills the whole frame, the sidebar not
+drawn, and holds the keys. `1`-`9`, `j` / `k` or an arrow turns the panel side
+with the keys on the main column, so the selection shows. In the narrow fallback
+`F` still zooms the panel, the label saying `F full` until it does. Side by side a click gives the keys to the column it lands on, and the
 focused column's name is in the title ink
 (`▸` before it with `theme = off`). Any change of focus ends writing as `Esc`
 does and keeps each draft. While the panel holds the keys, `Esc` (not writing)
@@ -704,7 +750,7 @@ return of a view that ran says `back from <seat>`.
 
 Click a seat in the sidebar, or `v` on the highlighted seat, and that seat's
 live screen replaces the chat where the chat lane is: the seat's screen and
-recent history as plain text. The sidebar stays drawn and clickable, and
+recent history as plain text. The sidebar stays drawn and clickable (a [zoom](#zoom) hides it, and `X` reaches the zoom from the view), and
 clicking another seat retargets the view. Nothing is typed into the seat, no
 record is written and no client moves. The seat is the one `oo` would open,
 as the last frame drew it; with no session selected or none highlighted, in a
@@ -754,7 +800,7 @@ shown.
 ## Reading a linked file
 
 A plain press and release on any file-link cell opens that occurrence in the
-chat column, read-only, with the sidebar still live. Wrapped links and wide
+chat column, read-only, with the sidebar still live unless the frame is [zoomed](#zoom) (`X` zooms and unzooms with the reader open). Wrapped links and wide
 characters work on every covered cell. A press changes no mark or draft; dragging
 selects text instead. Another press, key, wheel notch or changed view cancels the
 pending click. A stale link says `refused: read: the view changed`. Web links keep
