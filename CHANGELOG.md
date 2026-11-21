@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.103] - 2026-11-21
+- Let the orchestrator board divider resize its column
+- Fleet feed: the orchestrator chat shows every session's lifecycle as dim lines
+
 ## [v2026.11.102] - 2026-11-21
 - Zoom the focused column over the whole frame
 - Describe the whole-frame zoom in app.md
