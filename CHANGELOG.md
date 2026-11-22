@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.109] - 2026-11-22
+- Reuse a fresh Mac boundary test receipt during release
+- Show and scroll the orchestrator board in app zoom
+- Cover board scroll boundaries and focus controls
+- Keep board controls within the existing help page
+- Let auto reseat move the orchestrator's main seat when its conversation travels
+- Name the orchestrator move test as the Mac subset member for watch_until
+- Pin the orchestrator move's survivors: other-launch records, same-account keeps, completed relays, launchless seats and a landed-but-unfinished carry
+
 ## [v2026.11.108] - 2026-11-22
 - Check pinned release tools before preflight writes
 - Keep release acceptance fixtures compatible with tool preflight
