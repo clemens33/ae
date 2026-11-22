@@ -91,6 +91,8 @@ impl App {
                             self.model.split(),
                             columns,
                         )
+                    || self.layout.desk_beside()
+                        != draw::desk_beside(self.layout.area(), self.model.split(), columns)
             })
     }
 
@@ -351,6 +353,7 @@ impl App {
             | draw::Hit::SettingsClose
             | draw::Hit::PeekClose
             | draw::Hit::PanelDesk
+            | draw::Hit::PanelDeskToggle
             | draw::Hit::PanelPane => {
                 return held;
             }
@@ -395,7 +398,7 @@ impl App {
                 .drag_to(draw::zoomed_desk_drag(drag, mouse, area, split));
         }
         let count = draw::list_len(&self.fleet, self.stopped());
-        let size = draw::dragged_to(drag, mouse, area, split, count, self.desk_present());
+        let size = draw::dragged_to(drag, mouse, area, split, count, self.desk_stands());
         self.model.drag_to(size)
     }
 

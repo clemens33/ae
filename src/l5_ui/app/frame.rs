@@ -77,6 +77,7 @@ impl App {
         if self.model.columns().surface() != columns.surface()
             || self.layout.desk_replaces_panel()
                 != draw::desk_replaces_panel(area, self.model.split(), columns)
+            || self.layout.desk_beside() != draw::desk_beside(area, self.model.split(), columns)
         {
             self.zoom_pending = true;
         }

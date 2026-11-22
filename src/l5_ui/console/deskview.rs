@@ -253,6 +253,24 @@ pub fn cue(view: &DeskView) -> Option<String> {
     }
 }
 
+/// The word that stands in the panel header while the human hid the board:
+/// [`cue`], except that a board with nothing under DECIDE says nothing, so a
+/// word there always means a decision waits, or that the record is unreadable.
+#[must_use]
+pub fn hidden_cue(view: &DeskView) -> Option<String> {
+    match view {
+        DeskView::Shown(desk)
+            if !desk
+                .items
+                .iter()
+                .any(|item| item.id.section == Section::Decide) =>
+        {
+            None
+        }
+        _ => cue(view),
+    }
+}
+
 /// What reading the board of a session found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeskView {

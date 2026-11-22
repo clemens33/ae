@@ -158,6 +158,8 @@ pub(crate) enum Hit {
     PanelMode,
     /// The panel header's board control.
     PanelDesk,
+    /// The panel header's `b hide` / `b show` word.
+    PanelDeskToggle,
     /// The main column header's zoom label: zoom the column or leave the zoom.
     Zoom,
 }
@@ -428,6 +430,11 @@ impl Layout {
 
     pub(super) fn desk_replaces_panel(&self) -> bool {
         self.desk.is_some_and(|desk| !desk.adjacent)
+    }
+
+    /// Whether the board column stood beside the panel in this frame.
+    pub(super) fn desk_beside(&self) -> bool {
+        self.desk.is_some_and(|desk| desk.adjacent)
     }
 
     /// The chat lane above its last row: the panel footer owns that row, so
@@ -941,10 +948,15 @@ pub(crate) fn desk_area(area: Rect, split: Split, columns: Columns) -> Option<Re
 }
 
 /// [`desk_area`] while `columns` say a board stands to be shown or cannot be
-/// read, else `None`: with no board the frame is the one without a board column,
-/// the panel included.
+/// read and the human did not hide it, else `None`: with no board, or a hidden
+/// one, the frame is the one without a board column, the panel included.
 pub(crate) fn desk_slot(area: Rect, split: Split, columns: Columns) -> Option<Rect> {
-    desk_area(area, split, columns).filter(|_| columns.desk)
+    desk_area(area, split, columns).filter(|_| columns.desk && !columns.desk_hidden)
+}
+
+/// Whether the board column stands beside the panel in `area`.
+pub(super) fn desk_beside(area: Rect, split: Split, columns: Columns) -> bool {
+    desk_slot(area, split, columns).is_some()
 }
 
 /// The focused board takes the panel's body when an adjacent column cannot fit.
@@ -2534,8 +2546,14 @@ fn hint_row(
     // The clear key is named only over text, and only where it fits whole.
     let text = matches!(&ctx.screen.composer, Composer::Home { view: Some(_), draft, .. } if !draft.is_empty());
     let long = rest_of(&format!("{keys} · ^C clears"));
+    // Browsing with a board set names the key that hides or shows it, where
+    // the longer hint fits whole.
+    let board = board_hint(ctx.screen.model.columns(), &ctx.screen.composer, keys)
+        .map(|word| rest_of(&format!("{keys} · {word}")));
     let rest = if text && !keys.is_empty() && fits(&long) {
         long
+    } else if let Some(board) = board.filter(|board| fits(board)) {
+        board
     } else {
         rest_of(keys)
     };
@@ -2584,8 +2602,33 @@ fn mode_hint(composer: &Composer<'_>) -> &'static str {
     match composer {
         Composer::Home { view: Some(_), .. } => "Enter sends · Alt+Enter ^J newline · Esc browses",
         Composer::Held { .. } => "",
-        _ => "? keys",
+        _ => BROWSE_HINT,
     }
+}
+
+/// The browse hint: the keys that work while no draft is written.
+const BROWSE_HINT: &str = "? keys";
+
+/// The word that names the board's visibility key in the browse hint: `b hide`
+/// while the board stands, `b show` while the human hid it. Only on the hint
+/// row of the column that holds the keys, while the panel is open over a board
+/// the frame shows, and only where `b` is a browse key: the peek and the reader
+/// take their own keys.
+fn board_hint(columns: Columns, composer: &Composer<'_>, keys: &str) -> Option<&'static str> {
+    let browsing = keys == BROWSE_HINT
+        && !matches!(
+            composer,
+            Composer::Viewing { .. } | Composer::Reading { .. }
+        );
+    let holds = columns
+        .panel
+        .is_some_and(|(_, focused)| focused == columns.drawing_panel)
+        && !columns.hides_panel();
+    (browsing && holds && columns.desk).then_some(if columns.desk_hidden {
+        "b show"
+    } else {
+        "b hide"
+    })
 }
 
 /// The lane's newest rows as the app's own state shows them: `size` is the
@@ -2907,18 +2950,40 @@ fn panel_head(
         stop = at.saturating_sub(2);
     }
     let replaces = desk_replaces_panel(buf.area, model.split(), columns);
-    // While the board column has no room, the header says what it would show.
-    if !replaces
-        && desk_slot(buf.area, model.split(), columns).is_none()
-        && let Some(cue) = ctx.wait.desk.and_then(deskview::cue)
-    {
+    // While the board column has no room, the header says what it would show;
+    // while the human hid the board, it says only a decision that waits, in the
+    // ink the needs-you mark has.
+    let dim = ctx.paint.fg(|p| p.dim);
+    let (cue, ink) = if columns.desk_hidden {
+        let waiting = ctx.paint.mark(Mark::NeedsYou);
+        (ctx.wait.desk.and_then(deskview::hidden_cue), waiting)
+    } else if !replaces && !desk_beside(buf.area, model.split(), columns) {
+        (ctx.wait.desk.and_then(deskview::cue), dim)
+    } else {
+        (None, dim)
+    };
+    if let Some(cue) = cue {
         let need = cells(cue.chars().count());
         if stop >= left + need {
-            put(buf, stop - need, 0, &cue, need, ctx.paint.fg(|p| p.dim));
+            put(buf, stop - need, 0, &cue, need, ink);
             stop = stop.saturating_sub(need + 2);
         }
     }
     if columns.desk {
+        let label = if columns.desk_hidden {
+            "b show"
+        } else {
+            "b hide"
+        };
+        let need = cells(label.len());
+        if stop >= left + need {
+            let at = stop - need;
+            put(buf, at, 0, label, need, ctx.paint.fg(|p| p.title));
+            layout.record(buf, Rect::new(at, 0, need, 1), Hit::PanelDeskToggle);
+            stop = at.saturating_sub(2);
+        }
+    }
+    if columns.desk && !columns.desk_hidden {
         let label = if replaces {
             "B/Esc chat"
         } else if columns.desk_focused {
@@ -3061,7 +3126,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 21] = [
+const BROWSE_KEYS: [(&str, &str); 22] = [
     ("1-9", "select the Nth session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
@@ -3077,6 +3142,7 @@ const BROWSE_KEYS: [(&str, &str); 21] = [
     ("v", "peek at the seat's screen"),
     ("r", "read the marked turn's first file link"),
     ("n/p", "step the seat cursor (▹ or -)"),
+    ("b", "hide / show the orchestrator board"),
     ("B PgUp/PgDn", "B: board or chat. PgUp/PgDn: scroll a page"),
     ("[ ]", "mark older / newer turn"),
     ("y", "copy the marked turn"),

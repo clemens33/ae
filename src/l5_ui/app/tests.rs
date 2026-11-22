@@ -36,6 +36,8 @@ use crate::time::Timestamp;
 use crate::tmux;
 mod boarddrag_spec;
 mod boardfull_spec;
+mod boardhide_spec;
+mod boardhide_ui_spec;
 mod composercopy_app_spec;
 mod f12panel_guards;
 mod f12panel_spec;
@@ -6003,6 +6005,7 @@ fn handed(pages: usize, rows: usize) -> Answer {
         body_top: 0,
         panel: None,
         desk: None,
+        desk_hidden: false,
         zoom: false,
         orchestrator: None,
     };

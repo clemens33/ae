@@ -906,6 +906,7 @@ fn p3_an_orchestrator_home_or_handover_opens_full_without_an_ordinary_row() {
                     body_top: 0,
                     panel: None,
                     desk: None,
+                    desk_hidden: false,
                     zoom: false,
                     orchestrator: None,
                 },

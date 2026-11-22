@@ -239,7 +239,8 @@ Browsing:
 | `!` | the next session that needs you |
 | `O`, click `◆` | open the orchestrator panel beside the chat, or hide it ([Orchestrator panel](#orchestrator-panel)) |
 | `F`, click `F full` / `F side` | the open panel over the whole frame, the sidebar hidden, or side by side again ([Zoom](#zoom)) |
-| `B`, click `B board` | focus the orchestrator board, or open it in the panel on a narrow frame. `B` or `Esc` returns to chat ([Orchestrator board](#orchestrator-board)) |
+| `b`, click `b hide` / `b show` | hide the orchestrator board and give the chat its width, or show it again, in side and full-screen modes and on a narrow frame; the choice survives an app restart ([Orchestrator board](#orchestrator-board)) |
+| `B`, click `B board` | focus the orchestrator board, or open it in the panel on a narrow frame; it does nothing while the board is hidden. `B` or `Esc` returns to chat ([Orchestrator board](#orchestrator-board)) |
 | `X`, click `X zoom` / `X unzoom` | the column that holds the keys over the whole frame, the sidebar hidden, or back; text while writing ([Zoom](#zoom)) |
 | `oo`, click `pane` in the panel header | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat. While the orchestrator panel holds the keys, `oo` and the click open the orchestrator's pane ([Orchestrator panel](#orchestrator-panel)) |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
@@ -471,7 +472,8 @@ way back. The main column and the orchestrator panel each have their own zoom:
   the human asked for, so the narrow fallback (the panel filling the chat column
   when a side panel does not fit) is not a zoom: `F full` there zooms the panel,
   and a wider frame leaves the zoom on. The board stands beside the zoomed
-  panel when it fits. If space is tight, `B` opens the board in the panel.
+  panel when it fits and `b` hides it. If space is tight, `B` opens the board
+  in the panel.
 - The two zooms are independent. `F side` ends the panel's zoom and leaves the
   main column's stored: while the side panel holds the keys the frame shows the
   split, and when the main column holds the keys again, by a click on it or by
@@ -607,6 +609,14 @@ Its default width is 36 cells including its left border. It fits from 161
 columns with the default sidebar, or 76 columns in full screen. Drag its border
 to give it as few as 24 cells. The app keeps the width while the column is
 hidden and through an app restart.
+
+Press `b` to hide the board and give the chat the whole width, and `b` again
+to show it. The header names the key as `b hide` or `b show`, and the hint row
+does too where it fits. The choice holds on every width and in zoom, and it
+survives an app restart like the zoom does. While the board is hidden, the
+header says `desk N` when N items wait under DECIDE, `desk unreadable` when the
+record cannot be read, and nothing when no decision waits. `B` does nothing
+until `b` shows the board.
 
 When the column cannot fit, the header says `desk N` for the N decisions or
 `desk unreadable`. Press `B` to show the board in the panel's body. `B` or

@@ -90,6 +90,7 @@ fn keep() -> Keep {
             body_top: 0,
             panel: None,
             desk: None,
+            desk_hidden: false,
             zoom: false,
             orchestrator: None,
         },

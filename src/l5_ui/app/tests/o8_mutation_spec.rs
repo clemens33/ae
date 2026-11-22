@@ -71,6 +71,7 @@ fn handed_seat() -> Answer {
             body_top: 0,
             panel: None,
             desk: None,
+            desk_hidden: false,
             zoom: false,
             orchestrator: None,
         },

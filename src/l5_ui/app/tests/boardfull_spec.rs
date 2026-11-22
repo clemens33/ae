@@ -17,24 +17,24 @@ use crate::console::input::Keys;
 use crate::console::link;
 use crate::desk::{Desk, parse_input};
 
-const ORCH: &str = crate::orchestrator::ORCHESTRATOR_SESSION;
-const OID: &str = "0199c0de-2222-4890-abcd-ef0123456789";
-const MAIN_TURN: &str = "BOARDFULL_MAIN_SENTINEL";
-const PANEL_TURN: &str = "BOARDFULL_PANEL_SENTINEL";
+pub(super) const ORCH: &str = crate::orchestrator::ORCHESTRATOR_SESSION;
+pub(super) const OID: &str = "0199c0de-2222-4890-abcd-ef0123456789";
+pub(super) const MAIN_TURN: &str = "BOARDFULL_MAIN_SENTINEL";
+pub(super) const PANEL_TURN: &str = "BOARDFULL_PANEL_SENTINEL";
 
-fn paint(app: &mut App, width: u16, height: u16) -> Buffer {
+pub(super) fn paint(app: &mut App, width: u16, height: u16) -> Buffer {
     let mut cells = Buffer::empty(Rect::new(0, 0, width, height));
     app.frame(&mut cells);
     app.frame_shown(Instant::now());
     cells
 }
 
-fn bytes(app: &mut App, value: &[u8]) {
+pub(super) fn bytes(app: &mut App, value: &[u8]) {
     let at = Instant::now();
     assert!(take_keys(app, Keys::app().feed(value, at)).is_some());
 }
 
-fn send_key(app: &mut App, key: Key) {
+pub(super) fn send_key(app: &mut App, key: Key) {
     let at = Instant::now();
     assert!(take_keys(app, vec![(key, at)]).is_some());
 }
@@ -58,7 +58,7 @@ fn wheel(app: &mut App, up: bool, at: (u16, u16)) {
     event(app, kind, at);
 }
 
-fn drag_border(app: &mut App, from: u16, to: u16) {
+pub(super) fn drag_border(app: &mut App, from: u16, to: u16) {
     for (kind, column) in [
         (MouseKind::Click, from),
         (MouseKind::Drag, to),
@@ -68,14 +68,14 @@ fn drag_border(app: &mut App, from: u16, to: u16) {
     }
 }
 
-fn rules_at_bottom(cells: &Buffer) -> Vec<u16> {
+pub(super) fn rules_at_bottom(cells: &Buffer) -> Vec<u16> {
     let y = cells.area.height.saturating_sub(1);
     (0..cells.area.width)
         .filter(|&x| cells[(x, y)].symbol() == "│")
         .collect()
 }
 
-fn locate(cells: &Buffer, needle: &str) -> Option<(u16, u16)> {
+pub(super) fn locate(cells: &Buffer, needle: &str) -> Option<(u16, u16)> {
     let width = u16::try_from(needle.len()).expect("short needle");
     (0..cells.area.height).find_map(|y| {
         (0..=cells.area.width.saturating_sub(width)).find_map(|x| {
@@ -108,7 +108,7 @@ fn scrolled_link_at(
     (runs[0].x, runs[0].y)
 }
 
-fn row_text(cells: &Buffer, y: u16) -> String {
+pub(super) fn row_text(cells: &Buffer, y: u16) -> String {
     (0..cells.area.width)
         .map(|x| cells[(x, y)].symbol())
         .collect()
@@ -143,7 +143,7 @@ fn seat_record(root: &Root) {
     std::fs::write(dir.join("meta"), meta).expect("orchestrator meta");
 }
 
-fn setup_board(tag: &str, desk: Option<DeskView>) -> (Root, App) {
+pub(super) fn setup_board(tag: &str, desk: Option<DeskView>) -> (Root, App) {
     let root = Root::new(tag);
     seat_record(&root);
     let reader = Reader::new(root.0.clone(), Some("api".to_owned()), None);
@@ -176,7 +176,7 @@ fn setup_board(tag: &str, desk: Option<DeskView>) -> (Root, App) {
     (root, app)
 }
 
-fn sample_desk(raw: &[u8]) -> DeskView {
+pub(super) fn sample_desk(raw: &[u8]) -> DeskView {
     DeskView::Shown(Desk {
         updated: Timestamp::now(),
         items: parse_input(raw).expect("valid board"),

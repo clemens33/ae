@@ -271,6 +271,10 @@ pub struct Model {
     /// frame, the sidebar not drawn. A view preference like the split, so a
     /// restart carries it.
     zoom: bool,
+    /// The human hid the orchestrator board: the column is not drawn and `B`
+    /// does not open it, whatever the width. A view preference, so a restart
+    /// carries it.
+    desk_hidden: bool,
 }
 
 /// The view state one chat column keeps for itself: the session it shows,
@@ -300,7 +304,7 @@ impl Chat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent facts the App writes before each draw: the needs-you mark, the drawing column, the board, its focus and the main zoom"
+    reason = "independent facts the App writes before each draw: the needs-you mark, the drawing column, the board, its hiding and focus and the main zoom"
 )]
 pub(crate) struct Columns {
     /// The button wears the needs-you mark.
@@ -312,6 +316,8 @@ pub(crate) struct Columns {
     pub(crate) drawing_panel: bool,
     /// The open panel has a board to show, or could not read its record.
     pub(crate) desk: bool,
+    /// The human hid that board: no column, no focus.
+    pub(crate) desk_hidden: bool,
     /// The board holds the keys and can take the panel's body when narrow.
     pub(crate) desk_focused: bool,
     /// The main column's own zoom ([`Model::zoom`]).
@@ -615,6 +621,19 @@ impl Model {
         }
     }
 
+    /// Whether the human hid the orchestrator board.
+    pub(crate) fn desk_hidden(&self) -> bool {
+        self.desk_hidden
+    }
+
+    /// Hide or show the orchestrator board. A change moves the cells under the
+    /// old coordinates, so it ends a selection the old cells drew.
+    pub(crate) fn set_desk_hidden(&mut self, hidden: bool) {
+        if std::mem::replace(&mut self.desk_hidden, hidden) != hidden {
+            self.moved();
+        }
+    }
+
     /// The selected session.
     #[must_use]
     pub fn selected(&self) -> Option<&str> {
@@ -746,6 +765,7 @@ impl Model {
                 peek: self.peek,
                 reader: self.reader,
                 zoom: self.zoom,
+                desk_hidden: self.desk_hidden,
                 epoch: self.epoch.wrapping_add(1),
                 ..Self::new(fleet)
             };
@@ -770,6 +790,7 @@ impl Model {
             body_top: self.body_top,
             panel: self.split.panel,
             desk: self.split.desk,
+            desk_hidden: self.desk_hidden,
             zoom: self.zoom,
             orchestrator: None,
         })
@@ -796,6 +817,7 @@ impl Model {
                 desk: view.desk,
             },
             zoom: view.zoom,
+            desk_hidden: view.desk_hidden,
             epoch: self.epoch.wrapping_add(1),
             ..Self::default()
         };
@@ -811,6 +833,7 @@ impl Model {
             peek: self.peek,
             reader: self.reader,
             zoom: self.zoom,
+            desk_hidden: self.desk_hidden,
             epoch: self.epoch.wrapping_add(1),
             ..Self::new(fleet)
         };
@@ -1732,6 +1755,7 @@ mod tests {
             body_top: 0,
             panel: None,
             desk: None,
+            desk_hidden: false,
             zoom: false,
             orchestrator: None,
         };

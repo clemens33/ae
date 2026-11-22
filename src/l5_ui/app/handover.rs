@@ -27,8 +27,10 @@
 //! `v1` alone reads the `overview` token. The panel's own full-frame zoom rides
 //! as the `full` mode, in `v2` or `v3`.
 //!
-//! A dragged board adds `|desk=<width>` after any of these canonical lines.
-//! Without a chosen board width, all three encodings keep their old bytes.
+//! A dragged board adds `|desk=<width>` after any of these canonical lines, a
+//! hidden board `|desk=hidden`, both `|desk=<width>,hidden`. Without a chosen
+//! board width and without a hidden board, all three encodings keep their old
+//! bytes.
 
 use crate::archive::is_canonical_uuid;
 use crate::config::is_agent_name;
@@ -71,6 +73,8 @@ pub struct View {
     pub panel: Option<u16>,
     /// The board's dragged width, including its left border.
     pub desk: Option<u16>,
+    /// The human hid the board, whatever the width.
+    pub desk_hidden: bool,
     /// The main column was zoomed: it holds the whole frame while it holds
     /// the keys, the sidebar not drawn. Independent of the panel's own zoom.
     pub zoom: bool,
@@ -176,9 +180,11 @@ impl Handover {
             (None, Some(width)) => format!("{line}|{width}"),
             (None, None) => line,
         };
-        match view.desk {
-            Some(width) => format!("{line}|desk={width}"),
-            None => line,
+        match (view.desk, view.desk_hidden) {
+            (None, false) => line,
+            (Some(width), false) => format!("{line}|desk={width}"),
+            (None, true) => format!("{line}|desk=hidden"),
+            (Some(width), true) => format!("{line}|desk={width},hidden"),
         }
     }
 
@@ -235,6 +241,19 @@ fn number(text: &str, max: u64) -> Option<u64> {
 
 fn size(text: &str, max: usize) -> Option<usize> {
     usize::try_from(number(text, max as u64)?).ok()
+}
+
+/// What the text after `|desk=` spells: the dragged width and whether the board
+/// is hidden, as `<width>`, `hidden` or `<width>,hidden`, nothing else.
+fn desk_suffix(text: &str) -> Option<(Option<u16>, bool)> {
+    let width = |text: &str| u16::try_from(number(text, u64::from(u16::MAX))?).ok();
+    if text == "hidden" {
+        return Some((None, true));
+    }
+    match text.strip_suffix(",hidden") {
+        Some(text) => Some((Some(width(text)?), true)),
+        None => Some((Some(width(text)?), false)),
+    }
 }
 
 /// The handover `text` spells, or `None` unless it is exactly canonical.
@@ -305,9 +324,9 @@ pub fn parse(text: &str) -> Option<Handover> {
     };
     let list_top = optional(list_top, ROWS_MAX as u64)?;
     let list_top = list_top.map(usize::try_from).transpose().ok()?;
-    let desk = match desk {
-        Some(width) => Some(small(width)??),
-        None => None,
+    let (desk, desk_hidden) = match desk {
+        Some(text) => desk_suffix(text)?,
+        None => (None, false),
     };
     let view = View {
         session: is_session_name(session).then(|| (*session).to_owned())?,
@@ -321,6 +340,7 @@ pub fn parse(text: &str) -> Option<Handover> {
         body_top: size(body_top, PAGES_MAX)?,
         panel: small(panel)?,
         desk,
+        desk_hidden,
         zoom,
         orchestrator,
     };
@@ -451,6 +471,51 @@ mod tests {
             format!("{WIRE}||desk=44"),
             format!("{overview}|desk=44"),
             format!("{WIRE}|desk=44|desk=45"),
+        ] {
+            assert!(parse(&bad).is_none(), "refuse {bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_hidden_board_extends_each_canonical_view_with_or_without_a_width() {
+        let open_panel = format!("side,{ORCH_ID},0,0");
+        let side = WIRE.replacen("v1|", "v2|", 1);
+        let zoom = WIRE.replacen("v1|", "v3|", 1);
+        for old in [
+            WIRE.to_owned(),
+            format!("{WIRE}|56"),
+            format!("{side}||{open_panel}"),
+            format!("{zoom}|"),
+            format!("{zoom}|56|{open_panel}"),
+        ] {
+            for (suffix, desk) in [("hidden", None), ("44,hidden", Some(44))] {
+                let text = format!("{old}|desk={suffix}");
+                let read = parse(&text).expect("a view with a hidden board");
+                assert_eq!((read.view.desk, read.view.desk_hidden), (desk, true));
+                assert_eq!(read.render(), text);
+            }
+            let shown = parse(&format!("{old}|desk=44")).expect("a view with a board width");
+            assert!(!shown.view.desk_hidden);
+            assert!(!parse(&old).expect("an old view").view.desk_hidden);
+        }
+    }
+
+    #[test]
+    fn a_hidden_board_has_one_spelling_and_the_overview_token_never_carries_it() {
+        let overview = WIRE.replace("|agents|", "|overview|");
+        for bad in [
+            format!("{WIRE}|desk="),
+            format!("{WIRE}|desk=,hidden"),
+            format!("{WIRE}|desk=hidden,hidden"),
+            format!("{WIRE}|desk=hidden,44"),
+            format!("{WIRE}|desk=44,hidden,hidden"),
+            format!("{WIRE}|desk=44,shown"),
+            format!("{WIRE}|desk=44, hidden"),
+            format!("{WIRE}|desk=Hidden"),
+            format!("{WIRE}|desk=hidden|desk=44"),
+            format!("{WIRE}||desk=hidden"),
+            format!("{overview}|desk=hidden"),
+            format!("{overview}|desk=44,hidden"),
         ] {
             assert!(parse(&bad).is_none(), "refuse {bad:?}");
         }

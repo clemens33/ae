@@ -591,6 +591,7 @@ fn restored_view_of_stopped_session_opens_group_and_preserves_explicit_selection
             body_top: 0,
             panel: None,
             desk: None,
+            desk_hidden: false,
             zoom: false,
             orchestrator: None,
         },

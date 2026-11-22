@@ -166,7 +166,7 @@ fn turns(rows: &[String]) -> BTreeSet<String> {
 
 /// Run the real restart decision on `app` into [`NEXT`]: the carrier the
 /// recorded exec hands on, and what the exec receiver's own gate makes of it.
-fn restart(app: &mut App, root: &Root) -> (String, Keep) {
+pub(super) fn restart(app: &mut App, root: &Root) -> (String, Keep) {
     app.answer(Answer::Core(Some(Upgrade {
         version: NEXT.to_owned(),
         restart: Ok(Via::Exec {
@@ -201,7 +201,7 @@ fn restart(app: &mut App, root: &Root) -> (String, Keep) {
 
 /// How the view reaches the app that replaces the sender.
 #[derive(Debug, Clone, Copy)]
-enum Carrier {
+pub(super) enum Carrier {
     /// `ae app --app-view`: `run.rs` sets `App.keep` before the first read.
     Exec,
     /// The `@ae_app_view` option of a respawned chat window.
@@ -211,7 +211,7 @@ enum Carrier {
 /// The app that replaces the sender, after the loader's first fleet read and
 /// its orchestrator proof `proof`, one frame drawn while the panel's lane is
 /// still loading.
-fn receiver(root: &Root, keep: Keep, carrier: Carrier, proof: loader::Proof) -> App {
+pub(super) fn receiver(root: &Root, keep: Keep, carrier: Carrier, proof: loader::Proof) -> App {
     let mut app = fresh();
     match carrier {
         Carrier::Exec => app.keep = Some(keep),

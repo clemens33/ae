@@ -34,6 +34,7 @@ fn saved() -> View {
         body_top: 4,
         panel: None,
         desk: None,
+        desk_hidden: false,
         zoom: false,
         orchestrator: None,
     }

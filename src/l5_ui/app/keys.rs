@@ -390,6 +390,9 @@ pub(super) fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bo
         if byte == b'B' {
             return Some(app.toggle_desk() || disarmed);
         }
+        if byte == b'b' {
+            return Some(app.toggle_desk_hidden() || disarmed);
+        }
         if app.desk_focused() && !matches!(byte, b'O' | b'F' | b'X' | b'q' | b',' | b'?') {
             return Some(disarmed);
         }

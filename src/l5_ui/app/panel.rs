@@ -461,6 +461,7 @@ impl App {
                 .as_ref()
                 .map(|panel| (panel.full, panel.focused)),
             desk: self.desk_present(),
+            desk_hidden: self.model.desk_hidden(),
             desk_focused: self.desk_focused(),
             zoom: self.model.zoom(),
             ..model::Columns::default()
@@ -587,6 +588,28 @@ impl App {
             .as_ref()
             .is_some_and(|panel| panel.desk_focused)
             && self.desk_present()
+            && !self.model.desk_hidden()
+    }
+
+    /// Whether the board column is wanted beside the panel: a board is set and
+    /// the human did not hide it.
+    pub(super) fn desk_stands(&self) -> bool {
+        self.desk_present() && !self.model.desk_hidden()
+    }
+
+    /// Hide the board, or show it again. Hiding drops the board's hold on the
+    /// keys first; any change moves the cells under the old coordinates. Does
+    /// nothing while no panel is open over a board.
+    pub(super) fn toggle_desk_hidden(&mut self) -> bool {
+        if !self.desk_present() {
+            return false;
+        }
+        let hidden = !self.model.desk_hidden();
+        if hidden {
+            self.focus_desk(false);
+        }
+        self.model.set_desk_hidden(hidden);
+        true
     }
 
     pub(super) fn toggle_desk(&mut self) -> bool {
@@ -595,8 +618,7 @@ impl App {
 
     pub(super) fn focus_desk(&mut self, focused: bool) -> bool {
         let area = self.layout.area();
-        if focused
-            && (!self.desk_present() || !draw::floor_met(area) || self.panel_area().is_none())
+        if focused && (!self.desk_stands() || !draw::floor_met(area) || self.panel_area().is_none())
         {
             return false;
         }
@@ -976,6 +998,7 @@ impl App {
             Some(draw::Hit::PanelMode) => return self.flip_panel(),
             Some(draw::Hit::PanelPane) => return self.pane_click(),
             Some(draw::Hit::PanelDesk) => return self.toggle_desk(),
+            Some(draw::Hit::PanelDeskToggle) => return self.toggle_desk_hidden(),
             Some(draw::Hit::Settings) => {
                 self.open_settings();
                 return true;
