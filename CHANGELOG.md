@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.107] - 2026-11-22
+- Document the reviewer write limit inside ae
+- Warn about unfiltered diff mutation runs
+- Print the exact linked-worktree lane claim export
+- Give spawn-wait tests distinct scratch paths
+- Select integration readers for changed fixture directories
+- Release the lane lock without a temporary recipe file
+
 ## [v2026.11.106] - 2026-11-21
 - Derive the layer ratchet from source folders
 
