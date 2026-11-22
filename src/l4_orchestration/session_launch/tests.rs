@@ -581,8 +581,15 @@ fn settings_launch_preserves_floor_then_locks_before_authoritative_proof_and_eff
         .expect("launch policy");
     let floor = launch.find("floor_refusal").expect("tmux floor");
     let locked = launch.find("crate::store::lock").expect("lifecycle lock");
+    // The binding and its first operand, whatever line break rustfmt puts
+    // between them: the read under the lock that the expected action decides.
     let meta_present = launch
-        .find("let meta_present = if expected_launch.is_some()")
+        .find("let meta_present =")
+        .filter(|at| {
+            launch[at + "let meta_present =".len()..]
+                .trim_start()
+                .starts_with("if expected_launch.is_some()")
+        })
         .expect("locked state read");
     let clicker = launch.find("expected.check_action").expect("action proof");
     let census = launch
