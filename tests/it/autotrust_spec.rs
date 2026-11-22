@@ -1441,8 +1441,8 @@ fn a_refused_reservation_sends_zero_keys() {
     assert_eq!(rig.count("auto-trust-reserved"), 0);
 }
 
-fn spawn_wait(value: &str) -> (Rig, PathBuf, i32, String, String) {
-    let rig = Rig::new("spawn-wait", "claude", "normal");
+fn spawn_wait(tag: &str, value: &str) -> (Rig, PathBuf, i32, String, String) {
+    let rig = Rig::new(tag, "claude", "normal");
     if value == "on" {
         rig.replace_meta("agent_bin.main", "agy");
     }
@@ -1499,7 +1499,7 @@ fn spawn_wait(value: &str) -> (Rig, PathBuf, i32, String, String) {
 
 #[test]
 fn spawn_brief_wait_answers_without_a_watchdog_and_delivers_the_original_brief() {
-    let (rig, child, code, out, err) = spawn_wait("on");
+    let (rig, child, code, out, err) = spawn_wait("spawn-on", "on");
     assert_eq!(
         code, 0,
         "in-wait owner answers with watchdog absent: {out}\n{err}"
@@ -1645,8 +1645,8 @@ fn v14_off_reseat_names_a_trust_prompt_fast_without_keys() {
     );
 }
 
-fn spawn_wait_refuses(value: &str) {
-    let (rig, child, code, out, err) = spawn_wait(value);
+fn spawn_wait_refuses(tag: &str, value: &str) {
+    let (rig, child, code, out, err) = spawn_wait(tag, value);
     assert_eq!(code, 1, "{value}: brief stays undelivered: {out}\n{err}");
     assert_eq!(rig.count("watchdog-start"), 0, "no watchdog answers");
     assert!(
@@ -1671,17 +1671,17 @@ fn spawn_wait_refuses(value: &str) {
 
 #[test]
 fn spawn_brief_wait_with_off_never_answers_or_delivers() {
-    spawn_wait_refuses("off");
+    spawn_wait_refuses("spawn-off", "off");
 }
 
 #[test]
 fn spawn_brief_wait_with_invalid_value_never_answers_or_delivers() {
-    spawn_wait_refuses("INVALID");
+    spawn_wait_refuses("spawn-bad", "INVALID");
 }
 
 #[test]
 fn v14_spawn_declines_a_foreign_folder_once_and_keeps_the_brief() {
-    let (rig, child, code, out, err) = spawn_wait("decline");
+    let (rig, child, code, out, err) = spawn_wait("spawn-no", "decline");
     assert!(child.join("ready").is_file(), "child drew the modal");
     assert_eq!(code, 1, "brief stays undelivered: {out}\n{err}");
     assert_eq!(rig.count("watchdog-start"), 0, "no watchdog answers");
@@ -1866,7 +1866,7 @@ fn v14_fresh_client_activity_holds_every_key_then_detach_allows_answer() {
     reason = "one real reseat proves predecessor, successor and the original seed together"
 )]
 fn v14_reseat_seed_wait_answers_without_a_watchdog_and_keeps_the_original_seed() {
-    let (rig, child, code, out, err) = spawn_wait("off");
+    let (rig, child, code, out, err) = spawn_wait("reseat-seed", "off");
     assert_eq!(code, 1, "off predecessor refused: {out}\n{err}");
     assert!(child.join("ready").is_file(), "predecessor drew modal");
     assert!(
