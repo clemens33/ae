@@ -61,6 +61,7 @@ pub use l2_model::store;
 pub use l2_model::theme;
 pub use l2_model::tmux;
 pub use l2_model::tool;
+pub use l2_model::topic;
 pub use l2_model::tracked;
 pub use l2_model::wait_on;
 pub use l2_model::watchdog;

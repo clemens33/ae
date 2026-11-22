@@ -513,6 +513,12 @@ fn answer(shared: &Shared, head: &Head, body: &[u8]) -> Response {
             shared.fresh_link();
             return Response::refusal(401, NO_SESSION);
         }
+        if let Some(slug) = path.strip_prefix("/api/topic/") {
+            return match head.method {
+                Method::Get => shared.topic(head, slug),
+                Method::Post => Response::refusal(405, http::reason(405)),
+            };
+        }
         return match (head.method, path) {
             (Method::Get, "/api/state") => shared.state(head),
             (_, "/api/state" | "/api/session") => Response::refusal(405, http::reason(405)),
@@ -619,6 +625,22 @@ impl Shared {
             content_type: http::JSON,
             body: Arc::clone(&snapshot.body),
             etag: Some(snapshot.etag.clone()),
+        }
+    }
+
+    /// `GET /api/topic/<slug>`: the card of `slug` from the same shared
+    /// snapshot, with its own entity tag, or 404 for no such topic.
+    fn topic(&self, head: &Head, slug: &str) -> Response {
+        let snapshot = self.cache.get(&*self.clock, &*self.source, &self.version);
+        let Some((body, etag)) = state::topic(&snapshot.read, slug) else {
+            return Response::refusal(404, "no such topic");
+        };
+        let unchanged = head.header("if-none-match") == Some(etag.as_str());
+        Response {
+            status: if unchanged { 304 } else { 200 },
+            content_type: http::JSON,
+            body,
+            etag: Some(etag),
         }
     }
 }

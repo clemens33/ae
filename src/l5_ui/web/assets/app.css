@@ -32,8 +32,57 @@ body {
   margin: 0; padding: 8px 16px; background: var(--need-soft); color: var(--ink);
   border-bottom: 1px solid var(--need); flex: none;
 }
-main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr); }
 .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); }
+.col { border-right: 1px solid var(--line); overflow: auto; padding: 10px 8px 24px; background: var(--bg); }
+.card { overflow: auto; background: var(--bg); border-left: 1px solid var(--line); padding: 16px 18px 32px; }
+@media (min-width: 1180px) { .has-card main { grid-template-columns: 280px minmax(0, 1fr) 392px; } }
+@media (min-width: 760px) and (max-width: 1179px) {
+  .has-card .card {
+    position: fixed; right: 0; top: 48px; bottom: 0; width: min(410px, 92vw); z-index: 20;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .18);
+  }
+}
+.grp {
+  margin: 14px 8px 4px; font-size: .74em; letter-spacing: .09em; text-transform: uppercase; color: var(--mute);
+  display: flex; justify-content: space-between;
+}
+.grp.need { color: var(--need); }
+.row {
+  display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 2px 8px; align-items: baseline;
+  width: 100%; text-align: left; padding: 8px; border-radius: 8px;
+}
+.row:hover { background: var(--soft); }
+.row.sel { background: var(--accent-soft); }
+.row .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .ln { grid-column: 2 / 4; color: var(--mute); font-size: .88em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .meta { font-size: .8em; color: var(--mute); white-space: nowrap; }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--mute); }
+.dot.needs_you { background: var(--need); } .dot.moving { background: var(--accent); }
+.dot.quiet, .dot.parked { background: transparent; border: 1.5px solid var(--mute); }
+.dot.closed { background: var(--line); } .dot.unreadable { background: transparent; border: 1.5px dashed var(--need); }
+.col input {
+  font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 5px 8px; width: 100%; margin: 2px 0 6px;
+}
+.wait, .note { font-size: .86em; margin: 4px 8px 6px; padding-left: 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wait { border-left: 3px solid var(--need); }
+.note { color: var(--mute); border-left: 3px solid var(--line); }
+.card .hd { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+.card h2 { margin: 0; font-size: 1.25em; overflow-wrap: anywhere; }
+.card .x { font-size: 1.3em; line-height: 1; color: var(--mute); }
+.card .sub { color: var(--mute); font-size: .86em; margin: 2px 0 4px; }
+.fld { margin-top: 16px; }
+.fld h3 {
+  margin: 0 0 5px; font-size: .74em; letter-spacing: .09em; text-transform: uppercase; color: var(--mute);
+  font-weight: 600; display: flex; justify-content: space-between; gap: 8px;
+}
+.fld.need h3 { color: var(--need); }
+.fld ul { margin: 0; padding-left: 18px; } .fld li { margin: 3px 0; }
+.src { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--accent); font-size: .92em; overflow-wrap: anywhere; text-align: right; }
+.raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tabs { display: none; }
 .stream { flex: 1; overflow: auto; padding: 18px 18px 8px; }
 .inner { max-width: 760px; margin: 0 auto; }
 .day { text-align: center; color: var(--mute); font-size: .8em; margin: 14px 0 10px; }
@@ -54,4 +103,12 @@ main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1
 @media (max-width: 759px) {
   .stream { padding: 14px 12px 6px; }
   .msg { max-width: 94%; }
+  main { grid-template-columns: minmax(0, 1fr); }
+  .col, .chat, .card { display: none; border: 0; }
+  .view-chat .chat { display: flex; }
+  .view-topics .col { display: block; }
+  .view-topic .card { display: block; }
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); background: var(--panel); flex: none; }
+  .tabs button { padding: 11px 0 13px; color: var(--mute); font-weight: 600; }
+  .tabs button.on { color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
 }

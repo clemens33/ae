@@ -26,6 +26,7 @@ pub mod store;
 pub mod theme;
 pub mod tmux;
 pub mod tool;
+pub mod topic;
 pub mod tracked;
 pub mod wait_on;
 pub mod watchdog;

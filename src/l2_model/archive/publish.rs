@@ -291,6 +291,13 @@ fn run_guarded(
     }
     let target = root.join(&aid);
     let reuse = strict && exists(&target);
+    // The seat proof an archive carries: the source's overlay row, recorded
+    // only when the source meta proves the orchestrator seat of this state
+    // root, so a reader can prove the seat as it proves a live meta.
+    let mut seat = root
+        .parent()
+        .filter(|home| crate::meta::is_seat(&meta_bytes, home))
+        .map(|_| meta_get(&meta_bytes, crate::config::LOCAL_CONFIG_KEY));
     if !strict && exists(&target) {
         writeln!(
             err,
@@ -300,7 +307,7 @@ fn run_guarded(
         return Ok(EXIT_FAILED);
     }
 
-    let inventory = match prepare_policy(strict, reuse, dir, &target, &aid, &mut vol) {
+    let inventory = match prepare_policy(strict, reuse, dir, &target, &aid, &mut vol, &mut seat) {
         Ok(tree) => tree,
         Err(why) => {
             let why = if reuse {
@@ -324,6 +331,7 @@ fn run_guarded(
         reason: ops.reason,
         inventory: inventory.as_ref(),
         reuse,
+        seat: seat.as_deref(),
     };
     publish_under_claim(&root, &target, dir, &facts, &before, out, err)
 }
@@ -358,6 +366,7 @@ fn prepare_policy(
     target: &Path,
     aid: &str,
     vol: &mut Volatiles,
+    seat: &mut Option<String>,
 ) -> Result<Option<super::retained::Inventory>, String> {
     if !strict {
         return Ok(None);
@@ -373,6 +382,11 @@ fn prepare_policy(
         vol.push_outcome = meta_get(&archived, "git_push_outcome");
         vol.push_ref = meta_get(&archived, "git_push_ref");
         vol.preserved = meta_get(&archived, "preserved_work_dir");
+        // An archive published before the seat keys existed carries none:
+        // the candidate repeats what the archive recorded, so an unchanged
+        // session still matches it.
+        *seat = (meta_get(&archived, "source_meta_agent") == "true")
+            .then(|| meta_get(&archived, "source_local_config"));
     }
     super::retained::inventory(dir).map(Some)
 }
@@ -502,6 +516,8 @@ struct StagedFacts<'a> {
     vol: &'a Volatiles,
     inventory: Option<&'a super::retained::Inventory>,
     reuse: bool,
+    /// The seat overlay the source meta proves, when it proves the seat.
+    seat: Option<&'a str>,
 }
 
 /// Stage the payload under the held claim and validate it — up to but NOT
@@ -667,6 +683,10 @@ fn compose_meta(facts: &StagedFacts) -> String {
     let _ = writeln!(out, "handover_count={handover}");
     let _ = writeln!(out, "memo_topic_count={topics}");
     let _ = writeln!(out, "pending_request_count={pending}");
+    if let Some(overlay) = facts.seat {
+        let _ = writeln!(out, "source_meta_agent=true");
+        let _ = writeln!(out, "source_local_config={overlay}");
+    }
     // The roster is already parsed and stripped to alias:name; agents first, then
     // the per-slot binaries, in two passes.
     for (slot, refname) in facts.roster {

@@ -31,7 +31,10 @@ fn head(data: &[u8]) {
             head_len,
             body_len,
         }) => {
-            assert!(head_len <= data.len(), "the head lies within the bytes read");
+            assert!(
+                head_len <= data.len(),
+                "the head lies within the bytes read"
+            );
             let whole = data.get(..head_len).unwrap_or_default();
             assert!(whole.ends_with(b"\r\n\r\n"), "a head ends at its empty row");
             assert!(body_len <= http::BODY_MAX, "a body is capped");

@@ -128,6 +128,153 @@ function Stream({ chat }) {
   </div>`;
 }
 
+// A memo record's time as the reader's local date and time, or the text as
+// written when it is no time.
+function when(text) {
+  const parsed = new Date(text);
+  if (!text || Number.isNaN(parsed.getTime())) {
+    return text || "never";
+  }
+  return parsed.toLocaleString([], {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+const GROUPS = {
+  needs_you: "Needs you",
+  moving: "Moving",
+  quiet: "Quiet",
+  parked: "Parked",
+  closed: "Closed",
+  unreadable: "Unreadable",
+};
+
+function TopicRow({ row, group, chosen, choose }) {
+  const waits = row.waits.length;
+  return html`<button
+    class=${"row" + (chosen === row.slug ? " sel" : "")}
+    onClick=${() => choose(row.slug)}
+  >
+    <span class=${"dot " + group}></span>
+    <span class="nm">${row.title || row.slug}</span>
+    <span class="meta" title=${row.reviewed}>${when(row.reviewed)}</span>
+    <span class="ln">#${row.slug}${waits ? " · waits on you (" + waits + ")" : ""}</span>
+  </button>`;
+}
+
+function Desk({ desk, chosen, choose }) {
+  const [query, setQuery] = useState("");
+  const rows = (name) => {
+    const found = desk.groups.find((group) => group.group === name);
+    return found ? found.rows : [];
+  };
+  const listed = (name) =>
+    rows(name).map(
+      (row) => html`<${TopicRow} key=${name + row.slug} row=${row} group=${name} chosen=${chosen} choose=${choose} />`,
+    );
+  const needle = query.trim().toLowerCase();
+  const all = [];
+  for (const group of desk.groups) {
+    for (const row of group.rows) {
+      const words = (row.slug + " " + (row.title || "")).toLowerCase();
+      if (!needle || words.includes(needle)) {
+        all.push(html`<${TopicRow} key=${"a" + row.slug} row=${row} group=${group.group} chosen=${chosen} choose=${choose} />`);
+      }
+    }
+  }
+  const skipped = desk.skipped;
+  const left = skipped.claimed + skipped.unproven + skipped.invalid;
+  return html`<nav class="col" aria-label="Topics">
+    <div class="grp need"><span>${GROUPS.needs_you}</span><span>${rows("needs_you").length}</span></div>
+    ${listed("needs_you")}
+    ${desk.untagged.length
+      ? html`<div class="grp need"><span>Untagged decisions</span><span>${desk.untagged.length}</span></div>
+          ${desk.untagged.map((wait, at) => html`<p class="wait" key=${"u" + at}>${wait.text}</p>`)}`
+      : null}
+    <div class="grp"><span>${GROUPS.moving}</span><span>${rows("moving").length}</span></div>
+    ${listed("moving")}
+    <div class="grp"><span>All topics</span><span>${all.length}</span></div>
+    <input
+      type="search"
+      placeholder="Search topics"
+      aria-label="Search topics"
+      value=${query}
+      onInput=${(event) => setQuery(event.currentTarget.value)}
+    />
+    ${all}
+    ${desk.gaps.map((gap, at) => html`<p class="note" key=${"g" + at}>${gap}</p>`)}
+    ${left > 0
+      ? html`<p class="note">
+          ${left} archives not read: ${skipped.claimed} being written, ${skipped.unproven} not proven from
+          the orchestrator seat, ${skipped.invalid} damaged.
+        </p>`
+      : null}
+  </nav>`;
+}
+
+// Every shown field of a card, each with the record it came from.
+const FIELDS = [
+  ["title", "Title"],
+  ["state", "State"],
+  ["what", "What"],
+  ["last", "Last"],
+  ["next", "Next"],
+  ["src", "Sources"],
+  ["close", "Closed because"],
+];
+
+// The two kinds of wait: a DECIDE item on the board waits for the owner; an
+// open ask from the owner's console is owed to the owner.
+const WAITS = [
+  ["decide", "Waits for you"],
+  ["ask", "Owed to you"],
+];
+
+// A record's source: its session, its incarnation's uuid and its time.
+function Source({ origin }) {
+  return html`<span class="src" title=${origin.at}>
+    ${origin.session} · ${origin.uuid} · ${when(origin.at)}
+  </span>`;
+}
+
+function Card({ card, close }) {
+  const fields = card.fields;
+  return html`<aside class="card" aria-label="Topic">
+    <div class="hd">
+      <h2>${fields.title ? fields.title.value : card.slug}</h2>
+      <button class="x" aria-label="Close topic" onClick=${close}>×</button>
+    </div>
+    <p class="sub">#${card.slug} · ${GROUPS[card.group] || card.group} · reviewed ${when(card.reviewed)}</p>
+    ${WAITS.map(([kind, name]) => {
+      const waits = card.waits.filter((wait) => wait.kind === kind);
+      return waits.length
+        ? html`<div class="fld need" key=${kind}>
+            <h3>${name}</h3>
+            <ul>${waits.map((wait, at) => html`<li key=${kind + at}>${wait.text}${wait.id ? html` <span class="mute sm">${wait.id}</span>` : null}</li>`)}</ul>
+          </div>`
+        : null;
+    })}
+    ${card.unreadable !== null
+      ? html`<div class="fld need"><h3>Unreadable checkpoint</h3><p class="raw">${card.unreadable}</p></div>`
+      : null}
+    ${FIELDS.filter(([key]) => fields[key]).map(
+      ([key, name]) => html`<div class="fld" key=${key}>
+        <h3><span>${name}</span><${Source} origin=${fields[key]} /></h3>
+        <p class="raw">${fields[key].value}</p>
+      </div>`,
+    )}
+    ${card.history.length
+      ? html`<div class="fld">
+          <h3>Earlier records</h3>
+          <ul>${card.history.map((entry, at) => html`<li key=${"h" + at}><${Source} origin=${entry} /> <span class="raw">${entry.text}</span></li>`)}</ul>
+        </div>`
+      : null}
+  </aside>`;
+}
+
 function Head({ state }) {
   const seat = state ? state.orchestrator : null;
   const words = seat
@@ -145,6 +292,77 @@ function App() {
   const [state, setState] = useState(null);
   const [problem, setProblem] = useState("");
   const tag = useRef("");
+  // The topic open in the card, its last answer and that answer's tag; the
+  // view names what a narrow screen shows.
+  const [chosen, setChosen] = useState("");
+  const [card, setCard] = useState(null);
+  const [view, setView] = useState("chat");
+  const [cardProblem, setCardProblem] = useState("");
+  const cardTag = useRef("");
+
+  // Choosing the open topic again only shows its card: its answer and tag
+  // stay, because no new snapshot would bring them back. A card that could
+  // not be read leaves no selection, so choosing it again reads it again.
+  const choose = useCallback((slug) => {
+    setCardProblem("");
+    if (slug !== chosen) {
+      cardTag.current = "";
+      setCard(null);
+      setChosen(slug);
+    }
+    setView("topic");
+  }, [chosen]);
+  const close = useCallback(() => {
+    cardTag.current = "";
+    setCard(null);
+    setChosen("");
+    setCardProblem("");
+    setView("topics");
+  }, []);
+
+  // The open card follows every new snapshot: it is read from the same one.
+  useEffect(() => {
+    if (!chosen) {
+      return undefined;
+    }
+    let gone = false;
+    // A failed read drops the selection and says why.
+    const fail = (why) => {
+      cardTag.current = "";
+      setCard(null);
+      setChosen("");
+      setCardProblem("#" + chosen + ": " + why);
+    };
+    const read = async () => {
+      try {
+        const headers = cardTag.current ? { "If-None-Match": cardTag.current } : {};
+        const answer = await api("topic/" + chosen, { headers });
+        if (gone) {
+          return;
+        }
+        if (answer.status === 200) {
+          const next = await answer.json();
+          if (gone) {
+            return;
+          }
+          cardTag.current = answer.headers.get("ETag") || "";
+          setCard(next);
+        } else if (answer.status === 404) {
+          fail("no such topic");
+        } else if (answer.status !== 304) {
+          fail("ae web answered " + answer.status);
+        }
+      } catch (_) {
+        if (!gone) {
+          fail("ae web is not reachable");
+        }
+      }
+    };
+    read();
+    return () => {
+      gone = true;
+    };
+  }, [chosen, state]);
 
   useEffect(() => {
     let stopped = false;
@@ -230,14 +448,25 @@ function App() {
     };
   }, []);
 
-  return html`<div class="app">
+  // A narrow screen shows the list until the chosen card has arrived.
+  const shown = view === "topic" && !card ? "topics" : view;
+  return html`<div class=${"app view-" + shown + (card ? " has-card" : "")}>
     <${Head} state=${state} />
     ${problem ? html`<p class="problem" role="status">${problem}</p>` : null}
+    ${cardProblem ? html`<p class="problem" role="status">${cardProblem}</p>` : null}
     <main>
+      ${state && state.desk
+        ? html`<${Desk} desk=${state.desk} chosen=${chosen} choose=${choose} />`
+        : html`<nav class="col" aria-label="Topics"></nav>`}
       <section class="chat" aria-label="Chat">
         ${state ? html`<${Stream} chat=${state.chat} />` : html`<div class="stream"></div>`}
       </section>
+      ${card ? html`<${Card} card=${card} close=${close} />` : null}
     </main>
+    <nav class="tabs" aria-label="Views">
+      <button class=${view === "chat" ? "on" : ""} onClick=${() => setView("chat")}>Chat</button>
+      <button class=${view === "chat" ? "" : "on"} onClick=${() => setView("topics")}>Topics</button>
+    </nav>
   </div>`;
 }
 

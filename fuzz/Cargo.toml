@@ -538,3 +538,10 @@ path = "fuzz_targets/web_request.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "topic_card"
+path = "fuzz_targets/topic_card.rs"
+test = false
+doc = false
+bench = false

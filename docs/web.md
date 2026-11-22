@@ -43,6 +43,31 @@ a `304` and costs no render.
 Every text from an agent is shown as plain text, never as markup: control characters are removed,
 a turn's text is capped at 64 KiB and a speaker or qualifier at 200 characters.
 
+## The desk column
+
+The column beside the chat lists the orchestrator's topics: **Needs you**, **Moving** and **All
+topics** with a search over slug and title. A narrow screen switches between Chat and Topics.
+
+- A topic is a memo checkpoint under `topic-<slug>`, the slug `[a-z0-9][a-z0-9-]{0,47}`. One
+  checkpoint line reads `title: Web UI | state: moving | what: … | last: … | next: … | src: … |
+  close: …`; `\|` is a literal pipe and `\\` a backslash, other names are ignored. The states are
+  `needs`, `moving`, `quiet`, `parked` and `closed`.
+- The memos come from the orchestrator seat's session and from every kept archive that the seat
+  published, renamed or not. Each field shows the newest record that carries it, with that
+  record's session and time; later incarnations rank above earlier ones and, within one memo,
+  later lines above earlier ones. The other records are the card's history.
+- **Last reviewed** is the time of the topic's newest record, whatever it carries.
+- A topic needs you when its state is `needs` or when something waits for you on it: a DECIDE item
+  on the orchestrator's board, or your own open ask from `ae chat`, whose text tags it with
+  `#<slug>`. A DECIDE item without a tag is listed under **Untagged decisions**.
+- A checkpoint without a readable state is shown as an unreadable checkpoint with its raw text.
+- A memo over 8 MiB shows none of its topics, and the column names it until `ae web` restarts.
+  Archives that are being written, damaged or not proven to come from the seat are counted, not
+  read.
+
+Clicking a row opens its card, which `GET /api/topic/<slug>` answers from the same snapshot as the
+chat.
+
 ## Security
 
 - The listener binds `127.0.0.1` alone and answers only the `Host` values `127.0.0.1:<port>`,

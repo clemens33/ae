@@ -268,6 +268,10 @@ mod web_run;
     reason = "the frozen spec's bytes stay as nav froze them"
 )]
 mod web_server_spec;
+#[allow(
+    clippy::redundant_closure_for_method_calls,
+    reason = "the frozen spec's bytes stay as nav froze them"
+)]
 mod web_topic_grammar_spec;
 mod web_topic_text_spec;
 mod web_topic_wire_spec;

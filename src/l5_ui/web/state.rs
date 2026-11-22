@@ -1,6 +1,7 @@
-//! What `/api/state` shows: the orchestrator's standing and its chat, read
-//! through the same staged console read as the app's panel, rendered at most
-//! once per second into one snapshot every page shares.
+//! What `/api/state` shows: the orchestrator's standing, its chat, read
+//! through the same staged console read as the app's panel, and the desk
+//! column of its topics, rendered at most once per second into one snapshot
+//! that every page and every `/api/topic/<slug>` answer shares.
 //!
 //! The render is the outbound boundary: whatever a [`Source`] returns, the
 //! document carries at most [`chat::ROWS_MAX`] rows and each text within its
@@ -12,9 +13,11 @@ use std::time::{Duration, Instant};
 
 use super::chat::{self, Chat};
 use super::clock::Clock;
+use super::topics::{self, Sticky, Wait};
 use crate::console::{Console, Reach};
 use crate::events::Held;
 use crate::session::RecordSnapshot;
+use crate::topic::{Card, Field, Group, State};
 
 /// The most stages one read drives a fresh console through: the journal, the
 /// current conversations, their predecessors and the follow.
@@ -33,6 +36,8 @@ pub struct Read {
     pub orchestrator: Orchestrator,
     /// Its chat.
     pub chat: Chat,
+    /// The desk column: its topics and the owner actions they wait on.
+    pub desk: topics::Column,
 }
 
 /// The orchestrator seat as one read found it.
@@ -82,6 +87,8 @@ pub struct Snapshot {
     pub etag: String,
     /// The clock second of the read it renders.
     pub read_at: i64,
+    /// The read it renders, which the topic route answers from.
+    pub read: Arc<Read>,
 }
 
 /// How often the source may be read: once per this span of the monotonic
@@ -99,7 +106,6 @@ pub struct Cache {
 struct Kept {
     /// When the source was last read, on the monotonic clock.
     at: Instant,
-    read: Read,
     snapshot: Arc<Snapshot>,
 }
 
@@ -119,15 +125,14 @@ impl Cache {
         let read_at = clock.epoch();
         let read = source.read();
         if let Some(kept) = held.as_mut()
-            && kept.read == read
+            && *kept.snapshot.read == read
         {
             kept.at = now;
             return Arc::clone(&kept.snapshot);
         }
-        let snapshot = Arc::new(render(&read, version, read_at));
+        let snapshot = Arc::new(render(Arc::new(read), version, read_at));
         *held = Some(Kept {
             at: now,
-            read,
             snapshot: Arc::clone(&snapshot),
         });
         snapshot
@@ -139,7 +144,7 @@ impl Cache {
 /// and capped. Written in one pass, because a legitimate snapshot reaches tens
 /// of MiB and is rendered while a page waits for its first byte.
 #[must_use]
-pub fn render(read: &Read, version: &str, read_at: i64) -> Snapshot {
+pub fn render(read: Arc<Read>, version: &str, read_at: i64) -> Snapshot {
     use std::fmt::Write as _;
 
     let seat = &read.orchestrator;
@@ -194,15 +199,226 @@ pub fn render(read: &Read, version: &str, read_at: i64) -> Snapshot {
         string(&mut out, &chat::plain(gap, chat::BODY_MAX));
     }
     let cut = chat.cut.saturating_add(over);
-    let _ = write!(out, "],\"cut\":{cut}}},\"desk\":null,\"route\":null}}");
+    let _ = write!(out, "],\"cut\":{cut}}},\"desk\":");
+    desk(&mut out, &read.desk);
+    out.push_str(",\"route\":null}");
     let body: Arc<[u8]> = out.into_bytes().into();
-    let digest = crate::install::sha256_hex(&body);
-    let etag = format!("\"{}\"", digest.get(..16).unwrap_or_default());
+    let etag = etag(&body);
     Snapshot {
         body,
         etag,
         read_at,
+        read,
     }
+}
+
+/// The entity tag of `body`, quotes included.
+fn etag(body: &[u8]) -> String {
+    let digest = crate::install::sha256_hex(body);
+    format!("\"{}\"", digest.get(..16).unwrap_or_default())
+}
+
+/// `text` as a label: one line, every control character removed, at most
+/// [`chat::WORDS_MAX`] characters.
+fn label(out: &mut String, text: &str) {
+    string(out, &chat::words(text));
+}
+
+/// `text` as a body: newline and tab kept, every other control character
+/// removed, at most [`chat::BODY_MAX`] bytes.
+fn body(out: &mut String, text: &str) {
+    string(out, &chat::plain(text, chat::BODY_MAX));
+}
+
+/// The desk column: all six groups in their fixed order, each with its cards,
+/// then the untagged waits, the gaps and the archive counts left out.
+fn desk(out: &mut String, desk: &topics::Column) {
+    use std::fmt::Write as _;
+
+    out.push_str("{\"groups\":[");
+    for (at, group) in Group::ALL.iter().enumerate() {
+        if at > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"group\":");
+        string(out, group.word());
+        out.push_str(",\"rows\":[");
+        let cards = desk
+            .groups
+            .iter()
+            .filter(|(each, _)| each == group)
+            .flat_map(|(_, cards)| cards);
+        for (at, card) in cards.enumerate() {
+            if at > 0 {
+                out.push(',');
+            }
+            row(
+                out,
+                card,
+                desk.waits.get(&card.slug).map_or(&[], Vec::as_slice),
+            );
+        }
+        out.push_str("]}");
+    }
+    out.push_str("],\"untagged\":");
+    waits(out, &desk.untagged);
+    out.push_str(",\"gaps\":[");
+    for (at, gap) in desk.gaps.iter().enumerate() {
+        if at > 0 {
+            out.push(',');
+        }
+        body(out, gap);
+    }
+    let skipped = desk.skipped;
+    let _ = write!(
+        out,
+        "],\"skipped\":{{\"claimed\":{},\"unproven\":{},\"invalid\":{}}}}}",
+        skipped.claimed, skipped.unproven, skipped.invalid
+    );
+}
+
+/// One desk row: the card's slug, title, state word, review time and waits.
+fn row(out: &mut String, card: &Card, joined: &[Wait]) {
+    out.push_str("{\"slug\":");
+    label(out, &card.slug);
+    out.push_str(",\"title\":");
+    match &card.title {
+        Some(title) => label(out, &title.value),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"state\":");
+    match card
+        .state
+        .as_ref()
+        .and_then(|state| State::parse(&state.value))
+    {
+        Some(state) => string(out, state.word()),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"reviewed\":");
+    label(out, &card.reviewed);
+    out.push_str(",\"waits\":");
+    waits(out, joined);
+    out.push('}');
+}
+
+/// The waits as a JSON array: kind, text and the ask's id.
+fn waits(out: &mut String, waits: &[Wait]) {
+    out.push('[');
+    for (at, wait) in waits.iter().enumerate() {
+        if at > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"kind\":");
+        string(out, wait.kind.word());
+        out.push_str(",\"text\":");
+        body(out, &wait.text);
+        out.push_str(",\"id\":");
+        match &wait.id {
+            Some(id) => label(out, id),
+            None => out.push_str("null"),
+        }
+        out.push('}');
+    }
+    out.push(']');
+}
+
+/// The `/api/topic/<slug>` document of `slug` in `read`, and its entity tag:
+/// the card's group, review time, unreadable text, each shown field with the
+/// record it came from, its waits and the records that show no field. `None`
+/// for a text that is no slug and for a slug no card has.
+#[must_use]
+pub fn topic(read: &Read, slug: &str) -> Option<(Arc<[u8]>, String)> {
+    if !crate::topic::is_slug(slug) {
+        return None;
+    }
+    let (group, card) = read.desk.groups.iter().find_map(|(group, cards)| {
+        cards
+            .iter()
+            .find(|card| card.slug == slug)
+            .map(|card| (group, card))
+    })?;
+    let mut out = String::with_capacity(4096);
+    out.push_str("{\"slug\":");
+    label(&mut out, &card.slug);
+    out.push_str(",\"group\":");
+    string(&mut out, group.word());
+    out.push_str(",\"reviewed\":");
+    label(&mut out, &card.reviewed);
+    out.push_str(",\"unreadable\":");
+    match &card.unreadable {
+        Some(text) => body(&mut out, text),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"fields\":{");
+    for (at, (name, shown, short)) in [
+        ("title", &card.title, true),
+        ("state", &card.state, true),
+        ("what", &card.what, false),
+        ("last", &card.last, false),
+        ("next", &card.next, false),
+        ("src", &card.src, false),
+        ("close", &card.close, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if at > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        out.push_str(name);
+        out.push_str("\":");
+        field(&mut out, shown.as_ref(), short);
+    }
+    out.push_str("},\"waits\":");
+    waits(
+        &mut out,
+        read.desk.waits.get(slug).map_or(&[], Vec::as_slice),
+    );
+    out.push_str(",\"history\":[");
+    for (at, entry) in card.history.iter().enumerate() {
+        if at > 0 {
+            out.push(',');
+        }
+        out.push('{');
+        origin(&mut out, &entry.origin);
+        out.push_str(",\"text\":");
+        body(&mut out, &entry.text);
+        out.push('}');
+    }
+    out.push_str("]}");
+    let bytes: Arc<[u8]> = out.into_bytes().into();
+    let tag = etag(&bytes);
+    Some((bytes, tag))
+}
+
+/// One shown field: its value, a label when `short`, else a body, and the
+/// record it came from; `null` when no record carries it.
+fn field(out: &mut String, shown: Option<&Field>, short: bool) {
+    let Some(shown) = shown else {
+        out.push_str("null");
+        return;
+    };
+    out.push_str("{\"value\":");
+    if short {
+        label(out, &shown.value);
+    } else {
+        body(out, &shown.value);
+    }
+    out.push(',');
+    origin(out, &shown.origin);
+    out.push('}');
+}
+
+/// A record's source session, its uuid and its time, as three labels.
+fn origin(out: &mut String, origin: &crate::topic::Origin) {
+    out.push_str("\"session\":");
+    label(out, &origin.session);
+    out.push_str(",\"uuid\":");
+    label(out, &origin.uuid);
+    out.push_str(",\"at\":");
+    label(out, &origin.at);
 }
 
 /// `text` as a JSON string: quote, backslash and every ASCII control escaped.
@@ -262,6 +478,8 @@ pub struct LiveSource {
     root: PathBuf,
     global: PathBuf,
     followed: Mutex<Option<Followed>>,
+    /// What the desk keeps for the listener's life.
+    sticky: Mutex<Sticky>,
 }
 
 struct Followed {
@@ -280,12 +498,17 @@ impl LiveSource {
             root,
             global,
             followed: Mutex::new(None),
+            sticky: Mutex::new(Sticky::default()),
         }
     }
 }
 
 impl Source for LiveSource {
     fn read(&self) -> Read {
+        let desk = {
+            let mut sticky = self.sticky.lock().unwrap_or_else(PoisonError::into_inner);
+            topics::collect(&self.root, &mut sticky)
+        };
         let (orchestrator, found) = orchestrator(&self.root);
         let mut followed = self.followed.lock().unwrap_or_else(PoisonError::into_inner);
         let Some((name, dir, uuid)) = found else {
@@ -293,6 +516,7 @@ impl Source for LiveSource {
             return Read {
                 orchestrator,
                 chat: Chat::default(),
+                desk,
             };
         };
         // Any change of name, place or incarnation opens a fresh console; an
@@ -313,11 +537,13 @@ impl Source for LiveSource {
             return Read {
                 orchestrator,
                 chat: Chat::default(),
+                desk,
             };
         };
         Read {
             orchestrator,
             chat: kept.chat(&self.global),
+            desk,
         }
     }
 }
