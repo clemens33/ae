@@ -457,7 +457,8 @@ fn a_dirty_or_unreadable_start_and_a_wrong_expected_identity_refuse() {
 }
 
 fn proof_window(phase: &str, mutation: &str) {
-    let fixture = ProofFixture::new(&format!("window-{phase}-{mutation}"));
+    // The nested gate appends its own lane and socket paths beneath this root.
+    let fixture = ProofFixture::new(&format!("{phase}-{mutation}"));
     let before = fixture.old.tree_head();
     fixture.refuse(
         &[("AE_PROOF_MUTATE_AT", phase), ("AE_PROOF_MUTATE", mutation)],
