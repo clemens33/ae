@@ -1,7 +1,7 @@
 //! More acceptance for board visibility: the header click, the unreadable
 //! fault cue and the key bar's own word.
 
-use super::boardfull_spec::{bytes, locate, paint, row_text, sample_desk, setup_board};
+use super::boardfull_spec::{PANEL_TURN, bytes, locate, paint, row_text, sample_desk, setup_board};
 use super::*;
 use crate::console::deskview::DeskView;
 
@@ -124,4 +124,98 @@ fn an_open_overlay_takes_b_so_the_key_bar_stops_naming_it() {
         !bar.contains("b hide") && !bar.contains("b show"),
         "{bar:?}"
     );
+}
+
+#[test]
+fn a_peek_or_a_reader_takes_b_as_the_settings_do() {
+    for reader in [false, true] {
+        let (_root, mut app) = setup_board("boardhide-peek", Some(sample_desk(BOARD)));
+        let last = |cells: &Buffer| row_text(cells, cells.area.height - 1);
+        assert!(last(&paint(&mut app, WIDE, HEIGHT)).contains("b hide"));
+        if reader {
+            app.model.open_reader(1);
+        } else {
+            app.model.open_peek(1);
+        }
+        let bar = last(&paint(&mut app, WIDE, HEIGHT));
+        assert!(
+            !bar.contains("b hide") && !bar.contains("b show"),
+            "reader={reader}: {bar:?}"
+        );
+    }
+}
+
+const GONE: &str = "click not taken: its frame is gone";
+
+#[test]
+fn a_press_in_the_read_that_hides_the_board_is_refused_before_any_frame() {
+    for full in [false, true] {
+        let (_root, mut app) = setup_board("boardhide-same-read", Some(sample_desk(BOARD)));
+        if full {
+            bytes(&mut app, b"F");
+        }
+        let shown = paint(&mut app, WIDE, HEIGHT);
+        let (column, row) = locate(&shown, DECISION).expect("a decision on the board");
+        let origin = Instant::now();
+        let press = Key::Mouse(Mouse {
+            kind: MouseKind::Click,
+            column,
+            row,
+        });
+        app.flash = None;
+        let read = vec![(Key::Text(b"b".to_vec()), origin), (press, origin)];
+        assert!(take_keys(&mut app, read).is_some());
+        let line = app.flash.as_ref().map(|(line, _)| line.as_str());
+        assert_eq!(line, Some(GONE), "full={full}");
+    }
+}
+
+#[test]
+fn a_press_made_where_the_board_returns_is_refused_not_aimed_at_the_old_frame() {
+    let (_root, mut app) = setup_board("boardhide-returns", Some(sample_desk(BOARD)));
+    bytes(&mut app, b"b");
+    let hidden = paint(&mut app, WIDE, HEIGHT);
+    let (column, row) = locate(&hidden, "F full").expect("the mode word on the wide panel");
+    let origin = Instant::now();
+    bytes(&mut app, b"b");
+    let _ = paint(&mut app, WIDE, HEIGHT);
+    app.flash = None;
+    let press = Key::Mouse(Mouse {
+        kind: MouseKind::Click,
+        column,
+        row,
+    });
+    assert!(take_keys(&mut app, vec![(press, origin)]).is_some());
+    let line = app.flash.as_ref().map(|(line, _)| line.as_str());
+    assert_eq!(line, Some(GONE));
+    let after = row_text(&paint(&mut app, WIDE, HEIGHT), 0);
+    assert!(
+        after.contains("F full") && !after.contains("F side"),
+        "{after:?}"
+    );
+}
+
+#[test]
+fn b_asks_for_a_redraw_exactly_when_it_changes_what_shows() {
+    let (_root, mut app) = setup_board("boardhide-redraw", Some(sample_desk(BOARD)));
+    let _ = paint(&mut app, WIDE, HEIGHT);
+    let press = |app: &mut App| take_keys(app, vec![(Key::Text(b"b".to_vec()), Instant::now())]);
+    assert_eq!(press(&mut app), Some(true), "hides");
+    assert_eq!(press(&mut app), Some(true), "shows");
+    let (_root, mut bare) = setup_board("boardhide-redraw-none", Some(DeskView::Absent));
+    let _ = paint(&mut bare, WIDE, HEIGHT);
+    assert_eq!(press(&mut bare), Some(false), "no board, nothing to change");
+}
+
+#[test]
+fn a_panel_the_zoomed_main_column_covers_does_not_hand_the_keys_to_its_board() {
+    let (_root, mut app) = setup_board("boardhide-covered", Some(sample_desk(BOARD)));
+    let _ = paint(&mut app, WIDE, HEIGHT);
+    app.focus_column(false);
+    bytes(&mut app, b"X");
+    let covered = paint(&mut app, WIDE, HEIGHT);
+    assert!(!text(&covered).contains(PANEL_TURN) && !text(&covered).contains(DECISION));
+    bytes(&mut app, b"B");
+    assert!(!app.desk_focused());
+    assert!(!app.panel_focused());
 }

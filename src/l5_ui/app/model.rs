@@ -1736,6 +1736,35 @@ mod tests {
         moved(&model, &mut last, "a selection that left the fleet");
     }
 
+    /// Hiding the board is a view preference: it counts once as a change of
+    /// what shows, a no-op counts nothing, and a restart or a reconcile that
+    /// drops the selection keeps it.
+    #[test]
+    fn hiding_the_board_is_a_preference_the_model_counts_once_and_keeps() {
+        let both = fleet(&["api", "web"]);
+        let mut model = Model::new(&both);
+        let before = model.epoch();
+        model.set_desk_hidden(true);
+        assert!(model.desk_hidden());
+        assert_eq!(model.epoch(), before + 1);
+        model.set_desk_hidden(true);
+        assert_eq!(
+            model.epoch(),
+            before + 1,
+            "hiding a hidden board moves nothing"
+        );
+        model.restart(&both);
+        assert!(model.desk_hidden(), "a restart keeps it");
+        model.reconcile(&fleet(&["web"]));
+        assert!(model.desk_hidden(), "a selection that left keeps it");
+        let at = model.epoch();
+        model.set_desk_hidden(false);
+        assert!(!model.desk_hidden());
+        assert_eq!(model.epoch(), at + 1);
+        model.set_desk_hidden(false);
+        assert_eq!(model.epoch(), at + 1, "showing a shown board moves nothing");
+    }
+
     /// An adopted view changes what the panels show: a selection made at the
     /// count before it is stale.
     #[test]
