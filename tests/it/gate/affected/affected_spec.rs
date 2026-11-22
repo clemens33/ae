@@ -862,6 +862,96 @@ fn included_data_makes_its_source_owner_changed() {
 }
 
 #[test]
+fn a_fixture_addition_selects_anchored_family_readers() {
+    let mut input = fixture();
+    put(
+        &mut input,
+        "src/changed.rs",
+        r#"pub fn value() -> u8 {
+               include_bytes!("../tests/fixtures/family/library.config")[0]
+           }"#,
+    );
+    for (name, reader) in [
+        (
+            "relative_include",
+            r#"include_str!("../fixtures/family/relative.config")"#,
+        ),
+        (
+            "manifest_include",
+            r#"include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/family/manifest.config"))"#,
+        ),
+        ("directory_literal", r#""tests/fixtures/family""#),
+        (
+            "direct_file",
+            r#"include_str!("../fixtures/family/new.config")"#,
+        ),
+        (
+            "sibling",
+            r#"include_str!("../fixtures/family-extra/other.config")"#,
+        ),
+        ("bare_family", r#""family""#),
+    ] {
+        add_it(
+            &mut input,
+            name,
+            &format!("#[test] fn reads() {{ let _ = {reader}; }}"),
+        );
+    }
+    let path = "tests/fixtures/family/new.config";
+    input.changes = vec![Change {
+        status: Status::Added,
+        path: path.to_owned(),
+    }];
+    input.old.clear();
+    input.tracked.insert(path.to_owned());
+
+    let got = select(&input);
+    subset(&got);
+    assert_eq!(
+        got.owners,
+        [
+            "direct",
+            "direct_file",
+            "directory_literal",
+            "doors",
+            "floor",
+            "gate",
+            "manifest_include",
+            "relative_include",
+        ]
+        .map(str::to_owned)
+        .into()
+    );
+}
+
+#[test]
+fn an_unread_fixture_runs_the_whole_lane() {
+    let mut input = fixture();
+    add_it(
+        &mut input,
+        "known_fixture",
+        r#"#[test] fn reads() { let _ = include_str!("../fixtures/known/old.config"); }"#,
+    );
+    add_it(
+        &mut input,
+        "unanchored",
+        r#"#[test] fn reads() { let _ = "unread"; }"#,
+    );
+    add_it(
+        &mut input,
+        "top_level",
+        r#"#[test] fn reads() { let _ = include_str!("../fixtures/other-root.config"); }"#,
+    );
+    for path in [
+        "tests/fixtures/unread/new.config",
+        "tests/fixtures/top-level.config",
+    ] {
+        only_edit(&mut input, path, "", "");
+        whole(&select(&input), "unknown-path");
+    }
+}
+
+#[test]
 fn unresolved_paths_are_visible_without_hiding_the_accepted_gap() {
     let mut input = fixture();
     add_it(

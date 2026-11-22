@@ -521,8 +521,11 @@ library module selects the integration files that name it: an `ae::` path to it 
 `use ae::…` of it, or a name that `src/lib.rs` or its parent module re-exports from it with
 `pub use`. Every changed path is also data: an `include!`, `include_str!` or `include_bytes!`, a
 `#[path]` or a string literal that names it (or its base name) selects the reader, and a library
-module that includes it counts as changed. A checked-in source view can name a read set by its
-root. `source_view::tree()` matches Rust files under `src/` and `tests/`. `product()` matches the
+module that includes it counts as changed. A change under `tests/fixtures/<dir>/` also selects
+integration modules that name that directory or another file inside it, including direct
+consumers of library modules that include those fixture files. If no rule can place the changed
+fixture, the whole lane runs. A checked-in source view can name a read set by its root.
+`source_view::tree()` matches Rust files under `src/` and `tests/`. `product()` matches the
 Rust sources it classifies under `src/`. `module_family()` matches its literal root file and the
 Rust files in the matching directory. A filesystem reader with a known checkout directory matches
 the files beneath it, including non-Rust files. The selector follows literal path joins and uses

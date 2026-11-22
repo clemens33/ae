@@ -7,8 +7,10 @@
 //! selects the integration modules whose own file names it: an `ae::` path or `use` of it, or a
 //! name that `src/lib.rs` or its parent module re-exports from it. Every changed path is also
 //! data: an `include*!`, a `#[path]` or a string literal that names it selects the reader, and a
-//! library module that includes it counts as changed. Source views and checkout directory reads
-//! also name paths by their root. An identified source read without a place runs the whole suite.
+//! library module that includes it counts as changed. Paths in one fixture directory also select
+//! readers that name that fixture directory or another member. Source views and checkout
+//! directory reads also name paths by their root. An identified source read without a place runs
+//! the whole suite.
 //! What the rules cannot place, and every build input, config, crate root, module-map, shared-rig,
 //! deletion, rename and macro change,
 //! runs the whole suite and names why.
@@ -95,7 +97,7 @@ pub(crate) struct Why {
     pub(crate) file: String,
     pub(crate) line: usize,
     /// `own`, `namespace`, `reexport`, `include`, `path-attr`, `literal`, `basename`,
-    /// `source-view` or `unresolved`.
+    /// `fixture-dir`, `source-view` or `unresolved`.
     pub(crate) rule: &'static str,
     pub(crate) target: String,
 }
@@ -148,6 +150,7 @@ const LAYER_MODULES: [&str; 7] = [
 const BIN_ROOT: &str = "src/main.rs";
 const IT_ROOT: &str = "tests/it/main.rs";
 const MAC_MANIFEST: &str = ".config/macos-subset";
+const FIXTURE_ROOT: &str = "tests/fixtures/";
 
 /// The extension of a repository path's last component.
 fn extension(path: &str) -> Option<&str> {
@@ -883,6 +886,10 @@ impl<'a> Run<'a> {
             for wanted_path in &wanted {
                 let wanted_path = *wanted_path;
                 let base = wanted_path.rsplit('/').next().unwrap_or(wanted_path);
+                let fixture = wanted_path
+                    .strip_prefix(FIXTURE_ROOT)
+                    .and_then(|path| path.split_once('/'))
+                    .map(|(dir, _)| dir);
                 for reference in &refs {
                     let (line, rule) = match reference {
                         DataRef::Include { line, target } if target == wanted_path => {
@@ -900,6 +907,16 @@ impl<'a> Run<'a> {
                             (*line, "literal")
                         }
                         DataRef::Literal { line, value } if value == base => (*line, "basename"),
+                        DataRef::Include { line, target }
+                            if fixture.is_some_and(|dir| fixture_dir(target) == Some(dir)) =>
+                        {
+                            (*line, "fixture-dir")
+                        }
+                        DataRef::FixtureDir { line, dir: named }
+                            if fixture == Some(named.as_str()) =>
+                        {
+                            (*line, "fixture-dir")
+                        }
                         _ => continue,
                     };
                     if !it.is_empty() {
@@ -908,7 +925,9 @@ impl<'a> Run<'a> {
                             picks.push((owner.clone(), *file, line, rule, wanted_path));
                         }
                     }
-                    if rule == "include" && !(lib.is_empty() && file.starts_with("tests/")) {
+                    if matches!(reference, DataRef::Include { .. })
+                        && !(lib.is_empty() && file.starts_with("tests/"))
+                    {
                         placed.push(wanted_path);
                         if *file == LIB_ROOT || *file == BIN_ROOT {
                             roots.push((*file, wanted_path));
@@ -1288,6 +1307,12 @@ enum DataRef {
     PathAttr { line: usize, target: String },
     /// Any string literal.
     Literal { line: usize, value: String },
+    /// A literal naming a checkout fixture directory or one of its files.
+    FixtureDir { line: usize, dir: String },
+}
+
+fn fixture_dir(path: &str) -> Option<&str> {
+    path.strip_prefix(FIXTURE_ROOT)?.split('/').next()
 }
 
 fn data_refs(lexed: &Lexed, file: &str) -> Vec<DataRef> {
@@ -1307,6 +1332,16 @@ fn data_refs(lexed: &Lexed, file: &str) -> Vec<DataRef> {
                 line,
                 value: value.to_owned(),
             });
+            if value.contains("fixtures/") {
+                let checkout = normalize(value);
+                let relative = beside(value);
+                if let Some(dir) = fixture_dir(&checkout).or_else(|| fixture_dir(&relative)) {
+                    found.push(DataRef::FixtureDir {
+                        line,
+                        dir: dir.to_owned(),
+                    });
+                }
+            }
         }
         if matches!(
             lexed.ident(at),
