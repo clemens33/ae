@@ -62,6 +62,8 @@ mod seat;
 #[cfg(test)]
 #[path = "loader_tools_spec.rs"]
 mod tools_spec;
+#[cfg(test)]
+mod web_parity_spec;
 
 /// The most sessions whose consoles are kept read, home and the selection
 /// among them.
