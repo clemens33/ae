@@ -7451,11 +7451,12 @@ fn parity_stale_pid_overlap_child() {
 /// parity reaper (`tests/it/parity.rs`).
 #[test]
 fn stale_same_pid_entry_for_absent_root_does_not_reap_live_owner_in_parity_reaper() {
-    let scratch = super::cli::OwnedScratch::root("gate", "parity-overlap");
-    let base = scratch.join("base");
+    // Both process namespaces count toward the tmux socket path limit.
+    let scratch = super::cli::OwnedScratch::root("gate", "overlap");
     let lane = scratch.join("lane");
     let done = scratch.join("done");
-    std::fs::create_dir_all(&base).expect("child scratch base");
+    let out = scratch.join("child-out");
+    let err = scratch.join("child-err");
     std::fs::create_dir_all(&lane).expect("child lane");
     let exe =
         std::env::current_exe().unwrap_or_else(|why| panic!("the integration test binary: {why}"));
@@ -7463,18 +7464,19 @@ fn stale_same_pid_entry_for_absent_root_does_not_reap_live_owner_in_parity_reape
         &Invocation::new(exe)
             .arg("--exact")
             .arg("gate::parity_stale_pid_overlap_child")
-            .env("AE_TEST_TMPDIR", &base)
+            .env("AE_TEST_TMPDIR", &scratch)
             .env("TMUX_TMPDIR", &lane)
             .env("AE_GATE_PARITY_OVERLAP_DONE", &done),
         &scratch,
-        &scratch.join("child-out"),
-        &scratch.join("child-err"),
+        &out,
+        &err,
     )
     .unwrap_or_else(|why| panic!("the overlap child runs: {why}"));
-    let err = read(&scratch.join("child-err"));
     assert!(
         matches!(status.outcome(), ExitOutcome::Code(0)),
-        "live owner must survive stale same-pid parity reap: {err}"
+        "live owner must survive stale same-pid parity reap\nstdout:\n{}\nstderr:\n{}",
+        read(&out),
+        read(&err)
     );
     assert_eq!(read(&done), "ok\n");
 }
