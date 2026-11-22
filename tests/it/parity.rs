@@ -183,7 +183,7 @@ pub(crate) mod capture {
                             complete = false;
                             continue;
                         };
-                        if !reap_fixture_root(owner, &scratch, &probe) {
+                        if !reap_fixture_root(owner, recorded, &scratch, &probe) {
                             complete = false;
                         }
                     }
@@ -214,13 +214,13 @@ pub(crate) mod capture {
             if !cwd.is_absolute() {
                 return Err(io::Error::other("tmux test fixture root must be absolute"));
             }
-            remember_fixture_in(&lane, cwd, own_identity(&lane).as_deref())
+            remember_fixture_in(&lane, cwd, own_identity(&lane))
         }
 
         /// This process's start identity, read once; `None` when unreadable, and
         /// then the owner registers under its bare pid (never reaped on a guess).
         #[cfg(unix)]
-        fn own_identity(lane: &Path) -> Option<String> {
+        pub(crate) fn own_identity(lane: &Path) -> Option<&'static str> {
             static IDENTITY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
             IDENTITY
                 .get_or_init(|| {
@@ -230,7 +230,7 @@ pub(crate) mod capture {
                     let _ = fs::remove_dir_all(&probe);
                     identity
                 })
-                .clone()
+                .as_deref()
         }
 
         /// Register `cwd` under this process's owner directory in `lane`,
@@ -273,14 +273,19 @@ pub(crate) mod capture {
         }
 
         #[cfg(unix)]
+        pub(crate) fn owner_is_dead(owner: u32, recorded: Option<&str>, probe: &Path) -> bool {
+            pid_is_gone(owner, probe) || owner_pid_was_reused(owner, recorded, probe)
+        }
+
+        #[cfg(unix)]
         #[allow(
             clippy::disallowed_methods,
             reason = "the parity reaper reads its own probe stderr to distinguish ESRCH"
         )]
-        pub(crate) fn owner_is_dead(owner: u32, recorded: Option<&str>, probe: &Path) -> bool {
+        fn pid_is_gone(owner: u32, probe: &Path) -> bool {
             let out = probe.join("owner-out");
             let err = probe.join("owner-err");
-            let gone = run_unreaped(
+            run_unreaped(
                 &Invocation::new("kill")
                     .env("LC_ALL", "C")
                     .arg("-0")
@@ -290,8 +295,7 @@ pub(crate) mod capture {
                 &err,
             )
             .is_ok_and(|status| matches!(status.outcome(), ExitOutcome::Code(1)))
-                && fs::read_to_string(err).is_ok_and(|text| text.contains("No such process"));
-            gone || owner_pid_was_reused(owner, recorded, probe)
+                && fs::read_to_string(err).is_ok_and(|text| text.contains("No such process"))
         }
 
         /// Whether a LIVE pid now belongs to another process than the owner that
@@ -371,26 +375,37 @@ pub(crate) mod capture {
         }
 
         /// Kill every server under a dead owner's registered root, then delete
-        /// the root only when it is the suite's own (`scratch::owned_root`).
+        /// the root only when it belongs to that owner instance.
         #[cfg(unix)]
         #[allow(
             clippy::disallowed_methods,
             reason = "the parity reaper asks whether a dead owner already removed its root"
         )]
-        fn reap_fixture_root(owner: u32, scratch: &Path, probe: &Path) -> bool {
-            let gone = fs::symlink_metadata(scratch)
-                .is_err_and(|why| why.kind() == io::ErrorKind::NotFound);
-            // The owner's whole `ae-it-<owner>` when the grammar allows it, so a
-            // sibling root's server dies before its socket is unlinked.
-            let ours = crate::scratch::owned_root(owner, scratch);
-            let Some(walk) = ours.as_deref().or((!gone).then_some(scratch)) else {
+        fn reap_fixture_root(
+            owner: u32,
+            recorded: Option<&str>,
+            scratch: &Path,
+            probe: &Path,
+        ) -> bool {
+            use crate::scratch::ReapRoot;
+
+            let (walk, remove_root) =
+                match crate::scratch::registered_root(owner, recorded, scratch) {
+                    ReapRoot::Owned(path) => (path, true),
+                    ReapRoot::Legacy(path) if pid_is_gone(owner, probe) => (path, true),
+                    ReapRoot::Legacy(_) | ReapRoot::Protected => return true,
+                    ReapRoot::External => (scratch, false),
+                };
+            if fs::symlink_metadata(walk).is_err_and(|why| why.kind() == io::ErrorKind::NotFound) {
                 return true;
-            };
+            }
             let mut sockets = Vec::new();
             if !find_sockets(walk, &mut sockets) || !kill_servers(&sockets, walk, probe) {
                 return false;
             }
-            ours.is_none_or(|root| fs::remove_dir_all(root).is_ok())
+            !remove_root
+                || fs::remove_dir_all(walk)
+                    .map_or_else(|why| why.kind() == io::ErrorKind::NotFound, |()| true)
         }
 
         /// Kill every server under `root` and each `listed` socket, for an

@@ -400,15 +400,18 @@ per invariant, driving the real binary against a real tmux server, rather than a
 transliteration of a 40-assertion bash section.
 
 `tests/it` runs against real servers. Every scratch root comes from one owner,
-`cli::OwnedScratch::root`: `<base>/ae-it-<pid>/<family>.<tag>`, the base `AE_TEST_TMPDIR` or
+`cli::OwnedScratch::root`: `<base>/ae<pid>.<start>/<family>.<tag>`, the base `AE_TEST_TMPDIR` or
 `/tmp` — short, because a tmux socket beneath it must fit `sun_path` (104 bytes on macOS), and
 the owner refuses a root that leaves no room. The root is registered with the lane's reaper
 before any tmux starts there, and its `Drop` kills every server beneath it before removing it.
+The namespace carries the PID and a compact encoding of the process start time. Both reapers
+match the recorded start time to the namespace before touching its sockets or files. A legacy
+PID-only namespace is reaped only when the PID is absent.
 A test killed outright is reaped when its lane exits, unless an orphaned child still holds its
 root 30 s later: then the lane fails and keeps itself, and the next lane retries the reap.
 A root the sweep cannot delete because a child is still writing into it is named (`note:
 kept …`) and left for the next lane: that transient race never turns an all-green lane red.
-A lane start and a lane exit also sweep the dead owners' unregistered roots (`ae-it-<pid>`,
+A lane start and a lane exit also sweep the dead owners' unregistered roots (`ae<pid>.<start>`, `ae-it-<pid>`,
 `ae-it-shadow-<pid>`, `ae-it-tmux-<pid>`, plain directories of this uid whose pid is gone, as
 `owner_is_dead` decides): a test killed between a `chmod` and its restore leaves directories at
 0555, so such a root is repaired (`find -type d`, no link followed) before it is removed, and

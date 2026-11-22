@@ -396,7 +396,7 @@ impl OwnedScratch {
         Self { path, tmux_servers }
     }
 
-    /// The suite's ONE scratch root, `<base>/ae-it-<pid>/<family>.<tag>`
+    /// The suite's scratch root, `<base>/ae<pid>.<start>/<family>.<tag>`
     /// (`scratch::base`): created empty, and registered with the lane's reaper
     /// before any tmux can start there, so a killed test is still reaped.
     pub(crate) fn root(family: &str, tag: &str) -> Self {
@@ -519,19 +519,15 @@ impl Drop for OwnedScratch {
     }
 }
 
-/// `<base>/ae-it-<pid>/<name>`: where [`OwnedScratch::root`] puts a root.
+/// Where [`OwnedScratch::root`] puts a root for this process instance.
 fn own_root_path(name: &str) -> std::path::PathBuf {
-    super::scratch::base()
-        .join(format!("ae-it-{}", std::process::id()))
-        .join(name)
+    super::scratch::own_dir().join(name)
 }
 
-/// Remove this process's `ae-it-<pid>` once its last root is gone.
+/// Remove this process's namespace once its last root is gone.
 fn release_process_dir(root: &std::path::Path) {
     if let Some(parent) = root.parent()
-        && parent
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy() == format!("ae-it-{}", std::process::id()))
+        && parent == super::scratch::own_dir()
     {
         let _ = std::fs::remove_dir(parent);
     }
@@ -577,6 +573,9 @@ pub(crate) fn ae_hermetic() -> (Runner, OwnedScratch) {
 }
 
 fn owns_scratch_path(path: &std::path::Path) -> bool {
+    if path.parent() == Some(super::scratch::own_dir()) {
+        return true;
+    }
     let pid = std::process::id().to_string();
     // The suite deliberately names `/tmp` so its post-gate audit can inspect
     // one stable directory. On macOS, `temp_dir()` is the more specific

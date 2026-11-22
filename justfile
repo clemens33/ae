@@ -3898,25 +3898,49 @@ _tmux-isolated lane *args:
         done <<<"$sockets"
         return "$failed"
     }
-    # The ONE deletion rule, as tests/it/scratch.rs::owned_root: a registered
-    # target is deleted only as <base>/ae-it-<owner>/<one name> (or gone), no
-    # link, and then as the whole ae-it-<owner>, left in $owned. Any other
-    # target is only killed.
+    # The short start timestamp, as tests/it/scratch.rs::short_start. Each
+    # field takes one base-62 digit except the year, which takes two.
+    short_start() {
+        local digits=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
+        local months=JanFebMarAprMayJunJulAugSepOctNovDec month day hour minute second year i
+        [[ "$1" =~ ^[A-Z][a-z]{2}([A-Z][a-z]{2})([0-9]{1,2})([0-9]{2})([0-9]{2})([0-9]{2})([0-9]{4})$ ]] || return 1
+        month="${BASH_REMATCH[1]}"
+        day=$((10#${BASH_REMATCH[2]}))
+        hour=$((10#${BASH_REMATCH[3]}))
+        minute=$((10#${BASH_REMATCH[4]}))
+        second=$((10#${BASH_REMATCH[5]}))
+        year=$((10#${BASH_REMATCH[6]}))
+        for ((i=0; i<12; i++)); do [[ "${months:i*3:3}" != "$month" ]] || break; done
+        ((i < 12 && year / 62 < 62 && day < 62 && hour < 62 && minute < 62 && second < 62)) || return 1
+        owner_start="${digits:year/62:1}${digits:year%62:1}${digits:i:1}${digits:day:1}${digits:hour:1}${digits:minute:1}${digits:second:1}"
+    }
+    # Match tests/it/scratch.rs::registered_root. Return 0 for a plain, owned
+    # namespace (left in $owned), 1 for an external fixture, 2 for a protected
+    # suite namespace. Legacy PID-only scratch requires a definitely absent PID.
     owned_root() {
-        local owner="$1" target="$2" prefix rest
+        local owner="$1" target="$2" prefix rest dir leaf
         for prefix in "$base" "$base_real"; do
-            rest="${target#"$prefix/ae-it-$owner/"}"
-            [[ "$rest" != "$target" && -n "$rest" && "$rest" != */* && "$rest" != . && "$rest" != .. ]] || continue
-            [[ -d "$prefix/ae-it-$owner" && ! -L "$prefix/ae-it-$owner" && ! -L "$target" ]] || return 1
-            [[ -d "$target" || ! -e "$target" ]] || return 1
-            owned="$prefix/ae-it-$owner"
+            rest="${target#"$prefix/"}"
+            [[ "$rest" != "$target" ]] || continue
+            dir="${rest%%/*}"
+            [[ "$dir" =~ ^(ae-it-[0-9]+|ae[0-9]+[.][A-Za-z0-9]{7})$ ]] || return 1
+            leaf="${rest#*/}"
+            [[ "$leaf" != "$rest" && -n "$leaf" && "$leaf" != */* && "$leaf" != . && "$leaf" != .. ]] || return 2
+            [[ -d "$prefix/$dir" && ! -L "$prefix/$dir" && ! -L "$target" ]] || return 2
+            [[ -d "$target" || ! -e "$target" ]] || return 2
+            if [[ "$dir" == "ae-it-$owner" ]]; then
+                owner_is_dead "$owner" || return 2
+            else
+                [[ -n "$owner_start" && "$dir" == "ae$owner.$owner_start" ]] || return 2
+            fi
+            owned="$prefix/$dir"
             return 0
         done
         return 1
     }
     # Reap every root a DEAD owner registered in lane $1; fails if any is left.
     reap_registry() {
-        local registry="$1/.ae-parity-fixtures" owner_dir owner recorded entry scratch failed=0
+        local registry="$1/.ae-parity-fixtures" owner_dir owner recorded entry scratch owned owner_start failed=0
         [[ -e "$registry" ]] || return 0
         [[ -d "$registry" && ! -L "$registry" && -r "$registry" && -x "$registry" ]] || return 1
         for owner_dir in "$registry"/*; do
@@ -3929,6 +3953,8 @@ _tmux-isolated lane *args:
                 failed=1
                 continue
             fi
+            owner_start=""
+            short_start "$recorded" || true
             for entry in "$owner_dir"/*; do
                 if [[ ! -L "$entry" ]]; then
                     [[ ! -e "$entry" ]] || failed=1
@@ -3942,7 +3968,7 @@ _tmux-isolated lane *args:
                     # traversal it needed), still inside the proven root: plain
                     # `find` follows no link and `-type d` never matches one.
                     reap_sockets "$owned" && find "$owned" -type d -exec chmod u+rwx {} \; 2>/dev/null && rm -rf "$owned" 2>/dev/null || failed=1
-                elif [[ -e "$scratch" ]]; then
+                elif [[ $? == 1 && -e "$scratch" ]]; then
                     reap_sockets "$scratch" || failed=1
                 fi
             done
@@ -3973,7 +3999,7 @@ _tmux-isolated lane *args:
             [[ "$legacy" != "$base" ]] || break
         done
     }
-    # A dead test's root no lane registered: `ae-it-<pid>`, and the runner's own
+    # A dead test's root no lane registered: `ae<pid>.<start>`, legacy `ae-it-<pid>`, and the runner's own
     # `ae-it-shadow-<pid>` and `ae-it-tmux-<pid>`, each a plain directory (never a link) of this
     # uid, and only when older than this lane and its pid is gone by `owner_is_dead`
     # (no recorded identity: a pid that still answers keeps its root): a reused pid's fresh
@@ -4040,16 +4066,20 @@ _tmux-isolated lane *args:
         sweep_deadline=$((SECONDS + sweep_secs))
         bound_tool="$timer"
         bound_hit=0
-        for dir in "$base"/ae-it-*; do
+        for dir in "$base"/ae-it-* "$base"/ae[0-9]*.*; do
             if ((scanned >= sweep_scan)); then why="$sweep_scan entries examined"; break; fi
             if ((SECONDS >= sweep_deadline)); then why="the ${sweep_secs} s budget"; break; fi
             scanned=$((scanned + 1))
             [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || continue
-            name="${dir##*/ae-it-}"
+            name="${dir##*/}"
             case "$name" in
-                shadow-*) owner="${name#shadow-}" ;;
-                tmux-*) owner="${name#tmux-}" ;;
-                *) owner="$name" ;;
+                ae-it-shadow-*) owner="${name#ae-it-shadow-}" ;;
+                ae-it-tmux-*) owner="${name#ae-it-tmux-}" ;;
+                ae-it-*) owner="${name#ae-it-}" ;;
+                *)
+                    [[ "$name" =~ ^ae([0-9]+)[.][A-Za-z0-9]{7}$ ]] || continue
+                    owner="${BASH_REMATCH[1]}"
+                    ;;
             esac
             [[ "$owner" =~ ^[0-9]+$ ]] || continue
             owner_is_dead "$owner" || continue
@@ -4322,7 +4352,7 @@ harness-smoke mode="":
             [[ -L "$entry" ]] || continue
             root="$(readlink "$entry")"
             case "$root" in
-                "$base"/ae-it-*/hs.*)
+                "$base"/ae[0-9]*.*/hs.*)
                     env -u TMUX -u TMUX_PANE tmux -S "$root/sock" set-option -su command-alias >/dev/null 2>&1 || true
                     env -u TMUX -u TMUX_PANE tmux -S "$root/sock" kill-server >/dev/null 2>&1 || true
                     # The kill's exit status is not proof: the server must stop answering

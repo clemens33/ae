@@ -7360,14 +7360,16 @@ fn lane_with_registered_owners(
 #[test]
 fn a_reused_pid_does_not_make_an_ended_owner_look_alive() {
     let pid = std::process::id();
-    let register = format!("{pid}.StaleStart0000 ae-it-{pid}/ended\n");
+    let identity = "FriNov141020302025";
+    let ended = super::scratch::owner_dir_name(pid, identity).expect("the ended owner's namespace");
+    let register = format!("{pid}.{identity} {ended}/ended\n");
     let (outcome, stderr, base) = lane_with_registered_owners("reuse-ended", &register);
     assert!(
         matches!(outcome, ExitOutcome::Code(0)),
         "an owner whose pid was reused must be reaped, not fail the lane: {stderr}"
     );
     assert!(
-        !base.join(format!("ae-it-{pid}")).exists(),
+        !base.join(ended).exists(),
         "the ended owner's root is reaped"
     );
 }

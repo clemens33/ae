@@ -369,9 +369,7 @@ fn sigkill_fixture_leaves_a_server_for_the_next_test_process_to_reap() {
     let tag =
         std::env::var("AE_LIFECYCLE_SIGKILL_TAG").unwrap_or_else(|_| "sigkillfixture".to_owned());
     let rig = Rig::new(&tag);
-    if let Some(pid_file) = std::env::var_os("AE_LIFECYCLE_SIGKILL_PID_FILE") {
-        std::fs::write(pid_file, std::process::id().to_string()).expect("the fixture pid file");
-    }
+    report_killed_fixture_home(&rig.home);
     let out = rig.home.join("sigkill-out");
     let err = rig.home.join("sigkill-err");
     let _ = raw::run(
@@ -385,15 +383,18 @@ fn sigkill_fixture_leaves_a_server_for_the_next_test_process_to_reap() {
     panic!("SIGKILL must end this fixture process");
 }
 
-fn killed_fixture_home(probe: &Path, tag: &str) -> PathBuf {
-    let pid = std::fs::read_to_string(probe.join("child-pid"))
-        .expect("the killed fixture pid")
-        .trim()
-        .parse::<u32>()
-        .expect("the killed fixture pid is numeric");
-    super::scratch::base()
-        .join(format!("ae-it-{pid}"))
-        .join(format!("lc.{tag}"))
+fn report_killed_fixture_home(home: &Path) {
+    if let Some(report) = std::env::var_os("AE_LIFECYCLE_SIGKILL_REPORT") {
+        std::fs::write(report, home.as_os_str().as_encoded_bytes())
+            .expect("the fixture home report");
+    }
+}
+
+fn killed_fixture_home(probe: &Path) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let home = std::fs::read(probe.join("child-home")).expect("the killed fixture home");
+    PathBuf::from(std::ffi::OsString::from_vec(home))
 }
 
 fn sigkill_fixture(probe: &Path, lane: &Path, tag: &str) -> PathBuf {
@@ -404,7 +405,7 @@ fn sigkill_fixture(probe: &Path, lane: &Path, tag: &str) -> PathBuf {
             .arg("lifecycle::sigkill_fixture_leaves_a_server_for_the_next_test_process_to_reap")
             .env("AE_LIFECYCLE_SIGKILL_CHILD", "1")
             .env("AE_LIFECYCLE_SIGKILL_TAG", tag)
-            .env("AE_LIFECYCLE_SIGKILL_PID_FILE", probe.join("child-pid"))
+            .env("AE_LIFECYCLE_SIGKILL_REPORT", probe.join("child-home"))
             .env("TMUX_TMPDIR", lane),
         probe,
         &probe.join("child-out"),
@@ -415,7 +416,7 @@ fn sigkill_fixture(probe: &Path, lane: &Path, tag: &str) -> PathBuf {
         matches!(child_status.outcome(), ExitOutcome::Signalled),
         "the fixture must die to SIGKILL"
     );
-    killed_fixture_home(probe, tag)
+    killed_fixture_home(probe)
 }
 
 fn reap_from_fresh_test_process(probe: &Path, lane: &Path, path: Option<&str>) -> ExitOutcome {
@@ -540,9 +541,7 @@ fn write_ahead_fixture_leaves_a_server_for_the_next_test_process_to_reap() {
     }
     let tag = "writeahead";
     let home = OwnedScratch::root("lc", tag).keep();
-    if let Some(pid_file) = std::env::var_os("AE_LIFECYCLE_SIGKILL_PID_FILE") {
-        std::fs::write(pid_file, std::process::id().to_string()).expect("the fixture pid file");
-    }
+    report_killed_fixture_home(&home);
     let _ = raw::run(
         &Invocation::new("tmux")
             .arg("-S")
@@ -570,7 +569,7 @@ fn a_write_ahead_registry_survives_sigkill_between_creation_and_return() {
             .arg("--exact")
             .arg("lifecycle::write_ahead_fixture_leaves_a_server_for_the_next_test_process_to_reap")
             .env("AE_LIFECYCLE_WRITE_AHEAD_CHILD", "1")
-            .env("AE_LIFECYCLE_SIGKILL_PID_FILE", probe.join("child-pid"))
+            .env("AE_LIFECYCLE_SIGKILL_REPORT", probe.join("child-home"))
             .env("TMUX_TMPDIR", &lane),
         &probe,
         &probe.join("child-out"),
@@ -578,7 +577,7 @@ fn a_write_ahead_registry_survives_sigkill_between_creation_and_return() {
     )
     .expect("the write-ahead fixture starts");
     assert!(matches!(status.outcome(), ExitOutcome::Signalled));
-    let home = killed_fixture_home(&probe, "writeahead");
+    let home = killed_fixture_home(&probe);
     let socket = home.join("s");
     assert!(
         socket.exists(),
