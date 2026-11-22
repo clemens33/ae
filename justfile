@@ -1774,11 +1774,11 @@ _cliff-skip:
     fi
     printf '%s\n' "$skip"
 
-# The ONE owner of the text-to-argv boundary, and the ONE place `git-cliff` is invoked in
-# this file — tests/it/gate.rs asserts both structurally, so a direct call added anywhere
-# else fails by construction. `set --` prepends the skip flag and its UNQUOTED values to
-# the caller's own argv: N shas become N argv entries, and an empty list adds no flag at
-# all. A quoted crossing (one joined argument, silently ignored by git-cliff) is the
+# The ONE owner of the text-to-argv boundary, and the ONE place `git-cliff` generates a
+# changelog in this file — tests/it/gate.rs asserts both structurally, so a direct call
+# added anywhere else fails by construction. `set --` prepends the skip flag and its UNQUOTED
+# values to the caller's own argv: N shas become N argv entries, and an empty list adds no
+# flag at all. A quoted crossing (one joined argument, silently ignored by git-cliff) is the
 # failure the boundary test executes these recipes to refuse. Why the list exists and what
 # keeps it complete: `_cliff-skip` above.
 #
@@ -1822,7 +1822,57 @@ release:
     {{ DETACHED }}
     {{ DISKFREE }}
 
-    # THE DISK FLOOR comes first, before anything is claimed, fetched or written: a release that
+    release_tool_pin() {
+        local tool="$1" pin="$2" path="$3" remedy="$4" output name have
+        shift 4
+        if [[ -z "$path" ]]; then
+            have="<missing>"
+            path="<not on PATH>"
+        elif output="$("$@" --version 2>&1)"; then
+            read -r name have _ <<< "$output"
+            if [[ "$name" == "$tool" && "$have" == "$pin" ]]; then
+                return 0
+            fi
+            have="${output%%$'\n'*}"
+            have="${have:-<no version output>}"
+        else
+            have="<version probe failed: ${output%%$'\n'*}>"
+        fi
+        printf 'release: refused: %s found %s at %s, want %s\n       %s\n' "$tool" "$have" "$path" "$pin" "$remedy" >&2
+        return 1
+    }
+
+    release_cargo_tool_path() {
+        local cargo_home="${CARGO_HOME:-$HOME/.cargo}" bin path
+        [[ "$cargo_home" == /* ]] || cargo_home="$(pwd -P)/$cargo_home"
+        bin="${cargo_home%/}/bin"
+        path="${PATH-}"
+        # Cargo prepends CARGO_HOME/bin only if it is absent from PATH.
+        case ":$path:" in
+            *":$bin:"*|*":$bin/:"*) ;;
+            *) path="$bin:$path" ;;
+        esac
+        PATH="$path" type -P "cargo-$1"
+    }
+
+    # Check the tools the local release recipes run. The pin inventory guard in
+    # tests/it/gate/release_tool_pins.rs requires a decision for each new pin.
+    dev_tool_remedy="Run just rust-setup, or remove a shadowing copy (for example, from Homebrew) from PATH."
+    just_remedy="Install just {{ JUST_VERSION }} and put it first on PATH before rerunning release."
+    running_just={{ quote(just_executable()) }}
+    path_just="$(type -P just || true)"
+    release_tool_pin just "{{ JUST_VERSION }}" "$running_just" "$just_remedy" "$running_just"
+    if [[ "$path_just" != "$running_just" ]]; then
+        release_tool_pin just "{{ JUST_VERSION }}" "$path_just" "$just_remedy" "$path_just"
+    fi
+    cliff="$(type -P git-cliff || true)"
+    release_tool_pin git-cliff "{{ GIT_CLIFF_VERSION }}" "$cliff" "$dev_tool_remedy" "$cliff"
+    release_tool_pin cargo-deny "{{ DENY_VERSION }}" "$(release_cargo_tool_path deny || true)" "$dev_tool_remedy" cargo deny
+    release_tool_pin cargo-nextest "{{ NEXTEST_VERSION }}" "$(release_cargo_tool_path nextest || true)" "$dev_tool_remedy" cargo nextest
+    taplo="$(type -P taplo || true)"
+    release_tool_pin taplo "{{ TAPLO_VERSION }}" "$taplo" "$dev_tool_remedy" "$taplo"
+
+    # THE DISK FLOOR also precedes anything claimed, fetched or written: a release that
     # runs out of disk mid-way stops after its claim and leaves a suspect lane lock. It refuses when
     # the checkout's or cargo's volume has less than AE_LANE_MIN_FREE_GIB (default 20) free.
     disk_floor release
