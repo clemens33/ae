@@ -210,6 +210,145 @@ const RETURN_OFF_CHAIN: &str = "held: the seat is no longer on its automatic cha
 /// A return's hold: the leg ran before the episode's grace had passed.
 const RETURN_EARLY: &str = "held: the return is not due yet";
 
+/// An orchestrator's hold: a tracked exchange with its seat is still open, so
+/// a move now would strand it (the reply would reach a shell, or answer a
+/// launch the move replaced).
+pub(crate) const IN_FLIGHT: &str =
+    "held: a request, relay or owner reply to the orchestrator is in flight";
+
+/// An orchestrator's hold: every listed candidate would start it on a fresh
+/// conversation, and the orchestrator never loses its own.
+pub(crate) const NO_KEEPER: &str = "held: no candidate keeps the orchestrator's conversation";
+
+/// What is still in flight to or from the seat at `slot` of an orchestrator
+/// session, or `None` when nothing is. Read in the leg before a choice and
+/// again by the move under its locks, so the two judge by one rule:
+///
+/// 1. a send the session's chat has admitted and not finished (its admission
+///    lock is held; a lock ae cannot even try is in flight too);
+/// 2. a Pending ask or review ADDRESSED TO the seat, an owner's chat request
+///    included: the seat owes it a reply;
+/// 3. a Pending ask or review the seat OPENED, to an agent, another session or
+///    the owner: its answer is bound to the launch a move replaces;
+/// 4. a relay the seat claimed with no `relay-result` yet, or a claim ae
+///    cannot read. A crash between claim and result leaves such a relay
+///    unmatched for good: the hold stays until a human settles it.
+pub(crate) fn orchestrator_in_flight(
+    dir: &Path,
+    (session, slot, agent): (&str, &str, &str),
+) -> Option<String> {
+    match crate::store::open(dir).console_admission_now() {
+        Ok(admission) => drop(admission),
+        Err(why) if why.kind() == io::ErrorKind::WouldBlock => {
+            return Some("the chat is admitting a send".to_owned());
+        }
+        Err(why) => return Some(format!("the chat admission lock is not free ({why})")),
+    }
+    orchestrator_exchange(dir, (session, slot, agent))
+}
+
+/// The session's journal as an orchestrator decision must read it: whole, or
+/// not at all. A journal that cannot be read, a node that is not a regular
+/// file, a last record with no LF and a line that is not one event all refuse,
+/// because a request or a relay ae cannot read is not proof that none is open.
+/// An absent journal is an empty one, and a blank complete line is skipped.
+fn orchestrator_ledger(dir: &Path) -> Result<Vec<crate::events::Event>, String> {
+    let bytes = match crate::store::open(dir).events_source() {
+        crate::store::SourceRead::Ready(bytes) => bytes,
+        crate::store::SourceRead::Absent => return Ok(Vec::new()),
+        crate::store::SourceRead::Invalid(why) | crate::store::SourceRead::Unreadable(why) => {
+            return Err(format!("the journal cannot be read ({why})"));
+        }
+    };
+    // A record still being appended (or torn by a crash) has no LF yet:
+    // `read_lines` would drop it, and it may be the very ask or relay claim
+    // this guard looks for.
+    if bytes.last().is_some_and(|byte| *byte != b'\n') {
+        return Err("the journal ends in an unterminated record".to_owned());
+    }
+    let mut events = Vec::new();
+    for (index, line) in crate::event_text::read_lines(&bytes)
+        .into_iter()
+        .enumerate()
+    {
+        if line.is_empty() {
+            continue;
+        }
+        let event = std::str::from_utf8(line)
+            .ok()
+            .and_then(|text| crate::events::Event::parse_line(text).ok())
+            .ok_or_else(|| format!("journal line {} is not one event", index + 1))?;
+        events.push(event);
+    }
+    Ok(events)
+}
+
+/// Points 2 to 4 of [`orchestrator_in_flight`]: the journal half, read whole
+/// ([`orchestrator_ledger`]), which the move reads again while it HOLDS the
+/// chat's admission lock and once more under the pane's send-lock.
+pub(crate) fn orchestrator_exchange(
+    dir: &Path,
+    (session, slot, agent): (&str, &str, &str),
+) -> Option<String> {
+    let events = match orchestrator_ledger(dir) {
+        Ok(events) => events,
+        Err(why) => return Some(why),
+    };
+    let events = events.as_slice();
+    let id = crate::meta::session_id_in(dir);
+    let key = crate::events::SessionKey::new(session, &id);
+    for request in crate::session::open_requests(events, key) {
+        let reference = request.reference.as_deref().unwrap_or_default();
+        if crate::watchdog::event_is_addressed_to_in(request, key, slot, agent) {
+            return Some(format!("request {reference} to it is pending"));
+        }
+        if crate::watchdog::event_is_actor_in(request, key, slot, agent) {
+            return Some(format!("request {reference} it opened is pending"));
+        }
+    }
+    for claim in events.iter().filter(|event| {
+        event.action == crate::relay::ATTEMPT
+            && crate::watchdog::event_is_actor_in(event, key, slot, agent)
+    }) {
+        let reference = claim.reference.as_deref().unwrap_or_default();
+        match crate::relay::claimed(events, reference, &id) {
+            Ok(found) if found.outcome.is_some() => {}
+            Ok(_) => return Some(format!("relay {reference} has no result")),
+            Err(why) => return Some(format!("relay {reference} cannot be read ({why})")),
+        }
+    }
+    None
+}
+
+/// The candidates an orchestrator's seat may take, or the hold that keeps it
+/// where it is: nothing may be in flight ([`orchestrator_in_flight`]), and only
+/// a candidate on which ae can resume the SAME conversation is kept
+/// ([`crate::reseat::travels`]).
+fn orchestrator_list(
+    dir: &Path,
+    bytes: &[u8],
+    (session, slot, agent): (&str, &str, &str),
+    list: Vec<(String, Provenance)>,
+) -> Result<Vec<(String, Provenance)>, (CauseClass, String)> {
+    if let Some(what) = orchestrator_in_flight(dir, (session, slot, agent)) {
+        return Err((
+            CauseClass::Busy,
+            CauseClass::Busy.lead(&format!("{IN_FLIGHT} ({what})")),
+        ));
+    }
+    let kept: Vec<(String, Provenance)> = list
+        .into_iter()
+        .filter(|(name, _)| crate::reseat::travels(dir, bytes, slot, name).is_ok())
+        .collect();
+    if kept.is_empty() {
+        return Err((
+            CauseClass::NoCandidate,
+            CauseClass::NoCandidate.lead(NO_KEEPER),
+        ));
+    }
+    Ok(kept)
+}
+
 /// The hold journaled when the seat is no longer eligible, led by its class.
 pub(crate) fn ineligible_record(why: Ineligible) -> String {
     why.class().lead(ineligible_summary(why))
@@ -219,7 +358,7 @@ pub(crate) fn ineligible_record(why: Ineligible) -> String {
 pub(crate) const fn ineligible_summary(why: Ineligible) -> &'static str {
     match why {
         Ineligible::Off => "held: auto reseat is off",
-        Ineligible::Orchestrator => "held: an orchestrator session's seat is never moved",
+        Ineligible::Orchestrator => "held: in an orchestrator session only the main seat moves",
         Ineligible::Session => "held: auto_reseat_sessions does not name this session",
         Ineligible::Slot => "held: the seat's slot is not one auto reseat moves",
         Ineligible::Class => "held: the main seat moves only when auto_reseat = all",
@@ -1619,6 +1758,14 @@ pub(crate) fn run(
                 Ok(list)
             }
         }
+    };
+    // THE ORCHESTRATOR'S OWN GUARDS, past every rule it shares with other
+    // seats: nothing in flight, and a candidate that keeps its conversation.
+    let eligible = match eligible {
+        Ok(list) if orchestrator => {
+            orchestrator_list(dir, &bytes, (&argv.session, &argv.slot, &agent), list)
+        }
+        other => other,
     };
     let list = match eligible {
         Ok(list) => list,

@@ -1,0 +1,511 @@
+#![allow(
+    clippy::expect_used,
+    reason = "fixture failures identify the missing prerequisite"
+)]
+
+use super::*;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const SESSION: &str = "d04bc042-f51e-4fea-a814-b8bcac07557e";
+const OTHER: &str = "b72543cb-c102-45c6-a4f6-81950a066560";
+const OWNER_ASK: &str = "ae-20260925T100000Z-deadbeef";
+const RELAY: &str = "ae-20260925T100001Z-cafebabe";
+const ON: &str = "all\nauto_reseat_at = 95\nauto_reseat_grace_secs = 0";
+const FACT: &str = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"The compass word is olive.\"}}\n";
+const CHARTER: &str = include_str!("../../../contrib/aeorchestrator/orchestrator.config");
+
+struct SeatRig {
+    rig: Rig,
+    name: &'static str,
+    transcript: PathBuf,
+    other_store: PathBuf,
+    pid: u32,
+}
+
+impl SeatRig {
+    fn new(tag: &str, orchestrator: bool, candidates: &str) -> Self {
+        let rig = Rig::new(tag);
+        configure_from(&rig, ON, "fake-claude-a", candidates);
+        let scratch = fs::canonicalize(&rig.scratch).expect("canonical scratch");
+        let work = scratch.join("work");
+        let from = scratch.join("home-a");
+        let to = scratch.join("home-b");
+        let home = scratch.join("home");
+        for path in [&from, &to, &home] {
+            fs::create_dir_all(path).expect("account directory");
+        }
+        let project = ae::carry::project_key(&work);
+        let transcript = from
+            .join("projects")
+            .join(&project)
+            .join(format!("{CARRIED}.jsonl"));
+        let other_store = to
+            .join("projects")
+            .join(&project)
+            .join(format!("{CARRIED}.jsonl"));
+        fs::create_dir_all(transcript.parent().expect("project directory"))
+            .expect("source Claude project");
+        fs::write(&transcript, FACT).expect("source transcript");
+        quota(&from, 96);
+        quota(&to, 2);
+
+        let name = if orchestrator { "orchestrator" } else { "lead" };
+        rebind(&rig, "seat.main", name);
+        rebind(&rig, "profile.main", "fake-claude-a");
+        rebind(&rig, "agent_bin.main", "claude");
+        rebind(&rig, "work_dir", work.to_str().expect("plain fixture path"));
+        let mut rows = format!(
+            "session_id={SESSION}\nlaunch_id.main={CARRIED}\nharness_session.main={CARRIED}\n"
+        );
+        if orchestrator {
+            let overlay = rig.scratch.join("orchestrator.config");
+            fs::write(&overlay, CHARTER).expect("seat charter");
+            writeln!(rows, "meta_agent=true\nlocal_config={}", overlay.display())
+                .expect("role and overlay");
+        }
+        fs::write(rig.dir.join("meta"), rig.meta() + &rows).expect("main seat metadata");
+        assert!(
+            rig.tmux(&[
+                "set-option",
+                "-t",
+                &rig.session,
+                "@ae_session_uuid",
+                SESSION
+            ])
+            .0
+        );
+        // A production launch starts its shell in work_dir with this state root.
+        // Rig's generic initial shell is elsewhere and has no AE_HOME.
+        let shell = format!(
+            "exec env AE_HOME={} HOME={} /bin/sh",
+            rig.scratch.display(),
+            home.display()
+        );
+        assert!(
+            rig.tmux(&[
+                "respawn-pane",
+                "-k",
+                "-t",
+                &rig.main_pane,
+                "-c",
+                work.to_str().expect("plain fixture path"),
+                &shell,
+            ])
+            .0
+        );
+        assert!(
+            rig.tmux(&["set-option", "-p", "-t", &rig.main_pane, "@ae_agent", name])
+                .0
+        );
+        rig.start(&rig.main_pane, "main", "claude");
+        let pid = rig
+            .tool_pid(&rig.main_pane, "claude")
+            .expect("the initial tool");
+        assert_eq!(rig.meta_row("harness_session.main"), CARRIED);
+        assert!(
+            rig.capture(&rig.main_pane).contains("done (0s)"),
+            "the source shows a proven idle frame"
+        );
+        Self {
+            rig,
+            name,
+            transcript,
+            other_store,
+            pid,
+        }
+    }
+
+    fn append(&self, line: &str) {
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.rig.dir.join("events.jsonl"))
+            .and_then(|mut f| writeln!(f, "{line}"))
+            .expect("append fixture journal row");
+    }
+
+    fn records(&self, action: &str) -> Vec<Event> {
+        records(&self.rig)
+            .into_iter()
+            .filter(|event| {
+                event.action == action
+                    && ae::watchdog::event_is_addressed_to(
+                        event,
+                        &self.rig.session,
+                        "main",
+                        self.name,
+                    )
+            })
+            .collect()
+    }
+
+    // The daemon leaves these records when it dispatches a leg. Supplying
+    // them lets the refusal cases isolate the leg's last admission check.
+    fn attempt(&self) -> (Option<i32>, String, String) {
+        let key = Timestamp::from_epoch(Timestamp::now().epoch() - 1);
+        for (action, extra) in [
+            (
+                "auto-reseat-headroom",
+                r#","summary":"headroom 96% weekly_all 7d""#.to_owned(),
+            ),
+            (ATTEMPT_ACTION, format!(r#","ref":"{key}""#)),
+        ] {
+            self.append(&format!(
+                r#"{{"ts":"{key}","actor":"watchdog","action":"{action}","target":"{}","target_slot":"main","target_session":"{}"{extra}}}"#,
+                self.name, self.rig.session,
+            ));
+        }
+        let out = super::super::cli::ae()
+            .env("TMUX", format!("{},0,0", self.rig.sock.display()))
+            .env_remove("TMUX_PANE")
+            .env("AE_HOME", &self.rig.scratch)
+            .env("HOME", self.rig.scratch.join("home"))
+            .env("CONFIG_FILE", self.rig.scratch.join("config"))
+            .arg("_auto-reseat")
+            .arg(&self.rig.dir)
+            .args(["main", &key.to_string()])
+            .output()
+            .expect("the detached leg runs");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    fn held(&self, reason: &str) {
+        let receipt = self.attempt();
+        assert_ne!(receipt.0, Some(0), "{receipt:?}");
+        let holds = self.records(HELD_ACTION);
+        assert!(
+            holds.iter().any(|hold| hold
+                .summary
+                .as_deref()
+                .is_some_and(|text| text.contains(reason))),
+            "expected hold with {reason:?}: {receipt:?}\n{}",
+            self.rig.events()
+        );
+        assert_eq!(
+            self.rig.tool_pid(&self.rig.main_pane, "claude"),
+            Some(self.pid)
+        );
+        assert_eq!(self.rig.meta_row("profile.main"), "fake-claude-a");
+        assert_eq!(self.rig.meta_row("harness_session.main"), CARRIED);
+        assert!(self.records("reseat").is_empty(), "no stop recorded");
+        assert!(!self.other_store.exists(), "no carry published");
+    }
+}
+
+fn quota(home: &Path, percent: u8) {
+    let now = Timestamp::now().epoch();
+    fs::write(
+        home.join(".claude.json"),
+        format!(
+            r#"{{"cachedUsageUtilization":{{"fetchedAtMs":{},"utilization":{{"limits":[{{"kind":"weekly_all","group":"weekly_all","percent":{percent},"resets_at":"{}","scope":null}}]}}}}}}"#,
+            now * 1_000,
+            Timestamp::from_epoch(now + 86_400),
+        ),
+    )
+    .expect("fresh fixture weekly quota");
+}
+
+#[test]
+fn orchreseat_watchdog_skips_a_fresh_candidate_and_carries_the_main_conversation() {
+    let seat = SeatRig::new("orcarry", true, "fake-opencode, fake-claude-b");
+    let rig = &seat.rig;
+    let desk = ae::desk::parse_input(b"DECIDE\nD7 | first draft\n").expect("fixture desk");
+    ae::deskstore::set(&rig.dir, desk, Timestamp::now(), seat.name).expect("saved desk");
+    let memo = format!(
+        "{}\torchestrator\tgeneral\tKeep the decision.\n",
+        Timestamp::now()
+    );
+    fs::write(rig.dir.join("memo.tsv"), &memo).expect("fixture memo");
+    let board = fs::read(rig.dir.join("desk-record")).expect("desk bytes");
+    let initial_launch = rig.meta_row("launch_id.main");
+    let charter = rig.meta_row("charter.main");
+    assert!(
+        !charter.is_empty(),
+        "the original start stamped its charter"
+    );
+
+    assert!(
+        watch_until(rig, || !seat.records(DONE_ACTION).is_empty()),
+        "no move:\n{}\n{}",
+        rig.events(),
+        daemon_err(rig)
+    );
+    assert_eq!(rig.meta_row("profile.main"), "fake-claude-b");
+    assert_eq!(rig.meta_row("harness_session.main"), CARRIED);
+    assert_ne!(rig.tool_pid(&rig.main_pane, "claude"), Some(seat.pid));
+    assert!(rig.tool_pid(&rig.main_pane, "claude").is_some());
+    assert!(
+        rig.launched().contains(&format!("--resume {CARRIED}")),
+        "{}",
+        rig.launched()
+    );
+    assert_eq!(
+        fs::read_to_string(&seat.transcript).expect("source transcript intact"),
+        FACT
+    );
+    assert_eq!(
+        fs::read_to_string(&seat.other_store).expect("destination transcript"),
+        FACT
+    );
+    assert!(
+        !rig.dir.join("seed.orchestrator.md").exists(),
+        "no fresh seed"
+    );
+    assert_eq!(rig.meta_row("meta_agent"), "true");
+    assert_eq!(rig.meta_row("session_id"), SESSION);
+    assert_eq!(rig.meta_row("main_pane"), rig.main_pane);
+    assert_ne!(rig.meta_row("launch_id.main"), initial_launch);
+    assert!(!rig.meta_row("launch_id.main").is_empty());
+    assert_eq!(rig.meta_row("charter.main"), charter);
+    assert_eq!(
+        rig.meta_row("charter_launch.main"),
+        rig.meta_row("launch_id.main")
+    );
+    assert!(
+        rig.meta_row("context.main")
+            .parse::<u32>()
+            .is_ok_and(|stamp| stamp > 0)
+    );
+    assert_eq!(
+        fs::read(rig.dir.join("desk-record")).expect("desk bytes"),
+        board
+    );
+    assert_eq!(
+        fs::read_to_string(rig.dir.join("memo.tsv")).expect("memo bytes"),
+        memo
+    );
+    assert_eq!(
+        fs::read_to_string(rig.meta_row("local_config")).expect("charter overlay"),
+        CHARTER
+    );
+
+    // Exercise the guard left by the move itself. The separate _run refusal
+    // fixture supplies a record and cannot catch a move that never writes it.
+    rig.kill_tools(&rig.main_pane);
+    fs::remove_file(&seat.other_store).expect("lose the destination transcript before restart");
+    let restart = super::super::cli::ae()
+        .env("AE_HOME", &rig.scratch)
+        .env("HOME", rig.scratch.join("home"))
+        .env("CONFIG_FILE", rig.scratch.join("config"))
+        .current_dir(rig.meta_row("work_dir"))
+        .args([ae::cli::RUN, "--print"])
+        .arg(&rig.dir)
+        .arg("main")
+        .output()
+        .expect("check the successor's restart plan");
+    assert!(!restart.status.success(), "{restart:?}");
+    let refusal = String::from_utf8_lossy(&restart.stderr);
+    assert!(
+        refusal.contains("refusing a fresh start") && refusal.contains(CARRIED),
+        "{refusal}"
+    );
+    assert_eq!(rig.meta_row("harness_session.main"), CARRIED);
+}
+
+#[test]
+fn orchreseat_holds_a_pending_owner_chat_request() {
+    let seat = SeatRig::new("orask", true, "fake-claude-b");
+    let rig = &seat.rig;
+    seat.append(&format!(
+        r#"{{"ts":"{}","actor":"console:local","action":"ask","target":"orchestrator","target_slot":"main","target_session":"{}","target_session_id":"{SESSION}","target_session_uuid":"{SESSION}","target_server":"{}","target_pane":"{}","ref":"{OWNER_ASK}","summary":"Wait for this answer"}}"#,
+        Timestamp::now(), rig.session, rig.sock.display(), rig.main_pane,
+    ));
+    assert!(
+        ae::requests::states(rig.events().as_bytes())
+            .iter()
+            .any(|request| {
+                request.id == OWNER_ASK.as_bytes()
+                    && request.status == ae::requests::Status::Pending
+            }),
+        "fixture is a pending request"
+    );
+    seat.held("in flight");
+}
+
+#[test]
+fn orchreseat_holds_a_claimed_relay_without_a_result() {
+    let seat = SeatRig::new("orrelay", true, "fake-claude-b");
+    seat.append(&format!(
+        r#"{{"ts":"{}","actor":"orchestrator","actor_slot":"main","actor_session":"{}","actor_session_id":"{SESSION}","actor_launch_id":"{CARRIED}","action":"relay-attempt","target":"project","target_slot":"main","target_session":"project","target_session_id":"{OTHER}","target_session_uuid":"{OTHER}","ref":"{RELAY}","relay_mode":"interim","summary":"Relay the owner's request"}}"#,
+        Timestamp::now(), seat.rig.session,
+    ));
+    assert_eq!(
+        ae::relay::claimed(&records(&seat.rig), RELAY, SESSION)
+            .expect("fixture relay claim")
+            .outcome,
+        None
+    );
+    seat.held("in flight");
+}
+
+#[test]
+fn orchreseat_holds_while_the_console_has_admitted_a_send() {
+    let seat = SeatRig::new("orcompose", true, "fake-claude-b");
+    let _admission = ae::store::open(&seat.rig.dir)
+        .console_admission_now()
+        .expect("console owns admission");
+    seat.held("in flight");
+}
+
+#[test]
+fn orchreseat_holds_if_every_candidate_would_start_a_new_conversation() {
+    let seat = SeatRig::new("orfresh", true, "fake-opencode");
+    remove_unused_profiles(&seat.rig, &["fake-claude", "fake-claude-b"]);
+    seat.held("conversation");
+}
+
+#[test]
+fn orchreseat_holds_an_open_attempt_when_switched_off() {
+    let seat = SeatRig::new("oroff", true, "fake-claude-b");
+    configure_from(&seat.rig, "off", "fake-claude-a", "fake-claude-b");
+    seat.held("auto reseat is off");
+}
+
+#[test]
+fn orchreseat_does_not_change_the_normal_main_seats_fresh_move() {
+    let seat = SeatRig::new("orordinary", false, "fake-opencode");
+    let receipt = seat.attempt();
+    assert_eq!(receipt.0, Some(0), "{receipt:?}\n{}", seat.rig.events());
+    assert_eq!(seat.rig.meta_row("profile.main"), "fake-opencode");
+    assert!(seat.rig.tool_pid(&seat.rig.main_pane, "opencode").is_some());
+    assert_eq!(seat.records(DONE_ACTION).len(), 1, "{}", seat.rig.events());
+}
+
+#[test]
+fn orchreseat_holds_an_owner_request_opened_by_its_main_seat() {
+    const OWNER: &str = "telegram:42";
+    let seat = SeatRig::new("orownreply", true, "fake-claude-b");
+    let asks = seat
+        .rig
+        .run(ae::cli::ASK, &[OWNER, "Please choose a direction."]);
+    assert_eq!(asks.0, Some(0), "{asks:?}");
+    let id = asks.1.trim();
+    assert!(
+        ae::requests::states(seat.rig.events().as_bytes())
+            .iter()
+            .any(|request| {
+                request.id == id.as_bytes()
+                    && request.from == ae::tracked::ORCHESTRATOR_DISPLAY.as_bytes()
+                    && request.to == OWNER.as_bytes()
+                    && request.status == ae::requests::Status::Pending
+            }),
+        "fixture opened a pending request to the owner: {}",
+        seat.rig.events()
+    );
+    assert!(
+        records(&seat.rig).iter().any(|event| {
+            event.action == "ask"
+                && event.reference.as_deref() == Some(id)
+                && event.actor_slot.value() == Some("main")
+                && event.actor_session_id.value() == Some(SESSION)
+                && event.actor_launch_id.value() == Some(CARRIED)
+        }),
+        "the opening binds the orchestrator's current launch"
+    );
+    seat.held("in flight");
+}
+
+#[test]
+fn orchreseat_a_copy_write_failure_after_the_stop_cannot_seed() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let seat = SeatRig::new("orcopyfail", true, "fake-claude-b");
+    let rig = &seat.rig;
+    let project = seat.other_store.parent().expect("destination project");
+    fs::create_dir_all(project).expect("destination account has its project");
+    // With no differing destination files, the read-only survey can succeed.
+    // The copy cannot create its private publication file in this directory.
+    fs::set_permissions(project, fs::Permissions::from_mode(0o500))
+        .expect("deny publication to the target");
+    let receipt = seat.attempt();
+    fs::set_permissions(project, fs::Permissions::from_mode(0o700))
+        .expect("allow the fixture cleanup");
+    let events = records(rig);
+    assert!(
+        with_action(&events, "reseat").iter().any(|event| {
+            event
+                .summary
+                .as_deref()
+                .is_some_and(|summary| summary.starts_with("stopped claude"))
+        }),
+        "the failure is past the stop: {receipt:?}\n{}",
+        rig.events()
+    );
+    assert_ne!(receipt.0, Some(0), "{receipt:?}");
+    assert_eq!(rig.meta_row("profile.main"), "fake-claude-a");
+    assert_eq!(rig.meta_row("harness_session.main"), CARRIED);
+    assert_eq!(
+        fs::read_to_string(&seat.transcript).expect("source transcript"),
+        FACT
+    );
+    assert!(
+        !seat.other_store.exists(),
+        "target conversation was not published"
+    );
+    assert!(
+        !rig.dir.join("seed.orchestrator.md").exists(),
+        "no seeded successor"
+    );
+    assert!(seat.records(DONE_ACTION).is_empty(), "no successful move");
+    assert_eq!(
+        rig.launched().matches("--session-id ").count(),
+        1,
+        "{}",
+        rig.launched()
+    );
+}
+
+#[test]
+fn orchreseat_strict_resume_cannot_exec_a_fresh_tool_after_a_store_gap() {
+    for (tag, started) in [("orstrictresume", true), ("orstrictstart", false)] {
+        let seat = SeatRig::new(tag, true, "fake-claude-b");
+        let rig = &seat.rig;
+        rig.kill_tools(&rig.main_pane);
+        let launch = rig.meta_row("launch_id.main");
+        fs::write(
+            rig.dir.join("must_resume.main"),
+            format!("{CARRIED} {launch}\n"),
+        )
+        .expect("the record a strict move leaves");
+        fs::remove_file(&seat.transcript).expect("lose the conversation before _run");
+        if !started {
+            fs::remove_file(ae::run::started_marker(&rig.dir, "main"))
+                .expect("model an interrupted start-marker write");
+        }
+
+        // If _run falls back, the fake records the exec and returns without
+        // needing a terminal. A failure from the fake cannot pass this check.
+        let executed = rig.scratch.join("unexpected-exec");
+        fs::write(
+            rig.scratch.join("claude.pl"),
+            format!(
+                "open my $f, '>', '{}' or die; exit 0;\n",
+                executed.display()
+            ),
+        )
+        .expect("record a forbidden exec");
+        let out = super::super::cli::ae()
+            .env("AE_HOME", &rig.scratch)
+            .env("HOME", rig.scratch.join("home"))
+            .env("CONFIG_FILE", rig.scratch.join("config"))
+            .current_dir(rig.meta_row("work_dir"))
+            .arg("_run")
+            .arg(&rig.dir)
+            .arg("main")
+            .output()
+            .expect("_run returns");
+        assert!(!out.status.success(), "{tag}: {out:?}");
+        assert!(!executed.exists(), "{tag}: _run entered the harness");
+        assert_eq!(rig.meta_row("harness_session.main"), CARRIED, "{tag}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("resum") && stderr.contains(CARRIED),
+            "{tag}: {stderr}"
+        );
+    }
+}

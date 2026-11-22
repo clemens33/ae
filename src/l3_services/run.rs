@@ -385,6 +385,85 @@ pub fn started_marker(dir: &Path, slot: &str) -> PathBuf {
     dir.join(format!("launch.{}.started", launch::safe_slot(slot)))
 }
 
+/// The record a move that KEEPS or CARRIES a seat's conversation stages for its
+/// starts: lines of `<conversation id> <launch id>`, one for the seat before
+/// the move and one for its successor. While a line names the seat's recorded
+/// `harness_session.<slot>` and `launch_id.<slot>`, `_run` starts that
+/// conversation exactly or not at all ([`must_resume`]). Nothing removes it,
+/// [`clear_slot`] included: a launch id is minted once, so a line naming no
+/// current launch binds nothing.
+#[must_use]
+pub fn must_resume_marker(dir: &Path, slot: &str) -> PathBuf {
+    dir.join(format!("must_resume.{}", launch::safe_slot(slot)))
+}
+
+/// The most a strict resume record may hold: two lines of an id and a launch
+/// id, with room to spare. A longer one is no record ae wrote, and refuses.
+const MUST_RESUME_CAP: u64 = 512;
+
+/// THE STRICT RESUME: a seat whose [`must_resume_marker`] names its recorded
+/// conversation and launch starts only on a resume the store PROVES
+/// ([`Probe::Found`]). A missing start marker, a conversation not in its
+/// store, one ae cannot read and a store ae cannot probe all refuse BEFORE
+/// anything is published or exec'd, so the pane stays at its shell instead of
+/// opening a fresh conversation. Each line is compared byte for byte and never
+/// parsed; a record that is not a regular file, cannot be read or is longer
+/// than [`MUST_RESUME_CAP`] refuses too.
+fn must_resume(
+    dir: &Path,
+    slot: &str,
+    seat: &Seat,
+    mode: Mode,
+    probe: Option<Probe>,
+) -> Result<(), String> {
+    let marker = must_resume_marker(dir, slot);
+    let unusable = |why: &str| {
+        format!(
+            "seat {slot}: the strict resume record {} cannot be used ({why}) — refusing to \
+             start, so no fresh conversation replaces the one a move kept",
+            marker.display()
+        )
+    };
+    let held = match crate::store::read_capped(&marker, MUST_RESUME_CAP) {
+        Ok(crate::store::SourceRead::Absent) => return Ok(()),
+        Ok(crate::store::SourceRead::Ready(bytes)) => bytes,
+        Ok(crate::store::SourceRead::Invalid(why) | crate::store::SourceRead::Unreadable(why)) => {
+            return Err(unusable(&why));
+        }
+        Err(_) => return Err(unusable(&format!("longer than {MUST_RESUME_CAP} bytes"))),
+    };
+    let id = seat.harness_session.as_str();
+    let line = format!("{id} {}", seat.launch_id);
+    if id.is_empty()
+        || !held
+            .split(|byte| *byte == b'\n')
+            .any(|held| held == line.as_bytes())
+    {
+        return Ok(());
+    }
+    let gap = match (mode, probe) {
+        // The profile is re-read on every start: one edited to another harness
+        // would probe a different store for the same id.
+        _ if seat.tool != seat.recorded_tool => format!(
+            "its profile now runs {}, not the recorded {}",
+            seat.tool.as_str(),
+            seat.recorded_tool.as_str()
+        ),
+        (Mode::Resume, Some(Probe::Found)) => return Ok(()),
+        (Mode::Create, _) => "its start marker is gone".to_owned(),
+        (Mode::Resume, Some(Probe::NotFound)) => "it is not in its store".to_owned(),
+        (Mode::Resume, Some(Probe::Unprobed)) => "ae cannot probe its store".to_owned(),
+        (Mode::Resume, Some(Probe::Unreadable)) => "its store cannot be read".to_owned(),
+        (Mode::Resume, Some(Probe::NoId) | None) => "it has no usable id".to_owned(),
+    };
+    Err(format!(
+        "seat {slot}: ae moved this seat to resume conversation {id}, and {gap} — refusing a \
+         fresh start; the pane stays at its shell. Restore the conversation and relaunch, or \
+         remove {} to start fresh",
+        marker.display()
+    ))
+}
+
 /// When any seat here last BECAME its tool, epoch seconds.
 ///
 /// The marker above is `_run`'s own pre-exec record, written for every tool and
@@ -867,6 +946,7 @@ fn build_with_snapshot(
         )
     });
     let exact = matches!(probe, Some(Probe::Found | Probe::Unprobed));
+    must_resume(dir, slot, &seat, mode, probe)?;
     let variant_notice = variant_notice_for(slot, &seat, exact);
     let (effort, effort_notice) = effort_on_resume(dir, slot, &mut seat, exact)?;
     let launch = launch_baseline(&seat);

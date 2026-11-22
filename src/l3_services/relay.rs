@@ -437,6 +437,22 @@ pub fn run(
         }
     };
     let caller = &grant.caller;
+    // THE ORIGIN'S ADMISSION, held from before the claim to the result, without
+    // waiting: an automatic move of the orchestrator's seat holds the same lock
+    // from its gate until its new tool has started, so a relay and a move never
+    // overlap. Dropped when this function returns.
+    let _origin = match store::open(&caller.dir).console_admission_now() {
+        Ok(admission) => admission,
+        Err(why) => {
+            let reason = if why.kind() == io::ErrorKind::WouldBlock {
+                "the orchestrator's chat admission is held (a seat move or a send is in flight)"
+                    .to_owned()
+            } else {
+                format!("the orchestrator's chat admission lock is not free ({why})")
+            };
+            return refuse(caller, &parsed, &reason, now, err);
+        }
+    };
     let prepared = match prepare(&grant, &parsed, now, entropy) {
         Ok(prepared) => prepared,
         Err(reason) => return refuse(caller, &parsed, &reason, now, err),

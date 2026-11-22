@@ -1021,7 +1021,10 @@ pub struct Seat<'a> {
     pub agent: &'a str,
     /// The profile the seat records now.
     pub profile: &'a str,
-    /// The session is an orchestrator's.
+    /// The session is an orchestrator's. Only its main seat may move, under the
+    /// same rules as every other main seat, and the leg adds the orchestrator's
+    /// own guards: the conversation must travel, and nothing may be in flight
+    /// to or from it.
     pub orchestrator: bool,
 }
 
@@ -1060,7 +1063,7 @@ pub fn eligible<'s>(settings: &'s Settings, seat: &Seat<'_>) -> Result<&'s [Stri
     if settings.switch == Switch::Off {
         return Err(Ineligible::Off);
     }
-    if seat.orchestrator {
+    if seat.orchestrator && SeatClass::of(seat.slot) != Some(SeatClass::Main) {
         return Err(Ineligible::Orchestrator);
     }
     if settings
@@ -3864,19 +3867,39 @@ mod tests {
     }
 
     #[test]
-    fn an_orchestrator_an_unlisted_session_a_bad_slot_or_an_unmapped_profile_never_moves() {
+    fn an_unlisted_session_a_bad_slot_or_an_unmapped_profile_never_moves() {
         let mut settings = with_map(Switch::All);
         assert_eq!(
             eligible(&with_map(Switch::Off), &seat("worker.0")),
             Err(Ineligible::Off)
         );
+        // An orchestrator session moves its main seat alone, judged by the
+        // rules of every main seat; its own guards are the leg's.
+        assert_eq!(
+            eligible(
+                &settings,
+                &Seat {
+                    orchestrator: true,
+                    ..seat("worker.0")
+                }
+            ),
+            Err(Ineligible::Orchestrator)
+        );
         let orchestrator = Seat {
             orchestrator: true,
-            ..seat("worker.0")
+            ..seat("main")
         };
         assert_eq!(
             eligible(&settings, &orchestrator),
-            Err(Ineligible::Orchestrator)
+            Ok(&["opus55x".to_owned()][..])
+        );
+        assert_eq!(
+            eligible(&with_map(Switch::On), &orchestrator),
+            Err(Ineligible::Class)
+        );
+        assert_eq!(
+            eligible(&with_map(Switch::Off), &orchestrator),
+            Err(Ineligible::Off)
         );
         assert_eq!(
             eligible(&settings, &seat("worker.x")),

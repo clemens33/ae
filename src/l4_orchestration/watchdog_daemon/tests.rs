@@ -6563,7 +6563,7 @@ fn the_auto_reseat_step_triggers_one_due_seat_and_names_each_hold_once() {
     let orchestrator = auto_acts(&on, &both, &limits, ("dev", true), 300, &mut Vec::new());
     assert!(
         orchestrator.is_empty(),
-        "an orchestrator's seat never moves"
+        "an orchestrator session's non-main seat never moves"
     );
     let waiting = Settings {
         grace_secs: 600,

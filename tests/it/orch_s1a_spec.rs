@@ -1957,3 +1957,31 @@ fn dispatcher_rename_keeps_binding_and_same_name_replacement_cannot_borrow_it() 
     }
     assert_eq!((r.keys(), r.asks().len()), before);
 }
+
+#[test]
+fn orchreseat_relay_cannot_claim_while_its_origin_admission_is_held() {
+    let r = rig("s1aoradmit");
+    r.stamp_target();
+    let admission = ae::store::open(&r.caller.dir)
+        .console_admission_now()
+        .expect("a move holds the origin admission");
+    let before = r.asks().len();
+
+    let out = r.relay(OWNER);
+
+    assert_eq!(out.0, Some(1), "{}", words(&out));
+    assert!(out.2.contains("chat admission"), "{}", words(&out));
+    assert!(out.1.is_empty(), "no claim receipt: {}", words(&out));
+    assert!(
+        events(&r.caller.dir)
+            .iter()
+            .all(|event| event.action != ATTEMPT),
+        "blocked relay must precede its claim: {}",
+        ledger(&r.caller.dir)
+    );
+    assert_eq!(r.asks().len(), before, "nothing reached the target");
+    drop(admission);
+
+    let (_, event) = deliver(&r, &["--quote", OWNER, "--task", TASK]);
+    assert_eq!(event.target_slot.value(), Some("main"));
+}

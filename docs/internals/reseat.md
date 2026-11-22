@@ -950,6 +950,65 @@ destination pass) and `other` (the rest, and the give-up hold of a spent limit e
 `lock`, `observed-choice`, `pair-changed` and `floor-changed` are transient classes: their record
 is a hold, every other class a refusal. `ae reseat` itself prints its messages unchanged.
 
+### Auto reseat and the orchestrator
+
+The orchestrator's seat is a `main` seat: it moves only under `auto_reseat = all`,
+on the same thresholds, grace, idle proof and candidate list as every main seat.
+In the canonical seat's layout (`vertical`, from the seat template) it is no lead
+pair, so the global `auto_reseat_at` applies, not `auto_reseat_lead_at`. Any other
+seat of an orchestrator session never moves (`Ineligible::Orchestrator`). Three guards are its own, each
+read in the leg and again by the move under the lifecycle lock:
+
+1. **Its conversation travels.** `leg::orchestrator_list` keeps only the candidates
+   `reseat::travels` accepts: a keep (same tool and account, `keeps`) with the
+   conversation PROVEN in its store, or a carry (`carry_plan`: same tool binary,
+   both config homes known) with the conversation PROVEN in the store it leaves and
+   the carry's read-only Check passing, so a destination holding a forked copy is
+   passed over before the choice. A probe that cannot check is no proof. With none, the leg holds
+   `no-candidate: held: no candidate keeps the orchestrator's conversation`. Under
+   the lock the move proves the same travel again with the carry Check, before the
+   stop. Past the stop, before any launch file or meta row moves, the destination
+   store must hold the conversation; a failed copy or a missing transcript sends the
+   seat back on its OLD profile, resuming the same conversation (`hold_back`), and
+   the move refuses. No path seeds an orchestrator.
+2. **Nothing is in flight.** `leg::orchestrator_in_flight` holds
+   `busy: held: a request, relay or owner reply to the orchestrator is in flight`
+   while the session chat's admission lock is held (an owner send, a relay, or
+   another move), while a Pending ask or review is addressed to the seat or was
+   opened by it (a role-opened request is bound to the launch a move replaces,
+   docs/reference/contract.md), while a relay it claimed has no `relay-result`, or
+   while the journal cannot be read whole: an unreadable journal, a node that is
+   not a regular file or one line that is not an event holds too, because a
+   request ae cannot read is no proof that none is open.
+   The move takes the chat's admission lock without waiting before the stop and
+   holds it until the new tool has started; `relay` takes the same lock from before
+   its claim to its result, so a relay and a move never overlap. The journal is read
+   once more under the pane's send-lock, before the idle frames. Agent deliveries
+   that arrive while the pane is at its shell are refused as dead and told to
+   re-send, as for every seat. Residual: a crash between a relay's claim and its
+   result leaves an unmatched `relay-attempt`, which `relay --status` never closes;
+   the hold then stays until a human settles the relay (`relay --status <id>`) and
+   moves the seat by hand with `ae reseat`.
+3. **The start resumes or does not happen.** Under the lifecycle lock and before
+   the stop, the move mints the successor's launch id and stages
+   `must_resume.<slot>` atomically with two lines, `<conversation> <current launch>`
+   and `<conversation> <successor launch>` (`reseat::stage_guard`); the meta move
+   later publishes exactly that successor launch. No crash window therefore leaves
+   either the old rows or the new ones unguarded. While a line names the seat's
+   recorded conversation and launch, `_run` starts only on a resume its store
+   proves (`Probe::Found`) with the recorded tool: a missing start marker, a
+   conversation not in its store, a store it cannot probe or read, and a profile
+   edited to another tool all refuse before anything is exec'd, so the pane stays
+   at its shell. Nothing removes the record: a launch id is minted once, so a line
+   naming no current launch binds nothing.
+
+The session's identity stays: `meta_agent`, `session_id`, the seat overlay,
+`main_pane`, the charter, the desk board, memos and the journal are not touched;
+the move mints a new `launch_id.main`, which the dispatcher proof requires to be
+present, and the new start stamps its charter and relay context as any start does.
+A headroom episode the guards hold is tried at most twice and is not retried; the
+seat then moves on its limit episode, whose rounds are.
+
 ### The pair guard (#305)
 
 A seat with a review-pair partner is never moved onto the partner's provider by

@@ -199,26 +199,35 @@ fn leadat_new_red_off_disables_crossing_on_both_lead_slots() {
 }
 
 #[test]
-fn leadat_control_orchestrator_and_on_main_eligibility_are_unchanged() {
-    for (tag, orchestrator) in [("latorch", true), ("latonmain", false)] {
+fn leadat_control_on_main_is_unchanged_and_orchestrator_main_keeps_the_global_bar() {
+    // `on` never moves a main seat, so it opens no episode at any reading.
+    let seat = fixture(
+        "latonmain",
+        "lead-pair",
+        "main",
+        "auto_reseat_at = 90\nauto_reseat_lead_at = 50",
+    );
+    let config = seat.rig.scratch.join("config");
+    let text = std::fs::read_to_string(&config).expect("config");
+    std::fs::write(
+        config,
+        text.replace("auto_reseat = all", "auto_reseat = on"),
+    )
+    .expect("on excludes main");
+    crossing(&seat, 99.0, false);
+    // An orchestrator's main seat may move under `all`. In the canonical
+    // seat's layout (`vertical`, contrib/aeorchestrator/orchestrator.config)
+    // it is no lead pair and keeps the global `auto_reseat_at` bar: 51 is past
+    // the lead row's 50 yet opens nothing, 99 is past the global 90 and opens one.
+    for (tag, used, opens) in [("latorchlow", 51.0, false), ("latorchhigh", 99.0, true)] {
         let seat = fixture(
             tag,
-            "lead-pair",
+            "vertical",
             "main",
             "auto_reseat_at = 90\nauto_reseat_lead_at = 50",
         );
-        if orchestrator {
-            put(&seat.rig, "meta_agent", "true");
-        } else {
-            let config = seat.rig.scratch.join("config");
-            let text = std::fs::read_to_string(&config).expect("config");
-            std::fs::write(
-                config,
-                text.replace("auto_reseat = all", "auto_reseat = on"),
-            )
-            .expect("on excludes main");
-        }
-        crossing(&seat, 99.0, false);
+        put(&seat.rig, "meta_agent", "true");
+        crossing(&seat, used, opens);
     }
 }
 

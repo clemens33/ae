@@ -1275,6 +1275,23 @@ fn stop_running_tool(
         )?;
         return Ok(Stop::Refused(CauseClass::Lock));
     };
+    // AN ORCHESTRATOR'S JOURNAL, read once more under the send-lock: a tracked
+    // send that completed between the gate and this lock opened a request the
+    // gate could not see, and the frame alone would not show it.
+    if parsed.automatic
+        && crate::meta::meta_agent_role(bytes) == crate::meta::MetaAgentRole::Role
+        && let Some(what) = crate::autoreseat::leg::orchestrator_exchange(
+            dir,
+            (&parsed.session, &target.slot, &target.agent),
+        )
+    {
+        writeln!(
+            err,
+            "Error: {} ({what}) — nothing was stopped.",
+            crate::autoreseat::leg::IN_FLIGHT
+        )?;
+        return Ok(Stop::Refused(CauseClass::Busy));
+    }
     // THE FRAME. Only a POSITIVELY proven idle box may be stopped, and it is
     // proven TWICE: `Busy` short-circuits on the first reading, and a seat
     // that was handed work between the two readings is caught by the second.
@@ -1611,16 +1628,7 @@ pub(crate) fn resolved(dir: &Path, name: &str) -> Option<Resolved> {
 /// refusal that move would print.
 pub(crate) fn resolution(dir: &Path, name: &str, agent: &str) -> Result<Resolved, String> {
     let bytes = crate::meta::read_bytes(dir).unwrap_or_default();
-    let moving = match crate::session_launch::split_profile_client(name) {
-        Some((profile, Some(label))) => resolve_pair(&bytes, &profile, &label, agent)?,
-        Some((profile, None)) => resolve_profile(dir, &bytes, &profile, agent)?,
-        None => {
-            return Err(format!(
-                "Error: '{name}' is neither a profile nor one profile@client pair. Nothing was \
-                 reseated."
-            ));
-        }
-    };
+    let moving = moving_named(dir, &bytes, name, agent)?;
     let identity = moving
         .pair
         .as_ref()
@@ -1631,6 +1639,95 @@ pub(crate) fn resolution(dir: &Path, name: &str, agent: &str) -> Result<Resolved
         tool: moving.tool,
         identity,
     })
+}
+
+/// `name` resolved for the seat `agent`: a bare profile, or a `profile@client`
+/// pair through the one pair gate ([`resolve_pair`]).
+fn moving_named(dir: &Path, bytes: &[u8], name: &str, agent: &str) -> Result<Moving, String> {
+    match crate::session_launch::split_profile_client(name) {
+        Some((profile, Some(label))) => resolve_pair(bytes, &profile, &label, agent),
+        Some((profile, None)) => resolve_profile(dir, bytes, &profile, agent),
+        None => Err(format!(
+            "Error: '{name}' is neither a profile nor one profile@client pair. Nothing was \
+             reseated."
+        )),
+    }
+}
+
+/// How a move to `name` keeps the seat's conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Travels {
+    /// The same tool in the same account resumes it ([`keeps`]).
+    Kept,
+    /// The same tool in another account resumes it once ae copies it
+    /// ([`crate::carry`]).
+    Carried,
+}
+
+/// Would a move of the seat at `slot` to `name` go on in the SAME
+/// conversation? Read from the seat's records (`bytes`), never from what a
+/// tool shows: the move must keep it ([`keeps`]) with the conversation PROVEN
+/// in its store, or carry it ([`carry_plan`]) with the conversation PROVEN in
+/// the store it leaves. A probe that cannot check counts as no proof, so a
+/// tool whose store ae has not measured never travels.
+///
+/// The leg asks it of every candidate of an orchestrator's seat, and the move
+/// asks it again under the lifecycle lock, so both judge by one rule. The
+/// carry's own walk ([`crate::carry::Mode::Check`]) still runs before the stop.
+///
+/// # Errors
+///
+/// Why the conversation would not travel, in words a hold can carry.
+pub(crate) fn travels(dir: &Path, bytes: &[u8], slot: &str, name: &str) -> Result<Travels, String> {
+    let meta = crate::meta::Meta::parse(&String::from_utf8_lossy(bytes));
+    let Some(row) = meta.roster().iter().find(|row| row.slot == slot) else {
+        return Err(format!("no seat at slot {slot}"));
+    };
+    let moving = moving_named(dir, bytes, name, &row.name)?;
+    let value = |key: &str| crate::lifecycle::meta_value(bytes, &format!("{key}.{slot}"));
+    let prior = value("harness_session");
+    let work_dir = crate::seat_relaunch::usable_work_dir(bytes)?;
+    let found = |home: &Path| {
+        crate::run::probe_in(
+            moving.tool,
+            &prior,
+            &crate::launch_cmd::Resolved::Path(home.to_path_buf()),
+            Some(Path::new(&work_dir)),
+        ) == crate::conversation::Probe::Found
+    };
+    let from_command = recorded_command(dir, bytes, row);
+    let keeping = keeps(&Keep {
+        from_binary: &value("agent_bin"),
+        to_binary: &moving.binary,
+        tool: moving.tool,
+        id: &prior,
+        from_home: &value("config_home"),
+        from_base: &value("config_home_base"),
+        to_home: (moving.account.as_ref())
+            .map(|account| (account.row.as_str(), account.base.as_deref())),
+        from_command: from_command.as_deref(),
+        to_command: &moving.command,
+    });
+    if keeping {
+        return match moving.account.as_ref() {
+            Some(account) if found(&account.path) => Ok(Travels::Kept),
+            _ => Err(format!("conversation {prior} is not proven in its store")),
+        };
+    }
+    let Some(plan) = carry_plan(bytes, slot, &moving, &prior, &work_dir) else {
+        return Err(format!("'{name}' would start a fresh conversation"));
+    };
+    if !found(plan.homes().0) {
+        return Err(format!(
+            "conversation {prior} is not proven in {}",
+            plan.homes().0.display()
+        ));
+    }
+    // The carry's own read-only walk, so a destination that holds a forked
+    // copy is passed over here rather than chosen and refused every round.
+    crate::carry::run(&plan, crate::carry::Mode::Check)
+        .map(|_| Travels::Carried)
+        .map_err(|why| format!("conversation {prior} cannot be carried ({why})"))
 }
 
 /// The move itself, from a parsed argv and the caller rule's verdict. Every
@@ -1725,11 +1822,25 @@ fn move_seat(
     at.carry = travel.carried.clone();
     let seed = build_seed(ask, &seat, &travel, broke, err)?;
     clear_launch_files(&seat, &travel, broke, err)?;
-    let after = publish_move(ask, &seat, &travel, &prepared.prior, before, broke, err)?;
+    let staged = prepared
+        .guard
+        .as_ref()
+        .map(|guard| guard.successor.as_str());
+    let after = publish_move(
+        ask,
+        &seat,
+        &travel,
+        (&prepared.prior, staged),
+        before,
+        broke,
+        err,
+    )?;
     let started =
         crate::seat_relaunch::start(&seat.dir, &seat.target, &after, ask.now, RESEAT_VERB, err)?;
     // PAST THE LOCK before any readiness wait: a gated turn blocks up to 45s,
     // and nothing else may be held out of the session's lifecycle for that.
+    // An orchestrator's chat admission goes with it: the new tool has started.
+    drop(prepared.guard);
     drop(lifecycle);
     let (dir, target, profile) = (&seat.dir, &seat.target, &ask.parsed.profile);
     match started {
@@ -1998,6 +2109,9 @@ fn place(
 struct Prepared {
     /// The conversation id the seat records, `harness_session.<slot>`.
     prior: String,
+    /// An automatic move of an orchestrator's seat: the chat admission it
+    /// holds and the travel it proved ([`orchestrator_guard`]).
+    guard: Option<OrchestratorGuard>,
     /// Whether the move KEEPS that conversation ([`keeps`]).
     keeping: bool,
     /// What the carry Check proved, kept for the copy: `None` when no carry
@@ -2103,12 +2217,46 @@ fn prepare(
     // name it in their own words.
     // What it proved is KEPT: the copy after the stop archives exactly what
     // this Check decided, or nothing.
-    let mut checked = None;
+    let checked = carry_check(locked, target, moving, &prior, err)?;
+    // THE ORCHESTRATOR, read again under the same lock: an automatic move of
+    // its seat holds the chat's admission until the new tool has started, finds
+    // nothing in flight, and goes on only where its conversation travels.
+    let guard = orchestrator_gate(ask, seat, locked, (&prior, keeping, checked.is_some()), err)?;
+    // A TOOL CHANGE says what it costs before anything happens, a dead pane
+    // included ([`tool_change_note`]).
+    let from_binary = crate::lifecycle::meta_value(locked, &format!("agent_bin.{}", target.slot));
+    if let Some(note) = tool_change_note(
+        &target.agent,
+        &ask.parsed.profile,
+        &from_binary,
+        &moving.binary,
+        &prior,
+    ) {
+        writeln!(err, "{note}")?;
+    }
+    Ok(Prepared {
+        prior,
+        guard,
+        keeping,
+        checked,
+    })
+}
+
+/// The carry [`prepare`] proves before a running tool is ended: the copy's own
+/// walk in Check mode, writing nothing. `None` when no carry applies; a carry
+/// that would fail refuses here, with nothing stopped.
+fn carry_check(
+    locked: &[u8],
+    target: &Target,
+    moving: &Moving,
+    prior: &str,
+    err: &mut impl Write,
+) -> Result<Option<crate::carry::Crossing>, Halt> {
     if let Ok(work_dir) = crate::seat_relaunch::usable_work_dir(locked)
-        && let Some(plan) = carry_plan(locked, &target.slot, moving, &prior, &work_dir)
+        && let Some(plan) = carry_plan(locked, &target.slot, moving, prior, &work_dir)
     {
         match crate::carry::run(&plan, crate::carry::Mode::Check) {
-            Ok(crossing) => checked = Some(crossing),
+            Ok(crossing) => return Ok(Some(crossing)),
             Err(why) => {
                 let (from, to) = plan.homes();
                 writeln!(
@@ -2124,26 +2272,114 @@ fn prepare(
             }
         }
     }
-    // A TOOL CHANGE says what it costs before anything happens, a dead pane
-    // included ([`tool_change_note`]).
-    let from_binary = crate::lifecycle::meta_value(locked, &format!("agent_bin.{}", target.slot));
-    if let Some(note) = tool_change_note(
-        &target.agent,
-        &ask.parsed.profile,
-        &from_binary,
-        &moving.binary,
-        &prior,
-    ) {
-        writeln!(err, "{note}")?;
-    }
-    Ok(Prepared {
-        prior,
-        keeping,
-        checked,
-    })
+    Ok(None)
 }
 
-/// THE STOP, before the dead proof and before anything durable is written,
+/// The orchestrator's gate ([`orchestrator_guard`]), then its travel proven
+/// again by the same reads that decide the move itself — a keep the keep rule
+/// takes, or a carry whose Check ran — and its strict resume record staged
+/// ([`stage_guard`]). Before the stop: every refusal stops nothing. Any other
+/// seat, or a move ae was asked for, has no gate.
+fn orchestrator_gate(
+    ask: &Ask<'_>,
+    seat: &Admitted<'_>,
+    locked: &[u8],
+    (prior, keeping, checked): (&str, bool, bool),
+    err: &mut impl Write,
+) -> Result<Option<OrchestratorGuard>, Halt> {
+    if !ask.parsed.automatic
+        || crate::meta::meta_agent_role(locked) != crate::meta::MetaAgentRole::Role
+    {
+        return Ok(None);
+    }
+    let guard = orchestrator_guard(ask, seat, locked, err)?;
+    let agrees = match guard.travel {
+        Travels::Kept => keeping,
+        Travels::Carried => checked,
+    };
+    if !agrees {
+        writeln!(
+            err,
+            "Error: {} (the move to '{}' does not prove it) — nothing was stopped or reseated.",
+            crate::autoreseat::leg::NO_KEEPER,
+            seat.to
+        )?;
+        return Err(Halt::End(Ended::Refused(CauseClass::NoCandidate)));
+    }
+    stage_guard(seat, locked, (prior, &guard.successor), err)?;
+    Ok(Some(guard))
+}
+
+/// What an automatic move of an orchestrator's seat holds from its gate until
+/// the new tool has started.
+struct OrchestratorGuard {
+    /// The session chat's admission lock: no owner send, and no relay of the
+    /// seat (which takes the same lock from its claim to its result), can
+    /// start while it is held. Released with the lifecycle lock.
+    _admission: std::fs::File,
+    /// How the conversation travels ([`travels`]).
+    travel: Travels,
+    /// The successor's launch id, minted here and published by the meta move,
+    /// already named by the strict resume record ([`stage_guard`]).
+    successor: String,
+}
+
+/// THE ORCHESTRATOR'S GATE, under the lifecycle lock and before the stop: the
+/// chat's admission without waiting, nothing in flight in the journal
+/// ([`crate::autoreseat::leg::orchestrator_exchange`]), and a destination on
+/// which the conversation travels ([`travels`]). Every refusal stops nothing.
+fn orchestrator_guard(
+    ask: &Ask<'_>,
+    seat: &Admitted<'_>,
+    locked: &[u8],
+    err: &mut impl Write,
+) -> Result<OrchestratorGuard, Halt> {
+    let target = &seat.target;
+    let flying = crate::autoreseat::leg::IN_FLIGHT;
+    let admission = match crate::store::open(&seat.dir).console_admission_now() {
+        Ok(admission) => admission,
+        Err(why) => {
+            let what = if why.kind() == io::ErrorKind::WouldBlock {
+                "the chat is admitting a send".to_owned()
+            } else {
+                format!("the chat admission lock is not free ({why})")
+            };
+            writeln!(
+                err,
+                "Error: {flying} ({what}) — nothing was stopped or reseated."
+            )?;
+            return Err(Halt::End(Ended::Refused(CauseClass::Busy)));
+        }
+    };
+    if let Some(what) = crate::autoreseat::leg::orchestrator_exchange(
+        &seat.dir,
+        (&ask.parsed.session, &target.slot, &target.agent),
+    ) {
+        writeln!(
+            err,
+            "Error: {flying} ({what}) — nothing was stopped or reseated."
+        )?;
+        return Err(Halt::End(Ended::Refused(CauseClass::Busy)));
+    }
+    match travels(&seat.dir, locked, &target.slot, &seat.to) {
+        Ok(travel) => Ok(OrchestratorGuard {
+            _admission: admission,
+            travel,
+            successor: crate::session_launch::launch_token(seat.moving.tool, None),
+        }),
+        Err(why) => {
+            writeln!(
+                err,
+                "Error: {} ({why}) — nothing was stopped or reseated.",
+                crate::autoreseat::leg::NO_KEEPER
+            )?;
+            Err(Halt::End(Ended::Refused(CauseClass::NoCandidate)))
+        }
+    }
+}
+
+/// THE STOP, before the dead proof and before the launch files are cleared or
+/// the meta moves (an orchestrator's strict resume record is already staged),
 /// then the dead proof itself. Returns the proof with how every later refusal
 /// ends ([`past_the_stop`]), decided HERE from whether this move stopped the
 /// tool.
@@ -2278,10 +2514,39 @@ fn conversation(
         return Err(Halt::End(broke));
     }
     let planned = plan.is_some() || keep_on;
+    let strict = prepared.guard.is_some();
     let carried = match plan {
         None => kept.unwrap_or(Carried::No),
-        Some(plan) => copy(&plan, prepared.checked.as_ref(), &target.agent, out, err)?,
+        Some(plan) => copy(
+            &plan,
+            (prepared.checked.as_ref(), strict),
+            &target.agent,
+            out,
+            err,
+        )?,
     };
+    // AN ORCHESTRATOR'S CONVERSATION, PROVEN WHERE IT GOES: past the stop and
+    // before any launch file or meta row moves, the store the successor will
+    // resume from must hold it ([`crate::conversation::Probe::Found`]). Anything
+    // less sends the seat back on its old profile ([`hold_back`]).
+    if strict {
+        let landed = moving.account.as_ref().is_some_and(|account| {
+            carried.travelled()
+                && crate::run::probe_in(
+                    moving.tool,
+                    prior,
+                    &crate::launch_cmd::Resolved::Path(account.path.clone()),
+                    Some(Path::new(&before.work_dir)),
+                ) == crate::conversation::Probe::Found
+        });
+        if !landed {
+            let why = match &carried {
+                Carried::Seeded(why) => why.clone(),
+                _ => "the destination store does not hold it".to_owned(),
+            };
+            return Err(hold_back(seat, before, prior, &why, err)?);
+        }
+    }
     Ok(Travel {
         carried,
         planned,
@@ -2290,10 +2555,106 @@ fn conversation(
     })
 }
 
-/// The carry's COPY, with the proof its Check left, and what it says.
+/// THE STRICT RESUME RECORD of an orchestrator's move, staged under the
+/// lifecycle lock BEFORE the stop: one line for the seat as it is
+/// (`<conversation> <current launch>`) and one for its successor
+/// (`<conversation> <successor launch>`), published atomically. Every later
+/// step then leaves a guarded seat behind it: a crash or a refusal before the
+/// meta move leaves the old rows, which the first line binds, and the meta move
+/// publishes the successor launch the second line already names, so no row is
+/// ever exposed without its guard. The record is never removed: a launch id is
+/// minted once, so a line naming no current launch binds nothing. A record ae
+/// cannot write refuses the move with nothing stopped.
+fn stage_guard(
+    seat: &Admitted<'_>,
+    locked: &[u8],
+    (conversation, successor): (&str, &str),
+    err: &mut impl Write,
+) -> Result<(), Halt> {
+    let target = &seat.target;
+    let current = crate::lifecycle::meta_value(locked, &format!("launch_id.{}", target.slot));
+    let refused = Halt::End(Ended::Refused(CauseClass::Other));
+    if current.is_empty() || conversation.is_empty() {
+        writeln!(
+            err,
+            "Error: '{}' records no launch or conversation to guard — nothing was stopped or \
+             reseated.",
+            target.agent
+        )?;
+        return Err(refused);
+    }
+    let record = format!("{conversation} {current}\n{conversation} {successor}\n");
+    let marker = crate::run::must_resume_marker(&seat.dir, &target.slot);
+    // `publish_private` fsyncs the record before its rename, and the directory
+    // is synced after it, before anything is stopped or cleared: a reboot never
+    // keeps a cleared start marker or the successor rows without the record.
+    let published = crate::store::publish_private(&marker, record.as_bytes())
+        .and_then(|()| sync_dir(&seat.dir));
+    if let Err(why) = published {
+        writeln!(
+            err,
+            "Error: the strict resume record {} could not be made durable ({why}) — nothing \
+             was stopped or reseated.",
+            marker.display()
+        )?;
+        return Err(refused);
+    }
+    Ok(())
+}
+
+/// Make a renamed entry of `dir` durable: fsync the directory itself.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .open(dir)
+        .and_then(|directory| directory.sync_all())
+}
+
+/// An orchestrator's move that could not prove its conversation past the stop.
+/// Nothing of the seat has moved yet: its meta still names the old profile, its
+/// launch files and start marker are in place, and a carry only ever COPIES, so
+/// the source store is untouched. The OLD profile starts again on the SAME
+/// conversation under the strict resume its gate staged ([`stage_guard`]), and
+/// the move refuses: that start resumes exactly or leaves the pane at its shell.
+fn hold_back(
+    seat: &Admitted<'_>,
+    before: &Proven,
+    prior: &str,
+    why: &str,
+    err: &mut impl Write,
+) -> Result<Halt, Halt> {
+    let (target, was) = (&seat.target, &seat.was);
+    let refused = Halt::End(Ended::Refused(CauseClass::Other));
+    writeln!(
+        err,
+        "Error: '{}' could not keep conversation {prior} on '{}' ({why}) — an orchestrator never \
+         moves on a fresh conversation, so it goes back on {was}, resuming the same one.",
+        target.agent, seat.to
+    )?;
+    match crate::seat_relaunch::start(
+        &seat.dir,
+        target,
+        before,
+        Timestamp::now(),
+        RESEAT_VERB,
+        err,
+    )? {
+        Started::Running { .. } => {}
+        Started::NotPasted | Started::NotSeen => writeln!(
+            err,
+            "  '{}' did not start again — `relaunch {}` resumes conversation {prior}.",
+            target.agent, target.agent
+        )?,
+    }
+    Ok(refused)
+}
+
+/// The carry's COPY, with the proof its Check left, and what it says. A
+/// `strict` copy (an orchestrator's) never falls back to a fresh conversation,
+/// so its failure says the seat goes back instead.
 fn copy(
     plan: &crate::carry::Plan,
-    checked: Option<&crate::carry::Crossing>,
+    (checked, strict): (Option<&crate::carry::Crossing>, bool),
     agent: &str,
     out: &mut impl Write,
     err: &mut impl Write,
@@ -2350,10 +2711,15 @@ fn copy(
                 writeln!(
                     err,
                     "note: '{agent}' could not carry conversation {} from {} to {} ({why}) — \
-                 moving it on a fresh conversation with its seed pack instead.",
+                 {}.",
                     plan.id(),
                     from.display(),
-                    to.display()
+                    to.display(),
+                    if strict {
+                        "it goes back on its old profile instead"
+                    } else {
+                        "moving it on a fresh conversation with its seed pack instead"
+                    }
                 )?;
                 Carried::Seeded(why.to_string())
             }
@@ -2480,7 +2846,7 @@ fn publish_move(
     ask: &Ask<'_>,
     seat: &Admitted<'_>,
     travel: &Travel,
-    prior: &str,
+    (prior, staged): (&str, Option<&str>),
     before: Proven,
     broke: Ended,
     err: &mut impl Write,
@@ -2510,7 +2876,13 @@ fn publish_move(
         &crate::meta::SeatMove {
             profile: &ask.parsed.profile,
             binary: &moving.binary,
-            launch_id: &crate::session_launch::launch_token(moving.tool, None),
+            // An orchestrator's successor launch was minted and guarded before
+            // the stop ([`stage_guard`]), so the row that names it is never
+            // exposed without its strict resume record.
+            launch_id: &crate::session_launch::launch_token(
+                moving.tool,
+                staged.map(ToOwned::to_owned),
+            ),
             conversation: seat_conversation(
                 carried,
                 moving.account.as_ref(),

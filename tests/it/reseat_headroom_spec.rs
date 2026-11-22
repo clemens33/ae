@@ -1202,6 +1202,8 @@ fn global_off_session_filter_and_orchestrator_make_headroom_inert() {
     for (tag, knobs, meta) in [
         ("hroff", "auto_reseat = off", None),
         ("hrfilter", "auto_reseat_sessions = other", None),
+        // An orchestrator session's NON-MAIN seat (this rig's spawned.0):
+        // only the orchestrator's main seat may move.
         ("hrmeta", "", Some(("meta_agent", "true"))),
     ] {
         let rig = Rig::new(tag);

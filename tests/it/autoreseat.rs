@@ -2921,3 +2921,6 @@ mod bgtaskreseat_spec;
 
 #[path = "autoreseat/bgtaskreseat_pins.rs"]
 mod bgtaskreseat_pins;
+
+#[path = "autoreseat/orchreseat_spec.rs"]
+mod orchreseat_spec;
