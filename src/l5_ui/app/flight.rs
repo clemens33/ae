@@ -3,8 +3,8 @@
 use super::{
     App, Arc, Binding, Cell, Duration, Effect, FLASH_WINDOW, File, Instant, Item, Key, Kind,
     LeaseFile, MouseKind, NOTICES, QUIT_WINDOW, Reading, Receiver, RecvTimeoutError, RoleRoute,
-    Stage, Timestamp, Write, console, lines_word, mpsc, select, shell, submit, term, terminal_text,
-    transport, upgrade,
+    Stage, Timestamp, Write, console, draw, lines_word, mpsc, select, shell, submit, term,
+    terminal_text, transport, upgrade,
 };
 use crate::clipboard;
 
@@ -169,6 +169,16 @@ impl App {
     pub(super) fn unbounded(&self, key: &Key) -> bool {
         if self.model.peek_open() || self.model.reader_open() {
             return false;
+        }
+        if matches!(key, Key::PageUp | Key::PageDown)
+            && self.layout.desk.is_none()
+            && draw::desk_replaces_panel(
+                self.layout.area(),
+                self.model.split(),
+                self.stand_columns(),
+            )
+        {
+            return true;
         }
         let Key::Mouse(mouse) = key else {
             return false;

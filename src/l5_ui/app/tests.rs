@@ -35,6 +35,7 @@ use crate::theme::Mark;
 use crate::time::Timestamp;
 use crate::tmux;
 mod boarddrag_spec;
+mod boardfull_spec;
 mod composercopy_app_spec;
 mod f12panel_guards;
 mod f12panel_spec;

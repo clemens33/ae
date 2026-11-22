@@ -254,7 +254,7 @@ impl App {
         }
         // The board rides the panel's read: kept for that incarnation only.
         if panel && let Some(desk) = view.desk {
-            self.orch.desk = Some((view.id.clone(), desk));
+            self.read_desk(view.id.clone(), desk);
         }
         // The seats `/open` names, as the chat's own tick hands them over.
         let key = (view.name.clone(), view.id.clone());

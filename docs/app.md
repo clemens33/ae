@@ -239,12 +239,13 @@ Browsing:
 | `!` | the next session that needs you |
 | `O`, click `◆` | open the orchestrator panel beside the chat, or hide it ([Orchestrator panel](#orchestrator-panel)) |
 | `F`, click `F full` / `F side` | the open panel over the whole frame, the sidebar hidden, or side by side again ([Zoom](#zoom)) |
+| `B`, click `B board` | focus the orchestrator board, or open it in the panel on a narrow frame. `B` or `Esc` returns to chat ([Orchestrator board](#orchestrator-board)) |
 | `X`, click `X zoom` / `X unzoom` | the column that holds the keys over the whole frame, the sidebar hidden, or back; text while writing ([Zoom](#zoom)) |
 | `oo`, click `pane` in the panel header | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat. While the orchestrator panel holds the keys, `oo` and the click open the orchestrator's pane ([Orchestrator panel](#orchestrator-panel)) |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
 | Click a seat, or `v` on the highlighted seat | inside tmux: watch that seat's live screen in the chat column, read-only ([Peeking at an agent](#peeking-at-an-agent)); outside tmux a click works in the seat itself ([Working in a seat](#working-in-a-seat)) |
 | `n` / `p` | step the seat cursor (`▹`, `-` with `icons = off`) to the next / previous seat the body shows; with no cursor `n` lands on the first seat and `p` on the last, and both wrap |
-| `PgUp` / `PgDn` | scroll the chat a page |
+| `PgUp` / `PgDn` | scroll the focused chat or board a page |
 | `G` / `End` | scroll the chat to its newest turn |
 | Click the hint under a scrolled-up chat | the same: the accent line `↓ 3 newer turns · End` (`↓ 1 newer turn · End`, or `↓ more below · End` when only the rest of the newest turn waits) stands centered on the row under the lane and counts the turns that start below the window; a click on its words scrolls to the newest turn, also while writing, and keeps the draft |
 | `[` / `]` | mark the next older / newer turn; with none marked, the newest turn the chat shows. At the oldest or newest turn the frame produced nothing moves and the mark stays |
@@ -256,7 +257,7 @@ Browsing:
 | Click the `Stopped (N)` line | open or close the stopped sessions |
 | Click the `Spawned (N)` line | fold or show the selected session's spawned seats |
 | Click a seat row | highlight that seat |
-| Wheel over chat or the Agents body | scroll three rows per notch, also while writing |
+| Wheel over chat, the board or the Agents body | scroll three rows per notch, also while writing |
 | Wheel over the session list | scroll one session per notch, also while writing |
 | Drag a border | resize the sidebar, session list, orchestrator panel or board, also while writing |
 | Click composer | write the selected session, when no other app writes it |
@@ -469,7 +470,8 @@ way back. The main column and the orchestrator panel each have their own zoom:
 - `F` or `F full` zooms the open panel, `F side` ends it. It acts on the zoom
   the human asked for, so the narrow fallback (the panel filling the chat column
   when a side panel does not fit) is not a zoom: `F full` there zooms the panel,
-  and a wider frame leaves the zoom on.
+  and a wider frame leaves the zoom on. The board stands beside the zoomed
+  panel when it fits. If space is tight, `B` opens the board in the panel.
 - The two zooms are independent. `F side` ends the panel's zoom and leaves the
   main column's stored: while the side panel holds the keys the frame shows the
   split, and when the main column holds the keys again, by a click on it or by
@@ -479,9 +481,8 @@ way back. The main column and the orchestrator panel each have their own zoom:
   panel the keys zoomed, so the frame keeps its look; `Esc` hides the panel and
   shows the zoomed main column again. A zoomed panel that is hidden takes its
   zoom with it.
-- `Esc` keeps every meaning it has and never ends a zoom by itself: it ends
-  writing, clears a selection, closes the reader or the seat view, and where it
-  has nothing to do it does nothing.
+- `Esc` ends writing, clears a selection, closes the reader or the seat view,
+  or returns from the board to chat. It preserves the current zoom.
 - `j` / `k`, the arrows, `1`-`9` and `!` select sessions as ever, over the
   hidden list; the header names the session. A zoomed panel turns side first.
 - `s` and `m` act on the card the last frame drew for the selection. With the
@@ -591,23 +592,25 @@ each, a web URL or an absolute path. The board shows in three places and never i
 ([Chat](chat.md#what-it-shows)), a column in this app and one pinned Telegram
 message ([Telegram bridge](reference/telegram.md#the-board-message)).
 
-The board stands right of the open side panel when a board is set or cannot be
-read and the frame has room. It starts at 36 cells including its left border.
-With the default sidebar, the frame needs 161 columns to show it at that size.
-Drag the board's left border to give it as few as 24 cells. The app keeps that
-width while the board is hidden and carries it through an app restart. If the
-board cannot fit, the panel header says `desk N` for the N items in DECIDE or
-`desk unreadable`. The column shows `BOARD  updated HH:MM:SS <zone>` and the
-items wrapped to its width, each link on its own row. A web link opens as
-written and a path opens as its `file://` URL, also on every row of a link that
-wraps. Rows that do not fit are cut for height and the last row says `+N more:
-/board`. Every field passes the terminal-output gate, so a control character in
-a hostile record never reaches the terminal as an escape. A record that cannot
-be read shows one line that says why. With no board set the column is not drawn,
-takes no cell and moves no width or click target, and the panel header says
-nothing about it. The column reads the record with the panel's own reads, so a
-change shows within one of them. It is read-only: a click on a link opens it and
-nothing writes the record.
+The board stands to the right of the open panel in side and full-screen modes.
+Its default width is 36 cells including its left border. It fits from 161
+columns with the default sidebar, or 76 columns in full screen. Drag its border
+to give it as few as 24 cells. The app keeps the width while the column is
+hidden and through an app restart.
+
+When the column cannot fit, the header says `desk N` for the N decisions or
+`desk unreadable`. Press `B` to show the board in the panel's body. `B` or
+`Esc` returns to the chat at its previous scroll position with its draft kept.
+When the board is adjacent, `B` or a click on the board gives it the keys.
+Use `PgUp` and `PgDn` to scroll the focused board by a page, or wheel over the
+board to scroll three rows per notch. The last row counts hidden rows and
+points toward them.
+
+The board shows `BOARD  updated HH:MM:SS <zone>` and wraps sanitized items and
+links to its width. Each visible fragment of a wrapped link opens the same URL or
+`file://` destination. The app reads the board with the panel and shows the
+reason when a record is unreadable. The board is read-only. With no record set,
+the panel keeps its entire width, every click target and its usual header.
 
 ## Session menu
 

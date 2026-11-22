@@ -25,7 +25,15 @@ fn a_board_column_fits_only_beside_two_full_width_chat_columns() {
     assert!(desk_area(narrow, split, side).is_none());
     assert!(desk_area(narrow, split, focused_side).is_none());
     assert!(desk_area(wide, split, Columns::default()).is_none());
-    assert!(desk_area(wide, split, full).is_none());
+    assert_eq!(
+        desk_area(wide, split, full),
+        Some(Rect::new(164, 0, 36, 35))
+    );
+    assert!(desk_area(Rect::new(0, 0, 75, 35), split, full).is_none());
+    assert_eq!(
+        desk_area(Rect::new(0, 0, 76, 35), split, full),
+        Some(Rect::new(40, 0, 36, 35))
+    );
     assert_eq!(
         desk_area(boundary, split, side),
         Some(Rect::new(125, 0, 36, 35))

@@ -298,6 +298,13 @@ pub(super) fn browse(app: &mut App, key: &Key, origin: Instant) -> Option<bool> 
         }
         return Some(redraw);
     }
+    if !app.orch.active && app.desk_focused() && *key != Key::Interrupt {
+        return Some(match key {
+            Key::Escape => app.focus_desk(false),
+            Key::PageUp | Key::PageDown => app.scroll_desk(*key == Key::PageUp, true),
+            _ => false,
+        });
+    }
     // With the panel holding the keys, Esc hides it, the arrows step the
     // list (a full panel turns side first), and the rest is the panel's chat.
     let mut turned = false;
@@ -380,6 +387,12 @@ pub(super) fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bo
     let disarmed = !matches!(byte, b'q' | b'o') && app.armed.take().is_some();
     let mut turned = false;
     if !app.orch.active {
+        if byte == b'B' {
+            return Some(app.toggle_desk() || disarmed);
+        }
+        if app.desk_focused() && !matches!(byte, b'O' | b'F' | b'X' | b'q' | b',' | b'?') {
+            return Some(disarmed);
+        }
         match byte {
             b'O' => {
                 app.toggle_panel();

@@ -109,7 +109,7 @@ fn a_dragged_board_width_survives_narrowing_full_panel_and_close() {
     drag_rule(&mut app, 176, 150);
     assert_eq!(board_rules(&mut app, 200), [44, 98, 150]);
     app.flip_panel();
-    assert!(board_rules(&mut app, 200).is_empty());
+    assert_eq!(board_rules(&mut app, 200), [150]);
     app.flip_panel();
     assert_eq!(board_rules(&mut app, 200), [44, 98, 150]);
     app.close_panel();

@@ -300,7 +300,7 @@ impl Chat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent facts the App writes before each draw: the needs-you mark, the drawing column, the board and the main zoom"
+    reason = "independent facts the App writes before each draw: the needs-you mark, the drawing column, the board, its focus and the main zoom"
 )]
 pub(crate) struct Columns {
     /// The button wears the needs-you mark.
@@ -310,10 +310,10 @@ pub(crate) struct Columns {
     pub(crate) panel: Option<(bool, bool)>,
     /// The frame drawn now is the panel's own column.
     pub(crate) drawing_panel: bool,
-    /// A board stands to be shown, or cannot be read: only then does the board
-    /// column keep its place beside a side panel. With no board nothing is
-    /// reserved, and every width and hit target is the one it was without one.
+    /// The open panel has a board to show, or could not read its record.
     pub(crate) desk: bool,
+    /// The board holds the keys and can take the panel's body when narrow.
+    pub(crate) desk_focused: bool,
     /// The main column's own zoom ([`Model::zoom`]).
     pub(crate) zoom: bool,
 }

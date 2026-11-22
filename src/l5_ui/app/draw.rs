@@ -156,6 +156,8 @@ pub(crate) enum Hit {
     PanelPane,
     /// The panel header's mode label: side or full.
     PanelMode,
+    /// The panel header's board control.
+    PanelDesk,
     /// The main column header's zoom label: zoom the column or leave the zoom.
     Zoom,
 }
@@ -168,6 +170,15 @@ struct Border {
     at: u16,
     cells: Rect,
     grab: Rect,
+}
+
+/// Where the board drew and how far its wrapped rows can scroll.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DeskViewport {
+    area: Rect,
+    adjacent: bool,
+    pub(super) page: usize,
+    pub(super) max: usize,
 }
 
 fn link_area(offset: usize, width: usize, (left, y, room): (u16, u16, u16)) -> Rect {
@@ -249,6 +260,7 @@ pub(crate) struct Layout {
     /// panel's own column records them as it draws, the main column's frame
     /// takes them over.
     pub(crate) panel: Option<Rect>,
+    pub(super) desk: Option<DeskViewport>,
     /// What the panel's `pane` word opens, as the frame that drew it read it:
     /// the incarnation the panel is bound to and the main seat that
     /// incarnation's roster named then. Set by the app after the draw, only
@@ -330,9 +342,9 @@ impl Layout {
     /// the backend wraps in OSC 8, under `file`'s guards, off every file hit.
     pub(super) fn link_at(&self, mouse: Mouse) -> bool {
         let at = Position::new(mouse.column, mouse.row);
-        self.file(mouse).is_none()
-            && self.grab(mouse).is_none()
-            && matches!(self.hit(mouse), Some(Hit::Turn(_)))
+        self.grab(mouse).is_none()
+            && (self.in_desk(mouse)
+                || (matches!(self.hit(mouse), Some(Hit::Turn(_))) && self.file(mouse).is_none()))
             && (self.links.iter()).any(|run| Rect::new(run.x, run.y, run.width, 1).contains(at))
     }
 
@@ -406,7 +418,16 @@ impl Layout {
     }
 
     pub fn in_chat(&self, mouse: Mouse) -> bool {
-        self.chat.contains((mouse.column, mouse.row).into())
+        self.chat.contains((mouse.column, mouse.row).into()) && !self.in_desk(mouse)
+    }
+
+    pub(super) fn in_desk(&self, mouse: Mouse) -> bool {
+        self.desk
+            .is_some_and(|desk| desk.area.contains(Position::new(mouse.column, mouse.row)))
+    }
+
+    pub(super) fn desk_replaces_panel(&self) -> bool {
+        self.desk.is_some_and(|desk| !desk.adjacent)
     }
 
     /// The chat lane above its last row: the panel footer owns that row, so
@@ -892,11 +913,12 @@ const DESK_FLOOR: u16 = 24;
 /// How much room the board can use after both chat columns keep their floors.
 /// An undragged board needs its default width. A dragged board can fit down to
 /// its floor without replacing the chosen width in `split`.
-fn desk_width(area: Rect, split: Split) -> Option<u16> {
+fn desk_width(area: Rect, split: Split, full: bool) -> Option<u16> {
+    let chat_floor = if full { PANEL_FLOOR } else { PANEL_FLOOR * 2 };
     let room = area
         .width
-        .saturating_sub(chat_start(area, split, false))
-        .saturating_sub(PANEL_FLOOR * 2);
+        .saturating_sub(chat_start(area, split, full))
+        .saturating_sub(chat_floor);
     let floor = if split.desk.is_some() {
         DESK_FLOOR
     } else {
@@ -907,21 +929,14 @@ fn desk_width(area: Rect, split: Split) -> Option<u16> {
 
 /// Where the orchestrator's board stands in `area` split as `split`: the
 /// rightmost columns, only while the frame meets the app's size floor, the
-/// panel stands at the side and the main column and the panel each still keep
-/// [`PANEL_FLOOR`] beside it. Else `None`, and every other cell of the frame
-/// is the one it was without a board: nothing is taken from a frame that
-/// cannot spare the room, and a frame below the floor shows its note alone.
+/// panel and, in side mode, the main column can each still keep [`PANEL_FLOOR`]
+/// beside it. A frame below the size floor shows its note alone.
 pub(crate) fn desk_area(area: Rect, split: Split, columns: Columns) -> Option<Rect> {
-    let Some((false, _)) = columns.panel else {
-        return None;
-    };
-    if columns.hides_panel() {
+    let (full, _) = columns.panel?;
+    if columns.hides_panel() || !floor_met(area) {
         return None;
     }
-    if !floor_met(area) {
-        return None;
-    }
-    let width = desk_width(area, split)?;
+    let width = desk_width(area, split, full)?;
     Some(Rect::new(area.width - width, 0, width, area.height))
 }
 
@@ -932,17 +947,25 @@ pub(crate) fn desk_slot(area: Rect, split: Split, columns: Columns) -> Option<Re
     desk_area(area, split, columns).filter(|_| columns.desk)
 }
 
-/// Draw the board column into `area` of `buf`: its left border, then the rows
-/// of `view` from the top, the last one marking what the height cut. Record the
-/// border and the visible link runs in the main frame's layout.
+/// The focused board takes the panel's body when an adjacent column cannot fit.
+pub(super) fn desk_replaces_panel(area: Rect, split: Split, columns: Columns) -> bool {
+    columns.desk_focused
+        && desk_slot(area, split, columns).is_none()
+        && floor_met(area)
+        && panel_area(area, split, columns).is_some()
+}
+
+/// Draw the board's current rows and record their links in the main frame.
+/// Only the adjacent column has a board border of its own.
 pub(super) fn draw_desk(
     buf: &mut Buffer,
-    area: Rect,
+    (area, adjacent): (Rect, bool),
     view: Option<&DeskView>,
     (look, zone): (Option<&Look>, Option<&str>),
     layout: &mut Layout,
     model: &Model,
-) {
+    requested: usize,
+) -> usize {
     let paint = Paint::of(look);
     for y in area.y..area.y.saturating_add(area.height) {
         for x in area.x..area.x.saturating_add(area.width) {
@@ -952,21 +975,35 @@ pub(super) fn draw_desk(
         }
     }
     buf.set_style(area, paint.ground(|p| p.ink));
-    let border_cells = Rect::new(area.x, area.y, 1, area.height);
-    layout.border(buf, Edge::Desk, area.width, border_cells);
-    let rule = paint.rule(dragged(model, Edge::Desk));
-    for y in area.y..area.y.saturating_add(area.height) {
-        put(buf, area.x, y, "│", 1, rule);
+    if adjacent {
+        let border_cells = Rect::new(area.x, area.y, 1, area.height);
+        layout.border(buf, Edge::Desk, area.width, border_cells);
+        let rule = paint.rule(dragged(model, Edge::Desk));
+        for y in area.y..area.bottom() {
+            put(buf, area.x, y, "│", 1, rule);
+        }
     }
     let left = area.x.saturating_add(2);
     let room = area.width.saturating_sub(2);
-    let rows = deskview::fit(deskview::column(view, room, zone), area.height);
+    let rows = deskview::column(view, room, zone);
+    let height = usize::from(area.height);
+    let overflows = rows.len() > height;
+    let page = height.saturating_sub(usize::from(overflows));
+    let max = rows.len().saturating_sub(page);
+    let top = requested.min(max);
+    layout.desk = Some(DeskViewport {
+        area,
+        adjacent,
+        page,
+        max,
+    });
+    layout.uncover(area);
     let (dim, text, title) = (
         paint.fg(|p| p.dim),
         paint.fg(|p| p.text),
         paint.fg(|p| p.title),
     );
-    for (step, row) in rows.iter().enumerate() {
+    for (step, row) in rows.iter().skip(top).take(page).enumerate() {
         let y = area.y.saturating_add(cells(step));
         let style = match row.kind {
             deskview::RowKind::Heading => title.add_modifier(Modifier::BOLD),
@@ -997,6 +1034,16 @@ pub(super) fn draw_desk(
             }
         }
     }
+    if overflows && area.height > 0 {
+        let below = max - top;
+        let cue = match (top, below) {
+            (0, _) => format!("{below} more ↓"),
+            (_, 0) => format!("{top} more ↑"),
+            _ => format!("{top} ↑ · {below} more ↓"),
+        };
+        put(buf, left, area.bottom().saturating_sub(1), &cue, room, dim);
+    }
+    top
 }
 
 /// The column a side panel ends at in `area` split as `split`: the frame's
@@ -1019,7 +1066,8 @@ pub(crate) fn panel_area(area: Rect, split: Split, columns: Columns) -> Option<R
         Stand::Side { border, end } => Some(Rect::new(border, 0, end - border, area.height)),
         Stand::Full { .. } => {
             let start = chat_start(area, split, columns.zoomed());
-            Some(Rect::new(start, 0, area.width - start, area.height))
+            let end = desk_slot(area, split, columns).map_or(area.width, |desk| desk.x);
+            Some(Rect::new(start, 0, end - start, area.height))
         }
     }
 }
@@ -1045,25 +1093,17 @@ pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) 
         icons: screen.look.is_none_or(|look| look.icons),
         wait,
     };
-    let height = area.height;
-    let width = match stand {
-        Stand::Side { end, .. } => end,
-        _ => area.width,
+    let Some(panel) = panel_area(area, screen.model.split(), columns) else {
+        return layout;
     };
-    let from = match stand {
-        Stand::Side { border, .. } => border,
-        _ => chat_start(area, screen.model.split(), columns.zoomed()),
-    };
+    let (height, width, from) = (panel.height, panel.right(), panel.x);
     for y in 0..height {
         for x in from..width {
             buf[(x, y)].reset();
         }
     }
-    layout.panel = Some(Rect::new(from, 0, width - from, height));
-    buf.set_style(
-        Rect::new(from, 0, width - from, height),
-        ctx.paint.ground(|p| p.ink),
-    );
+    layout.panel = Some(panel);
+    buf.set_style(panel, ctx.paint.ground(|p| p.ink));
     let left = if let Stand::Side { .. } = stand {
         let border = ctx.paint.rule(dragged(screen.model, Edge::Panel));
         for y in 0..height {
@@ -1075,7 +1115,12 @@ pub(crate) fn draw_panel(screen: &Screen<'_>, wait: Wait<'_>, buf: &mut Buffer) 
     };
     layout.chat = Rect::new(left, 0, width - left, height);
     layout.seats_session = ctx.screen.selected.map(|entry| entry.name.clone());
-    chat_column(&ctx, buf, left + 2..width - 2, &mut layout);
+    let columns_at = left + 2..width - 2;
+    if desk_replaces_panel(area, screen.model.split(), columns) {
+        chat_head(&ctx, buf, &columns_at, &mut layout);
+    } else {
+        chat_column(&ctx, buf, columns_at, &mut layout);
+    }
     layout
 }
 
@@ -1104,8 +1149,9 @@ pub(crate) fn column_width(area: Rect, split: Split, columns: Columns) -> usize 
     let width = match stand(area, split, columns) {
         Stand::Side { border, end } if columns.drawing_panel => end - border - 1,
         Stand::Side { border, .. } => border - chat_start(area, split, false),
-        // A full panel stands in the cells of the main column, so both draw a
-        // draft as wide as the main column's.
+        Stand::Full { .. } if columns.drawing_panel => {
+            panel_area(area, split, columns).map_or(0, |panel| panel.width)
+        }
         Stand::Closed | Stand::Full { .. } => {
             return draft_room(area, chat_start(area, split, columns.zoomed()));
         }
@@ -1206,14 +1252,7 @@ pub(crate) fn dragged_to(
     count: usize,
     desk: bool,
 ) -> u16 {
-    let (at, from) = (i32::from(drag.at), i32::from(drag.from));
-    let moved = match drag.edge {
-        Edge::Sidebar => at + i32::from(mouse.column) - from,
-        Edge::List => at + i32::from(mouse.row) - from,
-        // These borders are left of their columns: moving one left widens it.
-        Edge::Panel | Edge::Desk => at + from - i32::from(mouse.column),
-    };
-    let to = u16::try_from(moved.max(0)).unwrap_or(u16::MAX);
+    let to = drag_position(drag, mouse);
     match drag.edge {
         Edge::Sidebar => sidebar_clamp(to, area),
         Edge::List => list_clamp(to.saturating_sub(list_border(0)), area, count),
@@ -1226,15 +1265,35 @@ pub(crate) fn dragged_to(
             },
         )
         .unwrap_or(to),
-        Edge::Desk => desk_width(
-            area,
-            Split {
-                desk: Some(to),
-                ..split
-            },
-        )
-        .unwrap_or(to),
+        Edge::Desk => clamp_desk_drag(area, split, false, to),
     }
+}
+
+pub(super) fn zoomed_desk_drag(drag: Drag, mouse: Mouse, area: Rect, split: Split) -> u16 {
+    clamp_desk_drag(area, split, true, drag_position(drag, mouse))
+}
+
+fn clamp_desk_drag(area: Rect, split: Split, full: bool, to: u16) -> u16 {
+    desk_width(
+        area,
+        Split {
+            desk: Some(to),
+            ..split
+        },
+        full,
+    )
+    .unwrap_or(to)
+}
+
+fn drag_position(drag: Drag, mouse: Mouse) -> u16 {
+    let (at, from) = (i32::from(drag.at), i32::from(drag.from));
+    let moved = match drag.edge {
+        Edge::Sidebar => at + i32::from(mouse.column) - from,
+        Edge::List => at + i32::from(mouse.row) - from,
+        // These borders are left of their columns: moving one left widens it.
+        Edge::Panel | Edge::Desk => at + from - i32::from(mouse.column),
+    };
+    u16::try_from(moved.max(0)).unwrap_or(u16::MAX)
 }
 
 /// Whether `edge` is being dragged.
@@ -2280,6 +2339,14 @@ fn declaration_row(
 // the chat column
 // ---------------------------------------------------------------------------
 
+fn chat_head(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: &Range<u16>, layout: &mut Layout) {
+    let (left, end) = (columns.start, columns.end);
+    header(ctx, buf, (left, end), layout);
+    let room = end - left;
+    let rule = ctx.paint.fg(|p| p.border);
+    put(buf, left, 1, &"─".repeat(usize::from(room)), room, rule);
+}
+
 /// The chat column over `columns`: the header, the turns anchored to the
 /// bottom, the composer.
 fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout: &mut Layout) {
@@ -2288,8 +2355,7 @@ fn chat_column(ctx: &Ctx<'_, '_>, buf: &mut Buffer, columns: Range<u16>, layout:
     let (left, end) = (columns.start, columns.end);
     let room = end - left;
     let (dim, border) = (paint.fg(|p| p.dim), paint.fg(|p| p.border));
-    header(ctx, buf, (left, end), layout);
-    put(buf, left, 1, &"─".repeat(usize::from(room)), room, border);
+    chat_head(ctx, buf, &columns, layout);
     // While writing, the composer has a row for each row of the draft's view,
     // under the address row; the hint row, the pane's last, follows.
     let grown = match screen.composer {
@@ -2840,20 +2906,38 @@ fn panel_head(
         layout.record(buf, Rect::new(at, 0, pane, 1), Hit::PanelPane);
         stop = at.saturating_sub(2);
     }
-    if let Stand::Full { note: Some(note) } = stand {
-        let need = cells(note.chars().count());
-        if stop >= left + need {
-            put(buf, stop - need, 0, &note, need, ctx.paint.fg(|p| p.dim));
-            stop = stop.saturating_sub(need + 2);
-        }
-    }
+    let replaces = desk_replaces_panel(buf.area, model.split(), columns);
     // While the board column has no room, the header says what it would show.
-    if desk_area(buf.area, model.split(), columns).is_none()
+    if !replaces
+        && desk_slot(buf.area, model.split(), columns).is_none()
         && let Some(cue) = ctx.wait.desk.and_then(deskview::cue)
     {
         let need = cells(cue.chars().count());
         if stop >= left + need {
             put(buf, stop - need, 0, &cue, need, ctx.paint.fg(|p| p.dim));
+            stop = stop.saturating_sub(need + 2);
+        }
+    }
+    if columns.desk {
+        let label = if replaces {
+            "B/Esc chat"
+        } else if columns.desk_focused {
+            "B chat"
+        } else {
+            "B board"
+        };
+        let need = cells(label.len());
+        if stop >= left + need {
+            let at = stop - need;
+            put(buf, at, 0, label, need, ctx.paint.fg(|p| p.title));
+            layout.record(buf, Rect::new(at, 0, need, 1), Hit::PanelDesk);
+            stop = at.saturating_sub(2);
+        }
+    }
+    if let Stand::Full { note: Some(note) } = stand {
+        let need = cells(note.chars().count());
+        if stop >= left + need {
+            put(buf, stop - need, 0, &note, need, ctx.paint.fg(|p| p.dim));
             stop = stop.saturating_sub(need + 2);
         }
     }
@@ -2977,7 +3061,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 21] = [
+const BROWSE_KEYS: [(&str, &str); 22] = [
     ("1-9", "select the Nth session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
@@ -2986,6 +3070,7 @@ const BROWSE_KEYS: [(&str, &str); 21] = [
         "O F X",
         "orchestrator panel; F, X: zoom or unzoom; click pane",
     ),
+    ("B", "focus board or return to chat; PgUp/PgDn scroll it"),
     ("m", "session menu; right-click a card too"),
     ("s", "start / stop the selected session"),
     ("z", "show / hide stopped sessions"),

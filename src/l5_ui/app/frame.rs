@@ -74,7 +74,10 @@ impl App {
         // own, so neither the bound's drops nor a column swap can lower or hide
         // it; it moves to the replaced layout's instant and then to the
         // instant the frame is shown ([`App::frame_shown`]).
-        if self.model.columns().surface() != columns.surface() {
+        if self.model.columns().surface() != columns.surface()
+            || self.layout.desk_replaces_panel()
+                != draw::desk_replaces_panel(area, self.model.split(), columns)
+        {
             self.zoom_pending = true;
         }
         self.model.set_columns(columns);

@@ -335,5 +335,5 @@ fn the_panel_border_moves_with_a_board_and_when_the_board_does_not_fit() {
     assert_eq!(board_rules(&mut app, 150), [44, 91]);
     assert_eq!(board_rules(&mut app, 100), [34], "narrow panel fallback");
     app.flip_panel();
-    assert!(board_rules(&mut app, 200).is_empty(), "full panel");
+    assert_eq!(board_rules(&mut app, 200), [164], "full panel");
 }
