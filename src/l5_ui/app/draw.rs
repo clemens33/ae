@@ -3061,7 +3061,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 22] = [
+const BROWSE_KEYS: [(&str, &str); 21] = [
     ("1-9", "select the Nth session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
@@ -3070,7 +3070,6 @@ const BROWSE_KEYS: [(&str, &str); 22] = [
         "O F X",
         "orchestrator panel; F, X: zoom or unzoom; click pane",
     ),
-    ("B", "focus board or return to chat; PgUp/PgDn scroll it"),
     ("m", "session menu; right-click a card too"),
     ("s", "start / stop the selected session"),
     ("z", "show / hide stopped sessions"),
@@ -3078,7 +3077,7 @@ const BROWSE_KEYS: [(&str, &str); 22] = [
     ("v", "peek at the seat's screen"),
     ("r", "read the marked turn's first file link"),
     ("n/p", "step the seat cursor (▹ or -)"),
-    ("PgUp/PgDn", "scroll the chat"),
+    ("B PgUp/PgDn", "B: board or chat. PgUp/PgDn: scroll a page"),
     ("[ ]", "mark older / newer turn"),
     ("y", "copy the marked turn"),
     ("Enter i", "write; a paste writes too"),
