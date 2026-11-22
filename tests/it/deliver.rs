@@ -32,6 +32,8 @@ use super::cli::ae;
 use super::phase2::run_tmux;
 use super::support::{PANE_WAIT, SETUP_WAIT, first_pane, is_shell, observe, pane_command};
 
+mod web_send_spec;
+
 /// A wait on ONE local effect: a first draw, a listed client, a sensor reading.
 /// The evidence ends the wait the moment it exists, so the bound only ends a
 /// fixture that never produces it, and a host under load never reaches it (#234).
