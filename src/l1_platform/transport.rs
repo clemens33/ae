@@ -3280,6 +3280,25 @@ mod tests {
         assert!(super::detached_env(false).is_empty());
     }
 
+    /// The autostart's read-back of its child: a reason behind a long note (a
+    /// deep state-root path, for one) still arrives, and a child that writes
+    /// without end is read only up to the bound.
+    #[test]
+    fn the_background_read_back_keeps_a_late_reason_and_stays_bounded() {
+        let sh = std::path::Path::new("/bin/sh");
+        let late = super::run_background(
+            sh,
+            &["-c", "printf '%04000d\\n' 0; echo 'Error: late reason' >&2; exit 1"],
+        )
+        .expect("the child ran");
+        assert!(!late.status.success());
+        let text = String::from_utf8_lossy(&late.stderr);
+        assert!(text.contains("Error: late reason"), "{} bytes", text.len());
+        let endless = super::run_background(sh, &["-c", "printf '%0200000d' 0"])
+            .expect("the child ran");
+        assert_eq!(endless.stderr.len(), 64 * 1024);
+    }
+
     thread_local! {
         static SPAWNS: std::cell::RefCell<Option<Vec<Vec<String>>>> =
             const { std::cell::RefCell::new(None) };
