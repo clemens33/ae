@@ -499,17 +499,26 @@ pub(super) fn resolve_server(
         return Ok(ControlFlow::Break(EXIT_FAILED));
     }
     // The orchestrator autostart's own launch leaves a live seat exactly as it
-    // is: no adoption, backfill, restamp or attach hint, and nothing printed. A
-    // tmux session of the name that is not an ae session keeps its refusal.
+    // is: no adoption, backfill, restamp or attach hint, and nothing printed.
+    // Only the incarnation the record names counts as that seat: a tmux
+    // session of the name whose live uuid stamp is missing or another one is
+    // left untouched and refused in one line.
     if env.starter == super::Starter::Autostart && matches!(placed, Placement::Running) {
-        if transport::observe_agents(&recorded.server, session).is_none() {
-            writeln!(
-                err,
-                "Error: tmux session '{session}' exists but is not an ae session."
-            )?;
-            return Ok(ControlFlow::Break(EXIT_FAILED));
-        }
-        return Ok(ControlFlow::Break(0));
+        let live = transport::observe_option_reading(
+            &recorded.server,
+            session,
+            crate::theme::SESSION_ID_OPTION,
+        );
+        let Some(why) = foreign_incarnation(&bytes, &live) else {
+            return Ok(ControlFlow::Break(0));
+        };
+        let id = transport::observe_session_id(&recorded.server, session)
+            .map_or_else(String::new, |id| format!(" ({id})"));
+        writeln!(
+            err,
+            "Error: tmux session '{session}'{id} {why}, so it is not the recorded ae session. Nothing was changed."
+        )?;
+        return Ok(ControlFlow::Break(EXIT_FAILED));
     }
     match placed {
         Placement::Running if recorded.legacy => {
@@ -559,6 +568,32 @@ pub(super) fn resolve_server(
             why,
             err,
         )?)),
+    }
+}
+
+/// Why the running tmux session is not the incarnation the saved meta records,
+/// or `None` when its live `@ae_session_uuid` names the meta's one session
+/// uuid. `bytes` is the meta read under the lifecycle lock that also named
+/// the recorded server. Every doubt — no single recorded uuid, an unanswered
+/// read — is a reason, never a match.
+pub(super) fn foreign_incarnation(bytes: &[u8], live: &tmux::OptionReading) -> Option<String> {
+    let saved = meta::sole_value(bytes, "session_id")
+        .map(|value| crate::archive::canonical_uuid(&String::from_utf8_lossy(value)))
+        .filter(|value| !value.is_empty());
+    let Some(saved) = saved else {
+        return Some("could not be matched: its record names no single session uuid".to_owned());
+    };
+    match live {
+        tmux::OptionReading::Set(value) if crate::archive::canonical_uuid(value) == saved => None,
+        tmux::OptionReading::Set(value) => Some(format!(
+            "carries session uuid {value}, not the recorded {saved}"
+        )),
+        tmux::OptionReading::Vacant => Some(format!(
+            "carries no ae session uuid, not the recorded {saved}"
+        )),
+        tmux::OptionReading::Unknown => {
+            Some("could not be matched: its session uuid could not be read".to_owned())
+        }
     }
 }
 

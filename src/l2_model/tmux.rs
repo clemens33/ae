@@ -107,6 +107,13 @@ pub fn session_choice_args(server: &ServerId) -> Vec<String> {
 /// a tie the first in name order, because tmux walks its sessions by name and
 /// keeps only a strictly better one. `None` when no row qualifies or a row is
 /// not this format's.
+///
+/// The one residual difference: tmux compares activity to the microsecond,
+/// and `#{session_activity}` prints whole seconds, so two sessions active
+/// within the same second fall to name order here. Only bare `ae` asks this,
+/// and only after it attempted an orchestrator start — whether that start
+/// created the seat, was refused, or found the seat on another server; every
+/// other attach stays tmux's.
 #[must_use]
 pub fn untargeted_attach_choice(stdout: &str, excluded: &str) -> Option<String> {
     let mut best: Option<(bool, u64, &str)> = None;

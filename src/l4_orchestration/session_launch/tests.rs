@@ -2582,3 +2582,31 @@ fn an_unjournaled_start_keeps_the_record_when_the_rollback_cannot_prove_the_sess
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn autostart_counts_a_live_session_only_when_its_stamp_names_the_record() {
+    use crate::tmux::OptionReading;
+    const SAVED: &str = "0199c0de-3333-4890-abcd-ef0123456789";
+    let foreign = super::preflight::foreign_incarnation;
+    let meta = format!("name=orchestrator\nsession_id={SAVED}\n");
+    let meta = meta.as_bytes();
+    assert_eq!(
+        foreign(meta, &OptionReading::Set(SAVED.to_ascii_uppercase())),
+        None
+    );
+    let vacant = foreign(meta, &OptionReading::Vacant).expect("an unstamped session is foreign");
+    assert!(
+        vacant.contains("no ae session uuid") && vacant.contains(SAVED),
+        "{vacant}"
+    );
+    let other = "0199c0de-4444-4890-abcd-ef0123456789";
+    let mismatch = foreign(meta, &OptionReading::Set(other.to_owned())).expect("another uuid");
+    assert!(
+        mismatch.contains(other) && mismatch.contains(SAVED),
+        "{mismatch}"
+    );
+    assert!(foreign(meta, &OptionReading::Unknown).is_some());
+    let doubled = format!("session_id={SAVED}\nsession_id={SAVED}\n");
+    assert!(foreign(doubled.as_bytes(), &OptionReading::Set(SAVED.to_owned())).is_some());
+    assert!(foreign(b"name=orchestrator\n", &OptionReading::Vacant).is_some());
+}

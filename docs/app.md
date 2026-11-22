@@ -580,6 +580,16 @@ again binds or starts one. An app started on the orchestrator (`ae app
 orchestrator`, or a handed-over view of it) opens the panel full screen when
 the seat runs.
 
+The app also starts the orchestrator when the owner starts ae: bare `ae`, a
+launch that lands in the app, or `ae app` typed outside tmux or in an ordinary
+pane (see Autostart under [`ae orchestrator`](reference/commands.md#ae-orchestrator)).
+The start runs in the background after the app has taken the terminal, and the
+app never waits for it. A start that succeeds shows nothing. A start that fails,
+or a seat that waits on a login, shows its one line as a notice, once. An app
+opened by a session, handed over on a restart or started in an agent seat starts
+nothing. `[workspace] orchestrator_autostart = off` and `AE_NO_AUTOSTART=1`
+switch it off.
+
 ### Orchestrator board
 
 The orchestrator's board is one record of what needs the human, in its session

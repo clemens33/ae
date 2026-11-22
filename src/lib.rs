@@ -2019,11 +2019,15 @@ fn run_bare_attach(
     Ok(entry::EXIT_FAILED)
 }
 
-/// Bare `ae`'s orchestrator autostart, then its untargeted attach as tmux
-/// would have chosen before the kick: a seat the kick just created is the
-/// newest session on the server, so tmux's own pick would land on it. Only
-/// then is the target named — tmux's pick among the others; otherwise tmux
-/// chooses, as it always did. `names` is the listing taken before the kick.
+/// Bare `ae`'s orchestrator autostart, then its untargeted attach. When this
+/// invocation ran the start and the seat was not there before it, the seat
+/// may now be the newest session on the server, so tmux's own pick could
+/// land on it: the target is then named instead — tmux's pick among the
+/// others, read after the start and attached by exact name. With no such
+/// session proven (none left, or the listing failed) nothing is attached, and
+/// a target that closes before the attach fails that attach; neither falls
+/// back to tmux's untargeted pick. Otherwise tmux chooses, as it always did.
+/// `names` is the listing taken before the kick.
 fn kick_then_attach(
     preamble: &entry::Preamble,
     server: &inventory::ServerId,
@@ -2032,41 +2036,48 @@ fn kick_then_attach(
 ) -> Result<u8> {
     let seat = orchestrator::ORCHESTRATOR_SESSION;
     let had_seat = names.iter().any(|name| name == seat);
-    kick_orchestrator(preamble, true, err)?;
-    let created = !had_seat
-        && transport::session_names(server).is_some_and(|names| names.iter().any(|n| n == seat));
-    if created && let Some(name) = transport::untargeted_attach_choice(server, seat) {
+    let started = kick_orchestrator(preamble, true, err);
+    if had_seat || !started {
+        return Ok(transport::attach(server));
+    }
+    if let Some(name) = transport::untargeted_attach_choice(server, seat) {
         return Ok(transport::focus(
             server,
             tmux::FocusVerb::AttachSession,
             &name,
         ));
     }
-    Ok(transport::attach(server))
+    writeln!(
+        err,
+        "ae: found no session to attach besides the orchestrator; attach it with: ae {seat}"
+    )?;
+    Ok(entry::EXIT_FAILED)
 }
 
 /// The orchestrator autostart for a route that has already decided what it
 /// does, waited for, its one line on `err`. Only for a human — `human` from
 /// the caller the route observed, and both streams a terminal — and at most
-/// once per invocation. The app kicks for itself ([`app::run`]).
-fn kick_orchestrator(preamble: &entry::Preamble, human: bool, err: &mut impl Write) -> Result<()> {
+/// once per invocation. The app kicks for itself ([`app::run`]). The line is
+/// best-effort: a stream that cannot take it never fails the route. Whether
+/// the start ran.
+fn kick_orchestrator(preamble: &entry::Preamble, human: bool, err: &mut impl Write) -> bool {
     if !human || !both_terminal() || !orchestrator_autostart::claim_once() {
-        return Ok(());
+        return false;
     }
     let kick = orchestrator_autostart::Kick {
         global: preamble.global.clone(),
         no_autostart: preamble.no_autostart,
     };
-    let line = match orchestrator_autostart::verdict(&kick) {
-        orchestrator_autostart::Verdict::Skip => None,
-        orchestrator_autostart::Verdict::Note(line) => Some(line),
-        orchestrator_autostart::Verdict::Start => orchestrator_autostart::start(),
+    let (started, line) = match orchestrator_autostart::verdict(&kick) {
+        orchestrator_autostart::Verdict::Skip => (false, None),
+        orchestrator_autostart::Verdict::Note(line) => (false, Some(line)),
+        orchestrator_autostart::Verdict::Start => (true, orchestrator_autostart::start()),
     };
     if let Some(line) = line {
-        writeln!(err, "{line}")?;
-        err.flush()?;
+        let _ = writeln!(err, "{line}");
+        let _ = err.flush();
     }
-    Ok(())
+    started
 }
 
 /// Whether BOTH of this process's streams are a terminal. The app draws on
@@ -2734,7 +2745,7 @@ fn run_launch_as(
             who,
             session_launch::LaunchCaller::Outside | session_launch::LaunchCaller::Pane(_)
         );
-        kick_orchestrator(preamble, human, err)?;
+        kick_orchestrator(preamble, human, err);
     }
     match gate {
         Gate::Caller(who, route) => {

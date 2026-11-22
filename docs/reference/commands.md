@@ -293,7 +293,8 @@ tmux -L ae attach -t "=my-feature"
 Outside tmux, bare `ae` first resumes the sessions a crashed server held (`restore` in the config
 guide); the orchestrator seat is not among them and comes back only through the orchestrator
 autostart (see Autostart under `ae orchestrator`). Then, with a terminal on both stdin and stdout and at least one recorded session, running
-or stopped, it opens [the app](../app.md) on the fleet; it creates and resumes nothing itself.
+or stopped, it opens [the app](../app.md) on the fleet; apart from that autostart, it creates and
+resumes nothing itself.
 With no recorded session it is a first use: it creates a session named after the current
 directory (characters outside `A-Za-z0-9_-` become `-`; a word `ae` answers itself takes
 `-1`), records that directory as its origin, prints `first use: created session <name> in
@@ -2191,7 +2192,14 @@ command has decided what it does, never attaches, and says nothing on success;
 a running seat is left exactly as it is. The app waits for it in the
 background; any other command waits for it first. A failure never fails the
 command: it prints one line, `ae: orchestrator autostart failed: <why>; start it
-by hand: ae orchestrator`, and nothing retries it. Agent seats and scripted
+by hand: ae orchestrator`, and nothing retries it. A tmux session that holds the
+name but carries no `@ae_session_uuid`, or another one than the record names, is
+not the seat: it is left untouched, and that line names its tmux id. When bare
+`ae --tmux` attempted a start of a seat that was not running, it never attaches
+the new seat: it chooses among the other sessions, an unattached one first, then
+the most recent activity to the second. With no other session found it attaches nothing and
+says `ae: found no session to attach besides the orchestrator; attach it with:
+ae orchestrator`. Agent seats and scripted
 (non-terminal) callers never start it. `[workspace] orchestrator_autostart = off`
 in the global config switches it off; any value other than `on` or `off` starts
 nothing and is named once. `AE_NO_AUTOSTART=1` starts no companion for that

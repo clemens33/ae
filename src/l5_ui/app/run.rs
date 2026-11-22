@@ -65,7 +65,8 @@ pub fn run(
     let hint = !(own || handed.is_some()) && says_hint(at.is_some(), stamp.as_deref());
     // The owner's own start of ae: the app the entry opened (bare `ae`, a
     // launch that lands here), `ae app` typed outside tmux, or typed in a pane
-    // proved ordinary — no console stamp and no agent. Never a restart handed
+    // proved ordinary — tmux named its session, and it carries no console stamp
+    // and no agent (as `pane_is_seatless` reads it). Never a restart handed
     // on, an app or chat window a session runs, or an agent seat.
     let kicks = handed.is_none()
         && (own
@@ -73,7 +74,7 @@ pub fn run(
             || (stamp.as_deref() == Some("")
                 && at.is_some_and(|(server, pane)| {
                     transport::reask_viewer(server, pane)
-                        .is_some_and(|viewer| viewer.agent.is_none())
+                        .is_some_and(|viewer| viewer.session.is_some() && viewer.agent.is_none())
                 })));
     let (keep, landed) = handed_on(handed);
     let own = (caller.clone(), pane.clone());
