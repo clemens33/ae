@@ -9947,6 +9947,50 @@ fn the_lane_lock_is_one_lock_for_every_checkout_and_only_its_owner_releases_it()
     assert_eq!(code, 1, "nothing is held, so nothing is released: {err}");
 }
 
+#[test]
+fn lane_lock_release_works_after_tmpdir_is_removed() {
+    let (scratch, main, linked) = lane_lock_checkouts("missing-tmpdir");
+    let tmp = scratch.join("receipt-tmp");
+    assert!(
+        std::fs::create_dir(&tmp).is_ok(),
+        "temporary directory for the claim"
+    );
+    let env = [(
+        "TMPDIR",
+        tmp.to_str()
+            .unwrap_or_else(|| panic!("non-UTF-8 scratch path: {tmp:?}")),
+    )];
+    let (code, out, err) = lane_lock_env(&scratch, &main, &["claim", "alpha"], &env);
+    assert_eq!(code, 0, "{out}{err}");
+
+    assert!(
+        std::fs::remove_dir(&tmp).is_ok(),
+        "remove TMPDIR before release"
+    );
+    let (code, out, err) = lane_lock_env(&scratch, &linked, &["release", "alpha"], &env);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(!main.join(".local/locks/gate").exists(), "released");
+}
+
+#[test]
+fn lane_lock_release_failure_reports_the_current_holder() {
+    let (scratch, main, linked) = lane_lock_checkouts("refusal-holder");
+    let gate = main.join(".local/locks/gate");
+    let (code, out, err) = lane_lock(&scratch, &main, &["claim", "alpha"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let owner_line = read(&gate.join("owner"));
+    let extra = gate.join("extra");
+    assert!(
+        std::fs::write(&extra, "").is_ok(),
+        "unexpected file that prevents release"
+    );
+
+    let (code, _, err) = lane_lock(&scratch, &linked, &["release", "alpha"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("lock still held by alpha"), "{err}");
+    assert_eq!(read(&gate.join("owner")), owner_line);
+}
+
 /// The queue file is honoured, a lock taken by hand holds off the recipe and
 /// the reverse, and a lock that looks abandoned is REPORTED and left standing.
 #[test]

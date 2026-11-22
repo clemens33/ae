@@ -998,9 +998,12 @@ test-affected *args:
 # Claim, release or inspect the gate lane lock: claim NAME [WAIT-SECS] | release NAME | cancel-wait NAME | status
 [no-exit-message]
 lane-lock verb name="" wait="0":
-    #!/usr/bin/env bash
+    @exec bash -c {{ quote(LANE_LOCK) }} lane-lock "$@" {{ quote(REAP) }}
+
+# A shebang recipe needs a Just temp file before bash starts. Release must also work after the
+# caller's TMPDIR has been removed, so pass the existing bash body directly.
+LANE_LOCK := DISKFREE + "\n" + '''
     set -euo pipefail
-    {{ DISKFREE }}
     verb="$1"
     name="${2:-}"
     wait="${3:-0}"
@@ -1008,17 +1011,21 @@ lane-lock verb name="" wait="0":
     suspect_secs=3600
     usage() { echo "usage: just lane-lock claim <name> [wait-secs] | release <name> | cancel-wait <name> | status" >&2; exit 2; }
     refuse() { echo "lane-lock: refused: $*" >&2; exit 1; }
-    case "$verb" in
-        claim | release | cancel-wait) [[ -n "$name" ]] || usage ;;
-        status) ;;
-        *) usage ;;
-    esac
-    if [[ -n "$name" && ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
-        echo "lane-lock: refused: a lock name is [A-Za-z0-9][A-Za-z0-9_.-]{0,63}, got '$name'" >&2
-        exit 2
-    fi
-    # Whole seconds without a leading zero: bash would read 08 as an invalid octal number.
-    [[ "$wait" =~ ^(0|[1-9][0-9]{0,5})$ ]] || { echo "lane-lock: refused: wait is whole seconds without a leading zero, got '$wait'" >&2; exit 2; }
+    validate_args() {
+        case "$verb" in
+            claim | release | cancel-wait) [[ -n "$name" ]] || usage ;;
+            status) ;;
+            *) usage ;;
+        esac
+        if [[ -n "$name" && ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
+            echo "lane-lock: refused: a lock name is [A-Za-z0-9][A-Za-z0-9_.-]{0,63}, got '$name'" >&2
+            exit 2
+        fi
+        # Whole seconds without a leading zero: bash would read 08 as an invalid octal number.
+        [[ "$wait" =~ ^(0|[1-9][0-9]{0,5})$ ]] || { echo "lane-lock: refused: wait is whole seconds without a leading zero, got '$wait'" >&2; exit 2; }
+    }
+    # Release installs its failure report before validating the request.
+    [[ "$verb" == release ]] || validate_args
     common="$(git rev-parse --git-common-dir 2>/dev/null)" || refuse "not inside a git checkout"
     common="$(cd -P "$common" && pwd -P)"
     [[ "${common##*/}" == .git ]] || refuse "the git common dir $common is not <checkout>/.git"
@@ -1089,6 +1096,24 @@ lane-lock verb name="" wait="0":
             echo "held by $h_line (age $(span "$h_age"))"
         else
             echo "held by $h_line (age unknown)"
+        fi
+    }
+    # Observe the current path after a failed release. The entered directory can now be
+    # detached from the path, or another holder might have claimed the lane in the meantime.
+    report_release_failure() {
+        local status=$?
+        ((status != 0)) || return 0
+        if [[ -d "$gate" && ! -L "$gate" ]]; then
+            owner_file="$gate/owner"
+            read_holder
+            if [[ -z "$h_name" && -n "${removed_owner:-}" &&
+                "$(inode_of "$gate" 2>/dev/null)" == "$entered" ]]; then
+                echo "lane-lock: lock still held; no owner recorded, last held by $removed_owner" >&2
+            else
+                echo "lane-lock: lock still $(holder_words)" >&2
+            fi
+        elif [[ -e "$gate" || -L "$gate" ]]; then
+            echo "lane-lock: lock path $gate still exists; no owner can be read" >&2
         fi
     }
     waiting="$locks/waiting"
@@ -1235,7 +1260,10 @@ lane-lock verb name="" wait="0":
             exit "$state"
             ;;
         release)
-            [[ -d "$gate" && ! -L "$gate" ]] || refuse "no gate lock is held, nothing to release"
+            trap report_release_failure EXIT
+            validate_args
+            [[ -e "$gate" || -L "$gate" ]] || refuse "no gate lock is held, nothing to release"
+            [[ -d "$gate" && ! -L "$gate" ]] || refuse "$gate is not a lock directory"
             # ANCHORED TO THE DIRECTORY ENTERED HERE, never to the path. A release can stall between
             # its owner check and its removal while the lock is released (by this recipe or by the
             # hand-typed protocol, which takes no part in anything below) and another slice claims
@@ -1264,7 +1292,7 @@ lane-lock verb name="" wait="0":
             # readable is checked, and the check refuses it.
             if [[ -e "$locks/groups" || -L "$locks/groups" ]]; then
                 census=0
-                verdict="$(perl -e '{{ REAP }}' check "$locks/groups" "$h_line" 2>&1)" || census=$?
+                verdict="$(perl -e "$4" check "$locks/groups" "$h_line" 2>&1)" || census=$?
                 if ((census != 0)); then
                     [[ -n "$verdict" ]] || verdict="suspect: groups: the run census exited with status $census"
                     printf '%s\n' "$verdict" >>suspect
@@ -1277,6 +1305,7 @@ lane-lock verb name="" wait="0":
                 rm "$binding_file" 2>/dev/null || echo "note: $binding_file could not be removed"
             fi
             err="$(rm owner 2>&1)" || refuse "the owner line could not be removed ($err); the gate this release checked is gone or changed, so nothing else was removed"
+            removed_owner="$h_name"
             [[ "$(inode_of "$gate" 2>/dev/null)" == "$entered" ]] || refuse "the owner line is removed, but $gate is no longer the directory this release entered; left alone"
             rmdir "$gate" || refuse "the owner line is removed, but $gate could not be removed"
             echo "lane-lock: released by $name"
@@ -1414,6 +1443,7 @@ lane-lock verb name="" wait="0":
             done
             ;;
     esac
+'''
 
 # ── Version ──────────────────────────────────────────────────────────
 
