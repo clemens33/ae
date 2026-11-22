@@ -260,6 +260,7 @@ mod web_assets_spec;
 mod web_auth_spec;
 mod web_http_spec;
 mod web_lifecycle_spec;
+mod web_response_spec;
 mod web_server_spec;
 mod weeklyroom_spec;
 mod worker_birth_decode_spec;
