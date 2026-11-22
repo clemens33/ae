@@ -475,3 +475,120 @@ fn absent_board_leaves_every_width_target_and_key_unchanged() {
         assert_eq!(text(&paint(&mut absent_app, width, 35)), text(&none_buf));
     }
 }
+
+#[test]
+fn exact_fit_and_bottom_scroll_cue_and_plain_board_click() {
+    let mut exact_raw = String::from("RUNNING\n");
+    for n in 1..=6 {
+        let _ = writeln!(exact_raw, "R{n} | Fit {n}");
+    }
+    let (_root, mut exact_app) =
+        setup_board("bf-exact-fit", Some(sample_desk(exact_raw.as_bytes())));
+    let exact = paint(&mut exact_app, 200, 8);
+    let board_rect = Rect::new(164, 0, 36, 8);
+    let exact_board = rect_text(&exact, board_rect);
+    assert!(exact_board.contains("BOARD"));
+    assert!(exact_board.contains("Fit 6"));
+    assert!(
+        !exact_board.contains("more") && !exact_board.contains('↓') && !exact_board.contains('↑'),
+        "exact 8-row board shows no overflow cue:\n{exact_board}"
+    );
+
+    let mut long_raw = String::from("RUNNING\n");
+    for n in 1..=9 {
+        let _ = writeln!(long_raw, "R{n} | Row {n:02}");
+    }
+    long_raw.push_str("R10 | Plain tenth | https://example.test/extra\n");
+    let (_root2, mut long_app) =
+        setup_board("bf-bottom-cue", Some(sample_desk(long_raw.as_bytes())));
+    let _ = paint(&mut long_app, 200, 10);
+    for _ in 0..10 {
+        wheel(&mut long_app, false, (170, 5));
+    }
+    let bottom = paint(&mut long_app, 200, 10);
+    assert!(text(&bottom).contains("Plain tenth"));
+    let cue = row_text(&bottom, 9);
+    assert!(
+        cue.contains("more") && cue.contains('↑') && !cue.contains('↓'),
+        "bottom scroll cue points up only: {cue:?}"
+    );
+
+    let plain_at = locate(&bottom, "Plain tenth").expect("plain board text visible");
+    long_app.flash = None;
+    click(&mut long_app, plain_at);
+    assert!(
+        long_app.flash.is_none(),
+        "clicking plain board text triggers no link hint"
+    );
+}
+
+#[test]
+fn board_wheel_redraw_signal_respects_scroll_bounds() {
+    let mut raw = String::from("RUNNING\nR1 | Top milestone\n");
+    for n in 2..=13 {
+        let _ = writeln!(
+            raw,
+            "R{n} | Middle step {n:02} with extra wrapped detail text"
+        );
+    }
+    let (_root, mut app) = setup_board("bf-wheel-bounds", Some(sample_desk(raw.as_bytes())));
+    let _ = paint(&mut app, 200, 20);
+    let wheel_at = |app: &mut App, kind| {
+        take_keys(
+            app,
+            vec![(
+                Key::Mouse(Mouse {
+                    kind,
+                    column: 170,
+                    row: 5,
+                }),
+                Instant::now(),
+            )],
+        )
+    };
+    assert_eq!(wheel_at(&mut app, MouseKind::WheelUp), Some(false));
+    assert_eq!(wheel_at(&mut app, MouseKind::WheelDown), Some(true));
+    let _ = paint(&mut app, 200, 20);
+    for _ in 0..20 {
+        let _ = wheel_at(&mut app, MouseKind::WheelDown);
+    }
+    let _ = paint(&mut app, 200, 20);
+    assert_eq!(wheel_at(&mut app, MouseKind::WheelDown), Some(false));
+    assert_eq!(wheel_at(&mut app, MouseKind::WheelUp), Some(true));
+}
+
+#[test]
+fn absent_board_b_ignores_unfocused_panel_and_clicking_b_board_exits_panel_composer() {
+    let (_r1, mut absent) = setup_board("bf-absent-main", Some(DeskView::Absent));
+    let first = paint(&mut absent, 120, 20);
+    let main_at = locate(&first, MAIN_TURN).expect("main chat visible");
+    click(&mut absent, main_at);
+    assert!(absent.orch.panel.is_some() && !absent.panel_focused());
+    absent.flash = None;
+    let redraw = take_keys(&mut absent, Keys::app().feed(b"B", Instant::now()));
+    assert_eq!(redraw, Some(false));
+    assert!(!absent.panel_focused());
+    assert!(absent.flash.is_none());
+
+    let (_r2, mut comp) = setup_board(
+        "bf-click-compose",
+        Some(sample_desk(b"DECIDE\nD1 | Header click test\n")),
+    );
+    let _ = paint(&mut comp, 120, 20);
+    bytes(&mut comp, b"i");
+    bytes(&mut comp, b"keep");
+    assert!(comp.composing());
+    let cells = paint(&mut comp, 120, 20);
+    let button = locate(&cells, "B board").expect("B board header button");
+    click(&mut comp, button);
+    assert!(!comp.composing(), "clicking B board leaves composer");
+    let replaced = paint(&mut comp, 120, 20);
+    assert!(text(&replaced).contains("Header click test"));
+    send_key(&mut comp, Key::Escape);
+    let _ = paint(&mut comp, 120, 20);
+    bytes(&mut comp, b"i");
+    assert_eq!(
+        comp.writer_input().map(Input::draft).as_deref(),
+        Some("keep")
+    );
+}
