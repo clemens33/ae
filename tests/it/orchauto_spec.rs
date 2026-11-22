@@ -546,3 +546,40 @@ fn a_foreign_session_cannot_satisfy_autostart_with_a_saved_record() {
     );
     assert_eq!(f.start_count(), 1);
 }
+
+#[test]
+fn an_invalid_launch_name_does_not_start_the_orchestrator() {
+    let f = Fixture::new("oa-invalid", CONFIG);
+    let args = ["bad/name", "--local", "--no-attach"];
+    let pane = f.pane("invalid", "0", Path::new(""), &args);
+    let output = f.completed_with("invalid", &pane, "1");
+    assert!(output.contains("invalid session name"), "{output}");
+    f.absent();
+}
+
+#[test]
+fn startup_dialog_is_reported_once_with_the_detached_seat_ready_to_attach() {
+    use super::super::dialogseat_live_spec::{MCP40_80, install_fakes};
+
+    let f = Fixture::new("oa-dialog", CONFIG);
+    let root = fs::canonicalize(f.rig.scratch.path()).expect("private fixture root");
+    install_fakes(&root, MCP40_80);
+    let profile = format!(
+        "[profiles]\nmodal = \"{0}/bin/claude {0}/vendor.pl {0}\"\n",
+        root.display()
+    );
+    let config = CONFIG
+        .replace("[profiles]\n", &profile)
+        .replace("orchestrator = idle", "orchestrator = modal");
+    fs::write(&f.rig.config, config).expect("private orchestrator profile");
+
+    let output = f.ordinary("origin", "0");
+    let lines: Vec<_> = output.lines().filter(|line| line.contains(ORCH)).collect();
+    assert_eq!(lines.len(), 1, "{output}");
+    let notice = lines[0];
+    assert!(notice.contains("needs a human"), "{output}");
+    assert!(notice.ends_with("attach with: ae orchestrator"), "{output}");
+    assert!(!notice.contains("autostart failed"), "{output}");
+    f.orchestrator(1);
+    assert_eq!(f.start_count(), 1);
+}

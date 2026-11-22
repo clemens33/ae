@@ -38,7 +38,7 @@ use ae::tool::Composed;
 const SHORT_40: &str =
     include_str!("../fixtures/dialogseat/claude-2.1.330-settings-40x12.history.txt");
 /// 80x24, 40 permissions + hooks + `.mcp.json`: 27 rows from rule to hint.
-const MCP40_80: &str =
+pub(super) const MCP40_80: &str =
     include_str!("../fixtures/dialogseat/claude-2.1.330-mcp40-80x24.history.txt");
 const UUID: &str = "0199c0de-bbbb-4890-abcd-ef0123456789";
 const TITLE: &str = "Accessing workspace:";
@@ -133,7 +133,7 @@ fn real_tmux(root: &Path) -> String {
 
 /// The native fake named `claude`, the vendor script and the counting tmux
 /// wrapper, all under `<root>/bin` and `<root>`.
-fn install_fakes(root: &Path, frame: &str) {
+pub(super) fn install_fakes(root: &Path, frame: &str) {
     for dir in [root.join("bin"), root.join("tmp")] {
         assert!(fs::create_dir_all(dir).is_ok(), "setup: directories");
     }
