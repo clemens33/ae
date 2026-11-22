@@ -1828,6 +1828,8 @@ release:
         if [[ -z "$path" ]]; then
             have="<missing>"
             path="<not on PATH>"
+        elif [[ -z "$1" ]]; then
+            have="<version probe command not on PATH>"
         elif output="$("$@" --version 2>&1)"; then
             read -r name have _ <<< "$output"
             if [[ "$name" == "$tool" && "$have" == "$pin" ]]; then
@@ -1860,17 +1862,18 @@ release:
     dev_tool_remedy="Run just rust-setup, or remove a shadowing copy (for example, from Homebrew) from PATH."
     just_remedy="Install just {{ JUST_VERSION }} and put it first on PATH before rerunning release."
     running_just={{ quote(just_executable()) }}
-    path_just="$(type -P just || true)"
-    release_tool_pin just "{{ JUST_VERSION }}" "$running_just" "$just_remedy" "$running_just"
+    path_just="$(type -P "just" || true)"
+    release_tool_pin "just" "{{ JUST_VERSION }}" "$running_just" "$just_remedy" "$running_just"
     if [[ "$path_just" != "$running_just" ]]; then
-        release_tool_pin just "{{ JUST_VERSION }}" "$path_just" "$just_remedy" "$path_just"
+        release_tool_pin "just" "{{ JUST_VERSION }}" "$path_just" "$just_remedy" "$path_just"
     fi
-    cliff="$(type -P git-cliff || true)"
-    release_tool_pin git-cliff "{{ GIT_CLIFF_VERSION }}" "$cliff" "$dev_tool_remedy" "$cliff"
-    release_tool_pin cargo-deny "{{ DENY_VERSION }}" "$(release_cargo_tool_path deny || true)" "$dev_tool_remedy" cargo deny
-    release_tool_pin cargo-nextest "{{ NEXTEST_VERSION }}" "$(release_cargo_tool_path nextest || true)" "$dev_tool_remedy" cargo nextest
-    taplo="$(type -P taplo || true)"
-    release_tool_pin taplo "{{ TAPLO_VERSION }}" "$taplo" "$dev_tool_remedy" "$taplo"
+    cliff="$(type -P "git-cliff" || true)"
+    release_tool_pin "git-cliff" "{{ GIT_CLIFF_VERSION }}" "$cliff" "$dev_tool_remedy" "$cliff"
+    cargo_launcher="$(type -P "cargo" || true)"
+    release_tool_pin "cargo-deny" "{{ DENY_VERSION }}" "$(release_cargo_tool_path deny || true)" "$dev_tool_remedy" "$cargo_launcher" "deny"
+    release_tool_pin "cargo-nextest" "{{ NEXTEST_VERSION }}" "$(release_cargo_tool_path nextest || true)" "$dev_tool_remedy" "$cargo_launcher" "nextest"
+    taplo="$(type -P "taplo" || true)"
+    release_tool_pin "taplo" "{{ TAPLO_VERSION }}" "$taplo" "$dev_tool_remedy" "$taplo"
 
     # THE DISK FLOOR also precedes anything claimed, fetched or written: a release that
     # runs out of disk mid-way stops after its claim and leaves a suspect lane lock. It refuses when
