@@ -75,7 +75,7 @@ pub fn run(
         stamp.as_deref(),
         || {
             at.is_some_and(|(server, pane)| {
-                crate::pane_is_seatless(transport::reask_viewer(server, pane).as_ref())
+                crate::tmux::pane_is_seatless(transport::reask_viewer(server, pane).as_ref())
             })
         },
     );

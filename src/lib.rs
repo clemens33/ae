@@ -2119,26 +2119,18 @@ fn caller_pane_lands(preamble: &entry::Preamble) -> bool {
 /// `@ae_agent` (a seat or a monitor keeps today's entry). Anything unread
 /// fails closed.
 fn caller_pane_seatless(preamble: &entry::Preamble) -> bool {
-    pane_is_seatless(caller_viewer(preamble).as_ref())
-}
-
-/// Whether a described pane carries no `@ae_agent`. A chat pane is stamped
-/// `@ae_console`, never `@ae_agent`, so it is no seat. Described means tmux
-/// named the pane's session: for a pane id it cannot find, tmux 3.7b still
-/// exits 0 and prints every pane field empty.
-pub(crate) fn pane_is_seatless(viewer: Option<&tmux::ObservedViewer>) -> bool {
-    viewer.is_some_and(|viewer| viewer.session.is_some() && viewer.agent.is_none())
+    tmux::pane_is_seatless(caller_viewer(preamble).as_ref())
 }
 
 /// Whether the calling pane may draw the app with no session named: it is no
-/// seat ([`pane_is_seatless`]) and its session is one this state root records
+/// seat ([`tmux::pane_is_seatless`]) and its session is one this state root records
 /// — the home `app::run` would otherwise refuse. Anything unread fails closed
 /// to the list.
 fn pane_may_land(
     viewer: Option<&tmux::ObservedViewer>,
     recorded: impl FnOnce(&str) -> bool,
 ) -> bool {
-    pane_is_seatless(viewer)
+    tmux::pane_is_seatless(viewer)
         && viewer
             .and_then(|viewer| viewer.session.as_deref())
             .is_some_and(recorded)
@@ -5768,26 +5760,24 @@ mod tests {
     /// whatever session it sits in, because the app's home is the named one.
     #[test]
     fn a_named_landing_asks_only_that_the_pane_is_no_seat() {
+        use crate::tmux::pane_is_seatless;
         let pane = |agent: Option<&str>, session: Option<&str>| crate::tmux::ObservedViewer {
             agent: agent.map(ToOwned::to_owned),
             session: session.map(ToOwned::to_owned),
             ..crate::tmux::ObservedViewer::default()
         };
-        assert!(super::pane_is_seatless(Some(&pane(None, Some("host")))));
+        assert!(pane_is_seatless(Some(&pane(None, Some("host")))));
         assert!(
-            !super::pane_is_seatless(Some(&pane(None, None))),
+            !pane_is_seatless(Some(&pane(None, None))),
             "no session named"
         );
-        assert!(!super::pane_is_seatless(Some(&pane(
-            Some("lead"),
-            Some("one")
-        ))));
-        assert!(!super::pane_is_seatless(None), "unread fails closed");
+        assert!(!pane_is_seatless(Some(&pane(Some("lead"), Some("one")))));
+        assert!(!pane_is_seatless(None), "unread fails closed");
         // tmux 3.7b's whole answer for a pane id it cannot find: exit 0, every
         // pane field empty, only the server's socket path filled.
         let missing = crate::tmux::interpret_viewer(true, " |  |  |  | /tmp/s/sock\n");
         assert!(missing.is_some(), "tmux answered");
-        assert!(!super::pane_is_seatless(missing.as_ref()), "a missing pane");
+        assert!(!pane_is_seatless(missing.as_ref()), "a missing pane");
     }
 
     /// Only a grammar name lands, so the `--dir` read stays under the sessions

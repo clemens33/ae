@@ -877,6 +877,15 @@ pub struct ObservedViewer {
     pub socket_path: Option<String>,
 }
 
+/// Whether a described pane carries no `@ae_agent`. A chat pane is stamped
+/// `@ae_console`, never `@ae_agent`, so it is no seat. Described means tmux
+/// named the pane's session: for a pane id it cannot find, tmux 3.7b still
+/// exits 0 and prints every pane field empty.
+#[must_use]
+pub fn pane_is_seatless(viewer: Option<&ObservedViewer>) -> bool {
+    viewer.is_some_and(|viewer| viewer.session.is_some() && viewer.agent.is_none())
+}
+
 impl Default for ObservedViewer {
     fn default() -> Self {
         Self {
