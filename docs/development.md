@@ -82,7 +82,7 @@ just rust-stress 'test(=menu::x)' 20 600  # one named filter, repeated, bounded 
 just version          # current AE_VERSION
 just bundles          # both platform bundles + release SHA256SUMS into ./dist
 just test-macos       # the Mac boundary subset (.config/macos-subset); print=yes prints it, runs nothing
-just release-proof    # the hp's whole green receipt for this commit over ssh, then just test-macos
+just release-proof    # the hp's whole green receipt over ssh, plus a Mac receipt or just test-macos
 just release          # check → release-proof → rust-deny → CalVer → bundles → smoke → tag → gh release
 just docs             # serve the docs site locally on http://localhost:8000
 just docs-build       # build the static site into ./site
@@ -147,8 +147,8 @@ Every `just` recipe of the Rust lanes and what it is. AGENTS.md carries the shor
 | `just rust-build-release` / `bundles` | native release binary at `target/release/ae` (host only, a bare clone must build) / both platform bundles + `SHA256SUMS` into `dist/` from one two-target cargo build (native binary under `target/aarch64-apple-darwin/release/`; needs the musl cross toolchain) |
 | `just rust-stress <filterset> [count=10] [secs=900]` | the BOUNDED repeat run: nextest `--stress-count` over ONE named filterset (a module or a test, never the suite), through the isolated lane. Refuses to start above load1 14 or when load1 cannot be read (status 1), refuses an empty or `all()` filter, a count or bound that is not a plain integer, or a host without `timeout`/`gtimeout` (status 2); threads are the lane's sizing (below), cargo runs at nice 10 under `timeout -k 5 <secs>` (status 124 when the bound ends it) and the lane reaps what it started. It judges the run's own JUnit report, not nextest's exit status alone: status 100 when any iteration failed, status 1 when one did not run or the report is missing (nextest 0.9.143 exits 0 when only the last iteration passed). Never in the gate, CI or mutants. See Stress runs |
 | `just rust-prune` / `rust-prune apply=yes` | THIS checkout's stale `ae` build output: the report is the default and removes nothing, `apply=yes` runs six fixed `cargo clean -p ae` cleans, each proved by a `--dry-run` path check first. Refuses a redirected target dir, a non-root cwd, a linked tree, a process using the checkout or a dry run it cannot prove (a stdout line that is not an absolute path inside its tree, no single valid `Summary`). Own tree only, never during a gate (`docs/development.md`) |
-| `just test-macos` / `test-macos print=yes` | the Mac boundary subset: every unit test plus the integration modules and exact tests `.config/macos-subset` names, through the lane's filtered arm (no doctests, no receipt), plus the `gate::macos_subset` guard itself whatever the manifest says. `print=yes` prints the filterset and the selected tests and runs nothing. A malformed manifest refuses. The `gate::macos_subset` guard keeps the manifest complete (see [Release proof](#release-proof)) |
-| `just release-proof [expect=<head>:<tree>]` | the release's tests: the hp's whole green gate-receipt for this clean HEAD, read over ssh and checked strictly, then `just test-macos`. Any doubt is one `release-proof: refused:` line. Needs `AE_RELEASE_HP` and `AE_RELEASE_HP_ROOT` (see [Release proof](#release-proof)) |
+| `just test-macos` / `test-macos print=yes` | the Mac boundary subset: every unit test, the integration tests `.config/macos-subset` names, and the `gate::macos_subset` guard. A whole green run on a steady, clean Mac checkout writes a subset receipt. `print=yes` lists the filterset and tests. A malformed manifest refuses. [Release proof](#release-proof) |
+| `just release-proof [expect=<head>:<tree>]` | the hp's whole green receipt for this clean HEAD over ssh, plus a matching Mac subset receipt or `just test-macos`. Needs `AE_RELEASE_HP` and `AE_RELEASE_HP_ROOT`. [Release proof](#release-proof) |
 | `just release` | the whole release, locally: check, `release-proof`, rust-deny and an identity recheck before the bump. Pre-flight refuses before any state is written, a missing hp destination included |
 | `just rust-linux` / `rust-linux-26` / `rust-linux-smoke` | ON DEMAND, never reached by `just test`, `just pre` or `just release`: the gate on real Linux, native arm64, in a local container (read-only checkout, `ae-linux-arm64-*` cache volumes, non-root, the mounted source checked against the host's HEAD, tree and dirty count) / the same on Ubuntu 26.04, own `ae-linux26-arm64-*` volumes; `rust-linux-26` (bus `stall`, the default since that arm went green, #267) adds a stalling session bus proved before the build, `rust-linux-26 off` is the validated-host arm / the x86_64 musl release bundle from `./dist` executed in an amd64 container. arm64 only: the x86_64 proof of Ubuntu 26.04 is a human run on x86_64 hardware |
 | `just harness-smoke [control]` | ON-DEMAND live smoke of the adapter rows against the REAL harness binaries and logins (a few short turns per tool); never in the gate, CI or mutants; control = hang shim, no spend |
@@ -642,6 +642,13 @@ test is flaky or depends on the machine. Receipts are a few hundred bytes, one p
 to delete at any time. `tests/it/gate/receipt_spec.rs` is the frozen acceptance for the writer and the
 strict reader.
 
+A whole green `just test-macos` on Darwin writes `.local/gate-receipts/macos-<tree>` in the main
+checkout when it starts and ends on the same clean HEAD and tree with the same boundary facts.
+The receipt records `kind=macos-subset`, the format version, tree, HEAD, host, OS, architecture,
+tmux version, `subset_hash` (SHA-256 of `.config/macos-subset`), toolchain pin hash and UTC time.
+Print-only, partial, failed and dirty runs leave existing receipts alone. The hp requires the separate
+whole-suite receipt.
+
 ### Release proof
 
 The human ruled the split on 2026-11-12: during a merge only the relevant tests run, and during a
@@ -665,10 +672,9 @@ host-key checking. It refuses unless ALL of these hold:
 `tmux`, `harness`, `scratch`, `inventory` and `inventory_count` are recorded only: the two machines
 differ there by design.
 
-**Both halves at the same time.** `just release` passes `hp=run`. When the hp already has a receipt
-for the tree, the proof runs as described above: the hp check first, then the Mac subset. When the
-hp has no receipt yet, the proof makes one, and the hp whole run and the Mac subset run at the same
-time, so a release costs about the slower of the two legs:
+**Both halves at the same time.** `just release` passes `hp=run`. When the hp has a receipt for the
+tree, the proof validates it first and then checks the Mac receipt. When the hp has no receipt yet,
+the proof starts the hp whole run and checks the Mac receipt while it runs:
 
 1. On the hp, `bash -s` runs a missing-only check: the receipt and its directories are not symbolic
    links, every directory on the path is readable and searchable, and the receipt does not exist. A
@@ -682,9 +688,9 @@ time, so a release costs about the slower of the two legs:
    the staging ref, runs `timeout -k 60 3600 just test`, releases the lock on a normal end and writes
    `<root>/.local/release/<run>.exit` last. The run id is the head, the time and the Mac process id,
    so no attempt reads the exit record of another.
-4. The Mac runs `just test-macos` in the foreground, as without an hp leg, then polls the exit record every
-   30 s. It goes on only when the record names its own run, commit and tree, exit 0 and a released
-   lock. Then the strict receipt check above runs on the receipt the hp leg wrote.
+4. The Mac reuses a matching receipt or runs `just test-macos` in the foreground. It then polls the
+   exit record every 30 s. It goes on only when the record names its own run, commit and tree, exit 0
+   and a released lock. Then the strict receipt check above runs on the receipt the hp leg wrote.
 
 The hp leg has no remote cancel. A red Mac subset, three lost polls in a row or an interrupt only
 stops the Mac waiting and refuses; the hp leg finishes alone, and its receipt serves a later release
@@ -695,7 +701,12 @@ that run is left. An interrupt reaches the Mac subset exactly as it does without
 stays with the caller of `just release`: the release itself claims none.
 `tests/it/gate/receipt_spec/parallel_spec.rs` is the frozen acceptance for this path.
 
-**The Mac half.** `just test-macos` runs every unit test plus the integration modules and exact tests
+**The Mac half.** `release-proof` reuses the local subset receipt when it parses strictly, is at most
+24 h old, and matches the current HEAD, tree, host, Darwin, architecture, tmux version, subset hash
+and toolchain pin hash. It prints the receipt path and age on a match. On a miss, it prints why and
+runs `just test-macos`.
+
+`just test-macos` runs every unit test plus the integration modules and exact tests
 `.config/macos-subset` names: the tests that touch what differs on a Mac (OS conditionals, the process
 table, real tmux clients, justfile recipes, fsync, the clipboard, archive tools). The guard
 `tests/it/gate/macos_subset.rs` derives that boundary from the source, and the gate refuses a manifest
@@ -1073,7 +1084,7 @@ recovered with `just bump-recover`.
 
 1. Pre-flight: clean working tree; on `main`; `gh` authenticated **and** `repos/<owner>/<repo>` reporting `permissions.push=true`; the musl cross compiler present; a usable `AE_RELEASE_HP` and `AE_RELEASE_HP_ROOT`; fetch tags, pull rebase.
 2. `just check` (shellcheck + shfmt).
-3. `just release-proof hp=run` (see [Release proof](#release-proof)): the hp's whole green receipt for exactly this commit, over ssh, then the Mac boundary subset `just test-macos`; without a receipt, the hp whole run and the Mac subset run at the same time. fmt-check, lint, fuzz-check and the doctests run again after the bump.
+3. `just release-proof hp=run` proves the hp whole suite over ssh and the Mac boundary subset for this commit. It starts the hp run if its receipt is missing. The Mac reuses a matching receipt or runs `just test-macos`. fmt-check, lint, fuzz-check and the doctests run again after the bump. [Release proof](#release-proof)
 4. `just rust-deny` audits advisories, licenses, bans and sources (`cargo deny --locked check`). The advisory DB needs network; an offline release refuses here, before the bump. The identity recheck follows: the checkout must still be clean on the proved HEAD and tree.
 5. `just bump` updates the version — `Cargo.toml` and `Cargo.lock`, which since slice Z3 are the only files that hold one — and rewrites the README and docs/index release badges. It refuses to proceed if the pre-release badge or the obsolete checkout-install prose is still standing in either file; a real build-from-source section is not what it is looking for.
 6. `just bundles` builds both halves into `dist/` and proves them; a bounded smoke (`--version` and `doctor`, 10 s each) of the native binary follows.

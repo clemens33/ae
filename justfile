@@ -110,9 +110,9 @@ _pre-test:
 # justfile recipes, fsync, the clipboard and archive tools. The guard
 # `tests/it/gate/macos_subset.rs` derives that boundary from the source and refuses a
 # manifest that misses part of it. This recipe only reads the manifest, refuses a malformed
-# line, and renders the same nextest filterset the guard renders. A filtered run: nextest
-# only, no doctests, no receipt. `print=yes` prints the filterset and the selected tests and
-# runs nothing.
+# line, and renders the same nextest filterset the guard renders. The lane runs nextest only.
+# A whole green subset on a steady, clean Mac checkout writes its own receipt. `print=yes`
+# prints the filterset and the selected tests and runs nothing.
 
 # Run the Mac boundary subset (`.config/macos-subset`); print=yes only prints it
 test-macos *args:
@@ -126,6 +126,12 @@ test-macos *args:
             *) echo "usage: just test-macos [print=yes]" >&2; exit 2 ;;
         esac
     done
+    {{ RECEIPT }}
+    {{ PROOF }}
+    {{ MAC_RECEIPT }}
+    if [[ "$print" == no ]]; then
+        mac_receipt_start "{{ RUN_START }}" || true
+    fi
     {{ SUBSET }}
     subset_render .config/macos-subset || { echo "test-macos: refused: $subset_why" >&2; exit 1; }
     # The guard that keeps the manifest complete runs in this lane whatever the manifest says: a valid
@@ -139,6 +145,9 @@ test-macos *args:
     fi
     echo "test-macos: $subset_run" >&2
     nest just _tmux-isolated test -E "$subset_run"
+    if [[ -z "$mac_start_facts" ]] || ! mac_receipt_write; then
+        receipt_note "not written: $receipt_why"
+    fi
 
 # THE NESTED STEP (#340). just passes a TERM only to the recipe shell it started, and a shell that a
 # signal ends leaves its foreground child running: a nested just, or the supervisor in `detached`,
@@ -1946,8 +1955,8 @@ release:
 
     # Gate 2: Tests on two machines. The hp runs the WHOLE suite on exactly this commit and
     # writes its receipt; this Mac runs only the boundary subset. The proof recipe checks the
-    # receipt over ssh and runs the subset; with hp=run and no receipt yet, it starts the hp
-    # whole run and runs the subset at the same time. It refuses on any doubt and never falls
+    # receipt over ssh and checks for a fresh local subset receipt. With hp=run and no hp receipt
+    # yet, it starts the hp whole run and runs the subset beside it if needed. It never falls
     # back to the whole suite here (docs/development.md, "Release proof"). The identity it
     # proves is snapshotted now, after the rebase, and named to it.
     proof_identity || proof_refuse "$proof_why"
@@ -2190,11 +2199,12 @@ release:
 #    HEAD of this clean checkout, Cargo.lock, the toolchain pin, rustc, the pinned nextest, a
 #    host that answered as the one the receipt names and that is not this Mac, and an age of
 #    at most 24 h with at most 300 s of clock skew.
-# 2. This Mac runs the boundary subset, `just test-macos`.
+# 2. This Mac proves the boundary subset with a fresh matching local Mac receipt or runs
+#    `just test-macos`.
 #
 # With `hp=run` (the release passes it) and no receipt for the tree on the hp, the two halves run
-# at the same time: HP_LEG's hp_parallel starts the hp whole run and runs the subset beside it,
-# then this recipe checks the receipt that run wrote exactly as above.
+# at the same time when needed: HP_LEG's hp_parallel starts the hp whole run, checks the local
+# receipt and runs the subset on a miss. Then this recipe checks the hp receipt as above.
 #
 # The checkout must be clean and stay on the same HEAD and tree while the hp is asked and while
 # the subset runs. Any doubt is one `release-proof: refused:` line and exit 1. Nothing falls
@@ -2209,6 +2219,7 @@ release-proof *args:
     {{ NEST }}
     {{ RECEIPT }}
     {{ PROOF }}
+    {{ MAC_RECEIPT }}
     expect=""
     hp_run=no
     for arg in "$@"; do
@@ -2254,9 +2265,10 @@ release-proof *args:
     }
     hp_query
     parallel=no
+    mac_reused=no
     if ((status != 0)); then
         # With hp=run (the release passes it), a receipt the hp provably does not have yet is
-        # made now: the hp whole run and the Mac subset run at the same time (hp_parallel).
+        # made now: hp_parallel starts the hp whole run before proving the Mac subset.
         # A timeout or an unreachable hp still refuses, and so does anything the missing-only
         # check on the hp cannot prove absent.
         if [[ "$hp_run" == yes && "$status" != 124 && "$status" != 255 ]]; then
@@ -2305,15 +2317,18 @@ release-proof *args:
     ((age <= 86400)) || proof_refuse "the hp receipt is stale: $((age / 3600)) h old, the limit is 24 h"
     proof_same "$head" "$tree" || proof_refuse "$proof_why while the hp was asked"
     echo "release-proof: the hp ($r_host) ran the whole suite green on this tree $((age / 60)) min ago"
-    if [[ "$parallel" == yes ]]; then
-        echo "release-proof: ok: the hp ran the whole suite and this Mac the boundary subset at the same time, on HEAD $head"
-        exit 0
+    if [[ "$parallel" == no ]] && ! mac_receipt_reuse; then
+        echo "release-proof: running the Mac boundary subset, just test-macos"
+        nest just test-macos || proof_refuse "the Mac boundary subset failed"
+        proof_same "$head" "$tree" || proof_refuse "$proof_why while the Mac subset ran"
     fi
-
-    echo "release-proof: running the Mac boundary subset, just test-macos"
-    nest just test-macos || proof_refuse "the Mac boundary subset failed"
-    proof_same "$head" "$tree" || proof_refuse "$proof_why while the Mac subset ran"
-    echo "release-proof: ok: the hp ran the whole suite and this Mac the boundary subset, on HEAD $head"
+    if [[ "$mac_reused" == yes ]]; then
+        echo "release-proof: ok: the hp ran the whole suite and the Mac receipt proves the boundary subset, on HEAD $head"
+    elif [[ "$parallel" == yes ]]; then
+        echo "release-proof: ok: the hp ran the whole suite and this Mac the boundary subset at the same time, on HEAD $head"
+    else
+        echo "release-proof: ok: the hp ran the whole suite and this Mac the boundary subset, on HEAD $head"
+    fi
 
 # ── Bundle ───────────────────────────────────────────────────────────
 
@@ -3140,6 +3155,9 @@ RECEIPT := '''
             rustc) fact="$(receipt_first rustc --version)" || fact="" ;;
             nextest) fact="$(receipt_first cargo nextest --version)" || fact="" ;;
             tmux) fact="$(receipt_first tmux -V)" || fact="" ;;
+            os) fact="$(receipt_first uname -s)" || fact="" ;;
+            arch) fact="$(receipt_first uname -m)" || fact="" ;;
+            subset_hash) fact="$(receipt_sha .config/macos-subset 2>/dev/null | cut -d' ' -f1)" || fact="" ;;
             harness)
                 for name in "${receipt_harnesses[@]}"; do
                     fact="${fact:+$fact;}$name=$(receipt_harness_version "$name")"
@@ -3186,12 +3204,14 @@ RECEIPT := '''
     receipt_value_ok() {
         local key="$1" value="$2" re i name part rest
         case "$key" in
+            kind) [[ "$value" == macos-subset ]] ;;
             version) [[ "$value" == 1 ]] ;;
             tree | head) re='^[0-9a-f]{40}$'; [[ "$value" =~ $re ]] ;;
-            lock_hash | toolchain_pin | inventory) re='^[0-9a-f]{64}$'; [[ "$value" =~ $re ]] ;;
+            lock_hash | toolchain_pin | inventory | subset_hash) re='^[0-9a-f]{64}$'; [[ "$value" =~ $re ]] ;;
             inventory_count) re='^(0|[1-9][0-9]{0,17})$'; [[ "$value" =~ $re ]] ;;
             time) [[ -n "$(receipt_epoch "$value")" ]] ;;
-            rustc | nextest | tmux | scratch | host) [[ -n "$value" && "$value" != " "* && "$value" != *" " ]] ;;
+            os) [[ "$value" == Darwin ]] ;;
+            rustc | nextest | tmux | scratch | host | arch) [[ -n "$value" && "$value" != " "* && "$value" != *" " ]] ;;
             harness)
                 i=0
                 rest="$value"
@@ -3358,9 +3378,122 @@ PROOF := '''
     }
 '''
 
+# THE MAC BOUNDARY RECEIPT: a separate proof written only by `test-macos`.
+# Both readers use the same line grammar, with a different set of keys for this receipt.
+# The Mac reader takes a bounded copy into release-proof's private reply directory.
+MAC_RECEIPT := '''
+    mac_boundary_keys=(host os arch tmux subset_hash toolchain_pin)
+    mac_receipt_path() {
+        local common root
+        if ! common="$(git rev-parse --git-common-dir 2>/dev/null)" || ! root="$(receipt_root "$common")"; then
+            receipt_why="cannot find the main checkout"
+            return 1
+        fi
+        mac_receipt_file="$root/.local/gate-receipts/macos-$1"
+        if [[ -L "$root/.local" || -L "${mac_receipt_file%/*}" || -L "$mac_receipt_file" ]]; then
+            receipt_why="the Mac receipt path runs through a symbolic link"
+            return 1
+        fi
+    }
+    mac_receipt_parse() {
+        local receipt_keys=(kind version tree head "${mac_boundary_keys[@]}" time)
+        local counts lines size
+        counts="$(LC_ALL=C wc -lc <"$1")" || { receipt_why="unreadable"; return 1; }
+        read -r lines size <<<"$counts"
+        if ((size > 8192)); then receipt_why="larger than 8192 bytes"; return 1; fi
+        if ((lines != ${#receipt_keys[@]})); then
+            receipt_why="malformed: expected ${#receipt_keys[@]} LF-terminated lines"
+            return 1
+        fi
+        receipt_parse "$1"
+    }
+    mac_receipt_observe() {
+        local key
+        mac_facts=""
+        for key in "${mac_boundary_keys[@]}"; do
+            receipt_fact "$key" || return 1
+            receipt_value_ok "$key" "$fact" || { receipt_why="the live $key fact is invalid for a Mac receipt ($fact)"; return 1; }
+            mac_facts="$mac_facts$key=$fact"$'\n'
+        done
+    }
+    mac_receipt_steady() {
+        proof_same "$mac_start_head" "$mac_start_tree" || { receipt_why="$proof_why"; return 1; }
+    }
+    mac_receipt_start() {
+        local state
+        mac_start_facts=""
+        read -r mac_start_head mac_start_tree state <<<"$1" || true
+        if [[ "$state" != clean ]]; then
+            receipt_why="the working tree was not known clean when the run started"
+            return 1
+        fi
+        mac_receipt_steady && mac_receipt_observe || return 1
+        mac_start_facts="$mac_facts"
+    }
+    mac_receipt_write() {
+        local tmp dir
+        mac_receipt_steady && mac_receipt_observe || return 1
+        if [[ "$mac_facts" != "$mac_start_facts" ]]; then
+            receipt_why="a Mac boundary fact changed during the subset run"
+            return 1
+        fi
+        mac_receipt_path "$mac_start_tree" || return 1
+        dir="${mac_receipt_file%/*}"
+        if ! mkdir -p "$dir" 2>/dev/null || ! tmp="$(mktemp "$dir/.tmp.macos.XXXXXX" 2>/dev/null)"; then
+            receipt_why="$dir is not a writable directory"
+            return 1
+        fi
+        if receipt_fact time &&
+            printf 'kind=macos-subset\nversion=1\ntree=%s\nhead=%s\n%stime=%s\n' \
+                "$mac_start_tree" "$mac_start_head" "$mac_start_facts" "$fact" >"$tmp" &&
+            mac_receipt_parse "$tmp" && mac_receipt_steady && mac_receipt_path "$mac_start_tree" &&
+            [[ ! -e "$mac_receipt_file" || -f "$mac_receipt_file" ]] && mv "$tmp" "$mac_receipt_file"; then
+            receipt_note "wrote $mac_receipt_file"
+            return 0
+        fi
+        rm -f "$tmp"
+        receipt_why="${receipt_why:-the Mac receipt could not be published}"
+        return 1
+    }
+    mac_receipt_match() {
+        local expected_head="$1" expected_tree="$2" copy="$3" key name now stamp
+        local r_kind r_version r_tree r_head r_host r_os r_arch r_tmux r_subset_hash r_toolchain_pin r_time
+        local epoch_re='^(0|[1-9][0-9]{0,17})$'
+        mac_receipt_path "$expected_tree" || return 1
+        if [[ ! -e "$mac_receipt_file" ]]; then receipt_why="missing"; return 1; fi
+        if [[ ! -f "$mac_receipt_file" ]] || ! head -c 8193 "$mac_receipt_file" >"$copy" 2>/dev/null; then
+            receipt_why="unreadable"
+            return 1
+        fi
+        mac_receipt_parse "$copy" || return 1
+        if [[ "$r_tree" != "$expected_tree" ]]; then receipt_why="tree differs"; return 1; fi
+        if [[ "$r_head" != "$expected_head" ]]; then receipt_why="HEAD differs"; return 1; fi
+        for key in "${mac_boundary_keys[@]}"; do
+            receipt_fact "$key" || return 1
+            name="r_$key"
+            if [[ "$fact" != "${!name}" ]]; then receipt_why="$key differs (receipt: ${!name}; now: $fact)"; return 1; fi
+        done
+        now="$(date -u +%s 2>/dev/null)" || now=""
+        if [[ ! "$now" =~ $epoch_re ]]; then receipt_why="the local clock cannot be read"; return 1; fi
+        stamp="$(receipt_epoch "$r_time")"
+        mac_receipt_age=$((now - stamp))
+        if ((mac_receipt_age < 0)); then receipt_why="dated in the future"; return 1; fi
+        if ((mac_receipt_age > 86400)); then receipt_why="stale: $((mac_receipt_age / 3600)) h old, the limit is 24 h"; return 1; fi
+    }
+    mac_receipt_reuse() {
+        if ! mac_receipt_match "$head" "$tree" "$reply_dir/mac-receipt"; then
+            echo "release-proof: no Mac boundary subset receipt matches ($receipt_why)"
+            return 1
+        fi
+        proof_same "$head" "$tree" || proof_refuse "$proof_why while checking the Mac receipt"
+        echo "release-proof: using $mac_receipt_file ($mac_receipt_age s ago): skipping just test-macos"
+        mac_reused=yes
+    }
+'''
+
 # THE PARALLEL RELEASE PROOF (docs/development.md, "Release proof"): `release-proof hp=run`
-# when the hp has no receipt for the tree yet. The hp whole run and the Mac subset run at the
-# same time, and the release goes on only when both are green for this exact commit.
+# when the hp has no receipt for the tree yet. The hp whole run starts while the Mac checks its
+# receipt or runs the subset. The release goes on only with both proofs for this exact commit.
 #
 # The Mac side, hp_parallel, runs in release-proof. The hp side is four functions, which reach
 # the hp as text on the stdin of `ssh <hp> bash -s` (declare -f), so the hp login shell never
@@ -3508,7 +3641,7 @@ HP_LEG := '''
         if [[ -n "$path" && ! "$path" =~ ^/[A-Za-z0-9._/-]+(:/[A-Za-z0-9._/-]+)*$ ]]; then
             proof_refuse "AE_RELEASE_HP_PATH is not a ':'-separated list of absolute directories: $path"
         fi
-        echo "release-proof: the hp has no receipt for tree $tree yet: its whole run starts now, beside the Mac subset (run $runid)"
+        echo "release-proof: the hp has no receipt for tree $tree yet: its whole run starts now (run $runid)"
         code=0
         hp_remote hp_pre "$AE_RELEASE_HP_ROOT" "$tree" "$head" "$lock" >"$reply_dir/pre" 2>"$reply_dir/err" || code=$?
         case "$code" in
@@ -3543,15 +3676,16 @@ HP_LEG := '''
                proof_refuse "the hp leg did not start (exit $code)" ;;
         esac
 
-        # The Mac subset runs in the foreground, as it does when the hp already has its receipt:
-        # an interrupt reaches it as before, and a failure or an interrupt ends this proof nonzero
-        # before the bump. The hp leg runs on alone and releases its own lane.
-        echo "release-proof: running the Mac boundary subset, just test-macos, while the hp runs"
-        mac_status=0
-        nest just test-macos || mac_status=$?
-        ((mac_status == 0)) || proof_refuse "the Mac boundary subset failed (exit $mac_status); the hp leg $runid runs on alone and releases its own lane"
-        proof_same "$head" "$tree" || proof_refuse "$proof_why while the Mac subset ran"
-        echo "release-proof: the Mac boundary subset is green; waiting for the hp leg $runid"
+        # On a miss the foreground subset stays interruptible. If it fails or is interrupted,
+        # the hp leg runs on alone and releases its own lane.
+        if ! mac_receipt_reuse; then
+            echo "release-proof: running the Mac boundary subset, just test-macos, while the hp runs"
+            mac_status=0
+            nest just test-macos || mac_status=$?
+            ((mac_status == 0)) || proof_refuse "the Mac boundary subset failed (exit $mac_status); the hp leg $runid runs on alone and releases its own lane"
+            proof_same "$head" "$tree" || proof_refuse "$proof_why while the Mac subset ran"
+        fi
+        echo "release-proof: the Mac boundary subset is proved; waiting for the hp leg $runid"
 
         deadline=$(($(date -u +%s) + 1800 + 3660 + 120))
         while :; do

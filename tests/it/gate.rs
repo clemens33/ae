@@ -49,6 +49,8 @@ mod macos_subset;
     reason = "independent acceptance fixtures must fail with a named precondition"
 )]
 mod macos_subset_spec;
+#[path = "gate/receipt_spec/macreceipt_spec.rs"]
+mod macreceipt_spec;
 mod modtree;
 #[path = "gate/receipt_spec/parallel_spec.rs"]
 mod parallel_spec;
