@@ -353,7 +353,7 @@ impl App {
             | draw::Hit::SettingsClose
             | draw::Hit::PeekClose
             | draw::Hit::PanelDesk
-            | draw::Hit::PanelDeskToggle
+            | draw::Hit::PanelDeskToggle(_)
             | draw::Hit::PanelPane => {
                 return held;
             }

@@ -391,7 +391,8 @@ pub(super) fn browse_byte(app: &mut App, byte: u8, origin: Instant) -> Option<bo
             return Some(app.toggle_desk() || disarmed);
         }
         if byte == b'b' {
-            return Some(app.toggle_desk_hidden() || disarmed);
+            let hide = !app.model.desk_hidden();
+            return Some(app.hide_desk(hide) || disarmed);
         }
         if app.desk_focused() && !matches!(byte, b'O' | b'F' | b'X' | b'q' | b',' | b'?') {
             return Some(disarmed);

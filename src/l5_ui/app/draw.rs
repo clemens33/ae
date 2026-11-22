@@ -158,8 +158,10 @@ pub(crate) enum Hit {
     PanelMode,
     /// The panel header's board control.
     PanelDesk,
-    /// The panel header's `b hide` / `b show` word.
-    PanelDeskToggle,
+    /// The panel header's `b hide` / `b show` word, with the hiding it asks
+    /// for: `true` hides the board, `false` shows it. A press made on a frame
+    /// whose word the board has since answered asks for what it already is.
+    PanelDeskToggle(bool),
     /// The main column header's zoom label: zoom the column or leave the zoom.
     Zoom,
 }
@@ -2548,7 +2550,7 @@ fn hint_row(
     let long = rest_of(&format!("{keys} · ^C clears"));
     // Browsing with a board set names the key that hides or shows it, where
     // the longer hint fits whole.
-    let board = board_hint(ctx.screen.model.columns(), &ctx.screen.composer, keys)
+    let board = board_hint(ctx.screen.model.columns(), keys)
         .map(|word| rest_of(&format!("{keys} · {word}")));
     let rest = if text && !keys.is_empty() && fits(&long) {
         long
@@ -2612,14 +2614,10 @@ const BROWSE_HINT: &str = "? keys";
 /// The word that names the board's visibility key in the browse hint: `b hide`
 /// while the board stands, `b show` while the human hid it. Only on the hint
 /// row of the column that holds the keys, while the panel is open over a board
-/// the frame shows, and only where `b` is a browse key: the peek and the reader
-/// take their own keys.
-fn board_hint(columns: Columns, composer: &Composer<'_>, keys: &str) -> Option<&'static str> {
-    let browsing = keys == BROWSE_HINT
-        && !matches!(
-            composer,
-            Composer::Viewing { .. } | Composer::Reading { .. }
-        );
+/// the frame shows, and only where `b` is a browse key: the settings, the peek
+/// and the reader take their own keys.
+fn board_hint(columns: Columns, keys: &str) -> Option<&'static str> {
+    let browsing = keys == BROWSE_HINT && !columns.overlay;
     let holds = columns
         .panel
         .is_some_and(|(_, focused)| focused == columns.drawing_panel)
@@ -2979,7 +2977,8 @@ fn panel_head(
         if stop >= left + need {
             let at = stop - need;
             put(buf, at, 0, label, need, ctx.paint.fg(|p| p.title));
-            layout.record(buf, Rect::new(at, 0, need, 1), Hit::PanelDeskToggle);
+            let asks = Hit::PanelDeskToggle(!columns.desk_hidden);
+            layout.record(buf, Rect::new(at, 0, need, 1), asks);
             stop = at.saturating_sub(2);
         }
     }

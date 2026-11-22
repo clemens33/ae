@@ -84,3 +84,44 @@ fn the_key_bar_names_the_key_only_while_browsing_a_board() {
     let (_root, mut bare) = setup_board("boardhide-bar-none", Some(DeskView::Absent));
     assert!(!last(&paint(&mut bare, WIDE, HEIGHT)).contains("b hide"));
 }
+
+#[test]
+fn a_stale_header_word_asks_for_the_visibility_it_named_not_a_flip() {
+    // The frame drew `b hide`. The read that holds `b` also holds a press on
+    // that word: the board is already hidden, so the press changes nothing.
+    for (width, full) in [(120, false), (60, true), (WIDE, false), (WIDE, true)] {
+        let (_root, mut app) = setup_board("boardhide-stale-word", Some(sample_desk(BOARD)));
+        if full {
+            bytes(&mut app, b"F");
+        }
+        let shown = paint(&mut app, width, HEIGHT);
+        let word = locate(&shown, "b hide").expect("the hide word is in the header");
+        let origin = Instant::now();
+        let press = Key::Mouse(Mouse {
+            kind: MouseKind::Click,
+            column: word.0,
+            row: word.1,
+        });
+        let read = vec![(Key::Text(b"b".to_vec()), origin), (press, origin)];
+        assert!(take_keys(&mut app, read).is_some());
+        let after = paint(&mut app, width, HEIGHT);
+        let header = row_text(&after, 0);
+        assert!(header.contains("b show"), "{width} {full}: {header:?}");
+        assert!(!header.contains("b hide"), "{width} {full}: {header:?}");
+    }
+}
+
+#[test]
+fn an_open_overlay_takes_b_so_the_key_bar_stops_naming_it() {
+    let (_root, mut app) = setup_board("boardhide-overlay", Some(sample_desk(BOARD)));
+    let last = |cells: &Buffer| row_text(cells, cells.area.height - 1);
+    assert!(last(&paint(&mut app, WIDE, HEIGHT)).contains("b hide"));
+    bytes(&mut app, b"?");
+    let keys_tab = paint(&mut app, WIDE, HEIGHT);
+    assert!(text(&keys_tab).contains("hide / show the orchestrator board"));
+    let bar = last(&keys_tab);
+    assert!(
+        !bar.contains("b hide") && !bar.contains("b show"),
+        "{bar:?}"
+    );
+}

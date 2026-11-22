@@ -447,6 +447,9 @@ impl App {
     pub(super) fn columns(&self) -> model::Columns {
         model::Columns {
             needy: self.orchestrator_needy(),
+            overlay: self.model.settings_open()
+                || self.model.peek_open()
+                || self.model.reader_open(),
             ..self.stand_columns()
         }
     }
@@ -597,14 +600,13 @@ impl App {
         self.desk_present() && !self.model.desk_hidden()
     }
 
-    /// Hide the board, or show it again. Hiding drops the board's hold on the
-    /// keys first; any change moves the cells under the old coordinates. Does
-    /// nothing while no panel is open over a board.
-    pub(super) fn toggle_desk_hidden(&mut self) -> bool {
-        if !self.desk_present() {
+    /// Hide the board, or show it. Hiding drops the board's hold on the keys
+    /// first; a change moves the cells under the old coordinates. Does nothing
+    /// while no panel is open over a board, or when the board already is so.
+    pub(super) fn hide_desk(&mut self, hidden: bool) -> bool {
+        if !self.desk_present() || self.model.desk_hidden() == hidden {
             return false;
         }
-        let hidden = !self.model.desk_hidden();
         if hidden {
             self.focus_desk(false);
         }
@@ -998,7 +1000,7 @@ impl App {
             Some(draw::Hit::PanelMode) => return self.flip_panel(),
             Some(draw::Hit::PanelPane) => return self.pane_click(),
             Some(draw::Hit::PanelDesk) => return self.toggle_desk(),
-            Some(draw::Hit::PanelDeskToggle) => return self.toggle_desk_hidden(),
+            Some(draw::Hit::PanelDeskToggle(hide)) => return self.hide_desk(hide),
             Some(draw::Hit::Settings) => {
                 self.open_settings();
                 return true;
