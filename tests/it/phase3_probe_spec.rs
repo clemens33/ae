@@ -49,6 +49,7 @@ pub(super) fn expected_production_files() -> Vec<String> {
         "src/l3_services/usage.rs",
         "src/l4_orchestration/watchdog_daemon.rs",
         "src/l4_orchestration/watchdog_glue.rs",
+        "src/l5_ui/web/claim.rs",
         "src/l5_ui/web/server.rs",
     ]
     .into_iter()

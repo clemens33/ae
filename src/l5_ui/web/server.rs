@@ -21,6 +21,7 @@ use super::assets;
 use super::auth::{self, Auth};
 use super::clock::Clock;
 use super::http::{self, Head, Method, Parsed, Response};
+use super::send::{self, Epoch, Sending, Sends};
 use super::state::{self, Source};
 use crate::json::Value;
 
@@ -158,6 +159,17 @@ pub struct Running {
     link: String,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
+    sending: Option<Arc<Sending>>,
+}
+
+/// What a [`Running::follow`] that returned did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Followed {
+    /// A send was still queued or carrying when the wait ran out: nothing was
+    /// replaced and sends are admitted again.
+    Busy,
+    /// The exec failed, and why: sends are admitted again.
+    Failed(String),
 }
 
 impl Running {
@@ -171,6 +183,35 @@ impl Running {
     #[must_use]
     pub fn link(&self) -> String {
         self.link.clone()
+    }
+
+    /// Close send admission, then wait up to `wait` for nothing to be queued
+    /// or carrying: whether that came, true at once for a listener that sends
+    /// nothing. Admission stays closed until [`Running::follow`] reopens it; a
+    /// send while closed is 503.
+    #[must_use]
+    pub fn drain_sends(&self, wait: Duration) -> bool {
+        self.sending
+            .as_ref()
+            .is_none_or(|sending| sending.drain(wait))
+    }
+
+    /// Replace this process with `argv` once no send is queued or carrying,
+    /// waiting at most `wait` for that, as [`Running::drain_sends`] does.
+    /// Returns only when it did not: the sends still in flight, or the exec's
+    /// error; admission is open again either way.
+    #[must_use]
+    pub fn follow(&self, argv: &[String], wait: Duration) -> Followed {
+        let Some(sending) = &self.sending else {
+            return Followed::Failed("this listener sends nothing".to_owned());
+        };
+        if !sending.drain(wait) {
+            sending.reopen();
+            return Followed::Busy;
+        }
+        let why = sending.exec(argv);
+        sending.reopen();
+        Followed::Failed(why.to_string())
     }
 
     /// Stop accepting, let every worker finish and join every thread. The
@@ -194,21 +235,40 @@ struct Shared {
     links: Arc<dyn Fn(&str) + Send + Sync>,
     version: String,
     auth: Mutex<Auth>,
+    /// The listener key: it signs codes, sessions, routes and nonces.
+    key: [u8; 32],
     random: SystemRandom,
     cache: state::Cache,
+    /// The send half, when this listener sends.
+    sending: Option<Arc<Sending>>,
     last_link: Mutex<Option<Instant>>,
     waiting: AtomicUsize,
     stop: Arc<AtomicBool>,
 }
 
-/// Bind 127.0.0.1:`port` and start the acceptor and the workers. The server
-/// is ready when this returns.
+/// Bind 127.0.0.1:`port` and start the acceptor and the workers, with no send
+/// route: `/api/nonce` and `/api/send` answer 404. The server is ready when
+/// this returns.
 ///
 /// # Errors
 ///
 /// [`StartError::Busy`] when the port is taken, [`StartError::Bind`] for any
 /// other bind failure, [`StartError::Random`] when no key could be made.
 pub fn start(options: Options) -> Result<Running, StartError> {
+    start_inner(options, None)
+}
+
+/// [`start`] with the send route and its one send worker, carrying to the
+/// orchestrator of `sends.root`.
+///
+/// # Errors
+///
+/// [`start`]'s.
+pub fn start_with(options: Options, sends: Sends) -> Result<Running, StartError> {
+    start_inner(options, Some(sends))
+}
+
+fn start_inner(options: Options, sends: Option<Sends>) -> Result<Running, StartError> {
     let random = SystemRandom::new();
     let mut key = [0_u8; 32];
     random.fill(&mut key).map_err(|_| StartError::Random)?;
@@ -217,6 +277,14 @@ pub fn start(options: Options) -> Result<Running, StartError> {
         .local_addr()
         .map_err(|why| StartError::Bind(why.to_string()))?;
     let stop = Arc::new(AtomicBool::new(false));
+    let epoch = Epoch::new(Arc::clone(&options.clock));
+    let (sending, jobs) = match sends {
+        Some(sends) => {
+            let (sending, jobs) = Sending::new(sends, key, epoch);
+            (Some(Arc::clone(&sending)), Some((sending, jobs)))
+        }
+        None => (None, None),
+    };
     let shared = Arc::new(Shared {
         port: addr.port(),
         clock: options.clock,
@@ -225,33 +293,63 @@ pub fn start(options: Options) -> Result<Running, StartError> {
         links: options.links,
         version: options.version,
         auth: Mutex::new(Auth::new(key)),
+        key,
         random,
         cache: state::Cache::default(),
+        sending: sending.clone(),
         last_link: Mutex::new(None),
         waiting: AtomicUsize::new(0),
         stop: Arc::clone(&stop),
     });
     let code = shared.mint().ok_or(StartError::Random)?;
     let link = format!("http://127.0.0.1:{}/#c={code}", addr.port());
-    let (queue, taken) = std::sync::mpsc::sync_channel::<TcpStream>(QUEUE);
-    let taken = Arc::new(Mutex::new(taken));
-    let mut threads = Vec::with_capacity(WORKERS + 1);
-    for worker in 0..WORKERS {
-        let (shared, taken) = (Arc::clone(&shared), Arc::clone(&taken));
-        threads.push(spawn(&format!("ae-web-read-{worker}"), move || {
-            work(worker, &shared, &taken);
-        })?);
+    let mut threads = Vec::with_capacity(WORKERS + 2);
+    if let Err(why) = start_threads(&shared, listener, jobs, &mut threads) {
+        // A partial start: the failed spawn dropped the queue's sender, so
+        // the read workers end on their next take, and the send worker ends
+        // on `stop` within its poll. Nothing outlives this error.
+        stop.store(true, Ordering::SeqCst);
+        for thread in threads {
+            drop(thread.join());
+        }
+        return Err(why);
     }
-    let accepting = Arc::clone(&shared);
-    threads.push(spawn("ae-web-accept", move || {
-        accept(&listener, &accepting, &queue);
-    })?);
     Ok(Running {
         addr,
         link,
         stop,
         threads,
+        sending,
     })
+}
+
+/// Start the read workers, the send worker when `jobs` is given, and the
+/// acceptor last, pushing each handle onto `threads` as it starts. The queue's
+/// sender lives only in this call or the acceptor, so a failed spawn leaves it
+/// dropped by the time this returns.
+fn start_threads(
+    shared: &Arc<Shared>,
+    listener: TcpListener,
+    jobs: Option<(Arc<Sending>, Receiver<send::Job>)>,
+    threads: &mut Vec<JoinHandle<()>>,
+) -> Result<(), StartError> {
+    let (queue, taken) = std::sync::mpsc::sync_channel::<TcpStream>(QUEUE);
+    let taken = Arc::new(Mutex::new(taken));
+    for worker in 0..WORKERS {
+        let (shared, taken) = (Arc::clone(shared), Arc::clone(&taken));
+        threads.push(spawn(&format!("ae-web-read-{worker}"), move || {
+            work(worker, &shared, &taken);
+        })?);
+    }
+    if let Some((sending, jobs)) = jobs {
+        let body = send::worker(sending, jobs, Arc::clone(&shared.stop));
+        threads.push(spawn("ae-web-send", body)?);
+    }
+    let accepting = Arc::clone(shared);
+    threads.push(spawn("ae-web-accept", move || {
+        accept(&listener, &accepting, &queue);
+    })?);
+    Ok(())
 }
 
 /// The one listener door: 127.0.0.1 only.
@@ -519,9 +617,13 @@ fn answer(shared: &Shared, head: &Head, body: &[u8]) -> Response {
                 Method::Post => Response::refusal(405, http::reason(405)),
             };
         }
-        return match (head.method, path) {
-            (Method::Get, "/api/state") => shared.state(head),
-            (_, "/api/state" | "/api/session") => Response::refusal(405, http::reason(405)),
+        return match (head.method, path, &shared.sending) {
+            (Method::Get, "/api/state", _) => shared.state(head),
+            (Method::Get, "/api/nonce", Some(sending)) => sending.nonce(shared.random16()),
+            (Method::Post, "/api/send", Some(sending)) => sending.post(body),
+            (_, "/api/state" | "/api/session", _) | (_, "/api/nonce" | "/api/send", Some(_)) => {
+                Response::refusal(405, http::reason(405))
+            }
             _ => Response::refusal(404, http::reason(404)),
         };
     }
@@ -538,6 +640,13 @@ fn answer(shared: &Shared, head: &Head, body: &[u8]) -> Response {
 }
 
 impl Shared {
+    /// Sixteen fresh random bytes, or `None` when the random source failed.
+    fn random16(&self) -> Option<[u8; 16]> {
+        let mut random = [0_u8; 16];
+        self.random.fill(&mut random).ok()?;
+        Some(random)
+    }
+
     /// A fresh one-time code, or `None` when the random source failed.
     fn mint(&self) -> Option<String> {
         let mut random = [0_u8; 16];
@@ -618,7 +727,9 @@ impl Shared {
 
     /// `GET /api/state`: the shared snapshot, or 304 when the page has it.
     fn state(&self, head: &Head) -> Response {
-        let snapshot = self.cache.get(&*self.clock, &*self.source, &self.version);
+        let snapshot = self
+            .cache
+            .get(&*self.clock, &*self.source, &self.version, &self.key);
         let unchanged = head.header("if-none-match") == Some(snapshot.etag.as_str());
         Response {
             status: if unchanged { 304 } else { 200 },
@@ -631,7 +742,9 @@ impl Shared {
     /// `GET /api/topic/<slug>`: the card of `slug` from the same shared
     /// snapshot, with its own entity tag, or 404 for no such topic.
     fn topic(&self, head: &Head, slug: &str) -> Response {
-        let snapshot = self.cache.get(&*self.clock, &*self.source, &self.version);
+        let snapshot = self
+            .cache
+            .get(&*self.clock, &*self.source, &self.version, &self.key);
         let Some((body, etag)) = state::topic(&snapshot.read, slug) else {
             return Response::refusal(404, "no such topic");
         };

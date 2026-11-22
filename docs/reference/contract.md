@@ -378,6 +378,14 @@ caller beside `run_git`'s and `run_ps`'s.
 `transport::run_seat_apply` is the same door's orchestrator seat leg, with ONE product caller, the app reader's detached `ae-app-seat` thread (`src/l5_ui/app/loader/seat.rs`), started only when the panel opens with no orchestrator running. It runs THIS binary (`shape::resolved_exe`) with fixed words and two typed values only, `transport::seat_apply_args` (`orchestrator --settings-apply start|resume --target orchestrator --uuid <uuid or empty> --unattended --deadline <epoch>`; a `settings_menu` unit test parses exactly that argv with the apply parser), stdin and stderr null, stdout a private scratch file capped at 4 KiB, killed and reaped past 90 s; the child never attaches a client and writes one line. It goes through the deadline-bounded `spawn_until`, so no new `Command` site.
 `transport::open_popup` and `transport::run_shell_line` are the same door's `!` legs, each with ONE product caller, `console::term::shell` (`tests/it/doors.rs` pins both and keeps `src/l5_ui/console/shell.rs`, which builds their arguments, pure). `open_popup` starts `tmux display-popup -EE -c <client> -d <work dir> -- <line>` DETACHED, because the popup holds its caller until it closes; `run_shell_line` starts the FIXED program `/bin/sh` with `-c <line>`, in the work dir and a process group of its own, stdin, stdout and stderr null, never waited for, no `$SHELL` read. The line is the human's own and the only script text either runs; no new `Command` site.
 
+`src/l5_ui/web/claim.rs`, `ae web`'s durable claim store under `<state>/web/claims/`, has exactly
+two doors: one `std::fs::File::open` of a claim directory or its parent to `fsync` it, and one
+`std::fs::read_dir` of the claim directory for the seven-day prune. Each claim is read through
+`store::read_capped_in`, each directory proven by `store::source_presence` and
+`store::prove_real_directory`, each claim created through `init::create_exclusive` and settled
+through `store::publish_private_in`. The file is in the `tests/it/phase3_probe_spec.rs` world-read
+inventory, and `tests/it/doors.rs` pins both counts and its `create_exclusive` call.
+
 `doors::canonical_strict_dir` / `canonical_optional_ae` are the strict directory classifier with
 no variable of its own: lstat, canonicalize and metadata proving a recorded worker target or root
 is a directory, fail-closed — on the OptionalRoot branch a dangling link refuses as present-invalid

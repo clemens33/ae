@@ -134,7 +134,7 @@ fn live(kept: &Kept, life: Duration, now: Instant) -> bool {
 }
 
 /// Whether `text` is exactly `len` lowercase hex digits.
-fn is_hex(text: &str, len: usize) -> bool {
+pub(crate) fn is_hex(text: &str, len: usize) -> bool {
     text.len() == len
         && text
             .bytes()

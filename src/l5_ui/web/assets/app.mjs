@@ -10,6 +10,12 @@ const KEY = "ae-web-session";
 const VISIBLE_MS = 2000;
 const HIDDEN_MS = 30000;
 const NO_SESSION = "open the newest link from ae web";
+// A queued or busy send is asked again this often, at most this many times,
+// before the page stops asking; the draft id stays, so a later send asks once
+// more and never carries twice.
+const SEND_AGAIN_MS = 1000;
+const SEND_TRIES = 120;
+const UNREACHABLE = "ae web is not reachable";
 
 function stored() {
   try {
@@ -154,8 +160,10 @@ const GROUPS = {
 
 function TopicRow({ row, group, chosen, choose }) {
   const waits = row.waits.length;
+  // A press keeps the focus where it was, so a draft being typed stays focused.
   return html`<button
     class=${"row" + (chosen === row.slug ? " sel" : "")}
+    onMouseDown=${(event) => event.preventDefault()}
     onClick=${() => choose(row.slug)}
   >
     <span class=${"dot " + group}></span>
@@ -287,6 +295,200 @@ function Head({ state }) {
     ${state ? html`<span class="mute sm">core ${state.version}</span>` : null}
   </header>`;
 }
+
+function pause(ms) {
+  return new Promise((done) => setTimeout(done, ms));
+}
+
+// The words of a refusal the server sent, or its status.
+async function refusal(answer) {
+  try {
+    const body = await answer.json();
+    if (body && typeof body.error === "string") {
+      return body.error;
+    }
+  } catch (_) {
+    // No JSON: the status says it.
+  }
+  return "ae web answered " + answer.status;
+}
+
+// A receipt as the page shows it: a label for the outcome and the server's
+// words verbatim. The words of an unknown outcome already say so.
+function receiptNote(receipt) {
+  const words = typeof receipt.words === "string" ? receipt.words : "";
+  const id = typeof receipt.id === "string" ? receipt.id : "";
+  if (receipt.outcome === "sent") {
+    return { kind: "sent", label: "sent to " + receipt.seat + " in " + receipt.to, words, id };
+  }
+  if (receipt.outcome === "refused") {
+    return { kind: "refused", label: "refused", words, id };
+  }
+  return { kind: "unknown", label: "", words: words || "unknown", id };
+}
+
+function line(kind, words) {
+  return { kind, label: "", words, id: "" };
+}
+
+// The owner's composer. One draft id (nonce) per draft, and one attempt per
+// draft id: the exact body first posted (text, route and id) is posted again
+// verbatim on every retry and every later check until an answer settles it,
+// so the server carries a draft at most once and a check always finds its
+// receipt. While an attempt is open the draft cannot change.
+function Composer({ route, slug }) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [attempt, setAttempt] = useState("");
+  const [note, setNote] = useState(null);
+  const box = useRef(null);
+  const frozen = sending || Boolean(attempt);
+  const ready = Boolean(attempt || (route && text.trim()));
+
+  const attach = () => {
+    if (frozen) {
+      return;
+    }
+    const first = "#" + slug;
+    setText((now) => (now.split("\n", 1)[0] === first ? now : first + "\n" + now));
+    if (box.current) {
+      box.current.focus();
+    }
+  };
+
+  // A receipt settles the attempt. A refused draft stays to be edited and
+  // sent as a new one; one that was sent or may have landed leaves the
+  // composer, so it is not sent twice.
+  const settle = (receipt) => {
+    const shown = receiptNote(receipt);
+    setAttempt("");
+    setNote(shown);
+    if (shown.kind !== "refused") {
+      setText("");
+    }
+  };
+
+  // The open attempt, or a new one for the draft as it stands.
+  const begin = async () => {
+    if (attempt) {
+      return attempt;
+    }
+    if (!route || !text.trim()) {
+      return "";
+    }
+    const answer = await api("nonce");
+    if (answer.status !== 200) {
+      setNote(line("error", answer.status === 401 ? NO_SESSION : await refusal(answer)));
+      return "";
+    }
+    const minted = await answer.json();
+    const nonce = minted && typeof minted.nonce === "string" ? minted.nonce : "";
+    if (!nonce) {
+      setNote(line("error", "ae web gave no draft id"));
+      return "";
+    }
+    const body = JSON.stringify({ text, route: route.id, nonce });
+    setAttempt(body);
+    return body;
+  };
+
+  const send = async () => {
+    if (sending || !ready) {
+      return;
+    }
+    setSending(true);
+    setNote(line("wait", attempt ? "asking again" : "sending"));
+    try {
+      const body = await begin();
+      if (!body) {
+        return;
+      }
+      for (let tries = 0; tries < SEND_TRIES; tries += 1) {
+        const answer = await api("send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        });
+        if (answer.status === 200) {
+          settle(await answer.json());
+          return;
+        }
+        if (answer.status === 202 || answer.status === 503) {
+          setNote(line("wait", answer.status === 202 ? "queued" : "busy, retrying"));
+          await pause(SEND_AGAIN_MS);
+          continue;
+        }
+        // A refusal of this very body (400, 409, 410, 413 and the other 4xx
+        // but 401 and 408) settles the attempt with nothing sent: the draft
+        // can be edited again and the next send is a new draft id. A lost
+        // session (401), a request cut by its deadline (408) and any other
+        // answer leave it open to be asked again: it may have carried.
+        const open = answer.status === 401 || answer.status === 408;
+        if (answer.status >= 400 && answer.status < 500 && !open) {
+          setAttempt("");
+        }
+        setNote(line("error", answer.status === 401 ? NO_SESSION : await refusal(answer)));
+        return;
+      }
+      setNote(line("error", "no receipt yet: it may still land; Check again asks once more"));
+    } catch (_) {
+      setNote(line("error", UNREACHABLE + "; Check again asks once more"));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const onKeyDown = (event) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      send();
+    }
+  };
+
+  return html`<form
+    class="composer"
+    onSubmit=${(event) => {
+      event.preventDefault();
+      send();
+    }}
+  >
+    ${note
+      ? html`<p class=${"receipt k-" + note.kind} role="status">
+          ${note.label ? html`<b>${note.label}</b>${note.words ? " " : ""}` : null}${note.words}
+          ${note.id ? html` <span class="mute sm">${note.id}</span>` : null}
+        </p>`
+      : null}
+    <textarea
+      ref=${box}
+      rows="3"
+      aria-label="Message to the orchestrator"
+      placeholder=${route ? "Message " + route.seat + " in " + route.to : "No proven orchestrator to send to"}
+      value=${text}
+      readOnly=${frozen}
+      onInput=${(event) => setText(event.currentTarget.value)}
+      onKeyDown=${onKeyDown}
+    ></textarea>
+    <div class="bar">
+      ${slug
+        ? html`<button
+            type="button"
+            class="attach"
+            disabled=${frozen}
+            onMouseDown=${(event) => event.preventDefault()}
+            onClick=${attach}
+          >
+            Attach #${slug}
+          </button>`
+        : null}
+      <span class="sp"></span>
+      <span class="mute sm">Ctrl+Enter</span>
+      <button type="submit" class="send" disabled=${sending || !ready}>
+        ${sending ? "Sending" : attempt ? "Check again" : "Send"}
+      </button>
+    </div>
+  </form>`;
+}
+
 
 function App() {
   const [state, setState] = useState(null);
@@ -460,6 +662,7 @@ function App() {
         : html`<nav class="col" aria-label="Topics"></nav>`}
       <section class="chat" aria-label="Chat">
         ${state ? html`<${Stream} chat=${state.chat} />` : html`<div class="stream"></div>`}
+        <${Composer} route=${state ? state.route : null} slug=${card ? card.slug : ""} />
       </section>
       ${card ? html`<${Card} card=${card} close=${close} />` : null}
     </main>

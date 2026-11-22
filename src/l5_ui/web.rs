@@ -5,18 +5,24 @@
 pub mod assets;
 pub mod auth;
 pub mod chat;
+pub mod claim;
 pub mod clock;
 pub mod http;
+pub mod nonce;
+pub mod send;
 pub mod server;
 pub mod state;
 pub mod topics;
 
+use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use self::clock::SystemClock;
-use self::server::{NoProbe, Options};
+use self::send::Sends;
+use self::server::{Followed, NoProbe, Options, Running};
 use self::state::LiveSource;
 
 /// The port `ae web` listens on without `--port`.
@@ -27,6 +33,18 @@ const HELD: &str = "ae web: another ae web runs for this state root";
 const OPEN: &str = "ae web: open it in a browser on this machine; Ctrl-C stops it";
 /// The terminal lines a worker may have waiting for the main thread.
 const LINES_QUEUED: usize = 8;
+/// How often `ae web` looks at the command link for another core.
+const FOLLOW_EVERY: Duration = Duration::from_secs(5);
+/// How long a follow waits for the sends in flight before it looks again later.
+const FOLLOW_WAIT: Duration = Duration::from_secs(30);
+
+/// A line for the terminal `ae web` runs in.
+enum Line {
+    /// For stdout: a fresh link.
+    Out(String),
+    /// For stderr: why the listener did not follow a new core.
+    Err(String),
+}
 
 /// What `ae web` was asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,13 +93,15 @@ pub fn parse(tail: &[String]) -> Result<Args, Usage> {
 }
 
 /// `ae web [--port N]`: take the state root's web lock, listen, print the
-/// link, then serve until the process is stopped.
+/// link, then serve until the process is stopped. A send carried to a busy
+/// seat defers after `defer`, the helpers' own setting.
 ///
 /// # Errors
 ///
 /// [`crate::error::Error::Io`] when `out` or `err` cannot be written.
 pub fn run(
     tail: &[String],
+    defer: Duration,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> crate::error::Result<u8> {
@@ -118,17 +138,21 @@ pub fn run(
     // The binary holds the stdout lock for the whole command, so a read
     // worker never writes the terminal: it hands its line to this thread,
     // and a full queue drops the line rather than holding up an answer.
-    let (say, said) = mpsc::sync_channel::<String>(LINES_QUEUED);
-    let running = server::start(Options {
-        port: args.port,
-        clock: Arc::new(SystemClock),
-        source: Arc::new(LiveSource::new(root, global)),
-        probe: Arc::new(NoProbe),
-        links: Arc::new(move |line: &str| drop(say.try_send(line.to_owned()))),
-        version: crate::shape::VERSION.to_owned(),
-    });
+    let (say, said) = mpsc::sync_channel::<Line>(LINES_QUEUED);
+    let links = say.clone();
+    let running = server::start_with(
+        Options {
+            port: args.port,
+            clock: Arc::new(SystemClock),
+            source: Arc::new(LiveSource::new(root.clone(), global)),
+            probe: Arc::new(NoProbe),
+            links: Arc::new(move |line: &str| drop(links.try_send(Line::Out(line.to_owned())))),
+            version: crate::shape::VERSION.to_owned(),
+        },
+        Sends::live_with(root, defer),
+    );
     let running = match running {
-        Ok(running) => running,
+        Ok(running) => Arc::new(running),
         Err(why) => {
             writeln!(err, "ae web: {why}")?;
             return Ok(crate::state::EXIT_FAILED);
@@ -137,13 +161,74 @@ pub fn run(
     writeln!(out, "ae web: {}", running.link())?;
     writeln!(out, "{OPEN}")?;
     out.flush()?;
+    let following = Arc::clone(&running);
+    let spawned = std::thread::Builder::new()
+        .name("ae-web-follow".to_owned())
+        .spawn(move || follow(&following, &say));
+    if let Err(why) = spawned {
+        writeln!(err, "ae web: cannot follow new versions: {why}")?;
+    }
     // Serve until a signal ends the process: the listener keeps the sending
     // side, so this loop writes every handed line and never ends while it runs.
     for line in said {
-        drop(writeln!(out, "{line}"));
-        drop(out.flush());
+        match line {
+            Line::Out(line) => {
+                drop(writeln!(out, "{line}"));
+                drop(out.flush());
+            }
+            Line::Err(line) => drop(writeln!(err, "{line}")),
+        }
     }
     loop {
         std::thread::park();
+    }
+}
+
+/// Follow the command link as `ae app` does: when it names another core and
+/// automatic upgrades are on, replace this listener with that core once no
+/// send is in flight. A version the link already named at the first look is
+/// never followed, and a failed exec is told once per version.
+fn follow(running: &Running, say: &mpsc::SyncSender<Line>) {
+    let shape = crate::shape::current();
+    let crate::shape::Shape::Installed { version, .. } = shape else {
+        return;
+    };
+    let home = crate::doors::home();
+    let paths = || {
+        let home = home.as_deref().ok_or("HOME is not set")?;
+        crate::install::fixed_paths(home)
+    };
+    let other = |linked: &str| {
+        matches!(
+            crate::install::compare_versions(linked, version),
+            Some(Ordering::Less | Ordering::Greater)
+        )
+    };
+    let linked = || paths().and_then(|paths| crate::install::current_public_version(&paths));
+    let unlinked = linked().ok().filter(|first| other(first));
+    let mut told = BTreeSet::new();
+    loop {
+        std::thread::sleep(FOLLOW_EVERY);
+        let Ok(now) = linked() else { continue };
+        if !other(&now) || unlinked.as_ref() == Some(&now) || told.contains(&now) {
+            continue;
+        }
+        if !crate::autoupgrade::automatic(shape, crate::doors::no_autostart()) {
+            continue;
+        }
+        let Some(link) = paths()
+            .ok()
+            .and_then(|paths| paths.link.to_str().map(str::to_owned))
+        else {
+            continue;
+        };
+        let port = running.addr().port().to_string();
+        let argv = [link, "web".to_owned(), "--port".to_owned(), port];
+        if let Followed::Failed(why) = running.follow(&argv, FOLLOW_WAIT) {
+            let words =
+                format!("ae web: cannot follow version {now}: {why}; still serving {version}");
+            drop(say.try_send(Line::Err(words)));
+            told.insert(now);
+        }
     }
 }

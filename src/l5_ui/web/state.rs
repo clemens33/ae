@@ -14,8 +14,11 @@ use std::time::{Duration, Instant};
 use super::chat::{self, Chat};
 use super::clock::Clock;
 use super::topics::{self, Sticky, Wait};
+use crate::console::lane::Seat;
 use crate::console::{Console, Reach};
 use crate::events::Held;
+use crate::inventory::ServerId;
+use crate::meta::Selector;
 use crate::session::RecordSnapshot;
 use crate::topic::{Card, Field, Group, State};
 
@@ -38,6 +41,127 @@ pub struct Read {
     pub chat: Chat,
     /// The desk column: its topics and the owner actions they wait on.
     pub desk: topics::Column,
+    /// What a send would be bound to: present only while the orchestrator is
+    /// proven live and its main seat names a launch.
+    pub route: Option<RouteFacts>,
+}
+
+/// The target a page's send is bound to, as one read proved it: the
+/// orchestrator's incarnation, its lead pair with each seat's launch, and the
+/// role-proof facts. The listener tags it with its key at render, so the page
+/// never sees these facts as a secret it could forge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteFacts {
+    /// The orchestrator session's uuid.
+    pub uuid: String,
+    /// The orchestrator session's name.
+    pub to: String,
+    /// The seat an ask goes to: the main seat.
+    pub seat: String,
+    /// Every lead-pair seat in order, main first: slot, name and launch id
+    /// (empty for a seat that records none).
+    pub seats: Vec<(String, String, String)>,
+    /// The session's state directory.
+    pub dir: PathBuf,
+    /// The tmux server the role proof found the session on.
+    pub server: ServerId,
+}
+
+/// What signs a route before its facts.
+const ROUTE_DOMAIN: &[u8] = b"ae-web route 1\0";
+
+/// The route id of `facts` under listener key `key`: HMAC-SHA256 over the
+/// domain, then every fact, each ended by a NUL, as 64 lowercase hex.
+#[must_use]
+pub fn route_id(key: &[u8; 32], facts: &RouteFacts) -> String {
+    let mut message = ROUTE_DOMAIN.to_vec();
+    let server = server_words(&facts.server);
+    let dir = facts.dir.to_string_lossy();
+    let mut fact = |text: &str| {
+        message.extend_from_slice(text.as_bytes());
+        message.push(0);
+    };
+    for text in [facts.uuid.as_str(), &facts.to, &facts.seat, &dir, &server] {
+        fact(text);
+    }
+    for (slot, name, launch) in &facts.seats {
+        for text in [slot, name, launch] {
+            fact(text);
+        }
+    }
+    let signer = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    super::auth::hex(ring::hmac::sign(&signer, &message).as_ref())
+}
+
+/// The server's identity as words a route signs.
+fn server_words(server: &ServerId) -> String {
+    match server {
+        ServerId::Ambient => "ambient".to_owned(),
+        ServerId::Selected(Selector::Name(name)) => format!("name:{name}"),
+        ServerId::Selected(Selector::Socket(path)) => format!("socket:{}", path.display()),
+    }
+}
+
+/// The route of the orchestrator under `root` as it stands now: the role
+/// holder, its directory and a fresh role proof, or `None` when any of them
+/// fails or the main seat names no launch.
+#[must_use]
+pub fn current_route(root: &Path) -> Option<RouteFacts> {
+    current_route_pair(root).map(|(facts, _)| facts)
+}
+
+/// [`current_route`] with the lead pair its facts were taken from, main
+/// first: one roster read for both, so a carry binds the very pair the
+/// route id names.
+pub(crate) fn current_route_pair(root: &Path) -> Option<(RouteFacts, Vec<Seat>)> {
+    let name = crate::settings_menu::role_holder(root).ok()??;
+    let dir = crate::console::locate(root, &name)?;
+    let (uuid, server) = crate::console::target::prove_role(root, &name, &dir).ok()?;
+    route_of(name, dir, uuid, server)
+}
+
+/// The route of the proven seat `name` at `dir` and the lead pair it was
+/// taken from, from one roster read.
+fn route_of(
+    name: String,
+    dir: PathBuf,
+    uuid: String,
+    server: ServerId,
+) -> Option<(RouteFacts, Vec<Seat>)> {
+    let console = Console::bound(name.clone(), dir.clone(), uuid.clone());
+    let pair = crate::console::term::pair_of(console.seats().ok()?).ok()?;
+    let facts = route_facts(name, dir, uuid, server, &pair)?;
+    Some((facts, pair))
+}
+
+/// The route of the proven seat `name` at `dir` with lead pair `pair`, main
+/// first, each with the launch its meta records for this incarnation.
+fn route_facts(
+    name: String,
+    dir: PathBuf,
+    uuid: String,
+    server: ServerId,
+    pair: &[Seat],
+) -> Option<RouteFacts> {
+    let seats: Vec<(String, String, String)> = pair
+        .iter()
+        .map(|seat| {
+            let launch = crate::tracked::launch_id_at(&dir, &seat.slot, &uuid);
+            (seat.slot.clone(), seat.name.clone(), launch)
+        })
+        .collect();
+    let (_, seat, launch) = seats.first().filter(|(slot, ..)| slot == "main")?;
+    if launch.is_empty() {
+        return None;
+    }
+    Some(RouteFacts {
+        seat: seat.clone(),
+        uuid,
+        to: name,
+        seats,
+        dir,
+        server,
+    })
 }
 
 /// The orchestrator seat as one read found it.
@@ -114,7 +238,13 @@ impl Cache {
     /// fresh read's. The time is sampled under the lock, so a worker that
     /// waited for it never reads again after a newer snapshot; the wall clock
     /// only stamps `read_at`.
-    pub fn get(&self, clock: &dyn Clock, source: &dyn Source, version: &str) -> Arc<Snapshot> {
+    pub fn get(
+        &self,
+        clock: &dyn Clock,
+        source: &dyn Source,
+        version: &str,
+        key: &[u8; 32],
+    ) -> Arc<Snapshot> {
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         let now = clock.now();
         if let Some(kept) = held.as_ref()
@@ -130,7 +260,7 @@ impl Cache {
             kept.at = now;
             return Arc::clone(&kept.snapshot);
         }
-        let snapshot = Arc::new(render(Arc::new(read), version, read_at));
+        let snapshot = Arc::new(render(Arc::new(read), version, read_at, key));
         *held = Some(Kept {
             at: now,
             snapshot: Arc::clone(&snapshot),
@@ -141,10 +271,11 @@ impl Cache {
 
 /// The state document of `read`, bounded at this boundary: the newest
 /// [`chat::ROWS_MAX`] rows, the rest counted in `cut`, every text made plain
-/// and capped. Written in one pass, because a legitimate snapshot reaches tens
-/// of MiB and is rendered while a page waits for its first byte.
+/// and capped, and the route tagged under listener key `key`. Written in one
+/// pass, because a legitimate snapshot reaches tens of MiB and is rendered
+/// while a page waits for its first byte.
 #[must_use]
-pub fn render(read: Arc<Read>, version: &str, read_at: i64) -> Snapshot {
+pub fn render(read: Arc<Read>, version: &str, read_at: i64, key: &[u8; 32]) -> Snapshot {
     use std::fmt::Write as _;
 
     let seat = &read.orchestrator;
@@ -201,7 +332,20 @@ pub fn render(read: Arc<Read>, version: &str, read_at: i64) -> Snapshot {
     let cut = chat.cut.saturating_add(over);
     let _ = write!(out, "],\"cut\":{cut}}},\"desk\":");
     desk(&mut out, &read.desk);
-    out.push_str(",\"route\":null}");
+    out.push_str(",\"route\":");
+    match &read.route {
+        Some(facts) => {
+            out.push_str("{\"id\":");
+            string(&mut out, &route_id(key, facts));
+            out.push_str(",\"to\":");
+            label(&mut out, &facts.to);
+            out.push_str(",\"seat\":");
+            label(&mut out, &facts.seat);
+            out.push('}');
+        }
+        None => out.push_str("null"),
+    }
+    out.push('}');
     let body: Arc<[u8]> = out.into_bytes().into();
     let etag = etag(&body);
     Snapshot {
@@ -509,7 +653,7 @@ impl Source for LiveSource {
             let mut sticky = self.sticky.lock().unwrap_or_else(PoisonError::into_inner);
             topics::collect(&self.root, &mut sticky)
         };
-        let (orchestrator, found) = orchestrator(&self.root);
+        let (orchestrator, found, route) = orchestrator(&self.root);
         let mut followed = self.followed.lock().unwrap_or_else(PoisonError::into_inner);
         let Some((name, dir, uuid)) = found else {
             *followed = None;
@@ -517,6 +661,7 @@ impl Source for LiveSource {
                 orchestrator,
                 chat: Chat::default(),
                 desk,
+                route,
             };
         };
         // Any change of name, place or incarnation opens a fresh console; an
@@ -538,12 +683,14 @@ impl Source for LiveSource {
                 orchestrator,
                 chat: Chat::default(),
                 desk,
+                route,
             };
         };
         Read {
             orchestrator,
             chat: kept.chat(&self.global),
             desk,
+            route,
         }
     }
 }
@@ -571,20 +718,23 @@ impl Followed {
     }
 }
 
+/// The session a read follows: its name, directory and incarnation.
+type Found = Option<(String, PathBuf, Option<String>)>;
+
 /// The orchestrator's standing under `root`, and the session to read when
 /// one holds the role: its name, its directory and the incarnation to follow
 /// (proven live, or recorded by a meta that still proves the seat).
-fn orchestrator(root: &Path) -> (Orchestrator, Option<(String, PathBuf, Option<String>)>) {
+fn orchestrator(root: &Path) -> (Orchestrator, Found, Option<RouteFacts>) {
     let name = match crate::settings_menu::role_holder(root) {
         Ok(Some(name)) => name,
-        Ok(None) => return (Orchestrator::default(), None),
+        Ok(None) => return (Orchestrator::default(), None, None),
         Err(why) => {
             let seat = Orchestrator {
                 name: None,
                 state: Standing::Gap,
                 why,
             };
-            return (seat, None);
+            return (seat, None, None);
         }
     };
     let Some(dir) = crate::console::locate(root, &name) else {
@@ -593,16 +743,18 @@ fn orchestrator(root: &Path) -> (Orchestrator, Option<(String, PathBuf, Option<S
             state: Standing::Gap,
             why: "no session directory holds the role's session".to_owned(),
         };
-        return (seat, None);
+        return (seat, None, None);
     };
     match crate::console::target::prove_role(root, &name, &dir) {
-        Ok((uuid, _)) => {
+        Ok((uuid, server)) => {
             let seat = Orchestrator {
                 name: Some(name.clone()),
                 state: Standing::Proven,
                 why: String::new(),
             };
-            (seat, Some((name, dir, Some(uuid))))
+            let route =
+                route_of(name.clone(), dir.clone(), uuid.clone(), server).map(|(facts, _)| facts);
+            (seat, Some((name, dir, Some(uuid))), route)
         }
         Err(why) => {
             // Not proven live: the directory still has to prove the seat by
@@ -617,7 +769,7 @@ fn orchestrator(root: &Path) -> (Orchestrator, Option<(String, PathBuf, Option<S
                     state: Standing::Gap,
                     why: "the role's session no longer proves the orchestrator seat".to_owned(),
                 };
-                return (seat, None);
+                return (seat, None, None);
             };
             let uuid =
                 crate::archive::canonical_uuid(&crate::lifecycle::meta_value(&meta, "session_id"));
@@ -626,7 +778,11 @@ fn orchestrator(root: &Path) -> (Orchestrator, Option<(String, PathBuf, Option<S
                 state: Standing::Stopped,
                 why,
             };
-            (seat, Some((name, dir, (!uuid.is_empty()).then_some(uuid))))
+            (
+                seat,
+                Some((name, dir, (!uuid.is_empty()).then_some(uuid))),
+                None,
+            )
         }
     }
 }
@@ -707,7 +863,7 @@ mod tests {
         let cache = Arc::new(Cache::default());
         let first = {
             let (cache, clock, source) = (cache.clone(), clock.clone(), source.clone());
-            std::thread::spawn(move || cache.get(&*clock, &*source, "v"))
+            std::thread::spawn(move || cache.get(&*clock, &*source, "v", &[0; 32]))
         };
         let started = Instant::now();
         while source.reads.load(Ordering::SeqCst) == 0 && started.elapsed() < Duration::from_secs(5)
@@ -718,7 +874,7 @@ mod tests {
             let (cache, clock, source) = (cache.clone(), clock.clone(), source.clone());
             std::thread::Builder::new()
                 .name("late".to_owned())
-                .spawn(move || cache.get(&*clock, &*source, "v"))
+                .spawn(move || cache.get(&*clock, &*source, "v", &[0; 32]))
                 .unwrap_or_else(|error| panic!("spawn: {error}"))
         };
         // A reader that samples its second before the lock does so now.

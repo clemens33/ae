@@ -68,6 +68,40 @@ topics** with a search over slug and title. A narrow screen switches between Cha
 Clicking a row opens its card, which `GET /api/topic/<slug>` answers from the same snapshot as the
 chat.
 
+## Sending
+
+The composer under the chat sends one owner ask to the orchestrator's main seat, the same ask `ae
+chat` opens: it passes the console's own admission, so the cap of five open asks holds and a cap
+refusal shows verbatim. `Attach #<slug>` puts the open topic's tag on the draft's first line,
+where it stays visible text. Ctrl+Enter or **Send** sends; opening a topic keeps the draft and the
+focus.
+
+- Every draft gets one draft id from `GET /api/nonce`. The page posts the text, the draft id and
+  the route it shows (`POST /api/send`) and repeats that same post until it gets a receipt, so a
+  lost answer or a restarted listener never sends the draft twice. When no receipt comes in about
+  two minutes, or ae web is not reachable, **Check again** posts the same body once more; the
+  draft cannot change until an answer settles it.
+- The receipt names the request id and one outcome: `sent`, `refused` with the console's words,
+  or `unknown: may have landed, not resent` when input may have reached the seat. A sent or
+  unknown draft leaves the composer; a refused one stays to be edited and sent as a new draft.
+- The route is the orchestrator session, its lead pair and each seat's launch, signed with the
+  listener's key. A draft is carried only to the route it was written against: when the role or
+  the pair changed, the answer is `the orchestrator changed, reload` and nothing is sent.
+- A draft id is good for 24 hours. An older one, or one from a stopped listener that never sent it,
+  answers `expired draft id: send it as a new message`.
+- One draft is carried at a time and two more wait; the next one answers `busy, retry`, and the
+  page retries it.
+- Before any input, the send worker writes a claim for the draft id under
+  `<state root>/web/claims/` (mode 0600, synced to disk) and settles it with the outcome
+  afterwards. A claim without an outcome is never carried again: its retry answers unknown. When
+  no claim can be written, nothing is sent and the next retry answers `refused` with the reason.
+  Claims older than 7 days are removed.
+- When the command link names another core and automatic upgrades are on, `ae web` replaces
+  itself with that core on the same port once no draft is queued or carrying; meanwhile a send
+  answers `busy, retry`. The new core has a new key, so it prints a new link, and a draft that was
+  sent is answered from its claim. A failed switch is printed once per version
+  (`ae web: cannot follow version <v>: <why>; still serving <old>`) and the old core keeps serving.
+
 ## Security
 
 - The listener binds `127.0.0.1` alone and answers only the `Host` values `127.0.0.1:<port>`,

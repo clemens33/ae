@@ -288,6 +288,30 @@ fn the_listener_door_has_exactly_one_product_site() {
     );
 }
 
+/// `ae web`'s claim store has exactly two doors (lead ruling, S1c): one
+/// `File::open` of a claim directory or its parent to fsync it, and one
+/// `std::fs::read_dir` of the claim directory for the seven-day prune. Every
+/// claim it reads goes through the store's readers; a third raw call there is
+/// a review, not a diff.
+#[test]
+fn the_web_claim_store_has_exactly_its_two_doors() {
+    let claim = tree_text("src/l5_ui/web/claim.rs");
+    for (needle, count) in [
+        ("File::open(", 1),
+        ("read_dir(", 1),
+        ("OpenOptions", 0),
+        ("std::fs::read(", 0),
+        ("read_to_string(", 0),
+        ("a door:", 2),
+    ] {
+        assert_eq!(
+            claim.matches(needle).count(),
+            count,
+            "src/l5_ui/web/claim.rs: {needle} is no longer its pinned count"
+        );
+    }
+}
+
 /// `transport::run_sysctl` is the FIXED-PROGRAM boot-time leg of the one
 /// process door — and it takes no arguments at all, because there is exactly
 /// one question ae asks `sysctl`.
@@ -824,7 +848,7 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
     /// make. The mode is part of the spelling: it is the published file's, and
     /// a caller that changed it would be publishing into someone else's store
     /// at the wrong permissions.
-    const CALLERS: [(&str, &str, &str); 4] = [
+    const CALLERS: [(&str, &str, &str); 5] = [
         (
             "src/lib.rs",
             "crate::init::create_exclusive(path, contents.as_bytes(), 0o666)",
@@ -856,6 +880,13 @@ fn init_owns_exclusive_publication_and_every_caller_of_it_is_named() {
             "src/l5_ui/clipboard.rs",
             "crate::init::create_exclusive(&path, &bytes, 0o600)",
             "the clipboard image publication must be init's exclusive writer at the store's own mode",
+        ),
+        // `ae web`'s durable claim of one draft id: it must appear whole and
+        // only if no claim holds the name, or a retry could carry twice.
+        (
+            "src/l5_ui/web/claim.rs",
+            "crate::init::create_exclusive(&self.dir.join(name), encode(claim).as_bytes(), 0o600)",
+            "the web claim must be init's exclusive writer at the store's own mode",
         ),
     ];
 

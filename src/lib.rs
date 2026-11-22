@@ -5429,7 +5429,7 @@ pub fn run_with(
         cli::Request::Board { tail } => run_board(tail, world, out, err)?,
         cli::Request::Console { tail } => console::run(tail, out, err)?,
         cli::Request::App { tail } => app::run(tail, out, err)?,
-        cli::Request::Web { tail } => web::run(tail, out, err)?,
+        cli::Request::Web { tail } => web::run(tail, send_defer(), out, err)?,
         // A parsed `--popup` is answered before `run_dispatch` reaches this
         // generic arm. Only a direct `run_with` caller can bring one here.
         cli::Request::Orchestrator { tail } => refuse_unwired_orchestrator(tail, err)?,

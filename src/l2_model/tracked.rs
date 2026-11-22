@@ -1292,15 +1292,16 @@ pub(crate) fn deliver_request(
     request: &crate::deliver::Request<'_>,
     err: &mut impl Write,
 ) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
-    deliver_request_with(request, None, None, err)
+    deliver_request_with(request, None, None, Ok(None), err)
 }
 
 /// [`deliver_request`], audited for the proved orchestrator seat when `seat`
-/// is given ([`deliver_expected`]).
+/// is given, and narrowed to the seat `expect` names ([`deliver_expected`]).
 fn deliver_request_with(
     request: &crate::deliver::Request<'_>,
     seat: Option<&mut Dispatch>,
     role: Option<RolePin<'_>>,
+    expect: Expectation<'_>,
     err: &mut impl Write,
 ) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
     #[cfg(test)]
@@ -1316,7 +1317,7 @@ fn deliver_request_with(
         slot: request.pane_slot.to_owned(),
         session: request.target_session.to_owned(),
     };
-    deliver_expected(request, &target, Ok(None), seat, role, err).map(|(delivery, _)| delivery)
+    deliver_expected(request, &target, expect, seat, role, err).map(|(delivery, _)| delivery)
 }
 
 /// A helper's private expected seat (#218 P1): its slot and exact launch token, `""`
@@ -3223,6 +3224,26 @@ pub(crate) struct Extra<'a> {
     pub(crate) role: Option<RolePin<'a>>,
 }
 
+/// What a carry that must name its seat's launch adds to [`run_with`]: the
+/// expected seat [`deliver_expected`] proves before any input, and a step run
+/// after the input and before the opening is recorded, whose error ends the
+/// run there with nothing recorded.
+pub(crate) struct Carried<'a> {
+    /// The seat's slot and exact launch token, or none.
+    pub(crate) expect: Expectation<'a>,
+    /// Run once the delivery returned, before its opening is recorded.
+    pub(crate) after_carry: Option<&'a mut dyn FnMut() -> io::Result<()>>,
+}
+
+impl Default for Carried<'_> {
+    fn default() -> Self {
+        Self {
+            expect: Ok(None),
+            after_carry: None,
+        }
+    }
+}
+
 /// [`run`] with a relay's [`Extra`].
 ///
 /// # Errors
@@ -3242,6 +3263,49 @@ pub(crate) fn run_with(
     entropy: u64,
     defer: std::time::Duration,
     extra: Extra<'_>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> io::Result<u8> {
+    run_carried(
+        kind,
+        dir,
+        tail,
+        sender,
+        own_session,
+        now,
+        entropy,
+        defer,
+        extra,
+        Carried::default(),
+        out,
+        err,
+    )
+}
+
+/// [`run_with`], its delivery narrowed by [`Carried::expect`] and its opening
+/// preceded by [`Carried::after_carry`].
+///
+/// # Errors
+///
+/// A failure to write `out` or `err`, or the error `after_carry` returned.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the frozen helper's inputs, spelled out rather than bundled"
+)]
+pub(crate) fn run_carried(
+    kind: Kind,
+    dir: &Path,
+    tail: &[String],
+    sender: Option<&Sender>,
+    own_session: &str,
+    now: Timestamp,
+    entropy: u64,
+    defer: std::time::Duration,
+    extra: Extra<'_>,
+    Carried {
+        expect,
+        after_carry,
+    }: Carried<'_>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
@@ -3313,9 +3377,9 @@ pub(crate) fn run_with(
     let meta_dir = target_meta_dir(dir, &resolved.session, own_session);
     let mut target_launch = launch_id_at(&meta_dir, &resolved.slot, &target_id);
     let (delivery, outcome) = across_cut(&server, &resolved.pane, &meta_dir, || {
-        deliver_receipted(&request, extra.receipt, seat, extra.role, err)
+        deliver_receipted(&request, extra.receipt, seat, extra.role, expect, err)
     });
-    let delivery = delivery?;
+    let delivery = carry_on(delivery, after_carry)?;
     keep_launch(&mut actor_launch, &caller_dir, &sender.slot, &caller_id);
     keep_launch(&mut target_launch, &meta_dir, &resolved.slot, &target_id);
     let fields = stamp_target(
@@ -3362,14 +3426,27 @@ fn deliver_receipted(
     receipt: Option<&mut Option<Receipt>>,
     seat: Option<&mut Dispatch>,
     role: Option<RolePin<'_>>,
+    expect: Expectation<'_>,
     err: &mut impl Write,
 ) -> io::Result<Result<crate::deliver::Delivered, crate::deliver::Failure>> {
     let Some(slot) = receipt else {
-        return deliver_request_with(request, seat, role, err);
+        return deliver_request_with(request, seat, role, expect, err);
     };
     *slot = Some(Receipt::Uncertain);
-    let delivery = deliver_request_with(request, seat, role, err)?;
+    let delivery = deliver_request_with(request, seat, role, expect, err)?;
     *slot = Some(Receipt::of(&delivery, role.is_some()));
+    Ok(delivery)
+}
+
+/// `delivery`, once `after_carry`, when given, has run: its error wins.
+fn carry_on<T>(
+    delivery: io::Result<T>,
+    after_carry: Option<&mut dyn FnMut() -> io::Result<()>>,
+) -> io::Result<T> {
+    let delivery = delivery?;
+    if let Some(step) = after_carry {
+        step()?;
+    }
     Ok(delivery)
 }
 
@@ -3641,6 +3718,7 @@ mod tests {
                 Some(&mut actual),
                 None,
                 Some(pin),
+                Ok(None),
                 &mut Vec::new(),
             )
             .unwrap();
