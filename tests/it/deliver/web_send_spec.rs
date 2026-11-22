@@ -412,7 +412,7 @@ impl Hooks for OnePause {
             return Flow::Halt;
         }
         channel
-            .recv_timeout(Duration::from_secs(60))
+            .recv_timeout(Duration::from_mins(1))
             .unwrap_or(Flow::Halt)
     }
 }
@@ -483,7 +483,7 @@ impl Hooks for CrashPoint {
             return Flow::Go;
         }
         publish_signal(&self.root, "crash-point", &id);
-        std::thread::park_timeout(Duration::from_secs(60));
+        std::thread::park_timeout(Duration::from_mins(1));
         Flow::Halt
     }
 }
@@ -509,7 +509,7 @@ fn crash_listener_child() {
         },
     );
     publish_signal(&root, "crash-link", &running.link());
-    std::thread::park_timeout(Duration::from_secs(60));
+    std::thread::park_timeout(Duration::from_mins(1));
     running.shutdown();
     panic!("the parent did not stop this listener at the agreed cut");
 }
@@ -868,7 +868,7 @@ impl Hooks for ExecFailure {
             .release
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .recv_timeout(Duration::from_secs(60));
+            .recv_timeout(Duration::from_mins(1));
         std::io::Error::other("exec fixture refusal")
     }
 }

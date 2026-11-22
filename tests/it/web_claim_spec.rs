@@ -47,11 +47,8 @@ fn nonce_checks_its_listener_tag_and_the_inclusive_one_day_window() {
     for byte in [7, 8, 55] {
         let mut changed = NONCE.to_owned();
         let position = 2 * byte;
-        let before = &NONCE[position..position + 1];
-        changed.replace_range(
-            position..position + 1,
-            if before == "0" { "1" } else { "0" },
-        );
+        let before = &NONCE[position..=position];
+        changed.replace_range(position..=position, if before == "0" { "1" } else { "0" });
         assert!(
             matches!(nonce::verify(&KEY, &changed, EPOCH), Err(Refused::Forged)),
             "tamper byte {byte}"
