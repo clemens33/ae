@@ -85,6 +85,11 @@ case "$mode" in
     proof-other) proof=other ;;
     proof-empty) proof= ;;
     proof-invalid) proof='bad/name' ;;
+    malformed-holder)
+        cp "$locks/gate/owner" "$dir/valid-owner" || exit 72
+        cp "$locks/binding" "$dir/valid-binding" || exit 72
+        printf '%s\n' 'bad;holder 2000-01-01T00:00:00Z' >"$locks/gate/owner"
+        { cat "$locks/gate/owner"; tail -n 1 "$dir/valid-binding"; } >"$locks/binding" ;;
     binding-missing) rm "$locks/binding" 2>/dev/null || : ;;
     binding-stale) printf 'other 2000-01-01T00:00:00Z\n%s\n' "$linked" >"$locks/binding" ;;
     binding-link)
@@ -147,6 +152,9 @@ if [[ -s "$dir/cargo" ]]; then
     done
     case "$mode" in
         free-then-claim) claim "$main" holder || exit 75 ;;
+        malformed-holder)
+            cp "$dir/valid-owner" "$locks/gate/owner" || exit 75
+            cp "$dir/valid-binding" "$locks/binding" || exit 75 ;;
         replace-other|replace-same)
             # Simulate the administrative recovery in the stated claim-loss
             # case without deleting the old lock or manufacturing an entry.
@@ -341,12 +349,24 @@ fn an_unclaimed_linked_worktree_run_never_blocks_or_receives_a_signal_from_the_h
         let case = case(mode);
         case.released();
         assert_eq!(case.claim_lines(), ["free"], "{}", case.evidence);
+        let out = case.file("run.out");
+        assert!(out.contains("detached: note:"), "{}", case.evidence);
         assert!(
-            case.file("run.out").contains("detached: note:"),
+            out.contains("export AE_LANE_CLAIM=holder"),
             "{}",
             case.evidence
         );
     }
+}
+
+#[test]
+fn a_foreign_worktree_diagnostic_does_not_offer_an_export_for_a_malformed_holder() {
+    let case = case("malformed-holder");
+    case.released();
+    assert_eq!(case.claim_lines(), ["free"], "{}", case.evidence);
+    let out = case.file("run.out");
+    assert!(out.contains("detached: note:"), "{}", case.evidence);
+    assert!(!out.contains("export AE_LANE_CLAIM="), "{}", case.evidence);
 }
 
 #[test]

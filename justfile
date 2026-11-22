@@ -448,8 +448,9 @@ REAP := '''
     # then it serves no claim. Missing proof gives the run to the holder, never frees it. A
     # set AE_LANE_CLAIM, also an empty one, is a claim the caller means: it is never ignored.
     my $want = $ENV{AE_LANE_CLAIM};
+    my $claim_name = qr/\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/;
     my $refuse = sub { print STDERR "detached: refused: $_[0]\n"; exit 1 };
-    if (defined $want && $want !~ /\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/) {
+    if (defined $want && $want !~ $claim_name) {
         # The refusal stays one line: control characters are shown escaped, never raw.
         (my $shown = $want) =~ s/([\x00-\x1f\x7f])/sprintf("\\x%02x", ord($1))/ge;
         $refuse->("AE_LANE_CLAIM is not a lock name: \"$shown\"");
@@ -468,9 +469,9 @@ REAP := '''
         } elsif ($owner ne "" && !$!{ENOENT}) {
             die "detached: the lane lock owner $owner cannot be read: $!\n";
         }
+        (my $holder = $line // "") =~ s/ .*//s;
         if (defined $want) {
             $refuse->("this run serves lane claim $want, but the lane is free") unless defined $line;
-            (my $holder = $line) =~ s/ .*//s;
             $refuse->("this run serves lane claim $want, but the lane is held by $line") unless $holder eq $want;
             $claim = $line;
         } elsif (defined $line) {
@@ -480,7 +481,9 @@ REAP := '''
                 my $n = read($bh, my $text, 8193);
                 close($bh);
                 if (defined $n && $n <= 8192 && $text =~ m{\A([^\x00-\x1f]+)\n(/[^\x00-\x1f]*)\n\z} && $1 eq $line && $2 ne $here) {
-                    print STDERR "detached: note: the lane is held by $line from $2; this run in $here is not part of that claim (AE_LANE_CLAIM=<name> makes it one)\n";
+                    my $claim_worktree = $2;
+                    my $join = $holder =~ $claim_name ? "; to join it, run: export AE_LANE_CLAIM=$holder" : "";
+                    print STDERR "detached: note: the lane is held by $line from $claim_worktree; this run in $here is not part of that claim$join\n";
                     $claim = "free";
                 }
             }
