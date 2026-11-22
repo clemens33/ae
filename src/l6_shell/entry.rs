@@ -563,6 +563,10 @@ pub struct Preamble {
     /// The operator's `AE_NO_AUTOSTART=1`: start no companion — neither the
     /// watchdog nor the Telegram bridge.
     pub no_autostart: bool,
+    /// Who asked: [`crate::session_launch::Starter::Autostart`] is the
+    /// orchestrator autostart's own seat launch (`--autostart`), which leaves a
+    /// live seat alone. Never a typed command.
+    pub starter: crate::session_launch::Starter,
 }
 
 impl Default for Preamble {
@@ -582,6 +586,7 @@ impl Default for Preamble {
             inside_tmux: false,
             attach: true,
             no_autostart: false,
+            starter: crate::session_launch::Starter::Caller,
         }
     }
 }
@@ -605,6 +610,9 @@ impl Preamble {
         }
         if self.no_autostart {
             argv.push("--no-autostart".to_owned());
+        }
+        if self.starter == crate::session_launch::Starter::Autostart {
+            argv.push(crate::orchestrator::AUTOSTART_FLAG.to_owned());
         }
         argv.extend(self.server_argv());
         if let Some(ServerId::Selected(Selector::Socket(socket))) = &self.caller_server {

@@ -8,6 +8,7 @@ pub mod interrupt;
 pub mod lifecycle;
 pub mod migrate;
 pub mod orchestrator;
+pub mod orchestrator_autostart;
 pub mod rename;
 pub mod request_verb;
 pub(crate) mod reseat;

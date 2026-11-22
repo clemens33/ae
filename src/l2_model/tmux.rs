@@ -90,6 +90,48 @@ pub(crate) use fleet::{is_decimal, pane_id_is_valid, session_id_is_valid};
 /// The format `list-sessions` is asked for: one exact session name per line.
 pub const SESSION_NAME_FORMAT: &str = "#{session_name}";
 
+/// What an untargeted attach chooses by: clients attached, last activity, name.
+pub const SESSION_CHOICE_FORMAT: &str = "#{session_attached} #{session_activity} #{session_name}";
+
+/// The full argument list for reading what an untargeted attach chooses by.
+#[must_use]
+pub fn session_choice_args(server: &ServerId) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-sessions", "-F", SESSION_CHOICE_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// The session an untargeted `attach-session` picks among the
+/// [`SESSION_CHOICE_FORMAT`] rows, `excluded` left out: tmux's best session —
+/// an unattached one before an attached one, then the latest activity, and on
+/// a tie the first in name order, because tmux walks its sessions by name and
+/// keeps only a strictly better one. `None` when no row qualifies or a row is
+/// not this format's.
+#[must_use]
+pub fn untargeted_attach_choice(stdout: &str, excluded: &str) -> Option<String> {
+    let mut best: Option<(bool, u64, &str)> = None;
+    for line in stdout.lines().filter(|line| !line.is_empty()) {
+        let (attached, rest) = line.split_once(' ')?;
+        let (activity, name) = rest.split_once(' ')?;
+        let attached = attached.parse::<u32>().ok()? > 0;
+        let activity = activity.parse::<u64>().ok()?;
+        if name == excluded {
+            continue;
+        }
+        let better = best.is_none_or(|(was_attached, was_active, _)| {
+            if was_attached == attached {
+                activity > was_active
+            } else {
+                was_attached
+            }
+        });
+        if better {
+            best = Some((attached, activity, name));
+        }
+    }
+    best.map(|(_, _, name)| name.to_owned())
+}
+
 /// Pin `name` to tmux's exact session-name rule.
 ///
 /// A tmux target session resolves by exact match, then prefix, then fnmatch;

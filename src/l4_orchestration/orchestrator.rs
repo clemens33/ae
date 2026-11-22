@@ -257,6 +257,9 @@ pub struct LaunchTail {
     pub inside_tmux: bool,
     /// Whether this launch suppresses companion autostart.
     pub no_autostart: bool,
+    /// `--autostart`: the orchestrator autostart's own child, which leaves a
+    /// live seat alone and is never typed by hand.
+    pub autostart: bool,
 }
 
 /// Parse a bare seat launch tail through the public launch grammar. Shape,
@@ -267,10 +270,12 @@ pub fn parse_launch_tail(tail: &[String]) -> Option<LaunchTail> {
     let mut public = Vec::new();
     let mut inside_tmux = false;
     let mut no_autostart = false;
+    let mut autostart = false;
     for word in tail {
         match word.as_str() {
             "--inside-tmux" => inside_tmux = true,
             "--no-autostart" => no_autostart = true,
+            AUTOSTART_FLAG => autostart = true,
             _ => public.push(word.clone()),
         }
     }
@@ -288,8 +293,12 @@ pub fn parse_launch_tail(tail: &[String]) -> Option<LaunchTail> {
         attach: plan.attach,
         inside_tmux,
         no_autostart,
+        autostart,
     })
 }
+
+/// The hidden seat-launch flag the orchestrator autostart's child carries.
+pub const AUTOSTART_FLAG: &str = "--autostart";
 
 /// Whether a bare seat launch tail uses only its fixed launch flags.
 #[must_use]

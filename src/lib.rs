@@ -106,6 +106,7 @@ pub use l4_orchestration::interrupt;
 pub use l4_orchestration::lifecycle;
 pub use l4_orchestration::migrate;
 pub use l4_orchestration::orchestrator;
+pub use l4_orchestration::orchestrator_autostart;
 pub use l4_orchestration::rename;
 pub use l4_orchestration::request_verb;
 pub(crate) use l4_orchestration::reseat;
@@ -621,6 +622,7 @@ fn resolve_facts(shape: &shape::Shape, err: &mut impl Write) -> Result<Option<en
         inside_tmux,
         attach: true,
         no_autostart: doors::no_autostart(),
+        starter: session_launch::Starter::Caller,
     }))
 }
 
@@ -1875,6 +1877,9 @@ fn run_entry(
                 }
                 seat.inside_tmux |= flags.inside_tmux;
                 seat.no_autostart |= flags.no_autostart;
+                if flags.autostart {
+                    seat.starter = session_launch::Starter::Autostart;
+                }
                 let route = session_launch::LaunchRoute::OrchestratorStart;
                 return run_launch(&seat, &launch, false, None, (&who, route), out, err);
             }
@@ -1977,9 +1982,10 @@ fn run_bare_attach(
     if app && let Some(code) = run_first_use(preamble, out, err)? {
         return Ok(code.max(failed));
     }
-    if transport::session_names(server).is_some_and(|names| !names.is_empty()) {
+    if let Some(names) = transport::session_names(server).filter(|names| !names.is_empty()) {
         if attach {
-            return Ok(transport::attach(server).max(failed));
+            // Outside tmux on a terminal: the owner's own `ae` or `ae --tmux`.
+            return Ok(kick_then_attach(preamble, server, &names, err)?.max(failed));
         }
         error::with_status(
             failed,
@@ -2011,6 +2017,56 @@ fn run_bare_attach(
         writeln!(err, "Stopped sessions: {}", stopped.join(", "))?;
     }
     Ok(entry::EXIT_FAILED)
+}
+
+/// Bare `ae`'s orchestrator autostart, then its untargeted attach as tmux
+/// would have chosen before the kick: a seat the kick just created is the
+/// newest session on the server, so tmux's own pick would land on it. Only
+/// then is the target named — tmux's pick among the others; otherwise tmux
+/// chooses, as it always did. `names` is the listing taken before the kick.
+fn kick_then_attach(
+    preamble: &entry::Preamble,
+    server: &inventory::ServerId,
+    names: &[String],
+    err: &mut impl Write,
+) -> Result<u8> {
+    let seat = orchestrator::ORCHESTRATOR_SESSION;
+    let had_seat = names.iter().any(|name| name == seat);
+    kick_orchestrator(preamble, true, err)?;
+    let created = !had_seat
+        && transport::session_names(server).is_some_and(|names| names.iter().any(|n| n == seat));
+    if created && let Some(name) = transport::untargeted_attach_choice(server, seat) {
+        return Ok(transport::focus(
+            server,
+            tmux::FocusVerb::AttachSession,
+            &name,
+        ));
+    }
+    Ok(transport::attach(server))
+}
+
+/// The orchestrator autostart for a route that has already decided what it
+/// does, waited for, its one line on `err`. Only for a human — `human` from
+/// the caller the route observed, and both streams a terminal — and at most
+/// once per invocation. The app kicks for itself ([`app::run`]).
+fn kick_orchestrator(preamble: &entry::Preamble, human: bool, err: &mut impl Write) -> Result<()> {
+    if !human || !both_terminal() || !orchestrator_autostart::claim_once() {
+        return Ok(());
+    }
+    let kick = orchestrator_autostart::Kick {
+        global: preamble.global.clone(),
+        no_autostart: preamble.no_autostart,
+    };
+    let line = match orchestrator_autostart::verdict(&kick) {
+        orchestrator_autostart::Verdict::Skip => None,
+        orchestrator_autostart::Verdict::Note(line) => Some(line),
+        orchestrator_autostart::Verdict::Start => orchestrator_autostart::start(),
+    };
+    if let Some(line) = line {
+        writeln!(err, "{line}")?;
+        err.flush()?;
+    }
+    Ok(())
 }
 
 /// Whether BOTH of this process's streams are a terminal. The app draws on
@@ -2672,6 +2728,13 @@ fn run_launch_as(
         && let Gate::Caller(who, route) = gate
     {
         return run_named_landing(preamble, &plan, user, first_use, (who, route), out, err);
+    }
+    if let Gate::Caller(who, session_launch::LaunchRoute::Entry) = &gate {
+        let human = matches!(
+            who,
+            session_launch::LaunchCaller::Outside | session_launch::LaunchCaller::Pane(_)
+        );
+        kick_orchestrator(preamble, human, err)?;
     }
     match gate {
         Gate::Caller(who, route) => {

@@ -238,6 +238,10 @@ fn fact_of(record: &DurableRecord, live: bool) -> Fact {
 /// One verdict per saved session under `roots`, in the scan's path order. A name
 /// its recorded server lists is live; one it answers without is proven absent;
 /// only when that server gave no listing does the launch's own proof decide.
+///
+/// The canonical orchestrator seat is not in the census: its one automatic
+/// start is [`crate::orchestrator_autostart`], under that switch and
+/// `AE_NO_AUTOSTART`, so a crash never brings it back past either opt-out.
 #[must_use]
 pub fn restorable(roots: &Roots) -> Vec<Verdict> {
     let scan = crate::inventory::durable_records(roots);
@@ -245,6 +249,7 @@ pub fn restorable(roots: &Roots) -> Vec<Verdict> {
         .records
         .iter()
         .filter(|record| record.layout == Layout::Canonical)
+        .filter(|record| record.name != crate::orchestrator::ORCHESTRATOR_SESSION)
         .collect();
     let mut listed: BTreeMap<Selector, Option<Vec<String>>> = BTreeMap::new();
     for record in &records {

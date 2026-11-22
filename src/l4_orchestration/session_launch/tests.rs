@@ -1259,6 +1259,7 @@ fn a_resume_document_carries_the_observed_model_pair_forward() {
         core: None,
         core_version: None,
         no_autostart: true,
+        starter: super::Starter::Caller,
         test_pre_lock_marker: None,
     };
     let shape = super::Session {
@@ -1381,6 +1382,7 @@ fn resume_parts(
         core: None,
         core_version: None,
         no_autostart: true,
+        starter: super::Starter::Caller,
         test_pre_lock_marker: None,
     };
     let shape = super::Session {

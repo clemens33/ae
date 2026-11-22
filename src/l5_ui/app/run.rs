@@ -56,15 +56,30 @@ pub fn run(
     };
     let (wake, wakes) = mpsc::channel();
     let (caller, pane) = (doors::caller_server(), doors::calling_pane_id());
-    let hint = !(own || handed.is_some()) && {
-        let at = caller.as_ref().zip(pane.as_deref());
-        let stamp = at.and_then(|(server, pane)| transport::observe_pane_console(server, pane));
-        says_hint(at.is_some(), stamp.as_deref())
+    let at = caller.as_ref().zip(pane.as_deref());
+    let stamp = if own || handed.is_some() {
+        None
+    } else {
+        at.and_then(|(server, pane)| transport::observe_pane_console(server, pane))
     };
+    let hint = !(own || handed.is_some()) && says_hint(at.is_some(), stamp.as_deref());
+    // The owner's own start of ae: the app the entry opened (bare `ae`, a
+    // launch that lands here), `ae app` typed outside tmux, or typed in a pane
+    // proved ordinary — no console stamp and no agent. Never a restart handed
+    // on, an app or chat window a session runs, or an agent seat.
+    let kicks = handed.is_none()
+        && (own
+            || caller.is_none()
+            || (stamp.as_deref() == Some("")
+                && at.is_some_and(|(server, pane)| {
+                    transport::reask_viewer(server, pane)
+                        .is_some_and(|viewer| viewer.agent.is_none())
+                })));
     let (keep, landed) = handed_on(handed);
     let own = (caller.clone(), pane.clone());
     let reader = reader_of(&root, home.clone(), own, landed);
     let notices = wake.clone();
+    let autostart = wake.clone();
     let started = forward(reads, wake.clone()).and_then(|()| loader::spawn(reader, wake));
     let (ask, reader) = match started {
         Ok(started) => started,
@@ -87,6 +102,11 @@ pub fn run(
             return Ok(crate::EXIT_UNAVAILABLE);
         }
     };
+    // Only once the app owns its terminal: an app that cannot open starts
+    // nothing.
+    if kicks {
+        kick_orchestrator(&root, autostart);
+    }
     let mut size = tty.size().unwrap_or((80, 24));
     let mut terminal = Terminal::new(backend::Ansi::new(out, size))?;
     let mut app = App::new(home, caller, pane, Some(ask));
@@ -314,6 +334,37 @@ pub(super) struct Operands {
 /// `ae app`'s operands: the home session, then [`OWN`] once, then the view an
 /// exec restart handed on behind [`handover::FLAG`], last. `None` is a usage
 /// error.
+/// The orchestrator autostart for the owner's own app, once per invocation:
+/// on a thread, so the app paints at once, and its one line arrives as a
+/// flash. Success says nothing.
+fn kick_orchestrator(root: &Path, wake: mpsc::Sender<Wake>) {
+    use crate::orchestrator_autostart::{self as autostart, Verdict};
+    if !autostart::claim_once() {
+        return;
+    }
+    let kick = autostart::Kick {
+        global: Some(doors::config_file(crate::shape::current(), root)),
+        no_autostart: doors::no_autostart(),
+    };
+    let said = wake.clone();
+    let spawned = std::thread::Builder::new()
+        .name("ae-orchestrator-autostart".to_owned())
+        .spawn(move || {
+            let line = match autostart::verdict(&kick) {
+                Verdict::Skip => None,
+                Verdict::Note(line) => Some(line),
+                Verdict::Start => autostart::start(),
+            };
+            if let Some(line) = line {
+                let _ = wake.send(Wake::Notice(line));
+            }
+        });
+    if spawned.is_err() {
+        let line = autostart::failure_line("the app could not start its thread");
+        let _ = said.send(Wake::Notice(line));
+    }
+}
+
 pub(super) fn operands(tail: &[String]) -> Option<Operands> {
     let (session, rest) = match tail.split_first() {
         Some((name, rest)) if !name.starts_with('-') => (Some(name.clone()), rest),

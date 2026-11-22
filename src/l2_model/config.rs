@@ -2444,6 +2444,29 @@ pub fn global_restore(global: Option<&Path>) -> Restore {
     }
 }
 
+/// The global `[workspace] orchestrator_autostart` ruling: whether starting ae
+/// also starts or resumes the orchestrator seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrchestratorAutostart {
+    On,
+    Off,
+    /// Starts NOTHING, like `Off`: a start the owner may have tried to switch
+    /// off fails closed; carries the escaped reason for the one note.
+    Unusable(String),
+}
+
+/// GLOBAL ONLY, through the reader `restore` uses, so a project `.ae/config`
+/// never votes. Absent and exact `on` start, exact `off` does not; any other
+/// value and every reader error start nothing and are named.
+#[must_use]
+pub fn global_orchestrator_autostart(global: Option<&Path>) -> OrchestratorAutostart {
+    match global_switch(global, "orchestrator_autostart") {
+        Ok(true) => OrchestratorAutostart::On,
+        Ok(false) => OrchestratorAutostart::Off,
+        Err(why) => OrchestratorAutostart::Unusable(why),
+    }
+}
+
 /// The global `[workspace] auto_trust` ruling: whether ae answers a measured
 /// folder-trust prompt for a seat's own folder.
 #[derive(Debug, Clone, PartialEq, Eq)]

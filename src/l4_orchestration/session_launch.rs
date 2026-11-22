@@ -68,7 +68,7 @@ use overrides::{
 pub(crate) use overrides::{approved_pair, split_profile_client};
 #[cfg(test)]
 use overrides::{recorded_solo_identity, resolve_spawn_pair, split_seat_override};
-pub use plan::{Env, Mode, Plan, is_bound_resume, parse_plan};
+pub use plan::{Env, Mode, Plan, Starter, is_bound_resume, parse_plan};
 use plan::{EnvError, read_env};
 pub(crate) use plan::{parse_plan_with_attach, parse_seat_plan};
 
@@ -590,6 +590,7 @@ pub fn relaunch(
         // A relaunch IS a launch (compact's child), so Telegram autostart is
         // decided exactly as it is for one typed by hand.
         no_autostart: false,
+        starter: Starter::Caller,
         test_pre_lock_marker: None,
         core: None,
         core_version: None,
@@ -1001,8 +1002,22 @@ fn launch(
     // write; every expected fact is re-read while the lock is held.
     // The seat's audited launch always holds it, so its request names the
     // locked target, and so does an agent seat's, so its guard does.
+    // The autostart always takes the lock below, a cold state root included,
+    // whose sessions root does not exist yet: create it first, as a new
+    // session's build does before its own lock.
+    if env.starter == Starter::Autostart
+        && let Err(why) = std::fs::create_dir_all(&sessions)
+    {
+        writeln!(
+            err,
+            "Error: could not create {} ({why})",
+            sessions.display()
+        )?;
+        return Ok(EXIT_FAILED);
+    }
     let mut lifecycle = if settings_start
         || expected_resume
+        || env.starter == Starter::Autostart
         || bound_uuid.is_some()
         || preflight_meta_present
         || audit.is_some()
@@ -1051,11 +1066,12 @@ fn launch(
     }
     // An expected or audited launch decides by what the lock holds, as its
     // proof or its audit request did.
-    let meta_present = if expected_launch.is_some() || audit.is_some() {
-        node_exists(&dir.join(crate::store::META))
-    } else {
-        preflight_meta_present
-    };
+    let meta_present =
+        if expected_launch.is_some() || audit.is_some() || env.starter == Starter::Autostart {
+            node_exists(&dir.join(crate::store::META))
+        } else {
+            preflight_meta_present
+        };
     if let Some(attempt) = restore
         && let Some(why) = restore_skip(lifecycle.is_some(), meta_present, || {
             attempt.guard.refuse(&dir)
@@ -1408,6 +1424,10 @@ fn stored_session_id(dir: &Path, slot: &str, resuming: bool) -> Option<String> {
     clippy::too_many_arguments,
     reason = "the frozen order, kept in one place — see the module docs"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the frozen order, kept in one place: the autostart's startup status is one more step in it"
+)]
 fn build(
     env: &Env,
     shape: &mut Session,
@@ -1547,7 +1567,12 @@ fn build(
         let _ = transport::run_tmux_op(&argv(&server, &Op::SelectWindow { pane: chat }));
     }
     crate::autoupgrade::schedule();
-    report_startup_dialogs(at.server, &shape.name, &launching, out)?;
+    let needs_human = report_startup_dialogs(at.server, &shape.name, &launching, out)?;
+    // The autostart's child carries the measured report as its status, so the
+    // invocation that asked names it instead of reading the words back.
+    if env.starter == Starter::Autostart && needs_human > 0 {
+        return Ok(crate::orchestrator_autostart::NEEDS_HUMAN);
+    }
     if !env.attach {
         writeln!(
             out,
@@ -2002,7 +2027,8 @@ fn report_startup_dialogs(
     session: &str,
     launching: &[Launching],
     out: &mut impl Write,
-) -> io::Result<()> {
+) -> io::Result<usize> {
+    let mut reported = 0;
     let mut waiting: Vec<_> = launching
         .iter()
         .filter(|agent| !agent.pane.is_empty() && deliver::prompt_row(Some(agent.tool)))
@@ -2024,6 +2050,7 @@ fn report_startup_dialogs(
                         "Session '{session}' seat {} ({}) needs a human — {notice}",
                         agent.name, agent.slot
                     )?;
+                    reported += 1;
                 }
             } else if !capture.as_deref().is_some_and(|frame| {
                 deliver::region::composer_drawn(frame, input.model, input.composed)
@@ -2036,7 +2063,8 @@ fn report_startup_dialogs(
             std::thread::sleep(STARTUP_POLL);
         }
     }
-    out.flush()
+    out.flush()?;
+    Ok(reported)
 }
 
 /// Only the original visible-screen answer proof can enter the launch

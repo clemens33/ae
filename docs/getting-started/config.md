@@ -271,6 +271,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `auto_upgrade` | Let an installed ae quietly check for and apply strictly newer releases (`on` / `off`); global config only | `on` |
 | `fleet_order` | The order your sessions are drawn in on the fleet strip, and the sessions pinned to the top of the app's sidebar, as a comma-separated list of session names; global config only | creation order |
 | `restore` | Let bare `ae` resume the sessions a crashed tmux server held (`on` / `off`); global config only | `on` |
+| `orchestrator_autostart` | Starting ae from a terminal (bare `ae`, `ae app`, `ae <name>`) also starts or resumes the orchestrator seat when `[roster] orchestrator` is set (`on` / `off`); any other value starts nothing and is named once; global config only | `on` |
 | `auto_trust` | Answer claude's and agy's folder-trust modal for a seat's OWN recorded folder, once per tool start, and dismiss codex's Warnings panel with one Escape per panel episode (`on` / `off`); global config only | `on` |
 | `palette` | `darcula` (the JetBrains dark), `a` (neutral dark), `b` (warmer neutrals) | `darcula` |
 | `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
@@ -468,6 +469,10 @@ lock, so a concurrent `ae <name>`, `ae stop` or second bare `ae` leaves exactly
 one incarnation. Sessions still live are left alone; a candidate skipped during
 a restore run is named on stderr as `ae: skipped <name>: <reason>`, and a failed
 attempt as `ae: restore failed <name>:`.
+The orchestrator seat is never restored this way. After a crash it comes back
+only through the orchestrator autostart, quietly and after the restore, so
+`orchestrator_autostart = off` or `AE_NO_AUTOSTART=1` keeps it stopped while the
+other sessions still restore.
 
 `auto_trust` answers TWO prompts. The first is the measured folder-trust modal of claude or
 agy, drawn whole, naming exactly the folder the seat was started in (symlinks

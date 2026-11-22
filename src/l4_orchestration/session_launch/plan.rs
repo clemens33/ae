@@ -350,6 +350,18 @@ fn second_positional_refusal(first: &str, second: &str) -> String {
     }
 }
 
+/// Who asked for a launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Starter {
+    /// The caller the entry observed: a typed launch, a menu, a seat.
+    #[default]
+    Caller,
+    /// The orchestrator autostart's own launch of the seat. It always holds
+    /// the lifecycle lock, re-reads the record under it, and leaves a live
+    /// seat alone: it never adopts, restamps or prints an attach hint.
+    Autostart,
+}
+
 /// The facts the glue hands in — everything the core would otherwise have to
 /// read out of the environment, which the capability boundary denies it.
 #[derive(Debug, Clone)]
@@ -380,6 +392,9 @@ pub struct Env {
     /// `--no-autostart`: start no companion — neither the watchdog nor the
     /// Telegram bridge.
     pub no_autostart: bool,
+    /// Who asked for this launch: [`Starter::Autostart`] is the orchestrator
+    /// autostart's own launch of the seat (`--autostart`).
+    pub starter: Starter,
     /// Internal debug-build test seam: publish [`TEST_PRE_LOCK_MARKER`] after
     /// preflight and immediately before waiting for the lifecycle lock.
     pub(super) test_pre_lock_marker: Option<PathBuf>,
@@ -440,6 +455,7 @@ pub(super) fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> 
         inside_tmux: false,
         attach: true,
         no_autostart: false,
+        starter: Starter::Caller,
         test_pre_lock_marker: None,
         core: None,
         core_version: None,
@@ -468,6 +484,11 @@ pub(super) fn read_env(tail: &[String]) -> Result<(Env, Vec<String>), EnvError> 
             }
             "--no-autostart" => {
                 env.no_autostart = true;
+                rest = after;
+                continue;
+            }
+            "--autostart" => {
+                env.starter = Starter::Autostart;
                 rest = after;
                 continue;
             }

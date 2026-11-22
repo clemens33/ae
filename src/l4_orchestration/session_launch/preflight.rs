@@ -498,6 +498,19 @@ pub(super) fn resolve_server(
         }
         return Ok(ControlFlow::Break(EXIT_FAILED));
     }
+    // The orchestrator autostart's own launch leaves a live seat exactly as it
+    // is: no adoption, backfill, restamp or attach hint, and nothing printed. A
+    // tmux session of the name that is not an ae session keeps its refusal.
+    if env.starter == super::Starter::Autostart && matches!(placed, Placement::Running) {
+        if transport::observe_agents(&recorded.server, session).is_none() {
+            writeln!(
+                err,
+                "Error: tmux session '{session}' exists but is not an ae session."
+            )?;
+            return Ok(ControlFlow::Break(EXIT_FAILED));
+        }
+        return Ok(ControlFlow::Break(0));
+    }
     match placed {
         Placement::Running if recorded.legacy => {
             let backfilled = match adopt_legacy_session(

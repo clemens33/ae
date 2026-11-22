@@ -141,7 +141,7 @@ A file may name its own layer and the layers below it. A `crate::` path that nam
   reseat, rename, lifecycle, teardown, the watchdog daemon. Modules: `session_launch`,
   `request_verb`, `effort`, `migrate`, `lifecycle`, `spawn`, `reseat`, `seat_relaunch`, `rename`,
   `autoreseat`, `autotrust`, `watchdog_daemon`, `watchdog_glue`, `watchdog_lifecycle`,
-  `telegram_lifecycle`, `orchestrator`, `seatpack`, `seatcompact`, `seatcompact_run`, `restore`,
+  `telegram_lifecycle`, `orchestrator`, `orchestrator_autostart`, `seatpack`, `seatcompact`, `seatcompact_run`, `restore`,
   `teardown`, `interrupt`, `session_notice`, `worktrees`.
 - **5 terminal UI** — what the human sees and presses: `ae chat`, `ae app`, the menus, the overview,
   the monitor, the reader, `ae doctor`. Modules: `console`, `clipboard`, `doctor`, `app`,
@@ -334,7 +334,7 @@ inventoried by the clippy `disallowed-methods` boundary. Never read the world ad
 | `AE_TEST_CLIPBOARD_TOOL` | fake image tool path, read by the transport clipboard leg | CHECKOUT only |
 | `WAYLAND_DISPLAY` | chooses wl-paste rather than xclip on Linux, read by transport | both shapes |
 | `AE_TMUX_SERVER` + `AE_TMUX_SERVER_KIND` | which tmux server a launch lands on; absent → named server `ae` | CHECKOUT only |
-| `AE_NO_AUTOSTART` | start no companion: neither the watchdog nor the Telegram bridge | both |
+| `AE_NO_AUTOSTART` | start no companion: neither the watchdog, the Telegram bridge nor the orchestrator autostart | both |
 | `CLAUDE_CONFIG_DIR` | which Claude account a statusline feed belongs to — read by `ae _quota-feed` ALONE, as the caller has it (set but empty or relative records nothing; unset means the default account under `HOME`), joined to the same canonical `.claude.json` key the configured scope carries; its payload is the stdin pipe, drained to EOF on every path. Every other reader judges a seat's recorded command, never this variable | both |
 | `AE_TEST_GO_USAGE_URL` | the OpenCode Go usage endpoint `src/l3_services/go_usage.rs` asks instead of `https://opencode.ai/zen/go/v1/usage`; only a loopback `http://` URL skips TLS. The integration suite pins it to a refused loopback port so no test reaches the network; test seam, unset in production | CHECKOUT only |
 | `AE_TEST_COPILOT_USAGE_URL` | the GitHub Copilot quota endpoint `src/l3_services/go_usage.rs` asks instead of `https://api.github.com/copilot_internal/user`; only a loopback `http://` URL skips TLS. The integration suite pins it to a refused loopback port; test seam, unset in production | CHECKOUT only |
@@ -507,6 +507,7 @@ layout = vertical
 auto_upgrade = on        # installed ae checks quietly; global config only
 fleet_order = a, b, c      # fleet-strip order, named first; global config only
 restore = on              # bare ae resumes a crashed server's sessions; global config only
+orchestrator_autostart = on  # starting ae from a terminal starts or resumes the orchestrator seat; global only
 auto_trust = on           # answer a seat's own measured folder-trust modal once per tool start, dismiss codex's
                           # Warnings panel once per panel episode; global only
 opencode_go_key_file = ~/.config/opencode/go-usage.key  # 0600 key file; ae quota shows opencode-go/* windows; global only

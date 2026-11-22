@@ -424,6 +424,29 @@ fn spawn<A: AsRef<std::ffi::OsStr>>(
             stderr: Vec::new(),
         });
     }
+    if let Streams::Background { file, cap } = streams {
+        // Waited for, but owned by nothing of the caller's: no stdin, no tmux
+        // client markers, a process group of its own so a signal to the
+        // caller's terminal never reaches it, and both streams into one regular
+        // file, so a caller that ends first cannot fail its writes.
+        command.stdin(std::process::Stdio::null());
+        command.stdout(std::process::Stdio::from(file.try_clone().ok()?));
+        command.stderr(std::process::Stdio::from(file.try_clone().ok()?));
+        command.env_remove("TMUX").env_remove("TMUX_PANE");
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let status = command.status().ok()?;
+        let mut cursor = file;
+        let mut bytes = Vec::new();
+        if std::io::Seek::seek(&mut cursor, std::io::SeekFrom::Start(0)).is_ok() {
+            let mut limited = std::io::Read::take(cursor, cap);
+            let _ = std::io::Read::read_to_end(&mut limited, &mut bytes);
+        }
+        return Some(std::process::Output {
+            status,
+            stdout: Vec::new(),
+            stderr: bytes,
+        });
+    }
     if let Streams::TerminalReason { file, cap } = streams {
         let handle = file.try_clone().ok()?;
         command.stderr(std::process::Stdio::from(handle));
@@ -697,6 +720,11 @@ enum Streams<'a> {
     /// whole. Passing a `feed` body together with this variant is a caller
     /// error, and the door refuses it.
     CapturedToFile { file: &'a std::fs::File, cap: u64 },
+    /// Waited for with null stdin, outside the caller's tmux and in a process
+    /// group of its own; stdout and stderr both go into this scratch handle,
+    /// already unlinked by its owner, and at most `cap` bytes are read back as
+    /// the output's stderr. The orchestrator autostart's child alone.
+    Background { file: &'a std::fs::File, cap: u64 },
 }
 
 /// One captured child's scratch file: created exclusively at 0600 and removed
@@ -2487,6 +2515,19 @@ pub fn focus(server: &ServerId, verb: tmux::FocusVerb, session: &str) -> u8 {
     }
 }
 
+/// The session an untargeted attach on `server` would pick with `excluded`
+/// not there, or `None` when tmux gave no usable answer.
+#[must_use]
+pub fn untargeted_attach_choice(server: &ServerId, excluded: &str) -> Option<String> {
+    if !addressable(server) {
+        return None;
+    }
+    let (succeeded, stdout) = run(PROGRAM, &tmux::session_choice_args(server));
+    succeeded
+        .then(|| tmux::untargeted_attach_choice(&stdout, excluded))
+        .flatten()
+}
+
 /// Hand this terminal to `server`; tmux chooses its most recently used session.
 #[must_use]
 pub fn attach(server: &ServerId) -> u8 {
@@ -3113,6 +3154,36 @@ pub(crate) fn open_popup(server: &ServerId, args: &[String]) -> bool {
 pub(crate) fn run_shell_line(argv: &crate::console::shell::ShellArgv, dir: &Path) -> bool {
     let streams = Streams::DetachedIn(dir);
     spawn("/bin/sh", argv.as_args(), &[], streams, None).is_some()
+}
+
+/// The orchestrator autostart's child: `program` — this very binary — with
+/// `args`, waited for, its streams merged into a scratch file that is unlinked
+/// before the child starts, so an invocation that ends first leaves nothing in
+/// the temp directory and the child never writes into a closed pipe. `None`
+/// when nothing ran.
+#[must_use]
+pub(crate) fn run_background(
+    program: &std::path::Path,
+    args: &[&str],
+) -> Option<std::process::Output> {
+    /// Enough for any refusal a launch prints; the rest is never read.
+    const CAP: u64 = 64 * 1024;
+    let program = program.to_str()?;
+    let file = {
+        let scratch = CaptureScratch::tagged("autostart")?;
+        // The clone keeps the node open; dropping the guard unlinks its name.
+        scratch.file().try_clone().ok()?
+    };
+    spawn(
+        program,
+        args,
+        &[],
+        Streams::Background {
+            file: &file,
+            cap: CAP,
+        },
+        None,
+    )
 }
 
 /// The DETACHED leg of the one process door — the ONLY way product code starts

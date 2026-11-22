@@ -291,7 +291,8 @@ tmux -L ae attach -t "=my-feature"
 ```
 
 Outside tmux, bare `ae` first resumes the sessions a crashed server held (`restore` in the config
-guide). Then, with a terminal on both stdin and stdout and at least one recorded session, running
+guide); the orchestrator seat is not among them and comes back only through the orchestrator
+autostart (see Autostart under `ae orchestrator`). Then, with a terminal on both stdin and stdout and at least one recorded session, running
 or stopped, it opens [the app](../app.md) on the fleet; it creates and resumes nothing itself.
 With no recorded session it is a first use: it creates a session named after the current
 directory (characters outside `A-Za-z0-9_-` become `-`; a word `ae` answers itself takes
@@ -2182,11 +2183,20 @@ carries workspace and role prompt only, including `orchestrator = true` and
 still overlay. `CHARTER.md` is its readable reference,
 not a guessed runtime path.
 
-**Autostart.** A launch may start the configured Telegram bridge. The
-orchestrator is started explicitly with `ae orchestrator`; it is never a
-background companion. `AE_NO_AUTOSTART=1` starts no companion for that launch:
-neither the watchdog nor the Telegram bridge. It is never persisted, so a later
-launch without it starts what the settings ask for.
+**Autostart.** A launch may start the configured Telegram bridge. When the
+owner starts ae from a terminal (bare `ae`, `ae app`, or `ae <name>`), ae also
+starts or resumes the orchestrator seat if it is not running and the global
+config has a `[roster] orchestrator` row. The start runs only after that
+command has decided what it does, never attaches, and says nothing on success;
+a running seat is left exactly as it is. The app waits for it in the
+background; any other command waits for it first. A failure never fails the
+command: it prints one line, `ae: orchestrator autostart failed: <why>; start it
+by hand: ae orchestrator`, and nothing retries it. Agent seats and scripted
+(non-terminal) callers never start it. `[workspace] orchestrator_autostart = off`
+in the global config switches it off; any value other than `on` or `off` starts
+nothing and is named once. `AE_NO_AUTOSTART=1` starts no companion for that
+launch: neither the watchdog, the Telegram bridge nor the orchestrator. It is
+never persisted, so a later launch without it starts what the settings ask for.
 
 To talk to the orchestrator from your phone, run the [Telegram bridge](telegram.md):
 plain messages with no `/use` selection are asked in its chat by default — see

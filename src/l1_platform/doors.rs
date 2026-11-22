@@ -11,7 +11,7 @@
 //! | `AE_HOME` | relocates ALL ae state | CHECKOUT only |
 //! | `CONFIG_FILE` | which global config is read | CHECKOUT only |
 //! | `AE_TMUX_SERVER` + `AE_TMUX_SERVER_KIND` | which tmux server a launch lands on | CHECKOUT only |
-//! | `AE_NO_AUTOSTART` | start neither companion | both |
+//! | `AE_NO_AUTOSTART` | start no companion and no orchestrator | both |
 //! | `TMUX` | is this shell in a pane, and which server | both |
 //! | `TMUX_PANE` | which pane, for `stop` and `watchdog` | both (at its own site) |
 
