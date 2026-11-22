@@ -278,13 +278,10 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
     let callers = [
         ("rust-test:", "exec just _tmux-isolated test"),
         ("rust-cov:", "exec just _tmux-isolated cov"),
-        // Positional words, never `{{ args }}`: that splices the arguments back into
-        // a command line, where a space splits one and a `|` starts a pipeline (#221).
-        (
-            "rust-mutants *args:",
-            "exec just _tmux-isolated mutants \"$@\"",
-        ),
     ];
+    // The wrapper may inspect the arguments before exec. The last command still
+    // passes positional words without reparsing them (#221).
+    let mutants = recipe_text(justfile, "rust-mutants *args:");
     reap < mktemp
         && registry < remove
         && mktemp < tmpdir
@@ -295,6 +292,7 @@ fn rust_test_tmux_isolation_ok(justfile: &str) -> bool {
         && unset < sentry
         && sentry < nextest
         && nextest < doctest
+        && mutants.last().map(String::as_str) == Some("exec just _tmux-isolated mutants \"$@\"")
         && callers
             .iter()
             .all(|(header, command)| recipe_text(justfile, header) == [*command])
@@ -4359,6 +4357,75 @@ fn rust_mutants_forwards_each_argument_as_one_word() {
     );
     assert!(matches!(outcome, ExitOutcome::Code(0)), "{stderr}");
     assert!(lanes_left(&lane_base).is_empty(), "{stderr}");
+}
+
+#[test]
+fn rust_mutants_warns_before_an_unscoped_diff_run() {
+    let scratch = super::cli::OwnedScratch::root("gate", "mutwarn");
+    let base = scratch.path();
+    let lane_base = base.join("lane");
+    let work = base.join("work");
+    std::fs::create_dir_all(&work).expect("recipe working directory");
+    std::os::unix::fs::symlink(root().join("justfile"), work.join("justfile"))
+        .expect("link the actual recipe");
+    let cases: &[(&[&str], bool, i32)] = &[
+        (&["--in-diff", "a.diff"], true, 0),
+        (&["--in-diff=a.diff"], true, 7),
+        (&["-D", "a.diff"], true, 0),
+        (&["--in-diff", "a.diff", "-E", "test(x)"], true, 0),
+        (&["--in-diff", "a.diff", "--", "-E", "test(x)"], false, 0),
+        (&["--in-diff", "a.diff", "--", "-Etest(x)"], false, 0),
+        (
+            &["--in-diff", "a.diff", "--", "--filter-expr", "test(x)"],
+            false,
+            0,
+        ),
+        (
+            &["--in-diff", "a.diff", "--", "--filter-expr=test(x)"],
+            false,
+            0,
+        ),
+        (
+            &["--in-diff", "a.diff", "--", "--filterset", "test(x)"],
+            false,
+            0,
+        ),
+        (&["--in-diff", "a.diff", "--list"], false, 0),
+        (&["--in-diff", "a.diff", "--check"], false, 0),
+        (&["-F", "fn foo"], false, 0),
+    ];
+    let cargo = format!("printf '%s\\n' 'fake mutants entered' >&2\n{ROOTS_CARGO}");
+    for &(args, warns, exit) in cases {
+        let env = [("AE_FAKE_EXIT", exit.to_string())];
+        let mut recipe = vec!["rust-mutants"];
+        recipe.extend_from_slice(args);
+        let (outcome, calls, stderr) = rooted_just(base, &lane_base, &cargo, &env, &recipe);
+        let [call] = &calls[..] else {
+            panic!("{args:?}: expected one cargo call: {stderr}");
+        };
+        let mut want = vec!["mutants", "--cargo-arg=--locked", "--jobs", "1"];
+        want.extend_from_slice(args);
+        assert_eq!(call.args(), want, "{args:?}: {stderr}");
+        assert!(
+            matches!(outcome, ExitOutcome::Code(code) if code == exit),
+            "{args:?}: {stderr}"
+        );
+        let lines: Vec<_> = stderr.lines().collect();
+        let warnings: Vec<_> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains("warning") && line.contains("--in-diff"))
+            .collect();
+        assert_eq!(warnings.len(), usize::from(warns), "{args:?}: {stderr}");
+        if let [(position, warning)] = warnings.as_slice() {
+            assert!(warning.contains("-- -E"), "{args:?}: {stderr}");
+            let entry = lines
+                .iter()
+                .position(|line| *line == "fake mutants entered")
+                .expect("fake cargo stderr marker");
+            assert!(*position < entry, "{args:?}: {stderr}");
+        }
+    }
 }
 
 /// `root.sh <binary>`: start `<binary>` (a link to bash) on `kid.sh`, so the

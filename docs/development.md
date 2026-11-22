@@ -893,7 +893,7 @@ git merge-base --is-ancestor "$base" HEAD   # exit 0, or stop
 git diff "$base" HEAD -- src > "$PWD/.local/<slice>/slice.diff"
 cargo mutants --list --in-diff "$PWD/.local/<slice>/slice.diff" > "$PWD/.local/<slice>/mutants.list"
 wc -l < "$PWD/.local/<slice>/mutants.list"   # the count, before the cost
-just rust-mutants --in-diff "$PWD/.local/<slice>/slice.diff"
+just rust-mutants --in-diff "$PWD/.local/<slice>/slice.diff" -- -E 'test(/^module_name::/)'
 ```
 
 `just rust-mutants` hands every argument to `cargo mutants` as the one word you typed, so a regex with a space or a `|` needs only the shell quoting you would give `cargo mutants` itself (`-F 'fn a b|fn c'`).

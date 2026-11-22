@@ -4153,6 +4153,26 @@ rust-cov:
 
 # Mutation testing
 rust-mutants *args:
+    #!/bin/sh
+    tool=mutants
+    diff=no
+    filtered=no
+    # Cargo-mutants passes the arguments after the first -- to nextest.
+    for arg; do
+        case "$tool:$arg" in
+            mutants:--in-diff|mutants:--in-diff=*|mutants:-D|mutants:-D?*) diff=yes ;;
+            mutants:--list|mutants:--list-files|mutants:--check) diff=no; break ;;
+            mutants:--) tool=nextest ;;
+            nextest:-E|nextest:-E?*|nextest:--filterset|nextest:--filterset=*|nextest:--filter-expr|nextest:--filter-expr=*)
+                filtered=yes
+                break
+                ;;
+            nextest:--) break ;;
+        esac
+    done
+    if [ "$diff" = yes ] && [ "$filtered" = no ]; then
+        printf '%s\n' "rust-mutants: warning: --in-diff can run the whole test suite. Scope the tests with -- -E '<filter>'." >&2
+    fi
     exec just _tmux-isolated mutants "$@"
 
 # The BOUNDED repeat run for a flake hunt: nextest --stress-count over ONE named
