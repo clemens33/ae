@@ -2550,8 +2550,7 @@ fn hint_row(
     let long = rest_of(&format!("{keys} · ^C clears"));
     // Browsing with a board set names the key that hides or shows it, where
     // the longer hint fits whole.
-    let board = board_hint(ctx.screen.model.columns(), keys)
-        .map(|word| rest_of(&format!("{keys} · {word}")));
+    let board = board_hint(ctx.screen.model, keys).map(|word| rest_of(&format!("{keys} · {word}")));
     let rest = if text && !keys.is_empty() && fits(&long) {
         long
     } else if let Some(board) = board.filter(|board| fits(board)) {
@@ -2616,8 +2615,9 @@ const BROWSE_HINT: &str = "? keys";
 /// row of the column that holds the keys, while the panel is open over a board
 /// the frame shows, and only where `b` is a browse key: the settings, the peek
 /// and the reader take their own keys.
-fn board_hint(columns: Columns, keys: &str) -> Option<&'static str> {
-    let browsing = keys == BROWSE_HINT && !columns.overlay;
+fn board_hint(model: &Model, keys: &str) -> Option<&'static str> {
+    let columns = model.columns();
+    let browsing = keys == BROWSE_HINT && !overlay_open(model);
     let holds = columns
         .panel
         .is_some_and(|(_, focused)| focused == columns.drawing_panel)

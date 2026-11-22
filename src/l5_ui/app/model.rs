@@ -304,7 +304,7 @@ impl Chat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent facts the App writes before each draw: the needs-you mark, the drawing column, the board, its hiding and focus, an overlay and the main zoom"
+    reason = "independent facts the App writes before each draw: the needs-you mark, the drawing column, the board, its hiding and focus and the main zoom"
 )]
 pub(crate) struct Columns {
     /// The button wears the needs-you mark.
@@ -318,8 +318,6 @@ pub(crate) struct Columns {
     pub(crate) desk: bool,
     /// The human hid that board: no column, no focus.
     pub(crate) desk_hidden: bool,
-    /// The settings, the peek or the reader is open and takes the keys.
-    pub(crate) overlay: bool,
     /// The board holds the keys and can take the panel's body when narrow.
     pub(crate) desk_focused: bool,
     /// The main column's own zoom ([`Model::zoom`]).

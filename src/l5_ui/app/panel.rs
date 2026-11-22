@@ -447,9 +447,6 @@ impl App {
     pub(super) fn columns(&self) -> model::Columns {
         model::Columns {
             needy: self.orchestrator_needy(),
-            overlay: self.model.settings_open()
-                || self.model.peek_open()
-                || self.model.reader_open(),
             ..self.stand_columns()
         }
     }

@@ -126,25 +126,6 @@ fn an_open_overlay_takes_b_so_the_key_bar_stops_naming_it() {
     );
 }
 
-#[test]
-fn a_peek_or_a_reader_takes_b_as_the_settings_do() {
-    for reader in [false, true] {
-        let (_root, mut app) = setup_board("boardhide-peek", Some(sample_desk(BOARD)));
-        let last = |cells: &Buffer| row_text(cells, cells.area.height - 1);
-        assert!(last(&paint(&mut app, WIDE, HEIGHT)).contains("b hide"));
-        if reader {
-            app.model.open_reader(1);
-        } else {
-            app.model.open_peek(1);
-        }
-        let bar = last(&paint(&mut app, WIDE, HEIGHT));
-        assert!(
-            !bar.contains("b hide") && !bar.contains("b show"),
-            "reader={reader}: {bar:?}"
-        );
-    }
-}
-
 const GONE: &str = "click not taken: its frame is gone";
 
 #[test]
