@@ -33,6 +33,9 @@ mod presetreseat_resume_spec;
 #[path = "orchprof_spec.rs"]
 mod orchprof_spec;
 
+#[path = "orchauto_spec.rs"]
+mod orchauto_spec;
+
 #[path = "orchexec_lifecycle_spec.rs"]
 mod orchexec_lifecycle_spec;
 
