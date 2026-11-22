@@ -7399,6 +7399,234 @@ fn a_live_owner_is_never_reaped_with_or_without_a_recorded_identity() {
     }
 }
 
+/// Child helper for [`stale_same_pid_entry_for_absent_root_does_not_reap_live_owner_in_parity_reaper`]:
+/// owns a live [`OwnedScratch::root`], seeds a stale same-PID registry entry
+/// pointing to an absent root, and triggers the parity reaper via `tmux -V`.
+#[test]
+fn parity_stale_pid_overlap_child() {
+    let Some(done) = std::env::var_os("AE_GATE_PARITY_OVERLAP_DONE") else {
+        return;
+    };
+    let base = super::scratch::base();
+    let lane = PathBuf::from(std::env::var_os("TMUX_TMPDIR").expect("the child lane"));
+    let pid = std::process::id();
+    let live = super::cli::OwnedScratch::root("gate", "live");
+    std::fs::write(live.join("capture.err"), "live bytes\n").expect("live capture bytes");
+    let old_owner = lane.join(format!(".ae-parity-fixtures/{pid}.StaleStart0000"));
+    std::fs::create_dir_all(&old_owner).expect("stale registry owner");
+    let absent_old = base.join(format!("ae-it-{pid}")).join("ended");
+    std::os::unix::fs::symlink(&absent_old, old_owner.join("0")).expect("stale absent symlink");
+
+    let status = raw::run(
+        &Invocation::new("tmux").arg("-V"),
+        live.path(),
+        &live.join("tmux-out"),
+        &live.join("tmux-err"),
+    )
+    .expect("tmux -V triggers parity reaper");
+    assert!(
+        matches!(status.outcome(), ExitOutcome::Code(0)),
+        "tmux -V must succeed"
+    );
+    assert!(
+        !old_owner.exists(),
+        "the stale registry entry must be consumed"
+    );
+    assert!(
+        live.path().is_dir(),
+        "a stale same-pid entry must not remove a live owner's scratch directory"
+    );
+    assert_eq!(
+        read(&live.join("capture.err")),
+        "live bytes\n",
+        "a stale same-pid entry must not remove a live owner's bytes"
+    );
+    std::fs::write(done, "ok\n").expect("overlap child done");
+}
+
+/// Stale registry entries sharing a PID with a live process (even when the old
+/// leaf is absent) must never reap the live owner's scratch directory in the
+/// parity reaper (`tests/it/parity.rs`).
+#[test]
+fn stale_same_pid_entry_for_absent_root_does_not_reap_live_owner_in_parity_reaper() {
+    let scratch = super::cli::OwnedScratch::root("gate", "parity-overlap");
+    let base = scratch.join("base");
+    let lane = scratch.join("lane");
+    let done = scratch.join("done");
+    std::fs::create_dir_all(&base).expect("child scratch base");
+    std::fs::create_dir_all(&lane).expect("child lane");
+    let exe =
+        std::env::current_exe().unwrap_or_else(|why| panic!("the integration test binary: {why}"));
+    let status = raw::run(
+        &Invocation::new(exe)
+            .arg("--exact")
+            .arg("gate::parity_stale_pid_overlap_child")
+            .env("AE_TEST_TMPDIR", &base)
+            .env("TMUX_TMPDIR", &lane)
+            .env("AE_GATE_PARITY_OVERLAP_DONE", &done),
+        &scratch,
+        &scratch.join("child-out"),
+        &scratch.join("child-err"),
+    )
+    .unwrap_or_else(|why| panic!("the overlap child runs: {why}"));
+    let err = read(&scratch.join("child-err"));
+    assert!(
+        matches!(status.outcome(), ExitOutcome::Code(0)),
+        "live owner must survive stale same-pid parity reap: {err}"
+    );
+    assert_eq!(read(&done), "ok\n");
+}
+
+/// Stale registry entries sharing a PID with a live owner (even when the old
+/// leaf is absent) must never reap the live owner's scratch directory in the
+/// `justfile` lane reaper (`reap_registry`).
+#[test]
+fn stale_same_pid_entry_for_absent_root_does_not_reap_live_owner_in_lane_reaper() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let pid = std::process::id();
+    let own = super::parity::capture::raw::process_identity(pid, &std::env::temp_dir())
+        .expect("this process has a readable start identity");
+    let base = super::cli::OwnedScratch::root("gate", "lane-overlap");
+    let cargo = base.join("bin").join("cargo");
+    std::fs::create_dir_all(base.join("bin")).expect("the fake cargo directory");
+    std::fs::write(
+        &cargo,
+        format!(
+            "#!/bin/sh\n\
+             [ \"$1\" = nextest ] || exit 0\n\
+             mkdir -p \"$TMUX_TMPDIR/.ae-parity-fixtures/{pid}.StaleStart0000\" || exit 1\n\
+             ln -s \"$AE_TEST_TMPDIR/ae-it-{pid}/ended\" \"$TMUX_TMPDIR/.ae-parity-fixtures/{pid}.StaleStart0000/0\" || exit 1\n\
+             mkdir -p \"$AE_TEST_TMPDIR/ae-it-{pid}/live\" \"$TMUX_TMPDIR/.ae-parity-fixtures/{pid}.{own}\" || exit 1\n\
+             printf 'live bytes\\n' >\"$AE_TEST_TMPDIR/ae-it-{pid}/live/held\" || exit 1\n\
+             ln -s \"$AE_TEST_TMPDIR/ae-it-{pid}/live\" \"$TMUX_TMPDIR/.ae-parity-fixtures/{pid}.{own}/0\" || exit 1\n\
+             exit 0\n"
+        ),
+    )
+    .expect("the fake cargo registers stale and live owners");
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755))
+        .expect("an executable fake cargo");
+    let path = std::env::var("PATH").unwrap_or_default();
+    let swept = raw::run(
+        &Invocation::new("just")
+            .arg("_tmux-isolated")
+            .arg("test")
+            .env("PATH", format!("{}:{path}", base.join("bin").display()))
+            .env("HOME", &*base)
+            .env("TMPDIR", &*base)
+            .env("AE_TEST_TMPDIR", &*base),
+        &root(),
+        &base.join("lane-out"),
+        &base.join("lane-err"),
+    )
+    .expect("the lane runs to teardown");
+    let stderr = read(&base.join("lane-err"));
+    assert!(
+        matches!(swept.outcome(), ExitOutcome::Code(1)),
+        "the live owner must still keep the lane red: {stderr}"
+    );
+    assert!(
+        stderr.contains("outlived the lane"),
+        "the lane must name the live leak: {stderr}"
+    );
+    assert_eq!(
+        read(&base.join(format!("ae-it-{pid}/live/held"))),
+        "live bytes\n",
+        "the live owner's bytes must survive a stale same-pid registry entry"
+    );
+}
+
+/// Child helper for [`dead_owner_scratch_is_reaped_by_parity_reaper`]: creates
+/// an [`OwnedScratch::root`], writes its path, and ends with `SIGKILL`.
+#[test]
+fn parity_dead_owner_sigkill_child() {
+    let Some(report) = std::env::var_os("AE_GATE_PARITY_DEAD_REPORT") else {
+        return;
+    };
+    let scratch = super::cli::OwnedScratch::root("gate", "dead");
+    std::fs::write(scratch.join("held"), "dead bytes\n").expect("dead scratch bytes");
+    std::fs::write(report, scratch.path().display().to_string()).expect("dead root report");
+    let _ = raw::run(
+        &Invocation::new("kill")
+            .arg("-KILL")
+            .arg(std::process::id().to_string()),
+        scratch.path(),
+        &scratch.join("kill-out"),
+        &scratch.join("kill-err"),
+    );
+    panic!("SIGKILL must end the dead-owner child");
+}
+
+/// Child helper for [`dead_owner_scratch_is_reaped_by_parity_reaper`]: triggers
+/// the parity reaper via `tmux -V`.
+#[test]
+fn parity_reap_trigger_child() {
+    let Some(done) = std::env::var_os("AE_GATE_PARITY_REAP_DONE") else {
+        return;
+    };
+    let base = super::scratch::base();
+    let status = raw::run(
+        &Invocation::new("tmux").arg("-V"),
+        &base,
+        &base.join("tmux-out"),
+        &base.join("tmux-err"),
+    )
+    .expect("tmux -V triggers parity reaper");
+    assert!(matches!(status.outcome(), ExitOutcome::Code(0)));
+    std::fs::write(done, "ok\n").expect("reap trigger done");
+}
+
+/// A genuinely dead owner's [`OwnedScratch::root`] is still reaped by the
+/// parity reaper (`tests/it/parity.rs`).
+#[test]
+fn dead_owner_scratch_is_reaped_by_parity_reaper() {
+    let scratch = super::cli::OwnedScratch::root("gate", "parity-dead");
+    let base = scratch.join("base");
+    let lane = scratch.join("lane");
+    let report = scratch.join("dead-root");
+    let done = scratch.join("done");
+    std::fs::create_dir_all(&base).expect("child scratch base");
+    std::fs::create_dir_all(&lane).expect("child lane");
+    let exe =
+        std::env::current_exe().unwrap_or_else(|why| panic!("the integration test binary: {why}"));
+    let killed = raw::run(
+        &Invocation::new(&exe)
+            .arg("--exact")
+            .arg("gate::parity_dead_owner_sigkill_child")
+            .env("AE_TEST_TMPDIR", &base)
+            .env("TMUX_TMPDIR", &lane)
+            .env("AE_GATE_PARITY_DEAD_REPORT", &report),
+        &scratch,
+        &scratch.join("kill-out"),
+        &scratch.join("kill-err"),
+    )
+    .expect("dead owner child runs");
+    assert!(matches!(killed.outcome(), ExitOutcome::Signalled));
+    let dead_root = PathBuf::from(read(&report).trim());
+    assert!(
+        dead_root.is_dir(),
+        "dead owner's scratch root exists before parity reap"
+    );
+    let reaped = raw::run(
+        &Invocation::new(&exe)
+            .arg("--exact")
+            .arg("gate::parity_reap_trigger_child")
+            .env("AE_TEST_TMPDIR", &base)
+            .env("TMUX_TMPDIR", &lane)
+            .env("AE_GATE_PARITY_REAP_DONE", &done),
+        &scratch,
+        &scratch.join("reap-out"),
+        &scratch.join("reap-err"),
+    )
+    .expect("reap trigger child runs");
+    assert!(matches!(reaped.outcome(), ExitOutcome::Code(0)));
+    assert_eq!(read(&done), "ok\n");
+    assert!(
+        !dead_root.exists(),
+        "dead owner's scratch root must be reaped by parity reaper"
+    );
+}
+
 /// #339 writer and reader grammar: the registry names an owner `<pid>` or
 /// `<pid>.<identity>`, an identity is ASCII letters and digits only, and
 /// anything else is not an owner a reader may act on.
