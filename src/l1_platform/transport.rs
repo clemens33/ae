@@ -3288,14 +3288,17 @@ mod tests {
         let sh = std::path::Path::new("/bin/sh");
         let late = super::run_background(
             sh,
-            &["-c", "printf '%04000d\\n' 0; echo 'Error: late reason' >&2; exit 1"],
+            &[
+                "-c",
+                "printf '%04000d\\n' 0; echo 'Error: late reason' >&2; exit 1",
+            ],
         )
         .expect("the child ran");
         assert!(!late.status.success());
         let text = String::from_utf8_lossy(&late.stderr);
         assert!(text.contains("Error: late reason"), "{} bytes", text.len());
-        let endless = super::run_background(sh, &["-c", "printf '%0200000d' 0"])
-            .expect("the child ran");
+        let endless =
+            super::run_background(sh, &["-c", "printf '%0200000d' 0"]).expect("the child ran");
         assert_eq!(endless.stderr.len(), 64 * 1024);
     }
 

@@ -2126,7 +2126,7 @@ fn caller_pane_seatless(preamble: &entry::Preamble) -> bool {
 /// `@ae_console`, never `@ae_agent`, so it is no seat. Described means tmux
 /// named the pane's session: for a pane id it cannot find, tmux 3.7b still
 /// exits 0 and prints every pane field empty.
-fn pane_is_seatless(viewer: Option<&tmux::ObservedViewer>) -> bool {
+pub(crate) fn pane_is_seatless(viewer: Option<&tmux::ObservedViewer>) -> bool {
     viewer.is_some_and(|viewer| viewer.session.is_some() && viewer.agent.is_none())
 }
 

@@ -68,14 +68,17 @@ pub fn run(
     // proved ordinary — tmux named its session, and it carries no console stamp
     // and no agent (as `pane_is_seatless` reads it). Never a restart handed
     // on, an app or chat window a session runs, or an agent seat.
-    let kicks = handed.is_none()
-        && (own
-            || caller.is_none()
-            || (stamp.as_deref() == Some("")
-                && at.is_some_and(|(server, pane)| {
-                    transport::reask_viewer(server, pane)
-                        .is_some_and(|viewer| viewer.session.is_some() && viewer.agent.is_none())
-                })));
+    let kicks = crate::orchestrator_autostart::app_kicks(
+        handed.is_some(),
+        own,
+        caller.is_none(),
+        stamp.as_deref(),
+        || {
+            at.is_some_and(|(server, pane)| {
+                crate::pane_is_seatless(transport::reask_viewer(server, pane).as_ref())
+            })
+        },
+    );
     let (keep, landed) = handed_on(handed);
     let own = (caller.clone(), pane.clone());
     let reader = reader_of(&root, home.clone(), own, landed);

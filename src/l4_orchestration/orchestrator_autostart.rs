@@ -104,6 +104,21 @@ pub fn names_the_attach(had_seat: bool, started: bool) -> bool {
     started && !had_seat
 }
 
+/// Whether an app start is the owner's own start of ae: never a restart
+/// `handed` on; the app the entry opened (`own`), `ae app` typed `outside`
+/// tmux, or typed in a pane with an empty console `stamp` that `seatless`
+/// proves is no seat. `seatless` is asked only in that last case.
+#[must_use]
+pub fn app_kicks(
+    handed: bool,
+    own: bool,
+    outside: bool,
+    stamp: Option<&str>,
+    seatless: impl FnOnce() -> bool,
+) -> bool {
+    !handed && (own || outside || (stamp == Some("") && seatless()))
+}
+
 /// The argv the child runs after the binary.
 #[must_use]
 pub fn child_args() -> [&'static str; 3] {
@@ -346,6 +361,34 @@ mod tests {
             "no start, tmux's own choice"
         );
         assert!(!names_the_attach(true, false));
+    }
+
+    #[test]
+    fn only_the_owners_own_app_start_kicks() {
+        // (handed, own, outside, stamp, seatless) -> kicks, seatless asked
+        let rows = [
+            (false, true, false, None, false, true, false),
+            (false, false, true, None, false, true, false),
+            (false, false, false, Some(""), true, true, true),
+            (false, false, false, Some(""), false, false, true),
+            (false, false, false, Some("chat"), true, false, false),
+            (false, false, false, None, true, false, false),
+            (true, true, false, None, true, false, false),
+            (true, false, true, None, true, false, false),
+            (true, false, false, Some(""), true, false, false),
+        ];
+        for (handed, own, outside, stamp, seatless, want, asks) in rows {
+            let mut asked = false;
+            let got = app_kicks(handed, own, outside, stamp, || {
+                asked = true;
+                seatless
+            });
+            assert_eq!(
+                (got, asked),
+                (want, asks),
+                "handed {handed} own {own} outside {outside} stamp {stamp:?} seatless {seatless}"
+            );
+        }
     }
 
     #[test]
