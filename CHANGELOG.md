@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.108] - 2026-11-22
+- Check pinned release tools before preflight writes
+- Keep release acceptance fixtures compatible with tool preflight
+- Keep release version probes distinct from recipe calls
+
 ## [v2026.11.107] - 2026-11-22
 - Document the reviewer write limit inside ae
 - Warn about unfiltered diff mutation runs
