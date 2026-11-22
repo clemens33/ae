@@ -58,6 +58,9 @@ ae app [session]       The fleet as a terminal UI: sessions in a sidebar, the se
                        opens a seat's pane, outside tmux by handing this terminal
                        to it. Plain ae opens it; a hand-typed ae app prints a
                        one-line hint saying so
+ae web [--port N]      The orchestrator chat in a browser tab on this machine: a
+                       foreground listener on 127.0.0.1 (default port 7480) that
+                       prints a one-time link; Ctrl-C stops it
 ae orchestrator        Start or reattach the orchestrator seat: a local session named
                        orchestrator, drawn as a `◆` button after the menu glyph
 ae orchestrator --popup
@@ -157,6 +160,22 @@ chat; it needs a terminal on stdin and stdout. Plain `ae` is the way in
 ([tmux server](#tmux-server)); a hand-typed `ae app` that opens prints
 `ae app: plain ae opens the app` on stderr, which ae's own starts never do.
 `[workspace] chat = app` runs it in the `chat` window. See [App](../app.md) for the layout, keys and ownership.
+
+## `ae web`
+
+`ae web [--port N]` serves the orchestrator chat to a browser on this machine. It runs in the
+foreground, listens on `127.0.0.1` only (port 7480 unless `--port N`, N in 1..=65535) and prints
+`ae web: http://127.0.0.1:<port>/#c=<code>`: open that link once, in a browser on this machine.
+One `ae web` runs per state root (lock `<state root>/web/lock`); a second one, or a busy port,
+refuses with exit 1 before it prints any link. Ctrl-C stops it, and every link and browser session
+ends with it. See [Web](../web.md) for what the page shows and how it is secured.
+
+`web` is a routed word ([Retired words](#retired-words) explains why a routed word matters): a
+session can no longer be named `web`, so a launch or rename to `web` is refused, a launch that
+derives its name from a directory called `web` names the session `web-1`, and the app's Start of
+a stopped session named `web` refuses. `webs` becomes a near-miss: creating a session named
+`webs` is refused with the hint `Did you mean: ae web?`, and a directory called `webs` derives
+`webs-1`.
 
 ## `ae init`
 

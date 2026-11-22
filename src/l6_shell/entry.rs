@@ -444,6 +444,7 @@ pub const ROUTED_VERBS: &[&str] = &[
     "usage",
     "version",
     "watchdog",
+    "web",
     "worktree",
 ];
 
@@ -732,6 +733,7 @@ pub fn route(preamble: &Preamble, argv: &[String], pane: Option<&str>) -> Route 
         // session named after the old command.
         Some("chat" | "console") => Route::Core(with_head("chat", &tail())),
         Some("app") => Route::Core(with_head("app", &tail())),
+        Some("web") => Route::Core(with_head("web", &tail())),
         Some("quota") => Route::Core(with_head("quota", &tail())),
         Some("usage") => Route::Core(with_head("usage", &tail())),
         Some("worktree") => Route::Core(with_head("worktree", &tail())),

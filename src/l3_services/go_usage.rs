@@ -711,6 +711,10 @@ mod tests {
 
     /// One loopback HTTP exchange: answers `response` and hands back the
     /// request head it read.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test fixture: a loopback server the client under test calls"
+    )]
     fn serve(response: Vec<u8>) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("loopback");
         let url = format!(
@@ -803,6 +807,10 @@ mod tests {
 
     /// A loopback answer that promises a body and never sends it: the head,
     /// then silence until the client hangs up.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test fixture: a loopback server the client under test calls"
+    )]
     fn serve_head_only(status: &str) -> (String, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("loopback");
         let url = format!(

@@ -155,7 +155,7 @@ A file may name its own layer and the layers below it. A `crate::` path that nam
 - **5 terminal UI** — what the human sees and presses: `ae chat`, `ae app`, the menus, the overview,
   the monitor, the reader, `ae doctor`. Modules: `console`, `clipboard`, `doctor`, `app`,
   `session_menu`, `settings_menu`, `overview`, `profile_view`, `monitor`, `jump`, `panes`, `next`,
-  `events_tail`, `reader`.
+  `events_tail`, `reader`, `web`.
 - **6 CLI shell** — argv to intent, the entry, the identity entries and the shim links;
   `src/lib.rs`, `src/main.rs` and every root item of `src/lib.rs` belong here too. Modules: `cli`,
   `entry`, `identity`, `shim`.

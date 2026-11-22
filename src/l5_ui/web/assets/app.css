@@ -1,0 +1,57 @@
+:root {
+  --bg: #f6f4ef; --panel: #fffdf9; --ink: #1f1d1a; --mute: #6d675e; --line: #e2ddd3; --soft: #efebe3;
+  --accent: #0f6b63; --accent-soft: #dcefec; --need: #a85a00; --need-soft: #fbead0; --you: #e8f0ef;
+  --r: 10px; --f: 15px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151719; --panel: #1c1f22; --ink: #ece9e3; --mute: #9a968d; --line: #2e3236; --soft: #24282c;
+    --accent: #58c2b6; --accent-soft: #1d3532; --need: #f0b057; --need-soft: #3a2c14; --you: #20302e;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: var(--f)/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  overflow: hidden;
+}
+#root, .app { height: 100%; display: flex; flex-direction: column; }
+.mute { color: var(--mute); } .sm { font-size: .86em; }
+.top {
+  display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 48px; flex: none;
+  border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.brand { font-weight: 700; letter-spacing: .02em; }
+.top .sp { flex: 1; }
+.chip {
+  display: inline-flex; align-items: center; border-radius: 99px; background: var(--accent-soft);
+  padding: 2px 10px; font-size: .84em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60vw;
+}
+.problem {
+  margin: 0; padding: 8px 16px; background: var(--need-soft); color: var(--ink);
+  border-bottom: 1px solid var(--need); flex: none;
+}
+main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
+.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--panel); }
+.stream { flex: 1; overflow: auto; padding: 18px 18px 8px; }
+.inner { max-width: 760px; margin: 0 auto; }
+.day { text-align: center; color: var(--mute); font-size: .8em; margin: 14px 0 10px; }
+.gap { color: var(--mute); font-size: .84em; border-left: 3px solid var(--line); padding-left: 9px; margin: 0 0 10px; }
+.msg { margin: 0 0 14px; max-width: 88%; }
+.msg.you { margin-left: auto; }
+.msg .who { font-size: .8em; color: var(--mute); margin: 0 2px 3px; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.msg .who b { color: var(--ink); font-weight: 600; }
+.msg.you .who { justify-content: flex-end; }
+.bub {
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r); padding: 9px 12px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.msg.you .bub { background: var(--you); border-color: transparent; }
+.msg.system { max-width: 100%; }
+.msg.system .bub { background: transparent; border-style: dashed; color: var(--mute); }
+.msg.k-card .bub, .msg.k-needs_you .bub { border-color: var(--need); background: var(--need-soft); }
+@media (max-width: 759px) {
+  .stream { padding: 14px 12px 6px; }
+  .msg { max-width: 94%; }
+}

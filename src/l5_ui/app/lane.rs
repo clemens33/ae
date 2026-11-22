@@ -25,7 +25,7 @@ use crate::state::CHAT_SUMMARY_CAP;
 
 /// Who speaks a turn, which is all its colour says.
 #[derive(Clone, Copy)]
-enum Voice {
+pub(crate) enum Voice {
     You,
     Lead,
     Colead,
@@ -719,7 +719,7 @@ pub(super) fn rows_on(
 
 /// The speaker, what the turn is and its voice. The words are the chat's
 /// tag reordered so the speaker leads: `you … to lead`, `lead … said`.
-fn head(kind: &Kind, main: &str, through: bool) -> (String, String, Voice) {
+pub(crate) fn head(kind: &Kind, main: &str, through: bool) -> (String, String, Voice) {
     let seat = |name: &str| match name {
         "ae" => Voice::System,
         name if name == main => Voice::Lead,
@@ -822,7 +822,7 @@ fn head(kind: &Kind, main: &str, through: bool) -> (String, String, Voice) {
 
 /// What names a turn across re-reads: its fingerprint over everything that
 /// tells it apart. In-process only, never persisted; a collision is 2^-64.
-pub(super) fn key(item: &Item) -> u64 {
+pub(crate) fn key(item: &Item) -> u64 {
     let mut hasher = DefaultHasher::new();
     item.hash(&mut hasher);
     hasher.finish()

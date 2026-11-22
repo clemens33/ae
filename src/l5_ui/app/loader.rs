@@ -387,6 +387,53 @@ pub(super) struct FleetRead {
     pub(super) scanned: bool,
 }
 
+/// One stage of a standing console's lane, as every view of a session reads it.
+pub(crate) struct LaneRead {
+    /// The lane so far; a needs gap or a failed read is named in its coverage.
+    pub(crate) lane: Lane,
+    /// The needs section, when it was read.
+    pub(crate) needs: Option<Section>,
+    /// Whether the console answered: `false` leaves the lane its failure alone.
+    pub(crate) read: bool,
+}
+
+/// One stage of `console`'s lane toward `reach`, the global config at `global`
+/// read afresh so a changed `relay_replies` shows on the next read, and the
+/// session's records read by `records`. The app's panel and `ae web` share it.
+pub(crate) fn read_lane(
+    console: &mut Console,
+    reach: Reach,
+    global: &Path,
+    records: &mut dyn FnMut(&Path) -> crate::session::RecordSnapshot,
+) -> LaneRead {
+    console.relay_replies(crate::config::global_relay_replies(Some(global)));
+    match console.read_staged(reach, records) {
+        Ok(read) => {
+            let mut lane = read.lane;
+            let needs = match read.needs {
+                Ok(section) => Some(section),
+                Err(why) => {
+                    lane.coverage.push(format!("needs you unread: {why}"));
+                    None
+                }
+            };
+            LaneRead {
+                lane,
+                needs,
+                read: true,
+            }
+        }
+        Err(why) => LaneRead {
+            lane: Lane {
+                items: Vec::new(),
+                coverage: vec![why],
+            },
+            needs: None,
+            read: false,
+        },
+    }
+}
+
 /// One read of session `name` through its console.
 pub(super) struct ViewRead {
     pub(super) name: String,
@@ -1560,38 +1607,16 @@ impl Reader {
             .consoles
             .entry(name.to_owned())
             .or_insert_with(|| Console::open_standing(name.to_owned(), dir.clone()));
-        // Read afresh with every stage, so a changed `relay_replies` shows on
-        // the next read of the session's lane.
-        console.relay_replies(crate::config::global_relay_replies(Some(
-            &self.settings_paths.global,
-        )));
         let journals = &mut self.journals;
-        let read = console.read_staged(reach, &mut |dir| journals.snapshot(dir));
-        if read.is_ok() {
+        let LaneRead { lane, needs, read } =
+            read_lane(console, reach, &self.settings_paths.global, &mut |dir| {
+                journals.snapshot(dir)
+            });
+        if read {
             self.answered.insert(name.to_owned());
         } else {
             self.answered.remove(name);
         }
-        let (lane, needs) = match read {
-            Ok(read) => {
-                let mut lane = read.lane;
-                let needs = match read.needs {
-                    Ok(section) => Some(section),
-                    Err(why) => {
-                        lane.coverage.push(format!("needs you unread: {why}"));
-                        None
-                    }
-                };
-                (lane, needs)
-            }
-            Err(why) => (
-                Lane {
-                    items: Vec::new(),
-                    coverage: vec![why],
-                },
-                None,
-            ),
-        };
         let roster = console.roster().map(<[SeatRef]>::to_vec);
         let id = console.uuid().to_owned();
         let desk = (name == super::ORCH).then(|| DeskView::read(&dir));

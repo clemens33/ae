@@ -262,6 +262,11 @@ mod web_http_spec;
 mod web_licenses_spec;
 mod web_lifecycle_spec;
 mod web_response_spec;
+mod web_run;
+#[allow(
+    clippy::needless_raw_string_hashes,
+    reason = "the frozen spec's bytes stay as nav froze them"
+)]
 mod web_server_spec;
 mod weeklyroom_spec;
 mod worker_birth_decode_spec;

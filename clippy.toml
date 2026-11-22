@@ -132,6 +132,10 @@ disallowed-methods = [
   { path = "std::path::Path::is_file", reason = "a file: store::source_presence(path); a directory: doors::canonical_strict_dir" },
   { path = "std::env::var", reason = "read env in a named src/l1_platform/doors.rs fn (home, cwd, no_autostart); one fn per variable" },
   { path = "std::env::var_os", reason = "read env in a named src/l1_platform/doors.rs fn (home, cwd, no_autostart); one fn per variable" },
+  # THE LISTENER DOOR (`ae web`, 2026-11-22, plan r4 owner decision 1A). The one
+  # product site that accepts connections, loopback 127.0.0.1 only, is
+  # `src/l5_ui/web/server.rs::listen`; a second listener is a review.
+  { path = "std::net::TcpListener::bind", reason = "the one listener: src/l5_ui/web/server.rs; a new site is a review" },
   # THE TERMINAL DOOR (`ae app`, 2026-10-03, lead ruling D2 on the sideapp
   # plan). rustix's termios module is how the app takes raw mode, puts the mode
   # back and reads the window size without libc or `unsafe`, and every entry

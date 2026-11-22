@@ -254,6 +254,40 @@ fn the_board_streaming_door_has_exactly_one_product_site() {
     );
 }
 
+/// `ae web`'s listener is the one product site that accepts connections:
+/// `std::net::TcpListener::bind` is denied in `clippy.toml`, and its one allowed
+/// site binds 127.0.0.1 in `src/l5_ui/web/server.rs`. The other holders bind a
+/// loopback fixture inside their test modules. A second listener is a review.
+#[test]
+fn the_listener_door_has_exactly_one_product_site() {
+    let holders = src_holders("TcpListener::bind(");
+
+    // Control FIRST: a scan that matched nothing would pass this vacuously.
+    assert!(
+        !holders.is_empty(),
+        "the scan found no `TcpListener::bind` anywhere in src/; it did not run"
+    );
+    assert_eq!(
+        holders,
+        sorted(vec![
+            "src/l3_services/go_usage.rs".to_owned(),
+            "src/l3_services/telegram.rs".to_owned(),
+            "src/l5_ui/web/server.rs".to_owned(),
+        ]),
+        "the listener door gained (or lost) a site"
+    );
+    let server = tree_text("src/l5_ui/web/server.rs");
+    assert_eq!(
+        server.matches("TcpListener::bind(").count(),
+        1,
+        "src/l5_ui/web/server.rs binds more than once"
+    );
+    assert!(
+        server.contains(r#"TcpListener::bind(("127.0.0.1", port))"#),
+        "the one listener no longer binds 127.0.0.1 alone"
+    );
+}
+
 /// `transport::run_sysctl` is the FIXED-PROGRAM boot-time leg of the one
 /// process door — and it takes no arguments at all, because there is exactly
 /// one question ae asks `sysctl`.

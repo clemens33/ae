@@ -767,6 +767,11 @@ pub enum Request {
         /// Everything after the subcommand, as typed.
         tail: Vec<String>,
     },
+    /// `web [--port N]` — the browser chat on 127.0.0.1; [`crate::web::run`] owns its argv.
+    Web {
+        /// Everything after the subcommand, as typed.
+        tail: Vec<String>,
+    },
     /// `chat [session] [--follow] [--all]` (`console` is a deprecated alias) — validated by
     /// [`crate::console::parse`], which owns the flag grammar and its usage text.
     Console {
@@ -940,6 +945,9 @@ impl Request {
                 tail: tail.to_vec(),
             },
             "app" => Self::App {
+                tail: tail.to_vec(),
+            },
+            "web" => Self::Web {
                 tail: tail.to_vec(),
             },
             QUOTA => Self::parse_dir(QUOTA, tail, |dir| Self::Quota { dir }),
@@ -1542,6 +1550,7 @@ impl Request {
             | Self::Board { .. }
             | Self::Console { .. }
             | Self::App { .. }
+            | Self::Web { .. }
             | Self::Quota { .. }
             | Self::Usage { .. }
             | Self::UsageHourly { .. }
@@ -1695,6 +1704,7 @@ impl Request {
             | Self::Brief { .. }
             | Self::Board { .. }
             | Self::App { .. }
+            | Self::Web { .. }
             | Self::Console { .. }
             | Self::Rename { .. }
             | Self::Reseat { .. }

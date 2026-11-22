@@ -14,3 +14,4 @@ pub(crate) mod profile_view;
 pub(crate) mod reader;
 pub mod session_menu;
 pub(crate) mod settings_menu;
+pub mod web;

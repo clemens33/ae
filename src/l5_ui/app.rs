@@ -50,6 +50,8 @@ use frame::draw_frame;
 #[cfg(test)]
 use keys::{Mode, disarms, held_quit, mode};
 use keys::{apply, browse, browse_byte, guarded_at, take_keys};
+pub(crate) use lane::{Voice as LaneVoice, head as lane_head, key as lane_key};
+pub(crate) use loader::read_lane;
 use loader::{Answer, Binding, EndingAsk, PeekAsk, ReadAsk, RecordsAsk, Request, Wake};
 use mouse::{Held, Press, Stage};
 use panel::{Opening, Orch, PanelByte};
