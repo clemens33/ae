@@ -9,6 +9,7 @@ pub mod clock;
 pub mod http;
 pub mod server;
 pub mod state;
+pub mod topics;
 
 use std::io::Write;
 use std::sync::{Arc, mpsc};

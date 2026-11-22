@@ -268,6 +268,10 @@ mod web_run;
     reason = "the frozen spec's bytes stay as nav froze them"
 )]
 mod web_server_spec;
+mod web_topic_grammar_spec;
+mod web_topic_text_spec;
+mod web_topic_wire_spec;
+mod web_topics_archive_spec;
 mod weeklyroom_spec;
 mod worker_birth_decode_spec;
 mod worker_birth_folds_spec;
