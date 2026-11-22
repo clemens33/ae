@@ -320,7 +320,6 @@ impl Archives {
             format!(
                 "schema=2\nsession={name}\nsession_id={uuid}\nsession_id_origin=session\n\
                  mode=worktree\nlayout=lead-pair\nseat.main=lead\nseat.worker.0=colead\n\
-                 agent.main=cl:lead:sid-fixture\nagent.worker.0=cl:colead:sid-fixture2\n\
                  tmux_server_kind=socket\ntmux_server={}\nmeta_agent=true\nlocal_config={}\n",
                 self.root().join("no-server").display(),
                 self.root().join(overlay).display(),

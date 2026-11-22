@@ -8,8 +8,11 @@ use crate::events::{Event, SessionKey};
 use crate::inventory::ServerId;
 use crate::json::Value;
 use crate::meta::Selector;
+use crate::session_tmux::{Op, argv};
 use crate::time::Timestamp;
+use crate::tmux::{ObservedViewer, OptionReading, SessionIdentity};
 use crate::tracked::{self, IdentityTriple, Resolved};
+use crate::transport::{fixture_tmux, run_tmux_op};
 use crate::web::topics::{self, Column, Sticky};
 
 const UUID: &str = "0199c0de-9876-4890-abcd-ef0123456789";
@@ -22,7 +25,7 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
         static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-        let temp = std::env::temp_dir();
+        let temp = Path::new("/tmp");
         loop {
             let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let root = temp.join(format!("ae-wtpc-{}-{sequence}", std::process::id()));
@@ -43,6 +46,37 @@ impl Drop for Scratch {
 
 fn write(path: &Path, bytes: impl AsRef<[u8]>) {
     std::fs::write(path, bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+}
+
+struct OwnerSocket(ServerId);
+
+impl OwnerSocket {
+    fn start(ledger: &Ledger) -> Self {
+        let owned = Self(ServerId::Selected(Selector::Socket(ledger.socket())));
+        let work_dir = ledger
+            .root()
+            .to_str()
+            .unwrap_or_else(|| panic!("fixture root is UTF-8"));
+        let (ok, why) = run_tmux_op(&argv(
+            &owned.0,
+            &Op::NewSession {
+                name: ledger.session,
+                work_dir,
+            },
+        ));
+        assert!(ok, "start private owner socket: {why}");
+        owned
+    }
+}
+
+impl Drop for OwnerSocket {
+    fn drop(&mut self) {
+        let result = fixture_tmux::end(&self.0);
+        assert!(
+            result.ok || result.proven() || std::thread::panicking(),
+            "private owner socket cleanup: {result:?}"
+        );
+    }
 }
 
 struct Ledger {
@@ -74,6 +108,10 @@ impl Ledger {
         &self.scratch.0
     }
 
+    fn socket(&self) -> PathBuf {
+        self.root().join("pane-socket")
+    }
+
     fn meta(&self) {
         write(
             &self.dir.join("meta"),
@@ -82,7 +120,7 @@ impl Ledger {
                  seat.main=lead\nseat.worker.0=colead\nlaunch_id.main=fixture-launch\n\
                  tmux_server_kind=socket\ntmux_server={}\nmeta_agent=true\nlocal_config={}\n",
                 self.session,
-                self.root().join("pane-socket").display(),
+                self.socket().display(),
                 self.root().join("orchestrator.config").display(),
             ),
         );
@@ -117,7 +155,7 @@ impl Ledger {
 
     fn owner_ask(&self, entropy: u64, body: &str) -> String {
         let pair = ["lead".to_owned(), "colead".to_owned()];
-        let socket = self.root().join("pane-socket");
+        let socket = self.socket();
         let now = Timestamp::from_epoch(OPENED);
         let kind = tracked::Kind::Ask;
         let request = tracked::request_id(kind.id_prefix(), now, entropy);
@@ -130,6 +168,19 @@ impl Ledger {
             .join(format!("{request}.ask.0000aa.txt"));
         write(&stored, &frame);
         tracked::clear_test_hooks();
+        tracked::set_test_address_observation(
+            ObservedViewer {
+                slot: Some("main".to_owned()),
+                session: Some(self.session.to_owned()),
+                agent: Some("lead".to_owned()),
+                session_uuid: OptionReading::Set(UUID.to_owned()),
+                socket_path: Some(socket.to_string_lossy().into_owned()),
+            },
+            SessionIdentity {
+                id: "$0".to_owned(),
+                created: OPENED.to_string(),
+            },
+        );
         tracked::set_test_resolve(
             Resolved {
                 pane: "%4".to_owned(),
@@ -167,12 +218,16 @@ impl Ledger {
         tracked::clear_test_hooks();
         assert!(!carried.replayed);
         assert_eq!(carried.id, request);
-        assert!(matches!(&carried.outcome, Outcome::Sent(id, _) if id == &carried.id));
+        assert!(
+            matches!(&carried.outcome, Outcome::Sent(id, _) if id == &carried.id),
+            "product owner ask receipt: {:?}",
+            carried.outcome
+        );
         carried.id
     }
 
     fn reply(&self, id: &str) {
-        let socket = self.root().join("pane-socket");
+        let socket = self.socket();
         self.append(&[
             ("ts", "2026-10-16T09:01:00Z"),
             ("actor", "lead"),
@@ -279,9 +334,11 @@ fn real_console_opens_stop_owing_after_reply_cancel_and_uuid_bound_retirement() 
         "{}\n#full-body, held past the opening preview",
         "x".repeat(650)
     );
+    let owner_socket = OwnerSocket::start(&fixture);
     let answered = fixture.owner_ask(71, &body);
     let cancelled = fixture.owner_ask(72, "#summary-fallback can survive a missing body");
     let retired = fixture.owner_ask(73, "#renamed-ask is awaiting a reply");
+    drop(owner_socket);
     let missing = fixture
         .dir
         .join("messages")
@@ -340,7 +397,9 @@ fn real_console_opens_stop_owing_after_reply_cancel_and_uuid_bound_retirement() 
 #[test]
 fn other_actors_and_a_console_actor_with_a_relay_stamp_do_not_create_owner_waits() {
     let fixture = Ledger::new();
+    let owner_socket = OwnerSocket::start(&fixture);
     let control = fixture.owner_ask(41, "#owned this is an owner ask");
+    drop(owner_socket);
     for (id, actor, target, summary) in [
         (
             "ae-20261016T090100Z-00000042",
