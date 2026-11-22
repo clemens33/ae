@@ -468,3 +468,81 @@ fn an_ordinary_restore_failure_keeps_its_diagnostic_and_exit_status() {
         damaged
     );
 }
+
+#[test]
+fn bare_tmux_never_attaches_a_new_orchestrator_when_the_ordinary_target_closes() {
+    let f = Fixture::new("oa-attach-gone", CONFIG);
+    f.ordinary("ordinary", "1");
+    // This hook runs during the companion's new-session command, before
+    // the foreground invocation can attach.
+    assert!(
+        f.rig
+            .tmux(&[
+                "set-hook",
+                "-g",
+                "after-new-session",
+                "kill-session -t ordinary",
+            ])
+            .0,
+        "remove the ordinary session on the next private launch"
+    );
+    let pane = f.pane("reopen", "0", Path::new(""), &["--tmux"]);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let (_, clients) = f.rig.tmux(&["list-clients", "-F", "#{session_name}"]);
+        assert!(
+            !clients.lines().any(|name| name == ORCH),
+            "bare ae attached to its new orchestrator"
+        );
+        if f.rig.scratch.join("reopen.status").is_file() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "bare ae did not return after its target closed:\n{}",
+            f.screen(&pane)
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(!f.rig.tmux(&["has-session", "-t", "=ordinary"]).0);
+    f.orchestrator(1);
+    assert_eq!(f.start_count(), 1);
+}
+
+#[test]
+fn a_foreign_session_cannot_satisfy_autostart_with_a_saved_record() {
+    let f = Fixture::new("oa-foreign", CONFIG);
+    f.run("manual", "1", &[ORCH, "--no-attach"]);
+    f.orchestrator(1);
+    bare_session(&f.rig, &f.rig.sock, "keeper");
+    stop(&f.rig, ORCH);
+    bare_session(&f.rig, &f.rig.sock, ORCH);
+    let meta = f.orchestrator_dir().join("meta");
+    let saved = fs::read(&meta).expect("saved orchestrator metadata");
+    let observe = || {
+        let (ok, rows) = f.rig.tmux(&[
+            "list-sessions",
+            "-F",
+            "#{session_name}|#{session_id}|#{@ae_session_uuid}",
+        ]);
+        assert!(ok, "read the private server: {rows}");
+        rows.lines()
+            .find(|row| row.starts_with("orchestrator|"))
+            .expect("foreign orchestrator session")
+            .to_owned()
+    };
+    let before = observe();
+    assert!(before.ends_with('|'), "fixture is unstamped: {before}");
+
+    let output = f.ordinary("origin", "0");
+    let lines: Vec<_> = output.lines().filter(|line| line.contains(ORCH)).collect();
+    assert_eq!(lines.len(), 1, "{output}");
+    assert!(lines[0].contains("autostart failed"), "{output}");
+    assert!(lines[0].contains("ae orchestrator"), "{output}");
+    assert_eq!(observe(), before);
+    assert_eq!(
+        fs::read(meta).expect("retained orchestrator metadata"),
+        saved
+    );
+    assert_eq!(f.start_count(), 1);
+}
