@@ -4048,6 +4048,47 @@ mod tests {
         }
     }
 
+    /// A strict resume record binds ONE conversation to the two launches a move
+    /// named. A later start of the same conversation under any other launch is
+    /// an ordinary start, so a record left behind never turns it strict.
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixture publishes the very record the strict resume reads"
+    )]
+    fn a_strict_record_for_other_launches_leaves_a_normal_start_alone() {
+        let dir = std::env::temp_dir().join(format!("ae-must-resume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a fixture dir");
+        let seat = model_seat("claude", ToolKind::Claude, None, None);
+        let marker = must_resume_marker(&dir, "main");
+        std::fs::write(&marker, "sid L0\nsid L9\n").expect("a record for other launches");
+        assert_eq!(
+            must_resume(&dir, "main", &seat, Mode::Create, None),
+            Ok(()),
+            "launch L1 is named by no line"
+        );
+        assert_eq!(
+            must_resume(&dir, "main", &seat, Mode::Resume, Some(Probe::NotFound)),
+            Ok(()),
+            "nor does a failed resume of L1 turn strict"
+        );
+        std::fs::write(&marker, "sid L0\nsid L1\n").expect("a record naming this launch");
+        let refused = must_resume(&dir, "main", &seat, Mode::Create, None)
+            .expect_err("the launch a move named starts only on its conversation");
+        assert!(refused.contains("refusing a fresh start"), "{refused}");
+        // A profile edited to another harness probes another store for the
+        // same id: even a proven resume there is no resume of this conversation.
+        let edited = Seat {
+            recorded_tool: ToolKind::Codex,
+            ..model_seat("claude", ToolKind::Claude, None, None)
+        };
+        let refused = must_resume(&dir, "main", &edited, Mode::Resume, Some(Probe::Found))
+            .expect_err("a changed harness never satisfies the record");
+        assert!(refused.contains("not the recorded codex"), "{refused}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The identity config a follow case reads, published under a name of its
     /// own so the cases cannot collide.
     #[allow(

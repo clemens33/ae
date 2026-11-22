@@ -25,7 +25,10 @@ struct SeatRig {
 
 impl SeatRig {
     fn new(tag: &str, orchestrator: bool, candidates: &str) -> Self {
-        let rig = Rig::new(tag);
+        Self::with_rig(Rig::new(tag), orchestrator, candidates)
+    }
+
+    fn with_rig(rig: Rig, orchestrator: bool, candidates: &str) -> Self {
         configure_from(&rig, ON, "fake-claude-a", candidates);
         let scratch = fs::canonicalize(&rig.scratch).expect("canonical scratch");
         let work = scratch.join("work");
@@ -143,12 +146,13 @@ impl SeatRig {
     // The daemon leaves these records when it dispatches a leg. Supplying
     // them lets the refusal cases isolate the leg's last admission check.
     fn attempt(&self) -> (Option<i32>, String, String) {
+        self.attempt_with_summary("headroom 96% weekly_all 7d")
+    }
+
+    fn attempt_with_summary(&self, summary: &str) -> (Option<i32>, String, String) {
         let key = Timestamp::from_epoch(Timestamp::now().epoch() - 1);
         for (action, extra) in [
-            (
-                "auto-reseat-headroom",
-                r#","summary":"headroom 96% weekly_all 7d""#.to_owned(),
-            ),
+            ("auto-reseat-headroom", format!(r#","summary":"{summary}""#)),
             (ATTEMPT_ACTION, format!(r#","ref":"{key}""#)),
         ] {
             self.append(&format!(
@@ -175,7 +179,10 @@ impl SeatRig {
     }
 
     fn held(&self, reason: &str) {
-        let receipt = self.attempt();
+        self.assert_held(&self.attempt(), reason);
+    }
+
+    fn assert_held(&self, receipt: &(Option<i32>, String, String), reason: &str) {
         assert_ne!(receipt.0, Some(0), "{receipt:?}");
         let holds = self.records(HELD_ACTION);
         assert!(
@@ -308,12 +315,84 @@ fn orchreseat_watchdog_skips_a_fresh_candidate_and_carries_the_main_conversation
 }
 
 #[test]
-fn orchreseat_holds_a_pending_owner_chat_request() {
-    let seat = SeatRig::new("orask", true, "fake-claude-b");
+fn orchreseat_same_account_move_requires_the_recorded_conversation() {
+    for (tag, present) in [("orkeep", true), ("orkeepgap", false)] {
+        let rig = Rig::new(tag);
+        let path = rig.scratch.join("config");
+        let config = fs::read_to_string(&path).expect("fixture config");
+        let source = config
+            .lines()
+            .find(|line| line.starts_with("fake-claude-a = "))
+            .expect("source profile");
+        let command = source
+            .strip_prefix("fake-claude-a = \"")
+            .and_then(|text| text.strip_suffix('"'))
+            .expect("quoted source command");
+        let profiles = format!(
+            "fake-claude-a = \"{command} --model opus\"\nfake-claude-keep = \"{command} --model sonnet\""
+        );
+        fs::write(&path, config.replacen(source, &profiles, 1)).expect("same-account profiles");
+        let seat = SeatRig::with_rig(rig, true, "fake-claude-keep");
+        let rig = &seat.rig;
+        remove_unused_profiles(rig, &["fake-claude", "fake-claude-b"]);
+
+        // The source hits the Opus window. Sonnet uses the same account but
+        // only the account-wide window applies to that model.
+        let now = Timestamp::now().epoch();
+        let reset = Timestamp::from_epoch(now + 86_400);
+        fs::write(
+            rig.scratch.join("home-a/.claude.json"),
+            format!(
+                r#"{{"cachedUsageUtilization":{{"fetchedAtMs":{},"utilization":{{"limits":[{{"kind":"weekly_scoped","group":"weekly_scoped","percent":96,"resets_at":"{reset}","scope":{{"model":{{"display_name":"Opus"}}}}}},{{"kind":"weekly_all","group":"weekly_all","percent":10,"resets_at":"{reset}","scope":null}}]}}}}}}"#,
+                now * 1_000
+            ),
+        )
+        .expect("model-scoped quota");
+        if !present {
+            fs::remove_file(&seat.transcript).expect("remove the recorded conversation");
+        }
+        let home = rig.meta_row("config_home.main");
+        assert!(!home.is_empty(), "the initial launch recorded its account");
+        let receipt = seat.attempt_with_summary("headroom 96% weekly_scoped 7d");
+        if present {
+            assert_eq!(receipt.0, Some(0), "{receipt:?}\n{}", rig.events());
+            assert!(
+                seat.records(DONE_ACTION).iter().any(|done| done
+                    .summary
+                    .as_deref()
+                    .is_some_and(|summary| summary.starts_with("to fake-claude-keep, kept"))),
+                "{}",
+                rig.events()
+            );
+            assert_eq!(rig.meta_row("profile.main"), "fake-claude-keep");
+            assert_eq!(rig.meta_row("harness_session.main"), CARRIED);
+            assert_eq!(rig.meta_row("config_home.main"), home);
+            assert!(
+                rig.launched().lines().any(|line| {
+                    line.contains("--model sonnet") && line.contains(&format!("--resume {CARRIED}"))
+                }),
+                "{}",
+                rig.launched()
+            );
+            assert_eq!(
+                fs::read_to_string(&seat.transcript).expect("retained transcript"),
+                FACT
+            );
+        } else {
+            seat.assert_held(
+                &receipt,
+                "no candidate keeps the orchestrator's conversation",
+            );
+            assert!(seat.records(REFUSED_ACTION).is_empty(), "{}", rig.events());
+        }
+    }
+}
+
+fn record_pending_owner_request(seat: &SeatRig) {
     let rig = &seat.rig;
     seat.append(&format!(
-        r#"{{"ts":"{}","actor":"console:local","action":"ask","target":"orchestrator","target_slot":"main","target_session":"{}","target_session_id":"{SESSION}","target_session_uuid":"{SESSION}","target_server":"{}","target_pane":"{}","ref":"{OWNER_ASK}","summary":"Wait for this answer"}}"#,
-        Timestamp::now(), rig.session, rig.sock.display(), rig.main_pane,
+        r#"{{"ts":"{}","actor":"console:local","action":"ask","target":"{}","target_slot":"main","target_session":"{}","target_session_id":"{SESSION}","target_session_uuid":"{SESSION}","target_server":"{}","target_pane":"{}","ref":"{OWNER_ASK}","summary":"Wait for this answer"}}"#,
+        Timestamp::now(), seat.name, rig.session, rig.sock.display(), rig.main_pane,
     ));
     assert!(
         ae::requests::states(rig.events().as_bytes())
@@ -324,16 +403,26 @@ fn orchreseat_holds_a_pending_owner_chat_request() {
             }),
         "fixture is a pending request"
     );
+}
+
+#[test]
+fn orchreseat_holds_a_pending_owner_chat_request() {
+    let seat = SeatRig::new("orask", true, "fake-claude-b");
+    record_pending_owner_request(&seat);
     seat.held("in flight");
+}
+
+fn record_relay_claim(seat: &SeatRig) {
+    seat.append(&format!(
+        r#"{{"ts":"{}","actor":"orchestrator","actor_slot":"main","actor_session":"{}","actor_session_id":"{SESSION}","actor_launch_id":"{CARRIED}","action":"relay-attempt","target":"project","target_slot":"main","target_session":"project","target_session_id":"{OTHER}","target_session_uuid":"{OTHER}","ref":"{RELAY}","relay_mode":"interim","summary":"Relay the owner's request"}}"#,
+        Timestamp::now(), seat.rig.session,
+    ));
 }
 
 #[test]
 fn orchreseat_holds_a_claimed_relay_without_a_result() {
     let seat = SeatRig::new("orrelay", true, "fake-claude-b");
-    seat.append(&format!(
-        r#"{{"ts":"{}","actor":"orchestrator","actor_slot":"main","actor_session":"{}","actor_session_id":"{SESSION}","actor_launch_id":"{CARRIED}","action":"relay-attempt","target":"project","target_slot":"main","target_session":"project","target_session_id":"{OTHER}","target_session_uuid":"{OTHER}","ref":"{RELAY}","relay_mode":"interim","summary":"Relay the owner's request"}}"#,
-        Timestamp::now(), seat.rig.session,
-    ));
+    record_relay_claim(&seat);
     assert_eq!(
         ae::relay::claimed(&records(&seat.rig), RELAY, SESSION)
             .expect("fixture relay claim")
@@ -341,6 +430,28 @@ fn orchreseat_holds_a_claimed_relay_without_a_result() {
         None
     );
     seat.held("in flight");
+}
+
+#[test]
+fn orchreseat_moves_after_a_claimed_relay_has_a_result() {
+    let seat = SeatRig::new("orrelaydone", true, "fake-claude-b");
+    record_relay_claim(&seat);
+    seat.append(&format!(
+        r#"{{"ts":"{}","actor":"orchestrator","actor_slot":"main","actor_session":"{}","actor_session_id":"{SESSION}","actor_launch_id":"{CARRIED}","action":"relay-result","target":"project","target_slot":"main","target_session":"project","target_session_id":"{OTHER}","target_session_uuid":"{OTHER}","ref":"{RELAY}","outcome":"sent"}}"#,
+        Timestamp::now(), seat.rig.session,
+    ));
+    let rig = &seat.rig;
+    assert_eq!(
+        ae::relay::claimed(&records(rig), RELAY, SESSION)
+            .expect("fixture relay claim")
+            .outcome,
+        Some("sent")
+    );
+    let receipt = seat.attempt();
+    assert_eq!(receipt.0, Some(0), "{receipt:?}\n{}", rig.events());
+    assert_eq!(seat.records(DONE_ACTION).len(), 1, "{}", rig.events());
+    assert_eq!(rig.meta_row("profile.main"), "fake-claude-b");
+    assert_eq!(rig.meta_row("harness_session.main"), CARRIED);
 }
 
 #[test]
@@ -369,6 +480,7 @@ fn orchreseat_holds_an_open_attempt_when_switched_off() {
 #[test]
 fn orchreseat_does_not_change_the_normal_main_seats_fresh_move() {
     let seat = SeatRig::new("orordinary", false, "fake-opencode");
+    record_pending_owner_request(&seat);
     let receipt = seat.attempt();
     assert_eq!(receipt.0, Some(0), "{receipt:?}\n{}", seat.rig.events());
     assert_eq!(seat.rig.meta_row("profile.main"), "fake-opencode");
@@ -411,6 +523,27 @@ fn orchreseat_holds_an_owner_request_opened_by_its_main_seat() {
 }
 
 #[test]
+fn orchreseat_refuses_a_move_without_a_launch_to_guard() {
+    let seat = SeatRig::new("ornolaunch", true, "fake-claude-b");
+    let rig = &seat.rig;
+    rebind(rig, "launch_id.main", "");
+    let receipt = seat.attempt();
+    assert_ne!(receipt.0, Some(0), "{receipt:?}");
+    assert!(
+        receipt
+            .2
+            .contains("records no launch or conversation to guard"),
+        "{receipt:?}\n{}",
+        rig.events()
+    );
+    assert_eq!(rig.tool_pid(&rig.main_pane, "claude"), Some(seat.pid));
+    assert_eq!(rig.meta_row("profile.main"), "fake-claude-a");
+    assert_eq!(rig.meta_row("harness_session.main"), CARRIED);
+    assert!(seat.records("reseat").is_empty(), "no stop recorded");
+    assert!(!seat.other_store.exists(), "no carry published");
+}
+
+#[test]
 fn orchreseat_a_copy_write_failure_after_the_stop_cannot_seed() {
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -418,8 +551,18 @@ fn orchreseat_a_copy_write_failure_after_the_stop_cannot_seed() {
     let rig = &seat.rig;
     let project = seat.other_store.parent().expect("destination project");
     fs::create_dir_all(project).expect("destination account has its project");
-    // With no differing destination files, the read-only survey can succeed.
-    // The copy cannot create its private publication file in this directory.
+    fs::write(&seat.other_store, FACT).expect("the target already has the transcript");
+    let source_sidecar = seat
+        .transcript
+        .parent()
+        .expect("source project")
+        .join(CARRIED);
+    fs::create_dir(&source_sidecar).expect("source conversation sidecar");
+    fs::write(source_sidecar.join("note"), "a sidecar the carry must copy")
+        .expect("source sidecar content");
+    // The survey can read the matching transcript and the missing sidecar.
+    // Copy cannot create the sidecar even though the resume probe finds the
+    // target transcript. A failed carry still requires the original profile.
     fs::set_permissions(project, fs::Permissions::from_mode(0o500))
         .expect("deny publication to the target");
     let receipt = seat.attempt();
@@ -443,9 +586,13 @@ fn orchreseat_a_copy_write_failure_after_the_stop_cannot_seed() {
         fs::read_to_string(&seat.transcript).expect("source transcript"),
         FACT
     );
+    assert_eq!(
+        fs::read_to_string(&seat.other_store).expect("target transcript still present"),
+        FACT
+    );
     assert!(
-        !seat.other_store.exists(),
-        "target conversation was not published"
+        !project.join(CARRIED).exists(),
+        "the sidecar was not copied"
     );
     assert!(
         !rig.dir.join("seed.orchestrator.md").exists(),
