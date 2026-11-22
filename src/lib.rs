@@ -2037,7 +2037,7 @@ fn kick_then_attach(
     let seat = orchestrator::ORCHESTRATOR_SESSION;
     let had_seat = names.iter().any(|name| name == seat);
     let started = kick_orchestrator(preamble, true, err);
-    if had_seat || !started {
+    if !orchestrator_autostart::names_the_attach(had_seat, started) {
         return Ok(transport::attach(server));
     }
     if let Some(name) = transport::untargeted_attach_choice(server, seat) {
@@ -2061,7 +2061,8 @@ fn kick_then_attach(
 /// best-effort: a stream that cannot take it never fails the route. Whether
 /// the start ran.
 fn kick_orchestrator(preamble: &entry::Preamble, human: bool, err: &mut impl Write) -> bool {
-    if !human || !both_terminal() || !orchestrator_autostart::claim_once() {
+    if !orchestrator_autostart::may_kick(human, both_terminal(), orchestrator_autostart::claim_once)
+    {
         return false;
     }
     let kick = orchestrator_autostart::Kick {
@@ -2740,7 +2741,11 @@ fn run_launch_as(
     {
         return run_named_landing(preamble, &plan, user, first_use, (who, route), out, err);
     }
-    if let Gate::Caller(who, session_launch::LaunchRoute::Entry) = &gate {
+    // Only a name the launch can take kicks: an invalid name, a routed verb or
+    // the seat itself keeps the launch owner's own answer and nothing else.
+    if let Gate::Caller(who, session_launch::LaunchRoute::Entry) = &gate
+        && landing_name(hint)
+    {
         let human = matches!(
             who,
             session_launch::LaunchCaller::Outside | session_launch::LaunchCaller::Pane(_)

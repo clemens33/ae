@@ -88,6 +88,22 @@ pub fn claim_once() -> bool {
     !KICKED.swap(true, Ordering::SeqCst)
 }
 
+/// Whether a route may kick: only for a `human` caller with both streams on a
+/// `terminal`, and only then is the once-per-invocation `claim` taken.
+#[must_use]
+pub fn may_kick(human: bool, terminal: bool, claim: impl FnOnce() -> bool) -> bool {
+    human && terminal && claim()
+}
+
+/// Whether bare `ae`'s attach must name its target instead of letting tmux
+/// choose: only when this invocation `started` the seat's launch and the seat
+/// was not running before it (`had_seat`), because only then can tmux's own
+/// choice land on a seat this invocation created.
+#[must_use]
+pub fn names_the_attach(had_seat: bool, started: bool) -> bool {
+    started && !had_seat
+}
+
 /// The argv the child runs after the binary.
 #[must_use]
 pub fn child_args() -> [&'static str; 3] {
@@ -283,6 +299,53 @@ mod tests {
         assert!(line.contains(NEEDS_HUMAN_WORDS), "{line}");
         assert!(line.ends_with("; attach with: ae orchestrator"), "{line}");
         assert!(!line.contains("failed"), "{line}");
+    }
+
+    #[test]
+    fn one_invocation_claims_the_kick_once() {
+        // nextest runs each test in its own process, so this is the first claim.
+        assert!(claim_once(), "the first route may kick");
+        assert!(
+            !claim_once(),
+            "a second route of the same invocation may not"
+        );
+        assert!(!claim_once(), "nor any later one");
+    }
+
+    #[test]
+    fn only_a_human_on_a_terminal_takes_the_claim() {
+        for (human, terminal, claimed, want) in [
+            (true, true, true, true),
+            (true, true, false, false),
+            (true, false, true, false),
+            (false, true, true, false),
+            (false, false, true, false),
+        ] {
+            let mut asked = false;
+            let got = may_kick(human, terminal, || {
+                asked = true;
+                claimed
+            });
+            assert_eq!(
+                got, want,
+                "human {human} terminal {terminal} claim {claimed}"
+            );
+            assert_eq!(asked, human && terminal, "the claim is taken only when due");
+        }
+    }
+
+    #[test]
+    fn only_a_start_that_may_have_created_the_seat_names_the_attach() {
+        assert!(names_the_attach(false, true));
+        assert!(
+            !names_the_attach(true, true),
+            "a seat that was running stays tmux's choice"
+        );
+        assert!(
+            !names_the_attach(false, false),
+            "no start, tmux's own choice"
+        );
+        assert!(!names_the_attach(true, false));
     }
 
     #[test]
