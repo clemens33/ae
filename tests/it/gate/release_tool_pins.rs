@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
-use super::{read, recipe_text, root, run_in, run_in_env};
+use super::{read, recipe_text, root, run_in_env};
 use crate::cli::OwnedScratch;
 
 fn write_executable(path: &Path, body: &str) {
@@ -18,6 +18,48 @@ fn version_pin<'a>(justfile: &'a str, name: &str) -> &'a str {
         .find_map(|(key, value)| (key == name).then_some(value))
         .and_then(|value| value.strip_prefix('"')?.strip_suffix('"'))
         .unwrap_or_else(|| panic!("the justfile pins {name}"))
+}
+
+/// Give older release fixtures matching version probes while leaving their
+/// existing tool shims in charge of every other invocation.
+pub(super) fn release_fixture_path(scratch: &Path, checkout: &Path, path: &str) -> String {
+    let shims = scratch.join("release-versions");
+    std::fs::create_dir_all(&shims).unwrap_or_else(|why| panic!("{}: {why}", shims.display()));
+    let justfile = read(&checkout.join("justfile"));
+    for (tool, pin) in [
+        ("git-cliff", "GIT_CLIFF_VERSION"),
+        ("taplo", "TAPLO_VERSION"),
+        ("cargo-deny", "DENY_VERSION"),
+        ("cargo-nextest", "NEXTEST_VERSION"),
+    ] {
+        let version = version_pin(&justfile, pin);
+        write_executable(
+            &shims.join(tool),
+            &format!(
+                "#!/bin/sh\nif [ \"$#\" = 1 ] && [ \"$1\" = --version ]; then\n\
+                 printf '%s\\n' '{tool} {version}'\nexit 0\nfi\n\
+                 PATH=\"${{PATH#*:}}\" exec {tool} \"$@\"\n",
+            ),
+        );
+    }
+    write_executable(
+        &shims.join("cargo"),
+        r#"#!/bin/sh
+case "$*" in
+    'nextest --version'|'deny --version') exec "cargo-$1" --version ;;
+esac
+PATH="${PATH#*:}" exec cargo "$@"
+"#,
+    );
+    format!("{}:{path}", shims.display())
+}
+
+pub(super) fn fixture_just_pin(version: &str) -> String {
+    let version = version
+        .trim()
+        .strip_prefix("just ")
+        .unwrap_or_else(|| panic!("expected a just version, got {version:?}"));
+    format!("JUST_VERSION={version}")
 }
 
 fn declared_pins(justfile: &str) -> BTreeSet<String> {
@@ -129,10 +171,11 @@ fn release_refuses_tool_mismatches_before_disk_floor() {
     ] {
         set_version(tool, version_pin(&justfile, pin));
     }
-    let (code, real_just, err) = run_in(&scratch, &checkout, "bash", &["-c", "type -P just"]);
+    let (code, real_just, err) =
+        run_in_env(&scratch, &checkout, "bash", &["-c", "type -P just"], &[]);
     assert_eq!(code, 0, "the fixture needs just: {err}");
     let real_just = real_just.trim();
-    let (code, just_version, err) = run_in(&scratch, &checkout, real_just, &["--version"]);
+    let (code, just_version, err) = run_in_env(&scratch, &checkout, real_just, &["--version"], &[]);
     assert_eq!(code, 0, "just must report its version: {err}");
     let just_version = just_version
         .trim()

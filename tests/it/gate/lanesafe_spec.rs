@@ -11,6 +11,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use super::release_tool_pins::{fixture_just_pin, release_fixture_path};
 use super::{killed_scratch_child, lane_lock_checkouts, lane_lock_env, read, run_in_env};
 use crate::cli::{bounded, helper_by_name};
 
@@ -143,7 +144,16 @@ esac
 PATH=${PATH#*:} exec git "$@"
 "#,
     );
-    let path = shim_path(&bin);
+    let path = release_fixture_path(&scratch, &checkout, &shim_path(&bin));
+    let (code, version, err) = run_in_env(
+        &scratch,
+        &checkout,
+        "just",
+        &["--version"],
+        &[("PATH", &path)],
+    );
+    assert_eq!(code, 0, "the fixture needs just: {err}");
+    let just_pin = fixture_just_pin(&version);
     let mount = scratch.join("alternate target volume");
     fs::create_dir(&mount).expect("an existing ancestor on the target volume");
     let mount = mount
@@ -155,7 +165,7 @@ PATH=${PATH#*:} exec git "$@"
         &scratch,
         &checkout,
         "just",
-        &["release"],
+        &[&just_pin, "release"],
         &[
             ("PATH", &path),
             ("AE_LANE_MIN_FREE_GIB", "2"),

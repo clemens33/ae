@@ -21,6 +21,7 @@ mod relleaves_spec;
 
 use std::path::{Path, PathBuf};
 
+use super::release_tool_pins::{fixture_just_pin, release_fixture_path};
 use super::{read, recipe_text, root};
 use crate::parity::capture::ExitOutcome;
 use crate::parity::capture::raw;
@@ -762,16 +763,15 @@ impl ReceiptFixture {
     /// `just release` in the checkout. `abort` fails the fake cargo build
     /// inside `bundles`, which lands after the gate decision and the bump.
     fn release(&self, env: &[(&str, &str)]) -> (i32, String, String) {
+        let path = format!("{}:{}", self.bin().display(), std::env::var("PATH").unwrap_or_default());
+        let path = release_fixture_path(&self.base, &self.tree, &path);
+        let just = self.bin().join("just");
+        let (code, version, err) =
+            spec_run(&self.base, &self.tree, just.to_str().expect("fixture just path"), &["--version"]);
+        assert_eq!(code, 0, "the fixture needs just: {err}");
         let mut invocation = Invocation::new("just")
             .env_cleared()
-            .env(
-                "PATH",
-                format!(
-                    "{}:{}",
-                    self.bin().display(),
-                    std::env::var("PATH").unwrap_or_default()
-                ),
-            )
+            .env("PATH", path)
             .env("HOME", &*self.base)
             .env("TMPDIR", &*self.base)
             .env("AE_TEST_TMPDIR", &*self.base)
@@ -784,6 +784,7 @@ impl ReceiptFixture {
             .arg(self.tree.join("justfile"))
             .arg("--working-directory")
             .arg(&self.tree)
+            .arg(fixture_just_pin(&version))
             .arg("release");
         for (key, value) in env {
             invocation = invocation.env(key, value);
