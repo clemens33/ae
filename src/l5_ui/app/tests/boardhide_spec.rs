@@ -103,6 +103,10 @@ fn a_hidden_board_marks_only_current_decisions() {
         if full {
             bytes(&mut app, b"F");
         }
+        // The COMING item stands on its own tab: focus the board and pick it.
+        let _ = draw(&mut app, WIDE);
+        bytes(&mut app, b"B");
+        bytes(&mut app, b"2");
         let shown = draw(&mut app, WIDE);
         assert!(text(&shown).contains(UPCOMING));
         assert!(!row_text(&shown, 0).contains("desk 0"));

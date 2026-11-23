@@ -47,7 +47,9 @@ fn the_app_reads_the_bound_board_and_writes_its_links_only_when_the_column_fits(
     assert!(wide.contains("BOARD") && wide.contains("D7"));
     let (x, _) = cell(&frame, "Choose the river plan").expect("item appears in the board");
     assert!(x >= 125);
-    assert!(wide.contains("R6") && wide.contains("Run the checks"));
+    // The board opens on DECIDE: the RUNNING item shows as a count on its tab.
+    assert!(wide.contains("DEC 1") && wide.contains("RUN 1"), "{wide}");
+    assert!(!wide.contains("R6") && !wide.contains("Run the checks"));
     assert!(!wide.contains("OTHER_SESSION_BOARD"));
 
     let runs = &rig.app.layout.links;

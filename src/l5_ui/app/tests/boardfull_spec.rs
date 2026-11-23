@@ -256,17 +256,17 @@ fn full_panel_shows_and_drags_adjacent_board_when_it_fits() {
 
 #[test]
 fn board_scrolls_by_wheel_and_keyboard_keeps_links_clickable_and_updates_cue() {
-    let mut raw = String::from("RUNNING\nR1 | Top milestone\n");
+    let mut raw = String::from("DECIDE\nD1 | Top milestone\n");
     for n in 2..=13 {
         let _ = writeln!(
             raw,
-            "R{n} | Middle step {n:02} with extra wrapped detail text"
+            "D{n} | Middle step {n:02} with extra wrapped detail text"
         );
     }
     let web_url = "https://example.test/scrolled-web";
     let file_path = "/tmp/scrolled-file.md";
     let file_url = "file:///tmp/scrolled-file.md";
-    let _ = writeln!(raw, "R14 | Bottom target | {web_url} | {file_path}");
+    let _ = writeln!(raw, "D14 | Bottom target | {web_url} | {file_path}");
 
     for full in [false, true] {
         let (_root, mut app) = setup_board("bf-scroll", Some(sample_desk(raw.as_bytes())));
@@ -347,11 +347,11 @@ fn board_scrolls_by_wheel_and_keyboard_keeps_links_clickable_and_updates_cue() {
 #[test]
 fn narrow_frame_toggles_board_over_panel_preserving_geometry_and_chat() {
     let web_url = "https://example.test/narrow-link";
-    let mut raw = format!("DECIDE\nD1 | Narrow decision | {web_url}\nRUNNING\n");
-    for n in 1..=13 {
+    let mut raw = format!("DECIDE\nD1 | Narrow decision | {web_url}\n");
+    for n in 2..=9 {
         let _ = writeln!(
             raw,
-            "R{n} | Narrow item {n:02} with extra wrapped detail text"
+            "D{n} | Narrow item {n:02} with extra wrapped detail text"
         );
     }
     let (_root, mut app) = setup_board("bf-narrow", Some(sample_desk(raw.as_bytes())));
@@ -363,7 +363,7 @@ fn narrow_frame_toggles_board_over_panel_preserving_geometry_and_chat() {
     assert!(text(&before).contains(PANEL_TURN));
     assert!(!text(&before).contains("Narrow decision"));
     let header_before = row_text(&before, 0);
-    assert!(header_before.contains("desk 1") && header_before.contains("B board"));
+    assert!(header_before.contains("desk 9") && header_before.contains("B board"));
 
     bytes(&mut app, b"B");
     let replaced = paint(&mut app, 120, 20);
@@ -478,9 +478,9 @@ fn absent_board_leaves_every_width_target_and_key_unchanged() {
 
 #[test]
 fn exact_fit_and_bottom_scroll_cue_and_plain_board_click() {
-    let mut exact_raw = String::from("RUNNING\n");
+    let mut exact_raw = String::from("DECIDE\n");
     for n in 1..=6 {
-        let _ = writeln!(exact_raw, "R{n} | Fit {n}");
+        let _ = writeln!(exact_raw, "D{n} | Fit {n}");
     }
     let (_root, mut exact_app) =
         setup_board("bf-exact-fit", Some(sample_desk(exact_raw.as_bytes())));
@@ -494,11 +494,11 @@ fn exact_fit_and_bottom_scroll_cue_and_plain_board_click() {
         "exact 8-row board shows no overflow cue:\n{exact_board}"
     );
 
-    let mut long_raw = String::from("RUNNING\n");
+    let mut long_raw = String::from("DECIDE\n");
     for n in 1..=9 {
-        let _ = writeln!(long_raw, "R{n} | Row {n:02}");
+        let _ = writeln!(long_raw, "D{n} | Row {n:02}");
     }
-    long_raw.push_str("R10 | Plain tenth | https://example.test/extra\n");
+    long_raw.push_str("D10 | Plain tenth | https://example.test/extra\n");
     let (_root2, mut long_app) =
         setup_board("bf-bottom-cue", Some(sample_desk(long_raw.as_bytes())));
     let _ = paint(&mut long_app, 200, 10);
@@ -524,11 +524,11 @@ fn exact_fit_and_bottom_scroll_cue_and_plain_board_click() {
 
 #[test]
 fn board_wheel_redraw_signal_respects_scroll_bounds() {
-    let mut raw = String::from("RUNNING\nR1 | Top milestone\n");
+    let mut raw = String::from("DECIDE\nD1 | Top milestone\n");
     for n in 2..=13 {
         let _ = writeln!(
             raw,
-            "R{n} | Middle step {n:02} with extra wrapped detail text"
+            "D{n} | Middle step {n:02} with extra wrapped detail text"
         );
     }
     let (_root, mut app) = setup_board("bf-wheel-bounds", Some(sample_desk(raw.as_bytes())));
