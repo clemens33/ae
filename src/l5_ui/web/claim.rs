@@ -355,7 +355,10 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
         reason = "a door: opens a web claim directory or its parent to fsync it for a durable claim — see clippy.toml"
     )]
     let handle = std::fs::File::open(dir)?;
-    handle.sync_all()
+    let synced = handle.sync_all();
+    #[cfg(test)]
+    seen(Seen::Synced, dir, synced.is_ok());
+    synced
 }
 
 /// The claim names in the claim directory; none when it cannot be listed.
@@ -365,6 +368,8 @@ fn names(dir: &Path) -> Vec<String> {
         reason = "a door: lists the web claim directory for the seven-day prune — see clippy.toml"
     )]
     let listing = std::fs::read_dir(dir);
+    #[cfg(test)]
+    seen(Seen::Listed, dir, listing.is_ok());
     listing
         .map(|entries| {
             entries
@@ -375,11 +380,206 @@ fn names(dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// What the store did to one directory, for the tests: an `fsync` that
+/// returned, or a listing that opened.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    Synced,
+    Listed,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SEEN: std::cell::RefCell<Vec<(Seen, PathBuf)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record on this thread that `dir` was synced or listed, when `done`.
+#[cfg(test)]
+fn seen(what: Seen, dir: &Path, done: bool) {
+    if done {
+        SEEN.with_borrow_mut(|seen| seen.push((what, dir.to_owned())));
+    }
+}
+
+/// What this thread's stores did since the last take, in order.
+#[cfg(test)]
+fn take_seen() -> Vec<(Seen, PathBuf)> {
+    SEEN.with_borrow_mut(std::mem::take)
+}
+
 #[cfg(test)]
 mod tests {
     use std::io;
 
-    use super::{Claim, Claims, Outcome, Refused, SourcePresence, Word, decode, encode, store};
+    use std::path::Path;
+
+    use super::{
+        Claim, Claims, KEEP, Lookup, Outcome, Refused, Seen, SourcePresence, Word, decode, encode,
+        store, take_seen,
+    };
+
+    /// An unsettled claim created at listener second `created`.
+    fn pending(created: u64) -> Claim {
+        Claim {
+            payload: "a".repeat(64),
+            route: "b".repeat(64),
+            id: "ae-20261122T200000Z-0000000a".to_owned(),
+            created,
+            outcome: None,
+        }
+    }
+
+    /// Words with no outcome are a partial outcome, never an unsettled claim.
+    #[test]
+    fn words_without_an_outcome_are_a_partial_outcome() {
+        let text = encode(&pending(5));
+        assert_eq!(decode(text.as_bytes()), Ok(pending(5)));
+        let words = format!("{text}words cap-full: 5/5\n");
+        assert_eq!(decode(words.as_bytes()), Err(Refused("a partial outcome")));
+    }
+
+    /// A seat, a session or words is one non-empty value with no control
+    /// character: an empty one or one with a tab, a carriage return or a bell
+    /// is no claim.
+    #[test]
+    fn an_outcome_value_is_one_non_empty_line() {
+        let mut settled = pending(5);
+        settled.outcome = Some(Outcome {
+            word: Word::Refused,
+            seat: "tui".to_owned(),
+            to: "sample".to_owned(),
+            words: "cap-full".to_owned(),
+        });
+        let text = encode(&settled);
+        assert_eq!(decode(text.as_bytes()), Ok(settled));
+        for (from, to, why) in [
+            ("seat tui\n", "seat \n", "a seat out of shape"),
+            ("seat tui\n", "seat t\tui\n", "a seat out of shape"),
+            ("to sample\n", "to sam\rple\n", "a session out of shape"),
+            (
+                "words cap-full\n",
+                "words cap\u{7}full\n",
+                "words out of shape",
+            ),
+        ] {
+            let bad = text.replace(from, to);
+            assert_ne!(bad, text, "{from:?} is in the record");
+            assert_eq!(decode(bad.as_bytes()), Err(Refused(why)), "{bad:?}");
+        }
+    }
+
+    /// The store's `fsync`s and listings so far on this thread, with each
+    /// directory named relative to `root`.
+    fn seen_under(root: &Path) -> Vec<(Seen, String)> {
+        take_seen()
+            .into_iter()
+            .map(|(what, dir)| {
+                let dir = dir.strip_prefix(root).map_or_else(
+                    |_| dir.display().to_string(),
+                    |rel| rel.display().to_string(),
+                );
+                (what, dir)
+            })
+            .collect()
+    }
+
+    fn synced(dirs: &[&str]) -> Vec<(Seen, String)> {
+        dirs.iter()
+            .map(|dir| (Seen::Synced, (*dir).to_owned()))
+            .collect()
+    }
+
+    /// A fresh store syncs the entries of `web` and `claims` before its first
+    /// claim even when it made neither directory, since an earlier process may
+    /// have crashed before syncing them.
+    #[test]
+    fn a_fresh_store_syncs_the_parents_of_directories_it_finds() {
+        let root = scratch("claim-found");
+        let made = std::fs::create_dir_all(root.join("web").join("claims"));
+        take_seen();
+        let created = Claims::open(&root).create(&"c".repeat(64), &pending(5));
+        let seen = seen_under(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(made.is_ok() && created.is_ok(), "{made:?} {created:?}");
+        assert_eq!(seen, synced(&["", "web", "web/claims"]));
+    }
+
+    /// Once a store synced the parents it syncs only the claim directory,
+    /// until it has to make a directory again.
+    #[test]
+    fn a_store_syncs_the_parents_again_when_it_makes_a_directory_again() {
+        let root = scratch("claim-remade");
+        let claims = Claims::open(&root);
+        take_seen();
+        let first = claims.create(&"c".repeat(64), &pending(5));
+        let after_first = seen_under(&root);
+        let second = claims.create(&"d".repeat(64), &pending(5));
+        let after_second = seen_under(&root);
+        let removed = std::fs::remove_dir_all(root.join("web").join("claims"));
+        let third = claims.create(&"e".repeat(64), &pending(5));
+        let after_third = seen_under(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            first.is_ok() && second.is_ok() && removed.is_ok() && third.is_ok(),
+            "{first:?} {second:?} {removed:?} {third:?}"
+        );
+        assert_eq!(after_first, synced(&["", "web", "web/claims"]));
+        assert_eq!(after_second, synced(&["web/claims"]));
+        assert_eq!(after_third, synced(&["", "web", "web/claims"]));
+    }
+
+    /// A prune that removes an expired claim makes the removal durable.
+    #[test]
+    fn the_prune_syncs_the_claim_directory_after_it_removes_a_claim() {
+        let root = scratch("claim-pruned");
+        let claims = Claims::open(&root);
+        let name = "c".repeat(64);
+        let created = claims.create(&name, &pending(0));
+        take_seen();
+        claims.prune(KEEP + 1);
+        let seen = seen_under(&root);
+        let left = claims.lookup(&name);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(created.is_ok(), "{created:?}");
+        assert_eq!(left, Lookup::Absent, "the expired claim is removed");
+        assert_eq!(
+            seen,
+            [
+                (Seen::Listed, "web/claims".to_owned()),
+                (Seen::Synced, "web/claims".to_owned())
+            ]
+        );
+    }
+
+    /// A linked `web` is never followed by the prune: the expired claim
+    /// behind it stays, and no directory under the link is even listed.
+    #[test]
+    fn the_prune_never_walks_a_linked_web() {
+        let root = scratch("claim-link");
+        let elsewhere = scratch("claim-link-target");
+        let name = "c".repeat(64);
+        let foreign = elsewhere.join("claims");
+        let made = std::fs::create_dir(&foreign)
+            .and_then(|()| std::fs::write(foreign.join(&name), encode(&pending(0))))
+            .and_then(|()| std::os::unix::fs::symlink(&elsewhere, root.join("web")));
+        take_seen();
+        Claims::open(&root).prune(KEEP + 1);
+        let seen = seen_under(&root);
+        let kept = store::read_capped_in(&foreign, &name, 4096);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&elsewhere);
+        assert!(made.is_ok(), "{made:?}");
+        assert!(
+            matches!(&kept, Ok(store::SourceRead::Ready(bytes)) if *bytes == encode(&pending(0)).into_bytes()),
+            "the expired claim behind the link is kept: {kept:?}"
+        );
+        assert!(
+            seen.is_empty(),
+            "nothing under the link is listed or synced: {seen:?}"
+        );
+    }
 
     #[test]
     fn a_settled_claim_without_words_and_one_with_words_round_trip() {
