@@ -745,8 +745,8 @@ mod tests {
     use super::super::claim::KEEP;
     use super::super::clock::ManualClock;
     use super::{
-        Claim, Draft, Epoch, FAILED_KEPT, Failed, Flow, Gate, Hooks, Job, Lookup, Point, Sending,
-        Sends, keep, told, words_of, worker,
+        Claim, Draft, Epoch, FAILED_KEPT, Failed, Flow, Gate, Hooks, Job, Lookup, POLL, Point,
+        Sending, Sends, keep, told, words_of, worker,
     };
 
     #[test]
@@ -967,5 +967,51 @@ mod tests {
             "no prune before the hour: {at_hour_less_a_second:?}"
         );
         assert_eq!(at_hour, Lookup::Absent, "the prune at the hour removes it");
+    }
+
+    /// The worker waits for jobs until it is stopped: a job handed to it after
+    /// it idled through two polls is still carried.
+    #[test]
+    fn the_worker_takes_a_job_after_an_idle_poll() {
+        let root = scratch("idle");
+        let (beats, beat) = std::sync::mpsc::channel();
+        let sends = Sends {
+            root: root.clone(),
+            hooks: Arc::new(Beat(beats)),
+        };
+        let clock = Arc::new(ManualClock::new(1_700_000_000));
+        let (sending, taken) = Sending::new(sends, [7; 32], Epoch::new(clock));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::spawn(worker(Arc::clone(&sending), taken, Arc::clone(&stop)));
+        std::thread::sleep(POLL * 2 + Duration::from_millis(500));
+        let taken_after_idle = pulse(&sending, &beat, 1);
+        stop.store(true, Ordering::SeqCst);
+        let joined = thread.join().is_ok();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            taken_after_idle,
+            "a job handed after an idle poll is carried"
+        );
+        assert!(joined, "the worker ends once it is stopped");
+    }
+
+    /// Hooks that do not say otherwise defer a busy seat after the helpers'
+    /// default; the listener's test hooks rely on it. A contract pin.
+    #[test]
+    fn hooks_that_do_not_say_otherwise_defer_like_the_helpers() {
+        assert_eq!(NoCut.defer(), crate::deliver::DEFAULT_DEFER);
+    }
+
+    /// The production sends defer a busy seat after the command line's own
+    /// setting, and after the helpers' default without one.
+    #[test]
+    fn the_live_sends_defer_after_the_command_lines_setting() {
+        let root = std::path::PathBuf::from("unused");
+        let set = Duration::from_secs(7);
+        assert_eq!(Sends::live_with(root.clone(), set).hooks.defer(), set);
+        assert_eq!(
+            Sends::live(root).hooks.defer(),
+            crate::deliver::DEFAULT_DEFER
+        );
     }
 }
