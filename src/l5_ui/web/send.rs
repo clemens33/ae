@@ -755,10 +755,10 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{Receiver, Sender};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::super::claim::{KEEP, Outcome, Word};
-    use super::super::clock::ManualClock;
+    use super::super::clock::{Clock, ManualClock};
     use super::{
         Claim, Draft, Epoch, FAILED_KEPT, Failed, Flow, Gate, Hooks, Job, Lookup, POLL, Point,
         Receipt, Sending, Sends, admission_refusal, keep, reread, settled, told, words_of, worker,
@@ -984,8 +984,25 @@ mod tests {
         assert_eq!(at_hour, Lookup::Absent, "the prune at the hour removes it");
     }
 
+    /// A manual clock that says so each time its monotonic now is read.
+    struct Reads {
+        clock: ManualClock,
+        read: Sender<()>,
+    }
+
+    impl Clock for Reads {
+        fn now(&self) -> Instant {
+            let _ = self.read.send(());
+            self.clock.now()
+        }
+
+        fn epoch(&self) -> i64 {
+            self.clock.epoch()
+        }
+    }
+
     /// The worker waits for jobs until it is stopped: a job handed to it after
-    /// it idled through two polls is still carried.
+    /// a poll that timed out with no job is still carried.
     #[test]
     fn the_worker_takes_a_job_after_an_idle_poll() {
         let root = scratch("idle");
@@ -994,15 +1011,24 @@ mod tests {
             root: root.clone(),
             hooks: Arc::new(Beat(beats)),
         };
-        let clock = Arc::new(ManualClock::new(1_700_000_000));
+        let (read, reads) = std::sync::mpsc::channel();
+        let clock = Arc::new(Reads {
+            clock: ManualClock::new(1_700_000_000),
+            read,
+        });
         let (sending, taken) = Sending::new(sends, [7; 32], Epoch::new(clock));
+        // The worker reads the clock once at the top of each turn of its loop,
+        // and nothing else reads it before a job: the second read after the
+        // spawn witnesses one poll that timed out with no job and went on.
+        let _ = reads.try_iter().count();
         let stop = Arc::new(AtomicBool::new(false));
         let thread = std::thread::spawn(worker(Arc::clone(&sending), taken, Arc::clone(&stop)));
-        std::thread::sleep(POLL * 2 + Duration::from_millis(500));
-        let taken_after_idle = pulse(&sending, &beat, 1);
+        let idled = (0..2).all(|_| reads.recv_timeout(POLL * 10).is_ok());
+        let taken_after_idle = idled && pulse(&sending, &beat, 1);
         stop.store(true, Ordering::SeqCst);
         let joined = thread.join().is_ok();
         let _ = std::fs::remove_dir_all(&root);
+        assert!(idled, "the worker polled once with no job and went on");
         assert!(
             taken_after_idle,
             "a job handed after an idle poll is carried"
