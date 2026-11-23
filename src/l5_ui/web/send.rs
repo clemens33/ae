@@ -369,12 +369,7 @@ impl Sending {
         if self.gate().pending.contains_key(name) {
             return Some(queued());
         }
-        Some(match self.claims.lookup(name) {
-            Lookup::Known(again) if again.outcome.is_some() && again.id == claim.id => {
-                answer(&again)
-            }
-            _ => unknown(Some(&claim.id)),
-        })
+        Some(reread(&claim, self.claims.lookup(name)))
     }
 
     /// Close admission, then wait up to `wait` for nothing to be queued or
@@ -676,6 +671,17 @@ fn answer(claim: &Claim) -> Response {
     )
 }
 
+/// The answer of `again`, the second read of `claim`, which was unsettled at
+/// the first read and is no longer pending: the receipt once that same claim
+/// settled, unknown with the first read's id otherwise, so a receipt never
+/// answers for another claim.
+fn reread(claim: &Claim, again: Lookup) -> Response {
+    match again {
+        Lookup::Known(again) if again.outcome.is_some() && again.id == claim.id => answer(&again),
+        _ => unknown(Some(&claim.id)),
+    }
+}
+
 /// A console outcome as a claim's: a confirmed send, a refusal with what the
 /// delivery said, or unknown when input may have reached the seat.
 fn settled(outcome: submit::Outcome, receipt: Option<Receipt>, said: &str) -> (Word, String) {
@@ -742,11 +748,11 @@ mod tests {
     use std::sync::mpsc::{Receiver, Sender};
     use std::time::Duration;
 
-    use super::super::claim::KEEP;
+    use super::super::claim::{KEEP, Outcome, Word};
     use super::super::clock::ManualClock;
     use super::{
         Claim, Draft, Epoch, FAILED_KEPT, Failed, Flow, Gate, Hooks, Job, Lookup, POLL, Point,
-        Sending, Sends, keep, told, words_of, worker,
+        Sending, Sends, keep, reread, told, words_of, worker,
     };
 
     #[test]
@@ -1013,5 +1019,68 @@ mod tests {
             Sends::live(root).hooks.defer(),
             crate::deliver::DEFAULT_DEFER
         );
+    }
+
+    /// The second read of a claim that was unsettled and is no longer
+    /// pending: the receipt once that same claim settled, unknown with the
+    /// first read's id for anything else, so a receipt never answers for
+    /// another claim.
+    #[test]
+    fn a_second_read_answers_only_the_same_claim_settled() {
+        const FIRST: &str = "ae-20261122T200000Z-0000000a";
+        const OTHER: &str = "ae-20261122T200001Z-0000000b";
+        let claim = |id: &str, word: Option<Word>| Claim {
+            payload: "a".repeat(64),
+            route: "b".repeat(64),
+            id: id.to_owned(),
+            created: 1,
+            outcome: word.map(|word| Outcome {
+                word,
+                seat: "tui".to_owned(),
+                to: "sample".to_owned(),
+                words: String::new(),
+            }),
+        };
+        let unknown_first = format!(
+            r#"{{"id":"{FIRST}","seat":null,"to":null,"outcome":"unknown","words":"unknown: may have landed, not resent"}}"#
+        );
+        let cases = [
+            (
+                "the same claim settled",
+                Lookup::Known(claim(FIRST, Some(Word::Sent))),
+                format!(
+                    r#"{{"id":"{FIRST}","seat":"tui","to":"sample","outcome":"sent","words":""}}"#
+                ),
+            ),
+            (
+                "another claim settled",
+                Lookup::Known(claim(OTHER, Some(Word::Sent))),
+                unknown_first.clone(),
+            ),
+            (
+                "another claim unsettled",
+                Lookup::Known(claim(OTHER, None)),
+                unknown_first.clone(),
+            ),
+            (
+                "the same claim unsettled",
+                Lookup::Known(claim(FIRST, None)),
+                unknown_first.clone(),
+            ),
+            ("no claim", Lookup::Absent, unknown_first.clone()),
+            ("no readable claim", Lookup::Unreadable, unknown_first),
+        ];
+        let first = claim(FIRST, None);
+        for (case, again, body) in cases {
+            let answer = reread(&first, again);
+            assert_eq!(
+                (
+                    answer.status,
+                    String::from_utf8_lossy(&answer.body).into_owned()
+                ),
+                (200, body),
+                "{case}"
+            );
+        }
     }
 }
