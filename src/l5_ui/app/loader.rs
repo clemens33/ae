@@ -18,6 +18,7 @@ use super::handover::{self, View};
 use super::journals::Journals;
 use super::menu::Dialog;
 use super::peek::{self, Body};
+use super::saved;
 use super::{REFRESH, facts_of, filedoor, fleet, proven_pane, reader};
 use crate::console::deskview::DeskView;
 use crate::console::input::Reading;
@@ -246,6 +247,10 @@ pub(super) enum Answer {
         view: View,
         at: i64,
     },
+    /// The view the durable file holds, read once at start when no handover
+    /// was admitted. It is hostile input already parsed, and a preference
+    /// only: it is never older than it may be.
+    Saved(View),
     /// One capture of the open peek panel's pane, or the refusal that stood
     /// in its place, read at `at` for `generation`.
     Peek {
@@ -503,6 +508,9 @@ pub(super) struct Reader {
     /// The version an exec restart meant this app to be, when it landed in
     /// another core: such an app never restarts again.
     landed: Option<String>,
+    /// The durable view file to read at start, when this start was handed no
+    /// view by an exec restart: `None` reads nothing.
+    saved: Option<PathBuf>,
     /// The version the command link already named at this app's first look,
     /// when not its own: this core did not arrive through that link, and an
     /// exec of it would only land here again.
@@ -619,6 +627,7 @@ impl Reader {
             server,
             own: None,
             landed: None,
+            saved: None,
             unlinked: None,
             looked: false,
             writing: None,
@@ -679,11 +688,22 @@ impl Reader {
         self
     }
 
+    /// The durable view file this start may restore from; set once before
+    /// spawn, and only when no exec restart handed a view on.
+    pub(super) fn saved(&mut self, path: Option<PathBuf>) -> &mut Self {
+        self.saved = path;
+        self
+    }
+
     /// Read until the UI is gone.
     fn run(mut self, asks: &Receiver<Request>, wake: &Sender<Wake>) {
         let send = |answer| wake.send(Wake::Answer(Box::new(answer))).is_ok();
-        if let Some((view, at)) = self.handover()
-            && !send(Answer::Handover { view, at })
+        if let Some((view, at)) = self.handover() {
+            if !send(Answer::Handover { view, at }) {
+                return;
+            }
+        } else if let Some(held) = self.saved.take().and_then(|path| saved::read_file(&path))
+            && !send(Answer::Saved(held.view))
         {
             return;
         }

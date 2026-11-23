@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::fleet::Fleet;
-use super::handover::View;
+use super::handover::{self, View};
 use crate::config::is_agent_name;
 use crate::console::input;
 use crate::desk::Section;
@@ -798,9 +798,50 @@ impl Model {
     #[must_use]
     pub(crate) fn view(&self, id: &str) -> Option<View> {
         let session = self.selected.clone().filter(|name| is_session_name(name))?;
-        Some(View {
+        Some(self.view_of(session, (!id.is_empty()).then(|| id.to_owned())?))
+    }
+
+    /// What the durable file keeps: [`Model::view`] while a session is
+    /// selected and its uuid is read, else the preferences alone under the
+    /// no-selection sentinel, so an orchestrator-only fleet still saves its
+    /// board, widths, zoom and panel.
+    #[must_use]
+    pub(crate) fn saved(&self, id: Option<&str>) -> View {
+        let named = (self.selected.clone().filter(|name| is_session_name(name)))
+            .zip(id.filter(|id| !id.is_empty()).map(str::to_owned));
+        match named {
+            Some((session, id)) => self.view_of(session, id),
+            None => View {
+                focus: None,
+                pages: 0,
+                rows: 0,
+                list_top: None,
+                body_top: 0,
+                ..self.view_of(handover::NO_SESSION.to_owned(), handover::NO_ID.to_owned())
+            },
+        }
+    }
+
+    /// Take over a durable view's preferences: the widths, the zoom and the
+    /// board's hidden flag and tab, nothing of any selection. Applied before
+    /// any fleet read, so the first frame already draws them.
+    pub(crate) fn adopt_layout(&mut self, view: &View) {
+        self.split = Split {
+            sidebar: view.sidebar,
+            list: view.list,
+            panel: view.panel,
+            desk: view.desk,
+        };
+        self.zoom = view.zoom;
+        self.desk_hidden = view.desk_hidden;
+        self.desk_tab = view.desk_tab;
+        self.moved();
+    }
+
+    fn view_of(&self, session: String, id: String) -> View {
+        View {
             session,
-            id: (!id.is_empty()).then(|| id.to_owned())?,
+            id,
             focus: self.focus.clone().filter(|seat| is_agent_name(seat)),
             sidebar: self.split.sidebar,
             list: self.split.list,
@@ -814,7 +855,7 @@ impl Model {
             desk_tab: self.desk_tab,
             zoom: self.zoom,
             orchestrator: None,
-        })
+        }
     }
 
     /// Take over a handed view when `fleet` lists its session: the selection

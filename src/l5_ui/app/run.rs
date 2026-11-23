@@ -5,8 +5,8 @@ use std::io::IsTerminal as _;
 use super::{
     App, Duration, FLIGHT_QUIT_BOUND, HINT, Instant, Keep, Keys, NO_TERMINAL, OWN, Path,
     RecvTimeoutError, ServerId, TICK, Terminal, Timestamp, USAGE, Wake, Write, backend, console,
-    doors, draw_frame, forward, handover, loader, maintainer, mpsc, paneview, take_keys,
-    terminal_text, toggle, transport, tty, upgrade,
+    doors, draw_frame, forward, handover, loader, maintainer, mpsc, paneview, saved, terminal_text,
+    toggle, transport, tty, upgrade,
 };
 
 /// `ae app [session]`.
@@ -81,9 +81,14 @@ pub fn run(
     );
     let (keep, landed) = handed_on(handed);
     let own = (caller.clone(), pane.clone());
-    let reader = reader_of(&root, home.clone(), own, landed);
+    // A view an exec restart handed on wins over the durable file: with one
+    // kept, the file is never opened.
+    let durable = saved::path(&root);
+    let restore = keep.is_none().then(|| durable.clone());
+    let reader = reader_of(&root, home.clone(), own, landed, restore);
     let notices = wake.clone();
     let autostart = wake.clone();
+    let told = wake.clone();
     let started = forward(reads, wake.clone()).and_then(|()| loader::spawn(reader, wake));
     let (ask, reader) = match started {
         Ok(started) => started,
@@ -116,6 +121,13 @@ pub fn run(
     let mut app = App::new(home, caller, pane, Some(ask));
     app.root = Some(root);
     app.keep = keep;
+    app.saver = Some(saved::Saver::start(
+        move |text| saved::write_file(&durable, text),
+        move |why| {
+            let line = format!("ae app: could not save the view: {why}");
+            let _ = told.send(Wake::Notice(line));
+        },
+    ));
     let mut keys = Keys::app();
     let (mut dirty, mut first, mut restart) = (true, None, None);
     let code = loop {
@@ -152,6 +164,7 @@ pub fn run(
             break clipped(&mut app, terminal.backend_mut()).map(|()| 0)?;
         };
         dirty |= redraw | app.lapse(Instant::now());
+        app.persist_view(Instant::now());
         app.focus();
         if reader.is_finished() {
             break 1;
@@ -190,6 +203,7 @@ fn reader_of(
     home: Option<String>,
     own: (Option<ServerId>, Option<String>),
     landed: Option<String>,
+    restore: Option<std::path::PathBuf>,
 ) -> loader::Reader {
     let declared = doors::declared_server(crate::shape::current());
     let server = doors::launch_target(declared.as_ref());
@@ -200,7 +214,7 @@ fn reader_of(
         local: doors::local_config(&doors::cwd(), Some(&global)),
         global,
     });
-    reader.own_pane(own.0, own.1).landed(landed);
+    reader.own_pane(own.0, own.1).landed(landed).saved(restore);
     reader
 }
 
@@ -209,7 +223,14 @@ fn reader_of(
 fn handed_on(text: Option<String>) -> (Option<Keep>, Option<String>) {
     let now = Timestamp::now().epoch();
     match text.map(|text| upgrade::carried(&text, std::process::id(), crate::shape::VERSION, now)) {
-        Some(upgrade::Carried::View(view, at)) => (Some(Keep { view, at }), None),
+        Some(upgrade::Carried::View(view, at)) => (
+            Some(Keep {
+                view,
+                at,
+                saved: false,
+            }),
+            None,
+        ),
         Some(upgrade::Carried::Landed(version)) => (None, Some(version)),
         Some(upgrade::Carried::Ignored) | None => (None, None),
     }
@@ -269,6 +290,15 @@ pub(super) fn step(
     // returns to stop it.
     upkeep.pause(maintainer::STOP_BOUND);
     outside.suspend();
+    // The view is written before the process is replaced: a restart is a quit
+    // for the file.
+    if let Err(why) = app.persist_final_view() {
+        writeln!(
+            err,
+            "{}",
+            terminal_text(&format!("ae app: could not save the view: {why}"))
+        )?;
+    }
     let why = outside.exec(&argv).to_string();
     if let Err(lost) = outside.resume() {
         let said = format!("ae app: could not restart into ae {version} - {why}; {lost}");
@@ -413,6 +443,16 @@ fn end(
     // The store's upkeep stops before anything else.
     upkeep.stop(maintainer::STOP_BOUND);
     drop(tty);
+    // The last word of the durable view, once the terminal is back: a change
+    // the human made in this run is written and waited for, and a failure is
+    // said once.
+    if let Err(why) = app.persist_final_view() {
+        writeln!(
+            err,
+            "{}",
+            terminal_text(&format!("ae app: could not save the view: {why}"))
+        )?;
+    }
     app.finish_flight(err, FLIGHT_QUIT_BOUND)?;
     let in_tmux = app.server.is_some();
     if let Some((version, restart)) = restart {
@@ -481,7 +521,7 @@ pub(super) fn drain(
     if let Some(resumed) = app.resumed_at {
         held.retain(|(_, origin)| paneview::keep_key(*origin, resumed));
     }
-    let (mut redraw, mut fed) = (take_keys(app, held)?, false);
+    let (mut redraw, mut fed) = (app.human(held)?, false);
     while app.queued.is_empty()
         && !app.warning_unpainted()
         && app.pane_view.is_none()
@@ -538,10 +578,10 @@ pub(super) fn drain(
             }
             Wake::Closed => return None,
         };
-        redraw |= take_keys(app, keyed)?;
+        redraw |= app.human(keyed)?;
     }
     if !fed && app.pane_view.is_none() && !app.warning_unpainted() {
-        redraw |= take_keys(app, keys.idle(Instant::now()))?;
+        redraw |= app.human(keys.idle(Instant::now()))?;
     }
     app.forget(keys.begun());
     Some(redraw)

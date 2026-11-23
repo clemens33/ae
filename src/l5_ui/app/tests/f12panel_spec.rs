@@ -196,7 +196,14 @@ pub(super) fn restart(app: &mut App, root: &Root) -> (String, Keep) {
     let Carried::View(view, at) = upgrade::carried(&text, std::process::id(), NEXT, now) else {
         panic!("the exec receiver must accept the carrier: {text}");
     };
-    (text, Keep { view, at })
+    (
+        text,
+        Keep {
+            view,
+            at,
+            saved: false,
+        },
+    )
 }
 
 /// How the view reaches the app that replaces the sender.

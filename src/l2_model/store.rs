@@ -364,6 +364,62 @@ pub(crate) fn read_capped_identified(path: &Path, cap: u64) -> CappedRead {
     done(Ok(SourceRead::Ready(body)))
 }
 
+/// [`read_capped`] for a file whose node must never be followed, at the price
+/// of one more guarantee: the OPEN itself refuses a link and never waits, so a
+/// symlink or a FIFO swapped in between the classification and the open is
+/// refused instead of followed or blocked on. The open carries `O_NOFOLLOW |
+/// O_NONBLOCK` ([`HOLD_FLAGS`]) and the handle's own status must say regular
+/// before one byte is read. A target with no spelled flag pair reads
+/// `Unreadable` and never opens anything: the caller loses only what it was
+/// reading.
+///
+/// # Errors
+///
+/// [`Oversized`] for a regular file longer than `cap`.
+pub(crate) fn read_nofollow_capped(path: &Path, cap: u64) -> Result<SourceRead, Oversized> {
+    let Some(flags) = HOLD_FLAGS else {
+        return Ok(SourceRead::Unreadable(
+            "no spelled O_NOFOLLOW flag on this target".to_owned(),
+        ));
+    };
+    match node_meta(path) {
+        Ok(meta) => {
+            if let Some(what) = nonregular_leg(meta.file_type()) {
+                return Ok(SourceRead::Invalid(what.to_owned()));
+            }
+        }
+        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(SourceRead::Absent),
+        Err(why) => return Ok(SourceRead::Unreadable(why.to_string())),
+    }
+    #[cfg(test)]
+    {
+        classified_hook::run(path);
+    }
+    let opened = OpenOptions::new().read(true).custom_flags(flags).open(path);
+    let file = match opened {
+        Ok(file) => file,
+        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(SourceRead::Absent),
+        Err(why) => return Ok(SourceRead::Unreadable(why.to_string())),
+    };
+    let shape = match file.metadata() {
+        Ok(meta) => meta.file_type(),
+        Err(why) => return Ok(SourceRead::Unreadable(why.to_string())),
+    };
+    if let Some(what) = nonregular_leg(shape) {
+        return Ok(SourceRead::Invalid(what.to_owned()));
+    }
+    let mut body = Vec::new();
+    if let Err(why) =
+        io::Read::read_to_end(&mut io::Read::take(file, cap.saturating_add(1)), &mut body)
+    {
+        return Ok(SourceRead::Unreadable(why.to_string()));
+    }
+    if body.len() as u64 > cap {
+        return Err(Oversized);
+    }
+    Ok(SourceRead::Ready(body))
+}
+
 /// A one-shot hook between the classification and the open of
 /// [`read_capped_identified`] (`cfg(test)` only): the instant a file seen as
 /// regular can still vanish before it is opened.
@@ -2800,6 +2856,62 @@ mod tests {
         let again = read_capped_identified(&path, 4);
         assert_eq!(again.read, Ok(SourceRead::Ready(b"abcd".to_vec())));
         assert!(again.opened.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The no-follow read refuses a link that replaces the classified file
+    /// between the classification and the open, and a link or directory that
+    /// stood there from the start, without reading a byte through either. The
+    /// FIFO that would block an ungated open needs mkfifo and is covered
+    /// black-box (`tests/it/app_view_file_spec.rs`).
+    #[test]
+    fn a_nofollow_read_refuses_a_link_swapped_in_at_the_open() {
+        use super::{Oversized, SourceRead, classified_hook, read_nofollow_capped};
+        if super::HOLD_FLAGS.is_none() {
+            // An unshipped target reads nothing: there is nothing to refuse.
+            return;
+        }
+        let dir = scratch("nofollow");
+        let (path, target) = (dir.join("view"), dir.join("target"));
+        std::fs::write(&path, b"abcd").unwrap();
+        std::fs::write(&target, b"zzzz").unwrap();
+        assert_eq!(
+            read_nofollow_capped(&path, 4),
+            Ok(SourceRead::Ready(b"abcd".to_vec())),
+            "a regular file reads whole"
+        );
+        assert_eq!(read_nofollow_capped(&path, 3), Err(Oversized), "over cap");
+
+        // The classification sees a regular file; the hook then swaps a link
+        // to other valid bytes in; the open must refuse it.
+        let (victim, aim) = (path.clone(), target.clone());
+        classified_hook::arm(&path, move || {
+            std::fs::remove_file(&victim).unwrap();
+            std::os::unix::fs::symlink(&aim, &victim).unwrap();
+        });
+        let swapped = read_nofollow_capped(&path, 4);
+        assert!(
+            std::fs::symlink_metadata(&path).unwrap().is_symlink(),
+            "the hook did not run between the two steps"
+        );
+        assert!(
+            matches!(swapped, Ok(SourceRead::Unreadable(_))),
+            "a swapped-in link must not be followed: {swapped:?}"
+        );
+
+        // A link or a directory that stands there from the start is Invalid.
+        assert_eq!(
+            read_nofollow_capped(&path, 4),
+            Ok(SourceRead::Invalid("a symlink".to_owned()))
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(
+            read_nofollow_capped(&path, 4),
+            Ok(SourceRead::Invalid("a directory".to_owned()))
+        );
+        std::fs::remove_dir(&path).unwrap();
+        assert_eq!(read_nofollow_capped(&path, 4), Ok(SourceRead::Absent));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

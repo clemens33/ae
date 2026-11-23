@@ -49,6 +49,21 @@ pub const FLAG: &str = "--app-view";
 pub const MAX_AGE_SECS: i64 = 60;
 /// The whole text, in bytes.
 pub const CAP: usize = 512;
+/// The durable view's file name, directly under the state root. See
+/// [`render_file`].
+pub const FILE: &str = "app-view";
+/// The most bytes the durable file may hold: the line and its one line feed.
+pub const FILE_CAP: usize = CAP + 1;
+/// The `pane` field of a durable line: the file belongs to no pane, and this
+/// is the smallest id the one grammar accepts.
+pub const FILE_PANE: &str = "%0";
+/// The session a durable line names when no session is selected (an
+/// orchestrator-only fleet draws none): the orchestrator role's own name,
+/// which is never an ordinary session's. With [`NO_ID`] it is the one
+/// spelling of "no selection", so the board, widths, zoom and panel still ride.
+pub const NO_SESSION: &str = "orchestrator";
+/// The nil uuid, the id of [`NO_SESSION`] in a durable line with no selection.
+pub const NO_ID: &str = "00000000-0000-0000-0000-000000000000";
 
 const PAGES_MAX: usize = 1_000_000;
 const ROWS_MAX: usize = 65_535;
@@ -85,6 +100,28 @@ pub struct View {
     pub zoom: bool,
     /// An open orchestrator panel, independent of the main view.
     pub orchestrator: Option<OrchestratorView>,
+}
+
+impl View {
+    /// Whether this view names no selection: the one sentinel a durable line
+    /// carries when no session is selected.
+    #[must_use]
+    pub fn unselected(&self) -> bool {
+        self.session == NO_SESSION && self.id == NO_ID
+    }
+
+    /// This view without its scroll hints (rows, pages, list and body tops, and
+    /// the panel's own): what a change to the view is judged on. Scroll rides
+    /// along with the next write and never causes one.
+    #[must_use]
+    pub fn settled(&self) -> Self {
+        let mut view = self.clone();
+        (view.pages, view.rows, view.list_top, view.body_top) = (0, 0, None, 0);
+        if let Some(panel) = view.orchestrator.as_mut() {
+            (panel.pages, panel.rows) = (0, 0);
+        }
+        view
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +245,45 @@ impl Handover {
     pub fn admits(&self, pane: &str, version: &str, now: i64) -> bool {
         self.pane == pane && self.version == version && fresh(self.at, now)
     }
+
+    /// `view` as the durable file holds it: bound to no pane, written by
+    /// `version` at `at`.
+    #[must_use]
+    pub fn durable(version: &str, at: i64, view: View) -> Self {
+        Self {
+            pane: FILE_PANE.to_owned(),
+            version: version.to_owned(),
+            at,
+            view,
+        }
+    }
+}
+
+/// The durable file's exact bytes: the canonical line and one line feed. The
+/// file has one spelling, so what [`parse_file`] accepts renders back to the
+/// same bytes.
+#[must_use]
+pub fn render_file(held: &Handover) -> String {
+    format!("{}\n", held.render())
+}
+
+/// The handover the durable file's `bytes` spell, or `None` unless they are
+/// exactly what [`render_file`] writes: at most [`FILE_CAP`] bytes, valid
+/// UTF-8, one canonical line (the live parser's two legacy spellings are not
+/// canonical), one line feed and nothing after it. The file is
+/// hostile input like the option and the argument. Its pane, version and age
+/// are never judged: the file is for no pane and outlives every upgrade, and
+/// the uuid binds what it carries.
+#[must_use]
+pub fn parse_file(bytes: &[u8]) -> Option<Handover> {
+    if bytes.len() > FILE_CAP {
+        return None;
+    }
+    let line = std::str::from_utf8(bytes).ok()?.strip_suffix('\n')?;
+    // The live option still reads the older core's `overview` token and an
+    // empty trailing panel width. No older core ever wrote this file, so it
+    // has exactly one spelling: what does not render back is refused.
+    parse(line).filter(|held| held.render() == line)
 }
 
 /// Whether a handover written at `at` may still be used at `now`: not from the
@@ -233,6 +309,18 @@ pub fn decide(
     scanned: bool,
 ) -> Verdict {
     if !fresh(at, now) {
+        return Verdict::Discard;
+    }
+    decide_saved(view, row, id, scanned)
+}
+
+/// [`decide`] without the age rule, for the durable file's view: the same
+/// identity and completeness rules, whatever its age. A view that names no
+/// selection ([`View::unselected`]) has nothing to select, so it is never
+/// applied.
+#[must_use]
+pub fn decide_saved(view: &View, row: bool, id: Option<&str>, scanned: bool) -> Verdict {
+    if view.unselected() {
         return Verdict::Discard;
     }
     match id.filter(|id| !id.is_empty()) {
@@ -404,6 +492,22 @@ mod tests {
 
     const WIRE: &str = "v1|%7|2026.10.99|1760259000|web|6f1c2b7e-0d3a-4c58-9a2e-5b1d7c9e0a11|agents|colead|31|9|2|0|1|4";
     const ORCH_ID: &str = "0199c0de-bbbb-4890-abcd-ef0123456789";
+
+    #[test]
+    fn the_file_reads_one_spelling_where_the_live_option_reads_two_more() {
+        let canonical = format!("{WIRE}\n");
+        let held = parse_file(canonical.as_bytes()).expect("the canonical line");
+        assert_eq!(render_file(&held), canonical, "byte for byte");
+        let overview = WIRE.replacen("|agents|", "|overview|", 1);
+        let empty_width = format!("{WIRE}|");
+        for legacy in [overview, empty_width] {
+            assert!(parse(&legacy).is_some(), "the option still reads {legacy}");
+            assert_eq!(parse_file(format!("{legacy}\n").as_bytes()), None);
+        }
+        let open = format!("{}||full,{ORCH_ID},3,2", WIRE.replacen("v1|", "v2|", 1));
+        let held = parse_file(format!("{open}\n").as_bytes()).expect("an open panel");
+        assert_eq!(render_file(&held), format!("{open}\n"));
+    }
 
     #[test]
     fn v2_round_trips_both_width_forms_and_clamps_panel_scroll() {

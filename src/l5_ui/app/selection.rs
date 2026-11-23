@@ -3,9 +3,9 @@
 use super::fleet::Facts;
 use super::panel::{Opening, Panel};
 use super::{
-    Answer, App, Arm, Buffer, Drawn, Instant, LANE_HOLD, Move, ORCH, QUIT_WINDOW, Rc, Reading,
-    Refusal, Request, SeatRef, Shown, Stage, Status, Timestamp, handover, loader, model, open,
-    paneview, proven_pane, select, theme, tmux, toggle, transport,
+    Answer, App, Arm, Buffer, Drawn, Instant, Keep, Key, LANE_HOLD, Move, ORCH, QUIT_WINDOW, Rc,
+    Reading, Refusal, Request, SeatRef, Shown, Stage, Status, Timestamp, handover, loader, model,
+    open, paneview, proven_pane, select, take_keys, theme, tmux, toggle, transport,
 };
 
 impl App {
@@ -22,9 +22,7 @@ impl App {
             let name = keep.view.session.as_str();
             let id = self.ids.get(name).map(String::as_str);
             let now = Timestamp::now().epoch();
-            stopped(name)
-                && handover::decide(keep.at, now, &keep.view, true, id, scanned)
-                    == handover::Verdict::Apply
+            stopped(name) && self.keeps_view(keep, true, id, scanned, now)
         });
         self.stopped_open |= selected || handed;
         self.hidden.clear();
@@ -170,7 +168,20 @@ impl App {
         let row = self.fleet.rows.iter().any(|row| row.name == name);
         let id = self.ids.get(name).map(String::as_str);
         let now = Timestamp::now().epoch();
-        match handover::decide(keep.at, now, &keep.view, row, id, scanned) {
+        match self.verdict_on(&keep, row, id, scanned, now) {
+            handover::Verdict::Apply if keep.saved => {
+                // The layout and the panel were taken at the answer. The
+                // selection comes along only for an app that named no home
+                // of its own, or whose home is the saved session.
+                if self
+                    .home
+                    .as_deref()
+                    .is_none_or(|home| home == keep.view.session)
+                {
+                    self.model.adopt(&self.fleet, &keep.view);
+                    self.restored = true;
+                }
+            }
             handover::Verdict::Apply => {
                 self.model.adopt(&self.fleet, &keep.view);
                 self.restored = true;
@@ -182,6 +193,153 @@ impl App {
             handover::Verdict::Defer => self.keep = Some(keep),
             handover::Verdict::Discard => {}
         }
+    }
+
+    /// What a fleet read decides for a kept view: a handed one by
+    /// [`handover::decide`], with its age; one from the durable file by
+    /// [`handover::decide_saved`], whatever its age.
+    fn verdict_on(
+        &self,
+        keep: &Keep,
+        row: bool,
+        id: Option<&str>,
+        scanned: bool,
+        now: i64,
+    ) -> handover::Verdict {
+        if keep.saved {
+            handover::decide_saved(&keep.view, row, id, scanned)
+        } else {
+            handover::decide(keep.at, now, &keep.view, row, id, scanned)
+        }
+    }
+
+    /// Whether the kept view would be applied for the listed `row` now.
+    fn keeps_view(
+        &self,
+        keep: &Keep,
+        row: bool,
+        id: Option<&str>,
+        scanned: bool,
+        now: i64,
+    ) -> bool {
+        self.verdict_on(keep, row, id, scanned, now) == handover::Verdict::Apply
+            && (!keep.saved
+                || self
+                    .home
+                    .as_deref()
+                    .is_none_or(|home| home == keep.view.session))
+    }
+
+    /// Take in the durable view the loader read at start. A handed view that
+    /// is already kept, or any input, wins: the file is never read over
+    /// either. The layout applies at once, before any fleet read; the panel
+    /// follows the first proof of the orchestrator, and the selection the
+    /// fleet read that settles the keep.
+    pub(super) fn saved_in(&mut self, view: handover::View) {
+        if self.touched || self.keep.is_some() {
+            return;
+        }
+        self.model.adopt_layout(&view);
+        let homed = self.orch.opening == Opening::Home;
+        self.orch.opening = Opening::Saved(view.orchestrator.clone(), homed);
+        if !view.unselected() {
+            let at = Timestamp::now().epoch();
+            self.keep = Some(Keep {
+                view,
+                at,
+                saved: true,
+            });
+        }
+    }
+
+    /// The view the durable file keeps, as the app stands: only once a fleet
+    /// read named the sessions' uuids, so a start that has read nothing never
+    /// writes a half-built view over the file.
+    pub(super) fn saved_view(&self) -> Option<handover::View> {
+        if !self.fleeted {
+            return None;
+        }
+        let id = (self.model.selected()).and_then(|name| self.ids.get(name).map(String::as_str));
+        let mut view = self.model.saved(id);
+        view.orchestrator = self.orch.panel.as_ref().and_then(Panel::handover);
+        Some(view)
+    }
+
+    /// What the settled view stands at now, for [`App::viewed_by_the_human`].
+    pub(super) fn settled_view(&self) -> Option<handover::View> {
+        self.saved_view().map(|view| view.settled())
+    }
+
+    /// Take `keyed` as the human's action and judge what it changed in the view,
+    /// around this one call: an answer, a proof or a fleet read taken in the
+    /// same turn is never the human's change. Every dispatch of the human's keys
+    /// goes through here: the loop's three intakes and the keys a first fleet
+    /// read replays.
+    pub(super) fn human(&mut self, keyed: Vec<(Key, Instant)>) -> Option<bool> {
+        if keyed.is_empty() {
+            return take_keys(self, keyed);
+        }
+        let before = self.settled_view();
+        let taken = take_keys(self, keyed);
+        self.viewed_by_the_human(before);
+        taken
+    }
+
+    /// Judge one action of the human, around the keys it dispatched: when the
+    /// settled view differs from `before`, taken just ahead of them, the human
+    /// changed the view, and the next debounced write and the final one are
+    /// due. A change an answer made (a fleet read, a proof, a vanished session)
+    /// never comes through here, even in a turn that also read a key.
+    pub(super) fn viewed_by_the_human(&mut self, before: Option<handover::View>) {
+        if before.is_some() && self.settled_view() != before {
+            self.view_dirty = true;
+            self.view_owed = true;
+        }
+    }
+
+    /// The text of the durable file for the view as it stands, `None` before a
+    /// fleet read.
+    fn saved_text(&self) -> Option<String> {
+        let view = self.saved_view()?;
+        let held =
+            handover::Handover::durable(crate::shape::VERSION, Timestamp::now().epoch(), view);
+        Some(handover::render_file(&held))
+    }
+
+    /// Hand the changed view to the writer when its debounce allows.
+    pub(super) fn persist_view(&mut self, now: Instant) {
+        if !self.view_dirty || !self.saver.as_ref().is_some_and(|saver| saver.ready(now)) {
+            return;
+        }
+        let Some(text) = self.saved_text() else {
+            return;
+        };
+        if self
+            .saver
+            .as_mut()
+            .is_some_and(|saver| saver.submit(text, now))
+        {
+            self.view_dirty = false;
+        }
+    }
+
+    /// The last word on the way out: when the human changed the view in this
+    /// run, write it now and wait for the write, however long it takes, behind
+    /// any debounced write still running; a run that changed nothing leaves the
+    /// file alone. A failure is returned once.
+    ///
+    /// # Errors
+    ///
+    /// Why the write failed.
+    pub(super) fn persist_final_view(&mut self) -> Result<(), String> {
+        if !self.view_owed {
+            return Ok(());
+        }
+        let (Some(text), Some(saver)) = (self.saved_text(), self.saver.as_mut()) else {
+            return Ok(());
+        };
+        (self.view_dirty, self.view_owed) = (false, false);
+        saver.finish(text)
     }
 
     /// What this app hands to the one that replaces it in `pane`, at `now`:

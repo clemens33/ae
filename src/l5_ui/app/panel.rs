@@ -158,6 +158,11 @@ pub(super) enum Opening {
     Handed(String),
     /// A carried panel, its timestamp, and whether the app is homed here.
     Restore(OrchestratorView, i64, bool),
+    /// The panel as the durable file left it, `None` for one left closed, and
+    /// whether the app is homed here. Judged by the first proof alone, with no
+    /// age: only a proven seat opens it, whatever incarnation, and a panel left
+    /// closed stays closed even for a homed app.
+    Saved(Option<OrchestratorView>, bool),
 }
 
 /// The pane target a panel frame drew, as the frozen frame the seat keys act
@@ -1001,7 +1006,10 @@ impl App {
             panel.bind = Bind::Live(uuid.clone());
         }
         let opening = std::mem::take(&mut self.orch.opening);
-        let homed = matches!(opening, Opening::Home | Opening::Restore(_, _, true));
+        let homed = matches!(
+            opening,
+            Opening::Home | Opening::Restore(_, _, true) | Opening::Saved(_, true)
+        );
         let current = self.orch.panel.as_ref();
         // A home that runs no seat opens nothing: O asks for it.
         match (opening, &self.orch.proof) {
@@ -1018,6 +1026,25 @@ impl App {
                     panel.column.chat.pages = view.pages;
                     panel.column.chat.rows = view.rows;
                     panel.column.restored = true;
+                }
+            }
+            (Opening::Saved(panel, _), loader::Proof::Proven(uuid))
+                if !self.touched && current.is_none_or(|open| open.pin() == Some(uuid)) =>
+            {
+                if let Some(view) = panel {
+                    let same = view.id == *uuid;
+                    self.open_panel(view.mode == PanelMode::Full);
+                    if let Some(open) = self.orch.panel.as_mut() {
+                        open.full = view.mode == PanelMode::Full;
+                        open.focused = view.mode != PanelMode::SideMain;
+                        // The scroll is a hint for the incarnation it was
+                        // made on: another incarnation starts at its newest turn.
+                        if same {
+                            open.column.chat.pages = view.pages;
+                            open.column.chat.rows = view.rows;
+                            open.column.restored = true;
+                        }
+                    }
                 }
             }
             (_, proof) if homed && *proof != loader::Proof::Absent => self.open_panel(true),

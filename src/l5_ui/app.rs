@@ -133,6 +133,9 @@ pub(crate) mod route;
 mod run;
 #[cfg(test)]
 mod s5_app;
+pub mod saved;
+#[cfg(test)]
+mod saved_app_spec;
 #[cfg(test)]
 mod seatfold_edges_spec;
 #[cfg(test)]
@@ -320,6 +323,8 @@ struct Entry {
 struct Keep {
     view: handover::View,
     at: i64,
+    /// From the durable file: judged without the age rule.
+    saved: bool,
 }
 
 /// Everything the app was answered, and the browse and compose state.
@@ -507,6 +512,13 @@ struct App {
     keep: Option<Keep>,
     /// Input was read, a key or a click: no handed-over view is taken after it.
     touched: bool,
+    /// The durable view's writer; `None` writes nothing.
+    saver: Option<saved::Saver>,
+    /// The human changed the view since the last write handed to the writer.
+    view_dirty: bool,
+    /// The human changed the view in this run: the final write is owed, whatever
+    /// became of the debounced ones.
+    view_owed: bool,
     /// A handed-over scroll is applied and its lane is not read yet.
     restored: bool,
     /// Navigation keys read before the first fleet read, with their read
@@ -650,6 +662,9 @@ impl App {
             again: false,
             keep: None,
             touched: false,
+            saver: None,
+            view_dirty: false,
+            view_owed: false,
             restored: false,
             early: Vec::new(),
             early_named: false,
@@ -688,7 +703,7 @@ impl App {
                 // instants it was read. A press armed by a later key stays
                 // armed: the key that ended any older one has already acted.
                 let (early, armed) = (std::mem::take(&mut self.early), self.armed.take());
-                let _ = take_keys(self, early);
+                let _ = self.human(early);
                 self.armed = armed;
             }
             Answer::Look { name, look, zone } => drop(self.looks.insert(name, (look, zone))),
@@ -724,11 +739,16 @@ impl App {
             // A handed-over view named `orchestrator` is the seat's or a
             // namesake row's: the seat's proof opens its panel, and the role
             // holder is no row, so only a namesake row takes the view.
+            Answer::Saved(view) => self.saved_in(view),
             Answer::Handover { view, at } => {
                 if view.session == ORCH && view.orchestrator.is_none() && !self.touched {
                     self.orch.opening = Opening::Handed(view.id.clone());
                 }
-                self.keep = (!self.touched).then_some(Keep { view, at });
+                self.keep = (!self.touched).then_some(Keep {
+                    view,
+                    at,
+                    saved: false,
+                });
             }
             Answer::Peek {
                 generation,

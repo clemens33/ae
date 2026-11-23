@@ -82,7 +82,9 @@ src/l5_ui/app/            — `ae app`; src/l5_ui/app.rs is the coordinator (the
                       highlight.rs the reader's syntax colouring (pure scanner and styles),
                       select.rs text selection,
                       menu.rs the card session menu and its Stop question,
-                      cue.rs unread cues, handover.rs the restart view.
+                      cue.rs unread cues, handover.rs the restart view and the durable
+                      file's grammar, saved.rs the durable view file (`<root>/app-view`:
+                      its no-follow read, its refusing write, its writer thread).
                       maintainer.rs the Statistics store's upkeep thread (`ae-app-stats`),
                       the one transcript reader: S5 steps at its own pause, Tools units
                       between them. draw/tool_body.rs the tool pages.

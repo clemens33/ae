@@ -171,8 +171,9 @@ as few as it had undragged). The left border of the side-by-side
 its width. The two chat columns each keep at least 40 cells and the board keeps
 at least 24. A rule takes the title colour while you drag it, or reverses with
 `theme = off`. Letting go ends the drag. [Zoom](#zoom) hides the sidebar and
-its rules. A smaller pane limits the sizes temporarily. An app restart carries
-the dragged sizes.
+its rules. A smaller pane limits the sizes temporarily. The dragged sizes are
+part of the saved view: a fresh `ae app` draws them again
+([What survives a quit](#what-survives-a-quit)).
 
 Below 90x20 the sidebar goes and the chat takes the pane; below 40x8 the app
 only says how large it needs to be. Colours come from the session's own look
@@ -239,9 +240,9 @@ Browsing:
 | `!` | the next session that needs you |
 | `O`, click `◆` | open the orchestrator panel beside the chat, or hide it ([Orchestrator panel](#orchestrator-panel)) |
 | `F`, click `F full` / `F side` | the open panel over the whole frame, the sidebar hidden, or side by side again ([Zoom](#zoom)) |
-| `b`, click `b hide` / `b show` | hide the orchestrator board and give the chat its width, or show it again, in side and full-screen modes and on a narrow frame; the choice survives an app restart ([Orchestrator board](#orchestrator-board)) |
+| `b`, click `b hide` / `b show` | hide the orchestrator board and give the chat its width, or show it again, in side and full-screen modes and on a narrow frame; the choice is saved with the view ([What survives a quit](#what-survives-a-quit)) |
 | `B`, click `B board` | focus the orchestrator board, or open it in the panel on a narrow frame; it does nothing while the board is hidden. `B` or `Esc` returns to chat ([Orchestrator board](#orchestrator-board)) |
-| `1`-`5`, `Tab` / `Right`, `Left`, click a label | with the board focused: show DECIDE, COMING, RUNNING, WAITING or LINKS, or step to the next / previous tab, wrapping; the tab survives an app restart ([Orchestrator board](#orchestrator-board)) |
+| `1`-`5`, `Tab` / `Right`, `Left`, click a label | with the board focused: show DECIDE, COMING, RUNNING, WAITING or LINKS, or step to the next / previous tab, wrapping; the tab is saved with the view ([What survives a quit](#what-survives-a-quit)) |
 | `X`, click `X zoom` / `X unzoom` | the column that holds the keys over the whole frame, the sidebar hidden, or back; text while writing ([Zoom](#zoom)) |
 | `oo`, click `pane` in the panel header | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat. While the orchestrator panel holds the keys, `oo` and the click open the orchestrator's pane ([Orchestrator panel](#orchestrator-panel)) |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
@@ -1491,7 +1492,8 @@ with the selected session's view. The new app opens the panel when the
 orchestrator proof confirms the same incarnation within the same 60 s.
 The panel needs a selected session whose view the new app can adopt.
 An older core that receives the open-panel format on respawn starts with
-its default view.
+its default view. This handover lasts 60 s and serves one restart of one pane;
+the file in [What survives a quit](#what-survives-a-quit) serves every later start.
 
 An app that execs carries the same line as an internal argument,
 `--app-view <view>`, after your operands — not in the usage text, never typed
@@ -1502,6 +1504,58 @@ leaves the default view. A view that names another version means the exec
 landed in a core the link did not name: that app shows the hint and never
 restarts again. Only a newer core is handed the view, since an older one may
 not know the argument.
+
+## What survives a quit
+
+The app keeps its view in one private file, `app-view`, directly in the ae
+home (`~/.ae/app-view`, mode 0600), and a fresh `ae` or `ae app` restores it.
+The file belongs to the ae home and not to one terminal: when two apps run at
+once, the last write wins.
+
+**What it holds.** The selected session and its seat highlight, the panel open
+or closed and its mode (side with the panel holding the keys, side with the main
+chat holding them, or full, also when the orchestrator is the only session), the
+board hidden with `b` and its tab, the dragged sizes and the main column's zoom.
+Scroll positions are hints that ride along. Settings, a viewed seat, drafts,
+marked turns and the stopped group never persist. The per-invocation flags
+(`--tmux`, `--attach`, `--no-attach`, `--no-autostart`) are never saved.
+
+**When it is written.** After a change you make, at most once every 2 seconds,
+and once more, before the app ends or restarts into a newer core, when you
+changed the view in that run. Only your own change counts: a fleet read, a proof
+of the orchestrator or a session that vanished never writes. Wheel scrolling
+alone does not write; the scroll is saved with your next change. An app in which
+you changed nothing, such as a chat window you only read, leaves the file
+alone, and an app that ended before its first fleet read writes nothing. A
+failed write says so once on the hint row, and a failed final write says so once
+on stderr; the app goes on. A link, a directory or any other node already at
+that path is never replaced or written through.
+
+**When it is read.** Once, when an app starts, unless that start already holds a
+restart handover ([Leaving](#leaving)): an exec restart's `--app-view` argument,
+or an admitted `@ae_app_view` option, wins whatever it holds, and the file is not
+read then. A missing, damaged, oversized, foreign-version or symlinked file, a
+node that is not a regular file, or a file that cannot be read is ignored: it
+costs the restore, never the start. The file has no age limit and outlives an
+upgrade. The selected session's uuid binds the selection to that incarnation.
+
+**What it restores.**
+
+- The sizes, the zoom, the board's hidden state and its tab apply at once, even
+  when the saved session is gone. Only the selection then falls back to the
+  fleet view.
+- The selection applies when you name no home: plain `ae`, or `ae app` with no
+  session outside a session's windows. A named or own home (`ae app web`,
+  `ae web`, a session's chat window) keeps that home selected and takes only the
+  layout and the panel from the file.
+- The panel reopens in its saved mode only when the first proof of the
+  orchestrator at start shows the seat running, whichever incarnation; its scroll
+  applies only to the incarnation it was made on. A panel left closed stays
+  closed, also for an app homed on the orchestrator. With the seat absent or
+  unproven the app opens as it does without a file: closed, or full when homed on
+  the orchestrator. A key or click before that proof leaves the default view.
+- A saved panel mode is lost when the seat was absent at start and you change
+  the layout in that run: the next write says closed.
 
 ## Residuals
 
