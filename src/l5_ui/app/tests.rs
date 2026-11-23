@@ -38,6 +38,7 @@ mod boarddrag_spec;
 mod boardfull_spec;
 mod boardhide_spec;
 mod boardhide_ui_spec;
+mod boardtabs_spec;
 mod composercopy_app_spec;
 mod f12panel_guards;
 mod f12panel_spec;
