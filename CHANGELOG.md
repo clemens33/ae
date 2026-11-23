@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.114] - 2026-11-23
+- Pin that an expected launch reads the record its lifecycle lock holds
+- Wait for the spawned group before the app open tests place a click
+- Refuse a picker resume whose record vanished under the lifecycle lock
+
 ## [v2026.11.113] - 2026-11-23
 - Show the fleet's live state below the board in the chat and the Telegram pin
 - Say that the live part leaves the rendered board unchanged
