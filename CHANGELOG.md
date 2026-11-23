@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.111] - 2026-11-23
+- Resume orchestrator delivery after an automatic reseat
+- Keep reseat action in the watchdog model
+
 ## [v2026.11.110] - 2026-11-23
 - Pin scratch reaping across PID reuse
 - Bind test scratch reaping to process instances
