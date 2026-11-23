@@ -427,7 +427,8 @@ impl App {
     pub(super) fn park(&mut self, mut answer: Answer) {
         let same = |old: &Answer| match (old, &answer) {
             (Answer::Fleet(_), Answer::Fleet(_))
-            | (Answer::ComposerRole { .. }, Answer::ComposerRole { .. }) => true,
+            | (Answer::ComposerRole { .. }, Answer::ComposerRole { .. })
+            | (Answer::Live { .. }, Answer::Live { .. }) => true,
             (Answer::Look { name: a, .. }, Answer::Look { name: b, .. }) => a == b,
             (Answer::View(a), Answer::View(b)) => a.name == b.name,
             _ => false,

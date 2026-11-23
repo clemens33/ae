@@ -126,6 +126,10 @@ pub(super) struct Orch {
     /// `session_id` it was read as, and the record. Kept only while the panel
     /// is open on that incarnation.
     pub(super) desk: Option<(String, DeskView)>,
+    /// The fleet's live part the reader last computed beside that board, for
+    /// the same incarnation: shown under the RUNNING tab, never stored.
+    /// Shared, so a frame borrows it without copying the fleet.
+    pub(super) live: Option<(String, std::rc::Rc<crate::desklive::Live>)>,
 }
 
 impl Orch {
@@ -568,19 +572,39 @@ impl App {
             .map(|(_, view)| view)
     }
 
-    /// The board the panel's incarnation read is set or could not be read.
+    /// The live part computed for the open panel's incarnation, `None` while
+    /// none was.
+    pub(super) fn live_view(&self) -> Option<&std::rc::Rc<crate::desklive::Live>> {
+        let pin = self.orch.panel.as_ref()?.pin()?;
+        (self.orch.live.as_ref())
+            .filter(|(id, _)| id == pin)
+            .map(|(_, live)| live)
+    }
+
+    /// The board the panel's incarnation read is set or could not be read,
+    /// or its live part stands without one.
     pub(super) fn desk_present(&self) -> bool {
         self.desk_view()
-            .is_some_and(|view| !matches!(view, DeskView::Absent))
+            .is_some_and(|view| !matches!(view, DeskView::Absent) || self.live_view().is_some())
     }
 
     pub(super) fn read_desk(&mut self, id: String, desk: DeskView) {
-        if matches!(desk, DeskView::Absent)
+        self.orch.desk = Some((id, desk));
+        if !self.desk_present()
             && let Some(panel) = self.orch.panel.as_mut()
         {
             (panel.desk_focused, panel.desk_top) = (false, 0);
         }
-        self.orch.desk = Some((id, desk));
+    }
+
+    /// Keep the live part read for incarnation `id`; a column that begins
+    /// to stand by it moves the cells.
+    pub(super) fn read_live(&mut self, id: String, live: crate::desklive::Live) {
+        let before = self.desk_present();
+        self.orch.live = Some((id, std::rc::Rc::new(live)));
+        if before != self.desk_present() {
+            self.model.reshaped();
+        }
     }
 
     pub(super) fn desk_focused(&self) -> bool {
@@ -655,12 +679,14 @@ impl App {
         std::mem::replace(&mut panel.desk_top, top) != top
     }
 
-    /// Show `section` on a board that is read. A real change starts the body
-    /// at its top and ends a selection the old cells drew; the section already
-    /// shown, and a board that is absent or unreadable, change nothing.
+    /// Show `section` on a board that is read, or on a column the live part
+    /// keeps standing. A real change starts the body at its top and ends a
+    /// selection the old cells drew; the section already shown, and an absent
+    /// or unreadable board without a live part, change nothing.
     pub(super) fn select_desk_tab(&mut self, section: Section) -> bool {
-        if !matches!(self.desk_view(), Some(DeskView::Shown(_))) || self.model.desk_tab() == section
-        {
+        let tabbed = matches!(self.desk_view(), Some(DeskView::Shown(_)))
+            || (self.desk_present() && self.live_view().is_some());
+        if !tabbed || self.model.desk_tab() == section {
             return false;
         }
         self.model.set_desk_tab(section);
@@ -703,15 +729,16 @@ impl App {
             return;
         };
         let view = self.desk_view().cloned();
+        let live = self.live_view().cloned();
         let (look, zone) = self.dressed();
         let zone = zone.map(str::to_owned);
         let Some(panel) = self.orch.panel.as_mut() else {
             return;
         };
-        panel.desk_top = draw::draw_desk(
+        panel.desk_top = draw::draw_board(
             buf,
             (area, adjacent),
-            view.as_ref(),
+            (view.as_ref(), live.as_deref()),
             (look.as_ref(), zone.as_deref()),
             &mut self.layout,
             &self.model,

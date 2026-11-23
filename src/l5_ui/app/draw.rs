@@ -974,12 +974,36 @@ pub(super) fn desk_replaces_panel(area: Rect, split: Split, columns: Columns) ->
         && panel_area(area, split, columns).is_some()
 }
 
-/// Draw the board's current rows and record their links in the main frame.
-/// Only the adjacent column has a board border of its own.
+/// [`draw_board`] without a live part.
+#[cfg(test)]
 pub(super) fn draw_desk(
     buf: &mut Buffer,
     (area, adjacent): (Rect, bool),
     view: Option<&DeskView>,
+    (look, zone): (Option<&Look>, Option<&str>),
+    layout: &mut Layout,
+    model: &Model,
+    requested: usize,
+) -> usize {
+    draw_board(
+        buf,
+        (area, adjacent),
+        (view, None),
+        (look, zone),
+        layout,
+        model,
+        requested,
+    )
+}
+
+/// Draw the board's current rows and record their links in the main frame.
+/// Only the adjacent column has a board border of its own. The fleet's live
+/// part follows the RUNNING tab's items and scrolls with them; it fills the
+/// column's RUNNING tab when no board can be shown.
+pub(super) fn draw_board(
+    buf: &mut Buffer,
+    (area, adjacent): (Rect, bool),
+    (view, live): (Option<&DeskView>, Option<&crate::desklive::Live>),
     (look, zone): (Option<&Look>, Option<&str>),
     layout: &mut Layout,
     model: &Model,
@@ -1007,14 +1031,26 @@ pub(super) fn draw_desk(
     // A board that is read stands as a head, a tab bar and the rows of the
     // tab's section: the first two stand still and the rows scroll. A board
     // that is absent or cannot be read is its notice rows alone.
-    let (head, bar, body) = match view {
+    // The live part stands below the RUNNING tab's rows only, and without a
+    // board it keeps the tabs standing so that tab stays reachable.
+    let below = live
+        .filter(|_| model.desk_tab() == Section::Running)
+        .map(|live| deskview::live_rows(live, room, zone));
+    let (head, bar, mut body) = match view {
         Some(DeskView::Shown(desk)) => (
             deskview::head(desk, room, zone),
             Some(deskview::tab_bar(desk, room)),
             deskview::body(desk, model.desk_tab(), room),
         ),
+        Some(view) if live.is_some() => {
+            let (head, bar, body) = deskview::without_board(view, room);
+            (head, Some(bar), body)
+        }
         _ => (Vec::new(), None, deskview::column(view, room, zone)),
     };
+    if bar.is_some() {
+        body.extend(below.into_iter().flatten());
+    }
     let height = usize::from(area.height);
     let head_rows = head.len().min(height);
     let bar_row = bar.is_some() && head.len() < height;

@@ -1202,3 +1202,160 @@ fn submit_names_an_older_cores_recorded_holder_then_unknown() {
     assert!(rig.asks().is_empty());
     drop(witness);
 }
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real app checks manual rows, scrolling and an absent desk in order"
+)]
+fn desklive_app_running_tab_shows_the_full_fleet_and_preserves_the_manual_board() {
+    use super::o2guard_p2_spec::World;
+    use std::fmt::Write as _;
+    use std::mem::ManuallyDrop;
+
+    use ae::time::Timestamp;
+
+    let rig = Rig::new("deskapp");
+    let world = ManuallyDrop::new(World {
+        root: rig.root.clone(),
+        sock: rig.socket.clone(),
+    });
+    let overlay = rig.root.join("orchestrator.config");
+    fs::write(&overlay, "[workspace]\norchestrator = true\n").expect("orchestrator role overlay");
+    let desk = world.session(
+        "orchestrator",
+        "operator",
+        &format!(
+            "schema=2\nmode=local\nlayout=vertical\nmeta_agent=true\nlocal_config={}\n",
+            overlay.display()
+        ),
+    );
+    rig.tmux(&[
+        "set-option",
+        "-t",
+        "orchestrator",
+        "@ae_main_pane",
+        &desk.pane,
+    ]);
+    rig.tmux(&[
+        "set-environment",
+        "-t",
+        "orchestrator",
+        "AE_SESSION",
+        "orchestrator",
+    ]);
+    ae::watchdog_glue::touch_beat(&desk.dir).expect("fresh orchestrator watchdog beat");
+    let peer = world.session("app-leaf", "bi", "schema=2\nmode=local\nlayout=vertical\n");
+    rig.tmux(&[
+        "set-environment",
+        "-t",
+        "app-leaf",
+        "AE_SESSION",
+        "app-leaf",
+    ]);
+    let now = Timestamp::now().epoch();
+    let board_at = Timestamp::from_epoch(now - 900);
+    let mut manual = format!(
+        "ae-desk 1\nupdated {board_at}\nD1\tManual decision stays\nR1\tManual running entry\n"
+    );
+    // At the default board width each padded item needs three rows. The
+    // manual tail overflows the first page but shares the second with LIVE.
+    let padding = "fixture item ".repeat(6);
+    for row in 2..15 {
+        writeln!(manual, "R{row}\t{}", padding.trim_end()).expect("fixture row");
+    }
+    manual.push_str("R15\tFinal manual running item\n");
+    ae::desk::parse(manual.as_bytes()).expect("valid private board");
+    let board = desk.dir.join("desk-record");
+    fs::write(&board, &manual).expect("canonical manual board");
+    let at = Timestamp::from_epoch(now - 250);
+    fs::write(
+        peer.dir.join("events.jsonl"),
+        format!(
+            r#"{{"ts":"{at}","actor":"bi","action":"state","ref":"blocked","summary":"no key","actor_slot":"main","actor_session":"app-leaf","actor_launch_id":"tok-app-leaf"}}"#
+        ) + "\n",
+    )
+    .expect("bound peer state");
+    fs::write(peer.dir.join(".launch-attempt"), (now - 1_200).to_string())
+        .expect("peer launch precedes state");
+
+    rig.tmux(&["set-option", "-t", &rig.home, "default-size", "200x30"]);
+    let (app, _gates) = rig.outside("desk-live");
+    rig.raw(&app, "O");
+    let decide = rig.wait(
+        &app,
+        "manual decision appears in the default board tab",
+        |s| s.contains("Manual decision stays"),
+    );
+    assert!(!decide.contains("LIVE"), "{decide}");
+    rig.raw(&app, "B");
+    rig.raw(&app, "3");
+    let running = rig.wait(&app, "manual RUNNING tab item remains visible", |s| {
+        s.contains("Manual running entry")
+    });
+    assert!(!running.contains("Final manual running item"), "{running}");
+    assert!(running.contains("more ↓"), "{running}");
+    rig.key(&app, "NPage");
+    rig.wait(
+        &app,
+        "the focused RUNNING tab pages to its last manual item",
+        |s| s.contains("Final manual running item"),
+    );
+    let shown = rig.wait(
+        &app,
+        "live fleet follows the last manual RUNNING row",
+        |s| {
+            s.split_once("Final manual running item")
+                .is_some_and(|(_, rest)| rest.contains("LIVE") && rest.contains("no key"))
+        },
+    );
+    let (_, live) = shown.split_once("LIVE").expect("visible live board");
+    assert!(
+        live.lines()
+            .next()
+            .is_some_and(|line| line.trim_start().starts_with("as of")),
+        "{shown}"
+    );
+    // The fleet sidebar also shows the peer name, so read only the board column.
+    let mut rows = live
+        .lines()
+        .filter_map(|line| line.rsplit_once('│').map(|(_, board)| board));
+    assert!(
+        rows.clone()
+            .any(|row| row.split_whitespace().next() == Some("app-leaf")),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("DEC 1·COM 0·RUN 15·WAIT 0·LINK 0"),
+        "live rows do not contribute to tab counts: {shown}"
+    );
+    assert!(
+        rows.any(|row| {
+            let mut words = row.split_whitespace();
+            words.next() == Some("bi")
+                && words.next() == Some("blocked")
+                && matches!(words.next(), Some("4m" | "5m"))
+                && row.contains("no key")
+        }),
+        "{shown}"
+    );
+    assert_eq!(fs::read_to_string(&board).expect("manual bytes"), manual);
+
+    fs::remove_file(&board).expect("remove this private fixture board");
+    let absent = rig.wait(
+        &app,
+        "the RUNNING tab clamps its scroll and shows live facts with no manual board",
+        |s| s.contains("LIVE") && s.contains("no key") && !s.contains("Final manual running item"),
+    );
+    assert!(absent.contains("as of"), "{absent}");
+    rig.raw(&app, "1");
+    rig.wait(&app, "an absent desk has no live rows on DECIDE", |s| {
+        s.contains("no board set") && !s.contains("LIVE")
+    });
+    rig.raw(&app, "3");
+    rig.wait(
+        &app,
+        "the live RUNNING tab can be entered without a manual board",
+        |s| s.contains("LIVE") && s.contains("no key"),
+    );
+}

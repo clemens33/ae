@@ -604,9 +604,9 @@ LINKS, with items `D1` to `L99` of at most 160 characters and up to three links
 each, a web URL or an absolute path. The board shows in three places and never in the chat lane: `/board` in the chat
 ([Chat](chat.md#what-it-shows)), a column in this app and one pinned Telegram
 message ([Telegram bridge](reference/telegram.md#the-board-message)). The chat's
-`/board` and the Telegram message also show the live part of the fleet below the
-board: seat states, ages, reasons and open asks to you, computed by ae itself
-([Chat](chat.md#what-it-shows)).
+`/board`, the Telegram message and this app's RUNNING tab also show the live part
+of the fleet below the board: seat states, ages, reasons and open asks to you,
+computed by ae itself ([Chat](chat.md#what-it-shows)).
 
 The board stands to the right of the open panel in side and full-screen modes.
 Its default width is 36 cells including its left border. It fits from 161
@@ -643,11 +643,20 @@ the default width and `D3` on the narrowest, with the letter of the item ids.
 The chosen tab survives an app restart like the zoom does. The hidden-board
 `desk N` counts DECIDE, whichever tab is chosen.
 
+The RUNNING tab shows the live part below its items: a blank row, the line
+`LIVE  as of HH:MM:SS <zone>`, then a row per session, per seat with its state,
+age and reason, and per open ask to you. The app takes it from its own fleet
+read at most once a minute, so the ages are as of that line. The live rows
+scroll with the items, and no tab counts them. The other tabs show no live
+rows, and the board record is never changed.
+
 The board wraps sanitized items and links to its width. Each visible fragment
 of a wrapped link opens the same URL or `file://` destination. The app reads the
 board with the panel and shows the reason when a record is unreadable. The board
-is read-only. With no record set, the panel keeps its entire width, every click
-target and its usual header.
+is read-only. With no record set, the column still stands once the app has read
+the fleet: the `BOARD` line, the five tabs counting `0`, the row `no board set`
+and, under RUNNING, the live part. Until that read, the panel keeps its entire
+width, every click target and its usual header.
 
 ## Session menu
 

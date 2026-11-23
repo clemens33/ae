@@ -355,6 +355,51 @@ fn notice(text: &str, width: u16) -> Vec<DeskRow> {
     out
 }
 
+/// The live part below the RUNNING tab's items, `width` cells wide: a blank
+/// row, the `LIVE  as of <clock>` heading, then a row per session, seat and
+/// open ask to the human, with ages as of the snapshot. It is computed, never
+/// part of the board: no tab counts it and no link rides it.
+#[must_use]
+pub fn live_rows(live: &crate::desklive::Live, width: u16, zone: Option<&str>) -> Vec<DeskRow> {
+    let width = room(width);
+    let mut out = vec![DeskRow {
+        kind: RowKind::Notice,
+        text: String::new(),
+        links: Vec::new(),
+    }];
+    let heading = crate::desklive::header(live, &clock(live.as_of, zone));
+    push_wrapped(&mut out, RowKind::Heading, &heading, (0, HANG), width, None);
+    for row in crate::desklive::rows(live, crate::desklive::Elapsed::Age) {
+        let text = row.trim_start();
+        let lead = row.len() - text.len();
+        push_wrapped(
+            &mut out,
+            RowKind::Item,
+            text,
+            (lead, lead + HANG),
+            width,
+            None,
+        );
+    }
+    out
+}
+
+/// The head and the body a board column stands with when the live part can
+/// be shown but no board can: the `BOARD` line, then why there is none. The
+/// tabs stay, counting nothing.
+#[must_use]
+pub fn without_board(view: &DeskView, width: u16) -> (Vec<DeskRow>, TabBar, Vec<DeskRow>) {
+    let body = match view {
+        DeskView::Unreadable(why) => notice(&format!("desk unreadable: {why}"), width),
+        DeskView::Absent | DeskView::Shown(_) => notice("no board set", width),
+    };
+    let empty = Desk {
+        updated: Timestamp::from_epoch(0),
+        items: Vec::new(),
+    };
+    (notice("BOARD", width), tab_bar(&empty, width), body)
+}
+
 /// What the app's board column shows for `view`, `width` cells wide: the rows
 /// of the board, or a header with the one line that says there is none or why
 /// it cannot be shown. `None` is a record not read yet: no rows.
@@ -477,6 +522,85 @@ mod tests {
         Desk {
             updated: Timestamp::from_epoch(0),
             items: parse_input(raw.as_bytes()).expect("a valid board"),
+        }
+    }
+
+    fn live() -> crate::desklive::Live {
+        use crate::desklive::{LiveSeat, LiveSession, SessionBody};
+        crate::desklive::Live {
+            as_of: Timestamp::from_epoch(600),
+            sessions: vec![LiveSession {
+                name: "app-leaf".to_owned(),
+                dir: None,
+                uuid: None,
+                body: Ok(SessionBody {
+                    seats: vec![LiveSeat {
+                        name: "bi".to_owned(),
+                        main: true,
+                        state: "blocked".to_owned(),
+                        since: Some(Timestamp::from_epoch(350)),
+                        reason: "waits on a key from the human".to_owned(),
+                    }],
+                    asks: Vec::new(),
+                }),
+            }],
+            losses: 0,
+        }
+    }
+
+    /// A blank row, the heading with the snapshot's clock, then the session
+    /// and its seat as items; a long row continues under its own indent.
+    #[test]
+    fn the_live_part_is_a_blank_row_a_heading_and_wrapped_items() {
+        let rows = live_rows(&live(), 30, None);
+        let kinds: Vec<RowKind> = rows.iter().map(|row| row.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                RowKind::Notice,
+                RowKind::Heading,
+                RowKind::Item,
+                RowKind::Item,
+                RowKind::Item,
+                RowKind::Item,
+            ]
+        );
+        assert_eq!(rows[0].text, "");
+        assert_eq!(rows[1].text, "LIVE  as of 00:10:00 UTC");
+        // The session row continues under a hang of two cells.
+        assert!(rows[2].text.starts_with("app-leaf  running workers: 0"));
+        assert!(rows[3].text.starts_with("  ") && !rows[3].text.starts_with("   "));
+        assert!(rows[3].text.ends_with("open asks to you: 0"));
+        // The seat row keeps its own indent and continues two cells further.
+        assert_eq!(rows[4].text, "  bi  blocked  4m  waits on a");
+        assert_eq!(rows[5].text, "    key from the human");
+        assert!(rows.iter().all(|row| row.text.chars().count() <= 30));
+        assert!(rows.iter().all(|row| row.links.is_empty()));
+    }
+
+    /// Without a board the column keeps its tabs, counting nothing, under the
+    /// `BOARD` line, and says why there is no board.
+    #[test]
+    fn a_column_without_a_board_keeps_empty_tabs_and_says_why() {
+        for (view, why) in [
+            (DeskView::Absent, "no board set"),
+            (
+                DeskView::Unreadable("cut".to_owned()),
+                "desk unreadable: cut",
+            ),
+        ] {
+            let (head, bar, body) = without_board(&view, 60);
+            assert_eq!(head.len(), 1);
+            assert_eq!(head[0].text, "BOARD");
+            assert_eq!(
+                bar.tabs
+                    .iter()
+                    .map(|tab| tab.text.as_str())
+                    .collect::<Vec<_>>(),
+                ["DECIDE 0", "COMING 0", "RUNNING 0", "WAITING 0", "LINKS 0"]
+            );
+            assert_eq!(body.len(), 1);
+            assert_eq!(body[0].text, why);
         }
     }
 

@@ -213,6 +213,13 @@ pub(super) enum Answer {
         at: Instant,
     },
     View(ViewRead),
+    /// The fleet's live part beside the orchestrator's board, computed for
+    /// the incarnation `id` the same read found: at most once a
+    /// [`crate::desklive::CACHE_SECS`] per reader.
+    Live {
+        id: String,
+        live: Box<crate::desklive::Live>,
+    },
     /// The settings overlay's bodies for `generation`. Quota rides every
     /// answer; config, about and instructions ride the first per open, then
     /// stay.
@@ -514,6 +521,9 @@ pub(super) struct Reader {
     focus_at: Instant,
     fleet_at: Option<Instant>,
     live_facts: Option<(Vec<crate::quota::LiveSeatFact>, bool, i64)>,
+    /// The fleet's live part beside the orchestrator's board, reused while
+    /// young.
+    live: crate::desklive::Cache,
     rereads: BTreeSet<String>,
     looks: BTreeSet<String>,
     /// Sessions whose look has already been sent to the app for this incarnation.
@@ -622,6 +632,7 @@ impl Reader {
             focus_at: Instant::now(),
             fleet_at: None,
             live_facts: None,
+            live: crate::desklive::Cache::default(),
             rereads: BTreeSet::new(),
             looks: BTreeSet::new(),
             read_looks: BTreeSet::new(),
@@ -1045,6 +1056,14 @@ impl Reader {
         Job::Wait(until.min(now + REFRESH))
     }
 
+    /// Fold the board's live part from `read`, the fleet read just taken, at
+    /// most once a [`crate::desklive::CACHE_SECS`]: a view publishes what is
+    /// held, so the live part never takes a census of its own.
+    fn hold_live(&mut self, read: &crate::fleet_read::WorldRead, now: i64) {
+        self.live
+            .get(now, || crate::desklive::from_world(read, super::ORCH));
+    }
+
     /// Read the fleet again: home's look (and the selection's when home's is
     /// not drawn), whether the writer may still write, then `ae list`'s world folded into
     /// the sidebar.
@@ -1061,13 +1080,15 @@ impl Reader {
         answers.extend(self.owned());
         let now = Timestamp::now();
         let journals = &mut self.journals;
+        let read = crate::fleet_read::world_read(&self.root, &mut |dir| journals.snapshot(dir));
+        self.hold_live(&read, now.epoch());
         let crate::fleet_read::WorldRead {
             snapshot,
             world,
             panes,
             sockets,
             ..
-        } = crate::fleet_read::world_read(&self.root, &mut |dir| journals.snapshot(dir));
+        } = read;
         let records: BTreeMap<&Path, _> = snapshot
             .sessions
             .iter()
@@ -1422,6 +1443,18 @@ impl Reader {
                 name: name.to_owned(),
                 id,
                 pressure,
+            });
+        }
+        // The orchestrator's read carries its board; the live part rides
+        // beside it, for the same incarnation.
+        let board = match answers.first() {
+            Some(Answer::View(view)) if view.desk.is_some() => Some(view.id.clone()),
+            _ => None,
+        };
+        if let (Some(id), Some(live)) = (board, self.live.held()) {
+            answers.push(Answer::Live {
+                id,
+                live: Box::new(live.clone()),
             });
         }
         answers

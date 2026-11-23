@@ -314,6 +314,13 @@ impl Cache {
         }
     }
 
+    /// The snapshot held now, however old: what a reader that refreshes it
+    /// elsewhere publishes.
+    #[must_use]
+    pub fn held(&self) -> Option<&Live> {
+        self.held.as_ref().map(|(_, live)| live)
+    }
+
     /// The held snapshot while it is younger than [`CACHE_SECS`] at `now`,
     /// else the one `read` takes, which is then held.
     pub fn get(&mut self, now: i64, read: impl FnOnce() -> Live) -> &Live {
@@ -335,7 +342,16 @@ impl Cache {
 /// `own` is the orchestrator's session.
 #[must_use]
 pub fn collect(root: &std::path::Path, own: &str) -> Live {
-    let read = crate::fleet_read::world_read(root, &mut crate::session::RecordSnapshot::read);
+    from_world(
+        &crate::fleet_read::world_read(root, &mut crate::session::RecordSnapshot::read),
+        own,
+    )
+}
+
+/// The live snapshot of one fleet read a caller already holds, so a reader
+/// that reads the fleet anyway takes no second census.
+#[must_use]
+pub(crate) fn from_world(read: &crate::fleet_read::WorldRead, own: &str) -> Live {
     let classified = &read.snapshot.sessions;
     let entries = &read.world.sessions;
     let paired = classified.len() == entries.len();
