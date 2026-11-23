@@ -774,10 +774,12 @@ fn a_launch_carrying_an_expectation_is_not_asked_for_a_sign_of_intent() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// The hidden launch child's argv for session `s`: the state root, the cwd,
-/// the global config and the private server of a test, with the debug marker.
+/// The hidden launch child's argv for session `session`: the state root, the
+/// cwd, the global config and the private server of a test, with the debug
+/// marker.
 #[cfg(debug_assertions)]
 fn launch_words(
+    session: &str,
     home: &std::path::Path,
     cwd: &std::path::Path,
     config: &std::path::Path,
@@ -798,27 +800,103 @@ fn launch_words(
         "--no-attach".to_owned(),
         "--test-pre-lock-marker".to_owned(),
         "--".to_owned(),
-        "s".to_owned(),
+        session.to_owned(),
     ]
 }
 
-/// DEFEATING MUTATION: turn the first `||` of `meta_present` in `launch`
-/// (`expected_launch.is_some() || audit.is_some() || …`) into `&&` and this
-/// test goes RED. An expected launch with no audit and no autostart then
-/// decides by the preflight value instead of by what its lifecycle lock holds,
-/// and a record that vanished while it waited is read as present.
-///
-/// The oracle is the comment above that line, not a recorded output: "An
-/// expected or audited launch decides by what the lock holds". The picker's
-/// resume proves no record of its own under the lock (`StoppedSession`), so
-/// the locked read is its only judge. The record goes while the launch waits
-/// and a worktree directory of the name is left behind: judged by the lock,
-/// the launch is a fresh one and meets that leftover; judged by the stale
-/// preflight, it is a resume that cannot read the record it expects.
+/// The private global config of the lock-race tests: one idle profile that
+/// names no real agent, and nothing that opens a window.
 #[cfg(debug_assertions)]
-#[test]
-fn an_expected_launch_decides_by_the_record_its_lock_holds_not_the_preflight_one() {
-    let root = scratch("expected-lock-record");
+fn lock_race_config(root: &std::path::Path) -> PathBuf {
+    let config = root.join("config");
+    std::fs::write(
+        &config,
+        "[profiles]\nidle = \"/nonexistent/ae-agent\"\n[roster]\nlead = idle\n\
+         [workspace]\nmain = lead\nworkers =\nwatchdog = false\nchat = off\ntheme = off\n",
+    )
+    .unwrap();
+    config
+}
+
+/// A lock-race test's scratch root and the private tmux server its launch may
+/// start at `<root>/sock`. A launch that wrongly starts a session starts a real
+/// server there, and the lane's sweep does not know this root, so the drop ends
+/// that exact server and removes the root on every exit, a panic included.
+#[cfg(debug_assertions)]
+struct Fixture {
+    root: PathBuf,
+    server: ServerId,
+}
+
+#[cfg(debug_assertions)]
+impl Fixture {
+    fn new(tag: &str) -> Self {
+        let root = scratch(tag);
+        let server = ServerId::Selected(crate::meta::Selector::Socket(root.join("sock")));
+        Self { root, server }
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        use crate::transport::fixture_tmux;
+        let socket = self.root.join("sock");
+        let _ = fixture_tmux::end(&self.server);
+        let mut last = fixture_tmux::probe(&self.server);
+        for _ in 0..20 {
+            // A server that never started left no socket, and one that ended
+            // took its socket with it.
+            if last.proven() || !socket.exists() {
+                let _ = std::fs::remove_dir_all(&self.root);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            last = fixture_tmux::probe(&self.server);
+        }
+        assert!(
+            std::thread::panicking(),
+            "fixture socket cleanup unproven: {last:?}"
+        );
+    }
+}
+
+/// What one launch did, and where it did it.
+#[cfg(debug_assertions)]
+struct LaunchRun {
+    fixture: Fixture,
+    code: u8,
+    out: String,
+    err: String,
+}
+
+#[cfg(debug_assertions)]
+impl LaunchRun {
+    fn root(&self) -> &std::path::Path {
+        &self.fixture.root
+    }
+
+    fn home(&self) -> PathBuf {
+        self.root().join("home")
+    }
+
+    fn socket(&self) -> PathBuf {
+        self.root().join("sock")
+    }
+}
+
+/// A picker resume of the stopped session `s`, whose record the launch finds at
+/// its preflight. The test holds the session's real lifecycle lock, so the
+/// launch passes that preflight, publishes the debug marker and waits for the
+/// lock. Then `change` runs once, with the sessions root and the scratch root,
+/// and the lock is let go.
+#[cfg(debug_assertions)]
+fn picker_resume_racing_the_lock(
+    tag: &str,
+    change: impl FnOnce(&std::path::Path, &std::path::Path) -> std::io::Result<()> + Send + 'static,
+) -> LaunchRun {
+    let fixture = Fixture::new(tag);
+    let root = fixture.root.clone();
     let home = root.join("home");
     let sessions = home.join("sessions");
     let dir = sessions.join("s");
@@ -836,17 +914,8 @@ fn an_expected_launch_decides_by_the_record_its_lock_holds_not_the_preflight_one
         ),
     )
     .unwrap();
-    let config = root.join("config");
-    std::fs::write(
-        &config,
-        "[profiles]\nidle = \"/nonexistent/ae-agent\"\n[roster]\nlead = idle\n\
-         [workspace]\nmain = lead\nworkers =\nwatchdog = false\nchat = off\ntheme = off\n",
-    )
-    .unwrap();
+    let config = lock_race_config(&root);
 
-    // The test holds the session's real lifecycle lock, so the launch passes
-    // its preflight with the record present, publishes the debug marker and
-    // waits for the lock.
     let held = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -855,7 +924,7 @@ fn an_expected_launch_decides_by_the_record_its_lock_holds_not_the_preflight_one
     held.try_lock().expect("the test holds the lifecycle lock");
     let marker = home.join(super::TEST_PRE_LOCK_MARKER);
     let racer = {
-        let (meta, leftover) = (dir.join("meta"), home.join("worktrees").join("s"));
+        let (sessions, root) = (sessions.clone(), root.clone());
         std::thread::spawn(move || {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
             while !marker.is_file() {
@@ -864,14 +933,13 @@ fn an_expected_launch_decides_by_the_record_its_lock_holds_not_the_preflight_one
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            std::fs::remove_file(&meta).map_err(|why| why.to_string())?;
-            std::fs::create_dir_all(&leftover).map_err(|why| why.to_string())?;
+            change(&sessions, &root).map_err(|why| why.to_string())?;
             drop(held);
             Ok(())
         })
     };
 
-    let words = launch_words(&home, &root, &config, &socket);
+    let words = launch_words("s", &home, &root, &config, &socket);
     let expected = ExpectedLaunch::unattended(
         ExpectedState::StoppedSession,
         crate::time::Timestamp::now().epoch() + 60,
@@ -893,20 +961,221 @@ fn an_expected_launch_decides_by_the_record_its_lock_holds_not_the_preflight_one
         String::from_utf8_lossy(&err).into_owned(),
     );
     assert_eq!(barrier, Ok(()), "{err}");
+    LaunchRun {
+        fixture,
+        code,
+        out,
+        err,
+    }
+}
+
+/// The suffix of the refusal a resume whose record is gone under the lock
+/// prints: the words before it explain, these words promise what it did.
+#[cfg(debug_assertions)]
+const RESUME_REFUSED_SUFFIX: &str = "Nothing was resumed.";
+
+/// A refused resume: the failed exit and the promise that nothing was resumed.
+#[cfg(debug_assertions)]
+fn assert_resume_refused(run: &LaunchRun) {
+    let LaunchRun { code, out, err, .. } = run;
+    assert_eq!(*code, super::EXIT_FAILED, "{out}{err}");
     assert!(
-        !err.contains("could not read metadata"),
-        "the launch read the record the lock no longer holds: {err}"
+        err.trim_end().ends_with(RESUME_REFUSED_SUFFIX),
+        "the refusal does not end by saying nothing was resumed: {err}"
     );
-    assert_eq!(code, super::EXIT_FAILED, "{out}{err}");
-    assert!(
-        err.contains("stopped session 's' exists as worktree/copy"),
-        "the launch judged the name by the lock and met the leftover copy: {err}"
-    );
+}
+
+/// What a refused resume must not have made: a worktree for the session, a tmux
+/// server, or any claim of being resumed.
+#[cfg(debug_assertions)]
+fn assert_nothing_was_created(run: &LaunchRun) {
+    let LaunchRun { out, err, .. } = run;
     assert!(
         !out.contains("Resuming session"),
         "a record the lock does not hold is never resumed: {out}"
     );
-    let _ = std::fs::remove_dir_all(root);
+    assert!(
+        !run.home().join("worktrees").join("s").exists(),
+        "the refusal made a worktree: {err}"
+    );
+    assert!(
+        !run.socket().exists(),
+        "the refusal started a tmux server: {err}"
+    );
+}
+
+/// DEFEATING MUTATION: turn the first `||` of `meta_present` in `launch`
+/// (`expected_launch.is_some() || audit.is_some() || …`) into `&&` and this
+/// test goes RED. An expected launch with no audit and no autostart then
+/// decides by the preflight value instead of by what its lifecycle lock holds,
+/// and a record that vanished while it waited is read as present.
+///
+/// The oracle is the comment above that line, not a recorded output: "An
+/// expected or audited launch decides by what the lock holds". The picker's
+/// resume proves no record of its own under the lock (`StoppedSession`), so
+/// the locked read is its only judge. The record goes while the launch waits,
+/// its directory stays and a worktree directory of the name is left behind:
+/// judged by the lock, the record is gone and the resume is refused; judged by
+/// the stale preflight, it is a resume that cannot read the record it expects.
+#[cfg(debug_assertions)]
+#[test]
+fn an_expected_launch_decides_by_the_record_its_lock_holds_not_the_preflight_one() {
+    let run = picker_resume_racing_the_lock("expected-lock-record", |sessions, _| {
+        std::fs::remove_file(sessions.join("s").join("meta"))?;
+        let home = sessions.parent().expect("the sessions root has a home");
+        std::fs::create_dir_all(home.join("worktrees").join("s"))
+    });
+    assert!(
+        !run.err.contains("could not read metadata"),
+        "the launch read the record the lock no longer holds: {}",
+        run.err
+    );
+    assert_resume_refused(&run);
+    assert!(
+        !run.out.contains("Resuming session"),
+        "a record the lock does not hold is never resumed: {}",
+        run.out
+    );
+    assert!(
+        !run.socket().exists(),
+        "the refusal started a tmux server: {}",
+        run.err
+    );
+    assert!(
+        !run.home().join("sessions").join("s").join("meta").exists(),
+        "the refusal wrote a record"
+    );
+}
+
+/// The picker row promised a resume. A session that is gone under the lock
+/// (ended while the click waited) is refused, and no fresh session of that
+/// name appears, with no state directory, no worktree and no server.
+#[cfg(debug_assertions)]
+#[test]
+fn a_picker_resume_of_a_session_that_vanished_under_the_lock_refuses_and_creates_nothing() {
+    let run = picker_resume_racing_the_lock("resume-vanished", |sessions, _| {
+        std::fs::remove_dir_all(sessions.join("s"))
+    });
+    assert_resume_refused(&run);
+    assert_nothing_was_created(&run);
+    assert!(
+        !run.home().join("sessions").join("s").exists(),
+        "the refusal made a state directory"
+    );
+}
+
+/// The record a live rename of `s` to `t` publishes under the new name.
+#[cfg(debug_assertions)]
+const RENAMED_RECORD: &str = "schema=2\nmeta_version=2\nmode=local\nsession=t\n\
+                              session_id=11111111-1111-4111-8111-111111111111\n";
+
+/// A live rename between the preflight and the lock leaves its helper alias at
+/// the old name. That name holds no record: the resume is refused, and the
+/// refusal leaves the alias, which belongs to the rename, where it is, and the
+/// renamed session's record as the rename published it.
+#[cfg(debug_assertions)]
+#[test]
+fn a_picker_resume_whose_name_became_a_rename_alias_under_the_lock_refuses_and_keeps_it() {
+    let run = picker_resume_racing_the_lock("resume-aliased", |sessions, _| {
+        std::fs::rename(sessions.join("s"), sessions.join("t"))?;
+        std::fs::write(sessions.join("t").join("meta"), RENAMED_RECORD)?;
+        std::os::unix::fs::symlink("t", sessions.join("s"))
+    });
+    assert_resume_refused(&run);
+    assert_nothing_was_created(&run);
+    let sessions = run.home().join("sessions");
+    assert_eq!(
+        std::fs::read_link(sessions.join("s")).ok(),
+        Some(PathBuf::from("t")),
+        "the refusal reclaimed the rename's alias"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sessions.join("t").join("meta")).ok(),
+        Some(RENAMED_RECORD.to_owned()),
+        "the refusal changed the renamed session's record"
+    );
+}
+
+/// A link that is no recognized rename alias keeps the launch's own refusal,
+/// whatever sits behind it: the resume never reaches a server through it.
+#[cfg(debug_assertions)]
+#[test]
+fn a_picker_resume_whose_name_became_a_foreign_link_under_the_lock_still_refuses_it() {
+    let run = picker_resume_racing_the_lock("resume-foreign-link", |sessions, root| {
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere)?;
+        std::fs::write(elsewhere.join("meta"), "session=s\n")?;
+        std::fs::remove_dir_all(sessions.join("s"))?;
+        std::os::unix::fs::symlink(&elsewhere, sessions.join("s"))
+    });
+    assert_eq!(run.code, super::EXIT_FAILED, "{}{}", run.out, run.err);
+    assert!(
+        run.err
+            .contains("is a symlink; refusing to launch through it"),
+        "{}",
+        run.err
+    );
+    assert_nothing_was_created(&run);
+    let kept: Vec<_> = std::fs::read_dir(run.root().join("elsewhere"))
+        .expect("the link target stays")
+        .map(|entry| entry.expect("an entry").file_name())
+        .collect();
+    assert_eq!(kept, ["meta"], "the launch wrote through the link");
+}
+
+/// The alias reclaim is skipped for a resume only. A settings Start of the
+/// canonical name still reclaims a recognized alias before its own proof, which
+/// here refuses (a sibling directory with no record makes the role census
+/// fail): the alias is gone when it does.
+#[cfg(debug_assertions)]
+#[test]
+fn an_expected_start_still_reclaims_a_rename_alias_before_its_proof() {
+    let fixture = Fixture::new("start-reclaims-alias");
+    let root = fixture.root.clone();
+    let home = root.join("home");
+    let sessions = home.join("sessions");
+    let socket = root.join("sock");
+    std::fs::create_dir_all(sessions.join("x")).unwrap();
+    let canonical = sessions.join(crate::orchestrator::ORCHESTRATOR_SESSION);
+    std::os::unix::fs::symlink("x", &canonical).unwrap();
+    let config = lock_race_config(&root);
+
+    let words = launch_words(
+        crate::orchestrator::ORCHESTRATOR_SESSION,
+        &home,
+        &root,
+        &config,
+        &socket,
+    );
+    let expected = ExpectedLaunch::unattended(
+        ExpectedState::AbsentCanonical,
+        crate::time::Timestamp::now().epoch() + 60,
+    );
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = super::run_with_expected(
+        &words,
+        Some(&expected),
+        None,
+        None,
+        (&super::LaunchCaller::Outside, super::LaunchRoute::Picker),
+        &mut out,
+        &mut err,
+    )
+    .expect("the launch writes to buffers");
+    let (out, err) = (
+        String::from_utf8_lossy(&out).into_owned(),
+        String::from_utf8_lossy(&err).into_owned(),
+    );
+    assert_eq!(code, super::EXIT_FAILED, "{out}{err}");
+    assert!(
+        err.contains("Nothing was started."),
+        "the Start's own proof refused: {err}"
+    );
+    assert!(
+        std::fs::read_link(&canonical).is_err() && !canonical.exists(),
+        "the Start reclaimed the alias before its proof: {err}"
+    );
+    assert!(sessions.join("x").is_dir(), "the sibling stays");
 }
 
 #[test]

@@ -159,6 +159,9 @@ pub(crate) enum ExpectedState {
     /// the picker row was drawn. The clicker's identity and the deadline are
     /// the whole contribution: the launch's own meta re-read and absence proof
     /// decide everything about the session itself, under the lifecycle lock.
+    /// A record that lock no longer holds (the session was ended, or renamed
+    /// away and left its helper alias) refuses with "Nothing was resumed." and
+    /// creates nothing: the row promised a resume, never a fresh session.
     StoppedSession,
 }
 
@@ -1061,7 +1064,11 @@ fn launch(
             return Ok(EXIT_FAILED);
         }
     }
-    if lifecycle.is_some() {
+    // A resume never reclaims a recognized rename alias: one a live rename left
+    // since the preflight is a record gone from this name, and the refusal
+    // below keeps it in place. Every other link meets the reclaim's refusal.
+    let resume_alias = expected_resume && crate::lifecycle::aliases::target(&dir).is_some();
+    if lifecycle.is_some() && !resume_alias {
         step!(reclaim_launch_alias(&dir, err));
     }
     // An expected or audited launch decides by what the lock holds, as its
@@ -1072,6 +1079,16 @@ fn launch(
         } else {
             preflight_meta_present
         };
+    // A resume promises an existing session: a record this lock does not hold
+    // refuses before any server, worktree or record is made, where a start or
+    // an unexpected launch would create one.
+    if expected_resume && (resume_alias || !meta_present) {
+        writeln!(
+            err,
+            "Error: session '{session}' disappeared while Resume waited for its lifecycle lock. Nothing was resumed."
+        )?;
+        return Ok(EXIT_FAILED);
+    }
     if let Some(attempt) = restore
         && let Some(why) = restore_skip(lifecycle.is_some(), meta_present, || {
             attempt.guard.refuse(&dir)
