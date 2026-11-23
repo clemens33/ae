@@ -4689,6 +4689,9 @@ mod desk_geometry_spec;
 #[cfg(test)]
 #[path = "desk_presence_tests.rs"]
 mod desk_presence_tests;
+#[cfg(test)]
+#[path = "desk_tabs_spec.rs"]
+mod desk_tabs_spec;
 
 #[cfg(test)]
 mod s5_draw;
