@@ -234,13 +234,14 @@ Browsing:
 
 | Key | Does |
 |---|---|
-| `1`-`9` | select the Nth session of the list, counted by position (no number is drawn) |
+| `1`-`9` | select the Nth session of the list, counted by position (no number is drawn); with the board focused `1`-`5` pick its tab instead |
 | `j` / `k`, `↓` / `↑` | next / previous session |
 | `!` | the next session that needs you |
 | `O`, click `◆` | open the orchestrator panel beside the chat, or hide it ([Orchestrator panel](#orchestrator-panel)) |
 | `F`, click `F full` / `F side` | the open panel over the whole frame, the sidebar hidden, or side by side again ([Zoom](#zoom)) |
 | `b`, click `b hide` / `b show` | hide the orchestrator board and give the chat its width, or show it again, in side and full-screen modes and on a narrow frame; the choice survives an app restart ([Orchestrator board](#orchestrator-board)) |
 | `B`, click `B board` | focus the orchestrator board, or open it in the panel on a narrow frame; it does nothing while the board is hidden. `B` or `Esc` returns to chat ([Orchestrator board](#orchestrator-board)) |
+| `1`-`5`, `Tab` / `Right`, `Left`, click a label | with the board focused: show DECIDE, COMING, RUNNING, WAITING or LINKS, or step to the next / previous tab, wrapping; the tab survives an app restart ([Orchestrator board](#orchestrator-board)) |
 | `X`, click `X zoom` / `X unzoom` | the column that holds the keys over the whole frame, the sidebar hidden, or back; text while writing ([Zoom](#zoom)) |
 | `oo`, click `pane` in the panel header | open the highlighted seat's pane: the first `o` only arms (`o again to open <seat>`), the second within 2 seconds opens that same seat. While the orchestrator panel holds the keys, `oo` and the click open the orchestrator's pane ([Orchestrator panel](#orchestrator-panel)) |
 | `m`, right-click a card | the session menu on that card ([Session menu](#session-menu)) |
@@ -626,7 +627,20 @@ Use `PgUp` and `PgDn` to scroll the focused board by a page, or wheel over the
 board to scroll three rows per notch. The last row counts hidden rows and
 points toward them.
 
-The board shows `BOARD  updated HH:MM:SS <zone>` and wraps sanitized items and
+The column is the line `BOARD  updated HH:MM:SS <zone>`, a bar of five tabs and
+the items of the chosen tab. The tabs are the sections, DECIDE, COMING, RUNNING,
+WAITING and LINKS, each with its item count. An empty section shows `0` and the
+row `no items`. DECIDE is chosen until you pick another tab. While the board has
+the keys, `1` to `5` pick a tab by its place, `Tab` or `Right` step to the next
+tab and `Left` to the previous one, wrapping at both ends. A click on a label
+picks it too, and gives the board the keys unless you write a draft. The line and
+the bar stay in place, only the items scroll, and a new tab starts at its top.
+The labels shorten instead of wrapping: `DECIDE 3` on a wide board, `DEC 3` at
+the default width and `D3` on the narrowest, with the letter of the item ids.
+The chosen tab survives an app restart like the zoom does. The hidden-board
+`desk N` counts DECIDE, whichever tab is chosen.
+
+The board wraps sanitized items and
 links to its width. Each visible fragment of a wrapped link opens the same URL or
 `file://` destination. The app reads the board with the panel and shows the
 reason when a record is unreadable. The board is read-only. With no record set,
