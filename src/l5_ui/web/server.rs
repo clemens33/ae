@@ -751,11 +751,12 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use std::io::{Read as _, Write as _};
-    use std::net::TcpStream;
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::net::{Shutdown, TcpStream};
+    use std::sync::{Arc, mpsc};
+    use std::time::{Duration, Instant};
 
-    use super::{Options, Probe, Seen, start};
+    use super::{Cut, Options, Probe, Running, Seen, start};
+    use crate::web::chat;
     use crate::web::clock::ManualClock;
     use crate::web::state::{Read, Source};
 
@@ -814,5 +815,297 @@ mod tests {
     #[test]
     fn a_response_write_hands_the_socket_at_most_16_kib() {
         assert_eq!(super::CHUNK, 16_384);
+    }
+
+    /// How long a test waits for one event or one read.
+    const WAIT: Duration = Duration::from_secs(5);
+
+    /// Hands every event to the test. With `early` set, it first moves the
+    /// clock at each first byte to `early` before that request's deadline.
+    struct Events {
+        sender: mpsc::Sender<Seen>,
+        clock: Arc<ManualClock>,
+        early: Option<Duration>,
+    }
+
+    impl Probe for Events {
+        fn saw(&self, seen: Seen) {
+            if let (Some(early), Seen::FirstByte { .. }) = (self.early, &seen) {
+                self.clock
+                    .advance(super::REQUEST_LIFE.saturating_sub(early));
+            }
+            drop(self.sender.send(seen));
+        }
+    }
+
+    /// A [`Running`] that shuts down and joins its threads when it is dropped,
+    /// a panic's unwind included, so no worker of a failed test runs on.
+    struct Listening(Option<Running>);
+
+    impl Listening {
+        /// Shut down now and join every thread.
+        fn shutdown(self) {
+            drop(self);
+        }
+    }
+
+    impl std::ops::Deref for Listening {
+        type Target = Running;
+
+        fn deref(&self) -> &Running {
+            self.0
+                .as_ref()
+                .unwrap_or_else(|| panic!("a listener used after its shutdown"))
+        }
+    }
+
+    impl Drop for Listening {
+        fn drop(&mut self) {
+            if let Some(running) = self.0.take() {
+                running.shutdown();
+            }
+        }
+    }
+
+    /// A listener on a test clock that moves only as [`Events`] says, and
+    /// the events it saw. The listener shuts down when it is dropped.
+    fn listen(
+        source: Arc<dyn Source>,
+        early: Option<Duration>,
+    ) -> (Listening, mpsc::Receiver<Seen>) {
+        let clock = Arc::new(ManualClock::new(1_795_000_000));
+        let (sender, events) = mpsc::channel();
+        let running = start(Options {
+            port: 0,
+            clock: clock.clone(),
+            source,
+            probe: Arc::new(Events {
+                sender,
+                clock,
+                early,
+            }),
+            links: Arc::new(|_| {}),
+            version: "server-unit".to_owned(),
+        })
+        .unwrap_or_else(|error| panic!("start: {error}"));
+        (Listening(Some(running)), events)
+    }
+
+    /// The first event `wanted` takes within [`WAIT`].
+    fn observe(events: &mpsc::Receiver<Seen>, what: &str, wanted: impl Fn(&Seen) -> bool) -> Seen {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let seen = events
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|error| panic!("{what}: {error}"));
+            if wanted(&seen) {
+                return seen;
+            }
+        }
+    }
+
+    /// A client of `running` whose reads give up after [`WAIT`].
+    fn client(running: &Running) -> TcpStream {
+        let client =
+            TcpStream::connect(running.addr()).unwrap_or_else(|error| panic!("connect: {error}"));
+        client
+            .set_read_timeout(Some(WAIT))
+            .unwrap_or_else(|error| panic!("read timeout: {error}"));
+        client
+    }
+
+    /// `linger`: unread request bytes do not turn the close into a reset that
+    /// destroys the answer. A client still sending when its 413 leaves reads
+    /// the whole refusal and an orderly end, and its socket reports no reset.
+    #[test]
+    fn a_refusal_reaches_a_client_that_is_still_sending() {
+        let (running, _events) = listen(Arc::new(Empty), None);
+        let host = running.addr();
+        let mut client = client(&running);
+        let mut wire = format!(
+            "POST /api/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\n\
+             Content-Type: application/json\r\nContent-Length: 70000\r\n\r\n"
+        )
+        .into_bytes();
+        wire.resize(wire.len() + 16 * 1024, b'x');
+        client
+            .write_all(&wire)
+            .unwrap_or_else(|error| panic!("send: {error}"));
+        client
+            .shutdown(Shutdown::Write)
+            .unwrap_or_else(|error| panic!("half close: {error}"));
+        let mut reply = Vec::new();
+        let read = client.read_to_end(&mut reply);
+        assert!(
+            read.is_ok() && reply.starts_with(b"HTTP/1.1 413 "),
+            "{read:?} after {:?}",
+            String::from_utf8_lossy(&reply)
+        );
+        // The worker closes on its own thread after the reply's end, so a
+        // reset can land after the read: watch the socket error for a while.
+        let watch = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < watch {
+            let error = client
+                .take_error()
+                .unwrap_or_else(|error| panic!("socket error: {error}"));
+            assert!(
+                error.is_none(),
+                "the server reset the connection: {error:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        running.shutdown();
+    }
+
+    /// `waited` and `read_request`: a read that only runs out its timeout is a
+    /// wait, not a close. With the request deadline 50 ms away, each read times
+    /// out after 50 ms, and a client that pauses past that is still answered.
+    #[test]
+    fn a_client_that_pauses_past_a_read_timeout_is_still_answered() {
+        let early = Duration::from_millis(50);
+        let (running, events) = listen(Arc::new(Empty), Some(early));
+        let host = running.addr();
+        let mut client = client(&running);
+        client
+            .write_all(b"G")
+            .unwrap_or_else(|error| panic!("first byte: {error}"));
+        let _ = observe(&events, "the first byte", |seen| {
+            matches!(seen, Seen::FirstByte { .. })
+        });
+        // The pause the scenario needs: past the read timeout the deadline leaves.
+        std::thread::sleep(early * 4);
+        let _ = client.write_all(format!("ET / HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes());
+        let mut reply = Vec::new();
+        let _ = client.read_to_end(&mut reply);
+        running.shutdown();
+        assert!(
+            reply.starts_with(b"HTTP/1.1 200 "),
+            "{}",
+            String::from_utf8_lossy(reply.get(..40).unwrap_or_default())
+        );
+    }
+
+    /// A chat of the most rows at the most bytes: a state reply of about
+    /// 32 MiB, more than the loopback socket buffers hold.
+    struct Full(Read);
+
+    impl Source for Full {
+        fn read(&self) -> Read {
+            self.0.clone()
+        }
+    }
+
+    /// The [`Full`] source.
+    fn full() -> Arc<dyn Source> {
+        let mut read = Read::default();
+        read.chat.rows = (1..=500_u64)
+            .map(|key| chat::Row {
+                key,
+                body: "x".repeat(chat::BODY_MAX),
+                ..chat::Row::default()
+            })
+            .collect();
+        Arc::new(Full(read))
+    }
+
+    /// A bearer for `running`: its link's code redeemed at /api/session.
+    fn login(running: &Running) -> String {
+        let link = running.link();
+        let (_, code) = link.split_once("#c=").unwrap_or_else(|| panic!("{link}"));
+        let host = running.addr();
+        let body = format!(r#"{{"code":"{code}"}}"#);
+        let mut client = client(running);
+        client
+            .write_all(
+                format!(
+                    "POST /api/session HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\n\
+                     Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .unwrap_or_else(|error| panic!("login: {error}"));
+        let mut reply = String::new();
+        let _ = client.read_to_string(&mut reply);
+        let (_, after) = reply
+            .split_once(r#""session":""#)
+            .unwrap_or_else(|| panic!("{reply}"));
+        let (bearer, _) = after.split_once('"').unwrap_or_else(|| panic!("{reply}"));
+        bearer.to_owned()
+    }
+
+    /// A client that asked `running` for the state.
+    fn ask_state(running: &Running) -> TcpStream {
+        let bearer = login(running);
+        let host = running.addr();
+        let mut client = client(running);
+        client
+            .write_all(
+                format!(
+                    "GET /api/state HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {bearer}\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap_or_else(|error| panic!("state request: {error}"));
+        client
+    }
+
+    /// `write_response` and `waited`: a write that only runs out its timeout is
+    /// a wait. A reader that pauses past one write timeout on a reply larger
+    /// than the socket buffers still gets the whole body its head names.
+    #[test]
+    fn a_reader_that_pauses_past_a_write_timeout_gets_the_whole_state() {
+        let (running, _events) = listen(full(), None);
+        let mut client = ask_state(&running);
+        // The first bytes show that the reply is leaving: the rest fills the
+        // socket buffers at once, and the next write blocks.
+        let mut reply = vec![0_u8; 4096];
+        let first = client.read_exact(&mut reply);
+        // The pause the scenario needs: past one write timeout.
+        std::thread::sleep(super::POLL + Duration::from_millis(500));
+        let read = client.read_to_end(&mut reply);
+        running.shutdown();
+        assert!(first.is_ok(), "first bytes: {first:?}");
+        let end = reply
+            .windows(4)
+            .position(|four| four == b"\r\n\r\n")
+            .unwrap_or_else(|| panic!("no head in {} bytes: {read:?}", reply.len()));
+        let head = String::from_utf8_lossy(reply.get(..end).unwrap_or_default()).into_owned();
+        let named: usize = head
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .and_then(|length| length.parse().ok())
+            .unwrap_or_else(|| panic!("{head}"));
+        assert!(named > 30 << 20, "{head}");
+        assert_eq!(reply.len() - end - 4, named, "{read:?} {head}");
+    }
+
+    /// `write_response` and `waited`: a write that fails is a close, not a
+    /// wait. A reader that goes away mid-reply is cut as closed at once; the
+    /// response deadline never comes on the test clock.
+    #[test]
+    fn a_reader_that_goes_away_is_cut_at_once() {
+        let (running, events) = listen(full(), None);
+        let mut client = ask_state(&running);
+        let mut first = [0_u8; 4096];
+        client
+            .read_exact(&mut first)
+            .unwrap_or_else(|error| panic!("first bytes: {error}"));
+        // Closing with reply bytes unread resets the connection.
+        drop(client);
+        let cut = observe(&events, "the cut of the reader that went away", |seen| {
+            matches!(seen, Seen::Cut { .. })
+        });
+        running.shutdown();
+        assert!(
+            matches!(
+                cut,
+                Seen::Cut {
+                    why: Cut::Closed,
+                    ..
+                }
+            ),
+            "{cut:?}"
+        );
     }
 }
