@@ -4507,6 +4507,58 @@ harness-smoke mode="":
     export NEXTEST_TEST_THREADS=1
     AE_HARNESS_SMOKE=1 nice -n 10 cargo nextest run --locked --run-ignored only --no-capture -E "binary(it) & $filter"
 
+# ON-DEMAND browser smoke of `ae web` (docs/web.md, "Browser smoke"): headless Chrome against a
+# real listener on 127.0.0.1 over a scratch state root, four cells (1440x900 and 360x740, light
+# and dark), one real send. It is NEVER a dependency of `test`, `test-affected`, `pre`, the Mac
+# subset, mutants or CI: the test is `#[ignore]`d and needs AE_WEB_SMOKE=1, which only this
+# recipe sets. Chrome is the absolute path in AE_WEB_SMOKE_CHROME, else this OS's stock install
+# path, never a PATH lookup. Screenshots and the log land in .local/web-smoke/<UTC stamp>/.
+# `just web-smoke plant` serves app.mjs without the topic row's focus guard and passes only
+# when the run fails at focus-kept and at no other check.
+web-smoke mode="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "${1:-}" in
+        "") plant="" ;;
+        plant) plant=focus ;;
+        *) echo "usage: just web-smoke [plant]" >&2; exit 2 ;;
+    esac
+    chrome="${AE_WEB_SMOKE_CHROME:-}"
+    if [[ -z "$chrome" ]]; then
+        case "$(uname -s)" in
+            Darwin) chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ;;
+            Linux) chrome=/usr/bin/google-chrome ;;
+        esac
+    fi
+    if [[ "$chrome" != /* || ! -f "$chrome" || ! -x "$chrome" ]]; then
+        echo "web-smoke: no Chrome at '$chrome'; set AE_WEB_SMOKE_CHROME to its absolute path" >&2
+        exit 2
+    fi
+    out="$PWD/.local/web-smoke/$(date -u +%Y%m%dT%H%M%SZ)${plant:+-plant}"
+    mkdir -p "$out"
+    filter='binary(it) & test(=deliver::web_smoke::live_web_smoke)'
+    export AE_WEB_SMOKE=1 AE_WEB_SMOKE_CHROME="$chrome" AE_WEB_SMOKE_OUT="$out"
+    if [[ -z "$plant" ]]; then
+        just _tmux-isolated test --run-ignored only --no-capture -E "$filter" 2>&1 | tee "$out/run.log"
+        echo "web-smoke: PASS; evidence in $out"
+        exit 0
+    fi
+    status=0
+    AE_WEB_SMOKE_PLANT="$plant" just _tmux-isolated test --run-ignored only --no-capture -E "$filter" >"$out/run.log" 2>&1 || status=$?
+    cat "$out/run.log"
+    # The plant passes only when the run failed, said the fault was served, and every failure it
+    # reports is the focus check of the first cell.
+    caught='web-smoke FAILED at focus-kept (1440x900 light): '
+    if ((status != 0)) \
+        && grep -qF 'web-smoke plant: /assets/app.mjs served without' "$out/run.log" \
+        && grep -qF "$caught" "$out/run.log" \
+        && ! grep -F 'web-smoke FAILED at ' "$out/run.log" | grep -qvF "$caught"; then
+        echo "web-smoke plant: caught at focus-kept, as planted (run exit $status); evidence in $out"
+        exit 0
+    fi
+    echo "web-smoke plant: the planted fault was NOT caught at focus-kept (run exit $status); evidence in $out" >&2
+    exit 1
+
 # Coverage is a REPORT, not a gate. It becomes a gate the day a threshold is
 # ratified, and not before.
 

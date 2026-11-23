@@ -117,3 +117,35 @@ focus.
   by SHA-256 in `src/l5_ui/web/assets/VENDOR.md`; there is no build step. Their licence texts
   (MIT for Preact, Apache-2.0 for htm) are served unchanged at `/assets/licenses.txt`, which needs
   no session.
+
+## Browser smoke
+
+The gate has no JavaScript engine, so it proves the wire and pins the page's sources, but it
+never runs the page. `just web-smoke` does, on demand: it is a required receipt at a web freeze
+and before each web release, and it is never part of `just test`, `just test-affected`, the Mac
+subset, mutants or CI. The test (`tests/it/deliver/web_smoke.rs`) is `#[ignore]`d and runs only
+when `AE_WEB_SMOKE=1`, which only the recipe sets.
+
+- The run starts one listener on `127.0.0.1` over a scratch state root whose orchestrator is the
+  delivery tests' fake TUI, and one headless Chrome with a scratch profile and home. Chrome is the
+  absolute path in `AE_WEB_SMOKE_CHROME`, else `/usr/bin/google-chrome` on Linux and
+  `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` on macOS; the recipe never looks
+  it up through `PATH`.
+- It drives one tab over the DevTools protocol. Every click is a real pointer press and release
+  at the control's centre, after a hit test proves the press lands on that control.
+- Four cells, each a fresh load: 1440x900 and 360x740, each light and dark. Each cell checks that
+  the modules load under the strict CSP header with no exception, console error, dialog or CSP
+  violation (`modules`); that a topic titled `<img src=x onerror=alert(1)> & </p>` shows that
+  literal text and the page holds no `img` and no inline script (`hostile-literal`); the scheme's
+  page background (`theme`); and no horizontal scroll with the draft box inside the viewport
+  (`fits`).
+- A wide cell types a draft, clicks a topic row and checks that the card opens while the draft
+  keeps its text (`draft-kept`) and the focus (`focus-kept`). A narrow cell takes the same draft
+  through Topics, the card and back to Chat (`draft-kept`).
+- The 1440x900 dark cell clicks Send and waits for the `sent to …` receipt with its request id;
+  the fake TUI must have received the draft once (`sent`).
+- Each cell leaves a screenshot, and the run its log, in `.local/web-smoke/<UTC stamp>/`.
+
+`just web-smoke plant` serves `app.mjs` without the topic row's mousedown `preventDefault`, the
+guard that keeps the focus in the draft. The recipe passes only when that run fails at
+`focus-kept (1440x900 light)` and at no other check.
