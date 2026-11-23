@@ -2588,7 +2588,10 @@ fn trustfix_named_without_keys(rig: &mut Rig, case: &str, reason: &[&str]) -> St
         .filter(|event| event.action == "human-prompt")
         .collect();
     assert_eq!(names.len(), 1, "{case}: one naming");
-    let summary = names[0].summary.as_deref().expect("human prompt summary");
+    let summary = names[0]
+        .summary
+        .as_deref()
+        .unwrap_or_else(|| panic!("{case}: human prompt summary"));
     for words in reason {
         assert!(
             summary.contains(words),
@@ -2610,9 +2613,9 @@ fn trustfix_home_with_the_recorded_default_config_answers_at_both_measured_width
         ("home-narrow", HOME_TRUST_NARROW, false),
     ] {
         let mut rig = Rig::new(tag, "claude", "normal");
-        let home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+        let home = fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("watchdog HOME: {why}"));
         let config_home = home.join(".claude");
-        fs::create_dir(&config_home).expect("default config home");
+        fs::create_dir(&config_home).unwrap_or_else(|why| panic!("default config home: {why}"));
         if explicit {
             rig.replace_meta("config_home.main", &config_home.display().to_string());
         } else {
@@ -2636,10 +2639,11 @@ fn trustfix_home_with_an_alternate_config_answers() {
         ("home-p", HOME_TRUST, ".claude-p"),
     ] {
         let mut rig = Rig::new(tag, "claude", "normal");
-        let home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+        let home = fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("watchdog HOME: {why}"));
         let config_home = home.join(account);
-        fs::create_dir(&config_home).expect("alternate config home");
-        fs::create_dir(home.join(".claude")).expect("default config home");
+        fs::create_dir(&config_home).unwrap_or_else(|why| panic!("alternate config home: {why}"));
+        fs::create_dir(home.join(".claude"))
+            .unwrap_or_else(|why| panic!("default config home: {why}"));
         rig.replace_meta("config_home.main", &config_home.display().to_string());
         rig.repaint(&frame.replace(HOME_TRUST_FOLDER, &home.display().to_string()));
         rig.start_stepped();
@@ -2659,9 +2663,9 @@ fn trustfix_home_answers_with_or_without_a_config_home_record() {
         ("other-base", Some("implicit")),
     ] {
         let mut rig = Rig::new(case, "claude", "normal");
-        let home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+        let home = fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("watchdog HOME: {why}"));
         let config_home = home.join(".claude");
-        fs::create_dir(&config_home).expect("default config home");
+        fs::create_dir(&config_home).unwrap_or_else(|why| panic!("default config home: {why}"));
         if recorded == Some("implicit") {
             rig.replace_meta(
                 "config_home.main",
@@ -2690,9 +2694,9 @@ fn trustfix_home_answers_with_or_without_a_config_home_record() {
 #[test]
 fn trustfix_home_with_an_extra_source_names_the_dialog_difference() {
     let mut rig = Rig::new("home-mcp", "claude", "normal");
-    let home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+    let home = fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("watchdog HOME: {why}"));
     let config_home = home.join(".claude");
-    fs::create_dir(&config_home).expect("default config home");
+    fs::create_dir(&config_home).unwrap_or_else(|why| panic!("default config home: {why}"));
     rig.replace_meta("config_home.main", &config_home.display().to_string());
     let frame = HOME_TRUST_HOOKS
         .replace(HOME_TRUST_FOLDER, &home.display().to_string())
@@ -2716,7 +2720,8 @@ fn trustfix_home_with_an_extra_source_names_the_dialog_difference() {
 fn trustfix_home_requires_the_recorded_seat_folder() {
     for (case, matching) in [("matching-seat", true), ("wrong-seat", false)] {
         let mut rig = Rig::new(case, "claude", "normal");
-        let watchdog_home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+        let watchdog_home =
+            fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("watchdog HOME: {why}"));
         let seat_folder = watchdog_home.join("other");
         let shown = if matching {
             &seat_folder
@@ -2738,9 +2743,9 @@ fn trustfix_home_requires_the_recorded_seat_folder() {
 #[test]
 fn trustfix_home_with_changed_access_text_names_the_difference() {
     let mut rig = Rig::new("home-changed", "claude", "normal");
-    let home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+    let home = fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("watchdog HOME: {why}"));
     let config_home = home.join(".claude");
-    fs::create_dir(&config_home).expect("default config home");
+    fs::create_dir(&config_home).unwrap_or_else(|why| panic!("default config home: {why}"));
     rig.replace_meta("config_home.main", &config_home.display().to_string());
     let frame = HOME_TRUST
         .replace(HOME_TRUST_FOLDER, &home.display().to_string())
@@ -2781,7 +2786,8 @@ fn trustfix_non_home_plain_and_measured_settings_dialogs_answer() {
         ),
     ] {
         let mut rig = Rig::new(case, "claude", "normal");
-        let folder = fs::canonicalize(rig.root.join("other")).expect("project folder");
+        let folder = fs::canonicalize(rig.root.join("other"))
+            .unwrap_or_else(|why| panic!("project folder: {why}"));
         rig.replace_meta("work_dir.main", &folder.display().to_string());
         let frame = captured
             .replace("/tmp/claude-trust-probe", &folder.display().to_string())
@@ -2814,7 +2820,7 @@ fn trustfix_measured_claude_settings_dialogs_are_named_when_auto_trust_is_off() 
             rig.root.join("config"),
             "[workspace]\nauto_trust = off\nquota = off\nauto_upgrade = off\ntheme = off\n",
         );
-        let folder = fs::canonicalize(&rig.root).expect("seat folder");
+        let folder = fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("seat folder: {why}"));
         let frame = captured
             .replace(HOME_TRUST_FOLDER, &folder.display().to_string())
             .replace("/tmp/claude-trust-probe", &folder.display().to_string());
@@ -2828,9 +2834,9 @@ fn trustfix_home_with_only_the_measured_settings_rows_answers_with_the_default_c
     // These rows were measured under a relocated config. Replay that exact
     // text with a default account record to isolate the rule about sources.
     let mut rig = Rig::new("home-default-hooks", "claude", "normal");
-    let home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+    let home = fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("watchdog HOME: {why}"));
     let config_home = home.join(".claude");
-    fs::create_dir(&config_home).expect("default config home");
+    fs::create_dir(&config_home).unwrap_or_else(|why| panic!("default config home: {why}"));
     rig.replace_meta("config_home.main", &config_home.display().to_string());
     rig.repaint(&HOME_TRUST_HOOKS.replace(HOME_TRUST_FOLDER, &home.display().to_string()));
     rig.start_stepped();
@@ -2845,14 +2851,15 @@ fn trustfix_plain_claude_block_answers_with_an_alternate_config() {
         ("plain-other-p", ".claude-p", true),
     ] {
         let mut rig = Rig::new(case, "claude", "normal");
-        let watchdog_home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+        let watchdog_home =
+            fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("watchdog HOME: {why}"));
         let folder = if use_subdir {
             watchdog_home.join("other")
         } else {
             watchdog_home
         };
         let config_home = folder.join(account);
-        fs::create_dir(&config_home).expect("alternate config home");
+        fs::create_dir(&config_home).unwrap_or_else(|why| panic!("alternate config home: {why}"));
         rig.replace_meta("config_home.main", &config_home.display().to_string());
         rig.replace_meta("work_dir.main", &folder.display().to_string());
         rig.repaint(&trustfix_measured_plain_dialog(&folder));
@@ -2869,7 +2876,7 @@ fn trustfix_plain_claude_block_answers_with_an_alternate_config() {
 #[test]
 fn trustfix_home_hooks_answer_once_for_each_new_tool_start() {
     let mut rig = Rig::new("home-hooks-new-start", "claude", "normal");
-    let home = fs::canonicalize(&rig.root).expect("seat folder");
+    let home = fs::canonicalize(&rig.root).unwrap_or_else(|why| panic!("seat folder: {why}"));
     let frame = HOME_TRUST_HOOKS.replace(HOME_TRUST_FOLDER, &home.display().to_string());
     write(rig.root.join("frame"), &frame);
     rig.repaint(&frame);
@@ -2885,7 +2892,8 @@ fn trustfix_home_hooks_answer_once_for_each_new_tool_start() {
     rig.stop();
 
     let old_pid = text(rig.root.join("ready"));
-    fs::remove_file(rig.root.join("ready")).expect("old start receipt");
+    fs::remove_file(rig.root.join("ready"))
+        .unwrap_or_else(|why| panic!("old start receipt: {why}"));
     let command = format!("exec {0}/bin/claude {0}/vendor.pl {0}", rig.root.display());
     rig.tmux(&["respawn-pane", "-k", "-t", &rig.pane, &command]);
     wait_for("distinct tool start", || rig.root.join("ready").is_file());
@@ -2921,7 +2929,8 @@ fn trustfix_measured_project_dialogs_with_mcp_name_the_source_and_send_no_keys()
         ),
     ] {
         let mut rig = Rig::new(case, "claude", "normal");
-        let folder = fs::canonicalize(rig.root.join("other")).expect("seat folder");
+        let folder = fs::canonicalize(rig.root.join("other"))
+            .unwrap_or_else(|why| panic!("seat folder: {why}"));
         rig.replace_meta("work_dir.main", &folder.display().to_string());
         let frame = captured.replace(captured_folder, &format!(" {}", folder.display()));
         assert_ne!(
