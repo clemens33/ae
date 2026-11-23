@@ -3,9 +3,11 @@
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::cli;
 
@@ -158,4 +160,134 @@ fn a_lock_that_cannot_be_taken_names_the_lock_not_another_listener() {
         "{stderr:?}"
     );
     assert!(output.stdout.is_empty(), "{output:?}");
+}
+
+/// The version the follow test repoints the command link to.
+const NEXT: &str = "2099.1.1";
+/// How long the follow test waits for the told failure after the repoint: the
+/// watcher looks every 5 s, so a passing run spends one look of it.
+const FOLLOW_DEADLINE: Duration = Duration::from_secs(20);
+
+/// A version directory under `versions` with its installer and manifest, the
+/// `app_upgrade_spec` `InstalledRig` recipe: the path its core goes to.
+fn version_dir(versions: &Path, version: &str) -> PathBuf {
+    let dir = versions.join(version);
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|error| panic!("version directory {version}: {error}"));
+    let zero = "0".repeat(64);
+    for (name, text) in [
+        ("install", "not executed".to_owned()),
+        ("SHA256SUMS", format!("{zero}  ae-core\n{zero}  install\n")),
+    ] {
+        std::fs::write(dir.join(name), text)
+            .unwrap_or_else(|error| panic!("{name} {version}: {error}"));
+    }
+    dir.join("ae-core")
+}
+
+/// Point the command link `link` at `core`.
+fn relink(link: &Path, core: &Path) {
+    drop(std::fs::remove_file(link));
+    std::os::unix::fs::symlink(core, link)
+        .unwrap_or_else(|error| panic!("link {}: {error}", core.display()));
+}
+
+/// docs/web.md: when the command link names another core and automatic
+/// upgrades are on, `ae web` replaces itself with that core; a failed switch
+/// is printed once per version and the old core keeps serving. The startup
+/// line witnesses the listener's first look, so the link moves only after it.
+#[test]
+fn an_installed_listener_tells_a_core_it_cannot_follow_and_keeps_serving() {
+    let scratch = cli::OwnedScratch::root("web", "follow");
+    let home = scratch.path().join("home");
+    let ae_home = home.join(".ae");
+    let versions = ae_home.join("versions");
+    let tmux = scratch.path().join("tmux");
+    let link = home.join(".local").join("bin").join("ae");
+    for dir in [&tmux, &home.join(".local").join("bin")] {
+        std::fs::create_dir_all(dir).unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
+    }
+    let core = version_dir(&versions, ae::VERSION);
+    std::fs::copy(env!("CARGO_BIN_EXE_ae"), &core)
+        .unwrap_or_else(|error| panic!("copy the core: {error}"));
+    // The next core is complete but cannot run: its exec fails.
+    let next = version_dir(&versions, NEXT);
+    std::fs::write(&next, "not a core").unwrap_or_else(|error| panic!("next core: {error}"));
+    std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o644))
+        .unwrap_or_else(|error| panic!("next core mode: {error}"));
+    std::fs::write(ae_home.join("config"), "[workspace]\nauto_upgrade = on\n")
+        .unwrap_or_else(|error| panic!("config: {error}"));
+    relink(&link, &core);
+    let port = free_port();
+    // Killed and reaped when it drops, on every exit path.
+    let mut served = cli::helper(&link)
+        .env("HOME", &home)
+        .env("AE_HOME", &ae_home)
+        .env("TMUX_TMPDIR", &tmux)
+        .env_remove("AE_NO_AUTOSTART")
+        .args(["web", "--port", &port.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn the installed ae web: {error}"));
+    let out = lines(served.stdout.take());
+    let err = lines(served.stderr.take());
+    let first = out
+        .recv_timeout(WAIT)
+        .unwrap_or_else(|error| panic!("startup link: {error}"));
+    assert!(first.starts_with("ae web: http://127.0.0.1:"), "{first:?}");
+
+    relink(&link, &next);
+    let deadline = Instant::now() + FOLLOW_DEADLINE;
+    let prefix = format!("ae web: cannot follow version {NEXT}: ");
+    let suffix = format!("; still serving {}", ae::VERSION);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let printed = err.recv_timeout(left).unwrap_or_else(|error| {
+            panic!("no `{prefix}...{suffix}` within {FOLLOW_DEADLINE:?}: {error}")
+        });
+        if printed.starts_with(&prefix) && printed.ends_with(&suffix) {
+            break;
+        }
+    }
+    let reply = state(port);
+    assert!(reply.starts_with("HTTP/1.1 401 "), "{reply:?}");
+    drop(served);
+}
+
+/// Every line `stream` prints, handed over by a reader thread.
+fn lines(stream: Option<impl std::io::Read + Send + 'static>) -> mpsc::Receiver<String> {
+    let stream = stream.unwrap_or_else(|| panic!("a piped stream"));
+    let (lines, seen) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stream).lines().map_while(Result::ok) {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    seen
+}
+
+/// The whole answer to `GET /api/state` from the listener on `port`.
+fn state(port: u16) -> String {
+    let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+        .unwrap_or_else(|error| panic!("connect: {error}"));
+    client
+        .set_read_timeout(Some(WAIT))
+        .unwrap_or_else(|error| panic!("read deadline: {error}"));
+    write!(
+        client,
+        "GET /api/state HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+    )
+    .unwrap_or_else(|error| panic!("request: {error}"));
+    client
+        .shutdown(Shutdown::Write)
+        .unwrap_or_else(|error| panic!("half-close: {error}"));
+    let mut reply = String::new();
+    client
+        .read_to_string(&mut reply)
+        .unwrap_or_else(|error| panic!("the whole answer: {error}"));
+    reply
 }
