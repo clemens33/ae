@@ -2630,7 +2630,7 @@ fn trustfix_home_with_the_recorded_default_config_answers_at_both_measured_width
 }
 
 #[test]
-fn trustfix_home_with_an_alternate_config_names_the_config_refusal() {
+fn trustfix_home_with_an_alternate_config_answers() {
     for (tag, frame, account) in [
         ("home-mic", HOME_TRUST_HOOKS, ".claude-mic"),
         ("home-p", HOME_TRUST, ".claude-p"),
@@ -2642,17 +2642,14 @@ fn trustfix_home_with_an_alternate_config_names_the_config_refusal() {
         fs::create_dir(home.join(".claude")).expect("default config home");
         rig.replace_meta("config_home.main", &config_home.display().to_string());
         rig.repaint(&frame.replace(HOME_TRUST_FOLDER, &home.display().to_string()));
-        let summary =
-            trustfix_named_without_keys(&mut rig, tag, &["folder trust", "config home", account]);
-        assert!(
-            !summary.contains("dialog differs"),
-            "{tag}: the measured frame reaches the config-home check: {summary}"
-        );
+        rig.start_stepped();
+        rig.trusted(b"\x1b[B\r");
+        assert_eq!(rig.count("human-prompt"), 0, "{tag}: answer needs no human");
     }
 }
 
 #[test]
-fn trustfix_home_without_a_proven_config_home_sends_nothing_and_says_why() {
+fn trustfix_home_answers_with_or_without_a_config_home_record() {
     for (case, recorded) in [
         ("legacy", None),
         ("unknown", Some("unknown")),
@@ -2680,7 +2677,13 @@ fn trustfix_home_without_a_proven_config_home_sends_nothing_and_says_why() {
             );
         }
         rig.repaint(&HOME_TRUST.replace(HOME_TRUST_FOLDER, &home.display().to_string()));
-        trustfix_named_without_keys(&mut rig, case, &["folder trust", "config home"]);
+        rig.start_stepped();
+        rig.trusted(b"\x1b[B\r");
+        assert_eq!(
+            rig.count("human-prompt"),
+            0,
+            "{case}: answer needs no human"
+        );
     }
 }
 
@@ -2710,23 +2713,25 @@ fn trustfix_home_with_an_extra_source_names_the_dialog_difference() {
 }
 
 #[test]
-fn trustfix_home_must_be_both_home_and_the_recorded_seat_folder() {
-    for (case, shown_in_home) in [("wrong-home", false), ("wrong-seat", true)] {
+fn trustfix_home_requires_the_recorded_seat_folder() {
+    for (case, matching) in [("matching-seat", true), ("wrong-seat", false)] {
         let mut rig = Rig::new(case, "claude", "normal");
-        let home = fs::canonicalize(&rig.root).expect("watchdog HOME");
-        let config_home = home.join(".claude");
-        fs::create_dir(&config_home).expect("default config home");
-        rig.replace_meta("config_home.main", &config_home.display().to_string());
-        let other = home.join("other");
-        let shown = if shown_in_home { &home } else { &other };
-        rig.replace_meta("work_dir.main", &other.display().to_string());
-        rig.repaint(&HOME_TRUST.replace(HOME_TRUST_FOLDER, &shown.display().to_string()));
-        let why = if shown_in_home {
-            "seat's folder"
+        let watchdog_home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+        let seat_folder = watchdog_home.join("other");
+        let shown = if matching {
+            &seat_folder
         } else {
-            "HOME"
+            &watchdog_home
         };
-        trustfix_named_without_keys(&mut rig, case, &["folder trust", why]);
+        rig.replace_meta("work_dir.main", &seat_folder.display().to_string());
+        rig.repaint(&HOME_TRUST.replace(HOME_TRUST_FOLDER, &shown.display().to_string()));
+        if matching {
+            rig.start_stepped();
+            rig.trusted(b"\x1b[B\r");
+            assert_eq!(rig.count("human-prompt"), 0);
+        } else {
+            trustfix_named_without_keys(&mut rig, case, &["folder trust", "seat's folder"]);
+        }
     }
 }
 
@@ -2759,32 +2764,63 @@ fn trustfix_home_with_changed_access_text_names_the_difference() {
 }
 
 #[test]
-fn trustfix_non_home_plain_answers_and_settings_warning_stays_report_only() {
-    let mut plain = Rig::new("project-plain", "claude", "normal");
-    let folder = fs::canonicalize(plain.root.join("other")).expect("project folder");
-    plain.replace_meta("work_dir.main", &folder.display().to_string());
-    let frame = CLAUDE.replace("/tmp/claude-trust-probe", &folder.display().to_string());
-    plain.repaint(&frame);
-    plain.start_stepped();
-    plain.result();
-    assert_eq!(
-        plain.count("auto-trust"),
-        1,
-        "plain project trust still answers"
-    );
-    assert_eq!(plain.wire(), b"\x1b[B\r", "plain answer is Down then Enter");
+fn trustfix_non_home_plain_and_measured_settings_dialogs_answer() {
+    for (case, captured) in [
+        ("project-plain", CLAUDE),
+        (
+            "project-settings",
+            include_str!("../fixtures/dialogseat/claude-2.1.330-settings-only-120x40.txt"),
+        ),
+        (
+            "project-permissions",
+            include_str!("../fixtures/dialogseat/claude-2.1.330-settings-80x24.txt"),
+        ),
+        (
+            "project-hooks",
+            include_str!("../fixtures/dialogseat/claude-2.1.330-hooks-200x50.txt"),
+        ),
+    ] {
+        let mut rig = Rig::new(case, "claude", "normal");
+        let folder = fs::canonicalize(rig.root.join("other")).expect("project folder");
+        rig.replace_meta("work_dir.main", &folder.display().to_string());
+        let frame = captured
+            .replace("/tmp/claude-trust-probe", &folder.display().to_string())
+            .replace(
+                "/tmp/ae-harness-probe/claude-settings/project",
+                &folder.display().to_string(),
+            );
+        rig.repaint(&frame);
+        rig.start_stepped();
+        rig.trusted(b"\x1b[B\r");
+        assert_eq!(
+            rig.count("human-prompt"),
+            0,
+            "{case}: answer needs no human"
+        );
+    }
+}
 
-    let mut warning = Rig::new("project-warning", "claude", "normal");
-    let folder = fs::canonicalize(warning.root.join("other")).expect("project folder");
-    warning.replace_meta("work_dir.main", &folder.display().to_string());
-    let frame = include_str!("../fixtures/dialogseat/claude-2.1.330-hooks-200x50.txt")
-        .replace("/tmp/claude-trust-probe", &folder.display().to_string());
-    warning.repaint(&frame);
-    trustfix_named_without_keys(
-        &mut warning,
-        "non-home settings warning",
-        &["folder trust", "hooks"],
-    );
+#[test]
+fn trustfix_measured_claude_settings_dialogs_are_named_when_auto_trust_is_off() {
+    for (case, captured) in [
+        ("home-hooks-off", HOME_TRUST_HOOKS),
+        (
+            "project-hooks-off",
+            include_str!("../fixtures/dialogseat/claude-2.1.330-hooks-200x50.txt"),
+        ),
+    ] {
+        let mut rig = Rig::new(case, "claude", "normal");
+        write(
+            rig.root.join("config"),
+            "[workspace]\nauto_trust = off\nquota = off\nauto_upgrade = off\ntheme = off\n",
+        );
+        let folder = fs::canonicalize(&rig.root).expect("seat folder");
+        let frame = captured
+            .replace(HOME_TRUST_FOLDER, &folder.display().to_string())
+            .replace("/tmp/claude-trust-probe", &folder.display().to_string());
+        rig.repaint(&frame);
+        trustfix_named_without_keys(&mut rig, case, &["folder trust", "hooks"]);
+    }
 }
 
 #[test]
@@ -2803,76 +2839,61 @@ fn trustfix_home_with_only_the_measured_settings_rows_answers_with_the_default_c
 }
 
 #[test]
-fn trustfix_plain_claude_block_at_home_requires_the_default_config() {
-    let mut rig = Rig::new("plain-home-mic", "claude", "normal");
-    let home = fs::canonicalize(&rig.root).expect("watchdog HOME");
-    fs::create_dir(home.join(".claude")).expect("default config home");
-    let account = home.join(".claude-mic");
-    fs::create_dir(&account).expect("alternate config home");
-    rig.replace_meta("config_home.main", &account.display().to_string());
-    rig.repaint(&trustfix_measured_plain_dialog(&home));
-    trustfix_named_without_keys(
-        &mut rig,
-        "plain Claude dialog at HOME",
-        &["folder trust", "config home", ".claude-mic"],
-    );
+fn trustfix_plain_claude_block_answers_with_an_alternate_config() {
+    for (case, account, use_subdir) in [
+        ("plain-home-mic", ".claude-mic", false),
+        ("plain-other-p", ".claude-p", true),
+    ] {
+        let mut rig = Rig::new(case, "claude", "normal");
+        let watchdog_home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+        let folder = if use_subdir {
+            watchdog_home.join("other")
+        } else {
+            watchdog_home
+        };
+        let config_home = folder.join(account);
+        fs::create_dir(&config_home).expect("alternate config home");
+        rig.replace_meta("config_home.main", &config_home.display().to_string());
+        rig.replace_meta("work_dir.main", &folder.display().to_string());
+        rig.repaint(&trustfix_measured_plain_dialog(&folder));
+        rig.start_stepped();
+        rig.trusted(b"\x1b[B\r");
+        assert_eq!(
+            rig.count("human-prompt"),
+            0,
+            "{case}: answer needs no human"
+        );
+    }
 }
 
 #[test]
-fn trustfix_plain_claude_block_at_the_recorded_seat_home_requires_default_config() {
-    let mut rig = Rig::new("plain-seat-home", "claude", "normal");
-    let watchdog_home = fs::canonicalize(&rig.root).expect("watchdog HOME");
-    let seat_home = watchdog_home.join("other");
-    fs::create_dir(seat_home.join(".claude")).expect("seat default config home");
-    let account = seat_home.join(".claude-mic");
-    fs::create_dir(&account).expect("alternate config home");
-    rig.replace_meta("config_home.main", &account.display().to_string());
-    rig.replace_meta("launch_home.main", &seat_home.display().to_string());
-    rig.replace_meta("work_dir.main", &seat_home.display().to_string());
-    rig.repaint(&trustfix_measured_plain_dialog(&seat_home));
-    trustfix_named_without_keys(
-        &mut rig,
-        "plain Claude dialog at the seat's recorded HOME",
-        &["folder trust", "config home", ".claude-mic"],
-    );
-}
-
-#[test]
-fn trustfix_plain_claude_block_with_a_damaged_launch_home_never_answers() {
-    let mut rig = Rig::new("plain-damaged-home", "claude", "normal");
-    let watchdog_home = fs::canonicalize(&rig.root).expect("watchdog HOME");
-    let folder = watchdog_home.join("other");
-    let account = folder.join(".claude-mic");
-    fs::create_dir(&account).expect("alternate config home");
-    rig.replace_meta("config_home.main", &account.display().to_string());
-    rig.replace_meta("launch_home.main", "relative/home");
-    rig.replace_meta("work_dir.main", &folder.display().to_string());
-    rig.repaint(&trustfix_measured_plain_dialog(&folder));
-    trustfix_named_without_keys(
-        &mut rig,
-        "plain Claude dialog with a damaged launch_home row",
-        &["folder trust", "launch_home"],
-    );
-}
-
-#[test]
-fn trustfix_plain_claude_block_at_the_recorded_seat_home_answers_with_implicit_default() {
-    let mut rig = Rig::new("plain-own-home", "claude", "normal");
-    let watchdog_home = fs::canonicalize(&rig.root).expect("watchdog HOME");
-    let seat_home = watchdog_home.join("other");
-    let config_home = seat_home.join(".claude");
-    fs::create_dir(&config_home).expect("seat default config home");
-    rig.replace_meta(
-        "config_home.main",
-        &format!("implicit:{}", config_home.display()),
-    );
-    rig.replace_meta("config_home_base.main", &seat_home.display().to_string());
-    rig.replace_meta("launch_home.main", &seat_home.display().to_string());
-    rig.replace_meta("work_dir.main", &seat_home.display().to_string());
-    rig.repaint(&trustfix_measured_plain_dialog(&seat_home));
+fn trustfix_home_hooks_answer_once_for_each_new_tool_start() {
+    let mut rig = Rig::new("home-hooks-new-start", "claude", "normal");
+    let home = fs::canonicalize(&rig.root).expect("seat folder");
+    let frame = HOME_TRUST_HOOKS.replace(HOME_TRUST_FOLDER, &home.display().to_string());
+    write(rig.root.join("frame"), &frame);
+    rig.repaint(&frame);
     rig.start_stepped();
-    rig.trusted(b"\x1b[B\r");
-    assert_eq!(rig.count("human-prompt"), 0);
+    let keys = b"\x1b[B\r";
+    rig.trusted(keys);
+    rig.stop();
+    rig.repaint(&frame);
+    rig.start_stepped();
+    rig.named();
+    assert_eq!(rig.wire(), keys, "a repeat sighting spends no more keys");
+    assert_eq!(rig.count("auto-trust-reserved"), 1);
+    rig.stop();
+
+    let old_pid = text(rig.root.join("ready"));
+    fs::remove_file(rig.root.join("ready")).expect("old start receipt");
+    let command = format!("exec {0}/bin/claude {0}/vendor.pl {0}", rig.root.display());
+    rig.tmux(&["respawn-pane", "-k", "-t", &rig.pane, &command]);
+    wait_for("distinct tool start", || rig.root.join("ready").is_file());
+    assert_ne!(text(rig.root.join("ready")), old_pid);
+    rig.start_stepped();
+    rig.until("new HOME trust answer", || rig.count("auto-trust") == 2);
+    assert_eq!(rig.count("auto-trust-reserved"), 2);
+    assert_eq!(rig.wire(), [keys.as_slice(), keys.as_slice()].concat());
 }
 
 fn trustfix_measured_plain_dialog(folder: &Path) -> String {
@@ -2883,4 +2904,39 @@ fn trustfix_measured_plain_dialog(folder: &Path) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         .replace("/tmp/claude-trust-probe", &folder.display().to_string())
+}
+
+#[test]
+fn trustfix_measured_project_dialogs_with_mcp_name_the_source_and_send_no_keys() {
+    for (case, captured, captured_folder) in [
+        (
+            "project-mcp-80",
+            include_str!("../fixtures/dialogseat/claude-2.1.330-mcp40-80x24.history.txt"),
+            " /tmp/claude-trust-probe",
+        ),
+        (
+            "project-mcp-34",
+            include_str!("../fixtures/dialogseat/claude-2.1.330-mcp40-34x12.history.txt"),
+            " /private/tmp/ae-trust-width.5GRL\n 1i/project",
+        ),
+    ] {
+        let mut rig = Rig::new(case, "claude", "normal");
+        let folder = fs::canonicalize(rig.root.join("other")).expect("seat folder");
+        rig.replace_meta("work_dir.main", &folder.display().to_string());
+        let frame = captured.replace(captured_folder, &format!(" {}", folder.display()));
+        assert_ne!(
+            frame, captured,
+            "{case}: substitute the measured folder row"
+        );
+        rig.repaint(&frame);
+        trustfix_named_without_keys(
+            &mut rig,
+            case,
+            &[
+                "folder trust",
+                "dialog differs from the measured one",
+                ".mcp.json",
+            ],
+        );
+    }
 }

@@ -1,7 +1,8 @@
 //! Frozen acceptance (dialogseat, pure half): a harness start dialog drawn
 //! instead of a ready input box is NAMED as needs-human, with its kind, the one
 //! human action and, for Claude's settings variant, the vendor's warning rows.
-//! It is never a `TrustSighting`, so `auto_trust` never answers it.
+//! Only measured Claude blocks whose source is .claude/settings.json can
+//! also carry a `TrustSighting`.
 //!
 //! Oracle: the frames under `tests/fixtures/dialogseat/` are private-tmux
 //! captures of the real harnesses (README there), never adapter constants or
@@ -86,7 +87,7 @@ fn settings_variants() -> [(&'static str, &'static str, Vec<&'static str>); 8] {
 }
 
 #[test]
-fn dialogseat_claude_settings_variants_are_needs_human_with_warnings_and_never_a_trust_sighting() {
+fn dialogseat_measured_settings_dialogs_answer_only_with_the_measured_settings_source() {
     for (label, frame, heads) in settings_variants() {
         let prompt = named(label, frame, "claude");
         assert!(
@@ -94,10 +95,23 @@ fn dialogseat_claude_settings_variants_are_needs_human_with_warnings_and_never_a
             "{label}: {prompt:?}"
         );
         assert_eq!(prompt.keys, CLAUDE_KEYS, "{label}");
-        assert_eq!(
-            prompt.trust, None,
-            "{label}: an unmeasured trust variant is never answerable"
-        );
+        if heads.contains(&LOADS_MCP) {
+            assert_eq!(
+                prompt.trust, None,
+                "{label}: other sources are never answered"
+            );
+        } else {
+            let trust = prompt.trust.as_ref().unwrap_or_else(|| {
+                panic!("{label}: the measured settings block must be answerable")
+            });
+            let folder = match label {
+                "settings-40x12-history" => "/tmp/ae-dialog-probe/proj",
+                "settings-only-120x40" => "/tmp/ae-harness-probe/claude-settings/project",
+                _ => "/tmp/claude-trust-probe",
+            };
+            assert_eq!(trust.folder, folder, "{label}");
+            assert_eq!(trust.toward_yes, Some(ae::tmux::Key::Down), "{label}");
+        }
         assert!(!prompt.dismiss, "{label}: never dismissable");
         assert_eq!(prompt.kind, DialogKind::FolderTrust, "{label}");
         assert_eq!(
