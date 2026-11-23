@@ -818,4 +818,11 @@ mod tests {
             String::from_utf8_lossy(reply.get(..40).unwrap_or_default())
         );
     }
+
+    /// driver-plan.md: a response leaves in writes of at most 16 KiB. A contract pin
+    /// of the planned chunk size; the bytes a reader gets do not show it.
+    #[test]
+    fn a_response_write_hands_the_socket_at_most_16_kib() {
+        assert_eq!(super::CHUNK, 16_384);
+    }
 }

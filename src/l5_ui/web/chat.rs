@@ -155,6 +155,8 @@ pub fn words(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::plain;
 
     /// docs/web.md: every agent text is plain, control characters removed, and
@@ -164,5 +166,19 @@ mod tests {
     fn plain_cleans_a_short_text_and_cuts_a_clean_long_one() {
         assert_eq!(plain("a\u{7}b\tc\n", 64), "ab\tc\n");
         assert_eq!(plain("abcdef", 3), "abc");
+    }
+
+    /// docs/web.md and `plain`: a text with no control character but newline
+    /// and tab is borrowed unchanged, and every other control character is
+    /// removed: C0 without a newline or tab, DEL, and C1 (U+0085 is C2 85).
+    #[test]
+    fn plain_borrows_a_clean_text_and_removes_every_control_character() {
+        let clean = "a plain\ttext\nline";
+        assert!(
+            matches!(plain(clean, 64), Cow::Borrowed(text) if text == clean),
+            "a clean text is borrowed unchanged"
+        );
+        assert_eq!(plain("a\u{7}b", 64), "ab");
+        assert_eq!(plain("a\u{7f}b\u{85}c", 64), "abc");
     }
 }
