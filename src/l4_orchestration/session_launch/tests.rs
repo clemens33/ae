@@ -2709,6 +2709,7 @@ fn asking(question: &str) -> super::ReadyRead {
         keys: "Enter to confirm · Esc to cancel".to_owned(),
         trust: None,
         dismiss: false,
+        differs: None,
     }))
 }
 
@@ -2729,6 +2730,7 @@ fn blocked(question: &str) -> super::Readiness {
         keys: "Enter to confirm · Esc to cancel".to_owned(),
         trust: None,
         dismiss: false,
+        differs: None,
     })
 }
 

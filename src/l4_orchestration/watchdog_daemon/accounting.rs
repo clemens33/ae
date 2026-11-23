@@ -436,7 +436,16 @@ fn book_human_prompt(
             effects.push(Effect::Note(format!(
                 "auto_trust did not answer the trust prompt: {why}"
             )));
-            effects.extend(naming(prompt));
+            if prompt.dismiss {
+                effects.extend(naming(prompt));
+            } else {
+                effects.extend(naming_declined(prompt, why));
+            }
+        }
+        // A trust block auto_trust declined is named with the reason, so the
+        // human learns why ae did not answer it.
+        Some(crate::autotrust::Due::Declined(why)) if name => {
+            effects.extend(naming_declined(prompt, why));
         }
         _ if name => effects.extend(naming(prompt)),
         _ => {}
@@ -446,11 +455,20 @@ fn book_human_prompt(
 
 /// The ONE naming of a human-only prompt: its event and its Notify line.
 pub(super) fn naming(prompt: &crate::watchdog::HumanPrompt) -> [Effect; 2] {
-    let summary = prompt_summary(prompt);
+    named(&prompt_summary(prompt))
+}
+
+/// [`naming`] of a trust block `auto_trust` declined, with its reason.
+pub(super) fn naming_declined(prompt: &crate::watchdog::HumanPrompt, why: &str) -> [Effect; 2] {
+    let declined = crate::board::terminal_text(&format!("auto_trust did not answer: {why}"));
+    named(&format!("{} — {declined}", prompt_summary(prompt)))
+}
+
+fn named(summary: &str) -> [Effect; 2] {
     [
         Effect::Emit {
             action: "human-prompt",
-            summary: summary.clone(),
+            summary: summary.to_owned(),
         },
         Effect::Notify(format!("waiting for you: {summary}")),
     ]

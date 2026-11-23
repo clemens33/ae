@@ -226,6 +226,7 @@ fn sleepgap_every_due_fold_delivery_waits_without_consuming_its_delivery_clock()
         keys: "Enter".to_owned(),
         trust: None,
         dismiss: false,
+        differs: None,
     });
     cases.push((
         "trust",
@@ -309,6 +310,7 @@ fn sleepgap_held_trust_answer_keeps_the_prompt_naming_at_its_observed_threshold(
         keys: "Enter".to_owned(),
         trust: None,
         dismiss: false,
+        differs: None,
     });
     let prior = PaneState {
         identity: Some(1),

@@ -828,6 +828,29 @@ pub(crate) struct TrustSpec {
     pub(crate) hint: &'static str,
     /// The most non-blank rows the modal draws below its hint.
     pub(crate) trailer: usize,
+    /// The tool and version this block was measured on, as a differing block's
+    /// naming quotes it: a constant, never a live read.
+    pub(crate) measured: &'static str,
+    /// The home-folder variant of the block, where one is measured.
+    pub(crate) home: Option<HomeTrust>,
+}
+
+/// The block a tool draws when the folder is the user's home folder: one
+/// paragraph replaced, and optionally the settings rows a non-default config
+/// home adds before the last paragraph. `auto_trust` answers it only under
+/// [`crate::autotrust`]'s home rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HomeTrust {
+    /// Which of [`TrustSpec::paragraphs`] the home folder replaces.
+    pub(crate) at: usize,
+    /// That paragraph as the home folder draws it, wrapped rows joined.
+    pub(crate) access: &'static str,
+    /// The one warning paragraph drawn when the home folder's project settings
+    /// declare hooks.
+    pub(crate) hooks: &'static str,
+    /// The row drawn with it, in the last paragraph's run, above that
+    /// paragraph's own row.
+    pub(crate) loads: &'static str,
 }
 
 /// A measured start dialog that requires the person at the terminal. Its
@@ -860,6 +883,9 @@ pub(crate) struct TrustWarnings {
     pub(crate) permission_notice: &'static str,
     pub(crate) hooks: &'static str,
     pub(crate) loads: &'static [&'static str],
+    /// The `loads` rows `auto_trust` answers (owner ruling 2026-11-23): those
+    /// naming `.claude/settings.json` alone. Any other measured row is named.
+    pub(crate) answers: &'static [&'static str],
 }
 
 /// An information panel a harness draws in place of its composer until a key
@@ -940,7 +966,9 @@ pub(crate) struct ToolAdapter {
     pub(crate) input: InputSpec,
     /// The prompt only the human may answer, where one is measured.
     pub(crate) prompt: Option<PromptSpec>,
-    /// Start-dialog evidence that is used exclusively to report a hold.
+    /// Start-dialog evidence: logins report a hold; claude's settings-warning
+    /// trust block is answered when its source row names `.claude/settings.json`
+    /// alone (`TrustWarnings::answers`), and reported otherwise.
     pub(crate) startup: Option<StartupDialog>,
     /// The information panel that can stand where the composer was, where one
     /// is measured.
@@ -988,7 +1016,25 @@ const CLAUDE_SETTINGS_TRUST: StartupDialog = StartupDialog {
             "Trusting this folder loads .claude/settings.json (runs commands).",
             "Trusting this folder loads .claude/settings.json (runs commands) and .mcp.json here or above (MCP servers).",
         ],
+        answers: &[
+            "Trusting this folder loads .claude/settings.json.",
+            "Trusting this folder loads .claude/settings.json (runs commands).",
+        ],
     }),
+};
+
+// MEASURED on claude 2.1.330 (2026-11-23): the home-folder block, drawn since
+// 2.1.326 for a folder that is the user's HOME. `tests/fixtures/claude-trust/`
+// holds it with the default config home (no settings rows, hooks declared or
+// not) and with `CLAUDE_CONFIG_DIR` elsewhere, where the home folder's
+// `.claude/settings.json` is project settings and draws the hooks rows.
+const CLAUDE_HOME_TRUST: HomeTrust = HomeTrust {
+    at: 1,
+    access: "Claude Code'll be able to read, edit, and execute files here. This is your home \
+             folder, so Yes lasts for this session only.",
+    hooks: "⚠ This folder configures hooks that can run commands without asking, declared in \
+            .claude/settings.json",
+    loads: "Trusting this folder loads .claude/settings.json (runs commands).",
 };
 
 const CODEX_LOGIN: StartupDialog = StartupDialog {
@@ -1134,6 +1180,8 @@ const CLAUDE: ToolAdapter = ToolAdapter {
             yes: "Yes, I trust this folder",
             hint: "Enter to confirm · Esc to cancel",
             trailer: 0,
+            measured: "claude 2.1.330",
+            home: Some(CLAUDE_HOME_TRUST),
         }),
     }),
     startup: Some(CLAUDE_SETTINGS_TRUST),
@@ -1242,6 +1290,8 @@ const CODEX: ToolAdapter = ToolAdapter {
             yes: "1. Trust and continue",
             hint: "enter continue · esc back",
             trailer: 0,
+            measured: "codex 0.167.0",
+            home: None,
         }),
     }),
     // MEASURED on codex 0.163.0 (F2, or a click on its footer warning):
@@ -1417,6 +1467,8 @@ const AGY: ToolAdapter = ToolAdapter {
             yes: "Yes, I trust this folder",
             hint: "↑/↓ Navigate · enter Confirm",
             trailer: 1,
+            measured: "agy 1.2.6",
+            home: None,
         }),
     }),
     startup: Some(AGY_LOGIN),
@@ -2373,6 +2425,15 @@ mod tests {
                             yes: "Yes, I trust this folder",
                             hint: "Enter to confirm · Esc to cancel",
                             trailer: 0,
+                            measured: "claude 2.1.330",
+                            home: Some(HomeTrust {
+                                at: 1,
+                                access: "Claude Code'll be able to read, edit, and execute files here. \
+                                         This is your home folder, so Yes lasts for this session only.",
+                                hooks: "⚠ This folder configures hooks that can run commands without \
+                                        asking, declared in .claude/settings.json",
+                                loads: "Trusting this folder loads .claude/settings.json (runs commands).",
+                            }),
                         }),
                     }),
                     startup: Some(CLAUDE_SETTINGS_TRUST),
@@ -2469,6 +2530,8 @@ mod tests {
                             yes: "1. Trust and continue",
                             hint: "enter continue · esc back",
                             trailer: 0,
+                            measured: "codex 0.167.0",
+                            home: None,
                         }),
                     }),
                     startup: Some(CODEX_LOGIN),
@@ -2625,6 +2688,8 @@ mod tests {
                             yes: "Yes, I trust this folder",
                             hint: "↑/↓ Navigate · enter Confirm",
                             trailer: 1,
+                            measured: "agy 1.2.6",
+                            home: None,
                         }),
                     }),
                     startup: Some(AGY_LOGIN),

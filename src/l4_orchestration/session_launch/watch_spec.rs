@@ -94,8 +94,11 @@ fn only_a_trust_block_reaches_the_in_wait_answer() {
         trust: trust.then(|| crate::watchdog::TrustSighting {
             folder: "/tmp/x".to_owned(),
             toward_yes: None,
+            variant: crate::watchdog::TrustVariant::Plain,
+            block: String::new(),
         }),
         dismiss: false,
+        differs: None,
     };
     let asked = std::cell::Cell::new(0);
     let answer = || {

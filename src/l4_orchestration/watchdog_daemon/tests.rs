@@ -82,6 +82,7 @@ fn prompt() -> crate::watchdog::HumanPrompt {
         keys: "↑/↓ Navigate · enter Confirm".to_owned(),
         trust: None,
         dismiss: false,
+        differs: None,
     }
 }
 
@@ -129,6 +130,7 @@ fn a_due_panel_is_not_answered_at_first_sight() {
         human_prompt: Some(crate::watchdog::HumanPrompt {
             kind: crate::watchdog::DialogKind::InformationPanel,
             dismiss: true,
+            differs: None,
             ..prompt()
         }),
         ..seen()
@@ -170,15 +172,39 @@ fn a_due_trust_block_is_answered_from_first_sight_and_every_other_verdict_names_
     );
 
     let today = run(None);
-    for trust in [Due::No, Due::Doubt("damaged".to_owned())] {
+    let (first, second, third) = run(Some(&Due::No));
+    assert_eq!(first.effects, today.0.effects);
+    assert_eq!(third.effects, today.2.effects, "named once");
+    assert_eq!(second.effects, today.1.effects, "a plain No names as today");
+    // A doubt and a decline name the trust prompt WITH their reason, in the
+    // journal event and the Notify line alike (trustfix rule 1); a doubt also
+    // keeps its stderr Note.
+    for (trust, note) in [
+        (Due::Doubt("damaged".to_owned()), true),
+        (Due::Declined("damaged".to_owned()), false),
+    ] {
         let (first, second, third) = run(Some(&trust));
         assert_eq!(first.effects, today.0.effects);
         assert_eq!(third.effects, today.2.effects, "named once");
-        let note = Effect::Note("auto_trust did not answer the trust prompt: damaged".to_owned());
-        let expected: Vec<Effect> = (trust != Due::No)
-            .then(|| note.clone())
+        let reasoned: Vec<Effect> = today
+            .1
+            .effects
+            .iter()
+            .map(|effect| match effect {
+                Effect::Emit { action, summary } => Effect::Emit {
+                    action,
+                    summary: format!("{summary} — auto_trust did not answer: damaged"),
+                },
+                Effect::Notify(line) => {
+                    Effect::Notify(format!("{line} — auto_trust did not answer: damaged"))
+                }
+                other => other.clone(),
+            })
+            .collect();
+        let expected: Vec<Effect> = note
+            .then(|| Effect::Note("auto_trust did not answer the trust prompt: damaged".to_owned()))
             .into_iter()
-            .chain(today.1.effects.iter().cloned())
+            .chain(reasoned)
             .collect();
         assert_eq!(second.effects, expected, "{trust:?}");
     }

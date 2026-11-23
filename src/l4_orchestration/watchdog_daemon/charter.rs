@@ -773,6 +773,7 @@ mod tests {
             keys: "Enter to confirm".to_owned(),
             trust: None,
             dismiss: false,
+            differs: None,
         });
         // COMPOSITE: the measured styled idle frame with the measured running
         // turn's row in place of the row above its still empty composer.

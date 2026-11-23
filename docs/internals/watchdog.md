@@ -701,7 +701,7 @@ adapter supplies the dialog evidence. Unknown binary names have no measured sign
 
 | Harness | Measured hold |
 |---|---|
-| Claude | Folder trust, including permission, settings, hook and MCP warnings |
+| Claude | Folder trust, including the home-folder block and permission, settings, hook and MCP warnings |
 | Codex | Folder trust, login method chooser and Warnings panel |
 | Agy | Folder trust and login method chooser |
 | Muse | Workspace trust |
@@ -739,6 +739,30 @@ re-proven and recorded), and an answer that does not land names the prompt as be
 send-lock, or a client's input on the pane within `VIEW_GRACE` (4 s), spends nothing before the
 reservation and is retried each later cycle without naming again; after it, that input stops the
 answer before its next key as `auto-trust-failed`, and the start stays spent.
+
+**Every measured claude trust block is answered** (owner ruling 2026-11-23, claude 2.1.330,
+`tests/fixtures/claude-trust/` and `tests/fixtures/dialogseat/`). With `auto_trust` on, ae
+answers like a human pressing Yes: the plain block; the home-folder block (claude 2.1.326 and
+later replace the access paragraph with "… This is your home folder, so Yes lasts for this
+session only."), which a default config home draws with no settings rows and another
+`CLAUDE_CONFIG_DIR` draws with the hooks warning; and every settings-warning block whose source
+row names `.claude/settings.json` alone ("Trusting this folder loads .claude/settings.json." or
+"… (runs commands)."), with or without the permissions and hooks warnings, at home or not. The
+sighting names its `TrustVariant` (`Plain`, `Home`, `Settings`, `HomeSettings`): `trust_block`
+reads the first two, `startup::read` the settings ones, and `answer_prompt` takes a sighting from
+either. Every proof of `autotrust::due` above still holds; the config home is not consulted. A
+home-folder Yes lasts one claude session, so every new or reseated seat in `HOME` is answered
+again. Residual, accepted by the owner: a seat on another config home (the `claude-mic` or
+`claude-p` login) that is answered in `HOME` loads `~/.claude/settings.json` and its hooks as
+project settings for that session. `auto_trust = off` names every block and answers none.
+
+**A differing block is named with its reason.** When a prompt has a tool's folder-trust shape but
+is not one measured block, the detector sets `HumanPrompt.differs` and the `human-prompt` event and
+Notify line read "folder trust: dialog differs from the measured one (claude 2.1.330): <first
+differing paragraph or reason>; attach to answer it in the pane". A measured block whose source row loads
+more than `.claude/settings.json` (the `.mcp.json` row) is named the same way with that row. When `autotrust::due` declines a measured
+block it returns `Due::Declined(<why>)`, and the naming appends "auto_trust did not answer:
+<why>". No key is sent in either case.
 
 **codex's Warnings panel**, under the same switch. `tool::PanelSpec` carries the measured panel
 (codex-cli 0.163.0, `tests/fixtures/codex-warning/`): the title `Warnings` or

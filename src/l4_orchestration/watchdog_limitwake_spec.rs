@@ -440,6 +440,7 @@ fn a_busy_draft_prompt_or_moving_seat_is_not_woken() {
         keys: "↑/↓ Navigate · enter Confirm".to_owned(),
         trust: None,
         dismiss: false,
+        differs: None,
     };
     let guarded = [
         (

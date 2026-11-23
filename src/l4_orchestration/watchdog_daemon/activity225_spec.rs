@@ -417,6 +417,7 @@ fn child_activity_preserves_dead_limit_and_throttle_precedence() {
         keys: "enter Confirm".to_owned(),
         trust: None,
         dismiss: false,
+        differs: None,
     });
     let first = account_with_activity(&PaneState::default(), &prompted, &knobs, None, &activity);
     let second = account_with_activity(&first.next, &prompted, &knobs, None, &activity);

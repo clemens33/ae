@@ -17,7 +17,7 @@ use crate::procs::{Lineage, Proc};
 use crate::store::SourceRead;
 use crate::time::Timestamp;
 use crate::tmux::{ObservedViewer, OptionReading};
-use crate::watchdog::{TrustSighting, WATCHDOG_ACTOR};
+use crate::watchdog::{TrustSighting, TrustVariant, WATCHDOG_ACTOR};
 
 /// Reserves one tool start before its first key. The reservation ALONE spends
 /// the start: whatever follows, no second attempt is made for it.
@@ -62,6 +62,18 @@ pub(crate) struct Proof {
     episode: String,
     folder: PathBuf,
     kind: Kind,
+    /// The measured block variant this proof covers.
+    variant: TrustVariant,
+    /// The raw settings warnings this proof covers (`TrustSighting::block`).
+    block: String,
+}
+
+impl Proof {
+    /// Whether `sighting` is the block this proof was made for: the same
+    /// variant and, for a settings block, the same raw warning text.
+    pub(crate) fn covers(&self, sighting: &TrustSighting) -> bool {
+        self.variant == sighting.variant && self.block == sighting.block
+    }
 }
 
 /// Which answer an episode is, and so which four records it writes.
@@ -89,8 +101,13 @@ impl Kind {
 pub enum Due {
     /// Proven, and the journal holds no reservation for this start.
     Yes,
-    /// Not ae's to answer: another folder, an unproven pane, a spent start.
+    /// Not ae's to answer, and nothing worth telling: a panel whose quiet
+    /// gates have not passed, or whose run is spent.
     No,
+    /// A drawn trust block that is not ae's to answer: another folder, an
+    /// unproven pane, a spent start, a home folder ae may not trust; the why,
+    /// in plain words, for the naming.
+    Declined(String),
     /// The journal cannot be read strictly, so nothing is answered; the why.
     Doubt(String),
 }
@@ -98,17 +115,19 @@ pub enum Due {
 /// Whether `sighting` is this seat's to answer. It reads the pane's identity,
 /// the process table and the journal; it presses nothing and waits for nothing.
 pub(crate) fn due(seat: &Seat<'_>, sighting: &TrustSighting) -> Due {
-    let Ok(proof) = prove(seat, &sighting.folder) else {
-        return Due::No;
-    };
-    owed(crate::store::open(seat.dir).events_source(), &proof.episode)
+    match prove(seat, &sighting.folder, sighting.variant, &sighting.block) {
+        Ok(proof) => owed(crate::store::open(seat.dir).events_source(), &proof.episode),
+        Err(why) => Due::Declined(why),
+    }
 }
 
 /// The journal's verdict on a proven start: doubt, spent, or owed an answer.
 fn owed(source: SourceRead, episode: &str) -> Due {
     match ledger(source) {
         Err(why) => Due::Doubt(why),
-        Ok(events) if spent(&events, episode) => Due::No,
+        Ok(events) if spent(&events, episode) => {
+            Due::Declined("this tool start was already tried once".to_owned())
+        }
         Ok(_) => Due::Yes,
     }
 }
@@ -188,8 +207,16 @@ fn try_in_wait(
 }
 
 /// The seat, proven from its records and its pane as [`start`] proves it, and
-/// the seat's folder equal to `drawn`, both canonical.
-pub(crate) fn prove(seat: &Seat<'_>, drawn: &str) -> Result<Proof, String> {
+/// the seat's folder equal to `drawn`, both canonical. `variant` is which
+/// measured block was drawn; every measured variant is answered alike (owner
+/// ruling 2026-11-23), and the proof keeps it so a key never lands on a block
+/// that changed shape between the reads.
+pub(crate) fn prove(
+    seat: &Seat<'_>,
+    drawn: &str,
+    variant: TrustVariant,
+    block: &str,
+) -> Result<Proof, String> {
     let (meta, proof) = start(seat)?;
     let recorded = crate::meta::resolve_seat_dir(&meta, seat.slot)?;
     if !Path::new(&recorded).is_absolute() {
@@ -202,7 +229,12 @@ pub(crate) fn prove(seat: &Seat<'_>, drawn: &str) -> Result<Proof, String> {
     if folder != shown {
         return Err(format!("the modal names {drawn}, not the seat's folder"));
     }
-    Ok(Proof { folder, ..proof })
+    Ok(Proof {
+        folder,
+        variant,
+        block: block.to_owned(),
+        ..proof
+    })
 }
 
 /// The seat's tool START, proven from its records and its pane: the recorded
@@ -256,6 +288,8 @@ pub(crate) fn start(seat: &Seat<'_>) -> Result<(crate::meta::Meta, Proof), Strin
         episode: format!("{}:{launch}:{pid}", seat.slot),
         folder: PathBuf::new(),
         kind: Kind::Trust,
+        variant: TrustVariant::Plain,
+        block: String::new(),
     };
     Ok((meta, proof))
 }
@@ -276,7 +310,7 @@ pub(crate) fn start_of(
 /// Prove `proof`'s seat again before a key: `Ok(false)` when it changed.
 pub(crate) fn again(seat: &Seat<'_>, proof: &Proof, drawn: &str) -> Result<bool, String> {
     match proof.kind {
-        Kind::Trust => prove(seat, drawn).map(|again| again == *proof),
+        Kind::Trust => prove(seat, drawn, proof.variant, &proof.block).map(|again| again == *proof),
         Kind::Dismiss => start(seat).map(|(_, again)| {
             again.name == proof.name
                 && proof.episode.rsplit_once('@').map(|(start, _)| start)
@@ -671,7 +705,10 @@ mod tests {
     #[test]
     fn only_a_reservation_of_the_same_start_spends_it() {
         let journal = || SourceRead::Ready(RESERVATION.as_bytes().to_vec());
-        assert_eq!(owed(journal(), "main:start:7"), Due::No, "spent");
+        assert!(
+            matches!(owed(journal(), "main:start:7"), Due::Declined(_)),
+            "spent"
+        );
         assert_eq!(owed(journal(), "main:start:8"), Due::Yes, "unspent");
         assert!(matches!(
             owed(SourceRead::Absent, "main:start:8"),
@@ -705,7 +742,8 @@ mod tests {
                 pane: "%0",
                 tool: "claude",
             };
-            prove(&seat, "/tmp").expect_err("no live pane to prove")
+            prove(&seat, "/tmp", crate::watchdog::TrustVariant::Plain, "")
+                .expect_err("no live pane to prove")
         };
         let roster = "seat.main=lead\nagent_bin.main=claude\n";
         let named = format!("tmux_server=ae-a\n{roster}");
@@ -776,6 +814,8 @@ mod tests {
             episode: "main:start:7".to_owned(),
             folder: std::path::PathBuf::from("/tmp"),
             kind: super::Kind::Trust,
+            variant: crate::watchdog::TrustVariant::Plain,
+            block: String::new(),
         };
         let refused = reserve(&seat, &proof, true).expect_err("already spent");
         assert_eq!(refused, "main:start:7 is already spent");

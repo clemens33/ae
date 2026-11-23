@@ -300,6 +300,10 @@ pub struct HumanPrompt {
     /// Whether this is a measured information panel whose body is listed
     /// whole, so `auto_trust` may close it with one Escape.
     pub dismiss: bool,
+    /// Why a prompt with the tool's folder-trust shape is not its measured
+    /// block, in plain words, quoting the measured version: the reason the
+    /// naming gives the human. `None` for a measured block or another prompt.
+    pub differs: Option<String>,
 }
 
 impl HumanPrompt {
@@ -309,13 +313,34 @@ impl HumanPrompt {
         if self.kind == DialogKind::InformationPanel {
             return None;
         }
-        let mut detail = format!("{} — {}", self.kind.label(), self.kind.action());
+        let mut detail = match &self.differs {
+            Some(why) => format!(
+                "{}: {why}; attach to answer it in the pane",
+                self.kind.label()
+            ),
+            None => format!("{} — {}", self.kind.label(), self.kind.action()),
+        };
         for warning in &self.warnings {
             detail.push_str(" — ");
             detail.push_str(warning);
         }
         Some(detail)
     }
+}
+
+/// Which measured shape of a folder-trust block was drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustVariant {
+    /// The block for any folder that is not the user's home folder.
+    Plain,
+    /// The home-folder block with no settings rows: what a default config
+    /// home draws, because the home folder's settings are its user settings.
+    Home,
+    /// The block with measured settings warnings (permissions, hooks) whose
+    /// source row names `.claude/settings.json` alone.
+    Settings,
+    /// The home-folder block with such settings warnings.
+    HomeSettings,
 }
 
 /// What a measured folder-trust block shows. Reading it sends nothing.
@@ -326,6 +351,12 @@ pub struct TrustSighting {
     /// The arrow that moves the selection onto trust-yes; `None` when trust-yes
     /// is already selected.
     pub toward_yes: Option<crate::tmux::Key>,
+    /// Which measured shape was drawn.
+    pub variant: TrustVariant,
+    /// The raw warning paragraphs of a settings block, joined as drawn and
+    /// never sanitized; empty for the plain and home blocks. Two reads, and
+    /// the read after the arrow, must carry the same text.
+    pub block: String,
 }
 
 /// Whether `buf` shows a prompt only the HUMAN may answer, for `agent_bin` —
@@ -352,11 +383,16 @@ pub fn human_prompt_class(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
     startup::read(buf, adapter).or_else(|| legacy_prompt(buf, adapter))
 }
 
-/// The original observation used by the existing answer sequence, including
-/// its post-key clear check. Report-only signatures never affect that proof.
+/// The observation the answer sequence reads, including its post-key clear
+/// check: a measured trust sighting from either reader first, else whatever
+/// prompt is drawn, so a block that is still up never reads as clear.
 pub(crate) fn answer_prompt(buf: &str, agent_bin: &str) -> Option<HumanPrompt> {
     let adapter = crate::tool::ToolKind::from_known_binary_name(agent_bin)?.adapter();
-    legacy_prompt(buf, adapter)
+    let legacy = legacy_prompt(buf, adapter);
+    if legacy.as_ref().is_some_and(|prompt| prompt.trust.is_some()) {
+        return legacy;
+    }
+    startup::read(buf, adapter).or(legacy)
 }
 
 fn legacy_prompt(buf: &str, adapter: &crate::tool::ToolAdapter) -> Option<HumanPrompt> {
@@ -416,15 +452,36 @@ fn legacy_prompt(buf: &str, adapter: &crate::tool::ToolAdapter) -> Option<HumanP
             if !sibling(&options[..selected]) && !sibling(&options[selected + 1..]) {
                 return None;
             }
+            let block = spec.trust.map(|trust| {
+                trust_block(window, question, question + 1 + keys, trust, spec.selected).map_err(
+                    |why| {
+                        let why = crate::event_text::clip_head(&why, NOTICE_CELLS);
+                        format!(
+                            "dialog differs from the measured one ({}): {why}",
+                            trust.measured
+                        )
+                    },
+                )
+            });
+            let (trust, differs) = match block {
+                None => (None, None),
+                Some(Ok(sighting)) => (Some(sighting), None),
+                Some(Err(why)) => (None, Some(why)),
+            };
+            let warnings = match (&trust, spec.trust.and_then(|spec| spec.home)) {
+                (Some(sighting), Some(home)) if sighting.variant == TrustVariant::HomeSettings => {
+                    vec![home.hooks.to_owned(), home.loads.to_owned()]
+                }
+                _ => Vec::new(),
+            };
             Some(HumanPrompt {
                 kind: DialogKind::FolderTrust,
-                warnings: Vec::new(),
+                warnings,
                 question: reported(spec.question, window[question]),
                 keys: after[keys].trim().to_owned(),
-                trust: spec.trust.and_then(|trust| {
-                    trust_block(window, question, question + 1 + keys, trust, spec.selected)
-                }),
+                trust,
                 dismiss: false,
+                differs,
             })
         })
 }
@@ -473,6 +530,7 @@ fn panel_shown(
             .bodies
             .iter()
             .any(|whole| fills(&body, whole, panel.slot_bytes)),
+        differs: None,
     })
 }
 
@@ -500,48 +558,55 @@ fn fills(body: &str, whole: &str, max: usize) -> bool {
 }
 
 /// The trust block bound to the ONE match [`human_prompt_class`] chose — its
-/// question row at `question`, its hint row at `hint` — or `None` unless the
-/// window holds that block whole: heading, one absolute folder row, every
-/// paragraph, exactly the measured options with one selected, the hint, and
-/// no more rows below it than the tool draws. A third option, a reordered
-/// pair, or a live prompt drawn under a quoted block reads as `None`.
+/// question row at `question`, its hint row at `hint` — or, in plain words,
+/// why the window does not hold one measured block whole: heading, one
+/// absolute folder row, every paragraph of one measured variant, exactly the
+/// measured options with one selected, the hint, and no more rows below it
+/// than the tool draws. A third option, a reordered pair, an unmeasured row,
+/// or a live prompt drawn under a quoted block is a reason, never a sighting.
 fn trust_block(
     window: &[&str],
     question: usize,
     hint: usize,
     spec: crate::tool::TrustSpec,
     glyph: char,
-) -> Option<TrustSighting> {
+) -> Result<TrustSighting, String> {
     let filled = |row: &&&str| !row.trim().is_empty();
     let mut above = window[..question].iter().rev().filter(filled);
-    let folder = above.next()?.trim();
-    if above.next()?.trim() != spec.heading || !folder.starts_with('/') {
-        return None;
+    let folder = above
+        .next()
+        .ok_or("no folder row above the question")?
+        .trim();
+    if above.next().map(|row| row.trim()) != Some(spec.heading) {
+        return Err(format!(
+            "the folder row is not one row under \"{}\"",
+            spec.heading
+        ));
     }
-    if window[hint].trim() != spec.hint
-        || window[hint + 1..].iter().filter(filled).count() > spec.trailer
-    {
-        return None;
+    if !folder.starts_with('/') {
+        return Err("the folder row is not an absolute path".to_owned());
+    }
+    if window[hint].trim() != spec.hint {
+        return Err(format!("the hint row is not \"{}\"", spec.hint));
+    }
+    if window[hint + 1..].iter().filter(filled).count() > spec.trailer {
+        return Err("rows are drawn below the hint".to_owned());
     }
     let runs: Vec<&[&str]> = window[question..hint]
         .split(|row| row.trim().is_empty())
         .filter(|run| !run.is_empty())
         .collect();
-    let (options, paragraphs) = runs.split_last()?;
-    let joined = |run: &[&str]| {
-        run.iter()
-            .map(|row| row.trim())
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    if paragraphs.len() != spec.paragraphs.len()
-        || paragraphs
-            .iter()
-            .zip(spec.paragraphs)
-            .any(|(run, want)| joined(run) != *want)
-    {
-        return None;
-    }
+    let (options, paragraphs) = runs.split_last().ok_or("no option rows")?;
+    let paragraphs: Vec<String> = paragraphs
+        .iter()
+        .map(|run| {
+            run.iter()
+                .map(|row| row.trim())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    let variant = trust_variant(&paragraphs, spec)?;
     let drawn: Vec<(bool, &str)> = options
         .iter()
         .map(|row| match row.trim().strip_prefix(glyph) {
@@ -556,18 +621,91 @@ fn trust_block(
             .map(|(_, text)| *text)
             .ne(spec.options.iter().copied())
     {
-        return None;
+        return Err(format!(
+            "the options are not exactly \"{}\" with one selected",
+            spec.options.join("\" and \"")
+        ));
     }
-    let at = drawn.iter().position(|(on, _)| *on)?;
-    let yes = spec.options.iter().position(|option| *option == spec.yes)?;
-    Some(TrustSighting {
+    let at = drawn
+        .iter()
+        .position(|(on, _)| *on)
+        .ok_or("no option is selected")?;
+    let yes = spec
+        .options
+        .iter()
+        .position(|option| *option == spec.yes)
+        .ok_or("the measured options name no trust-yes")?;
+    Ok(TrustSighting {
         folder: folder.to_owned(),
         toward_yes: match yes.cmp(&at) {
             std::cmp::Ordering::Equal => None,
             std::cmp::Ordering::Greater => Some(crate::tmux::Key::Down),
             std::cmp::Ordering::Less => Some(crate::tmux::Key::Up),
         },
+        variant,
+        block: String::new(),
     })
+}
+
+/// Which measured variant the joined `drawn` paragraphs are, or the first
+/// paragraph that differs from the closest one.
+fn trust_variant(drawn: &[String], spec: crate::tool::TrustSpec) -> Result<TrustVariant, String> {
+    let plain: Vec<String> = spec.paragraphs.iter().map(|&row| row.to_owned()).collect();
+    if drawn == plain.as_slice() {
+        return Ok(TrustVariant::Plain);
+    }
+    let Some(home) = spec.home else {
+        return Err(first_difference(drawn, &plain));
+    };
+    let mut bare = plain.clone();
+    let Some(access) = bare.get_mut(home.at) else {
+        return Err(first_difference(drawn, &plain));
+    };
+    home.access.clone_into(access);
+    if drawn == bare.as_slice() {
+        return Ok(TrustVariant::Home);
+    }
+    let mut settings = bare.clone();
+    if let Some(last) = settings.pop() {
+        settings.push(home.hooks.to_owned());
+        settings.push(format!("{} {last}", home.loads));
+    }
+    if drawn == settings.as_slice() {
+        return Ok(TrustVariant::HomeSettings);
+    }
+    let closest = if drawn.get(home.at).map(String::as_str) != Some(home.access) {
+        &plain
+    } else if drawn.len() > bare.len() {
+        &settings
+    } else {
+        &bare
+    };
+    Err(first_difference(drawn, closest))
+}
+
+/// The first paragraph where `drawn` and `want` part, in words.
+fn first_difference(drawn: &[String], want: &[String]) -> String {
+    let quote = |text: &str| crate::event_text::clip_head(text, 100);
+    let at = drawn
+        .iter()
+        .zip(want)
+        .position(|(drawn, want)| drawn != want);
+    match (at, drawn.len().cmp(&want.len())) {
+        (Some(at), _) => format!(
+            "paragraph {} reads \"{}\", not \"{}\"",
+            at + 1,
+            quote(&drawn[at]),
+            quote(&want[at])
+        ),
+        (None, std::cmp::Ordering::Greater) => {
+            format!("unmeasured paragraph \"{}\"", quote(&drawn[want.len()]))
+        }
+        (None, _) => format!(
+            "paragraph {} \"{}\" is missing",
+            drawn.len() + 1,
+            quote(&want[drawn.len()])
+        ),
+    }
 }
 
 /// Whether `row` is the prompt's question row.
@@ -8123,6 +8261,8 @@ tail line
             Some(super::TrustSighting {
                 folder: folder.to_owned(),
                 toward_yes,
+                variant: super::TrustVariant::Plain,
+                block: String::new(),
             })
         };
         for size in ["80x24", "200x50"] {
@@ -8214,6 +8354,8 @@ tail line
                 Some(super::TrustSighting {
                     folder: "/tmp/claude-trust-probe".to_owned(),
                     toward_yes: Some(crate::tmux::Key::Down),
+                    variant: super::TrustVariant::Plain,
+                    block: String::new(),
                 }),
                 "{size}"
             );
@@ -8248,6 +8390,8 @@ tail line
                 Some(super::TrustSighting {
                     folder: "/tmp/codex-trust-probe".to_owned(),
                     toward_yes: None,
+                    variant: super::TrustVariant::Plain,
+                    block: String::new(),
                 }),
                 "{size}"
             );
@@ -8261,6 +8405,8 @@ tail line
             Some(super::TrustSighting {
                 folder: "/tmp/codex-trust-probe".to_owned(),
                 toward_yes: Some(crate::tmux::Key::Up),
+                variant: super::TrustVariant::Plain,
+                block: String::new(),
             })
         );
     }

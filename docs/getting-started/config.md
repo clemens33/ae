@@ -272,7 +272,7 @@ Old seat files that still carry `[profiles]`/`[roster]` are ignored for identity
 | `fleet_order` | The order your sessions are drawn in on the fleet strip, and the sessions pinned to the top of the app's sidebar, as a comma-separated list of session names; global config only | creation order |
 | `restore` | Let bare `ae` resume the sessions a crashed tmux server held (`on` / `off`); global config only | `on` |
 | `orchestrator_autostart` | Starting ae from a terminal (bare `ae`, `ae app`, `ae <name>`) also starts or resumes the orchestrator seat when `[roster] orchestrator` is set (`on` / `off`); any other value starts nothing and is named once; global config only | `on` |
-| `auto_trust` | Answer claude's and agy's folder-trust modal for a seat's OWN recorded folder, once per tool start, and dismiss codex's Warnings panel with one Escape per panel episode (`on` / `off`); global config only | `on` |
+| `auto_trust` | Answer every measured claude and agy folder-trust modal for a seat's OWN recorded folder, once per tool start, like pressing Yes: claude's plain, home-folder and settings-warning blocks whose source row names `.claude/settings.json` alone (in `HOME` on another config home this loads `~/.claude/settings.json` hooks for that session); a block that differs is named with the reason, never answered. Also dismiss codex's Warnings panel with one Escape per panel episode (`on` / `off`); global config only | `on` |
 | `palette` | `darcula` (the JetBrains dark), `a` (neutral dark), `b` (warmer neutrals) | `darcula` |
 | `icons`   | `off` draws the ASCII fallback instead of the glyph set | `on`          |
 | `theme`   | `off` leaves your own status line, pane borders and menu styles alone | `on`  |

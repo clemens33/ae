@@ -158,7 +158,15 @@ ae end -f <name>                                    # nuclear option
 - **Every send to a claude seat abandons after the Mac slept, with `composer occupied: 27 content cells on 1 row`** — a claude input row can show a grey hint while the box is empty: `Resend your message to try again` (after a failed turn such as `API Error: Your computer went to sleep mid-response`), `Once fixed, resend your message`, `Run /rewind to go back` or `Press up to edit queued messages`. ae counts a hint as an empty box only when the row's text is exactly one of these four strings AND the cells are drawn the way claude 2.1.330 draws a hint (the cursor cell over the first letter, then a dim run). The same words typed by a person are plain text, so they still read as a draft and still hold a send. Any other grey text, such as the rotating `Try "…"` ghost text, is unmeasured and still reads as a draft. If a seat stays stuck on a hint ae does not know, read the box with `tmux capture-pane -e -p -t <pane>` on the target's own server, and report the SGR it shows. Residual: the watchdog reads plain captures, which carry no rendering, so a person who typed exactly one of the three failure hints reads as no draft for the idle clock only, and every nudge still re-reads the styled box and abandons on typed text.
 - **A trust prompt was named, not answered, with `auto_trust` on** — `auto_trust` answers only the
   measured claude/agy/codex folder-trust block for the seat's own recorded folder, once per tool start; a
-  folder or seat it cannot prove, or a start already answered, is only named. An answer refused before
+  folder or seat it cannot prove, or a start already answered, is only named, and the
+  `human-prompt` summary says why (`auto_trust did not answer: <why>`). A dialog that differs from
+  the measured one reads `folder trust: dialog differs from the measured one (claude <version>):
+  <reason>; attach to answer it in the pane`: the vendor changed its text, or the dialog loads more than
+  `.claude/settings.json` (an `.mcp.json` row), so answer it yourself. Claude's home-folder dialog
+  ("This is your home folder, so Yes lasts for this session only.") and its settings warnings are
+  answered like any measured block. Claude asks again at every start in `HOME`, so every new seat
+  there is answered again; on another config home that answer loads `~/.claude/settings.json`
+  hooks for the session. To avoid both, start the seat in a project folder you trusted once. An answer refused before
   its reservation says why on stderr (`ae: watchdog: <agent>: auto_trust did not answer the trust
   prompt: <why>`, or a spawn's `ae: auto_trust did not answer …`). One stopped after it is
   `auto-trust-failed` in `events.jsonl`, naming the step, and that start is spent: answer it in the

@@ -60,7 +60,8 @@ pub(crate) fn answer_trust(seat: &Seat<'_>, ask: Ask, err: &mut impl Write) -> T
             return stop;
         }
         match steady(seat, true) {
-            Ok(after) if after.toward_yes.is_none() && after.folder == drawn => {}
+            Ok(after)
+                if after.toward_yes.is_none() && after.folder == drawn && proof.covers(&after) => {}
             Ok(_) => {
                 return fail(
                     seat,
@@ -99,7 +100,8 @@ fn opened(seat: &Seat<'_>, ask: Ask) -> Result<(Proof, String, Option<Key>), Tru
     let (proof, drawn, arrow) = match ask {
         Ask::Trust => {
             let first = steady(seat, false).map_err(TrustAnswer::NotYet)?;
-            let proof = autotrust::prove(seat, &first.folder).map_err(TrustAnswer::Declined)?;
+            let proof = autotrust::prove(seat, &first.folder, first.variant, &first.block)
+                .map_err(TrustAnswer::Declined)?;
             (proof, first.folder, first.toward_yes)
         }
         Ask::Panel(_) => {

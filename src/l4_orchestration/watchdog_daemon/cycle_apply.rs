@@ -991,7 +991,7 @@ impl Cycle<'_> {
         } else {
             (crate::deliver::Ask::Trust, "auto-trust")
         };
-        match crate::deliver::answer_trust(&seat, ask, err) {
+        let declined = match crate::deliver::answer_trust(&seat, ask, err) {
             crate::deliver::TrustAnswer::Trusted(summary) => {
                 self.notify(on.agent, &format!("{word}: {summary}"));
                 // Never named, so nothing is to clear: a modal still drawn is
@@ -1001,15 +1001,22 @@ impl Cycle<'_> {
                 }
                 return Ok(());
             }
-            crate::deliver::TrustAnswer::Declined(why) if name => writeln!(
-                err,
-                "ae: watchdog: {}: auto_trust did not answer the trust prompt: {why}",
-                on.agent
-            )?,
-            _ => {}
-        }
+            crate::deliver::TrustAnswer::Declined(why) if name => {
+                writeln!(
+                    err,
+                    "ae: watchdog: {}: auto_trust did not answer the trust prompt: {why}",
+                    on.agent
+                )?;
+                Some(why)
+            }
+            _ => None,
+        };
         if let Some(prompt) = on.seen.human_prompt.as_ref().filter(|_| name) {
-            for effect in naming(prompt) {
+            let effects = match &declined {
+                Some(why) if !prompt.dismiss => super::accounting::naming_declined(prompt, why),
+                _ => naming(prompt),
+            };
+            for effect in effects {
                 self.apply(&effect, on, state, err)?;
             }
         }
