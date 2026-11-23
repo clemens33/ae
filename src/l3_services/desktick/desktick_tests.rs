@@ -5,8 +5,16 @@ use std::collections::BTreeMap;
 
 use super::{Journal, Settle, Stale, changed, old, settle};
 use crate::desk::Desk;
-use crate::events::{Cursor, Event, SessionKey};
+use crate::digest::{SessionEntry, Status};
+use crate::events::{Cursor, Drain, Event, SessionKey};
+use crate::fleet_read::{SocketPaths, WorldRead};
+use crate::inventory::{Candidate, DurableRecord, Layout, MetaRead};
+use crate::listing::World;
+use crate::liveness::{Classified, Snapshot};
+use crate::meta::ServerSelector;
+use crate::session::{RecordSnapshot, SessionRead};
 use crate::time::Timestamp;
+use crate::watchdog_state::DeskTick;
 
 const SESSION: &str = "desk-peer";
 const ID: &str = "0199c0de-5555-4890-abcd-ef0123456789";
@@ -258,4 +266,133 @@ fn a_legacy_declaration_counts_for_a_seat_and_ignores_reserved_actors() {
     for actor in ["ae", "human", "watchdog"] {
         assert!(!judge(&[declared(actor)], 0, None), "{actor} is not a seat");
     }
+}
+
+#[test]
+fn the_cursor_keys_a_session_by_uuid_or_its_exact_legacy_path() {
+    let first = std::path::Path::new("/legacy/first/desk-peer");
+    let second = std::path::Path::new("/legacy/second/desk-peer");
+    assert_eq!(super::key_text(first, Some(ID)), ID);
+    assert_eq!(
+        super::key_text(second, Some(ID)),
+        ID,
+        "a move keeps the cursor"
+    );
+    assert_eq!(
+        super::key_text(first, Some("")),
+        "path\u{1f}/legacy/first/desk-peer",
+        "an empty identity cannot own a cursor"
+    );
+    assert_eq!(
+        super::key_text(second, None),
+        "path\u{1f}/legacy/second/desk-peer",
+        "legacy namesakes have separate cursors"
+    );
+}
+
+#[test]
+fn the_desk_tick_ignores_main_done_only_for_the_own_session() {
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let own = std::env::temp_dir().join(format!(
+        "ae-desktick-ack-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir(&own).expect("private state directory");
+    let scratch = Scratch(own);
+    let own = &scratch.0;
+    std::fs::write(
+        own.join(crate::desk::RECORD_FILE),
+        format!("ae-desk 1\nupdated {}\nD1\tReview notes\n", at(0)),
+    )
+    .expect("manual board");
+    let meta = own.join(crate::store::META);
+    std::fs::write(&meta, format!("session_id={ID}\n")).expect("own uuid");
+
+    let cursor = Cursor {
+        generation: 3,
+        offset: 128,
+    };
+    let journal = SessionRead::from_drain(&Drain {
+        events: vec![by("claude:boss", "main", 10, "state", r#","ref":"done""#)],
+        cursor,
+        skipped: Vec::new(),
+        drained: true,
+    });
+    let own_alias = ID.to_ascii_uppercase();
+    let foreign = "0199c0de-7777-4890-abcd-ef0123456789";
+    let mut classified = Vec::new();
+    let mut entries = Vec::new();
+    let mut positions = BTreeMap::new();
+    for (path, uuid) in [
+        (own.clone(), None),
+        (own.join("alias"), Some(own_alias.as_str())),
+        (own.join("namesake"), Some(foreign)),
+        (own.join("no-id"), Some("")),
+    ] {
+        let mut entry = SessionEntry::new(SESSION, Status::Running);
+        entry.session_uuid = uuid.map(str::to_owned);
+        entries.push(entry);
+        positions.insert(path.clone(), vec![cursor]);
+        classified.push(Classified {
+            candidate: Candidate::durable(DurableRecord {
+                path,
+                name: SESSION.to_owned(),
+                layout: Layout::Canonical,
+                server: ServerSelector::Missing,
+                meta_read: MetaRead::Absent,
+                snapshot: RecordSnapshot {
+                    events: Some(journal.clone()),
+                    ..RecordSnapshot::default()
+                },
+            }),
+            status: Status::Running,
+        });
+    }
+
+    let now = UPDATED + 400;
+    let read = WorldRead {
+        snapshot: Snapshot {
+            sessions: classified,
+            incomplete: Vec::new(),
+        },
+        world: World::new(Timestamp::from_epoch(now), entries),
+        panes: BTreeMap::new(),
+        pids: BTreeMap::new(),
+        sockets: SocketPaths::live(),
+    };
+    let checkpoint = DeskTick::default();
+    let claim = |ack| {
+        super::read(&read, &positions, (own, ack), &checkpoint, now)
+            .expect("at least the foreign main's done is a desk change")
+            .claim(now)
+            .cursor
+    };
+
+    assert_eq!(claim(None).len(), 4, "all four declarations bind");
+    let others = BTreeMap::from([
+        (foreign.to_owned(), cursor),
+        (format!("path\u{1f}{}/no-id", own.display()), cursor),
+    ]);
+    assert_eq!(
+        claim(Some("boss")),
+        others,
+        "only the own directory and the case-insensitive UUID alias can ack"
+    );
+
+    std::fs::remove_file(meta).expect("remove the own identity");
+    let mut without_uuid = others;
+    without_uuid.insert(own_alias, cursor);
+    assert_eq!(
+        claim(Some("boss")),
+        without_uuid,
+        "an unknown own uuid proves no alias and the own directory still acks"
+    );
 }
