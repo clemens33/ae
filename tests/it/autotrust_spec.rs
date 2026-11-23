@@ -2801,3 +2801,86 @@ fn trustfix_home_with_only_the_measured_settings_rows_answers_with_the_default_c
     rig.trusted(b"\x1b[B\r");
     assert_eq!(rig.count("human-prompt"), 0);
 }
+
+#[test]
+fn trustfix_plain_claude_block_at_home_requires_the_default_config() {
+    let mut rig = Rig::new("plain-home-mic", "claude", "normal");
+    let home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+    fs::create_dir(home.join(".claude")).expect("default config home");
+    let account = home.join(".claude-mic");
+    fs::create_dir(&account).expect("alternate config home");
+    rig.replace_meta("config_home.main", &account.display().to_string());
+    rig.repaint(&trustfix_measured_plain_dialog(&home));
+    trustfix_named_without_keys(
+        &mut rig,
+        "plain Claude dialog at HOME",
+        &["folder trust", "config home", ".claude-mic"],
+    );
+}
+
+#[test]
+fn trustfix_plain_claude_block_at_the_recorded_seat_home_requires_default_config() {
+    let mut rig = Rig::new("plain-seat-home", "claude", "normal");
+    let watchdog_home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+    let seat_home = watchdog_home.join("other");
+    fs::create_dir(seat_home.join(".claude")).expect("seat default config home");
+    let account = seat_home.join(".claude-mic");
+    fs::create_dir(&account).expect("alternate config home");
+    rig.replace_meta("config_home.main", &account.display().to_string());
+    rig.replace_meta("launch_home.main", &seat_home.display().to_string());
+    rig.replace_meta("work_dir.main", &seat_home.display().to_string());
+    rig.repaint(&trustfix_measured_plain_dialog(&seat_home));
+    trustfix_named_without_keys(
+        &mut rig,
+        "plain Claude dialog at the seat's recorded HOME",
+        &["folder trust", "config home", ".claude-mic"],
+    );
+}
+
+#[test]
+fn trustfix_plain_claude_block_with_a_damaged_launch_home_never_answers() {
+    let mut rig = Rig::new("plain-damaged-home", "claude", "normal");
+    let watchdog_home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+    let folder = watchdog_home.join("other");
+    let account = folder.join(".claude-mic");
+    fs::create_dir(&account).expect("alternate config home");
+    rig.replace_meta("config_home.main", &account.display().to_string());
+    rig.replace_meta("launch_home.main", "relative/home");
+    rig.replace_meta("work_dir.main", &folder.display().to_string());
+    rig.repaint(&trustfix_measured_plain_dialog(&folder));
+    trustfix_named_without_keys(
+        &mut rig,
+        "plain Claude dialog with a damaged launch_home row",
+        &["folder trust", "launch_home"],
+    );
+}
+
+#[test]
+fn trustfix_plain_claude_block_at_the_recorded_seat_home_answers_with_implicit_default() {
+    let mut rig = Rig::new("plain-own-home", "claude", "normal");
+    let watchdog_home = fs::canonicalize(&rig.root).expect("watchdog HOME");
+    let seat_home = watchdog_home.join("other");
+    let config_home = seat_home.join(".claude");
+    fs::create_dir(&config_home).expect("seat default config home");
+    rig.replace_meta(
+        "config_home.main",
+        &format!("implicit:{}", config_home.display()),
+    );
+    rig.replace_meta("config_home_base.main", &seat_home.display().to_string());
+    rig.replace_meta("launch_home.main", &seat_home.display().to_string());
+    rig.replace_meta("work_dir.main", &seat_home.display().to_string());
+    rig.repaint(&trustfix_measured_plain_dialog(&seat_home));
+    rig.start_stepped();
+    rig.trusted(b"\x1b[B\r");
+    assert_eq!(rig.count("human-prompt"), 0);
+}
+
+fn trustfix_measured_plain_dialog(folder: &Path) -> String {
+    // Drop the probe shell history before the first rule. Keep the whole dialog.
+    CLAUDE
+        .lines()
+        .skip_while(|row| !row.starts_with('─'))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("/tmp/claude-trust-probe", &folder.display().to_string())
+}
