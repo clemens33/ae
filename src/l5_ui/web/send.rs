@@ -505,8 +505,7 @@ impl Sending {
         let admitted = match submit::admit_external(&mut held, &facts.dir, &facts.to, id, owns) {
             Ok(Admission::Fresh(admitted)) => admitted,
             Ok(Admission::Recorded(outcome)) => return Some(settled(outcome, None, "")),
-            Err(_) if changed.get() => return Some((Word::Changed, String::new())),
-            Err(why) => return Some((Word::Refused, words_of(&why))),
+            Err(why) => return Some(admission_refusal(changed.get(), &why)),
         };
         let Some((facts, role)) = admitted_route else {
             return Some((Word::Changed, String::new()));
@@ -682,6 +681,16 @@ fn reread(claim: &Claim, again: Lookup) -> Response {
     }
 }
 
+/// What a refused admission settles as: changed with no words when the route
+/// moved under the admission lock (`changed`), so nothing is carried to it and
+/// the page asks for a reload; refused with what the admission said otherwise.
+fn admission_refusal(changed: bool, why: &str) -> (Word, String) {
+    match why {
+        _ if changed => (Word::Changed, String::new()),
+        why => (Word::Refused, words_of(why)),
+    }
+}
+
 /// A console outcome as a claim's: a confirmed send, a refusal with what the
 /// delivery said, or unknown when input may have reached the seat.
 fn settled(outcome: submit::Outcome, receipt: Option<Receipt>, said: &str) -> (Word, String) {
@@ -752,7 +761,7 @@ mod tests {
     use super::super::clock::ManualClock;
     use super::{
         Claim, Draft, Epoch, FAILED_KEPT, Failed, Flow, Gate, Hooks, Job, Lookup, POLL, Point,
-        Receipt, Sending, Sends, keep, reread, settled, told, words_of, worker,
+        Receipt, Sending, Sends, admission_refusal, keep, reread, settled, told, words_of, worker,
     };
 
     #[test]
@@ -1104,5 +1113,23 @@ mod tests {
                 "{receipt:?}"
             );
         }
+    }
+
+    /// A refused admission: a route that moved under the admission lock answers
+    /// changed with no words, so nothing is carried and the page asks for a
+    /// reload; any other refusal answers refused with the admission's words.
+    #[test]
+    fn a_route_that_moved_under_the_admission_lock_answers_changed() {
+        assert_eq!(
+            admission_refusal(true, "the orchestrator changed, reload"),
+            (Word::Changed, String::new())
+        );
+        assert_eq!(
+            admission_refusal(false, "five asks are open: answer one first"),
+            (
+                Word::Refused,
+                "five asks are open: answer one first".to_owned()
+            )
+        );
     }
 }
