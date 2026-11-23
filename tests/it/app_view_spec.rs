@@ -259,6 +259,7 @@ impl Rig {
             rig.tmux(&["set-option", "-p", "-t", pane, "@ae_agent", seat]);
         }
         rig.tmux(&["set-option", "-t", "web", "@ae_session_uuid", WEB_ID]);
+        rig.tmux(&["set-option", "-t", "web", "@ae_icons", "off"]);
         rig.tmux(&["set-option", "-t", "web", "@ae_attn_rank", "0"]);
         rig.tmux(&[
             "set-option",
@@ -671,7 +672,11 @@ impl Rig {
                 pane,
                 "#{pane_dead}:#{pane_dead_status}",
             ]);
-            if let Some(status) = status.trim().strip_prefix("1:") {
+            if let Some(status) = status
+                .trim()
+                .strip_prefix("1:")
+                .filter(|status| !status.is_empty())
+            {
                 assert_eq!(status, "0", "normal app quit:\n{}", self.screen(pane));
                 return self.screen(pane);
             }
@@ -729,6 +734,7 @@ impl Rig {
             format!("schema=2\nsession=orchestrator\nmode=local\nsession_id={id}\nlayout=vertical\nseat.main=orchestrator\nagent_bin.main=codex\nmain_pane={pane}\nmeta_agent=true\nlocal_config={}\ntmux_server_kind=socket\ntmux_server={}\n", overlay.display(), self.socket.display()),
         ).expect("orchestrator meta");
         self.tmux(&["set-option", "-t", "=orchestrator:", "@ae_session_uuid", id]);
+        self.tmux(&["set-option", "-t", "=orchestrator:", "@ae_icons", "off"]);
         self.tmux(&["set-option", "-t", "=orchestrator:", "@ae_main_pane", &pane]);
         self.tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"]);
         self.tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "orchestrator"]);
@@ -1086,9 +1092,19 @@ fn durable_view_keeps_side_panel_and_distinguishes_which_chat_has_focus() {
     rig.wait(
         &side,
         "GUARD side panel visible with main chat focused",
-        |s| durable_header(s, "pane  F full") && s.contains(&format!("to {}", rig.name)),
+        |s| {
+            durable_header(s, "pane  F full")
+                && s.contains(&format!("to {}", rig.name))
+                && s.contains("Esc browses")
+        },
     );
     rig.durable_keys(&side, &["Escape"]);
+    rig.wait(&side, "the main chat browses again", |s| {
+        s.contains("O Enter writes")
+    });
+    // A key within ESC_IDLE of the Escape is read as Alt+key, and one right
+    // behind the browse frame starts the composer again.
+    std::thread::sleep(ae::console::input::ESC_IDLE + Duration::from_millis(200));
     rig.durable_quit(&side, &[]);
 
     let side_main = rig.durable_pane(false);
