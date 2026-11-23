@@ -2108,7 +2108,8 @@ pub fn declaration_current(relevant: &Relevant<'_>) -> bool {
 }
 
 /// The watchdog's newest delivery to the seat that may have reached its pane —
-/// an idle or sweep nudge, a challenge, a quota advisory or checkpoint ask,
+/// an idle or sweep nudge, an automatic reseat continuation, a challenge, a
+/// quota advisory or checkpoint ask,
 /// unconfirmed ones included because they may have landed. A challenge
 /// refused before its paste painted nothing, so it is not one.
 #[must_use]
@@ -2138,7 +2139,12 @@ pub fn last_watchdog_delivery(
         .rev()
         .find(|event| {
             event.actor == WATCHDOG_ACTOR
-                && painting.contains(&event.action.as_str())
+                && (painting.contains(&event.action.as_str())
+                    || (event.action == crate::autoreseat::NOTICE_ACTION
+                        && event
+                            .reference
+                            .as_deref()
+                            .is_some_and(crate::archive::is_canonical_uuid)))
                 && event_is_addressed_to(event, session, slot, agent)
                 && !refused(event)
         })

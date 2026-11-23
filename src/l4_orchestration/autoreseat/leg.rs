@@ -1867,7 +1867,7 @@ pub(crate) fn run(
         profile: profile.clone(),
         newest: back.home.newest,
     });
-    let (ended, tasks, minted) = crate::reseat::run_as_watchdog(
+    let (ended, report) = crate::reseat::run_as_watchdog(
         root,
         Some(&world),
         &argv.session,
@@ -1924,11 +1924,7 @@ pub(crate) fn run(
                 .unwrap_or_else(unknown);
             let dirty = crate::meta::resolve_seat_dir(&after, &argv.slot)
                 .is_ok_and(|wdir| crate::git::work_tree_dirty(wdir.as_bytes()));
-            // AFTER the move's own record: the episode is closed before the
-            // seat is handed anything, so nothing retries or repeats the turn.
-            // Decided for the incarnation the move itself minted (#218 2c).
-            let minted = minted.as_deref();
-            let nudge = (fate != super::Fate::Seeded).then(|| nudge(&argv, &agent, fate, minted));
+            let nudge = post_move_nudge(&argv, &agent, fate, &report);
             let to = named(&pick);
             let moved = super::Move {
                 from: &profile,
@@ -1942,9 +1938,9 @@ pub(crate) fn run(
                 cause: &cause,
             };
             notice(match stays {
-                Some(provider) => super::Ending::PairStays(provider, moved, &tasks),
-                None if tasks.is_empty() => super::Ending::Moved(moved),
-                None => super::Ending::MovedEndingTasks(moved, &tasks),
+                Some(provider) => super::Ending::PairStays(provider, moved, &report.tasks),
+                None if report.tasks.is_empty() => super::Ending::Moved(moved),
+                None => super::Ending::MovedEndingTasks(moved, &report.tasks),
             })
         }
         Ended::Refused(class) if retold(class) => String::new(),
@@ -2395,7 +2391,7 @@ const CONTINUE: &str = "and your conversation came with you. Restore your state 
 
 /// The continuation turn for `fate`, and the summary its record carries, which
 /// names it among the notices.
-fn continuation(fate: super::Fate) -> (String, String) {
+pub(crate) fn continuation(fate: super::Fate) -> (String, String) {
     let word = fate.word();
     let moved = match fate {
         super::Fate::Kept => "another model or effort",
@@ -2405,6 +2401,21 @@ fn continuation(fate: super::Fate) -> (String, String) {
         format!("auto reseat moved you to {moved} of the same tool, {CONTINUE}"),
         format!("continuation turn after an automatic {word} reseat"),
     )
+}
+
+/// The watchdog owns the orchestrator's durable turn; other seats get the
+/// leg's one launch-bound attempt after the move record.
+pub(crate) fn post_move_nudge(
+    argv: &Argv,
+    agent: &str,
+    fate: super::Fate,
+    report: &crate::reseat::Reported,
+) -> Option<super::Nudge> {
+    match fate {
+        super::Fate::Seeded => None,
+        _ if report.orchestrator_continuation => Some(super::Nudge::Owed),
+        _ => Some(nudge(argv, agent, fate, report.minted.as_deref())),
+    }
 }
 
 /// Hand `agent` its [`continuation`] turn through the session's own `send`

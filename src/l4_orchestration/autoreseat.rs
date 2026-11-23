@@ -3329,6 +3329,8 @@ impl Fate {
 /// session's `send` helper left it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nudge {
+    /// The orchestrator's current launch owes a watchdog continuation turn.
+    Owed,
     /// Exited 0 and recorded the submit as proven.
     Submitted,
     /// Exited 0, but its record says the submit was not proven, or ae could not
@@ -3531,6 +3533,7 @@ fn moved_line(agent: &str, moved: &Move<'_>, tasks: &[String]) -> String {
         // prove absent may already be there.
         match moved.nudge {
             None => "check it picked up its seat pack".to_owned(),
+            Some(Nudge::Owed) => "its continuation is owed and the watchdog delivers it".to_owned(),
             Some(Nudge::Submitted) => "nothing, its continuation nudge was submitted".to_owned(),
             Some(Nudge::Unconfirmed) => format!(
                 "its continuation nudge is unconfirmed: peek {agent}; re-send a resume turn only \

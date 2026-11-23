@@ -395,14 +395,18 @@ fn book_human_prompt(
     knobs: &Knobs,
 ) -> Option<Verdict> {
     let prompt = seen.human_prompt.as_ref()?;
-    let restarted = prior.prompt_start.is_some() && seen.start.is_some();
-    let streak = if restarted && prior.prompt_start != seen.start {
+    let restarted =
+        prior.prompt_start.is_some() && seen.start.is_some() && prior.prompt_start != seen.start;
+    let dialog = seen.sweep.as_ref().map(|_| prompt_identity(prompt));
+    let changed = dialog.is_some() && prior.sweep_prompt != dialog;
+    let streak = if restarted || changed {
         0
     } else {
         prior.human_prompt_streak
     };
     next.human_prompt_streak = streak.saturating_add(1);
     next.prompt_start.clone_from(&seen.start);
+    next.sweep_prompt = dialog;
     if next.human_prompt_streak < knobs.human_prompt_cycles {
         // A trust block proven this seat's is answered from its FIRST sight:
         // the answerer proves the frame steady itself (two equal reads), so
@@ -442,12 +446,7 @@ fn book_human_prompt(
 
 /// The ONE naming of a human-only prompt: its event and its Notify line.
 pub(super) fn naming(prompt: &crate::watchdog::HumanPrompt) -> [Effect; 2] {
-    let mut summary = format!("{} — press: {}", prompt.question, prompt.keys);
-    if let Some(notice) = prompt.startup_notice() {
-        summary.push_str(" — ");
-        summary.push_str(&notice);
-    }
-    let summary = crate::board::terminal_text(&summary);
+    let summary = prompt_summary(prompt);
     [
         Effect::Emit {
             action: "human-prompt",
@@ -455,6 +454,47 @@ pub(super) fn naming(prompt: &crate::watchdog::HumanPrompt) -> [Effect; 2] {
         },
         Effect::Notify(format!("waiting for you: {summary}")),
     ]
+}
+
+fn prompt_summary(prompt: &crate::watchdog::HumanPrompt) -> String {
+    let mut summary = format!("{} — press: {}", prompt.question, prompt.keys);
+    if let Some(notice) = prompt.startup_notice() {
+        summary.push_str(" — ");
+        summary.push_str(&notice);
+    }
+    crate::board::terminal_text(&summary)
+}
+
+/// Only the question and its action identify the kind of dialog being held.
+/// Wrapped or refreshed warning text still appears in the notice.
+pub(super) fn prompt_identity(prompt: &crate::watchdog::HumanPrompt) -> u64 {
+    super::quiet_hash(&crate::board::terminal_text(&format!(
+        "{} — {} — {}",
+        prompt.kind.label(),
+        prompt.question,
+        prompt.keys
+    )))
+}
+
+/// A read of the clear pane retracts the naming, including one from a previous daemon.
+fn clear_prompt(
+    prior: &PaneState,
+    next: &mut PaneState,
+    effects: &mut Vec<Effect>,
+    seen: &Observation,
+    knobs: &Knobs,
+) {
+    if seen.capture_ok && seen.human_prompt.is_none() {
+        if prior.human_prompt_streak >= knobs.human_prompt_cycles || seen.prompt_named {
+            effects.push(Effect::Emit {
+                action: "human-prompt-cleared",
+                summary: "the human-only prompt is gone from the pane".to_owned(),
+            });
+        }
+        next.human_prompt_streak = 0;
+        next.prompt_start = None;
+        next.sweep_prompt = None;
+    }
 }
 
 /// Whether this cycle is inside a usage-limit episode: the notice is on
@@ -1017,7 +1057,26 @@ fn account_ordinary(
         }
     };
 
-    // 3.
+    // 3. A sweep holds behind the prompt, without moving its cadence or budget.
+    //    Only a clear read releases a held prompt. The existing trust proof
+    //    still applies, and the first clear cycle can book its overview.
+    if seen.sweep.is_some() && knobs.sweep.enabled() {
+        if seen.human_prompt.is_some() {
+            book_human_prompt(prior, &mut next, &mut effects, (seen, trust), knobs);
+        }
+        if seen.human_prompt.is_some()
+            || (!seen.capture_ok && (prior.human_prompt_streak > 0 || seen.prompt_named))
+        {
+            next.idle_since_epoch = None;
+            return Accounting {
+                next,
+                effects,
+                verdict: Verdict::HumanPrompt,
+                moved: false,
+            };
+        }
+        clear_prompt(prior, &mut next, &mut effects, seen, knobs);
+    }
     if let Some(verdict) = book_sweep(prior, &mut next, &mut effects, seen, knobs) {
         next.idle_since_epoch = None;
         return Accounting {
@@ -1076,16 +1135,7 @@ fn account_ordinary(
     //     absence of evidence — clearing on it would flap the latch with
     //     clear-and-relatch pairs while a live modal sits untouched.
     //     A restarted daemon clears the naming it did not count.
-    if seen.capture_ok && seen.human_prompt.is_none() {
-        if prior.human_prompt_streak >= knobs.human_prompt_cycles || seen.prompt_named {
-            effects.push(Effect::Emit {
-                action: "human-prompt-cleared",
-                summary: "the human-only prompt is gone from the pane".to_owned(),
-            });
-        }
-        next.human_prompt_streak = 0;
-        next.prompt_start = None;
-    }
+    clear_prompt(prior, &mut next, &mut effects, seen, knobs);
 
     if let DoneProgress::ChallengeDue {
         confirmations,
@@ -1247,7 +1297,7 @@ fn account_ordinary(
         };
     }
 
-    // 8.5. A prompt only the HUMAN may answer. It sits BELOW dead, the sweep,
+    // 8.5. The ordinary pane's human-only prompt sits below dead,
     //      a declaration and the two vendor verdicts — all of which are worse
     //      news — and ABOVE the harness frames, because those are where `Stale`
     //      is decided and a seat waiting on a modal is silent BY NATURE. If

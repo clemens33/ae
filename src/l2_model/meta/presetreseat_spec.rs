@@ -50,6 +50,7 @@ fn paired<'a>(
         profile: "preset",
         binary: "claude",
         launch_id: "new-token",
+        orchestrator_continuation: false,
         conversation,
         pair: Some(PairIdentity {
             client: "approved-client",
@@ -183,6 +184,7 @@ fn presetreseat_bare_replacements_keep_the_existing_exact_document_for_all_three
                 profile: "preset",
                 binary: "claude",
                 launch_id: "new-token",
+                orchestrator_continuation: false,
                 conversation,
                 pair: None,
             },
@@ -210,6 +212,7 @@ fn presetreseat_pair_collapses_duplicate_invalid_client_rows_while_bare_removes_
             profile: "preset",
             binary: "claude",
             launch_id: "new-token",
+            orchestrator_continuation: false,
             conversation: Conversation::Kept,
             pair: None,
         },

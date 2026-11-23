@@ -78,6 +78,15 @@ impl Cycle<'_> {
         err: &mut impl Write,
     ) -> crate::error::Result<()> {
         let agent = on.agent;
+        if let Effect::Emit {
+            action: "human-prompt",
+            summary,
+        } = effect
+            && on.seen.sweep.is_some()
+            && let Some(prompt) = &on.seen.human_prompt
+        {
+            self.tell_held_prompt(on, super::accounting::prompt_identity(prompt), summary, err)?;
+        }
         match effect {
             // A panel's naming and an unreachable failure are keyed to their
             // tool start: what the quiet gate ages from, what a new start ends.
@@ -112,6 +121,9 @@ impl Cycle<'_> {
             }
             Effect::AnswerTrust { name } => self.answer_trust(*name, on, state, err),
             Effect::SweepNudge => self.sweep_nudge(on, state, err),
+            Effect::ReseatContinuation { owed, overview } => {
+                self.reseat_continuation(owed, *overview, on, state, err)
+            }
             // Cycle-level by design: `run` collects it and performs the ONE
             // pass after the sweep, outside every per-pane path.
             Effect::QuotaRefresh => Ok(()),
@@ -327,6 +339,44 @@ impl Cycle<'_> {
         }
     }
 
+    /// Tell the owner once for the standing dialog, through the shared chat.
+    /// The newest notice or clear also witnesses the episode across a restart.
+    fn tell_held_prompt(
+        &self,
+        on: &Acting<'_>,
+        dialog: u64,
+        summary: &str,
+        err: &mut impl Write,
+    ) -> crate::error::Result<()> {
+        let launch = launch_id_for(&self.launch_ids, on.slot);
+        let start = on.seen.start.as_deref().unwrap_or_default();
+        let prefix = format!(
+            "human-prompt:{}:{}:{start}:",
+            on.slot,
+            launch.unwrap_or_default()
+        );
+        let reference = format!("{prefix}{dialog:016x}");
+        let notice = format!("{} is waiting for you: {summary}", on.agent);
+        let standing = on.events.iter().rev().find(|event| {
+            event.actor == ACTOR
+                && ((event.action == "chat"
+                    && event
+                        .reference
+                        .as_deref()
+                        .is_some_and(|value| value.starts_with(&prefix)))
+                    || (event.action == "human-prompt-cleared"
+                        && event.target.as_deref() == Some(on.agent)))
+        });
+        if standing.is_some_and(|event| event.reference.as_deref() == Some(&reference)) {
+            return Ok(());
+        }
+        Journal {
+            meta_dir: self.meta_dir,
+            session: self.session,
+        }
+        .record_referring("chat", "", &reference, &notice, err)
+    }
+
     /// After a delivery to a seat whose unreachable failure stands: ONE
     /// `alert-cleared` once the helper's own record of `action` says it landed.
     fn reachable_again(
@@ -392,6 +442,18 @@ impl Cycle<'_> {
             )
             .code
             == Some(0);
+        self.record_overview(on, state, overview, delivered, err)
+    }
+
+    /// Book the overview after the helper's checked delivery.
+    pub(super) fn record_overview(
+        &self,
+        on: &Acting<'_>,
+        state: &mut PaneState,
+        overview: &super::OverviewReading,
+        delivered: bool,
+        err: &mut impl Write,
+    ) -> crate::error::Result<()> {
         // This is intentionally AFTER the checked delivery. A deferred submit
         // cannot be acknowledged by a `done` event that preceded the paste,
         // and the minimum spacing begins when the paste actually landed.

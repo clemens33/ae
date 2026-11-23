@@ -553,6 +553,7 @@ fn destination(conversation: Conversation<'_>) -> SeatMove<'_> {
         profile: "new-profile",
         binary: "claude",
         launch_id: "new-token",
+        orchestrator_continuation: false,
         conversation,
         pair: None,
     }

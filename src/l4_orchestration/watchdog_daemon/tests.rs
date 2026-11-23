@@ -7,6 +7,9 @@ include!("../../../tests/spec/alertlatch_slots.rs");
 include!("../../../tests/spec/alertlatch_rename.rs");
 include!("../../../tests/spec/deadnotify_impl.rs");
 include!("../../../tests/spec/seatinc.rs");
+include!("../../../tests/spec/orchwake.rs");
+#[path = "../../../tests/spec/orchwake_continuation.rs"]
+mod orchwake_continuation;
 #[test]
 fn history_state_is_known_at_900_seconds_and_unknown_at_901() {
     assert_eq!(super::history_clock(Some(100), 1000), Some(100));

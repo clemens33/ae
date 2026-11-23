@@ -648,6 +648,10 @@ const ON_NOW: &str = "on\nauto_reseat_grace_secs = 0";
 /// session's real `send` link. Its HOME is the scratch's own, so nothing it
 /// reads is a real account.
 fn watch_until(rig: &Rig, done: impl Fn() -> bool) -> bool {
+    watch_until_from(rig, None, done)
+}
+
+fn watch_until_from(rig: &Rig, caller_pane: Option<&str>, done: impl Fn() -> bool) -> bool {
     link_send(rig);
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -666,6 +670,11 @@ fn watch_until(rig: &Rig, done: impl Fn() -> bool) -> bool {
         .env_remove("TMUX_PANE")
         .env_remove("AE_SENDER_OVERRIDE")
         .stdout(std::process::Stdio::null());
+    if let Some(pane) = caller_pane {
+        runner
+            .env("TMUX", format!("{},0,0", rig.sock.display()))
+            .env("TMUX_PANE", pane);
+    }
     if let Ok(log) = log {
         runner.stderr(log);
     }

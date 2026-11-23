@@ -71,6 +71,9 @@ fn delivery(effect: &Effect) -> bool {
         | Effect::LimitWake { .. }
         | Effect::SweepNudge
         | Effect::AnswerTrust { .. } => true,
+        Effect::ReseatContinuation { owed, .. } => {
+            owed.phase == crate::meta::ContinuationPhase::Owed
+        }
         Effect::Emit { .. }
         | Effect::Notify(_)
         | Effect::QuotaRefresh

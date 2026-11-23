@@ -74,6 +74,7 @@ mod deadnotice;
 pub use deadnotice::{Death, DeathEpisode};
 use deadnotice::{Reading, Standing};
 mod charter;
+mod continuation;
 mod cycle_apply;
 mod cycle_observe;
 mod cycle_publish;
@@ -318,6 +319,10 @@ pub struct PaneState {
     /// The tool start the prompt was last seen on: a different proven start
     /// is a new episode, named again.
     pub prompt_start: Option<String>,
+    /// The visible dialog held by the orchestrator's sweep, independent of redraws.
+    pub sweep_prompt: Option<u64>,
+    /// The launch whose continuation the helper last proved refused before paste.
+    pub continuation_refused: Option<String>,
     /// Consecutive nudges that did not land.
     pub undelivered_streak: u32,
     /// Consecutive cycles whose process snapshot was unusable.
@@ -727,8 +732,7 @@ pub struct Observation {
     /// The journal's host suspensions (I15): slept seconds the idle clock and
     /// the limit-versus-declaration tie do not count.
     pub suspended: crate::watchdog::Suspensions,
-    /// The orchestrator sweep reading, `Some` ONLY for the orchestrator main
-    /// agent with the cadence enabled.
+    /// The orchestrator sweep reading, `Some` only for the orchestrator main.
     pub sweep: Option<SweepObservation>,
     /// What this seat is still owed by somebody else: requests it SENT that
     /// nobody answered, agents it SPAWNED that still hold a seat.
@@ -944,6 +948,13 @@ pub enum Effect {
     LimitWake { reset: i64 },
     /// Deliver one SWEEP prompt to the orchestrator.
     SweepNudge,
+    /// Reconcile or attempt this launch's continuation, with a due overview if booked.
+    ReseatContinuation {
+        /// The durable phase and exact launch this turn belongs to.
+        owed: crate::meta::ReseatContinuation,
+        /// Whether to include and book the overview in the same checked turn.
+        overview: bool,
+    },
     /// Reconcile the durable event log against a wedge alert this daemon does
     /// not remember raising — the post-restart clear.
     ReconcileWedge,
@@ -972,6 +983,15 @@ impl Effect {
                 | Self::LimitWake { .. }
                 | Self::SweepNudge
                 | Self::AnswerTrust { .. }
+        ) || matches!(
+            self,
+            Self::ReseatContinuation {
+                owed: crate::meta::ReseatContinuation {
+                    phase: crate::meta::ContinuationPhase::Owed,
+                    ..
+                },
+                ..
+            }
         )
     }
 }
@@ -2454,11 +2474,17 @@ impl Cycle<'_> {
         let events = read_events(self.meta_dir);
         let suspended = crate::watchdog::Suspensions::read(&events);
         let now = Timestamp::now().epoch();
-        // The orchestrator seat's charter turn goes first; a cycle that
-        // attempted one sends the seat no overview beside it, and while the
-        // current launch holds an unconfirmed turn the overview names the
-        // owner's remedy.
-        let charter = self.charter_update(&observed, settling, err)?;
+        let mut continuation = self.read_reseat_continuation();
+        // An owed continuation gets the seat's turn. Otherwise, the charter's
+        // attempt owns the cycle and an unresolved charter names the remedy.
+        let charter = if continuation
+            .as_ref()
+            .is_some_and(|row| row.phase == crate::meta::ContinuationPhase::Owed)
+        {
+            charter::Charter::Idle
+        } else {
+            self.charter_update(&observed, settling, err)?
+        };
         let overview = if self.meta_agent
             && self.knobs.sweep.enabled()
             && charter != charter::Charter::Attempted
@@ -2812,7 +2838,7 @@ impl Cycle<'_> {
                 .client_activity
                 .and_then(|(_, at)| i64::try_from(at).ok());
             let trust = self.trust_due(&seen, (&slot, &pane.pane_id), agent_bin.as_deref(), input);
-            let booked = account_settling(
+            let mut booked = account_settling(
                 carried,
                 &seen,
                 &self.knobs,
@@ -2820,6 +2846,11 @@ impl Cycle<'_> {
                 &activity,
                 settling,
             );
+            if seen.sweep.is_some()
+                && let Some(owed) = continuation.take()
+            {
+                continuation::book(&mut booked, &seen, owed, settling);
+            }
             // The latch this cycle started from: the carried one, or the journal's
             // standing dead alert a fresh carry was rebuilt from.
             let was_latched =

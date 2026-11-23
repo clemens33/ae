@@ -893,17 +893,29 @@ which ends no declaration. Refusals and failures the trigger closes itself are
 chat-only; the two endings a forged argv can reach journal their record and say
 nothing further.
 
-A CARRIED or KEPT move hands the moved seat one turn before it is told about:
-its conversation came along, so no seed pack did; the turn names what moved
-(another account, or another model or effort), and the records say `kept`
-where the conversation stayed. After the `-done` record, the leg
-sends one continuation (re-declare, check requests, memo and brief, resume only
-authorized work, keep real waits and parked scope) through the same `send`
-helper and its guards, journaled as `auto-reseat-notice` to the seat. The
-notice's `Next:` then says the nudge was submitted only on the helper's exit 0
-and its own unmarked record; `unconfirmed` or `refused or unrecorded` name a
-peek before any resend. A notice over its bound loses details, never that step.
-Nothing retries the nudge, and a seeded move gets none.
+A carried or kept move owes the seat one continuation. It names what moved
+and asks the agent to re-declare, check requests, memo and brief, and resume
+authorized work while keeping genuine waits and parked scope. A seeded
+move gets no continuation. For ordinary seats the leg makes one attempt
+after the `-done` record. It asks the owner to inspect the pane when it
+cannot prove the submit.
+
+An automatic move of the orchestrator's main seat publishes the continuation
+with the successor's launch token. The move notice says that the watchdog
+will deliver it. The first eligible watchdog cycle claims the turn and
+includes any due overview after the continuation in one checked `send`.
+The helper records `auto-reseat-notice` with the launch token as the reference.
+A verified receipt closes the claim. A proven refusal before paste reopens
+it. If the helper refuses twice, chat tells the owner once what held the
+launch's turn. An ambiguous submit leaves the launch claimed through later
+cycles and tells the owner once in chat. The watchdog reconciles the
+claim against the journal until it finds a verified receipt or the launch
+changes. A replacement launch cannot receive the earlier launch's continuation.
+
+The orchestrator's sweep holds while a human-only prompt is visible. The
+existing trust proof still admits an eligible trust answer. A dialog that
+persists is reported to the owner in chat, which Telegram forwards where
+configured. The first clear read releases the hold.
 
 The records are `auto-reseat` (the attempt, quoting from and to),
 `auto-reseat-held` (a hold before an attempt, or a transient refusal of one),

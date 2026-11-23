@@ -2280,6 +2280,8 @@ pub(crate) struct SeatMove<'a> {
     pub launch_id: &'a str,
     /// What happens to the conversation the seat was holding.
     pub conversation: Conversation<'a>,
+    /// A guarded automatic move whose retained conversation needs a watchdog turn.
+    pub orchestrator_continuation: bool,
     /// The approved `profile@client` pair this move lands on, with the account
     /// its gate-judged command selects; `None` is a bare move.
     pub pair: Option<PairIdentity<'a>>,
@@ -2338,6 +2340,139 @@ pub(crate) enum Conversation<'a> {
     Kept,
 }
 
+const RESEAT_CONTINUATION: &str = "reseat_continuation.main";
+
+/// The conversation that an automatic move retained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContinuationFate {
+    /// Copied to another account.
+    Carried,
+    /// Resumed in the same account.
+    Kept,
+}
+
+impl ContinuationFate {
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Carried => "carried",
+            Self::Kept => "kept",
+        }
+    }
+}
+
+/// Whether the watchdog has taken the right to attempt the turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContinuationPhase {
+    /// No outstanding attempt. The first eligible cycle may claim the turn.
+    Owed,
+    /// An attempt may have reached the seat. Only a proven pre-paste refusal reopens it.
+    Claimed,
+}
+
+impl ContinuationPhase {
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Owed => "owed",
+            Self::Claimed => "claimed",
+        }
+    }
+}
+
+/// The outstanding turn of one automatic orchestrator reseat.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReseatContinuation {
+    /// Exact token of the launch that received the retained conversation.
+    pub launch: String,
+    /// How the conversation reached that launch.
+    pub fate: ContinuationFate,
+    /// Delivery state within that launch.
+    pub phase: ContinuationPhase,
+}
+
+/// Read a continuation only when its grammar, orchestrator role and current
+/// main launch all agree. Missing, damaged and superseded rows confer no turn.
+#[must_use]
+pub fn reseat_continuation(text: &[u8]) -> Option<ReseatContinuation> {
+    if meta_agent_role(text) != MetaAgentRole::Role {
+        return None;
+    }
+    let row = std::str::from_utf8(sole_value(text, RESEAT_CONTINUATION)?).ok()?;
+    let (phase, rest) = row.split_once(':')?;
+    let (fate, launch) = rest.split_once(':')?;
+    if !crate::archive::is_canonical_uuid(launch)
+        || sole_value(text, "launch_id.main") != Some(launch.as_bytes())
+    {
+        return None;
+    }
+    Some(ReseatContinuation {
+        launch: launch.to_owned(),
+        fate: match fate {
+            "carried" => ContinuationFate::Carried,
+            "kept" => ContinuationFate::Kept,
+            _ => return None,
+        },
+        phase: match phase {
+            "owed" => ContinuationPhase::Owed,
+            "claimed" => ContinuationPhase::Claimed,
+            _ => return None,
+        },
+    })
+}
+
+fn continuation_value(phase: ContinuationPhase, fate: ContinuationFate, launch: &str) -> String {
+    format!("{}:{}:{launch}", phase.word(), fate.word())
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ContinuationStep {
+    Claim,
+    Reopen,
+    Confirm,
+}
+
+/// Apply one transition under the same lock as launch publication. Only the
+/// exact current obligation can change, including when a replacement races it.
+pub(crate) fn advance_reseat_continuation(
+    dir: &Path,
+    expected: &ReseatContinuation,
+    step: ContinuationStep,
+) -> Result<bool, RewriteError> {
+    let (from, to) = match step {
+        ContinuationStep::Claim => (ContinuationPhase::Owed, Some(ContinuationPhase::Claimed)),
+        ContinuationStep::Reopen => (ContinuationPhase::Claimed, Some(ContinuationPhase::Owed)),
+        ContinuationStep::Confirm => (ContinuationPhase::Claimed, None),
+    };
+    let changed = std::cell::Cell::new(false);
+    rewrite_under_lock(dir, |current| {
+        if expected.phase != from
+            || reseat_continuation(current.as_bytes()).as_ref() != Some(expected)
+        {
+            return None;
+        }
+        let value = to.map(|phase| continuation_value(phase, expected.fate, &expected.launch));
+        changed.set(true);
+        Some(rewritten(current, RESEAT_CONTINUATION, value.as_deref()))
+    })?;
+    Ok(changed.get())
+}
+
+fn moved_continuation(text: &str, move_to: &SeatMove<'_>) -> Option<String> {
+    if !move_to.orchestrator_continuation || meta_agent_role(text.as_bytes()) != MetaAgentRole::Role
+    {
+        return None;
+    }
+    let fate = match move_to.conversation {
+        Conversation::Carried { .. } => ContinuationFate::Carried,
+        Conversation::Kept => ContinuationFate::Kept,
+        Conversation::Fresh { .. } => return None,
+    };
+    Some(continuation_value(
+        ContinuationPhase::Owed,
+        fate,
+        move_to.launch_id,
+    ))
+}
+
 /// The seat's rows after that move — PURE, so every one of them is pinnable
 /// without a session on disk.
 ///
@@ -2388,6 +2523,12 @@ pub(crate) fn reseated(text: &str, slot: &str, move_to: &SeatMove<'_>) -> String
         (format!("{LAUNCHED_MODEL_PREFIX}{slot}"), None),
         (format!("{LAUNCHED_EFFORT_PREFIX}{slot}"), None),
     ];
+    if slot == crate::watchdog::MAIN_SLOT {
+        rows.push((
+            RESEAT_CONTINUATION.to_owned(),
+            moved_continuation(text, move_to),
+        ));
+    }
     match &move_to.conversation {
         Conversation::Fresh { id, capture_floor } => {
             let value = |key: &str| crate::lifecycle::meta_value(text.as_bytes(), key);
@@ -4235,6 +4376,7 @@ mod tests {
                         profile: "custom",
                         binary: "claude",
                         launch_id: "tok-2",
+                        orchestrator_continuation: false,
                         conversation,
                         pair: None,
                     },
@@ -4722,6 +4864,7 @@ mod tests {
             profile,
             binary,
             launch_id: "L-NEW",
+            orchestrator_continuation: false,
             conversation: super::Conversation::Fresh {
                 id,
                 capture_floor: 5000,
@@ -4737,6 +4880,7 @@ mod tests {
             profile,
             binary,
             launch_id: "L-NEW",
+            orchestrator_continuation: false,
             conversation: super::Conversation::Carried {
                 config_home: home,
                 config_home_base: None,
@@ -4783,6 +4927,7 @@ mod tests {
             profile: "cc-mic",
             binary: "claude",
             launch_id: "L-NEW",
+            orchestrator_continuation: false,
             conversation: super::Conversation::Carried {
                 config_home: "implicit:/h/b/.claude",
                 config_home_base: Some("/h/b"),
@@ -7398,6 +7543,7 @@ agent_bin.main=claude
                     profile: "new",
                     binary: "claude",
                     launch_id: "new-launch",
+                    orchestrator_continuation: false,
                     conversation: super::super::Conversation::Kept,
                     pair: None,
                 },

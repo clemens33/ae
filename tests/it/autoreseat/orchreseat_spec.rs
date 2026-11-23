@@ -217,6 +217,48 @@ fn quota(home: &Path, percent: u8) {
     .expect("fresh fixture weekly quota");
 }
 
+fn await_carried_continuation(seat: &SeatRig) {
+    let rig = &seat.rig;
+    let (created, pane) = rig.tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        &rig.session,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "sleep",
+        "60",
+    ]);
+    assert!(created, "{pane}");
+    let pane = pane.trim();
+    assert!(
+        rig.tmux(&["set-option", "-p", "-t", pane, "@ae_agent", "_watchdog"])
+            .0
+    );
+    assert!(
+        watch_until_from(rig, Some(pane), || {
+            !seat.records(DONE_ACTION).is_empty()
+                && !seat.records(ae::autoreseat::NOTICE_ACTION).is_empty()
+                && rig.meta_row("reseat_continuation.main").is_empty()
+        }),
+        "no move:\n{}\n{}",
+        rig.events(),
+        daemon_err(rig)
+    );
+    let continuation = seat.records(ae::autoreseat::NOTICE_ACTION);
+    assert_eq!(continuation.len(), 1, "the leg and daemon share one turn");
+    assert_eq!(
+        continuation[0].reference.as_deref(),
+        Some(rig.meta_row("launch_id.main").as_str()),
+        "the daemon's checked continuation names the carried launch"
+    );
+    assert_eq!(
+        continuation[0].summary.as_deref(),
+        Some("continuation turn after an automatic carried reseat")
+    );
+}
+
 #[test]
 fn orchreseat_watchdog_skips_a_fresh_candidate_and_carries_the_main_conversation() {
     let seat = SeatRig::new("orcarry", true, "fake-opencode, fake-claude-b");
@@ -236,12 +278,7 @@ fn orchreseat_watchdog_skips_a_fresh_candidate_and_carries_the_main_conversation
         "the original start stamped its charter"
     );
 
-    assert!(
-        watch_until(rig, || !seat.records(DONE_ACTION).is_empty()),
-        "no move:\n{}\n{}",
-        rig.events(),
-        daemon_err(rig)
-    );
+    await_carried_continuation(&seat);
     assert_eq!(rig.meta_row("profile.main"), "fake-claude-b");
     assert_eq!(rig.meta_row("harness_session.main"), CARRIED);
     assert_ne!(rig.tool_pid(&rig.main_pane, "claude"), Some(seat.pid));
