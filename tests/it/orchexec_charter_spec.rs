@@ -246,6 +246,10 @@ mod desklive_nudge {
 
         let (_watchdog, mut steps) = fixture.start("desk-reseat");
         let shown = fixture.receipt();
+        assert!(
+            !shown.contains("orchestrator charter update uncertain"),
+            "an owed continuation silences the charter update in this cycle: {shown:?}"
+        );
         let continuation = shown.find("Restore your state first").expect(&shown);
         let peer = shown.find(PEER).expect(&shown);
         let trailer = "overview; declare done.";

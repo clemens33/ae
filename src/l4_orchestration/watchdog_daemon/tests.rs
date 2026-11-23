@@ -12403,3 +12403,36 @@ fn the_charter_remedy_names_the_instance_and_never_the_default_root_command_ther
     assert!(!line.contains("ae stop"), "{line}");
     assert!(!line.contains("ae orchestrator"), "{line}");
 }
+
+#[test]
+fn a_joined_desk_notice_has_its_own_line_before_the_overview_trailer() {
+    let row = "QUIET\n  desk-peer (done -)";
+    for (rendered, expected) in [
+        (
+            row.to_owned(),
+            "QUIET\n  desk-peer (done -)\nDesk stale: refresh the record\n— overview; declare done.",
+        ),
+        (
+            format!("{row}\n"),
+            "QUIET\n  desk-peer (done -)\nDesk stale: refresh the record\n— overview; declare done.",
+        ),
+        (
+            String::new(),
+            "Desk stale: refresh the record\n— overview; declare done.",
+        ),
+    ] {
+        let reading = OverviewReading {
+            rendered,
+            hash: "0123456789abcdef".to_owned(),
+            checkpoint: crate::monitor::OverviewCheckpoint {
+                hash: None,
+                outstanding_since: None,
+                last_delivered_at: None,
+            },
+        };
+        assert_eq!(
+            reading.body_with("Desk stale: refresh the record"),
+            expected
+        );
+    }
+}
