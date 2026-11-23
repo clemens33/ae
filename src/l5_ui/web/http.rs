@@ -49,7 +49,8 @@ pub enum Method {
 pub struct Head {
     /// The method.
     pub method: Method,
-    /// The request target as sent: an origin-form path and query.
+    /// The request target as sent: `/` followed by visible ASCII, a path and
+    /// query.
     pub target: String,
     /// Each header field in order: its name lowercased, its value trimmed.
     pub headers: Vec<(String, String)>,
@@ -94,13 +95,15 @@ pub enum Parsed {
 ///
 /// # Errors
 ///
-/// The status that refuses the request: 400 a malformed head, a GET that
-/// announces content, or a target that is not origin-form, 405 another method,
-/// 411 a body without `Content-Length` or any `Transfer-Encoding`, 413 a body
-/// over [`BODY_MAX`], 414 a request line over [`LINE_MAX`], 431 header fields
-/// over [`FIELDS_MAX`] or [`FIELD_ROWS_MAX`], 505 a version other than
-/// `HTTP/1.1`. Refusing absolute-form is a deliberate deviation from RFC 9112
-/// section 3.2.2 for this loopback origin: no browser sends it to an origin.
+/// The status that refuses the request: 400 a malformed head, a target that
+/// is not `/` followed by visible ASCII, or a GET whose `Content-Length` is
+/// positive and at most [`BODY_MAX`], 405 another method, 411 a body without
+/// `Content-Length` or any `Transfer-Encoding`, 413 a body over [`BODY_MAX`]
+/// (a GET's too), 414 a request line over [`LINE_MAX`], 431 header fields over
+/// [`FIELDS_MAX`] or [`FIELD_ROWS_MAX`], 505 a version other than `HTTP/1.1`.
+/// The target check is not exactly RFC 9112 origin-form: a raw `#` passes, and
+/// refusing absolute-form is a deliberate deviation from RFC 9112 section
+/// 3.2.2 for this loopback origin, because no browser sends it to an origin.
 pub fn parse_head(buf: &[u8]) -> Result<Parsed, u16> {
     bare_lf(buf)?;
     let Some(line_end) = find_crlf(buf, 0) else {
