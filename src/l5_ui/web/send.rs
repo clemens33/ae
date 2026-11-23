@@ -738,10 +738,15 @@ pub(crate) fn worker(
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::time::Duration;
 
+    use super::super::claim::KEEP;
     use super::super::clock::ManualClock;
     use super::{
-        Draft, Epoch, FAILED_KEPT, Failed, Gate, Hooks, Job, Sending, Sends, keep, told, words_of,
+        Claim, Draft, Epoch, FAILED_KEPT, Failed, Flow, Gate, Hooks, Job, Lookup, Point, Sending,
+        Sends, keep, told, words_of, worker,
     };
 
     #[test]
@@ -884,5 +889,83 @@ mod tests {
         );
         assert!(told(&mut gate, "3", "p", "r").is_none(), "told only once");
         assert_eq!(gate.failed.len(), FAILED_KEPT - 1);
+    }
+
+    /// Hooks that end every job once its claim is durable and say so: the
+    /// worker has then passed the prune check that comes before that job.
+    struct Beat(Sender<()>);
+
+    impl Hooks for Beat {
+        fn at(&self, point: Point) -> Flow {
+            if matches!(point, Point::Claimed { .. }) {
+                let _ = self.0.send(());
+            }
+            Flow::Halt
+        }
+    }
+
+    /// Hand the worker job `n` and wait until its claim is durable.
+    fn pulse(sending: &Sending, beat: &Receiver<()>, n: u8) -> bool {
+        let job = Job {
+            name: format!("{n:064x}"),
+            payload: "a".repeat(64),
+            route: "b".repeat(64),
+            text: "hi".to_owned(),
+            seat: "tui".to_owned(),
+            to: "sample".to_owned(),
+        };
+        sending.jobs.send(job).is_ok() && beat.recv_timeout(Duration::from_secs(30)).is_ok()
+    }
+
+    /// The worker prunes the claim store when it starts and then once an hour
+    /// of listener time, never sooner: a claim that expires one second after
+    /// the first prune is kept at 59:59 and gone at 60:00.
+    #[test]
+    fn the_worker_prunes_the_claim_store_once_an_hour_of_listener_time() {
+        const START: u64 = 1_700_000_000;
+        let root = scratch("prune");
+        let (beats, beat) = std::sync::mpsc::channel();
+        let clock = Arc::new(ManualClock::new(1_700_000_000));
+        let sends = Sends {
+            root: root.clone(),
+            hooks: Arc::new(Beat(beats)),
+        };
+        let (sending, taken) = Sending::new(sends, [7; 32], Epoch::new(clock.clone()));
+        // Its age at START is exactly KEEP, so only a later prune removes it.
+        let expiring = "e".repeat(64);
+        let made = sending.claims.create(
+            &expiring,
+            &Claim {
+                payload: "a".repeat(64),
+                route: "b".repeat(64),
+                id: "ae-20261122T200000Z-0000000a".to_owned(),
+                created: START - KEEP,
+                outcome: None,
+            },
+        );
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::spawn(worker(Arc::clone(&sending), taken, Arc::clone(&stop)));
+        // Each advance is followed by two jobs: the check before the second
+        // one reads the advanced clock.
+        let started = pulse(&sending, &beat, 1);
+        clock.advance(Duration::from_secs(3599));
+        let early = pulse(&sending, &beat, 2) && pulse(&sending, &beat, 3);
+        let at_hour_less_a_second = sending.claims.lookup(&expiring);
+        clock.advance(Duration::from_secs(1));
+        let late = pulse(&sending, &beat, 4) && pulse(&sending, &beat, 5);
+        let at_hour = sending.claims.lookup(&expiring);
+        stop.store(true, Ordering::SeqCst);
+        let joined = thread.join().is_ok();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(made.map_err(|error| error.kind()), Ok(()));
+        assert!(
+            started && early && late && joined,
+            "the worker took every job"
+        );
+        assert!(
+            matches!(at_hour_less_a_second, Lookup::Known(_)),
+            "no prune before the hour: {at_hour_less_a_second:?}"
+        );
+        assert_eq!(at_hour, Lookup::Absent, "the prune at the hour removes it");
     }
 }

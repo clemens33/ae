@@ -437,4 +437,26 @@ mod tests {
             assert_eq!(super::reason(status), phrase, "{status}");
         }
     }
+
+    /// The contract of `parse_head`: 414 only for a request line over
+    /// `LINE_MAX`, and a head still arriving is `Partial`, refusing nothing.
+    #[test]
+    fn a_request_line_of_exactly_line_max_is_never_refused_while_it_arrives() {
+        let line = format!("GET /{} HTTP/1.1", "a".repeat(super::LINE_MAX - 14));
+        assert_eq!(line.len(), super::LINE_MAX);
+        let head = format!("{line}\r\nHost: 127.0.0.1:1\r\n\r\n");
+        for end in line.len()..head.len() {
+            let part = head
+                .as_bytes()
+                .get(..end)
+                .unwrap_or_else(|| panic!("{end} is inside the head"));
+            assert_eq!(parse_head(part), Ok(Parsed::Partial), "{end} bytes");
+        }
+        assert!(matches!(
+            parse_head(head.as_bytes()),
+            Ok(Parsed::Done { body_len: 0, .. })
+        ));
+        let over = format!("GET /{} HTTP/1.1\r\n", "a".repeat(super::LINE_MAX - 13));
+        assert_eq!(parse_head(over.as_bytes()), Err(414), "one byte over");
+    }
 }
