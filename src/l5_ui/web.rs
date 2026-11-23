@@ -160,7 +160,7 @@ pub fn run(
     };
     // The first look at the command link, taken before the startup line so the
     // line witnesses it: the version the link names now is never followed.
-    let first = linked_version().ok();
+    let first = first_look(shape, linked_version);
     writeln!(out, "ae web: {}", running.link())?;
     writeln!(out, "{OPEN}")?;
     out.flush()?;
@@ -234,6 +234,19 @@ fn follow(running: &Running, say: &mpsc::SyncSender<Line>, first: Option<String>
     }
 }
 
+/// The first look at the command link for a listener of `shape`: only an
+/// installed core follows the link, so only it reads the link through `look`.
+/// A checkout or displaced core reads nothing.
+fn first_look(
+    shape: &crate::shape::Shape,
+    look: impl FnOnce() -> Result<String, String>,
+) -> Option<String> {
+    match shape {
+        crate::shape::Shape::Installed { .. } => look().ok(),
+        crate::shape::Shape::Displaced { .. } | crate::shape::Shape::Checkout => None,
+    }
+}
+
 /// The version the command link names, the link spelled from `$HOME` as a
 /// publish spells it, or why it cannot be read.
 fn linked_version() -> Result<String, String> {
@@ -267,8 +280,10 @@ fn due(
 mod tests {
     use std::cell::Cell;
     use std::collections::BTreeSet;
+    use std::path::PathBuf;
 
-    use super::due;
+    use super::{due, first_look};
+    use crate::shape::Shape;
 
     const NOW: &str = "2026.11.200";
 
@@ -316,5 +331,44 @@ mod tests {
             (true, true),
             "another than the first look and the told ones"
         );
+    }
+
+    /// `first_look` for `shape` when the link reads `linked`: the version it
+    /// keeps, and whether the link was read.
+    fn look(shape: &Shape, linked: Result<&str, &str>) -> (Option<String>, bool) {
+        let read = Cell::new(false);
+        let got = first_look(shape, || {
+            read.set(true);
+            linked.map(str::to_owned).map_err(str::to_owned)
+        });
+        (got, read.get())
+    }
+
+    /// `follow` and docs/web.md: only an installed listener follows the link,
+    /// so only it takes the first look; a checkout or displaced listener reads
+    /// no install path before it prints the startup link.
+    #[test]
+    fn only_an_installed_listener_takes_the_first_link_look() {
+        let installed = Shape::Installed {
+            home: PathBuf::from("/home/u/.ae"),
+            version_dir: PathBuf::from("/home/u/.ae/versions/2026.11.1"),
+            version: "2026.11.1".to_owned(),
+        };
+        assert_eq!(
+            look(&installed, Ok(NOW)),
+            (Some(NOW.to_owned()), true),
+            "an installed listener keeps the linked version"
+        );
+        assert_eq!(
+            look(&installed, Err("no link")),
+            (None, true),
+            "an unreadable link names no version"
+        );
+        let displaced = Shape::Displaced {
+            home: PathBuf::from("/opt/root/.ae"),
+            declared: PathBuf::from("/home/u"),
+        };
+        assert_eq!(look(&displaced, Ok(NOW)), (None, false), "displaced");
+        assert_eq!(look(&Shape::Checkout, Ok(NOW)), (None, false), "checkout");
     }
 }

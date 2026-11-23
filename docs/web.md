@@ -96,10 +96,12 @@ focus.
   afterwards. A claim without an outcome is never carried again: its retry answers unknown. When
   no claim can be written, nothing is sent and the next retry answers `refused` with the reason.
   Claims older than 7 days are removed.
-- When the command link names another core and automatic upgrades are on, `ae web` replaces
-  itself with that core on the same port once no draft is queued or carrying; meanwhile a send
-  answers `busy, retry`. The new core has a new key, so it prints a new link, and a draft that was
-  sent is answered from its claim. A failed switch is printed once per version
+- An installed `ae web` follows a change of the command link. When the link changes to another
+  core and automatic upgrades are on, it replaces itself with that core on the same port once no
+  draft is queued or carrying; meanwhile a send answers `busy, retry`. A different version that
+  the link already named when the listener started is never followed. The new core has a new
+  key, so it prints a new link, and a draft that was sent is answered from its claim. A failed
+  switch is printed once per version
   (`ae web: cannot follow version <v>: <why>; still serving <old>`) and the old core keeps serving.
 
 ## Security
