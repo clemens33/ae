@@ -640,11 +640,11 @@ the default width and `D3` on the narrowest, with the letter of the item ids.
 The chosen tab survives an app restart like the zoom does. The hidden-board
 `desk N` counts DECIDE, whichever tab is chosen.
 
-The board wraps sanitized items and
-links to its width. Each visible fragment of a wrapped link opens the same URL or
-`file://` destination. The app reads the board with the panel and shows the
-reason when a record is unreadable. The board is read-only. With no record set,
-the panel keeps its entire width, every click target and its usual header.
+The board wraps sanitized items and links to its width. Each visible fragment
+of a wrapped link opens the same URL or `file://` destination. The app reads the
+board with the panel and shows the reason when a record is unreadable. The board
+is read-only. With no record set, the panel keeps its entire width, every click
+target and its usual header.
 
 ## Session menu
 

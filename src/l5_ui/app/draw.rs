@@ -3230,7 +3230,10 @@ const BROWSE_KEYS: [(&str, &str); 23] = [
     ("n/p", "step the seat cursor (▹ or -)"),
     ("b", "hide / show the orchestrator board"),
     ("B PgUp/PgDn", "B: board or chat. PgUp/PgDn: scroll a page"),
-    ("1-5 Tab Left Right", "board focused: pick or step its tab"),
+    (
+        "1-5 Tab",
+        "board focused: tab by place; Tab, Right next, Left back",
+    ),
     ("[ ]", "mark older / newer turn"),
     ("y", "copy the marked turn"),
     ("Enter i", "write; a paste writes too"),
