@@ -432,11 +432,26 @@ impl Rig {
         self.raw(app, &format!("\x1b[<0;9;{}M", row + 1));
     }
 
+    /// The Agents body is drawn in its settled shape: `scout` sits under its
+    /// `Spawned` group line. The fleet read draws the seat rows first, in
+    /// plain order. The group line comes with the session's roster, which the
+    /// console read answers later, and it pushes the spawned seat down one
+    /// row. A click placed from a frame before that line lands on the line
+    /// that arrives and folds the group.
     fn agents(&self, app: &str) {
-        self.wait_screen(app, "GUARD Agents facts drawn", |s| {
-            s.lines()
-                .any(|row| row.split('│').next().unwrap_or("").contains("scout"))
-        });
+        self.wait_screen(
+            app,
+            "GUARD Agents facts drawn under the spawned group",
+            |s| {
+                let side: Vec<&str> = s
+                    .lines()
+                    .map(|row| row.split('│').next().unwrap_or(""))
+                    .collect();
+                let group = side.iter().position(|row| row.contains("Spawned ("));
+                let scout = side.iter().position(|row| row.contains("scout"));
+                matches!((group, scout), (Some(group), Some(scout)) if group < scout)
+            },
+        );
     }
 
     /// The seat is visibly identified in the sidebar: the cursor `▹` (`-`
@@ -609,6 +624,7 @@ fn agents_need_for_spawned_seat_has_the_same_open_action() {
         "GUARD the seat's reason is drawn in the header",
         |s| s.contains("SCOUT-DEPENDENCY-BLOCK") && s.contains("scout"),
     );
+    rig.agents(&app);
     rig.click(&app, "scout", true);
     rig.focused(&app, "scout");
     // The click opens scout's seat view (livepeek R1); `oo` is swallowed
