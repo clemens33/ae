@@ -444,21 +444,15 @@ fn serve(worker: usize, shared: &Shared, mut stream: TcpStream) {
 
 /// Close the write side and drain what the client still sends, briefly, so
 /// unread request bytes do not turn the close into a reset that destroys the
-/// answer before the client reads it.
+/// answer before the client reads it. At most [`LINGER_READS`] reads of
+/// 4 KiB, 32 KiB in all, so the drain stays under [`http::BODY_MAX`].
 fn linger(stream: &mut TcpStream) {
     drop(stream.shutdown(Shutdown::Write));
     drop(stream.set_read_timeout(Some(LINGER_POLL)));
     let mut sink = [0_u8; 4096];
-    let mut drained = 0_usize;
     for _ in 0..LINGER_READS {
-        match stream.read(&mut sink) {
-            Ok(0) | Err(_) => return,
-            Ok(read) => {
-                drained = drained.saturating_add(read);
-                if drained > http::BODY_MAX {
-                    return;
-                }
-            }
+        if let Ok(0) | Err(_) = stream.read(&mut sink) {
+            return;
         }
     }
 }
