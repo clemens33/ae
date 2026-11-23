@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.113] - 2026-11-23
+- Show the fleet's live state below the board in the chat and the Telegram pin
+- Say that the live part leaves the rendered board unchanged
+- Tell the orchestrator when its desk record falls behind the fleet
+- Show the fleet's live part under the app board's RUNNING tab
+- Pin the live snapshot order, cut and cache, the positioned drain and the desk recheck
+- Pin the desk tick cursor key and its own-session acknowledgement
+- Pin the desk line boundary and the silenced charter remedy in the joined overview
+
 ## [v2026.11.112] - 2026-11-23
 - Freeze the acceptance tests for the board tabs
 - Show the orchestrator board as one tab per section
