@@ -152,3 +152,17 @@ pub fn words(text: &str) -> String {
         .take(WORDS_MAX)
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::plain;
+
+    /// docs/web.md: every agent text is plain, control characters removed, and
+    /// capped. A short text with a control byte is cleaned, not passed through,
+    /// and a clean text over the cap is cut, not passed through.
+    #[test]
+    fn plain_cleans_a_short_text_and_cuts_a_clean_long_one() {
+        assert_eq!(plain("a\u{7}b\tc\n", 64), "ab\tc\n");
+        assert_eq!(plain("abcdef", 3), "abc");
+    }
+}

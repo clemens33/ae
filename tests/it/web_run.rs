@@ -110,3 +110,52 @@ fn code(line: &str, prefix: &str) -> String {
     );
     code.to_owned()
 }
+
+/// `ae web` with a word it does not take: the usage line on stderr, exit 2.
+#[test]
+fn an_unknown_word_answers_the_usage_line_and_exit_2() {
+    let output = cli::ae()
+        .args(["web", "--bogus"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(cli::OwnedChild::wait_with_output)
+        .unwrap_or_else(|error| panic!("run ae web --bogus: {error}"));
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "ae web: unexpected --bogus\nusage: ae web [--port N]   (N in 1..=65535; default 7480)\n"
+    );
+    assert!(output.stdout.is_empty(), "{output:?}");
+}
+
+/// docs/web.md: only another `ae web` on the same state root is told that one
+/// runs. Any other failure to take `<state root>/web/lock` names the lock and
+/// its error, exit 1: here the lock path is a directory.
+#[test]
+fn a_lock_that_cannot_be_taken_names_the_lock_not_another_listener() {
+    let scratch = cli::OwnedScratch::root("web", "lockdir");
+    std::fs::create_dir_all(scratch.path().join("web").join("lock"))
+        .unwrap_or_else(|error| panic!("a directory where the lock goes: {error}"));
+    let output = cli::ae()
+        .env("AE_HOME", scratch.path())
+        .args(["web", "--port", &free_port().to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(cli::OwnedChild::wait_with_output)
+        .unwrap_or_else(|error| panic!("run ae web: {error}"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        stderr.starts_with("ae web: ") && stderr.contains("/web/lock: "),
+        "{stderr:?}"
+    );
+    assert!(
+        !stderr.contains("another ae web runs for this state root"),
+        "{stderr:?}"
+    );
+    assert!(output.stdout.is_empty(), "{output:?}");
+}
