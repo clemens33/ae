@@ -158,13 +158,16 @@ pub fn run(
             return Ok(crate::state::EXIT_FAILED);
         }
     };
+    // The first look at the command link, taken before the startup line so the
+    // line witnesses it: the version the link names now is never followed.
+    let first = linked_version().ok();
     writeln!(out, "ae web: {}", running.link())?;
     writeln!(out, "{OPEN}")?;
     out.flush()?;
     let following = Arc::clone(&running);
     let spawned = std::thread::Builder::new()
         .name("ae-web-follow".to_owned())
-        .spawn(move || follow(&following, &say));
+        .spawn(move || follow(&following, &say, first));
     if let Err(why) = spawned {
         writeln!(err, "ae web: cannot follow new versions: {why}")?;
     }
@@ -186,9 +189,10 @@ pub fn run(
 
 /// Follow the command link as `ae app` does: when it names another core and
 /// automatic upgrades are on, replace this listener with that core once no
-/// send is in flight. A version the link already named at the first look is
-/// never followed, and a failed exec is told once per version.
-fn follow(running: &Running, say: &mpsc::SyncSender<Line>) {
+/// send is in flight. A version the link named when this listener started is
+/// never followed: `first` is that look, which `run` takes before it prints
+/// the startup link. A failed exec is told once per version.
+fn follow(running: &Running, say: &mpsc::SyncSender<Line>, first: Option<String>) {
     let shape = crate::shape::current();
     let crate::shape::Shape::Installed { version, .. } = shape else {
         return;
@@ -204,12 +208,11 @@ fn follow(running: &Running, say: &mpsc::SyncSender<Line>) {
             Some(Ordering::Less | Ordering::Greater)
         )
     };
-    let linked = || paths().and_then(|paths| crate::install::current_public_version(&paths));
-    let unlinked = linked().ok().filter(|first| other(first));
+    let unlinked = first.filter(|first| other(first));
     let mut told = BTreeSet::new();
     loop {
         std::thread::sleep(FOLLOW_EVERY);
-        let Ok(now) = linked() else { continue };
+        let Ok(now) = linked_version() else { continue };
         let automatic = || crate::autoupgrade::automatic(shape, crate::doors::no_autostart());
         if !due(other(&now), &now, unlinked.as_deref(), &told, automatic) {
             continue;
@@ -231,11 +234,19 @@ fn follow(running: &Running, say: &mpsc::SyncSender<Line>) {
     }
 }
 
+/// The version the command link names, the link spelled from `$HOME` as a
+/// publish spells it, or why it cannot be read.
+fn linked_version() -> Result<String, String> {
+    let home = crate::doors::home();
+    let home = home.as_deref().ok_or("HOME is not set")?;
+    crate::install::current_public_version(&crate::install::fixed_paths(home)?)
+}
+
 /// Whether the watcher follows `now`, the version the command link names: it
-/// names another core than this one (`other`), not the version it named at the
-/// first look (`unlinked`), not one whose follow already failed and was told
-/// (`told`), and automatic upgrades are on. `automatic` reads the config, so it
-/// is read only when every other condition holds.
+/// names another core than this one (`other`), not the version it named when
+/// this listener started (`unlinked`), not one whose follow already failed and
+/// was told (`told`), and automatic upgrades are on. `automatic` reads the
+/// config, so it is read only when every other condition holds.
 fn due(
     other: bool,
     now: &str,
