@@ -105,7 +105,7 @@ fn dialogseat_measured_settings_dialogs_answer_only_with_the_measured_settings_s
                 panic!("{label}: the measured settings block must be answerable")
             });
             let folder = match label {
-                "settings-40x12-history" => "/tmp/ae-dialog-probe/proj",
+                "settings-40x12-history" => "/tmp/ae-dialog-probe/project",
                 "settings-only-120x40" => "/tmp/ae-harness-probe/claude-settings/project",
                 _ => "/tmp/claude-trust-probe",
             };
