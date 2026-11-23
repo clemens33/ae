@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.112] - 2026-11-23
+- Freeze the acceptance tests for the board tabs
+- Show the orchestrator board as one tab per section
+- Move the old board fixtures onto the tab they read
+- Document the board tabs and seed the restart parser with a chosen tab
+- Fit the board tab keys into the Keys tab column
+- Pin the rows, cells and redraw answers of the board tabs
+
 ## [v2026.11.111] - 2026-11-23
 - Resume orchestrator delivery after an automatic reseat
 - Keep reseat action in the watchdog model
