@@ -113,6 +113,11 @@ focus.
   connection.
 - A request must arrive whole within 10 s and an answer must leave whole within 10 s; a slow
   client costs one of four readers for that long, and a full queue of 16 answers `503`.
+- The listener reads only an origin-form target (`/path`). An absolute-form target such as
+  `GET http://127.0.0.1:7480/ HTTP/1.1` gets `400`: a deliberate deviation from
+  [RFC 9112 §3.2.2](https://www.rfc-editor.org/rfc/rfc9112#section-3.2.2), which asks a server to
+  accept it, because no browser sends absolute-form to an origin. A `GET` that announces content
+  also gets `400`.
 - The page's three library files (Preact 11.2.0, its hooks and htm 3.1.1) are vendored and pinned
   by SHA-256 in `src/l5_ui/web/assets/VENDOR.md`; there is no build step. Their licence texts
   (MIT for Preact, Apache-2.0 for htm) are served unchanged at `/assets/licenses.txt`, which needs

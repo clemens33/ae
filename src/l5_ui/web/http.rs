@@ -94,11 +94,13 @@ pub enum Parsed {
 ///
 /// # Errors
 ///
-/// The status that refuses the request: 400 a malformed head, 405 another
-/// method, 411 a body without `Content-Length` or any `Transfer-Encoding`, 413
-/// a body over [`BODY_MAX`], 414 a request line over [`LINE_MAX`], 431 header
-/// fields over [`FIELDS_MAX`] or [`FIELD_ROWS_MAX`], 505 a version other than
-/// `HTTP/1.1`.
+/// The status that refuses the request: 400 a malformed head, a GET that
+/// announces content, or a target that is not origin-form, 405 another method,
+/// 411 a body without `Content-Length` or any `Transfer-Encoding`, 413 a body
+/// over [`BODY_MAX`], 414 a request line over [`LINE_MAX`], 431 header fields
+/// over [`FIELDS_MAX`] or [`FIELD_ROWS_MAX`], 505 a version other than
+/// `HTTP/1.1`. Refusing absolute-form is a deliberate deviation from RFC 9112
+/// section 3.2.2 for this loopback origin: no browser sends it to an origin.
 pub fn parse_head(buf: &[u8]) -> Result<Parsed, u16> {
     bare_lf(buf)?;
     let Some(line_end) = find_crlf(buf, 0) else {
@@ -502,5 +504,45 @@ mod tests {
     #[test]
     fn a_bare_line_feed_just_before_the_delimiter_is_a_malformed_head() {
         assert_eq!(parse_head(b"GET / HTTP/1.1\n\r\n\r\n"), Err(400));
+    }
+
+    /// A method is a token (RFC 9110 section 9.1), so a request line whose
+    /// method is empty or holds another byte is malformed, not another method.
+    #[test]
+    fn a_request_line_whose_method_is_no_token_is_malformed() {
+        for line in ["G@T / HTTP/1.1", " / HTTP/1.1"] {
+            let head = format!("{line}\r\nHost: 127.0.0.1:1\r\n\r\n");
+            assert_eq!(parse_head(head.as_bytes()), Err(400), "{line:?}");
+        }
+    }
+
+    /// Only an origin-form target of visible ASCII is read: the asterisk-form
+    /// (OPTIONS only, RFC 9112 section 3.2.4), a control byte (section 3.2) and,
+    /// by the deliberate deviation `parse_head` names, the absolute-form are
+    /// malformed.
+    #[test]
+    fn a_target_that_is_not_origin_form_of_visible_ascii_is_malformed() {
+        for line in [
+            "GET * HTTP/1.1",
+            "GET /a\u{7f}b HTTP/1.1",
+            "GET http://127.0.0.1:1/ HTTP/1.1",
+        ] {
+            let head = format!("{line}\r\nHost: 127.0.0.1:1\r\n\r\n");
+            assert_eq!(parse_head(head.as_bytes()), Err(400), "{line:?}");
+        }
+    }
+
+    /// A GET that announces content is refused, as `parse_head` names it; one
+    /// whose `Content-Length` is 0 announces none.
+    #[test]
+    fn a_get_that_announces_content_is_refused() {
+        let head = |length: &str| {
+            format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:1\r\nContent-Length: {length}\r\n\r\n")
+        };
+        assert_eq!(parse_head(head("1").as_bytes()), Err(400));
+        assert!(matches!(
+            parse_head(head("0").as_bytes()),
+            Ok(Parsed::Done { body_len: 0, .. })
+        ));
     }
 }
