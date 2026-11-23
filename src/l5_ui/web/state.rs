@@ -789,12 +789,15 @@ fn orchestrator(root: &Path) -> (Orchestrator, Found, Option<RouteFacts>) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::{Duration, Instant};
 
-    use super::{Cache, LiveSource, Read, Source, Standing, string};
+    use super::{Cache, LiveSource, Read, RouteFacts, Source, Standing, route_id, string};
+    use crate::inventory::ServerId;
+    use crate::meta::Selector;
     use crate::web::clock::Clock;
 
     /// One monotonic instant for every thread; the wall second a thread
@@ -968,5 +971,37 @@ mod tests {
         let second = source.read();
         assert_eq!(second.orchestrator.state, Standing::Stopped, "{second:?}");
         assert!(!replaced(&second), "{:?}", second.chat.coverage);
+    }
+
+    /// The plan's route binding (plan-final.md, "Route binding"): the route id
+    /// is an HMAC over the target the page shows, its role-proof facts among
+    /// it, and the tmux server the role proof found the session on is one of
+    /// them. Facts that differ only in that server sign different ids, so a
+    /// draft written against a session on one server is never carried to a
+    /// same-named session on another.
+    #[test]
+    fn the_route_id_changes_when_only_the_tmux_server_changes() {
+        let key = [7_u8; 32];
+        let on = |server: ServerId| {
+            route_id(
+                &key,
+                &RouteFacts {
+                    uuid: "0b6f6a43-1f4e-4c1e-9a52-3d2b8c1e7f00".to_owned(),
+                    to: "orch".to_owned(),
+                    seat: "lead".to_owned(),
+                    seats: vec![("main".to_owned(), "lead".to_owned(), "l-1".to_owned())],
+                    dir: PathBuf::from("/state/orch"),
+                    server,
+                },
+            )
+        };
+        let ambient = on(ServerId::Ambient);
+        let named = on(ServerId::Selected(Selector::Name("work".to_owned())));
+        let socket = on(ServerId::Selected(Selector::Socket(PathBuf::from(
+            "/tmp/tmux-501/work",
+        ))));
+        assert_ne!(ambient, named, "ambient and a named server");
+        assert_ne!(ambient, socket, "ambient and a socket");
+        assert_ne!(named, socket, "a named server and a socket");
     }
 }

@@ -746,10 +746,11 @@ impl Shared {
 mod tests {
     use std::io::{Read as _, Write as _};
     use std::net::{Shutdown, TcpStream};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, mpsc};
     use std::time::{Duration, Instant};
 
-    use super::{Cut, Options, Probe, Running, Seen, start};
+    use super::{Cut, NoProbe, Options, Probe, Running, Seen, start};
     use crate::web::chat;
     use crate::web::clock::ManualClock;
     use crate::web::state::{Read, Source};
@@ -1100,6 +1101,78 @@ mod tests {
                 }
             ),
             "{cut:?}"
+        );
+    }
+
+    /// What `running` answers to `wire`, whole.
+    fn reply(running: &Running, wire: &str) -> String {
+        let mut client = client(running);
+        client
+            .write_all(wire.as_bytes())
+            .unwrap_or_else(|error| panic!("send: {error}"));
+        let mut reply = Vec::new();
+        let _ = client.read_to_end(&mut reply);
+        String::from_utf8_lossy(&reply).into_owned()
+    }
+
+    /// `answer` serves a page asset to `GET` only, and RFC 9110 §15.5.6 makes a
+    /// method the target does not support a 405: a POST to `/` with the right
+    /// Host and Origin is refused, not answered with the page.
+    #[test]
+    fn a_post_to_a_page_asset_is_405_not_the_asset() {
+        let (running, _events) = listen(Arc::new(Empty), None);
+        let host = running.addr();
+        let answer = reply(
+            &running,
+            &format!(
+                "POST / HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\n\
+                 Content-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}"
+            ),
+        );
+        running.shutdown();
+        assert!(
+            answer.starts_with("HTTP/1.1 405 "),
+            "{}",
+            answer.get(..40).unwrap_or(&answer)
+        );
+    }
+
+    /// [`super::LINK_GAP`], "the least time between two fresh links printed
+    /// for pages without a session": a gap of at least `LINK_GAP` allows the
+    /// next fresh link, so a page without a session gets one again exactly one
+    /// gap after the last.
+    #[test]
+    fn a_fresh_link_comes_exactly_one_link_gap_after_the_last() {
+        let clock = Arc::new(ManualClock::new(1_795_000_000));
+        let printed = Arc::new(AtomicUsize::new(0));
+        let links = Arc::clone(&printed);
+        let running = start(Options {
+            port: 0,
+            clock: clock.clone(),
+            source: Arc::new(Empty),
+            probe: Arc::new(NoProbe),
+            links: Arc::new(move |line: &str| {
+                if line.starts_with("ae web: new link ") {
+                    links.fetch_add(1, Ordering::SeqCst);
+                }
+            }),
+            version: "server-unit".to_owned(),
+        })
+        .unwrap_or_else(|error| panic!("start: {error}"));
+        let running = Listening(Some(running));
+        let host = running.addr();
+        let no_session = format!("GET /api/state HTTP/1.1\r\nHost: {host}\r\n\r\n");
+        let first = reply(&running, &no_session);
+        assert!(first.starts_with("HTTP/1.1 401 "), "{first}");
+        assert_eq!(printed.load(Ordering::SeqCst), 1, "the first fresh link");
+        clock.advance(super::LINK_GAP);
+        let second = reply(&running, &no_session);
+        running.shutdown();
+        assert!(second.starts_with("HTTP/1.1 401 "), "{second}");
+        assert_eq!(
+            printed.load(Ordering::SeqCst),
+            2,
+            "one more fresh link exactly one gap later"
         );
     }
 }
