@@ -10728,8 +10728,11 @@ fn the_live_harness_smoke_is_reachable_only_by_typing_its_recipe() {
     let release = read(&root().join(".github/workflows/release.yml"));
     let mutants = read(&root().join(".cargo/mutants.toml"));
     let nextest = read(&root().join(".config/nextest.toml"));
+    // The browser smoke's recipe is the one other recipe that may run ignored
+    // tests, and `the_browser_smoke_is_reachable_only_by_typing_its_recipe`
+    // pins it line by line; only that recipe is cut, and every other line counts.
     let leaks = harness_smoke_leaks(
-        &justfile,
+        &without_recipe(&justfile, "web-smoke "),
         &[
             ("rust.yml", &rust),
             ("release.yml", &release),
@@ -10825,6 +10828,318 @@ fn the_live_harness_smoke_guards_catch_every_way_of_reaching_it() {
     assert!(
         !harness_smoke_source_leaks(&format!("{source}fn x() {{ run_tmux(&[], p); }}\n"))
             .is_empty()
+    );
+}
+
+// ── the on-demand live browser smoke ─────────────────────────────────────
+
+/// The one selection the browser smoke may run: its single ignored test.
+const BROWSER_SMOKE_FILTER: &str =
+    "filter='binary(it) & test(=deliver::web_smoke::live_web_smoke)'";
+
+/// The browser smoke's gate assignment, which comes before both run lines.
+const BROWSER_SMOKE_GATE: &str = "export AE_WEB_SMOKE=1 ";
+
+/// The only two lines outside `harness-smoke` that may run ignored tests: the
+/// browser smoke's plain run and its planted run, each niced, through the sized
+/// lane, with the one exact filter.
+const BROWSER_SMOKE_RUNS: [&str; 2] = [
+    "nice -n 10 just _tmux-isolated test --run-ignored only --no-capture -E \"$filter\" 2>&1 | tee \"$out/run.log\"",
+    "AE_WEB_SMOKE_PLANT=\"$plant\" nice -n 10 just _tmux-isolated test --run-ignored only --no-capture -E \"$filter\" >\"$out/run.log\" 2>&1 || status=$?",
+];
+
+/// The justfile without one recipe: its header, indented body and blank lines,
+/// cut the way `harness_smoke_leaks` cuts its own recipe.
+fn without_recipe(justfile: &str, header: &str) -> String {
+    let mut rest = Vec::new();
+    let mut inside = false;
+    for line in justfile.lines() {
+        if line.starts_with(header) {
+            inside = true;
+            continue;
+        }
+        if inside && (line.starts_with([' ', '\t']) || line.is_empty()) {
+            continue;
+        }
+        inside = false;
+        rest.push(line);
+    }
+    rest.join("\n")
+}
+
+/// Every way the live browser smoke is reachable from somewhere it must not
+/// be, or runs without what makes it safe, as plain sentences.
+///
+/// `just web-smoke` starts a real headless Chrome against a real listener, so,
+/// as with `harness-smoke`, the only way into it is typing it. Its recipe is the
+/// one other place that may run ignored tests, and only as the two exact run
+/// lines: the one-test filter, `AE_WEB_SMOKE=1` set before them, nice and the
+/// sized lane, and nothing of the harness smoke. Outside the recipe no live
+/// justfile or workflow line names it or its gate variable, and the harness
+/// guard still reads every other justfile line for an ignored run.
+fn browser_smoke_leaks(justfile: &str, others: &[(&str, &str)]) -> Vec<String> {
+    let mut leaks = Vec::new();
+    let headers = justfile
+        .lines()
+        .filter(|line| line.starts_with("web-smoke "))
+        .count();
+    if headers != 1 {
+        leaks.push(format!("{headers} `web-smoke` recipes, not exactly one"));
+    }
+    let body = recipe_text(justfile, "web-smoke ");
+    if body.is_empty() {
+        leaks.push("the `web-smoke` recipe is missing".to_owned());
+        return leaks;
+    }
+    let count = |wanted: &str| body.iter().filter(|line| *line == wanted).count();
+    let gate = body
+        .iter()
+        .position(|line| line.starts_with(BROWSER_SMOKE_GATE));
+    if gate.is_none() {
+        leaks.push(format!(
+            "the recipe lost `{}`",
+            BROWSER_SMOKE_GATE.trim_end()
+        ));
+    }
+    for run in BROWSER_SMOKE_RUNS {
+        let copies = count(run);
+        if copies != 1 {
+            leaks.push(format!("{copies} copies of the run line {run:?}, not one"));
+        }
+        let at = body.iter().position(|line| line == run);
+        if at.zip(gate).is_some_and(|(at, gate)| at < gate) {
+            leaks.push(format!("the run line {run:?} comes before the gate"));
+        }
+    }
+    let filters = count(BROWSER_SMOKE_FILTER);
+    if filters != 1 {
+        leaks.push(format!(
+            "{filters} copies of {BROWSER_SMOKE_FILTER:?}, not one"
+        ));
+    }
+    for line in body.iter().map(String::as_str) {
+        let run = BROWSER_SMOKE_RUNS.contains(&line);
+        if !run && SMOKE_REACH.iter().any(|word| line.contains(word)) {
+            leaks.push(format!(
+                "the recipe runs ignored tests outside its two run lines: {line:?}"
+            ));
+        }
+        if !run && line != BROWSER_SMOKE_FILTER && line.contains("filter") {
+            leaks.push(format!(
+                "the recipe touches its filter outside the one selection: {line:?}"
+            ));
+        }
+        if line.contains("harness") {
+            leaks.push(format!("the recipe reaches the harness smoke: {line:?}"));
+        }
+    }
+    let rest = without_recipe(justfile, "web-smoke ");
+    let live = |line: &&str| !line.trim_start().starts_with('#');
+    let names = |line: &str| {
+        ["web-smoke", "web_smoke", "AE_WEB_SMOKE"]
+            .iter()
+            .any(|word| line.contains(word))
+    };
+    for line in rest.lines().filter(live) {
+        if names(line) {
+            leaks.push(format!(
+                "the justfile reaches the browser smoke outside its recipe: {line:?}"
+            ));
+        }
+    }
+    for (name, text) in others {
+        for line in text.lines().filter(live) {
+            if names(line) {
+                leaks.push(format!("{name} reaches the browser smoke: {line:?}"));
+            }
+        }
+    }
+    leaks
+}
+
+/// What the browser smoke's test file must keep: exactly one ignored test,
+/// opening with the gate check, and a gate that opens only on `AE_WEB_SMOKE=1`.
+fn browser_smoke_source_leaks(text: &str) -> Vec<String> {
+    let mut leaks = Vec::new();
+    let ignored = text.matches("#[ignore = \"live:").count();
+    if ignored != 1 {
+        leaks.push(format!(
+            "{ignored} live ignored tests, not exactly the one named"
+        ));
+    }
+    let after = |head: &str| {
+        text.split_once(head)
+            .map_or("", |(_, rest)| rest)
+            .trim_start()
+    };
+    if !after("fn live_web_smoke() {").starts_with("if !gated() {") {
+        leaks.push("`live_web_smoke` does not open with the gate check".to_owned());
+    }
+    if !text.contains("const GATE: &str = \"AE_WEB_SMOKE\";") {
+        leaks.push("the gate is no longer the variable `AE_WEB_SMOKE`".to_owned());
+    }
+    if !after("fn gated() -> bool {").starts_with("env_text(GATE).as_deref() == Some(\"1\")\n}") {
+        leaks.push("the gate no longer opens only on the exact value `1`".to_owned());
+    }
+    leaks
+}
+
+#[test]
+fn the_browser_smoke_is_reachable_only_by_typing_its_recipe() {
+    let justfile = read(&root().join("justfile"));
+    let rust = read(&root().join(".github/workflows/rust.yml"));
+    let release = read(&root().join(".github/workflows/release.yml"));
+    let mutants = read(&root().join(".cargo/mutants.toml"));
+    let nextest = read(&root().join(".config/nextest.toml"));
+    let leaks = browser_smoke_leaks(
+        &justfile,
+        &[
+            ("rust.yml", &rust),
+            ("release.yml", &release),
+            ("mutants.toml", &mutants),
+            ("nextest.toml", &nextest),
+        ],
+    );
+    assert!(leaks.is_empty(), "{leaks:#?}");
+    for gate in ["test", "rust-check", "pre", "rust-test"] {
+        assert!(
+            !recipe_deps(&justfile, gate)
+                .iter()
+                .any(|dep| dep.contains("web")),
+            "`{gate}` must not depend on the browser smoke"
+        );
+    }
+    let source = read(&root().join("tests/it/deliver/web_smoke.rs"));
+    let leaks = browser_smoke_source_leaks(&source);
+    assert!(leaks.is_empty(), "{leaks:#?}");
+}
+
+#[test]
+fn the_browser_smoke_guards_catch_every_way_of_reaching_it() {
+    let [plain, planted] = BROWSER_SMOKE_RUNS;
+    let good = format!(
+        "test: rust-check\n\
+         web-smoke mode=\"\":\n    \
+         set -euo pipefail\n    \
+         {BROWSER_SMOKE_FILTER}\n    \
+         export AE_WEB_SMOKE=1 AE_WEB_SMOKE_OUT=\"$out\"\n    \
+         if [[ -z \"$plant\" ]]; then\n        \
+         {plain}\n        \
+         exit 0\n    \
+         fi\n    \
+         {planted}\n\
+         rust-test:\n    just _tmux-isolated test\n"
+    );
+    assert!(
+        browser_smoke_leaks(&good, &[]).is_empty(),
+        "{:?}",
+        browser_smoke_leaks(&good, &[])
+    );
+    // The exception is that one recipe: uncut, the harness guard sees its run
+    // lines; cut, it sees none; and the same run line in any other recipe still leaks.
+    let reached = |justfile: &str| {
+        harness_smoke_leaks(justfile, &[])
+            .iter()
+            .any(|leak| leak.starts_with("the justfile reaches the smoke outside its recipe"))
+    };
+    assert!(reached(&good));
+    assert!(!reached(&without_recipe(&good, "web-smoke ")));
+    let copied = format!("{good}other:\n    {plain}\n");
+    assert!(reached(&without_recipe(&copied, "web-smoke ")));
+
+    // A gate recipe that depends on it.
+    let wired = good.replace("test: rust-check", "test: rust-check web-smoke");
+    assert!(!browser_smoke_leaks(&wired, &[]).is_empty());
+    // The gate variable missing, not exactly `1`, or set after the runs.
+    assert!(!browser_smoke_leaks(&good.replace("AE_WEB_SMOKE=1 ", ""), &[]).is_empty());
+    assert!(
+        !browser_smoke_leaks(&good.replace("AE_WEB_SMOKE=1", "AE_WEB_SMOKE=0"), &[]).is_empty()
+    );
+    let export = "    export AE_WEB_SMOKE=1 AE_WEB_SMOKE_OUT=\"$out\"\n";
+    let late = good
+        .replacen(export, "", 1)
+        .replace("rust-test:", &format!("{export}rust-test:"));
+    assert!(!browser_smoke_leaks(&late, &[]).is_empty());
+    // A widened selection: the filter, a run line's -E, or every ignored test.
+    let wide = good.replace(
+        "test(=deliver::web_smoke::live_web_smoke)",
+        "test(/web_smoke/)",
+    );
+    assert!(!browser_smoke_leaks(&wide, &[]).is_empty());
+    let wide = good.replace("-E \"$filter\" 2>&1", "-E \"$filter | all()\" 2>&1");
+    assert!(!browser_smoke_leaks(&wide, &[]).is_empty());
+    let wide = good.replace("    fi\n", "    fi\n    filter+=' | all()'\n");
+    assert!(!browser_smoke_leaks(&wide, &[]).is_empty());
+    // No selection of its own: the run lines would take `filter` from the caller.
+    let inherited = good.replace(&format!("    {BROWSER_SMOKE_FILTER}\n"), "");
+    assert!(!browser_smoke_leaks(&inherited, &[]).is_empty());
+    let other = good.replace(
+        "    fi\n",
+        "    fi\n    nice -n 10 cargo nextest run --run-ignored only\n",
+    );
+    assert!(!browser_smoke_leaks(&other, &[]).is_empty());
+    let all = good.replace("--run-ignored only", "--run-ignored all");
+    assert!(!browser_smoke_leaks(&all, &[]).is_empty());
+    let third = good.replace(
+        "        exit 0\n",
+        &format!("        {plain}\n        exit 0\n"),
+    );
+    assert!(!browser_smoke_leaks(&third, &[]).is_empty());
+    // A workflow that names the recipe, the test or the gate variable.
+    assert!(!browser_smoke_leaks(&good, &[("ci", "      - run: just web-smoke")]).is_empty());
+    assert!(!browser_smoke_leaks(&good, &[("ci", "  AE_WEB_SMOKE: 1")]).is_empty());
+    assert!(
+        !browser_smoke_leaks(
+            &good,
+            &[("ci", "  run: cargo nextest run -E 'test(/web_smoke/)'")]
+        )
+        .is_empty()
+    );
+    // A comment naming it is not a reach.
+    assert!(browser_smoke_leaks(&good, &[("ci", "# just web-smoke is on demand")]).is_empty());
+    // The lane sizing and nice lost, the harness gate inside, or the recipe gone or doubled.
+    assert!(!browser_smoke_leaks(&good.replace("nice -n 10 ", ""), &[]).is_empty());
+    let bare = good.replace("just _tmux-isolated test", "cargo nextest run");
+    assert!(!browser_smoke_leaks(&bare, &[]).is_empty());
+    let harness = good.replace("    fi\n", "    fi\n    export AE_HARNESS_SMOKE=1\n");
+    assert!(!browser_smoke_leaks(&harness, &[]).is_empty());
+    let harness = good.replace("    fi\n", "    fi\n    just harness-smoke\n");
+    assert!(!browser_smoke_leaks(&harness, &[]).is_empty());
+    assert!(!browser_smoke_leaks("test: rust-check\n", &[]).is_empty());
+    assert!(!browser_smoke_leaks(&format!("{good}{good}"), &[]).is_empty());
+}
+
+#[test]
+fn the_browser_smoke_source_guard_catches_a_loosened_gate() {
+    let source = "const GATE: &str = \"AE_WEB_SMOKE\";\n\
+                  fn gated() -> bool {\n    env_text(GATE).as_deref() == Some(\"1\")\n}\n\
+                  #[test]\n#[ignore = \"live: a\"]\nfn live_web_smoke() {\n    if !gated() {\n        return;\n    }\n}\n";
+    assert!(
+        browser_smoke_source_leaks(source).is_empty(),
+        "{:?}",
+        browser_smoke_source_leaks(source)
+    );
+    // A second ignored test, an ungated body, another variable, a loosened value.
+    assert!(!browser_smoke_source_leaks(&format!("{source}#[ignore = \"live: b\"]\n")).is_empty());
+    assert!(
+        !browser_smoke_source_leaks(&source.replacen(
+            "if !gated() {",
+            "let x = 1; if !gated() {",
+            1
+        ))
+        .is_empty()
+    );
+    assert!(
+        !browser_smoke_source_leaks(&source.replace("\"AE_WEB_SMOKE\"", "\"AE_SMOKE\"")).is_empty()
+    );
+    assert!(
+        !browser_smoke_source_leaks(&source.replace("== Some(\"1\")", ".is_some()")).is_empty()
+    );
+    assert!(
+        !browser_smoke_source_leaks(
+            &source.replace("    env_text(GATE)", "    true || env_text(GATE)")
+        )
+        .is_empty()
     );
 }
 

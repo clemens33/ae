@@ -4514,7 +4514,8 @@ harness-smoke mode="":
 # recipe sets. Chrome is the absolute path in AE_WEB_SMOKE_CHROME, else this OS's stock install
 # path, never a PATH lookup. Screenshots and the log land in .local/web-smoke/<UTC stamp>/.
 # `just web-smoke plant` serves app.mjs without the topic row's focus guard and passes only
-# when the run fails at focus-kept and at no other check.
+# when the run fails at focus-kept and at no other check. tests/it/gate.rs pins the filter,
+# the gate variable and both run lines byte for byte: change them together.
 web-smoke mode="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -4539,12 +4540,12 @@ web-smoke mode="":
     filter='binary(it) & test(=deliver::web_smoke::live_web_smoke)'
     export AE_WEB_SMOKE=1 AE_WEB_SMOKE_CHROME="$chrome" AE_WEB_SMOKE_OUT="$out"
     if [[ -z "$plant" ]]; then
-        just _tmux-isolated test --run-ignored only --no-capture -E "$filter" 2>&1 | tee "$out/run.log"
+        nice -n 10 just _tmux-isolated test --run-ignored only --no-capture -E "$filter" 2>&1 | tee "$out/run.log"
         echo "web-smoke: PASS; evidence in $out"
         exit 0
     fi
     status=0
-    AE_WEB_SMOKE_PLANT="$plant" just _tmux-isolated test --run-ignored only --no-capture -E "$filter" >"$out/run.log" 2>&1 || status=$?
+    AE_WEB_SMOKE_PLANT="$plant" nice -n 10 just _tmux-isolated test --run-ignored only --no-capture -E "$filter" >"$out/run.log" 2>&1 || status=$?
     cat "$out/run.log"
     # The plant passes only when the run failed, said the fault was served, and every failure it
     # reports is the focus check of the first cell.
