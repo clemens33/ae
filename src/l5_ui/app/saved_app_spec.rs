@@ -196,3 +196,62 @@ fn a_key_read_before_the_first_fleet_counts_when_the_fleet_replays_it() {
     assert_eq!(app.persist_final_view(), Ok(()));
     assert_eq!(newest(&log).view.session, "web");
 }
+
+/// A stderr that refuses every byte, as one that was closed.
+struct Closed;
+
+impl std::io::Write for Closed {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+}
+
+/// An app whose one change is owed its final write, and whose sink records the
+/// write and then fails it.
+fn owing_a_failing_write(tag: &str) -> (Log, App) {
+    let root = Root::new(tag);
+    let (log, record) = recorder();
+    let fail = move |text: &str| record(text).and(Err("disk full".to_owned()));
+    let mut app = running(&root, Saver::start(fail, |_| {}));
+    pump(&mut app, vec![Wake::Keys(Instant::now(), b"2".to_vec())]);
+    assert_eq!(app.model.selected(), Some("web"), "the key picked row 2");
+    (log, app)
+}
+
+#[test]
+fn a_failed_final_save_is_said_once_when_the_leave_can_speak() {
+    let (log, mut app) = owing_a_failing_write("saved-leave-says");
+    let mut said = Vec::new();
+    super::run::leave_the_view(&mut app, &mut said);
+    let said = String::from_utf8(said).expect("text");
+    assert_eq!(log.lock().expect("log").len(), 1, "the final write ran");
+    assert_eq!(
+        said.matches("could not save the view: disk full").count(),
+        1
+    );
+}
+
+#[test]
+fn a_failed_final_save_and_a_closed_stderr_never_abort_the_leave() {
+    let (log, mut app) = owing_a_failing_write("saved-leave-closed");
+    // A diagnostic nobody can read never aborts a quit or a restart: the call
+    // returns, whatever the stderr does, after the write was tried.
+    super::run::leave_the_view(&mut app, &mut Closed);
+    assert_eq!(log.lock().expect("log").len(), 1, "the final write ran");
+}
+
+#[test]
+fn a_saved_leave_says_nothing() {
+    let root = Root::new("saved-leave-quiet");
+    let (log, record) = recorder();
+    let mut app = running(&root, Saver::start(record, |_| {}));
+    pump(&mut app, vec![Wake::Keys(Instant::now(), b"2".to_vec())]);
+    let mut said = Vec::new();
+    super::run::leave_the_view(&mut app, &mut said);
+    assert!(said.is_empty(), "nothing failed, so nothing is said");
+    assert_eq!(newest(&log).view.session, "web");
+}

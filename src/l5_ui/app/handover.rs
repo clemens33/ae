@@ -311,18 +311,24 @@ pub fn decide(
     if !fresh(at, now) {
         return Verdict::Discard;
     }
-    decide_saved(view, row, id, scanned)
+    identified(view, row, id, scanned)
 }
 
 /// [`decide`] without the age rule, for the durable file's view: the same
 /// identity and completeness rules, whatever its age. A view that names no
 /// selection ([`View::unselected`]) has nothing to select, so it is never
-/// applied.
+/// applied. The sentinel is the file's alone: a live carrier names a session
+/// by its record, and a session called `orchestrator` with the nil uuid is one.
 #[must_use]
 pub fn decide_saved(view: &View, row: bool, id: Option<&str>, scanned: bool) -> Verdict {
     if view.unselected() {
         return Verdict::Discard;
     }
+    identified(view, row, id, scanned)
+}
+
+/// The identity and completeness rules both legs share.
+fn identified(view: &View, row: bool, id: Option<&str>, scanned: bool) -> Verdict {
     match id.filter(|id| !id.is_empty()) {
         Some(id) if id != view.id => Verdict::Discard,
         Some(_) if row => Verdict::Apply,
@@ -507,6 +513,37 @@ mod tests {
         let open = format!("{}||full,{ORCH_ID},3,2", WIRE.replacen("v1|", "v2|", 1));
         let held = parse_file(format!("{open}\n").as_bytes()).expect("an open panel");
         assert_eq!(render_file(&held), format!("{open}\n"));
+    }
+
+    /// The one sentinel is the durable file's: the live carrier names a session
+    /// by its own record, and an ordinary session may be called `orchestrator`
+    /// (it is a legal name) with the nil uuid (the canonical id of a record
+    /// with no uuid), so its view applies when the fleet lists that row.
+    #[test]
+    fn the_sentinel_is_the_durable_leg_s_and_a_live_namesake_still_applies() {
+        let line = format!("{WIRE}\n").replacen(
+            "|web|6f1c2b7e-0d3a-4c58-9a2e-5b1d7c9e0a11|",
+            &format!("|{NO_SESSION}|{NO_ID}|"),
+            1,
+        );
+        let held = parse(line.trim_end()).expect("a namesake with the nil uuid");
+        assert!(held.view.unselected(), "its spelling is the sentinel's");
+        let now = held.at;
+        assert_eq!(
+            decide(held.at, now, &held.view, true, Some(NO_ID), true),
+            Verdict::Apply,
+            "the live carrier applies the row that matches"
+        );
+        assert_eq!(
+            decide(held.at, now, &held.view, true, None, true),
+            Verdict::Discard,
+            "a read that proves no such row still discards it"
+        );
+        assert_eq!(
+            decide_saved(&held.view, true, Some(NO_ID), true),
+            Verdict::Discard,
+            "the durable file's sentinel selects nothing"
+        );
     }
 
     #[test]

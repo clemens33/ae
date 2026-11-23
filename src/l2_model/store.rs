@@ -368,8 +368,9 @@ pub(crate) fn read_capped_identified(path: &Path, cap: u64) -> CappedRead {
 /// of one more guarantee: the OPEN itself refuses a link and never waits, so a
 /// symlink or a FIFO swapped in between the classification and the open is
 /// refused instead of followed or blocked on. The open carries `O_NOFOLLOW |
-/// O_NONBLOCK` ([`HOLD_FLAGS`]) and the handle's own status must say regular
-/// before one byte is read. A target with no spelled flag pair reads
+/// O_NONBLOCK` ([`HOLD_FLAGS`], through [`open_held`], the open the stamp hold
+/// shares) and the handle's own status must say regular before one byte is
+/// read. A target with no spelled flag pair reads
 /// `Unreadable` and never opens anything: the caller loses only what it was
 /// reading.
 ///
@@ -395,8 +396,7 @@ pub(crate) fn read_nofollow_capped(path: &Path, cap: u64) -> Result<SourceRead, 
     {
         classified_hook::run(path);
     }
-    let opened = OpenOptions::new().read(true).custom_flags(flags).open(path);
-    let file = match opened {
+    let file = match open_held(path, flags) {
         Ok(file) => file,
         Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(SourceRead::Absent),
         Err(why) => return Ok(SourceRead::Unreadable(why.to_string())),
@@ -1735,6 +1735,17 @@ const HOLD_FLAGS: Option<i32> = Some(0o4000 | 0o400_000);
 )))]
 const HOLD_FLAGS: Option<i32> = None;
 
+/// The one open of a node that must be neither followed nor waited on: read
+/// only, with the pair [`HOLD_FLAGS`] spells. The stamp hold ([`StampNode::open`])
+/// and [`read_nofollow_capped`] open through this and nothing else, so the
+/// black-box pin of a FIFO swapped in after the `lstat`
+/// (`a_writerless_fifo_swapped_in_after_lstat_is_refused_without_blocking`,
+/// tests/it/compact.rs) pins the flags of both, and a regular file or a swapped
+/// link is told apart from them by the caller, on the handle it got.
+fn open_held(path: &Path, flags: i32) -> io::Result<File> {
+    OpenOptions::new().read(true).custom_flags(flags).open(path)
+}
+
 /// Why the launch stamp could not be held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StampGap {
@@ -1802,11 +1813,7 @@ impl StampNode {
     /// that are not a positive epoch.
     pub fn open(self) -> Result<StampHold, StampGap> {
         let flags = HOLD_FLAGS.ok_or(StampGap::Unavailable)?;
-        let opened = OpenOptions::new()
-            .read(true)
-            .custom_flags(flags)
-            .open(&self.path);
-        let mut file = opened.map_err(|_| StampGap::Unreadable)?;
+        let mut file = open_held(&self.path, flags).map_err(|_| StampGap::Unreadable)?;
         let meta = file.metadata().map_err(|_| StampGap::Unreadable)?;
         if !meta.is_file() || (meta.dev(), meta.ino()) != (self.dev, self.ino) {
             return Err(StampGap::Unreadable);

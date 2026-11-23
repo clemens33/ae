@@ -292,13 +292,7 @@ pub(super) fn step(
     outside.suspend();
     // The view is written before the process is replaced: a restart is a quit
     // for the file.
-    if let Err(why) = app.persist_final_view() {
-        writeln!(
-            err,
-            "{}",
-            terminal_text(&format!("ae app: could not save the view: {why}"))
-        )?;
-    }
+    leave_the_view(app, err);
     let why = outside.exec(&argv).to_string();
     if let Err(lost) = outside.resume() {
         let said = format!("ae app: could not restart into ae {version} - {why}; {lost}");
@@ -432,6 +426,21 @@ pub(super) fn says_hint(in_pane: bool, stamp: Option<&str>) -> bool {
 /// How `ae app` ends, its terminal put back first: restarted into the core
 /// the command link names when that was due, else with the line that says
 /// how to start it again.
+/// The last word of the durable view, at a quit and before a restart replaces
+/// the process: a change the human made in this run is written and waited for,
+/// and a failure is said once. The saying is best effort: a diagnostic that a
+/// closed or failing stderr cannot take is lost, and never aborts the quit or
+/// the restart it is part of.
+pub(super) fn leave_the_view(app: &mut App, err: &mut impl Write) {
+    if let Err(why) = app.persist_final_view() {
+        let _ = writeln!(
+            err,
+            "{}",
+            terminal_text(&format!("ae app: could not save the view: {why}"))
+        );
+    }
+}
+
 fn end(
     tty: tty::Tty,
     mut app: App,
@@ -443,16 +452,8 @@ fn end(
     // The store's upkeep stops before anything else.
     upkeep.stop(maintainer::STOP_BOUND);
     drop(tty);
-    // The last word of the durable view, once the terminal is back: a change
-    // the human made in this run is written and waited for, and a failure is
-    // said once.
-    if let Err(why) = app.persist_final_view() {
-        writeln!(
-            err,
-            "{}",
-            terminal_text(&format!("ae app: could not save the view: {why}"))
-        )?;
-    }
+    // The last word of the durable view, once the terminal is back.
+    leave_the_view(&mut app, err);
     app.finish_flight(err, FLIGHT_QUIT_BOUND)?;
     let in_tmux = app.server.is_some();
     if let Some((version, restart)) = restart {

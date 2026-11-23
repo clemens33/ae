@@ -1546,8 +1546,10 @@ upgrade. The selected session's uuid binds the selection to that incarnation.
   fleet view.
 - The selection applies when you name no home: plain `ae`, or `ae app` with no
   session outside a session's windows. A named or own home (`ae app web`,
-  `ae web`, a session's chat window) keeps that home selected and takes only the
-  layout and the panel from the file.
+  `ae web`, a session's chat window) keeps that home selected and takes the
+  layout and the panel from the file. The saved seat focus and scroll apply to
+  such a home only when the file's selection is that same session, with the
+  same uuid.
 - The panel reopens in its saved mode only when the first proof of the
   orchestrator at start shows the seat running, whichever incarnation; its scroll
   applies only to the incarnation it was made on. A panel left closed stays
