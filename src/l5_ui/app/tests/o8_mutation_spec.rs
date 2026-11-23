@@ -72,6 +72,7 @@ fn handed_seat() -> Answer {
             panel: None,
             desk: None,
             desk_hidden: false,
+            desk_tab: crate::desk::Section::Decide,
             zoom: false,
             orchestrator: None,
         },

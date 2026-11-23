@@ -8,6 +8,7 @@ use super::{
     model, overview,
 };
 use crate::console::deskview::DeskView;
+use crate::desk::Section;
 use ratatui_core::layout::Rect;
 
 /// The open orchestrator panel: how it stands, what it is bound to, and its
@@ -652,6 +653,38 @@ impl App {
             panel.desk_top.saturating_add(step).min(desk.max)
         };
         std::mem::replace(&mut panel.desk_top, top) != top
+    }
+
+    /// Show `section` on a board that is read. A real change starts the body
+    /// at its top and ends a selection the old cells drew; the section already
+    /// shown, and a board that is absent or unreadable, change nothing.
+    pub(super) fn select_desk_tab(&mut self, section: Section) -> bool {
+        if !matches!(self.desk_view(), Some(DeskView::Shown(_))) || self.model.desk_tab() == section
+        {
+            return false;
+        }
+        self.model.set_desk_tab(section);
+        if let Some(panel) = self.orch.panel.as_mut() {
+            panel.desk_top = 0;
+        }
+        true
+    }
+
+    /// Step to the next tab, or the previous one, wrapping at either end.
+    pub(super) fn step_desk_tab(&mut self, forward: bool) -> bool {
+        let all = Section::ALL;
+        let at = all
+            .iter()
+            .position(|section| *section == self.model.desk_tab());
+        let to = at.map(|at| {
+            if forward {
+                (at + 1) % all.len()
+            } else {
+                (at + all.len() - 1) % all.len()
+            }
+        });
+        to.and_then(|to| all.get(to))
+            .is_some_and(|section| self.select_desk_tab(*section))
     }
 
     /// Draw the board beside the panel or over its body, keeping its visible

@@ -592,6 +592,7 @@ fn restored_view_of_stopped_session_opens_group_and_preserves_explicit_selection
             panel: None,
             desk: None,
             desk_hidden: false,
+            desk_tab: crate::desk::Section::Decide,
             zoom: false,
             orchestrator: None,
         },

@@ -907,6 +907,7 @@ fn p3_an_orchestrator_home_or_handover_opens_full_without_an_ordinary_row() {
                     panel: None,
                     desk: None,
                     desk_hidden: false,
+                    desk_tab: crate::desk::Section::Decide,
                     zoom: false,
                     orchestrator: None,
                 },

@@ -33,6 +33,7 @@ fn view() -> View {
         panel: None,
         desk: None,
         desk_hidden: false,
+        desk_tab: ae::desk::Section::Decide,
         zoom: false,
         orchestrator: None,
     }

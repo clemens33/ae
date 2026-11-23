@@ -30,6 +30,7 @@ use crate::console::lane::{Kind, Lane};
 use crate::console::target::{self, Target};
 use crate::console::view;
 use crate::console::wrap::wrap;
+use crate::desk::Section;
 use crate::digest::{SessionEntry, Status};
 use crate::event_text::clip_tail;
 use crate::quota::view::Tone;
@@ -162,6 +163,10 @@ pub(crate) enum Hit {
     /// for: `true` hides the board, `false` shows it. A press made on a frame
     /// whose word the board has since answered asks for what it already is.
     PanelDeskToggle(bool),
+    /// A board tab's drawn label, with the section it shows. The target names
+    /// the section, not a step, so a press made on a frame the board has since
+    /// left asks for what that frame showed.
+    DeskTab(Section),
     /// The main column header's zoom label: zoom the column or leave the zoom.
     Zoom,
 }
@@ -999,11 +1004,25 @@ pub(super) fn draw_desk(
     }
     let left = area.x.saturating_add(2);
     let room = area.width.saturating_sub(2);
-    let rows = deskview::column(view, room, zone);
+    // A board that is read stands as a head, a tab bar and the rows of the
+    // tab's section: the first two stand still and the rows scroll. A board
+    // that is absent or cannot be read is its notice rows alone.
+    let (head, bar, body) = match view {
+        Some(DeskView::Shown(desk)) => (
+            deskview::head(desk, room, zone),
+            Some(deskview::tab_bar(desk, room)),
+            deskview::body(desk, model.desk_tab(), room),
+        ),
+        _ => (Vec::new(), None, deskview::column(view, room, zone)),
+    };
     let height = usize::from(area.height);
-    let overflows = rows.len() > height;
-    let page = height.saturating_sub(usize::from(overflows));
-    let max = rows.len().saturating_sub(page);
+    let head_rows = head.len().min(height);
+    let bar_row = bar.is_some() && head.len() < height;
+    let fixed = head_rows + usize::from(bar_row);
+    let body_height = height - fixed;
+    let overflows = body.len() > body_height;
+    let page = body_height.saturating_sub(usize::from(overflows));
+    let max = body.len().saturating_sub(page);
     let top = requested.min(max);
     layout.desk = Some(DeskViewport {
         area,
@@ -1012,52 +1031,120 @@ pub(super) fn draw_desk(
         max,
     });
     layout.uncover(area);
-    let (dim, text, title) = (
-        paint.fg(|p| p.dim),
-        paint.fg(|p| p.text),
-        paint.fg(|p| p.title),
-    );
-    for (step, row) in rows.iter().skip(top).take(page).enumerate() {
+    for (step, row) in head.iter().take(head_rows).enumerate() {
         let y = area.y.saturating_add(cells(step));
-        let style = match row.kind {
-            deskview::RowKind::Heading => title.add_modifier(Modifier::BOLD),
-            deskview::RowKind::Item => text,
-            deskview::RowKind::Link => title.add_modifier(Modifier::UNDERLINED),
-            deskview::RowKind::Header | deskview::RowKind::More | deskview::RowKind::Notice => dim,
-        };
-        put(buf, left, y, &row.text, room, style);
-        for link in &row.links {
-            let (Some(before), Some(shown)) = (
-                row.text.get(..link.range.start),
-                row.text.get(link.range.clone()),
-            ) else {
-                continue;
-            };
-            let run = link_area(
-                crate::event_text::terminal_cells(before),
-                crate::event_text::terminal_cells(shown),
-                (left, y, room),
-            );
-            if run.width > 0 {
-                layout.links.push(super::backend::Run {
-                    x: run.x,
-                    y: run.y,
-                    width: run.width,
-                    url: link.url.clone(),
-                });
-            }
-        }
+        desk_row(buf, layout, row, (left, y, room), paint);
     }
-    if overflows && area.height > 0 {
+    if let Some(bar) = bar.filter(|_| bar_row) {
+        let y = area.y.saturating_add(cells(head_rows));
+        desk_tabs(
+            buf,
+            layout,
+            &bar,
+            (left, y, room),
+            (paint, model.desk_tab()),
+        );
+    }
+    let body_top = area.y.saturating_add(cells(fixed));
+    for (step, row) in body.iter().skip(top).take(page).enumerate() {
+        let y = body_top.saturating_add(cells(step));
+        desk_row(buf, layout, row, (left, y, room), paint);
+    }
+    if overflows && body_height > 0 {
         let below = max - top;
         let cue = match (top, below) {
             (0, _) => format!("{below} more ↓"),
             (_, 0) => format!("{top} more ↑"),
             _ => format!("{top} ↑ · {below} more ↓"),
         };
+        let dim = paint.fg(|p| p.dim);
         put(buf, left, area.bottom().saturating_sub(1), &cue, room, dim);
     }
     top
+}
+
+/// One board row at `(left, y, room)`, dressed for its kind, with the runs of
+/// the links it carries.
+fn desk_row(
+    buf: &mut Buffer,
+    layout: &mut Layout,
+    row: &deskview::DeskRow,
+    (left, y, room): (u16, u16, u16),
+    paint: Paint,
+) {
+    let (dim, text, title) = (
+        paint.fg(|p| p.dim),
+        paint.fg(|p| p.text),
+        paint.fg(|p| p.title),
+    );
+    let style = match row.kind {
+        deskview::RowKind::Heading => title.add_modifier(Modifier::BOLD),
+        deskview::RowKind::Item => text,
+        deskview::RowKind::Link => title.add_modifier(Modifier::UNDERLINED),
+        deskview::RowKind::Header | deskview::RowKind::More | deskview::RowKind::Notice => dim,
+    };
+    put(buf, left, y, &row.text, room, style);
+    for link in &row.links {
+        let (Some(before), Some(shown)) = (
+            row.text.get(..link.range.start),
+            row.text.get(link.range.clone()),
+        ) else {
+            continue;
+        };
+        let run = link_area(
+            crate::event_text::terminal_cells(before),
+            crate::event_text::terminal_cells(shown),
+            (left, y, room),
+        );
+        if run.width > 0 {
+            layout.links.push(super::backend::Run {
+                x: run.x,
+                y: run.y,
+                width: run.width,
+                url: link.url.clone(),
+            });
+        }
+    }
+}
+
+/// The board's tab bar at `(left, y, room)`: each label clickable over the
+/// cells it draws, the chosen one in the selected ink, the gaps dim. A label
+/// the room cuts keeps the cells it shows.
+fn desk_tabs(
+    buf: &mut Buffer,
+    layout: &mut Layout,
+    bar: &deskview::TabBar,
+    (left, y, room): (u16, u16, u16),
+    (paint, chosen): (Paint, Section),
+) {
+    let right = left.saturating_add(room);
+    for (index, tab) in bar.tabs.iter().enumerate() {
+        let x = left.saturating_add(tab.offset);
+        if x >= right {
+            break;
+        }
+        let style = if tab.section == chosen {
+            paint.selected()
+        } else {
+            paint.fg(|p| p.text)
+        };
+        let end = put(buf, x, y, &tab.text, right - x, style);
+        layout.record(
+            buf,
+            Rect::new(x, y, end.saturating_sub(x), 1),
+            Hit::DeskTab(tab.section),
+        );
+        if index + 1 < bar.tabs.len() {
+            put(
+                buf,
+                end,
+                y,
+                bar.gap,
+                right.saturating_sub(end),
+                paint.fg(|p| p.dim),
+            );
+        }
+    }
 }
 
 /// The column a side panel ends at in `area` split as `split`: the frame's
@@ -3125,7 +3212,7 @@ fn composer_lines(ctx: &Ctx<'_, '_>) -> (Line<'static>, Line<'static>, String) {
 
 /// The browse keys the Keys tab lists, in the order it shows them: the keys
 /// and what they do.
-const BROWSE_KEYS: [(&str, &str); 22] = [
+const BROWSE_KEYS: [(&str, &str); 23] = [
     ("1-9", "select the Nth session"),
     ("j/k Up/Down", "previous / next session"),
     ("!", "next session needing you"),
@@ -3143,6 +3230,7 @@ const BROWSE_KEYS: [(&str, &str); 22] = [
     ("n/p", "step the seat cursor (▹ or -)"),
     ("b", "hide / show the orchestrator board"),
     ("B PgUp/PgDn", "B: board or chat. PgUp/PgDn: scroll a page"),
+    ("1-5 Tab Left Right", "board focused: pick or step its tab"),
     ("[ ]", "mark older / newer turn"),
     ("y", "copy the marked turn"),
     ("Enter i", "write; a paste writes too"),

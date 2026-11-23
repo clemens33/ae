@@ -27,13 +27,16 @@
 //! `v1` alone reads the `overview` token. The panel's own full-frame zoom rides
 //! as the `full` mode, in `v2` or `v3`.
 //!
-//! A dragged board adds `|desk=<width>` after any of these canonical lines, a
-//! hidden board `|desk=hidden`, both `|desk=<width>,hidden`. Without a chosen
-//! board width and without a hidden board, all three encodings keep their old
-//! bytes.
+//! The board's view preferences add `|desk=<parts>` after any of these
+//! canonical lines. The parts that apply, comma-joined in this order, are the
+//! dragged width `<width>`, `hidden` for a hidden board and `tab=<name>` for a
+//! chosen tab (`|desk=44,hidden,tab=links`). The name is `coming`, `running`,
+//! `waiting` or `links`: DECIDE is the default and is never written. With none
+//! of the three, all three encodings keep their old bytes.
 
 use crate::archive::is_canonical_uuid;
 use crate::config::is_agent_name;
+use crate::desk::Section;
 use crate::session_launch::name::is_session_name;
 
 /// The session option the handover rides.
@@ -75,6 +78,8 @@ pub struct View {
     pub desk: Option<u16>,
     /// The human hid the board, whatever the width.
     pub desk_hidden: bool,
+    /// The section the board shows: DECIDE until the human chose another.
+    pub desk_tab: Section,
     /// The main column was zoomed: it holds the whole frame while it holds
     /// the keys, the sidebar not drawn. Independent of the panel's own zoom.
     pub zoom: bool,
@@ -180,11 +185,20 @@ impl Handover {
             (None, Some(width)) => format!("{line}|{width}"),
             (None, None) => line,
         };
-        match (view.desk, view.desk_hidden) {
-            (None, false) => line,
-            (Some(width), false) => format!("{line}|desk={width}"),
-            (None, true) => format!("{line}|desk=hidden"),
-            (Some(width), true) => format!("{line}|desk={width},hidden"),
+        let mut desk = Vec::new();
+        if let Some(width) = view.desk {
+            desk.push(width.to_string());
+        }
+        if view.desk_hidden {
+            desk.push("hidden".to_owned());
+        }
+        if let Some(name) = tab_name(view.desk_tab) {
+            desk.push(format!("tab={name}"));
+        }
+        if desk.is_empty() {
+            line
+        } else {
+            format!("{line}|desk={}", desk.join(","))
         }
     }
 
@@ -243,17 +257,36 @@ fn size(text: &str, max: usize) -> Option<usize> {
     usize::try_from(number(text, max as u64)?).ok()
 }
 
-/// What the text after `|desk=` spells: the dragged width and whether the board
-/// is hidden, as `<width>`, `hidden` or `<width>,hidden`, nothing else.
-fn desk_suffix(text: &str) -> Option<(Option<u16>, bool)> {
-    let width = |text: &str| u16::try_from(number(text, u64::from(u16::MAX))?).ok();
-    if text == "hidden" {
-        return Some((None, true));
+/// The spelling of the board tab in the wire; `None` for DECIDE, which is the
+/// default and has no spelling.
+fn tab_name(section: Section) -> Option<&'static str> {
+    match section {
+        Section::Decide => None,
+        Section::Coming => Some("coming"),
+        Section::Running => Some("running"),
+        Section::Waiting => Some("waiting"),
+        Section::Links => Some("links"),
     }
-    match text.strip_suffix(",hidden") {
-        Some(text) => Some((Some(width(text)?), true)),
-        None => Some((Some(width(text)?), false)),
-    }
+}
+
+/// What the text after `|desk=` spells: the dragged width, whether the board
+/// is hidden and the chosen tab, as the parts `<width>`, `hidden` and
+/// `tab=<name>` in that order, comma-joined, at least one and nothing else.
+fn desk_suffix(text: &str) -> Option<(Option<u16>, bool, Section)> {
+    let mut parts = text.split(',').peekable();
+    let width = match parts.next_if(|part| part.bytes().next().is_some_and(|b| b.is_ascii_digit()))
+    {
+        Some(part) => Some(u16::try_from(number(part, u64::from(u16::MAX))?).ok()?),
+        None => None,
+    };
+    let hidden = parts.next_if_eq(&"hidden").is_some();
+    let tab = match parts.next_if(|part| part.starts_with("tab=")) {
+        Some(part) => Section::ALL
+            .into_iter()
+            .find(|section| tab_name(*section) == part.strip_prefix("tab="))?,
+        None => Section::Decide,
+    };
+    parts.next().is_none().then_some((width, hidden, tab))
 }
 
 /// The handover `text` spells, or `None` unless it is exactly canonical.
@@ -324,9 +357,9 @@ pub fn parse(text: &str) -> Option<Handover> {
     };
     let list_top = optional(list_top, ROWS_MAX as u64)?;
     let list_top = list_top.map(usize::try_from).transpose().ok()?;
-    let (desk, desk_hidden) = match desk {
+    let (desk, desk_hidden, desk_tab) = match desk {
         Some(text) => desk_suffix(text)?,
-        None => (None, false),
+        None => (None, false, Section::Decide),
     };
     let view = View {
         session: is_session_name(session).then(|| (*session).to_owned())?,
@@ -341,6 +374,7 @@ pub fn parse(text: &str) -> Option<Handover> {
         panel: small(panel)?,
         desk,
         desk_hidden,
+        desk_tab,
         zoom,
         orchestrator,
     };

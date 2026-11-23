@@ -74,9 +74,10 @@ const UPDATED: &str = "updated ";
 const _: () = assert!(MAGIC.len() + 1 + UPDATED.len() + 20 < STORED_CAP - INPUT_CAP);
 
 /// The five parts of a board, in the order they are written and shown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Section {
     /// What the human must decide.
+    #[default]
     Decide,
     /// What comes next.
     Coming,

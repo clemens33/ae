@@ -245,11 +245,17 @@ impl App {
             }
             MouseKind::Click => {
                 let held = self.held.take().is_some();
+                // A label of the tab bar is an absolute target: it asks for the
+                // section it showed, whichever the board shows now.
+                let tab = match self.layout.hit(mouse) {
+                    Some(draw::Hit::DeskTab(section)) => self.select_desk_tab(section),
+                    _ => false,
+                };
                 let focused = !self.composing() && self.focus_desk(true);
                 if self.layout.link_at(mouse) {
                     self.web_press(mouse);
                 }
-                focused || held
+                focused || held || tab
             }
             MouseKind::Release => self.finish(mouse),
             MouseKind::Drag | MouseKind::Menu => false,
@@ -354,6 +360,7 @@ impl App {
             | draw::Hit::PeekClose
             | draw::Hit::PanelDesk
             | draw::Hit::PanelDeskToggle(_)
+            | draw::Hit::DeskTab(_)
             | draw::Hit::PanelPane => {
                 return held;
             }
