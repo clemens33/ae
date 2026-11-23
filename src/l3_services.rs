@@ -8,6 +8,7 @@ pub mod carry;
 pub(crate) mod compact;
 pub mod deliver;
 pub mod deskcmd;
+pub mod desklive;
 pub mod deskstore;
 pub(crate) mod fleet_read;
 pub mod fleetfeed;

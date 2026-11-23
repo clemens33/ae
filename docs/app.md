@@ -603,7 +603,10 @@ bridge only read it. It has five sections in this order: DECIDE, COMING, RUNNING
 LINKS, with items `D1` to `L99` of at most 160 characters and up to three links
 each, a web URL or an absolute path. The board shows in three places and never in the chat lane: `/board` in the chat
 ([Chat](chat.md#what-it-shows)), a column in this app and one pinned Telegram
-message ([Telegram bridge](reference/telegram.md#the-board-message)).
+message ([Telegram bridge](reference/telegram.md#the-board-message)). The chat's
+`/board` and the Telegram message also show the live part of the fleet below the
+board: seat states, ages, reasons and open asks to you, computed by ae itself
+([Chat](chat.md#what-it-shows)).
 
 The board stands to the right of the open panel in side and full-screen modes.
 Its default width is 36 cells including its left border. It fits from 161

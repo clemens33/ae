@@ -62,6 +62,80 @@ fn wire(seen: &Seen, endpoint: &str, id: Option<i64>) -> Value {
 }
 
 #[test]
+fn a_near_full_manual_pin_keeps_its_entries_and_stays_within_the_budget() {
+    use super::super::desk::FleetRows;
+    use std::fmt::Write as _;
+
+    let mut input = "DECIDE\n".to_owned();
+    for (id, ampersands) in [(1, 160), (2, 160), (3, 160), (4, 160), (5, 122)] {
+        writeln!(input, "D{id} | {}", "&".repeat(ampersands)).expect("fixture item");
+    }
+    let board = Desk {
+        updated: Timestamp::from_epoch(1_795_165_612),
+        items: parse_input(input.as_bytes()).expect("valid full manual board"),
+    };
+    let fleet = FleetRows {
+        as_of: 1_795_166_000,
+        rows: vec!["birch  running workers: 1 · open asks to you: 0".to_owned()],
+    };
+    let dir = Temp::new("desk-wide-manual");
+    let mut machine = Machine::new(dir.path().to_owned());
+    let fake = Fake::start(vec![by_id(42), pin_ok()]);
+    let mut err = Vec::new();
+    let _ = machine.pass_with_fleet(
+        &fake.api(),
+        CHAT,
+        Some(&board),
+        Some(&fleet),
+        fleet.as_of,
+        &mut err,
+    );
+    let received = fake.requests();
+    assert_eq!(received.len(), 2, "one send and one pin");
+    let sent = wire(&received[0], "sendMessage", None);
+    let text = sent.get_str("text").expect("manual board reached Telegram");
+    assert!(
+        text.contains(&format!("D5 {}", "&amp;".repeat(122))),
+        "the last manual item survives the live append"
+    );
+    let units = text.encode_utf16().count();
+    assert!(units <= 3900, "the pin contains {units} UTF-16 units");
+}
+
+#[test]
+fn an_available_live_sample_cannot_create_a_pin_without_a_manual_record() {
+    use super::super::desk::FleetRows;
+
+    let dir = Temp::new("desk-live-no-record");
+    let mut machine = Machine::new(dir.path().to_owned());
+    let fake = Fake::start(vec![by_id(42), pin_ok()]);
+    let api = fake.api();
+    let mut err = Vec::new();
+    let start = 1_795_164_012;
+    let live = FleetRows {
+        as_of: start,
+        rows: vec!["dispatch  lead  blocked  since 08:30  needs an answer".to_owned()],
+    };
+
+    let _ = machine.pass_with_fleet(&api, CHAT, None, Some(&live), start, &mut err);
+    assert!(fake.requests().is_empty(), "no manual record means no pin");
+    assert!(!dir.path().join(PIN_FILE).exists());
+
+    let board = ours("A manual decision exists", start);
+    let _ = machine.pass_with_fleet(&api, CHAT, Some(&board), Some(&live), start, &mut err);
+    let requests = fake.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "the same live data can extend a real pin"
+    );
+    let sent = wire(&requests[0], "sendMessage", None);
+    let text = sent.get_str("text").expect("pin text");
+    assert!(text.contains("A manual decision exists") && text.contains("needs an answer"));
+    wire(&requests[1], "pinChatMessage", Some(42));
+}
+
+#[test]
 fn one_pin_survives_restart_edits_and_refusals_until_an_edit_proves_it_gone() {
     let dir = Temp::new("desk-life");
     let mut machine = Machine::new(dir.path().to_owned());
@@ -506,4 +580,90 @@ fn a_persistent_edit_refusal_backs_off_and_retries_the_same_id() {
     let requests = fake.requests();
     assert_eq!(requests.len(), 6);
     wire(&requests[5], "editMessageText", Some(42));
+}
+
+#[test]
+fn live_pin_cadence_tracks_the_last_confirmed_display_even_after_restart() {
+    use super::super::desk::FleetRows;
+
+    let temp = Temp::new("desk-live-clock");
+    let fake = Fake::start(vec![by_id(91), pin_ok()]);
+    let api = fake.api();
+    let mut err = Vec::new();
+    let mut machine = Machine::new(temp.path().to_owned());
+    let start = 1_795_164_012;
+    let desk = ours("Manual decision remains", start - 1000);
+    let rows = |at, reason: &str| FleetRows {
+        as_of: at,
+        rows: vec![format!("dispatch  lead  blocked  since 08:30  {reason}")],
+    };
+    let first = rows(start, "first reason");
+    let _ = machine.pass_with_fleet(&api, CHAT, Some(&desk), Some(&first), start, &mut err);
+    let later = rows(start + 6, "first reason");
+    let _ = machine.pass_with_fleet(&api, CHAT, Some(&desk), Some(&later), start + 6, &mut err);
+    let initial = fake.requests();
+    assert_eq!(initial.len(), 2);
+    let original = wire(&initial[0], "sendMessage", None);
+    let original = original.get_str("text").expect("first pin text");
+    assert!(
+        original.contains("LIVE") && original.contains("first reason"),
+        "{original}"
+    );
+    wire(&initial[1], "pinChatMessage", Some(91));
+
+    let mut machine = Machine::new(temp.path().to_owned());
+    let unchanged = rows(start + 252, "first reason");
+    let _ = machine.pass_with_fleet(
+        &api,
+        CHAT,
+        Some(&desk),
+        Some(&unchanged),
+        start + 299,
+        &mut err,
+    );
+    assert_eq!(
+        fake.requests().len(),
+        2,
+        "a newer sample alone does not spend an edit early, even after restart"
+    );
+
+    fake.script(vec![by_id(91)]);
+    let _ = machine.pass_with_fleet(
+        &api,
+        CHAT,
+        Some(&desk),
+        Some(&unchanged),
+        start + 300,
+        &mut err,
+    );
+    let requests = fake.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "a quiet pin still refreshes in five minutes"
+    );
+    let edited = wire(&requests[2], "editMessageText", Some(91));
+    let edited = edited.get_str("text").expect("periodic edit text");
+    assert_ne!(edited, original, "the as-of visible to the owner moves");
+    assert!(edited.contains("first reason") && edited.contains("Manual decision remains"));
+
+    let relevant = rows(start + 301, "relevant changed reason");
+    fake.script(vec![by_id(91)]);
+    let _ = machine.pass_with_fleet(
+        &api,
+        CHAT,
+        Some(&desk),
+        Some(&relevant),
+        start + 301,
+        &mut err,
+    );
+    let requests = fake.requests();
+    assert_eq!(
+        requests.len(),
+        4,
+        "a new reason refreshes before the next periodic edit"
+    );
+    let edited = wire(&requests[3], "editMessageText", Some(91));
+    let edited = edited.get_str("text").expect("relevant edit text");
+    assert!(edited.contains("relevant changed reason"), "{edited}");
 }

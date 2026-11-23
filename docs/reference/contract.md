@@ -46,7 +46,10 @@ src/                — Rust sources. main.rs is thin (argv in, exit code out). 
                       is the `desk` session helper over it (`desk show`, `desk set`).
                       console/deskview.rs turns it into rows for the app column and
                       `/board`; telegram/desk.rs keeps one pinned Telegram message in step with
-                      it, its checkpoint and Telegram-answer readers fuzzed as `desk_pin`
+                      it, its checkpoint and Telegram-answer readers fuzzed as `desk_pin`.
+                      l3_services/desklive.rs is the board's live part: one fleet read
+                      turned into seat states, ages, reasons and open asks to the human,
+                      computed per reader at most once a minute and never stored.
 src/l5_ui/app/            — `ae app`; src/l5_ui/app.rs is the coordinator (the `App` state, its
                       constants, `new`, `answer` and `absorb`). loader.rs the one
                       background reader; journals.rs its
@@ -133,7 +136,7 @@ A file may name its own layer and the layers below it. A `crate::` path that nam
   `conversation`, `watchdog`.
 - **3 services** — one capability each over that state: delivery and the helper verbs, the board,
   usage and Statistics reads, Telegram, launch builders, install and upgrade. Modules: `deliver`,
-  `send`, `reply`, `relay`, `brief`, `brief_retry`, `board`, `deskcmd`, `deskstore`, `quota`, `usage`,
+  `send`, `reply`, `relay`, `brief`, `brief_retry`, `board`, `deskcmd`, `desklive`, `deskstore`, `quota`, `usage`,
   `go_usage`, `muse_usage`, `stats`, `stats_store`, `tool_stats`, `telegram`, `render`, `listing`, `fleet_read`, `fleetfeed`,
   `session`, `launch`, `run`, `install`, `upgrade`, `autoupgrade`, `init`, `compact`, `carry`,
   `opencode_variant`.

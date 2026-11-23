@@ -783,6 +783,8 @@ pub struct Printed {
     needs_last: Option<i64>,
     /// The watchdog silence stays graced while the wall clock is before this.
     needs_grace_until: Option<i64>,
+    /// The live part `/board` printed last, reused for a minute.
+    live: crate::desklive::Cache,
     /// The doubt classes the section last disclosed.
     needs_doubt: BTreeSet<&'static str>,
 }
@@ -892,11 +894,28 @@ impl Printed {
         }
     }
 
-    /// `/board`: the board of the session in `dir`, read now, as the lane text
-    /// that shows it. The clock reads in the viewer's zone.
-    pub(super) fn board(&self, dir: &std::path::Path) -> Effect {
+    /// `/board`: the board of the session in `dir`, read now, then the live
+    /// part of the fleet (read at most once a minute), as the lane text that
+    /// shows both. `own` is this console's session. The clock reads in the
+    /// viewer's zone.
+    pub(super) fn board(&mut self, dir: &std::path::Path, own: &str) -> Effect {
         let view = super::deskview::DeskView::read(dir);
-        self.lane(super::deskview::board_text(&view, self.style.zone()))
+        let zone = self.style.zone();
+        let mut text = super::deskview::board_text(&view, zone);
+        let now = crate::time::Timestamp::now().epoch();
+        let live = self.live.get(now, || {
+            crate::doors::state_root(crate::shape::current()).map_or_else(
+                || crate::desklive::Live {
+                    as_of: crate::time::Timestamp::from_epoch(now),
+                    sessions: Vec::new(),
+                    losses: 1,
+                },
+                |root| crate::desklive::collect(&root, own),
+            )
+        });
+        text.push('\n');
+        text.push_str(&super::deskview::live_text(live, zone));
+        self.lane(text)
     }
 
     /// Keep an outcome until its ask row prints, or two readable passes have

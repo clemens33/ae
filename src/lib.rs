@@ -72,6 +72,7 @@ pub use l3_services::carry;
 pub(crate) use l3_services::compact;
 pub use l3_services::deliver;
 pub use l3_services::deskcmd;
+pub use l3_services::desklive;
 pub use l3_services::deskstore;
 pub(crate) use l3_services::fleet_read;
 pub use l3_services::fleetfeed;

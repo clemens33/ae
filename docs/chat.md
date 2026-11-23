@@ -163,6 +163,16 @@ works in a read-only chat too. It takes no word: `/board x` prints
 kept for a command that only reads. The chat reads the board and never writes it: the orchestrator seat sets it with
 its `desk` helper ([Orchestrator board](app.md#orchestrator-board)).
 
+Below the board, `/board` prints the live part, also when no board is set. ae
+computes it from the fleet's own records, not from the orchestrator, and reads
+the fleet at most once a minute per chat. It starts with `LIVE  as of HH:MM:SS
+<zone>`, with ` (partial)` appended when a source could not be read. Each
+running session follows with `running workers: N` (its seats other than `main`
+that declared `working`) and `open asks to you: N` (open asks whose target is
+you on a chat bridge or the console). Then one row per seat gives its state,
+its age and its reason, waits first. One row per open ask to you follows. A
+session whose record cannot be read shows `unavailable: <why>`, never a zero.
+
 ## Needs you
 
 The conversation stays the lead pair's, but the section that follows it lists

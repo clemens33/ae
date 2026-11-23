@@ -1018,7 +1018,7 @@ fn seat_needs(agents: &[AgentLine]) -> Vec<Need> {
 /// state cell itself reads, so no later read of the journal can lend a seat a
 /// reason or a newer state the world never saw. Only a seat whose state is
 /// exact carries them.
-fn agent_lines_from_world(entry: &SessionEntry, now: Timestamp) -> Vec<AgentLine> {
+pub(crate) fn agent_lines_from_world(entry: &SessionEntry, now: Timestamp) -> Vec<AgentLine> {
     let exact = entry.agent_state_is_exact();
     entry
         .agents

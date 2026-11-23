@@ -359,6 +359,103 @@ pub(super) fn render(desk: &Desk) -> String {
     text
 }
 
+/// The live part of the fleet the pinned board shows below the board, after
+/// the outbound scope chose its sessions: the snapshot's time and its rows,
+/// plain text. The machine draws the `LIVE  as of` line from `as_of`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetRows {
+    /// When the fleet was read, epoch seconds.
+    pub as_of: i64,
+    /// The rows below the `LIVE` line, plain text.
+    pub rows: Vec<String>,
+}
+
+/// What starts the `LIVE` line of a pinned board; the stamp follows it.
+const LIVE_LEAD: &str = "<b>LIVE</b>  as of ";
+
+/// `text` (a rendered board) with the live part appended, within [`BUDGET`]
+/// units. The board itself always comes first and unchanged. The whole live
+/// part (its `LIVE` line and every row) is appended when it fits. Otherwise
+/// the `LIVE` line and the rows that fit are appended, then the notice
+/// `… N more: /board` for the N rows left out. When the `LIVE` line and that
+/// notice do not fit beside the board, the live part is left out whole.
+fn with_fleet(mut text: String, fleet: &FleetRows) -> String {
+    let heading = format!(
+        "\n\n{LIVE_LEAD}{}",
+        crate::time::Timestamp::from_epoch(fleet.as_of)
+    );
+    let lines: Vec<String> = fleet
+        .rows
+        .iter()
+        .map(|row| format!("\n{}", escape(row)))
+        .collect();
+    let whole = units(&heading) + lines.iter().map(|line| units(line)).sum::<usize>();
+    if units(&text) + whole <= BUDGET {
+        text.push_str(&heading);
+        for line in &lines {
+            text.push_str(line);
+        }
+        return text;
+    }
+    if units(&text) + units(&heading) + TRAILER_ROOM > BUDGET {
+        return text;
+    }
+    text.push_str(&heading);
+    for (index, line) in lines.iter().enumerate() {
+        if units(&text) + units(line) + TRAILER_ROOM > BUDGET {
+            let _ = write!(text, "\n… {} more: /board", lines.len() - index);
+            break;
+        }
+        text.push_str(line);
+    }
+    text
+}
+
+/// `text` without its `LIVE` line, and the stamp that line shows, when it has
+/// one: what a pinned board says apart from when it was sampled.
+fn split_as_of(text: &str) -> (String, Option<i64>) {
+    let mut stamp = None;
+    let mut rest = String::with_capacity(text.len());
+    for line in text.split('\n') {
+        if let Some(at) = line.strip_prefix(LIVE_LEAD) {
+            stamp = crate::time::Timestamp::parse(at).map(crate::time::Timestamp::epoch);
+            rest.push_str(LIVE_LEAD);
+        } else {
+            rest.push_str(line);
+        }
+        rest.push('\n');
+    }
+    (rest, stamp)
+}
+
+/// The seconds a pinned live part may show the same sample time while
+/// nothing else in it changed.
+pub(super) const LIVE_REFRESH_SECS: i64 = 300;
+
+/// Whether the message showing `shown` must be edited to show `text` at
+/// `now`: when they differ in anything but the `LIVE` stamp, or when the
+/// sample the message shows is [`LIVE_REFRESH_SECS`] old at `now` and `text`
+/// carries a newer one. A stamp that cannot be read counts as stale.
+fn needs_edit(shown: Option<&str>, text: &str, now: i64) -> bool {
+    let Some(shown) = shown else {
+        return true;
+    };
+    if shown == text {
+        return false;
+    }
+    let (old, old_at) = split_as_of(shown);
+    let (new, new_at) = split_as_of(text);
+    if old != new {
+        return true;
+    }
+    match (old_at, new_at) {
+        (Some(old_at), Some(new_at)) => {
+            new_at > old_at && now.saturating_sub(old_at) >= LIVE_REFRESH_SECS
+        }
+        _ => true,
+    }
+}
+
 // ─── the machine ─────────────────────────────────────────────────────────
 
 /// What one pass did, for the caller that must know the board is held.
@@ -621,11 +718,29 @@ impl Machine {
     /// others' failure. A message is sent when there is none, edited when it
     /// does not show the board, and pinned when it is not pinned and its id
     /// is on disk. A message found gone is dropped, and the next pass sends.
+    #[cfg(test)]
     pub(super) fn pass(
         &mut self,
         api: &Api,
         chat: &str,
         desk: Option<&Desk>,
+        now: i64,
+        err: &mut impl Write,
+    ) -> Pass {
+        self.pass_with_fleet(api, chat, desk, None, now, err)
+    }
+
+    /// One pass for a board shown with the live part `fleet` below it (none
+    /// for the board alone). A message that shows the same board and live
+    /// rows is edited only when `now` is at least [`LIVE_REFRESH_SECS`] past
+    /// the sample time the message shows AND `fleet` carries a newer sample.
+    /// With no board set nothing is sent.
+    pub(super) fn pass_with_fleet(
+        &mut self,
+        api: &Api,
+        chat: &str,
+        desk: Option<&Desk>,
+        fleet: Option<&FleetRows>,
         now: i64,
         err: &mut impl Write,
     ) -> Pass {
@@ -636,9 +751,12 @@ impl Machine {
         let Some(desk) = desk else {
             return Pass::default();
         };
-        let text = render(desk);
+        let text = match fleet {
+            Some(fleet) => with_fleet(render(desk), fleet),
+            None => render(desk),
+        };
         let placed = if let Some(placed) = live.pin.placed {
-            let stale = live.shown.as_deref() != Some(text.as_str());
+            let stale = needs_edit(live.shown.as_deref(), &text, now);
             if stale && self.edit.due(now) && self.edit(api, chat, placed.message, &text, now, err)
             {
                 return Pass::default();

@@ -452,6 +452,20 @@ pub fn board_text(view: &DeskView, zone: Option<&str>) -> String {
     }
 }
 
+/// The live part as `/board` prints it, each line ending in a line break:
+/// `LIVE  as of <clock>`, then a row per session, seat and open ask to the
+/// human, with ages. `zone` is the tmux answer for the viewer's clock.
+#[must_use]
+pub fn live_text(live: &crate::desklive::Live, zone: Option<&str>) -> String {
+    let mut text = crate::desklive::header(live, &clock(live.as_of, zone));
+    text.push('\n');
+    for row in crate::desklive::rows(live, crate::desklive::Elapsed::Age) {
+        text.push_str(&row);
+        text.push('\n');
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;

@@ -1046,7 +1046,10 @@ impl Term {
                 Ok(text) => console.printed.lane(text),
                 Err(why) => Effect::Print(why),
             },
-            Effect::Board => console.printed.board(console.dir()),
+            Effect::Board => {
+                let dir = console.dir().to_owned();
+                console.printed.board(&dir, &console.name)
+            }
             effect => effect,
         };
         Some(effects.into_iter().map(act).collect())

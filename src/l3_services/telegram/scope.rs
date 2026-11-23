@@ -1,7 +1,7 @@
 //! The outbound session scope, resolved against each pass's census and inventory.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::routing::{RunningSession, Seat, World};
 
@@ -75,7 +75,21 @@ impl Scope {
         let Seat::Held { dir, .. } = world.seat() else {
             return None;
         };
-        let mut dirs = BTreeSet::from([dir]);
+        self.admitted_in(&dir, running)
+    }
+
+    /// [`Self::admitted`] against a seat already proved: `seat_dir` and the
+    /// `running` snapshot it was proved in, with no census read of its own.
+    /// `None` only in `all` mode.
+    pub(super) fn admitted_in(
+        &self,
+        seat_dir: &Path,
+        running: &[RunningSession],
+    ) -> Option<BTreeSet<PathBuf>> {
+        if self.mode == Mode::All {
+            return None;
+        }
+        let mut dirs = BTreeSet::from([seat_dir.to_path_buf()]);
         for selector in &self.also {
             let mut matches = running.iter().filter(|session| selector.matches(session));
             if let (Some(session), None) = (matches.next(), matches.next()) {

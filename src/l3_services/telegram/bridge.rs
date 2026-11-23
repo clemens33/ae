@@ -522,6 +522,7 @@ fn pump(
     let mut bridges: BTreeMap<PathBuf, Outbound> = BTreeMap::new();
     let machine = ForwardingMachine(Machine::under(paths.roots()).with_census(relay.census));
     let mut board = super::desk::Machine::new(paths.state());
+    let mut fleet = crate::desklive::Cache::default();
     let mut told = false;
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -535,7 +536,18 @@ fn pump(
             return Ok(0);
         }
         let stale = forward(api, &machine, relay, &paths.state(), &mut bridges, err)?;
-        board_pass(api, &machine, &mut board, err);
+        board_pass_with(
+            api,
+            &machine,
+            Some(Fleet {
+                root: &paths.ae_home,
+                scope: &relay.outbound,
+                cache: &mut fleet,
+            }),
+            &mut board,
+            crate::time::Timestamp::now().epoch(),
+            err,
+        );
         if stale > 0 && !told {
             told = true;
             let line = format!(
@@ -695,15 +707,98 @@ fn forward(
     Ok(held_back)
 }
 
-/// One pass of the pinned board: the board of the orchestrator seat, and only
-/// that. The seat is the one the role census proves, and it counts as present
-/// only while a running session with the seat's canonical directory and the
-/// orchestrator role stands: a living namesake elsewhere is no source. The
-/// outbound scope does not apply, because the board is not a chat event.
+/// Where the pinned board's live part comes from: the state root the fleet
+/// is read under, the outbound scope that chooses its sessions, and the
+/// bridge's snapshot, reused for a minute.
+struct Fleet<'a> {
+    root: &'a Path,
+    scope: &'a super::scope::Scope,
+    cache: &'a mut crate::desklive::Cache,
+}
+
+impl Fleet<'_> {
+    /// The live rows the scope admits, as of the snapshot `now` reuses or
+    /// reads. The scope is resolved against `seat_dir`, the seat this pass
+    /// already proved, and `running`, the snapshot it proved it in. In `all`
+    /// mode every sampled session shows, with the fleet's losses. Otherwise a
+    /// sampled session shows only when a running session of `running` has its
+    /// record directory and its uuid and the scope admits that directory, and
+    /// only the shown sessions decide whether the part is partial.
+    fn rows(
+        self,
+        seat_dir: &Path,
+        running: &[RunningSession],
+        seat: &str,
+        now: i64,
+    ) -> super::desk::FleetRows {
+        let root = self.root;
+        let live = self.cache.get(now, || crate::desklive::collect(root, seat));
+        let admitted = self.scope.admitted_in(seat_dir, running);
+        let admits = |session: &crate::desklive::LiveSession| {
+            let Some(dirs) = &admitted else {
+                return true;
+            };
+            let (Some(dir), Some(uuid)) = (&session.dir, &session.uuid) else {
+                return false;
+            };
+            running.iter().any(|held| {
+                held.dir == *dir
+                    && dirs.contains(&held.dir)
+                    && !held.session_id.is_empty()
+                    && held.session_id.eq_ignore_ascii_case(uuid)
+            })
+        };
+        let shown = crate::desklive::Live {
+            as_of: live.as_of,
+            sessions: live
+                .sessions
+                .iter()
+                .filter(|s| admits(s))
+                .cloned()
+                .collect(),
+            losses: if admitted.is_none() { live.losses } else { 0 },
+        };
+        let mut rows = Vec::new();
+        if shown.partial() {
+            rows.push("(partial: some of the fleet could not be read)".to_owned());
+        }
+        rows.extend(crate::desklive::rows(
+            &shown,
+            crate::desklive::Elapsed::Since,
+        ));
+        super::desk::FleetRows {
+            as_of: live.as_of.epoch(),
+            rows,
+        }
+    }
+}
+
+/// [`board_pass_with`] with no live part, now: the board alone.
+#[cfg(test)]
 fn board_pass(
     api: &Api,
     world: &dyn World,
     board: &mut super::desk::Machine,
+    err: &mut impl Write,
+) {
+    let now = crate::time::Timestamp::now().epoch();
+    board_pass_with(api, world, None, board, now, err);
+}
+
+/// One pass of the pinned board: the board of the orchestrator seat, and only
+/// that. The seat is the one the role census proves, and it counts as present
+/// only while a running session with the seat's canonical directory and the
+/// orchestrator role stands: a living namesake elsewhere is no source. The
+/// outbound scope does not apply to the board itself, because the board is
+/// not a chat event. It chooses the sessions of the live part `fleet` adds
+/// below a board that is set, resolved against the seat and the running
+/// snapshot this pass read once.
+fn board_pass_with(
+    api: &Api,
+    world: &dyn World,
+    fleet: Option<Fleet<'_>>,
+    board: &mut super::desk::Machine,
+    now: i64,
     err: &mut impl Write,
 ) {
     let Seat::Held { dir, name } = world.seat() else {
@@ -727,11 +822,15 @@ fn board_pass(
         return;
     }
     board.namesake_over();
-    let now = crate::time::Timestamp::now().epoch();
     match crate::deskstore::read(&dir) {
         // No board is still a pass: it reads the checkpoint, so a hold is told.
         Ok(found) => {
-            let _ = board.pass(api, api.chat(), found.as_ref(), now, err);
+            // The fleet is read only for a board that is shown.
+            let rows = found
+                .as_ref()
+                .and(fleet)
+                .map(|fleet| fleet.rows(&dir, &running, &name, now));
+            let _ = board.pass_with_fleet(api, api.chat(), found.as_ref(), rows.as_ref(), now, err);
         }
         Err(why) => board.unreadable(api.chat(), &why.to_string(), err),
     }
