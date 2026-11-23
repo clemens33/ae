@@ -65,3 +65,29 @@ impl Clock for ManualClock {
             .saturating_add(i64::try_from(moved.as_secs()).unwrap_or(i64::MAX))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{Clock, SystemClock};
+
+    /// The wall second as the standard library reads it, apart from the crate.
+    fn wall() -> i64 {
+        let since = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|error| panic!("wall clock before 1970: {error}"));
+        i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+    }
+
+    #[test]
+    fn the_system_clock_reads_the_wall_second() {
+        let before = wall();
+        let read = SystemClock.epoch();
+        let after = wall();
+        assert!(
+            (before..=after).contains(&read),
+            "{before} <= {read} <= {after}"
+        );
+    }
+}

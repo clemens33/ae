@@ -410,4 +410,31 @@ mod tests {
         );
         assert_eq!(parse_head(b"GET / HTTP/1.1\n").err(), Some(400));
     }
+
+    #[test]
+    fn every_status_the_listener_sends_carries_its_registered_reason_phrase() {
+        // RFC 9110 section 15 and RFC 6585 section 5 (431), not this module.
+        for (status, phrase) in [
+            (200, "OK"),
+            (202, "Accepted"),
+            (304, "Not Modified"),
+            (400, "Bad Request"),
+            (401, "Unauthorized"),
+            (403, "Forbidden"),
+            (404, "Not Found"),
+            (405, "Method Not Allowed"),
+            (408, "Request Timeout"),
+            (409, "Conflict"),
+            (410, "Gone"),
+            (411, "Length Required"),
+            (413, "Content Too Large"),
+            (414, "URI Too Long"),
+            (421, "Misdirected Request"),
+            (431, "Request Header Fields Too Large"),
+            (503, "Service Unavailable"),
+            (505, "HTTP Version Not Supported"),
+        ] {
+            assert_eq!(super::reason(status), phrase, "{status}");
+        }
+    }
 }

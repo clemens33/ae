@@ -377,7 +377,9 @@ fn names(dir: &Path) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Claim, Outcome, Word, decode, encode};
+    use std::io;
+
+    use super::{Claim, Claims, Outcome, Refused, SourcePresence, Word, decode, encode, store};
 
     #[test]
     fn a_settled_claim_without_words_and_one_with_words_round_trip() {
@@ -405,5 +407,64 @@ mod tests {
         assert!(decode(text.trim_end().as_bytes()).is_err());
         assert!(decode(format!("{text}words again\n").as_bytes()).is_err());
         assert!(decode(text.replace("seat tui\n", "").as_bytes()).is_err());
+    }
+
+    #[test]
+    fn a_creation_second_is_decimal_digits_only() {
+        let claim = Claim {
+            payload: "a".repeat(64),
+            route: "b".repeat(64),
+            id: "ae-20261122T200000Z-0000000a".to_owned(),
+            created: 5,
+            outcome: None,
+        };
+        let text = encode(&claim);
+        assert_eq!(decode(text.as_bytes()), Ok(claim));
+        // `u64::from_str` takes a leading `+`; the record does not.
+        let signed = text.replace("created 5\n", "created +5\n");
+        assert_eq!(
+            decode(signed.as_bytes()),
+            Err(Refused("no creation second"))
+        );
+    }
+
+    /// A scratch directory this test created itself, so its cleanup removes
+    /// nothing it did not make.
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir();
+        for at in 0..64 {
+            let root = base.join(format!("ae-web-{tag}-{}-{at}", std::process::id()));
+            if std::fs::create_dir(&root).is_ok() {
+                return root;
+            }
+        }
+        panic!("no unused scratch directory under {}", base.display());
+    }
+
+    #[test]
+    fn a_name_that_is_no_claim_name_is_refused_before_anything_is_made() {
+        let root = scratch("claim-name");
+        let claims = Claims::open(&root);
+        let claim = Claim {
+            payload: "a".repeat(64),
+            route: "b".repeat(64),
+            id: "ae-20261122T200000Z-0000000a".to_owned(),
+            created: 5,
+            outcome: None,
+        };
+        let created = claims
+            .create("../escape", &claim)
+            .map_err(|error| error.kind());
+        let settled = claims
+            .settle("../escape", &claim)
+            .map_err(|error| error.kind());
+        let web = store::source_presence(&root.join("web"));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(created, Err(io::ErrorKind::InvalidInput));
+        assert_eq!(settled, Err(io::ErrorKind::InvalidInput));
+        assert!(
+            matches!(web, SourcePresence::Absent),
+            "nothing is made for a refused name"
+        );
     }
 }

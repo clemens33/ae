@@ -737,8 +737,12 @@ pub(crate) fn worker(
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
+    use std::sync::Arc;
 
-    use super::{Draft, FAILED_KEPT, Failed, Gate, keep, told, words_of};
+    use super::super::clock::ManualClock;
+    use super::{
+        Draft, Epoch, FAILED_KEPT, Failed, Gate, Hooks, Job, Sending, Sends, keep, told, words_of,
+    };
 
     #[test]
     fn a_draft_is_exactly_three_strings_with_text_and_a_route() {
@@ -765,6 +769,83 @@ mod tests {
         assert_eq!(words_of("  a\tb\n\nc  "), "a b c");
         assert_eq!(words_of("\n"), "nothing was delivered");
         assert!(words_of(&"x ".repeat(4000)).len() <= super::WORDS_MAX);
+    }
+
+    #[test]
+    fn words_fill_the_cap_exactly_and_never_split_a_word() {
+        let full = format!("{} {}", "a".repeat(511), "b".repeat(512));
+        assert_eq!(full.len(), super::WORDS_MAX);
+        assert_eq!(words_of(&full), full, "a line of exactly the cap is whole");
+        let over = format!("{} {}", "a".repeat(512), "b".repeat(512));
+        assert_eq!(
+            words_of(&over),
+            "a".repeat(512),
+            "the word that would pass the cap is dropped whole"
+        );
+    }
+
+    struct NoCut;
+
+    impl Hooks for NoCut {}
+
+    /// A scratch directory this test created itself, so its cleanup removes
+    /// nothing it did not make.
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir();
+        for at in 0..64 {
+            let root = base.join(format!("ae-web-{tag}-{}-{at}", std::process::id()));
+            if std::fs::create_dir(&root).is_ok() {
+                return root;
+            }
+        }
+        panic!("no unused scratch directory under {}", base.display());
+    }
+
+    /// The worker keeps why it could not write a claim. `post` tells that
+    /// refusal to a retry only after the store answers no claim for the name
+    /// and the nonce and the route still pass; this test reaches the store
+    /// step and the gate directly, not the nonce and route checks.
+    #[test]
+    fn a_claim_the_worker_cannot_write_leaves_its_refusal_for_a_retry_past_the_store() {
+        let root = scratch("unrecorded");
+        // `web` is a file, so the claim directory cannot be made.
+        std::fs::write(root.join("web"), b"").unwrap_or_else(|error| panic!("web: {error}"));
+        let sends = Sends {
+            root: root.clone(),
+            hooks: Arc::new(NoCut),
+        };
+        let epoch = Epoch::new(Arc::new(ManualClock::new(1_700_000_000)));
+        let (sending, _taken) = Sending::new(sends, [7; 32], epoch);
+        let (name, payload, route) = ("c".repeat(64), "a".repeat(64), "b".repeat(64));
+        sending.carry(Job {
+            name: name.clone(),
+            payload: payload.clone(),
+            route: route.clone(),
+            text: "hi".to_owned(),
+            seat: "tui".to_owned(),
+            to: "sample".to_owned(),
+        });
+        // The store is readable again and holds no claim under the name.
+        std::fs::remove_file(root.join("web")).unwrap_or_else(|error| panic!("web: {error}"));
+        let stored = sending
+            .known(&name, &payload, &route)
+            .map(|answer| answer.status);
+        let answer = told(&mut sending.gate(), &name, &payload, &route).map(|answer| {
+            (
+                answer.status,
+                String::from_utf8_lossy(&answer.body).into_owned(),
+            )
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(stored, None, "no claim was written");
+        let (status, body) = answer.unwrap_or_else(|| panic!("the next retry is told nothing"));
+        assert_eq!(status, 200);
+        assert!(
+            body.starts_with(
+                r#"{"id":null,"seat":null,"to":null,"outcome":"refused","words":"not sent: its claim could not be written: "#
+            ),
+            "{body}"
+        );
     }
 
     fn failed(name: &str) -> Failed {

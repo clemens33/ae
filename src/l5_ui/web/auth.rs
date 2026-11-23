@@ -173,3 +173,28 @@ pub fn host_ok(host: &str, port: u16) -> bool {
 pub fn origin_ok(origin: Option<&str>, host: &str) -> bool {
     origin.is_some_and(|origin| origin == format!("http://{host}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{CODE_LIFE, IDLE, Kept, live};
+
+    #[test]
+    fn a_kept_secret_is_spent_once_its_age_reaches_its_lifetime() {
+        // Contract pin: "good for 10 minutes" and "12 idle hours end it" read
+        // as an age under the lifetime; web_auth_spec checks 599 s and 601 s.
+        let at = Instant::now();
+        let kept = Kept {
+            tag: Vec::new(),
+            at,
+        };
+        for life in [CODE_LIFE, IDLE] {
+            let Some(just_under) = life.checked_sub(Duration::from_millis(1)) else {
+                panic!("a lifetime under one millisecond");
+            };
+            assert!(live(&kept, life, at + just_under), "{life:?}");
+            assert!(!live(&kept, life, at + life), "{life:?}");
+        }
+    }
+}
