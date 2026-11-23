@@ -185,21 +185,11 @@ impl Running {
         self.link.clone()
     }
 
-    /// Close send admission, then wait up to `wait` for nothing to be queued
-    /// or carrying: whether that came, true at once for a listener that sends
-    /// nothing. Admission stays closed until [`Running::follow`] reopens it; a
-    /// send while closed is 503.
-    #[must_use]
-    pub fn drain_sends(&self, wait: Duration) -> bool {
-        self.sending
-            .as_ref()
-            .is_none_or(|sending| sending.drain(wait))
-    }
-
-    /// Replace this process with `argv` once no send is queued or carrying,
-    /// waiting at most `wait` for that, as [`Running::drain_sends`] does.
-    /// Returns only when it did not: the sends still in flight, or the exec's
-    /// error; admission is open again either way.
+    /// Replace this process with `argv` once no send is queued or carrying:
+    /// close send admission (a send while closed is 503), then wait at most
+    /// `wait` for the queue and the carry to empty. Returns only when it did
+    /// not: the sends still in flight, or the exec's error; admission is open
+    /// again either way.
     #[must_use]
     pub fn follow(&self, argv: &[String], wait: Duration) -> Followed {
         let Some(sending) = &self.sending else {
