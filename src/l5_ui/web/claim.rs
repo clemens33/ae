@@ -357,7 +357,9 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
     let handle = std::fs::File::open(dir)?;
     let synced = handle.sync_all();
     #[cfg(test)]
-    seen(Seen::Synced, dir, synced.is_ok());
+    if synced.is_ok() {
+        seen(Seen::Synced, dir);
+    }
     synced
 }
 
@@ -369,7 +371,9 @@ fn names(dir: &Path) -> Vec<String> {
     )]
     let listing = std::fs::read_dir(dir);
     #[cfg(test)]
-    seen(Seen::Listed, dir, listing.is_ok());
+    if listing.is_ok() {
+        seen(Seen::Listed, dir);
+    }
     listing
         .map(|entries| {
             entries
@@ -395,12 +399,11 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Record on this thread that `dir` was synced or listed, when `done`.
+/// Record on this thread that `dir` was synced or listed. The gated `if` at
+/// each call site is a form the source view of the door census can place.
 #[cfg(test)]
-fn seen(what: Seen, dir: &Path, done: bool) {
-    if done {
-        SEEN.with_borrow_mut(|seen| seen.push((what, dir.to_owned())));
-    }
+fn seen(what: Seen, dir: &Path) {
+    SEEN.with_borrow_mut(|seen| seen.push((what, dir.to_owned())));
 }
 
 /// What this thread's stores did since the last take, in order.
