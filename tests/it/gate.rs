@@ -10833,6 +10833,9 @@ fn the_live_harness_smoke_guards_catch_every_way_of_reaching_it() {
 
 // ── the on-demand live browser smoke ─────────────────────────────────────
 
+/// The browser smoke's recipe header: no dependency, so typing it runs only it.
+const BROWSER_SMOKE_HEADER: &str = "web-smoke mode=\"\":";
+
 /// The one selection the browser smoke may run: its single ignored test.
 const BROWSER_SMOKE_FILTER: &str =
     "filter='binary(it) & test(=deliver::web_smoke::live_web_smoke)'";
@@ -10873,18 +10876,21 @@ fn without_recipe(justfile: &str, header: &str) -> String {
 /// `just web-smoke` starts a real headless Chrome against a real listener, so,
 /// as with `harness-smoke`, the only way into it is typing it. Its recipe is the
 /// one other place that may run ignored tests, and only as the two exact run
-/// lines: the one-test filter, `AE_WEB_SMOKE=1` set before them, nice and the
-/// sized lane, and nothing of the harness smoke. Outside the recipe no live
-/// justfile or workflow line names it or its gate variable, and the harness
-/// guard still reads every other justfile line for an ignored run.
+/// lines: a header with no dependency, the one-test filter and `AE_WEB_SMOKE=1`
+/// both assigned before both runs, no other line that names the gate variable,
+/// nice and the sized lane, and nothing of the harness smoke. Outside the recipe
+/// no live justfile or workflow line names it or its gate variable, and the
+/// harness guard still reads every other justfile line for an ignored run.
 fn browser_smoke_leaks(justfile: &str, others: &[(&str, &str)]) -> Vec<String> {
     let mut leaks = Vec::new();
-    let headers = justfile
+    let headers: Vec<&str> = justfile
         .lines()
         .filter(|line| line.starts_with("web-smoke "))
-        .count();
-    if headers != 1 {
-        leaks.push(format!("{headers} `web-smoke` recipes, not exactly one"));
+        .collect();
+    if headers != [BROWSER_SMOKE_HEADER] {
+        leaks.push(format!(
+            "the `web-smoke` headers are {headers:?}, not the one {BROWSER_SMOKE_HEADER:?}"
+        ));
     }
     let body = recipe_text(justfile, "web-smoke ");
     if body.is_empty() {
@@ -10892,6 +10898,7 @@ fn browser_smoke_leaks(justfile: &str, others: &[(&str, &str)]) -> Vec<String> {
         return leaks;
     }
     let count = |wanted: &str| body.iter().filter(|line| *line == wanted).count();
+    let first = |wanted: &str| body.iter().position(|line| line == wanted);
     let gate = body
         .iter()
         .position(|line| line.starts_with(BROWSER_SMOKE_GATE));
@@ -10901,20 +10908,41 @@ fn browser_smoke_leaks(justfile: &str, others: &[(&str, &str)]) -> Vec<String> {
             BROWSER_SMOKE_GATE.trim_end()
         ));
     }
+    let filter = first(BROWSER_SMOKE_FILTER);
     for run in BROWSER_SMOKE_RUNS {
         let copies = count(run);
         if copies != 1 {
             leaks.push(format!("{copies} copies of the run line {run:?}, not one"));
         }
-        let at = body.iter().position(|line| line == run);
-        if at.zip(gate).is_some_and(|(at, gate)| at < gate) {
-            leaks.push(format!("the run line {run:?} comes before the gate"));
+        let at = first(run);
+        for (setup, what) in [(gate, "the gate"), (filter, "the filter")] {
+            if at.zip(setup).is_some_and(|(at, setup)| at < setup) {
+                leaks.push(format!("the run line {run:?} comes before {what}"));
+            }
         }
     }
     let filters = count(BROWSER_SMOKE_FILTER);
     if filters != 1 {
         leaks.push(format!(
             "{filters} copies of {BROWSER_SMOKE_FILTER:?}, not one"
+        ));
+    }
+    // The gate variable itself, not one of its `AE_WEB_SMOKE_*` siblings: only
+    // the gate assignment may name it, once, so no later line unsets or resets it.
+    let bare = |line: &str| {
+        line.split("AE_WEB_SMOKE")
+            .skip(1)
+            .filter(|tail| !tail.starts_with('_'))
+            .count()
+    };
+    let mentions: usize = body.iter().map(String::as_str).map(bare).sum();
+    let in_gate = gate
+        .and_then(|gate| body.get(gate))
+        .map(String::as_str)
+        .map_or(0, bare);
+    if mentions != 1 || in_gate != 1 {
+        leaks.push(format!(
+            "the recipe names `AE_WEB_SMOKE` {mentions} times, not once in its gate assignment"
         ));
     }
     for line in body.iter().map(String::as_str) {
@@ -10958,7 +10986,8 @@ fn browser_smoke_leaks(justfile: &str, others: &[(&str, &str)]) -> Vec<String> {
 }
 
 /// What the browser smoke's test file must keep: exactly one ignored test,
-/// opening with the gate check, and a gate that opens only on `AE_WEB_SMOKE=1`.
+/// opening with the gate check and its early return, and a gate that opens only
+/// on `AE_WEB_SMOKE=1`.
 fn browser_smoke_source_leaks(text: &str) -> Vec<String> {
     let mut leaks = Vec::new();
     let ignored = text.matches("#[ignore = \"live:").count();
@@ -10972,8 +11001,22 @@ fn browser_smoke_source_leaks(text: &str) -> Vec<String> {
             .map_or("", |(_, rest)| rest)
             .trim_start()
     };
-    if !after("fn live_web_smoke() {").starts_with("if !gated() {") {
-        leaks.push("`live_web_smoke` does not open with the gate check".to_owned());
+    // The gate block: every line inside it indented, and the last one the return.
+    let returns = after("fn live_web_smoke() {")
+        .strip_prefix("if !gated() {\n")
+        .map(|rest| {
+            rest.lines()
+                .take_while(|line| *line != "    }")
+                .collect::<Vec<_>>()
+        })
+        .is_some_and(|block| {
+            block.last() == Some(&"        return;")
+                && block.iter().all(|line| line.starts_with("        "))
+        });
+    if !returns {
+        leaks.push(
+            "`live_web_smoke` does not open with the gate check and its early return".to_owned(),
+        );
     }
     if !text.contains("const GATE: &str = \"AE_WEB_SMOKE\";") {
         leaks.push("the gate is no longer the variable `AE_WEB_SMOKE`".to_owned());
@@ -11001,25 +11044,17 @@ fn the_browser_smoke_is_reachable_only_by_typing_its_recipe() {
         ],
     );
     assert!(leaks.is_empty(), "{leaks:#?}");
-    for gate in ["test", "rust-check", "pre", "rust-test"] {
-        assert!(
-            !recipe_deps(&justfile, gate)
-                .iter()
-                .any(|dep| dep.contains("web")),
-            "`{gate}` must not depend on the browser smoke"
-        );
-    }
     let source = read(&root().join("tests/it/deliver/web_smoke.rs"));
     let leaks = browser_smoke_source_leaks(&source);
     assert!(leaks.is_empty(), "{leaks:#?}");
 }
 
-#[test]
-fn the_browser_smoke_guards_catch_every_way_of_reaching_it() {
+/// A justfile whose browser smoke recipe passes its guard, for the catch cases.
+fn browser_smoke_good() -> String {
     let [plain, planted] = BROWSER_SMOKE_RUNS;
-    let good = format!(
+    format!(
         "test: rust-check\n\
-         web-smoke mode=\"\":\n    \
+         {BROWSER_SMOKE_HEADER}\n    \
          set -euo pipefail\n    \
          {BROWSER_SMOKE_FILTER}\n    \
          export AE_WEB_SMOKE=1 AE_WEB_SMOKE_OUT=\"$out\"\n    \
@@ -11029,7 +11064,13 @@ fn the_browser_smoke_guards_catch_every_way_of_reaching_it() {
          fi\n    \
          {planted}\n\
          rust-test:\n    just _tmux-isolated test\n"
-    );
+    )
+}
+
+#[test]
+fn the_browser_smoke_guards_catch_every_way_of_reaching_it() {
+    let good = browser_smoke_good();
+    let [plain, _] = BROWSER_SMOKE_RUNS;
     assert!(
         browser_smoke_leaks(&good, &[]).is_empty(),
         "{:?}",
@@ -11047,19 +11088,14 @@ fn the_browser_smoke_guards_catch_every_way_of_reaching_it() {
     let copied = format!("{good}other:\n    {plain}\n");
     assert!(reached(&without_recipe(&copied, "web-smoke ")));
 
-    // A gate recipe that depends on it.
+    // A gate recipe that depends on it, or the recipe on the harness smoke.
     let wired = good.replace("test: rust-check", "test: rust-check web-smoke");
     assert!(!browser_smoke_leaks(&wired, &[]).is_empty());
-    // The gate variable missing, not exactly `1`, or set after the runs.
-    assert!(!browser_smoke_leaks(&good.replace("AE_WEB_SMOKE=1 ", ""), &[]).is_empty());
-    assert!(
-        !browser_smoke_leaks(&good.replace("AE_WEB_SMOKE=1", "AE_WEB_SMOKE=0"), &[]).is_empty()
+    let wired = good.replace(
+        BROWSER_SMOKE_HEADER,
+        &format!("{BROWSER_SMOKE_HEADER} harness-smoke"),
     );
-    let export = "    export AE_WEB_SMOKE=1 AE_WEB_SMOKE_OUT=\"$out\"\n";
-    let late = good
-        .replacen(export, "", 1)
-        .replace("rust-test:", &format!("{export}rust-test:"));
-    assert!(!browser_smoke_leaks(&late, &[]).is_empty());
+    assert!(!browser_smoke_leaks(&wired, &[]).is_empty());
     // A widened selection: the filter, a run line's -E, or every ignored test.
     let wide = good.replace(
         "test(=deliver::web_smoke::live_web_smoke)",
@@ -11070,9 +11106,6 @@ fn the_browser_smoke_guards_catch_every_way_of_reaching_it() {
     assert!(!browser_smoke_leaks(&wide, &[]).is_empty());
     let wide = good.replace("    fi\n", "    fi\n    filter+=' | all()'\n");
     assert!(!browser_smoke_leaks(&wide, &[]).is_empty());
-    // No selection of its own: the run lines would take `filter` from the caller.
-    let inherited = good.replace(&format!("    {BROWSER_SMOKE_FILTER}\n"), "");
-    assert!(!browser_smoke_leaks(&inherited, &[]).is_empty());
     let other = good.replace(
         "    fi\n",
         "    fi\n    nice -n 10 cargo nextest run --run-ignored only\n",
@@ -11110,6 +11143,38 @@ fn the_browser_smoke_guards_catch_every_way_of_reaching_it() {
 }
 
 #[test]
+fn the_browser_smoke_guard_pins_its_gate_and_filter_before_the_runs() {
+    let good = browser_smoke_good();
+    // The recipe with one of its lines moved to the end of its body.
+    let moved = |line: &str| {
+        good.replacen(&format!("    {line}\n"), "", 1)
+            .replace("rust-test:", &format!("    {line}\nrust-test:"))
+    };
+    // The gate variable missing or not exactly `1`.
+    assert!(!browser_smoke_leaks(&good.replace("AE_WEB_SMOKE=1 ", ""), &[]).is_empty());
+    assert!(
+        !browser_smoke_leaks(&good.replace("AE_WEB_SMOKE=1", "AE_WEB_SMOKE=0"), &[]).is_empty()
+    );
+    // The gate or the filter assigned only after the runs.
+    let late = moved("export AE_WEB_SMOKE=1 AE_WEB_SMOKE_OUT=\"$out\"");
+    assert!(!browser_smoke_leaks(&late, &[]).is_empty());
+    assert!(!browser_smoke_leaks(&moved(BROWSER_SMOKE_FILTER), &[]).is_empty());
+    // No selection of its own: the run lines would take `filter` from the caller.
+    let inherited = good.replace(&format!("    {BROWSER_SMOKE_FILTER}\n"), "");
+    assert!(!browser_smoke_leaks(&inherited, &[]).is_empty());
+    // A later line that unsets or resets the gate, or a second value in the assignment.
+    let unset = good.replace("    fi\n", "    fi\n    unset AE_WEB_SMOKE\n");
+    assert!(!browser_smoke_leaks(&unset, &[]).is_empty());
+    let reset = good.replace("    fi\n", "    fi\n    export AE_WEB_SMOKE=0\n");
+    assert!(!browser_smoke_leaks(&reset, &[]).is_empty());
+    let twice = good.replace("AE_WEB_SMOKE=1 ", "AE_WEB_SMOKE=1 AE_WEB_SMOKE=0 ");
+    assert!(!browser_smoke_leaks(&twice, &[]).is_empty());
+    // Its sibling variables are not the gate.
+    let sibling = good.replace("    fi\n", "    fi\n    unset AE_WEB_SMOKE_OUT\n");
+    assert!(browser_smoke_leaks(&sibling, &[]).is_empty());
+}
+
+#[test]
 fn the_browser_smoke_source_guard_catches_a_loosened_gate() {
     let source = "const GATE: &str = \"AE_WEB_SMOKE\";\n\
                   fn gated() -> bool {\n    env_text(GATE).as_deref() == Some(\"1\")\n}\n\
@@ -11119,8 +11184,13 @@ fn the_browser_smoke_source_guard_catches_a_loosened_gate() {
         "{:?}",
         browser_smoke_source_leaks(source)
     );
-    // A second ignored test, an ungated body, another variable, a loosened value.
+    // A second ignored test, an ungated body, an empty or returnless gate block,
+    // another variable, a loosened value.
     assert!(!browser_smoke_source_leaks(&format!("{source}#[ignore = \"live: b\"]\n")).is_empty());
+    let empty = source.replace("if !gated() {\n        return;\n    }", "if !gated() {}");
+    assert!(!browser_smoke_source_leaks(&empty).is_empty());
+    let returnless = source.replace("        return;\n", "        eprintln!(\"off\");\n");
+    assert!(!browser_smoke_source_leaks(&returnless).is_empty());
     assert!(
         !browser_smoke_source_leaks(&source.replacen(
             "if !gated() {",
