@@ -774,6 +774,141 @@ fn a_launch_carrying_an_expectation_is_not_asked_for_a_sign_of_intent() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The hidden launch child's argv for session `s`: the state root, the cwd,
+/// the global config and the private server of a test, with the debug marker.
+#[cfg(debug_assertions)]
+fn launch_words(
+    home: &std::path::Path,
+    cwd: &std::path::Path,
+    config: &std::path::Path,
+    socket: &std::path::Path,
+) -> Vec<String> {
+    let path = |path: &std::path::Path| path.to_str().expect("a utf-8 scratch path").to_owned();
+    vec![
+        "--home".to_owned(),
+        path(home),
+        "--cwd".to_owned(),
+        path(cwd),
+        "--global".to_owned(),
+        path(config),
+        "--server-kind".to_owned(),
+        "socket".to_owned(),
+        "--server".to_owned(),
+        path(socket),
+        "--no-attach".to_owned(),
+        "--test-pre-lock-marker".to_owned(),
+        "--".to_owned(),
+        "s".to_owned(),
+    ]
+}
+
+/// DEFEATING MUTATION: turn the first `||` of `meta_present` in `launch`
+/// (`expected_launch.is_some() || audit.is_some() || …`) into `&&` and this
+/// test goes RED. An expected launch with no audit and no autostart then
+/// decides by the preflight value instead of by what its lifecycle lock holds,
+/// and a record that vanished while it waited is read as present.
+///
+/// The oracle is the comment above that line, not a recorded output: "An
+/// expected or audited launch decides by what the lock holds". The picker's
+/// resume proves no record of its own under the lock (`StoppedSession`), so
+/// the locked read is its only judge. The record goes while the launch waits
+/// and a worktree directory of the name is left behind: judged by the lock,
+/// the launch is a fresh one and meets that leftover; judged by the stale
+/// preflight, it is a resume that cannot read the record it expects.
+#[cfg(debug_assertions)]
+#[test]
+fn an_expected_launch_decides_by_the_record_its_lock_holds_not_the_preflight_one() {
+    let root = scratch("expected-lock-record");
+    let home = root.join("home");
+    let sessions = home.join("sessions");
+    let dir = sessions.join("s");
+    let socket = root.join("sock");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("meta"),
+        format!(
+            "schema=2\nmeta_version=2\nmode=local\nsession=s\n\
+             session_id=11111111-1111-4111-8111-111111111111\ncreated=1\nstarted=1\n\
+             work_dir={w}\norigin={w}\ntmux_server_kind=socket\ntmux_server={s}\n\
+             seat.main=lead\nprofile.main=idle\nagent_bin.main=/nonexistent/ae-agent\n",
+            w = root.display(),
+            s = socket.display(),
+        ),
+    )
+    .unwrap();
+    let config = root.join("config");
+    std::fs::write(
+        &config,
+        "[profiles]\nidle = \"/nonexistent/ae-agent\"\n[roster]\nlead = idle\n\
+         [workspace]\nmain = lead\nworkers =\nwatchdog = false\nchat = off\ntheme = off\n",
+    )
+    .unwrap();
+
+    // The test holds the session's real lifecycle lock, so the launch passes
+    // its preflight with the record present, publishes the debug marker and
+    // waits for the lock.
+    let held = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(sessions.join(".lifecycle.s.lock"))
+        .expect("the lifecycle lock opens");
+    held.try_lock().expect("the test holds the lifecycle lock");
+    let marker = home.join(super::TEST_PRE_LOCK_MARKER);
+    let racer = {
+        let (meta, leftover) = (dir.join("meta"), home.join("worktrees").join("s"));
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while !marker.is_file() {
+                if std::time::Instant::now() > deadline {
+                    return Err("the launch never reached its pre-lock marker".to_owned());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            std::fs::remove_file(&meta).map_err(|why| why.to_string())?;
+            std::fs::create_dir_all(&leftover).map_err(|why| why.to_string())?;
+            drop(held);
+            Ok(())
+        })
+    };
+
+    let words = launch_words(&home, &root, &config, &socket);
+    let expected = ExpectedLaunch::unattended(
+        ExpectedState::StoppedSession,
+        crate::time::Timestamp::now().epoch() + 60,
+    );
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = super::run_with_expected(
+        &words,
+        Some(&expected),
+        None,
+        None,
+        (&super::LaunchCaller::Outside, super::LaunchRoute::Picker),
+        &mut out,
+        &mut err,
+    )
+    .expect("the launch writes to buffers");
+    let barrier = racer.join().expect("the racer ends");
+    let (out, err) = (
+        String::from_utf8_lossy(&out).into_owned(),
+        String::from_utf8_lossy(&err).into_owned(),
+    );
+    assert_eq!(barrier, Ok(()), "{err}");
+    assert!(
+        !err.contains("could not read metadata"),
+        "the launch read the record the lock no longer holds: {err}"
+    );
+    assert_eq!(code, super::EXIT_FAILED, "{out}{err}");
+    assert!(
+        err.contains("stopped session 's' exists as worktree/copy"),
+        "the launch judged the name by the lock and met the leftover copy: {err}"
+    );
+    assert!(
+        !out.contains("Resuming session"),
+        "a record the lock does not hold is never resumed: {out}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn a_compact_child_creates_so_a_near_miss_name_is_refused_before_a_write() {
     let home = scratch("relaunch-near-miss");
