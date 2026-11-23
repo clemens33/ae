@@ -2078,6 +2078,27 @@ mod tests {
     }
 
     #[test]
+    fn a_positioned_drain_walks_every_generation_and_stops_at_an_unfinished_one() {
+        let record = DONE.len() as u64 + 1;
+        for (tag, partial, walked) in [
+            ("positioned-all", None, vec![0, 3, 5]),
+            ("positioned-stop", Some(3), vec![0, 3]),
+        ] {
+            let (_scratch, log) = multi_generation(tag, &[0, 3, 5], partial);
+            let (drain, ends) = log.drain_all_positioned().expect("positioned read");
+            let plain = log.drain_all(Cursor::default()).expect("plain read");
+            assert_eq!(drain, plain, "{tag}: the same drain as the plain reader");
+            assert_eq!(drain.drained, partial.is_none(), "{tag}");
+            let positions: Vec<(u64, u64)> = ends
+                .iter()
+                .map(|end| (end.generation, end.offset))
+                .collect();
+            let expected: Vec<(u64, u64)> = walked.iter().map(|g| (*g, record)).collect();
+            assert_eq!(positions, expected, "{tag}: one end per generation read");
+        }
+    }
+
+    #[test]
     fn dr_001_a_partial_trailing_record_is_not_consumed() {
         // The cursor must never land mid-record: that is what generation+offset
         // exists to prevent.

@@ -1,7 +1,10 @@
 //! The desk-stale tick's pure judgements: which journal records are a
 //! relevant change, and what a send outcome does to the claim.
 
-use super::{Journal, Settle, changed, old, settle};
+use std::collections::BTreeMap;
+
+use super::{Journal, Settle, Stale, changed, old, settle};
+use crate::desk::Desk;
 use crate::events::{Cursor, Event, SessionKey};
 use crate::time::Timestamp;
 
@@ -156,6 +159,33 @@ fn the_desk_must_be_strictly_older_than_five_minutes_and_not_in_the_future() {
 }
 
 #[test]
+fn a_booked_tick_requires_the_same_still_stale_desk_before_paste() {
+    let desk = Desk {
+        updated: Timestamp::from_epoch(UPDATED),
+        items: Vec::new(),
+    };
+    let booked = Stale {
+        claim: BTreeMap::new(),
+        updated: desk.updated,
+    };
+    assert!(booked.desk_unchanged(Some(&desk), UPDATED + 301));
+    assert!(!booked.desk_unchanged(None, UPDATED + 301), "desk removed");
+    assert!(
+        !booked.desk_unchanged(Some(&desk), UPDATED + 300),
+        "same record after the clock moved back to the threshold"
+    );
+
+    let replaced = Desk {
+        updated: Timestamp::from_epoch(UPDATED + 1),
+        ..desk
+    };
+    assert!(
+        !booked.desk_unchanged(Some(&replaced), UPDATED + 302),
+        "a newer record is ineligible for this booking even if it is also old"
+    );
+}
+
+#[test]
 fn only_a_typed_pre_paste_refusal_releases_the_claim() {
     let marker = crate::send::RETRYABLE_MARKER;
     assert_eq!(settle(Some(0), ""), Settle::Keep);
@@ -213,4 +243,19 @@ fn a_declaration_counts_only_for_its_own_session_and_launch() {
         r#","ref":"blocked","actor_session_id":"0199c0de-7777-4890-abcd-ef0123456789""#,
     );
     assert!(!judge(&[other_id], 0, None), "another session's id");
+}
+
+#[test]
+fn a_legacy_declaration_counts_for_a_seat_and_ignores_reserved_actors() {
+    let declared = |actor: &str| {
+        Event::parse_line(&format!(
+            r#"{{"ts":"{}","actor":"{actor}","action":"state","ref":"blocked"}}"#,
+            at(10)
+        ))
+        .expect("legacy declaration")
+    };
+    assert!(judge(&[declared("worker")], 0, None));
+    for actor in ["ae", "human", "watchdog"] {
+        assert!(!judge(&[declared(actor)], 0, None), "{actor} is not a seat");
+    }
 }

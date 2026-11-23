@@ -382,3 +382,7 @@ pub(crate) fn from_world(read: &crate::fleet_read::WorldRead, own: &str) -> Live
         .collect();
     from_reads(&inputs, own, read.world.now, read.world.losses)
 }
+
+#[cfg(test)]
+#[path = "desklive/desklive_tests.rs"]
+mod tests;
