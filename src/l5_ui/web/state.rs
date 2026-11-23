@@ -1140,7 +1140,10 @@ mod tests {
     /// it follows. A kept console's rescan of a shrunk transcript replaces
     /// only the rows it reads again and keeps the others (console.rs,
     /// `read_through`), so after the lead's transcript shrinks the chat still
-    /// shows every row it showed before.
+    /// shows every row it showed before. The read that rescans also shows the
+    /// one-read coverage line the app panel shows for it (board/follow.rs
+    /// `step`): a read that drives a staged console further lets a later
+    /// poll replace that lane.
     #[test]
     fn a_shrunk_lead_transcript_keeps_the_rows_the_chat_showed() {
         const CONVERSATION: &str = "0199c0de-3333-4890-abcd-ef0123456789";
@@ -1194,5 +1197,14 @@ mod tests {
             .unwrap_or_else(|error| panic!("transcript: {error}"));
         let second = source.read();
         assert_eq!(second.chat.rows, first.chat.rows, "{:?}", second.chat);
+        assert!(
+            second
+                .chat
+                .coverage
+                .iter()
+                .any(|line| line.contains("transcript replaced — rescanned")),
+            "{:?}",
+            second.chat.coverage
+        );
     }
 }

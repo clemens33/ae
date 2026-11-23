@@ -647,6 +647,37 @@ mod tests {
         assert!(slugs(&after).is_empty(), "{:?}", slugs(&after));
     }
 
+    /// The doc of `archived`: a kept archive is judged once per tree identity,
+    /// so a later poll at the same identity reads metadata only. A content
+    /// read that fails on such a poll (a transient I/O error) cannot reach
+    /// the verdict: the archive keeps its card and the column its skipped
+    /// counts. A test cannot fail a read without moving the tree's lstat
+    /// facts, so it fails the meta read by removing the meta and then holds
+    /// the verdict at the moved identity: the state a transient failure at
+    /// an unchanged identity leaves.
+    #[test]
+    fn a_kept_archive_at_its_held_identity_keeps_its_verdict() {
+        let scratch = Scratch::new();
+        let root = &scratch.0;
+        let archive = published(root, "first-seat", FIRST, "kept", "2026-08-01T12:00:00Z");
+        let mut sticky = Sticky::default();
+        let before = collect(root, &mut sticky);
+        assert_eq!(before.skipped.invalid, 0, "{:?}", before.gaps);
+        assert_eq!(slugs(&before), ["kept"], "{:?}", before.skipped);
+
+        std::fs::remove_file(archive.join(crate::meta::FILE))
+            .unwrap_or_else(|error| panic!("remove the archive's meta: {error}"));
+        let unchanged = crate::archive::tree_identity(&archive)
+            .unwrap_or_else(|error| panic!("tree identity: {error}"));
+        let held = sticky
+            .judged
+            .get_mut(FIRST)
+            .unwrap_or_else(|| panic!("no verdict held for {FIRST}"));
+        held.0 = unchanged;
+        let after = collect(root, &mut sticky);
+        assert_eq!(after, before);
+    }
+
     /// The verdicts live as long as the listener, so they are held for the
     /// archives kept now and for no other: the memory of a long-running
     /// listener is bound by the archives it keeps, not by every archive it
