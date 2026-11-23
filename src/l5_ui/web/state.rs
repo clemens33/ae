@@ -795,10 +795,16 @@ mod tests {
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::{Duration, Instant};
 
-    use super::{Cache, LiveSource, Read, RouteFacts, Source, Standing, route_id, string};
+    use super::{
+        Cache, Card, Group, LiveSource, Read, RouteFacts, Source, Standing, Wait, desk, route_id,
+        string, topic, topics,
+    };
     use crate::inventory::ServerId;
+    use crate::json::{self, Value};
     use crate::meta::Selector;
+    use crate::topic::{Entry, Origin};
     use crate::web::clock::Clock;
+    use crate::web::topics::WaitKind;
 
     /// One monotonic instant for every thread; the wall second a thread
     /// named `late` reads is one behind every other thread's, and its first
@@ -931,9 +937,14 @@ mod tests {
     }
 
     fn seat_meta(root: &std::path::Path, dir: &std::path::Path, uuid: &str) {
+        seat_meta_and(root, dir, uuid, "");
+    }
+
+    /// [`seat_meta`] with the meta lines `more` after the seat's own.
+    fn seat_meta_and(root: &std::path::Path, dir: &std::path::Path, uuid: &str, more: &str) {
         let meta = format!(
             "schema=2\nsession=stopped-seat\nsession_id={uuid}\nlayout=lead-pair\nseat.main=lead\n\
-             meta_agent=true\nlocal_config={}\ntmux_server_kind=socket\ntmux_server={}\n",
+             meta_agent=true\nlocal_config={}\ntmux_server_kind=socket\ntmux_server={}\n{more}",
             root.join("orchestrator.config").display(),
             root.join("no-server").display(),
         );
@@ -1003,5 +1014,185 @@ mod tests {
         assert_ne!(ambient, named, "ambient and a named server");
         assert_ne!(ambient, socket, "ambient and a socket");
         assert_ne!(named, socket, "a named server and a socket");
+    }
+
+    /// The members of the JSON array `value`.
+    fn array(value: Option<&Value>) -> &[Value] {
+        match value {
+            Some(Value::Arr(members)) => members,
+            other => panic!("no array: {other:?}"),
+        }
+    }
+
+    /// RFC 8259 §5: the values of an array are separated by commas. `desk`
+    /// writes the rows of each group, the waits of each card, the untagged
+    /// waits and the gaps as arrays; with two members in each, the column is
+    /// still one JSON value to ae's own parser.
+    #[test]
+    fn every_desk_array_of_two_members_parses_as_json() {
+        let wait = |text: &str| Wait {
+            kind: WaitKind::Ask,
+            text: text.to_owned(),
+            id: Some(format!("r-{text}")),
+        };
+        let mut column = topics::Column {
+            groups: Group::ALL
+                .iter()
+                .map(|group| (*group, Vec::new()))
+                .collect(),
+            untagged: vec![wait("three"), wait("four")],
+            gaps: vec!["the first gap".to_owned(), "the second gap".to_owned()],
+            ..topics::Column::default()
+        };
+        if let Some((_, cards)) = column.groups.first_mut() {
+            cards.extend([Card::bare("alpha"), Card::bare("beta")]);
+        }
+        column
+            .waits
+            .insert("alpha".to_owned(), vec![wait("one"), wait("two")]);
+        let mut out = String::new();
+        desk(&mut out, &column);
+        let parsed = json::parse(&out).unwrap_or_else(|error| panic!("{error}: {out}"));
+        let groups = array(parsed.get("groups"));
+        let rows = array(groups.first().and_then(|each| each.get("rows")));
+        assert_eq!(rows.len(), 2, "the rows of one group: {out}");
+        let waits = array(rows.first().and_then(|each| each.get("waits")));
+        assert_eq!(waits.len(), 2, "the waits of one card: {out}");
+        assert_eq!(array(parsed.get("untagged")).len(), 2, "untagged: {out}");
+        assert_eq!(array(parsed.get("gaps")).len(), 2, "gaps: {out}");
+    }
+
+    /// RFC 8259 §5 for the topic document: a card with two history entries
+    /// answers a `history` array of two members in one JSON value.
+    #[test]
+    fn a_topic_with_two_history_entries_parses_as_json() {
+        let entry = |at: usize, text: &str| Entry {
+            origin: Origin {
+                session: "orch".to_owned(),
+                uuid: "0b6f6a43-1f4e-4c1e-9a52-3d2b8c1e7f00".to_owned(),
+                at: format!("2026-11-23T10:0{at}:00Z"),
+            },
+            rank: (0, at),
+            text: text.to_owned(),
+        };
+        let mut card = Card::bare("alpha");
+        card.history = vec![entry(1, "the first record"), entry(2, "the second record")];
+        let mut read = Read::default();
+        read.desk.groups = vec![(Group::NeedsYou, vec![card])];
+        let (bytes, _) = topic(&read, "alpha").unwrap_or_else(|| panic!("no topic alpha"));
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let parsed = json::parse(&text).unwrap_or_else(|error| panic!("{error}: {text}"));
+        assert_eq!(array(parsed.get("history")).len(), 2, "{text}");
+    }
+
+    /// Any change of place opens a fresh console, even with the same name and
+    /// incarnation. Only a raced read reaches that in a real tree: the role's
+    /// `sessions/<name>` vanishes between the role census and the session
+    /// lookup while a nested record of the same name and incarnation exists.
+    /// The test seeds the state such a raced read leaves, the kept console at
+    /// the nested place, and the next read must follow the seat's own place.
+    #[test]
+    fn a_seat_followed_at_another_place_is_followed_at_its_own_place_again() {
+        let scratch = Scratch::new();
+        let root = scratch.0.clone();
+        std::fs::write(
+            root.join("orchestrator.config"),
+            "[workspace]\norchestrator = true\n",
+        )
+        .unwrap_or_else(|error| panic!("overlay: {error}"));
+        let dir = root.join("sessions").join("stopped-seat");
+        std::fs::create_dir_all(dir.join("messages"))
+            .unwrap_or_else(|error| panic!("session: {error}"));
+        std::fs::write(dir.join("events.jsonl"), "")
+            .unwrap_or_else(|error| panic!("journal: {error}"));
+        seat_meta(&root, &dir, "0199c0de-1111-4890-abcd-ef0123456789");
+        let source = LiveSource::new(root.clone(), root.join("config"));
+        let place = || {
+            let followed = source
+                .followed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            followed.as_ref().map(|kept| kept.dir.clone())
+        };
+        let first = source.read();
+        assert_eq!(first.orchestrator.state, Standing::Stopped, "{first:?}");
+        assert_eq!(place(), Some(dir.clone()), "the first read");
+
+        let nested = root
+            .join("worktrees")
+            .join("wt")
+            .join(".ae")
+            .join("stopped-seat");
+        if let Some(kept) = source
+            .followed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            kept.dir = nested;
+        }
+        let second = source.read();
+        assert_eq!(second.orchestrator.state, Standing::Stopped, "{second:?}");
+        assert_eq!(place(), Some(dir), "the read after a raced one");
+    }
+
+    /// Read parity with the app panel, which keeps one console for the seat
+    /// it follows. A kept console's rescan of a shrunk transcript replaces
+    /// only the rows it reads again and keeps the others (console.rs,
+    /// `read_through`), so after the lead's transcript shrinks the chat still
+    /// shows every row it showed before.
+    #[test]
+    fn a_shrunk_lead_transcript_keeps_the_rows_the_chat_showed() {
+        const CONVERSATION: &str = "0199c0de-3333-4890-abcd-ef0123456789";
+        let scratch = Scratch::new();
+        let root = scratch.0.clone();
+        std::fs::write(
+            root.join("orchestrator.config"),
+            "[workspace]\norchestrator = true\n",
+        )
+        .unwrap_or_else(|error| panic!("overlay: {error}"));
+        let dir = root.join("sessions").join("stopped-seat");
+        std::fs::create_dir_all(dir.join("messages"))
+            .unwrap_or_else(|error| panic!("session: {error}"));
+        std::fs::write(dir.join("events.jsonl"), "")
+            .unwrap_or_else(|error| panic!("journal: {error}"));
+        let store = root.join("claude");
+        let claude = format!(
+            "agent_bin.main=claude\nharness_session.main={CONVERSATION}\nconfig_home.main={}\n",
+            store.display()
+        );
+        seat_meta_and(&root, &dir, "0199c0de-1111-4890-abcd-ef0123456789", &claude);
+        let project = store.join("projects").join("w");
+        std::fs::create_dir_all(&project).unwrap_or_else(|error| panic!("project: {error}"));
+        let transcript = project.join(format!("{CONVERSATION}.jsonl"));
+        let lines = |words: &[&str]| {
+            words
+                .iter()
+                .enumerate()
+                .map(|(minute, said)| {
+                    format!(
+                        r#"{{"type":"user","timestamp":"2026-11-23T10:0{minute}:00Z","message":{{"role":"user","content":"{said}"}}}}"#
+                    ) + "\n"
+                })
+                .collect::<Vec<_>>()
+                .concat()
+        };
+        let bodies = |read: &Read| {
+            read.chat
+                .rows
+                .iter()
+                .map(|row| row.body.clone())
+                .collect::<Vec<_>>()
+        };
+        std::fs::write(&transcript, lines(&["one", "two", "three"]))
+            .unwrap_or_else(|error| panic!("transcript: {error}"));
+        let source = LiveSource::new(root.clone(), root.join("config"));
+        let first = source.read();
+        assert_eq!(bodies(&first), ["one", "two", "three"], "{:?}", first.chat);
+
+        std::fs::write(&transcript, lines(&["one"]))
+            .unwrap_or_else(|error| panic!("transcript: {error}"));
+        let second = source.read();
+        assert_eq!(second.chat.rows, first.chat.rows, "{:?}", second.chat);
     }
 }
