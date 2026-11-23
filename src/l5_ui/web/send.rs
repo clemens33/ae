@@ -752,7 +752,7 @@ mod tests {
     use super::super::clock::ManualClock;
     use super::{
         Claim, Draft, Epoch, FAILED_KEPT, Failed, Flow, Gate, Hooks, Job, Lookup, POLL, Point,
-        Sending, Sends, keep, reread, told, words_of, worker,
+        Receipt, Sending, Sends, keep, reread, settled, told, words_of, worker,
     };
 
     #[test]
@@ -1080,6 +1080,28 @@ mod tests {
                 ),
                 (200, body),
                 "{case}"
+            );
+        }
+    }
+
+    /// A journal that gave the ask up is refused with what the delivery said,
+    /// unless the delivery's own receipt says input may have reached the seat:
+    /// that outranks the abandonment and settles as uncertain, never resent.
+    #[test]
+    fn an_uncertain_receipt_outranks_an_abandoned_delivery() {
+        let abandoned = || super::submit::Outcome::NotDelivered("gave up".to_owned());
+        assert_eq!(
+            settled(abandoned(), Some(Receipt::Uncertain), "said"),
+            (
+                Word::Unknown,
+                "uncertain: pasted, its submit not confirmed; not resent".to_owned()
+            )
+        );
+        for receipt in [None, Some(Receipt::NotDelivered), Some(Receipt::Sent)] {
+            assert_eq!(
+                settled(abandoned(), receipt, "the seat is gone"),
+                (Word::Refused, "the seat is gone".to_owned()),
+                "{receipt:?}"
             );
         }
     }
