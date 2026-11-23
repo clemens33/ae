@@ -210,10 +210,8 @@ fn follow(running: &Running, say: &mpsc::SyncSender<Line>) {
     loop {
         std::thread::sleep(FOLLOW_EVERY);
         let Ok(now) = linked() else { continue };
-        if !other(&now) || unlinked.as_ref() == Some(&now) || told.contains(&now) {
-            continue;
-        }
-        if !crate::autoupgrade::automatic(shape, crate::doors::no_autostart()) {
+        let automatic = || crate::autoupgrade::automatic(shape, crate::doors::no_autostart());
+        if !due(other(&now), &now, unlinked.as_deref(), &told, automatic) {
             continue;
         }
         let Some(link) = paths()
@@ -230,5 +228,82 @@ fn follow(running: &Running, say: &mpsc::SyncSender<Line>) {
             drop(say.try_send(Line::Err(words)));
             told.insert(now);
         }
+    }
+}
+
+/// Whether the watcher follows `now`, the version the command link names: it
+/// names another core than this one (`other`), not the version it named at the
+/// first look (`unlinked`), not one whose follow already failed and was told
+/// (`told`), and automatic upgrades are on. `automatic` reads the config, so it
+/// is read only when every other condition holds.
+fn due(
+    other: bool,
+    now: &str,
+    unlinked: Option<&str>,
+    told: &BTreeSet<String>,
+    automatic: impl FnOnce() -> bool,
+) -> bool {
+    if !other || unlinked == Some(now) || told.contains(now) {
+        return false;
+    }
+    if !automatic() {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::collections::BTreeSet;
+
+    use super::due;
+
+    const NOW: &str = "2026.11.200";
+
+    /// `due` for `now` = [`NOW`]: whether a follow is due, and whether the
+    /// config was read.
+    fn check(other: bool, unlinked: Option<&str>, told: &[&str], automatic: bool) -> (bool, bool) {
+        let told: BTreeSet<String> = told.iter().map(|version| (*version).to_owned()).collect();
+        let read = Cell::new(false);
+        let got = due(other, NOW, unlinked, &told, || {
+            read.set(true);
+            automatic
+        });
+        (got, read.get())
+    }
+
+    /// docs/web.md and `follow`: the link is followed when it names another
+    /// core, not the version it named at the first look, not a version already
+    /// told as failed, and automatic upgrades are on; the config is read last.
+    #[test]
+    fn a_follow_is_due_only_for_another_untold_version_with_automatic_upgrades_on() {
+        let skipped = (false, false);
+        assert_eq!(
+            check(false, None, &[], true),
+            skipped,
+            "this core's own version"
+        );
+        assert_eq!(
+            check(true, Some(NOW), &[], true),
+            skipped,
+            "named at the first look"
+        );
+        assert_eq!(check(true, None, &[NOW], true), skipped, "already told");
+        assert_eq!(
+            check(true, None, &[], false),
+            (false, true),
+            "automatic upgrades off"
+        );
+        assert_eq!(
+            check(true, None, &[], true),
+            (true, true),
+            "another version"
+        );
+        assert_eq!(
+            check(true, Some("2026.11.199"), &["2026.11.198"], true),
+            (true, true),
+            "another than the first look and the told ones"
+        );
     }
 }
