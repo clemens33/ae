@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2026.11.110] - 2026-11-23
+- Pin scratch reaping across PID reuse
+- Bind test scratch reaping to process instances
+- Keep scratch fixtures covered in the Mac gate
+- Shorten the parity reaper test scratch path
+- Freeze orchestrator autostart acceptance tests
+- Start or resume the orchestrator when the owner starts ae
+- Pin the orchestrator autostart attach race and foreign-name collision
+- Keep bare attach off a new orchestrator and refuse a foreign seat name
+- Pin that an invalid launch name and a startup dialog keep the autostart honest
+- Gate the orchestrator autostart on a usable launch name
+- Pin that the autostart read-back keeps a late reason and stays bounded
+- Decide the app's orchestrator kick in one tested function
+- Read pane seatlessness from the tmux model and pin the new shared test helpers
+- Record the autostart's self-invocation and anchor the launch order pin across line breaks
+- Hide and show the orchestrator board with b
+- Bind the board word to the visibility it asks for and silence the key bar under an overlay
+- Pin the survivors of the board hiding mutation run
+- Read the open overlay from the frame's own test in the board hint
+- Wheel the Keys tab until the write key row shows
+
 ## [v2026.11.109] - 2026-11-22
 - Reuse a fresh Mac boundary test receipt during release
 - Show and scroll the orchestrator board in app zoom
