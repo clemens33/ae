@@ -459,4 +459,48 @@ mod tests {
         let over = format!("GET /{} HTTP/1.1\r\n", "a".repeat(super::LINE_MAX - 13));
         assert_eq!(parse_head(over.as_bytes()), Err(414), "one byte over");
     }
+
+    /// The contract of `parse_head` and `FIELDS_MAX`: field rows of exactly
+    /// `FIELDS_MAX` bytes, each counted with its CRLF, are never refused while
+    /// they arrive, not even once the delimiter row's CR is read.
+    #[test]
+    fn header_fields_of_exactly_fields_max_are_never_refused_while_they_arrive() {
+        let host = "Host: 127.0.0.1:1\r\n";
+        let long = format!("X: {}\r\n", "a".repeat(super::FIELDS_MAX - host.len() - 5));
+        assert_eq!(host.len() + long.len(), super::FIELDS_MAX);
+        let head = format!("GET / HTTP/1.1\r\n{host}{long}\r\n");
+        let row = "GET / HTTP/1.1\r\n".len() + host.len();
+        // A thousand bytes into the long row, then every byte from its last one.
+        for end in [row + 1000].into_iter().chain(head.len() - 5..head.len()) {
+            let part = head
+                .as_bytes()
+                .get(..end)
+                .unwrap_or_else(|| panic!("{end} is inside the head"));
+            assert_eq!(parse_head(part), Ok(Parsed::Partial), "{end} bytes");
+        }
+        assert!(matches!(
+            parse_head(head.as_bytes()),
+            Ok(Parsed::Done { body_len: 0, .. })
+        ));
+    }
+
+    /// A field row whose bytes so far already make the fields more than
+    /// `FIELDS_MAX` + 1, so not even a delimiter row's CR could follow, is
+    /// refused before its CRLF arrives: one endless row cannot hold the head.
+    #[test]
+    fn a_field_row_that_cannot_fit_is_refused_before_it_ends() {
+        let host = "Host: 127.0.0.1:1\r\n";
+        let row = format!("X: {}", "a".repeat(super::FIELDS_MAX - host.len() - 1));
+        assert_eq!(host.len() + row.len(), super::FIELDS_MAX + 2);
+        let part = format!("GET / HTTP/1.1\r\n{host}{row}");
+        assert_eq!(parse_head(part.as_bytes()), Err(431));
+    }
+
+    /// A LF with no CR before it is a malformed head even as the last byte
+    /// before the delimiter, where the request line it ends would otherwise
+    /// read as another HTTP version.
+    #[test]
+    fn a_bare_line_feed_just_before_the_delimiter_is_a_malformed_head() {
+        assert_eq!(parse_head(b"GET / HTTP/1.1\n\r\n\r\n"), Err(400));
+    }
 }

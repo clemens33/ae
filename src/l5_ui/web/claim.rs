@@ -667,4 +667,23 @@ mod tests {
             "nothing is made for a refused name"
         );
     }
+
+    /// The next retry of a send whose claim was not recorded is told why
+    /// (`send.rs` carry): a store whose root is gone reports the missing root,
+    /// not a directory that is no real directory.
+    #[test]
+    fn a_store_whose_root_is_gone_reports_it_missing() {
+        let base = scratch("claim-gone");
+        let root = base.join("gone");
+        let created = Claims::open(&root)
+            .create(&"c".repeat(64), &pending(5))
+            .map_err(|error| error.kind());
+        let left = store::source_presence(&root);
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(created, Err(io::ErrorKind::NotFound));
+        assert!(
+            matches!(left, SourcePresence::Absent),
+            "nothing is made under a missing root"
+        );
+    }
 }
