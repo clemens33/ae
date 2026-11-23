@@ -609,3 +609,495 @@ fn standalone_app_does_not_consume_another_chats_handover() {
     assert!(selected(&shown, &rig.name) && !selected(&shown, "web") && !focused(&shown, "colead"));
     assert_eq!(rig.raw(), text, "unstamped app never consumes chat state");
 }
+// Durable app view acceptance. Input and screen assertions use real app processes
+// in an owned tmux fixture. Disk tests take valid bytes from the real writer.
+impl Rig {
+    fn persisted(&self) -> PathBuf {
+        self.state.join("app-view")
+    }
+
+    fn durable_start(&self, pane: &str, args: &[&str]) {
+        let home = format!("HOME={}", self.home.display());
+        let root = format!("TMUX_TMPDIR={}", self.root.display());
+        let socket = format!("AE_TMUX_SERVER={}", self.socket.display());
+        let executable = self.link.display().to_string();
+        let mut command = vec![
+            "respawn-pane",
+            "-k",
+            "-t",
+            pane,
+            "env",
+            "-u",
+            "AE_HOME",
+            "-u",
+            "CONFIG_FILE",
+            "-u",
+            "TMUX",
+            "-u",
+            "TMUX_PANE",
+            &home,
+            &root,
+            "AE_TMUX_SERVER_KIND=socket",
+            &socket,
+            &executable,
+        ];
+        command.extend_from_slice(args);
+        self.tmux(&command);
+    }
+
+    fn durable_pane(&self, stamped: bool) -> String {
+        let pane = self.sleeper(stamped);
+        self.tmux(&["set-window-option", "-t", &pane, "remain-on-exit", "on"]);
+        self.tmux(&["resize-window", "-t", &pane, "-x", "200", "-y", "45"]);
+        pane
+    }
+
+    fn durable_keys(&self, pane: &str, keys: &[&str]) {
+        let mut command = vec!["send-keys", "-t", pane];
+        command.extend_from_slice(keys);
+        self.tmux(&command);
+    }
+
+    fn durable_quit(&self, pane: &str, before: &[&str]) -> String {
+        let mut keys = before.to_vec();
+        keys.extend(["q", "q"]);
+        self.durable_keys(pane, &keys);
+        let until = Instant::now() + WAIT;
+        loop {
+            let status = self.tmux(&[
+                "display-message",
+                "-p",
+                "-t",
+                pane,
+                "#{pane_dead}:#{pane_dead_status}",
+            ]);
+            if let Some(status) = status.trim().strip_prefix("1:") {
+                assert_eq!(status, "0", "normal app quit:\n{}", self.screen(pane));
+                return self.screen(pane);
+            }
+            assert!(
+                Instant::now() < until,
+                "app did not quit: {}",
+                self.screen(pane)
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn durable_select_web(&self) -> String {
+        let pane = self.durable_pane(false);
+        self.durable_start(&pane, &["app", &self.name]);
+        self.wait(&pane, "GUARD home and web drawn", |screen| {
+            selected(screen, &self.name) && fleet_drawn(screen, &self.name)
+        });
+        self.durable_keys(&pane, &["2"]);
+        self.wait(&pane, "GUARD web selected", |screen| {
+            selected(screen, "web")
+        });
+        pane
+    }
+
+    fn durable_saved_web(&self) -> Vec<u8> {
+        let pane = self.durable_select_web();
+        self.durable_quit(&pane, &[]);
+        fs::read(self.persisted()).expect("quit publishes the selected web view")
+    }
+
+    fn durable_role(&self, id: &str) {
+        let pane = self
+            .tmux(&[
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-s",
+                "orchestrator",
+                "-e",
+                "AE_SESSION=orchestrator",
+                "sleep",
+                "120",
+            ])
+            .trim()
+            .to_owned();
+        let dir = self.state.join("sessions/orchestrator");
+        fs::create_dir(&dir).expect("fixture orchestrator");
+        let overlay = self.state.join("orchestrator.config");
+        fs::write(&overlay, "[workspace]\norchestrator = true\n").expect("role overlay");
+        fs::write(
+            dir.join("meta"),
+            format!("schema=2\nsession=orchestrator\nmode=local\nsession_id={id}\nlayout=vertical\nseat.main=orchestrator\nagent_bin.main=codex\nmain_pane={pane}\nmeta_agent=true\nlocal_config={}\ntmux_server_kind=socket\ntmux_server={}\n", overlay.display(), self.socket.display()),
+        ).expect("orchestrator meta");
+        self.tmux(&["set-option", "-t", "=orchestrator:", "@ae_session_uuid", id]);
+        self.tmux(&["set-option", "-t", "=orchestrator:", "@ae_main_pane", &pane]);
+        self.tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"]);
+        self.tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "orchestrator"]);
+        ae::watchdog_glue::touch_beat(&dir).expect("role watchdog beat");
+        let board = ae::desk::Desk {
+            updated: ae::time::Timestamp::now(),
+            items: ae::desk::parse_input(
+                b"DECIDE\nD1 | Durable decision\nRUNNING\nR1 | Durable running item\n",
+            )
+            .expect("fixture board"),
+        };
+        fs::write(dir.join(ae::desk::RECORD_FILE), ae::desk::encode(&board))
+            .expect("fixture board record");
+        let history: String = (0..80)
+            .map(|n| format!("{{\"ts\":\"2026-10-03T06:00:00Z\",\"actor\":\"orchestrator\",\"action\":\"chat\",\"summary\":\"DURABLE-TURN-{n:03}\"}}\n"))
+            .collect();
+        fs::write(dir.join("events.jsonl"), history).expect("fixture orchestrator history");
+    }
+}
+
+fn durable_sidebar(screen: &str) -> Option<usize> {
+    screen.lines().next()?.chars().position(|cell| cell == '│')
+}
+
+fn durable_header(screen: &str, word: &str) -> bool {
+    screen.lines().next().is_some_and(|row| row.contains(word))
+}
+
+#[test]
+fn durable_view_writes_while_running_and_a_bare_start_restores_the_quit_view() {
+    let rig = Rig::new("diskview");
+    let pane = rig.durable_select_web();
+    rig.durable_keys(&pane, &["Tab"]);
+    rig.wait(&pane, "GUARD web seats drawn", |s| seat_drawn(s, "colead"));
+    rig.durable_keys(&pane, &["n", "n"]);
+    let shown = rig.wait(&pane, "GUARD colead focused", |s| focused(s, "colead"));
+    let width = durable_sidebar(&shown).expect("GUARD main divider");
+    let from = width + 1;
+    let to = from + 7;
+    let drag = format!("\x1b[<0;{from};10M\x1b[<32;{to};10M\x1b[<0;{to};10m");
+    rig.durable_keys(&pane, &["-l", "--", &drag]);
+    rig.wait(&pane, "GUARD drawer moved the divider", |s| {
+        durable_sidebar(s) == Some(width + 7)
+    });
+    let file = rig.persisted();
+    let until = Instant::now() + WAIT;
+    let old = loop {
+        if let Ok(file) = fs::File::open(&file) {
+            break file;
+        }
+        assert!(Instant::now() < until, "view changes save before quit");
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let before = old.metadata().expect("open file metadata");
+    assert_eq!(before.permissions().mode() & 0o777, 0o600);
+    // An already opened file must keep its inode alive across the final write.
+    rig.durable_quit(&pane, &["X"]);
+    let after = fs::symlink_metadata(&file).expect("quit view");
+    assert!(after.is_file());
+    assert_eq!(after.permissions().mode() & 0o777, 0o600);
+    assert_ne!(
+        before.ino(),
+        after.ino(),
+        "atomic replacement changes the inode"
+    );
+    // The disk record survives age and upgrades. The 60-second handover
+    // follows a different admission rule.
+    let saved = fs::read_to_string(&file).expect("canonical durable view");
+    let mut fields: Vec<_> = saved.split('|').collect();
+    let previous_version = crate::calver::older();
+    fields[2] = &previous_version;
+    fields[3] = "1";
+    fs::write(&file, fields.join("|")).expect("the same view recorded by an older app");
+    let fresh = rig.durable_pane(false);
+    rig.durable_start(&fresh, &[]);
+    rig.wait(
+        &fresh,
+        "bare ae restores web and its main-column zoom",
+        |s| selected(s, "web") && durable_header(s, "X unzoom"),
+    );
+    rig.durable_keys(&fresh, &["X"]);
+    rig.wait(
+        &fresh,
+        "unzoom reveals the saved divider and seat focus",
+        |s| selected(s, "web") && focused(s, "colead") && durable_sidebar(s) == Some(width + 7),
+    );
+}
+
+#[test]
+fn durable_view_never_writes_for_a_loader_only_selection_change() {
+    let rig = Rig::new("diskidle");
+    fs::write(
+        rig.state.join("config"),
+        format!("[workspace]\nchat = app\nfleet_order = web, {}\n", rig.name),
+    )
+    .expect("web is the first fleet row");
+    let pane = rig.durable_pane(false);
+    rig.durable_start(&pane, &["app"]);
+    rig.wait(&pane, "GUARD unhomed app selects web without input", |s| {
+        card_drawn(s, &rig.name) && selected(s, "web")
+    });
+    rig.tmux(&["kill-session", "-t", "=web:"]);
+    fs::remove_dir_all(rig.state.join("sessions/web")).expect("selected session removed");
+    rig.wait(&pane, "GUARD loader selects the surviving session", |s| {
+        selected(s, &rig.name) && card_drawn(s, &rig.name) && !card_drawn(s, "web")
+    });
+    std::thread::sleep(Duration::from_millis(2200));
+    assert!(
+        !rig.persisted().exists(),
+        "loader changes never write app-view"
+    );
+    rig.durable_quit(&pane, &[]);
+    assert!(
+        !rig.persisted().exists(),
+        "untouched quit leaves the file absent"
+    );
+}
+
+#[test]
+fn durable_view_defers_to_an_admitted_handover_and_covers_a_refused_one() {
+    let rig = Rig::new("diskorder");
+    let first = rig.durable_select_web();
+    rig.durable_quit(&first, &["X"]);
+    let saved = fs::read(rig.persisted()).expect("quit publishes the zoomed view");
+    for admitted in [true, false] {
+        fs::write(rig.persisted(), &saved).expect("restore the original durable web view");
+        let pane = rig.durable_pane(true);
+        let carrier = Rig::literal(&pane)
+            .replace("|web|", &format!("|{}|", rig.name))
+            .replace(WEB_ID, ID);
+        let carrier = if admitted {
+            carrier
+        } else {
+            carrier.replacen(ae::VERSION, &crate::calver::older(), 1)
+        };
+        rig.put(&carrier);
+        rig.start(&pane);
+        rig.wait(
+            &pane,
+            "admitted handover takes precedence, refused handover falls back",
+            |s| {
+                rig.raw().is_empty()
+                    && selected(s, &rig.name)
+                    && if admitted {
+                        durable_sidebar(s) == Some(31)
+                    } else {
+                        durable_header(s, "X unzoom")
+                    }
+            },
+        );
+        rig.durable_quit(&pane, &[]);
+        assert_eq!(fs::read(rig.persisted()).expect("durable view"), saved);
+    }
+}
+
+#[test]
+fn durable_view_refuses_hostile_nodes_and_bytes_then_starts() {
+    let rig = Rig::new("diskhostile");
+    let saved = rig.durable_saved_web();
+    let file = rig.persisted();
+    fs::remove_file(&file).expect("remove owned view");
+    let victim = rig.root.join("valid-view-target");
+    fs::write(&victim, &saved).expect("a symlink target with valid opposed view bytes");
+    symlink(&victim, &file).expect("fixture symlink");
+    assert_eq!(
+        fs::read(&file).expect("symlink control has valid bytes"),
+        saved
+    );
+    let pane = rig.durable_pane(false);
+    rig.durable_start(&pane, &["app"]);
+    rig.wait(
+        &pane,
+        "symlink leaves the fleet at its default selection",
+        |s| fleet_drawn(s, &rig.name) && selected(s, &rig.name),
+    );
+    let closed = rig.durable_quit(&pane, &["X"]);
+    assert!(
+        closed.contains("ae app closed"),
+        "failed save must permit quit: {closed}"
+    );
+    assert_eq!(
+        closed.matches("app-view").count(),
+        1,
+        "failed final save is reported once: {closed}"
+    );
+    assert_eq!(
+        fs::read_link(&file).expect("symlink refused on write"),
+        victim
+    );
+    assert_eq!(fs::read(&victim).expect("symlink target untouched"), saved);
+    fs::remove_file(&file).expect("remove fixture symlink");
+
+    fs::create_dir(&file).expect("fixture directory at file path");
+    let pane = rig.durable_pane(false);
+    rig.durable_start(&pane, &["app"]);
+    rig.wait(&pane, "non-regular path permits start", |s| {
+        fleet_drawn(s, &rig.name)
+    });
+    rig.durable_quit(&pane, &["X"]);
+    assert!(file.is_dir(), "non-regular path refused on write");
+    fs::remove_dir(&file).expect("remove fixture directory");
+
+    let mut oversized = saved.clone();
+    oversized.resize(1024 * 1024, b'x');
+    let mut damaged = saved.clone();
+    damaged.push(0xff);
+    let version = saved
+        .iter()
+        .position(|&byte| byte == b'|')
+        .expect("wire tag");
+    let foreign = [b"v999999".as_slice(), &saved[version..]].concat();
+    for bytes in [oversized, damaged, foreign] {
+        fs::write(&file, bytes).expect("hostile view record");
+        let pane = rig.durable_pane(false);
+        rig.durable_start(&pane, &["app"]);
+        rig.wait(&pane, "hostile view bytes permit a default start", |s| {
+            fleet_drawn(s, &rig.name) && selected(s, &rig.name)
+        });
+        rig.durable_quit(&pane, &[]);
+    }
+
+    fs::write(&file, saved).expect("valid view before web disappears");
+    rig.tmux(&["kill-session", "-t", "=web:"]);
+    fs::remove_dir_all(rig.state.join("sessions/web")).expect("remove saved session record");
+    let pane = rig.durable_pane(false);
+    rig.durable_start(&pane, &["app"]);
+    rig.wait(
+        &pane,
+        "a missing saved home leaves the app on the fleet",
+        |s| card_drawn(s, &rig.name) && selected(s, &rig.name) && !card_drawn(s, "web"),
+    );
+}
+
+#[test]
+fn durable_view_keeps_a_hidden_board_tab_and_full_panel_without_an_ordinary_session() {
+    let rig = Rig::new("diskorch");
+    rig.durable_role(WEB_ID);
+    for session in [&rig.name, "web"] {
+        fs::remove_dir_all(rig.state.join("sessions").join(session))
+            .expect("ordinary record removed");
+    }
+    let first = rig.durable_pane(false);
+    rig.durable_start(&first, &["app", "orchestrator"]);
+    rig.wait(
+        &first,
+        "GUARD proven homed role draws its full panel and default board tab",
+        |s| durable_header(s, "F side") && s.contains("Durable decision"),
+    );
+    rig.durable_keys(&first, &["B", "3"]);
+    rig.wait(&first, "GUARD RUNNING tab selected", |s| {
+        s.contains("Durable running item")
+    });
+    rig.durable_keys(&first, &["b"]);
+    rig.wait(&first, "GUARD board hidden and latest turn drawn", |s| {
+        durable_header(s, "b show") && s.contains("DURABLE-TURN-079")
+    });
+    rig.durable_keys(&first, &["PageUp"]);
+    rig.wait(
+        &first,
+        "GUARD panel scrolled away from its latest turn",
+        |s| s.contains("newer turns") && !s.contains("DURABLE-TURN-079"),
+    );
+    rig.durable_quit(&first, &[]);
+    let saved =
+        fs::read(rig.persisted()).expect("persist with the orchestrator as the only record");
+
+    let fresh = rig.durable_pane(false);
+    rig.durable_start(&fresh, &["app"]);
+    rig.wait(
+        &fresh,
+        "fresh app reopens the proved full panel and keeps its board hidden",
+        |s| {
+            durable_header(s, "F side")
+                && durable_header(s, "b show")
+                && !s.contains("Durable running item")
+                && s.contains("newer turns")
+        },
+    );
+    rig.durable_keys(&fresh, &["b"]);
+    rig.wait(
+        &fresh,
+        "showing the board reveals the saved RUNNING tab",
+        |s| s.contains("Durable running item") && !s.contains("Durable decision"),
+    );
+    rig.durable_quit(&fresh, &["O"]);
+
+    rig.meta(&rig.name, ID);
+    let closed = rig.durable_pane(false);
+    rig.durable_start(&closed, &["app", "orchestrator"]);
+    rig.wait(
+        &closed,
+        "a saved closed panel overrides the homed default",
+        |s| card_drawn(s, &rig.name) && durable_header(s, "X zoom") && !durable_header(s, "F side"),
+    );
+    rig.durable_quit(&closed, &[]);
+
+    rig.tmux(&["kill-session", "-t", "=orchestrator:"]);
+    fs::remove_dir_all(rig.state.join("sessions/orchestrator")).expect("remove old role record");
+    fs::write(rig.persisted(), &saved).expect("restore the old open full record");
+    let absent = rig.durable_pane(false);
+    rig.durable_start(&absent, &["app"]);
+    rig.wait(
+        &absent,
+        "an absent role keeps the default panel closed",
+        |s| card_drawn(s, &rig.name) && durable_header(s, "X zoom") && !durable_header(s, "F side"),
+    );
+    rig.durable_quit(&absent, &[]);
+
+    rig.durable_role(OTHER_ORCH_ID);
+    let changed = rig.durable_pane(false);
+    rig.durable_start(&changed, &["app"]);
+    rig.wait(
+        &changed,
+        "a proved replacement keeps the full hidden-board view and drops old scroll",
+        |s| {
+            durable_header(s, "F side")
+                && durable_header(s, "b show")
+                && s.contains("DURABLE-TURN-079")
+                && !s.contains("newer turns")
+        },
+    );
+}
+
+const OTHER_ORCH_ID: &str = "0199c0de-bbbb-4890-abcd-ef0123456789";
+
+#[test]
+fn durable_view_keeps_side_panel_and_distinguishes_which_chat_has_focus() {
+    let rig = Rig::new("diskside");
+    rig.durable_role(OTHER_ORCH_ID);
+    let first = rig.durable_pane(false);
+    rig.durable_start(&first, &["app", &rig.name]);
+    rig.wait(&first, "GUARD named app draws its main chat", |s| {
+        fleet_drawn(s, &rig.name) && selected(s, &rig.name)
+    });
+    rig.durable_keys(&first, &["O"]);
+    rig.wait(&first, "GUARD side panel is live", |s| {
+        durable_header(s, "pane  F full") && s.contains("DURABLE-TURN-079")
+    });
+    rig.durable_quit(&first, &[]);
+    assert!(rig.persisted().is_file(), "quit saves the open side panel");
+
+    let side = rig.durable_pane(false);
+    rig.durable_start(&side, &["app", &rig.name]);
+    rig.wait(&side, "the side panel reopens beside the main chat", |s| {
+        durable_header(s, "pane  F full") && s.contains("DURABLE-TURN-079")
+    });
+    rig.durable_keys(&side, &["i"]);
+    rig.wait(&side, "the restored side panel has the keys", |s| {
+        s.contains("to orchestrator") && s.contains("Esc browses")
+    });
+    rig.durable_keys(&side, &["Escape"]);
+    let focus_main = "\x1b[<0;60;5M\x1b[<0;60;5m";
+    rig.durable_keys(&side, &["-l", "--", focus_main]);
+    rig.durable_keys(&side, &["i"]);
+    rig.wait(
+        &side,
+        "GUARD side panel visible with main chat focused",
+        |s| durable_header(s, "pane  F full") && s.contains(&format!("to {}", rig.name)),
+    );
+    rig.durable_keys(&side, &["Escape"]);
+    rig.durable_quit(&side, &[]);
+
+    let side_main = rig.durable_pane(false);
+    rig.durable_start(&side_main, &["app", &rig.name]);
+    rig.wait(&side_main, "the side panel reopens again", |s| {
+        durable_header(s, "pane  F full") && s.contains("DURABLE-TURN-079")
+    });
+    rig.durable_keys(&side_main, &["i"]);
+    rig.wait(&side_main, "the restored main chat has the keys", |s| {
+        s.contains(&format!("to {}", rig.name)) && s.contains("Esc browses")
+    });
+}
