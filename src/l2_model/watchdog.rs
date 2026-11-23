@@ -1624,6 +1624,9 @@ const NUDGE_ACTION: &str = "nudge";
 /// The action the orchestrator's fleet-overview prompt carries: its own, so a
 /// changed overview is never read as the idle nudge that lapses a `done`.
 pub(crate) const SWEEP_NUDGE_ACTION: &str = "sweep-nudge";
+
+/// The journal action of an automatic reseat notice or continuation.
+pub const AUTO_RESEAT_NOTICE_ACTION: &str = "auto-reseat-notice";
 /// The action of the one turn that hands a running orchestrator seat the
 /// current charter (D5): its own, so it never reads as a nudge or an overview.
 pub(crate) const CHARTER_UPDATE_ACTION: &str = "charter-update";
@@ -2140,7 +2143,7 @@ pub fn last_watchdog_delivery(
         .find(|event| {
             event.actor == WATCHDOG_ACTOR
                 && (painting.contains(&event.action.as_str())
-                    || (event.action == crate::autoreseat::NOTICE_ACTION
+                    || (event.action == AUTO_RESEAT_NOTICE_ACTION
                         && event
                             .reference
                             .as_deref()

@@ -65,7 +65,7 @@ pub const REFUSED_ACTION: &str = "auto-reseat-refused";
 /// The move failed and the episode gets no further attempt. `ref` = the key.
 pub const FAILED_ACTION: &str = "auto-reseat-failed";
 /// A notice sent to a recipient about an outcome; target-less, a config note.
-pub const NOTICE_ACTION: &str = "auto-reseat-notice";
+pub use crate::watchdog::AUTO_RESEAT_NOTICE_ACTION as NOTICE_ACTION;
 /// A headroom episode opens; its `ts` is the key and its summary the trigger.
 pub const HEADROOM_ACTION: &str = "auto-reseat-headroom";
 /// A headroom episode ends and the seat is armed again. `ref` = the key.

@@ -534,7 +534,7 @@ fn write_retryable_marker(
 ) -> io::Result<()> {
     let retryable = match action {
         "quota-advisory" | "quota-checkpoint" | "dead-notice" => retryable_delivery(delivery),
-        "auto-reseat-notice" => delivery.as_ref().is_err_and(|failure| {
+        crate::watchdog::AUTO_RESEAT_NOTICE_ACTION => delivery.as_ref().is_err_and(|failure| {
             matches!(failure, deliver::Failure::Abandoned { .. })
                 || pre_paste_reason(failure).is_some()
         }),
@@ -1048,8 +1048,12 @@ mod tests {
             ),
         ] {
             let mut out = Vec::new();
-            write_retryable_marker("auto-reseat-notice", &Err(failure), &mut out)
-                .expect("marker output");
+            write_retryable_marker(
+                crate::watchdog::AUTO_RESEAT_NOTICE_ACTION,
+                &Err(failure),
+                &mut out,
+            )
+            .expect("marker output");
             let expected = if expected {
                 format!("{RETRYABLE_MARKER}\n")
             } else {
