@@ -1046,8 +1046,9 @@ mod tests {
     }
 
     /// `write_response` and `waited`: a write that only runs out its timeout is
-    /// a wait. A reader that pauses past one write timeout on a reply larger
-    /// than the socket buffers still gets the whole body its head names.
+    /// a wait. A reader that pauses past a write timeout that sent nothing, on
+    /// a reply larger than the socket buffers, still gets the whole body its
+    /// head names.
     #[test]
     fn a_reader_that_pauses_past_a_write_timeout_gets_the_whole_state() {
         let (running, _events) = listen(full(), None);
@@ -1056,8 +1057,10 @@ mod tests {
         // socket buffers at once, and the next write blocks.
         let mut reply = vec![0_u8; 4096];
         let first = client.read_exact(&mut reply);
-        // The pause the scenario needs: past one write timeout.
-        std::thread::sleep(super::POLL + Duration::from_millis(500));
+        // The pause the scenario needs: two write timeouts and a margin. The
+        // write that fills the buffers ends at its timeout with the part it
+        // sent; only the next write sends nothing and fails with the timeout.
+        std::thread::sleep(super::POLL * 2 + Duration::from_millis(500));
         let read = client.read_to_end(&mut reply);
         running.shutdown();
         assert!(first.is_ok(), "first bytes: {first:?}");
