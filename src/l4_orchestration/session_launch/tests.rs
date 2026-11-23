@@ -308,10 +308,32 @@ fn the_flag_beats_the_record_beats_the_config_beats_local() {
     }
     assert_eq!(launch_mode(None, None, "git"), Mode::Git);
     assert_eq!(launch_mode(None, None, "full"), Mode::Full);
+    assert_eq!(
+        launch_mode(None, None, "worktree"),
+        Mode::Git,
+        "the documented spelling"
+    );
     assert_eq!(launch_mode(None, None, "local"), Mode::Local);
-    for unknown in ["", "Git", " git", "nonsense"] {
+    for unknown in ["", "Git", " git", "nonsense", "Worktree"] {
         assert_eq!(launch_mode(None, None, unknown), Mode::Local, "{unknown:?}");
     }
+}
+
+/// An unknown configured `copy` warns once and names the value and the
+/// accepted spellings; a known spelling or an unset key earns nothing.
+#[test]
+fn an_unknown_copy_warns_and_a_known_one_does_not() {
+    use super::unknown_copy_note;
+    for known in ["", "local", "git", "worktree", "full"] {
+        assert_eq!(unknown_copy_note(known), None, "{known:?}");
+    }
+    assert_eq!(
+        unknown_copy_note("nonsense").as_deref(),
+        Some(
+            "Note: [workspace] copy = \"nonsense\" is not a working-copy mode; \
+             use local, worktree (or git) or full. The launch uses local."
+        )
+    );
 }
 
 /// A meta agent's session and the orchestrator seat never open the chat

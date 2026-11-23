@@ -36,6 +36,15 @@ impl Mode {
             _ => None,
         }
     }
+
+    /// The mode a configured `[workspace] copy` names: the recorded spellings
+    /// plus `worktree`, the documented one, for the git worktree mode.
+    pub(super) fn parse_config(value: &str) -> Option<Self> {
+        match value {
+            "worktree" => Some(Self::Git),
+            other => Self::parse(other),
+        }
+    }
 }
 
 /// What the user's own argv said.

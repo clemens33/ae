@@ -799,11 +799,22 @@ fn recorded_wins_seconds(
     Ok(value)
 }
 
+/// The note an unknown configured `copy` earns, or `None` when it is unset or
+/// names a mode. The launch still uses local.
+fn unknown_copy_note(configured: &str) -> Option<String> {
+    (!configured.is_empty() && Mode::parse_config(configured).is_none()).then(|| {
+        format!(
+            "Note: [workspace] copy = \"{configured}\" is not a working-copy mode; \
+             use local, worktree (or git) or full. The launch uses local."
+        )
+    })
+}
+
 /// A launch's working-copy mode: the flag, then the recorded one, then the
 /// configured `copy`, then local.
 fn launch_mode(flag: Option<Mode>, recorded: Option<Mode>, configured: &str) -> Mode {
     flag.or(recorded)
-        .unwrap_or_else(|| Mode::parse(configured).unwrap_or(Mode::Local))
+        .unwrap_or_else(|| Mode::parse_config(configured).unwrap_or(Mode::Local))
 }
 
 /// Whether the chat opens as the session's first window, and the reason for
@@ -1233,6 +1244,12 @@ fn launch(
         None
     };
     let mode = launch_mode(plan.mode, recorded_mode, &values.copy);
+    if plan.mode.is_none()
+        && recorded_mode.is_none()
+        && let Some(note) = unknown_copy_note(&values.copy)
+    {
+        writeln!(err, "{note}")?;
+    }
 
     // ---- the working copy ----
     // The session document is the ONE resume discriminator. A worktree path is
