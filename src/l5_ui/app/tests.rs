@@ -6557,12 +6557,18 @@ fn bang_app_destination_is_none_and_effects_handle_shell_and_write_keys_lists_it
 
     app.open_settings();
     app.model.show_settings_tab(SettingsTab::Keys);
-    app.model.settings_wheel(15);
-    let keys_shown = framed(&mut app);
-    assert!(
-        keys_shown.contains("!command    run it: a popup in tmux, else started"),
-        "{keys_shown}"
-    );
+    // The row sits low in the keys table, so wheel down until the frame
+    // shows it, however many rows the table above it grows by.
+    let wanted = "!command    run it: a popup in tmux, else started";
+    let mut keys_shown = framed(&mut app);
+    for _ in 0..200 {
+        if keys_shown.contains(wanted) {
+            break;
+        }
+        app.model.settings_wheel(1);
+        keys_shown = framed(&mut app);
+    }
+    assert!(keys_shown.contains(wanted), "{keys_shown}");
     app.close_settings();
 
     // Without a work_dir in meta, ! is refused while writing stays live and
