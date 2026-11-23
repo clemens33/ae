@@ -416,7 +416,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::{Sticky, Wait, WaitKind, arrange, collect};
+    use super::{Column, Sticky, Wait, WaitKind, arrange, collect};
+    use crate::json::Value;
     use crate::topic::{self, Group};
 
     /// A scratch state root removed when it drops.
@@ -556,5 +557,177 @@ mod tests {
             needs[2].title.as_ref().map(|title| title.value.as_str()),
             Some("full z")
         );
+    }
+
+    const FIRST: &str = "0199c0de-5551-4890-abcd-ef0123456789";
+    const SECOND: &str = "0199c0de-5552-4890-abcd-ef0123456789";
+
+    /// The orchestrator seat `name` of incarnation `uuid` under `root`, with an
+    /// empty journal; its directory.
+    fn seat(root: &std::path::Path, name: &str, uuid: &str) -> std::path::PathBuf {
+        write(
+            &root.join("orchestrator.config"),
+            "[workspace]\norchestrator = true\n",
+        );
+        let dir = root.join("sessions").join(name);
+        std::fs::create_dir_all(dir.join("messages"))
+            .unwrap_or_else(|error| panic!("session: {error}"));
+        write(
+            &dir.join("meta"),
+            format!(
+                "schema=2\nsession={name}\nsession_id={uuid}\nsession_id_origin=session\n\
+                 mode=worktree\nlayout=lead-pair\nseat.main=lead\n\
+                 tmux_server_kind=socket\ntmux_server={}\nmeta_agent=true\nlocal_config={}\n",
+                root.join("no-server").display(),
+                root.join("orchestrator.config").display(),
+            ),
+        );
+        write(&dir.join("events.jsonl"), "");
+        dir
+    }
+
+    /// The seat `name` of incarnation `uuid` with the one topic `slug`,
+    /// published to the archive at `at` as an end publishes it and then
+    /// removed; its archive.
+    fn published(
+        root: &std::path::Path,
+        name: &str,
+        uuid: &str,
+        slug: &str,
+        at: &str,
+    ) -> std::path::PathBuf {
+        let dir = seat(root, name, uuid);
+        write(
+            &dir.join("memo.tsv"),
+            format!("2026-08-01T11:00:00Z\tlead\ttopic-{slug}\tstate: quiet\n"),
+        );
+        let ops = crate::archive::publish::Ops {
+            reason: crate::archive::publish::Reason::End,
+            push_outcome: "not-managed",
+            push_ref: "-",
+            preserved: "-",
+            workdir: "-",
+            archived_at: at,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = crate::archive::publish::run(&dir, &ops, &mut out, &mut err)
+            .unwrap_or_else(|error| panic!("publish: {error}"));
+        assert_eq!(code, 0, "publish: {}", String::from_utf8_lossy(&err));
+        std::fs::remove_dir_all(&dir).unwrap_or_else(|error| panic!("retire source: {error}"));
+        root.join("archive").join(uuid)
+    }
+
+    /// The slug of every card in the column.
+    fn slugs(column: &Column) -> Vec<&str> {
+        column
+            .groups
+            .iter()
+            .flat_map(|(_, cards)| cards)
+            .map(|card| card.slug.as_str())
+            .collect()
+    }
+
+    /// The doc of `archived`: an archive is judged again when its tree
+    /// identity moved. An archive whose meta goes away between two polls of
+    /// one listener no longer validates, so its topic leaves the column.
+    #[test]
+    fn a_kept_archive_whose_tree_moves_is_judged_again() {
+        let scratch = Scratch::new();
+        let root = &scratch.0;
+        let archive = published(root, "first-seat", FIRST, "kept", "2026-08-01T12:00:00Z");
+        let mut sticky = Sticky::default();
+        let before = collect(root, &mut sticky);
+        assert_eq!(before.skipped.invalid, 0, "{:?}", before.gaps);
+        assert_eq!(slugs(&before), ["kept"], "{:?}", before.skipped);
+
+        std::fs::remove_file(archive.join(crate::meta::FILE))
+            .unwrap_or_else(|error| panic!("remove the archive's meta: {error}"));
+        let after = collect(root, &mut sticky);
+        assert_eq!(after.skipped.invalid, 1, "{:?}", after.gaps);
+        assert!(slugs(&after).is_empty(), "{:?}", slugs(&after));
+    }
+
+    /// The verdicts live as long as the listener, so they are held for the
+    /// archives kept now and for no other: the memory of a long-running
+    /// listener is bound by the archives it keeps, not by every archive it
+    /// ever saw.
+    #[test]
+    fn the_verdicts_held_are_those_of_the_kept_archives() {
+        let scratch = Scratch::new();
+        let root = &scratch.0;
+        let gone = published(root, "first-seat", FIRST, "first", "2026-08-01T12:00:00Z");
+        published(
+            root,
+            "second-seat",
+            SECOND,
+            "second",
+            "2026-08-01T13:00:00Z",
+        );
+        let held = |sticky: &Sticky| sticky.judged.keys().cloned().collect::<Vec<_>>();
+        let mut sticky = Sticky::default();
+        let both = collect(root, &mut sticky);
+        assert_eq!(slugs(&both), ["first", "second"], "{:?}", both.skipped);
+        assert_eq!(held(&sticky), [FIRST, SECOND]);
+
+        std::fs::remove_dir_all(&gone)
+            .unwrap_or_else(|error| panic!("remove the first archive: {error}"));
+        let one = collect(root, &mut sticky);
+        assert_eq!(slugs(&one), ["second"], "{:?}", one.skipped);
+        assert_eq!(held(&sticky), [SECOND]);
+    }
+
+    /// Each open ask waits by its own lifetime: in a seat retired with one ask
+    /// open that took a new ask after the retire, the retired ask waits no
+    /// more and the new one waits.
+    #[test]
+    fn a_retired_ask_and_a_later_live_ask_each_keep_their_own_lifetime() {
+        const RETIRED: &str = "ae-20261016T090000Z-00000001";
+        const LIVE: &str = "ae-20261016T090200Z-00000002";
+        let scratch = Scratch::new();
+        let root = &scratch.0;
+        let dir = seat(root, "owner-seat", FIRST);
+        let store = crate::store::open(&dir);
+        let append = |fields: &[(&str, &str)]| {
+            let event = Value::obj(fields.iter().map(|(key, value)| (*key, Value::str(*value))));
+            store
+                .append_event(&format!("{}\n", event.render()))
+                .unwrap_or_else(|error| panic!("append: {error}"));
+        };
+        let ask = |ts: &str, id: &str, summary: &str| {
+            append(&[
+                ("ts", ts),
+                ("actor", crate::tracked::CONSOLE_SINK),
+                ("action", "ask"),
+                ("target", "lead"),
+                ("target_slot", "main"),
+                ("target_session", "owner-seat"),
+                ("ref", id),
+                ("summary", summary),
+            ]);
+        };
+        ask("2026-10-16T09:00:00Z", RETIRED, "#first-ask waits");
+        append(&[
+            ("ts", "2026-10-16T09:01:00Z"),
+            ("actor", "lead"),
+            ("action", "retire"),
+            ("target", "lead"),
+            ("target_slot", "main"),
+            ("target_session", "owner-seat"),
+            ("target_session_id", FIRST),
+        ]);
+        ask("2026-10-16T09:02:00Z", LIVE, "#second-ask waits");
+
+        let column = collect(root, &mut Sticky::default());
+        let waiting = |slug: &str| {
+            column
+                .waits
+                .get(slug)
+                .into_iter()
+                .flatten()
+                .filter_map(|wait| wait.id.as_deref())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(waiting("second-ask"), [LIVE], "{:?}", column.waits);
+        assert!(waiting("first-ask").is_empty(), "{:?}", column.waits);
     }
 }
