@@ -256,11 +256,12 @@ fn body_len(head: &Head) -> Result<usize, u16> {
         None if head.method == Method::Post => return Err(411),
         None => 0,
         Some(text) => {
-            if text.is_empty() || text.len() > 9 || !text.bytes().all(|byte| byte.is_ascii_digit())
-            {
+            if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
                 return Err(400);
             }
-            text.parse::<usize>().map_err(|_| 400_u16)?
+            // All digits, so the parse can only overflow: a length past `usize`
+            // is past BODY_MAX as well.
+            text.parse::<usize>().map_err(|_| 413_u16)?
         }
     };
     if length > BODY_MAX {
@@ -544,5 +545,54 @@ mod tests {
             parse_head(head("0").as_bytes()),
             Ok(Parsed::Done { body_len: 0, .. })
         ));
+    }
+
+    /// A POST head whose `Content-Length` value is `length`.
+    fn post(length: &str) -> String {
+        format!("POST /api/send HTTP/1.1\r\nHost: 127.0.0.1:1\r\nContent-Length: {length}\r\n\r\n")
+    }
+
+    /// A `Content-Length` is 1*DIGIT (RFC 9110 section 8.6): leading zeros
+    /// are part of the numeral, however many there are.
+    #[test]
+    fn a_content_length_with_leading_zeros_frames_its_value() {
+        for length in ["4", "000000004", "0000000004"] {
+            assert!(
+                matches!(
+                    parse_head(post(length).as_bytes()),
+                    Ok(Parsed::Done { body_len: 4, .. })
+                ),
+                "{length:?}"
+            );
+        }
+    }
+
+    /// The body limit: a `Content-Length` over `BODY_MAX` that a `usize` holds
+    /// is 413 (the approved plan), however many digits it has.
+    #[test]
+    fn a_content_length_over_body_max_is_too_large() {
+        let over = (super::BODY_MAX + 1).to_string();
+        for length in [over.as_str(), "9999999999"] {
+            assert_eq!(parse_head(post(length).as_bytes()), Err(413), "{length:?}");
+        }
+    }
+
+    /// The parse overflow: a numeral past `u64::MAX` is still a length over
+    /// `BODY_MAX`, so 413, never a malformed head.
+    #[test]
+    fn a_content_length_past_usize_is_too_large() {
+        assert_eq!(
+            parse_head(post("18446744073709551616").as_bytes()),
+            Err(413)
+        );
+    }
+
+    /// A `Content-Length` that is empty or holds a byte other than a digit is
+    /// malformed (the approved plan: a non-digit `Content-Length` is 400).
+    #[test]
+    fn a_content_length_that_is_not_all_digits_is_malformed() {
+        for length in ["", "+4", "4 4", "0x4"] {
+            assert_eq!(parse_head(post(length).as_bytes()), Err(400), "{length:?}");
+        }
     }
 }
